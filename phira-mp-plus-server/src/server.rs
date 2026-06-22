@@ -54,6 +54,7 @@ pub struct PlusServerState {
     pub plugin_manager: Arc<PluginManager>,
     pub extensions: Arc<ExtensionManager>,
     pub ban_manager: Arc<BanManager>,
+    pub auth_cache: RwLock<HashMap<u64, (i32, String, String)>>,
     pub shutdown: Notify,
 }
 
@@ -124,6 +125,7 @@ impl PlusServer {
             plugin_manager,
             extensions,
             ban_manager,
+            auth_cache: RwLock::new(HashMap::new()),
             shutdown: Notify::new(),
         });
 

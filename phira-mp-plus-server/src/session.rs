@@ -203,28 +203,66 @@ impl Session {
                                             name: String,
                                             language: String,
                                         }
-                                        let resp: Result<AuthUserInfo> = async {
-                                            Ok(reqwest::Client::new()
+
+                                        // 计算 token 哈希作为缓存键
+                                        use std::hash::{Hash, Hasher};
+                                        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+                                        token.hash(&mut hasher);
+                                        let token_hash = hasher.finish();
+
+                                        // 尝试通过 API 认证（5 秒超时）
+                                        let resp: Option<AuthUserInfo> = async {
+                                            reqwest::Client::builder()
+                                                .timeout(std::time::Duration::from_secs(5))
+                                                .build()
+                                                .ok()?
                                                 .get(format!("{HOST}/me"))
                                                 .header(
                                                     reqwest::header::AUTHORIZATION,
                                                     format!("Bearer {token}"),
                                                 )
                                                 .send()
-                                                .await?
-                                                .error_for_status()?
-                                                .json()
-                                                .await?)
+                                                .await
+                                                .ok()?
+                                                .error_for_status()
+                                                .ok()?
+                                                .json::<AuthUserInfo>()
+                                                .await
+                                                .ok()
                                         }
                                         .await;
+
+                                        // 如果 API 成功，更新缓存；否则尝试从缓存恢复
                                         let resp = match resp {
-                                            Ok(resp) => resp,
-                                            Err(err) => {
-                                                warn!("failed to fetch info: {err:?}");
-                                                bail!("failed to fetch info");
+                                            Some(info) => {
+                                                server.auth_cache.write().await.insert(
+                                                    token_hash,
+                                                    (info.id, info.name.clone(), info.language.clone()),
+                                                );
+                                                info
+                                            }
+                                            None => {
+                                                // API 失败，尝试从缓存恢复
+                                                warn!("API unreachable, trying auth cache...");
+                                                if let Some(&(uid, ref name, ref lang)) =
+                                                    server.auth_cache.read().await.get(&token_hash)
+                                                {
+                                                    // 检查缓存中的用户是否被封禁
+                                                    if server.ban_manager.is_banned(uid).await {
+                                                        let reason = server.ban_manager.get_effective_ban_message(uid).await;
+                                                        warn!("banned user {}({}) tried to connect", name, uid);
+                                                        bail!("{}", reason);
+                                                    }
+                                                    AuthUserInfo {
+                                                        id: uid,
+                                                        name: name.clone(),
+                                                        language: lang.clone(),
+                                                    }
+                                                } else {
+                                                    bail!("认证服务器不可达，请稍后重试");
+                                                }
                                             }
                                         };
-                                        debug!("session {id} <- {resp:?}");
 
                                         // 检查用户是否被封禁
                                         if server.ban_manager.is_banned(resp.id).await {
