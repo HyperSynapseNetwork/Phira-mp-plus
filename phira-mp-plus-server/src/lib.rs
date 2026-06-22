@@ -6,7 +6,6 @@
 pub mod ban;
 pub mod cli;
 pub mod extensions;
-#[cfg(feature = "postgres")]
 pub mod jsondb;
 pub mod l10n;
 pub mod plugin;
