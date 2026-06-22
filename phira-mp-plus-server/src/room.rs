@@ -3,6 +3,7 @@
 //! 增强的房间管理，集成插件事件系统。记录每轮游玩结算数据，
 //! 支持查询历史、转移房主等管理功能。
 
+use crate::plugin::{PluginEvent, PluginManager};
 use crate::server::Chart;
 use anyhow::{Result, bail};
 use phira_mp_common::{ClientRoomState, Message, RoomId, RoomState, ServerCommand};
@@ -71,6 +72,8 @@ pub struct PlayResult {
 
 pub struct Room {
     pub id: RoomId,
+    /// 用于触发 RoundComplete 事件的插件管理器
+    pub plugin_manager: Option<Arc<PluginManager>>,
     pub host: RwLock<Weak<super::session::User>>,
     pub state: RwLock<InternalRoomState>,
 
@@ -87,7 +90,7 @@ pub struct Room {
 }
 
 impl Room {
-    pub fn new(id: RoomId, host: Weak<super::session::User>) -> Self {
+    pub fn new(id: RoomId, host: Weak<super::session::User>, plugin_manager: Option<Arc<PluginManager>>) -> Self {
         Self {
             id,
             host: host.clone().into(),
@@ -101,6 +104,7 @@ impl Room {
             monitors: Vec::new().into(),
             chart: RwLock::default(),
             play_history: RwLock::new(Vec::new()),
+            plugin_manager,
         }
     }
 
@@ -418,6 +422,17 @@ impl Room {
                     drop(guard);
                     // 保存历史记录
                     self.save_round_history().await;
+
+                    // 触发 RoundComplete 事件
+                    if let Some(pm) = &self.plugin_manager {
+                        let chart = self.chart.read().await;
+                        let (cid, cn) = chart.as_ref().map(|c| (c.id, c.name.clone())).unwrap_or((0, "?".into()));
+                        pm.trigger(&PluginEvent::RoundComplete {
+                            room_id: self.id.to_string(),
+                            chart_id: cid,
+                            chart_name: cn,
+                        }).await;
+                    }
 
                     self.send(Message::GameEnd).await;
                     *self.state.write().await = InternalRoomState::SelectChart;

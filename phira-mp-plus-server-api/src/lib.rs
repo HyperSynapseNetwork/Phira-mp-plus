@@ -22,6 +22,8 @@ pub enum PluginEvent {
     GameEnd { user_id: i32, room_id: String, score: i32, accuracy: f32 },
     PlayerTouches { user_id: i32, room_id: String, data: Vec<TouchEventPoint> },
     PlayerJudges { user_id: i32, room_id: String, data: Vec<JudgeEventItem> },
+    /// 一轮游戏完成（所有玩家均已提交成绩）
+    RoundComplete { room_id: String, chart_id: i32, chart_name: String },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

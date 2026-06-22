@@ -555,7 +555,11 @@ async fn process(user: Arc<User>, cmd: ClientCommand) -> Option<ServerCommand> {
                 }
 
                 let mut map_guard = user.server.rooms.write().await;
-                let room = Arc::new(crate::room::Room::new(id.clone(), Arc::downgrade(&user)));
+                let room = Arc::new(crate::room::Room::new(
+                    id.clone(),
+                    Arc::downgrade(&user),
+                    Some(Arc::clone(&user.server.plugin_manager)),
+                ));
                 match map_guard.entry(id.clone()) {
                     std::collections::hash_map::Entry::Vacant(entry) => {
                         entry.insert(Arc::clone(&room));

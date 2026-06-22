@@ -209,6 +209,17 @@ impl PlusServer {
             }
         }
 
+        // 注册结算排行插件（--features round-results）
+        #[cfg(feature = "round-results")]
+        {
+            if let Err(e) = state.plugin_manager.register_native(
+                phira_mp_plus_round_results::RoundResultsPlugin::create(),
+                "round-results",
+            ).await {
+                warn!("round-results plugin init failed: {e}");
+            }
+        }
+
         // 启动中央 HTTP 服务器（所有路由已注册完毕）
         let http_state = Arc::clone(&state);
         tokio::spawn(async move {
