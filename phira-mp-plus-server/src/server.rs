@@ -415,6 +415,24 @@ fn server_state_query(state: &Arc<PlusServerState>, method: &str, args: &[Value]
             let ss = build_snapshot(name, room);
             serde_json::to_value(ss).map_err(|e| e.to_string())
         }
+        "send_chat" => {
+            let uid = args.get(0).and_then(|v| v.as_i64()).unwrap_or(0) as i32;
+            let msg = args.get(1).and_then(|v| v.as_str()).unwrap_or("").to_string();
+            let users = state.users.blocking_read();
+            if let Some(user) = users.get(&uid) {
+                let s = user.session.blocking_read();
+                if let Some(session) = s.as_ref().and_then(|w| w.upgrade()) {
+                    let cmd = phira_mp_common::ServerCommand::Message(
+                        phira_mp_common::Message::Chat { user: 0, content: msg },
+                    );
+                    let _ = session.stream.blocking_send(cmd);
+                }
+                drop(s);
+                Ok(serde_json::json!({"sent": true}))
+            } else {
+                Ok(serde_json::json!({"sent": false, "error": "user not found"}))
+            }
+        }
         "rooms.by_user" => {
             let uid = args.get(0).and_then(|v| v.as_i64()).unwrap_or(0) as i32;
             let user = {

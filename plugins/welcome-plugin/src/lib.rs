@@ -148,12 +148,18 @@ impl NativePlugin for WelcomePlugin {
             let text = replace_placeholders(&cfg.welcome_message, *user_id, user_name, ctx);
             drop(cfg);
 
-            // 发送欢迎语（通过 http API 告知，由客户端拉取）
-            // 实际发送通过房间 chat 消息
-            info!("Welcome to {}: {}", user_name, text);
-
-            // 通过 plugin context 无法直接发消息给用户，改为日志输出
-            // 实际应用中可通过 state 查询或 api 调用发送
+            // 通过 state 查询发送聊天消息给用户
+            if let Some(state) = &ctx.state {
+                let r = state.call("send_chat", &[
+                    serde_json::json!(user_id),
+                    serde_json::json!(text),
+                ]);
+                if let Ok(v) = r {
+                    if v.get("sent") == Some(&serde_json::json!(true)) {
+                        info!("Welcome message sent to {}: {}", user_name, text);
+                    }
+                }
+            }
         }
         vec![]
     }
