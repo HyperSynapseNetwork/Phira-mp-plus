@@ -501,7 +501,7 @@ fn server_state_query(state: &Arc<PlusServerState>, method: &str, args: &[Value]
                     if let Some(u) = wu.upgrade() {
                         let session = read_lock!(u.session);
                         if let Some(session) = session.as_ref().and_then(|w| w.upgrade()) {
-                            if session.stream.blocking_send(cmd.clone()).is_ok() {
+                            if session.stream.try_send(cmd.clone()).is_ok() {
                                 sent += 1;
                             }
                         }
