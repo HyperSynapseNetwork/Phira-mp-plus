@@ -153,10 +153,37 @@ impl CliHandler {
                 }
                 "broadcast" | "bc" => {
                     if args.is_empty() {
-                        println!("  {} {} <消息>", c::yellow("?"), c::bold("broadcast"));
+                        println!("  {} {} all <消息>          广播给所有用户", c::yellow("?"), c::bold("broadcast"));
+                        println!("  {} {} room <房间ID> <消息>  广播给指定房间", c::dim("▸"), c::bold("broadcast"));
+                        println!("  {} {} user <用户ID> <消息>  发送给指定用户", c::dim("▸"), c::bold("broadcast"));
                     } else {
-                        let msg = args.join(" ");
-                        self.broadcast(&msg).await;
+                        let scope = args[0];
+                        let rest: Vec<&str> = args[1..].iter().copied().collect();
+                        match scope {
+                            "all" | "a" => {
+                                self.broadcast_all(&rest.join(" ")).await;
+                            }
+                            "room" | "r" => {
+                                if rest.len() < 2 {
+                                    println!("  {} {} room <房间ID> <消息>", c::yellow("?"), c::bold("broadcast"));
+                                } else {
+                                    self.broadcast_room(rest[0], &rest[1..].join(" ")).await;
+                                }
+                            }
+                            "user" | "u" => {
+                                if rest.len() < 2 {
+                                    println!("  {} {} user <用户ID> <消息>", c::yellow("?"), c::bold("broadcast"));
+                                } else {
+                                    let uid: i32 = match rest[0].parse() { Ok(id) => id, Err(_) => { println!("  {} 无效的用户ID", c::red("✗")); return; } };
+                                    self.broadcast_user(uid, &rest[1..].join(" ")).await;
+                                }
+                            }
+                            _ => {
+                                // 兼容旧语法：直接广播
+                                let msg = args.join(" ");
+                                self.broadcast_all(&msg).await;
+                            }
+                        }
                     }
                 }
                 "status" | "st" => self.status().await,
@@ -844,31 +871,61 @@ impl CliHandler {
         }
     }
 
-    async fn broadcast(&self, message: &str) {
+    /// 广播给所有用户
+    async fn broadcast_all(&self, message: &str) {
         let users = self.state.users.read().await;
+        let content = format!("[系统广播] {}", message);
         let msg = phira_mp_common::ServerCommand::Message(
-            phira_mp_common::Message::Chat {
-                user: 0,
-                content: format!("[系统广播] {}", message),
-            }
+            phira_mp_common::Message::Chat { user: 0, content },
         );
-
         let mut sent = 0usize;
         for user in users.values() {
             user.try_send(msg.clone()).await;
             sent += 1;
         }
         drop(users);
-
-        info!(sent, message = %message, "broadcast message");
+        info!(sent, message = %message, "broadcast to all");
         self.state.plugin_manager
             .trigger(&PluginEvent::RoomModify {
                 user_id: 0,
                 room_id: "*broadcast*".to_string(),
-                data: format!(r#"{{"action":"broadcast","message":"{}"}}"#, message),
+                data: format!(r#"{{"action":"broadcast","scope":"all","message":"{}"}}"#, message),
             }).await;
-
         println!("  {} 已广播给 {} 个用户", c::green("✓"), sent);
+    }
+
+    /// 广播给指定房间
+    async fn broadcast_room(&self, room_id: &str, message: &str) {
+        let room = match self.find_room(room_id).await {
+            Some(r) => r,
+            None => { println!("  {} 未找到房间 {}", c::red("✗"), room_id); return; }
+        };
+        let content = format!("[房间广播] {}", message);
+        room.send(phira_mp_common::Message::Chat { user: 0, content }).await;
+        let users = room.users().await.len();
+        info!(room = room_id, message = %message, "broadcast to room");
+        self.state.plugin_manager
+            .trigger(&PluginEvent::RoomModify {
+                user_id: 0,
+                room_id: room_id.to_string(),
+                data: format!(r#"{{"action":"broadcast","scope":"room","message":"{}"}}"#, message),
+            }).await;
+        println!("  {} 已发送房间广播 ({} 人)", c::green("✓"), users);
+    }
+
+    /// 发送给指定用户
+    async fn broadcast_user(&self, user_id: i32, message: &str) {
+        let users = self.state.users.read().await;
+        if let Some(user) = users.get(&user_id) {
+            let content = format!("[管理员消息] {}", message);
+            user.try_send(phira_mp_common::ServerCommand::Message(
+                phira_mp_common::Message::Chat { user: 0, content },
+            )).await;
+            info!(user = user_id, message = %message, "message to user");
+            println!("  {} 已发送给用户 {}", c::green("✓"), user_id);
+        } else {
+            println!("  {} 未找到用户 {}", c::red("✗"), user_id);
+        }
     }
 
     async fn status(&self) {

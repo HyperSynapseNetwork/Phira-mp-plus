@@ -198,6 +198,17 @@ impl PlusServer {
             }
         }
 
+        // 注册游玩时间统计插件（--features playtime-tracker）
+        #[cfg(feature = "playtime-tracker")]
+        {
+            if let Err(e) = state.plugin_manager.register_native(
+                phira_mp_plus_playtime_tracker::PlaytimeTracker::create(),
+                "playtime-tracker",
+            ).await {
+                warn!("playtime-tracker plugin init failed: {e}");
+            }
+        }
+
         // 启动中央 HTTP 服务器（所有路由已注册完毕）
         let http_state = Arc::clone(&state);
         tokio::spawn(async move {

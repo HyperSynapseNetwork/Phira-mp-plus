@@ -38,9 +38,11 @@ phira-mp-macros = { path = "../phira-mp/phira-mp-macros" }
 phira-mp-plus-server-api = { path = "../phira-mp-plus-server-api" }
 phira-mp-plus-webapi = { path = "../plugins/webapi-plugin", optional = true }
 phira-mp-plus-player-tracker = { path = "../plugins/player-tracker", optional = true }
+phira-mp-plus-playtime-tracker = { path = "../plugins/playtime-tracker", optional = true }
 
 [features]
-default = ["plugin-system", "webapi", "player-tracker"]
+default = ["plugin-system", "webapi", "player-tracker", "playtime-tracker"]
 plugin-system = ["dep:wasmtime"]
 webapi = ["dep:phira-mp-plus-webapi"]
 player-tracker = ["dep:phira-mp-plus-player-tracker"]
+playtime-tracker = ["dep:phira-mp-plus-playtime-tracker"]
