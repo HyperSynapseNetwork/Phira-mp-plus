@@ -100,6 +100,31 @@ impl PluginApiRegistry {
     }
 }
 
+// ── CLI 命令注册 ──
+
+/// CLI 命令描述
+pub struct CliCommandInfo {
+    pub name: String,
+    pub description: String,
+    pub usage: String,
+}
+
+/// CLI 命令注册句柄
+#[derive(Clone)]
+pub struct CliHandle {
+    inner: Arc<dyn Fn(&str, &str, &str, Arc<dyn Fn(&[&str]) -> Vec<String> + Send + Sync>) -> Result<(), String> + Send + Sync>,
+}
+
+impl CliHandle {
+    pub fn new(inner: impl Fn(&str, &str, &str, Arc<dyn Fn(&[&str]) -> Vec<String> + Send + Sync>) -> Result<(), String> + Send + Sync + 'static) -> Self {
+        Self { inner: Arc::new(inner) }
+    }
+
+    pub fn register(&self, name: &str, description: &str, usage: &str, handler: Arc<dyn Fn(&[&str]) -> Vec<String> + Send + Sync>) -> Result<(), String> {
+        (self.inner)(name, description, usage, handler)
+    }
+}
+
 // ── 数据库访问 ──
 
 /// 数据库查询结果
@@ -159,6 +184,7 @@ pub struct PluginContext {
     pub state: Option<ServerStateQuery>,
     pub api: Option<PluginApiRegistry>,
     pub db: Option<DatabaseHandle>,
+    pub cli: Option<CliHandle>,
 }
 
 impl PluginContext {
@@ -169,28 +195,15 @@ impl PluginContext {
             state: None,
             api: None,
             db: None,
+            cli: None,
         }
     }
 
-    pub fn with_http(mut self, http: HttpHandle) -> Self {
-        self.http = Some(http);
-        self
-    }
-
-    pub fn with_state(mut self, state: ServerStateQuery) -> Self {
-        self.state = Some(state);
-        self
-    }
-
-    pub fn with_api(mut self, api: PluginApiRegistry) -> Self {
-        self.api = Some(api);
-        self
-    }
-
-    pub fn with_db(mut self, db: DatabaseHandle) -> Self {
-        self.db = Some(db);
-        self
-    }
+    pub fn with_http(mut self, http: HttpHandle) -> Self { self.http = Some(http); self }
+    pub fn with_state(mut self, state: ServerStateQuery) -> Self { self.state = Some(state); self }
+    pub fn with_api(mut self, api: PluginApiRegistry) -> Self { self.api = Some(api); self }
+    pub fn with_db(mut self, db: DatabaseHandle) -> Self { self.db = Some(db); self }
+    pub fn with_cli(mut self, cli: CliHandle) -> Self { self.cli = Some(cli); self }
 }
 
 // ── 插件特征 ──

@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::path::Path;
+use std::sync::Mutex;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use tracing::{info, warn};
@@ -197,7 +198,7 @@ pub mod native {
 /// 插件处理器 - 负责加载、管理和调度插件
 pub struct PluginManager {
     plugins: Arc<RwLock<Vec<Box<dyn PluginHost>>>>,
-    cli_commands: Arc<RwLock<HashMap<String, CliCommand>>>,
+    cli_commands: Arc<Mutex<HashMap<String, CliCommand>>>,
     api_handlers: Arc<RwLock<HashMap<String, api::PluginApiHandler>>>,
     extensions: Arc<ExtensionManager>,
     plugins_dir: String,
@@ -209,7 +210,7 @@ impl PluginManager {
     pub fn new(plugins_dir: &str, extensions: Arc<ExtensionManager>) -> Self {
         Self {
             plugins: Arc::new(RwLock::new(Vec::new())),
-            cli_commands: Arc::new(RwLock::new(HashMap::new())),
+            cli_commands: Arc::new(Mutex::new(HashMap::new())),
             api_handlers: Arc::new(RwLock::new(HashMap::new())),
             extensions,
             plugins_dir: plugins_dir.to_string(),
@@ -253,7 +254,7 @@ impl PluginManager {
         if let Some(ref d) = *self.db_handle.read().await {
             ctx = ctx.with_db(d.clone());
         }
-        // 提供插件间 API 调用（使用 blocking_read 避免 async）
+        // 提供插件间 API 调用
         let handlers = self.api_handlers.clone();
         let api_reg = api::PluginApiRegistry::new(move |plugin, method, args| {
             let guard = handlers.blocking_read();
@@ -263,6 +264,21 @@ impl PluginManager {
             }
         });
         ctx = ctx.with_api(api_reg);
+
+        // 提供 CLI 命令注册
+        let cli_cmds = self.cli_commands.clone();
+        let cli_handle = api::CliHandle::new(move |name, desc, usage, handler| {
+            let cmd = CliCommand {
+                name: name.to_string(),
+                description: desc.to_string(),
+                usage: usage.to_string(),
+                handler,
+            };
+            cli_cmds.lock().unwrap().insert(name.to_string(), cmd);
+            info!("plugin registered CLI command: {name}");
+            Ok(())
+        });
+        ctx = ctx.with_cli(cli_handle);
 
         Arc::new(native::ServerPluginContext {
             ctx,
@@ -458,7 +474,7 @@ impl PluginManager {
 
     /// 注册插件 CLI 命令
     pub async fn register_cli_command(&self, cmd: CliCommand) -> Result<(), String> {
-        let mut guard = self.cli_commands.write().await;
+        let mut guard = self.cli_commands.lock().unwrap();
         if guard.contains_key(&cmd.name) {
             return Err(format!("CLI command '{}' is already registered", cmd.name));
         }
@@ -469,14 +485,17 @@ impl PluginManager {
 
     /// 执行插件 CLI 命令，返回输出行
     pub async fn execute_cli_command(&self, name: &str, args: &[&str]) -> Option<Vec<String>> {
-        let guard = self.cli_commands.read().await;
+        let guard = self.cli_commands.lock().ok()?;
         guard.get(name).map(|cmd| (cmd.handler)(args))
     }
 
     /// 列出所有已注册的插件 CLI 命令
     pub async fn list_cli_commands(&self) -> Vec<CliCommand> {
-        let guard = self.cli_commands.read().await;
-        guard.values().cloned().collect()
+        if let Ok(guard) = self.cli_commands.lock() {
+            guard.values().cloned().collect()
+        } else {
+            Vec::new()
+        }
     }
 }
 

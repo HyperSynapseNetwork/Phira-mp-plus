@@ -83,6 +83,49 @@ impl NativePlugin for PlayerTracker {
             info!("registered /api/players/list");
         }
 
+        // CLI 命令
+        if let Some(cli) = &ctx.cli {
+            let d = db.cloned();
+            let _ = cli.register(
+                "players", "列出所有游玩过的玩家（翻页）", "players [页码]",
+                Arc::new(move |args| {
+                    let page: u64 = args.first().and_then(|p| p.parse().ok()).unwrap_or(1).max(1);
+                    let db = match d.as_ref() {
+                        Some(db) => db,
+                        None => return vec!["  DB not available".into()],
+                    };
+                    let offset = (page - 1) * PAGE_SIZE as u64;
+                    let r = match db.query(
+                        "SELECT phira_id, first_seen, last_seen, play_count
+                         FROM players ORDER BY last_seen DESC LIMIT $1 OFFSET $2",
+                        &[Value::Number((PAGE_SIZE as u64).into()), Value::Number(offset.into())],
+                    ) {
+                        Ok(r) => r,
+                        Err(e) => return vec![format!("  query error: {e}")],
+                    };
+                    let mut out = vec![format!("  ◆ 玩家 ({})", d.as_ref().map_or(0, |db| {
+                        db.query("SELECT COUNT(*)::bigint FROM players", &[])
+                            .ok().and_then(|r| r.rows.first()?.first()?.as_u64()).unwrap_or(0)
+                    }))];
+                    out.push("  ──────────────────────────────────────".into());
+                    for row in &r.rows {
+                        let id = row.get(0).and_then(|v| v.as_i64()).unwrap_or(0);
+                        let seen = row.get(2).and_then(|v| v.as_str()).unwrap_or("");
+                        let count = row.get(3).and_then(|v| v.as_i64()).unwrap_or(0);
+                        out.push(format!("  │ {:<8}  最近: {}  游玩: {}", id, seen, count));
+                    }
+                    out
+                }),
+            );
+            let _ = cli.register(
+                "player-count", "游玩过的玩家总数", "player-count",
+                Arc::new(|_| {
+                    vec!["  DB not available in CLI (use /api/players/count)".into()]
+                }),
+            );
+            info!("registered CLI: players, player-count");
+        }
+
         info!("PlayerTracker plugin initialized");
         Ok(())
     }
