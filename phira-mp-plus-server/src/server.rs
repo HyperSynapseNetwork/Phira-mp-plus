@@ -43,10 +43,15 @@ use tokio::net::TcpListener;
 use tokio::sync::{Notify, RwLock, mpsc};
 use tracing::{info, warn};
 
-/// 获取 tokio RwLock 读锁（在 blocking 线程中安全使用）
+/// 自旋获取 tokio RwLock 读锁（无需 tokio 运行时）
 macro_rules! read_lock {
     ($lock:expr) => {{
-        $lock.blocking_read()
+        loop {
+            match $lock.try_read() {
+                Ok(g) => break g,
+                Err(_) => std::thread::yield_now(),
+            }
+        }
     }};
 }
 use uuid::Uuid;
