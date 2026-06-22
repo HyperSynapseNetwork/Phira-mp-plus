@@ -45,6 +45,10 @@ struct Args {
     /// 允许旁观的管理员用户ID列表
     #[arg(short = 'm', long = "monitor", help = "允许旁观的用户ID（可多次指定）")]
     monitors: Vec<i32>,
+
+    /// HTTP/SSE 服务端口
+    #[arg(long = "http-port", default_value_t = 12347, help = "中央 HTTP/SSE 服务端口")]
+    http_port: u16,
 }
 
 fn init_log(file: &str) -> Result<WorkerGuard> {
@@ -106,6 +110,7 @@ async fn main() -> Result<()> {
 
     let config = PlusConfig {
         port: args.port,
+        http_port: args.http_port,
         monitors: if args.monitors.is_empty() {
             vec![2]
         } else {

@@ -7,6 +7,7 @@ use crate::ban::BanManager;
 use crate::cli::CliHandler;
 use crate::extensions::ExtensionManager;
 use crate::plugin::{self, PluginEvent, PluginManager};
+use crate::plugin_http::PluginHttpServer;
 use anyhow::Result;
 use phira_mp_common::RoomId;
 use serde::{Deserialize, Serialize};
@@ -61,6 +62,7 @@ pub struct PlusServerState {
 #[derive(Debug, Deserialize)]
 pub struct PlusConfig {
     pub port: u16,
+    pub http_port: u16,
     pub monitors: Vec<i32>,
     pub plugins_dir: String,
     pub extensions_file: Option<String>,
@@ -71,6 +73,7 @@ impl Default for PlusConfig {
     fn default() -> Self {
         Self {
             port: 12346,
+            http_port: 12347,
             monitors: vec![2],
             plugins_dir: "plugins".to_string(),
             extensions_file: None,
@@ -115,6 +118,8 @@ impl PlusServer {
         // 初始化黑名单管理器
         let ban_manager = Arc::new(BanManager::new(Arc::clone(&extensions)));
 
+        let http_port = config.http_port;
+
         let state = Arc::new(PlusServerState {
             config,
             sessions: IdMap::default(),
@@ -149,6 +154,10 @@ impl PlusServer {
         // 初始化黑名单扩展字段
         state.ban_manager.register_fields().await;
 
+        // 初始化中央 HTTP/SSE 服务器（插件可通过 PluginContext 注册路由）
+        let http_server = Arc::new(PluginHttpServer::new(http_port));
+        state.plugin_manager.set_http_server(Arc::clone(&http_server)).await;
+
         // 加载插件
         let plugin_count = state.plugin_manager.load_plugins().await.unwrap_or(0);
         info!("loaded {} plugin(s)", plugin_count);
@@ -159,8 +168,13 @@ impl PlusServer {
             "event-logger",
         ).await;
 
+        // 启动中央 HTTP 服务器（所有路由已注册）
+        let http_state = Arc::clone(&state);
+        tokio::spawn(async move {
+            http_server.start(http_state).await;
+        });
+
         // 注册 Web API 插件（可选：需要 phira-mp-plus-webapi 库）
-        // 取消注释以下代码并添加依赖来启用 Web API：
         // let _ = state.plugin_manager.register_native(
         //     phira_mp_plus_webapi::WebApiPlugin::create(Arc::clone(&state)),
         //     "webapi",

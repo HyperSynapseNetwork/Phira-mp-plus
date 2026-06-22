@@ -158,6 +158,8 @@ pub mod native {
     pub struct PluginContext {
         pub plugin_name: String,
         pub extensions: Arc<ExtensionManager>,
+        /// 中央 HTTP/SSE 服务器（可选，用于注册路由和广播事件）
+        pub http: Option<Arc<crate::plugin_http::PluginHttpServer>>,
     }
 
     impl PluginContext {
@@ -165,7 +167,13 @@ pub mod native {
             Self {
                 plugin_name: plugin_name.to_string(),
                 extensions,
+                http: None,
             }
+        }
+
+        pub fn with_http(mut self, http: Arc<crate::plugin_http::PluginHttpServer>) -> Self {
+            self.http = Some(http);
+            self
         }
     }
 
@@ -232,6 +240,7 @@ pub struct PluginManager {
     cli_commands: Arc<RwLock<HashMap<String, CliCommand>>>,
     extensions: Arc<ExtensionManager>,
     plugins_dir: String,
+    http_server: Arc<RwLock<Option<Arc<crate::plugin_http::PluginHttpServer>>>>,
 }
 
 impl PluginManager {
@@ -241,7 +250,21 @@ impl PluginManager {
             cli_commands: Arc::new(RwLock::new(HashMap::new())),
             extensions,
             plugins_dir: plugins_dir.to_string(),
+            http_server: Arc::new(RwLock::new(None)),
         }
+    }
+
+    /// 设置中央 HTTP 服务器（让插件在 init 中注册路由）
+    pub async fn set_http_server(&self, http: Arc<crate::plugin_http::PluginHttpServer>) {
+        *self.http_server.write().await = Some(http);
+    }
+
+    async fn make_ctx(&self, name: &str) -> Arc<native::PluginContext> {
+        let mut ctx = native::PluginContext::new(name, self.extensions.clone());
+        if let Some(ref http) = *self.http_server.read().await {
+            ctx = ctx.with_http(Arc::clone(http));
+        }
+        Arc::new(ctx)
     }
 
     /// 从指定目录加载所有插件
@@ -333,7 +356,7 @@ impl PluginManager {
         plugin: Box<dyn native::NativePlugin>,
         name: &str,
     ) -> Result<(), String> {
-        let ctx = Arc::new(native::PluginContext::new(name, self.extensions.clone()));
+        let ctx = self.make_ctx(name).await;
         let mut wrapper = native::NativePluginWrapper::new(plugin, name, ctx);
         // 初始化插件
         wrapper.init()?;

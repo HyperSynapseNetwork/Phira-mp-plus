@@ -25,6 +25,14 @@ unic-langid = { version = "0.9.6", features = ["macros"] }
 uuid = { workspace = true, features = ["v4"] }
 wasmtime = { version = "30", optional = true }
 
+# HTTP/SSE 中央服务器（插件系统）
+axum = { version = "0.8", default-features = false, features = [
+    "tokio", "http1", "json", "macros", "original-uri", "matched-path", "query", "form",
+] }
+tokio-stream = { version = "0.1", features = ["sync"] }
+tower-http = { version = "0.6", features = ["cors"] }
+futures = "0.3"
+
 phira-mp-common = { path = "../phira-mp/phira-mp-common" }
 phira-mp-macros = { path = "../phira-mp/phira-mp-macros" }
 

@@ -8,6 +8,7 @@ pub mod cli;
 pub mod extensions;
 pub mod l10n;
 pub mod plugin;
+pub mod plugin_http;
 pub mod room;
 pub mod server;
 pub mod session;

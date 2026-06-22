@@ -1659,9 +1659,11 @@ name = "phira-mp-plus-server"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "axum",
  "clap",
  "fluent",
  "fluent-syntax",
+ "futures",
  "intl-memoizer",
  "lru",
  "once_cell",
@@ -1674,6 +1676,8 @@ dependencies = [
  "serde_yaml",
  "tap",
  "tokio",
+ "tokio-stream",
+ "tower-http",
  "tracing",
  "tracing-appender",
  "tracing-subscriber",
