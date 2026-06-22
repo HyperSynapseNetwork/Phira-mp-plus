@@ -52,7 +52,9 @@ impl JsonDatabase {
                 }
                 Ok(DbResult { rows: vec![], columns: vec![], rows_affected: 1 })
             } else if upper.contains("COUNT") {
-                let table = sql.split_whitespace().nth(3).unwrap_or("t");
+                let table = sql.split_whitespace()
+                    .skip_while(|w| w.to_uppercase() != "FROM")
+                    .nth(1).unwrap_or("t");
                 let rows = stores.get(table).map(|r| r.len()).unwrap_or(0);
                 Ok(DbResult {
                     rows: vec![vec![Value::Number(rows.into())]],
@@ -60,7 +62,12 @@ impl JsonDatabase {
                     rows_affected: rows as u64,
                 })
             } else if upper.contains("SELECT") {
-                let table = sql.split_whitespace().nth(3).unwrap_or("t");
+                // 找 FROM 后面的表名
+                let table = sql.split_whitespace()
+                    .skip_while(|w| w.to_uppercase() != "FROM")
+                    .nth(1)
+                    .map(|s| s.trim_end_matches(';'))
+                    .unwrap_or("t");
                 let store = stores.get(table).cloned().unwrap_or_default();
                 // 排序
                 let mut data = store;
