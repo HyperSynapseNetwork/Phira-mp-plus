@@ -1,0 +1,234 @@
+// Phira-mp+ 插件系统 WIT API 定义
+// 本文件定义了 Phira-mp+ 服务器与 WASM 插件之间的接口规范
+
+package phira:mpplus;
+
+/// 用户事件监听接口
+/// 插件通过实现此接口来监听服务器上的用户行为事件
+interface user-events {
+    /// 用户连接服务器时触发
+    on-user-connect: func(user-id: i32, user-name: string);
+
+    /// 用户断开服务器连接时触发
+    on-user-disconnect: func(user-id: i32, user-name: string);
+
+    /// 用户创建房间时触发
+    on-room-create: func(user-id: i32, room-id: string);
+
+    /// 用户加入房间时触发
+    on-room-join: func(user-id: i32, room-id: string, is-monitor: bool);
+
+    /// 用户离开房间时触发
+    on-room-leave: func(user-id: i32, room-id: string);
+
+    /// 房主修改房间数据时触发
+    on-room-modify: func(user-id: i32, room-id: string, data: string);
+
+    /// 用户开始游戏时触发
+    on-game-start: func(user-id: i32, room-id: string);
+
+    /// 用户完成游戏时触发
+    on-game-end: func(user-id: i32, room-id: string, score: i32, accuracy: float32);
+}
+
+/// 用户信息获取接口
+interface user-info {
+    /// 用户数据结构
+    record user-data {
+        id: i32,
+        name: string,
+        language: string,
+        is-monitor: bool,
+    }
+
+    /// 获取用户基础信息
+    get-user: func(user-id: i32) -> expected<user-data, string>;
+
+    /// 获取用户的额外绑定数据
+    get-extra-data: func(user-id: i32, key: string) -> expected<string, string>;
+
+    /// 设置用户的额外绑定数据
+    set-extra-data: func(user-id: i32, key: string, value: string) -> expected<unit, string>;
+
+    /// 注册额外的用户数据字段（供其他插件/CLI查询）
+    register-extra-field: func(key: string, default-value: string) -> expected<unit, string>;
+
+    /// 列出所有已注册的额外数据字段
+    list-extra-fields: func() -> list<string>;
+
+    /// 检查用户是否存在/在线
+    is-user-online: func(user-id: i32) -> bool;
+}
+
+/// 房间信息获取接口
+interface room-info {
+    /// 房间数据结构
+    record room-data {
+        id: string,
+        host-id: i32,
+        host-name: string,
+        player-count: u32,
+        monitor-count: u32,
+        state: string,
+        locked: bool,
+        cycling: bool,
+    }
+
+    /// 获取房间基础信息
+    get-room: func(room-id: string) -> expected<room-data, string>;
+
+    /// 获取房间的额外绑定数据
+    get-room-extra: func(room-id: string, key: string) -> expected<string, string>;
+
+    /// 设置房间的额外绑定数据
+    set-room-extra: func(room-id: string, key: string, value: string) -> expected<unit, string>;
+
+    /// 注册额外的房间数据字段
+    register-room-field: func(key: string, default-value: string) -> expected<unit, string>;
+
+    /// 列出所有已注册的房间额外字段
+    list-room-fields: func() -> list<string>;
+
+    /// 获取房间内用户列表
+    get-room-users: func(room-id: string) -> expected<list<i32>, string>;
+
+    /// 获取房间内旁观者列表
+    get-room-monitors: func(room-id: string) -> expected<list<i32>, string>;
+
+    /// 列出所有活跃房间
+    list-rooms: func() -> list<string>;
+}
+
+/// 消息发送接口
+interface messaging {
+    /// 向指定用户发送消息（类似房间内提示）
+    send-to-user: func(user-id: i32, message: string) -> expected<unit, string>;
+
+    /// 向指定房间广播消息
+    send-to-room: func(room-id: string, message: string) -> expected<unit, string>;
+
+    /// 向所有在线用户广播消息
+    send-to-all: func(message: string) -> expected<unit, string>;
+
+    /// 向所有服务器管理员发送消息
+    send-to-admins: func(message: string) -> expected<unit, string>;
+}
+
+/// 房间管理接口
+interface room-management {
+    /// 将用户踢出房间
+    kick-from-room: func(room-id: string, target-id: i32) -> expected<unit, string>;
+
+    /// 转移房主权限
+    transfer-host: func(room-id: string, target-id: i32) -> expected<unit, string>;
+
+    /// 锁定/解锁房间
+    set-room-lock: func(room-id: string, locked: bool) -> expected<unit, string>;
+
+    /// 关闭/解散房间
+    close-room: func(room-id: string) -> expected<unit, string>;
+}
+
+/// 用户管理接口
+interface user-management {
+    /// 将用户踢出服务器
+    kick-user: func(user-id: i32, reason: string) -> expected<unit, string>;
+
+    /// 封禁用户
+    ban-user: func(user-id: i32, reason: string, duration-secs: i64) -> expected<unit, string>;
+
+    /// 解封用户
+    unban-user: func(user-id: i32) -> expected<unit, string>;
+
+    /// 检查用户是否被封禁
+    is-banned: func(user-id: i32) -> expected<bool, string>;
+
+    /// 获取封禁列表
+    get-ban-list: func() -> list<string>;
+
+    /// 列出所有在线用户
+    list-online-users: func() -> list<string>;
+}
+
+/// 工具 API 接口
+interface utilities {
+    /// 生成 UUID v4
+    generate-uuid: func() -> string;
+
+    /// 获取当前服务器时间（ISO 8601 格式）
+    current-time: func() -> string;
+
+    /// 记录日志
+    log: func(level: string, message: string);
+
+    /// 发送 HTTP GET 请求
+    http-get: func(url: string) -> expected<string, string>;
+
+    /// 发送 HTTP POST 请求
+    http-post: func(url: string, body: string, content-type: string) -> expected<string, string>;
+
+    /// 读取文件内容
+    file-read: func(path: string) -> expected<string, string>;
+
+    /// 写入文件内容
+    file-write: func(path: string, content: string) -> expected<unit, string>;
+
+    /// 获取插件的数据目录路径
+    plugin-data-dir: func() -> string;
+}
+
+/// 数据库管理接口
+interface database {
+    /// 执行 SQL 查询并获取 JSON 结果
+    query: func(sql: string) -> expected<string, string>;
+
+    /// 执行 SQL 写入（INSERT/UPDATE/DELETE）
+    execute: func(sql: string) -> expected<unit, string>;
+}
+
+/// 插件配置接口
+interface plugin-config {
+    /// 获取插件配置值
+    get-config: func(key: string) -> expected<string, string>;
+
+    /// 设置插件配置值
+    set-config: func(key: string, value: string) -> expected<unit, string>;
+
+    /// 获取所有配置键
+    list-config: func() -> expected<list<string>, string>;
+}
+
+/// 插件主入口 - 所有插件必须实现此接口
+interface plugin {
+    /// 插件初始化（加载时调用）
+    init: func() -> expected<unit, string>;
+
+    /// 获取插件信息
+    get-info: func() -> plugin-info;
+
+    /// 插件卸载时调用
+    cleanup: func();
+}
+
+/// 插件信息结构
+record plugin-info {
+    name: string,
+    version: string,
+    author: string,
+    description: string,
+}
+
+/// 插件世界 - 将上述接口组合成完整的插件定义
+world plugin-world {
+    import user-events;
+    import user-info;
+    import room-info;
+    import messaging;
+    import room-management;
+    import user-management;
+    import utilities;
+    import database;
+    import plugin-config;
+
+    export plugin;
+}

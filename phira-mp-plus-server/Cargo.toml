@@ -1,0 +1,34 @@
+[package]
+name = "phira-mp-plus-server"
+version = "0.1.0"
+edition.workspace = true
+
+[dependencies]
+anyhow = { workspace = true }
+clap = { version = "4.5.58", features = ["derive", "env"] }
+fluent = "0.17.0"
+fluent-syntax = "0.12.0"
+intl-memoizer = "0.5.3"
+lru = "0.16.3"
+once_cell = "1.21.3"
+rand = "0.10.0"
+reqwest = { version = "0.12", features = ["json"] }
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0"
+serde_yaml = "0.9"
+tap = "1.0.1"
+tokio = { workspace = true, features = ["io-std", "process", "signal"] }
+tracing = { workspace = true }
+tracing-appender = "0.2.4"
+tracing-log = "0.2.0"
+tracing-subscriber = { version = "0.3.22", features = ["env-filter"] }
+unic-langid = { version = "0.9.6", features = ["macros"] }
+uuid = { workspace = true, features = ["v4"] }
+wasmtime = { version = "30", optional = true }
+
+phira-mp-common = { path = "../phira-mp/phira-mp-common" }
+phira-mp-macros = { path = "../phira-mp/phira-mp-macros" }
+
+[features]
+default = ["plugin-system"]
+plugin-system = ["dep:wasmtime"]
