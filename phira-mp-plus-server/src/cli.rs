@@ -738,12 +738,28 @@ impl CliHandler {
                 let v = value == "true" || value == "1" || value == "锁定";
                 room.locked.store(v, Ordering::SeqCst);
                 room.send(phira_mp_common::Message::LockRoom { lock: v }).await;
+                room.on_state_change().await;
+                // 触发插件事件
+                self.state.plugin_manager
+                    .trigger(&PluginEvent::RoomModify {
+                        user_id: 0,
+                        room_id: room_id.to_string(),
+                        data: format!(r#"{{"action":"lock","value":{v}}}"#),
+                    }).await;
                 println!("  {} 房间 {} 已{}锁定", c::green("✓"), room_id, if v { "" } else { "解除" });
             }
             "cycle" | "cycling" => {
                 let v = value == "true" || value == "1" || value == "轮换";
                 room.cycle.store(v, Ordering::SeqCst);
                 room.send(phira_mp_common::Message::CycleRoom { cycle: v }).await;
+                room.on_state_change().await;
+                // 触发插件事件
+                self.state.plugin_manager
+                    .trigger(&PluginEvent::RoomModify {
+                        user_id: 0,
+                        room_id: room_id.to_string(),
+                        data: format!(r#"{{"action":"cycle","value":{v}}}"#),
+                    }).await;
                 println!("  {} 房间 {} 已{}轮换", c::green("✓"), room_id, if v { "开启" } else { "关闭" });
             }
             "chart-id" | "chart" => {
@@ -751,10 +767,31 @@ impl CliHandler {
                     Ok(id) => id,
                     Err(_) => { println!("  {} 无效的谱面ID", c::red("✗")); return; }
                 };
-                // 更新谱面信息
-                let chart = crate::server::Chart { id: cid, name: format!("chart_{}", cid) };
+                // 从 API 获取谱面信息（模拟玩家选曲）
+                let chart = match reqwest::get(format!("https://phira.5wyxi.com/chart/{cid}")).await {
+                    Ok(resp) => match resp.error_for_status() {
+                        Ok(resp) => resp.json::<crate::server::Chart>().await.ok(),
+                        Err(_) => None,
+                    },
+                    Err(_) => None,
+                }.unwrap_or(crate::server::Chart {
+                    id: cid,
+                    name: format!("chart_{cid}"),
+                });
+                room.send(phira_mp_common::Message::SelectChart {
+                    user: 0,
+                    name: chart.name.clone(),
+                    id: chart.id,
+                }).await;
                 room.chart.write().await.replace(chart);
                 room.on_state_change().await;
+                // 触发插件事件
+                self.state.plugin_manager
+                    .trigger(&PluginEvent::RoomModify {
+                        user_id: 0,
+                        room_id: room_id.to_string(),
+                        data: format!(r#"{{"action":"select-chart","chart-id":{cid}}}"#),
+                    }).await;
                 println!("  {} 谱面已切换为 ID {}", c::green("✓"), cid);
             }
             _ => {
