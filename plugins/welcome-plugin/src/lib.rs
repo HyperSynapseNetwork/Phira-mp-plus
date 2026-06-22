@@ -74,8 +74,7 @@ fn replace_placeholders(template: &str, user_id: i32, user_name: &str, user_ip: 
     let mut text = template
         .replace("[user_id]", &user_id.to_string())
         .replace("[user_name]", user_name)
-        .replace("[user_ip]", user_ip)
-        // [user_location] removed
+        .replace("[user_ip]", user_ip);
 
     // [player-count] → 通过 api 查询 player-tracker
     if text.contains("[player-count]") || text.contains("[players]") {
