@@ -89,6 +89,51 @@ fn replace_placeholders(template: &str, user_id: i32, user_name: &str, user_ip: 
         }
     }
 
+    // [top_playtime <N>] → 通过 api 查询 playtime-tracker 排行榜
+    if text.contains("[top_playtime ") {
+        if let Some(api) = &ctx.api {
+            // 一次性替换所有 [top_playtime N]
+            while let Some(start) = text.find("[top_playtime ") {
+                if let Some(end) = text[start..].find(']') {
+                    let arg = text[start+14..start+end].trim();
+                    let n: usize = arg.parse().unwrap_or(5).max(1).min(20);
+                    let r = api.call("playtime-tracker", "leaderboard", &[Value::Number(n.into())]);
+                    let board = r.ok().and_then(|v| v.get("data").cloned()).unwrap_or(Value::Array(vec![]));
+                    let lines: Vec<String> = if let Value::Array(items) = &board {
+                        items.iter().enumerate().map(|(i, item)| {
+                            let uid = item.get("user_id").and_then(|v| v.as_i64()).unwrap_or(0);
+                            let secs = item.get("total_playtime").and_then(|v| v.as_u64()).unwrap_or(0);
+                            format!("#{} 用户{} {:.1}h", i + 1, uid, secs as f64 / 3600.0)
+                        }).collect()
+                    } else { vec![] };
+                    let replacement = if lines.is_empty() { "暂无数据".into() } else { lines.join("、") };
+                    text = text.replace(&text[start..start+end+1], &replacement);
+                }
+            }
+        }
+    }
+
+    // [active_rooms] → 通过 state 查询活跃房间
+    if text.contains("[active_rooms]") {
+        if let Some(state) = &ctx.state {
+            let r = state.call("rooms.list", &[]);
+            let rooms = r.ok().unwrap_or(Value::Array(vec![]));
+            let lines: Vec<String> = if let Value::Array(items) = &rooms {
+                items.iter().map(|room| {
+                    let name = room.get("name").and_then(|v| v.as_str()).unwrap_or("?");
+                    let data = &room.get("data");
+                    let host = data.and_then(|d| d.get("host")).and_then(|v| v.as_i64()).unwrap_or(0);
+                    let users = data.and_then(|d| d.get("users")).and_then(|v| v.as_array()).map(|a| a.len()).unwrap_or(0);
+                    let state_str = data.and_then(|d| d.get("state")).and_then(|v| v.as_str()).unwrap_or("?");
+                    let chart = data.and_then(|d| d.get("chart")).and_then(|v| v.as_i64()).map(|c| format!("谱面{}", c)).unwrap_or("未选曲".into());
+                    format!("{} ({}) 房主{} {} {}人", name, state_str, host, chart, users)
+                }).collect()
+            } else { vec![] };
+            let replacement = if lines.is_empty() { "暂无活跃房间".into() } else { lines.join("；") };
+            text = text.replace("[active_rooms]", &replacement);
+        }
+    }
+
     // [playtime <id>] → 通过 api 查询 playtime-tracker
     if text.contains("[playtime") {
         if let Some(api) = &ctx.api {
@@ -142,7 +187,9 @@ impl NativePlugin for WelcomePlugin {
                         format!("  │ [user_ip]     用户 IP 地址"),
                         format!("  │ [player-count] 当前在线玩家数"),
                         format!("  │ [players]      当前在线玩家数（同 [player-count]）"),
-                        format!("  │ [playtime <id>] 指定用户的游玩时间"),
+                        format!("  │ [playtime <id>]   指定用户的游玩时间"),
+                        format!("  │ [top_playtime <N>] 游玩时间前 N 名排行"),
+                        format!("  │ [active_rooms]    活跃房间列表及详情"),
                     ]
                 }),
             );
