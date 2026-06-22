@@ -6,15 +6,19 @@
 use phira_mp_plus_server_api::{
     NativePlugin, PluginContext, PluginEvent, PluginInfo,
 };
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::path::Path;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 use tracing::info;
 
+/// 持久化文件路径
+const DATA_PATH: &str = "data/playtime-tracker.json";
+
 /// 玩家游玩数据
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct PlayerTime {
     total_seconds: u64,
     /// 当前会话开始时间戳（None 表示不在游戏中）
@@ -36,9 +40,22 @@ pub struct PlaytimeTracker {
 
 impl PlaytimeTracker {
     pub fn create() -> Box<dyn NativePlugin> {
+        // 尝试从文件加载
+        let data = load_data().unwrap_or_default();
+        info!("PlaytimeTracker loaded {} records from disk", data.len());
         Box::new(PlaytimeTracker {
-            data: Arc::new(Mutex::new(HashMap::new())),
+            data: Arc::new(Mutex::new(data)),
         })
+    }
+
+    fn save(&self) {
+        let guard = self.data.lock().unwrap_or_else(|e| e.into_inner());
+        if let Ok(json) = serde_json::to_string_pretty(&*guard) {
+            if let Some(parent) = Path::new(DATA_PATH).parent() {
+                std::fs::create_dir_all(parent).ok();
+            }
+            std::fs::write(DATA_PATH, json).ok();
+        }
     }
 
     fn now() -> u64 {
@@ -253,6 +270,8 @@ impl NativePlugin for PlaytimeTracker {
                     entry.total_seconds += Self::now().saturating_sub(start);
                 }
                 entry.session_start = Some(Self::now());
+                drop(guard);
+                self.save();
             }
             PluginEvent::UserDisconnect { user_id, .. } => {
                 let mut guard = self.data.lock().unwrap_or_else(|e| e.into_inner());
@@ -262,6 +281,8 @@ impl NativePlugin for PlaytimeTracker {
                         entry.session_start = None;
                     }
                 }
+                drop(guard);
+                self.save();
             }
             _ => {}
         }
@@ -269,7 +290,18 @@ impl NativePlugin for PlaytimeTracker {
     }
 
     fn cleanup(&mut self) {
+        self.save();
         info!("PlaytimeTracker plugin cleaned up");
+    }
+}
+
+fn load_data() -> Option<HashMap<i32, PlayerTime>> {
+    let path = Path::new(DATA_PATH);
+    if path.exists() {
+        std::fs::read_to_string(path).ok()
+            .and_then(|s| serde_json::from_str(&s).ok())
+    } else {
+        None
     }
 }
 

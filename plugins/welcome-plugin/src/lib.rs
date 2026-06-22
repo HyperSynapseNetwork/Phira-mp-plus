@@ -208,28 +208,15 @@ impl NativePlugin for WelcomePlugin {
 
     fn on_event(&self, ctx: &PluginContext, event: &PluginEvent) -> Vec<String> {
         if let PluginEvent::UserConnect { user_id, user_name, user_ip } = event {
-            let cfg = self.config.lock().unwrap_or_else(|e| e.into_inner());
-            // 从消息列表中随机选一条
-            let msg = if cfg.welcome_messages.is_empty() {
-                "欢迎 [user_name]".into()
-            } else {
-                let idx = (std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map(|d| d.as_nanos())
-                    .unwrap_or(0) as usize) % cfg.welcome_messages.len();
-                cfg.welcome_messages[idx].clone()
-            };
-            drop(cfg);
-            let text = replace_placeholders(&msg, *user_id, user_name, user_ip, ctx);
-
-            // 发送欢迎语（通过 ctx.send_chat）
-            if let Some(send) = &ctx.send_chat {
-                let text_clone = text.clone();
-                send(*user_id, text_clone);
-                info!("Welcome sent to {}: {}", user_name, text);
-            } else {
-                warn!("Welcome plugin: send_chat not available");
+            let messages = self.config.lock().unwrap_or_else(|e| e.into_inner()).welcome_messages.clone();
+            // 按顺序发送所有消息
+            for msg_template in &messages {
+                let text = replace_placeholders(msg_template, *user_id, user_name, user_ip, ctx);
+                if let Some(send) = &ctx.send_chat {
+                    send(*user_id, text);
+                }
             }
+            info!("Welcome sent {} msgs to {}", messages.len(), user_name);
         }
         vec![]
     }

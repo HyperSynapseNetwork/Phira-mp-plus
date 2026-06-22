@@ -364,10 +364,10 @@ fn server_state_query(state: &Arc<PlusServerState>, method: &str, args: &[Value]
     }
 
     fn build_snapshot(name: &str, room: &crate::room::Room) -> RoomSnapshot {
-        let chart_op = room.chart.blocking_read().clone();
-        let guard = room.state.blocking_read();
-        let ul = room.users.blocking_read();
-        let ml = room.monitors.blocking_read();
+        let chart_op = room.chart.try_read().unwrap_or_else(|_| panic!("lock")).clone();
+        let guard = room.state.try_read().unwrap_or_else(|_| panic!("lock"));
+        let ul = room.users.try_read().unwrap_or_else(|_| panic!("lock"));
+        let ml = room.monitors.try_read().unwrap_or_else(|_| panic!("lock"));
 
         let (st, pu) = match &*guard {
             crate::room::InternalRoomState::SelectChart =>
@@ -388,8 +388,8 @@ fn server_state_query(state: &Arc<PlusServerState>, method: &str, args: &[Value]
         users.extend(ml.iter().filter_map(|w| w.upgrade().map(|u| u.id)));
         drop(ul); drop(ml);
 
-        let host = room.host.blocking_read().upgrade().map(|u| u.id).unwrap_or(0);
-        let hist = room.play_history.blocking_read();
+        let host = room.host.try_read().unwrap_or_else(|_| panic!("lock")).upgrade().map(|u| u.id).unwrap_or(0);
+        let hist = room.play_history.try_read().unwrap_or_else(|_| panic!("lock"));
         let rounds: Vec<RoundInfo> = hist.iter().map(|r| RoundInfo {
             chart: r.chart_id,
             records: r.results.iter().map(|res| serde_json::json!({
@@ -417,7 +417,7 @@ fn server_state_query(state: &Arc<PlusServerState>, method: &str, args: &[Value]
 
     match method {
         "rooms.list" => {
-            let rooms = state.rooms.blocking_read();
+            let rooms = state.rooms.try_read().unwrap_or_else(|_| panic!("lock"));
             let list: Vec<Value> = rooms.iter().filter(|(rid, _)| {
                 !rid.to_string().starts_with('.')
             }).map(|(rid, room)| {
@@ -431,7 +431,7 @@ fn server_state_query(state: &Arc<PlusServerState>, method: &str, args: &[Value]
             if name.starts_with('.') { return Err("room not found".to_string()); }
             let rid: phira_mp_common::RoomId = name.to_string().try_into()
                 .map_err(|_| "invalid room name".to_string())?;
-            let rooms = state.rooms.blocking_read();
+            let rooms = state.rooms.try_read().unwrap_or_else(|_| panic!("lock"));
             let room = rooms.get(&rid).ok_or("room not found")?;
             let ss = build_snapshot(name, room);
             serde_json::to_value(ss).map_err(|e| e.to_string())
@@ -439,13 +439,13 @@ fn server_state_query(state: &Arc<PlusServerState>, method: &str, args: &[Value]
         "send_chat" => {
             let uid = args.get(0).and_then(|v| v.as_i64()).unwrap_or(0) as i32;
             let msg = args.get(1).and_then(|v| v.as_str()).unwrap_or("").to_string();
-            let users = state.users.blocking_read();
+            let users = state.users.try_read().unwrap_or_else(|_| panic!("lock"));
             let user = match users.get(&uid) {
                 Some(u) => Arc::clone(u),
                 None => return Ok(serde_json::json!({"sent": false, "error": "user not found"})),
             };
             drop(users);
-            let session_opt = user.session.blocking_read();
+            let session_opt = user.session.try_read().unwrap_or_else(|_| panic!("lock"));
             match session_opt.as_ref().and_then(|w| w.upgrade()) {
                 Some(session) => {
                     let cmd = phira_mp_common::ServerCommand::Message(
@@ -471,17 +471,17 @@ fn server_state_query(state: &Arc<PlusServerState>, method: &str, args: &[Value]
                 Ok(r) => r,
                 Err(_) => return Ok(serde_json::json!({"sent": false, "error": "invalid room"})),
             };
-            let rooms = state.rooms.blocking_read();
+            let rooms = state.rooms.try_read().unwrap_or_else(|_| panic!("lock"));
             if let Some(room) = rooms.get(&rid) {
                 let cmd = phira_mp_common::ServerCommand::Message(
                     phira_mp_common::Message::Chat { user: 0, content: msg },
                 );
-                let users_list = room.users.blocking_read();
-                let monitors_list = room.monitors.blocking_read();
+                let users_list = room.users.try_read().unwrap_or_else(|_| panic!("lock"));
+                let monitors_list = room.monitors.try_read().unwrap_or_else(|_| panic!("lock"));
                 let mut sent = 0usize;
                 for wu in users_list.iter().chain(monitors_list.iter()) {
                     if let Some(u) = wu.upgrade() {
-                        let session = u.session.blocking_read();
+                        let session = u.session.try_read().unwrap_or_else(|_| panic!("lock"));
                         if let Some(session) = session.as_ref().and_then(|w| w.upgrade()) {
                             if session.stream.blocking_send(cmd.clone()).is_ok() {
                                 sent += 1;
@@ -497,10 +497,10 @@ fn server_state_query(state: &Arc<PlusServerState>, method: &str, args: &[Value]
         "rooms.by_user" => {
             let uid = args.get(0).and_then(|v| v.as_i64()).unwrap_or(0) as i32;
             let user = {
-                let users = state.users.blocking_read();
+                let users = state.users.try_read().unwrap_or_else(|_| panic!("lock"));
                 users.get(&uid).map(Arc::clone).ok_or("user not found")?
             };
-            let rg = user.room.blocking_read();
+            let rg = user.room.try_read().unwrap_or_else(|_| panic!("lock"));
             let room = rg.as_ref().ok_or("user not in room")?;
             let name = room.id.to_string();
             let ss = build_snapshot(&name, room);
