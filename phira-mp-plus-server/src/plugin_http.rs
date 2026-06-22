@@ -20,6 +20,7 @@ use tokio_stream::wrappers::BroadcastStream;
 use tokio_stream::StreamExt as _;
 use tower_http::cors::CorsLayer;
 use tracing::{error, info};
+use phira_mp_plus_server_api as api;
 
 /// SSE 事件
 #[derive(Debug, Clone)]
@@ -148,6 +149,15 @@ fn extract_path_params(pattern: &str, path: &str) -> Vec<String> {
         }
     }
     params
+}
+
+/// 桥接：将 api::HttpHandleInner 连接到 PluginHttpServer
+pub struct HttpHandleBridge(pub Arc<PluginHttpServer>);
+
+impl api::HttpHandleInner for HttpHandleBridge {
+    fn register(&self, path: &str, handler: api::HttpHandler) {
+        self.0.register_route_sync(path, handler);
+    }
 }
 
 /// Axum 共享状态

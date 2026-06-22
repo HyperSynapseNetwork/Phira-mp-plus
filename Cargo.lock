@@ -1669,6 +1669,8 @@ dependencies = [
  "once_cell",
  "phira-mp-common",
  "phira-mp-macros",
+ "phira-mp-plus-server-api",
+ "phira-mp-plus-webapi",
  "rand",
  "reqwest",
  "serde",
@@ -1687,12 +1689,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "phira-mp-plus-server-api"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "phira-mp-plus-webapi"
 version = "0.1.0"
 dependencies = [
- "phira-mp-common",
- "phira-mp-plus-sdk",
- "phira-mp-plus-server",
+ "phira-mp-plus-server-api",
  "serde",
  "serde_json",
  "tracing",

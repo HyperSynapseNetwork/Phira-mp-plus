@@ -4,6 +4,7 @@
 //! 插件可以提供事件监听、数据处理、API扩展等功能。
 
 use crate::extensions::ExtensionManager;
+use phira_mp_plus_server_api as api;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::Path;
@@ -11,14 +12,26 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 use tracing::{info, warn};
 
-/// 插件信息
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PluginInfo {
-    pub name: String,
-    pub version: String,
-    pub author: String,
-    pub description: String,
-}
+/// 插件信息（来自 server-api）
+pub use api::PluginInfo;
+
+/// 插件事件（来自 server-api）
+pub use api::PluginEvent;
+
+/// 触摸事件点（来自 server-api）
+pub use api::TouchEventPoint;
+
+/// 判定事件（来自 server-api）
+pub use api::JudgeEventItem;
+
+/// 插件 HTTP 句柄（来自 server-api）
+pub use api::HttpHandle;
+
+/// 插件上下文（来自 server-api）
+pub use api::PluginContext;
+
+/// 原生插件特征（来自 server-api）
+pub use api::NativePlugin;
 
 /// 插件状态
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -36,41 +49,6 @@ pub struct PluginMeta {
     pub path: String,
     pub state: PluginState,
     pub enabled: bool,
-}
-
-/// 插件事件
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum PluginEvent {
-    UserConnect { user_id: i32, user_name: String },
-    UserDisconnect { user_id: i32, user_name: String },
-    RoomCreate { user_id: i32, room_id: String },
-    RoomJoin { user_id: i32, room_id: String, is_monitor: bool },
-    RoomLeave { user_id: i32, room_id: String },
-    RoomModify { user_id: i32, room_id: String, data: String },
-    GameStart { user_id: i32, room_id: String },
-    GameEnd { user_id: i32, room_id: String, score: i32, accuracy: f32 },
-    /// 玩家触摸事件（包含触摸点坐标）
-    PlayerTouches { user_id: i32, room_id: String, data: Vec<TouchEventPoint> },
-    /// 玩家判定事件
-    PlayerJudges { user_id: i32, room_id: String, data: Vec<JudgeEventItem> },
-}
-
-/// 触摸事件中的一个触点
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TouchEventPoint {
-    pub time: f32,
-    pub finger: i8,
-    pub x: f32,
-    pub y: f32,
-}
-
-/// 判定事件中的一个判定
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct JudgeEventItem {
-    pub time: f32,
-    pub line_id: u32,
-    pub note_id: u32,
-    pub judgement: String,
 }
 
 /// 插件宿主特征 - 所有插件运行时需实现此特征
@@ -144,51 +122,32 @@ pub mod wasm {
 pub mod native {
     use super::*;
     use crate::extensions::ExtensionManager;
-    use std::sync::Arc;
+    use phira_mp_plus_server_api as api;
 
-    /// 原生插件特征 - 插件开发者实现此特征
-    pub trait NativePlugin: Send + Sync {
-        fn info(&self) -> PluginInfo;
-        fn init(&mut self, ctx: &PluginContext) -> Result<(), String>;
-        fn cleanup(&mut self);
-        fn on_event(&self, ctx: &PluginContext, event: &PluginEvent) -> Vec<String>;
-    }
+    /// 原生插件特征（来自 server-api）
+    pub use api::NativePlugin;
 
-    /// 插件上下文 - 提供给插件的 API 接口
-    pub struct PluginContext {
-        pub plugin_name: String,
+    /// 插件上下文（来自 server-api，含 HTTP 路由注册句柄）
+    pub use api::PluginContext;
+
+    /// 生成的 API 上下文（含服务端内部引用）
+    pub struct ServerPluginContext {
+        pub ctx: api::PluginContext,
         pub extensions: Arc<ExtensionManager>,
-        /// 中央 HTTP/SSE 服务器（可选，用于注册路由和广播事件）
-        pub http: Option<Arc<crate::plugin_http::PluginHttpServer>>,
-    }
-
-    impl PluginContext {
-        pub fn new(plugin_name: &str, extensions: Arc<ExtensionManager>) -> Self {
-            Self {
-                plugin_name: plugin_name.to_string(),
-                extensions,
-                http: None,
-            }
-        }
-
-        pub fn with_http(mut self, http: Arc<crate::plugin_http::PluginHttpServer>) -> Self {
-            self.http = Some(http);
-            self
-        }
     }
 
     /// 原生插件包装器
     pub struct NativePluginWrapper {
         meta: PluginMeta,
         plugin: Box<dyn NativePlugin>,
-        ctx: Arc<PluginContext>,
+        svr_ctx: Arc<ServerPluginContext>,
     }
 
     impl NativePluginWrapper {
         pub fn new(
             plugin: Box<dyn NativePlugin>,
             path: &str,
-            ctx: Arc<PluginContext>,
+            svr_ctx: Arc<ServerPluginContext>,
         ) -> Self {
             let info = plugin.info();
             Self {
@@ -199,7 +158,7 @@ pub mod native {
                     enabled: true,
                 },
                 plugin,
-                ctx,
+                svr_ctx,
             }
         }
     }
@@ -214,7 +173,7 @@ pub mod native {
         }
 
         fn init(&mut self) -> Result<(), String> {
-            self.plugin.init(&self.ctx)?;
+            self.plugin.init(&self.svr_ctx.ctx)?;
             self.meta.state = PluginState::Enabled;
             Ok(())
         }
@@ -228,7 +187,7 @@ pub mod native {
             if !self.meta.enabled {
                 return Vec::new();
             }
-            let ctx = PluginContext::new(&self.meta.info.name, self.ctx.extensions.clone());
+            let ctx = api::PluginContext::new(&self.meta.info.name);
             self.plugin.on_event(&ctx, _event)
         }
     }
@@ -240,7 +199,7 @@ pub struct PluginManager {
     cli_commands: Arc<RwLock<HashMap<String, CliCommand>>>,
     extensions: Arc<ExtensionManager>,
     plugins_dir: String,
-    http_server: Arc<RwLock<Option<Arc<crate::plugin_http::PluginHttpServer>>>>,
+    http_handle: Arc<RwLock<Option<api::HttpHandle>>>,
 }
 
 impl PluginManager {
@@ -250,21 +209,27 @@ impl PluginManager {
             cli_commands: Arc::new(RwLock::new(HashMap::new())),
             extensions,
             plugins_dir: plugins_dir.to_string(),
-            http_server: Arc::new(RwLock::new(None)),
+            http_handle: Arc::new(RwLock::new(None)),
         }
     }
 
-    /// 设置中央 HTTP 服务器（让插件在 init 中注册路由）
-    pub async fn set_http_server(&self, http: Arc<crate::plugin_http::PluginHttpServer>) {
-        *self.http_server.write().await = Some(http);
+    /// 设置中央 HTTP 句柄（让插件在 init 中注册路由）
+    pub async fn set_http_handle(&self, handle: api::HttpHandle) {
+        *self.http_handle.write().await = Some(handle);
     }
 
-    async fn make_ctx(&self, name: &str) -> Arc<native::PluginContext> {
-        let mut ctx = native::PluginContext::new(name, self.extensions.clone());
-        if let Some(ref http) = *self.http_server.read().await {
-            ctx = ctx.with_http(Arc::clone(http));
+    async fn make_svr_ctx(&self, name: &str, state_query: Option<api::ServerStateQuery>) -> Arc<native::ServerPluginContext> {
+        let mut ctx = api::PluginContext::new(name);
+        if let Some(ref h) = *self.http_handle.read().await {
+            ctx = ctx.with_http(h.clone());
         }
-        Arc::new(ctx)
+        if let Some(ref q) = state_query {
+            ctx = ctx.with_state(q.clone());
+        }
+        Arc::new(native::ServerPluginContext {
+            ctx,
+            extensions: self.extensions.clone(),
+        })
     }
 
     /// 从指定目录加载所有插件
@@ -356,8 +321,18 @@ impl PluginManager {
         plugin: Box<dyn native::NativePlugin>,
         name: &str,
     ) -> Result<(), String> {
-        let ctx = self.make_ctx(name).await;
-        let mut wrapper = native::NativePluginWrapper::new(plugin, name, ctx);
+        self.register_native_with_state(plugin, name, None).await
+    }
+
+    /// 注册一个原生插件，附带服务端状态查询
+    pub async fn register_native_with_state(
+        &self,
+        plugin: Box<dyn native::NativePlugin>,
+        name: &str,
+        state_query: Option<api::ServerStateQuery>,
+    ) -> Result<(), String> {
+        let svr_ctx = self.make_svr_ctx(name, state_query).await;
+        let mut wrapper = native::NativePluginWrapper::new(plugin, name, svr_ctx);
         // 初始化插件
         wrapper.init()?;
         let info = wrapper.meta().info.clone();

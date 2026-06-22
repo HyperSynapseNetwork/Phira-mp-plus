@@ -8,9 +8,11 @@ use crate::cli::CliHandler;
 use crate::extensions::ExtensionManager;
 use crate::plugin::{self, PluginEvent, PluginManager};
 use crate::plugin_http::PluginHttpServer;
+use phira_mp_plus_server_api as api;
 use anyhow::Result;
 use phira_mp_common::RoomId;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 /// Chart information from the Phira API
 #[derive(Debug, Deserialize, Clone)]
@@ -156,7 +158,8 @@ impl PlusServer {
 
         // 初始化中央 HTTP/SSE 服务器（插件可通过 PluginContext 注册路由）
         let http_server = Arc::new(PluginHttpServer::new(http_port));
-        state.plugin_manager.set_http_server(Arc::clone(&http_server)).await;
+        let http_handle = api::HttpHandle::new(crate::plugin_http::HttpHandleBridge(Arc::clone(&http_server)));
+        state.plugin_manager.set_http_handle(http_handle).await;
 
         // 加载插件
         let plugin_count = state.plugin_manager.load_plugins().await.unwrap_or(0);
@@ -174,12 +177,21 @@ impl PlusServer {
             http_server.start(http_state).await;
         });
 
-        // 注册 Web API 插件（动态加载时通过 .so 自动加载）
-        // 或手动添加依赖后取消注释：
-        // state.plugin_manager.register_native(
-        //     phira_mp_plus_webapi::WebApiPlugin::create(Arc::clone(&state)),
-        //     "webapi",
-        // ).await;
+        // 注册 Web API 插件（--features webapi）
+        #[cfg(feature = "webapi")]
+        {
+            let state_query = api::ServerStateQuery::new({
+                let s = Arc::clone(&state);
+                move |method: &str, args: &[Value]| -> Result<Value, String> {
+                    server_state_query(&s, method, args)
+                }
+            });
+            let _ = state.plugin_manager.register_native_with_state(
+                phira_mp_plus_webapi::WebApiPlugin::create(),
+                "webapi",
+                Some(state_query),
+            ).await;
+        }
 
         Ok(Self {
             state,
@@ -256,4 +268,121 @@ pub struct ServerStats {
     pub active_sessions: usize,
     pub loaded_plugins: usize,
     pub port: u16,
+}
+
+// ── Web API 状态查询 ──
+
+use std::sync::atomic::Ordering;
+
+/// 处理来自插件查询服务端状态的请求
+#[cfg(feature = "webapi")]
+fn server_state_query(state: &Arc<PlusServerState>, method: &str, args: &[Value]) -> Result<Value, String> {
+    use serde::Serialize;
+
+    #[derive(Serialize)]
+    struct RoomSnapshot {
+        name: String,
+        data: RoomData,
+    }
+    #[derive(Serialize)]
+    struct RoomData {
+        host: i32,
+        users: Vec<i32>,
+        lock: bool,
+        cycle: bool,
+        chart: Option<i32>,
+        state: String,
+        playing_users: Vec<i32>,
+        rounds: Vec<RoundInfo>,
+    }
+    #[derive(Serialize)]
+    struct RoundInfo {
+        chart: i32,
+        records: Vec<Value>,
+    }
+
+    fn build_snapshot(name: &str, room: &crate::room::Room) -> RoomSnapshot {
+        let chart_op = room.chart.blocking_read().clone();
+        let guard = room.state.blocking_read();
+        let ul = room.users.blocking_read();
+        let ml = room.monitors.blocking_read();
+
+        let (st, pu) = match &*guard {
+            crate::room::InternalRoomState::SelectChart =>
+                ("SELECTING_CHART".into(), vec![]),
+            crate::room::InternalRoomState::WaitForReady { .. } =>
+                ("WAITING_FOR_READY".into(), vec![]),
+            crate::room::InternalRoomState::Playing { results, aborted } => {
+                let p: Vec<i32> = ul.iter().filter_map(|wu| {
+                    let u = wu.upgrade()?;
+                    (!results.contains_key(&u.id) && !aborted.contains(&u.id)).then_some(u.id)
+                }).collect();
+                ("PLAYING".into(), p)
+            }
+        };
+        drop(guard);
+
+        let mut users: Vec<i32> = ul.iter().filter_map(|w| w.upgrade().map(|u| u.id)).collect();
+        users.extend(ml.iter().filter_map(|w| w.upgrade().map(|u| u.id)));
+        drop(ul); drop(ml);
+
+        let host = room.host.blocking_read().upgrade().map(|u| u.id).unwrap_or(0);
+        let hist = room.play_history.blocking_read();
+        let rounds: Vec<RoundInfo> = hist.iter().map(|r| RoundInfo {
+            chart: r.chart_id,
+            records: r.results.iter().map(|res| serde_json::json!({
+                "player": res.user_id, "score": res.score, "accuracy": res.accuracy,
+                "perfect": res.perfect, "good": res.good, "bad": res.bad,
+                "miss": res.miss, "max_combo": res.max_combo, "full_combo": res.full_combo,
+            })).collect(),
+        }).collect();
+        drop(hist);
+
+        RoomSnapshot {
+            name: name.into(),
+            data: RoomData {
+                host,
+                users,
+                lock: room.locked.load(Ordering::SeqCst),
+                cycle: room.cycle.load(Ordering::SeqCst),
+                chart: chart_op.as_ref().map(|c| c.id),
+                state: st,
+                playing_users: pu,
+                rounds,
+            },
+        }
+    }
+
+    match method {
+        "rooms.list" => {
+            let rooms = state.rooms.blocking_read();
+            let list: Vec<Value> = rooms.iter().map(|(rid, room)| {
+                let ss = build_snapshot(&rid.to_string(), room);
+                serde_json::to_value(ss).unwrap_or_default()
+            }).collect();
+            Ok(Value::Array(list))
+        }
+        "rooms.by_name" => {
+            let name = args.get(0).and_then(|v| v.as_str()).unwrap_or("");
+            let rid: phira_mp_common::RoomId = name.to_string().try_into()
+                .map_err(|_| "invalid room name".to_string())?;
+            let rooms = state.rooms.blocking_read();
+            let room = rooms.get(&rid).ok_or("room not found")?;
+            let ss = build_snapshot(name, room);
+            serde_json::to_value(ss).map_err(|e| e.to_string())
+        }
+        "rooms.by_user" => {
+            let uid = args.get(0).and_then(|v| v.as_i64()).unwrap_or(0) as i32;
+            let user = {
+                let users = state.users.blocking_read();
+                users.get(&uid).map(Arc::clone).ok_or("user not found")?
+            };
+            let rg = user.room.blocking_read();
+            let room = rg.as_ref().ok_or("user not in room")?;
+            let name = room.id.to_string();
+            let ss = build_snapshot(&name, room);
+            serde_json::to_value(ss).map_err(|e| e.to_string())
+        }
+        _ => Err(format!("unknown query method: {method}")),
+    }
 }

@@ -5,6 +5,7 @@ edition = "2021"
 [workspace]
 members = [
     "phira-mp-plus-server",
+    "phira-mp-plus-server-api",
     "phira-mp-plus-sdk",
     "plugins/webapi-plugin",
 ]
