@@ -9,7 +9,7 @@ use crate::extensions::ExtensionManager;
 use crate::plugin::{self, PluginEvent, PluginManager};
 use anyhow::Result;
 use phira_mp_common::RoomId;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 /// Chart information from the Phira API
 #[derive(Debug, Deserialize, Clone)]
@@ -19,7 +19,7 @@ pub struct Chart {
 }
 
 /// Record information from the Phira API
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct Record {
     pub id: i32,
     pub player: i32,
@@ -157,6 +157,12 @@ impl PlusServer {
         let _ = state.plugin_manager.register_native(
             plugin::create_event_logger(),
             "event-logger",
+        ).await;
+
+        // 注册 Web API 插件
+        let _ = state.plugin_manager.register_native(
+            crate::webapi::create(Arc::clone(&state)),
+            "webapi",
         ).await;
 
         Ok(Self {

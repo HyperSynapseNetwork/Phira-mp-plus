@@ -78,8 +78,8 @@ pub struct Room {
     pub locked: AtomicBool,
     pub cycle: AtomicBool,
 
-    users: RwLock<Vec<Weak<super::session::User>>>,
-    monitors: RwLock<Vec<Weak<super::session::User>>>,
+    pub users: RwLock<Vec<Weak<super::session::User>>>,
+    pub monitors: RwLock<Vec<Weak<super::session::User>>>,
     pub chart: RwLock<Option<Chart>>,
 
     /// 历史游玩记录（不持久化，房间解散即清除）
