@@ -6,6 +6,7 @@
 pub mod ban;
 pub mod cli;
 pub mod extensions;
+pub mod jsondb;
 pub mod l10n;
 pub mod plugin;
 pub mod plugin_http;

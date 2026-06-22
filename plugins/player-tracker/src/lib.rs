@@ -21,10 +21,10 @@ impl PlayerTracker {
         if self.table_ready.load(Ordering::SeqCst) { return Ok(()); }
         db.query(
             "CREATE TABLE IF NOT EXISTS players (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                id SERIAL PRIMARY KEY,
                 phira_id INTEGER NOT NULL UNIQUE,
-                first_seen TEXT DEFAULT (datetime('now')),
-                last_seen TEXT DEFAULT (datetime('now')),
+                first_seen TIMESTAMP DEFAULT NOW(),
+                last_seen TIMESTAMP DEFAULT NOW(),
                 play_count INTEGER DEFAULT 1
             )", &[],
         )?;
@@ -34,10 +34,10 @@ impl PlayerTracker {
 
     fn record_player(&self, db: &DatabaseHandle, phira_id: i32) {
         let _ = db.query(
-            "INSERT INTO players (phira_id) VALUES (?1)
+            "INSERT INTO players (phira_id) VALUES ($1)
              ON CONFLICT(phira_id) DO UPDATE SET
-                last_seen = datetime('now'),
-                play_count = play_count + 1",
+                last_seen = NOW(),
+                play_count = players.play_count + 1",
             &[Value::Number(serde_json::Number::from(phira_id))],
         );
     }
@@ -75,7 +75,7 @@ impl NativePlugin for PlayerTracker {
                 let offset = (page - 1) * PAGE_SIZE as u64;
                 let r = d2.query(
                     "SELECT phira_id, first_seen, last_seen, play_count
-                     FROM players ORDER BY last_seen DESC LIMIT ?1 OFFSET ?2",
+                     FROM players ORDER BY last_seen DESC LIMIT $1 OFFSET $2",
                     &[Value::Number((PAGE_SIZE as u64).into()), Value::Number(offset.into())],
                 ).map_err(|e| (500u16, e))?;
                 let players: Vec<Value> = r.rows.iter().map(|row| serde_json::json!({

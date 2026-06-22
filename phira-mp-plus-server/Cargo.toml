@@ -32,6 +32,7 @@ axum = { version = "0.8", default-features = false, features = [
 tokio-stream = { version = "0.1", features = ["sync"] }
 tower-http = { version = "0.6", features = ["cors"] }
 futures = "0.3"
+sqlx = { version = "0.8", optional = true, features = ["runtime-tokio", "tls-rustls", "postgres"] }
 
 phira-mp-common = { path = "../phira-mp/phira-mp-common" }
 phira-mp-macros = { path = "../phira-mp/phira-mp-macros" }
@@ -44,3 +45,4 @@ default = ["plugin-system"]
 plugin-system = ["dep:wasmtime"]
 webapi = ["dep:phira-mp-plus-webapi"]
 player-tracker = ["dep:phira-mp-plus-player-tracker"]
+postgres = ["dep:sqlx"]
