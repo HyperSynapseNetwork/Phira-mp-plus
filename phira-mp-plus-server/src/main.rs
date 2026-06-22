@@ -106,10 +106,7 @@ async fn main() -> Result<()> {
     };
 
     println!();
-    println!("  ╭──────────────────────────────────────╮");
-    println!("  │  Phira-mp+ v{:<16} │", env!("CARGO_PKG_VERSION"));
-    println!("  │  增强版 Phira 多人游戏服务端            │");
-    println!("  ╰──────────────────────────────────────╯");
+    println!("  Phira-mp+ v{}", env!("CARGO_PKG_VERSION"));
     println!();
 
     // 创建服务器

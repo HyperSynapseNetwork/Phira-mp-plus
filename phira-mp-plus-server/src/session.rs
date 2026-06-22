@@ -422,6 +422,33 @@ async fn process(user: Arc<User>, cmd: ClientCommand) -> Option<ServerCommand> {
                 if let Some(frame) = frames.last() {
                     user.game_time.store(frame.time.to_bits(), Ordering::SeqCst);
                 }
+                // 触发插件事件：玩家触摸
+                let pm = Arc::clone(&user.server.plugin_manager);
+                let room_id = room.id.to_string();
+                let frames_for_plugin = Arc::clone(&frames);
+                let uid = user.id;
+                tokio::spawn(async move {
+                    let touch_data: Vec<crate::plugin::TouchEventPoint> = frames_for_plugin
+                        .iter()
+                        .flat_map(|frame| {
+                            frame.points.iter().map(|(finger, pos)| {
+                                crate::plugin::TouchEventPoint {
+                                    time: frame.time,
+                                    finger: *finger,
+                                    x: pos.x(),
+                                    y: pos.y(),
+                                }
+                            })
+                        })
+                        .collect();
+                    if !touch_data.is_empty() {
+                        pm.trigger(&PluginEvent::PlayerTouches {
+                            user_id: uid,
+                            room_id,
+                            data: touch_data,
+                        }).await;
+                    }
+                });
                 tokio::spawn(async move {
                     room.broadcast_monitors(ServerCommand::Touches {
                         player: user.id,
@@ -438,6 +465,29 @@ async fn process(user: Arc<User>, cmd: ClientCommand) -> Option<ServerCommand> {
             get_room!(~ room);
             if room.is_live() {
                 debug!("received {} judge events from {}", judges.len(), user.id);
+                // 触发插件事件：玩家判定
+                let pm = Arc::clone(&user.server.plugin_manager);
+                let room_id = room.id.to_string();
+                let judges_for_plugin = Arc::clone(&judges);
+                let uid = user.id;
+                tokio::spawn(async move {
+                    let judge_data: Vec<crate::plugin::JudgeEventItem> = judges_for_plugin
+                        .iter()
+                        .map(|j| crate::plugin::JudgeEventItem {
+                            time: j.time,
+                            line_id: j.line_id,
+                            note_id: j.note_id,
+                            judgement: format!("{:?}", j.judgement),
+                        })
+                        .collect();
+                    if !judge_data.is_empty() {
+                        pm.trigger(&PluginEvent::PlayerJudges {
+                            user_id: uid,
+                            room_id,
+                            data: judge_data,
+                        }).await;
+                    }
+                });
                 tokio::spawn(async move {
                     room.broadcast_monitors(ServerCommand::Judges {
                         player: user.id,

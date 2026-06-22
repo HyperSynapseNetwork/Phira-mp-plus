@@ -49,6 +49,28 @@ pub enum PluginEvent {
     RoomModify { user_id: i32, room_id: String, data: String },
     GameStart { user_id: i32, room_id: String },
     GameEnd { user_id: i32, room_id: String, score: i32, accuracy: f32 },
+    /// 玩家触摸事件（包含触摸点坐标）
+    PlayerTouches { user_id: i32, room_id: String, data: Vec<TouchEventPoint> },
+    /// 玩家判定事件
+    PlayerJudges { user_id: i32, room_id: String, data: Vec<JudgeEventItem> },
+}
+
+/// 触摸事件中的一个触点
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TouchEventPoint {
+    pub time: f32,
+    pub finger: i8,
+    pub x: f32,
+    pub y: f32,
+}
+
+/// 判定事件中的一个判定
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct JudgeEventItem {
+    pub time: f32,
+    pub line_id: u32,
+    pub note_id: u32,
+    pub judgement: String,
 }
 
 /// 插件宿主特征 - 所有插件运行时需实现此特征

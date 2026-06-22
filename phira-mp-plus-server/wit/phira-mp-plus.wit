@@ -29,6 +29,28 @@ interface user-events {
 
     /// 用户完成游戏时触发
     on-game-end: func(user-id: i32, room-id: string, score: i32, accuracy: float32);
+
+    /// 玩家触摸（打歌时实时触摸事件）
+    on-player-touch: func(user-id: i32, room-id: string, touches: list<touch-point>);
+
+    /// 玩家判定（打歌时实时判定事件）
+    on-player-judge: func(user-id: i32, room-id: string, judges: list<judge-item>);
+}
+
+/// 触摸点数据
+record touch-point {
+    time: float32,
+    finger: int8,
+    x: float32,
+    y: float32,
+}
+
+/// 判定数据
+record judge-item {
+    time: float32,
+    line-id: uint32,
+    note-id: uint32,
+    judgement: string,
 }
 
 /// 用户信息获取接口
