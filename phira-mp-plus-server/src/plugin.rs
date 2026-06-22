@@ -199,7 +199,7 @@ pub mod native {
 pub struct PluginManager {
     plugins: Arc<RwLock<Vec<Box<dyn PluginHost>>>>,
     cli_commands: Arc<Mutex<HashMap<String, CliCommand>>>,
-    api_handlers: Arc<RwLock<HashMap<String, api::PluginApiHandler>>>,
+    api_handlers: Arc<Mutex<HashMap<String, api::PluginApiHandler>>>,
     extensions: Arc<ExtensionManager>,
     plugins_dir: String,
     http_handle: Arc<RwLock<Option<api::HttpHandle>>>,
@@ -210,7 +210,7 @@ impl PluginManager {
         Self {
             plugins: Arc::new(RwLock::new(Vec::new())),
             cli_commands: Arc::new(Mutex::new(HashMap::new())),
-            api_handlers: Arc::new(RwLock::new(HashMap::new())),
+            api_handlers: Arc::new(Mutex::new(HashMap::new())),
             extensions,
             plugins_dir: plugins_dir.to_string(),
             http_handle: Arc::new(RwLock::new(None)),
@@ -224,12 +224,12 @@ impl PluginManager {
 
     /// 注册插件 API（供其他插件调用）
     pub async fn register_plugin_api(&self, name: &str, handler: api::PluginApiHandler) {
-        self.api_handlers.write().await.insert(name.to_string(), handler);
+        self.api_handlers.lock().unwrap_or_else(|e| e.into_inner()).insert(name.to_string(), handler);
     }
 
     /// 调用其他插件的 API
     async fn call_plugin_api(&self, plugin: &str, method: &str, args: &[Value]) -> Result<Value, String> {
-        let handlers = self.api_handlers.read().await;
+        let handlers = self.api_handlers.lock().unwrap_or_else(|e| e.into_inner());
         match handlers.get(plugin) {
             Some(h) => h(method, args),
             None => Err(format!("plugin '{}' not found or no API registered", plugin)),
@@ -247,7 +247,7 @@ impl PluginManager {
         // 提供插件间 API 调用
         let handlers = self.api_handlers.clone();
         let api_reg = api::PluginApiRegistry::new(move |plugin, method, args| {
-            let guard = handlers.blocking_read();
+            let guard = handlers.lock().unwrap_or_else(|e| e.into_inner());
             match guard.get(plugin) {
                 Some(h) => h(method, args),
                 None => Err(format!("plugin '{}' has no API", plugin)),
