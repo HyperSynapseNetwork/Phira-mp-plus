@@ -1645,6 +1645,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "phira-mp-plus-player-tracker"
+version = "0.1.0"
+dependencies = [
+ "phira-mp-plus-server-api",
+ "serde",
+ "serde_json",
+ "tracing",
+]
+
+[[package]]
 name = "phira-mp-plus-sdk"
 version = "0.1.0"
 dependencies = [
@@ -1669,6 +1679,7 @@ dependencies = [
  "once_cell",
  "phira-mp-common",
  "phira-mp-macros",
+ "phira-mp-plus-player-tracker",
  "phira-mp-plus-server-api",
  "phira-mp-plus-webapi",
  "rand",

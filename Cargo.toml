@@ -8,6 +8,7 @@ members = [
     "phira-mp-plus-server-api",
     "phira-mp-plus-sdk",
     "plugins/webapi-plugin",
+    "plugins/player-tracker",
 ]
 resolver = "2"
 

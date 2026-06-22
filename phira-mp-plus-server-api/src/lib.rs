@@ -76,6 +76,59 @@ impl HttpHandle {
     }
 }
 
+// ── 插件间 API 调用 ──
+
+/// 插件 API 处理器：接收方法名和 JSON 参数 → 返回 JSON
+pub type PluginApiHandler = Arc<dyn Fn(&str, &[Value]) -> Result<Value, String> + Send + Sync>;
+
+/// 插件 API 注册表（插件注册 API 供其他插件调用）
+#[derive(Clone)]
+pub struct PluginApiRegistry {
+    inner: Arc<dyn Fn(&str, &str, &[Value]) -> Result<Value, String> + Send + Sync>,
+}
+
+impl PluginApiRegistry {
+    pub fn new(
+        inner: impl Fn(&str, &str, &[Value]) -> Result<Value, String> + Send + Sync + 'static,
+    ) -> Self {
+        Self { inner: Arc::new(inner) }
+    }
+
+    /// 调用其他插件注册的 API: (plugin_name, method, args) → result
+    pub fn call(&self, plugin: &str, method: &str, args: &[Value]) -> Result<Value, String> {
+        (self.inner)(plugin, method, args)
+    }
+}
+
+// ── 数据库访问 ──
+
+/// 数据库查询结果
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DbResult {
+    pub rows: Vec<Vec<Value>>,
+    pub columns: Vec<String>,
+    pub rows_affected: u64,
+}
+
+/// 数据库句柄（插件通过它执行 SQL 查询）
+#[derive(Clone)]
+pub struct DatabaseHandle {
+    inner: Arc<dyn Fn(&str, &[Value]) -> Result<DbResult, String> + Send + Sync>,
+}
+
+impl DatabaseHandle {
+    pub fn new(
+        inner: impl Fn(&str, &[Value]) -> Result<DbResult, String> + Send + Sync + 'static,
+    ) -> Self {
+        Self { inner: Arc::new(inner) }
+    }
+
+    /// 执行 SQL 查询
+    pub fn query(&self, sql: &str, params: &[Value]) -> Result<DbResult, String> {
+        (self.inner)(sql, params)
+    }
+}
+
 // ── 服务端状态查询 ──
 
 /// 服务端状态查询句柄（插件通过它读取房间/用户数据）
@@ -104,6 +157,8 @@ pub struct PluginContext {
     pub plugin_name: String,
     pub http: Option<HttpHandle>,
     pub state: Option<ServerStateQuery>,
+    pub api: Option<PluginApiRegistry>,
+    pub db: Option<DatabaseHandle>,
 }
 
 impl PluginContext {
@@ -112,6 +167,8 @@ impl PluginContext {
             plugin_name: name.to_string(),
             http: None,
             state: None,
+            api: None,
+            db: None,
         }
     }
 
@@ -122,6 +179,16 @@ impl PluginContext {
 
     pub fn with_state(mut self, state: ServerStateQuery) -> Self {
         self.state = Some(state);
+        self
+    }
+
+    pub fn with_api(mut self, api: PluginApiRegistry) -> Self {
+        self.api = Some(api);
+        self
+    }
+
+    pub fn with_db(mut self, db: DatabaseHandle) -> Self {
+        self.db = Some(db);
         self
     }
 }

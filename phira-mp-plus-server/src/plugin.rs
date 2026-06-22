@@ -6,6 +6,7 @@
 use crate::extensions::ExtensionManager;
 use phira_mp_plus_server_api as api;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
@@ -197,9 +198,11 @@ pub mod native {
 pub struct PluginManager {
     plugins: Arc<RwLock<Vec<Box<dyn PluginHost>>>>,
     cli_commands: Arc<RwLock<HashMap<String, CliCommand>>>,
+    api_handlers: Arc<RwLock<HashMap<String, api::PluginApiHandler>>>,
     extensions: Arc<ExtensionManager>,
     plugins_dir: String,
     http_handle: Arc<RwLock<Option<api::HttpHandle>>>,
+    db_handle: Arc<RwLock<Option<api::DatabaseHandle>>>,
 }
 
 impl PluginManager {
@@ -207,15 +210,36 @@ impl PluginManager {
         Self {
             plugins: Arc::new(RwLock::new(Vec::new())),
             cli_commands: Arc::new(RwLock::new(HashMap::new())),
+            api_handlers: Arc::new(RwLock::new(HashMap::new())),
             extensions,
             plugins_dir: plugins_dir.to_string(),
             http_handle: Arc::new(RwLock::new(None)),
+            db_handle: Arc::new(RwLock::new(None)),
         }
     }
 
     /// 设置中央 HTTP 句柄（让插件在 init 中注册路由）
     pub async fn set_http_handle(&self, handle: api::HttpHandle) {
         *self.http_handle.write().await = Some(handle);
+    }
+
+    /// 设置数据库句柄
+    pub async fn set_db_handle(&self, db: api::DatabaseHandle) {
+        *self.db_handle.write().await = Some(db);
+    }
+
+    /// 注册插件 API（供其他插件调用）
+    pub async fn register_plugin_api(&self, name: &str, handler: api::PluginApiHandler) {
+        self.api_handlers.write().await.insert(name.to_string(), handler);
+    }
+
+    /// 调用其他插件的 API
+    async fn call_plugin_api(&self, plugin: &str, method: &str, args: &[Value]) -> Result<Value, String> {
+        let handlers = self.api_handlers.read().await;
+        match handlers.get(plugin) {
+            Some(h) => h(method, args),
+            None => Err(format!("plugin '{}' not found or no API registered", plugin)),
+        }
     }
 
     async fn make_svr_ctx(&self, name: &str, state_query: Option<api::ServerStateQuery>) -> Arc<native::ServerPluginContext> {
@@ -226,6 +250,20 @@ impl PluginManager {
         if let Some(ref q) = state_query {
             ctx = ctx.with_state(q.clone());
         }
+        if let Some(ref d) = *self.db_handle.read().await {
+            ctx = ctx.with_db(d.clone());
+        }
+        // 提供插件间 API 调用（使用 blocking_read 避免 async）
+        let handlers = self.api_handlers.clone();
+        let api_reg = api::PluginApiRegistry::new(move |plugin, method, args| {
+            let guard = handlers.blocking_read();
+            match guard.get(plugin) {
+                Some(h) => h(method, args),
+                None => Err(format!("plugin '{}' has no API", plugin)),
+            }
+        });
+        ctx = ctx.with_api(api_reg);
+
         Arc::new(native::ServerPluginContext {
             ctx,
             extensions: self.extensions.clone(),

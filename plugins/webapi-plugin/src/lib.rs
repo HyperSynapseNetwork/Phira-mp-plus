@@ -19,7 +19,7 @@ impl NativePlugin for WebApiPlugin {
             name: "webapi".to_string(),
             version: "0.1.0".to_string(),
             author: "Phira-mp+".to_string(),
-            description: "REST API 查询房间信息".to_string(),
+            description: "room-info-web-api — REST API 查询房间信息".to_string(),
         }
     }
 

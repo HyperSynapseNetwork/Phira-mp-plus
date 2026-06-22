@@ -187,6 +187,15 @@ impl PlusServer {
             ).await;
         }
 
+        // 注册玩家记录插件（--features player-tracker）
+        #[cfg(feature = "player-tracker")]
+        {
+            let _ = state.plugin_manager.register_native(
+                phira_mp_plus_player_tracker::PlayerTracker::create(),
+                "player-tracker",
+            ).await;
+        }
+
         // 启动中央 HTTP 服务器（所有路由已注册完毕）
         let http_state = Arc::clone(&state);
         tokio::spawn(async move {
