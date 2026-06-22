@@ -159,11 +159,12 @@ impl PlusServer {
             "event-logger",
         ).await;
 
-        // 注册 Web API 插件
-        let _ = state.plugin_manager.register_native(
-            crate::webapi::create(Arc::clone(&state)),
-            "webapi",
-        ).await;
+        // 注册 Web API 插件（可选：需要 phira-mp-plus-webapi 库）
+        // 取消注释以下代码并添加依赖来启用 Web API：
+        // let _ = state.plugin_manager.register_native(
+        //     phira_mp_plus_webapi::WebApiPlugin::create(Arc::clone(&state)),
+        //     "webapi",
+        // ).await;
 
         Ok(Self {
             state,

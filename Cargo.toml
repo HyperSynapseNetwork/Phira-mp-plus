@@ -6,12 +6,14 @@ edition = "2021"
 members = [
     "phira-mp-plus-server",
     "phira-mp-plus-sdk",
+    "plugins/webapi-plugin",
 ]
 resolver = "2"
 
 [workspace.dependencies]
 anyhow = { version = "1.0", features = ["backtrace"] }
 chrono = "0.4.43"
+serde = { version = "1.0.228", features = ["derive"] }
 tokio = { version = "1.49.0", features = [
     "macros",
     "rt-multi-thread",
