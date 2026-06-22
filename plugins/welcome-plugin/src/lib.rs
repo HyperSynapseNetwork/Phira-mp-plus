@@ -150,7 +150,8 @@ impl NativePlugin for WelcomePlugin {
 
             // 发送欢迎语（通过 ctx.send_chat）
             if let Some(send) = &ctx.send_chat {
-                send(*user_id, text);
+                let text_clone = text.clone();
+                send(*user_id, text_clone);
                 info!("Welcome sent to {}: {}", user_name, text);
             } else {
                 warn!("Welcome plugin: send_chat not available");
