@@ -1704,6 +1704,7 @@ dependencies = [
  "phira-mp-plus-round-results",
  "phira-mp-plus-server-api",
  "phira-mp-plus-webapi",
+ "phira-mp-plus-welcome-plugin",
  "rand",
  "reqwest",
  "serde",
@@ -1731,6 +1732,16 @@ dependencies = [
 
 [[package]]
 name = "phira-mp-plus-webapi"
+version = "0.1.0"
+dependencies = [
+ "phira-mp-plus-server-api",
+ "serde",
+ "serde_json",
+ "tracing",
+]
+
+[[package]]
+name = "phira-mp-plus-welcome-plugin"
 version = "0.1.0"
 dependencies = [
  "phira-mp-plus-server-api",
@@ -2823,6 +2834,7 @@ checksum = "144d6b123cef80b301b8f72a9e2ca4370ddec21950d0a103dd22c437006d2db7"
 dependencies = [
  "getrandom 0.4.3",
  "js-sys",
+ "serde_core",
  "wasm-bindgen",
 ]
 

@@ -40,11 +40,13 @@ phira-mp-plus-webapi = { path = "../plugins/webapi-plugin", optional = true }
 phira-mp-plus-player-tracker = { path = "../plugins/player-tracker", optional = true }
 phira-mp-plus-playtime-tracker = { path = "../plugins/playtime-tracker", optional = true }
 phira-mp-plus-round-results = { path = "../plugins/round-results", optional = true }
+phira-mp-plus-welcome-plugin = { path = "../plugins/welcome-plugin", optional = true }
 
 [features]
-default = ["plugin-system", "webapi", "player-tracker", "playtime-tracker", "round-results"]
+default = ["plugin-system", "webapi", "player-tracker", "playtime-tracker", "round-results", "welcome-plugin"]
 plugin-system = ["dep:wasmtime"]
 webapi = ["dep:phira-mp-plus-webapi"]
 player-tracker = ["dep:phira-mp-plus-player-tracker"]
 playtime-tracker = ["dep:phira-mp-plus-playtime-tracker"]
 round-results = ["dep:phira-mp-plus-round-results"]
+welcome-plugin = ["dep:phira-mp-plus-welcome-plugin"]

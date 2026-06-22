@@ -220,6 +220,17 @@ impl PlusServer {
             }
         }
 
+        // 注册欢迎语插件（--features welcome-plugin）
+        #[cfg(feature = "welcome-plugin")]
+        {
+            if let Err(e) = state.plugin_manager.register_native(
+                phira_mp_plus_welcome_plugin::WelcomePlugin::create(),
+                "welcome-plugin",
+            ).await {
+                warn!("welcome-plugin init failed: {e}");
+            }
+        }
+
         // 启动中央 HTTP 服务器（所有路由已注册完毕）
         let http_state = Arc::clone(&state);
         tokio::spawn(async move {

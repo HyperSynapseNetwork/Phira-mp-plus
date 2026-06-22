@@ -48,6 +48,8 @@ impl InternalRoomState {
 /// 一轮游玩的结算数据
 #[derive(Debug, Clone, Serialize)]
 pub struct PlayRound {
+    /// 本轮唯一标识符
+    pub round_id: uuid::Uuid,
     pub chart_id: i32,
     pub chart_name: String,
     pub results: Vec<PlayResult>,
@@ -72,6 +74,8 @@ pub struct PlayResult {
 
 pub struct Room {
     pub id: RoomId,
+    /// 房间唯一标识符
+    pub uuid: uuid::Uuid,
     /// 用于触发 RoundComplete 事件的插件管理器
     pub plugin_manager: Option<Arc<PluginManager>>,
     pub host: RwLock<Weak<super::session::User>>,
@@ -87,6 +91,8 @@ pub struct Room {
 
     /// 历史游玩记录（不持久化，房间解散即清除）
     pub play_history: RwLock<Vec<PlayRound>>,
+    /// 当前轮次 ID（游戏开始时生成，结算时使用）
+    pub current_round_id: RwLock<Option<uuid::Uuid>>,
 }
 
 impl Room {
@@ -103,7 +109,9 @@ impl Room {
             users: vec![host].into(),
             monitors: Vec::new().into(),
             chart: RwLock::default(),
+            uuid: uuid::Uuid::new_v4(),
             play_history: RwLock::new(Vec::new()),
+            current_round_id: RwLock::new(None),
             plugin_manager,
         }
     }
@@ -315,6 +323,7 @@ impl Room {
 
     /// 保存当前轮次的结算数据到历史记录
     async fn save_round_history(&self) {
+        let round_id = self.current_round_id.read().await.unwrap_or(uuid::Uuid::nil());
         let (chart_id, chart_name, results, aborted) = {
             let guard = self.state.read().await;
             match guard.deref() {
@@ -377,6 +386,7 @@ impl Room {
         }
 
         let round = PlayRound {
+            round_id,
             chart_id,
             chart_name,
             results: play_results,
@@ -402,7 +412,9 @@ impl Room {
                     .all(|it| started.contains(&it.id))
                 {
                     drop(guard);
-                    info!(room = self.id.to_string(), "game start");
+                    let round_id = uuid::Uuid::new_v4();
+                    *self.current_round_id.write().await = Some(round_id);
+                    info!(room = self.id.to_string(), round = %round_id, "game start");
                     self.send(Message::StartPlaying).await;
                     self.reset_game_time().await;
                     *self.state.write().await = InternalRoomState::Playing {
@@ -421,7 +433,13 @@ impl Room {
                 {
                     drop(guard);
                     // 保存历史记录
+                    let rid = *self.current_round_id.read().await;
                     self.save_round_history().await;
+
+                    if let Some(rid) = rid {
+                        info!(round = %rid, "round complete  room={}", self.id);
+                        info!("轮次 '{}' 唯一标识: {}", self.id, rid);
+                    }
 
                     // 触发 RoundComplete 事件
                     if let Some(pm) = &self.plugin_manager {

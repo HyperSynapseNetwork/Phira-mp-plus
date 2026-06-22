@@ -568,11 +568,13 @@ async fn process(user: Arc<User>, cmd: ClientCommand) -> Option<ServerCommand> {
                         bail!(tl!("create-id-occupied"));
                     }
                 }
+                let room_uuid = room.uuid;
                 room.send(Message::CreateRoom { user: user.id }).await;
                 drop(map_guard);
                 *room_guard = Some(room);
 
-                info!(user = user.id, room = id.to_string(), "user create room");
+                info!(user = user.id, room = id.to_string(), room_uuid = %room_uuid, "user create room");
+                info!("房间 '{}' 唯一标识: {}", id, room_uuid);
 
                 // 触发插件事件
                 user.server.plugin_manager
