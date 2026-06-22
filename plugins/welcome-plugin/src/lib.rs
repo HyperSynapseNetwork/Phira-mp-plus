@@ -75,7 +75,7 @@ fn replace_placeholders(template: &str, user_id: i32, user_name: &str, user_ip: 
         .replace("[user_id]", &user_id.to_string())
         .replace("[user_name]", user_name)
         .replace("[user_ip]", user_ip)
-        .replace("[user_location]", user_ip);
+        // [user_location] removed
 
     // [player-count] → 通过 api 查询 player-tracker
     if text.contains("[player-count]") || text.contains("[players]") {
@@ -141,7 +141,6 @@ impl NativePlugin for WelcomePlugin {
                         format!("  │ [user_id]     用户 Phira ID"),
                         format!("  │ [user_name]   用户名"),
                         format!("  │ [user_ip]     用户 IP 地址"),
-                        format!("  │ [user_location] 用户 IP 地址"),
                         format!("  │ [player-count] 当前在线玩家数"),
                         format!("  │ [players]      当前在线玩家数（同 [player-count]）"),
                         format!("  │ [playtime <id>] 指定用户的游玩时间"),
