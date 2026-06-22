@@ -72,6 +72,7 @@ impl BanManager {
         self.extensions
             .set_user_extra(user_id, "ban-reason", reason.to_string())
             .await?;
+        let _ = self.extensions.persist().await;
         info!(user = user_id, reason = %reason, "user banned");
         Ok(())
     }
@@ -84,6 +85,7 @@ impl BanManager {
         self.extensions
             .set_user_extra(user_id, "ban-reason", String::new())
             .await?;
+        let _ = self.extensions.persist().await;
         info!(user = user_id, "user unbanned");
         Ok(())
     }
@@ -155,7 +157,9 @@ impl BanManager {
     pub async fn set_user_ban_message(&self, user_id: i32, msg: &str) -> Result<(), String> {
         self.extensions
             .set_user_extra(user_id, "ban-message", msg.to_string())
-            .await
+            .await?;
+        let _ = self.extensions.persist().await;
+        Ok(())
     }
 
     /// 获取用户最终拒绝提示信息（优先使用自定义，否则使用默认）
@@ -181,7 +185,9 @@ impl BanManager {
             serde_json::to_string(&list).map_err(|e| format!("serialize blacklist: {}", e))?;
         self.extensions
             .set_room_extra(room_id, "blacklist", json)
-            .await
+            .await?;
+        let _ = self.extensions.persist().await;
+        Ok(())
     }
 
     /// 将用户移出房间黑名单
@@ -196,7 +202,9 @@ impl BanManager {
             serde_json::to_string(&list).map_err(|e| format!("serialize blacklist: {}", e))?;
         self.extensions
             .set_room_extra(room_id, "blacklist", json)
-            .await
+            .await?;
+        let _ = self.extensions.persist().await;
+        Ok(())
     }
 
     /// 检查用户是否在房间黑名单中

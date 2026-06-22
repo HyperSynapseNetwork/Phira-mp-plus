@@ -20,5 +20,8 @@ Thumbs.db
 .env
 *.local
 
+# Runtime data
+data/
+
 # Generated
 **/*.wasm

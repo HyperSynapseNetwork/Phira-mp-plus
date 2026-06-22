@@ -210,69 +210,64 @@ impl Session {
                                         token.hash(&mut hasher);
                                         let token_hash = hasher.finish();
 
-                                        // 尝试通过 API 认证（5 秒超时）
-                                        let resp: Option<AuthUserInfo> = async {
-                                            reqwest::Client::builder()
-                                                .timeout(std::time::Duration::from_secs(5))
-                                                .build()
-                                                .ok()?
-                                                .get(format!("{HOST}/me"))
-                                                .header(
-                                                    reqwest::header::AUTHORIZATION,
-                                                    format!("Bearer {token}"),
-                                                )
-                                                .send()
-                                                .await
-                                                .ok()?
-                                                .error_for_status()
-                                                .ok()?
-                                                .json::<AuthUserInfo>()
-                                                .await
-                                                .ok()
-                                        }
-                                        .await;
-
-                                        // 如果 API 成功，更新缓存；否则尝试从缓存恢复
-                                        let resp = match resp {
-                                            Some(info) => {
-                                                server.auth_cache.write().await.insert(
-                                                    token_hash,
-                                                    (info.id, info.name.clone(), info.language.clone()),
-                                                );
-                                                info
+                                        // ★ 优先检查缓存：如果 token 已缓存，直接验证封禁状态，跳过 API 请求
+                                        let user_info = if let Some(&(cached_uid, ref cached_name, ref cached_lang)) =
+                                            server.auth_cache.read().await.get(&token_hash)
+                                        {
+                                            // 封禁检查（拒绝前不走 API，毫秒级响应）
+                                            if server.ban_manager.is_banned(cached_uid).await {
+                                                let reason = server.ban_manager.get_effective_ban_message(cached_uid).await;
+                                                warn!("banned user {}({}) tried to connect (cache)", cached_name, cached_uid);
+                                                bail!("{}", reason);
                                             }
-                                            None => {
-                                                // API 失败，尝试从缓存恢复
-                                                warn!("API unreachable, trying auth cache...");
-                                                if let Some(&(uid, ref name, ref lang)) =
-                                                    server.auth_cache.read().await.get(&token_hash)
-                                                {
-                                                    // 检查缓存中的用户是否被封禁
-                                                    if server.ban_manager.is_banned(uid).await {
-                                                        let reason = server.ban_manager.get_effective_ban_message(uid).await;
-                                                        warn!("banned user {}({}) tried to connect", name, uid);
+                                            debug!("cache hit for user {}", cached_uid);
+                                            AuthUserInfo {
+                                                id: cached_uid,
+                                                name: cached_name.clone(),
+                                                language: cached_lang.clone(),
+                                            }
+                                        } else {
+                                            // 缓存未命中，请求 API（3 秒超时）
+                                            match async {
+                                                reqwest::Client::builder()
+                                                    .timeout(std::time::Duration::from_secs(3))
+                                                    .build()
+                                                    .map_err(|_| "build client")?
+                                                    .get(format!("{HOST}/me"))
+                                                    .header(reqwest::header::AUTHORIZATION, format!("Bearer {token}"))
+                                                    .send()
+                                                    .await
+                                                    .map_err(|_| "send")?
+                                                    .error_for_status()
+                                                    .map_err(|_| "status")?
+                                                    .json::<AuthUserInfo>()
+                                                    .await
+                                                    .map_err(|_| "json")
+                                            }
+                                            .await
+                                            {
+                                                Ok(info) => {
+                                                    // API 成功，更新缓存
+                                                    server.auth_cache.write().await.insert(
+                                                        token_hash,
+                                                        (info.id, info.name.clone(), info.language.clone()),
+                                                    );
+                                                    // 封禁检查
+                                                    if server.ban_manager.is_banned(info.id).await {
+                                                        let reason = server.ban_manager.get_effective_ban_message(info.id).await;
+                                                        warn!("banned user {}({}) tried to connect", info.name, info.id);
                                                         bail!("{}", reason);
                                                     }
-                                                    AuthUserInfo {
-                                                        id: uid,
-                                                        name: name.clone(),
-                                                        language: lang.clone(),
-                                                    }
-                                                } else {
+                                                    info
+                                                }
+                                                Err(_) => {
                                                     bail!("认证服务器不可达，请稍后重试");
                                                 }
                                             }
                                         };
 
-                                        // 检查用户是否被封禁
-                                        if server.ban_manager.is_banned(resp.id).await {
-                                            let reason = server.ban_manager.get_effective_ban_message(resp.id).await;
-                                            warn!("banned user {}({}) tried to connect", resp.name, resp.id);
-                                            bail!("{}", reason);
-                                        }
-
                                         let mut users_guard = server.users.write().await;
-                                        if let Some(user) = users_guard.get(&resp.id) {
+                                        if let Some(user) = users_guard.get(&user_info.id) {
                                             info!("reconnect");
                                             let _ = tx.send(Arc::clone(user));
                                             this_inited.notified().await;
@@ -280,9 +275,9 @@ impl Session {
                                                 .await;
                                         } else {
                                             let user = Arc::new(User::new(
-                                                resp.id,
-                                                resp.name,
-                                                resp.language
+                                                user_info.id,
+                                                user_info.name,
+                                                user_info.language
                                                     .parse()
                                                     .map(Language)
                                                     .unwrap_or_default(),
@@ -292,12 +287,12 @@ impl Session {
                                             this_inited.notified().await;
                                             user.set_session(Arc::downgrade(this.get().unwrap()))
                                                 .await;
-                                            users_guard.insert(resp.id, Arc::clone(&user));
+                                            users_guard.insert(user_info.id, Arc::clone(&user));
 
                                             // 触发插件事件：用户连接
                                             server.plugin_manager
                                                 .trigger(&PluginEvent::UserConnect {
-                                                    user_id: resp.id,
+                                                    user_id: user_info.id,
                                                     user_name: user.name.clone(),
                                                 })
                                                 .await;

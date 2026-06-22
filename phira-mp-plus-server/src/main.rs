@@ -31,8 +31,8 @@ struct Args {
     plugins_dir: String,
 
     /// 扩展数据持久化文件
-    #[arg(short = 'e', long = "ext-file", help = "扩展数据持久化 JSON 文件路径")]
-    extensions_file: Option<String>,
+    #[arg(short = 'e', long = "ext-file", default_value = "data/extensions.json", help = "扩展数据持久化 JSON 文件路径")]
+    extensions_file: String,
 
     /// 禁用 CLI 管理控制台
     #[arg(long = "no-cli", help = "禁用交互式 CLI 管理控制台")]
@@ -93,6 +93,17 @@ async fn main() -> Result<()> {
 
     let args = Args::parse();
 
+    // 自动创建数据目录
+    let data_dir = Path::new("data");
+    if !data_dir.exists() {
+        std::fs::create_dir_all(data_dir).expect("failed to create data directory");
+    }
+    // 自动创建插件目录
+    let plugins_dir = Path::new(&args.plugins_dir);
+    if !plugins_dir.exists() {
+        std::fs::create_dir_all(plugins_dir).expect("failed to create plugins directory");
+    }
+
     let config = PlusConfig {
         port: args.port,
         monitors: if args.monitors.is_empty() {
@@ -101,7 +112,7 @@ async fn main() -> Result<()> {
             args.monitors
         },
         plugins_dir: args.plugins_dir,
-        extensions_file: args.extensions_file,
+        extensions_file: Some(args.extensions_file),
         cli_enabled: !args.no_cli,
     };
 
