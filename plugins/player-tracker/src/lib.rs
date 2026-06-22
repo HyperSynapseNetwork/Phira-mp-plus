@@ -117,10 +117,20 @@ impl NativePlugin for PlayerTracker {
                     out
                 }),
             );
+            let d2 = db.cloned();
             let _ = cli.register(
                 "player-count", "游玩过的玩家总数", "player-count",
-                Arc::new(|_| {
-                    vec!["  DB not available in CLI (use /api/players/count)".into()]
+                Arc::new(move |_| {
+                    let db = match d2.as_ref() {
+                        Some(db) => db,
+                        None => return vec!["  DB not available".into()],
+                    };
+                    let r = match db.query("SELECT COUNT(*) FROM players", &[]) {
+                        Ok(r) => r,
+                        Err(e) => return vec![format!("  query error: {e}")],
+                    };
+                    let cnt = r.rows.first().and_then(|row| row.first()).and_then(|v| v.as_u64()).unwrap_or(0);
+                    vec![format!("  ◆ 玩家总数: {}", cnt)]
                 }),
             );
             info!("registered CLI: players, player-count");
