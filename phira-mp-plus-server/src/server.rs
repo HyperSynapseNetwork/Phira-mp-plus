@@ -362,6 +362,7 @@ fn server_state_query(state: &Arc<PlusServerState>, method: &str, args: &[Value]
         lock: bool,
         cycle: bool,
         chart: Option<i32>,
+        chart_name: Option<String>,
         state: String,
         playing_users: Vec<i32>,
         rounds: Vec<RoundInfo>,
@@ -417,6 +418,7 @@ fn server_state_query(state: &Arc<PlusServerState>, method: &str, args: &[Value]
                 lock: room.locked.load(Ordering::SeqCst),
                 cycle: room.cycle.load(Ordering::SeqCst),
                 chart: chart_op.as_ref().map(|c| c.id),
+                chart_name: chart_op.as_ref().map(|c| c.name.clone()),
                 state: st,
                 playing_users: pu,
                 rounds,
@@ -448,60 +450,34 @@ fn server_state_query(state: &Arc<PlusServerState>, method: &str, args: &[Value]
         "send_chat" => {
             let uid = args.get(0).and_then(|v| v.as_i64()).unwrap_or(0) as i32;
             let msg = args.get(1).and_then(|v| v.as_str()).unwrap_or("").to_string();
-            let users = state.users.try_read().unwrap_or_else(|_| panic!("lock"));
-            let user = match users.get(&uid) {
-                Some(u) => Arc::clone(u),
-                None => return Ok(serde_json::json!({"sent": false, "error": "user not found"})),
-            };
-            drop(users);
-            let session_opt = user.session.try_read().unwrap_or_else(|_| panic!("lock"));
-            match session_opt.as_ref().and_then(|w| w.upgrade()) {
-                Some(session) => {
-                    let cmd = phira_mp_common::ServerCommand::Message(
+            let server = Arc::clone(state);
+            tokio::spawn(async move {
+                let users = server.users.read().await;
+                if let Some(user) = users.get(&uid) {
+                    user.try_send(phira_mp_common::ServerCommand::Message(
                         phira_mp_common::Message::Chat { user: 0, content: msg },
-                    );
-                    match session.stream.blocking_send(cmd) {
-                        Ok(_) => info!("send_chat to {uid} OK"),
-                        Err(e) => warn!("send_chat to {uid} failed: {e:?}"),
-                    }
-                    Ok(serde_json::json!({"sent": true}))
+                    )).await;
                 }
-                None => {
-                    warn!("send_chat: session gone for user {uid}");
-                    Ok(serde_json::json!({"sent": false, "error": "session gone"}))
-                }
-            }
+            });
+            Ok(serde_json::json!({"sent": true}))
         }
         "send_room_chat" => {
             let room_name = args.get(0).and_then(|v| v.as_str()).unwrap_or("").to_string();
             let msg = args.get(1).and_then(|v| v.as_str()).unwrap_or("").to_string();
             if room_name.starts_with('.') { return Ok(serde_json::json!({"sent": false})); }
-            let rid: phira_mp_common::RoomId = match room_name.try_into() {
-                Ok(r) => r,
-                Err(_) => return Ok(serde_json::json!({"sent": false, "error": "invalid room"})),
-            };
-            let rooms = state.rooms.try_read().unwrap_or_else(|_| panic!("lock"));
-            if let Some(room) = rooms.get(&rid) {
-                let cmd = phira_mp_common::ServerCommand::Message(
-                    phira_mp_common::Message::Chat { user: 0, content: msg },
-                );
-                let users_list = room.users.try_read().unwrap_or_else(|_| panic!("lock"));
-                let monitors_list = room.monitors.try_read().unwrap_or_else(|_| panic!("lock"));
-                let mut sent = 0usize;
-                for wu in users_list.iter().chain(monitors_list.iter()) {
-                    if let Some(u) = wu.upgrade() {
-                        let session = u.session.try_read().unwrap_or_else(|_| panic!("lock"));
-                        if let Some(session) = session.as_ref().and_then(|w| w.upgrade()) {
-                            if session.stream.blocking_send(cmd.clone()).is_ok() {
-                                sent += 1;
-                            }
-                        }
-                    }
+            let server = Arc::clone(state);
+            tokio::spawn(async move {
+                let rid: phira_mp_common::RoomId = match room_name.try_into() {
+                    Ok(r) => r,
+                    Err(_) => return,
+                };
+                let rooms = server.rooms.read().await;
+                if let Some(room) = rooms.get(&rid) {
+                    let content = format!("[结算] {}", msg);
+                    room.send(phira_mp_common::Message::Chat { user: 0, content }).await;
                 }
-                Ok(serde_json::json!({"sent": sent}))
-            } else {
-                Ok(serde_json::json!({"sent": false, "error": "room not found"}))
-            }
+            });
+            Ok(serde_json::json!({"sent": true}))
         }
         "rooms.by_user" => {
             let uid = args.get(0).and_then(|v| v.as_i64()).unwrap_or(0) as i32;

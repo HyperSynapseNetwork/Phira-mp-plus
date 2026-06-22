@@ -121,8 +121,9 @@ fn replace_placeholders(template: &str, user_id: i32, user_name: &str, user_ip: 
                     let host = data.and_then(|d| d.get("host")).and_then(|v| v.as_i64()).unwrap_or(0);
                     let users = data.and_then(|d| d.get("users")).and_then(|v| v.as_array()).map(|a| a.len()).unwrap_or(0);
                     let state_str = data.and_then(|d| d.get("state")).and_then(|v| v.as_str()).unwrap_or("?");
-                    let chart = data.and_then(|d| d.get("chart")).and_then(|v| v.as_i64()).map(|c| format!("谱面{}", c)).unwrap_or("未选曲".into());
-                    format!("{} ({}) 房主{} {} {}人", name, state_str, host, chart, users)
+                    let chart_name = data.and_then(|d| d.get("chart_name")).and_then(|v| v.as_str()).unwrap_or("");
+                    let chart: String = if chart_name.is_empty() { "未选曲".into() } else { chart_name.into() };
+                    format!("房间：{} 房主{} [{}] {} {}人", name, host, state_str, chart, users)
                 }).collect()
             } else { vec![] };
             let replacement = if lines.is_empty() { "暂无活跃房间".into() } else { lines.join("；") };

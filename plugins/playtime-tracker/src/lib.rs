@@ -211,6 +211,38 @@ impl NativePlugin for PlaytimeTracker {
             info!("registered /api/playtime_leaderboard/top/<limit>");
         }
 
+        // 注册插件 API（供其他插件查询）
+        if let Some(reg) = &ctx.register_api {
+            let data = self.data.clone();
+            let handler: phira_mp_plus_server_api::PluginApiHandler = Arc::new(move |method, args| {
+                let guard = data.lock().unwrap_or_else(|e| e.into_inner());
+                let now = PlaytimeTracker::now();
+                match method {
+                    "user_playtime" => {
+                        let uid = args.first().and_then(|v| v.as_i64()).unwrap_or(0) as i32;
+                        let total = guard.get(&uid).map_or(0, |p| {
+                            p.total_seconds + p.session_start.map_or(0, |s| now.saturating_sub(s))
+                        });
+                        Ok(serde_json::json!({"user_id": uid, "total_seconds": total}))
+                    }
+                    "leaderboard" => {
+                        let limit = args.first().and_then(|v| v.as_u64()).unwrap_or(10) as usize;
+                        let mut list: Vec<Value> = guard.iter().map(|(&uid, p)| {
+                            let total = p.total_seconds + p.session_start.map_or(0, |s| now.saturating_sub(s));
+                            serde_json::json!({"user_id": uid, "total_playtime": total})
+                        }).collect();
+                        list.sort_by(|a, b| b.get("total_playtime").and_then(|v| v.as_u64())
+                            .cmp(&a.get("total_playtime").and_then(|v| v.as_u64())));
+                        list.truncate(limit);
+                        Ok(serde_json::json!({"data": list}))
+                    }
+                    _ => Err(format!("unknown: {method}")),
+                }
+            });
+            reg("playtime-tracker", handler);
+            info!("registered plugin API: playtime-tracker");
+        }
+
         // CLI
         if let Some(cli) = &ctx.cli {
             let data = self.data.clone();
