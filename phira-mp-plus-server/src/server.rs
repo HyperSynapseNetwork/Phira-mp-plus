@@ -418,7 +418,9 @@ fn server_state_query(state: &Arc<PlusServerState>, method: &str, args: &[Value]
     match method {
         "rooms.list" => {
             let rooms = state.rooms.blocking_read();
-            let list: Vec<Value> = rooms.iter().map(|(rid, room)| {
+            let list: Vec<Value> = rooms.iter().filter(|(rid, _)| {
+                !rid.to_string().starts_with('.')
+            }).map(|(rid, room)| {
                 let ss = build_snapshot(&rid.to_string(), room);
                 serde_json::to_value(ss).unwrap_or_default()
             }).collect();
@@ -426,6 +428,7 @@ fn server_state_query(state: &Arc<PlusServerState>, method: &str, args: &[Value]
         }
         "rooms.by_name" => {
             let name = args.get(0).and_then(|v| v.as_str()).unwrap_or("");
+            if name.starts_with('.') { return Err("room not found".to_string()); }
             let rid: phira_mp_common::RoomId = name.to_string().try_into()
                 .map_err(|_| "invalid room name".to_string())?;
             let rooms = state.rooms.blocking_read();
