@@ -273,7 +273,7 @@ impl PlusServer {
             }
             id
         };
-        let session = super::session::Session::new(id, stream, Arc::clone(&self.state)).await?;
+        let session = super::session::Session::new(id, addr, stream, Arc::clone(&self.state)).await?;
         info!(
             "received connections from {} ({}), version: {}",
             addr,

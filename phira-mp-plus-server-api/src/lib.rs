@@ -12,7 +12,7 @@ use std::sync::Arc;
 /// 插件事件
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum PluginEvent {
-    UserConnect { user_id: i32, user_name: String },
+    UserConnect { user_id: i32, user_name: String, user_ip: String },
     UserDisconnect { user_id: i32, user_name: String },
     RoomCreate { user_id: i32, room_id: String },
     RoomJoin { user_id: i32, room_id: String, is_monitor: bool },

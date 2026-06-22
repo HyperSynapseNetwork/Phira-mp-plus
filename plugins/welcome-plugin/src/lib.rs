@@ -70,10 +70,12 @@ fn save_config(config: &WelcomeConfig) {
 }
 
 /// 替换占位符
-fn replace_placeholders(template: &str, user_id: i32, user_name: &str, ctx: &PluginContext) -> String {
+fn replace_placeholders(template: &str, user_id: i32, user_name: &str, user_ip: &str, ctx: &PluginContext) -> String {
     let mut text = template
         .replace("[user_id]", &user_id.to_string())
-        .replace("[user_name]", user_name);
+        .replace("[user_name]", user_name)
+        .replace("[user_ip]", user_ip)
+        .replace("[user_location]", user_ip); // 暂用 IP 代替（可扩展为 GeoIP 查询）
 
     // [player-count] → 通过 api 查询 player-tracker
     if text.contains("[player-count]") || text.contains("[players]") {
@@ -130,9 +132,19 @@ impl NativePlugin for WelcomePlugin {
                     let cfg = config.lock().unwrap_or_else(|e| e.into_inner());
                     vec![
                         format!("  ◆ 欢迎语配置"),
+                        format!("  │ 配置文件: {}", CONFIG_PATH),
                         format!("  │ 消息: {}", cfg.welcome_message),
                         format!("  │ 显示时间: {}", cfg.show_time),
                         format!("  │ 时间格式: {}", cfg.time_format),
+                        format!(""),
+                        format!("  ■ 可用占位符:"),
+                        format!("  │ [user_id]     用户 Phira ID"),
+                        format!("  │ [user_name]   用户名"),
+                        format!("  │ [user_ip]     用户 IP 地址"),
+                        format!("  │ [user_location] IP 所在地（当前版本返回 IP）"),
+                        format!("  │ [player-count] 当前在线玩家数"),
+                        format!("  │ [players]      当前在线玩家数（同 [player-count]）"),
+                        format!("  │ [playtime <id>] 指定用户的游玩时间"),
                     ]
                 }),
             );
@@ -143,9 +155,9 @@ impl NativePlugin for WelcomePlugin {
     }
 
     fn on_event(&self, ctx: &PluginContext, event: &PluginEvent) -> Vec<String> {
-        if let PluginEvent::UserConnect { user_id, user_name } = event {
+        if let PluginEvent::UserConnect { user_id, user_name, user_ip } = event {
             let cfg = self.config.lock().unwrap_or_else(|e| e.into_inner());
-            let text = replace_placeholders(&cfg.welcome_message, *user_id, user_name, ctx);
+            let text = replace_placeholders(&cfg.welcome_message, *user_id, user_name, user_ip, ctx);
             drop(cfg);
 
             // 发送欢迎语（通过 ctx.send_chat）

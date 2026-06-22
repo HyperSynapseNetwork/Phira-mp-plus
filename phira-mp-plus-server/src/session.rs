@@ -138,6 +138,7 @@ impl User {
 
 pub struct Session {
     pub id: Uuid,
+    pub ip: String,
     pub stream: Stream<ServerCommand, ClientCommand>,
     pub user: Arc<User>,
 
@@ -147,6 +148,7 @@ pub struct Session {
 impl Session {
     pub async fn new(
         id: Uuid,
+        addr: std::net::SocketAddr,
         stream: TcpStream,
         server: Arc<PlusServerState>,
     ) -> Result<Arc<Self>> {
@@ -280,10 +282,12 @@ impl Session {
                                             user.set_session(Arc::downgrade(this.get().unwrap()))
                                                 .await;
                                             // 重连也需要触发 UserConnect（欢迎语等依赖此事件）
+                                            let user_ip = this.get().map(|s| s.ip.clone()).unwrap_or_default();
                                             server.plugin_manager
                                                 .trigger(&PluginEvent::UserConnect {
                                                     user_id: user_info.id,
                                                     user_name: user_info.name.clone(),
+                                                    user_ip,
                                                 }).await;
                                         } else {
                                             let user = Arc::new(User::new(
@@ -302,10 +306,12 @@ impl Session {
                                             users_guard.insert(user_info.id, Arc::clone(&user));
 
                                             // 触发插件事件：用户连接
+                                            let user_ip = this.get().map(|s| s.ip.clone()).unwrap_or_default();
                                             server.plugin_manager
                                                 .trigger(&PluginEvent::UserConnect {
                                                     user_id: user_info.id,
                                                     user_name: user.name.clone(),
+                                                    user_ip,
                                                 })
                                                 .await;
                                         }
@@ -384,8 +390,10 @@ impl Session {
 
         let user = rx.await?;
 
+        let ip = addr.ip().to_string();
         let res = Arc::new(Self {
             id,
+            ip,
             stream,
             user,
             monitor_task_handle,
