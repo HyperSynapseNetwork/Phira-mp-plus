@@ -21,6 +21,14 @@ pub struct ExtensionField {
     pub description: String,
 }
 
+/// 认证缓存条目（持久化用）
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AuthCacheEntry {
+    pub user_id: i32,
+    pub name: String,
+    pub language: String,
+}
+
 /// 扩展数据存储
 #[derive(Debug, Default, Serialize, Deserialize)]
 pub struct ExtensionDataStore {
@@ -31,6 +39,9 @@ pub struct ExtensionDataStore {
     pub user_data: HashMap<i32, HashMap<String, String>>,
     /// 房间扩展数据: room_id -> (key -> value)
     pub room_data: HashMap<String, HashMap<String, String>>,
+    /// 认证缓存 (token_hash -> 用户信息)，持久化以在重启后恢复
+    #[serde(default)]
+    pub auth_cache: HashMap<u64, AuthCacheEntry>,
 }
 
 impl ExtensionDataStore {
@@ -265,5 +276,22 @@ impl ExtensionManager {
 
     pub async fn list_room_fields(&self) -> Vec<String> {
         self.store.read().await.list_registered_room_fields()
+    }
+
+    // ── 认证缓存持久化 ──
+
+    pub async fn get_auth_cache(&self) -> HashMap<u64, AuthCacheEntry> {
+        self.store.read().await.auth_cache.clone()
+    }
+
+    pub async fn set_auth_cache(&self, cache: HashMap<u64, AuthCacheEntry>) {
+        self.store.write().await.auth_cache = cache;
+    }
+
+    pub async fn update_auth_cache(&self, token_hash: u64, entry: AuthCacheEntry) {
+        {
+            self.store.write().await.auth_cache.insert(token_hash, entry);
+        }
+        let _ = self.persist().await;
     }
 }

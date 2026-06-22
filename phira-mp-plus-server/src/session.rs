@@ -211,20 +211,22 @@ impl Session {
                                         let token_hash = hasher.finish();
 
                                         // ★ 优先检查缓存：如果 token 已缓存，直接验证封禁状态，跳过 API 请求
-                                        let user_info = if let Some(&(cached_uid, ref cached_name, ref cached_lang)) =
-                                            server.auth_cache.read().await.get(&token_hash)
-                                        {
+                                        let user_info = {
+                                            let ac = server.extensions.get_auth_cache().await;
+                                            ac.get(&token_hash).cloned()
+                                        };
+                                        let user_info = if let Some(entry) = user_info {
                                             // 封禁检查（拒绝前不走 API，毫秒级响应）
-                                            if server.ban_manager.is_banned(cached_uid).await {
-                                                let reason = server.ban_manager.get_ban_reason(cached_uid).await;
-                                                warn!("banned user {}({}) tried to connect (cache)", cached_name, cached_uid);
+                                            if server.ban_manager.is_banned(entry.user_id).await {
+                                                let reason = server.ban_manager.get_ban_reason(entry.user_id).await;
+                                                warn!("banned user {}({}) tried to connect (cache)", entry.name, entry.user_id);
                                                 bail!("{}", reason);
                                             }
-                                            debug!("cache hit for user {}", cached_uid);
+                                            debug!("cache hit for user {}", entry.user_id);
                                             AuthUserInfo {
-                                                id: cached_uid,
-                                                name: cached_name.clone(),
-                                                language: cached_lang.clone(),
+                                                id: entry.user_id,
+                                                name: entry.name,
+                                                language: entry.language,
                                             }
                                         } else {
                                             // 缓存未命中，请求 API（3 秒超时）
@@ -247,11 +249,15 @@ impl Session {
                                             .await
                                             {
                                                 Ok(info) => {
-                                                    // API 成功，更新缓存
-                                                    server.auth_cache.write().await.insert(
+                                                    // API 成功，更新缓存并持久化
+                                                    server.extensions.update_auth_cache(
                                                         token_hash,
-                                                        (info.id, info.name.clone(), info.language.clone()),
-                                                    );
+                                                        crate::extensions::AuthCacheEntry {
+                                                            user_id: info.id,
+                                                            name: info.name.clone(),
+                                                            language: info.language.clone(),
+                                                        },
+                                                    ).await;
                                                     // 封禁检查
                                                     if server.ban_manager.is_banned(info.id).await {
                                                         let reason = server.ban_manager.get_ban_reason(info.id).await;
