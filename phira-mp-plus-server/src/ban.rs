@@ -1,12 +1,11 @@
 //! Phira-mp+ 黑名单管理系统
 //!
-//! 提供全局玩家封禁、自定义拒绝提示信息、房间黑名单等功能。
-//! 所有数据存储在 ExtensionManager 中，作为额外用户/房间信息的一部分。
+//! 提供全局玩家封禁和房间黑名单。封禁原因直接作为客户端拒绝提示。
+//! 数据存储在 ExtensionManager 中，作为额外用户/房间信息的一部分。
 
 use crate::extensions::ExtensionManager;
 use serde::Serialize;
 use std::sync::Arc;
-use tokio::sync::RwLock;
 use tracing::info;
 
 /// 封禁条目
@@ -14,30 +13,21 @@ use tracing::info;
 pub struct BanEntry {
     pub user_id: i32,
     pub reason: String,
-    pub custom_message: String,
 }
-
-/// 系统默认拒绝提示
-const DEFAULT_BAN_MESSAGE: &str = "你的账号已被封禁";
 
 /// 黑名单管理器
 pub struct BanManager {
     extensions: Arc<ExtensionManager>,
-    default_message: RwLock<String>,
 }
 
 impl BanManager {
-    /// 创建黑名单管理器，并注册扩展字段
+    /// 创建黑名单管理器
     pub fn new(extensions: Arc<ExtensionManager>) -> Self {
-        Self {
-            extensions,
-            default_message: RwLock::new(DEFAULT_BAN_MESSAGE.to_string()),
-        }
+        Self { extensions }
     }
 
     /// 注册扩展字段（启动时调用）
     pub async fn register_fields(&self) {
-        // 用户扩展字段
         let _ = self
             .extensions
             .register_user_field("ban-status", "", "mp", "封禁状态: banned 或空")
@@ -48,17 +38,8 @@ impl BanManager {
             .await;
         let _ = self
             .extensions
-            .register_user_field("ban-message", "", "mp", "自定义拒绝提示信息")
+            .register_room_field("blacklist", "[]", "mp", "房间黑名单用户ID列表 (JSON)")
             .await;
-        // 房间扩展字段
-        let _ = self
-            .extensions
-            .register_room_field("blacklist", "[]", "mp", "房间黑名单用户ID列表 (JSON数组)")
-            .await;
-        // 读取默认拒绝信息
-        if let Some(msg) = self.extensions.get_user_extra(0, "ban-default-message").await {
-            *self.default_message.write().await = msg;
-        }
         info!("blacklist manager initialized");
     }
 
@@ -99,77 +80,28 @@ impl BanManager {
             == Some("banned")
     }
 
-    /// 获取封禁原因
-    pub async fn get_ban_reason(&self, user_id: i32) -> Option<String> {
-        if self.is_banned(user_id).await {
-            self.extensions.get_user_extra(user_id, "ban-reason").await
-        } else {
-            None
-        }
+    /// 获取封禁原因（作为拒绝提示）
+    pub async fn get_ban_reason(&self, user_id: i32) -> String {
+        self.extensions
+            .get_user_extra(user_id, "ban-reason")
+            .await
+            .filter(|r| !r.is_empty())
+            .unwrap_or_else(|| "你的账号已被封禁".to_string())
     }
 
     /// 列出所有被封禁的用户
     pub async fn list_banned(&self) -> Vec<BanEntry> {
-        // 遍历所有有 ban-status 数据的用户
         let store = self.extensions.store().read().await;
         let mut result = Vec::new();
         for (&uid, data) in &store.user_data {
             if data.get("ban-status").map(|s| s.as_str()) == Some("banned") {
                 result.push(BanEntry {
                     user_id: uid,
-                    reason: data
-                        .get("ban-reason")
-                        .cloned()
-                        .unwrap_or_default(),
-                    custom_message: data
-                        .get("ban-message")
-                        .cloned()
-                        .unwrap_or_default(),
+                    reason: data.get("ban-reason").cloned().unwrap_or_default(),
                 });
             }
         }
         result
-    }
-
-    // ── 拒绝提示信息 ──
-
-    /// 设置默认拒绝提示信息
-    pub async fn set_default_ban_message(&self, msg: &str) {
-        *self.default_message.write().await = msg.to_string();
-        // 通过虚拟用户 0 存储
-        let _ = self
-            .extensions
-            .register_user_field("ban-default-message", msg, "mp", "默认拒绝提示")
-            .await;
-        let _ = self
-            .extensions
-            .set_user_extra(0, "ban-default-message", msg.to_string())
-            .await;
-        info!("default ban message set to: {}", msg);
-    }
-
-    /// 获取默认拒绝提示信息
-    pub async fn get_default_ban_message(&self) -> String {
-        self.default_message.read().await.clone()
-    }
-
-    /// 设置用户的特殊拒绝提示信息
-    pub async fn set_user_ban_message(&self, user_id: i32, msg: &str) -> Result<(), String> {
-        self.extensions
-            .set_user_extra(user_id, "ban-message", msg.to_string())
-            .await?;
-        let _ = self.extensions.persist().await;
-        Ok(())
-    }
-
-    /// 获取用户最终拒绝提示信息（优先使用自定义，否则使用默认）
-    pub async fn get_effective_ban_message(&self, user_id: i32) -> String {
-        if let Some(msg) = self.extensions.get_user_extra(user_id, "ban-message").await {
-            if !msg.is_empty() {
-                return msg;
-            }
-        }
-        self.default_message.read().await.clone()
     }
 
     // ── 房间黑名单 ──
@@ -219,7 +151,6 @@ impl BanManager {
         self.get_room_ban_list_raw(room_id).await
     }
 
-    /// 获取房间黑名单原始数据
     async fn get_room_ban_list_raw(&self, room_id: &str) -> Vec<i32> {
         self.extensions
             .get_room_extra(room_id, "blacklist")

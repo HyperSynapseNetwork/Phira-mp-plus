@@ -216,7 +216,7 @@ impl Session {
                                         {
                                             // 封禁检查（拒绝前不走 API，毫秒级响应）
                                             if server.ban_manager.is_banned(cached_uid).await {
-                                                let reason = server.ban_manager.get_effective_ban_message(cached_uid).await;
+                                                let reason = server.ban_manager.get_ban_reason(cached_uid).await;
                                                 warn!("banned user {}({}) tried to connect (cache)", cached_name, cached_uid);
                                                 bail!("{}", reason);
                                             }
@@ -254,7 +254,7 @@ impl Session {
                                                     );
                                                     // 封禁检查
                                                     if server.ban_manager.is_banned(info.id).await {
-                                                        let reason = server.ban_manager.get_effective_ban_message(info.id).await;
+                                                        let reason = server.ban_manager.get_ban_reason(info.id).await;
                                                         warn!("banned user {}({}) tried to connect", info.name, info.id);
                                                         bail!("{}", reason);
                                                     }

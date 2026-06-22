@@ -184,36 +184,6 @@ impl CliHandler {
                     }
                 }
                 "banlist" | "bl" => self.ban_list().await,
-                "ban-message" | "bm" => {
-                    if args.is_empty() {
-                        // 显示当前默认拒绝提示
-                        let msg = self.state.ban_manager.get_default_ban_message().await;
-                        println!("  {} 当前默认拒绝提示信息:", c::green("◆"));
-                        println!("    {}", msg);
-                        println!("  {} {} <用户ID> <信息>    设置用户的特殊拒绝提示", c::dim("▸"), c::bold("ban-message"));
-                        println!("  {} {} <信息>             设置默认拒绝提示", c::dim("▸"), c::bold("ban-message"));
-                    } else if args.len() == 1 {
-                        // 设置默认拒绝提示
-                        let msg = args[0].to_string();
-                        self.state.ban_manager.set_default_ban_message(&msg).await;
-                        println!("  {} 默认拒绝提示信息已更新:", c::green("✓"));
-                        println!("    {}", msg);
-                    } else {
-                        // 设置用户的特殊拒绝提示
-                        let uid: i32 = match args[0].parse() {
-                            Ok(id) => id,
-                            Err(_) => {
-                                println!("  {} 无效的用户ID: {}", c::red("✗"), args[0]);
-                                return;
-                            }
-                        };
-                        let msg = args[1..].join(" ");
-                        match self.state.ban_manager.set_user_ban_message(uid, &msg).await {
-                            Ok(_) => println!("  {} 用户 {} 的特殊拒绝提示已设置: {}", c::green("✓"), uid, msg),
-                            Err(e) => println!("  {} {}", c::red("✗"), e),
-                        }
-                    }
-                }
                 "room-ban" | "rb" => {
                     if args.len() < 2 {
                         println!("  {} {} <房间ID> <用户ID>", c::yellow("?"), c::bold("room-ban"));
@@ -300,7 +270,6 @@ impl CliHandler {
         println!("    {} {:<20} {}", c::dim("│"), "ban <用户ID> [原因]", "封禁用户");
         println!("    {} {:<20} {}", c::dim("│"), "unban <用户ID>", "解封用户");
         println!("    {} {:<20} {}", c::dim("│"), "banlist (bl)", "列出封禁列表");
-        println!("    {} {:<20} {}", c::dim("│"), "ban-message (bm)", "查看/设置拒绝提示");
         println!("    {} {:<20} {}", c::dim("│"), "room-ban (rb)", "房间加入黑名单");
         println!("    {} {:<20} {}", c::dim("│"), "room-unban (ru)", "房间移出黑名单");
         println!("    {} {:<20} {}", c::dim("│"), "room-banlist (rbl)", "房间黑名单列表");
@@ -747,14 +716,9 @@ impl CliHandler {
         println!("  {} 封禁用户 ({})", c::green("◆"), list.len());
         println!("  {}", c::dim("  ────────────────────────────────────────────"));
         for entry in &list {
-            println!("  {} {:<6}  {}  {}", c::dim("│"),
+            println!("  {} {:<6}  {}", c::dim("│"),
                 entry.user_id,
                 c::dim(&entry.reason),
-                if entry.custom_message.is_empty() {
-                    String::new()
-                } else {
-                    format!("{} 自定义提示", c::yellow("·"))
-                },
             );
         }
     }
