@@ -65,11 +65,12 @@ fn init_log(file: &str) -> Result<WorkerGuard> {
         .with_writer(non_blocking)
         .with_filter(LevelFilter::DEBUG);
 
-    // 终端日志：根据 RUST_LOG 环境变量过滤，并压制嘈杂的第三方库
+    // 终端日志：无 RUST_LOG 时默认 INFO 级别，并压制嘈杂的第三方库
     let stdout_layer = fmt::layer()
         .with_writer(std::io::stdout)
         .with_filter(
-            EnvFilter::from_default_env()
+            EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| EnvFilter::new("info"))
                 .add_directive("hyper=info".parse().unwrap())
                 .add_directive("rustls=info".parse().unwrap())
                 .add_directive("isahc=info".parse().unwrap())
@@ -104,12 +105,11 @@ async fn main() -> Result<()> {
         cli_enabled: !args.no_cli,
     };
 
-    println!("╔══════════════════════════════════════════════════════════╗");
-    println!("║                                                          ║");
-    println!("║     Phira-mp+ v{}                                   ║", env!("CARGO_PKG_VERSION"));
-    println!("║     增强版 Phira 多人游戏服务端                          ║");
-    println!("║                                                          ║");
-    println!("╚══════════════════════════════════════════════════════════╝");
+    println!();
+    println!("  ╭──────────────────────────────────────╮");
+    println!("  │  Phira-mp+ v{:<16} │", env!("CARGO_PKG_VERSION"));
+    println!("  │  增强版 Phira 多人游戏服务端            │");
+    println!("  ╰──────────────────────────────────────╯");
     println!();
 
     // 创建服务器
@@ -118,8 +118,7 @@ async fn main() -> Result<()> {
     // 启动 CLI 管理控制台
     server.start_cli().await?;
 
-    println!("服务器已启动，等待连接...");
-    println!("输入 'exit' 或 'q' 关闭服务器");
+    println!("  ● 服务器已启动，监听端口 {} ── 输入 exit 关闭", server.state.config.port);
 
     // 主循环 - 接收连接（直到收到关闭信号）
     loop {

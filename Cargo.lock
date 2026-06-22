@@ -1552,7 +1552,6 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-appender",
- "tracing-log",
  "tracing-subscriber",
  "unic-langid",
  "uuid",
