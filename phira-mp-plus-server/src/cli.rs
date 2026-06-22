@@ -110,15 +110,13 @@ impl CliHandler {
                 "users" | "u" => self.list_users().await,
                 "rooms" | "r" => self.list_rooms().await,
                 "kick" | "k" => {
-                    if args.len() < 2 {
-                        println!("  {} {} <房间ID> <用户ID>  从房间踢出用户", c::yellow("?"), c::bold("kick"));
-                        println!("  {} {} <用户ID>          从服务器踢出用户", c::dim("│"), c::bold("kick"));
-                    } else if args.len() == 2 {
+                    if args.len() >= 2 {
                         self.kick_from_room(args[0], args[1]).await;
                     } else if args.len() == 1 {
                         self.kick_user(args[0]).await;
                     } else {
-                        self.kick_user(args[0]).await;
+                        println!("  {} {} <房间ID> <用户ID>  从房间踢出用户", c::yellow("?"), c::bold("kick"));
+                        println!("  {} {} <用户ID>          从服务器踢出用户", c::dim("│"), c::bold("kick"));
                     }
                 }
                 "broadcast" | "bc" => {
