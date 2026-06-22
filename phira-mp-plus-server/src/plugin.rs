@@ -281,6 +281,13 @@ impl PluginManager {
             ctx = ctx.with_send_chat(Arc::clone(sc));
         }
 
+        // 提供插件 API 注册能力
+        let api_handlers = self.api_handlers.clone();
+        ctx = ctx.with_register_api(Arc::new(move |name, handler| {
+            api_handlers.lock().unwrap_or_else(|e| e.into_inner()).insert(name.to_string(), handler);
+            info!("plugin registered API: {name}");
+        }));
+
         Arc::new(native::ServerPluginContext {
             ctx,
             extensions: self.extensions.clone(),

@@ -74,6 +74,27 @@ impl NativePlugin for PlayerTracker {
             info!("registered /api/players/count and /api/players/list");
         }
 
+        // 注册插件 API（供其他插件查询 player-count）
+        if let Some(reg) = &ctx.register_api {
+            let players = self.players.clone();
+            let handler: phira_mp_plus_server_api::PluginApiHandler = Arc::new(move |method, _args| {
+                let guard = players.lock().unwrap_or_else(|e| e.into_inner());
+                match method {
+                    "count" => Ok(serde_json::json!({"count": guard.len()})),
+                    "list" => {
+                        let list: Vec<Value> = guard.iter().map(|(&id, r)| serde_json::json!({
+                            "phira_id": id, "first_seen": r.first_seen,
+                            "last_seen": r.last_seen, "play_count": r.play_count,
+                        })).collect();
+                        Ok(serde_json::json!({"players": list}))
+                    }
+                    _ => Err(format!("unknown: {method}")),
+                }
+            });
+            reg("player-tracker", handler);
+            info!("registered plugin API: player-tracker");
+        }
+
         // CLI 命令
         if let Some(cli) = &ctx.cli {
             let players = self.players.clone();

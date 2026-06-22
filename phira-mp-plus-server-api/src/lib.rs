@@ -159,6 +159,8 @@ pub struct PluginContext {
     pub cli: Option<CliHandle>,
     /// 发送聊天消息给指定用户 (user_id, message)
     pub send_chat: Option<Arc<dyn Fn(i32, String) + Send + Sync>>,
+    /// 注册插件 API（供其他插件调用）
+    pub register_api: Option<Arc<dyn Fn(&str, PluginApiHandler) + Send + Sync>>,
 }
 
 impl PluginContext {
@@ -170,6 +172,7 @@ impl PluginContext {
             api: None,
             cli: None,
             send_chat: None,
+            register_api: None,
         }
     }
 
@@ -178,6 +181,7 @@ impl PluginContext {
     pub fn with_api(mut self, api: PluginApiRegistry) -> Self { self.api = Some(api); self }
     pub fn with_cli(mut self, cli: CliHandle) -> Self { self.cli = Some(cli); self }
     pub fn with_send_chat(mut self, f: Arc<dyn Fn(i32, String) + Send + Sync>) -> Self { self.send_chat = Some(f); self }
+    pub fn with_register_api(mut self, f: Arc<dyn Fn(&str, PluginApiHandler) + Send + Sync>) -> Self { self.register_api = Some(f); self }
 }
 
 // ── 插件特征 ──

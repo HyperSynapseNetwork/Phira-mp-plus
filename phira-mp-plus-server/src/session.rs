@@ -279,6 +279,12 @@ impl Session {
                                             this_inited.notified().await;
                                             user.set_session(Arc::downgrade(this.get().unwrap()))
                                                 .await;
+                                            // 重连也需要触发 UserConnect（欢迎语等依赖此事件）
+                                            server.plugin_manager
+                                                .trigger(&PluginEvent::UserConnect {
+                                                    user_id: user_info.id,
+                                                    user_name: user_info.name.clone(),
+                                                }).await;
                                         } else {
                                             let user = Arc::new(User::new(
                                                 user_info.id,
