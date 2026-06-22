@@ -544,6 +544,11 @@ impl CliHandler {
             };
 
             if let Some(user) = user_to_kick {
+                // 向房间内其他用户发送通知
+                room.send(phira_mp_common::Message::Chat {
+                    user: 0,
+                    content: format!("用户 {} 已被管理员踢出房间", user.name),
+                }).await;
                 let _ = room.on_user_leave(&user).await;
                 info!(user = target, room = room_id, "kicked from room by admin");
                 self.state.plugin_manager
@@ -721,8 +726,18 @@ impl CliHandler {
             Some(r) => r,
             None => { println!("  {} 未找到房间 {}", c::red("✗"), room_id); return; }
         };
+        // 获取用户名
+        let user_name = room.users().await.iter()
+            .find(|u| u.id == user_id)
+            .map(|u| u.name.clone())
+            .unwrap_or_else(|| format!("{}", user_id));
+        // 发送房间通知
+        room.send(phira_mp_common::Message::Chat {
+            user: 0,
+            content: format!("房主已转移给 {}", user_name),
+        }).await;
         match room.transfer_host(user_id).await {
-            Ok(_) => println!("  {} 房主已转移给用户 {}", c::green("✓"), user_id),
+            Ok(_) => println!("  {} 房主已转移给用户 {} ({})", c::green("✓"), user_name, user_id),
             Err(e) => println!("  {} {}", c::red("✗"), e),
         }
     }

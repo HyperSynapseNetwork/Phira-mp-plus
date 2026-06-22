@@ -212,6 +212,12 @@ impl Room {
 
     /// 转移房主
     pub async fn transfer_host(&self, new_host_id: i32) -> Result<()> {
+        // 通知旧房主
+        if let Some(old_host) = self.host.read().await.upgrade() {
+            if old_host.id != new_host_id {
+                old_host.try_send(ServerCommand::ChangeHost(false)).await;
+            }
+        }
         let user = self
             .users()
             .await
