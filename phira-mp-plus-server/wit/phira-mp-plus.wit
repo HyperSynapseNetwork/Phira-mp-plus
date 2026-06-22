@@ -218,6 +218,32 @@ record plugin-info {
     description: string,
 }
 
+/// CLI 接口
+/// 插件通过实现此接口来注册自定义 CLI 命令并与控制台交互
+interface cli {
+    /// 返回此插件提供的所有 CLI 命令及其描述
+    list-commands: func() -> list<cli-command>;
+
+    /// 执行插件 CLI 命令，返回输出行
+    /// command: 命令名
+    /// args: 参数列表
+    /// 返回输出文本行（空列表表示未处理此命令）
+    execute-command: func(command: string, args: list<string>) -> expected<list<string>, string>;
+
+    /// 向 CLI 控制台输出一行文本
+    output: func(message: string);
+
+    /// 获取当前登录的管理员用户名（如果有）
+    current-admin: func() -> option<string>;
+}
+
+/// CLI 命令描述
+record cli-command {
+    name: string,
+    description: string,
+    usage: string,
+}
+
 /// 插件世界 - 将上述接口组合成完整的插件定义
 world plugin-world {
     import user-events;
@@ -229,6 +255,7 @@ world plugin-world {
     import utilities;
     import database;
     import plugin-config;
+    import cli;
 
     export plugin;
 }

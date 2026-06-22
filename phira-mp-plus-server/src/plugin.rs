@@ -5,6 +5,7 @@
 
 use crate::extensions::ExtensionManager;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
 use tokio::sync::RwLock;
@@ -203,9 +204,10 @@ pub mod native {
     }
 }
 
-/// 插件管理器 - 负责加载、管理和调度插件
+/// 插件处理器 - 负责加载、管理和调度插件
 pub struct PluginManager {
     plugins: Arc<RwLock<Vec<Box<dyn PluginHost>>>>,
+    cli_commands: Arc<RwLock<HashMap<String, CliCommand>>>,
     extensions: Arc<ExtensionManager>,
     plugins_dir: String,
 }
@@ -214,6 +216,7 @@ impl PluginManager {
     pub fn new(plugins_dir: &str, extensions: Arc<ExtensionManager>) -> Self {
         Self {
             plugins: Arc::new(RwLock::new(Vec::new())),
+            cli_commands: Arc::new(RwLock::new(HashMap::new())),
             extensions,
             plugins_dir: plugins_dir.to_string(),
         }
@@ -309,9 +312,11 @@ impl PluginManager {
         name: &str,
     ) -> Result<(), String> {
         let ctx = Arc::new(native::PluginContext::new(name, self.extensions.clone()));
-        let wrapper = native::NativePluginWrapper::new(plugin, name, ctx);
+        let mut wrapper = native::NativePluginWrapper::new(plugin, name, ctx);
+        // 初始化插件
+        wrapper.init()?;
         let info = wrapper.meta().info.clone();
-        // 初始化并注册插件
+        // 注册插件
         self.plugins.write().await.push(Box::new(wrapper));
         info!("registered native plugin: {} v{}", info.name, info.version);
         Ok(())
@@ -391,6 +396,58 @@ impl PluginManager {
             plugin.cleanup();
         }
         guard.clear();
+    }
+
+    /// 注册插件 CLI 命令
+    pub async fn register_cli_command(&self, cmd: CliCommand) -> Result<(), String> {
+        let mut guard = self.cli_commands.write().await;
+        if guard.contains_key(&cmd.name) {
+            return Err(format!("CLI command '{}' is already registered", cmd.name));
+        }
+        info!("registered CLI command: {}", cmd.name);
+        guard.insert(cmd.name.clone(), cmd);
+        Ok(())
+    }
+
+    /// 执行插件 CLI 命令，返回输出行
+    pub async fn execute_cli_command(&self, name: &str, args: &[&str]) -> Option<Vec<String>> {
+        let guard = self.cli_commands.read().await;
+        guard.get(name).map(|cmd| (cmd.handler)(args))
+    }
+
+    /// 列出所有已注册的插件 CLI 命令
+    pub async fn list_cli_commands(&self) -> Vec<CliCommand> {
+        let guard = self.cli_commands.read().await;
+        guard.values().cloned().collect()
+    }
+}
+
+/// 插件 CLI 命令
+pub struct CliCommand {
+    pub name: String,
+    pub description: String,
+    pub usage: String,
+    pub handler: Arc<dyn Fn(&[&str]) -> Vec<String> + Send + Sync>,
+}
+
+impl std::fmt::Debug for CliCommand {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CliCommand")
+            .field("name", &self.name)
+            .field("description", &self.description)
+            .field("usage", &self.usage)
+            .finish()
+    }
+}
+
+impl Clone for CliCommand {
+    fn clone(&self) -> Self {
+        Self {
+            name: self.name.clone(),
+            description: self.description.clone(),
+            usage: self.usage.clone(),
+            handler: Arc::clone(&self.handler),
+        }
     }
 }
 

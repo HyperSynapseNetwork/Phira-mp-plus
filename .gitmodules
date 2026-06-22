@@ -1,0 +1,3 @@
+[submodule "phira-mp"]
+	path = phira-mp
+	url = /root/Phira-plus/Phira-mp-plus/phira-mp

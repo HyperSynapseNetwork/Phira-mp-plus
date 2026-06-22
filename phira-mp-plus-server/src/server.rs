@@ -36,7 +36,7 @@ pub struct Record {
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::net::TcpListener;
-use tokio::sync::{RwLock, mpsc};
+use tokio::sync::{Notify, RwLock, mpsc};
 use tracing::{info, warn};
 use uuid::Uuid;
 
@@ -52,6 +52,7 @@ pub struct PlusServerState {
     pub lost_con_tx: mpsc::Sender<Uuid>,
     pub plugin_manager: Arc<PluginManager>,
     pub extensions: Arc<ExtensionManager>,
+    pub shutdown: Notify,
 }
 
 /// Phira-mp+ 配置
@@ -117,6 +118,7 @@ impl PlusServer {
             lost_con_tx,
             plugin_manager,
             extensions,
+            shutdown: Notify::new(),
         });
 
         let lost_con_state = Arc::clone(&state);
@@ -183,14 +185,11 @@ impl PlusServer {
             info!("CLI management console is disabled");
             return Ok(());
         }
-        let cli = CliHandler::new(
-            Arc::clone(&self.state.plugin_manager),
-            Arc::clone(&self.state.extensions),
-        );
-        let _running = cli.is_running();
+        let state = Arc::clone(&self.state);
 
         // 在独立任务中运行 CLI
         tokio::spawn(async move {
+            let cli = CliHandler::new(state);
             cli.start().await;
         });
 

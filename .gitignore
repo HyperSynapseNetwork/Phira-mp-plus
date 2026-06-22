@@ -1,0 +1,24 @@
+# Rust build artifacts
+target/
+**/target/
+
+# Log files
+log/
+*.log
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Environment
+.env
+*.local
+
+# Generated
+**/*.wasm

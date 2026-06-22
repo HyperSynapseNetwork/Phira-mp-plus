@@ -6,9 +6,10 @@ use anyhow::Result;
 use clap::Parser;
 use phira_mp_plus_server::server::{PlusConfig, PlusServer};
 use std::path::Path;
-use tracing::{Level, level_filters::LevelFilter, warn};
+use tracing::level_filters::LevelFilter;
+use tracing::{info, warn};
 use tracing_appender::non_blocking::WorkerGuard;
-use tracing_subscriber::{EnvFilter, filter, fmt, prelude::*};
+use tracing_subscriber::{EnvFilter, fmt, prelude::*};
 
 /// Phira-mp+ 命令行参数
 #[derive(Parser, Debug)]
@@ -47,8 +48,6 @@ struct Args {
 }
 
 fn init_log(file: &str) -> Result<WorkerGuard> {
-    use tracing_log::LogTracer;
-
     let log_dir = Path::new("log");
     if log_dir.exists() {
         if !log_dir.is_dir() {
@@ -58,32 +57,32 @@ fn init_log(file: &str) -> Result<WorkerGuard> {
         std::fs::create_dir(log_dir).expect("failed to create log folder");
     }
 
-    LogTracer::init()?;
-
     let (non_blocking, guard) =
         tracing_appender::non_blocking(tracing_appender::rolling::hourly(log_dir, file));
 
-    let subscriber = tracing_subscriber::registry()
-        .with(
-            fmt::layer()
-                .with_writer(non_blocking)
-                .with_filter(LevelFilter::DEBUG),
-        )
-        .with(
-            fmt::layer()
-                .with_writer(std::io::stdout)
-                .with_filter(EnvFilter::from_default_env()),
-        )
-        .with(
-            filter::Targets::new()
-                .with_target("hyper", Level::INFO)
-                .with_target("rustls", Level::INFO)
-                .with_target("isahc", Level::INFO)
-                .with_default(Level::TRACE),
+    // 文件日志：记录所有 DEBUG 及以上级别
+    let file_layer = fmt::layer()
+        .with_writer(non_blocking)
+        .with_filter(LevelFilter::DEBUG);
+
+    // 终端日志：根据 RUST_LOG 环境变量过滤，并压制嘈杂的第三方库
+    let stdout_layer = fmt::layer()
+        .with_writer(std::io::stdout)
+        .with_filter(
+            EnvFilter::from_default_env()
+                .add_directive("hyper=info".parse().unwrap())
+                .add_directive("rustls=info".parse().unwrap())
+                .add_directive("isahc=info".parse().unwrap())
+                .add_directive("h2=info".parse().unwrap())
+                .add_directive("reqwest=info".parse().unwrap())
+                .add_directive("wasmtime=info".parse().unwrap()),
         );
 
-    tracing::subscriber::set_global_default(subscriber)
-        .expect("unable to set global subscriber");
+    tracing_subscriber::registry()
+        .with(file_layer)
+        .with(stdout_layer)
+        .init();
+
     Ok(guard)
 }
 
@@ -120,11 +119,47 @@ async fn main() -> Result<()> {
     server.start_cli().await?;
 
     println!("服务器已启动，等待连接...");
+    println!("输入 'exit' 或 'q' 关闭服务器");
 
-    // 主循环 - 接收连接
+    // 主循环 - 接收连接（直到收到关闭信号）
     loop {
-        if let Err(err) = server.accept().await {
-            warn!("failed to accept: {err:?}");
+        tokio::select! {
+            result = server.accept() => {
+                if let Err(err) = result {
+                    warn!("accept error: {err:?}");
+                }
+            }
+            _ = server.state.shutdown.notified() => {
+                info!("received shutdown signal, stopping server...");
+                break;
+            }
         }
     }
+
+    // 清理
+    println!("正在清理资源...");
+    // 清理所有会话
+    {
+        let sessions = server.state.sessions.read().await;
+        for session in sessions.values() {
+            let _ = session
+                .stream
+                .send(phira_mp_common::ServerCommand::Message(
+                    phira_mp_common::Message::Chat {
+                        user: 0,
+                        content: "服务器正在关闭...".to_string(),
+                    },
+                ))
+                .await;
+        }
+    }
+    // 清理插件
+    server.state.plugin_manager.cleanup_all().await;
+    // 持久化扩展数据
+    if let Err(e) = server.state.extensions.persist().await {
+        warn!("failed to persist extension data: {e}");
+    }
+
+    println!("服务器已关闭。");
+    Ok(())
 }
