@@ -156,32 +156,6 @@ impl PlusServer {
         // 初始化黑名单扩展字段
         state.ban_manager.register_fields().await;
 
-        // 初始化 PostgreSQL 数据库（--features postgres）
-        // 环境变量 DATABASE_URL 指定连接，默认 postgres://localhost:5432/phira_mp_plus
-        #[cfg(feature = "postgres")]
-        {
-            let db_url = std::env::var("DATABASE_URL")
-                .unwrap_or_else(|_| "postgres://localhost:5432/phira_mp_plus".to_string());
-            match crate::jsondb::PgDatabase::new(&db_url).await {
-                Ok(pg) => {
-                    let handle = pg.into_handle();
-                    state.plugin_manager.set_db_handle(handle).await;
-                    info!("PostgreSQL database initialized");
-                }
-                Err(e) => {
-                    warn!("PostgreSQL init failed (plugins without db will work): {e}");
-                }
-            }
-        }
-        // 无 PostgreSQL 时提供内存数据库（重启后数据丢失，仅供开发测试）
-        #[cfg(not(feature = "postgres"))]
-        {
-            info!("PostgreSQL not enabled, using in-memory database (data lost on restart)");
-            let mem_db = crate::jsondb::JsonDatabase::new_memory();
-            let handle = mem_db.into_handle();
-            state.plugin_manager.set_db_handle(handle).await;
-        }
-
         // 初始化中央 HTTP/SSE 服务器（插件可通过 PluginContext 注册路由）
         let http_server = Arc::new(PluginHttpServer::new(http_port));
         let http_handle = api::HttpHandle::new(crate::plugin_http::HttpHandleBridge(Arc::clone(&http_server)));

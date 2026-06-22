@@ -1,20 +1,36 @@
+//! Phira-mp+ 玩家记录插件
+//!
+//! 记录所有游玩过服务器的玩家 Phira ID，自有内存存储。
+
 use phira_mp_plus_server_api::{
-    NativePlugin, PluginContext, PluginEvent, PluginInfo, DatabaseHandle,
+    NativePlugin, PluginContext, PluginEvent, PluginInfo,
 };
+use serde::Serialize;
 use serde_json::Value;
+use std::collections::HashMap;
+use std::sync::Mutex;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
-use tracing::{info, warn};
+use tracing::info;
 
 const PAGE_SIZE: usize = 20;
 
+#[derive(Debug, Clone, Serialize)]
+struct PlayerRecord {
+    phira_id: i32,
+    first_seen: String,
+    last_seen: String,
+    play_count: u64,
+}
+
 pub struct PlayerTracker {
-    table_ready: AtomicBool,
+    players: Arc<Mutex<HashMap<i32, PlayerRecord>>>,
 }
 
 impl PlayerTracker {
     pub fn create() -> Box<dyn NativePlugin> {
-        Box::new(PlayerTracker { table_ready: AtomicBool::new(false) })
+        Box::new(PlayerTracker {
+            players: Arc::new(Mutex::new(HashMap::new())),
+        })
     }
 }
 
@@ -31,127 +47,84 @@ impl NativePlugin for PlayerTracker {
     fn init(&mut self, ctx: &PluginContext) -> Result<(), String> {
         info!("PlayerTracker plugin initializing...");
 
-        let db = ctx.db.as_ref();
-        if let Some(db) = db {
-            if db.query("CREATE TABLE IF NOT EXISTS players (
-                id SERIAL PRIMARY KEY,
-                phira_id INTEGER NOT NULL UNIQUE,
-                first_seen TIMESTAMP DEFAULT NOW(),
-                last_seen TIMESTAMP DEFAULT NOW(),
-                play_count INTEGER DEFAULT 1
-            )", &[]).is_ok() {
-                self.table_ready.store(true, Ordering::SeqCst);
-                info!("PlayerTracker DB table ready");
-            } else {
-                warn!("PlayerTracker: failed to create table");
-            }
-        } else {
-            warn!("PlayerTracker: no database, data won't be recorded");
-        }
-
-        // Web API — 不需要 DB 也能注册路由
+        // Web API
         if let Some(http) = &ctx.http {
-            // /api/players/count
-            let d = db.cloned();
+            let players = self.players.clone();
             http.register_route("/api/players/count", Arc::new(move |_, _| {
-                let db = d.as_ref().ok_or((500u16, "DB unavailable".into()))?;
-                let r = db.query("SELECT COUNT(*)::bigint as cnt FROM players", &[])
-                    .map_err(|e| (500u16, e))?;
-                let cnt = r.rows.first().and_then(|row| row.first())
-                    .and_then(|v| v.as_u64()).unwrap_or(0);
-                Ok(serde_json::json!({"count": cnt}))
+                let count = players.lock().unwrap_or_else(|e| e.into_inner()).len();
+                Ok(serde_json::json!({"count": count}))
             }));
-            info!("registered /api/players/count");
 
-            // /api/players/list
-            let d = db.cloned();
+            let players = self.players.clone();
             http.register_route("/api/players/list", Arc::new(move |_, params| {
-                let db = d.as_ref().ok_or((500u16, "DB unavailable".into()))?;
                 let page = params.first().and_then(|p| p.parse::<u64>().ok()).unwrap_or(1).max(1);
                 let offset = (page - 1) * PAGE_SIZE as u64;
-                let r = db.query(
-                    "SELECT phira_id, first_seen, last_seen, play_count
-                     FROM players ORDER BY last_seen DESC LIMIT $1 OFFSET $2",
-                    &[Value::Number((PAGE_SIZE as u64).into()), Value::Number(offset.into())],
-                ).map_err(|e| (500u16, e))?;
-                let players: Vec<Value> = r.rows.iter().map(|row| serde_json::json!({
-                    "phira_id": row.get(0), "first_seen": row.get(1),
-                    "last_seen": row.get(2), "play_count": row.get(3),
-                })).collect();
-                Ok(serde_json::json!({"page": page, "page_size": PAGE_SIZE, "players": players}))
+                let guard = players.lock().unwrap_or_else(|e| e.into_inner());
+                let mut list: Vec<&PlayerRecord> = guard.values().collect();
+                list.sort_by(|a, b| b.last_seen.cmp(&a.last_seen));
+                let page_data: Vec<Value> = list.into_iter()
+                    .skip(offset as usize).take(PAGE_SIZE)
+                    .map(|r| serde_json::json!({
+                        "phira_id": r.phira_id, "first_seen": r.first_seen,
+                        "last_seen": r.last_seen, "play_count": r.play_count,
+                    }))
+                    .collect();
+                Ok(serde_json::json!({"page": page, "page_size": PAGE_SIZE, "players": page_data}))
             }));
-            info!("registered /api/players/list");
+            info!("registered /api/players/count and /api/players/list");
         }
 
         // CLI 命令
         if let Some(cli) = &ctx.cli {
-            let d = db.cloned();
+            let players = self.players.clone();
             let _ = cli.register(
                 "players", "列出所有游玩过的玩家（翻页）", "players [页码]",
                 Arc::new(move |args| {
                     let page: u64 = args.first().and_then(|p| p.parse().ok()).unwrap_or(1).max(1);
-                    let db = match d.as_ref() {
-                        Some(db) => db,
-                        None => return vec!["  DB not available".into()],
-                    };
+                    let guard = players.lock().unwrap_or_else(|e| e.into_inner());
+                    let total = guard.len();
+                    let mut list: Vec<&PlayerRecord> = guard.values().collect();
+                    list.sort_by(|a, b| b.last_seen.cmp(&a.last_seen));
                     let offset = (page - 1) * PAGE_SIZE as u64;
-                    let r = match db.query(
-                        "SELECT phira_id, first_seen, last_seen, play_count
-                         FROM players ORDER BY last_seen DESC LIMIT $1 OFFSET $2",
-                        &[Value::Number((PAGE_SIZE as u64).into()), Value::Number(offset.into())],
-                    ) {
-                        Ok(r) => r,
-                        Err(e) => return vec![format!("  query error: {e}")],
-                    };
-                    let mut out = vec![format!("  ◆ 玩家 ({})", d.as_ref().map_or(0, |db| {
-                        db.query("SELECT COUNT(*)::bigint FROM players", &[])
-                            .ok().and_then(|r| r.rows.first()?.first()?.as_u64()).unwrap_or(0)
-                    }))];
-                    out.push("  ──────────────────────────────────────".into());
-                    for row in &r.rows {
-                        let id = row.get(0).and_then(|v| v.as_i64()).unwrap_or(0);
-                        let seen = row.get(2).and_then(|v| v.as_str()).unwrap_or("");
-                        let count = row.get(3).and_then(|v| v.as_i64()).unwrap_or(0);
-                        out.push(format!("  │ {:<8}  最近: {}  游玩: {}", id, seen, count));
+                    let mut out = vec![format!("  ◆ 玩家 ({total})"), "  ──────────────────────────────────────".into()];
+                    for r in list.into_iter().skip(offset as usize).take(PAGE_SIZE) {
+                        out.push(format!("  │ {:<8}  最近: {}  游玩: {}", r.phira_id, r.last_seen, r.play_count));
                     }
                     out
                 }),
             );
-            let d2 = db.cloned();
+
+            let players = self.players.clone();
             let _ = cli.register(
                 "player-count", "游玩过的玩家总数", "player-count",
                 Arc::new(move |_| {
-                    let db = match d2.as_ref() {
-                        Some(db) => db,
-                        None => return vec!["  DB not available".into()],
-                    };
-                    let r = match db.query("SELECT COUNT(*) FROM players", &[]) {
-                        Ok(r) => r,
-                        Err(e) => return vec![format!("  query error: {e}")],
-                    };
-                    let cnt = r.rows.first().and_then(|row| row.first()).and_then(|v| v.as_u64()).unwrap_or(0);
-                    vec![format!("  ◆ 玩家总数: {}", cnt)]
+                    let count = players.lock().unwrap_or_else(|e| e.into_inner()).len();
+                    vec![format!("  ◆ 玩家总数: {count}")]
                 }),
             );
             info!("registered CLI: players, player-count");
         }
 
-        info!("PlayerTracker plugin initialized");
         Ok(())
     }
 
     fn on_event(&self, ctx: &PluginContext, event: &PluginEvent) -> Vec<String> {
         if let PluginEvent::GameEnd { user_id, .. } = event {
-            if self.table_ready.load(Ordering::SeqCst) {
-                if let Some(db) = ctx.db.as_ref() {
-                    let _ = db.query(
-                        "INSERT INTO players (phira_id) VALUES ($1)
-                         ON CONFLICT(phira_id) DO UPDATE SET
-                            last_seen = NOW(),
-                            play_count = players.play_count + 1",
-                        &[Value::Number(serde_json::Number::from(*user_id))],
-                    );
-                }
+            let mut guard = self.players.lock().unwrap_or_else(|e| e.into_inner());
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs().to_string())
+                .unwrap_or_else(|_| "now".into());
+            if let Some(record) = guard.get_mut(user_id) {
+                record.last_seen = now.clone();
+                record.play_count += 1;
+            } else {
+                guard.insert(*user_id, PlayerRecord {
+                    phira_id: *user_id,
+                    first_seen: now.clone(),
+                    last_seen: now,
+                    play_count: 1,
+                });
             }
         }
         vec![]

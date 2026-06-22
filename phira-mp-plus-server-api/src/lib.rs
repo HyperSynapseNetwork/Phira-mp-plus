@@ -125,35 +125,6 @@ impl CliHandle {
     }
 }
 
-// ── 数据库访问 ──
-
-/// 数据库查询结果
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct DbResult {
-    pub rows: Vec<Vec<Value>>,
-    pub columns: Vec<String>,
-    pub rows_affected: u64,
-}
-
-/// 数据库句柄（插件通过它执行 SQL 查询）
-#[derive(Clone)]
-pub struct DatabaseHandle {
-    inner: Arc<dyn Fn(&str, &[Value]) -> Result<DbResult, String> + Send + Sync>,
-}
-
-impl DatabaseHandle {
-    pub fn new(
-        inner: impl Fn(&str, &[Value]) -> Result<DbResult, String> + Send + Sync + 'static,
-    ) -> Self {
-        Self { inner: Arc::new(inner) }
-    }
-
-    /// 执行 SQL 查询
-    pub fn query(&self, sql: &str, params: &[Value]) -> Result<DbResult, String> {
-        (self.inner)(sql, params)
-    }
-}
-
 // ── 服务端状态查询 ──
 
 /// 服务端状态查询句柄（插件通过它读取房间/用户数据）
@@ -183,7 +154,6 @@ pub struct PluginContext {
     pub http: Option<HttpHandle>,
     pub state: Option<ServerStateQuery>,
     pub api: Option<PluginApiRegistry>,
-    pub db: Option<DatabaseHandle>,
     pub cli: Option<CliHandle>,
 }
 
@@ -194,7 +164,6 @@ impl PluginContext {
             http: None,
             state: None,
             api: None,
-            db: None,
             cli: None,
         }
     }
@@ -202,7 +171,6 @@ impl PluginContext {
     pub fn with_http(mut self, http: HttpHandle) -> Self { self.http = Some(http); self }
     pub fn with_state(mut self, state: ServerStateQuery) -> Self { self.state = Some(state); self }
     pub fn with_api(mut self, api: PluginApiRegistry) -> Self { self.api = Some(api); self }
-    pub fn with_db(mut self, db: DatabaseHandle) -> Self { self.db = Some(db); self }
     pub fn with_cli(mut self, cli: CliHandle) -> Self { self.cli = Some(cli); self }
 }
 

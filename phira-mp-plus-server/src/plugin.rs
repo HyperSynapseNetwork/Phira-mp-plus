@@ -203,7 +203,6 @@ pub struct PluginManager {
     extensions: Arc<ExtensionManager>,
     plugins_dir: String,
     http_handle: Arc<RwLock<Option<api::HttpHandle>>>,
-    db_handle: Arc<RwLock<Option<api::DatabaseHandle>>>,
 }
 
 impl PluginManager {
@@ -215,18 +214,12 @@ impl PluginManager {
             extensions,
             plugins_dir: plugins_dir.to_string(),
             http_handle: Arc::new(RwLock::new(None)),
-            db_handle: Arc::new(RwLock::new(None)),
         }
     }
 
     /// 设置中央 HTTP 句柄（让插件在 init 中注册路由）
     pub async fn set_http_handle(&self, handle: api::HttpHandle) {
         *self.http_handle.write().await = Some(handle);
-    }
-
-    /// 设置数据库句柄
-    pub async fn set_db_handle(&self, db: api::DatabaseHandle) {
-        *self.db_handle.write().await = Some(db);
     }
 
     /// 注册插件 API（供其他插件调用）
@@ -250,9 +243,6 @@ impl PluginManager {
         }
         if let Some(ref q) = state_query {
             ctx = ctx.with_state(q.clone());
-        }
-        if let Some(ref d) = *self.db_handle.read().await {
-            ctx = ctx.with_db(d.clone());
         }
         // 提供插件间 API 调用
         let handlers = self.api_handlers.clone();
