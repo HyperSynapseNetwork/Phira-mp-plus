@@ -174,8 +174,9 @@ impl PlusServer {
             http_server.start(http_state).await;
         });
 
-        // 注册 Web API 插件（可选：需要 phira-mp-plus-webapi 库）
-        // let _ = state.plugin_manager.register_native(
+        // 注册 Web API 插件（动态加载时通过 .so 自动加载）
+        // 或手动添加依赖后取消注释：
+        // state.plugin_manager.register_native(
         //     phira_mp_plus_webapi::WebApiPlugin::create(Arc::clone(&state)),
         //     "webapi",
         // ).await;

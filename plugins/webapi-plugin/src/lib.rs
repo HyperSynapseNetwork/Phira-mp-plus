@@ -1,50 +1,24 @@
 //! Phira-mp+ Web API 插件 — 独立项目
 //!
-//! 提供 REST API 和 SSE 接口查询房间信息、游玩记录等。
-//! 编译为动态库后由服务器加载，或作为原生插件直接注册。
-//!
-//! # 构建
-//! ```bash
-//! cd plugins/webapi-plugin
-//! cargo build
-//! ```
-//! 产物在 `target/debug/libphira_mp_plus_webapi.so`。
-//!
-//! # 注册到服务器
-//! ```rust
-//! state.plugin_manager.register_native(
-//!     phira_mp_plus_webapi::WebApiPlugin::create(Arc::clone(&state)),
-//!     "webapi",
-//! ).await;
-//! ```
+//! 通过中央 HTTP/SSE 服务器提供 REST API 查询房间信息。
+//! 不在需要自己启动 HTTP 服务器，所有路由注册到 PluginHttpServer。
 
-pub mod sse;
-pub mod api;
+mod api;
 
 use phira_mp_plus_server::plugin::{self, PluginEvent, PluginInfo, native::NativePlugin};
 use phira_mp_plus_server::server::PlusServerState;
 use std::sync::Arc;
-use tokio::sync::broadcast;
 use tracing::info;
-
-pub use sse::SseEvent;
 
 /// Web API 插件
 pub struct WebApiPlugin {
     state: Arc<PlusServerState>,
-    sse_tx: broadcast::Sender<SseEvent>,
-    _server_handle: Option<tokio::task::JoinHandle<()>>,
 }
 
 impl WebApiPlugin {
     /// 创建插件实例（工厂方法）
     pub fn create(state: Arc<PlusServerState>) -> Box<dyn NativePlugin> {
-        let (sse_tx, _) = broadcast::channel(256);
-        Box::new(WebApiPlugin {
-            state,
-            sse_tx,
-            _server_handle: None,
-        })
+        Box::new(WebApiPlugin { state })
     }
 }
 
@@ -54,19 +28,36 @@ impl NativePlugin for WebApiPlugin {
             name: "webapi".to_string(),
             version: "0.1.0".to_string(),
             author: "Phira-mp+".to_string(),
-            description: "提供 REST API 和 SSE 接口查询房间信息".to_string(),
+            description: "REST API 查询房间信息（中央 HTTP 服务器）".to_string(),
         }
     }
 
-    fn init(&mut self, _ctx: &plugin::native::PluginContext) -> Result<(), String> {
-        info!("Web API plugin initializing...");
+    fn init(&mut self, ctx: &plugin::native::PluginContext) -> Result<(), String> {
+        info!("Web API plugin registering routes...");
+
+        let http = ctx.http.as_ref().ok_or("HTTP server not available")?;
         let state = Arc::clone(&self.state);
-        let sse_tx = self.sse_tx.clone();
-        let handle = tokio::spawn(async move {
-            api::start_http_server(state, sse_tx).await;
-        });
-        self._server_handle = Some(handle);
-        info!("Web API plugin initialized on port 12347");
+
+        // GET /api/rooms/info — 房间列表
+        let s = Arc::clone(&state);
+        http.register_route_sync("/api/rooms/info", Arc::new(move |_, _| {
+            api::rooms_info(&s)
+        }));
+
+        // GET /api/rooms/info/<name> — 指定房间
+        let s = Arc::clone(&state);
+        http.register_route_sync("/api/rooms/info/<name>", Arc::new(move |_, params| {
+            api::room_by_name(&s, params.get(0).map(|s| s.as_str()).unwrap_or(""))
+        }));
+
+        // GET /api/rooms/user/<user_id> — 用户所在房间
+        let s = Arc::clone(&state);
+        http.register_route_sync("/api/rooms/user/<user_id>", Arc::new(move |_, params| {
+            let uid: i32 = params.get(0).and_then(|p| p.parse().ok()).unwrap_or(0);
+            api::room_by_user(&s, uid)
+        }));
+
+        info!("Web API plugin registered 3 routes on central HTTP server");
         Ok(())
     }
 
@@ -74,74 +65,11 @@ impl NativePlugin for WebApiPlugin {
         info!("Web API plugin cleaned up");
     }
 
-    fn on_event(&self, _ctx: &plugin::native::PluginContext, event: &PluginEvent) -> Vec<String> {
-        match event {
-            PluginEvent::RoomCreate { room_id, .. } => {
-                let name = room_id.clone();
-                let rid = name.clone().try_into().ok();
-                if let Some(rid) = rid {
-                    let rooms = self.state.rooms.blocking_read();
-                    if let Some(room) = rooms.get(&rid) {
-                        let data = api::build_snapshot(&name, room);
-                        if let Some(ss) = data {
-                            let _ = self.sse_tx.send(SseEvent::CreateRoom { room: name, data: ss });
-                        }
-                    }
-                }
-            }
-            PluginEvent::RoomJoin { user_id, room_id, .. } => {
-                let _ = self.sse_tx.send(SseEvent::JoinRoom {
-                    room: room_id.clone(), user: *user_id,
-                });
-                self.send_update(room_id);
-            }
-            PluginEvent::RoomLeave { user_id, room_id } => {
-                let _ = self.sse_tx.send(SseEvent::LeaveRoom {
-                    room: room_id.clone(), user: *user_id,
-                });
-                self.send_update(room_id);
-            }
-            PluginEvent::RoomModify { room_id, .. } => {
-                self.send_update(room_id);
-            }
-            PluginEvent::GameStart { room_id, .. } => {
-                let _ = self.sse_tx.send(SseEvent::StartRound {
-                    room: room_id.clone(),
-                });
-            }
-            PluginEvent::GameEnd { user_id, room_id, score, accuracy } => {
-                let record = phira_mp_plus_server::server::Record {
-                    id: 0, player: *user_id, score: *score,
-                    perfect: 0, good: 0, bad: 0, miss: 0,
-                    max_combo: 0, accuracy: *accuracy, full_combo: false,
-                    std: 0.0, std_score: 0.0,
-                };
-                let _ = self.sse_tx.send(SseEvent::PlayerScore {
-                    room: room_id.clone(), record,
-                });
-            }
-            _ => {}
-        }
+    fn on_event(&self, _ctx: &plugin::native::PluginContext, _event: &PluginEvent) -> Vec<String> {
+        // 通过中央 HTTP 服务器的 SSE 总线广播事件
+        // 这里可以直接访问 PluginContext，但在 on_event 中 ctx 的 http 可能不为 None
+        // 因为我们只需要 SSE 发送器，所以需要在插件中持有它
+        // 该功能在下一步实现
         vec![]
-    }
-}
-
-impl WebApiPlugin {
-    fn send_update(&self, room_id: &str) {
-        let rid = room_id.to_string().try_into().ok();
-        let data = rid.and_then(|rid| {
-            let rooms = self.state.rooms.blocking_read();
-            let room = rooms.get(&rid)?;
-            let snapshot = api::build_snapshot(room_id, room);
-            drop(rooms);
-            snapshot
-        });
-        if let Some(ss) = data {
-            let json = serde_json::to_value(&ss.data).unwrap_or_default();
-            let _ = self.sse_tx.send(SseEvent::UpdateRoom {
-                room: room_id.to_string(),
-                data: json,
-            });
-        }
     }
 }

@@ -57,13 +57,22 @@ impl PluginHttpServer {
         self.sse_tx.clone()
     }
 
-    /// 注册 HTTP 路由
+    /// 注册 HTTP 路由（异步，在 async 上下文中调用）
     pub async fn register_route(&self, path: &str, handler: HttpHandler) {
         self.routes.write().await.push(RouteEntry {
             path: path.to_string(),
             handler,
         });
         info!("registered HTTP route: {path}");
+    }
+
+    /// 注册 HTTP 路由（同步，用于 NativePlugin::init 等非 async 环境）
+    pub fn register_route_sync(&self, path: &str, handler: HttpHandler) {
+        let path = path.to_string();
+        if let Ok(mut routes) = self.routes.try_write() {
+            routes.push(RouteEntry { path: path.clone(), handler });
+            info!("registered HTTP route: {path}");
+        }
     }
 
     /// 广播 SSE 事件

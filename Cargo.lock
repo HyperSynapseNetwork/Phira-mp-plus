@@ -1690,16 +1690,11 @@ dependencies = [
 name = "phira-mp-plus-webapi"
 version = "0.1.0"
 dependencies = [
- "axum",
- "futures",
  "phira-mp-common",
  "phira-mp-plus-sdk",
  "phira-mp-plus-server",
  "serde",
  "serde_json",
- "tokio",
- "tokio-stream",
- "tower-http",
  "tracing",
 ]
 
