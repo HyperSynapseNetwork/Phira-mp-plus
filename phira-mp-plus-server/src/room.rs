@@ -1,11 +1,13 @@
 //! Phira-mp+ 房间管理
 //!
-//! 增强的房间管理，集成插件事件系统。
+//! 增强的房间管理，集成插件事件系统。记录每轮游玩结算数据，
+//! 支持查询历史、转移房主等管理功能。
 
 use crate::server::Chart;
 use anyhow::{Result, bail};
 use phira_mp_common::{ClientRoomState, Message, RoomId, RoomState, ServerCommand};
 use rand::seq::IndexedRandom;
+use serde::Serialize;
 use std::{
     collections::{HashMap, HashSet},
     ops::Deref,
@@ -42,6 +44,31 @@ impl InternalRoomState {
     }
 }
 
+/// 一轮游玩的结算数据
+#[derive(Debug, Clone, Serialize)]
+pub struct PlayRound {
+    pub chart_id: i32,
+    pub chart_name: String,
+    pub results: Vec<PlayResult>,
+}
+
+/// 单个用户的游玩结算
+#[derive(Debug, Clone, Serialize)]
+pub struct PlayResult {
+    pub user_id: i32,
+    pub user_name: String,
+    pub score: i32,
+    pub accuracy: f32,
+    pub perfect: i32,
+    pub good: i32,
+    pub bad: i32,
+    pub miss: i32,
+    pub max_combo: i32,
+    pub full_combo: bool,
+    pub aborted: bool,
+    pub std_score: f32,
+}
+
 pub struct Room {
     pub id: RoomId,
     pub host: RwLock<Weak<super::session::User>>,
@@ -54,6 +81,9 @@ pub struct Room {
     users: RwLock<Vec<Weak<super::session::User>>>,
     monitors: RwLock<Vec<Weak<super::session::User>>>,
     pub chart: RwLock<Option<Chart>>,
+
+    /// 历史游玩记录（不持久化，房间解散即清除）
+    pub play_history: RwLock<Vec<PlayRound>>,
 }
 
 impl Room {
@@ -70,8 +100,11 @@ impl Room {
             users: vec![host].into(),
             monitors: Vec::new().into(),
             chart: RwLock::default(),
+            play_history: RwLock::new(Vec::new()),
         }
     }
+
+    // ── 查询方法 ──
 
     pub fn is_live(&self) -> bool {
         self.live.load(Ordering::SeqCst)
@@ -83,6 +116,21 @@ impl Room {
 
     pub fn is_cycle(&self) -> bool {
         self.cycle.load(Ordering::SeqCst)
+    }
+
+    /// 获取房主用户 ID
+    pub async fn host_id(&self) -> Option<i32> {
+        self.host.read().await.upgrade().map(|u| u.id)
+    }
+
+    /// 获取当前谱面 ID
+    pub async fn chart_id(&self) -> Option<i32> {
+        self.chart.read().await.as_ref().map(|c| c.id)
+    }
+
+    /// 获取当前谱面名称
+    pub async fn chart_name(&self) -> Option<String> {
+        self.chart.read().await.as_ref().map(|c| c.name.clone())
     }
 
     pub async fn client_room_state(&self) -> RoomState {
@@ -116,6 +164,8 @@ impl Room {
         self.broadcast(ServerCommand::ChangeState(self.client_room_state().await))
             .await;
     }
+
+    // ── 用户管理 ──
 
     pub async fn add_user(&self, user: Weak<super::session::User>, monitor: bool) -> bool {
         if monitor {
@@ -159,6 +209,23 @@ impl Room {
         }
         Ok(())
     }
+
+    /// 转移房主
+    pub async fn transfer_host(&self, new_host_id: i32) -> Result<()> {
+        let user = self
+            .users()
+            .await
+            .into_iter()
+            .find(|u| u.id == new_host_id)
+            .ok_or_else(|| anyhow::anyhow!("user not in room"))?;
+        let weak = Arc::downgrade(&user);
+        *self.host.write().await = weak;
+        self.send(Message::NewHost { user: new_host_id }).await;
+        user.try_send(ServerCommand::ChangeHost(true)).await;
+        Ok(())
+    }
+
+    // ── 消息广播 ──
 
     #[inline]
     pub async fn send(&self, msg: Message) {
@@ -227,11 +294,90 @@ impl Room {
         false
     }
 
+    // ── 游戏流程 ──
+
     pub async fn reset_game_time(&self) {
         for user in self.users().await {
             user.game_time
                 .store(f32::NEG_INFINITY.to_bits(), Ordering::SeqCst);
         }
+    }
+
+    /// 保存当前轮次的结算数据到历史记录
+    async fn save_round_history(&self) {
+        let (chart_id, chart_name, results, aborted) = {
+            let guard = self.state.read().await;
+            match guard.deref() {
+                InternalRoomState::Playing { results, aborted } => {
+                    let cid = self.chart.read().await.as_ref().map(|c| (c.id, c.name.clone()));
+                    let (cid, cn) = match cid {
+                        Some((id, name)) => (id, name),
+                        None => return, // 没有谱面信息，跳过
+                    };
+                    let results = results.clone();
+                    let aborted = aborted.clone();
+                    (cid, cn, results, aborted)
+                }
+                _ => return,
+            }
+        };
+
+        // 收集用户名
+        let users_map: HashMap<i32, String> = self
+            .users()
+            .await
+            .into_iter()
+            .map(|u| (u.id, u.name.clone()))
+            .collect();
+
+        let mut play_results = Vec::new();
+        for (uid, rec) in &results {
+            play_results.push(PlayResult {
+                user_id: *uid,
+                user_name: users_map.get(uid).cloned().unwrap_or_else(|| format!("{}", uid)),
+                score: rec.score,
+                accuracy: rec.accuracy,
+                perfect: rec.perfect,
+                good: rec.good,
+                bad: rec.bad,
+                miss: rec.miss,
+                max_combo: rec.max_combo,
+                full_combo: rec.full_combo,
+                aborted: false,
+                std_score: rec.std_score,
+            });
+        }
+        for uid in &aborted {
+            if !results.contains_key(uid) {
+                play_results.push(PlayResult {
+                    user_id: *uid,
+                    user_name: users_map.get(uid).cloned().unwrap_or_else(|| format!("{}", uid)),
+                    score: 0,
+                    accuracy: 0.0,
+                    perfect: 0,
+                    good: 0,
+                    bad: 0,
+                    miss: 0,
+                    max_combo: 0,
+                    full_combo: false,
+                    aborted: true,
+                    std_score: 0.0,
+                });
+            }
+        }
+
+        let round = PlayRound {
+            chart_id,
+            chart_name,
+            results: play_results,
+        };
+
+        self.play_history.write().await.push(round);
+        info!(
+            room = self.id.to_string(),
+            "saved play round history (total {})",
+            self.play_history.read().await.len()
+        );
     }
 
     pub async fn check_all_ready(&self) {
@@ -264,6 +410,9 @@ impl Room {
                     .all(|it| results.contains_key(&it.id) || aborted.contains(&it.id))
                 {
                     drop(guard);
+                    // 保存历史记录
+                    self.save_round_history().await;
+
                     self.send(Message::GameEnd).await;
                     *self.state.write().await = InternalRoomState::SelectChart;
                     if self.is_cycle() {

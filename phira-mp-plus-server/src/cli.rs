@@ -226,6 +226,40 @@ impl CliHandler {
                         self.close_room(args[0]).await;
                     }
                 }
+                "room-info" | "ri" => {
+                    if args.is_empty() {
+                        println!("  {} {} <房间ID>", c::yellow("?"), c::bold("room-info"));
+                    } else {
+                        self.room_info(args[0]).await;
+                    }
+                }
+                "room-transfer" | "rt" => {
+                    if args.len() < 2 {
+                        println!("  {} {} <房间ID> <用户ID>", c::yellow("?"), c::bold("room-transfer"));
+                    } else {
+                        let uid: i32 = match args[1].parse() {
+                            Ok(id) => id,
+                            Err(_) => { println!("  {} 无效的用户ID", c::red("✗")); return; }
+                        };
+                        self.room_transfer(args[0], uid).await;
+                    }
+                }
+                "room-set" => {
+                    if args.len() < 3 {
+                        println!("  {} {} <房间ID> <字段> <值>", c::yellow("?"), c::bold("room-set"));
+                        println!("  {} 字段: lock (true/false) | cycle (true/false) | chart-id (<谱面ID>)",
+                            c::dim("▸"));
+                    } else {
+                        self.room_set(args[0], args[1], &args[2..].join(" ")).await;
+                    }
+                }
+                "room-history" | "rh" => {
+                    if args.is_empty() {
+                        println!("  {} {} <房间ID>", c::yellow("?"), c::bold("room-history"));
+                    } else {
+                        self.room_history(args[0]).await;
+                    }
+                }
                 _ => {
                     // 尝试插件命令
                     if !self.try_plugin_command(command, &args).await {
@@ -252,12 +286,18 @@ impl CliHandler {
         println!("  {} 插件管理", c::cyan("▸"));
         println!("    {} {:<20} {}", c::dim("│"), "plugins (pl)", "列出所有插件");
         println!("    {} {:<20} {}", c::dim("│"), "plugin list", "列出所有插件");
-        println!("    {} {:<20} {}", c::dim("│"), "plugin enable", "启用插件");
-        println!("    {} {:<20} {}", c::dim("│"), "plugin disable", "禁用插件");
-        println!("    {} {:<20} {}", c::dim("│"), "plugin info", "插件详情");
+        println!("    {} {:<20} {}", c::dim("│"), "plugin enable <名>", "启用插件");
+        println!("    {} {:<20} {}", c::dim("│"), "plugin disable <名>", "禁用插件");
+        println!("    {} {:<20} {}", c::dim("│"), "plugin info <名>", "插件详情");
         println!("    {} {:<20} {}", c::dim("│"), "plugin reload", "重载所有插件");
+        println!();
+        println!("  {} 用户 / 房间", c::cyan("▸"));
         println!("    {} {:<20} {}", c::dim("│"), "users (u)", "在线用户");
         println!("    {} {:<20} {}", c::dim("│"), "rooms (r)", "活跃房间");
+        println!("    {} {:<20} {}", c::dim("│"), "room-info (ri)", "房间详情");
+        println!("    {} {:<20} {}", c::dim("│"), "room-transfer", "转移房主");
+        println!("    {} {:<20} {}", c::dim("│"), "room-set", "修改房间设置");
+        println!("    {} {:<20} {}", c::dim("│"), "room-history", "游玩记录");
         println!("    {} {:<20} {}", c::dim("│"), "kick (k)", "踢出用户");
         println!("    {} {:<20} {}", c::dim("│"), "close-room (cr)", "解散房间");
         println!("    {} {:<20} {}", c::dim("│"), "broadcast (bc)", "广播消息");
@@ -626,6 +666,129 @@ impl CliHandler {
             println!("  {} 房间 {} 已解散", c::green("✓"), c::bold(room_id));
         } else {
             println!("  {} 未找到房间 {}", c::red("✗"), room_id);
+        }
+    }
+
+    // ── 房间管理增强 ──
+
+    /// 从字符串查找房间
+    async fn find_room(&self, room_id: &str) -> Option<Arc<crate::room::Room>> {
+        let rid: phira_mp_common::RoomId = room_id.to_string().try_into().ok()?;
+        self.state.rooms.read().await.get(&rid).map(Arc::clone)
+    }
+
+    async fn room_info(&self, room_id: &str) {
+        let room = match self.find_room(room_id).await {
+            Some(r) => r,
+            None => { println!("  {} 未找到房间 {}", c::red("✗"), room_id); return; }
+        };
+        let users = room.users().await;
+        let monitors = room.monitors().await;
+        let state_str = match &*room.state.read().await {
+            crate::room::InternalRoomState::SelectChart => "SelectChart",
+            crate::room::InternalRoomState::WaitForReady { .. } => "WaitForReady",
+            crate::room::InternalRoomState::Playing { .. } => "Playing",
+        };
+        let locked = if room.locked.load(std::sync::atomic::Ordering::SeqCst) { c::yellow("锁定") } else { c::dim("未锁定") };
+        let cycling = if room.cycle.load(std::sync::atomic::Ordering::SeqCst) { c::cyan("轮换") } else { c::dim("不轮换") };
+        let chart_info = match room.chart.read().await.as_ref() {
+            Some(c) => format!("{} (id={})", c.name, c.id),
+            None => "未选择".to_string(),
+        };
+        let host_name = room.host_id().await
+            .and_then(|hid| users.iter().find(|u| u.id == hid).map(|u| u.name.clone()))
+            .unwrap_or_else(|| "未知".to_string());
+
+        println!("  {} 房间: {}", c::green("◆"), c::bold(room_id));
+        println!("  {} 状态: {} | {} | {}", c::dim("│"), state_str, locked, cycling);
+        println!("  {} 房主: {}", c::dim("│"), host_name);
+        println!("  {} 谱面: {}", c::dim("│"), chart_info);
+        println!("  {} 玩家: {}", c::dim("│"),
+            users.iter().map(|u| format!("{}({})", u.name, u.id)).collect::<Vec<_>>().join(", "));
+        if !monitors.is_empty() {
+            println!("  {} 旁观: {}", c::dim("│"),
+                monitors.iter().map(|u| format!("{}({})", u.name, u.id)).collect::<Vec<_>>().join(", "));
+        }
+        // 历史记录统计
+        let history = room.play_history.read().await;
+        if !history.is_empty() {
+            println!("  {} 历史对局: {} 轮", c::dim("│"), history.len());
+        }
+    }
+
+    async fn room_transfer(&self, room_id: &str, user_id: i32) {
+        let room = match self.find_room(room_id).await {
+            Some(r) => r,
+            None => { println!("  {} 未找到房间 {}", c::red("✗"), room_id); return; }
+        };
+        match room.transfer_host(user_id).await {
+            Ok(_) => println!("  {} 房主已转移给用户 {}", c::green("✓"), user_id),
+            Err(e) => println!("  {} {}", c::red("✗"), e),
+        }
+    }
+
+    async fn room_set(&self, room_id: &str, field: &str, value: &str) {
+        use std::sync::atomic::Ordering;
+        let room = match self.find_room(room_id).await {
+            Some(r) => r,
+            None => { println!("  {} 未找到房间 {}", c::red("✗"), room_id); return; }
+        };
+        match field {
+            "lock" | "locked" => {
+                let v = value == "true" || value == "1" || value == "锁定";
+                room.locked.store(v, Ordering::SeqCst);
+                room.send(phira_mp_common::Message::LockRoom { lock: v }).await;
+                println!("  {} 房间 {} 已{}锁定", c::green("✓"), room_id, if v { "" } else { "解除" });
+            }
+            "cycle" | "cycling" => {
+                let v = value == "true" || value == "1" || value == "轮换";
+                room.cycle.store(v, Ordering::SeqCst);
+                room.send(phira_mp_common::Message::CycleRoom { cycle: v }).await;
+                println!("  {} 房间 {} 已{}轮换", c::green("✓"), room_id, if v { "开启" } else { "关闭" });
+            }
+            "chart-id" | "chart" => {
+                let cid: i32 = match value.parse() {
+                    Ok(id) => id,
+                    Err(_) => { println!("  {} 无效的谱面ID", c::red("✗")); return; }
+                };
+                // 更新谱面信息
+                let chart = crate::server::Chart { id: cid, name: format!("chart_{}", cid) };
+                room.chart.write().await.replace(chart);
+                room.on_state_change().await;
+                println!("  {} 谱面已切换为 ID {}", c::green("✓"), cid);
+            }
+            _ => {
+                println!("  {} 未知字段: {}", c::red("✗"), field);
+                println!("  {} 支持: lock, cycle, chart-id", c::dim("▸"));
+            }
+        }
+    }
+
+    async fn room_history(&self, room_id: &str) {
+        let room = match self.find_room(room_id).await {
+            Some(r) => r,
+            None => { println!("  {} 未找到房间 {}", c::red("✗"), room_id); return; }
+        };
+        let history = room.play_history.read().await;
+        if history.is_empty() {
+            println!("  {} 该房间暂无游玩记录", c::dim("·"));
+            return;
+        }
+        println!("  {} 房间 {} 游玩记录 ({} 轮)", c::green("◆"), room_id, history.len());
+        println!("  {}", c::dim("  ────────────────────────────────────────────"));
+        for (i, round) in history.iter().enumerate() {
+            let round_num = i + 1;
+            println!("  {} 第{}轮: {} (id={})", c::dim("┏"), round_num, c::bold(&round.chart_name), round.chart_id);
+            for r in &round.results {
+                let status = if r.aborted { c::yellow(" (放弃)") } else { String::new() };
+                println!("  {} {:<6}  得分:{:<8} 准确率:{:<6.2}%  FC:{}{}",
+                    c::dim("┃"), format!("{}({})", r.user_name, r.user_id),
+                    r.score, r.accuracy * 100.0,
+                    if r.full_combo { c::green("✓") } else { c::dim("✗") },
+                    status,
+                );
+            }
+            println!("  {}", c::dim("  ─ ─ ─ ─ ─ ─"));
         }
     }
 
