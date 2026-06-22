@@ -42,6 +42,18 @@ use std::sync::Arc;
 use tokio::net::TcpListener;
 use tokio::sync::{Notify, RwLock, mpsc};
 use tracing::{info, warn};
+
+/// 安全获取 tokio RwLock 读锁（不 panic，无死锁）
+macro_rules! read_lock {
+    ($lock:expr) => {{
+        loop {
+            match $lock.try_read() {
+                Ok(g) => break g,
+                Err(_) => std::thread::yield_now(),
+            }
+        }
+    }};
+}
 use uuid::Uuid;
 
 pub type SafeMap<K, V> = RwLock<HashMap<K, V>>;
@@ -348,15 +360,6 @@ use std::sync::atomic::Ordering;
 /// 处理来自插件查询服务端状态的请求
 #[cfg(feature = "webapi")]
 fn server_state_query(state: &Arc<PlusServerState>, method: &str, args: &[Value]) -> Result<Value, String> {
-    // 在 tokio 运行时中通过 block_in_place 安全阻塞
-    let state = Arc::clone(state);
-    let method = method.to_string();
-    let args = args.to_vec();
-    tokio::task::block_in_place(move || server_state_query_inner(&state, &method, &args))
-}
-
-#[cfg(feature = "webapi")]
-fn server_state_query_inner(state: &Arc<PlusServerState>, method: &str, args: &[Value]) -> Result<Value, String> {
     use serde::Serialize;
 
     #[derive(Serialize)]
@@ -383,10 +386,10 @@ fn server_state_query_inner(state: &Arc<PlusServerState>, method: &str, args: &[
     }
 
     fn build_snapshot(name: &str, room: &crate::room::Room) -> RoomSnapshot {
-        let chart_op = room.chart.blocking_read().clone();
-        let guard = room.state.blocking_read();
-        let ul = room.users.blocking_read();
-        let ml = room.monitors.blocking_read();
+        let chart_op = read_lock!(room.chart).clone();
+        let guard = read_lock!(room.state);
+        let ul = read_lock!(room.users);
+        let ml = read_lock!(room.monitors);
 
         let (st, pu) = match &*guard {
             crate::room::InternalRoomState::SelectChart =>
@@ -407,8 +410,8 @@ fn server_state_query_inner(state: &Arc<PlusServerState>, method: &str, args: &[
         users.extend(ml.iter().filter_map(|w| w.upgrade().map(|u| u.id)));
         drop(ul); drop(ml);
 
-        let host = room.host.blocking_read().upgrade().map(|u| u.id).unwrap_or(0);
-        let hist = room.play_history.blocking_read();
+        let host = read_lock!(room.host).upgrade().map(|u| u.id).unwrap_or(0);
+        let hist = read_lock!(room.play_history);
         let rounds: Vec<RoundInfo> = hist.iter().map(|r| RoundInfo {
             chart: r.chart_id,
             records: r.results.iter().map(|res| serde_json::json!({
@@ -437,7 +440,7 @@ fn server_state_query_inner(state: &Arc<PlusServerState>, method: &str, args: &[
 
     match method {
         "rooms.list" => {
-            let rooms = state.rooms.blocking_read();
+            let rooms = read_lock!(state.rooms);
             let list: Vec<Value> = rooms.iter().filter(|(rid, _)| {
                 !rid.to_string().starts_with('.')
             }).map(|(rid, room)| {
@@ -451,14 +454,14 @@ fn server_state_query_inner(state: &Arc<PlusServerState>, method: &str, args: &[
             if name.starts_with('.') { return Err("room not found".to_string()); }
             let rid: phira_mp_common::RoomId = name.to_string().try_into()
                 .map_err(|_| "invalid room name".to_string())?;
-            let rooms = state.rooms.blocking_read();
+            let rooms = read_lock!(state.rooms);
             let room = rooms.get(&rid).ok_or("room not found")?;
             let ss = build_snapshot(name, room);
             serde_json::to_value(ss).map_err(|e| e.to_string())
         }
         "user_name" => {
             let uid = args.get(0).and_then(|v| v.as_i64()).unwrap_or(0) as i32;
-            let users = state.users.blocking_read();
+            let users = read_lock!(state.users);
             let name = users.get(&uid).map(|u| u.name.clone());
             drop(users);
             Ok(serde_json::json!({"user_id": uid, "name": name}))
@@ -498,10 +501,10 @@ fn server_state_query_inner(state: &Arc<PlusServerState>, method: &str, args: &[
         "rooms.by_user" => {
             let uid = args.get(0).and_then(|v| v.as_i64()).unwrap_or(0) as i32;
             let user = {
-                let users = state.users.blocking_read();
+                let users = read_lock!(state.users);
                 users.get(&uid).map(Arc::clone).ok_or("user not found")?
             };
-            let rg = user.room.blocking_read();
+            let rg = read_lock!(user.room);
             let room = rg.as_ref().ok_or("user not in room")?;
             let name = room.id.to_string();
             let ss = build_snapshot(&name, room);
