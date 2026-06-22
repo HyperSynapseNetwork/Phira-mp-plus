@@ -419,18 +419,27 @@ fn server_state_query(state: &Arc<PlusServerState>, method: &str, args: &[Value]
             let uid = args.get(0).and_then(|v| v.as_i64()).unwrap_or(0) as i32;
             let msg = args.get(1).and_then(|v| v.as_str()).unwrap_or("").to_string();
             let users = state.users.blocking_read();
-            if let Some(user) = users.get(&uid) {
-                let s = user.session.blocking_read();
-                if let Some(session) = s.as_ref().and_then(|w| w.upgrade()) {
+            let user = match users.get(&uid) {
+                Some(u) => Arc::clone(u),
+                None => return Ok(serde_json::json!({"sent": false, "error": "user not found"})),
+            };
+            drop(users);
+            let session_opt = user.session.blocking_read();
+            match session_opt.as_ref().and_then(|w| w.upgrade()) {
+                Some(session) => {
                     let cmd = phira_mp_common::ServerCommand::Message(
                         phira_mp_common::Message::Chat { user: 0, content: msg },
                     );
-                    let _ = session.stream.blocking_send(cmd);
+                    match session.stream.blocking_send(cmd) {
+                        Ok(_) => info!("send_chat to {uid} OK"),
+                        Err(e) => warn!("send_chat to {uid} failed: {e:?}"),
+                    }
+                    Ok(serde_json::json!({"sent": true}))
                 }
-                drop(s);
-                Ok(serde_json::json!({"sent": true}))
-            } else {
-                Ok(serde_json::json!({"sent": false, "error": "user not found"}))
+                None => {
+                    warn!("send_chat: session gone for user {uid}");
+                    Ok(serde_json::json!({"sent": false, "error": "session gone"}))
+                }
             }
         }
         "rooms.by_user" => {
