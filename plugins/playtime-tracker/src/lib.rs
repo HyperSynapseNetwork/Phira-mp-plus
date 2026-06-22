@@ -248,6 +248,10 @@ impl NativePlugin for PlaytimeTracker {
                     total_seconds: 0,
                     session_start: None,
                 });
+                // 先提交上一段的游玩时间（防止重连时覆盖 session_start 导致丢失）
+                if let Some(start) = entry.session_start {
+                    entry.total_seconds += Self::now().saturating_sub(start);
+                }
                 entry.session_start = Some(Self::now());
             }
             PluginEvent::UserDisconnect { user_id, .. } => {
