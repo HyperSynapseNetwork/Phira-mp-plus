@@ -26,7 +26,7 @@ struct Args {
     port: u16,
 
     /// 插件目录
-    #[arg(short, long, default_value = "plugins", help = "WASM 插件目录路径")]
+    #[arg(short = 'd', long = "plugins-dir", default_value = "plugins", help = "WASM 插件目录路径")]
     plugins_dir: String,
 
     /// 扩展数据持久化文件

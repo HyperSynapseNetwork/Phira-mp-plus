@@ -311,9 +311,8 @@ impl PluginManager {
         let ctx = Arc::new(native::PluginContext::new(name, self.extensions.clone()));
         let wrapper = native::NativePluginWrapper::new(plugin, name, ctx);
         let info = wrapper.meta().info.clone();
-        // 自动初始化
-        // 注：实际使用时需要确保 PluginContext 在 async 上下文中正确传递
-        // self.plugins.write().await.push(Box::new(wrapper));
+        // 初始化并注册插件
+        self.plugins.write().await.push(Box::new(wrapper));
         info!("registered native plugin: {} v{}", info.name, info.version);
         Ok(())
     }
