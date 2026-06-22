@@ -107,6 +107,38 @@ impl CliHandler {
                     }
                 }
                 "plug-reload" | "pr" => self.reload_plugins().await,
+                "plugin" => {
+                    let sub = args.first().copied().unwrap_or("");
+                    match sub {
+                        "list" | "ls" | "" => self.list_plugins().await,
+                        "enable" | "on" => {
+                            if args.len() < 2 {
+                                println!("  {} {} plugin enable <插件名>", c::yellow("?"), c::bold("用法"));
+                            } else {
+                                self.enable_plugin(args[1]).await;
+                            }
+                        }
+                        "disable" | "off" => {
+                            if args.len() < 2 {
+                                println!("  {} {} plugin disable <插件名>", c::yellow("?"), c::bold("用法"));
+                            } else {
+                                self.disable_plugin(args[1]).await;
+                            }
+                        }
+                        "reload" | "r" => self.reload_plugins().await,
+                        "info" => {
+                            if args.len() < 2 {
+                                println!("  {} {} plugin info <插件名>", c::yellow("?"), c::bold("用法"));
+                            } else {
+                                self.plugin_info(args[1]).await;
+                            }
+                        }
+                        _ => {
+                            println!("  {} 未知子命令: {}  ", c::red("✗"), c::yellow(sub));
+                            println!("  {} 可用: plugin list | enable | disable | reload | info", c::dim("▸"));
+                        }
+                    }
+                }
                 "users" | "u" => self.list_users().await,
                 "rooms" | "r" => self.list_rooms().await,
                 "kick" | "k" => {
@@ -168,11 +200,11 @@ impl CliHandler {
         println!();
         println!("  {} 插件管理", c::cyan("▸"));
         println!("    {} {:<20} {}", c::dim("│"), "plugins (pl)", "列出所有插件");
-        println!("    {} {:<20} {}", c::dim("│"), "plug-enable (pe)", "启用插件");
-        println!("    {} {:<20} {}", c::dim("│"), "plug-disable (pd)", "禁用插件");
-        println!("    {} {:<20} {}", c::dim("│"), "plug-reload (pr)", "重载所有插件");
-        println!();
-        println!("  {} 用户 / 房间", c::cyan("▸"));
+        println!("    {} {:<20} {}", c::dim("│"), "plugin list", "列出所有插件");
+        println!("    {} {:<20} {}", c::dim("│"), "plugin enable", "启用插件");
+        println!("    {} {:<20} {}", c::dim("│"), "plugin disable", "禁用插件");
+        println!("    {} {:<20} {}", c::dim("│"), "plugin info", "插件详情");
+        println!("    {} {:<20} {}", c::dim("│"), "plugin reload", "重载所有插件");
         println!("    {} {:<20} {}", c::dim("│"), "users (u)", "在线用户");
         println!("    {} {:<20} {}", c::dim("│"), "rooms (r)", "活跃房间");
         println!("    {} {:<20} {}", c::dim("│"), "kick (k)", "踢出用户");
@@ -238,6 +270,26 @@ impl CliHandler {
         match self.state.plugin_manager.reload_plugins().await {
             Ok(count) => println!("  {} 已重载 {} 个插件", c::green("✓"), count),
             Err(e) => println!("  {} 重载失败: {}", c::red("✗"), e),
+        }
+    }
+
+    async fn plugin_info(&self, name: &str) {
+        let plugins = self.state.plugin_manager.list_plugins().await;
+        if let Some(p) = plugins.into_iter().find(|p| p.info.name == name) {
+            let state_str = match p.state {
+                crate::plugin::PluginState::Enabled => c::green("启用"),
+                crate::plugin::PluginState::Disabled => c::yellow("禁用"),
+                crate::plugin::PluginState::Loaded => c::cyan("已加载"),
+                crate::plugin::PluginState::Error(ref e) => c::red(&format!("错误: {}", e)),
+            };
+            println!("  {} 插件详情: {}", c::green("◆"), c::bold(&p.info.name));
+            println!("  {} 版本:     {}", c::dim("│"), p.info.version);
+            println!("  {} 作者:     {}", c::dim("│"), p.info.author);
+            println!("  {} 描述:     {}", c::dim("│"), p.info.description);
+            println!("  {} 状态:     {}", c::dim("│"), state_str);
+            println!("  {} 路径:     {}", c::dim("│"), c::dim(&p.path));
+        } else {
+            println!("  {} 未找到插件: {}", c::yellow("!"), name);
         }
     }
 
