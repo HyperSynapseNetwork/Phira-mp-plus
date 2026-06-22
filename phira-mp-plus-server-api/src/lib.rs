@@ -143,8 +143,16 @@ impl ServerStateQuery {
     }
 
     /// 调用查询。method: "rooms.list" / "rooms.info" / "rooms.by_user"
+    /// 内部在新线程中执行，避免在 tokio 运行时中阻塞。
     pub fn call(&self, method: &str, args: &[Value]) -> Result<Value, String> {
-        (self.inner)(method, args)
+        let inner = self.inner.clone();
+        let method = method.to_string();
+        let args = args.to_vec();
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = tx.send((inner)(&method, &args));
+        });
+        rx.recv().unwrap_or(Err("query thread panicked".to_string()))
     }
 }
 
