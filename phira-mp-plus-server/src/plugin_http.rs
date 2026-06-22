@@ -106,7 +106,11 @@ impl PluginHttpServer {
                     async move {
                         let params = extract_path_params(&axum_path, &uri.path());
                         let body = body.map(|j| j.0);
-                        match h(body, params) {
+                        // 在 blocking 线程中运行处理器（避免 tokio RwLock blocking_read panic）
+                        let result = tokio::task::spawn_blocking(move || {
+                            h(body, params)
+                        }).await.unwrap_or(Err((500, "handler panicked".to_string())));
+                        match result {
                             Ok(json) => (StatusCode::OK, Json(json)).into_response(),
                             Err((code, msg)) => {
                                 let err = serde_json::json!({"error": msg});

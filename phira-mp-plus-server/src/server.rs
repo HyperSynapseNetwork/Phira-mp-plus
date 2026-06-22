@@ -171,13 +171,7 @@ impl PlusServer {
             "event-logger",
         ).await;
 
-        // 启动中央 HTTP 服务器（所有路由已注册）
-        let http_state = Arc::clone(&state);
-        tokio::spawn(async move {
-            http_server.start(http_state).await;
-        });
-
-        // 注册 Web API 插件（--features webapi）
+        // 注册 Web API 插件（--features webapi）→ 必须早于 HTTP 服务器启动
         #[cfg(feature = "webapi")]
         {
             let state_query = api::ServerStateQuery::new({
@@ -192,6 +186,12 @@ impl PlusServer {
                 Some(state_query),
             ).await;
         }
+
+        // 启动中央 HTTP 服务器（所有路由已注册完毕）
+        let http_state = Arc::clone(&state);
+        tokio::spawn(async move {
+            http_server.start(http_state).await;
+        });
 
         Ok(Self {
             state,
