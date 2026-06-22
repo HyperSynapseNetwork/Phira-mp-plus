@@ -210,11 +210,15 @@ impl NativePlugin for RoundResultsPlugin {
                 // 保存历史
                 self.history.lock().unwrap_or_else(|e| e.into_inner()).push(round.clone());
 
-                // 输出到服务器控制台
+                // 组装结算消息发送到房间
                 let summary = Self::format_summary(room_id, chart_name, &round.scores);
-                info!("==== Round complete: {} ====", chart_name);
-                for line in &summary {
-                    info!("{line}");
+                // 发送（通过 state 或 send_chat 发送给所有房间成员）
+                if let Some(state) = &_ctx.state {
+                    let text = summary.join("\n");
+                    state.call("send_room_chat", &[
+                        serde_json::json!(room_id),
+                        serde_json::json!(text),
+                    ]).ok();
                 }
             }
             _ => {}

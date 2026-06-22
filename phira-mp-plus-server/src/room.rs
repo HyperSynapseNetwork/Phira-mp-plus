@@ -437,8 +437,7 @@ impl Room {
                     self.save_round_history().await;
 
                     if let Some(rid) = rid {
-                        info!(round = %rid, "round complete  room={}", self.id);
-                        info!("轮次 '{}' 唯一标识: {}", self.id, rid);
+                        info!("round complete: {}", rid);
                     }
 
                     // 触发 RoundComplete 事件
