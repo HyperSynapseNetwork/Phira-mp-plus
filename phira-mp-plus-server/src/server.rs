@@ -174,6 +174,15 @@ impl PlusServer {
             });
         })).await;
 
+        // 设置默认状态查询（所有插件可用 ctx.state）
+        let state_query_all = api::ServerStateQuery::new({
+            let s = Arc::clone(&state);
+            move |method: &str, args: &[Value]| -> Result<Value, String> {
+                server_state_query(&s, method, args)
+            }
+        });
+        state.plugin_manager.set_default_state(state_query_all).await;
+
         // 初始化中央 HTTP/SSE 服务器（插件可通过 PluginContext 注册路由）
         let http_server = Arc::new(PluginHttpServer::new(http_port));
         let http_handle = api::HttpHandle::new(crate::plugin_http::HttpHandleBridge(Arc::clone(&http_server)));

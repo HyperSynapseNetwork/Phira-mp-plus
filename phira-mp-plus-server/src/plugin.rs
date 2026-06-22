@@ -203,6 +203,7 @@ pub struct PluginManager {
     plugins_dir: String,
     http_handle: Arc<RwLock<Option<api::HttpHandle>>>,
     send_chat: Arc<RwLock<Option<Arc<dyn Fn(i32, String) + Send + Sync>>>>,
+    default_state: Arc<RwLock<Option<api::ServerStateQuery>>>,
 }
 
 impl PluginManager {
@@ -215,7 +216,13 @@ impl PluginManager {
             plugins_dir: plugins_dir.to_string(),
             http_handle: Arc::new(RwLock::new(None)),
             send_chat: Arc::new(RwLock::new(None)),
+            default_state: Arc::new(RwLock::new(None)),
         }
+    }
+
+    /// 设置默认状态查询句柄（提供给所有插件）
+    pub async fn set_default_state(&self, q: api::ServerStateQuery) {
+        *self.default_state.write().await = Some(q);
     }
 
     /// 设置发送聊天消息的句柄
@@ -248,6 +255,8 @@ impl PluginManager {
             ctx = ctx.with_http(h.clone());
         }
         if let Some(ref q) = state_query {
+            ctx = ctx.with_state(q.clone());
+        } else if let Some(ref q) = *self.default_state.read().await {
             ctx = ctx.with_state(q.clone());
         }
         // 提供插件间 API 调用
