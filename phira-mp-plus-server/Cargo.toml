@@ -41,7 +41,7 @@ phira-mp-plus-webapi = { path = "../plugins/webapi-plugin", optional = true }
 phira-mp-plus-player-tracker = { path = "../plugins/player-tracker", optional = true }
 
 [features]
-default = ["plugin-system"]
+default = ["plugin-system", "webapi", "player-tracker"]
 plugin-system = ["dep:wasmtime"]
 webapi = ["dep:phira-mp-plus-webapi"]
 player-tracker = ["dep:phira-mp-plus-player-tracker"]

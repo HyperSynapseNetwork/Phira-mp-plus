@@ -173,6 +173,16 @@ impl PlusServer {
                 }
             }
         }
+        // 无 PostgreSQL 时提供空数据库句柄（插件降级运行）
+        #[cfg(not(feature = "postgres"))]
+        {
+            warn!("PostgreSQL not enabled (--features postgres), player-tracker will skip recording");
+            // 提供一个空的 DatabaseHandle 避免插件 init 报错
+            let empty_db = phira_mp_plus_server_api::DatabaseHandle::new(|_, _| {
+                Err("database not available".to_string())
+            });
+            state.plugin_manager.set_db_handle(empty_db).await;
+        }
 
         // 初始化中央 HTTP/SSE 服务器（插件可通过 PluginContext 注册路由）
         let http_server = Arc::new(PluginHttpServer::new(http_port));
@@ -208,10 +218,12 @@ impl PlusServer {
         // 注册玩家记录插件（--features player-tracker）
         #[cfg(feature = "player-tracker")]
         {
-            let _ = state.plugin_manager.register_native(
+            if let Err(e) = state.plugin_manager.register_native(
                 phira_mp_plus_player_tracker::PlayerTracker::create(),
                 "player-tracker",
-            ).await;
+            ).await {
+                warn!("player-tracker plugin init failed: {e}");
+            }
         }
 
         // 启动中央 HTTP 服务器（所有路由已注册完毕）
