@@ -108,8 +108,8 @@ impl NativePlugin for PlayerTracker {
         Ok(())
     }
 
-    fn on_event(&self, ctx: &PluginContext, event: &PluginEvent) -> Vec<String> {
-        if let PluginEvent::GameEnd { user_id, .. } = event {
+    fn on_event(&self, _ctx: &PluginContext, event: &PluginEvent) -> Vec<String> {
+        if let PluginEvent::UserConnect { user_id, user_name } = event {
             let mut guard = self.players.lock().unwrap_or_else(|e| e.into_inner());
             let now = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
