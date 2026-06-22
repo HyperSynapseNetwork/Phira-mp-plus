@@ -72,6 +72,19 @@ fn save_config(config: &WelcomeConfig) {
     }
 }
 
+/// 通过 state 查询将用户 ID 转为用户名
+fn resolve_name(uid: i32, ctx: &PluginContext) -> String {
+    if uid == 0 { return "系统".into(); }
+    if let Some(st) = &ctx.state {
+        if let Ok(v) = st.call("user_name", &[serde_json::json!(uid)]) {
+            if let Some(n) = v.get("name").and_then(|n| n.as_str()) {
+                return n.to_string();
+            }
+        }
+    }
+    format!("{}", uid)
+}
+
 /// 替换占位符
 fn replace_placeholders(template: &str, user_id: i32, user_name: &str, user_ip: &str, ctx: &PluginContext) -> String {
     let mut text = template
@@ -92,7 +105,7 @@ fn replace_placeholders(template: &str, user_id: i32, user_name: &str, user_ip: 
         }
     }
 
-    // [top_playtime] → 通过 api 查询 playtime-tracker 排行榜（锁定前 10）
+    // [top_playtime] → 通过 api 查询排行榜（锁定前 10）
     if text.contains("[top_playtime]") {
         if let Some(api) = &ctx.api {
             let r = api.call("playtime-tracker", "leaderboard", &[Value::Number(10.into())]);
@@ -101,7 +114,8 @@ fn replace_placeholders(template: &str, user_id: i32, user_name: &str, user_ip: 
                 items.iter().enumerate().map(|(i, item)| {
                     let uid = item.get("user_id").and_then(|v| v.as_i64()).unwrap_or(0);
                     let secs = item.get("total_playtime").and_then(|v| v.as_u64()).unwrap_or(0);
-                    format!("#{} 用户{} {:.1}h", i + 1, uid, secs as f64 / 3600.0)
+                    let name = resolve_name(uid as i32, ctx);
+                    format!("#{} {} {:.1}h", i + 1, name, secs as f64 / 3600.0)
                 }).collect()
             } else { vec![] };
             let replacement = if lines.is_empty() { "暂无数据".into() } else { lines.join("、") };
@@ -119,11 +133,12 @@ fn replace_placeholders(template: &str, user_id: i32, user_name: &str, user_ip: 
                     let name = room.get("name").and_then(|v| v.as_str()).unwrap_or("?");
                     let data = &room.get("data");
                     let host = data.and_then(|d| d.get("host")).and_then(|v| v.as_i64()).unwrap_or(0);
+                    let host_name = resolve_name(host as i32, ctx);
                     let users = data.and_then(|d| d.get("users")).and_then(|v| v.as_array()).map(|a| a.len()).unwrap_or(0);
                     let state_str = data.and_then(|d| d.get("state")).and_then(|v| v.as_str()).unwrap_or("?");
                     let chart_name = data.and_then(|d| d.get("chart_name")).and_then(|v| v.as_str()).unwrap_or("");
                     let chart: String = if chart_name.is_empty() { "未选曲".into() } else { chart_name.into() };
-                    format!("房间：{} 房主{} [{}] {} {}人", name, host, state_str, chart, users)
+                    format!("房间：{} 房主{} [{}] {} {}人", name, host_name, state_str, chart, users)
                 }).collect()
             } else { vec![] };
             let replacement = if lines.is_empty() { "暂无活跃房间".into() } else { lines.join("；") };

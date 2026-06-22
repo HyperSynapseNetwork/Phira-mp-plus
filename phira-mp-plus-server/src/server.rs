@@ -447,6 +447,13 @@ fn server_state_query(state: &Arc<PlusServerState>, method: &str, args: &[Value]
             let ss = build_snapshot(name, room);
             serde_json::to_value(ss).map_err(|e| e.to_string())
         }
+        "user_name" => {
+            let uid = args.get(0).and_then(|v| v.as_i64()).unwrap_or(0) as i32;
+            let users = state.users.try_read().unwrap_or_else(|_| panic!("lock"));
+            let name = users.get(&uid).map(|u| u.name.clone());
+            drop(users);
+            Ok(serde_json::json!({"user_id": uid, "name": name}))
+        }
         "send_chat" => {
             let uid = args.get(0).and_then(|v| v.as_i64()).unwrap_or(0) as i32;
             let msg = args.get(1).and_then(|v| v.as_str()).unwrap_or("").to_string();

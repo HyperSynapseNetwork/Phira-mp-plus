@@ -890,6 +890,7 @@ async fn process(user: Arc<User>, cmd: ClientCommand) -> Option<ServerCommand> {
                     user.server.plugin_manager
                         .trigger(&PluginEvent::GameEnd {
                             user_id: user.id,
+                            user_name: user.name.clone(),
                             room_id: room.id.to_string(),
                             score,
                             accuracy,

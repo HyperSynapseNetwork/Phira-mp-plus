@@ -176,14 +176,13 @@ impl NativePlugin for RoundResultsPlugin {
 
     fn on_event(&self, _ctx: &PluginContext, event: &PluginEvent) -> Vec<String> {
         match event {
-            PluginEvent::GameEnd { user_id, room_id, score, accuracy } => {
+            PluginEvent::GameEnd { user_id, user_name, room_id, score, accuracy } => {
                 let mut guard = self.pending.lock().unwrap_or_else(|e| e.into_inner());
                 let entry = guard.entry(room_id.clone()).or_insert_with(Vec::new);
-                // 避免重复添加
                 if !entry.iter().any(|r| r.user_id == *user_id) {
                     entry.push(ScoreRecord {
                         user_id: *user_id,
-                        user_name: format!("{}", user_id),
+                        user_name: user_name.clone(),
                         score: *score,
                         accuracy: *accuracy,
                         max_combo: 0,

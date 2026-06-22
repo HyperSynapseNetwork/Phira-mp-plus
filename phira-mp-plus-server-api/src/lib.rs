@@ -19,7 +19,7 @@ pub enum PluginEvent {
     RoomLeave { user_id: i32, room_id: String },
     RoomModify { user_id: i32, room_id: String, data: String },
     GameStart { user_id: i32, room_id: String },
-    GameEnd { user_id: i32, room_id: String, score: i32, accuracy: f32 },
+    GameEnd { user_id: i32, user_name: String, room_id: String, score: i32, accuracy: f32 },
     PlayerTouches { user_id: i32, room_id: String, data: Vec<TouchEventPoint> },
     PlayerJudges { user_id: i32, room_id: String, data: Vec<JudgeEventItem> },
     /// 一轮游戏完成（所有玩家均已提交成绩）
