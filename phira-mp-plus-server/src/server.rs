@@ -156,6 +156,21 @@ impl PlusServer {
         // 初始化黑名单扩展字段
         state.ban_manager.register_fields().await;
 
+        // 设置发送聊天消息能力（供插件使用）
+        let s = Arc::clone(&state);
+        state.plugin_manager.set_send_chat(Arc::new(move |uid, msg| {
+            let users = s.users.blocking_read();
+            if let Some(user) = users.get(&uid) {
+                let session = user.session.blocking_read();
+                if let Some(session) = session.as_ref().and_then(|w| w.upgrade()) {
+                    let cmd = phira_mp_common::ServerCommand::Message(
+                        phira_mp_common::Message::Chat { user: 0, content: msg },
+                    );
+                    let _ = session.stream.blocking_send(cmd);
+                }
+            }
+        })).await;
+
         // 初始化中央 HTTP/SSE 服务器（插件可通过 PluginContext 注册路由）
         let http_server = Arc::new(PluginHttpServer::new(http_port));
         let http_handle = api::HttpHandle::new(crate::plugin_http::HttpHandleBridge(Arc::clone(&http_server)));

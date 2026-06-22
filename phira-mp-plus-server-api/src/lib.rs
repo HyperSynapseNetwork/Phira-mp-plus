@@ -157,6 +157,8 @@ pub struct PluginContext {
     pub state: Option<ServerStateQuery>,
     pub api: Option<PluginApiRegistry>,
     pub cli: Option<CliHandle>,
+    /// 发送聊天消息给指定用户 (user_id, message)
+    pub send_chat: Option<Arc<dyn Fn(i32, String) + Send + Sync>>,
 }
 
 impl PluginContext {
@@ -167,6 +169,7 @@ impl PluginContext {
             state: None,
             api: None,
             cli: None,
+            send_chat: None,
         }
     }
 
@@ -174,6 +177,7 @@ impl PluginContext {
     pub fn with_state(mut self, state: ServerStateQuery) -> Self { self.state = Some(state); self }
     pub fn with_api(mut self, api: PluginApiRegistry) -> Self { self.api = Some(api); self }
     pub fn with_cli(mut self, cli: CliHandle) -> Self { self.cli = Some(cli); self }
+    pub fn with_send_chat(mut self, f: Arc<dyn Fn(i32, String) + Send + Sync>) -> Self { self.send_chat = Some(f); self }
 }
 
 // ── 插件特征 ──

@@ -189,8 +189,7 @@ pub mod native {
             if !self.meta.enabled {
                 return Vec::new();
             }
-            let ctx = api::PluginContext::new(&self.meta.info.name);
-            self.plugin.on_event(&ctx, _event)
+            self.plugin.on_event(&self.svr_ctx.ctx, _event)
         }
     }
 }
@@ -203,6 +202,7 @@ pub struct PluginManager {
     extensions: Arc<ExtensionManager>,
     plugins_dir: String,
     http_handle: Arc<RwLock<Option<api::HttpHandle>>>,
+    send_chat: Arc<RwLock<Option<Arc<dyn Fn(i32, String) + Send + Sync>>>>,
 }
 
 impl PluginManager {
@@ -214,7 +214,13 @@ impl PluginManager {
             extensions,
             plugins_dir: plugins_dir.to_string(),
             http_handle: Arc::new(RwLock::new(None)),
+            send_chat: Arc::new(RwLock::new(None)),
         }
+    }
+
+    /// 设置发送聊天消息的句柄
+    pub async fn set_send_chat(&self, f: Arc<dyn Fn(i32, String) + Send + Sync>) {
+        *self.send_chat.write().await = Some(f);
     }
 
     /// 设置中央 HTTP 句柄（让插件在 init 中注册路由）
@@ -269,6 +275,11 @@ impl PluginManager {
             Ok(())
         });
         ctx = ctx.with_cli(cli_handle);
+
+        // 提供发送聊天消息能力
+        if let Some(ref sc) = *self.send_chat.read().await {
+            ctx = ctx.with_send_chat(Arc::clone(sc));
+        }
 
         Arc::new(native::ServerPluginContext {
             ctx,

@@ -148,22 +148,12 @@ impl NativePlugin for WelcomePlugin {
             let text = replace_placeholders(&cfg.welcome_message, *user_id, user_name, ctx);
             drop(cfg);
 
-            // 延迟一秒发送（等待客户端完全就绪）
-            if let Some(state) = ctx.state.clone() {
-                let uid = *user_id;
-                let name = user_name.clone();
-                std::thread::spawn(move || {
-                    std::thread::sleep(std::time::Duration::from_secs(1));
-                    let r = state.call("send_chat", &[
-                        serde_json::json!(uid),
-                        serde_json::json!(text),
-                    ]);
-                    if let Ok(v) = r {
-                        if v.get("sent") == Some(&serde_json::json!(true)) {
-                            tracing::info!("Welcome message sent to {}: {}", name, text);
-                        }
-                    }
-                });
+            // 发送欢迎语（通过 ctx.send_chat）
+            if let Some(send) = &ctx.send_chat {
+                send(*user_id, text);
+                info!("Welcome sent to {}: {}", user_name, text);
+            } else {
+                warn!("Welcome plugin: send_chat not available");
             }
         }
         vec![]
