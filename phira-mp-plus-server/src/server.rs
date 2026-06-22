@@ -3,6 +3,7 @@
 //! 在原始 phira-mp 服务器基础上增加 WASM 插件系统支持、
 //! CLI 管理控制台和扩展数据系统。
 
+use crate::ban::BanManager;
 use crate::cli::CliHandler;
 use crate::extensions::ExtensionManager;
 use crate::plugin::{self, PluginEvent, PluginManager};
@@ -52,6 +53,7 @@ pub struct PlusServerState {
     pub lost_con_tx: mpsc::Sender<Uuid>,
     pub plugin_manager: Arc<PluginManager>,
     pub extensions: Arc<ExtensionManager>,
+    pub ban_manager: Arc<BanManager>,
     pub shutdown: Notify,
 }
 
@@ -110,6 +112,9 @@ impl PlusServer {
             Arc::clone(&extensions),
         ));
 
+        // 初始化黑名单管理器
+        let ban_manager = Arc::new(BanManager::new(Arc::clone(&extensions)));
+
         let state = Arc::new(PlusServerState {
             config,
             sessions: IdMap::default(),
@@ -118,6 +123,7 @@ impl PlusServer {
             lost_con_tx,
             plugin_manager,
             extensions,
+            ban_manager,
             shutdown: Notify::new(),
         });
 
@@ -139,6 +145,9 @@ impl PlusServer {
                 }
             }
         });
+
+        // 初始化黑名单扩展字段
+        state.ban_manager.register_fields().await;
 
         // 加载插件
         let plugin_count = state.plugin_manager.load_plugins().await.unwrap_or(0);

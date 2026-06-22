@@ -168,6 +168,87 @@ impl CliHandler {
                         self.get_extension(args[0], args[1]).await;
                     }
                 }
+                "ban" => {
+                    if args.len() < 1 {
+                        println!("  {} {} <用户ID> [原因]", c::yellow("?"), c::bold("ban"));
+                    } else {
+                        let reason = if args.len() >= 2 { args[1..].join(" ") } else { "违规行为".to_string() };
+                        self.ban_user(args[0], &reason).await;
+                    }
+                }
+                "unban" => {
+                    if args.is_empty() {
+                        println!("  {} {} <用户ID>", c::yellow("?"), c::bold("unban"));
+                    } else {
+                        self.unban_user(args[0]).await;
+                    }
+                }
+                "banlist" | "bl" => self.ban_list().await,
+                "ban-message" | "bm" => {
+                    if args.is_empty() {
+                        // 显示当前默认拒绝提示
+                        let msg = self.state.ban_manager.get_default_ban_message().await;
+                        println!("  {} 当前默认拒绝提示信息:", c::green("◆"));
+                        println!("    {}", msg);
+                        println!("  {} {} <用户ID> <信息>    设置用户的特殊拒绝提示", c::dim("▸"), c::bold("ban-message"));
+                        println!("  {} {} <信息>             设置默认拒绝提示", c::dim("▸"), c::bold("ban-message"));
+                    } else if args.len() == 1 {
+                        // 设置默认拒绝提示
+                        let msg = args[0].to_string();
+                        self.state.ban_manager.set_default_ban_message(&msg).await;
+                        println!("  {} 默认拒绝提示信息已更新:", c::green("✓"));
+                        println!("    {}", msg);
+                    } else {
+                        // 设置用户的特殊拒绝提示
+                        let uid: i32 = match args[0].parse() {
+                            Ok(id) => id,
+                            Err(_) => {
+                                println!("  {} 无效的用户ID: {}", c::red("✗"), args[0]);
+                                return;
+                            }
+                        };
+                        let msg = args[1..].join(" ");
+                        match self.state.ban_manager.set_user_ban_message(uid, &msg).await {
+                            Ok(_) => println!("  {} 用户 {} 的特殊拒绝提示已设置: {}", c::green("✓"), uid, msg),
+                            Err(e) => println!("  {} {}", c::red("✗"), e),
+                        }
+                    }
+                }
+                "room-ban" | "rb" => {
+                    if args.len() < 2 {
+                        println!("  {} {} <房间ID> <用户ID>", c::yellow("?"), c::bold("room-ban"));
+                    } else {
+                        let uid: i32 = match args[1].parse() {
+                            Ok(id) => id,
+                            Err(_) => { println!("  {} 无效的用户ID", c::red("✗")); return; }
+                        };
+                        match self.state.ban_manager.room_ban_user(args[0], uid).await {
+                            Ok(_) => println!("  {} 用户 {} 已加入房间 {} 的黑名单", c::green("✓"), uid, args[0]),
+                            Err(e) => println!("  {} {}", c::red("✗"), e),
+                        }
+                    }
+                }
+                "room-unban" | "ru" => {
+                    if args.len() < 2 {
+                        println!("  {} {} <房间ID> <用户ID>", c::yellow("?"), c::bold("room-unban"));
+                    } else {
+                        let uid: i32 = match args[1].parse() {
+                            Ok(id) => id,
+                            Err(_) => { println!("  {} 无效的用户ID", c::red("✗")); return; }
+                        };
+                        match self.state.ban_manager.room_unban_user(args[0], uid).await {
+                            Ok(_) => println!("  {} 用户 {} 已移出房间 {} 的黑名单", c::green("✓"), uid, args[0]),
+                            Err(e) => println!("  {} {}", c::red("✗"), e),
+                        }
+                    }
+                }
+                "room-banlist" | "rbl" => {
+                    if args.is_empty() {
+                        println!("  {} {} <房间ID>", c::yellow("?"), c::bold("room-banlist"));
+                    } else {
+                        self.room_ban_list(args[0]).await;
+                    }
+                }
                 "close-room" | "cr" => {
                     if args.is_empty() {
                         println!("  {} {} <房间ID>", c::yellow("?"), c::bold("close-room"));
@@ -214,6 +295,15 @@ impl CliHandler {
         println!("  {} 扩展数据", c::cyan("▸"));
         println!("    {} {:<20} {}", c::dim("│"), "ext-list (el)", "列出扩展字段");
         println!("    {} {:<20} {}", c::dim("│"), "ext-get (eg)", "查看扩展数据");
+        println!();
+        println!("  {} 黑名单管理", c::cyan("▸"));
+        println!("    {} {:<20} {}", c::dim("│"), "ban <用户ID> [原因]", "封禁用户");
+        println!("    {} {:<20} {}", c::dim("│"), "unban <用户ID>", "解封用户");
+        println!("    {} {:<20} {}", c::dim("│"), "banlist (bl)", "列出封禁列表");
+        println!("    {} {:<20} {}", c::dim("│"), "ban-message (bm)", "查看/设置拒绝提示");
+        println!("    {} {:<20} {}", c::dim("│"), "room-ban (rb)", "房间加入黑名单");
+        println!("    {} {:<20} {}", c::dim("│"), "room-unban (ru)", "房间移出黑名单");
+        println!("    {} {:<20} {}", c::dim("│"), "room-banlist (rbl)", "房间黑名单列表");
 
         // 列出插件注册的命令
         let plugin_cmds = self.state.plugin_manager.list_cli_commands().await;
@@ -616,6 +706,66 @@ impl CliHandler {
         println!("  {} 已加载插件  {}", c::dim("│"), stats.3);
         println!("  {}", c::dim("  ─────────────────────────────────────"));
         println!();
+    }
+
+    // ── 黑名单管理 ──
+
+    async fn ban_user(&self, target: &str, reason: &str) {
+        let uid: i32 = match target.parse() {
+            Ok(id) => id,
+            Err(_) => {
+                println!("  {} 无效的用户ID: {}", c::red("✗"), target);
+                return;
+            }
+        };
+        match self.state.ban_manager.ban_user(uid, reason).await {
+            Ok(_) => println!("  {} 用户 {} 已封禁\n    {}", c::green("✓"), uid, c::yellow(reason)),
+            Err(e) => println!("  {} {}", c::red("✗"), e),
+        }
+    }
+
+    async fn unban_user(&self, target: &str) {
+        let uid: i32 = match target.parse() {
+            Ok(id) => id,
+            Err(_) => {
+                println!("  {} 无效的用户ID: {}", c::red("✗"), target);
+                return;
+            }
+        };
+        match self.state.ban_manager.unban_user(uid).await {
+            Ok(_) => println!("  {} 用户 {} 已解封", c::green("✓"), uid),
+            Err(e) => println!("  {} {}", c::red("✗"), e),
+        }
+    }
+
+    async fn ban_list(&self) {
+        let list = self.state.ban_manager.list_banned().await;
+        if list.is_empty() {
+            println!("  {} 黑名单为空", c::dim("·"));
+            return;
+        }
+        println!("  {} 封禁用户 ({})", c::green("◆"), list.len());
+        println!("  {}", c::dim("  ────────────────────────────────────────────"));
+        for entry in &list {
+            println!("  {} {:<6}  {}  {}", c::dim("│"),
+                entry.user_id,
+                c::dim(&entry.reason),
+                if entry.custom_message.is_empty() {
+                    String::new()
+                } else {
+                    format!("{} 自定义提示", c::yellow("·"))
+                },
+            );
+        }
+    }
+
+    async fn room_ban_list(&self, room_id: &str) {
+        let list = self.state.ban_manager.list_room_bans(room_id).await;
+        if list.is_empty() {
+            println!("  {} 房间 {} 的黑名单为空", c::dim("·"), room_id);
+            return;
+        }
+        println!("  {} 房间 {} 黑名单: {:?}", c::green("◆"), room_id, list);
     }
 
     // ── 扩展数据 ──

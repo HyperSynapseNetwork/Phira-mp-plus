@@ -225,6 +225,14 @@ impl Session {
                                             }
                                         };
                                         debug!("session {id} <- {resp:?}");
+
+                                        // 检查用户是否被封禁
+                                        if server.ban_manager.is_banned(resp.id).await {
+                                            let reason = server.ban_manager.get_effective_ban_message(resp.id).await;
+                                            warn!("banned user {}({}) tried to connect", resp.name, resp.id);
+                                            bail!("{}", reason);
+                                        }
+
                                         let mut users_guard = server.users.write().await;
                                         if let Some(user) = users_guard.get(&resp.id) {
                                             info!("reconnect");
