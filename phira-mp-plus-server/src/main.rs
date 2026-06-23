@@ -88,6 +88,12 @@ impl io::Write for OutputWriter {
     }
 }
 
+impl Drop for OutputWriter {
+    fn drop(&mut self) {
+        let _ = <Self as io::Write>::flush(self);
+    }
+}
+
 struct OutputWriterMaker {
     log_tx: Option<mpsc::UnboundedSender<String>>,
 }
