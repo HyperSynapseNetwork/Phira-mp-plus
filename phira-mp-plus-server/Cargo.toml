@@ -27,7 +27,7 @@ wasmtime = { version = "30", features = ["component-model"], optional = true }
 
 # HTTP/SSE 中央服务器（插件系统）
 axum = { version = "0.8", default-features = false, features = [
-    "tokio", "http1", "json", "macros", "original-uri", "matched-path", "query", "form",
+    "tokio", "http1", "json", "macros", "original-uri", "matched-path", "query", "form", "ws",
 ] }
 tokio-stream = { version = "0.1", features = ["sync"] }
 tower-http = { version = "0.6", features = ["cors"] }
@@ -40,13 +40,15 @@ phira-mp-plus-webapi = { path = "../plugins/webapi-plugin", optional = true }
 phira-mp-plus-player-tracker = { path = "../plugins/player-tracker", optional = true }
 phira-mp-plus-playtime-tracker = { path = "../plugins/playtime-tracker", optional = true }
 phira-mp-plus-round-results = { path = "../plugins/round-results", optional = true }
+phira-mp-plus-web-monitor = { path = "../plugins/web-monitor", optional = true }
 phira-mp-plus-welcome-plugin = { path = "../plugins/welcome-plugin", optional = true }
 
 [features]
-default = ["plugin-system", "webapi", "player-tracker", "playtime-tracker", "round-results", "welcome-plugin"]
+default = ["plugin-system", "webapi", "player-tracker", "playtime-tracker", "round-results", "web-monitor", "welcome-plugin"]
 plugin-system = ["dep:wasmtime"]
 webapi = ["dep:phira-mp-plus-webapi"]
 player-tracker = ["dep:phira-mp-plus-player-tracker"]
 playtime-tracker = ["dep:phira-mp-plus-playtime-tracker"]
 round-results = ["dep:phira-mp-plus-round-results"]
+web-monitor = ["dep:phira-mp-plus-web-monitor"]
 welcome-plugin = ["dep:phira-mp-plus-welcome-plugin"]

@@ -1,12 +1,14 @@
-//! 中央 HTTP/SSE 服务器
+//! 中央 HTTP/SSE/WS 服务器
 //!
 //! 插件通过 PluginContext 注册路由和推送 SSE 事件，
 //! 统一在单个端口暴露，无需每个插件自建 HTTP 服务。
 //! 支持运行时动态注册路由（所有请求通过 catch-all 处理器派发）。
+//! 额外提供 /ws/live 和 /rooms/listen 端点供 web-monitor 使用。
 
 use crate::server::PlusServerState;
 use axum::{
     Router, Json,
+    extract::ws::{Message, WebSocket, WebSocketUpgrade},
     http::{StatusCode, Uri, Method},
     response::sse::{Event, KeepAlive, Sse},
     response::IntoResponse,
@@ -87,26 +89,45 @@ fn match_route(pattern: &str, path: &str) -> Option<Vec<String>> {
     Some(params)
 }
 
-/// 中央 HTTP/SSE 服务器
+/// 中央 HTTP/SSE/WS 服务器
 pub struct PluginHttpServer {
     /// 共享动态路由表
     router: Arc<RwLock<DynamicRouter>>,
+    /// 通用 SSE 事件
     sse_tx: broadcast::Sender<SseEvent>,
+    /// WebSocket live 事件（web-monitor 用）
+    ws_live_tx: broadcast::Sender<Vec<u8>>,
+    /// 房间 SSE 事件（web-monitor 用）
+    room_sse_tx: broadcast::Sender<SseEvent>,
     port: u16,
 }
 
 impl PluginHttpServer {
     pub fn new(port: u16) -> Self {
         let (sse_tx, _) = broadcast::channel(256);
+        let (ws_live_tx, _) = broadcast::channel(256);
+        let (room_sse_tx, _) = broadcast::channel(256);
         Self {
             router: Arc::new(RwLock::new(DynamicRouter::new())),
             sse_tx,
+            ws_live_tx,
+            room_sse_tx,
             port,
         }
     }
 
     pub fn sse_sender(&self) -> broadcast::Sender<SseEvent> {
         self.sse_tx.clone()
+    }
+
+    /// WebSocket live 事件发送者（用于推送 Touches/Judges）
+    pub fn ws_live_sender(&self) -> broadcast::Sender<Vec<u8>> {
+        self.ws_live_tx.clone()
+    }
+
+    /// 房间 SSE 事件发送者（web-monitor /rooms/listen 用）
+    pub fn room_sse_sender(&self) -> broadcast::Sender<SseEvent> {
+        self.room_sse_tx.clone()
     }
 
     /// 注册 HTTP 路由（异步）
@@ -144,11 +165,17 @@ impl PluginHttpServer {
     pub async fn start(&self, _server: Arc<PlusServerState>) {
         let router = Arc::clone(&self.router);
         let sse_tx = self.sse_tx.clone();
-        let state = Arc::new(HttpAppState { router, sse_tx });
+        let ws_live_tx = self.ws_live_tx.clone();
+        let room_sse_tx = self.room_sse_tx.clone();
+        let state = Arc::new(HttpAppState { router, sse_tx, ws_live_tx, room_sse_tx });
 
         let app = Router::new()
-            // SSE 端点
+            // 通用 SSE 端点
             .route("/api/events", axum::routing::get(sse_handler))
+            // 房间 SSE 端点（web-monitor 兼容）
+            .route("/rooms/listen", axum::routing::get(room_sse_handler))
+            // WebSocket 实时监测（web-monitor 兼容）
+            .route("/ws/live", axum::routing::get(ws_live_handler))
             // 动态路由 — 所有其他请求通过匹配派发
             .route("/{*path}", any(dynamic_handler))
             .layer(CorsLayer::permissive())
@@ -219,9 +246,11 @@ impl api::HttpHandleInner for HttpHandleBridge {
 struct HttpAppState {
     router: Arc<RwLock<DynamicRouter>>,
     sse_tx: broadcast::Sender<SseEvent>,
+    ws_live_tx: broadcast::Sender<Vec<u8>>,
+    room_sse_tx: broadcast::Sender<SseEvent>,
 }
 
-// SSE 端点
+// ── 通用 SSE 端点 ──
 async fn sse_handler(
     axum::extract::State(st): axum::extract::State<Arc<HttpAppState>>,
 ) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
@@ -231,4 +260,58 @@ async fn sse_handler(
         Err(_) => None,
     });
     Sse::new(stream).keep_alive(KeepAlive::default())
+}
+
+// ── 房间 SSE 端点（web-monitor 兼容） ──
+async fn room_sse_handler(
+    axum::extract::State(st): axum::extract::State<Arc<HttpAppState>>,
+) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
+    let rx = st.room_sse_tx.subscribe();
+    let stream = BroadcastStream::new(rx).filter_map(|result| match result {
+        Ok(ev) => Some(Ok(Event::default().event(ev.event_type).data(ev.data))),
+        Err(_) => None,
+    });
+    Sse::new(stream).keep_alive(KeepAlive::default())
+}
+
+// ── WebSocket Live 端点（web-monitor 兼容） ──
+async fn ws_live_handler(
+    ws: WebSocketUpgrade,
+    axum::extract::State(st): axum::extract::State<Arc<HttpAppState>>,
+) -> impl IntoResponse {
+    ws.on_upgrade(move |socket| handle_ws_socket(socket, st))
+}
+
+async fn handle_ws_socket(mut socket: WebSocket, st: Arc<HttpAppState>) {
+    let mut rx = st.ws_live_tx.subscribe();
+    let (_tx, rx2) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
+
+    // 读取 WebSocket 消息（心跳处理）
+    let _recv_fut = Box::pin(async {
+        use tokio_stream::StreamExt as _;
+        let mut stream = tokio_stream::wrappers::UnboundedReceiverStream::new(rx2);
+        while let Some(_) = stream.next().await {}
+    });
+
+    loop {
+        tokio::select! {
+            result = rx.recv() => {
+                match result {
+                    Ok(data) => {
+                        if socket.send(Message::Binary(axum::body::Bytes::from(data))).await.is_err() {
+                            break;
+                        }
+                    }
+                    Err(_) => break,
+                }
+            }
+            msg = socket.recv() => {
+                match msg {
+                    Some(Ok(Message::Close(_) | Message::Ping(_) | Message::Pong(_))) => break,
+                    None | Some(Err(_)) => break,
+                    _ => {}
+                }
+            }
+        }
+    }
 }
