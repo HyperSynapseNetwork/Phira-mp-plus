@@ -943,7 +943,22 @@ fn server_state_query(state: &Arc<PlusServerState>, method: &str, args: &[Value]
                     if let Some(u) = wu.upgrade() {
                         let session = read_lock!(u.session);
                         if let Some(session) = session.as_ref().and_then(|w| w.upgrade()) {
-                            if session.stream.try_send(cmd.clone()).is_ok() {
+                            if let Ok(handle) = tokio::runtime::Handle::try_current() {
+                                let cmd = cmd.clone();
+                                handle.spawn(async move {
+                                    let _ = session.stream.send(cmd).await;
+                                });
+                                sent += 1;
+                            } else {
+                                let cmd = cmd.clone();
+                                std::thread::spawn(move || {
+                                    // 没有 tokio 上下文，创建临时运行时
+                                    let rt = tokio::runtime::Builder::new_current_thread()
+                                        .enable_all().build().expect("build rt");
+                                    rt.block_on(async move {
+                                        let _ = session.stream.send(cmd).await;
+                                    });
+                                });
                                 sent += 1;
                             }
                         }
