@@ -196,7 +196,7 @@ impl Session {
                                     async move {
                                         let token = token.into_inner();
                                         if token.len() > 32 {
-                                            bail!(tl!("auth-invalid-token"));
+                                            bail!("invalid token");
                                         }
                                         debug!("session {id}: authenticate {token}");
                                         #[derive(Debug, Deserialize)]
@@ -222,7 +222,7 @@ impl Session {
                                             if server.ban_manager.is_banned(entry.user_id).await {
                                                 let reason = server.ban_manager.get_ban_reason(entry.user_id).await;
                                                 warn!("banned user {}({}) tried to connect (cache)", entry.name, entry.user_id);
-                                                bail!(tl!("auth-banned", reason => reason));
+                                                bail!("{}", reason);
                                             }
                                             debug!("cache hit for user {}", entry.user_id);
                                             AuthUserInfo {
@@ -264,12 +264,12 @@ impl Session {
                                                     if server.ban_manager.is_banned(info.id).await {
                                                         let reason = server.ban_manager.get_ban_reason(info.id).await;
                                                         warn!("banned user {}({}) tried to connect", info.name, info.id);
-                                                        bail!(tl!("auth-banned", reason => reason));
+                                                        bail!("{}", reason);
                                                     }
                                                     info
                                                 }
                                                 Err(_) => {
-                                                    bail!(tl!("auth-server-unreachable"));
+                                                    bail!("Authentication server unreachable, please try again later");
                                                 }
                                             }
                                         };
