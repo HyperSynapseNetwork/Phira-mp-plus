@@ -76,9 +76,6 @@ macro_rules! write_lock {
 }
 pub type IdMap<V> = SafeMap<Uuid, V>;
 
-/// 压测请求通道
-pub type BenchRequest = (u64, usize, tokio::sync::oneshot::Sender<String>);
-
 /// Phira-mp+ 增强配置（支持 YAML 文件、环境变量、CLI 参数三层覆盖）
 #[derive(Debug, Clone, Deserialize)]
 pub struct PlusConfig {
@@ -176,6 +173,9 @@ pub struct PlusConfigCli {
     pub log_file: String,
 }
 
+/// 压测请求: (时长s, 房间数, 结果回传)
+type BenchRequest = (u64, usize, std::sync::mpsc::Sender<String>);
+
 /// Phira-mp+ 服务器状态
 pub struct PlusServerState {
     pub config: PlusConfig,
@@ -191,6 +191,8 @@ pub struct PlusServerState {
     pub connection_limiter: super::rate_limiter::ConnectionRateLimiter,
     /// 轮次数据持久化存储（Touches/Judges 按轮次写入磁盘）
     pub round_store: super::round_store::RoundStore,
+    /// 压测请求发送端（背景 tokio 任务消费）
+    pub bench_tx: tokio::sync::mpsc::UnboundedSender<BenchRequest>,
 }
 
 /// Phira-mp+ 服务器
@@ -233,6 +235,7 @@ impl PlusServer {
         let rate_limit = config.connection_rate_limit;
         let rate_window = config.connection_rate_window;
         let retention_days = config.round_data_retention_days;
+        let (bench_tx, bench_rx) = tokio::sync::mpsc::unbounded_channel::<BenchRequest>();
 
         let state = Arc::new(PlusServerState {
             config,
@@ -252,6 +255,19 @@ impl PlusServer {
                 "data",
                 retention_days,
             ),
+            bench_tx: bench_tx.clone(),
+        });
+        // 压测背景任务
+        let bench_state = Arc::clone(&state);
+        tokio::spawn(async move {
+            let mut bench_rx = bench_rx;
+            while let Some((duration, rooms, result_tx)) = bench_rx.recv().await {
+                let bs = Arc::clone(&bench_state);
+                let output = tokio::task::spawn_blocking(move || {
+                    bs.run_benchmark_sync(duration, rooms)
+                }).await.unwrap_or_else(|e| format!("benchmark panicked: {e}"));
+                let _ = result_tx.send(output);
+            }
         });
 
         let lost_con_state = Arc::clone(&state);
@@ -756,9 +772,15 @@ fn server_state_query_inner(state: &Arc<PlusServerState>, method: &str, args: &[
             let duration = args.get(0).and_then(|v| v.as_u64()).unwrap_or(10).max(5).min(300);
             let rooms = args.get(1).and_then(|v| v.as_u64()).unwrap_or(100).max(10).min(5000) as usize;
 
-            // 同步运行（ServerStateQuery 线程上下文无 tokio）
-            let result = state.run_benchmark_sync(duration, rooms);
-            Ok(serde_json::json!({"output": result}))
+            // 通过 mpsc 通道发送请求给背景 tokio 任务，阻塞等待结果
+            let (tx, rx) = std::sync::mpsc::channel();
+            if state.bench_tx.send((duration, rooms, tx)).is_err() {
+                return Err("benchmark channel closed".to_string());
+            }
+            match rx.recv_timeout(std::time::Duration::from_secs(duration + 120)) {
+                Ok(result) => Ok(serde_json::json!({"output": result})),
+                Err(_) => Err("benchmark timeout or cancelled".to_string()),
+            }
         }
         "test.cleanup" => {
             state.cleanup_benchmark_sync();
