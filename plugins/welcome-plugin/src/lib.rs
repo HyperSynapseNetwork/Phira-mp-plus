@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::sync::{Arc, Mutex};
 use std::path::Path;
-use tracing::{info, warn};
+use tracing::info;
 
 /// 欢迎语配置
 #[derive(Debug, Clone, Serialize, Deserialize)]

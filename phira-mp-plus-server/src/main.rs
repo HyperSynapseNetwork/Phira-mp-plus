@@ -1,11 +1,12 @@
 //! Phira-mp+ 服务器入口
 //!
 //! 增强的多人游戏服务端，支持 WASM 插件系统、CLI 管理控制台和扩展 API。
+//! 配置加载顺序（后覆盖前）：YAML 配置文件 → 环境变量 → CLI 参数
 
 use anyhow::Result;
 use clap::Parser;
 use phira_mp_plus_server::cli::CliHandler;
-use phira_mp_plus_server::server::{PlusConfig, PlusServer};
+use phira_mp_plus_server::server::{PlusConfig, PlusConfigCli, PlusServer};
 use std::io;
 use std::path::Path;
 use std::sync::Arc;
@@ -53,6 +54,10 @@ struct Args {
     /// HTTP/SSE 服务端口
     #[arg(long = "http-port", default_value_t = 12347, help = "中央 HTTP/SSE 服务端口")]
     http_port: u16,
+
+    /// YAML 配置文件路径
+    #[arg(short = 'c', long = "config", default_value = "server_config.yml", help = "YAML 配置文件路径")]
+    config: String,
 }
 
 // ── 统一的 tracing 终端 writer ──
@@ -189,18 +194,41 @@ async fn main() -> Result<()> {
         std::fs::create_dir_all(plugins_dir).expect("failed to create plugins directory");
     }
 
-    let config = PlusConfig {
+    // ── 加载配置（三层覆盖：YAML 配置 < 环境变量 < CLI 参数） ──
+    let config_path = &args.config;
+    let mut config = if Path::new(config_path).exists() {
+        info!("loading config from '{config_path}'");
+        match PlusConfig::from_yaml(config_path) {
+            Ok(cfg) => cfg,
+            Err(e) => {
+                warn!("failed to load config '{config_path}': {e}, using defaults");
+                PlusConfig::default()
+            }
+        }
+    } else {
+        info!("config file '{config_path}' not found, using defaults");
+        PlusConfig::default()
+    };
+
+    // CLI 参数覆盖
+    let cli_overrides = PlusConfigCli {
         port: args.port,
         http_port: args.http_port,
         monitors: if args.monitors.is_empty() {
-            vec![2]
+            config.monitors.clone()
         } else {
             args.monitors
         },
         plugins_dir: args.plugins_dir,
         extensions_file: Some(args.extensions_file),
-        cli_enabled,
+        no_cli: args.no_cli,
+        log_file: args.log_file,
     };
+    config = config.merge_cli(cli_overrides);
+
+    if config.monitors.is_empty() {
+        config.monitors = vec![2];
+    }
 
     // ── 创建服务器 ──
     let server = PlusServer::new(config).await?;
@@ -219,7 +247,6 @@ async fn main() -> Result<()> {
     let tui_handle = if let (Some(cmd_tx), Some(out_rx), Some(log_rx)) = (cmd_tx, out_rx, log_rx) {
         Some(std::thread::spawn(move || {
             if let Err(e) = phira_mp_plus_server::cli_tui::run_tui(cmd_tx, out_rx, log_rx) {
-                // 终端已被 TUI 恢复，可安全使用 stderr
                 eprintln!("TUI error: {e}");
             }
         }))

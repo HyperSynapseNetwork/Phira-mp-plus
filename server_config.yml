@@ -1,0 +1,55 @@
+# Phira-mp+ 服务端配置文件
+# 所有选项均有默认值，可按需覆盖
+# 配置加载顺序（后覆盖前）：此文件 < 环境变量 < CLI 参数
+
+# ---- 网络 ----
+
+# TCP 监听端口（游戏客户端直连）
+port: 12346
+
+# HTTP/SSE 服务端口（REST API 和管理面板）
+http_port: 12347
+
+# ---- 认证 ----
+
+# 允许旁观的 Phira 用户 ID 列表
+monitors:
+  - 2
+
+# Phira API 端点（通常无需修改）
+phira_api_endpoint: "https://phira.5wyxi.com"
+
+# ---- 插件 ----
+
+# 插件目录路径（存放 .wasm 文件）
+plugins_dir: plugins
+
+# ---- 功能开关 ----
+
+# 是否启用聊天功能
+chat_enabled: true
+
+# 是否启用 CLI 管理控制台
+cli_enabled: true
+
+# ---- 限制 ----
+
+# 最大房间数（不设则无限制）
+# max_rooms: 100
+
+# 每房间最大玩家数（不设则使用默认 8）
+# max_users_per_room: 8
+
+# 连接速率限制（每秒最多连接数）
+connection_rate_limit: 30
+
+# 连接速率统计窗口（秒）
+connection_rate_window: 10
+
+# ---- 定制 ----
+
+# 服务器名称（显示在欢迎语等位置）
+# server_name: "My Phira Server"
+
+# 管理员 API 令牌（用于 HTTP admin 接口）
+# admin_token: "your-secret-token"

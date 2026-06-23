@@ -80,6 +80,7 @@ pub struct WasmPluginInstance {
     store: wasmtime::Store<()>,
 
     /// 共享宿主服务（用于 host/api 等调用）
+    #[allow(dead_code)]
     services: Arc<WasmPluginServices>,
 
     // 导出的函数
@@ -306,15 +307,25 @@ impl WasmPluginInstance {
             plugin_data_dir: format!("data/plugins/{}", pn_dir),
         };
 
-        // 尝试从 WASM 内存读取插件信息（通过预设偏移）
-        plugin.try_read_info_json();
+        // 尝试从 WASM 内存读取插件信息
+        plugin.read_plugin_info();
 
         Ok(plugin)
     }
 
-    /// 尝试从线性内存中读取插件元数据 JSON
-    fn try_read_info_json(&mut self) {
-        // 尝试从内存偏移 0 读取长度前缀的 JSON 元数据
+    /// 从 WASM 线性内存读取插件元数据
+    ///
+    /// 优先通过 phira_get_info 导出函数获取，
+    /// 回退到从偏移 0 读取长度前缀的 JSON。
+    fn read_plugin_info(&mut self) {
+        // 方案一：如果插件导出 phira_get_info，先调用它以填充元数据
+        let called_get_info = if let Some(ref get_info) = self.func_get_info {
+            get_info.call(&mut self.store, ()).is_ok()
+        } else {
+            false
+        };
+
+        // 方案二：从内存偏移 0 读取长度前缀的 JSON 元数据（兼容模式）
         if let Some(memory) = self.instance.get_memory(&mut self.store, "memory") {
             let mut header = [0u8; 4];
             if memory.read(&self.store, 0, &mut header).is_ok() {
@@ -341,6 +352,10 @@ impl WasmPluginInstance {
                     }
                 }
             }
+        }
+
+        if called_get_info {
+            info!("WASM plugin '{}' metadata read via phira_get_info", self.plugin_name);
         }
     }
 
@@ -409,8 +424,8 @@ impl WasmPluginInstance {
             PluginEvent::GameStart { user_id, room_id } => {
                 serde_json::json!({"type": "game_start", "user_id": user_id, "room_id": room_id}).to_string()
             }
-            PluginEvent::GameEnd { user_id, user_name, room_id, score, accuracy } => {
-                serde_json::json!({"type": "game_end", "user_id": user_id, "user_name": user_name, "room_id": room_id, "score": score, "accuracy": accuracy}).to_string()
+            PluginEvent::GameEnd { user_id, user_name, room_id, score, accuracy, perfect, good, bad, miss, max_combo, full_combo } => {
+                serde_json::json!({"type": "game_end", "user_id": user_id, "user_name": user_name, "room_id": room_id, "score": score, "accuracy": accuracy, "perfect": perfect, "good": good, "bad": bad, "miss": miss, "max_combo": max_combo, "full_combo": full_combo}).to_string()
             }
             PluginEvent::PlayerTouches { user_id, room_id, data } => {
                 serde_json::json!({"type": "player_touches", "user_id": user_id, "room_id": room_id, "data": data}).to_string()

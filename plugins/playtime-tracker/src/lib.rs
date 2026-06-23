@@ -63,6 +63,7 @@ impl PlaytimeTracker {
     }
 
     /// 获取排行列表（降序）
+    #[allow(dead_code)]
     fn ranked_list(&self) -> Vec<(i32, u64)> {
         let guard = self.data.lock().unwrap_or_else(|e| e.into_inner());
         let mut list: Vec<(i32, u64)> = guard.iter()

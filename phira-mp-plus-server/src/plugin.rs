@@ -324,6 +324,7 @@ impl PluginManager {
     }
 
     /// 调用其他插件的 API
+    #[allow(dead_code)]
     async fn call_plugin_api(&self, plugin: &str, method: &str, args: &[Value]) -> Result<Value, String> {
         let handlers = self.api_handlers.lock().unwrap_or_else(|e| e.into_inner());
         match handlers.get(plugin) {
@@ -450,13 +451,14 @@ impl PluginManager {
                         info.clone(),
                         Arc::clone(&self.wasm_services),
                     );
-                    // init 将进行实际的 WASM 加载和实例化
-                    // 这里先不初始化，由调用者在外部显式调用 init
-                    // 或者我们在这里初始化
+                    // 在 blocking 线程中执行 WASM 文件读取和 JIT 编译
                     let mut p = Box::new(plugin);
-                    p.init()?;
-                    let meta = p.meta().clone();
-                    self.plugins.write().await.push(p);
+                    let result = tokio::task::spawn_blocking(move || {
+                        p.init()?;
+                        Ok::<_, String>(p)
+                    }).await.map_err(|e| format!("spawn_blocking: {e}"))??;
+                    let meta = result.meta().clone();
+                    self.plugins.write().await.push(result);
                     Ok(meta)
                 }
                 #[cfg(not(feature = "plugin-system"))]

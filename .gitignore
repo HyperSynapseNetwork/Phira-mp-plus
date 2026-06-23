@@ -25,3 +25,6 @@ data/
 
 # Generated
 **/*.wasm
+
+# Hidden directories (reference material, local config)
+.??*

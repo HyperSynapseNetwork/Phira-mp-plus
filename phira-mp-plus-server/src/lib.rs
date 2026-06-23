@@ -10,6 +10,7 @@ pub mod extensions;
 pub mod l10n;
 pub mod plugin;
 pub mod plugin_http;
+pub mod rate_limiter;
 #[cfg(feature = "plugin-system")]
 pub mod wasm_host;
 pub mod room;

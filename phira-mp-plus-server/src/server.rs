@@ -1,7 +1,7 @@
 //! Phira-mp+ 增强服务器
 //!
 //! 在原始 phira-mp 服务器基础上增加 WASM 插件系统支持、
-//! CLI 管理控制台和扩展数据系统。
+//! CLI 管理控制台和扩展数据系统。支持 YAML 配置文件。
 
 use crate::ban::BanManager;
 use crate::extensions::ExtensionManager;
@@ -42,7 +42,12 @@ use tokio::net::TcpListener;
 use tokio::sync::{Notify, RwLock, mpsc};
 use tracing::{info, warn};
 
-/// 自旋获取 tokio RwLock 读锁（无需 tokio 运行时）
+use uuid::Uuid;
+
+pub type SafeMap<K, V> = RwLock<HashMap<K, V>>;
+
+/// 自旋获取 tokio RwLock 读锁（仅在 sync 上下文中使用，如 webapi）
+#[cfg(feature = "webapi")]
 macro_rules! read_lock {
     ($lock:expr) => {{
         loop {
@@ -53,6 +58,9 @@ macro_rules! read_lock {
         }
     }};
 }
+/// 自旋获取 tokio RwLock 写锁（仅在 sync 上下文中使用，如 webapi）
+#[cfg(feature = "webapi")]
+#[allow(unused_macros)]
 macro_rules! write_lock {
     ($lock:expr) => {{
         loop {
@@ -63,10 +71,99 @@ macro_rules! write_lock {
         }
     }};
 }
-use uuid::Uuid;
-
-pub type SafeMap<K, V> = RwLock<HashMap<K, V>>;
 pub type IdMap<V> = SafeMap<Uuid, V>;
+
+/// Phira-mp+ 增强配置（支持 YAML 文件、环境变量、CLI 参数三层覆盖）
+#[derive(Debug, Clone, Deserialize)]
+pub struct PlusConfig {
+    pub port: u16,
+    #[serde(default = "default_http_port")]
+    pub http_port: u16,
+    #[serde(default)]
+    pub monitors: Vec<i32>,
+    #[serde(default = "default_plugins_dir")]
+    pub plugins_dir: String,
+    pub extensions_file: Option<String>,
+    #[serde(default = "default_true")]
+    pub cli_enabled: bool,
+    #[serde(default)]
+    pub max_rooms: Option<usize>,
+    #[serde(default)]
+    pub max_users_per_room: Option<usize>,
+    #[serde(default = "default_rate_limit")]
+    pub connection_rate_limit: u32,
+    #[serde(default = "default_rate_window")]
+    pub connection_rate_window: u32,
+    #[serde(default)]
+    pub server_name: Option<String>,
+    #[serde(default)]
+    pub admin_token: Option<String>,
+    #[serde(default = "default_phira_api")]
+    pub phira_api_endpoint: String,
+    #[serde(default)]
+    pub chat_enabled: bool,
+}
+
+fn default_http_port() -> u16 { 12347 }
+fn default_plugins_dir() -> String { "plugins".to_string() }
+fn default_true() -> bool { true }
+fn default_rate_limit() -> u32 { 30 }
+fn default_rate_window() -> u32 { 10 }
+fn default_phira_api() -> String { "https://phira.5wyxi.com".to_string() }
+
+impl Default for PlusConfig {
+    fn default() -> Self {
+        Self {
+            port: 12346,
+            http_port: 12347,
+            monitors: vec![2],
+            plugins_dir: "plugins".to_string(),
+            extensions_file: None,
+            cli_enabled: true,
+            max_rooms: None,
+            max_users_per_room: None,
+            connection_rate_limit: 30,
+            connection_rate_window: 10,
+            server_name: None,
+            admin_token: None,
+            phira_api_endpoint: "https://phira.5wyxi.com".to_string(),
+            chat_enabled: true,
+        }
+    }
+}
+
+impl PlusConfig {
+    /// 从 YAML 文件加载配置
+    pub fn from_yaml(path: &str) -> Result<Self> {
+        let content = std::fs::read_to_string(path)
+            .map_err(|e| anyhow::anyhow!("failed to read config '{path}': {e}"))?;
+        let config: Self = serde_yaml::from_str(&content)
+            .map_err(|e| anyhow::anyhow!("failed to parse config '{path}': {e}"))?;
+        Ok(config)
+    }
+
+    /// 合并 CLI 参数覆盖（非默认值的 CLI 参数覆盖 YAML 配置）
+    pub fn merge_cli(mut self, cli: PlusConfigCli) -> Self {
+        if cli.port != 12346 { self.port = cli.port; }
+        if cli.http_port != 12347 { self.http_port = cli.http_port; }
+        if !cli.monitors.is_empty() { self.monitors = cli.monitors; }
+        if cli.plugins_dir != "plugins" { self.plugins_dir = cli.plugins_dir; }
+        if let Some(ext) = cli.extensions_file { self.extensions_file = Some(ext); }
+        if cli.no_cli { self.cli_enabled = false; }
+        self
+    }
+}
+
+/// CLI 覆盖配置（来自命令行参数）
+pub struct PlusConfigCli {
+    pub port: u16,
+    pub http_port: u16,
+    pub monitors: Vec<i32>,
+    pub plugins_dir: String,
+    pub extensions_file: Option<String>,
+    pub no_cli: bool,
+    pub log_file: String,
+}
 
 /// Phira-mp+ 服务器状态
 pub struct PlusServerState {
@@ -79,30 +176,8 @@ pub struct PlusServerState {
     pub extensions: Arc<ExtensionManager>,
     pub ban_manager: Arc<BanManager>,
     pub shutdown: Notify,
-}
-
-/// Phira-mp+ 配置
-#[derive(Debug, Deserialize)]
-pub struct PlusConfig {
-    pub port: u16,
-    pub http_port: u16,
-    pub monitors: Vec<i32>,
-    pub plugins_dir: String,
-    pub extensions_file: Option<String>,
-    pub cli_enabled: bool,
-}
-
-impl Default for PlusConfig {
-    fn default() -> Self {
-        Self {
-            port: 12346,
-            http_port: 12347,
-            monitors: vec![2],
-            plugins_dir: "plugins".to_string(),
-            extensions_file: None,
-            cli_enabled: true,
-        }
-    }
+    /// 连接速率限制器（按 IP）
+    pub connection_limiter: super::rate_limiter::ConnectionRateLimiter,
 }
 
 /// Phira-mp+ 服务器
@@ -142,6 +217,8 @@ impl PlusServer {
         let ban_manager = Arc::new(BanManager::new(Arc::clone(&extensions)));
 
         let http_port = config.http_port;
+        let rate_limit = config.connection_rate_limit;
+        let rate_window = config.connection_rate_window;
 
         let state = Arc::new(PlusServerState {
             config,
@@ -153,6 +230,10 @@ impl PlusServer {
             extensions,
             ban_manager,
             shutdown: Notify::new(),
+            connection_limiter: super::rate_limiter::ConnectionRateLimiter::new(
+                rate_limit,
+                rate_window,
+            ),
         });
 
         let lost_con_state = Arc::clone(&state);
@@ -213,7 +294,8 @@ impl PlusServer {
         let plugin_count = state.plugin_manager.load_plugins().await.unwrap_or(0);
         info!("loaded {} plugin(s)", plugin_count);
 
-        // 注册事件日志插件（调试用）
+        // 注册事件日志插件（调试用，仅 debug 构建启用）
+        #[cfg(debug_assertions)]
         let _ = state.plugin_manager.register_native(
             plugin::create_event_logger(),
             "event-logger",
@@ -295,6 +377,24 @@ impl PlusServer {
     /// 接受新连接
     pub async fn accept(&self) -> Result<()> {
         let (stream, addr) = self.listener.accept().await?;
+        let ip = addr.ip().to_string();
+
+        // 连接速率限制检查
+        let rate_limited = !self.state.connection_limiter.check(&ip).await;
+        if rate_limited {
+            warn!("connection rate limited: {ip}");
+            return Ok(());
+        }
+
+        // 最大会话数检查（防止资源耗尽）
+        {
+            let guard = self.state.sessions.read().await;
+            if guard.len() > 4096 {
+                warn!("max sessions reached, rejecting connection from {ip}");
+                return Ok(());
+            }
+        }
+
         let mut guard = self.state.sessions.write().await;
         let id = {
             let mut id = Uuid::new_v4();
@@ -303,7 +403,13 @@ impl PlusServer {
             }
             id
         };
-        let session = super::session::Session::new(id, addr, stream, Arc::clone(&self.state)).await?;
+        let session = match super::session::Session::new(id, addr, stream, Arc::clone(&self.state)).await {
+            Ok(s) => s,
+            Err(e) => {
+                warn!("failed to create session for {ip}: {e:?}");
+                return Ok(());
+            }
+        };
         info!(
             "received connections from {} ({}), version: {}",
             addr,

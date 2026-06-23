@@ -1,3 +1,3 @@
 [submodule "phira-mp"]
 	path = phira-mp
-	url = /root/Phira-plus/Phira-mp-plus/phira-mp
+	url = https://github.com/TeamFlos/phira-mp.git

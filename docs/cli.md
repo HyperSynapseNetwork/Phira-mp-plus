@@ -12,9 +12,12 @@ phira-mp-plus-server [OPTIONS]
   -l, --log-file <NAME>      日志文件基础名称 [默认: "phira-mp-plus"]
   -m, --monitor <IDS>...     允许旁观的用户 ID（可多次指定，如 `-m 1 -m 2`）
       --http-port <PORT>     HTTP/SSE 服务端口 [默认: 12347]
+  -c, --config <FILE>        YAML 配置文件路径 [默认: "server_config.yml"]
   -h, --help                 显示帮助信息
   -V, --version              显示版本号
 ```
+
+配置加载顺序（后覆盖前）：YAML 配置文件 < CLI 参数。
 
 ## 交互式管理控制台
 

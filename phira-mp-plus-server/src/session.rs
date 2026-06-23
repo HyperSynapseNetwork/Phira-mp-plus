@@ -26,8 +26,6 @@ use tokio::{
 use tracing::{Instrument, debug, debug_span, error, info, trace, warn};
 use uuid::Uuid;
 
-const HOST: &str = "https://phira.5wyxi.com";
-
 pub struct User {
     pub id: i32,
     pub name: String,
@@ -143,6 +141,8 @@ pub struct Session {
     pub user: Arc<User>,
 
     monitor_task_handle: JoinHandle<()>,
+    /// 命令速率限制器（按类别）
+    cmd_limiter: crate::rate_limiter::CommandRateLimiter,
 }
 
 impl Session {
@@ -196,7 +196,7 @@ impl Session {
                                     async move {
                                         let token = token.into_inner();
                                         if token.len() > 32 {
-                                            bail!("invalid token");
+                                            bail!(tl!("auth-invalid-token"));
                                         }
                                         debug!("session {id}: authenticate {token}");
                                         #[derive(Debug, Deserialize)]
@@ -206,11 +206,11 @@ impl Session {
                                             language: String,
                                         }
 
-                                        // 计算 token 哈希作为缓存键
-                                        use std::hash::{Hash, Hasher};
-                                        let mut hasher = std::collections::hash_map::DefaultHasher::new();
-                                        token.hash(&mut hasher);
-                                        let token_hash = hasher.finish();
+                                        // 计算 token 哈希作为缓存键（使用 SHA-256）
+                                        use sha2::{Sha256, Digest};
+                                        let token_hash = u64::from_le_bytes(
+                                            Sha256::digest(token.as_bytes())[..8].try_into().unwrap()
+                                        );
 
                                         // ★ 优先检查缓存：如果 token 已缓存，直接验证封禁状态，跳过 API 请求
                                         let user_info = {
@@ -222,7 +222,7 @@ impl Session {
                                             if server.ban_manager.is_banned(entry.user_id).await {
                                                 let reason = server.ban_manager.get_ban_reason(entry.user_id).await;
                                                 warn!("banned user {}({}) tried to connect (cache)", entry.name, entry.user_id);
-                                                bail!("{}", reason);
+                                                bail!(tl!("auth-banned", reason => reason));
                                             }
                                             debug!("cache hit for user {}", entry.user_id);
                                             AuthUserInfo {
@@ -237,7 +237,7 @@ impl Session {
                                                     .timeout(std::time::Duration::from_secs(3))
                                                     .build()
                                                     .map_err(|_| "build client")?
-                                                    .get(format!("{HOST}/me"))
+                                                    .get(format!("{}/me", &server.config.phira_api_endpoint))
                                                     .header(reqwest::header::AUTHORIZATION, format!("Bearer {token}"))
                                                     .send()
                                                     .await
@@ -264,12 +264,12 @@ impl Session {
                                                     if server.ban_manager.is_banned(info.id).await {
                                                         let reason = server.ban_manager.get_ban_reason(info.id).await;
                                                         warn!("banned user {}({}) tried to connect", info.name, info.id);
-                                                        bail!("{}", reason);
+                                                        bail!(tl!("auth-banned", reason => reason));
                                                     }
                                                     info
                                                 }
                                                 Err(_) => {
-                                                    bail!("认证服务器不可达，请稍后重试");
+                                                    bail!(tl!("auth-server-unreachable"));
                                                 }
                                             }
                                         };
@@ -350,6 +350,28 @@ impl Session {
                         }
                         let user = this.get().map(|it| Arc::clone(&it.user)).unwrap();
                         *last_recv.lock().await = Instant::now();
+
+                        // 命令速率限制
+                        let session_ref = this.get().map(|s| Arc::clone(s));
+                        let needs_limiting = matches!(&cmd,
+                            ClientCommand::Chat { .. }
+                            | ClientCommand::CreateRoom { .. }
+                            | ClientCommand::JoinRoom { .. }
+                            | ClientCommand::SelectChart { .. }
+                        );
+                        if needs_limiting {
+                            if let Some(session) = session_ref {
+                                let category = match &cmd {
+                                    ClientCommand::Chat { .. } => crate::rate_limiter::CommandCategory::Chat,
+                                    _ => crate::rate_limiter::CommandCategory::RoomOp,
+                                };
+                                if !session.cmd_limiter.check(category).await {
+                                    warn!("command rate limited for user {}", user.id);
+                                    return;
+                                }
+                            }
+                        }
+
                         let result = LANGUAGE
                             .scope(Arc::new(user.lang.clone()), process(user, cmd))
                             .await;
@@ -397,6 +419,7 @@ impl Session {
             stream,
             user,
             monitor_task_handle,
+            cmd_limiter: crate::rate_limiter::CommandRateLimiter::new(),
         });
         let _ = this.set(Arc::clone(&res));
         this_inited.notify_one();
@@ -447,7 +470,7 @@ async fn process(user: Arc<User>, cmd: ClientCommand) -> Option<ServerCommand> {
                 .await
                 .as_ref()
                 .map(Arc::clone)
-                .ok_or_else(|| anyhow!("no room"))?;
+                .ok_or_else(|| anyhow!("{}", tl!("no-room")))?;
         };
         ($d:ident, $($pt:tt)*) => {
             let $d = user
@@ -456,16 +479,16 @@ async fn process(user: Arc<User>, cmd: ClientCommand) -> Option<ServerCommand> {
                 .await
                 .as_ref()
                 .map(Arc::clone)
-                .ok_or_else(|| anyhow!("no room"))?;
+                .ok_or_else(|| anyhow!("{}", tl!("no-room")))?;
             if !matches!(&*$d.state.read().await, $($pt)*) {
-                bail!("invalid state");
+                bail!("{}", tl!("invalid-state"));
             }
         };
     }
     match cmd {
         ClientCommand::Ping => unreachable!(),
         ClientCommand::Authenticate { .. } => Some(ServerCommand::Authenticate(Err(
-            "repeated authenticate".to_owned(),
+            tl!("repeated-authenticate"),
         ))),
         ClientCommand::Chat { message } => {
             let res: Result<()> = async move {
@@ -565,14 +588,16 @@ async fn process(user: Arc<User>, cmd: ClientCommand) -> Option<ServerCommand> {
             let res: Result<()> = async move {
                 let mut room_guard = user.room.write().await;
                 if room_guard.is_some() {
-                    bail!("already in room");
+                    bail!(tl!("already-in-room"));
                 }
 
                 let mut map_guard = user.server.rooms.write().await;
+                let max_users = user.server.config.max_users_per_room.unwrap_or(8);
                 let room = Arc::new(crate::room::Room::new(
                     id.clone(),
                     Arc::downgrade(&user),
                     Some(Arc::clone(&user.server.plugin_manager)),
+                    max_users,
                 ));
                 match map_guard.entry(id.clone()) {
                     std::collections::hash_map::Entry::Vacant(entry) => {
@@ -607,11 +632,11 @@ async fn process(user: Arc<User>, cmd: ClientCommand) -> Option<ServerCommand> {
             let res: Result<JoinRoomResponse> = async move {
                 let mut room_guard = user.room.write().await;
                 if room_guard.is_some() {
-                    bail!("already in room");
+                    bail!(tl!("already-in-room"));
                 }
                 let room = user.server.rooms.read().await.get(&id).map(Arc::clone);
                 let Some(room) = room else {
-                    bail!("room not found")
+                    bail!(tl!("room-not-found"))
                 };
                 if room.locked.load(Ordering::SeqCst) {
                     bail!(tl!("join-room-locked"));
@@ -760,7 +785,7 @@ async fn process(user: Arc<User>, cmd: ClientCommand) -> Option<ServerCommand> {
                 );
                 async move {
                     trace!("fetch");
-                    let res: crate::server::Chart = reqwest::get(format!("{HOST}/chart/{id}"))
+                    let res: crate::server::Chart = reqwest::get(format!("{}/chart/{id}", &user.server.config.phira_api_endpoint))
                         .await?
                         .error_for_status()?
                         .json()
@@ -817,7 +842,7 @@ async fn process(user: Arc<User>, cmd: ClientCommand) -> Option<ServerCommand> {
                 let mut guard = room.state.write().await;
                 if let crate::room::InternalRoomState::WaitForReady { started } = &mut *guard {
                     if !started.insert(user.id) {
-                        bail!("already ready");
+                        bail!(tl!("already-ready"));
                     }
                     room.send(Message::Ready { user: user.id }).await;
                     drop(guard);
@@ -834,7 +859,7 @@ async fn process(user: Arc<User>, cmd: ClientCommand) -> Option<ServerCommand> {
                 let mut guard = room.state.write().await;
                 if let crate::room::InternalRoomState::WaitForReady { started } = &mut *guard {
                     if !started.remove(&user.id) {
-                        bail!("not ready");
+                        bail!(tl!("not-ready"));
                     }
                     if room.check_host(&user).await.is_ok() {
                         room.send(Message::CancelGame { user: user.id }).await;
@@ -853,13 +878,13 @@ async fn process(user: Arc<User>, cmd: ClientCommand) -> Option<ServerCommand> {
         ClientCommand::Played { id } => {
             let res: Result<()> = async move {
                 get_room!(room);
-                let res: crate::server::Record = reqwest::get(format!("{HOST}/record/{id}"))
+                let res: crate::server::Record = reqwest::get(format!("{}/record/{id}", &user.server.config.phira_api_endpoint))
                     .await?
                     .error_for_status()?
                     .json()
                     .await?;
                 if res.player != user.id {
-                    bail!("invalid record");
+                    bail!(tl!("invalid-record"));
                 }
                 debug!(
                     room = room.id.to_string(),
@@ -875,13 +900,19 @@ async fn process(user: Arc<User>, cmd: ClientCommand) -> Option<ServerCommand> {
                 .await;
                 let score = res.score;
                 let accuracy = res.accuracy;
+                let perfect = res.perfect;
+                let good = res.good;
+                let bad = res.bad;
+                let miss = res.miss;
+                let max_combo = res.max_combo;
+                let full_combo = res.full_combo;
                 let mut guard = room.state.write().await;
                 if let crate::room::InternalRoomState::Playing { results, aborted } = &mut *guard {
                     if aborted.contains(&user.id) {
                         bail!("aborted");
                     }
                     if results.insert(user.id, res).is_some() {
-                        bail!("already uploaded");
+                        bail!(tl!("already-uploaded"));
                     }
                     drop(guard);
                     room.check_all_ready().await;
@@ -894,6 +925,12 @@ async fn process(user: Arc<User>, cmd: ClientCommand) -> Option<ServerCommand> {
                             room_id: room.id.to_string(),
                             score,
                             accuracy,
+                            perfect,
+                            good,
+                            bad,
+                            miss,
+                            max_combo,
+                            full_combo,
                         })
                         .await;
                 }
@@ -908,10 +945,10 @@ async fn process(user: Arc<User>, cmd: ClientCommand) -> Option<ServerCommand> {
                 let mut guard = room.state.write().await;
                 if let crate::room::InternalRoomState::Playing { results, aborted } = &mut *guard {
                     if results.contains_key(&user.id) {
-                        bail!("already uploaded");
+                        bail!(tl!("already-uploaded"));
                     }
                     if !aborted.insert(user.id) {
-                        bail!("aborted");
+                        bail!(tl!("aborted"));
                     }
                     drop(guard);
                     room.send(Message::Abort { user: user.id }).await;

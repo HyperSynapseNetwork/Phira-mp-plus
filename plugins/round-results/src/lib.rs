@@ -7,7 +7,6 @@ use phira_mp_plus_server_api::{
     NativePlugin, PluginContext, PluginEvent, PluginInfo,
 };
 use serde::Serialize;
-use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use tracing::info;
@@ -65,7 +64,7 @@ impl RoundResultsPlugin {
         })
     }
 
-    fn format_summary(room_id: &str, chart_name: &str, scores: &[ScoreRecord]) -> Vec<String> {
+    fn format_summary(_room_id: &str, chart_name: &str, scores: &[ScoreRecord]) -> Vec<String> {
         let by_score = rank_by_score(scores);
         let by_acc = rank_by_acc(scores);
         let best_score = by_score.first();
@@ -176,7 +175,7 @@ impl NativePlugin for RoundResultsPlugin {
 
     fn on_event(&self, _ctx: &PluginContext, event: &PluginEvent) -> Vec<String> {
         match event {
-            PluginEvent::GameEnd { user_id, user_name, room_id, score, accuracy } => {
+            PluginEvent::GameEnd { user_id, user_name, room_id, score, accuracy, perfect, good, bad, miss, max_combo, full_combo } => {
                 let mut guard = self.pending.lock().unwrap_or_else(|e| e.into_inner());
                 let entry = guard.entry(room_id.clone()).or_insert_with(Vec::new);
                 if !entry.iter().any(|r| r.user_id == *user_id) {
@@ -185,9 +184,12 @@ impl NativePlugin for RoundResultsPlugin {
                         user_name: user_name.clone(),
                         score: *score,
                         accuracy: *accuracy,
-                        max_combo: 0,
-                        full_combo: false,
-                        perfect: 0, good: 0, bad: 0, miss: 0,
+                        max_combo: *max_combo,
+                        full_combo: *full_combo,
+                        perfect: *perfect,
+                        good: *good,
+                        bad: *bad,
+                        miss: *miss,
                     });
                 }
             }

@@ -20,8 +20,6 @@ use std::{
 use tokio::sync::RwLock;
 use tracing::{debug, info};
 
-const ROOM_MAX_USERS: usize = 8;
-
 #[derive(Default, Debug)]
 pub enum InternalRoomState {
     #[default]
@@ -93,10 +91,13 @@ pub struct Room {
     pub play_history: RwLock<Vec<PlayRound>>,
     /// 当前轮次 ID（游戏开始时生成，结算时使用）
     pub current_round_id: RwLock<Option<uuid::Uuid>>,
+
+    /// 房间最大玩家数（来自服务器配置或默认值）
+    pub max_users: usize,
 }
 
 impl Room {
-    pub fn new(id: RoomId, host: Weak<super::session::User>, plugin_manager: Option<Arc<PluginManager>>) -> Self {
+    pub fn new(id: RoomId, host: Weak<super::session::User>, plugin_manager: Option<Arc<PluginManager>>, max_users: usize) -> Self {
         Self {
             id,
             host: host.clone().into(),
@@ -113,6 +114,7 @@ impl Room {
             play_history: RwLock::new(Vec::new()),
             current_round_id: RwLock::new(None),
             plugin_manager,
+            max_users,
         }
     }
 
@@ -188,7 +190,7 @@ impl Room {
         } else {
             let mut guard = self.users.write().await;
             guard.retain(|it| it.strong_count() > 0);
-            if guard.len() >= ROOM_MAX_USERS {
+            if guard.len() >= self.max_users {
                 false
             } else {
                 guard.push(user);

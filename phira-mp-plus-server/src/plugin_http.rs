@@ -2,14 +2,15 @@
 //!
 //! 插件通过 PluginContext 注册路由和推送 SSE 事件，
 //! 统一在单个端口暴露，无需每个插件自建 HTTP 服务。
+//! 支持运行时动态注册路由（所有请求通过 catch-all 处理器派发）。
 
 use crate::server::PlusServerState;
 use axum::{
     Router, Json,
-    http::{StatusCode, Uri},
+    http::{StatusCode, Uri, Method},
     response::sse::{Event, KeepAlive, Sse},
     response::IntoResponse,
-    routing::{any, get},
+    routing::any,
 };
 use futures::stream::Stream;
 use serde_json::Value;
@@ -37,9 +38,59 @@ struct RouteEntry {
     handler: HttpHandler,
 }
 
+/// 动态路由表（支持运行时注册和查找）
+struct DynamicRouter {
+    /// 注册的路由条目（保持注册顺序，精确优先于通配）
+    entries: Vec<RouteEntry>,
+}
+
+impl DynamicRouter {
+    fn new() -> Self {
+        Self { entries: Vec::new() }
+    }
+
+    fn add(&mut self, path: String, handler: HttpHandler) {
+        self.entries.push(RouteEntry { path, handler });
+    }
+
+    /// 查找匹配的路由处理器。
+    /// 支持两种参数语法: `<param>` 和 `{param}`
+    fn resolve(&self, _method: &Method, uri: &Uri) -> Option<(HttpHandler, Vec<String>)> {
+        let path = uri.path();
+        for entry in &self.entries {
+            if let Some(params) = match_route(&entry.path, path) {
+                return Some((Arc::clone(&entry.handler), params));
+            }
+        }
+        None
+    }
+}
+
+/// 匹配路由模式与请求路径。返回路径参数（如果有）。
+/// 模式 "/api/round/last/<room_id>" 匹配 "/api/round/last/abc" → ["abc"]
+fn match_route(pattern: &str, path: &str) -> Option<Vec<String>> {
+    let p_segs: Vec<&str> = pattern.split('/').collect();
+    let u_segs: Vec<&str> = path.split('/').collect();
+    if p_segs.len() != u_segs.len() {
+        return None;
+    }
+    let mut params = Vec::new();
+    for (p, u) in p_segs.iter().zip(u_segs.iter()) {
+        if p.starts_with('<') && p.ends_with('>') {
+            params.push(u.to_string());
+        } else if p.starts_with('{') && p.ends_with('}') {
+            params.push(u.to_string());
+        } else if p != u {
+            return None;
+        }
+    }
+    Some(params)
+}
+
 /// 中央 HTTP/SSE 服务器
 pub struct PluginHttpServer {
-    routes: RwLock<Vec<RouteEntry>>,
+    /// 共享动态路由表
+    router: Arc<RwLock<DynamicRouter>>,
     sse_tx: broadcast::Sender<SseEvent>,
     port: u16,
 }
@@ -48,7 +99,7 @@ impl PluginHttpServer {
     pub fn new(port: u16) -> Self {
         let (sse_tx, _) = broadcast::channel(256);
         Self {
-            routes: RwLock::new(Vec::new()),
+            router: Arc::new(RwLock::new(DynamicRouter::new())),
             sse_tx,
             port,
         }
@@ -58,21 +109,26 @@ impl PluginHttpServer {
         self.sse_tx.clone()
     }
 
-    /// 注册 HTTP 路由（异步，在 async 上下文中调用）
+    /// 注册 HTTP 路由（异步）
     pub async fn register_route(&self, path: &str, handler: HttpHandler) {
-        self.routes.write().await.push(RouteEntry {
-            path: path.to_string(),
-            handler,
-        });
+        self.router.write().await.add(path.to_string(), handler);
         info!("registered HTTP route: {path}");
     }
 
-    /// 注册 HTTP 路由（同步，用于 NativePlugin::init 等非 async 环境）
+    /// 注册 HTTP 路由（同步，用于 init 等非 async 环境）
     pub fn register_route_sync(&self, path: &str, handler: HttpHandler) {
         let path = path.to_string();
-        if let Ok(mut routes) = self.routes.try_write() {
-            routes.push(RouteEntry { path: path.clone(), handler });
+        if let Ok(mut routes) = self.router.try_write() {
+            routes.add(path.clone(), handler);
             info!("registered HTTP route: {path}");
+        } else {
+            // 极罕见 — 仅发生在另一个写入正在进行时。异步重试。
+            let router = Arc::clone(&self.router);
+            let path = path.clone();
+            tokio::spawn(async move {
+                router.write().await.add(path.clone(), handler);
+                info!("registered HTTP route (deferred): {path}");
+            });
         }
     }
 
@@ -85,48 +141,16 @@ impl PluginHttpServer {
     }
 
     /// 启动服务器
-    pub async fn start(&self, server: Arc<PlusServerState>) {
+    pub async fn start(&self, _server: Arc<PlusServerState>) {
+        let router = Arc::clone(&self.router);
         let sse_tx = self.sse_tx.clone();
-        let state = Arc::new(HttpAppState { server, sse_tx });
+        let state = Arc::new(HttpAppState { router, sse_tx });
 
-        // 构建插件路由转发器
-        let routes = self.routes.read().await;
-        let mut router = Router::new();
-        for entry in routes.iter() {
-            let handler = Arc::clone(&entry.handler);
-            let path = entry.path.clone();
-            // 提取路径参数（<param> → {param}）
-            let axum_path = path.replace('<', "{").replace('>', "}");
-            let axum_path_for_route = axum_path.clone();
-            router = router.route(
-                &axum_path_for_route,
-                any(move |uri: Uri, body: Option<axum::extract::Json<Value>>| {
-                    let h = Arc::clone(&handler);
-                    let axum_path = axum_path.clone();
-                    async move {
-                        let params = extract_path_params(&axum_path, &uri.path());
-                        let body = body.map(|j| j.0);
-                        // 在 blocking 线程中运行处理器（避免 tokio RwLock blocking_read panic）
-                        let result = tokio::task::spawn_blocking(move || {
-                            h(body, params)
-                        }).await.unwrap_or(Err((500, "handler panicked".to_string())));
-                        match result {
-                            Ok(json) => (StatusCode::OK, Json(json)).into_response(),
-                            Err((code, msg)) => {
-                                let err = serde_json::json!({"error": msg});
-                                (StatusCode::from_u16(code).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR), Json(err)).into_response()
-                            }
-                        }
-                    }
-                }),
-            );
-        }
-        drop(routes);
-
-        // 添加 SSE 端点
-        router = router.route("/api/events", get(sse_handler));
-
-        let router = router
+        let app = Router::new()
+            // SSE 端点
+            .route("/api/events", axum::routing::get(sse_handler))
+            // 动态路由 — 所有其他请求通过匹配派发
+            .route("/{*path}", any(dynamic_handler))
             .layer(CorsLayer::permissive())
             .with_state(state);
 
@@ -136,23 +160,50 @@ impl PluginHttpServer {
             Ok(l) => l,
             Err(e) => { error!("Bind plugin HTTP: {e}"); return; }
         };
-        if let Err(e) = axum::serve(listener, router).await {
+        if let Err(e) = axum::serve(listener, app).await {
             error!("Plugin HTTP server: {e}");
         }
     }
 }
 
-/// 从 URI 路径提取命名参数
-fn extract_path_params(pattern: &str, path: &str) -> Vec<String> {
-    let p_segs: Vec<&str> = pattern.split('/').collect();
-    let u_segs: Vec<&str> = path.split('/').collect();
-    let mut params = Vec::new();
-    for (p, u) in p_segs.iter().zip(u_segs.iter()) {
-        if p.starts_with('{') && p.ends_with('}') {
-            params.push(u.to_string());
+/// 所有注册路由的 catch-all 处理器
+async fn dynamic_handler(
+    axum::extract::State(st): axum::extract::State<Arc<HttpAppState>>,
+    method: Method,
+    uri: Uri,
+    body: Option<axum::extract::Json<Value>>,
+) -> impl IntoResponse {
+    // 尝试从动态路由表查找匹配
+    let handler = {
+        let guard = st.router.read().await;
+        guard.resolve(&method, &uri)
+    };
+
+    match handler {
+        Some((h, params)) => {
+            let request_body = body.map(|j| j.0);
+            // 在 blocking 线程中运行处理器
+            let result = tokio::task::spawn_blocking(move || {
+                h(request_body, params)
+            }).await;
+
+            match result {
+                Ok(Ok(json)) => (StatusCode::OK, Json(json)).into_response(),
+                Ok(Err((code, msg))) => {
+                    let err = serde_json::json!({"error": msg});
+                    (StatusCode::from_u16(code).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR), Json(err)).into_response()
+                }
+                Err(_) => {
+                    let err = serde_json::json!({"error": "handler panicked"});
+                    (StatusCode::INTERNAL_SERVER_ERROR, Json(err)).into_response()
+                }
+            }
+        }
+        None => {
+            let err = serde_json::json!({"error": format!("route not found: {}", uri.path())});
+            (StatusCode::NOT_FOUND, Json(err)).into_response()
         }
     }
-    params
 }
 
 /// 桥接：将 api::HttpHandleInner 连接到 PluginHttpServer
@@ -165,9 +216,8 @@ impl api::HttpHandleInner for HttpHandleBridge {
 }
 
 /// Axum 共享状态
-#[allow(dead_code)]
 struct HttpAppState {
-    server: Arc<PlusServerState>,
+    router: Arc<RwLock<DynamicRouter>>,
     sse_tx: broadcast::Sender<SseEvent>,
 }
 
