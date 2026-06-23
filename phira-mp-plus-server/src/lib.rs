@@ -10,6 +10,8 @@ pub mod extensions;
 pub mod l10n;
 pub mod plugin;
 pub mod plugin_http;
+#[cfg(feature = "plugin-system")]
+pub mod wasm_host;
 pub mod room;
 pub mod server;
 pub mod session;

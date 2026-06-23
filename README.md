@@ -10,7 +10,7 @@
 
 ### 核心特性
 
-- **🧩 原生插件系统** — 基于 `NativePlugin` trait 的可扩展插件架构，插件可注册路由、CLI 命令、Hook 事件
+- **🧩 插件系统** — 原生 Rust 插件（`NativePlugin` trait）+ WASM 插件（基于 wasmtime 动态加载），插件可注册路由、CLI 命令、Hook 事件
 - **🖥️ TUI 管理控制台** — 基于 `ratatui` + `crossterm` 的终端界面，支持命令输入、日志实时显示
 - **🌐 中央 HTTP/SSE 服务器** — 插件在统一端口注册路由和 SSE 事件推送
 - **📊 内置插件** — 房间信息 Web API、玩家追踪、游玩时间统计、结算排行、欢迎语

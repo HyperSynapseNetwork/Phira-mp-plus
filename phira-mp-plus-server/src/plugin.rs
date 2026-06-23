@@ -71,17 +71,32 @@ pub trait PluginHost: Send + Sync {
 #[cfg(feature = "plugin-system")]
 pub mod wasm {
     use super::*;
+    use crate::wasm_host;
+    use std::sync::Arc;
+    use std::sync::Mutex;
 
-    /// WASM 插件实例
+    /// WASM 插件实例包装器
+    ///
+    /// 实现 PluginHost trait，内部使用 wasm_host::WasmPluginInstance
+    /// 进行实际的 WASM 运行时交互。
+    /// 使用 Mutex 实现内部可变性，满足 trigger_event(&self) 的签名要求。
     pub struct WasmPlugin {
         meta: PluginMeta,
-        // 在实际实现中，这里会包含 wasmtime 的 Instance 和 Linker
-        // wasm_instance: wasmtime::Instance,
-        // wasm_store: wasmtime::Store<()>,
+        /// 共享的宿主服务
+        services: Arc<wasm_host::WasmPluginServices>,
+        /// 已加载的 WASM 运行时实例（init 后创建）
+        /// 使用 Mutex 实现内部可变性以兼容 &self 事件分发
+        instance: Mutex<Option<wasm_host::WasmPluginInstance>>,
     }
 
     impl WasmPlugin {
-        pub fn new(path: &str, info: PluginInfo) -> Self {
+        /// 创建新的 WASM 插件（尚未加载 WASM 模块）
+        /// 实际加载在 init() 中完成
+        pub fn new(
+            path: &str,
+            info: PluginInfo,
+            services: Arc<wasm_host::WasmPluginServices>,
+        ) -> Self {
             Self {
                 meta: PluginMeta {
                     info,
@@ -89,6 +104,8 @@ pub mod wasm {
                     state: PluginState::Loaded,
                     enabled: true,
                 },
+                services,
+                instance: Mutex::new(None),
             }
         }
     }
@@ -103,18 +120,60 @@ pub mod wasm {
         }
 
         fn init(&mut self) -> Result<(), String> {
-            // 初始化 wasmtime 实例，调用插件导出的 init 函数
+            // 读取 WASM 文件字节码
+            let wasm_bytes = std::fs::read(&self.meta.path)
+                .map_err(|e| format!("failed to read WASM file '{}': {}", self.meta.path, e))?;
+
+            // 创建 WASM 实例
+            let mut instance = wasm_host::WasmPluginInstance::new(
+                &wasm_bytes,
+                &self.meta.path,
+                Arc::clone(&self.services),
+            )?;
+
+            // 更新元数据为 WASM 模块中声明的信息
+            self.meta.info = super::PluginInfo {
+                name: instance.info.name.clone(),
+                version: instance.info.version.clone(),
+                author: instance.info.author.clone(),
+                description: instance.info.description.clone(),
+            };
+
+            // 调用 WASM 模块的 init 导出函数
+            instance.call_init()?;
+
+            // 保存实例
+            *self.instance.lock().unwrap() = Some(instance);
             self.meta.state = PluginState::Enabled;
+
+            info!("WASM plugin '{}' loaded and initialized", self.meta.info.name);
             Ok(())
         }
 
         fn cleanup(&mut self) {
+            if let Some(ref mut instance) = *self.instance.lock().unwrap() {
+                instance.call_cleanup();
+            }
+            *self.instance.lock().unwrap() = None;
             self.meta.state = PluginState::Disabled;
-            info!("plugin '{}' cleaned up", self.meta.info.name);
+            info!("WASM plugin '{}' cleaned up", self.meta.info.name);
         }
 
-        fn trigger_event(&self, _event: &PluginEvent) -> Vec<String> {
-            // 调用插件导出的 on_* 函数并将结果收集
+        fn trigger_event(&self, event: &PluginEvent) -> Vec<String> {
+            if !self.meta.enabled {
+                return Vec::new();
+            }
+
+            // 通过 Mutex 获取实例的可变引用
+            let mut guard = self.instance.lock().unwrap();
+            let instance = match guard.as_mut() {
+                Some(inst) => inst,
+                None => return Vec::new(),
+            };
+
+            // 使用统一的 call_on_event 接口传递所有事件
+            instance.call_on_event(event);
+
             Vec::new()
         }
     }
@@ -204,10 +263,20 @@ pub struct PluginManager {
     http_handle: Arc<RwLock<Option<api::HttpHandle>>>,
     send_chat: Arc<RwLock<Option<Arc<dyn Fn(i32, String) + Send + Sync>>>>,
     default_state: Arc<RwLock<Option<api::ServerStateQuery>>>,
+    /// WASM 插件共享服务（仅 plugin-system feature 启用时使用）
+    #[cfg(feature = "plugin-system")]
+    wasm_services: Arc<crate::wasm_host::WasmPluginServices>,
 }
 
 impl PluginManager {
     pub fn new(plugins_dir: &str, extensions: Arc<ExtensionManager>) -> Self {
+        #[cfg(feature = "plugin-system")]
+        let wasm_services = {
+            let ws = Arc::new(crate::wasm_host::WasmPluginServices::new(
+                Arc::clone(&extensions),
+            ));
+            ws
+        };
         Self {
             plugins: Arc::new(RwLock::new(Vec::new())),
             cli_commands: Arc::new(Mutex::new(HashMap::new())),
@@ -217,21 +286,35 @@ impl PluginManager {
             http_handle: Arc::new(RwLock::new(None)),
             send_chat: Arc::new(RwLock::new(None)),
             default_state: Arc::new(RwLock::new(None)),
+            #[cfg(feature = "plugin-system")]
+            wasm_services,
         }
     }
 
     /// 设置默认状态查询句柄（提供给所有插件）
     pub async fn set_default_state(&self, q: api::ServerStateQuery) {
+        #[cfg(feature = "plugin-system")]
+        {
+            *self.wasm_services.state_query.write().unwrap() = Some(q.clone());
+        }
         *self.default_state.write().await = Some(q);
     }
 
     /// 设置发送聊天消息的句柄
     pub async fn set_send_chat(&self, f: Arc<dyn Fn(i32, String) + Send + Sync>) {
+        #[cfg(feature = "plugin-system")]
+        {
+            *self.wasm_services.send_chat.write().unwrap() = Some(Arc::clone(&f));
+        }
         *self.send_chat.write().await = Some(f);
     }
 
     /// 设置中央 HTTP 句柄（让插件在 init 中注册路由）
     pub async fn set_http_handle(&self, handle: api::HttpHandle) {
+        #[cfg(feature = "plugin-system")]
+        {
+            *self.wasm_services.http_handle.write().unwrap() = Some(handle.clone());
+        }
         *self.http_handle.write().await = Some(handle);
     }
 
@@ -362,11 +445,18 @@ impl PluginManager {
                         author: "unknown".to_string(),
                         description: format!("WASM plugin from {}", path.display()),
                     };
-                    let mut plugin =
-                        wasm::WasmPlugin::new(path.to_str().unwrap_or(""), info.clone());
-                    plugin.init()?;
-                    let meta = plugin.meta().clone();
-                    self.plugins.write().await.push(Box::new(plugin));
+                    let plugin = wasm::WasmPlugin::new(
+                        path.to_str().unwrap_or(""),
+                        info.clone(),
+                        Arc::clone(&self.wasm_services),
+                    );
+                    // init 将进行实际的 WASM 加载和实例化
+                    // 这里先不初始化，由调用者在外部显式调用 init
+                    // 或者我们在这里初始化
+                    let mut p = Box::new(plugin);
+                    p.init()?;
+                    let meta = p.meta().clone();
+                    self.plugins.write().await.push(p);
                     Ok(meta)
                 }
                 #[cfg(not(feature = "plugin-system"))]
