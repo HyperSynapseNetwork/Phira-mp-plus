@@ -9,12 +9,13 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Position},
     style::{Color, Modifier, Style},
     text::{Line, Span, Text},
-    widgets::{Block, Borders, Clear, Paragraph},
+    widgets::{Block, Borders, Clear, Paragraph, Wrap},
     Frame, Terminal,
 };
 use std::io;
 use std::time::Duration;
 use tokio::sync::mpsc;
+use tokio::sync::mpsc::error::TryRecvError;
 
 /// 运行 TUI 主循环（阻塞当前线程）
 pub fn run_tui(
@@ -114,12 +115,25 @@ impl TuiApp {
 
         while self.running {
             // 清空输出通道（CLI 处理器发来的结果）
-            while let Ok(msg) = out_rx.try_recv() {
-                self.add_output(strip_ansi(&msg));
+            loop {
+                match out_rx.try_recv() {
+                    Ok(msg) => self.add_output(strip_ansi(&msg)),
+                    Err(TryRecvError::Empty) => break,
+                    Err(TryRecvError::Disconnected) => {
+                        // CLI 处理器已退出，标记结束
+                        self.running = false;
+                        break;
+                    }
+                }
             }
             // 清空日志通道（tracing 发来的日志）
             while let Ok(msg) = log_rx.try_recv() {
                 self.add_output(strip_ansi(&msg));
+            }
+
+            // CLI 端已断开 → 退出 TUI
+            if !self.running {
+                break;
             }
 
             // 检查键盘输入（带超时，让位给通道检查）
@@ -375,7 +389,9 @@ impl TuiApp {
         let output_block = Block::default()
             .borders(Borders::ALL)
             .border_style(Style::default().fg(Color::DarkGray));
-        let output_para = Paragraph::new(Text::from(visible_lines)).block(output_block);
+        let output_para = Paragraph::new(Text::from(visible_lines))
+            .block(output_block)
+            .wrap(Wrap { trim: false });
         frame.render_widget(output_para, chunks[1]);
 
         // ── 分隔线 ──
