@@ -522,6 +522,12 @@ async fn process(user: Arc<User>, cmd: ClientCommand) -> Option<ServerCommand> {
                     .collect();
                 if !touch_data.is_empty() {
                     room.store_player_touches(user.id, &touch_data).await;
+                    // 同时写入轮次持久化存储
+                    if let Some(rid) = room.current_round_id.read().await.as_ref() {
+                        if let Some(server) = room.server.as_ref().and_then(|w| w.upgrade()) {
+                            server.round_store.append_touches(&rid.to_string(), user.id, &touch_data).await;
+                        }
+                    }
                 }
                 // 触发插件事件：玩家触摸
                 let pm = Arc::clone(&user.server.plugin_manager);
@@ -563,6 +569,12 @@ async fn process(user: Arc<User>, cmd: ClientCommand) -> Option<ServerCommand> {
                     .collect();
                 if !judge_data.is_empty() {
                     room.store_player_judges(user.id, &judge_data).await;
+                    // 同时写入轮次持久化存储
+                    if let Some(rid) = room.current_round_id.read().await.as_ref() {
+                        if let Some(server) = room.server.as_ref().and_then(|w| w.upgrade()) {
+                            server.round_store.append_judges(&rid.to_string(), user.id, &judge_data).await;
+                        }
+                    }
                 }
                 // 触发插件事件：玩家判定
                 let pm = Arc::clone(&user.server.plugin_manager);
@@ -602,6 +614,7 @@ async fn process(user: Arc<User>, cmd: ClientCommand) -> Option<ServerCommand> {
                     Arc::downgrade(&user),
                     Some(Arc::clone(&user.server.plugin_manager)),
                     max_users,
+                    Some(Arc::downgrade(&user.server)),
                 ));
                 match map_guard.entry(id.clone()) {
                     std::collections::hash_map::Entry::Vacant(entry) => {

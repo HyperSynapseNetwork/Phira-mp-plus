@@ -11,6 +11,7 @@ pub mod l10n;
 pub mod plugin;
 pub mod plugin_http;
 pub mod rate_limiter;
+pub mod round_store;
 #[cfg(feature = "plugin-system")]
 pub mod wasm_host;
 pub mod room;

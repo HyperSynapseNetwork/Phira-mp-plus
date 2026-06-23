@@ -40,11 +40,14 @@ cli_enabled: true
 # 每房间最大玩家数（不设则使用默认 8）
 # max_users_per_room: 8
 
-# 连接速率限制（每秒最多连接数）
+# 连接速率限制（窗口内允许次数）
 connection_rate_limit: 30
 
 # 连接速率统计窗口（秒）
 connection_rate_window: 10
+
+# 轮次 Touches/Judges 数据保留天数（0 为不保留）
+round_data_retention_days: 7
 
 # ---- 定制 ----
 

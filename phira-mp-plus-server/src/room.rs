@@ -18,7 +18,7 @@ use std::{
     },
 };
 use tokio::sync::RwLock;
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
 #[derive(Default, Debug)]
 pub enum InternalRoomState {
@@ -127,10 +127,19 @@ pub struct Room {
 
     /// 各玩家实时触控/判定数据缓存（供插件 WASM WIT API 查询）
     pub player_data: RwLock<HashMap<i32, PlayerLiveData>>,
+
+    /// 服务器状态弱引用（用于访问 round_store 等）
+    pub server: Option<Weak<super::server::PlusServerState>>,
 }
 
 impl Room {
-    pub fn new(id: RoomId, host: Weak<super::session::User>, plugin_manager: Option<Arc<PluginManager>>, max_users: usize) -> Self {
+    pub fn new(
+        id: RoomId,
+        host: Weak<super::session::User>,
+        plugin_manager: Option<Arc<PluginManager>>,
+        max_users: usize,
+        server: Option<Weak<super::server::PlusServerState>>,
+    ) -> Self {
         Self {
             id,
             host: host.clone().into(),
@@ -149,6 +158,7 @@ impl Room {
             plugin_manager,
             max_users,
             player_data: RwLock::new(HashMap::new()),
+            server,
         }
     }
 
@@ -488,6 +498,30 @@ impl Room {
                         aborted: HashSet::new(),
                     };
                     self.on_state_change().await;
+
+                    // 打开轮次数据存储
+                    let rid = round_id.to_string();
+                    let chart_info = self.chart.read().await;
+                    let (cid, cn) = chart_info.as_ref().map(|c| (c.id, c.name.clone())).unwrap_or((0, "?".into()));
+                    drop(chart_info);
+                    let players: Vec<i32> = self.users().await.into_iter().map(|u| u.id).collect();
+                    if let Some(server) = self.server.as_ref().and_then(|w| w.upgrade()) {
+                        let meta = crate::round_store::RoundMeta {
+                            round_uuid: rid,
+                            chart_id: cid,
+                            chart_name: cn,
+                            room_id: self.id.to_string(),
+                            players: players.clone(),
+                            started_at: std::time::SystemTime::now()
+                                .duration_since(std::time::UNIX_EPOCH)
+                                .map(|d| d.as_millis() as i64)
+                                .unwrap_or(0),
+                            finished_at: None,
+                        };
+                        if let Err(e) = server.round_store.open_round(&meta).await {
+                            warn!("round store: failed to open round: {e}");
+                        }
+                    }
                 }
             }
             InternalRoomState::Playing { results, aborted } => {
@@ -502,8 +536,12 @@ impl Room {
                     let rid = *self.current_round_id.read().await;
                     self.save_round_history().await;
 
+                    // 关闭轮次数据存储
                     if let Some(rid) = rid {
                         info!("round complete: {}", rid);
+                        if let Some(server) = self.server.as_ref().and_then(|w| w.upgrade()) {
+                            server.round_store.close_round(&rid.to_string()).await;
+                        }
                     }
 
                     // 触发 RoundComplete 事件

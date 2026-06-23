@@ -102,6 +102,9 @@ pub struct PlusConfig {
     pub phira_api_endpoint: String,
     #[serde(default)]
     pub chat_enabled: bool,
+    /// 轮次 Touches/Judges 数据保留天数（0 = 不保留）
+    #[serde(default = "default_retention_days")]
+    pub round_data_retention_days: u32,
 }
 
 fn default_http_port() -> u16 { 12347 }
@@ -110,6 +113,7 @@ fn default_true() -> bool { true }
 fn default_rate_limit() -> u32 { 30 }
 fn default_rate_window() -> u32 { 10 }
 fn default_phira_api() -> String { "https://phira.5wyxi.com".to_string() }
+fn default_retention_days() -> u32 { 7 }
 
 impl Default for PlusConfig {
     fn default() -> Self {
@@ -128,6 +132,7 @@ impl Default for PlusConfig {
             admin_token: None,
             phira_api_endpoint: "https://phira.5wyxi.com".to_string(),
             chat_enabled: true,
+            round_data_retention_days: 7,
         }
     }
 }
@@ -178,6 +183,8 @@ pub struct PlusServerState {
     pub shutdown: Notify,
     /// 连接速率限制器（按 IP）
     pub connection_limiter: super::rate_limiter::ConnectionRateLimiter,
+    /// 轮次数据持久化存储（Touches/Judges 按轮次写入磁盘）
+    pub round_store: super::round_store::RoundStore,
 }
 
 /// Phira-mp+ 服务器
@@ -219,6 +226,7 @@ impl PlusServer {
         let http_port = config.http_port;
         let rate_limit = config.connection_rate_limit;
         let rate_window = config.connection_rate_window;
+        let retention_days = config.round_data_retention_days;
 
         let state = Arc::new(PlusServerState {
             config,
@@ -233,6 +241,10 @@ impl PlusServer {
             connection_limiter: super::rate_limiter::ConnectionRateLimiter::new(
                 rate_limit,
                 rate_window,
+            ),
+            round_store: super::round_store::RoundStore::new(
+                "data",
+                retention_days,
             ),
         });
 
@@ -367,6 +379,17 @@ impl PlusServer {
             http_server.start(http_state).await;
         });
 
+        // 轮次数据定期清理（每小时检查一次）
+        if retention_days > 0 {
+            let cleanup_state = Arc::clone(&state);
+            tokio::spawn(async move {
+                loop {
+                    tokio::time::sleep(std::time::Duration::from_secs(3600)).await;
+                    cleanup_state.round_store.cleanup_expired().await;
+                }
+            });
+        }
+
         Ok(Self {
             state,
             listener,
@@ -499,6 +522,34 @@ fn server_state_query_inner(state: &Arc<PlusServerState>, method: &str, args: &[
                     Err("no data".to_string())
                 }.await;
                 let _ = tx.send(result);
+            });
+            rx.recv_timeout(std::time::Duration::from_millis(2000))
+                .unwrap_or(Err("query timeout".to_string()))
+        }
+        "round.data" => {
+            let round_uuid = args.get(0).and_then(|v| v.as_str()).unwrap_or("");
+            let player_id = args.get(1).and_then(|v| v.as_i64()).unwrap_or(0) as i32;
+            if round_uuid.is_empty() {
+                return Err("missing round_uuid".to_string());
+            }
+            let (tx, rx) = std::sync::mpsc::channel();
+            let s = Arc::clone(state);
+            let uuid = round_uuid.to_string();
+            tokio::spawn(async move {
+                let result = s.round_store.read_player_data(&uuid, player_id).await
+                    .map(|data| serde_json::to_value(data).unwrap_or_default())
+                    .ok_or_else(|| "round data not found".to_string());
+                let _ = tx.send(result);
+            });
+            rx.recv_timeout(std::time::Duration::from_millis(2000))
+                .unwrap_or(Err("query timeout".to_string()))
+        }
+        "round.list" => {
+            let (tx, rx) = std::sync::mpsc::channel();
+            let s = Arc::clone(state);
+            tokio::spawn(async move {
+                let rounds = s.round_store.list_rounds().await;
+                let _ = tx.send(Ok(serde_json::to_value(rounds).unwrap_or_default()));
             });
             rx.recv_timeout(std::time::Duration::from_millis(2000))
                 .unwrap_or(Err("query timeout".to_string()))

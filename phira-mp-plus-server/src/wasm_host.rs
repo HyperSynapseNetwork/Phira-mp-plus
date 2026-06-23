@@ -503,6 +503,8 @@ impl WasmPluginInstance {
     /// - `time.now`     → 获取当前时间（ISO 8601）
     /// - `player.touches` → 查询指定用户的最近触控数据
     /// - `player.judges`  → 查询指定用户的最近判定数据
+    /// - `round.data`     → 查询指定轮次+玩家的完整 Touches/Judges
+    /// - `round.list`     → 列出所有已记录的轮次
     fn dispatch_api(svc: &WasmPluginServices, plugin_name: &str, method: &str, args: &str) -> Result<String, String> {
         let (method_name, rest) = method.split_once('.').unwrap_or((method, ""));
         match (method_name, rest) {
@@ -698,6 +700,28 @@ impl WasmPluginInstance {
                 let guard = svc.state_query.read().map_err(|e| format!("lock error: {}", e))?;
                 match guard.as_ref() {
                     Some(sq) => sq.call("player.judges", &[serde_json::json!(uid)])
+                        .map(|v| v.to_string()),
+                    None => Err("state query not available".to_string()),
+                }
+            }
+            ("round", "data") => {
+                // 查询指定轮次+玩家的完整 Touches/Judges
+                let args_val: serde_json::Value = serde_json::from_str(args)
+                    .map_err(|e| format!("invalid args: {}", e))?;
+                let round_uuid = args_val.get("round_uuid").and_then(|v| v.as_str()).ok_or("missing round_uuid")?;
+                let player_id = args_val.get("player_id").and_then(|v| v.as_i64()).ok_or("missing player_id")? as i32;
+                let guard = svc.state_query.read().map_err(|e| format!("lock error: {}", e))?;
+                match guard.as_ref() {
+                    Some(sq) => sq.call("round.data", &[serde_json::json!(round_uuid), serde_json::json!(player_id)])
+                        .map(|v| v.to_string()),
+                    None => Err("state query not available".to_string()),
+                }
+            }
+            ("round", "list") => {
+                // 列出所有已记录的轮次
+                let guard = svc.state_query.read().map_err(|e| format!("lock error: {}", e))?;
+                match guard.as_ref() {
+                    Some(sq) => sq.call("round.list", &[])
                         .map(|v| v.to_string()),
                     None => Err("state query not available".to_string()),
                 }
