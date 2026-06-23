@@ -114,7 +114,10 @@ fn replace_placeholders(template: &str, user_id: i32, user_name: &str, user_ip: 
                 items.iter().enumerate().map(|(i, item)| {
                     let uid = item.get("user_id").and_then(|v| v.as_i64()).unwrap_or(0);
                     let secs = item.get("total_playtime").and_then(|v| v.as_u64()).unwrap_or(0);
-                    let name = resolve_name(uid as i32, ctx);
+                    // 优先用 API 返回的 user_name，回退到 resolve_name
+                    let name = item.get("user_name").and_then(|v| v.as_str())
+                        .map(|s| s.to_string())
+                        .unwrap_or_else(|| resolve_name(uid as i32, ctx));
                     format!("#{} {} {:.1}h", i + 1, name, secs as f64 / 3600.0)
                 }).collect()
             } else { vec![] };
