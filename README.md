@@ -1,27 +1,18 @@
-# Phira-mp+
+# Phira-mp +
 
-> 基于 Phira-mp 二次开发的增强版 Phira 多人游戏服务端
+> 使用AI开发
 
 [![License](https://img.shields.io/badge/License-AGPLv3-blue.svg)](LICENSE)
 
 ## 简介
 
-**Phira-mp+** 是 [Phira-mp](https://github.com/team-phira/phira-mp) 的增强版本，具备完善的插件系统、TUI 管理控制台、黑名单管理、游玩记录追踪、Web API 等特性。
+**Phira-mp +** 是基于 [Phira-mp](https://github.com/team-phira/phira-mp) 开发的Phira多人游戏服务端，使用Rust开发，支持WASM插件系统，旨在提供稳定，高性能，高拓展性的Phira多人游戏服务端。
 
 ### 核心特性
 
 - **🧩 插件系统** — 原生 Rust 插件（`NativePlugin` trait）+ WASM 插件（基于 wasmtime 动态加载），插件可注册路由、CLI 命令、Hook 事件
 - **🖥️ TUI 管理控制台** — 基于 `ratatui` + `crossterm` 的终端界面，支持命令输入、日志实时显示
-- **🌐 中央 HTTP/SSE 服务器** — 插件在统一端口注册路由和 SSE 事件推送，支持运行时动态注册
-- **⚙️ YAML 配置文件** — 支持 `server_config.yml`，三层覆盖：YAML → 环境变量 → CLI 参数
-- **🚦 速率限制** — 连接速率限制（按 IP 滑动窗口）+ 命令速率限制（令牌桶）
-- **💾 轮次数据持久化** — Touches/Judges 按轮次写入磁盘 (JSONL)，支持配置保留天数与后台清理
-- **🔐 安全增强** — 令牌使用 SHA-256 哈希，最大会话数保护
-- **🌍 本地化** — 支持多语言消息（en-US/zh-CN/zh-TW），基于 Fluent
 - **📊 内置插件** — 房间信息 Web API、玩家追踪、游玩时间统计、结算排行、欢迎语
-- **🔨 黑名单系统** — 全局封禁 + 房间黑名单，连接时自动拦截
-- **🆔 房间/轮次 UUID** — 每个房间和轮次分配唯一标识符
-- **🛡️ AGPLv3 开源协议**
 
 ## 技术栈
 
@@ -260,3 +251,9 @@ impl NativePlugin for MyPlugin {
 ## 许可证
 
 AGPLv3 — 详见 [LICENSE](LICENSE)。
+
+## 致谢
+
+感谢[TeamFlos](https://github.com/TeamFlos)开发并维护Phira,Phira-mp项目
+感谢[tphira-mp](https://github.com/Pimeng/tphira-mp),[jphira-mp](https://github.com/lRENyaaa/jphira-mp)的启发
+感谢所有资助过我们的用户[捐献页](https://phira.htadiy.com/about)
