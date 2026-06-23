@@ -93,13 +93,15 @@ plugins/                       # 独立插件
 
 ## 内置插件
 
+详细文档见 [docs/plugins/](docs/plugins/)。
+
 | 插件 | 功能 | CLI 命令 | Web API |
 |------|------|---------|---------|
-| **room-info-web-api** | 房间信息查询 | — | `GET /api/rooms/info` (SSE `/api/events`) |
+| **room-info-web-api** | 房间信息查询与 SSE 事件 | — | `GET /api/rooms/info` |
 | **player-tracker** | 记录游玩过的玩家 | `players`, `player-count` | `GET /api/players/count`, `/api/players/list` |
-| **playtime-tracker** | 游玩时间统计排行 | `playtime <id>`, `playtime-top [n]` | `GET /api/user_rank/<id>`, `/api/playtime_leaderboard` |
+| **playtime-tracker** | 游玩时间统计与排行 | `playtime <id>`, `playtime-top [n]` | `GET /api/user_rank/<id>` |
 | **round-results** | 每轮结算排行输出 | `round-last <room_id>` | `GET /api/round/last/<room_id>` |
-| **welcome-plugin** | 可配置欢迎语（含占位符） | `welcome-config` | — |
+| **welcome-plugin** | 可配置欢迎语（支持占位符） | `welcome-config` | — |
 
 ## CLI 命令
 
