@@ -6,7 +6,7 @@
 
 ## 简介
 
-**Phira-mp +** 是基于 [Phira-mp](https://github.com/team-phira/phira-mp) 开发的Phira多人游戏服务端，使用Rust开发，支持WASM插件系统，旨在提供稳定，高性能，高拓展性的Phira多人游戏服务端。
+**Phira-mp +** 是基于 [Phira-mp By HSN](https://github.com/HyperSynapseNetwork/phira-mp) 开发的Phira多人游戏服务端，使用Rust开发，支持WASM插件系统，旨在提供稳定，高性能，高拓展性的Phira多人游戏服务端。
 
 ### 核心特性
 
@@ -137,7 +137,7 @@ Phira-mp-plus/
 │   └── src/lib.rs               #   PluginEvent / NativePlugin / PluginContext
 │                                #   ServerStateQuery / HttpHandle / CliHandle / PluginApiRegistry
 │
-├── phira-mp/                    # ★ 上游 phira-mp 子模块 (协议层 + 原始服务端)
+├── phira-mp/                    # ★ 上游 phira-mp By HSN 子模块 (协议层 + 原始服务端)
 │   ├── phira-mp-common/         #   网络协议: 二进制编码 (BinaryData trait)、
 │   │   └── src/                 #     命令定义 (ClientCommand / ServerCommand)、
 │   │       ├── lib.rs           #     Stream 帧协议、RoomId / RoomState / 消息类型
