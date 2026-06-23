@@ -159,8 +159,6 @@ Phira-mp-plus/
 │   │   └── src/lib.rs           #   CLI: round-last  |  API: /api/round/last/{room_id}
 │   ├── welcome-plugin/          #   可配置欢迎语
 │   │   └── src/lib.rs           #   占位符: [user_name] [player-count] [top_playtime] [active_rooms]
-│   ├── web-monitor/             #   Web 监测 API（兼容 .phira-web-monitor）
-│   │   └── src/lib.rs           #   /rooms/info, /rooms/listen, /ws/live, /auth/login, /chart/{id}
 │   └── stress-test/             #   服务端压测
 │       └── src/lib.rs           #   CLI: benchmark, bench-quick, bench-cleanup
 │

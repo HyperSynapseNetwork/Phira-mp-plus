@@ -405,17 +405,6 @@ impl PlusServer {
             }
         }
 
-        // 注册 Web Monitor 插件（--features web-monitor）
-        #[cfg(feature = "web-monitor")]
-        {
-            if let Err(e) = state.plugin_manager.register_native(
-                phira_mp_plus_web_monitor::WebMonitorPlugin::create(),
-                "web-monitor",
-            ).await {
-                warn!("web-monitor plugin init failed: {e}");
-            }
-        }
-
         // 注册欢迎语插件（--features welcome-plugin）
         #[cfg(feature = "welcome-plugin")]
         {

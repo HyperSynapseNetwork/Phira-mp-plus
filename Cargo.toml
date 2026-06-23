@@ -13,7 +13,6 @@ members = [
     "plugins/playtime-tracker",
     "plugins/round-results",
     "plugins/stress-test",
-    "plugins/web-monitor",
     "plugins/welcome-plugin",
 ]
 resolver = "2"

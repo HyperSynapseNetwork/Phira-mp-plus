@@ -342,7 +342,7 @@ impl Session {
                                         .await;
                                     // 通知 room monitor 新用户
                                     let uid = user.id;
-                                    let session = this.get().map(|s| Arc::clone(s));
+                                    let _session = this.get().map(|s| Arc::clone(s));
                                     tokio::spawn(async move {
                                         if let Some(mon) = server.get_room_monitor().await {
                                             mon.stream.send(ServerCommand::UserVisit(uid)).await.ok();
@@ -350,6 +350,16 @@ impl Session {
                                     });
                                     waiting_for_authenticate.store(false, Ordering::SeqCst);
                                 }
+                                return;
+                            } else if let ClientCommand::ConsoleAuthenticate { .. } = cmd {
+                                // 控制台客户端 - 简单放行
+                                let Some(tx) = tx else { return };
+                                let user = Arc::new(User::new(-2, "$console".into(), Language::default(), Arc::clone(&server)));
+                                let _ = tx.send(Arc::clone(&user));
+                                this_inited.notified().await;
+                                user.set_session(Arc::downgrade(this.get().unwrap())).await;
+                                let _ = send_tx.send(ServerCommand::Authenticate(Ok((user.to_info(), None)))).await;
+                                waiting_for_authenticate.store(false, Ordering::SeqCst);
                                 return;
                             } else if let ClientCommand::RoomMonitorAuthenticate { key } = cmd {
                                 let Some(tx) = tx else { return };
@@ -1061,7 +1071,7 @@ async fn process(user: Arc<User>, cmd: ClientCommand) -> Option<ServerCommand> {
                 Err(_) => None,
             }
         }
-        ClientCommand::RoomMonitorAuthenticate { .. } | ClientCommand::GameMonitorAuthenticate { .. } => {
+        ClientCommand::RoomMonitorAuthenticate { .. } | ClientCommand::GameMonitorAuthenticate { .. } | ClientCommand::ConsoleAuthenticate { .. } => {
             Some(ServerCommand::Authenticate(Err("already authenticated".into())))
         }
     }
