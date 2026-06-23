@@ -288,10 +288,8 @@ impl ExtensionManager {
         self.store.write().await.auth_cache = cache;
     }
 
+    /// 更新认证缓存（不会立即写盘 — 由外部定期 persist）
     pub async fn update_auth_cache(&self, token_hash: u64, entry: AuthCacheEntry) {
-        {
-            self.store.write().await.auth_cache.insert(token_hash, entry);
-        }
-        let _ = self.persist().await;
+        self.store.write().await.auth_cache.insert(token_hash, entry);
     }
 }

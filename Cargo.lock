@@ -1844,6 +1844,7 @@ dependencies = [
  "phira-mp-plus-playtime-tracker",
  "phira-mp-plus-round-results",
  "phira-mp-plus-server-api",
+ "phira-mp-plus-stress-test",
  "phira-mp-plus-web-monitor",
  "phira-mp-plus-webapi",
  "phira-mp-plus-welcome-plugin",
@@ -1871,6 +1872,15 @@ version = "0.1.0"
 dependencies = [
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "phira-mp-plus-stress-test"
+version = "0.1.0"
+dependencies = [
+ "phira-mp-plus-server-api",
+ "serde_json",
+ "tracing",
 ]
 
 [[package]]

@@ -40,7 +40,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::net::TcpListener;
 use tokio::sync::{Notify, RwLock, mpsc};
-use tracing::{info, warn};
+use tracing::{info, trace, warn};
 
 use uuid::Uuid;
 
@@ -362,6 +362,17 @@ impl PlusServer {
             }
         }
 
+        // 注册压测插件（--features stress-test）
+        #[cfg(feature = "stress-test")]
+        {
+            if let Err(e) = state.plugin_manager.register_native(
+                phira_mp_plus_stress_test::StressTestPlugin::create(),
+                "stress-test",
+            ).await {
+                warn!("stress-test plugin init failed: {e}");
+            }
+        }
+
         // 注册 Web Monitor 插件（--features web-monitor）
         #[cfg(feature = "web-monitor")]
         {
@@ -390,6 +401,17 @@ impl PlusServer {
             http_server.start(http_state).await;
         });
 
+        // 定期持久化 auth 缓存（避免每次认证都写盘）
+        let persist_state = Arc::clone(&state);
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+                if let Err(e) = persist_state.extensions.persist().await {
+                    warn!("auth cache persist: {e}");
+                }
+            }
+        });
+
         // 轮次数据定期清理（每小时检查一次）
         if retention_days > 0 {
             let cleanup_state = Arc::clone(&state);
@@ -414,29 +436,19 @@ impl PlusServer {
         let ip = addr.ip().to_string();
 
         // 连接速率限制检查
-        let rate_limited = !self.state.connection_limiter.check(&ip).await;
-        if rate_limited {
-            warn!("connection rate limited: {ip}");
+        if !self.state.connection_limiter.check(&ip).await {
+            // 限流时直接静默丢弃，不产生日志
             return Ok(());
         }
 
-        // 最大会话数检查（防止资源耗尽）
-        {
-            let guard = self.state.sessions.read().await;
+        // 最大会话数快速检查（try_read 避免阻塞）
+        if let Ok(guard) = self.state.sessions.try_read() {
             if guard.len() > 4096 {
-                warn!("max sessions reached, rejecting connection from {ip}");
                 return Ok(());
             }
         }
 
-        let mut guard = self.state.sessions.write().await;
-        let id = {
-            let mut id = Uuid::new_v4();
-            while guard.contains_key(&id) {
-                id = Uuid::new_v4();
-            }
-            id
-        };
+        let id = Uuid::new_v4();
         let session = match super::session::Session::new(id, addr, stream, Arc::clone(&self.state)).await {
             Ok(s) => s,
             Err(e) => {
@@ -444,13 +456,15 @@ impl PlusServer {
                 return Ok(());
             }
         };
-        info!(
-            "received connections from {} ({}), version: {}",
-            addr,
-            session.id,
-            session.version()
-        );
-        guard.insert(id, session);
+
+        // 写锁窗口最小化：仅插入 session
+        if let Ok(mut guard) = self.state.sessions.try_write() {
+            guard.insert(id, session);
+        } else {
+            self.state.sessions.write().await.insert(id, session);
+        }
+
+        trace!("connection from {ip} accepted, session {id}");
         Ok(())
     }
 
