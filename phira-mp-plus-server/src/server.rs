@@ -276,11 +276,11 @@ impl PlusServer {
             });
         })).await;
 
-        // 设置默认状态查询（所有插件可用 ctx.state）
+        // 设置默认状态查询（所有插件可用 ctx.state / WIT API state.query）
         let state_query_all = api::ServerStateQuery::new({
             let s = Arc::clone(&state);
             move |method: &str, args: &[Value]| -> Result<Value, String> {
-                server_state_query(&s, method, args)
+                server_state_query_inner(&s, method, args)
             }
         });
         state.plugin_manager.set_default_state(state_query_all).await;
@@ -451,11 +451,72 @@ pub struct ServerStats {
     pub port: u16,
 }
 
-// ── Web API 状态查询 ──
+// ── 状态查询（供插件 / WASM WIT API 调用） ──
 
 use std::sync::atomic::Ordering;
 
-/// 处理来自插件查询服务端状态的请求
+/// 统一状态查询入口（插件 / WASM WIT API 均通过此函数查询）
+///
+/// 支持的 method:
+/// - `player.touches`  → 查询指定用户的最近触控数据
+/// - `player.judges`   → 查询指定用户的最近判定数据
+/// - 其它方法委托给 webapi feature 下的 server_state_query
+fn server_state_query_inner(state: &Arc<PlusServerState>, method: &str, args: &[Value]) -> Result<Value, String> {
+    match method {
+        "player.touches" => {
+            let uid = args.get(0).and_then(|v| v.as_i64()).unwrap_or(0) as i32;
+            let (tx, rx) = std::sync::mpsc::channel();
+            let s = Arc::clone(state);
+            tokio::spawn(async move {
+                let result = async {
+                    let rooms = s.rooms.read().await;
+                    for room in rooms.values() {
+                        let data = room.get_player_touches(uid).await;
+                        if !data.is_empty() {
+                            return Ok(serde_json::to_value(data).unwrap_or_default());
+                        }
+                    }
+                    Err("no data".to_string())
+                }.await;
+                let _ = tx.send(result);
+            });
+            rx.recv_timeout(std::time::Duration::from_millis(2000))
+                .unwrap_or(Err("query timeout".to_string()))
+        }
+        "player.judges" => {
+            let uid = args.get(0).and_then(|v| v.as_i64()).unwrap_or(0) as i32;
+            let (tx, rx) = std::sync::mpsc::channel();
+            let s = Arc::clone(state);
+            tokio::spawn(async move {
+                let result = async {
+                    let rooms = s.rooms.read().await;
+                    for room in rooms.values() {
+                        let data = room.get_player_judges(uid).await;
+                        if !data.is_empty() {
+                            return Ok(serde_json::to_value(data).unwrap_or_default());
+                        }
+                    }
+                    Err("no data".to_string())
+                }.await;
+                let _ = tx.send(result);
+            });
+            rx.recv_timeout(std::time::Duration::from_millis(2000))
+                .unwrap_or(Err("query timeout".to_string()))
+        }
+        _ => {
+            // webapi feature 下的扩展查询
+            server_state_query(state, method, args)
+        }
+    }
+}
+
+/// Web API 状态查询（webapi feature 禁用时的降级处理）
+#[cfg(not(feature = "webapi"))]
+fn server_state_query(_state: &Arc<PlusServerState>, method: &str, _args: &[Value]) -> Result<Value, String> {
+    Err(format!("unknown query method: {method}"))
+}
+
+/// Web API 状态查询（仅 webapi feature 启用时编译）
 #[cfg(feature = "webapi")]
 fn server_state_query(state: &Arc<PlusServerState>, method: &str, args: &[Value]) -> Result<Value, String> {
     use serde::Serialize;

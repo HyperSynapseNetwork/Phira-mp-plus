@@ -501,6 +501,8 @@ impl WasmPluginInstance {
     /// - `file.write`   → 写入插件数据目录中的文件
     /// - `uuid.v4`      → 生成 UUID v4
     /// - `time.now`     → 获取当前时间（ISO 8601）
+    /// - `player.touches` → 查询指定用户的最近触控数据
+    /// - `player.judges`  → 查询指定用户的最近判定数据
     fn dispatch_api(svc: &WasmPluginServices, plugin_name: &str, method: &str, args: &str) -> Result<String, String> {
         let (method_name, rest) = method.split_once('.').unwrap_or((method, ""));
         match (method_name, rest) {
@@ -675,6 +677,30 @@ impl WasmPluginInstance {
                     .map(|d| d.as_secs_f64())
                     .unwrap_or(0.0);
                 Ok(format!("{}", now)) // 返回 Unix 时间戳（秒）
+            }
+            ("player", "touches") => {
+                // 查询指定用户的最近触控数据
+                let args_val: serde_json::Value = serde_json::from_str(args)
+                    .map_err(|e| format!("invalid args: {}", e))?;
+                let uid = args_val.get("user_id").and_then(|v| v.as_i64()).ok_or("missing user_id")? as i32;
+                let guard = svc.state_query.read().map_err(|e| format!("lock error: {}", e))?;
+                match guard.as_ref() {
+                    Some(sq) => sq.call("player.touches", &[serde_json::json!(uid)])
+                        .map(|v| v.to_string()),
+                    None => Err("state query not available".to_string()),
+                }
+            }
+            ("player", "judges") => {
+                // 查询指定用户的最近判定数据
+                let args_val: serde_json::Value = serde_json::from_str(args)
+                    .map_err(|e| format!("invalid args: {}", e))?;
+                let uid = args_val.get("user_id").and_then(|v| v.as_i64()).ok_or("missing user_id")? as i32;
+                let guard = svc.state_query.read().map_err(|e| format!("lock error: {}", e))?;
+                match guard.as_ref() {
+                    Some(sq) => sq.call("player.judges", &[serde_json::json!(uid)])
+                        .map(|v| v.to_string()),
+                    None => Err("state query not available".to_string()),
+                }
             }
             _ => Err(format!("unknown API method: {}.{}", method_name, rest)),
         }

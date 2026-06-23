@@ -3,7 +3,7 @@
 //! 增强的房间管理，集成插件事件系统。记录每轮游玩结算数据，
 //! 支持查询历史、转移房主等管理功能。
 
-use crate::plugin::{PluginEvent, PluginManager};
+use crate::plugin::{PluginEvent, PluginManager, TouchEventPoint, JudgeEventItem};
 use crate::server::Chart;
 use anyhow::{Result, bail};
 use phira_mp_common::{ClientRoomState, Message, RoomId, RoomState, ServerCommand};
@@ -53,6 +53,36 @@ pub struct PlayRound {
     pub results: Vec<PlayResult>,
 }
 
+/// 单个用户的实时触控数据缓存
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct PlayerLiveData {
+    /// 最近的触控帧（最多保留 120 帧 ≈ 2 秒 @ 60fps）
+    pub touches: Vec<TouchEventPoint>,
+    /// 最近的判定事件（最多保留 64 条）
+    pub judges: Vec<JudgeEventItem>,
+}
+
+impl PlayerLiveData {
+    pub fn push_touches(&mut self, new_touches: &[TouchEventPoint]) {
+        self.touches.extend_from_slice(new_touches);
+        if self.touches.len() > 120 {
+            self.touches.drain(0..self.touches.len() - 120);
+        }
+    }
+
+    pub fn push_judges(&mut self, new_judges: &[JudgeEventItem]) {
+        self.judges.extend_from_slice(new_judges);
+        if self.judges.len() > 64 {
+            self.judges.drain(0..self.judges.len() - 64);
+        }
+    }
+
+    pub fn clear(&mut self) {
+        self.touches.clear();
+        self.judges.clear();
+    }
+}
+
 /// 单个用户的游玩结算
 #[derive(Debug, Clone, Serialize)]
 pub struct PlayResult {
@@ -94,6 +124,9 @@ pub struct Room {
 
     /// 房间最大玩家数（来自服务器配置或默认值）
     pub max_users: usize,
+
+    /// 各玩家实时触控/判定数据缓存（供插件 WASM WIT API 查询）
+    pub player_data: RwLock<HashMap<i32, PlayerLiveData>>,
 }
 
 impl Room {
@@ -115,6 +148,7 @@ impl Room {
             current_round_id: RwLock::new(None),
             plugin_manager,
             max_users,
+            player_data: RwLock::new(HashMap::new()),
         }
     }
 
@@ -177,6 +211,36 @@ impl Room {
     pub async fn on_state_change(&self) {
         self.broadcast(ServerCommand::ChangeState(self.client_room_state().await))
             .await;
+    }
+
+    // ── 实时监测数据 ──
+
+    /// 存储玩家的触控帧数据（供 WASM 插件 WIT API 查询）
+    pub async fn store_player_touches(&self, user_id: i32, data: &[TouchEventPoint]) {
+        if data.is_empty() { return; }
+        let mut guard = self.player_data.write().await;
+        guard.entry(user_id).or_default().push_touches(data);
+    }
+
+    /// 存储玩家的判定事件数据（供 WASM 插件 WIT API 查询）
+    pub async fn store_player_judges(&self, user_id: i32, data: &[JudgeEventItem]) {
+        if data.is_empty() { return; }
+        let mut guard = self.player_data.write().await;
+        guard.entry(user_id).or_default().push_judges(data);
+    }
+
+    /// 获取玩家的触控数据（WASM WIT API 用）
+    pub async fn get_player_touches(&self, user_id: i32) -> Vec<TouchEventPoint> {
+        self.player_data.read().await.get(&user_id)
+            .map(|d| d.touches.clone())
+            .unwrap_or_default()
+    }
+
+    /// 获取玩家的判定数据（WASM WIT API 用）
+    pub async fn get_player_judges(&self, user_id: i32) -> Vec<JudgeEventItem> {
+        self.player_data.read().await.get(&user_id)
+            .map(|d| d.judges.clone())
+            .unwrap_or_default()
     }
 
     // ── 用户管理 ──

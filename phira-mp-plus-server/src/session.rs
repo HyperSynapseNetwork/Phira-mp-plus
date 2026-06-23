@@ -506,32 +506,34 @@ async fn process(user: Arc<User>, cmd: ClientCommand) -> Option<ServerCommand> {
                 if let Some(frame) = frames.last() {
                     user.game_time.store(frame.time.to_bits(), Ordering::SeqCst);
                 }
+                // 转换触控数据并存入房间缓存（供 WASM WIT API 查询）
+                let touch_data: Vec<crate::plugin::TouchEventPoint> = frames
+                    .iter()
+                    .flat_map(|frame| {
+                        frame.points.iter().map(|(finger, pos)| {
+                            crate::plugin::TouchEventPoint {
+                                time: frame.time,
+                                finger: *finger,
+                                x: pos.x(),
+                                y: pos.y(),
+                            }
+                        })
+                    })
+                    .collect();
+                if !touch_data.is_empty() {
+                    room.store_player_touches(user.id, &touch_data).await;
+                }
                 // 触发插件事件：玩家触摸
                 let pm = Arc::clone(&user.server.plugin_manager);
                 let room_id = room.id.to_string();
-                let frames_for_plugin = Arc::clone(&frames);
+                let touch_data_for_event = touch_data.clone();
                 let uid = user.id;
                 tokio::spawn(async move {
-                    let touch_data: Vec<crate::plugin::TouchEventPoint> = frames_for_plugin
-                        .iter()
-                        .flat_map(|frame| {
-                            frame.points.iter().map(|(finger, pos)| {
-                                crate::plugin::TouchEventPoint {
-                                    time: frame.time,
-                                    finger: *finger,
-                                    x: pos.x(),
-                                    y: pos.y(),
-                                }
-                            })
-                        })
-                        .collect();
-                    if !touch_data.is_empty() {
-                        pm.trigger(&PluginEvent::PlayerTouches {
-                            user_id: uid,
-                            room_id,
-                            data: touch_data,
-                        }).await;
-                    }
+                    pm.trigger(&PluginEvent::PlayerTouches {
+                        user_id: uid,
+                        room_id,
+                        data: touch_data_for_event,
+                    }).await;
                 });
                 tokio::spawn(async move {
                     room.broadcast_monitors(ServerCommand::Touches {
@@ -549,28 +551,30 @@ async fn process(user: Arc<User>, cmd: ClientCommand) -> Option<ServerCommand> {
             get_room!(~ room);
             if room.is_live() {
                 debug!("received {} judge events from {}", judges.len(), user.id);
+                // 转换判定数据并存入房间缓存（供 WASM WIT API 查询）
+                let judge_data: Vec<crate::plugin::JudgeEventItem> = judges
+                    .iter()
+                    .map(|j| crate::plugin::JudgeEventItem {
+                        time: j.time,
+                        line_id: j.line_id,
+                        note_id: j.note_id,
+                        judgement: format!("{:?}", j.judgement),
+                    })
+                    .collect();
+                if !judge_data.is_empty() {
+                    room.store_player_judges(user.id, &judge_data).await;
+                }
                 // 触发插件事件：玩家判定
                 let pm = Arc::clone(&user.server.plugin_manager);
                 let room_id = room.id.to_string();
-                let judges_for_plugin = Arc::clone(&judges);
+                let judge_data_for_event = judge_data.clone();
                 let uid = user.id;
                 tokio::spawn(async move {
-                    let judge_data: Vec<crate::plugin::JudgeEventItem> = judges_for_plugin
-                        .iter()
-                        .map(|j| crate::plugin::JudgeEventItem {
-                            time: j.time,
-                            line_id: j.line_id,
-                            note_id: j.note_id,
-                            judgement: format!("{:?}", j.judgement),
-                        })
-                        .collect();
-                    if !judge_data.is_empty() {
-                        pm.trigger(&PluginEvent::PlayerJudges {
-                            user_id: uid,
-                            room_id,
-                            data: judge_data,
+                    pm.trigger(&PluginEvent::PlayerJudges {
+                        user_id: uid,
+                        room_id,
+                        data: judge_data_for_event,
                         }).await;
-                    }
                 });
                 tokio::spawn(async move {
                     room.broadcast_monitors(ServerCommand::Judges {
