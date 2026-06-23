@@ -1,7 +1,0 @@
-Phira-mp +是一个基于Phira-mp项目二次开发的增强版Phira多人游戏服务端，相对于原版Phira-mp，Phira-mp +通过完善的WASM插件系统与基于WIT实现的api系统使其获得了强大的拓展性，同时得益于WASM和Rust，本服务端还兼具高性能与高稳定性。本服务端还实现了CLI功能，便于管理员管理与维护。CLI命令自己想
-现在请你实现该项目，记得做好git commit，WASM插件系统使用现有成熟框架
-
-参考资料:
-本工作区根目录下的phira-mp文件夹-----Phira-mp源码
-本工作区根目录下的wit.txt-----需要实现的基本api
-本工作区根目录下的md.txt-----文档规范

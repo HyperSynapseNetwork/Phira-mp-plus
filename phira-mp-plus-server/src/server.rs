@@ -53,6 +53,16 @@ macro_rules! read_lock {
         }
     }};
 }
+macro_rules! write_lock {
+    ($lock:expr) => {{
+        loop {
+            match $lock.try_write() {
+                Ok(g) => break g,
+                Err(_) => std::thread::yield_now(),
+            }
+        }
+    }};
+}
 use uuid::Uuid;
 
 pub type SafeMap<K, V> = RwLock<HashMap<K, V>>;
@@ -492,6 +502,72 @@ fn server_state_query(state: &Arc<PlusServerState>, method: &str, args: &[Value]
                 Ok(serde_json::json!({"sent": sent}))
             } else {
                 Ok(serde_json::json!({"sent": false, "error": "room not found"}))
+            }
+        }
+        "admin.room_start" => {
+            let room_name = args.get(0).and_then(|v| v.as_str()).unwrap_or("");
+            let rooms = read_lock!(state.rooms);
+            let rid: phira_mp_common::RoomId = match room_name.to_string().try_into() {
+                Ok(r) => r,
+                Err(_) => return Ok(serde_json::json!({"error": "invalid room"})),
+            };
+            let room = match rooms.get(&rid) {
+                Some(r) => Arc::clone(r),
+                None => return Ok(serde_json::json!({"error": "room not found"})),
+            };
+            let guard = read_lock!(room.state);
+            if matches!(&*guard, crate::room::InternalRoomState::Playing { .. }) {
+                return Ok(serde_json::json!({"error": "already playing"}));
+            }
+            drop(guard);
+            if read_lock!(room.chart).is_none() {
+                return Ok(serde_json::json!({"error": "no chart"}));
+            }
+            let user_ids: std::collections::HashSet<i32> = read_lock!(room.users)
+                .iter().filter_map(|w| w.upgrade().map(|u| u.id)).collect();
+            // 广播 GameStart 消息（直接发送无需 await）
+            let broadcast_cmd = phira_mp_common::ServerCommand::Message(
+                phira_mp_common::Message::GameStart { user: 0 },
+            );
+            for wu in read_lock!(room.users).iter().chain(read_lock!(room.monitors).iter()) {
+                if let Some(u) = wu.upgrade() {
+                    if let Some(s) = read_lock!(u.session).as_ref().and_then(|w| w.upgrade()) {
+                        let _ = s.stream.try_send(broadcast_cmd.clone());
+                    }
+                }
+            }
+            *write_lock!(room.state) = crate::room::InternalRoomState::WaitForReady { started: user_ids };
+            Ok(serde_json::json!({"success": true}))
+        }
+        "admin.room_cancel" => {
+            let room_name = args.get(0).and_then(|v| v.as_str()).unwrap_or("");
+            let rooms = read_lock!(state.rooms);
+            let rid: phira_mp_common::RoomId = match room_name.to_string().try_into() {
+                Ok(r) => r,
+                Err(_) => return Ok(serde_json::json!({"error": "invalid room"})),
+            };
+            let room = match rooms.get(&rid) {
+                Some(r) => Arc::clone(r),
+                None => return Ok(serde_json::json!({"error": "room not found"})),
+            };
+            drop(rooms);
+            let mut guard = write_lock!(room.state);
+            if matches!(&*guard, crate::room::InternalRoomState::WaitForReady { .. }) {
+                // 广播 CancelGame 消息
+                let broadcast_cmd = phira_mp_common::ServerCommand::Message(
+                    phira_mp_common::Message::CancelGame { user: 0 },
+                );
+                for wu in read_lock!(room.users).iter().chain(read_lock!(room.monitors).iter()) {
+                    if let Some(u) = wu.upgrade() {
+                        if let Some(s) = read_lock!(u.session).as_ref().and_then(|w| w.upgrade()) {
+                            let _ = s.stream.try_send(broadcast_cmd.clone());
+                        }
+                    }
+                }
+                *guard = crate::room::InternalRoomState::SelectChart;
+                Ok(serde_json::json!({"success": true}))
+            } else {
+                Ok(serde_json::json!({"error": "not in waiting state"}))
             }
         }
         "rooms.by_user" => {

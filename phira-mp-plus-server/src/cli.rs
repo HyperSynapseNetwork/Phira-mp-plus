@@ -260,6 +260,20 @@ impl CliHandler {
                         self.close_room(args[0]).await;
                     }
                 }
+                "room-start" | "rs" => {
+                    if args.is_empty() {
+                        self.out(format!("  {} {} <房间ID>", c::yellow("?"), c::bold("room-start")));
+                    } else {
+                        self.room_start(args[0]).await;
+                    }
+                }
+                "room-cancel" | "rc" => {
+                    if args.is_empty() {
+                        self.out(format!("  {} {} <房间ID>", c::yellow("?"), c::bold("room-cancel")));
+                    } else {
+                        self.room_cancel(args[0]).await;
+                    }
+                }
                 "room-info" | "ri" => {
                     if args.is_empty() {
                         self.out(format!("  {} {} <房间ID>", c::yellow("?"), c::bold("room-info")));
@@ -334,6 +348,8 @@ impl CliHandler {
         self.out(format!("    {} {:<20} {}", c::dim("│"), "room-history", "游玩记录"));
         self.out(format!("    {} {:<20} {}", c::dim("│"), "kick (k)", "踢出用户"));
         self.out(format!("    {} {:<20} {}", c::dim("│"), "close-room (cr)", "解散房间"));
+        self.out(format!("    {} {:<20} {}", c::dim("│"), "room-start (rs)", "开始游戏"));
+        self.out(format!("    {} {:<20} {}", c::dim("│"), "room-cancel (rc)", "取消准备"));
         self.out(format!("    {} {:<20} {}", c::dim("│"), "broadcast (bc)", "广播消息"));
         self.out(String::new());
         self.out(format!("  {} 扩展数据", c::cyan("▸")));
@@ -752,6 +768,71 @@ impl CliHandler {
         let history = room.play_history.read().await;
         if !history.is_empty() {
             self.out(format!("  {} 历史对局: {} 轮", c::dim("│"), history.len()));
+        }
+    }
+
+    /// 强制开始游戏（管理员操作）
+    async fn room_start(&self, room_id: &str) {
+        let room = match self.find_room(room_id).await {
+            Some(r) => r,
+            None => { self.out(format!("  {} 未找到房间 {}", c::red("✗"), room_id)); return; }
+        };
+        // 检查状态
+        {
+            let guard = room.state.read().await;
+            match &*guard {
+                crate::room::InternalRoomState::Playing { .. } => {
+                    self.out(format!("  {} 游戏已在进行中", c::yellow("!")));
+                    return;
+                }
+                _ => {}
+            }
+        }
+        // 检查谱面
+        if room.chart.read().await.is_none() {
+            self.out(format!("  {} 尚未选择谱面", c::yellow("!")));
+            return;
+        }
+        // 将所有用户标记为已准备
+        let users = room.users().await;
+        let user_ids: std::collections::HashSet<i32> = users.iter().map(|u| u.id).collect();
+        room.reset_game_time().await;
+        room.send(phira_mp_common::Message::GameStart { user: 0 }).await;
+        *room.state.write().await = crate::room::InternalRoomState::WaitForReady {
+            started: user_ids,
+        };
+        room.on_state_change().await;
+        room.check_all_ready().await;
+        // 触发插件事件
+        if let Some(pm) = &room.plugin_manager {
+            pm.trigger(&PluginEvent::GameStart {
+                user_id: 0, room_id: room_id.to_string(),
+            }).await;
+        }
+        self.out(format!("  {} 游戏已开始", c::green("✓")));
+    }
+
+    /// 取消准备状态（管理员操作）
+    async fn room_cancel(&self, room_id: &str) {
+        let room = match self.find_room(room_id).await {
+            Some(r) => r,
+            None => { self.out(format!("  {} 未找到房间 {}", c::red("✗"), room_id)); return; }
+        };
+        let canceled = {
+            let mut guard = room.state.write().await;
+            if let crate::room::InternalRoomState::WaitForReady { .. } = &*guard {
+                room.send(phira_mp_common::Message::CancelGame { user: 0 }).await;
+                *guard = crate::room::InternalRoomState::SelectChart;
+                room.on_state_change().await;
+                true
+            } else {
+                false
+            }
+        };
+        if canceled {
+            self.out(format!("  {} 已取消准备状态", c::green("✓")));
+        } else {
+            self.out(format!("  {} 当前状态不需要取消", c::yellow("!")));
         }
     }
 
