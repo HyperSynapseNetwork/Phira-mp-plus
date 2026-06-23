@@ -9,7 +9,7 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Position},
     style::{Color, Modifier, Style},
     text::{Line, Span, Text},
-    widgets::{Block, Borders, Paragraph},
+    widgets::{Block, Borders, Clear, Paragraph},
     Frame, Terminal,
 };
 use std::io;
@@ -115,7 +115,7 @@ impl TuiApp {
         while self.running {
             // 清空输出通道（CLI 处理器发来的结果）
             while let Ok(msg) = out_rx.try_recv() {
-                self.add_output(msg);
+                self.add_output(strip_ansi(&msg));
             }
             // 清空日志通道（tracing 发来的日志）
             while let Ok(msg) = log_rx.try_recv() {
@@ -135,7 +135,7 @@ impl TuiApp {
                 }
             }
 
-            // 检查输出通道是否已断开（CLI 处理器已退出）
+            // 检查运行状态
             if !self.running {
                 break;
             }
@@ -164,6 +164,29 @@ impl TuiApp {
     fn handle_key(&mut self, key: crossterm::event::KeyEvent) {
         if key.kind != KeyEventKind::Press {
             return;
+        }
+
+        // Shift+↑ / Shift+↓：逐行滚动输出
+        if key.modifiers.contains(KeyModifiers::SHIFT) {
+            match key.code {
+                KeyCode::Up => {
+                    if self.scroll_offset > 0 {
+                        self.scroll_offset -= 1;
+                        self.auto_scroll = false;
+                    }
+                    return;
+                }
+                KeyCode::Down => {
+                    let max_scroll = self.output_lines.len().saturating_sub(1);
+                    if self.scroll_offset < max_scroll {
+                        self.scroll_offset += 1;
+                    } else {
+                        self.auto_scroll = true;
+                    }
+                    return;
+                }
+                _ => {}
+            }
         }
 
         match key.code {
@@ -209,7 +232,8 @@ impl TuiApp {
                 if !cmd.is_empty() {
                     self.history.push(cmd.clone());
                     self.history_idx = None;
-                    // 回显命令到输出
+                    // 回显命令到输出，并滚动到最新
+                    self.auto_scroll = true;
                     self.add_output(format!("> {}", cmd));
                     // 发送到 CLI 处理器
                     let _ = self.cmd_tx.send(cmd);
@@ -257,17 +281,16 @@ impl TuiApp {
                 self.cursor_pos = self.input.len();
             }
             KeyCode::PageUp => {
-                let area_height = (self.scroll_offset > 0) as usize;
-                let page_lines = 20.max(area_height);
+                let page_lines = 20.max(1);
                 self.scroll_offset = self.scroll_offset.saturating_sub(page_lines);
                 self.auto_scroll = false;
             }
             KeyCode::PageDown => {
                 let max_scroll = self.output_lines.len().saturating_sub(1);
-                self.scroll_offset = std::cmp::min(
-                    self.scroll_offset.saturating_add(20),
-                    max_scroll,
-                );
+                self.scroll_offset = self
+                    .scroll_offset
+                    .saturating_add(20)
+                    .min(max_scroll);
                 if self.scroll_offset >= max_scroll {
                     self.auto_scroll = true;
                 }
@@ -283,7 +306,7 @@ impl TuiApp {
             return; // 终端太小，无法渲染
         }
 
-        // 布局：标题(1) | 输出(填充) | 输入(1) | 状态栏(1)
+        // 布局：标题(1) | 输出(填充) | 分隔线(1) | 输入(1) | 状态栏(1)
         let chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
@@ -339,12 +362,16 @@ impl TuiApp {
                     Line::from(Span::styled(s, Style::default().fg(Color::Red)))
                 } else if s.contains("WARN") || s.contains("!") {
                     Line::from(Span::styled(s, Style::default().fg(Color::Yellow)))
+                } else if s.contains("INFO") || s.contains("◆") {
+                    Line::from(Span::styled(s, Style::default().fg(Color::Green)))
                 } else {
                     Line::from(Span::raw(s))
                 }
             })
             .collect();
 
+        // 先 Clear 输出区域，防止缩小时旧内容残留
+        frame.render_widget(Clear, chunks[1]);
         let output_block = Block::default()
             .borders(Borders::ALL)
             .border_style(Style::default().fg(Color::DarkGray));
@@ -377,13 +404,15 @@ impl TuiApp {
         frame.set_cursor_position(Position::new(cursor_x, cursor_y));
 
         // ── 状态栏 ──
-        let scroll_info = if self.auto_scroll {
+        let scroll_info = if total_lines == 0 {
+            "0 行".to_string()
+        } else if self.auto_scroll {
             format!("{} 行", total_lines)
         } else {
             format!("行 {}/{}", scroll + 1, total_lines)
         };
         let status = format!(
-            " C-c:退出 ↑↓:历史 PgUp/Dn:滚动 Ctrl+L:清屏  |  {}",
+            " C-c:退出  C-l:清屏  S-↑↓:行滚动  PgUp/Dn:翻页  ↑↓:历史  {}",
             scroll_info,
         );
         let status_bar = Paragraph::new(Line::from(Span::styled(
@@ -395,26 +424,48 @@ impl TuiApp {
 }
 
 /// 去除 ANSI 转义序列
+///
+/// 先将字符串解码为 char 数组（正确处理多字节 UTF-8），
+/// 再用索引遍历跳过转义序列。
 fn strip_ansi(s: &str) -> String {
+    let chars: Vec<char> = s.chars().collect();
     let mut out = String::with_capacity(s.len());
-    let bytes = s.as_bytes();
     let mut i = 0;
-    while i < bytes.len() {
-        if bytes[i] == 0x1b {
-            i += 1;
-            if i < bytes.len() && bytes[i] == b'[' {
-                // CSI 序列: ESC [ 参数字节(0x20-0x3F) 最终字节(0x40-0x7E)
+    while i < chars.len() {
+        if chars[i] == '\x1b' {
+            i += 1; // 跳过 ESC
+            if i < chars.len() && chars[i] == '[' {
+                // CSI: ESC [ param* intermediate* final
+                // param: 0x30-0x3F, intermediate: 0x20-0x2F, final: 0x40-0x7E
                 i += 1;
-                while i < bytes.len() && bytes[i] >= 0x20 && bytes[i] <= 0x3F {
+                while i < chars.len() {
+                    let c = chars[i];
+                    i += 1;
+                    if c >= '\x40' && c <= '\x7E' {
+                        break; // final byte
+                    }
+                }
+            } else if i < chars.len() && chars[i] == ']' {
+                // OSC: ESC ] ... ST (\x1b\\) 或 BEL (\x07)
+                i += 1;
+                while i < chars.len() {
+                    if chars[i] == '\x07' {
+                        i += 1;
+                        break;
+                    }
+                    if chars[i] == '\x1b' && i + 1 < chars.len() && chars[i + 1] == '\\' {
+                        i += 2;
+                        break;
+                    }
                     i += 1;
                 }
-                if i < bytes.len() && bytes[i] >= 0x40 && bytes[i] <= 0x7E {
-                    i += 1;
-                }
+            } else if i < chars.len() && chars[i] >= '\x40' && chars[i] <= '\x5F' {
+                // 两字符 ESC 序列
+                i += 1;
             }
-            // 其他 ESC 前缀序列（如 OSC）直接跳过
+            // 其他未知前缀：忽略 ESC 及其后的内容
         } else {
-            out.push(bytes[i] as char);
+            out.push(chars[i]);
             i += 1;
         }
     }
