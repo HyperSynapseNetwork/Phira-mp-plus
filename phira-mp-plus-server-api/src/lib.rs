@@ -156,6 +156,9 @@ impl ServerStateQuery {
 
     /// 调用查询。method: "rooms.list" / "rooms.info" / "rooms.by_user"
     /// 内部在新线程中执行（使用 try_read 自旋，无需 tokio 运行时）。
+    ///
+    /// 注意：各 handler 内部设有自己的超时保护（压测/查询都有），
+    /// 因此外层不做超时限制，以免切断长时间运行的操作。
     pub fn call(&self, method: &str, args: &[Value]) -> Result<Value, String> {
         let inner = self.inner.clone();
         let method = method.to_string();
@@ -164,9 +167,7 @@ impl ServerStateQuery {
         std::thread::spawn(move || {
             let _ = tx.send((inner)(&method, &args));
         });
-        // 最多等 500ms，超时返回错误（实际通常 <1ms）
-        rx.recv_timeout(std::time::Duration::from_millis(500))
-            .unwrap_or(Err("query timeout".to_string()))
+        rx.recv().unwrap_or(Err("query timeout".to_string()))
     }
 }
 
