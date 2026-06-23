@@ -16,7 +16,6 @@
 - **📊 内置插件** — 房间信息 Web API、玩家追踪、游玩时间统计、结算排行、欢迎语
 - **🔨 黑名单系统** — 全局封禁 + 房间黑名单，连接时自动拦截
 - **🆔 房间/轮次 UUID** — 每个房间和轮次分配唯一标识符
-- **🗄️ PostgreSQL 支持** — 可选数据库后端（`--features postgres`）
 - **🛡️ AGPLv3 开源协议**
 
 ## 技术栈
@@ -32,7 +31,6 @@
 | [fluent](https://projectfluent.org/) | 本地化 (i18n) |
 | [reqwest](https://docs.rs/reqwest/) | HTTP 客户端 |
 | [tracing](https://docs.rs/tracing/) | 日志与诊断 |
-| [sqlx](https://github.com/launchbadge/sqlx) | PostgreSQL 驱动（可选） |
 
 ## 快速开始
 
@@ -42,10 +40,6 @@ cargo build
 
 # 运行
 ./target/debug/phira-mp-plus-server
-
-# 带 PostgreSQL（可选）
-cargo build --features postgres
-DATABASE_URL=postgres://user:pass@localhost:5432/phira_mp_plus ./target/debug/phira-mp-plus-server
 ```
 
 ### 命令行参数
@@ -150,7 +144,6 @@ impl NativePlugin for MyPlugin {
 | `playtime-tracker` | 游玩时间统计插件 | ✅ |
 | `round-results` | 结算排行插件 | ✅ |
 | `welcome-plugin` | 欢迎语插件 | ✅ |
-| `postgres` | PostgreSQL 数据库支持 | ❌ |
 
 ## 许可证
 
