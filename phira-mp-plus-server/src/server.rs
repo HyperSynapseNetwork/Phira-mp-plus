@@ -76,6 +76,9 @@ macro_rules! write_lock {
 }
 pub type IdMap<V> = SafeMap<Uuid, V>;
 
+/// 压测请求通道
+pub type BenchRequest = (u64, usize, tokio::sync::oneshot::Sender<String>);
+
 /// Phira-mp+ 增强配置（支持 YAML 文件、环境变量、CLI 参数三层覆盖）
 #[derive(Debug, Clone, Deserialize)]
 pub struct PlusConfig {
@@ -505,12 +508,19 @@ pub struct ServerStats {
 // ── 压测方法 ──
 
 impl PlusServerState {
-    /// 运行压测，返回结果文本
-    pub async fn run_benchmark(self: &Arc<Self>, duration_secs: u64, target_rooms: usize) -> String {
+    /// 运行压测（同步版 — 在 ServerStateQuery 线程中调用，无 tokio）
+    pub fn run_benchmark_sync(self: &Arc<Self>, duration_secs: u64, target_rooms: usize) -> String {
+        // 辅助：自旋获取 tokio RwLock 的同步读取
+        macro_rules! sync_read {
+            ($lock:expr) => { loop { match $lock.try_read() { Ok(g) => break g, Err(_) => std::thread::yield_now() } } };
+        }
+        macro_rules! sync_write {
+            ($lock:expr) => { loop { match $lock.try_write() { Ok(g) => break g, Err(_) => std::thread::yield_now() } } };
+        }
+
         use std::time::Instant;
         let started_at = Instant::now();
         let mut out = String::new();
-        let mut results: Vec<serde_json::Value> = Vec::new();
         macro_rules! o { ($($t:tt)*) => { out.push_str(&format!($($t)*)); out.push('\n'); } }
 
         o!("  ◆ Phira-mp+ 服务端压测");
@@ -527,66 +537,59 @@ impl PlusServerState {
                 Ok(r) => r,
                 Err(_) => continue,
             };
-            // 创建 test user 作为房主
             let test_uid = TEST_USER_ID_BASE + i as i32;
             let test_user = Arc::new(super::session::User::new(
-                test_uid,
-                format!("bench#{i}"),
+                test_uid, format!("bench#{i}"),
                 crate::l10n::Language::default(),
                 Arc::clone(self),
             ));
-            self.users.write().await.insert(test_uid, Arc::clone(&test_user));
+            sync_write!(self.users).insert(test_uid, Arc::clone(&test_user));
 
             let room = Arc::new(crate::room::Room::new(
-                rid.clone(),
-                Arc::downgrade(&test_user),
+                rid.clone(), Arc::downgrade(&test_user),
                 Some(Arc::clone(&self.plugin_manager)),
-                self.config.max_users_per_room.unwrap_or(8),
-                None,
+                self.config.max_users_per_room.unwrap_or(8), None,
             ));
-            let mut rooms = self.rooms.write().await;
+            let mut rooms = sync_write!(self.rooms);
             if let std::collections::hash_map::Entry::Vacant(e) = rooms.entry(rid) {
                 e.insert(room);
                 created += 1;
             }
             drop(rooms);
 
-            // 进度报告
             if created > 0 && created % 50 == 0 {
-                let elapsed = t0.elapsed().as_secs_f64();
-                if elapsed > 0.0 {
-                    o!("  │  已创建 {created} 间 ({:.0} 间/秒)", created as f64 / elapsed);
-                }
+                let e = t0.elapsed().as_secs_f64();
+                if e > 0.0 { o!("  │  已创建 {created} 间 ({:.0} 间/秒)", created as f64 / e); }
             }
         }
         let phase1 = t0.elapsed();
         let create_rate = if phase1.as_secs_f64() > 0.0 { created as f64 / phase1.as_secs_f64() } else { 0.0 };
         o!("  │ ✓ 创建 {created} 间, 耗时 {:.1}s ({:.0} 间/秒)", phase1.as_secs_f64(), create_rate);
-        results.push(serde_json::json!({"phase": "create_rooms", "rooms": created, "elapsed_s": phase1.as_secs_f64(), "rate": create_rate}));
 
         // ── 阶段2: 模拟用户加入 ──
         o!("  │");
         o!("  ├─ [阶段2] 填充用户 (每房间+4人)");
         let t0 = Instant::now();
         let mut joined = 0usize;
-        let rooms_snapshot: Vec<Arc<crate::room::Room>> = self.rooms.read().await.values().map(Arc::clone).collect();
-        for (_, room) in rooms_snapshot.iter().enumerate().take(created) {
-            for _j in 0..4 {
+        let rooms_snapshot: Vec<Arc<crate::room::Room>> = sync_read!(self.rooms).values().map(Arc::clone).collect();
+        for room in rooms_snapshot.iter().take(created) {
+            for _ in 0..4 {
                 let test_uid = TEST_USER_ID_BASE + 1_000_000 + joined as i32;
                 let test_user = Arc::new(super::session::User::new(
-                    test_uid,
-                    format!("player#{joined}"),
-                    crate::l10n::Language::default(),
-                    Arc::clone(self),
+                    test_uid, format!("player#{joined}"),
+                    crate::l10n::Language::default(), Arc::clone(self),
                 ));
-                self.users.write().await.insert(test_uid, Arc::clone(&test_user));
-                room.add_user(Arc::downgrade(&test_user), false).await;
+                sync_write!(self.users).insert(test_uid, Arc::clone(&test_user));
+                // add_user 是 async — 用 try_block 绕过
+                let weak = Arc::downgrade(&test_user);
+                let mut uguard = sync_write!(room.users);
+                uguard.retain(|it| it.strong_count() > 0);
+                if uguard.len() < room.max_users { uguard.push(weak); }
                 joined += 1;
             }
         }
         let phase2 = t0.elapsed();
         o!("  │ ✓ 加入 {joined} 人, 耗时 {:.1}s ({:.0} 人/秒)", phase2.as_secs_f64(), joined as f64 / phase2.as_secs_f64().max(0.001));
-        results.push(serde_json::json!({"phase": "join_users", "users": joined, "elapsed_s": phase2.as_secs_f64(), "rate": joined as f64 / phase2.as_secs_f64().max(0.001)}));
 
         // ── 阶段3: 压力保持 ──
         o!("  │");
@@ -594,57 +597,49 @@ impl PlusServerState {
         let t0 = Instant::now();
         let mut query_latencies: Vec<f64> = Vec::new();
         let mut op_count = 0u64;
-        let _report_interval = std::time::Duration::from_secs(2);
 
         while t0.elapsed().as_secs() < duration_secs {
-            let batch_start = Instant::now();
             let mut batch_ops = 0u64;
-
-            // 批量房间状态查询
+            let mut batch_lat = 0.0f64;
             for _ in 0..50 {
                 let q = Instant::now();
-                let _ = self.rooms.read().await.len();
-                query_latencies.push(q.elapsed().as_secs_f64() * 1_000_000.0);
+                let _ = sync_read!(self.rooms).len();
+                batch_lat += q.elapsed().as_secs_f64() * 1_000_000.0;
                 batch_ops += 1;
             }
-
-            // 批量用户列表查询
             for _ in 0..50 {
                 let q = Instant::now();
-                let _ = self.users.read().await.len();
-                query_latencies.push(q.elapsed().as_secs_f64() * 1_000_000.0);
+                let _ = sync_read!(self.users).len();
+                batch_lat += q.elapsed().as_secs_f64() * 1_000_000.0;
                 batch_ops += 1;
             }
-
+            query_latencies.push(batch_lat / batch_ops as f64);
             op_count += batch_ops;
-            let batch_us = batch_start.elapsed().as_micros() as f64;
-            if batch_us > 0.0 {
-                let ops_per_sec = batch_ops as f64 / (batch_us / 1_000_000.0);
-                if batch_ops > 0 && op_count % 1000 == 0 {
-                    let elapsed = t0.elapsed().as_secs_f64();
-                    o!("  │  运行 {elapsed:.0}s | 操作 {op_count} | {:.0} ops/s", ops_per_sec);
-                }
+
+            let elapsed = t0.elapsed().as_secs_f64();
+            if elapsed > 0.0 && op_count % 1000 == 0 {
+                o!("  │  运行 {elapsed:.0}s | 操作 {op_count} | {:.0} ops/s", batch_ops as f64 / (batch_lat / 1_000_000.0).max(0.001));
             }
         }
-        let phase3 = t0.elapsed();
+        let _phase3 = t0.elapsed();
         let avg_lat = if !query_latencies.is_empty() {
             query_latencies.iter().sum::<f64>() / query_latencies.len() as f64
         } else { 0.0 };
-        let p99 = if query_latencies.len() > 10 {
-            let mut sorted = query_latencies.clone();
-            sorted.sort_unstable_by(|a, b| a.partial_cmp(b).unwrap());
-            sorted[(sorted.len() as f64 * 0.99) as usize]
-        } else { 0.0 };
-        o!("  │ ✓ 操作 {op_count} 次 | 延迟 avg={avg_lat:.0}µs p99={p99:.0}µs");
-        results.push(serde_json::json!({"phase": "sustained_load", "ops": op_count, "duration_s": phase3.as_secs_f64(), "avg_latency_us": avg_lat, "p99_latency_us": p99}));
+        let mut p99 = avg_lat;
+        if query_latencies.len() > 10 {
+            let mut s = query_latencies.clone();
+            s.sort_unstable_by(|a, b| a.partial_cmp(b).unwrap());
+            p99 = s[(s.len() as f64 * 0.99) as usize];
+        }
+        o!("  │ ✓ 操作 {op_count} 次 | avg={avg_lat:.0}µs p99={p99:.0}µs");
 
         // ── 阶段4: 清理 ──
         o!("  │");
         o!("  ├─ [阶段4] 清理测试数据");
-        let t0 = Instant::now();
-        self.cleanup_benchmark().await;
-        let phase4 = t0.elapsed();
-        o!("  │ ✓ 清理完成 ({:.1}s)", phase4.as_secs_f64());
+        let t4 = Instant::now();
+        sync_write!(self.rooms).retain(|rid, _| !rid.to_string().starts_with("bench-"));
+        sync_write!(self.users).retain(|id, _| *id < TEST_USER_ID_BASE || *id >= TEST_USER_ID_BASE + 10_000_000);
+        o!("  │ ✓ 清理完成 ({:.1}s)", t4.elapsed().as_secs_f64());
 
         // ── 汇总 ──
         let total = started_at.elapsed();
@@ -652,33 +647,28 @@ impl PlusServerState {
         o!("  └─ 压测完成 ({:.1}s)", total.as_secs_f64());
         o!("");
         o!("  ◆ 报告");
-        o!("  │  房间创建: {create_rate:.0} 间/秒 (创建 {created} 间)");
-        o!("  │  用户加入: {:.0} 人/秒 (加入 {joined} 人)", joined as f64 / phase2.as_secs_f64().max(0.001));
+        o!("  │  房间创建: {create_rate:.0} 间/秒 ({created} 间)");
+        o!("  │  用户加入: {:.0} 人/秒 ({joined} 人)", joined as f64 / phase2.as_secs_f64().max(0.001));
         o!("  │  查询延迟: avg={avg_lat:.0}µs  p99={p99:.0}µs");
         o!("  │  稳定运行: {duration_secs}s 操作 {op_count} 次");
 
-        // 推荐
         let max_rooms = (1000.0 / avg_lat.max(1.0) * 100.0) as usize;
         let rec_users = if avg_lat < 10.0 { 8 } else if avg_lat < 50.0 { 6 } else { 4 };
         o!("  │");
         o!("  ├─ 推荐");
-        o!("  │  基于当前硬件与配置:");
-        o!("  │  · 最大稳定房间数: ~{max_rooms}");
-        o!("  │  · 每房间人数上限: {rec_users}");
-        o!("  │  · 同时游玩上限: ~{}", max_rooms * rec_users);
-        o!("  │");
-        o!("  └─ 建议调整 server_config.yml 后重新压测对比");
-
+        o!("  │  · 最大稳定房间: ~{max_rooms}  每房间上限: {rec_users}  同时游玩: ~{}", max_rooms * rec_users);
+        o!("  │  · 调整 server_config.yml 后重启对比");
         out
     }
 
-    /// 清理压测残留数据
-    pub async fn cleanup_benchmark(&self) {
-        let mut rooms = self.rooms.write().await;
-        rooms.retain(|rid, _| !rid.to_string().starts_with("bench-"));
-        drop(rooms);
-        let mut users = self.users.write().await;
-        users.retain(|id, _| *id < TEST_USER_ID_BASE || *id >= TEST_USER_ID_BASE + 10_000_000);
+    /// 清理压测残留数据（同步版）
+    pub fn cleanup_benchmark_sync(&self) {
+        // 使用同步 spin-lock
+        macro_rules! sync_write {
+            ($lock:expr) => { loop { match $lock.try_write() { Ok(g) => break g, Err(_) => std::thread::yield_now() } } };
+        }
+        sync_write!(self.rooms).retain(|rid, _| !rid.to_string().starts_with("bench-"));
+        sync_write!(self.users).retain(|id, _| *id < TEST_USER_ID_BASE || *id >= TEST_USER_ID_BASE + 10_000_000);
     }
 }
 
@@ -765,20 +755,13 @@ fn server_state_query_inner(state: &Arc<PlusServerState>, method: &str, args: &[
         "test.run_benchmark" => {
             let duration = args.get(0).and_then(|v| v.as_u64()).unwrap_or(10).max(5).min(300);
             let rooms = args.get(1).and_then(|v| v.as_u64()).unwrap_or(100).max(10).min(5000) as usize;
-            let s = Arc::clone(state);
-            let (tx, rx) = std::sync::mpsc::channel();
-            tokio::spawn(async move {
-                let result = s.run_benchmark(duration, rooms).await;
-                let _ = tx.send(Ok(serde_json::json!({"output": result})));
-            });
-            rx.recv_timeout(std::time::Duration::from_secs(duration as u64 + 120))
-                .unwrap_or(Err("benchmark timeout".to_string()))
+
+            // 同步运行（ServerStateQuery 线程上下文无 tokio）
+            let result = state.run_benchmark_sync(duration, rooms);
+            Ok(serde_json::json!({"output": result}))
         }
         "test.cleanup" => {
-            let s = Arc::clone(state);
-            tokio::spawn(async move {
-                s.cleanup_benchmark().await;
-            });
+            state.cleanup_benchmark_sync();
             Ok(serde_json::json!({"ok": true}))
         }
         _ => {
