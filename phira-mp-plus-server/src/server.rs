@@ -4,7 +4,6 @@
 //! CLI 管理控制台和扩展数据系统。
 
 use crate::ban::BanManager;
-use crate::cli::CliHandler;
 use crate::extensions::ExtensionManager;
 use crate::plugin::{self, PluginEvent, PluginManager};
 use crate::plugin_http::PluginHttpServer;
@@ -115,7 +114,7 @@ impl PlusServer {
 
         let listener = TcpListener::bind(addrs).await?;
         for addr in addrs {
-            println!("Phira-mp+ Local Address: http://{}", addr);
+            info!("Phira-mp+ Local Address: http://{}", addr);
         }
 
         let (lost_con_tx, mut lost_con_rx) = mpsc::channel(16);
@@ -302,23 +301,6 @@ impl PlusServer {
             session.version()
         );
         guard.insert(id, session);
-        Ok(())
-    }
-
-    /// 启动 CLI 管理控制台
-    pub async fn start_cli(&self) -> Result<()> {
-        if !self.state.config.cli_enabled {
-            info!("CLI management console is disabled");
-            return Ok(());
-        }
-        let state = Arc::clone(&self.state);
-
-        // 在独立任务中运行 CLI
-        tokio::spawn(async move {
-            let cli = CliHandler::new(state);
-            cli.start().await;
-        });
-
         Ok(())
     }
 

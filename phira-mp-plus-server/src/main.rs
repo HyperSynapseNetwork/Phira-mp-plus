@@ -4,8 +4,12 @@
 
 use anyhow::Result;
 use clap::Parser;
+use phira_mp_plus_server::cli::CliHandler;
 use phira_mp_plus_server::server::{PlusConfig, PlusServer};
+use std::io;
 use std::path::Path;
+use std::sync::Arc;
+use tokio::sync::mpsc;
 use tracing::level_filters::LevelFilter;
 use tracing::{info, warn};
 use tracing_appender::non_blocking::WorkerGuard;
@@ -51,7 +55,55 @@ struct Args {
     http_port: u16,
 }
 
-fn init_log(file: &str) -> Result<WorkerGuard> {
+// ── 统一的 tracing 终端 writer ──
+// TUI 模式将日志发送到 mpsc 通道，普通模式输出到 stdout
+
+enum OutputWriter {
+    Stdout(io::Stdout),
+    Chan(mpsc::UnboundedSender<String>, Vec<u8>),
+}
+
+impl io::Write for OutputWriter {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        match self {
+            OutputWriter::Stdout(s) => s.write(buf),
+            OutputWriter::Chan(_, data) => {
+                data.extend_from_slice(buf);
+                Ok(buf.len())
+            }
+        }
+    }
+    fn flush(&mut self) -> io::Result<()> {
+        match self {
+            OutputWriter::Stdout(s) => s.flush(),
+            OutputWriter::Chan(tx, data) => {
+                if !data.is_empty() {
+                    let s = String::from_utf8_lossy(data).to_string();
+                    data.clear();
+                    let _ = tx.send(s);
+                }
+                Ok(())
+            }
+        }
+    }
+}
+
+struct OutputWriterMaker {
+    log_tx: Option<mpsc::UnboundedSender<String>>,
+}
+
+impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for OutputWriterMaker {
+    type Writer = OutputWriter;
+
+    fn make_writer(&'a self) -> Self::Writer {
+        match &self.log_tx {
+            Some(tx) => OutputWriter::Chan(tx.clone(), Vec::new()),
+            None => OutputWriter::Stdout(io::stdout()),
+        }
+    }
+}
+
+fn init_log(file: &str, log_tx: Option<mpsc::UnboundedSender<String>>) -> Result<WorkerGuard> {
     let log_dir = Path::new("log");
     if log_dir.exists() {
         if !log_dir.is_dir() {
@@ -64,24 +116,26 @@ fn init_log(file: &str) -> Result<WorkerGuard> {
     let (non_blocking, guard) =
         tracing_appender::non_blocking(tracing_appender::rolling::hourly(log_dir, file));
 
-    // 文件日志：记录所有 DEBUG 及以上级别
+    // 文件日志：所有 DEBUG 及以上级别，无 ANSI
     let file_layer = fmt::layer()
         .with_writer(non_blocking)
+        .with_ansi(false)
         .with_filter(LevelFilter::DEBUG);
 
-    // 终端日志：无 RUST_LOG 时默认 INFO 级别，并压制嘈杂的第三方库
+    // 终端日志：TUI 模式 → 通道；否则 → stdout
+    let filter = EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| EnvFilter::new("info"))
+        .add_directive("hyper=info".parse().unwrap())
+        .add_directive("rustls=info".parse().unwrap())
+        .add_directive("isahc=info".parse().unwrap())
+        .add_directive("h2=info".parse().unwrap())
+        .add_directive("reqwest=info".parse().unwrap())
+        .add_directive("wasmtime=info".parse().unwrap());
+
     let stdout_layer = fmt::layer()
-        .with_writer(std::io::stdout)
-        .with_filter(
-            EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| EnvFilter::new("info"))
-                .add_directive("hyper=info".parse().unwrap())
-                .add_directive("rustls=info".parse().unwrap())
-                .add_directive("isahc=info".parse().unwrap())
-                .add_directive("h2=info".parse().unwrap())
-                .add_directive("reqwest=info".parse().unwrap())
-                .add_directive("wasmtime=info".parse().unwrap()),
-        );
+        .with_writer(OutputWriterMaker { log_tx })
+        .with_ansi(false)
+        .with_filter(filter);
 
     tracing_subscriber::registry()
         .with(file_layer)
@@ -93,16 +147,37 @@ fn init_log(file: &str) -> Result<WorkerGuard> {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let _guard = init_log("phira-mp-plus")?;
-
     let args = Args::parse();
+    let cli_enabled = !args.no_cli;
 
-    // 自动创建数据目录
+    // ── 创建 TUI/CLI 通信通道（仅 CLI 启用时） ──
+    let (cmd_tx, cmd_rx) = if cli_enabled {
+        let (tx, rx) = mpsc::unbounded_channel();
+        (Some(tx), Some(rx))
+    } else {
+        (None, None)
+    };
+    let (out_tx, out_rx) = if cli_enabled {
+        let (tx, rx) = mpsc::unbounded_channel();
+        (Some(tx), Some(rx))
+    } else {
+        (None, None)
+    };
+    let (log_tx, log_rx) = if cli_enabled {
+        let (tx, rx) = mpsc::unbounded_channel();
+        (Some(tx), Some(rx))
+    } else {
+        (None, None)
+    };
+
+    // ── 初始化日志（此后应使用 info! / warn!，避免直接 println!） ──
+    let _guard = init_log(&args.log_file, log_tx)?;
+
+    // ── 自动创建数据 & 插件目录 ──
     let data_dir = Path::new("data");
     if !data_dir.exists() {
         std::fs::create_dir_all(data_dir).expect("failed to create data directory");
     }
-    // 自动创建插件目录
     let plugins_dir = Path::new(&args.plugins_dir);
     if !plugins_dir.exists() {
         std::fs::create_dir_all(plugins_dir).expect("failed to create plugins directory");
@@ -118,22 +193,42 @@ async fn main() -> Result<()> {
         },
         plugins_dir: args.plugins_dir,
         extensions_file: Some(args.extensions_file),
-        cli_enabled: !args.no_cli,
+        cli_enabled,
     };
 
-    println!();
-    println!("  Phira-mp+ v{}", env!("CARGO_PKG_VERSION"));
-    println!();
-
-    // 创建服务器
+    // ── 创建服务器 ──
     let server = PlusServer::new(config).await?;
 
-    // 启动 CLI 管理控制台
-    server.start_cli().await?;
+    // ── 启动 CLI 处理器（接收 TUI 发来的命令） ──
+    if let (Some(cmd_rx), Some(out_tx)) = (cmd_rx, out_tx) {
+        let state = Arc::clone(&server.state);
+        tokio::spawn(async move {
+            let cli = CliHandler::new(state, out_tx);
+            cli.start(cmd_rx).await;
+        });
+        info!("CLI management console started");
+    }
 
-    println!("  ● 服务器已启动，监听端口 {} ── 输入 exit 关闭", server.state.config.port);
+    // ── 启动 TUI 界面（独立线程，阻塞式） ──
+    let tui_handle = if let (Some(cmd_tx), Some(out_rx), Some(log_rx)) = (cmd_tx, out_rx, log_rx) {
+        Some(std::thread::spawn(move || {
+            if let Err(e) = phira_mp_plus_server::cli_tui::run_tui(cmd_tx, out_rx, log_rx) {
+                // 终端已被 TUI 恢复，可安全使用 stderr
+                eprintln!("TUI error: {e}");
+            }
+        }))
+    } else {
+        info!("CLI management console disabled, logs to stdout");
+        None
+    };
 
-    // 主循环 - 接收连接（直到收到关闭信号）
+    info!(
+        "Server started on port {} (http port {})",
+        server.state.config.port,
+        server.state.config.http_port,
+    );
+
+    // ── 主循环 - 接受连接（直到收到关闭信号） ──
     loop {
         tokio::select! {
             result = server.accept() => {
@@ -148,9 +243,8 @@ async fn main() -> Result<()> {
         }
     }
 
-    // 清理
-    println!("正在清理资源...");
-    // 清理所有会话
+    // ── 清理 ──
+    info!("cleaning up resources...");
     {
         let sessions = server.state.sessions.read().await;
         for session in sessions.values() {
@@ -165,13 +259,16 @@ async fn main() -> Result<()> {
                 .await;
         }
     }
-    // 清理插件
     server.state.plugin_manager.cleanup_all().await;
-    // 持久化扩展数据
     if let Err(e) = server.state.extensions.persist().await {
         warn!("failed to persist extension data: {e}");
     }
 
-    println!("服务器已关闭。");
+    // 等待 TUI 线程结束
+    if let Some(handle) = tui_handle {
+        let _ = handle.join();
+    }
+
+    info!("Server shut down.");
     Ok(())
 }

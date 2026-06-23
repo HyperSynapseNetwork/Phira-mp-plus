@@ -5,6 +5,7 @@
 
 pub mod ban;
 pub mod cli;
+pub mod cli_tui;
 pub mod extensions;
 pub mod l10n;
 pub mod plugin;
