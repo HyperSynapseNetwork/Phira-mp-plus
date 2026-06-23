@@ -268,3 +268,4 @@ AGPLv3 — 详见 [LICENSE](LICENSE)。
 感谢[tphira-mp](https://github.com/Pimeng/tphira-mp),[jphira-mp](https://github.com/lRENyaaa/jphira-mp)的启发
 
 感谢所有资助过我们的用户[捐献页](https://phira.htadiy.com/about)
+](https://github.com/HyperSynapseNetwork/Phira-mp-plus/)
