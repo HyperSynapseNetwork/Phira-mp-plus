@@ -227,18 +227,30 @@ impl TuiApp {
                 self.auto_scroll = true;
             }
             KeyCode::Char(c) => {
-                self.input.insert(self.cursor_pos, c);
-                self.cursor_pos += 1;
+                // 按 char 索引插入，避免多字节字符（如中文）的字节边界问题
+                let mut chars: Vec<char> = self.input.chars().collect();
+                let pos = self.cursor_pos.min(chars.len());
+                chars.insert(pos, c);
+                self.input = chars.into_iter().collect();
+                self.cursor_pos = pos + 1;
             }
             KeyCode::Backspace => {
                 if self.cursor_pos > 0 {
-                    self.cursor_pos -= 1;
-                    self.input.remove(self.cursor_pos);
+                    let mut chars: Vec<char> = self.input.chars().collect();
+                    let pos = self.cursor_pos.saturating_sub(1).min(chars.len().saturating_sub(1));
+                    if pos < chars.len() {
+                        chars.remove(pos);
+                        self.input = chars.into_iter().collect();
+                        self.cursor_pos = pos;
+                    }
                 }
             }
             KeyCode::Delete => {
-                if self.cursor_pos < self.input.len() {
-                    self.input.remove(self.cursor_pos);
+                let mut chars: Vec<char> = self.input.chars().collect();
+                let pos = self.cursor_pos.min(chars.len().saturating_sub(1));
+                if pos < chars.len() {
+                    chars.remove(pos);
+                    self.input = chars.into_iter().collect();
                 }
             }
             KeyCode::Enter => {
@@ -263,7 +275,7 @@ impl TuiApp {
                 if *idx > 0 {
                     *idx -= 1;
                     self.input = self.history[*idx].clone();
-                    self.cursor_pos = self.input.len();
+                    self.cursor_pos = self.input.chars().count();
                 }
             }
             KeyCode::Down => {
@@ -275,7 +287,7 @@ impl TuiApp {
                         self.history_idx = None;
                         self.input.clear();
                     }
-                    self.cursor_pos = self.input.len();
+                    self.cursor_pos = self.input.chars().count();
                 }
             }
             KeyCode::Left => {
@@ -284,7 +296,7 @@ impl TuiApp {
                 }
             }
             KeyCode::Right => {
-                if self.cursor_pos < self.input.len() {
+                if self.cursor_pos < self.input.chars().count() {
                     self.cursor_pos += 1;
                 }
             }
@@ -292,7 +304,7 @@ impl TuiApp {
                 self.cursor_pos = 0;
             }
             KeyCode::End => {
-                self.cursor_pos = self.input.len();
+                self.cursor_pos = self.input.chars().count();
             }
             KeyCode::PageUp => {
                 let page_lines = 20.max(1);
