@@ -340,7 +340,71 @@ impl Session {
                                             room_state,
                                         ))))
                                         .await;
+                                    // 通知 room monitor 新用户
+                                    let uid = user.id;
+                                    let session = this.get().map(|s| Arc::clone(s));
+                                    tokio::spawn(async move {
+                                        if let Some(mon) = server.get_room_monitor().await {
+                                            mon.stream.send(ServerCommand::UserVisit(uid)).await.ok();
+                                        }
+                                    });
                                     waiting_for_authenticate.store(false, Ordering::SeqCst);
+                                }
+                                return;
+                            } else if let ClientCommand::RoomMonitorAuthenticate { key } = cmd {
+                                let Some(tx) = tx else { return };
+                                if server.room_monitor.read().await.as_ref().and_then(|w| w.upgrade()).is_some() {
+                                    let _ = send_tx.send(ServerCommand::Authenticate(Err("more than one room monitor".into()))).await;
+                                    panicked.store(true, Ordering::SeqCst);
+                                    let _ = server.lost_con_tx.send(id).await;
+                                    return;
+                                }
+                                if server.room_monitor_key != key {
+                                    let _ = send_tx.send(ServerCommand::Authenticate(Err("secret key mismatch".into()))).await;
+                                    panicked.store(true, Ordering::SeqCst);
+                                    let _ = server.lost_con_tx.send(id).await;
+                                    return;
+                                }
+                                info!("new room monitor connected");
+                                let user = Arc::new(User::new(-1, "$server_room_monitor".into(), Language::default(), Arc::clone(&server)));
+                                let _ = tx.send(Arc::clone(&user));
+                                this_inited.notified().await;
+                                user.set_session(Arc::downgrade(this.get().unwrap())).await;
+                                *server.room_monitor.write().await = Some(Arc::downgrade(this.get().unwrap()));
+                                let _ = send_tx.send(ServerCommand::Authenticate(Ok((user.to_info(), None)))).await;
+                                waiting_for_authenticate.store(false, Ordering::SeqCst);
+                                return;
+                            } else if let ClientCommand::GameMonitorAuthenticate { token } = cmd {
+                                // 类似 RoomMonitor，但创建普通用户可以旁观
+                                let Some(tx) = tx else { return };
+                                let token_str = String::from(token.into_inner());
+                                match async {
+                                    reqwest::Client::builder().timeout(std::time::Duration::from_secs(3)).build()
+                                        .map_err(|_| "build client")?
+                                        .get(format!("{}/me", &server.config.phira_api_endpoint))
+                                        .header(reqwest::header::AUTHORIZATION, format!("Bearer {token_str}"))
+                                        .send().await.map_err(|_| "send")?
+                                        .error_for_status().map_err(|_| "status")?
+                                        .json::<serde_json::Value>().await.map_err(|_| "json")
+                                }.await {
+                                    Ok(info) => {
+                                        let uid = info.get("id").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
+                                        let name = info.get("name").and_then(|v| v.as_str()).unwrap_or("unknown");
+                                        let lang = info.get("language").and_then(|v| v.as_str()).unwrap_or("en-US");
+                                        let user = Arc::new(User::new(-uid, format!("{name} (monitor)"), lang.parse().map(Language).unwrap_or_default(), Arc::clone(&server)));
+                                        let _ = tx.send(Arc::clone(&user));
+                                        this_inited.notified().await;
+                                        user.set_session(Arc::downgrade(this.get().unwrap())).await;
+                                        server.users.write().await.insert(-uid, Arc::clone(&user));
+                                        server.set_game_monitor(-uid, Arc::downgrade(this.get().unwrap())).await;
+                                        let _ = send_tx.send(ServerCommand::Authenticate(Ok((user.to_info(), None)))).await;
+                                        waiting_for_authenticate.store(false, Ordering::SeqCst);
+                                    }
+                                    Err(_) => {
+                                        let _ = send_tx.send(ServerCommand::Authenticate(Err("game monitor auth failed".into()))).await;
+                                        panicked.store(true, Ordering::SeqCst);
+                                        let _ = server.lost_con_tx.send(id).await;
+                                    }
                                 }
                                 return;
                             } else {
@@ -975,6 +1039,30 @@ async fn process(user: Arc<User>, cmd: ClientCommand) -> Option<ServerCommand> {
             }
             .await;
             Some(ServerCommand::Abort(err_to_str(res)))
+        }
+        // ── Monitor 协议 ──
+        ClientCommand::QueryRoomInfo => {
+            let res: Result<ServerCommand> = async move {
+                let rooms_guard = user.server.rooms.read().await;
+                let mut info: std::collections::HashMap<phira_mp_common::RoomId, phira_mp_common::RoomData> = std::collections::HashMap::new();
+                let mut user_room_map: std::collections::HashMap<i32, phira_mp_common::RoomId> = std::collections::HashMap::new();
+                for (id, room) in rooms_guard.iter() {
+                    for u in room.users().await {
+                        user_room_map.insert(u.id, id.clone());
+                    }
+                    info.insert(id.clone(), crate::room::Room::into_data(room).await);
+                }
+                drop(rooms_guard);
+                Ok(ServerCommand::RoomResponse(Ok((info, user_room_map))))
+            }
+            .await;
+            match res {
+                Ok(cmd) => Some(cmd),
+                Err(_) => None,
+            }
+        }
+        ClientCommand::RoomMonitorAuthenticate { .. } | ClientCommand::GameMonitorAuthenticate { .. } => {
+            Some(ServerCommand::Authenticate(Err("already authenticated".into())))
         }
     }
 }

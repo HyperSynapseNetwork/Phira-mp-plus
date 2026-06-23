@@ -243,13 +243,22 @@ async fn main() -> Result<()> {
         info!("CLI management console started");
     }
 
+    // ── 检测是否在 screen/tmux 中（此类终端不支持 TUI raw mode） ──
+    let is_screen = std::env::var("STY").is_ok() || std::env::var("TMUX").is_ok()
+        || std::env::var("TERM").map(|t| t.contains("screen")).unwrap_or(false);
+
     // ── 启动 TUI 界面（独立线程，阻塞式） ──
     let tui_handle = if let (Some(cmd_tx), Some(out_rx), Some(log_rx)) = (cmd_tx, out_rx, log_rx) {
-        Some(std::thread::spawn(move || {
-            if let Err(e) = phira_mp_plus_server::cli_tui::run_tui(cmd_tx, out_rx, log_rx) {
-                eprintln!("TUI error: {e}");
-            }
-        }))
+        if is_screen {
+            info!("screen/tmux detected, TUI disabled (use --no-cli for headless mode)");
+            None
+        } else {
+            Some(std::thread::spawn(move || {
+                if let Err(e) = phira_mp_plus_server::cli_tui::run_tui(cmd_tx, out_rx, log_rx) {
+                    eprintln!("TUI error: {e}");
+                }
+            }))
+        }
     } else {
         info!("CLI management console disabled, logs to stdout");
         None

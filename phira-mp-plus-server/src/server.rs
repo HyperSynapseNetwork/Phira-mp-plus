@@ -9,7 +9,7 @@ use crate::plugin::{self, PluginEvent, PluginManager};
 use crate::plugin_http::PluginHttpServer;
 use phira_mp_plus_server_api as api;
 use anyhow::Result;
-use phira_mp_common::RoomId;
+use phira_mp_common::{RoomId, generate_secret_key};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -43,6 +43,7 @@ use tokio::sync::{Notify, RwLock, mpsc};
 use tracing::{info, trace, warn};
 
 use uuid::Uuid;
+use std::sync::Weak;
 
 pub type SafeMap<K, V> = RwLock<HashMap<K, V>>;
 
@@ -193,6 +194,12 @@ pub struct PlusServerState {
     pub round_store: super::round_store::RoundStore,
     /// 压测请求发送端（背景 tokio 任务消费）
     pub bench_tx: tokio::sync::mpsc::UnboundedSender<BenchRequest>,
+    /// 房间 monitor key（与 phira-web-monitor 共享密钥）
+    pub room_monitor_key: Vec<u8>,
+    /// 房间 monitor 会话（唯一）
+    pub room_monitor: RwLock<Option<Weak<super::session::Session>>>,
+    /// 游戏 monitor 会话（按用户 ID）
+    pub game_monitors: SafeMap<i32, Weak<super::session::Session>>,
 }
 
 /// Phira-mp+ 服务器
@@ -256,6 +263,9 @@ impl PlusServer {
                 retention_days,
             ),
             bench_tx: bench_tx.clone(),
+            room_monitor_key: generate_secret_key("room_monitor", 64).unwrap_or_default(),
+            room_monitor: RwLock::new(None),
+            game_monitors: SafeMap::default(),
         });
         // 压测背景任务
         let bench_state = Arc::clone(&state);
@@ -519,6 +529,27 @@ pub struct ServerStats {
     pub active_sessions: usize,
     pub loaded_plugins: usize,
     pub port: u16,
+}
+
+// ── Monitor 助手 ──
+
+impl PlusServerState {
+    /// 获取房间 monitor 会话
+    pub async fn get_room_monitor(&self) -> Option<Arc<super::session::Session>> {
+        self.room_monitor.read().await.as_ref().and_then(Weak::upgrade)
+    }
+    /// 设置房间 monitor 会话
+    pub async fn set_room_monitor(&self, session: Weak<super::session::Session>) {
+        *self.room_monitor.write().await = Some(session);
+    }
+    /// 获取游戏 monitor 会话
+    pub async fn get_game_monitor(&self, player_id: i32) -> Option<Arc<super::session::Session>> {
+        self.game_monitors.read().await.get(&player_id).and_then(Weak::upgrade)
+    }
+    /// 设置游戏 monitor 会话
+    pub async fn set_game_monitor(&self, player_id: i32, session: Weak<super::session::Session>) {
+        self.game_monitors.write().await.insert(player_id, session);
+    }
 }
 
 // ── 压测方法 ──

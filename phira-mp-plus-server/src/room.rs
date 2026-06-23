@@ -218,6 +218,46 @@ impl Room {
         }
     }
 
+    /// 转换为 RoomData（供 monitor 协议使用）
+    pub async fn into_data(room: &Arc<Self>) -> phira_mp_common::RoomData {
+        let host = room.host.read().await.upgrade().map(|u| u.id).unwrap_or(-1);
+        let users: Vec<i32> = room.users().await.into_iter().map(|u| u.id).collect();
+        let chart = room.chart.read().await.as_ref().map(|c| c.id);
+        let state = match &*room.state.read().await {
+            InternalRoomState::SelectChart => phira_mp_common::StrippedRoomState::SelectingChart,
+            InternalRoomState::WaitForReady { .. } => phira_mp_common::StrippedRoomState::WaitingForReady,
+            InternalRoomState::Playing { .. } => phira_mp_common::StrippedRoomState::Playing,
+        };
+        let rounds = room.play_history.read().await.iter().map(|r| {
+            phira_mp_common::RoundData {
+                chart: r.chart_id,
+                records: r.results.iter().map(|res| phira_mp_common::Record {
+                    id: 0,
+                    player: res.user_id,
+                    score: res.score,
+                    perfect: res.perfect,
+                    good: res.good,
+                    bad: res.bad,
+                    miss: res.miss,
+                    max_combo: res.max_combo,
+                    accuracy: res.accuracy,
+                    full_combo: res.full_combo,
+                    std: 0.0,
+                    std_score: res.std_score,
+                }).collect(),
+            }
+        }).collect();
+        phira_mp_common::RoomData {
+            host,
+            users,
+            lock: room.locked.load(Ordering::SeqCst),
+            cycle: room.cycle.load(Ordering::SeqCst),
+            chart,
+            state,
+            rounds,
+        }
+    }
+
     pub async fn on_state_change(&self) {
         self.broadcast(ServerCommand::ChangeState(self.client_room_state().await))
             .await;
