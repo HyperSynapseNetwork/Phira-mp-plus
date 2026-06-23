@@ -15,6 +15,7 @@
 - **🌐 中央 HTTP/SSE 服务器** — 插件在统一端口注册路由和 SSE 事件推送，支持运行时动态注册
 - **⚙️ YAML 配置文件** — 支持 `server_config.yml`，三层覆盖：YAML → 环境变量 → CLI 参数
 - **🚦 速率限制** — 连接速率限制（按 IP 滑动窗口）+ 命令速率限制（令牌桶）
+- **💾 轮次数据持久化** — Touches/Judges 按轮次写入磁盘 (JSONL)，支持配置保留天数与后台清理
 - **🔐 安全增强** — 令牌使用 SHA-256 哈希，最大会话数保护
 - **🌍 本地化** — 支持多语言消息（en-US/zh-CN/zh-TW），基于 Fluent
 - **📊 内置插件** — 房间信息 Web API、玩家追踪、游玩时间统计、结算排行、欢迎语
@@ -102,6 +103,7 @@ phira-mp-plus-server/          # 服务端
 │   ├── plugin_http.rs         # 中央 HTTP/SSE 服务器
 │   ├── rate_limiter.rs        # 速率限制器
 │   ├── room.rs                # 房间状态机
+│   ├── round_store.rs         # 轮次数据持久化存储
 │   ├── server.rs              # 服务器核心 + 配置
 │   └── session.rs             # 会话管理与命令处理
 ├── locales/                   # Fluent 翻译文件
@@ -198,6 +200,7 @@ impl NativePlugin for MyPlugin {
 | `connection_rate_limit` | u32 | `30` | 连接速率限制（窗口内允许次数） |
 | `connection_rate_window` | u32 | `10` | 连接速率统计窗口（秒） |
 | `max_users_per_room` | usize | `8` | 每房间最大玩家数 |
+| `round_data_retention_days` | u32 | `7` | 轮次 Touches/Judges 保留天数（0=不保留） |
 | `server_name` | String | — | 服务器名称 |
 
 ## 许可证

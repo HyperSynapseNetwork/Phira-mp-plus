@@ -180,6 +180,56 @@ cli.register(
 )?;
 ```
 
+## WASM WIT API
+
+WASM 插件通过 `phira:host/api` 调用宿主功能。所有方法通过 `api.call(method, args)` 调用，参数和返回值均为 JSON。
+
+### 服务端状态查询
+
+| 方法 | 参数 | 返回值 |
+|------|------|--------|
+| `state.query` | `{ method, params }` | 查询结果 |
+| `player.touches` | `{ user_id }` | 指定用户的最近触控数据 |
+| `player.judges` | `{ user_id }` | 指定用户的最近判定数据 |
+
+### 轮次数据查询
+
+| 方法 | 参数 | 返回值 |
+|------|------|--------|
+| `round.data` | `{ round_uuid, player_id }` | 指定轮次+玩家的全部触控和判定 |
+| `round.list` | `{}` | 所有已记录轮次列表 |
+
+示例 — 查询某轮次中某玩家的完整操作记录：
+
+```javascript
+let data = api.call('round.data', {
+  round_uuid: 'xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx',
+  player_id: 12345
+});
+// data = { round_uuid, player_id, touches: [...], judges: [...] }
+```
+
+轮次数据默认保留 7 天，通过配置 `round_data_retention_days` 调整。
+
+### 实时数据流
+
+Touches/Judges 数据通过 `PluginEvent::PlayerTouches` 和 `PluginEvent::PlayerJudges` 事件推送到 WASM 插件的 `phira_on_event` 处理器，无需主动轮询。
+
+### 其他方法
+
+| 方法 | 说明 |
+|------|------|
+| `send.to_user` | 发送消息给指定用户 |
+| `send.to_room` | 向房间广播消息 |
+| `send.to_all` | 向所有用户广播 |
+| `ext.get_user` / `ext.set_user` | 读写用户扩展数据 |
+| `ext.get_room` / `ext.set_room` | 读写房间扩展数据 |
+| `config.get` / `config.set` | 读写插件配置 |
+| `http.get` / `http.post` | 发送 HTTP 请求 |
+| `file.read` / `file.write` | 读写插件数据文件 |
+| `uuid.v4` | 生成 UUID |
+| `time.now` | 获取当前时间戳 |
+
 ## 服务端配置
 
 插件可通过配置文件 `server_config.yml` 获取自定义配置项：
