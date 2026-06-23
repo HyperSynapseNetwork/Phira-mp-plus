@@ -1,12 +1,11 @@
 //! Phira-mp+ 压测插件
 //!
-//! CLI `benchmark` — 分析配置与状态，估算最大房间数/人数/推荐值。
+//! CLI `benchmark` — 长时间压力测试，测试房间创建/用户加入/稳定性。
 
 use phira_mp_plus_server_api::{
     NativePlugin, PluginContext, PluginEvent, PluginInfo,
 };
 use std::sync::Arc;
-use std::time::Instant;
 use tracing::info;
 
 pub struct StressTestPlugin;
@@ -23,7 +22,7 @@ impl NativePlugin for StressTestPlugin {
             name: "stress-test".to_string(),
             version: "0.1.0".to_string(),
             author: "Phira-mp+".to_string(),
-            description: "服务端容量压测与分析".to_string(),
+            description: "服务端压力测试与容量评估".to_string(),
         }
     }
 
@@ -32,84 +31,95 @@ impl NativePlugin for StressTestPlugin {
 
         if let Some(cli) = &ctx.cli {
             let state = ctx.state.clone();
+
+            // ── benchmark — 全流程压测 ──
             let _ = cli.register(
                 "benchmark",
-                "运行服务端容量压测",
-                "benchmark",
+                "运行压力测试 (创建房间/填充用户/持续负载)",
+                "benchmark [时长s] [房间数]",
                 Arc::new(move |args| {
-                    let _ = args;
                     let st = match &state {
                         Some(s) => s,
                         None => return vec!["  · 状态查询不可用".into()],
                     };
-                    let start = Instant::now();
-                    let mut out = vec![format!("  ◆ 服务端容量压测")];
 
-                    let rooms = st.call("rooms.list", &[])
-                        .ok().and_then(|v| v.as_array().map(|a| a.len())).unwrap_or(0);
-                    out.push(format!("  │ 活跃房间: {rooms}"));
+                    let duration: u64 = args.first().and_then(|a| a.parse().ok()).unwrap_or(30);
+                    let rooms: usize = args.get(1).and_then(|a| a.parse().ok()).unwrap_or(200);
 
-                    const MAX: usize = 4096;
-                    out.push(format!("  │"));
-                    out.push(format!("  ├─ 容量上限（{MAX} 会话）"));
-                    out.push(format!("  │  ┌ 2人/间 → ≤{} 间", MAX / 2));
-                    out.push(format!("  │  ├ 4人/间 → ≤{} 间", MAX / 4));
-                    out.push(format!("  │  └ 8人/间 → ≤{} 间", MAX / 8));
+                    let mut out = vec![
+                        format!("  ◆ 开始压测: {}s, {} 间房间", duration, rooms),
+                        format!("  │ 这可能需要几分钟，请耐心等待..."),
+                    ];
 
-                    let mut us = Vec::new();
-                    for _ in 0..5 {
-                        let t = Instant::now();
-                        let _ = st.call("rooms.list", &[]);
-                        us.push(t.elapsed().as_micros());
+                    match st.call("test.run_benchmark", &[
+                        serde_json::json!(duration),
+                        serde_json::json!(rooms),
+                    ]) {
+                        Ok(result) => {
+                            if let Some(text) = result.get("output").and_then(|v| v.as_str()) {
+                                // 分行输出
+                                for line in text.lines() {
+                                    out.push(line.to_string());
+                                }
+                            } else {
+                                out.push(format!("  ✓ 压测完成"));
+                            }
+                        }
+                        Err(e) => {
+                            out.push(format!("  ✗ 压测失败: {e}"));
+                            // 尝试清理
+                            let _ = st.call("test.cleanup", &[]);
+                        }
                     }
-                    let avg: f64 = us.iter().sum::<u128>() as f64 / us.len() as f64;
 
-                    let recommended = if rooms > 50 { 4 } else if rooms > 20 { 6 } else { 8 };
-
-                    out.push(format!("  │"));
-                    out.push(format!("  ├─ 查询延迟 (5次 avg)"));
-                    out.push(format!("  │  {avg:.0}µs"));
-                    out.push(format!("  │"));
-                    out.push(format!("  ├─ 推荐"));
-                    out.push(format!("  │  每房间最多 {recommended} 人"));
-                    out.push(format!("  │  连接限流 30次/10s (可调)"));
-                    out.push(format!("  │  改 server_config.yml 后重启"));
-                    out.push(format!("  │"));
-                    out.push(format!("  └─ 耗时 {:.1}ms", start.elapsed().as_secs_f64() * 1000.0));
                     out
                 }),
             );
 
+            // ── bench-cleanup — 清理残留 ──
             let state = ctx.state.clone();
             let _ = cli.register(
-                "benchmark-config",
-                "查看/设置每房间最大人数",
-                "benchmark-config [<新值>]",
-                Arc::new(move |args| {
+                "bench-cleanup",
+                "清理压测残留数据",
+                "bench-cleanup",
+                Arc::new(move |_| {
                     let st = match &state {
                         Some(s) => s,
                         None => return vec!["  · 状态查询不可用".into()],
                     };
-                    let now = st.call("rooms.list", &[])
-                        .ok().and_then(|v| v.as_array().map(|a| a.len())).unwrap_or(0);
-                    let mut out = vec![
-                        format!("  ◆ 房间容量配置"),
-                        format!("  │ 活跃房间: {now}"),
-                    ];
-                    if args.is_empty() {
-                        out.push(format!("  │ 当前 max_users_per_room 见 server_config.yml"));
-                        out.push(format!("  │ 用法: benchmark-config <2~64>"));
-                    } else if let Ok(n) = args[0].parse::<usize>() {
-                        if n >= 2 && n <= 64 {
-                            out.push(format!("  │ ✓ 建议值: 每房间最多 {n} 人"));
-                            out.push(format!("  │   请更新 server_config.yml 后重启"));
-                        } else {
-                            out.push(format!("  │ ✗ 范围 2~64"));
-                        }
-                    } else {
-                        out.push(format!("  │ ✗ 参数须为数字"));
+                    match st.call("test.cleanup", &[]) {
+                        Ok(_) => vec!["  ✓ 已清理压测残留".into()],
+                        Err(e) => vec![format!("  ✗ 清理失败: {e}")],
                     }
-                    out
+                }),
+            );
+
+            // ── bench-quick — 快速基准测试 ──
+            let state = ctx.state.clone();
+            let _ = cli.register(
+                "bench-quick",
+                "快速基准测试 (10s, 50 间房)",
+                "bench-quick",
+                Arc::new(move |_| {
+                    let st = match &state {
+                        Some(s) => s,
+                        None => return vec!["  · 状态查询不可用".into()],
+                    };
+                    match st.call("test.run_benchmark", &[
+                        serde_json::json!(10),
+                        serde_json::json!(50),
+                    ]) {
+                        Ok(result) => {
+                            let mut out = vec![];
+                            if let Some(text) = result.get("output").and_then(|v| v.as_str()) {
+                                for line in text.lines() {
+                                    out.push(line.to_string());
+                                }
+                            }
+                            out
+                        }
+                        Err(e) => vec![format!("  ✗ 压测失败: {e}")],
+                    }
                 }),
             );
         }
