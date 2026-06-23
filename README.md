@@ -31,18 +31,27 @@
 
 ## 快速开始
 
+确保已安装 Rust 工具链（建议 1.70+）：
+
 ```bash
-# 构建（所有功能默认开启）
+# 安装/更新 Rust
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+rustup update stable
+
+# 克隆仓库后进入目录
+cd phira-mp-plus
+
+# 构建（所有功能默认开启，首次编译约需 2-5 分钟）
 cargo build
 
-# 运行（使用默认配置）
+# 使用默认配置启动（debug 模式）
 ./target/debug/phira-mp-plus-server
 
-# 指定配置文件
+# 指定自定义配置文件启动
 ./target/debug/phira-mp-plus-server --config my_config.yml
-```
 
-YAML 配置文件支持自动生成，首次运行时会创建默认的 `server_config.yml`。
+# 💡 release 模式对应路径为 ./target/release/phira-mp-plus-server
+```
 
 ### 自定义配置
 
