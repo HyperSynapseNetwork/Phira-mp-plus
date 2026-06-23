@@ -2,238 +2,124 @@
 
 ## 启动参数
 
-Phira-mp+ 服务器启动时支持以下命令行参数：
-
 ```
 phira-mp-plus-server [OPTIONS]
+
+  -p, --port <PORT>          服务器监听端口 [默认: 12346]
+  -d, --plugins-dir <DIR>    WASM 插件目录路径 [默认: "plugins"]
+  -e, --ext-file <FILE>      扩展数据持久化 JSON 文件路径 [默认: "data/extensions.json"]
+      --no-cli               禁用交互式 CLI 管理控制台
+  -l, --log-file <NAME>      日志文件基础名称 [默认: "phira-mp-plus"]
+  -m, --monitor <IDS>...     允许旁观的用户 ID（可多次指定，如 `-m 1 -m 2`）
+      --http-port <PORT>     HTTP/SSE 服务端口 [默认: 12347]
+  -h, --help                 显示帮助信息
+  -V, --version              显示版本号
 ```
-
-| 参数 | 简写 | 默认值 | 说明 |
-|------|------|--------|------|
-| `--port` | `-p` | `12346` | 服务器监听端口 |
-| `--plugins-dir` | `-d` | `plugins` | WASM 插件目录路径 |
-| `--ext-file` | `-e` | (无) | 扩展数据持久化 JSON 文件路径 |
-| `--no-cli` | — | `false` | 禁用交互式 CLI 管理控制台 |
-| `--log-file` | `-l` | `phira-mp-plus` | 日志文件基础名称 |
-| `--monitor` | `-m` | `[2]` | 允许旁观的用户 ID（可多次指定，如 `-m 1 -m 2`） |
-| `--help` | `-h` | — | 显示帮助信息 |
-| `--version` | `-V` | — | 显示版本号 |
-
-### 示例
-
-```bash
-# 默认启动
-phira-mp-plus-server
-
-# 指定端口和插件目录
-phira-mp-plus-server --port 8080 --plugins-dir ./my-plugins
-
-# 带多个监视器 + 扩展数据持久化
-phira-mp-plus-server -p 12346 -m 1 -m 2 -m 100 -e ./data/extensions.json
-
-# 无 CLI 模式（后台运行）
-phira-mp-plus-server --no-cli
-
-# 查看帮助
-phira-mp-plus-server -h
-```
-
----
 
 ## 交互式管理控制台
 
-当服务器启动时（未使用 `--no-cli`），会自动进入交互式管理控制台。在控制台中可以直接输入命令进行管理操作。
+服务器启动后自动进入 TUI（基于 ratatui）管理控制台。支持命令输入和日志实时显示。
 
-### 命令速览
+### 命令列表
+
+#### 通用命令
 
 | 命令 | 别名 | 说明 |
 |------|------|------|
 | `help` | `h`, `?` | 显示帮助信息 |
 | `exit` | `quit`, `q` | 关闭服务器 |
 | `status` | `st` | 显示服务器状态 |
+
+#### 插件管理
+
+| 命令 | 别名 | 说明 |
+|------|------|------|
 | `plugins` | `pl` | 列出所有已加载的插件 |
-| `plug-enable` | `pe` | 启用指定插件 |
-| `plug-disable` | `pd` | 禁用指定插件 |
-| `plug-reload` | `pr` | 重载所有插件 |
+| `plugin list` | — | 列出所有插件 |
+| `plugin enable <名>` | `pe` | 启用指定插件 |
+| `plugin disable <名>` | `pd` | 禁用指定插件 |
+| `plugin info <名>` | — | 显示插件详细信息 |
+| `plugin reload` | `pr` | 重载所有插件 |
+
+#### 用户 / 房间管理
+
+| 命令 | 别名 | 说明 |
+|------|------|------|
 | `users` | `u` | 列出在线用户 |
 | `rooms` | `r` | 列出活跃房间 |
-| `kick` | `k` | 踢出用户 |
-| `broadcast` | `bc` | 广播消息到所有用户 |
+| `room-info <id>` | `ri` | 房间详情（状态、房主、谱面、历史） |
+| `room-transfer <id> <uid>` | `rt` | 转移房主 |
+| `room-set <id> <字段> <值>` | — | 修改房间设置（lock/cycle/chart-id） |
+| `room-start <id>` | `rs` | 强制开始游戏 |
+| `room-cancel <id>` | `rc` | 取消准备状态 |
+| `room-history <id>` | `rh` | 查看游玩记录 |
+| `kick <房间ID> <用户ID>` | `k` | 踢出用户（从房间或服务器） |
+| `close-room <id>` | `cr` | 解散房间 |
+| `broadcast [作用域] <消息>` | `bc` | 广播消息 |
+
+##### broadcast 作用域
+
+```
+broadcast all <消息>           广播给所有用户
+broadcast room <房间ID> <消息>   广播给指定房间
+broadcast user <用户ID> <消息>   发送给指定用户
+```
+
+#### 扩展数据
+
+| 命令 | 别名 | 说明 |
+|------|------|------|
 | `ext-list` | `el` | 列出所有注册的扩展数据字段 |
-| `ext-get` | `eg` | 获取指定用户/房间的扩展数据 |
+| `ext-get <ID> <key>` | `eg` | 获取指定用户/房间的扩展数据 |
 
----
+#### 黑名单管理
 
-## 命令详解
+| 命令 | 别名 | 说明 |
+|------|------|------|
+| `ban <用户ID> [原因]` | — | 封禁用户 |
+| `unban <用户ID>` | — | 解封用户 |
+| `banlist` | `bl` | 列出封禁列表 |
+| `room-ban <房间ID> <用户ID>` | `rb` | 房间加入黑名单 |
+| `room-unban <房间ID> <用户ID>` | `ru` | 房间移出黑名单 |
+| `room-banlist <房间ID>` | `rbl` | 房间黑名单列表 |
 
-### 通用命令
+#### 插件扩展命令
 
-#### `help` / `h` / `?`
+| 命令 | 说明 |
+|------|------|
+| `players [页码]` | 列出所有游玩过的玩家（翻页） |
+| `player-count` | 游玩过的玩家总数 |
+| `playtime <用户ID>` | 查询指定用户的游玩时间 |
+| `playtime-top [数量]` | 游玩时间排行榜前 N |
+| `round-last <房间ID>` | 查看房间最近一轮结算 |
+| `welcome-config` | 查看欢迎语配置 |
 
-显示所有可用命令及其说明。
+## Web API
 
-#### `exit` / `quit` / `q`
+中央 HTTP/SSE 服务器监听配置的 `--http-port`（默认 12347）。
 
-安全关闭 Phira-mp+ 服务器。
-
-#### `status` / `st`
-
-显示服务器当前运行状态，包括：
-- 服务器版本
-- 运行状态
-- 已加载插件数量
-
----
-
-### 插件管理命令
-
-#### `plugins` / `pl`
-
-列出所有已加载的插件及其详细信息：
-
-```
-名称                      版本        状态      作者
-------------------------------------------------------------
-event-logger              0.1.0      启用      Phira-mp+
-example-plugin            0.1.0      启用      user
-```
-
-状态说明：
-- `启用` — 插件正常运行中
-- `禁用` — 插件已加载但未启用
-- `已加载` — 插件已加载但未初始化
-- `错误` — 插件初始化或运行时出错
-
-#### `plug-enable <插件名>` / `pe <插件名>`
-
-启用指定插件。
-
-示例：
-```
-> plug-enable my-plugin
-  插件 'my-plugin' 已启用
-```
-
-#### `plug-disable <插件名>` / `pd <插件名>`
-
-禁用指定插件。
-
-#### `plug-reload` / `pr`
-
-卸载所有插件并重新从插件目录加载。
-
----
-
-### 用户管理命令
-
-#### `users` / `u`
-
-列出当前所有在线用户（显示用户 ID、名称、当前状态）。
-
-#### `kick <目标ID>` / `k <目标ID>`
-
-将指定用户踢出服务器。
-
-示例：
-```
-> kick 42
-  用户 42 已被踢出服务器
-```
-
----
-
-### 房间管理命令
-
-#### `rooms` / `r`
-
-列出所有当前活跃的房间（显示房间 ID、玩家数、状态、房主）。
-
-#### `kick <房间ID> <用户ID>` / `k <房间ID> <用户ID>`
-
-将指定用户踢出指定房间。
-
-示例：
-```
-> kick my-room 42
-  用户 42 已被踢出房间 my-room
-```
-
----
-
-### 消息命令
-
-#### `broadcast <消息>` / `bc <消息>`
-
-向所有在线的用户广播一条消息。
-
-示例：
-```
-> broadcast 服务器将于5分钟后维护，请做好准备。
-```
-
----
-
-### 扩展数据命令
-
-#### `ext-list` / `el`
-
-列出所有已注册的扩展数据字段，包括用户字段和房间字段。
-
-示例：
-```
-用户扩展字段:
-    - ban-status
-    - score-rank
-房间扩展字段:
-    - min-level
-    - tags
-```
-
-#### `ext-get <用户ID|房间ID> <字段名>` / `eg <用户ID|房间ID> <字段名>`
-
-获取指定用户或房间的扩展数据值。自动检测是用户 ID 还是房间 ID。
-
-示例：
-```
-> eg 42 ban-status
-  用户 42 的扩展数据 'ban-status': active
-
-> eg my-room min-level
-  房间 'my-room' 的扩展数据 'min-level': 5
-```
-
----
-
-## 退出码
-
-| 退出码 | 说明 |
-|--------|------|
-| 0 | 正常退出 |
-| 1 | 启动失败（端口被占用、配置错误等） |
-| 2 | 运行时错误 |
-
----
+| 端点 | 说明 |
+|------|------|
+| `GET /api/rooms/info` | 房间列表（含详情） |
+| `GET /api/rooms/info/{name}` | 指定房间信息 |
+| `GET /api/rooms/user/{user_id}` | 用户所在房间 |
+| `GET /api/rooms/listen` | SSE 事件流 |
+| `GET /api/events` | 统一 SSE 端点 |
+| `GET /api/players/count` | 游玩过的玩家数 |
+| `GET /api/players/list?page=1` | 玩家列表（翻页） |
+| `GET /api/user_rank/{user_id}` | 用户游玩时间排名 |
+| `GET /api/user_playtime_ranking` | 游玩时间前 10 |
+| `GET /api/playtime_leaderboard` | 全部游玩时间排行 |
+| `GET /api/playtime_leaderboard/top/{n}` | 前 N 名游玩时间排行 |
+| `GET /api/round/last/{room_id}` | 房间最近一轮结算 |
 
 ## 日志文件
 
-日志文件存储在 `log/` 目录下，按小时轮转：
+日志文件存储在 `log/` 目录下，按小时轮转。
 
-```
-log/
-├── phira-mp-plus.2025-01-01-00.log
-├── phira-mp-plus.2025-01-01-01.log
-└── ...
-```
-
-日志级别可通过 `RUST_LOG` 环境变量控制：
+日志级别通过 `RUST_LOG` 环境变量控制：
 
 ```bash
-# 仅显示 info 及以上级别
 RUST_LOG=info phira-mp-plus-server
-
-# 显示 debug 及以上级别
 RUST_LOG=debug phira-mp-plus-server
-
-# 特定模块的日志级别
-RUST_LOG=phira_mp_plus_server=debug,info phira-mp-plus-server
 ```
