@@ -4,7 +4,7 @@
 //! 通过 UserConnect / UserDisconnect 事件追踪。
 
 use phira_mp_plus_server_api::{
-    NativePlugin, PluginContext, PluginEvent, PluginInfo,
+    NativePlugin, PluginContext, PluginEvent, PluginInfo, ServerStateQuery,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -23,15 +23,6 @@ struct PlayerTime {
     total_seconds: u64,
     /// 当前会话开始时间戳（None 表示不在游戏中）
     session_start: Option<u64>,
-}
-
-/// 排行条目
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "snake_case")]
-struct RankEntry {
-    user_id: i32,
-    playtime_seconds: u64,
-    playtime_hours: f64,
 }
 
 pub struct PlaytimeTracker {
@@ -89,10 +80,11 @@ impl NativePlugin for PlaytimeTracker {
 
     fn init(&mut self, ctx: &PluginContext) -> Result<(), String> {
         info!("PlaytimeTracker plugin initializing...");
+        let shared_data = self.data.clone();
 
         // 内部 API（供其他插件查询）
         if let Some(api) = &ctx.api {
-            let data = self.data.clone();
+            let data = shared_data.clone();
             let handler: phira_mp_plus_server_api::PluginApiHandler = Arc::new(move |method, args| {
                 let guard = data.lock().unwrap_or_else(|e| e.into_inner());
                 match method {
@@ -126,11 +118,28 @@ impl NativePlugin for PlaytimeTracker {
             info!("internal API handler ready");
         }
 
+        // ── 辅助：通过 state.query 解析用户名 ──
+        let make_name_resolver = |st: Option<ServerStateQuery>| {
+            move |uid: i32| -> String {
+                if uid == 0 { return "系统".into(); }
+                if let Some(ref st) = st {
+                    if let Ok(v) = st.call("user_name", &[serde_json::json!(uid)]) {
+                        if let Some(n) = v.get("name").and_then(|n| n.as_str()) {
+                            return n.to_string();
+                        }
+                    }
+                }
+                format!("#{}", uid)
+            }
+        };
+
         // Web API
         if let Some(http) = &ctx.http {
-            let data = self.data.clone();
+            let data = shared_data.clone();
+            let resolve_name = make_name_resolver(ctx.state.clone());
             http.register_route("/api/user_rank/<user_id>", Arc::new(move |_, params| {
                 let uid = params.first().and_then(|p| p.parse::<i32>().ok()).unwrap_or(0);
+                let name = resolve_name(uid);
                 let (rank, total) = {
                     let guard = data.lock().unwrap_or_else(|e| e.into_inner());
                     let now = PlaytimeTracker::now();
@@ -140,7 +149,6 @@ impl NativePlugin for PlaytimeTracker {
                     let user_total = guard.get(&uid).map(|p| {
                         p.total_seconds + p.session_start.map_or(0, |s| now.saturating_sub(s))
                     }).unwrap_or(0);
-                    // 计算排名（考虑并列）
                     let rank = 1 + totals.iter().filter(|(_, t)| *t > user_total).count() as u64;
                     (if user_total > 0 { rank } else { 0 }, user_total)
                 };
@@ -151,6 +159,7 @@ impl NativePlugin for PlaytimeTracker {
                     "success": true,
                     "data": {
                         "user_id": uid,
+                        "user_name": name,
                         "rank": rank,
                         "total_playtime_seconds": total,
                         "total_playtime_hours": (total as f64) / 3600.0,
@@ -159,28 +168,35 @@ impl NativePlugin for PlaytimeTracker {
             }));
             info!("registered /api/user_rank/<user_id>");
 
-            let data = self.data.clone();
+            let data = shared_data.clone();
+            let resolve_name = make_name_resolver(ctx.state.clone());
             http.register_route("/api/user_playtime_ranking", Arc::new(move |_, _| {
                 let guard = data.lock().unwrap_or_else(|e| e.into_inner());
                 let now = PlaytimeTracker::now();
-                let mut entries: Vec<RankEntry> = guard.iter().map(|(&uid, p)| {
+                let mut entries: Vec<Value> = guard.iter().map(|(&uid, p)| {
                     let secs = p.total_seconds + p.session_start.map_or(0, |s| now.saturating_sub(s));
-                    RankEntry { user_id: uid, playtime_seconds: secs, playtime_hours: (secs as f64 / 3600.0 * 100.0).round() / 100.0 }
+                    serde_json::json!({
+                        "user_id": uid,
+                        "user_name": resolve_name(uid),
+                        "playtime_seconds": secs,
+                        "playtime_hours": (secs as f64 / 3600.0 * 100.0).round() / 100.0
+                    })
                 }).collect();
-                entries.sort_by(|a, b| b.playtime_seconds.cmp(&a.playtime_seconds));
+                entries.sort_by(|a, b| b["playtime_seconds"].as_u64().unwrap_or(0).cmp(&a["playtime_seconds"].as_u64().unwrap_or(0)));
                 entries.truncate(10);
                 Ok(serde_json::json!({"success": true, "data": entries, "count": entries.len()}))
             }));
             info!("registered /api/user_playtime_ranking");
 
-            let data = self.data.clone();
+            let data = shared_data.clone();
+            let resolve_name = make_name_resolver(ctx.state.clone());
             http.register_route("/api/playtime_leaderboard", Arc::new(move |_, _| {
                 let guard = data.lock().unwrap_or_else(|e| e.into_inner());
                 let now = PlaytimeTracker::now();
                 let now_iso = iso_now();
                 let data_list: Vec<Value> = guard.iter().map(|(&uid, p)| {
                     let total = p.total_seconds + p.session_start.map_or(0, |s| now.saturating_sub(s));
-                    serde_json::json!({"user_id": uid, "total_playtime": total})
+                    serde_json::json!({"user_id": uid, "user_name": resolve_name(uid), "total_playtime": total})
                 }).collect();
                 Ok(serde_json::json!({
                     "success": true, "data": data_list,
@@ -189,7 +205,8 @@ impl NativePlugin for PlaytimeTracker {
             }));
             info!("registered /api/playtime_leaderboard");
 
-            let data = self.data.clone();
+            let data = shared_data.clone();
+            let resolve_name = make_name_resolver(ctx.state.clone());
             http.register_route("/api/playtime_leaderboard/top/<limit>", Arc::new(move |_, params| {
                 let limit: usize = params.first().and_then(|p| p.parse().ok()).unwrap_or(10).max(1);
                 let guard = data.lock().unwrap_or_else(|e| e.into_inner());
@@ -202,7 +219,7 @@ impl NativePlugin for PlaytimeTracker {
                 entries.sort_by(|a, b| b.1.cmp(&a.1));
                 entries.truncate(limit);
                 let data_list: Vec<Value> = entries.iter().map(|(uid, total)| {
-                    serde_json::json!({"user_id": uid, "total_playtime": total})
+                    serde_json::json!({"user_id": uid, "user_name": resolve_name(*uid), "total_playtime": total})
                 }).collect();
                 Ok(serde_json::json!({
                     "success": true, "data": data_list,
