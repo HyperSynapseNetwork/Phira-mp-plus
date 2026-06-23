@@ -255,5 +255,7 @@ AGPLv3 — 详见 [LICENSE](LICENSE)。
 ## 致谢
 
 感谢[TeamFlos](https://github.com/TeamFlos)开发并维护Phira,Phira-mp项目
+
 感谢[tphira-mp](https://github.com/Pimeng/tphira-mp),[jphira-mp](https://github.com/lRENyaaa/jphira-mp)的启发
+
 感谢所有资助过我们的用户[捐献页](https://phira.htadiy.com/about)
