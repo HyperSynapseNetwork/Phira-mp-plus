@@ -91,37 +91,91 @@ phira-mp-plus-server [OPTIONS]
 ## 项目结构
 
 ```
-phira-mp-plus-server/          # 服务端
-├── src/
-│   ├── main.rs                # 入口点
-│   ├── ban.rs                 # 黑名单管理
-│   ├── cli.rs                 # CLI 命令处理器
-│   ├── cli_tui.rs             # TUI 终端界面
-│   ├── extensions.rs          # 扩展数据系统
-│   ├── l10n.rs                # 本地化系统
-│   ├── plugin.rs              # 插件管理器
-│   ├── plugin_http.rs         # 中央 HTTP/SSE 服务器
-│   ├── rate_limiter.rs        # 速率限制器
-│   ├── room.rs                # 房间状态机
-│   ├── round_store.rs         # 轮次数据持久化存储
-│   ├── server.rs              # 服务器核心 + 配置
-│   └── session.rs             # 会话管理与命令处理
-├── locales/                   # Fluent 翻译文件
-│   ├── en-US.ftl
-│   ├── zh-CN.ftl
-│   └── zh-TW.ftl
-
-phira-mp-plus-server-api/      # 插件 API 公共 crate
-
-plugins/                       # 内置插件
-├── webapi-plugin/             # 房间信息 Web API
-├── player-tracker/            # 玩家记录
-├── playtime-tracker/          # 游玩时间统计
-├── round-results/             # 结算排行
-└── welcome-plugin/            # 欢迎语
-
-server_config.yml              # YAML 配置文件（自动生成）
-data/                          # 运行时数据
+Phira-mp-plus/
+│
+├── Cargo.toml                   # 工作区根 (workspace)
+├── Cargo.lock
+├── LICENSE                      # AGPL-3.0
+├── README.md
+│
+├── server_config.yml            # YAML 配置文件（首次运行自动生成默认模板）
+├── data/                        # 运行时数据目录
+│   ├── extensions.json          #   插件扩展数据持久化
+│   ├── rounds/                  #   轮次 Touches/Judges 记录
+│   └── plugins/                 #   插件私有数据
+├── log/                         # 运行日志（每小时轮转）
+│
+├── phira-mp-plus-server/        # ★ 服务端核心
+│   ├── Cargo.toml               #   axum / tokio / wasmtime / clap 等依赖
+│   ├── locales/                 #   Fluent i18n 翻译文件
+│   │   ├── en-US.ftl
+│   │   ├── zh-CN.ftl
+│   │   └── zh-TW.ftl
+│   └── src/
+│       ├── main.rs              #   入口: CLI 解析 → 日志初始化 → TUI → accept 循环
+│       ├── lib.rs               #   模块导出
+│       ├── server.rs            #   服务器核心: PlusConfig / PlusServerState / PlusServer
+│       │                        #     accept 循环、压测方法 (run_benchmark_sync)、
+│       │                        #     状态查询分发 (server_state_query_inner)
+│       ├── session.rs           #   会话管理: Session / User 模型、认证、命令处理 (process)
+│       │                        #     Touches/Judges 数据流向插件事件 + 磁盘存储
+│       ├── room.rs              #   房间状态机: InternalRoomState / Room
+│       │                        #     选谱→准备→游玩→结算、玩家实时数据缓存
+│       ├── plugin.rs            #   插件管理器 + WASM 宿主: PluginManager / PluginHost trait
+│       │                        #     插件加载、事件分发、CLI/HTTP/API 注册
+│       ├── plugin_http.rs       #   中央 HTTP/SSE/WS 服务器: 动态路由 / SSE / WebSocket
+│       ├── wasm_host.rs         #   WASM 运行时: wasmtime 实例、JSON ABI、host/api 桥接
+│       ├── extensions.rs        #   扩展数据系统: 用户/房间 KV 存储 + auth 缓存持久化
+│       ├── ban.rs               #   黑名单系统: 全局封禁 + 房间黑名单
+│       ├── round_store.rs       #   轮次数据存储: JSONL 格式、按 round_uuid/player_id 组织
+│       ├── rate_limiter.rs      #   速率限制: 滑动窗口 (连接) + 令牌桶 (命令)
+│       ├── cli.rs               #   CLI 命令处理器: 30+ 管理命令、插件扩展命令
+│       ├── cli_tui.rs           #   TUI 终端界面: ratatui + crossterm
+│       └── l10n.rs              #   本地化: Fluent Bundle / tl! 宏
+│
+├── phira-mp-plus-server-api/    # ★ 插件 API 公共 crate（打破循环依赖）
+│   └── src/lib.rs               #   PluginEvent / NativePlugin / PluginContext
+│                                #   ServerStateQuery / HttpHandle / CliHandle / PluginApiRegistry
+│
+├── phira-mp/                    # ★ 上游 phira-mp 子模块 (协议层 + 原始服务端)
+│   ├── phira-mp-common/         #   网络协议: 二进制编码 (BinaryData trait)、
+│   │   └── src/                 #     命令定义 (ClientCommand / ServerCommand)、
+│   │       ├── lib.rs           #     Stream 帧协议、RoomId / RoomState / 消息类型
+│   │       ├── command.rs
+│   │       ├── bin.rs           #     BinaryReader / BinaryWriter (LEB128, 小端)
+│   │       └── framing.rs       #     打包/拆包 (VARINT 长度前缀)
+│   ├── phira-mp-macros/         #   #[derive(BinaryData)] 过程宏
+│   ├── phira-mp-server/         #   原始单机服务端 (reference)
+│   └── phira-mp-client/         #   TCP 客户端库 (供游戏集成)
+│
+├── plugins/                     # ★ 内置原生插件
+│   ├── webapi-plugin/           #   房间信息 REST API
+│   │   └── src/lib.rs           #   GET /api/rooms/info, /api/rooms/info/{name}, /api/rooms/user/{id}
+│   ├── player-tracker/          #   玩家记录
+│   │   └── src/lib.rs           #   CLI: players, player-count  |  API: count, list
+│   ├── playtime-tracker/        #   游玩时间统计
+│   │   └── src/lib.rs           #   CLI: playtime, playtime-top  |  API: user_playtime, leaderboard
+│   ├── round-results/           #   结算排行输出
+│   │   └── src/lib.rs           #   CLI: round-last  |  API: /api/round/last/{room_id}
+│   ├── welcome-plugin/          #   可配置欢迎语
+│   │   └── src/lib.rs           #   占位符: [user_name] [player-count] [top_playtime] [active_rooms]
+│   ├── web-monitor/             #   Web 监测 API（兼容 .phira-web-monitor）
+│   │   └── src/lib.rs           #   /rooms/info, /rooms/listen, /ws/live, /auth/login, /chart/{id}
+│   └── stress-test/             #   服务端压测
+│       └── src/lib.rs           #   CLI: benchmark, bench-quick, bench-cleanup
+│
+├── docs/                        # 文档
+│   ├── cli.md                   #   CLI 命令参考
+│   ├── plugin-dev.md            #   插件开发指南 + WIT API 参考
+│   └── plugins/                 #   各插件独立文档
+│       ├── player-tracker.md
+│       ├── playtime-tracker.md
+│       ├── room-info-web-api.md
+│       ├── round-results.md
+│       └── welcome-plugin.md
+│
+├── server_config.yml            # YAML 配置文件 (同级副本, 运行时读取)
+└── LICENSE
 ```
 
 ## 内置插件
