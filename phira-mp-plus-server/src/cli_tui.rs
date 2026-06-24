@@ -3,7 +3,7 @@
 //! 使用 ratatui + crossterm 实现的交互式终端界面，
 //! 以独立的输出区域和输入行避免日志输出干扰命令输入。
 
-use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
+use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers, MouseEventKind};
 use ratatui::{
     backend::CrosstermBackend,
     layout::{Constraint, Direction, Layout, Position},
@@ -132,9 +132,20 @@ impl TuiApp {
                     Event::Key(key) => {
                         self.handle_key(key);
                     }
-                    Event::Resize(_, _) => {
-                        // ratatui 自动处理终端尺寸变化
+                    Event::Mouse(m) => {
+                        match m.kind {
+                            MouseEventKind::ScrollDown => {
+                                let max = self.output_lines.len().saturating_sub(1);
+                                if self.scroll_offset < max { self.scroll_offset += 1; }
+                                else { self.auto_scroll = true; }
+                            }
+                            MouseEventKind::ScrollUp => {
+                                if self.scroll_offset > 0 { self.scroll_offset -= 1; self.auto_scroll = false; }
+                            }
+                            _ => {}
+                        }
                     }
+                    Event::Resize(_, _) => {}
                     _ => {}
                 }
             }
@@ -360,7 +371,7 @@ impl TuiApp {
         };
         let input_content = Span::raw(&self.input);
         let status_info = Span::styled(
-            format!(" {}Ctrl+C退出 ↑↓历史 S-↑↓滚动", scroll_info),
+            format!(" {}Ctrl+C退出 ↑↓历史 S-↑↓/滚轮滚动", scroll_info),
             Style::default().fg(Color::DarkGray),
         );
 
