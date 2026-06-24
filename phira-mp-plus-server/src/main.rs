@@ -64,14 +64,14 @@ struct Args {
 // TUI 模式将日志发送到 mpsc 通道，普通模式输出到 stdout
 
 enum OutputWriter {
-    Stdout(io::Stdout),
+    Stdout(Box<dyn io::Write + Send>),
     Chan(mpsc::UnboundedSender<String>, Vec<u8>),
 }
 
 impl io::Write for OutputWriter {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
         match self {
-            OutputWriter::Stdout(s) => s.write(buf),
+            OutputWriter::Stdout(w) => w.write(buf),
             OutputWriter::Chan(_, data) => {
                 data.extend_from_slice(buf);
                 Ok(buf.len())
@@ -80,7 +80,7 @@ impl io::Write for OutputWriter {
     }
     fn flush(&mut self) -> io::Result<()> {
         match self {
-            OutputWriter::Stdout(s) => s.flush(),
+            OutputWriter::Stdout(w) => w.flush(),
             OutputWriter::Chan(tx, data) => {
                 if !data.is_empty() {
                     let s = String::from_utf8_lossy(data).to_string();
@@ -107,7 +107,7 @@ impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for OutputWriterMaker {
     fn make_writer(&'a self) -> Self::Writer {
         match &self.0 {
             Some(tx) => OutputWriter::Chan(tx.clone(), Vec::new()),
-            None => OutputWriter::Stdout(io::sink()),
+            None => OutputWriter::Stdout(Box::new(io::sink())),
         }
     }
 }
