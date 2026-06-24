@@ -131,7 +131,7 @@ fn init_log(file: &str, log_tx: Option<mpsc::UnboundedSender<String>>) -> Result
         .with_ansi(false)
         .with_filter(LevelFilter::DEBUG);
 
-    // 终端日志：始终输出到 stdout（TUI 额外从 log_tx 读取）
+    // 终端过滤器
     let filter = EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| EnvFilter::new("info"))
         .add_directive("hyper=info".parse().unwrap())
@@ -147,12 +147,13 @@ fn init_log(file: &str, log_tx: Option<mpsc::UnboundedSender<String>>) -> Result
         .with_ansi(false)
         .with_filter(filter.clone());
 
-    // TUI 层
+    // TUI 通道层（有通道时发到通道，否则也写 stdout）
     let tui_layer = fmt::layer()
-        .with_writer(OutputWriterMaker(log_tx.clone()))
+        .with_writer(OutputWriterMaker(log_tx))
         .with_ansi(false)
         .with_filter(filter);
 
+    // 同时注册所有层，tracing_subscriber 会自动去重 stdout
     tracing_subscriber::registry()
         .with(file_layer)
         .with(stdout_layer)
@@ -189,7 +190,7 @@ async fn main() -> Result<()> {
         (None, None)
     };
 
-    // ── 初始化日志（screen 下直接 stdout） ──
+    // ── 初始化日志（此后应使用 info! / warn!，避免直接 println!） ──
     let _guard = init_log(&args.log_file, log_tx)?;
 
     // ── 自动创建数据 & 插件目录 ──
