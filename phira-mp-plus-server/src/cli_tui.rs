@@ -252,9 +252,9 @@ impl TuiApp {
                     self.history_idx = None;
                     self.auto_scroll = true;
                     self.add_output(format!("> {}", cmd));
+                    let is_bench = cmd.starts_with("benchmark") || cmd == "bench";
                     let _ = self.cmd_tx.send(cmd);
-                    // 压测命令时禁用输入
-                    if cmd.starts_with("benchmark") || cmd == "bench" {
+                    if is_bench {
                         self.benchmark_running = true;
                     }
                 }
@@ -400,8 +400,8 @@ impl TuiApp {
         // 压测进度条
         if hide_progress {
             let bar_w = output_w.min(40);
-            let filled = (self.scroll_repeat % (bar_w + 1)) as u16;
-            let bar = format!("  ⟳ 压测中 [{}{}] {}", "█".repeat(filled as usize), "░".repeat(bar_w.saturating_sub(filled) as usize), "等待完成...");
+            let filled = self.scroll_repeat % (bar_w + 1);
+            let bar = format!("  ⟳ 压测中 [{}{}] 等待完成...", "█".repeat(filled), "░".repeat(bar_w.saturating_sub(filled)));
             frame.render_widget(
                 Paragraph::new(Line::from(Span::styled(bar, Style::default().fg(Color::Cyan)))),
                 ratatui::layout::Rect::new(chunks[0].x + 1, chunks[0].y + chunks[0].height.saturating_sub(2), bar_w as u16 + 6, 1),

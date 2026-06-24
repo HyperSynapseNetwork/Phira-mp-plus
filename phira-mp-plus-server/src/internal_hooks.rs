@@ -63,16 +63,9 @@ pub fn send_welcome(user_id: i32, user_name: &str, online: usize, state: &PlusSe
             let ts = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
             text = text.replace("[time]", &ts.to_string());
         }
-        // [playtime] → 当前用户
-        if text.contains("[playtime") {
+        // [playtime <id>] → 指定用户（先处理，避免被 [playtime] 替换干扰）
+        if text.contains("[playtime ") {
             let pt = PLAYTIME_DATA.lock().unwrap();
-            let secs = pt.get(&user_id).map(|e| {
-                e.total_secs + e.session_start.map(|s| {
-                    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0).saturating_sub(s)
-                }).unwrap_or(0)
-            }).unwrap_or(0);
-            text = text.replace("[playtime]", &format!("{:.1}h", secs as f64 / 3600.0));
-            // [playtime <id>] → 指定用户
             while let Some(start) = text.find("[playtime ") {
                 if let Some(end) = text[start..].find(']') {
                     let arg = text[start+10..start+end].trim();
@@ -84,6 +77,16 @@ pub fn send_welcome(user_id: i32, user_name: &str, online: usize, state: &PlusSe
                     } else { break; }
                 } else { break; }
             }
+        }
+        // [playtime] → 当前用户的游玩时间
+        if text.contains("[playtime]") {
+            let pt = PLAYTIME_DATA.lock().unwrap();
+            let secs = pt.get(&user_id).map(|e| {
+                e.total_secs + e.session_start.map(|s| {
+                    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0).saturating_sub(s)
+                }).unwrap_or(0)
+            }).unwrap_or(0);
+            text = text.replace("[playtime]", &format!("{:.1}h", secs as f64 / 3600.0));
         }
         // [active_rooms]
         if text.contains("[active_rooms]") {
