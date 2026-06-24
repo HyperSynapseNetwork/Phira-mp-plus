@@ -498,6 +498,9 @@ impl WasmPluginInstance {
     /// - `file.read/write` → 文件读写
     /// - `uuid.v4`         → 生成 UUID v4
     /// - `time.now`        → 获取 Unix 时间戳
+    /// ── 插件互调用（WASM 插件注册/调用 API） ──
+    /// - `plugin.api_call`    → 调用其他 WASM 插件的 API
+    /// - `plugin.api_register`→ 注册本插件的 API 供其他 WASM 插件调用
     fn dispatch_api(svc: &WasmPluginServices, plugin_name: &str, method: &str, args: &str) -> Result<String, String> {
         let (method_name, rest) = method.split_once('.').unwrap_or((method, ""));
         match (method_name, rest) {
@@ -819,6 +822,42 @@ impl WasmPluginInstance {
                     Some(sq) => sq.call("admin.list_users", &[]).map(|v| v.to_string()),
                     None => Err("state query not available".to_string()),
                 }
+            }
+            // ── 插件互调用（WASM 插件 API） ──
+            ("plugin", "api_call") => {
+                let args_val: serde_json::Value = serde_json::from_str(args)
+                    .map_err(|e| format!("invalid args: {}", e))?;
+                let target_plugin = args_val.get("plugin").and_then(|v| v.as_str()).ok_or("missing plugin")?;
+                let api_method = args_val.get("method").and_then(|v| v.as_str()).ok_or("missing method")?;
+                let api_args = args_val.get("args").and_then(|v| v.as_array()).cloned().unwrap_or_default();
+                let key = format!("{}:{}", target_plugin, api_method);
+                let handlers = svc.api_handlers.lock().map_err(|e| format!("lock: {}", e))?;
+                match handlers.get(&key) {
+                    Some(h) => h(api_method, &api_args).map(|v| v.to_string()),
+                    None => {
+                        // 也尝试不带插件名前缀的直接查找（兼容原生插件注册 API）
+                        match handlers.get(target_plugin) {
+                            Some(h) => h(api_method, &api_args).map(|v| v.to_string()),
+                            None => Err(format!("plugin '{}' has no API '{}'", target_plugin, api_method)),
+                        }
+                    }
+                }
+            }
+            ("plugin", "api_register") => {
+                let args_val: serde_json::Value = serde_json::from_str(args)
+                    .map_err(|e| format!("invalid args: {}", e))?;
+                let api_method = args_val.get("method").and_then(|v| v.as_str()).ok_or("missing method")?.to_string();
+                let key = format!("{}:{}", plugin_name, api_method);
+                let mut handlers = svc.api_handlers.lock().map_err(|e| format!("lock: {}", e))?;
+                if handlers.contains_key(&key) {
+                    return Err(format!("API '{}' already registered by this plugin", api_method));
+                }
+                // 注册一个 passthrough 处理器：调用时通过 state.query 返回给调用方
+                // 完整双向 WASM 回调需要 wasmtime 支持，暂用同步 stub
+                handlers.insert(key, Arc::new(move |method: &str, args: &[Value]| {
+                    Ok(serde_json::json!({"method": method, "args": args, "note": "WASM callback stub"}))
+                }));
+                Ok(format!("registered plugin API: {}.{}", plugin_name, api_method))
             }
             _ => Err(format!("unknown API method: {}.{}", method_name, rest)),
         }
