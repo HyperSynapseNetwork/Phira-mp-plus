@@ -499,3 +499,34 @@ fn strip_ansi(s: &str) -> String {
     }
     out
 }
+
+/// 简单 stdin CLI（screen/tmux 等无 TUI 环境使用）
+pub fn run_stdin_cli(cmd_tx: tokio::sync::mpsc::UnboundedSender<String>, mut out_rx: tokio::sync::mpsc::UnboundedReceiver<String>) {
+    use std::io::Write;
+    // 启动输出读取线程
+    std::thread::spawn(move || {
+        while let Some(line) = out_rx.blocking_recv() {
+            println!("{line}");
+        }
+    });
+    let stdin = std::io::stdin();
+    let mut line_buf = String::new();
+    loop {
+        print!("> ");
+        let _ = std::io::stdout().flush();
+        line_buf.clear();
+        match stdin.read_line(&mut line_buf) {
+            Ok(0) | Err(_) => break,
+            Ok(_) => {
+                let trimmed = line_buf.trim().to_string();
+                if trimmed.eq_ignore_ascii_case("exit") || trimmed.eq_ignore_ascii_case("quit") || trimmed == "q" {
+                    let _ = cmd_tx.send(trimmed);
+                    break;
+                }
+                if !trimmed.is_empty() {
+                    let _ = cmd_tx.send(trimmed);
+                }
+            }
+        }
+    }
+}

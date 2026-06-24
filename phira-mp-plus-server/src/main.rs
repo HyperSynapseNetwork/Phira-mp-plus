@@ -168,8 +168,12 @@ async fn main() -> Result<()> {
     let args = Args::parse();
     let cli_enabled = !args.no_cli;
 
-    // ── 创建 TUI/CLI 通信通道（--no-cli 时跳过 TUI） ──
-    let use_tui = cli_enabled;
+    // ── 检测是否在 screen/tmux 中（TUI 不兼容） ──
+    let is_screen = std::env::var("STY").is_ok() || std::env::var("TMUX").is_ok()
+        || std::env::var("TERM").map(|t| t.contains("screen")).unwrap_or(false);
+
+    // screen 下用简单 stdin CLI，不用 TUI
+    let use_tui = cli_enabled && !is_screen;
 
     let (cmd_tx, cmd_rx) = if use_tui {
         let (tx, rx) = mpsc::unbounded_channel();
@@ -242,7 +246,7 @@ async fn main() -> Result<()> {
     // ── 创建服务器 ──
     let server = PlusServer::new(config).await?;
 
-    // ── 启动 CLI 处理器（接收 TUI 发来的命令） ──
+    // ── 启动 CLI 处理器（接收 TUI 或 stdin 发来的命令） ──
     if let (Some(cmd_rx), Some(out_tx)) = (cmd_rx, out_tx) {
         let state = Arc::clone(&server.state);
         tokio::spawn(async move {
@@ -252,13 +256,22 @@ async fn main() -> Result<()> {
         info!("CLI management console started");
     }
 
-    // ── 启动 TUI 界面（独立线程，阻塞式） ──
+    // ── 启动用户界面 ──
     let tui_handle = if let (Some(cmd_tx), Some(out_rx), Some(log_rx)) = (cmd_tx, out_rx, log_rx) {
-        Some(std::thread::spawn(move || {
-            if let Err(e) = phira_mp_plus_server::cli_tui::run_tui(cmd_tx, out_rx, log_rx) {
-                eprintln!("TUI error: {e}");
-            }
-        }))
+        if is_screen {
+            // screen/tmux 下用简单 stdin CLI
+            info!("screen/tmux detected, starting stdin CLI (type 'help' for commands)");
+            Some(std::thread::spawn(move || {
+                phira_mp_plus_server::cli_tui::run_stdin_cli(cmd_tx, out_rx);
+            }))
+        } else {
+            // 正常终端用 ratatui TUI
+            Some(std::thread::spawn(move || {
+                if let Err(e) = phira_mp_plus_server::cli_tui::run_tui(cmd_tx, out_rx, log_rx) {
+                    eprintln!("TUI error: {e}");
+                }
+            }))
+        }
     } else {
         info!("CLI management console disabled, logs to stdout");
         None
