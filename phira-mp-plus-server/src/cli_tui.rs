@@ -397,13 +397,16 @@ impl TuiApp {
 
         // 全区域清除 + 重绘
         frame.render_widget(Clear, chunks[0]);
-        frame.render_widget(Paragraph::new(Text::from(visible_lines)).wrap(Wrap { trim: false }), chunks[0]);
+        frame.render_widget(Paragraph::new(Text::from(visible_lines)), chunks[0]);
 
-        // 压测进度条
+        // 压测进度条（每次渲染步进，模拟进度）
         if hide_progress {
             let bar_w = output_w.min(40);
-            let filled = self.scroll_repeat % (bar_w + 1);
-            let bar = format!("  ⟳ 压测中 [{}{}] 等待完成...", "█".repeat(filled), "░".repeat(bar_w.saturating_sub(filled)));
+            // 用渲染帧计数做进度动画，每次步进 5%
+            self.scroll_repeat = (self.scroll_repeat + 1) % 21;
+            let pct = (self.scroll_repeat as f64 / 20.0 * 100.0) as usize;
+            let filled = (bar_w * pct / 100).min(bar_w);
+            let bar = format!("  ⟳ 压测中 [{}{}] {}%", "█".repeat(filled), "░".repeat(bar_w.saturating_sub(filled)), pct);
             frame.render_widget(
                 Paragraph::new(Line::from(Span::styled(bar, Style::default().fg(Color::Cyan)))),
                 ratatui::layout::Rect::new(chunks[0].x + 1, chunks[0].y + chunks[0].height.saturating_sub(2), bar_w as u16 + 6, 1),
