@@ -78,6 +78,8 @@ struct TuiApp {
     scroll_repeat: usize,
     /// 上次滚动时间
     scroll_last_time: std::time::Instant,
+    /// S 键按下标志：S+↑↓ 滚动模式
+    scroll_key_pressed: bool,
 }
 
 impl TuiApp {
@@ -94,6 +96,7 @@ impl TuiApp {
             running: true,
             scroll_repeat: 0,
             scroll_last_time: std::time::Instant::now(),
+            scroll_key_pressed: false,
         }
     }
 
@@ -237,19 +240,18 @@ impl TuiApp {
                 self.input.clear();
                 self.cursor_pos = 0;
             }
-            // J/K = 下滚/上滚（仅输入为空时，避免干扰打字）
-            KeyCode::Char('j') if self.input.is_empty() => { self.scroll_down(); }
-            KeyCode::Char('k') if self.input.is_empty() => { self.scroll_up(); }
-            // Shift+↑↓ / Alt+↑↓ 也可用，始终有效
-            KeyCode::Up if key.modifiers.contains(KeyModifiers::ALT) || key.modifiers.contains(KeyModifiers::SHIFT) => { self.scroll_up(); }
-            KeyCode::Down if key.modifiers.contains(KeyModifiers::ALT) || key.modifiers.contains(KeyModifiers::SHIFT) => { self.scroll_down(); }
-            // ↑↓：命令历史
+            // S 键标记：S + ↑↓ 滚动（移动端友好）
+            KeyCode::Char('s') => { self.scroll_key_pressed = true; }
+            KeyCode::Char('S') => { self.scroll_key_pressed = true; }
+            // ↑↓：S 键按下时滚动，否则命令历史
             KeyCode::Up => {
+                if self.scroll_key_pressed { self.scroll_key_pressed = false; self.scroll_up(); return; }
                 if self.history.is_empty() { return; }
                 let idx = self.history_idx.get_or_insert(self.history.len());
                 if *idx > 0 { *idx -= 1; self.input = self.history[*idx].clone(); self.cursor_pos = self.input.chars().count(); }
             }
             KeyCode::Down => {
+                if self.scroll_key_pressed { self.scroll_key_pressed = false; self.scroll_down(); return; }
                 if let Some(idx) = &mut self.history_idx {
                     if *idx + 1 < self.history.len() { *idx += 1; self.input = self.history[*idx].clone(); }
                     else { self.history_idx = None; self.input.clear(); }
@@ -405,7 +407,7 @@ impl TuiApp {
             _ if self.auto_scroll => format!("{} 行", total_lines),
             _ => format!("{:.0}%  ↑", scroll as f64 / (total_lines - 1).max(1) as f64 * 100.0),
         };
-        let status_text = format!("  ↑↓历史  J/K滚动(空输入时) Alt+↑↓  {scroll_info}  Ctrl+C退出");
+        let status_text = format!("  ↑↓历史  S+↑↓滚动(长按加速)  {scroll_info}  Ctrl+C退出");
         let status_width = status_text.len() as u16;
         let padding = chunks[2].width.saturating_sub(status_width);
         let left_pad = " ".repeat((padding / 2).max(1) as usize);
