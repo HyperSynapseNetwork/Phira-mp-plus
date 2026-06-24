@@ -522,6 +522,7 @@ impl Drop for Session {
 }
 
 /// 向 room monitor 发送 RoomEvent
+#[allow(dead_code)]
 async fn send_room_event(user: &User, event: phira_mp_common::RoomEvent) {
     if let Some(mon) = user.server.get_room_monitor().await {
         mon.stream.send(ServerCommand::RoomEvent(event)).await.ok();
