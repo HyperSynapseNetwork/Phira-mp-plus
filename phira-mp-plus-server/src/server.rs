@@ -5,7 +5,7 @@
 
 use crate::ban::BanManager;
 use crate::extensions::ExtensionManager;
-use crate::plugin::{self, PluginEvent, PluginManager};
+use crate::plugin::{PluginEvent, PluginManager};
 use crate::plugin_http::PluginHttpServer;
 use phira_mp_plus_server_api as api;
 use anyhow::Result;
