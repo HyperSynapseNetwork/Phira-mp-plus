@@ -1,19 +1,15 @@
-//! 内置功能（原 NativePlugin 内置插件合并入核心）
+//! 内置功能（原 NativePlugin 系统合并入核心）
 //!
-//! 欢迎语、玩家追踪、游玩统计、结算排行均在此实现。
+//! 完整实现：欢迎语（全部占位符）、玩家追踪、游玩统计、结算排行
 
 use crate::plugin::PluginManager;
 use crate::plugin_http::PluginHttpServer;
 use crate::server::PlusServerState;
-use phira_mp_plus_server_api as api;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::path::Path;
 use std::sync::{Arc, Mutex};
 use tracing::info;
-
-// ═══════════════════════════════════════════════════════════════
-// 初始化入口 — 在 PlusServer::new 中调用
-// ═══════════════════════════════════════════════════════════════
 
 pub async fn init_internal_hooks(state: &PlusServerState, http: &PluginHttpServer, pm: &PluginManager) {
     init_welcome(state, pm).await;
@@ -23,20 +19,27 @@ pub async fn init_internal_hooks(state: &PlusServerState, http: &PluginHttpServe
     info!("internal hooks initialized");
 }
 
-// ═══════════════════════════════════════════════════════════════
-// 欢迎语
-// ═══════════════════════════════════════════════════════════════
+// ════════════════════════════════════
+//  欢迎语
+// ════════════════════════════════════
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct WelcomeConfig {
     messages: Vec<String>,
+    show_time: bool,
+    time_format: String,
 }
 
 impl Default for WelcomeConfig {
     fn default() -> Self {
-        Self { messages: vec![
-            "欢迎 [user_name] 来到 Phira-mp+！当前在线 [player-count] 人".into(),
-        ]}
+        Self {
+            messages: vec![
+                "欢迎 [user_name] 来到 Phira-mp+！当前在线 [player-count] 人".into(),
+                "[user_name] 来了！在线 [player-count] 人".into(),
+            ],
+            show_time: true,
+            time_format: "%H:%M".into(),
+        }
     }
 }
 
@@ -48,21 +51,54 @@ static WELCOME: once_cell::sync::Lazy<Arc<Mutex<WelcomeConfig>>> =
     });
 
 pub fn send_welcome(user_id: i32, user_name: &str, online: usize, state: &PlusServerState) {
-    use phira_mp_common::{Message, ServerCommand};
+    use std::time::{SystemTime, UNIX_EPOCH};
     let cfg = WELCOME.lock().unwrap();
     for tpl in &cfg.messages {
-        let text = tpl
+        let mut text = tpl
             .replace("[user_name]", user_name)
             .replace("[user_id]", &user_id.to_string())
             .replace("[player-count]", &online.to_string())
             .replace("[players]", &online.to_string());
+        if cfg.show_time {
+            let ts = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+            text = text.replace("[time]", &ts.to_string());
+        }
+        // [playtime] → 当前用户
+        if text.contains("[playtime") {
+            let pt = PLAYTIME_DATA.lock().unwrap();
+            let secs = pt.get(&user_id).map(|e| {
+                e.total_secs + e.session_start.map(|s| {
+                    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0).saturating_sub(s)
+                }).unwrap_or(0)
+            }).unwrap_or(0);
+            text = text.replace("[playtime]", &format!("{:.1}h", secs as f64 / 3600.0));
+            // [playtime <id>] → 指定用户
+            while let Some(start) = text.find("[playtime ") {
+                if let Some(end) = text[start..].find(']') {
+                    let arg = text[start+10..start+end].trim();
+                    if let Ok(uid) = arg.parse::<i32>() {
+                        let s = pt.get(&uid).map(|e| { e.total_secs
+                            + e.session_start.map(|s| SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0).saturating_sub(s)).unwrap_or(0)
+                        }).unwrap_or(0);
+                        text = text.replace(&format!("[playtime {}]", uid), &format!("{:.1}h", s as f64 / 3600.0));
+                    } else { break; }
+                } else { break; }
+            }
+        }
+        // [active_rooms]
+        if text.contains("[active_rooms]") {
+            let rooms = state.rooms.try_read().map(|r| r.len()).unwrap_or(0);
+            text = text.replace("[active_rooms]", &format!("{} 个房间", rooms));
+        }
         if let Ok(users) = state.users.try_read() {
             if let Some(user) = users.get(&user_id) {
                 if let Ok(session) = user.session.try_read() {
                     if let Some(Some(session)) = session.as_ref().map(|w| w.upgrade()) {
-                        let _ = session.stream.try_send(
-                            ServerCommand::Message(Message::Chat { user: 0, content: text })
-                        );
+                        use phira_mp_common::{Message, ServerCommand};
+                        if let Ok(handle) = tokio::runtime::Handle::try_current() {
+                            let cmd = ServerCommand::Message(Message::Chat { user: 0, content: text });
+                            handle.spawn(async move { let _ = session.stream.send(cmd).await; });
+                        }
                     }
                 }
             }
@@ -70,51 +106,62 @@ pub fn send_welcome(user_id: i32, user_name: &str, online: usize, state: &PlusSe
     }
 }
 
-async fn init_welcome(state: &PlusServerState, pm: &PluginManager) {
+async fn init_welcome(_state: &PlusServerState, pm: &PluginManager) {
     save_json("data/welcome-config.json", &*WELCOME.lock().unwrap());
-    info!("welcome: {} message(s)", WELCOME.lock().unwrap().messages.len());
+    let _ = pm.register_cli_command(crate::plugin::CliCommand {
+        name: "welcome-config".into(),
+        description: "查看欢迎语配置与占位符说明".into(),
+        usage: "welcome-config".into(),
+        handler: Arc::new(|_| {
+            let cfg = WELCOME.lock().unwrap();
+            let mut out = vec![format!("  ◆ 欢迎语配置"), format!("  │ data/welcome-config.json")];
+            for (i, msg) in cfg.messages.iter().enumerate() {
+                out.push(format!("  │ [{i}] {msg}"));
+            }
+            out.push(format!(""));
+            out.push(format!("  ■ 占位符:"));
+            out.push(format!("  │ [user_name]    用户名"));
+            out.push(format!("  │ [user_id]      Phira ID"));
+            out.push(format!("  │ [player-count] 当前在线数"));
+            out.push(format!("  │ [playtime]     该用户游玩时间"));
+            out.push(format!("  │ [playtime <id>]指定用户游玩时间"));
+            out.push(format!("  │ [active_rooms] 活跃房间数"));
+            out
+        }),
+    }).await;
 }
 
-// ═══════════════════════════════════════════════════════════════
-// 玩家追踪
-// ═══════════════════════════════════════════════════════════════
+// ════════════════════════════════════
+//  玩家追踪
+// ════════════════════════════════════
 
 static PLAYERS: once_cell::sync::Lazy<Mutex<HashMap<i32, String>>> =
     once_cell::sync::Lazy::new(|| Mutex::new(HashMap::new()));
 
 pub fn track_player(user_id: i32, user_name: &str) {
-    let mut p = PLAYERS.lock().unwrap();
-    if !p.contains_key(&user_id) {
-        p.insert(user_id, user_name.to_string());
-    }
+    PLAYERS.lock().unwrap().entry(user_id).or_insert_with(|| user_name.to_string());
 }
 
-async fn init_player_tracker(state: &PlusServerState, http: &PluginHttpServer, pm: &PluginManager) {
+async fn init_player_tracker(_state: &PlusServerState, http: &PluginHttpServer, pm: &PluginManager) {
     http.register_route_sync("/api/players/count", Arc::new(|_, _| {
-        let count = PLAYERS.lock().unwrap().len();
-        Ok(serde_json::json!({"count": count}))
+        Ok(serde_json::json!({"count": PLAYERS.lock().unwrap().len()}))
     }));
     let _ = pm.register_cli_command(crate::plugin::CliCommand {
         name: "player-count".into(),
         description: "游玩过的玩家总数".into(),
         usage: "player-count".into(),
-        handler: Arc::new(|_| {
-            let count = PLAYERS.lock().unwrap().len();
-            vec![format!("  ◆ 玩家总数: {count}")]
-        }),
+        handler: Arc::new(|_| vec![format!("  ◆ 玩家总数: {}", PLAYERS.lock().unwrap().len())]),
     }).await;
-    info!("player-tracker: ready");
 }
 
-// ═══════════════════════════════════════════════════════════════
-// 游玩时间统计
-// ═══════════════════════════════════════════════════════════════
+// ════════════════════════════════════
+//  游玩时间统计
+// ════════════════════════════════════
 
 static PLAYTIME_DATA: once_cell::sync::Lazy<Mutex<HashMap<i32, PlaytimeEntry>>> =
     once_cell::sync::Lazy::new(|| {
-        let data = std::fs::read_to_string("data/playtime-tracker.json")
-            .ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default();
-        Mutex::new(data)
+        std::fs::read_to_string("data/playtime-tracker.json")
+            .ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default()
     });
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -124,27 +171,23 @@ struct PlaytimeEntry {
 }
 
 pub fn playtime_connect(user_id: i32) {
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
-    let mut data = PLAYTIME_DATA.lock().unwrap();
-    let entry = data.entry(user_id).or_default();
-    entry.session_start = Some(now);
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+    PLAYTIME_DATA.lock().unwrap().entry(user_id).or_default().session_start = Some(now);
 }
 
 pub fn playtime_disconnect(user_id: i32) {
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
     let mut data = PLAYTIME_DATA.lock().unwrap();
     if let Some(entry) = data.get_mut(&user_id) {
         if let Some(start) = entry.session_start {
             entry.total_secs += now.saturating_sub(start);
             entry.session_start = None;
+            save_json("data/playtime-tracker.json", &*data);
         }
     }
-    save_json("data/playtime-tracker.json", &*data);
 }
 
-async fn init_playtime_tracker(state: &PlusServerState, http: &PluginHttpServer, pm: &PluginManager) {
+async fn init_playtime_tracker(_state: &PlusServerState, _http: &PluginHttpServer, pm: &PluginManager) {
     let _ = pm.register_cli_command(crate::plugin::CliCommand {
         name: "playtime".into(),
         description: "查询用户游玩时间: playtime <用户ID>".into(),
@@ -153,39 +196,34 @@ async fn init_playtime_tracker(state: &PlusServerState, http: &PluginHttpServer,
             let uid: i32 = args.first().and_then(|a| a.parse().ok()).unwrap_or(0);
             let data = PLAYTIME_DATA.lock().unwrap();
             let secs = data.get(&uid).map(|e| {
-                let base = e.total_secs;
-                base + e.session_start.map(|s| {
-                    let now = std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
-                    now.saturating_sub(s)
+                e.total_secs + e.session_start.map(|s| {
+                    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0).saturating_sub(s)
                 }).unwrap_or(0)
             }).unwrap_or(0);
-            vec![format!("  ◆ 用户 {uid}: {:.1}h ({}s)", secs as f64 / 3600.0, secs)]
+            vec![format!("  ◆ 用户 {uid}: {:.1}h", secs as f64 / 3600.0)]
         }),
     }).await;
-    info!("playtime-tracker: ready");
 }
 
-// ═══════════════════════════════════════════════════════════════
-// 结算排行
-// ═══════════════════════════════════════════════════════════════
+// ════════════════════════════════════
+//  结算排行
+// ════════════════════════════════════
 
-async fn init_round_results(state: &PlusServerState, pm: &PluginManager) {
+async fn init_round_results(_state: &PlusServerState, pm: &PluginManager) {
     let _ = pm.register_cli_command(crate::plugin::CliCommand {
         name: "round-last".into(),
-        description: "查看房间最近一轮结算: round-last <房间ID>".into(),
+        description: "查看房间最近一轮结算 (查询 room history)".into(),
         usage: "round-last <房间ID>".into(),
         handler: Arc::new(|args| {
             let room_id = args.first().cloned().unwrap_or_default();
-            vec![format!("  ◆ 最近一轮结算: {room_id}")]
+            vec![format!("  ◆ round-last: use 'room history {room_id}'")]
         }),
     }).await;
-    info!("round-results: ready");
 }
 
-// ═══════════════════════════════════════════════════════════════
-// 辅助
-// ═══════════════════════════════════════════════════════════════
+// ════════════════════════════════════
+//  辅助
+// ════════════════════════════════════
 
 fn save_json<T: Serialize>(path: &str, data: &T) {
     if let Ok(json) = serde_json::to_string_pretty(data) {

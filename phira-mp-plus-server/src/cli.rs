@@ -176,6 +176,14 @@ impl CliHandler {
                             if args.len() < 2 { self.out(format!("  {} {} room history <房间ID>", c::yellow("?"), c::bold("用法"))); }
                             else { self.room_history(args[1]).await; }
                         }
+                        "rounds" => {
+                            if args.len() < 2 { self.out(format!("  {} {} room rounds <房间ID>", c::yellow("?"), c::bold("用法"))); }
+                            else { self.room_rounds(args[1]).await; }
+                        }
+                        "round" => {
+                            if args.len() < 2 { self.out(format!("  {} {} room round <轮次UUID>", c::yellow("?"), c::bold("用法"))); }
+                            else { self.room_round_info(args[1]).await; }
+                        }
                         "ban" | "b" => {
                             if args.len() < 3 { self.out(format!("  {} {} room ban <房间ID> <用户ID>", c::yellow("?"), c::bold("用法"))); }
                             else { let uid: i32 = match args[2].parse() { Ok(id) => id, Err(_) => { self.out(format!("  {} 无效的用户ID", c::red("✗"))); return; } };
@@ -196,9 +204,13 @@ impl CliHandler {
                             if args.len() < 2 { self.out(format!("  {} {} room banlist <房间ID>", c::yellow("?"), c::bold("用法"))); }
                             else { self.room_ban_list(args[1]).await; }
                         }
+                        "uuid" | "id" => {
+                            if args.len() < 2 { self.out(format!("  {} {} room uuid <房间ID>", c::yellow("?"), c::bold("用法"))); }
+                            else { self.room_show_uuid(args[1]).await; }
+                        }
                         _ => {
                             self.out(format!("  {} 未知子命令: {}  ", c::red("✗"), c::yellow(sub)));
-                            self.out(format!("  {} 可用: room list|info|start|cancel|kick|transfer|close|set|history|ban|unban|banlist", c::dim("▸")));
+                            self.out(format!("  {} 可用: room list|info|start|cancel|kick|transfer|close|set|history|rounds|round|uuid|ban|unban|banlist", c::dim("▸")));
                         }
                     }
                 }
@@ -1007,6 +1019,57 @@ impl CliHandler {
             }
             self.out(format!("  {}", c::dim("  ─ ─ ─ ─ ─ ─")));
         }
+    }
+
+    // ── UUID / 轮次查询 ──
+
+    /// 显示房间 UUID
+    async fn room_show_uuid(&self, room_id: &str) {
+        let room = match self.find_room(room_id).await {
+            Some(r) => r,
+            None => { self.out(format!("  ✗ 未找到房间 {}", room_id)); return; }
+        };
+        self.out(format!("  ◆ 房间 {}  UUID: {}", room_id, room.uuid));
+    }
+
+    /// 列出房间历史轮次
+    async fn room_rounds(&self, room_id: &str) {
+        let room = match self.find_room(room_id).await {
+            Some(r) => r,
+            None => { self.out(format!("  ✗ 未找到房间 {}", room_id)); return; }
+        };
+        let history = room.play_history.read().await;
+        if history.is_empty() {
+            self.out(format!("  · 该房间暂无轮次记录"));
+            return;
+        }
+        self.out(format!("  ◆ 房间 {} 轮次记录 ({})", room_id, history.len()));
+        for (i, r) in history.iter().enumerate() {
+            self.out(format!("  │ [{i}] 轮次 {}  谱面 {} (id={})  玩家 {}", r.round_id, r.chart_name, r.chart_id, r.results.len()));
+        }
+    }
+
+    /// 按轮次 UUID 查询结算详情
+    async fn room_round_info(&self, round_uuid: &str) {
+        let rooms = self.state.rooms.read().await;
+        for room in rooms.values() {
+            let history = room.play_history.read().await;
+            if let Some(round) = history.iter().find(|r| r.round_id.to_string() == round_uuid) {
+                self.out(format!("  ◆ 轮次 {round_uuid}"));
+                self.out(format!("  │ 房间: {}  UUID: {}", room.id, room.uuid));
+                self.out(format!("  │ 谱面: {} (id={})", round.chart_name, round.chart_id));
+                self.out(format!("  │ 玩家: {}", round.results.len()));
+                let mut sorted = round.results.clone();
+                sorted.sort_by(|a, b| b.score.cmp(&a.score));
+                for (i, r) in sorted.iter().enumerate() {
+                    let fc = if r.full_combo { " FC" } else { "" };
+                    let ab = if r.aborted { " 放弃" } else { "" };
+                    self.out(format!("  │ #{} {}  {}分  {:.1}%{}{}", i+1, r.user_name, r.score, r.accuracy*100.0, fc, ab));
+                }
+                return;
+            }
+        }
+        self.out(format!("  ✗ 未找到轮次 {round_uuid}"));
     }
 
     /// 广播给所有用户

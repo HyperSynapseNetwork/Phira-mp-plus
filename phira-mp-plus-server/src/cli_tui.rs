@@ -3,7 +3,7 @@
 //! 使用 ratatui + crossterm 实现的交互式终端界面，
 //! 以独立的输出区域和输入行避免日志输出干扰命令输入。
 
-use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers, MouseEventKind};
+use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
 use ratatui::{
     backend::CrosstermBackend,
     layout::{Constraint, Direction, Layout, Position},
@@ -29,7 +29,6 @@ pub fn run_tui(
     crossterm::execute!(
         stdout,
         crossterm::terminal::EnterAlternateScreen,
-        crossterm::event::EnableMouseCapture,
     )?;
 
     let backend = CrosstermBackend::new(stdout);
@@ -43,7 +42,6 @@ pub fn run_tui(
     let _ = crossterm::execute!(
         terminal.backend_mut(),
         crossterm::terminal::LeaveAlternateScreen,
-        crossterm::event::DisableMouseCapture,
     );
     crossterm::terminal::disable_raw_mode()?;
     terminal.show_cursor()?;
@@ -131,19 +129,6 @@ impl TuiApp {
                 match event::read()? {
                     Event::Key(key) => {
                         self.handle_key(key);
-                    }
-                    Event::Mouse(m) => {
-                        match m.kind {
-                            MouseEventKind::ScrollDown => {
-                                let max = self.output_lines.len().saturating_sub(1);
-                                if self.scroll_offset < max { self.scroll_offset += 1; }
-                                else { self.auto_scroll = true; }
-                            }
-                            MouseEventKind::ScrollUp => {
-                                if self.scroll_offset > 0 { self.scroll_offset -= 1; self.auto_scroll = false; }
-                            }
-                            _ => {}
-                        }
                     }
                     Event::Resize(_, _) => {}
                     _ => {}
@@ -306,10 +291,10 @@ impl TuiApp {
         let area = frame.area();
         if area.width < 20 || area.height < 5 { return; }
 
-        // 仅两个区域：输出(填充) + 输入行(底部固定)
+        // 三个区域：输出(填充) + 输入行 + 状态栏
         let chunks = Layout::default()
             .direction(Direction::Vertical)
-            .constraints([Constraint::Min(1), Constraint::Length(1)])
+            .constraints([Constraint::Min(1), Constraint::Length(1), Constraint::Length(1)])
             .split(area);
 
         let total_lines = self.output_lines.len();
@@ -356,33 +341,39 @@ impl TuiApp {
             );
         }
 
-        // ── 状态栏 + 输入行合并 ──
-        let scroll_info = match total_lines {
-            0 => "".into(),
-            _ if self.auto_scroll => format!("{}行 ", total_lines),
-            _ => format!("{:.0}%↑ ", scroll as f64 / (total_lines - 1).max(1) as f64 * 100.0),
-        };
-
-        // 左: 输入提示符 | 右: 状态信息
+        // ── 输入行 ──
         let input_prompt = if self.input.is_empty() {
             Span::styled("→ ", Style::default().fg(Color::DarkGray))
         } else {
             Span::styled("→ ", Style::default().fg(Color::Cyan))
         };
-        let input_content = Span::raw(&self.input);
-        let status_info = Span::styled(
-            format!(" {}Ctrl+C退出 ↑↓历史 S-↑↓/滚轮滚动", scroll_info),
-            Style::default().fg(Color::DarkGray),
+        frame.render_widget(
+            Paragraph::new(Line::from(vec![input_prompt, Span::raw(&self.input)])),
+            chunks[1],
         );
-
-        let line = Line::from(vec![input_prompt, input_content, status_info]);
-        frame.render_widget(Paragraph::new(line), chunks[1]);
-
         // 光标
         frame.set_cursor_position(Position::new(
             chunks[1].x + 2 + self.cursor_pos.min(self.input.chars().count()) as u16,
             chunks[1].y,
         ));
+
+        // ── 状态栏 ──
+        let scroll_info = match total_lines {
+            0 => "".into(),
+            _ if self.auto_scroll => format!("{} 行", total_lines),
+            _ => format!("{:.0}%  ↑", scroll as f64 / (total_lines - 1).max(1) as f64 * 100.0),
+        };
+        let status_text = format!("  ↑↓历史  S-↑↓滚动  滚轮  {scroll_info}  Ctrl+C退出");
+        let status_width = status_text.len() as u16;
+        let padding = chunks[2].width.saturating_sub(status_width);
+        let left_pad = " ".repeat((padding / 2).max(1) as usize);
+        frame.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                format!("{left_pad}{status_text}"),
+                Style::default().fg(Color::DarkGray),
+            ))),
+            chunks[2],
+        );
     }
 }
 

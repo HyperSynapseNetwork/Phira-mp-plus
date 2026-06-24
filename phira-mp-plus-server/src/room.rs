@@ -130,6 +130,9 @@ pub struct Room {
 
     /// 轮次数据持久化存储（代替直接的 server 弱引用）
     pub round_store: Option<Arc<crate::round_store::RoundStore>>,
+
+    /// 房间创建时间戳（Unix 毫秒）
+    pub created_at: i64,
 }
 
 impl Room {
@@ -140,6 +143,10 @@ impl Room {
         max_users: usize,
         round_store: Option<Arc<crate::round_store::RoundStore>>,
     ) -> Self {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as i64)
+            .unwrap_or(0);
         Self {
             id,
             host: host.clone().into(),
@@ -159,6 +166,7 @@ impl Room {
             max_users,
             player_data: RwLock::new(HashMap::new()),
             round_store,
+            created_at: now,
         }
     }
 
@@ -595,6 +603,23 @@ impl Room {
                         }).await;
                     }
 
+                    // 发送结算排行
+                    {
+                        let history = self.play_history.read().await;
+                        if let Some(last) = history.last() {
+                            let mut sorted = last.results.clone();
+                            sorted.sort_by(|a, b| b.score.cmp(&a.score));
+                            let mut lines: Vec<String> = vec![format!("▸ {chart} 排行", chart = last.chart_name)];
+                            for (i, r) in sorted.iter().enumerate() {
+                                let status = if r.aborted { " 放弃" } else { "" };
+                                let fc = if r.full_combo { " FC" } else { "" };
+                                lines.push(format!("#{} {} | {}分 | {:.1}%{}{}", i + 1, r.user_name, r.score, r.accuracy * 100.0, fc, status));
+                            }
+                            for line in &lines {
+                                self.send(Message::Chat { user: 0, content: line.clone() }).await;
+                            }
+                        }
+                    }
                     self.send(Message::GameEnd).await;
                     *self.state.write().await = InternalRoomState::SelectChart;
                     if self.is_cycle() {

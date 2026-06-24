@@ -335,62 +335,45 @@ impl PlusServer {
         info!("loaded {} plugin(s)", plugin_count);
 
         // ── 注册内置功能（原内置插件系统已合并入核心） ──
-        // Web API 路由（原 webapi-plugin）
+        // Web API 路由
         let state_for_webapi = Arc::clone(&state);
         let webapi_state_query = api::ServerStateQuery::new(move |method: &str, args: &[Value]| {
-            let s = Arc::clone(&state_for_webapi);
-            // 在 blocking 线程中执行同步状态查询
-            server_state_query(&s, method, args)
+            server_state_query(&state_for_webapi, method, args)
         });
         let http_for_webapi = Arc::clone(&http_server);
         let state_for_webapi2 = Arc::clone(&state);
-        // rooms.list
         let sq = webapi_state_query.clone();
         http_for_webapi.register_route_sync("/api/rooms", Arc::new(move |_, _| {
             sq.call("rooms.list", &[]).map_err(|e| (500u16, e))
         }));
-        // rooms.by_name
         let s2 = Arc::clone(&state_for_webapi2);
         http_for_webapi.register_route_sync("/api/rooms/<name>", Arc::new(move |_, params| {
             let name = params.first().cloned().unwrap_or_default();
-            let s = Arc::clone(&s2);
-            server_state_query_inner(&s, "rooms.by_name", &[serde_json::json!(name)])
+            server_state_query_inner(&s2, "rooms.by_name", &[serde_json::json!(name)])
                 .map_err(|e| (500u16, e))
         }));
-        // user_name
         let sq = webapi_state_query.clone();
         http_for_webapi.register_route_sync("/api/user_name/<id>", Arc::new(move |_, params| {
             let uid: i32 = params.first().and_then(|p| p.parse().ok()).unwrap_or(0);
             sq.call("user_name", &[serde_json::json!(uid)]).map_err(|e| (500u16, e))
         }));
-
         // 压测 CLI 命令注册
         let bench_state = Arc::clone(&state);
-        let bench_http_port = state.config.http_port;
         let _ = state.plugin_manager.register_cli_command(crate::plugin::CliCommand {
             name: "benchmark".to_string(),
-            description: "服务端压测: benchmark [dur] [rooms] | benchmark http <url>".to_string(),
+            description: "运行服务端压力测试".to_string(),
             usage: "benchmark [dur_s=30] [rooms=100]".to_string(),
             handler: Arc::new(move |args| {
-                let first = args.first().map(|s| s.as_str()).unwrap_or("");
-                if first == "http" {
-                    // HTTP 真实请求压测
-                    let url = args.get(1).cloned().unwrap_or_else(||
-                        format!("http://127.0.0.1:{}/api/rooms", bench_http_port));
-                    let count: usize = args.get(2).and_then(|a| a.parse().ok()).unwrap_or(100).max(10).min(10000);
-                    crate::server::run_benchmark_http(&url, count)
-                } else {
-                    let duration: u64 = first.parse().ok().filter(|&v| v >= 5 && v <= 300).unwrap_or(30);
-                    let rooms: usize = args.get(1).and_then(|a| a.parse().ok()).unwrap_or(100).max(10).min(5000);
-                    let sq = bench_state.clone();
-                    match crate::server::server_state_query_inner(
-                        &sq, "test.run_benchmark", &[serde_json::json!(duration), serde_json::json!(rooms)]
-                    ) {
-                        Ok(v) => v.get("output").and_then(|o| o.as_str())
-                            .map(|s| s.lines().map(|l| l.to_string()).collect())
-                            .unwrap_or_else(|| vec!["  ✗ parse error".to_string()]),
-                        Err(e) => vec![format!("  ✗ {}", e)],
-                    }
+                let duration: u64 = args.first().and_then(|a| a.parse().ok()).filter(|&v| v >= 5 && v <= 300).unwrap_or(30);
+                let rooms: usize = args.get(1).and_then(|a| a.parse().ok()).unwrap_or(100).max(10).min(5000);
+                let sq = bench_state.clone();
+                match crate::server::server_state_query_inner(
+                    &sq, "test.run_benchmark", &[serde_json::json!(duration), serde_json::json!(rooms)]
+                ) {
+                    Ok(v) => v.get("output").and_then(|o| o.as_str())
+                        .map(|s| s.lines().map(|l| l.to_string()).collect())
+                        .unwrap_or_else(|| vec!["  ✗ parse error".to_string()]),
+                    Err(e) => vec![format!("  ✗ {}", e)],
                 }
             }),
         }).await;
@@ -643,9 +626,37 @@ impl PlusServerState {
         }
         o!("  │ ✓ 操作 {op_count} 次 | avg={avg_lat:.0}µs p99={p99:.0}µs");
 
-        // ── 阶段4: 清理 ──
+        // ── 阶段4: API 真实请求压测 ──
         o!("  │");
-        o!("  ├─ [阶段4] 清理测试数据");
+        o!("  ├─ [阶段4] Phira API 真实请求");
+        let api_base = &self.config.phira_api_endpoint;
+        let api_urls = [
+            format!("{api_base}/charts"),
+        ];
+        let mut api_lats: Vec<f64> = Vec::new();
+        for _ in 0..5 {
+            for url in &api_urls {
+                let q = Instant::now();
+                if let Ok(resp) = reqwest::blocking::get(url) {
+                    if resp.status().is_success() {
+                        let _ = resp.text();
+                        api_lats.push(q.elapsed().as_secs_f64() * 1000.0);
+                    }
+                }
+            }
+        }
+        if !api_lats.is_empty() {
+            api_lats.sort_unstable_by(|a, b| a.partial_cmp(b).unwrap());
+            let avg = api_lats.iter().sum::<f64>() / api_lats.len() as f64;
+            let p50 = api_lats[api_lats.len() / 2];
+            o!("  │ ✓ API {api_base} | {} 请求 | avg={avg:.0}ms  p50={p50:.0}ms", api_lats.len());
+        } else {
+            o!("  │ - API {api_base} 不可达，跳过");
+        }
+
+        // ── 阶段5: 清理 ──
+        o!("  │");
+        o!("  ├─ [阶段5] 清理测试数据");
         let t4 = Instant::now();
         sync_write!(self.rooms).retain(|rid, _| !rid.to_string().starts_with("bench-"));
         sync_write!(self.users).retain(|id, _| *id < TEST_USER_ID_BASE || *id >= TEST_USER_ID_BASE + 10_000_000);
@@ -679,59 +690,6 @@ impl PlusServerState {
 }
 
 // ── HTTP 真实请求压测 ──
-
-/// 对指定 URL 执行 HTTP 请求压测，测量真实网络延迟
-pub fn run_benchmark_http(url: &str, count: usize) -> Vec<String> {
-    use std::time::Instant;
-    let mut out = Vec::new();
-    let mut latencies = Vec::with_capacity(count);
-    let mut errors = 0usize;
-
-    out.push(format!("  ◆ HTTP 压测: {url}"));
-    out.push(format!("  │ 请求次数: {count}"));
-    out.push(String::new());
-    out.push(format!("  ├─ 发送中..."));
-
-    let client = reqwest::blocking::Client::builder()
-        .timeout(std::time::Duration::from_secs(10))
-        .build().unwrap_or_default();
-
-    for i in 0..count {
-        let t0 = Instant::now();
-        match client.get(url).send() {
-            Ok(resp) => {
-                let _ = resp.text();
-                let elapsed = t0.elapsed();
-                latencies.push(elapsed.as_secs_f64() * 1000.0);
-            }
-            Err(e) => {
-                errors += 1;
-                if errors <= 3 {
-                    out.push(format!("  │ [{i}] HTTP error: {e}"));
-                }
-            }
-        }
-        if (i + 1) % 50 == 0 || i == count - 1 {
-            out.push(format!("  │ 进度 {}/{}", i + 1, count));
-        }
-    }
-
-    if latencies.is_empty() {
-        out.push(format!("  ✗ 全部失败 ({errors} errors)"));
-        return out;
-    }
-
-    latencies.sort_unstable_by(|a, b| a.partial_cmp(b).unwrap());
-    let avg = latencies.iter().sum::<f64>() / latencies.len() as f64;
-    let p50 = latencies[latencies.len() / 2];
-    let p95 = latencies[(latencies.len() as f64 * 0.95) as usize];
-    let p99 = latencies[(latencies.len() as f64 * 0.99) as usize];
-
-    out.push(String::new());
-    out.push(format!("  └─ 结果 ({errors}/{count} errors)"));
-    out.push(format!("     avg={avg:.1}ms  p50={p50:.1}ms  p95={p95:.1}ms  p99={p99:.1}ms"));
-    out
-}
 
 // ── 状态查询 / Room/User 管理（供 WASM WIT API / dispatch） ──
 
@@ -925,6 +883,96 @@ fn server_state_query_inner(state: &Arc<PlusServerState>, method: &str, args: &[
         "test.cleanup" => {
             state.cleanup_benchmark_sync();
             Ok(serde_json::json!({"ok": true}))
+        }
+        // ── 房间/轮次查询接口 ──
+        "room.uuid" => {
+            let room_id = args.get(0).and_then(|v| v.as_str()).unwrap_or("").to_string();
+            if room_id.is_empty() { return Err("missing room_id".to_string()); }
+            use phira_mp_common::RoomId;
+            let rid: RoomId = match room_id.try_into() { Ok(r) => r, Err(_) => return Err("invalid room_id".to_string()) };
+            let rooms = state.rooms.try_read().map_err(|_| "lock error".to_string())?;
+            match rooms.get(&rid) {
+                Some(room) => Ok(serde_json::json!({"uuid": room.uuid.to_string(), "created_at": room.created_at})),
+                None => Err("room not found".to_string()),
+            }
+        }
+        "room.history" => {
+            let room_id = args.get(0).and_then(|v| v.as_str()).unwrap_or("").to_string();
+            if room_id.is_empty() { return Err("missing room_id".to_string()); }
+            use phira_mp_common::RoomId;
+            let rid: RoomId = match room_id.try_into() { Ok(r) => r, Err(_) => return Err("invalid room_id".to_string()) };
+            let (tx, rx) = std::sync::mpsc::channel();
+            let s = Arc::clone(state);
+            tokio::spawn(async move {
+                let rooms = s.rooms.read().await;
+                let result = match rooms.get(&rid) {
+                    Some(room) => {
+                        let history = room.play_history.read().await;
+                        let rounds: Vec<Value> = history.iter().map(|r| serde_json::json!({
+                            "round_id": r.round_id.to_string(),
+                            "chart_id": r.chart_id,
+                            "chart_name": r.chart_name,
+                            "players": r.results.len(),
+                        })).collect();
+                        Ok(serde_json::json!({"rounds": rounds, "total": rounds.len()}))
+                    }
+                    None => Err("room not found".to_string()),
+                };
+                let _ = tx.send(result);
+            });
+            rx.recv_timeout(std::time::Duration::from_secs(3))
+                .unwrap_or(Err("room.history timeout".to_string()))
+        }
+        "room.round_info" => {
+            let round_uuid = args.get(0).and_then(|v| v.as_str()).unwrap_or("").to_string();
+            if round_uuid.is_empty() { return Err("missing round_uuid".to_string()); }
+            let (tx, rx) = std::sync::mpsc::channel();
+            let s = Arc::clone(state);
+            tokio::spawn(async move {
+                let rooms = s.rooms.read().await;
+                let mut found = None;
+                for room in rooms.values() {
+                    let history = room.play_history.read().await;
+                    if let Some(round) = history.iter().find(|r| r.round_id.to_string() == round_uuid) {
+                        found = Some((room.uuid.to_string(), room.id.to_string(), round.clone()));
+                        break;
+                    }
+                }
+                let result = match found {
+                    Some((room_uuid, room_id, round)) => Ok(serde_json::json!({
+                        "room_uuid": room_uuid, "room_id": room_id,
+                        "round_id": round.round_id.to_string(),
+                        "chart_id": round.chart_id, "chart_name": round.chart_name,
+                        "results": round.results.iter().map(|r| serde_json::json!({
+                            "user_id": r.user_id, "user_name": r.user_name,
+                            "score": r.score, "accuracy": r.accuracy,
+                            "full_combo": r.full_combo, "aborted": r.aborted,
+                        })).collect::<Vec<_>>(),
+                    })),
+                    None => Err("round not found".to_string()),
+                };
+                let _ = tx.send(result);
+            });
+            rx.recv_timeout(std::time::Duration::from_secs(3))
+                .unwrap_or(Err("room.round_info timeout".to_string()))
+        }
+        "room.list_since" => {
+            let since_ms = args.get(0).and_then(|v| v.as_i64()).unwrap_or(0);
+            let (tx, rx) = std::sync::mpsc::channel();
+            let s = Arc::clone(state);
+            tokio::spawn(async move {
+                let rooms = s.rooms.read().await;
+                let list: Vec<Value> = rooms.values().filter(|r| r.created_at >= since_ms).map(|r| {
+                    serde_json::json!({
+                        "room_id": r.id.to_string(),
+                        "uuid": r.uuid.to_string(),
+                        "created_at": r.created_at,
+                    })
+                }).collect();
+                let _ = tx.send(Ok(serde_json::json!({"rooms": list, "total": list.len()})));
+            });
+            rx.recv_timeout(std::time::Duration::from_secs(3))
+                .unwrap_or(Err("room.list_since timeout".to_string()))
         }
         // ── 房间管理（WIT room-management 接口） ──
         "room.kick" => {

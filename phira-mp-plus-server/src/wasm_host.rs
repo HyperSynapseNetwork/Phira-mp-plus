@@ -766,6 +766,47 @@ impl WasmPluginInstance {
                     None => Err("state query not available".to_string()),
                 }
             }
+            // ── 房间/轮次查询接口 ──
+            ("room", "uuid") => {
+                let args_val: serde_json::Value = serde_json::from_str(args)
+                    .map_err(|e| format!("invalid args: {}", e))?;
+                let room_id = args_val.get("room_id").and_then(|v| v.as_str()).ok_or("missing room_id")?.to_string();
+                let guard = svc.state_query.read().map_err(|e| format!("lock error: {}", e))?;
+                match guard.as_ref() {
+                    Some(sq) => sq.call("room.uuid", &[serde_json::json!(room_id)]).map(|v| v.to_string()),
+                    None => Err("state query not available".to_string()),
+                }
+            }
+            ("room", "history") => {
+                let args_val: serde_json::Value = serde_json::from_str(args)
+                    .map_err(|e| format!("invalid args: {}", e))?;
+                let room_id = args_val.get("room_id").and_then(|v| v.as_str()).ok_or("missing room_id")?.to_string();
+                let guard = svc.state_query.read().map_err(|e| format!("lock error: {}", e))?;
+                match guard.as_ref() {
+                    Some(sq) => sq.call("room.history", &[serde_json::json!(room_id)]).map(|v| v.to_string()),
+                    None => Err("state query not available".to_string()),
+                }
+            }
+            ("room", "round_info") => {
+                let args_val: serde_json::Value = serde_json::from_str(args)
+                    .map_err(|e| format!("invalid args: {}", e))?;
+                let round_uuid = args_val.get("round_uuid").and_then(|v| v.as_str()).ok_or("missing round_uuid")?.to_string();
+                let guard = svc.state_query.read().map_err(|e| format!("lock error: {}", e))?;
+                match guard.as_ref() {
+                    Some(sq) => sq.call("room.round_info", &[serde_json::json!(round_uuid)]).map(|v| v.to_string()),
+                    None => Err("state query not available".to_string()),
+                }
+            }
+            ("room", "list_since") => {
+                let args_val: serde_json::Value = serde_json::from_str(args)
+                    .map_err(|e| format!("invalid args: {}", e))?;
+                let since_ms = args_val.get("since_ms").and_then(|v| v.as_i64()).unwrap_or(0);
+                let guard = svc.state_query.read().map_err(|e| format!("lock error: {}", e))?;
+                match guard.as_ref() {
+                    Some(sq) => sq.call("room.list_since", &[serde_json::json!(since_ms)]).map(|v| v.to_string()),
+                    None => Err("state query not available".to_string()),
+                }
+            }
             // ── 用户管理（WIT user-management 接口） ──
             ("admin", "kick_user") => {
                 let args_val: serde_json::Value = serde_json::from_str(args)
