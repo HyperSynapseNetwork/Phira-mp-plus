@@ -73,6 +73,11 @@ struct TuiApp {
 
     /// 运行状态
     running: bool,
+
+    /// 滚动加速：连续按键次数（长按变快）
+    scroll_repeat: usize,
+    /// 上次滚动时间
+    scroll_last_time: std::time::Instant,
 }
 
 impl TuiApp {
@@ -87,6 +92,8 @@ impl TuiApp {
             history_idx: None,
             cmd_tx,
             running: true,
+            scroll_repeat: 0,
+            scroll_last_time: std::time::Instant::now(),
         }
     }
 
@@ -230,14 +237,12 @@ impl TuiApp {
                 self.input.clear();
                 self.cursor_pos = 0;
             }
-            // Shift+↑↓：逐行滚动输出（优先匹配，避免被普通 ↑↓ 吞掉）
-            KeyCode::Up if key.modifiers.contains(KeyModifiers::SHIFT) => {
-                if self.scroll_offset > 0 { self.scroll_offset -= 1; self.auto_scroll = false; }
-            }
-            KeyCode::Down if key.modifiers.contains(KeyModifiers::SHIFT) => {
-                let max = self.output_lines.len().saturating_sub(1);
-                if self.scroll_offset < max { self.scroll_offset += 1; } else { self.auto_scroll = true; }
-            }
+            // J/K = 下滚/上滚（仅输入为空时，避免干扰打字）
+            KeyCode::Char('j') if self.input.is_empty() => { self.scroll_down(); }
+            KeyCode::Char('k') if self.input.is_empty() => { self.scroll_up(); }
+            // Shift+↑↓ / Alt+↑↓ 也可用，始终有效
+            KeyCode::Up if key.modifiers.contains(KeyModifiers::ALT) || key.modifiers.contains(KeyModifiers::SHIFT) => { self.scroll_up(); }
+            KeyCode::Down if key.modifiers.contains(KeyModifiers::ALT) || key.modifiers.contains(KeyModifiers::SHIFT) => { self.scroll_down(); }
             // ↑↓：命令历史
             KeyCode::Up => {
                 if self.history.is_empty() { return; }
@@ -283,6 +288,43 @@ impl TuiApp {
                 }
             }
             _ => {}
+        }
+    }
+
+    /// 向上滚动（含加速）
+    fn scroll_up(&mut self) {
+        let now = std::time::Instant::now();
+        if now.duration_since(self.scroll_last_time).as_millis() < 200 {
+            self.scroll_repeat += 1;
+        } else {
+            self.scroll_repeat = 0;
+        }
+        self.scroll_last_time = now;
+        let step = 1 + self.scroll_repeat.min(10); // 最多一次跳 11 行
+        if self.scroll_offset >= step {
+            self.scroll_offset -= step;
+        } else {
+            self.scroll_offset = 0;
+        }
+        self.auto_scroll = false;
+    }
+
+    /// 向下滚动（含加速）
+    fn scroll_down(&mut self) {
+        let now = std::time::Instant::now();
+        if now.duration_since(self.scroll_last_time).as_millis() < 200 {
+            self.scroll_repeat += 1;
+        } else {
+            self.scroll_repeat = 0;
+        }
+        self.scroll_last_time = now;
+        let step = 1 + self.scroll_repeat.min(10);
+        let max = self.output_lines.len().saturating_sub(1);
+        if self.scroll_offset + step <= max {
+            self.scroll_offset += step;
+        } else {
+            self.scroll_offset = max;
+            self.auto_scroll = true;
         }
     }
 
@@ -363,7 +405,7 @@ impl TuiApp {
             _ if self.auto_scroll => format!("{} 行", total_lines),
             _ => format!("{:.0}%  ↑", scroll as f64 / (total_lines - 1).max(1) as f64 * 100.0),
         };
-        let status_text = format!("  ↑↓历史  S-↑↓滚动  滚轮  {scroll_info}  Ctrl+C退出");
+        let status_text = format!("  ↑↓历史  J/K滚动(空输入时) Alt+↑↓  {scroll_info}  Ctrl+C退出");
         let status_width = status_text.len() as u16;
         let padding = chunks[2].width.saturating_sub(status_width);
         let left_pad = " ".repeat((padding / 2).max(1) as usize);
