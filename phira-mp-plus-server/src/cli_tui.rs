@@ -199,8 +199,10 @@ impl TuiApp {
                 self.scroll_offset = 0;
                 self.auto_scroll = true;
             }
+            // S 键标记（输入为空时，不干扰打字）
+            KeyCode::Char('s') if self.input.is_empty() => { self.scroll_key_pressed = true; }
+            KeyCode::Char('S') if self.input.is_empty() => { self.scroll_key_pressed = true; }
             KeyCode::Char(c) => {
-                // 按 char 索引插入，避免多字节字符（如中文）的字节边界问题
                 let mut chars: Vec<char> = self.input.chars().collect();
                 let pos = self.cursor_pos.min(chars.len());
                 chars.insert(pos, c);
@@ -240,9 +242,6 @@ impl TuiApp {
                 self.input.clear();
                 self.cursor_pos = 0;
             }
-            // S 键标记：S + ↑↓ 滚动（移动端友好）
-            KeyCode::Char('s') => { self.scroll_key_pressed = true; }
-            KeyCode::Char('S') => { self.scroll_key_pressed = true; }
             // ↑↓：S 键按下时滚动，否则命令历史
             KeyCode::Up => {
                 if self.scroll_key_pressed { self.scroll_key_pressed = false; self.scroll_up(); return; }
