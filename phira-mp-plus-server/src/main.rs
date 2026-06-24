@@ -133,7 +133,7 @@ fn init_log(file: &str, log_tx: Option<mpsc::UnboundedSender<String>>) -> Result
         .with_ansi(false)
         .with_filter(LevelFilter::DEBUG);
 
-    // 终端日志：TUI 模式 → 通道；否则 → stdout
+    // 终端日志：始终输出到 stdout（TUI 额外从 log_tx 读取）
     let filter = EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| EnvFilter::new("info"))
         .add_directive("hyper=info".parse().unwrap())
@@ -143,15 +143,28 @@ fn init_log(file: &str, log_tx: Option<mpsc::UnboundedSender<String>>) -> Result
         .add_directive("reqwest=info".parse().unwrap())
         .add_directive("wasmtime=info".parse().unwrap());
 
+    // stdout 层
     let stdout_layer = fmt::layer()
-        .with_writer(OutputWriterMaker { log_tx })
+        .with_writer(io::stdout)
         .with_ansi(false)
-        .with_filter(filter);
+        .with_filter(filter.clone());
 
-    tracing_subscriber::registry()
+    // TUI 层（仅 TUI 启用时，额外发送到通道）
+    let registry = tracing_subscriber::registry()
         .with(file_layer)
-        .with(stdout_layer)
-        .init();
+        .with(stdout_layer);
+
+    let registry = if let Some(tx) = log_tx {
+        let tui_layer = fmt::layer()
+            .with_writer(OutputWriterMaker { log_tx: Some(tx) })
+            .with_ansi(false)
+            .with_filter(filter);
+        registry.with(tui_layer)
+    } else {
+        registry
+    };
+
+    registry.init();
 
     Ok(guard)
 }
@@ -161,12 +174,8 @@ async fn main() -> Result<()> {
     let args = Args::parse();
     let cli_enabled = !args.no_cli;
 
-    // ── 检测是否在 screen/tmux 中（此类终端不支持 TUI raw mode） ──
-    let is_screen = std::env::var("STY").is_ok() || std::env::var("TMUX").is_ok()
-        || std::env::var("TERM").map(|t| t.contains("screen")).unwrap_or(false);
-
-    // ── 创建 TUI/CLI 通信通道（screen 或 --no-cli 时跳过 TUI） ──
-    let use_tui = cli_enabled && !is_screen;
+    // ── 创建 TUI/CLI 通信通道（--no-cli 时跳过 TUI） ──
+    let use_tui = cli_enabled;
 
     let (cmd_tx, cmd_rx) = if use_tui {
         let (tx, rx) = mpsc::unbounded_channel();
@@ -189,9 +198,6 @@ async fn main() -> Result<()> {
 
     // ── 初始化日志（screen 下直接 stdout） ──
     let _guard = init_log(&args.log_file, log_tx)?;
-    if is_screen {
-        info!("screen/tmux detected, TUI disabled; logs to stdout");
-    }
 
     // ── 自动创建数据 & 插件目录 ──
     let data_dir = Path::new("data");
