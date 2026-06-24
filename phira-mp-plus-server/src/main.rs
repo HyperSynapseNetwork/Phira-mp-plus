@@ -99,15 +99,13 @@ impl Drop for OutputWriter {
     }
 }
 
-struct OutputWriterMaker {
-    log_tx: Option<mpsc::UnboundedSender<String>>,
-}
+struct OutputWriterMaker(Option<mpsc::UnboundedSender<String>>);
 
 impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for OutputWriterMaker {
     type Writer = OutputWriter;
 
     fn make_writer(&'a self) -> Self::Writer {
-        match &self.log_tx {
+        match &self.0 {
             Some(tx) => OutputWriter::Chan(tx.clone(), Vec::new()),
             None => OutputWriter::Stdout(io::stdout()),
         }
@@ -149,22 +147,17 @@ fn init_log(file: &str, log_tx: Option<mpsc::UnboundedSender<String>>) -> Result
         .with_ansi(false)
         .with_filter(filter.clone());
 
-    // TUI 层（仅 TUI 启用时，额外发送到通道）
-    let registry = tracing_subscriber::registry()
+    // TUI 层
+    let tui_layer = fmt::layer()
+        .with_writer(OutputWriterMaker(log_tx.clone()))
+        .with_ansi(false)
+        .with_filter(filter);
+
+    tracing_subscriber::registry()
         .with(file_layer)
-        .with(stdout_layer);
-
-    let registry = if let Some(tx) = log_tx {
-        let tui_layer = fmt::layer()
-            .with_writer(OutputWriterMaker { log_tx: Some(tx) })
-            .with_ansi(false)
-            .with_filter(filter);
-        registry.with(tui_layer)
-    } else {
-        registry
-    };
-
-    registry.init();
+        .with(stdout_layer)
+        .with(tui_layer)
+        .init();
 
     Ok(guard)
 }
