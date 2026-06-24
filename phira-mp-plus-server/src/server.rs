@@ -62,20 +62,16 @@ macro_rules! read_lock {
         }
     }};
 }
-/// 自旋获取 tokio RwLock 写锁（仅在 sync 上下文中使用，如 webapi）
-#[cfg(feature = "webapi")]
-#[allow(unused_macros)]
-macro_rules! write_lock {
-    ($lock:expr) => {{
-        loop {
-            match $lock.try_write() {
-                Ok(g) => break g,
-                Err(_) => std::thread::yield_now(),
-            }
-        }
-    }};
-}
 pub type IdMap<V> = SafeMap<Uuid, V>;
+
+/// 自旋获取 tokio RwLock 读锁（同步上下文，如压测）
+macro_rules! sync_read {
+    ($lock:expr) => { loop { match $lock.try_read() { Ok(g) => break g, Err(_) => std::thread::yield_now() } } };
+}
+/// 自旋获取 tokio RwLock 写锁（同步上下文，如压测）
+macro_rules! sync_write {
+    ($lock:expr) => { loop { match $lock.try_write() { Ok(g) => break g, Err(_) => std::thread::yield_now() } } };
+}
 
 /// Phira-mp+ 增强配置（支持 YAML 文件、环境变量、CLI 参数三层覆盖）
 #[derive(Debug, Clone, Deserialize)]
@@ -546,14 +542,6 @@ impl PlusServerState {
 impl PlusServerState {
     /// 运行压测（同步版 — 在 ServerStateQuery 线程中调用，无 tokio）
     pub fn run_benchmark_sync(self: &Arc<Self>, duration_secs: u64, target_rooms: usize) -> String {
-        // 辅助：自旋获取 tokio RwLock 的同步读取
-        macro_rules! sync_read {
-            ($lock:expr) => { loop { match $lock.try_read() { Ok(g) => break g, Err(_) => std::thread::yield_now() } } };
-        }
-        macro_rules! sync_write {
-            ($lock:expr) => { loop { match $lock.try_write() { Ok(g) => break g, Err(_) => std::thread::yield_now() } } };
-        }
-
         use std::time::Instant;
         let started_at = Instant::now();
         let mut out = String::new();
@@ -699,10 +687,6 @@ impl PlusServerState {
 
     /// 清理压测残留数据（同步版）
     pub fn cleanup_benchmark_sync(&self) {
-        // 使用同步 spin-lock
-        macro_rules! sync_write {
-            ($lock:expr) => { loop { match $lock.try_write() { Ok(g) => break g, Err(_) => std::thread::yield_now() } } };
-        }
         sync_write!(self.rooms).retain(|rid, _| !rid.to_string().starts_with("bench-"));
         sync_write!(self.users).retain(|id, _| *id < TEST_USER_ID_BASE || *id >= TEST_USER_ID_BASE + 10_000_000);
     }
@@ -822,7 +806,6 @@ fn server_state_query(_state: &Arc<PlusServerState>, method: &str, _args: &[Valu
 /// Web API 状态查询（仅 webapi feature 启用时编译）
 #[cfg(feature = "webapi")]
 fn server_state_query(state: &Arc<PlusServerState>, method: &str, args: &[Value]) -> Result<Value, String> {
-    use serde::Serialize;
 
     #[derive(Serialize)]
     struct RoomSnapshot {

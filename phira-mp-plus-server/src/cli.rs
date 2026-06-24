@@ -20,16 +20,6 @@ use tracing::info;
 
 // ── ANSI 颜色辅助 ──
 mod c {
-    #![allow(dead_code)]
-    pub const RESET: &str = "\x1b[0m";
-    pub const BOLD: &str = "\x1b[1m";
-    pub const DIM: &str = "\x1b[2m";
-    pub const GREEN: &str = "\x1b[32m";
-    pub const CYAN: &str = "\x1b[36m";
-    pub const YELLOW: &str = "\x1b[33m";
-    pub const RED: &str = "\x1b[31m";
-    pub const MAGENTA: &str = "\x1b[35m";
-    pub const BLUE: &str = "\x1b[34m";
     pub fn green(s: &str) -> String { format!("\x1b[32m{}\x1b[0m", s) }
     pub fn cyan(s: &str) -> String { format!("\x1b[36m{}\x1b[0m", s) }
     pub fn yellow(s: &str) -> String { format!("\x1b[33m{}\x1b[0m", s) }

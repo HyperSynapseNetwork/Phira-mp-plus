@@ -6,7 +6,6 @@
 use crate::extensions::ExtensionManager;
 use phira_mp_plus_server_api as api;
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Mutex;
@@ -321,16 +320,6 @@ impl PluginManager {
     /// 注册插件 API（供其他插件调用）
     pub async fn register_plugin_api(&self, name: &str, handler: api::PluginApiHandler) {
         self.api_handlers.lock().unwrap_or_else(|e| e.into_inner()).insert(name.to_string(), handler);
-    }
-
-    /// 调用其他插件的 API
-    #[allow(dead_code)]
-    async fn call_plugin_api(&self, plugin: &str, method: &str, args: &[Value]) -> Result<Value, String> {
-        let handlers = self.api_handlers.lock().unwrap_or_else(|e| e.into_inner());
-        match handlers.get(plugin) {
-            Some(h) => h(method, args),
-            None => Err(format!("plugin '{}' not found or no API registered", plugin)),
-        }
     }
 
     async fn make_svr_ctx(&self, name: &str, state_query: Option<api::ServerStateQuery>) -> Arc<native::ServerPluginContext> {

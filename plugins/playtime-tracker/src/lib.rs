@@ -55,19 +55,6 @@ impl PlaytimeTracker {
         SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs()
     }
 
-    /// 获取排行列表（降序）
-    #[allow(dead_code)]
-    fn ranked_list(&self) -> Vec<(i32, u64)> {
-        let guard = self.data.lock().unwrap_or_else(|e| e.into_inner());
-        let mut list: Vec<(i32, u64)> = guard.iter()
-            .map(|(&uid, p)| {
-                let total = p.total_seconds + p.session_start.map_or(0, |start| Self::now().saturating_sub(start));
-                (uid, total)
-            })
-            .collect();
-        list.sort_by(|a, b| b.1.cmp(&a.1));
-        list
-    }
 }
 
 impl NativePlugin for PlaytimeTracker {
