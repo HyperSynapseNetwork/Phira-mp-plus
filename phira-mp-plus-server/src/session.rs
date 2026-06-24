@@ -521,6 +521,13 @@ impl Drop for Session {
     }
 }
 
+/// 向 room monitor 发送 RoomEvent
+async fn send_room_event(user: &User, event: phira_mp_common::RoomEvent) {
+    if let Some(mon) = user.server.get_room_monitor().await {
+        mon.stream.send(ServerCommand::RoomEvent(event)).await.ok();
+    }
+}
+
 async fn process(user: Arc<User>, cmd: ClientCommand) -> Option<ServerCommand> {
     #[inline]
     fn err_to_str<T>(result: Result<T>) -> Result<T, String> {
