@@ -103,6 +103,7 @@ impl User {
                     user_id: self.id,
                     user_name: self.name.clone(),
                 }).await;
+                crate::internal_hooks::playtime_disconnect(self.id);
                 return;
             }
         }
@@ -289,13 +290,9 @@ impl Session {
                                                     user_name: user_info.name.clone(),
                                                     user_ip,
                                                 }).await;
-                                            // 欢迎语（重连）
-                                            if let Some(s) = this.get() {
-                                                let online = server.users.read().await.len();
-                                                let _ = s.stream.send(ServerCommand::Message(Message::Chat {
-                                                    user: 0, content: format!("欢迎 {} 回来！在线 {} 人", user_info.name, online),
-                                                })).await;
-                                            }
+                                            // 内置 hooks
+                                            crate::internal_hooks::track_player(user_info.id, &user_info.name);
+                                            crate::internal_hooks::playtime_connect(user_info.id);
                                         } else {
                                             let user = Arc::new(User::new(
                                                 user_info.id,
@@ -321,13 +318,9 @@ impl Session {
                                                     user_ip,
                                                 })
                                                 .await;
-                                            // 欢迎语（新用户）
-                                            if let Some(s) = this.get() {
-                                                let online = server.users.read().await.len();
-                                                let _ = s.stream.send(ServerCommand::Message(Message::Chat {
-                                                    user: 0, content: format!("欢迎 {} 来到 Phira-mp+！在线 {} 人", user.name, online),
-                                                })).await;
-                                            }
+                                            // 内置 hooks
+                                            crate::internal_hooks::track_player(user_info.id, &user.name);
+                                            crate::internal_hooks::playtime_connect(user_info.id);
                                         }
                                         Ok(())
                                     }

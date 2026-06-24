@@ -395,6 +395,9 @@ impl PlusServer {
             }),
         }).await;
 
+        // 初始化内置功能（欢迎语/追踪/排行等）
+        crate::internal_hooks::init_internal_hooks(&state, &http_server, &state.plugin_manager).await;
+
         // 启动中央 HTTP 服务器（所有路由已注册完毕）
         let http_state = Arc::clone(&state);
         tokio::spawn(async move {
