@@ -128,8 +128,8 @@ pub struct Room {
     /// 各玩家实时触控/判定数据缓存（供插件 WASM WIT API 查询）
     pub player_data: RwLock<HashMap<i32, PlayerLiveData>>,
 
-    /// 服务器状态弱引用（用于访问 round_store 等）
-    pub server: Option<Weak<super::server::PlusServerState>>,
+    /// 轮次数据持久化存储（代替直接的 server 弱引用）
+    pub round_store: Option<Arc<crate::round_store::RoundStore>>,
 }
 
 impl Room {
@@ -138,7 +138,7 @@ impl Room {
         host: Weak<super::session::User>,
         plugin_manager: Option<Arc<PluginManager>>,
         max_users: usize,
-        server: Option<Weak<super::server::PlusServerState>>,
+        round_store: Option<Arc<crate::round_store::RoundStore>>,
     ) -> Self {
         Self {
             id,
@@ -158,7 +158,7 @@ impl Room {
             plugin_manager,
             max_users,
             player_data: RwLock::new(HashMap::new()),
-            server,
+            round_store,
         }
     }
 
@@ -545,7 +545,7 @@ impl Room {
                     let (cid, cn) = chart_info.as_ref().map(|c| (c.id, c.name.clone())).unwrap_or((0, "?".into()));
                     drop(chart_info);
                     let players: Vec<i32> = self.users().await.into_iter().map(|u| u.id).collect();
-                    if let Some(server) = self.server.as_ref().and_then(|w| w.upgrade()) {
+                    if let Some(rs) = &self.round_store {
                         let meta = crate::round_store::RoundMeta {
                             round_uuid: rid,
                             chart_id: cid,
@@ -558,7 +558,7 @@ impl Room {
                                 .unwrap_or(0),
                             finished_at: None,
                         };
-                        if let Err(e) = server.round_store.open_round(&meta).await {
+                        if let Err(e) = rs.open_round(&meta).await {
                             warn!("round store: failed to open round: {e}");
                         }
                     }
@@ -579,8 +579,8 @@ impl Room {
                     // 关闭轮次数据存储
                     if let Some(rid) = rid {
                         info!("round complete: {}", rid);
-                        if let Some(server) = self.server.as_ref().and_then(|w| w.upgrade()) {
-                            server.round_store.close_round(&rid.to_string()).await;
+                        if let Some(rs) = &self.round_store {
+                            rs.close_round(&rid.to_string()).await;
                         }
                     }
 

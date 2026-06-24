@@ -74,18 +74,11 @@ impl WasmPluginServices {
 
 /// WASM 插件在 wasmtime 中的导出函数表
 pub struct WasmPluginInstance {
-    #[allow(dead_code)]
-    pub engine: wasmtime::Engine,
     instance: wasmtime::Instance,
     store: wasmtime::Store<()>,
 
-    /// 共享宿主服务（用于 host/api 等调用）
-    #[allow(dead_code)]
-    services: Arc<WasmPluginServices>,
-
     // 导出的函数
     func_init: Option<wasmtime::TypedFunc<(), i32>>,
-    #[allow(dead_code)]
     func_get_info: Option<wasmtime::TypedFunc<(), ()>>,
     func_cleanup: Option<wasmtime::TypedFunc<(), ()>>,
     func_on_event: Option<wasmtime::TypedFunc<(i32, i32), i32>>,
@@ -96,14 +89,6 @@ pub struct WasmPluginInstance {
     pub plugin_name: String,
     pub plugin_path: String,
     pub initialized: bool,
-
-    // 信息缓存（JSON 格式）
-    #[allow(dead_code)]
-    info_json_ptr: Option<i32>,
-    #[allow(dead_code)]
-    info_json_len: i32,
-    #[allow(dead_code)]
-    plugin_data_dir: String,
 }
 
 unsafe impl Send for WasmPluginInstance {}
@@ -282,29 +267,24 @@ impl WasmPluginInstance {
             .get_typed_func::<(i32, i32), ()>(&mut store, "phira_dealloc")
             .ok();
 
-        let pn_dir = plugin_name.clone();
+        let pn = plugin_name.clone();
         let mut plugin = Self {
-            engine,
             instance,
             store,
-            services: Arc::clone(&svc),
             func_init,
             func_get_info,
             func_cleanup,
             func_on_event,
             func_alloc,
             info: PluginInfo {
-                name: pn_dir.clone(),
+                name: pn.clone(),
                 version: "0.1.0".to_string(),
                 author: "unknown".to_string(),
                 description: format!("WASM plugin from {}", plugin_path),
             },
-            plugin_name: pn_dir.clone(),
+            plugin_name: pn.clone(),
             plugin_path: plugin_path.to_string(),
             initialized: false,
-            info_json_ptr: None,
-            info_json_len: 0,
-            plugin_data_dir: format!("data/plugins/{}", pn_dir),
         };
 
         // 尝试从 WASM 内存读取插件信息
@@ -485,26 +465,39 @@ impl WasmPluginInstance {
     /// 通用 API 分发：处理 WASM 插件的 `phira:host/api` 调用
     ///
     /// 支持的 method:
-    /// - `state.query` → 调用 ServerStateQuery
-    /// - `send.to_user` → 发送聊天消息给指定用户
-    /// - `send.to_room` → 向房间广播消息
-    /// - `send.to_all`  → 向所有用户广播
-    /// - `ext.get_user` → 获取用户扩展数据
-    /// - `ext.set_user` → 设置用户扩展数据
-    /// - `ext.get_room` → 获取房间扩展数据
-    /// - `ext.set_room` → 设置房间扩展数据
-    /// - `config.get`   → 获取插件配置
-    /// - `config.set`   → 设置插件配置
-    /// - `http.get`     → 发送 HTTP GET 请求
-    /// - `http.post`    → 发送 HTTP POST 请求
-    /// - `file.read`    → 读取插件数据目录中的文件
-    /// - `file.write`   → 写入插件数据目录中的文件
-    /// - `uuid.v4`      → 生成 UUID v4
-    /// - `time.now`     → 获取当前时间（ISO 8601）
+    /// ── 状态查询 ──
+    /// - `state.query`    → 调用 ServerStateQuery (rooms.list, rooms.by_user, user_name, send_chat, send_room_chat, rooms.by_user)
     /// - `player.touches` → 查询指定用户的最近触控数据
     /// - `player.judges`  → 查询指定用户的最近判定数据
     /// - `round.data`     → 查询指定轮次+玩家的完整 Touches/Judges
     /// - `round.list`     → 列出所有已记录的轮次
+    /// ── 消息发送 ──
+    /// - `send.to_user`   → 发送聊天消息给指定用户
+    /// - `send.to_room`   → 向房间广播消息
+    /// - `send.to_all`    → 向所有用户广播
+    /// ── 扩展数据 ──
+    /// - `ext.get_user`   → 获取用户扩展数据
+    /// - `ext.set_user`   → 设置用户扩展数据
+    /// - `ext.get_room`   → 获取房间扩展数据
+    /// - `ext.set_room`   → 设置房间扩展数据
+    /// ── 房间管理（WIT room-management） ──
+    /// - `room.kick`         → 从房间踢出用户
+    /// - `room.transfer_host`→ 转移房主
+    /// - `room.set_lock`     → 锁定/解锁房间
+    /// - `room.close`        → 解散房间
+    /// ── 用户管理（WIT user-management） ──
+    /// - `admin.kick_user`  → 从服务器踢出用户
+    /// - `admin.ban_user`   → 封禁用户
+    /// - `admin.unban_user` → 解封用户
+    /// - `admin.is_banned`  → 检查用户是否被封禁
+    /// - `admin.ban_list`   → 获取封禁列表
+    /// - `admin.list_users` → 列出所有在线用户
+    /// ── 工具 ──
+    /// - `config.get/set`  → 插件配置读写
+    /// - `http.get/post`   → HTTP 请求
+    /// - `file.read/write` → 文件读写
+    /// - `uuid.v4`         → 生成 UUID v4
+    /// - `time.now`        → 获取 Unix 时间戳
     fn dispatch_api(svc: &WasmPluginServices, plugin_name: &str, method: &str, args: &str) -> Result<String, String> {
         let (method_name, rest) = method.split_once('.').unwrap_or((method, ""));
         match (method_name, rest) {
@@ -723,6 +716,107 @@ impl WasmPluginInstance {
                 match guard.as_ref() {
                     Some(sq) => sq.call("round.list", &[])
                         .map(|v| v.to_string()),
+                    None => Err("state query not available".to_string()),
+                }
+            }
+            // ── 房间管理（WIT room-management 接口） ──
+            ("room", "kick") => {
+                let args_val: serde_json::Value = serde_json::from_str(args)
+                    .map_err(|e| format!("invalid args: {}", e))?;
+                let room_id = args_val.get("room_id").and_then(|v| v.as_str()).ok_or("missing room_id")?.to_string();
+                let target_id = args_val.get("target_id").and_then(|v| v.as_i64()).ok_or("missing target_id")? as i32;
+                let guard = svc.state_query.read().map_err(|e| format!("lock error: {}", e))?;
+                match guard.as_ref() {
+                    Some(sq) => sq.call("room.kick", &[serde_json::json!(room_id), serde_json::json!(target_id)]).map(|v| v.to_string()),
+                    None => Err("state query not available".to_string()),
+                }
+            }
+            ("room", "transfer_host") => {
+                let args_val: serde_json::Value = serde_json::from_str(args)
+                    .map_err(|e| format!("invalid args: {}", e))?;
+                let room_id = args_val.get("room_id").and_then(|v| v.as_str()).ok_or("missing room_id")?.to_string();
+                let target_id = args_val.get("target_id").and_then(|v| v.as_i64()).ok_or("missing target_id")? as i32;
+                let guard = svc.state_query.read().map_err(|e| format!("lock error: {}", e))?;
+                match guard.as_ref() {
+                    Some(sq) => sq.call("room.transfer_host", &[serde_json::json!(room_id), serde_json::json!(target_id)]).map(|v| v.to_string()),
+                    None => Err("state query not available".to_string()),
+                }
+            }
+            ("room", "set_lock") => {
+                let args_val: serde_json::Value = serde_json::from_str(args)
+                    .map_err(|e| format!("invalid args: {}", e))?;
+                let room_id = args_val.get("room_id").and_then(|v| v.as_str()).ok_or("missing room_id")?.to_string();
+                let locked = args_val.get("locked").and_then(|v| v.as_bool()).ok_or("missing locked")?;
+                let guard = svc.state_query.read().map_err(|e| format!("lock error: {}", e))?;
+                match guard.as_ref() {
+                    Some(sq) => sq.call("room.set_lock", &[serde_json::json!(room_id), serde_json::json!(locked)]).map(|v| v.to_string()),
+                    None => Err("state query not available".to_string()),
+                }
+            }
+            ("room", "close") => {
+                let args_val: serde_json::Value = serde_json::from_str(args)
+                    .map_err(|e| format!("invalid args: {}", e))?;
+                let room_id = args_val.get("room_id").and_then(|v| v.as_str()).ok_or("missing room_id")?.to_string();
+                let guard = svc.state_query.read().map_err(|e| format!("lock error: {}", e))?;
+                match guard.as_ref() {
+                    Some(sq) => sq.call("room.close", &[serde_json::json!(room_id)]).map(|v| v.to_string()),
+                    None => Err("state query not available".to_string()),
+                }
+            }
+            // ── 用户管理（WIT user-management 接口） ──
+            ("admin", "kick_user") => {
+                let args_val: serde_json::Value = serde_json::from_str(args)
+                    .map_err(|e| format!("invalid args: {}", e))?;
+                let uid = args_val.get("user_id").and_then(|v| v.as_i64()).ok_or("missing user_id")? as i32;
+                let reason = args_val.get("reason").and_then(|v| v.as_str()).unwrap_or("kicked by admin");
+                let guard = svc.state_query.read().map_err(|e| format!("lock error: {}", e))?;
+                match guard.as_ref() {
+                    Some(sq) => sq.call("admin.kick_user", &[serde_json::json!(uid), serde_json::json!(reason)]).map(|v| v.to_string()),
+                    None => Err("state query not available".to_string()),
+                }
+            }
+            ("admin", "ban_user") => {
+                let args_val: serde_json::Value = serde_json::from_str(args)
+                    .map_err(|e| format!("invalid args: {}", e))?;
+                let uid = args_val.get("user_id").and_then(|v| v.as_i64()).ok_or("missing user_id")? as i32;
+                let reason = args_val.get("reason").and_then(|v| v.as_str()).unwrap_or("banned");
+                let guard = svc.state_query.read().map_err(|e| format!("lock error: {}", e))?;
+                match guard.as_ref() {
+                    Some(sq) => sq.call("admin.ban_user", &[serde_json::json!(uid), serde_json::json!(reason)]).map(|v| v.to_string()),
+                    None => Err("state query not available".to_string()),
+                }
+            }
+            ("admin", "unban_user") => {
+                let args_val: serde_json::Value = serde_json::from_str(args)
+                    .map_err(|e| format!("invalid args: {}", e))?;
+                let uid = args_val.get("user_id").and_then(|v| v.as_i64()).ok_or("missing user_id")? as i32;
+                let guard = svc.state_query.read().map_err(|e| format!("lock error: {}", e))?;
+                match guard.as_ref() {
+                    Some(sq) => sq.call("admin.unban_user", &[serde_json::json!(uid)]).map(|v| v.to_string()),
+                    None => Err("state query not available".to_string()),
+                }
+            }
+            ("admin", "is_banned") => {
+                let args_val: serde_json::Value = serde_json::from_str(args)
+                    .map_err(|e| format!("invalid args: {}", e))?;
+                let uid = args_val.get("user_id").and_then(|v| v.as_i64()).ok_or("missing user_id")? as i32;
+                let guard = svc.state_query.read().map_err(|e| format!("lock error: {}", e))?;
+                match guard.as_ref() {
+                    Some(sq) => sq.call("admin.is_banned", &[serde_json::json!(uid)]).map(|v| v.to_string()),
+                    None => Err("state query not available".to_string()),
+                }
+            }
+            ("admin", "ban_list") => {
+                let guard = svc.state_query.read().map_err(|e| format!("lock error: {}", e))?;
+                match guard.as_ref() {
+                    Some(sq) => sq.call("admin.ban_list", &[]).map(|v| v.to_string()),
+                    None => Err("state query not available".to_string()),
+                }
+            }
+            ("admin", "list_users") => {
+                let guard = svc.state_query.read().map_err(|e| format!("lock error: {}", e))?;
+                match guard.as_ref() {
+                    Some(sq) => sq.call("admin.list_users", &[]).map(|v| v.to_string()),
                     None => Err("state query not available".to_string()),
                 }
             }

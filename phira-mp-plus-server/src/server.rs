@@ -692,9 +692,108 @@ impl PlusServerState {
     }
 }
 
-// ── 状态查询（供插件 / WASM WIT API 调用） ──
+// ── 状态查询 / Room/User 管理（供 WASM WIT API / dispatch） ──
 
+use crate::plugin::PluginEvent;
 use std::sync::atomic::Ordering;
+use tracing::info;
+
+/// 从房间踢出用户
+async fn run_room_kick(state: &PlusServerState, room_id: &str, target_id: i32) -> Result<Value, String> {
+    use phira_mp_common::RoomId;
+    let rid: RoomId = room_id.to_string().try_into().map_err(|_| "invalid room_id".to_string())?;
+    let room = state.rooms.read().await.get(&rid).map(Arc::clone)
+        .ok_or("room not found")?;
+    let users = room.users().await;
+    let monitors = room.monitors().await;
+    let user = users.into_iter().chain(monitors).find(|u| u.id == target_id)
+        .ok_or("user not in room")?;
+    room.send(phira_mp_common::Message::Chat {
+        user: 0, content: format!("用户 {} 已被管理员踢出房间", user.name),
+    }).await;
+    room.on_user_leave(&user).await;
+    state.plugin_manager.trigger(&PluginEvent::RoomModify {
+        user_id: target_id, room_id: room_id.to_string(),
+        data: r#"{"action":"kicked"}"#.to_string(),
+    }).await;
+    Ok(serde_json::json!({"ok": true}))
+}
+
+/// 转移房主
+async fn run_room_transfer(state: &PlusServerState, room_id: &str, target_id: i32) -> Result<Value, String> {
+    use phira_mp_common::RoomId;
+    let rid: RoomId = room_id.to_string().try_into().map_err(|_| "invalid room_id".to_string())?;
+    let room = state.rooms.read().await.get(&rid).map(Arc::clone)
+        .ok_or("room not found")?;
+    room.send(phira_mp_common::Message::Chat {
+        user: 0, content: format!("房主已转移给用户 {}", target_id),
+    }).await;
+    room.transfer_host(target_id).await.map_err(|e| e.to_string())?;
+    Ok(serde_json::json!({"ok": true}))
+}
+
+/// 设置房间锁定状态
+async fn run_room_set_lock(state: &PlusServerState, room_id: &str, locked: bool) -> Result<Value, String> {
+    use phira_mp_common::RoomId;
+    let rid: RoomId = room_id.to_string().try_into().map_err(|_| "invalid room_id".to_string())?;
+    let room = state.rooms.read().await.get(&rid).map(Arc::clone)
+        .ok_or("room not found")?;
+    room.locked.store(locked, Ordering::SeqCst);
+    room.send(phira_mp_common::Message::LockRoom { lock: locked }).await;
+    room.on_state_change().await;
+    Ok(serde_json::json!({"ok": true, "locked": locked}))
+}
+
+/// 关闭/解散房间
+async fn run_room_close(state: &PlusServerState, room_id: &str) -> Result<Value, String> {
+    use phira_mp_common::RoomId;
+    let rid: RoomId = room_id.to_string().try_into().map_err(|_| "invalid room_id".to_string())?;
+    let room = state.rooms.read().await.get(&rid).map(Arc::clone)
+        .ok_or("room not found")?;
+    room.send(phira_mp_common::Message::Chat {
+        user: 0, content: "房间已被管理员关闭".to_string(),
+    }).await;
+    for u in room.users().await { *u.room.write().await = None; }
+    for u in room.monitors().await { *u.room.write().await = None; }
+    state.rooms.write().await.remove(&rid);
+    Ok(serde_json::json!({"ok": true}))
+}
+
+/// 将用户踢出服务器
+async fn run_admin_kick_user(state: &PlusServerState, target_id: i32, reason: &str) -> Result<Value, String> {
+    let user = state.users.read().await.get(&target_id).map(Arc::clone)
+        .ok_or("user not found")?;
+    {
+        let room_clone = user.room.read().await.as_ref().map(Arc::clone);
+        if let Some(room) = room_clone {
+            let room_id = room.id.to_string();
+            if room.on_user_leave(&user).await {
+                state.rooms.write().await.remove(&room.id);
+            }
+            state.plugin_manager.trigger(&PluginEvent::RoomLeave { user_id: target_id, room_id }).await;
+        }
+    }
+    {
+        let sessions = state.sessions.read().await;
+        for session in sessions.values() {
+            if session.user.id == target_id {
+                let _ = session.stream.send(
+                    phira_mp_common::ServerCommand::Message(
+                        phira_mp_common::Message::Chat { user: 0, content: format!("你已被管理员踢出服务器: {reason}") },
+                    )
+                ).await;
+                break;
+            }
+        }
+    }
+    state.users.write().await.remove(&target_id);
+    info!(user = target_id, reason = %reason, "kicked from server by admin (WIT)");
+    state.plugin_manager.trigger(&PluginEvent::UserDisconnect {
+        user_id: target_id,
+        user_name: user.name.clone(),
+    }).await;
+    Ok(serde_json::json!({"ok": true, "reason": reason}))
+}
 
 /// 统一状态查询入口（插件 / WASM WIT API 均通过此函数查询）
 ///
@@ -789,6 +888,134 @@ fn server_state_query_inner(state: &Arc<PlusServerState>, method: &str, args: &[
         "test.cleanup" => {
             state.cleanup_benchmark_sync();
             Ok(serde_json::json!({"ok": true}))
+        }
+        // ── 房间管理（WIT room-management 接口） ──
+        "room.kick" => {
+            let room_id = args.get(0).and_then(|v| v.as_str()).unwrap_or("").to_string();
+            let target_id = args.get(1).and_then(|v| v.as_i64()).unwrap_or(0) as i32;
+            if room_id.is_empty() { return Err("missing room_id".to_string()); }
+            let (tx, rx) = std::sync::mpsc::channel();
+            let s = Arc::clone(state);
+            tokio::spawn(async move {
+                let result = run_room_kick(&s, &room_id, target_id).await;
+                let _ = tx.send(result);
+            });
+            rx.recv_timeout(std::time::Duration::from_secs(5))
+                .unwrap_or(Err("room.kick timeout".to_string()))
+        }
+        "room.transfer_host" => {
+            let room_id = args.get(0).and_then(|v| v.as_str()).unwrap_or("").to_string();
+            let target_id = args.get(1).and_then(|v| v.as_i64()).unwrap_or(0) as i32;
+            if room_id.is_empty() { return Err("missing room_id".to_string()); }
+            let (tx, rx) = std::sync::mpsc::channel();
+            let s = Arc::clone(state);
+            tokio::spawn(async move {
+                let result = run_room_transfer(&s, &room_id, target_id).await;
+                let _ = tx.send(result);
+            });
+            rx.recv_timeout(std::time::Duration::from_secs(5))
+                .unwrap_or(Err("room.transfer_host timeout".to_string()))
+        }
+        "room.set_lock" => {
+            let room_id = args.get(0).and_then(|v| v.as_str()).unwrap_or("").to_string();
+            let locked = args.get(1).and_then(|v| v.as_bool()).unwrap_or(true);
+            if room_id.is_empty() { return Err("missing room_id".to_string()); }
+            let (tx, rx) = std::sync::mpsc::channel();
+            let s = Arc::clone(state);
+            tokio::spawn(async move {
+                let result = run_room_set_lock(&s, &room_id, locked).await;
+                let _ = tx.send(result);
+            });
+            rx.recv_timeout(std::time::Duration::from_secs(5))
+                .unwrap_or(Err("room.set_lock timeout".to_string()))
+        }
+        "room.close" => {
+            let room_id = args.get(0).and_then(|v| v.as_str()).unwrap_or("").to_string();
+            if room_id.is_empty() { return Err("missing room_id".to_string()); }
+            let (tx, rx) = std::sync::mpsc::channel();
+            let s = Arc::clone(state);
+            tokio::spawn(async move {
+                let result = run_room_close(&s, &room_id).await;
+                let _ = tx.send(result);
+            });
+            rx.recv_timeout(std::time::Duration::from_secs(5))
+                .unwrap_or(Err("room.close timeout".to_string()))
+        }
+        // ── 用户管理（WIT user-management 接口） ──
+        "admin.kick_user" => {
+            let uid = args.get(0).and_then(|v| v.as_i64()).unwrap_or(0) as i32;
+            if uid <= 0 { return Err("invalid user_id".to_string()); }
+            let reason = args.get(1).and_then(|v| v.as_str()).unwrap_or("kicked by admin").to_string();
+            let (tx, rx) = std::sync::mpsc::channel();
+            let s = Arc::clone(state);
+            tokio::spawn(async move {
+                let result = run_admin_kick_user(&s, uid, &reason).await;
+                let _ = tx.send(result);
+            });
+            rx.recv_timeout(std::time::Duration::from_secs(5))
+                .unwrap_or(Err("admin.kick_user timeout".to_string()))
+        }
+        "admin.ban_user" => {
+            let uid = args.get(0).and_then(|v| v.as_i64()).unwrap_or(0) as i32;
+            let reason = args.get(1).and_then(|v| v.as_str()).unwrap_or("banned").to_string();
+            if uid <= 0 { return Err("invalid user_id".to_string()); }
+            let (tx, rx) = std::sync::mpsc::channel();
+            let s = Arc::clone(state);
+            tokio::spawn(async move {
+                let result = s.ban_manager.ban_user(uid, &reason).await
+                    .map(|_| serde_json::json!({"ok": true}));
+                let _ = tx.send(result);
+            });
+            rx.recv_timeout(std::time::Duration::from_secs(5))
+                .unwrap_or(Err("admin.ban_user timeout".to_string()))
+        }
+        "admin.unban_user" => {
+            let uid = args.get(0).and_then(|v| v.as_i64()).unwrap_or(0) as i32;
+            if uid <= 0 { return Err("invalid user_id".to_string()); }
+            let (tx, rx) = std::sync::mpsc::channel();
+            let s = Arc::clone(state);
+            tokio::spawn(async move {
+                let result = s.ban_manager.unban_user(uid).await
+                    .map(|_| serde_json::json!({"ok": true}));
+                let _ = tx.send(result);
+            });
+            rx.recv_timeout(std::time::Duration::from_secs(5))
+                .unwrap_or(Err("admin.unban_user timeout".to_string()))
+        }
+        "admin.is_banned" => {
+            let uid = args.get(0).and_then(|v| v.as_i64()).unwrap_or(0) as i32;
+            if uid <= 0 { return Err("invalid user_id".to_string()); }
+            let (tx, rx) = std::sync::mpsc::channel();
+            let s = Arc::clone(state);
+            tokio::spawn(async move {
+                let banned = s.ban_manager.is_banned(uid).await;
+                let _ = tx.send(Ok(serde_json::json!({"banned": banned})));
+            });
+            rx.recv_timeout(std::time::Duration::from_secs(5))
+                .unwrap_or(Err("admin.is_banned timeout".to_string()))
+        }
+        "admin.ban_list" => {
+            let (tx, rx) = std::sync::mpsc::channel();
+            let s = Arc::clone(state);
+            tokio::spawn(async move {
+                let list = s.ban_manager.list_banned().await;
+                let _ = tx.send(Ok(serde_json::to_value(list).unwrap_or_default()));
+            });
+            rx.recv_timeout(std::time::Duration::from_secs(5))
+                .unwrap_or(Err("admin.ban_list timeout".to_string()))
+        }
+        "admin.list_users" => {
+            let (tx, rx) = std::sync::mpsc::channel();
+            let s = Arc::clone(state);
+            tokio::spawn(async move {
+                let users = s.users.read().await;
+                let list: Vec<Value> = users.values().map(|u| serde_json::json!({
+                    "id": u.id, "name": u.name, "monitor": u.monitor.load(Ordering::SeqCst)
+                })).collect();
+                let _ = tx.send(Ok(serde_json::to_value(list).unwrap_or_default()));
+            });
+            rx.recv_timeout(std::time::Duration::from_secs(5))
+                .unwrap_or(Err("admin.list_users timeout".to_string()))
         }
         _ => {
             // webapi feature 下的扩展查询
