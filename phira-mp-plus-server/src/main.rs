@@ -172,9 +172,6 @@ async fn main() -> Result<()> {
     let is_screen = std::env::var("STY").is_ok() || std::env::var("TMUX").is_ok()
         || std::env::var("TERM").map(|t| t.contains("screen")).unwrap_or(false);
 
-    // screen 下用简单 stdin CLI，正常终端用 TUI
-    let use_tui = cli_enabled && !is_screen;
-
     // 通道始终创建（CLI 处理器需要，TUI 和 stdin 只是不同前端）
     let (cmd_tx, cmd_rx) = if cli_enabled {
         let (tx, rx) = mpsc::unbounded_channel();
