@@ -107,7 +107,7 @@ impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for OutputWriterMaker {
     fn make_writer(&'a self) -> Self::Writer {
         match &self.0 {
             Some(tx) => OutputWriter::Chan(tx.clone(), Vec::new()),
-            None => OutputWriter::Stdout(io::stdout()),
+            None => OutputWriter::Stdout(io::sink()),
         }
     }
 }
