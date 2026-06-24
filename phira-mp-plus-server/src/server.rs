@@ -347,23 +347,22 @@ impl PlusServer {
         // rooms.list
         let sq = webapi_state_query.clone();
         http_for_webapi.register_route_sync("/api/rooms", Arc::new(move |_, _| {
-            sq.call("rooms.list", &[])
+            sq.call("rooms.list", &[]).map_err(|e| (500u16, e))
         }));
         // rooms.by_name
         let sq = webapi_state_query.clone();
         let s2 = Arc::clone(&state_for_webapi2);
         http_for_webapi.register_route_sync("/api/rooms/<name>", Arc::new(move |_, params| {
             let name = params.first().cloned().unwrap_or_default();
-            let sq = sq.clone();
             let s = Arc::clone(&s2);
-            // 直接使用 server_state_query 的同步查询
             server_state_query_inner(&s, "rooms.by_name", &[serde_json::json!(name)])
+                .map_err(|e| (500u16, e))
         }));
         // user_name
         let sq = webapi_state_query.clone();
         http_for_webapi.register_route_sync("/api/user_name/<id>", Arc::new(move |_, params| {
             let uid: i32 = params.first().and_then(|p| p.parse().ok()).unwrap_or(0);
-            sq.call("user_name", &[serde_json::json!(uid)])
+            sq.call("user_name", &[serde_json::json!(uid)]).map_err(|e| (500u16, e))
         }));
 
         // 压测 CLI 命令注册（原 stress-test 插件）

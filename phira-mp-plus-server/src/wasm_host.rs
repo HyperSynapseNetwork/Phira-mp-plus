@@ -854,7 +854,7 @@ impl WasmPluginInstance {
                 }
                 // 注册一个 passthrough 处理器：调用时通过 state.query 返回给调用方
                 // 完整双向 WASM 回调需要 wasmtime 支持，暂用同步 stub
-                handlers.insert(key, Arc::new(move |method: &str, args: &[Value]| {
+                handlers.insert(key, Arc::new(move |method: &str, args: &[serde_json::Value]| {
                     Ok(serde_json::json!({"method": method, "args": args, "note": "WASM callback stub"}))
                 }));
                 Ok(format!("registered plugin API: {}.{}", plugin_name, api_method))

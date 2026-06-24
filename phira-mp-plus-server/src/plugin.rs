@@ -178,7 +178,6 @@ pub struct PluginManager {
     plugins: Arc<RwLock<Vec<Box<dyn PluginHost>>>>,
     cli_commands: Arc<Mutex<HashMap<String, CliCommand>>>,
     api_handlers: Arc<Mutex<HashMap<String, api::PluginApiHandler>>>,
-    extensions: Arc<ExtensionManager>,
     plugins_dir: String,
     http_handle: Arc<RwLock<Option<api::HttpHandle>>>,
     send_chat: Arc<RwLock<Option<Arc<dyn Fn(i32, String) + Send + Sync>>>>,
@@ -192,16 +191,12 @@ impl PluginManager {
     pub fn new(plugins_dir: &str, extensions: Arc<ExtensionManager>) -> Self {
         #[cfg(feature = "plugin-system")]
         let wasm_services = {
-            let ws = Arc::new(crate::wasm_host::WasmPluginServices::new(
-                Arc::clone(&extensions),
-            ));
-            ws
+            Arc::new(crate::wasm_host::WasmPluginServices::new(extensions))
         };
         Self {
             plugins: Arc::new(RwLock::new(Vec::new())),
             cli_commands: Arc::new(Mutex::new(HashMap::new())),
             api_handlers: Arc::new(Mutex::new(HashMap::new())),
-            extensions,
             plugins_dir: plugins_dir.to_string(),
             http_handle: Arc::new(RwLock::new(None)),
             send_chat: Arc::new(RwLock::new(None)),
