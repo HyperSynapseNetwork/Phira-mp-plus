@@ -216,7 +216,9 @@ impl TuiApp {
                 self.scroll_offset = 0;
                 self.auto_scroll = true;
             }
-            // S 键标记（输入为空时，不干扰打字）
+            // 非 S/方向键时清除滚动标记
+            KeyCode::Char(c) if self.scroll_key_pressed && c != 's' && c != 'S' => { self.scroll_key_pressed = false; }
+            // S 键标记（输入为空时，不干扰打字），长按持续有效
             KeyCode::Char('s') if self.input.is_empty() => { self.scroll_key_pressed = true; }
             KeyCode::Char('S') if self.input.is_empty() => { self.scroll_key_pressed = true; }
             KeyCode::Char(c) => {
@@ -263,13 +265,13 @@ impl TuiApp {
             }
             // ↑↓：S 键按下时滚动，否则命令历史
             KeyCode::Up => {
-                if self.scroll_key_pressed { self.scroll_key_pressed = false; self.scroll_up(); return; }
+                if self.scroll_key_pressed { self.scroll_up(); return; }
                 if self.history.is_empty() { return; }
                 let idx = self.history_idx.get_or_insert(self.history.len());
                 if *idx > 0 { *idx -= 1; self.input = self.history[*idx].clone(); self.cursor_pos = self.input.chars().count(); }
             }
             KeyCode::Down => {
-                if self.scroll_key_pressed { self.scroll_key_pressed = false; self.scroll_down(); return; }
+                if self.scroll_key_pressed { self.scroll_down(); return; }
                 if let Some(idx) = &mut self.history_idx {
                     if *idx + 1 < self.history.len() { *idx += 1; self.input = self.history[*idx].clone(); }
                     else { self.history_idx = None; self.input.clear(); }
@@ -395,7 +397,7 @@ impl TuiApp {
 
         // 全区域清除 + 重绘
         frame.render_widget(Clear, chunks[0]);
-        frame.render_widget(Paragraph::new(Text::from(visible_lines)), chunks[0]);
+        frame.render_widget(Paragraph::new(Text::from(visible_lines)).wrap(Wrap { trim: false }), chunks[0]);
 
         // 压测进度条
         if hide_progress {
