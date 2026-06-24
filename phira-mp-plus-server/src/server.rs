@@ -350,7 +350,6 @@ impl PlusServer {
             sq.call("rooms.list", &[]).map_err(|e| (500u16, e))
         }));
         // rooms.by_name
-        let sq = webapi_state_query.clone();
         let s2 = Arc::clone(&state_for_webapi2);
         http_for_webapi.register_route_sync("/api/rooms/<name>", Arc::new(move |_, params| {
             let name = params.first().cloned().unwrap_or_default();

@@ -138,6 +138,70 @@ impl CliHandler {
                 }
                 "users" | "u" => self.list_users().await,
                 "rooms" | "r" => self.list_rooms().await,
+                // ── 统一 room 子命令 ──
+                "room" => {
+                    let sub = args.first().copied().unwrap_or("");
+                    match sub {
+                        "list" | "ls" | "" => self.list_rooms().await,
+                        "info" | "i" => {
+                            if args.len() < 2 { self.out(format!("  {} {} room info <房间ID>", c::yellow("?"), c::bold("用法"))); }
+                            else { self.room_info(args[1]).await; }
+                        }
+                        "start" | "s" => {
+                            if args.len() < 2 { self.out(format!("  {} {} room start <房间ID>", c::yellow("?"), c::bold("用法"))); }
+                            else { self.room_start(args[1]).await; }
+                        }
+                        "cancel" | "c" => {
+                            if args.len() < 2 { self.out(format!("  {} {} room cancel <房间ID>", c::yellow("?"), c::bold("用法"))); }
+                            else { self.room_cancel(args[1]).await; }
+                        }
+                        "kick" | "k" => {
+                            if args.len() < 3 { self.out(format!("  {} {} room kick <房间ID> <用户ID>", c::yellow("?"), c::bold("用法"))); }
+                            else { self.kick_from_room(args[1], args[2]).await; }
+                        }
+                        "transfer" | "t" => {
+                            if args.len() < 3 { self.out(format!("  {} {} room transfer <房间ID> <用户ID>", c::yellow("?"), c::bold("用法"))); }
+                            else { let uid: i32 = match args[2].parse() { Ok(id) => id, Err(_) => { self.out(format!("  {} 无效的用户ID", c::red("✗"))); return; } };
+                                self.room_transfer(args[1], uid).await; }
+                        }
+                        "close" | "cl" => {
+                            if args.len() < 2 { self.out(format!("  {} {} room close <房间ID>", c::yellow("?"), c::bold("用法"))); }
+                            else { self.close_room(args[1]).await; }
+                        }
+                        "set" => {
+                            if args.len() < 4 { self.out(format!("  {} {} room set <房间ID> <字段> <值>", c::yellow("?"), c::bold("用法"))); }
+                            else { self.room_set(args[1], args[2], &args[3..].join(" ")).await; }
+                        }
+                        "history" | "h" => {
+                            if args.len() < 2 { self.out(format!("  {} {} room history <房间ID>", c::yellow("?"), c::bold("用法"))); }
+                            else { self.room_history(args[1]).await; }
+                        }
+                        "ban" | "b" => {
+                            if args.len() < 3 { self.out(format!("  {} {} room ban <房间ID> <用户ID>", c::yellow("?"), c::bold("用法"))); }
+                            else { let uid: i32 = match args[2].parse() { Ok(id) => id, Err(_) => { self.out(format!("  {} 无效的用户ID", c::red("✗"))); return; } };
+                                match self.state.ban_manager.room_ban_user(args[1], uid).await {
+                                    Ok(_) => self.out(format!("  {} 用户 {} 已加入房间 {} 的黑名单", c::green("✓"), uid, args[1])),
+                                    Err(e) => self.out(format!("  {} {}", c::red("✗"), e)),
+                                }}
+                        }
+                        "unban" | "ub" => {
+                            if args.len() < 3 { self.out(format!("  {} {} room unban <房间ID> <用户ID>", c::yellow("?"), c::bold("用法"))); }
+                            else { let uid: i32 = match args[2].parse() { Ok(id) => id, Err(_) => { self.out(format!("  {} 无效的用户ID", c::red("✗"))); return; } };
+                                match self.state.ban_manager.room_unban_user(args[1], uid).await {
+                                    Ok(_) => self.out(format!("  {} 用户 {} 已移出房间 {} 的黑名单", c::green("✓"), uid, args[1])),
+                                    Err(e) => self.out(format!("  {} {}", c::red("✗"), e)),
+                                }}
+                        }
+                        "banlist" | "bl" => {
+                            if args.len() < 2 { self.out(format!("  {} {} room banlist <房间ID>", c::yellow("?"), c::bold("用法"))); }
+                            else { self.room_ban_list(args[1]).await; }
+                        }
+                        _ => {
+                            self.out(format!("  {} 未知子命令: {}  ", c::red("✗"), c::yellow(sub)));
+                            self.out(format!("  {} 可用: room list|info|start|cancel|kick|transfer|close|set|history|ban|unban|banlist", c::dim("▸")));
+                        }
+                    }
+                }
                 "kick" | "k" => {
                     if args.len() >= 2 {
                         self.kick_from_room(args[0], args[1]).await;
@@ -332,27 +396,30 @@ impl CliHandler {
         self.out(format!("  {} 用户 / 房间", c::cyan("▸")));
         self.out(format!("    {} {:<20} {}", c::dim("│"), "users (u)", "在线用户"));
         self.out(format!("    {} {:<20} {}", c::dim("│"), "rooms (r)", "活跃房间"));
-        self.out(format!("    {} {:<20} {}", c::dim("│"), "room-info (ri)", "房间详情"));
-        self.out(format!("    {} {:<20} {}", c::dim("│"), "room-transfer", "转移房主"));
-        self.out(format!("    {} {:<20} {}", c::dim("│"), "room-set", "修改房间设置"));
-        self.out(format!("    {} {:<20} {}", c::dim("│"), "room-history", "游玩记录"));
-        self.out(format!("    {} {:<20} {}", c::dim("│"), "kick (k)", "踢出用户"));
-        self.out(format!("    {} {:<20} {}", c::dim("│"), "close-room (cr)", "解散房间"));
-        self.out(format!("    {} {:<20} {}", c::dim("│"), "room-start (rs)", "开始游戏"));
-        self.out(format!("    {} {:<20} {}", c::dim("│"), "room-cancel (rc)", "取消准备"));
+        self.out(format!("    {} {:<20} {}", c::dim("│"), "kick (k)", "踢出用户/从房间踢出"));
         self.out(format!("    {} {:<20} {}", c::dim("│"), "broadcast (bc)", "广播消息"));
         self.out(String::new());
+        self.out(format!("  {} 房间管理 (room <子命令>)", c::cyan("▸")));
+        self.out(format!("    {} {:<20} {}", c::dim("│"), "room list", "列出活跃房间"));
+        self.out(format!("    {} {:<20} {}", c::dim("│"), "room info <房间ID>", "房间详情"));
+        self.out(format!("    {} {:<20} {}", c::dim("│"), "room start <房间ID>", "强制开始游戏"));
+        self.out(format!("    {} {:<20} {}", c::dim("│"), "room cancel <房间ID>", "取消准备"));
+        self.out(format!("    {} {:<20} {}", c::dim("│"), "room kick <房间ID> <用户ID>", "踢出房间用户"));
+        self.out(format!("    {} {:<20} {}", c::dim("│"), "room transfer <房间ID> <用户ID>", "转移房主"));
+        self.out(format!("    {} {:<20} {}", c::dim("│"), "room set <房间ID> <字段> <值>", "修改房间设置"));
+        self.out(format!("    {} {:<20} {}", c::dim("│"), "room close <房间ID>", "解散房间"));
+        self.out(format!("    {} {:<20} {}", c::dim("│"), "room history <房间ID>", "游玩记录"));
+        self.out(format!("    {} {:<20} {}", c::dim("│"), "room ban <房间ID> <用户ID>", "房间黑名单"));
+        self.out(format!("    {} {:<20} {}", c::dim("│"), "room banlist <房间ID>", "房间黑名单列表"));
+        self.out(String::new());
         self.out(format!("  {} 扩展数据", c::cyan("▸")));
-        self.out(format!("    {} {:<20} {}", c::dim("│"), "ext-list (el)", "列出扩展字段"));
-        self.out(format!("    {} {:<20} {}", c::dim("│"), "ext-get (eg)", "查看扩展数据"));
+        self.out(format!("    {} {:<20} {}", c::dim("│"), "ext-list", "列出扩展字段"));
+        self.out(format!("    {} {:<20} {}", c::dim("│"), "ext-get <ID> <key>", "查看扩展数据"));
         self.out(String::new());
         self.out(format!("  {} 黑名单管理", c::cyan("▸")));
         self.out(format!("    {} {:<20} {}", c::dim("│"), "ban <用户ID> [原因]", "封禁用户"));
         self.out(format!("    {} {:<20} {}", c::dim("│"), "unban <用户ID>", "解封用户"));
         self.out(format!("    {} {:<20} {}", c::dim("│"), "banlist (bl)", "列出封禁列表"));
-        self.out(format!("    {} {:<20} {}", c::dim("│"), "room-ban (rb)", "房间加入黑名单"));
-        self.out(format!("    {} {:<20} {}", c::dim("│"), "room-unban (ru)", "房间移出黑名单"));
-        self.out(format!("    {} {:<20} {}", c::dim("│"), "room-banlist (rbl)", "房间黑名单列表"));
 
         // 列出插件注册的命令
         let plugin_cmds = self.state.plugin_manager.list_cli_commands().await;
