@@ -516,9 +516,16 @@ pub fn run_stdin_cli(cmd_tx: tokio::sync::mpsc::UnboundedSender<String>, mut out
         let _ = std::io::stdout().flush();
         line_buf.clear();
         match stdin.read_line(&mut line_buf) {
-            Ok(0) | Err(_) => break,
+            Ok(0) => break, // EOF
+            Err(e) => {
+                // screen 下中文 IME 可能发送转义干扰 read_line，记录后跳过
+                eprintln!("\n[input error: {e}, type help for commands]");
+                continue;
+            }
             Ok(_) => {
-                let trimmed = line_buf.trim().to_string();
+                // 清理可能混入的 ANSI 转义（IME 有时会残留 ESC 序列）
+                let raw = strip_ansi(&line_buf);
+                let trimmed = raw.trim().to_string();
                 if trimmed.eq_ignore_ascii_case("exit") || trimmed.eq_ignore_ascii_case("quit") || trimmed == "q" {
                     let _ = cmd_tx.send(trimmed);
                     break;
