@@ -10,9 +10,9 @@
 
 ### 核心特性
 
-- **🧩 插件系统** — 原生 Rust 插件（`NativePlugin` trait）+ WASM 插件（基于 wasmtime 动态加载），插件可注册路由、CLI 命令、Hook 事件
+- **🧩 WASM 插件系统** — 基于 wasmtime 动态加载，通过 `phira:host/api` 访问全部服务端能力
 - **🖥️ TUI 管理控制台** — 基于 `ratatui` + `crossterm` 的终端界面，支持命令输入、日志实时显示
-- **📊 内置插件** — 房间信息 Web API、玩家追踪、游玩时间统计、结算排行、欢迎语
+- **📦 内置功能** — 房间信息 Web API、黑名单管理、轮次数据持久化、速率限制等均集成在核心中
 
 ## 技术栈
 
@@ -133,9 +133,9 @@ Phira-mp-plus/
 │       ├── cli_tui.rs           #   TUI 终端界面: ratatui + crossterm
 │       └── l10n.rs              #   本地化: Fluent Bundle / tl! 宏
 │
-├── phira-mp-plus-server-api/    # ★ 插件 API 公共 crate（打破循环依赖）
-│   └── src/lib.rs               #   PluginEvent / NativePlugin / PluginContext
-│                                #   ServerStateQuery / HttpHandle / CliHandle / PluginApiRegistry
+├── phira-mp-plus-server-api/    # ★ WASM 插件共享类型 crate
+│   └── src/lib.rs               #   PluginEvent / PluginInfo / HttpHandle
+│                                #   ServerStateQuery / PluginApiHandler
 │
 ├── phira-mp/                    # ★ 上游 phira-mp By HSN 子模块 (协议层 + 原始服务端)
 │   ├── phira-mp-common/         #   网络协议: 二进制编码 (BinaryData trait)、
@@ -148,45 +148,13 @@ Phira-mp-plus/
 │   ├── phira-mp-server/         #   原始单机服务端 (reference)
 │   └── phira-mp-client/         #   TCP 客户端库 (供游戏集成)
 │
-├── plugins/                     # ★ 内置原生插件
-│   ├── webapi-plugin/           #   房间信息 REST API
-│   │   └── src/lib.rs           #   GET /api/rooms/info, /api/rooms/info/{name}, /api/rooms/user/{id}
-│   ├── player-tracker/          #   玩家记录
-│   │   └── src/lib.rs           #   CLI: players, player-count  |  API: count, list
-│   ├── playtime-tracker/        #   游玩时间统计
-│   │   └── src/lib.rs           #   CLI: playtime, playtime-top  |  API: user_playtime, leaderboard
-│   ├── round-results/           #   结算排行输出
-│   │   └── src/lib.rs           #   CLI: round-last  |  API: /api/round/last/{room_id}
-│   ├── welcome-plugin/          #   可配置欢迎语
-│   │   └── src/lib.rs           #   占位符: [user_name] [player-count] [top_playtime] [active_rooms]
-│   └── stress-test/             #   服务端压测
-│       └── src/lib.rs           #   CLI: benchmark, bench-quick, bench-cleanup
-│
 ├── docs/                        # 文档
 │   ├── cli.md                   #   CLI 命令参考
-│   ├── plugin-dev.md            #   插件开发指南 + WIT API 参考
-│   └── plugins/                 #   各插件独立文档
-│       ├── player-tracker.md
-│       ├── playtime-tracker.md
-│       ├── room-info-web-api.md
-│       ├── round-results.md
-│       └── welcome-plugin.md
+│   └── plugin-dev.md            #   WASM 插件开发指南 + WIT API 参考
 │
 ├── server_config.yml            # YAML 配置文件 (同级副本, 运行时读取)
 └── LICENSE
 ```
-
-## 内置插件
-
-详细文档见 [docs/plugins/](docs/plugins/)。
-
-| 插件 | 功能 | CLI 命令 | Web API |
-|------|------|---------|---------|
-| **room-info-web-api** | 房间信息查询与 SSE 事件 | — | `GET /api/rooms/info` |
-| **player-tracker** | 记录游玩过的玩家 | `players`, `player-count` | `GET /api/players/count`, `/api/players/list` |
-| **playtime-tracker** | 游玩时间统计与排行 | `playtime <id>`, `playtime-top [n]` | `GET /api/user_rank/<id>` |
-| **round-results** | 每轮结算排行输出 | `round-last <room_id>` | `GET /api/round/last/<room_id>` |
-| **welcome-plugin** | 可配置欢迎语（支持占位符） | `welcome-config` | — |
 
 ## CLI 命令
 
@@ -195,46 +163,23 @@ Phira-mp-plus/
 | 分组 | 命令 | 说明 |
 |------|------|------|
 | 通用 | `help`, `exit`, `status` | 帮助/退出/状态 |
-| 插件管理 | `plugins`, `plugin list/enable/disable/info/reload` | 插件管理 |
-| 用户/房间 | `users`, `rooms`, `room-info`, `room-transfer`, `room-set`, `room-start`, `room-cancel`, `room-history`, `kick`, `close-room`, `broadcast` | 用户和房间管理 |
+| WASM 插件 | `plugin list/enable/disable/info/reload` | 插件管理 |
+| 用户 | `users`, `kick`, `broadcast` | 用户管理和消息 |
+| 房间 | `room list/info/start/cancel/kick/transfer/set/close/history` | 房间管理子命令 |
+| 黑名单 | `ban`, `unban`, `banlist` | 封禁管理 |
 | 扩展数据 | `ext-list`, `ext-get` | 扩展字段 |
-| 黑名单 | `ban`, `unban`, `banlist`, `room-ban`, `room-unban`, `room-banlist` | 封禁管理 |
-| 插件扩展 | `players`, `player-count`, `playtime`, `playtime-top`, `round-last`, `welcome-config` | 插件命令 |
 
-## 插件开发
+## WASM 插件开发
 
 详细文档见 [docs/plugin-dev.md](docs/plugin-dev.md)。
 
-```rust
-use phira_mp_plus_server_api::{
-    NativePlugin, PluginContext, PluginEvent, PluginInfo,
-};
-
-pub struct MyPlugin;
-
-impl NativePlugin for MyPlugin {
-    fn info(&self) -> PluginInfo { /* ... */ }
-    fn init(&mut self, ctx: &PluginContext) -> Result<(), String> {
-        if let Some(http) = &ctx.http {
-            http.register_route("/api/hello", Arc::new(|_, _| {
-                Ok(serde_json::json!({"hello": "world"}))
-            }));
-        }
-        Ok(())
-    }
-}
-```
+WASM 插件通过 `phira:host/api` 和 `phira:host/log` 等导入函数与宿主通信。
 
 ## 构建特性
 
 | 特性 | 说明 | 默认 |
 |------|------|------|
 | `plugin-system` | WASM 插件支持（wasmtime） | ✅ |
-| `webapi` | 房间信息 Web API 插件 | ✅ |
-| `player-tracker` | 玩家记录插件 | ✅ |
-| `playtime-tracker` | 游玩时间统计插件 | ✅ |
-| `round-results` | 结算排行插件 | ✅ |
-| `welcome-plugin` | 欢迎语插件 | ✅ |
 
 ## 配置参考
 
