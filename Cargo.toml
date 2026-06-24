@@ -6,16 +6,8 @@ edition = "2021"
 members = [
     "phira-mp-plus-server",
     "phira-mp-plus-server-api",
-    # phira-mp-plus-sdk: 已废弃，使用 phira-mp-plus-server-api 替代
-    # "phira-mp-plus-sdk",
     "phira-mp/phira-mp-common",
     "phira-mp/phira-mp-macros",
-    "plugins/webapi-plugin",
-    "plugins/player-tracker",
-    "plugins/playtime-tracker",
-    "plugins/round-results",
-    "plugins/stress-test",
-    "plugins/welcome-plugin",
 ]
 resolver = "2"
 

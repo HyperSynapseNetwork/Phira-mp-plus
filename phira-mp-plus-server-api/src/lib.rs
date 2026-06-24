@@ -90,54 +90,10 @@ impl HttpHandle {
     }
 }
 
-// ── 插件间 API 调用 ──
+// ── 插件间 API（WASM 插件互调用） ──
 
 /// 插件 API 处理器：接收方法名和 JSON 参数 → 返回 JSON
 pub type PluginApiHandler = Arc<dyn Fn(&str, &[Value]) -> Result<Value, String> + Send + Sync>;
-
-/// 插件 API 注册表（插件注册 API 供其他插件调用）
-#[derive(Clone)]
-pub struct PluginApiRegistry {
-    inner: Arc<dyn Fn(&str, &str, &[Value]) -> Result<Value, String> + Send + Sync>,
-}
-
-impl PluginApiRegistry {
-    pub fn new(
-        inner: impl Fn(&str, &str, &[Value]) -> Result<Value, String> + Send + Sync + 'static,
-    ) -> Self {
-        Self { inner: Arc::new(inner) }
-    }
-
-    /// 调用其他插件注册的 API: (plugin_name, method, args) → result
-    pub fn call(&self, plugin: &str, method: &str, args: &[Value]) -> Result<Value, String> {
-        (self.inner)(plugin, method, args)
-    }
-}
-
-// ── CLI 命令注册 ──
-
-/// CLI 命令描述
-pub struct CliCommandInfo {
-    pub name: String,
-    pub description: String,
-    pub usage: String,
-}
-
-/// CLI 命令注册句柄
-#[derive(Clone)]
-pub struct CliHandle {
-    inner: Arc<dyn Fn(&str, &str, &str, Arc<dyn Fn(&[&str]) -> Vec<String> + Send + Sync>) -> Result<(), String> + Send + Sync>,
-}
-
-impl CliHandle {
-    pub fn new(inner: impl Fn(&str, &str, &str, Arc<dyn Fn(&[&str]) -> Vec<String> + Send + Sync>) -> Result<(), String> + Send + Sync + 'static) -> Self {
-        Self { inner: Arc::new(inner) }
-    }
-
-    pub fn register(&self, name: &str, description: &str, usage: &str, handler: Arc<dyn Fn(&[&str]) -> Vec<String> + Send + Sync>) -> Result<(), String> {
-        (self.inner)(name, description, usage, handler)
-    }
-}
 
 // ── 服务端状态查询 ──
 
@@ -171,54 +127,4 @@ impl ServerStateQuery {
     }
 }
 
-// ── 插件上下文 ──
 
-/// 插件上下文（传递给插件的 init / on_event）
-pub struct PluginContext {
-    pub plugin_name: String,
-    pub http: Option<HttpHandle>,
-    pub state: Option<ServerStateQuery>,
-    pub api: Option<PluginApiRegistry>,
-    pub cli: Option<CliHandle>,
-    /// 发送聊天消息给指定用户 (user_id, message)
-    pub send_chat: Option<Arc<dyn Fn(i32, String) + Send + Sync>>,
-    /// 注册插件 API（供其他插件调用）
-    pub register_api: Option<Arc<dyn Fn(&str, PluginApiHandler) + Send + Sync>>,
-}
-
-impl PluginContext {
-    pub fn new(name: &str) -> Self {
-        Self {
-            plugin_name: name.to_string(),
-            http: None,
-            state: None,
-            api: None,
-            cli: None,
-            send_chat: None,
-            register_api: None,
-        }
-    }
-
-    pub fn with_http(mut self, http: HttpHandle) -> Self { self.http = Some(http); self }
-    pub fn with_state(mut self, state: ServerStateQuery) -> Self { self.state = Some(state); self }
-    pub fn with_api(mut self, api: PluginApiRegistry) -> Self { self.api = Some(api); self }
-    pub fn with_cli(mut self, cli: CliHandle) -> Self { self.cli = Some(cli); self }
-    pub fn with_send_chat(mut self, f: Arc<dyn Fn(i32, String) + Send + Sync>) -> Self { self.send_chat = Some(f); self }
-    pub fn with_register_api(mut self, f: Arc<dyn Fn(&str, PluginApiHandler) + Send + Sync>) -> Self { self.register_api = Some(f); self }
-}
-
-// ── 插件特征 ──
-
-/// 原生插件特征 - 所有插件实现此特征
-pub trait NativePlugin: Send + Sync {
-    fn info(&self) -> PluginInfo;
-    fn init(&mut self, ctx: &PluginContext) -> Result<(), String> {
-        let _ = ctx;
-        Ok(())
-    }
-    fn cleanup(&mut self) {}
-    fn on_event(&self, ctx: &PluginContext, event: &PluginEvent) -> Vec<String> {
-        let _ = (ctx, event);
-        vec![]
-    }
-}

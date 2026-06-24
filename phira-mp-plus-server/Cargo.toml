@@ -37,19 +37,6 @@ futures = "0.3"
 phira-mp-common = { path = "../phira-mp/phira-mp-common" }
 phira-mp-macros = { path = "../phira-mp/phira-mp-macros" }
 phira-mp-plus-server-api = { path = "../phira-mp-plus-server-api" }
-phira-mp-plus-webapi = { path = "../plugins/webapi-plugin", optional = true }
-phira-mp-plus-player-tracker = { path = "../plugins/player-tracker", optional = true }
-phira-mp-plus-playtime-tracker = { path = "../plugins/playtime-tracker", optional = true }
-phira-mp-plus-round-results = { path = "../plugins/round-results", optional = true }
-phira-mp-plus-stress-test = { path = "../plugins/stress-test", optional = true }
-phira-mp-plus-welcome-plugin = { path = "../plugins/welcome-plugin", optional = true }
-
 [features]
-default = ["plugin-system", "webapi", "player-tracker", "playtime-tracker", "round-results", "stress-test", "welcome-plugin"]
+default = ["plugin-system"]
 plugin-system = ["dep:wasmtime"]
-webapi = ["dep:phira-mp-plus-webapi"]
-player-tracker = ["dep:phira-mp-plus-player-tracker"]
-playtime-tracker = ["dep:phira-mp-plus-playtime-tracker"]
-round-results = ["dep:phira-mp-plus-round-results"]
-stress-test = ["dep:phira-mp-plus-stress-test"]
-welcome-plugin = ["dep:phira-mp-plus-welcome-plugin"]

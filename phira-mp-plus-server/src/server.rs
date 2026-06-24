@@ -44,14 +44,14 @@ use tracing::{info, trace, warn};
 
 use uuid::Uuid;
 use std::sync::Weak;
+use std::sync::atomic::Ordering;
 
 pub type SafeMap<K, V> = RwLock<HashMap<K, V>>;
 
 /// 测试用 sim 用户 ID 起点（避免与真实用户冲突）
 const TEST_USER_ID_BASE: i32 = 1_000_000_000;
 
-/// 自旋获取 tokio RwLock 读锁（仅在 sync 上下文中使用，如 webapi）
-#[cfg(feature = "webapi")]
+/// 自旋获取 tokio RwLock 读锁（同步上下文使用）
 macro_rules! read_lock {
     ($lock:expr) => {{
         loop {
@@ -187,7 +187,7 @@ pub struct PlusServerState {
     /// 连接速率限制器（按 IP）
     pub connection_limiter: super::rate_limiter::ConnectionRateLimiter,
     /// 轮次数据持久化存储（Touches/Judges 按轮次写入磁盘）
-    pub round_store: super::round_store::RoundStore,
+    pub round_store: Arc<super::round_store::RoundStore>,
     /// 压测请求发送端（背景 tokio 任务消费）
     pub bench_tx: tokio::sync::mpsc::UnboundedSender<BenchRequest>,
     /// 房间 monitor key（与 phira-web-monitor 共享密钥）
@@ -254,10 +254,10 @@ impl PlusServer {
                 rate_limit,
                 rate_window,
             ),
-            round_store: super::round_store::RoundStore::new(
+            round_store: Arc::new(super::round_store::RoundStore::new(
                 "data",
                 retention_days,
-            ),
+            )),
             bench_tx: bench_tx.clone(),
             room_monitor_key: generate_secret_key("room_monitor", 64).unwrap_or_default(),
             room_monitor: RwLock::new(None),
@@ -334,83 +334,59 @@ impl PlusServer {
         let plugin_count = state.plugin_manager.load_plugins().await.unwrap_or(0);
         info!("loaded {} plugin(s)", plugin_count);
 
-        // 注册事件日志插件（调试用，仅 debug 构建启用）
-        #[cfg(debug_assertions)]
-        let _ = state.plugin_manager.register_native(
-            plugin::create_event_logger(),
-            "event-logger",
-        ).await;
+        // ── 注册内置功能（原内置插件系统已合并入核心） ──
+        // Web API 路由（原 webapi-plugin）
+        let state_for_webapi = Arc::clone(&state);
+        let webapi_state_query = api::ServerStateQuery::new(move |method: &str, args: &[Value]| {
+            let s = Arc::clone(&state_for_webapi);
+            // 在 blocking 线程中执行同步状态查询
+            server_state_query(&s, method, args)
+        });
+        let http_for_webapi = Arc::clone(&http_server);
+        let state_for_webapi2 = Arc::clone(&state);
+        // rooms.list
+        let sq = webapi_state_query.clone();
+        http_for_webapi.register_route_sync("/api/rooms", Arc::new(move |_, _| {
+            sq.call("rooms.list", &[])
+        }));
+        // rooms.by_name
+        let sq = webapi_state_query.clone();
+        let s2 = Arc::clone(&state_for_webapi2);
+        http_for_webapi.register_route_sync("/api/rooms/<name>", Arc::new(move |_, params| {
+            let name = params.first().cloned().unwrap_or_default();
+            let sq = sq.clone();
+            let s = Arc::clone(&s2);
+            // 直接使用 server_state_query 的同步查询
+            server_state_query_inner(&s, "rooms.by_name", &[serde_json::json!(name)])
+        }));
+        // user_name
+        let sq = webapi_state_query.clone();
+        http_for_webapi.register_route_sync("/api/user_name/<id>", Arc::new(move |_, params| {
+            let uid: i32 = params.first().and_then(|p| p.parse().ok()).unwrap_or(0);
+            sq.call("user_name", &[serde_json::json!(uid)])
+        }));
 
-        // 注册 Web API 插件（--features webapi）→ 必须早于 HTTP 服务器启动
-        #[cfg(feature = "webapi")]
-        {
-            let state_query = api::ServerStateQuery::new({
-                let s = Arc::clone(&state);
-                move |method: &str, args: &[Value]| -> Result<Value, String> {
-                    server_state_query(&s, method, args)
+        // 压测 CLI 命令注册（原 stress-test 插件）
+        let bench_state = Arc::clone(&state);
+        let _ = state.plugin_manager.register_cli_command(crate::plugin::CliCommand {
+            name: "benchmark".to_string(),
+            description: "运行服务端压力测试".to_string(),
+            usage: "benchmark [dur_s=30] [rooms=100]".to_string(),
+            handler: Arc::new(move |args| {
+                let duration: u64 = args.first().and_then(|a| a.parse().ok()).unwrap_or(30).max(5).min(300);
+                let rooms: usize = args.get(1).and_then(|a| a.parse().ok()).unwrap_or(100).max(10).min(5000);
+                // 通过 state_query 触发压测
+                let sq = bench_state.clone();
+                match crate::server::server_state_query_inner(
+                    &sq, "test.run_benchmark", &[serde_json::json!(duration), serde_json::json!(rooms)]
+                ) {
+                    Ok(v) => v.get("output").and_then(|o| o.as_str())
+                        .map(|s| s.lines().map(|l| l.to_string()).collect())
+                        .unwrap_or_else(|| vec!["  ✗ failed to parse benchmark output".to_string()]),
+                    Err(e) => vec![format!("  ✗ {}", e)],
                 }
-            });
-            let _ = state.plugin_manager.register_native_with_state(
-                phira_mp_plus_webapi::WebApiPlugin::create(),
-                "webapi",
-                Some(state_query),
-            ).await;
-        }
-
-        // 注册玩家记录插件（--features player-tracker）
-        #[cfg(feature = "player-tracker")]
-        {
-            if let Err(e) = state.plugin_manager.register_native(
-                phira_mp_plus_player_tracker::PlayerTracker::create(),
-                "player-tracker",
-            ).await {
-                warn!("player-tracker plugin init failed: {e}");
-            }
-        }
-
-        // 注册游玩时间统计插件（--features playtime-tracker）
-        #[cfg(feature = "playtime-tracker")]
-        {
-            if let Err(e) = state.plugin_manager.register_native(
-                phira_mp_plus_playtime_tracker::PlaytimeTracker::create(),
-                "playtime-tracker",
-            ).await {
-                warn!("playtime-tracker plugin init failed: {e}");
-            }
-        }
-
-        // 注册结算排行插件（--features round-results）
-        #[cfg(feature = "round-results")]
-        {
-            if let Err(e) = state.plugin_manager.register_native(
-                phira_mp_plus_round_results::RoundResultsPlugin::create(),
-                "round-results",
-            ).await {
-                warn!("round-results plugin init failed: {e}");
-            }
-        }
-
-        // 注册压测插件（--features stress-test）
-        #[cfg(feature = "stress-test")]
-        {
-            if let Err(e) = state.plugin_manager.register_native(
-                phira_mp_plus_stress_test::StressTestPlugin::create(),
-                "stress-test",
-            ).await {
-                warn!("stress-test plugin init failed: {e}");
-            }
-        }
-
-        // 注册欢迎语插件（--features welcome-plugin）
-        #[cfg(feature = "welcome-plugin")]
-        {
-            if let Err(e) = state.plugin_manager.register_native(
-                phira_mp_plus_welcome_plugin::WelcomePlugin::create(),
-                "welcome-plugin",
-            ).await {
-                warn!("welcome-plugin init failed: {e}");
-            }
-        }
+            }),
+        }).await;
 
         // 启动中央 HTTP 服务器（所有路由已注册完毕）
         let http_state = Arc::clone(&state);
@@ -694,10 +670,6 @@ impl PlusServerState {
 
 // ── 状态查询 / Room/User 管理（供 WASM WIT API / dispatch） ──
 
-use crate::plugin::PluginEvent;
-use std::sync::atomic::Ordering;
-use tracing::info;
-
 /// 从房间踢出用户
 async fn run_room_kick(state: &PlusServerState, room_id: &str, target_id: i32) -> Result<Value, String> {
     use phira_mp_common::RoomId;
@@ -711,7 +683,7 @@ async fn run_room_kick(state: &PlusServerState, room_id: &str, target_id: i32) -
     room.send(phira_mp_common::Message::Chat {
         user: 0, content: format!("用户 {} 已被管理员踢出房间", user.name),
     }).await;
-    room.on_user_leave(&user).await;
+    let _ = room.on_user_leave(&user).await;
     state.plugin_manager.trigger(&PluginEvent::RoomModify {
         user_id: target_id, room_id: room_id.to_string(),
         data: r#"{"action":"kicked"}"#.to_string(),
@@ -1024,14 +996,7 @@ fn server_state_query_inner(state: &Arc<PlusServerState>, method: &str, args: &[
     }
 }
 
-/// Web API 状态查询（webapi feature 禁用时的降级处理）
-#[cfg(not(feature = "webapi"))]
-fn server_state_query(_state: &Arc<PlusServerState>, method: &str, _args: &[Value]) -> Result<Value, String> {
-    Err(format!("unknown query method: {method}"))
-}
-
-/// Web API 状态查询（仅 webapi feature 启用时编译）
-#[cfg(feature = "webapi")]
+/// Web API 状态查询（内置，无 feature gate）
 fn server_state_query(state: &Arc<PlusServerState>, method: &str, args: &[Value]) -> Result<Value, String> {
 
     #[derive(Serialize)]

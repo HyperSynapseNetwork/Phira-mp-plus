@@ -28,11 +28,6 @@ pub use api::JudgeEventItem;
 /// 插件 HTTP 句柄（来自 server-api）
 pub use api::HttpHandle;
 
-/// 插件上下文（来自 server-api）
-pub use api::PluginContext;
-
-/// 原生插件特征（来自 server-api）
-pub use api::NativePlugin;
 
 /// 插件状态
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -178,80 +173,6 @@ pub mod wasm {
     }
 }
 
-/// 原生 Rust 插件（用于测试和开发）
-pub mod native {
-    use super::*;
-    use crate::extensions::ExtensionManager;
-    use phira_mp_plus_server_api as api;
-
-    /// 原生插件特征（来自 server-api）
-    pub use api::NativePlugin;
-
-    /// 插件上下文（来自 server-api，含 HTTP 路由注册句柄）
-    pub use api::PluginContext;
-
-    /// 生成的 API 上下文（含服务端内部引用）
-    pub struct ServerPluginContext {
-        pub ctx: api::PluginContext,
-        pub extensions: Arc<ExtensionManager>,
-    }
-
-    /// 原生插件包装器
-    pub struct NativePluginWrapper {
-        meta: PluginMeta,
-        plugin: Box<dyn NativePlugin>,
-        svr_ctx: Arc<ServerPluginContext>,
-    }
-
-    impl NativePluginWrapper {
-        pub fn new(
-            plugin: Box<dyn NativePlugin>,
-            path: &str,
-            svr_ctx: Arc<ServerPluginContext>,
-        ) -> Self {
-            let info = plugin.info();
-            Self {
-                meta: PluginMeta {
-                    info,
-                    path: path.to_string(),
-                    state: PluginState::Loaded,
-                    enabled: true,
-                },
-                plugin,
-                svr_ctx,
-            }
-        }
-    }
-
-    impl PluginHost for NativePluginWrapper {
-        fn meta(&self) -> &PluginMeta {
-            &self.meta
-        }
-
-        fn meta_mut(&mut self) -> &mut PluginMeta {
-            &mut self.meta
-        }
-
-        fn init(&mut self) -> Result<(), String> {
-            self.plugin.init(&self.svr_ctx.ctx)?;
-            self.meta.state = PluginState::Enabled;
-            Ok(())
-        }
-
-        fn cleanup(&mut self) {
-            self.plugin.cleanup();
-            self.meta.state = PluginState::Disabled;
-        }
-
-        fn trigger_event(&self, _event: &PluginEvent) -> Vec<String> {
-            if !self.meta.enabled {
-                return Vec::new();
-            }
-            self.plugin.on_event(&self.svr_ctx.ctx, _event)
-        }
-    }
-}
-
 /// 插件处理器 - 负责加载、管理和调度插件
 pub struct PluginManager {
     plugins: Arc<RwLock<Vec<Box<dyn PluginHost>>>>,
@@ -322,61 +243,7 @@ impl PluginManager {
         self.api_handlers.lock().unwrap_or_else(|e| e.into_inner()).insert(name.to_string(), handler);
     }
 
-    async fn make_svr_ctx(&self, name: &str, state_query: Option<api::ServerStateQuery>) -> Arc<native::ServerPluginContext> {
-        let mut ctx = api::PluginContext::new(name);
-        if let Some(ref h) = *self.http_handle.read().await {
-            ctx = ctx.with_http(h.clone());
-        }
-        if let Some(ref q) = state_query {
-            ctx = ctx.with_state(q.clone());
-        } else if let Some(ref q) = *self.default_state.read().await {
-            ctx = ctx.with_state(q.clone());
-        }
-        // 提供插件间 API 调用
-        let handlers = self.api_handlers.clone();
-        let api_reg = api::PluginApiRegistry::new(move |plugin, method, args| {
-            let guard = handlers.lock().unwrap_or_else(|e| e.into_inner());
-            match guard.get(plugin) {
-                Some(h) => h(method, args),
-                None => Err(format!("plugin '{}' has no API", plugin)),
-            }
-        });
-        ctx = ctx.with_api(api_reg);
-
-        // 提供 CLI 命令注册
-        let cli_cmds = self.cli_commands.clone();
-        let cli_handle = api::CliHandle::new(move |name, desc, usage, handler| {
-            let cmd = CliCommand {
-                name: name.to_string(),
-                description: desc.to_string(),
-                usage: usage.to_string(),
-                handler,
-            };
-            cli_cmds.lock().unwrap().insert(name.to_string(), cmd);
-            info!("plugin registered CLI command: {name}");
-            Ok(())
-        });
-        ctx = ctx.with_cli(cli_handle);
-
-        // 提供发送聊天消息能力
-        if let Some(ref sc) = *self.send_chat.read().await {
-            ctx = ctx.with_send_chat(Arc::clone(sc));
-        }
-
-        // 提供插件 API 注册能力
-        let api_handlers = self.api_handlers.clone();
-        ctx = ctx.with_register_api(Arc::new(move |name, handler| {
-            api_handlers.lock().unwrap_or_else(|e| e.into_inner()).insert(name.to_string(), handler);
-            info!("plugin registered API: {name}");
-        }));
-
-        Arc::new(native::ServerPluginContext {
-            ctx,
-            extensions: self.extensions.clone(),
-        })
-    }
-
-    /// 从指定目录加载所有插件
+    /// 从指定目录加载所有 WASM 插件
     pub async fn load_plugins(&self) -> Result<usize, String> {
         let dir = Path::new(&self.plugins_dir);
         if !dir.exists() {
@@ -416,21 +283,16 @@ impl PluginManager {
         Ok(loaded)
     }
 
-    /// 加载单个插件
+    /// 加载单个 WASM 插件
     async fn load_plugin(&self, path: &Path) -> Result<PluginMeta, String> {
         let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
 
         match ext {
             "wasm" => {
-                // WASM 插件 - 使用 wasmtime
                 #[cfg(feature = "plugin-system")]
                 {
                     let info = PluginInfo {
-                        name: path
-                            .file_stem()
-                            .and_then(|s| s.to_str())
-                            .unwrap_or("unknown")
-                            .to_string(),
+                        name: path.file_stem().and_then(|s| s.to_str()).unwrap_or("unknown").to_string(),
                         version: "0.1.0".to_string(),
                         author: "unknown".to_string(),
                         description: format!("WASM plugin from {}", path.display()),
@@ -440,7 +302,6 @@ impl PluginManager {
                         info.clone(),
                         Arc::clone(&self.wasm_services),
                     );
-                    // 在 blocking 线程中执行 WASM 文件读取和 JIT 编译
                     let mut p = Box::new(plugin);
                     let result = tokio::task::spawn_blocking(move || {
                         p.init()?;
@@ -452,46 +313,11 @@ impl PluginManager {
                 }
                 #[cfg(not(feature = "plugin-system"))]
                 {
-                    Err("WASM plugin support not enabled (compile with 'plugin-system' feature)".to_string())
+                    Err("WASM plugin support not enabled".to_string())
                 }
-            }
-            "so" | "dylib" => {
-                // 原生动态库插件
-                // 在实际实现中，这里会使用 libloading 加载动态库
-                Err(format!(
-                    "native dynamic library plugins not yet supported: {}",
-                    path.display()
-                ))
             }
             _ => Err(format!("unsupported plugin type: {}", ext)),
         }
-    }
-
-    /// 注册一个原生插件（用于开发和测试）
-    pub async fn register_native(
-        &self,
-        plugin: Box<dyn native::NativePlugin>,
-        name: &str,
-    ) -> Result<(), String> {
-        self.register_native_with_state(plugin, name, None).await
-    }
-
-    /// 注册一个原生插件，附带服务端状态查询
-    pub async fn register_native_with_state(
-        &self,
-        plugin: Box<dyn native::NativePlugin>,
-        name: &str,
-        state_query: Option<api::ServerStateQuery>,
-    ) -> Result<(), String> {
-        let svr_ctx = self.make_svr_ctx(name, state_query).await;
-        let mut wrapper = native::NativePluginWrapper::new(plugin, name, svr_ctx);
-        // 初始化插件
-        wrapper.init()?;
-        let info = wrapper.meta().info.clone();
-        // 注册插件
-        self.plugins.write().await.push(Box::new(wrapper));
-        info!("registered native plugin: {} v{}", info.name, info.version);
-        Ok(())
     }
 
     /// 触发事件 - 向所有已启用插件分发事件
@@ -633,29 +459,3 @@ pub struct PluginEventResult {
     pub responses: Vec<String>,
 }
 
-/// 用于调试/测试的事件日志插件
-pub fn create_event_logger() -> Box<dyn native::NativePlugin> {
-    struct EventLogger;
-    impl native::NativePlugin for EventLogger {
-        fn info(&self) -> PluginInfo {
-            PluginInfo {
-                name: "event-logger".to_string(),
-                version: "0.1.0".to_string(),
-                author: "Phira-mp+".to_string(),
-                description: "记录所有插件事件到日志".to_string(),
-            }
-        }
-        fn init(&mut self, _ctx: &native::PluginContext) -> Result<(), String> {
-            info!("EventLogger plugin initialized");
-            Ok(())
-        }
-        fn cleanup(&mut self) {
-            info!("EventLogger plugin cleaned up");
-        }
-        fn on_event(&self, _ctx: &native::PluginContext, _event: &PluginEvent) -> Vec<String> {
-            info!("PluginEvent received");
-            Vec::new()
-        }
-    }
-    Box::new(EventLogger)
-}
