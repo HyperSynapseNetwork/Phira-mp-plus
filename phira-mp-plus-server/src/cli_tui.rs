@@ -9,13 +9,14 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Position},
     style::{Color, Modifier, Style},
     text::{Line, Span, Text},
-    widgets::{Clear, Paragraph, Wrap},
+    widgets::{Clear, Paragraph},
     Frame, Terminal,
 };
 use std::io;
 use std::time::Duration;
 use tokio::sync::mpsc;
 use tokio::sync::mpsc::error::TryRecvError;
+use unicode_width::UnicodeWidthStr;
 
 /// 运行 TUI 主循环（阻塞当前线程）
 pub fn run_tui(
@@ -80,6 +81,8 @@ struct TuiApp {
     scroll_last_time: std::time::Instant,
     /// S 键按下标志：S+↑↓ 滚动模式
     scroll_key_pressed: bool,
+    /// 压测执行中（禁用输入，显示进度）
+    benchmark_running: bool,
 }
 
 impl TuiApp {
@@ -97,6 +100,7 @@ impl TuiApp {
             scroll_repeat: 0,
             scroll_last_time: std::time::Instant::now(),
             scroll_key_pressed: false,
+            benchmark_running: false,
         }
     }
 
@@ -118,11 +122,16 @@ impl TuiApp {
                     Ok(msg) => self.add_output(strip_ansi(&msg)),
                     Err(TryRecvError::Empty) => break,
                     Err(TryRecvError::Disconnected) => {
-                        // CLI 处理器已退出，标记结束
                         self.running = false;
                         break;
                     }
                 }
+            }
+            // 检测压测结束
+            if self.benchmark_running {
+                let last_lines: Vec<String> = self.output_lines.iter().rev().take(5).cloned().collect();
+                let done = last_lines.iter().any(|l| l.contains("压测完成") || l.contains("BUILD EXIT") || l.contains("cleanup"));
+                if done { self.benchmark_running = false; }
             }
             // 清空日志通道（tracing 发来的日志）
             while let Ok(msg) = log_rx.try_recv() {
@@ -172,7 +181,15 @@ impl TuiApp {
 
     /// 处理键盘事件
     fn handle_key(&mut self, key: crossterm::event::KeyEvent) {
-        if key.kind != KeyEventKind::Press {
+        if key.kind != KeyEventKind::Press { return; }
+        // 压测中只允许 Ctrl+C
+        if self.benchmark_running {
+            if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
+                let _ = self.cmd_tx.send("exit".to_string());
+                self.add_output("> exit".to_string());
+                self.benchmark_running = false;
+                self.running = false;
+            }
             return;
         }
 
@@ -233,11 +250,13 @@ impl TuiApp {
                 if !cmd.is_empty() {
                     self.history.push(cmd.clone());
                     self.history_idx = None;
-                    // 回显命令到输出，并滚动到最新
                     self.auto_scroll = true;
                     self.add_output(format!("> {}", cmd));
-                    // 发送到 CLI 处理器
                     let _ = self.cmd_tx.send(cmd);
+                    // 压测命令时禁用输入
+                    if cmd.starts_with("benchmark") || cmd == "bench" {
+                        self.benchmark_running = true;
+                    }
                 }
                 self.input.clear();
                 self.cursor_pos = 0;
@@ -341,17 +360,18 @@ impl TuiApp {
             .split(area);
 
         let total_lines = self.output_lines.len();
-        let output_height = chunks[0].height.saturating_sub(1) as usize;
+        let output_h = chunks[0].height.saturating_sub(1) as usize;
+        let output_w = chunks[0].width.saturating_sub(2) as usize; // 留出滚动指示器空间
 
-        // 计算可见范围
-        let scroll = if self.auto_scroll || total_lines <= output_height {
-            total_lines.saturating_sub(output_height)
+        let scroll = if self.auto_scroll || total_lines <= output_h {
+            total_lines.saturating_sub(output_h)
         } else {
             self.scroll_offset.min(total_lines.saturating_sub(1))
         };
 
-        // ── 输出区域 — 纯文本，无边框 ──
-        let visible_lines: Vec<Line> = self.output_lines.iter().skip(scroll).take(output_height).map(|s| {
+        // ── 输出区域 — 纯文本，CJK 宽度感知 ──
+        let hide_progress = self.benchmark_running;
+        let visible_lines: Vec<Line> = self.output_lines.iter().skip(scroll).take(output_h).map(|s| {
             if s.is_empty() { return Line::from(""); }
             let style = if s.starts_with("> ") {
                 Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)
@@ -368,37 +388,63 @@ impl TuiApp {
             } else {
                 Style::default()
             };
-            Line::from(if style != Style::default() { Span::styled(s, style) } else { Span::raw(s) })
+            // CJK 宽度截断，防止溢出换行打乱布局
+            let truncated = truncate_line(s, output_w);
+            Line::from(if style != Style::default() { Span::styled(truncated, style) } else { Span::raw(truncated) })
         }).collect();
 
+        // 全区域清除 + 重绘
         frame.render_widget(Clear, chunks[0]);
-        frame.render_widget(Paragraph::new(Text::from(visible_lines)).wrap(Wrap { trim: false }), chunks[0]);
+        frame.render_widget(Paragraph::new(Text::from(visible_lines)), chunks[0]);
 
-        // ── 滚动指示器（右侧） ──
-        if !self.auto_scroll && total_lines > output_height {
-            let pct = scroll as f64 / (total_lines.saturating_sub(output_height)).max(1) as f64;
-            let bar_y = chunks[0].y + (pct * (output_height as f64 - 1.0)).round() as u16;
+        // 压测进度条
+        if hide_progress {
+            let bar_w = output_w.min(40);
+            let filled = (self.scroll_repeat % (bar_w + 1)) as u16;
+            let bar = format!("  ⟳ 压测中 [{}{}] {}", "█".repeat(filled as usize), "░".repeat(bar_w.saturating_sub(filled) as usize), "等待完成...");
             frame.render_widget(
-                Paragraph::new(Span::styled("┃", Style::default().fg(Color::Cyan))),
-                ratatui::layout::Rect::new(chunks[0].x + chunks[0].width.saturating_sub(1), bar_y, 1, 1),
+                Paragraph::new(Line::from(Span::styled(bar, Style::default().fg(Color::Cyan)))),
+                ratatui::layout::Rect::new(chunks[0].x + 1, chunks[0].y + chunks[0].height.saturating_sub(2), bar_w as u16 + 6, 1),
             );
         }
 
-        // ── 输入行 ──
-        let input_prompt = if self.input.is_empty() {
+        // ── 滚动指示器 ──
+        if !self.auto_scroll && total_lines > output_h && output_h > 1 {
+            let pct = scroll as f64 / (total_lines.saturating_sub(output_h)).max(1) as f64;
+            let max_y = chunks[0].y + chunks[0].height.saturating_sub(1);
+            let bar_y = (chunks[0].y as f64 + pct * (output_h as f64 - 1.0)).round() as u16;
+            if bar_y <= max_y {
+                frame.render_widget(
+                    Paragraph::new(Span::styled("┃", Style::default().fg(Color::Cyan))),
+                    ratatui::layout::Rect::new(chunks[0].x + chunks[0].width.saturating_sub(1), bar_y, 1, 1),
+                );
+            }
+        }
+
+        // ── 输入行（压测中禁用） ──
+        let input_prompt = if hide_progress {
+            Span::styled("⏳ ", Style::default().fg(Color::DarkGray))
+        } else if self.input.is_empty() {
             Span::styled("→ ", Style::default().fg(Color::DarkGray))
         } else {
             Span::styled("→ ", Style::default().fg(Color::Cyan))
         };
+        let input_content = if hide_progress {
+            Span::styled("压测执行中，请等待...", Style::default().fg(Color::DarkGray))
+        } else {
+            Span::raw(&self.input)
+        };
         frame.render_widget(
-            Paragraph::new(Line::from(vec![input_prompt, Span::raw(&self.input)])),
+            Paragraph::new(Line::from(vec![input_prompt, input_content])),
             chunks[1],
         );
-        // 光标
-        frame.set_cursor_position(Position::new(
-            chunks[1].x + 2 + self.cursor_pos.min(self.input.chars().count()) as u16,
-            chunks[1].y,
-        ));
+        // 光标（压测中隐藏）
+        if !hide_progress {
+            frame.set_cursor_position(Position::new(
+                chunks[1].x + 2 + self.cursor_pos.min(self.input.chars().count()) as u16,
+                chunks[1].y,
+            ));
+        }
 
         // ── 状态栏 ──
         let scroll_info = match total_lines {
@@ -406,18 +452,32 @@ impl TuiApp {
             _ if self.auto_scroll => format!("{} 行", total_lines),
             _ => format!("{:.0}%  ↑", scroll as f64 / (total_lines - 1).max(1) as f64 * 100.0),
         };
-        let status_text = format!("  ↑↓历史  S+↑↓滚动(长按加速)  {scroll_info}  Ctrl+C退出");
-        let status_width = status_text.len() as u16;
-        let padding = chunks[2].width.saturating_sub(status_width);
-        let left_pad = " ".repeat((padding / 2).max(1) as usize);
+        let suffix = if hide_progress { "  ⟳ 压测中...  Ctrl+C强制退出" } else { "  ↑↓历史  S+↑↓滚动  Ctrl+C退出" };
+        let status_text = format!("  {scroll_info}{suffix}");
         frame.render_widget(
-            Paragraph::new(Line::from(Span::styled(
-                format!("{left_pad}{status_text}"),
-                Style::default().fg(Color::DarkGray),
-            ))),
+            Paragraph::new(Line::from(Span::styled(status_text, Style::default().fg(Color::DarkGray)))),
             chunks[2],
         );
     }
+}
+
+/// 按 CJK 显示宽度截断字符串，防止溢出换行打乱布局
+fn truncate_line(s: &str, max_width: usize) -> String {
+    if max_width < 3 { return s.chars().take(max_width).collect(); }
+    let w = UnicodeWidthStr::width(s);
+    if w <= max_width { return s.to_string(); }
+    let mut out = String::with_capacity(max_width);
+    let mut cur = 0usize;
+    for c in s.chars() {
+        let cw = UnicodeWidthStr::width(c.to_string().as_str());
+        if cur + cw > max_width.saturating_sub(2) {
+            out.push_str("…");
+            break;
+        }
+        out.push(c);
+        cur += cw;
+    }
+    out
 }
 
 /// 去除 ANSI 转义序列

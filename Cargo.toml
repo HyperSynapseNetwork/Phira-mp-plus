@@ -25,6 +25,7 @@ tokio = { version = "1.49.0", features = [
     "sync",
 ] }
 tracing = "0.1.44"
+unicode-width = "0.2.0"
 uuid = { version = "1.21.0", features = ["v4", "serde"] }
 
 [profile.release]
