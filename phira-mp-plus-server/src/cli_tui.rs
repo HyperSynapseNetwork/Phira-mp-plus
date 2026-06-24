@@ -9,7 +9,7 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Position},
     style::{Color, Modifier, Style},
     text::{Line, Span, Text},
-    widgets::{Block, Borders, Clear, Paragraph, Wrap},
+    widgets::{Clear, Paragraph, Wrap},
     Frame, Terminal,
 };
 use std::io;
@@ -234,42 +234,26 @@ impl TuiApp {
                 self.input.clear();
                 self.cursor_pos = 0;
             }
-            // ↑↓：滚动输出（用户最常用的操作）
+            // ↑↓：命令历史
             KeyCode::Up => {
-                if self.scroll_offset > 0 {
-                    self.scroll_offset -= 1;
-                    self.auto_scroll = false;
-                }
-            }
-            KeyCode::Down => {
-                let max_scroll = self.output_lines.len().saturating_sub(1);
-                if self.scroll_offset < max_scroll {
-                    self.scroll_offset += 1;
-                } else {
-                    self.auto_scroll = true;
-                }
-            }
-            // Ctrl+P / Ctrl+N：命令历史导航
-            KeyCode::Char('p') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 if self.history.is_empty() { return; }
                 let idx = self.history_idx.get_or_insert(self.history.len());
-                if *idx > 0 {
-                    *idx -= 1;
-                    self.input = self.history[*idx].clone();
+                if *idx > 0 { *idx -= 1; self.input = self.history[*idx].clone(); self.cursor_pos = self.input.chars().count(); }
+            }
+            KeyCode::Down => {
+                if let Some(idx) = &mut self.history_idx {
+                    if *idx + 1 < self.history.len() { *idx += 1; self.input = self.history[*idx].clone(); }
+                    else { self.history_idx = None; self.input.clear(); }
                     self.cursor_pos = self.input.chars().count();
                 }
             }
-            KeyCode::Char('n') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                if let Some(idx) = &mut self.history_idx {
-                    if *idx + 1 < self.history.len() {
-                        *idx += 1;
-                        self.input = self.history[*idx].clone();
-                    } else {
-                        self.history_idx = None;
-                        self.input.clear();
-                    }
-                    self.cursor_pos = self.input.chars().count();
-                }
+            // Shift+↑↓：逐行滚动输出
+            KeyCode::Up if key.modifiers.contains(KeyModifiers::SHIFT) => {
+                if self.scroll_offset > 0 { self.scroll_offset -= 1; self.auto_scroll = false; }
+            }
+            KeyCode::Down if key.modifiers.contains(KeyModifiers::SHIFT) => {
+                let max = self.output_lines.len().saturating_sub(1);
+                if self.scroll_offset < max { self.scroll_offset += 1; } else { self.auto_scroll = true; }
             }
             KeyCode::Left => {
                 if self.cursor_pos > 0 {
@@ -376,7 +360,7 @@ impl TuiApp {
         };
         let input_content = Span::raw(&self.input);
         let status_info = Span::styled(
-            format!(" {}Ctrl+C退出 Ctrl+P/N历史", scroll_info),
+            format!(" {}Ctrl+C退出 ↑↓历史 S-↑↓滚动", scroll_info),
             Style::default().fg(Color::DarkGray),
         );
 
