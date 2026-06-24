@@ -376,63 +376,56 @@ impl CliHandler {
     }
 
     async fn print_help(&self) {
-        self.out(String::new());
-        self.out(format!("  {} {}", c::bold("⋆"), c::bold("Phira-mp+ 管理命令")));
-        self.out(format!("  {}", c::dim("──────────────────────────────────────────────────")));
-        self.out(String::new());
+        self.out(format!("  {} Phira-mp+ 管理命令", c::bold("◆")));
+        self.out(format!("  {} ─────────────────────────────────────────────", c::dim("")));
+        self.out(format!(""));
         self.out(format!("  {} 通用", c::cyan("▸")));
-        self.out(format!("    {} {:<20} {}", c::dim("│"), "help (h, ?)", "显示此帮助"));
-        self.out(format!("    {} {:<20} {}", c::dim("│"), "exit (quit, q)", "关闭服务器"));
-        self.out(format!("    {} {:<20} {}", c::dim("│"), "status (st)", "服务器状态"));
-        self.out(String::new());
-        self.out(format!("  {} 插件管理", c::cyan("▸")));
-        self.out(format!("    {} {:<20} {}", c::dim("│"), "plugins (pl)", "列出所有插件"));
-        self.out(format!("    {} {:<20} {}", c::dim("│"), "plugin list", "列出所有插件"));
-        self.out(format!("    {} {:<20} {}", c::dim("│"), "plugin enable <名>", "启用插件"));
-        self.out(format!("    {} {:<20} {}", c::dim("│"), "plugin disable <名>", "禁用插件"));
-        self.out(format!("    {} {:<20} {}", c::dim("│"), "plugin info <名>", "插件详情"));
-        self.out(format!("    {} {:<20} {}", c::dim("│"), "plugin reload", "重载所有插件"));
-        self.out(String::new());
-        self.out(format!("  {} 用户 / 房间", c::cyan("▸")));
-        self.out(format!("    {} {:<20} {}", c::dim("│"), "users (u)", "在线用户"));
-        self.out(format!("    {} {:<20} {}", c::dim("│"), "rooms (r)", "活跃房间"));
-        self.out(format!("    {} {:<20} {}", c::dim("│"), "kick (k)", "踢出用户/从房间踢出"));
-        self.out(format!("    {} {:<20} {}", c::dim("│"), "broadcast (bc)", "广播消息"));
-        self.out(String::new());
-        self.out(format!("  {} 房间管理 (room <子命令>)", c::cyan("▸")));
-        self.out(format!("    {} {:<20} {}", c::dim("│"), "room list", "列出活跃房间"));
-        self.out(format!("    {} {:<20} {}", c::dim("│"), "room info <房间ID>", "房间详情"));
-        self.out(format!("    {} {:<20} {}", c::dim("│"), "room start <房间ID>", "强制开始游戏"));
-        self.out(format!("    {} {:<20} {}", c::dim("│"), "room cancel <房间ID>", "取消准备"));
-        self.out(format!("    {} {:<20} {}", c::dim("│"), "room kick <房间ID> <用户ID>", "踢出房间用户"));
-        self.out(format!("    {} {:<20} {}", c::dim("│"), "room transfer <房间ID> <用户ID>", "转移房主"));
-        self.out(format!("    {} {:<20} {}", c::dim("│"), "room set <房间ID> <字段> <值>", "修改房间设置"));
-        self.out(format!("    {} {:<20} {}", c::dim("│"), "room close <房间ID>", "解散房间"));
-        self.out(format!("    {} {:<20} {}", c::dim("│"), "room history <房间ID>", "游玩记录"));
-        self.out(format!("    {} {:<20} {}", c::dim("│"), "room ban <房间ID> <用户ID>", "房间黑名单"));
-        self.out(format!("    {} {:<20} {}", c::dim("│"), "room banlist <房间ID>", "房间黑名单列表"));
-        self.out(String::new());
-        self.out(format!("  {} 扩展数据", c::cyan("▸")));
-        self.out(format!("    {} {:<20} {}", c::dim("│"), "ext-list", "列出扩展字段"));
-        self.out(format!("    {} {:<20} {}", c::dim("│"), "ext-get <ID> <key>", "查看扩展数据"));
-        self.out(String::new());
-        self.out(format!("  {} 黑名单管理", c::cyan("▸")));
-        self.out(format!("    {} {:<20} {}", c::dim("│"), "ban <用户ID> [原因]", "封禁用户"));
-        self.out(format!("    {} {:<20} {}", c::dim("│"), "unban <用户ID>", "解封用户"));
-        self.out(format!("    {} {:<20} {}", c::dim("│"), "banlist (bl)", "列出封禁列表"));
+        self.out(format!("    {:<22} {}", c::dim("help"), "显示此帮助"));
+        self.out(format!("    {:<22} {}", c::dim("exit"), "关闭服务器"));
+        self.out(format!("    {:<22} {}", c::dim("status"), "服务器状态"));
+        self.out(format!(""));
+        self.out(format!("  {} WASM 插件", c::cyan("▸")));
+        self.out(format!("    {:<22} {}", c::dim("plugin list"), "列出所有 WASM 插件"));
+        self.out(format!("    {:<22} {}", c::dim("plugin enable <名>"), "启用插件"));
+        self.out(format!("    {:<22} {}", c::dim("plugin disable <名>"), "禁用插件"));
+        self.out(format!("    {:<22} {}", c::dim("plugin info <名>"), "插件详情"));
+        self.out(format!("    {:<22} {}", c::dim("plugin reload"), "重载所有插件"));
+        self.out(format!(""));
+        self.out(format!("  {} 用户", c::cyan("▸")));
+        self.out(format!("    {:<22} {}", c::dim("users"), "在线用户"));
+        self.out(format!("    {:<22} {}", c::dim("kick <用户ID>"), "踢出用户"));
+        self.out(format!("    {:<22} {}", c::dim("broadcast <消息>"), "广播消息"));
+        self.out(format!(""));
+        self.out(format!("  {} 房间 (room <子命令>)", c::cyan("▸")));
+        self.out(format!("    {:<22} {}", c::dim("room list"), "活跃房间"));
+        self.out(format!("    {:<22} {}", c::dim("room info <ID>"), "房间详情"));
+        self.out(format!("    {:<22} {}", c::dim("room kick <ID> <用户>"), "踢出"));
+        self.out(format!("    {:<22} {}", c::dim("room start|cancel <ID>"), "开始/取消"));
+        self.out(format!("    {:<22} {}", c::dim("room close <ID>"), "解散"));
+        self.out(format!("    {:<22} {}", c::dim("room transfer <ID> <用户>"), "转移房主"));
+        self.out(format!("    {:<22} {}", c::dim("room set <ID> <字段> <值>"), "修改设置"));
+        self.out(format!("    {:<22} {}", c::dim("room history <ID>"), "游玩记录"));
+        self.out(format!("    {:<22} {}", c::dim("room ban|unban|banlist"), "房间黑名单"));
+        self.out(format!(""));
+        self.out(format!("  {} 黑名单", c::cyan("▸")));
+        self.out(format!("    {:<22} {}", c::dim("ban <用户ID> [原因]"), "封禁"));
+        self.out(format!("    {:<22} {}", c::dim("unban <用户ID>"), "解封"));
+        self.out(format!("    {:<22} {}", c::dim("banlist"), "封禁列表"));
+        self.out(format!(""));
+        self.out(format!("  {} 扩展", c::cyan("▸")));
+        self.out(format!("    {:<22} {}", c::dim("ext-list"), "扩展字段列表"));
+        self.out(format!("    {:<22} {}", c::dim("ext-get <ID> <key>"), "查看扩展数据"));
 
-        // 列出插件注册的命令
         let plugin_cmds = self.state.plugin_manager.list_cli_commands().await;
         if !plugin_cmds.is_empty() {
-            self.out(String::new());
-            self.out(format!("  {} 插件扩展", c::magenta("▸")));
+            self.out(format!(""));
+            self.out(format!("  {} WASM 插件扩展", c::magenta("▸")));
             for cmd in &plugin_cmds {
-                self.out(format!("    {} {:<20} {}", c::dim("│"), cmd.name, cmd.description));
+                self.out(format!("    {:<22} {}", c::dim(&cmd.name), cmd.description));
             }
         }
-        self.out(String::new());
-        self.out(format!("  {}", c::dim("──────────────────────────────────────────────────")));
-        self.out(String::new());
+        self.out(format!(""));
+        self.out(format!("  {} ─────────────────────────────────────────────", c::dim("")));
     }
 
     // ── 插件管理 ──
@@ -1074,24 +1067,13 @@ impl CliHandler {
     }
 
     async fn status(&self) {
-        let stats = {
-            let users = self.state.users.read().await.len();
-            let rooms = self.state.rooms.read().await.len();
-            let sessions = self.state.sessions.read().await.len();
-            let plugins = self.state.plugin_manager.list_plugins().await.len();
-            (users, rooms, sessions, plugins)
-        };
-        self.out(String::new());
-        self.out(format!("  {} {}", c::bold("⋆"), c::bold("Phira-mp+ 服务器状态")));
-        self.out(format!("  {}", c::dim("  ─────────────────────────────────────")));
-        self.out(format!("  {} 版本        {}", c::dim("│"), c::cyan(env!("CARGO_PKG_VERSION"))));
-        self.out(format!("  {} 端口        {}", c::dim("│"), self.state.config.port));
-        self.out(format!("  {} 在线用户    {}", c::dim("│"), stats.0));
-        self.out(format!("  {} 活跃会话    {}", c::dim("│"), stats.2));
-        self.out(format!("  {} 活跃房间    {}", c::dim("│"), stats.1));
-        self.out(format!("  {} 已加载插件  {}", c::dim("│"), stats.3));
-        self.out(format!("  {}", c::dim("  ─────────────────────────────────────")));
-        self.out(String::new());
+        let users = self.state.users.read().await.len();
+        let rooms = self.state.rooms.read().await.len();
+        let sessions = self.state.sessions.read().await.len();
+        let plugins = self.state.plugin_manager.list_plugins().await.len();
+        self.out(format!("  {} Phira-mp+ v{}  │ 端口 {}  │ 用户 {} 会话 {} 房间 {} 插件 {}",
+            c::bold("◆"), env!("CARGO_PKG_VERSION"),
+            self.state.config.port, users, sessions, rooms, plugins));
     }
 
     // ── 黑名单管理 ──

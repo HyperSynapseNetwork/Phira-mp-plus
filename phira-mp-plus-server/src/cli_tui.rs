@@ -99,18 +99,8 @@ impl TuiApp {
         out_rx: &mut mpsc::UnboundedReceiver<String>,
         log_rx: &mut mpsc::UnboundedReceiver<String>,
     ) -> io::Result<()> {
-        // 显示欢迎信息
-        self.add_output(format!(
-            "  {} Phira-mp+ v{} 管理控制台",
-            "◆",
-            env!("CARGO_PKG_VERSION"),
-        ));
-        self.add_output(format!(
-            "  {} 输入 {} 查看命令帮助，{} 关闭服务器",
-            "▸",
-            "help",
-            "exit",
-        ));
+        // 简洁欢迎
+        self.add_output(format!("Phira-mp+ v{} 管理控制台 — 输入 help 查看命令", env!("CARGO_PKG_VERSION")));
         self.add_output(String::new());
 
         while self.running {
@@ -180,29 +170,6 @@ impl TuiApp {
             return;
         }
 
-        // Shift+↑ / Shift+↓：逐行滚动输出
-        if key.modifiers.contains(KeyModifiers::SHIFT) {
-            match key.code {
-                KeyCode::Up => {
-                    if self.scroll_offset > 0 {
-                        self.scroll_offset -= 1;
-                        self.auto_scroll = false;
-                    }
-                    return;
-                }
-                KeyCode::Down => {
-                    let max_scroll = self.output_lines.len().saturating_sub(1);
-                    if self.scroll_offset < max_scroll {
-                        self.scroll_offset += 1;
-                    } else {
-                        self.auto_scroll = true;
-                    }
-                    return;
-                }
-                _ => {}
-            }
-        }
-
         match key.code {
             KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 // Ctrl+C: 发送 exit 命令，退出 TUI
@@ -267,10 +234,24 @@ impl TuiApp {
                 self.input.clear();
                 self.cursor_pos = 0;
             }
+            // ↑↓：滚动输出（用户最常用的操作）
             KeyCode::Up => {
-                if self.history.is_empty() {
-                    return;
+                if self.scroll_offset > 0 {
+                    self.scroll_offset -= 1;
+                    self.auto_scroll = false;
                 }
+            }
+            KeyCode::Down => {
+                let max_scroll = self.output_lines.len().saturating_sub(1);
+                if self.scroll_offset < max_scroll {
+                    self.scroll_offset += 1;
+                } else {
+                    self.auto_scroll = true;
+                }
+            }
+            // Ctrl+P / Ctrl+N：命令历史导航
+            KeyCode::Char('p') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                if self.history.is_empty() { return; }
                 let idx = self.history_idx.get_or_insert(self.history.len());
                 if *idx > 0 {
                     *idx -= 1;
@@ -278,7 +259,7 @@ impl TuiApp {
                     self.cursor_pos = self.input.chars().count();
                 }
             }
-            KeyCode::Down => {
+            KeyCode::Char('n') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 if let Some(idx) = &mut self.history_idx {
                     if *idx + 1 < self.history.len() {
                         *idx += 1;
@@ -325,41 +306,19 @@ impl TuiApp {
         }
     }
 
-    /// 渲染一帧
+    /// 渲染一帧 — 简洁 Claude Code 风格
     fn render(&self, frame: &mut Frame) {
         let area = frame.area();
-        if area.width < 20 || area.height < 5 {
-            return; // 终端太小，无法渲染
-        }
+        if area.width < 20 || area.height < 5 { return; }
 
-        // 布局：标题(1) | 输出(填充) | 分隔线(1) | 输入(1) | 状态栏(1)
+        // 仅两个区域：输出(填充) + 输入行(底部固定)
         let chunks = Layout::default()
             .direction(Direction::Vertical)
-            .constraints([
-                Constraint::Length(1), // 标题栏
-                Constraint::Min(0),    // 输出区域
-                Constraint::Length(1), // 分隔线
-                Constraint::Length(1), // 输入行
-                Constraint::Length(1), // 状态栏
-            ])
+            .constraints([Constraint::Min(1), Constraint::Length(1)])
             .split(area);
 
-        // ── 标题栏 ──
-        let title = format!(
-            " Phira-mp+ v{} 管理控制台",
-            env!("CARGO_PKG_VERSION"),
-        );
-        let header = Paragraph::new(Line::from(Span::styled(
-            title,
-            Style::default()
-                .fg(Color::Cyan)
-                .add_modifier(Modifier::BOLD),
-        )));
-        frame.render_widget(header, chunks[0]);
-
-        // ── 输出区域 ──
-        let output_height = chunks[1].height.saturating_sub(2) as usize; // 减去边框
         let total_lines = self.output_lines.len();
+        let output_height = chunks[0].height.saturating_sub(1) as usize;
 
         // 计算可见范围
         let scroll = if self.auto_scroll || total_lines <= output_height {
@@ -368,86 +327,67 @@ impl TuiApp {
             self.scroll_offset.min(total_lines.saturating_sub(1))
         };
 
-        let visible_lines: Vec<Line> = self
-            .output_lines
-            .iter()
-            .skip(scroll)
-            .take(output_height)
-            .map(|s| {
-                if s.is_empty() {
-                    Line::from("")
-                } else if s.starts_with("> ") {
-                    // 命令回显用青色加粗
-                    Line::from(Span::styled(
-                        s,
-                        Style::default()
-                            .fg(Color::Cyan)
-                            .add_modifier(Modifier::BOLD),
-                    ))
-                } else if s.contains("ERROR") || s.contains("✗") {
-                    Line::from(Span::styled(s, Style::default().fg(Color::Red)))
-                } else if s.contains("WARN") || s.contains("!") {
-                    Line::from(Span::styled(s, Style::default().fg(Color::Yellow)))
-                } else if s.contains("INFO") || s.contains("◆") {
-                    Line::from(Span::styled(s, Style::default().fg(Color::Green)))
-                } else {
-                    Line::from(Span::raw(s))
-                }
-            })
-            .collect();
+        // ── 输出区域 — 纯文本，无边框 ──
+        let visible_lines: Vec<Line> = self.output_lines.iter().skip(scroll).take(output_height).map(|s| {
+            if s.is_empty() { return Line::from(""); }
+            let style = if s.starts_with("> ") {
+                Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)
+            } else if s.contains("✗") || s.contains("ERROR") {
+                Style::default().fg(Color::Red)
+            } else if s.contains("✓") || s.contains("◆") {
+                Style::default().fg(Color::Green)
+            } else if s.contains("!") || s.contains("WARN") {
+                Style::default().fg(Color::Yellow)
+            } else if s.contains("⟳") {
+                Style::default().fg(Color::Cyan)
+            } else if s.contains("▸") || s.contains("│") || s.contains("─") {
+                Style::default().fg(Color::DarkGray)
+            } else {
+                Style::default()
+            };
+            Line::from(if style != Style::default() { Span::styled(s, style) } else { Span::raw(s) })
+        }).collect();
 
-        // 先 Clear 输出区域，防止缩小时旧内容残留
-        frame.render_widget(Clear, chunks[1]);
-        let output_block = Block::default()
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(Color::DarkGray));
-        let output_para = Paragraph::new(Text::from(visible_lines))
-            .block(output_block)
-            .wrap(Wrap { trim: false });
-        frame.render_widget(output_para, chunks[1]);
+        frame.render_widget(Clear, chunks[0]);
+        frame.render_widget(Paragraph::new(Text::from(visible_lines)).wrap(Wrap { trim: false }), chunks[0]);
 
-        // ── 分隔线 ──
-        let sep_width = chunks[2].width as usize;
-        let sep = Paragraph::new(Line::from(Span::styled(
-            "─".repeat(sep_width),
+        // ── 滚动指示器（右侧） ──
+        if !self.auto_scroll && total_lines > output_height {
+            let pct = scroll as f64 / (total_lines.saturating_sub(output_height)).max(1) as f64;
+            let bar_y = chunks[0].y + (pct * (output_height as f64 - 1.0)).round() as u16;
+            frame.render_widget(
+                Paragraph::new(Span::styled("┃", Style::default().fg(Color::Cyan))),
+                ratatui::layout::Rect::new(chunks[0].x + chunks[0].width.saturating_sub(1), bar_y, 1, 1),
+            );
+        }
+
+        // ── 状态栏 + 输入行合并 ──
+        let scroll_info = match total_lines {
+            0 => "".into(),
+            _ if self.auto_scroll => format!("{}行 ", total_lines),
+            _ => format!("{:.0}%↑ ", scroll as f64 / (total_lines - 1).max(1) as f64 * 100.0),
+        };
+
+        // 左: 输入提示符 | 右: 状态信息
+        let input_prompt = if self.input.is_empty() {
+            Span::styled("→ ", Style::default().fg(Color::DarkGray))
+        } else {
+            Span::styled("→ ", Style::default().fg(Color::Cyan))
+        };
+        let input_content = Span::raw(&self.input);
+        let status_info = Span::styled(
+            format!(" {}Ctrl+C退出 Ctrl+P/N历史", scroll_info),
             Style::default().fg(Color::DarkGray),
-        )));
-        frame.render_widget(sep, chunks[2]);
-
-        // ── 输入行 ──
-        let input_text = if self.input.is_empty() {
-            Line::from(Span::styled(
-                " 输入命令 (help 查看帮助)",
-                Style::default().fg(Color::DarkGray),
-            ))
-        } else {
-            Line::from(Span::raw(format!("> {}", self.input)))
-        };
-        let input_para = Paragraph::new(input_text);
-        frame.render_widget(input_para, chunks[3]);
-
-        // 设置光标位置（输入行）
-        let cursor_x = chunks[3].x + 2 + self.cursor_pos as u16;
-        let cursor_y = chunks[3].y;
-        frame.set_cursor_position(Position::new(cursor_x, cursor_y));
-
-        // ── 状态栏 ──
-        let scroll_info = if total_lines == 0 {
-            "0 行".to_string()
-        } else if self.auto_scroll {
-            format!("{} 行", total_lines)
-        } else {
-            format!("行 {}/{}", scroll + 1, total_lines)
-        };
-        let status = format!(
-            " C-c:退出  C-l:清屏  S-↑↓:行滚动  PgUp/Dn:翻页  ↑↓:历史  {}",
-            scroll_info,
         );
-        let status_bar = Paragraph::new(Line::from(Span::styled(
-            status,
-            Style::default().fg(Color::DarkGray),
-        )));
-        frame.render_widget(status_bar, chunks[4]);
+
+        let line = Line::from(vec![input_prompt, input_content, status_info]);
+        frame.render_widget(Paragraph::new(line), chunks[1]);
+
+        // 光标
+        frame.set_cursor_position(Position::new(
+            chunks[1].x + 2 + self.cursor_pos.min(self.input.chars().count()) as u16,
+            chunks[1].y,
+        ));
     }
 }
 
