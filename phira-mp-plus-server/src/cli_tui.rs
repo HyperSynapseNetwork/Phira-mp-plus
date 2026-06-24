@@ -245,6 +245,14 @@ impl TuiApp {
                 self.input.clear();
                 self.cursor_pos = 0;
             }
+            // Shift+↑↓：逐行滚动输出（优先匹配，避免被普通 ↑↓ 吞掉）
+            KeyCode::Up if key.modifiers.contains(KeyModifiers::SHIFT) => {
+                if self.scroll_offset > 0 { self.scroll_offset -= 1; self.auto_scroll = false; }
+            }
+            KeyCode::Down if key.modifiers.contains(KeyModifiers::SHIFT) => {
+                let max = self.output_lines.len().saturating_sub(1);
+                if self.scroll_offset < max { self.scroll_offset += 1; } else { self.auto_scroll = true; }
+            }
             // ↑↓：命令历史
             KeyCode::Up => {
                 if self.history.is_empty() { return; }
@@ -257,14 +265,6 @@ impl TuiApp {
                     else { self.history_idx = None; self.input.clear(); }
                     self.cursor_pos = self.input.chars().count();
                 }
-            }
-            // Shift+↑↓：逐行滚动输出
-            KeyCode::Up if key.modifiers.contains(KeyModifiers::SHIFT) => {
-                if self.scroll_offset > 0 { self.scroll_offset -= 1; self.auto_scroll = false; }
-            }
-            KeyCode::Down if key.modifiers.contains(KeyModifiers::SHIFT) => {
-                let max = self.output_lines.len().saturating_sub(1);
-                if self.scroll_offset < max { self.scroll_offset += 1; } else { self.auto_scroll = true; }
             }
             KeyCode::Left => {
                 if self.cursor_pos > 0 {
