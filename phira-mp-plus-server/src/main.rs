@@ -161,28 +161,37 @@ async fn main() -> Result<()> {
     let args = Args::parse();
     let cli_enabled = !args.no_cli;
 
-    // ── 创建 TUI/CLI 通信通道（仅 CLI 启用时） ──
-    let (cmd_tx, cmd_rx) = if cli_enabled {
+    // ── 检测是否在 screen/tmux 中（此类终端不支持 TUI raw mode） ──
+    let is_screen = std::env::var("STY").is_ok() || std::env::var("TMUX").is_ok()
+        || std::env::var("TERM").map(|t| t.contains("screen")).unwrap_or(false);
+
+    // ── 创建 TUI/CLI 通信通道（screen 或 --no-cli 时跳过 TUI） ──
+    let use_tui = cli_enabled && !is_screen;
+
+    let (cmd_tx, cmd_rx) = if use_tui {
         let (tx, rx) = mpsc::unbounded_channel();
         (Some(tx), Some(rx))
     } else {
         (None, None)
     };
-    let (out_tx, out_rx) = if cli_enabled {
+    let (out_tx, out_rx) = if use_tui {
         let (tx, rx) = mpsc::unbounded_channel();
         (Some(tx), Some(rx))
     } else {
         (None, None)
     };
-    let (log_tx, log_rx) = if cli_enabled {
+    let (log_tx, log_rx) = if use_tui {
         let (tx, rx) = mpsc::unbounded_channel();
         (Some(tx), Some(rx))
     } else {
         (None, None)
     };
 
-    // ── 初始化日志（此后应使用 info! / warn!，避免直接 println!） ──
+    // ── 初始化日志（screen 下直接 stdout） ──
     let _guard = init_log(&args.log_file, log_tx)?;
+    if is_screen {
+        info!("screen/tmux detected, TUI disabled; logs to stdout");
+    }
 
     // ── 自动创建数据 & 插件目录 ──
     let data_dir = Path::new("data");
@@ -243,22 +252,13 @@ async fn main() -> Result<()> {
         info!("CLI management console started");
     }
 
-    // ── 检测是否在 screen/tmux 中（此类终端不支持 TUI raw mode） ──
-    let is_screen = std::env::var("STY").is_ok() || std::env::var("TMUX").is_ok()
-        || std::env::var("TERM").map(|t| t.contains("screen")).unwrap_or(false);
-
     // ── 启动 TUI 界面（独立线程，阻塞式） ──
     let tui_handle = if let (Some(cmd_tx), Some(out_rx), Some(log_rx)) = (cmd_tx, out_rx, log_rx) {
-        if is_screen {
-            info!("screen/tmux detected, TUI disabled (use --no-cli for headless mode)");
-            None
-        } else {
-            Some(std::thread::spawn(move || {
-                if let Err(e) = phira_mp_plus_server::cli_tui::run_tui(cmd_tx, out_rx, log_rx) {
-                    eprintln!("TUI error: {e}");
-                }
-            }))
-        }
+        Some(std::thread::spawn(move || {
+            if let Err(e) = phira_mp_plus_server::cli_tui::run_tui(cmd_tx, out_rx, log_rx) {
+                eprintln!("TUI error: {e}");
+            }
+        }))
     } else {
         info!("CLI management console disabled, logs to stdout");
         None

@@ -1,0 +1,31 @@
+[package]
+name = "phira-mp-common"
+version = "0.1.0"
+edition.workspace = true
+
+[features]
+default = ["stream"]
+stream = ["dep:tokio", "dep:tracing", "dep:hkdf", "dep:sha2"]
+
+[dependencies]
+serde = "1.0"
+serde_json = "1.0"
+anyhow = { workspace = true }
+byteorder = "1.5.0"
+chrono = { workspace = true }
+half = "2.7.1"
+tap = "1.0.1"
+uuid = { workspace = true, features = ["v4"] }
+argon2 = "0.5.3"
+
+# Optional deps — only needed for Stream (server/proxy use, not WASM)
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "rt", "net", "io-util", "time", "sync"], optional = true }
+tracing = { workspace = true, optional = true }
+sha2 = { version = "0.10", optional = true }
+hkdf = { version = "0.12", features = ["std"], optional = true }
+
+phira-mp-macros = { path = "../phira-mp-macros" }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+getrandom = { version = "0.2", features = ["js"] }
+uuid = { version = "1.3.3", features = ["v4", "js"] }

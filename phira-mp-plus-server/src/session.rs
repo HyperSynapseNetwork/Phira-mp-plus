@@ -735,7 +735,8 @@ async fn process(user: Arc<User>, cmd: ClientCommand) -> Option<ServerCommand> {
                 if !matches!(*room.state.read().await, crate::room::InternalRoomState::SelectChart) {
                     bail!(tl!("join-game-ongoing"));
                 }
-                if monitor && !user.can_monitor() {
+                // GameMonitor 会话（user.id < 0）可以旁观任意房间
+                if monitor && !user.can_monitor() && user.id > 0 {
                     bail!(tl!("join-cant-monitor"));
                 }
                 if !room.add_user(Arc::downgrade(&user), monitor).await {

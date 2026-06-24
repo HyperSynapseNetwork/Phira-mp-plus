@@ -52,15 +52,17 @@ task_local! {
 macro_rules! tl {
     ($id:expr) => {{
         let lang = $crate::l10n::LANGUAGE.get();
-        $crate::l10n::try_translate(&lang.0, stringify!($id))
+        let id: &str = $id;
+        $crate::l10n::try_translate(&lang.0, id)
     }};
     ($id:expr, $($key:ident => $value:expr),* $(,)?) => {{
         let lang = $crate::l10n::LANGUAGE.get();
+        let id: &str = $id;
         let mut args = fluent::FluentArgs::new();
         $(
             args.set(stringify!($key), $value);
         )*
-        $crate::l10n::try_translate_with_args(&lang.0, stringify!($id), args)
+        $crate::l10n::try_translate_with_args(&lang.0, id, args)
     }};
 }
 
