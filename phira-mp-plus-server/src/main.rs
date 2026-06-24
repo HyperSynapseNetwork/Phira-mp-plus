@@ -168,10 +168,6 @@ async fn main() -> Result<()> {
     let args = Args::parse();
     let cli_enabled = !args.no_cli;
 
-    // ── 检测是否在 screen/tmux 中（TUI 不兼容） ──
-    let is_screen = std::env::var("STY").is_ok() || std::env::var("TMUX").is_ok()
-        || std::env::var("TERM").map(|t| t.contains("screen")).unwrap_or(false);
-
     // 通道始终创建（CLI 处理器需要，TUI 和 stdin 只是不同前端）
     let (cmd_tx, cmd_rx) = if cli_enabled {
         let (tx, rx) = mpsc::unbounded_channel();
@@ -254,22 +250,13 @@ async fn main() -> Result<()> {
         info!("CLI management console started");
     }
 
-    // ── 启动用户界面 ──
+    // ── 启动 TUI（screen/tmux 下也使用 TUI，部分终端可正常显示） ──
     let tui_handle = if let (Some(cmd_tx), Some(out_rx), Some(log_rx)) = (cmd_tx, out_rx, log_rx) {
-        if is_screen {
-            // screen/tmux 下用简单 stdin CLI
-            info!("screen/tmux detected, starting stdin CLI (type 'help' for commands)");
-            Some(std::thread::spawn(move || {
-                phira_mp_plus_server::cli_tui::run_stdin_cli(cmd_tx, out_rx);
-            }))
-        } else {
-            // 正常终端用 ratatui TUI
-            Some(std::thread::spawn(move || {
-                if let Err(e) = phira_mp_plus_server::cli_tui::run_tui(cmd_tx, out_rx, log_rx) {
-                    eprintln!("TUI error: {e}");
-                }
-            }))
-        }
+        Some(std::thread::spawn(move || {
+            if let Err(e) = phira_mp_plus_server::cli_tui::run_tui(cmd_tx, out_rx, log_rx) {
+                eprintln!("TUI error (try --no-cli): {e}");
+            }
+        }))
     } else {
         info!("CLI management console disabled, logs to stdout");
         None

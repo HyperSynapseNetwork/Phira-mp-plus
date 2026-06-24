@@ -364,24 +364,33 @@ impl PlusServer {
             sq.call("user_name", &[serde_json::json!(uid)]).map_err(|e| (500u16, e))
         }));
 
-        // 压测 CLI 命令注册（原 stress-test 插件）
+        // 压测 CLI 命令注册
         let bench_state = Arc::clone(&state);
+        let bench_http_port = state.config.http_port;
         let _ = state.plugin_manager.register_cli_command(crate::plugin::CliCommand {
             name: "benchmark".to_string(),
-            description: "运行服务端压力测试".to_string(),
+            description: "服务端压测: benchmark [dur] [rooms] | benchmark http <url>".to_string(),
             usage: "benchmark [dur_s=30] [rooms=100]".to_string(),
             handler: Arc::new(move |args| {
-                let duration: u64 = args.first().and_then(|a| a.parse().ok()).unwrap_or(30).max(5).min(300);
-                let rooms: usize = args.get(1).and_then(|a| a.parse().ok()).unwrap_or(100).max(10).min(5000);
-                // 通过 state_query 触发压测
-                let sq = bench_state.clone();
-                match crate::server::server_state_query_inner(
-                    &sq, "test.run_benchmark", &[serde_json::json!(duration), serde_json::json!(rooms)]
-                ) {
-                    Ok(v) => v.get("output").and_then(|o| o.as_str())
-                        .map(|s| s.lines().map(|l| l.to_string()).collect())
-                        .unwrap_or_else(|| vec!["  ✗ failed to parse benchmark output".to_string()]),
-                    Err(e) => vec![format!("  ✗ {}", e)],
+                let first = args.first().map(|s| s.as_str()).unwrap_or("");
+                if first == "http" {
+                    // HTTP 真实请求压测
+                    let url = args.get(1).cloned().unwrap_or_else(||
+                        format!("http://127.0.0.1:{}/api/rooms", bench_http_port));
+                    let count: usize = args.get(2).and_then(|a| a.parse().ok()).unwrap_or(100).max(10).min(10000);
+                    crate::server::run_benchmark_http(&url, count)
+                } else {
+                    let duration: u64 = first.parse().ok().filter(|&v| v >= 5 && v <= 300).unwrap_or(30);
+                    let rooms: usize = args.get(1).and_then(|a| a.parse().ok()).unwrap_or(100).max(10).min(5000);
+                    let sq = bench_state.clone();
+                    match crate::server::server_state_query_inner(
+                        &sq, "test.run_benchmark", &[serde_json::json!(duration), serde_json::json!(rooms)]
+                    ) {
+                        Ok(v) => v.get("output").and_then(|o| o.as_str())
+                            .map(|s| s.lines().map(|l| l.to_string()).collect())
+                            .unwrap_or_else(|| vec!["  ✗ parse error".to_string()]),
+                        Err(e) => vec![format!("  ✗ {}", e)],
+                    }
                 }
             }),
         }).await;
@@ -664,6 +673,61 @@ impl PlusServerState {
         sync_write!(self.rooms).retain(|rid, _| !rid.to_string().starts_with("bench-"));
         sync_write!(self.users).retain(|id, _| *id < TEST_USER_ID_BASE || *id >= TEST_USER_ID_BASE + 10_000_000);
     }
+}
+
+// ── HTTP 真实请求压测 ──
+
+/// 对指定 URL 执行 HTTP 请求压测，测量真实网络延迟
+pub fn run_benchmark_http(url: &str, count: usize) -> Vec<String> {
+    use std::time::Instant;
+    let mut out = Vec::new();
+    let mut latencies = Vec::with_capacity(count);
+    let mut errors = 0usize;
+
+    out.push(format!("  ◆ HTTP 压测: {url}"));
+    out.push(format!("  │ 请求次数: {count}"));
+    out.push(String::new());
+    out.push(format!("  ├─ 发送中..."));
+
+    let client = reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .build().unwrap_or_default();
+
+    for i in 0..count {
+        let t0 = Instant::now();
+        match client.get(url).send() {
+            Ok(resp) => {
+                let _ = resp.text();
+                let elapsed = t0.elapsed();
+                latencies.push(elapsed.as_secs_f64() * 1000.0);
+            }
+            Err(e) => {
+                errors += 1;
+                if errors <= 3 {
+                    out.push(format!("  │ [{i}] HTTP error: {e}"));
+                }
+            }
+        }
+        if (i + 1) % 50 == 0 || i == count - 1 {
+            out.push(format!("  │ 进度 {}/{}", i + 1, count));
+        }
+    }
+
+    if latencies.is_empty() {
+        out.push(format!("  ✗ 全部失败 ({errors} errors)"));
+        return out;
+    }
+
+    latencies.sort_unstable_by(|a, b| a.partial_cmp(b).unwrap());
+    let avg = latencies.iter().sum::<f64>() / latencies.len() as f64;
+    let p50 = latencies[latencies.len() / 2];
+    let p95 = latencies[(latencies.len() as f64 * 0.95) as usize];
+    let p99 = latencies[(latencies.len() as f64 * 0.99) as usize];
+
+    out.push(String::new());
+    out.push(format!("  └─ 结果 ({errors}/{count} errors)"));
+    out.push(format!("     avg={avg:.1}ms  p50={p50:.1}ms  p95={p95:.1}ms  p99={p99:.1}ms"));
+    out
 }
 
 // ── 状态查询 / Room/User 管理（供 WASM WIT API / dispatch） ──

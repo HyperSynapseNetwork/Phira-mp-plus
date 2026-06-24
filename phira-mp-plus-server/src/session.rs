@@ -289,6 +289,13 @@ impl Session {
                                                     user_name: user_info.name.clone(),
                                                     user_ip,
                                                 }).await;
+                                            // 欢迎语（重连）
+                                            if let Some(s) = this.get() {
+                                                let online = server.users.read().await.len();
+                                                let _ = s.stream.send(ServerCommand::Message(Message::Chat {
+                                                    user: 0, content: format!("欢迎 {} 回来！在线 {} 人", user_info.name, online),
+                                                })).await;
+                                            }
                                         } else {
                                             let user = Arc::new(User::new(
                                                 user_info.id,
@@ -314,6 +321,13 @@ impl Session {
                                                     user_ip,
                                                 })
                                                 .await;
+                                            // 欢迎语（新用户）
+                                            if let Some(s) = this.get() {
+                                                let online = server.users.read().await.len();
+                                                let _ = s.stream.send(ServerCommand::Message(Message::Chat {
+                                                    user: 0, content: format!("欢迎 {} 来到 Phira-mp+！在线 {} 人", user.name, online),
+                                                })).await;
+                                            }
                                         }
                                         Ok(())
                                     }
