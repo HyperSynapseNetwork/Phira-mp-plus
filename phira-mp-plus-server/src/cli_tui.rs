@@ -217,9 +217,9 @@ impl TuiApp {
                 self.auto_scroll = true;
             }
             // 输入 's' 时正常输入（不再吞首字）
-            // J/K：滚动输出（不吞字）
-            KeyCode::Char('j') => { self.scroll_down(); }
-            KeyCode::Char('k') => { self.scroll_up(); }
+            // J/K：输入为空时滚动，否则正常输入
+            KeyCode::Char('j') if self.input.is_empty() => { self.scroll_down(); }
+            KeyCode::Char('k') if self.input.is_empty() => { self.scroll_up(); }
             // Backspace（某些终端发送 Char(0x7f) 或 Char(0x08)）
             KeyCode::Backspace
             | KeyCode::Char('\x7f')

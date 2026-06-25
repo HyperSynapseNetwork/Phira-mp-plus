@@ -8,8 +8,8 @@ use crate::server::PlusServerState;
 use crate::tl;
 use anyhow::{Result, anyhow, bail};
 use phira_mp_common::{
-    ClientCommand, JoinRoomResponse, Message, RoomEvent, ServerCommand, Stream,
-    UserInfo,
+    ClientCommand, JoinRoomResponse, Message, PartialRoomData, RoomEvent, ServerCommand, Stream,
+    StrippedRoomState, UserInfo,
 };
 
 const HEARTBEAT_DISCONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(600);
@@ -878,6 +878,7 @@ async fn process(user: Arc<User>, cmd: ClientCommand) -> Option<ServerCommand> {
                 );
                 room.locked.store(lock, Ordering::SeqCst);
                 room.send(Message::LockRoom { lock }).await;
+                send_room_event!(UpdateRoom { room: room.id.clone(), data: PartialRoomData { lock: Some(lock), ..Default::default() } });
 
                 // 触发插件事件
                 user.server.plugin_manager
@@ -905,6 +906,7 @@ async fn process(user: Arc<User>, cmd: ClientCommand) -> Option<ServerCommand> {
                 );
                 room.cycle.store(cycle, Ordering::SeqCst);
                 room.send(Message::CycleRoom { cycle }).await;
+                send_room_event!(UpdateRoom { room: room.id.clone(), data: PartialRoomData { cycle: Some(cycle), ..Default::default() } });
 
                 // 触发插件事件
                 user.server.plugin_manager
@@ -946,6 +948,7 @@ async fn process(user: Arc<User>, cmd: ClientCommand) -> Option<ServerCommand> {
                     .await;
                     *room.chart.write().await = Some(res);
                     room.on_state_change().await;
+                    send_room_event!(UpdateRoom { room: room.id.clone(), data: PartialRoomData { chart: Some(id), ..Default::default() } });
                     Ok(())
                 }
                 .instrument(span)
