@@ -106,12 +106,12 @@ pub fn send_welcome(user_id: i32, user_name: &str, online: usize, state: &PlusSe
                 (uid, total)
             }).collect();
             ranking.sort_by(|a, b| b.1.cmp(&a.1));
-            let top: Vec<String> = ranking.iter().take(10).map(|(uid, secs)| {
+            let top: Vec<String> = ranking.iter().take(10).enumerate().map(|(i, (uid, secs))| {
                 let name = users_guard.as_ref().ok()
                     .and_then(|u| u.get(uid))
                     .map(|u| u.name.clone())
                     .unwrap_or_else(|| uid.to_string());
-                format!("#{}: {:.1}h", name, *secs as f64 / 3600.0)
+                format!("#{} {}: {:.1}h", i + 1, name, *secs as f64 / 3600.0)
             }).collect();
             text = text.replace("[top_playtime]", &top.join(" | "));
         }
