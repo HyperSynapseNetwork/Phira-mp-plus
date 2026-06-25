@@ -786,13 +786,6 @@ async fn process(user: Arc<User>, cmd: ClientCommand) -> Option<ServerCommand> {
                     })
                     .await;
 
-                // 记录用户房间访问历史
-                let now = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as i64).unwrap_or(0);
-                user.server.user_room_history.write().await
-                    .entry(user.id).or_default()
-                    .push((id.to_string(), room.uuid.to_string(), now));
-
                 Ok(JoinRoomResponse {
                     state: room.client_room_state().await,
                     users: room
