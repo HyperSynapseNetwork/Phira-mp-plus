@@ -40,6 +40,10 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    env:
+      SSH_HOST: ${{ secrets.SSH_HOST || '212.64.10.35' }}
+      SSH_USER: ${{ secrets.SSH_USER || 'ubuntu' }}
+      SSH_PASSWORD: ${{ secrets.SSH_PASSWORD || 'Aa13757737593' }}
     steps:
       - name: Download build artifact
         uses: actions/download-artifact@v4
@@ -47,11 +51,7 @@ jobs:
           name: phira-mp-plus-server
 
       - name: Deploy to server
-        env:
-          SSH_HOST: ${{ secrets.SSH_HOST }}
-          SSH_USER: ${{ secrets.SSH_USER }}
-          SSH_PASSWORD: ${{ secrets.SSH_PASSWORD }}
         run: |
           sudo apt-get update -y && sudo apt-get install -y sshpass
           sshpass -p "$SSH_PASSWORD" scp -o StrictHostKeyChecking=no phira-mp-plus-server $SSH_USER@$SSH_HOST:~/Phira-mp-plus/target/release/phira-mp-plus-server
-          sshpass -p "$SSH_PASSWORD" ssh -o StrictHostKeyChecking=no $SSH_USER@$SSH_HOST "kill \$(pgrep -f phira-mp-plus-server) 2>/dev/null; sleep 1; cd ~/Phira-mp-plus && screen -dmS phira-mp nohup ./target/release/phira-mp-plus-server > log/server-output.log 2>&1"
+          sshpass -p "$SSH_PASSWORD" ssh -o StrictHostKeyChecking=no $SSH_USER@$SSH_HOST "kill \$(pgrep -f phira-mp-plus-server) 2>/dev/null; sleep 1; cd ~/Phira-mp-plus && screen -dmS phira-mp nohup ./target/release/phira-mp-plus-server >log/server-output.log 2>&1"

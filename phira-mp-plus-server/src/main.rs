@@ -198,6 +198,7 @@ async fn main() -> Result<()> {
 
     // ── 初始化日志（此后应使用 info! / warn!，避免直接 println!） ──
     let _guard = init_log(&args.log_file, log_tx)?;
+    let _guard = std::mem::ManuallyDrop::new(_guard);
 
     // ── 自动创建数据 & 插件目录 ──
     let data_dir = Path::new("data");
