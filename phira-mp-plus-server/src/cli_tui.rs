@@ -373,31 +373,17 @@ impl TuiApp {
 
         // ── 输出区域 — 纯文本，CJK 宽度感知 ──
         let hide_progress = self.benchmark_running;
-        let visible_lines: Vec<Line> = self.output_lines.iter().skip(scroll).take(output_h).map(|s| {
-            if s.is_empty() { return Line::from(""); }
-            let style = if s.starts_with("> ") {
-                Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)
-            } else if s.contains("✗") || s.contains("ERROR") {
-                Style::default().fg(Color::Red)
-            } else if s.contains("✓") || s.contains("◆") {
-                Style::default().fg(Color::Green)
-            } else if s.contains("!") || s.contains("WARN") {
-                Style::default().fg(Color::Yellow)
-            } else if s.contains("⟳") {
-                Style::default().fg(Color::Cyan)
-            } else if s.contains("▸") || s.contains("│") || s.contains("─") {
-                Style::default().fg(Color::DarkGray)
-            } else {
-                Style::default()
-            };
-            // CJK 宽度截断，防止溢出换行打乱布局
+        // 纯文本渲染，避开 ratatui Line/Span CJK 宽度计算 bug
+        let mut rendered = String::with_capacity(output_h * (output_w + 1));
+        for s in self.output_lines.iter().skip(scroll).take(output_h) {
+            if s.is_empty() { rendered.push('\n'); continue; }
             let truncated = truncate_line(s, output_w);
-            Line::from(if style != Style::default() { Span::styled(truncated, style) } else { Span::raw(truncated) })
-        }).collect();
-
-        // 全区域清除 + 重绘
+            rendered.push_str(&truncated);
+            rendered.push('\n');
+        }
         frame.render_widget(Clear, chunks[0]);
-        frame.render_widget(Paragraph::new(Text::from(visible_lines)), chunks[0]);
+        let para = Paragraph::new(Text::from(rendered));
+        frame.render_widget(para, chunks[0]);
 
         // 压测进度条（每次渲染步进，模拟进度）
         if hide_progress {
