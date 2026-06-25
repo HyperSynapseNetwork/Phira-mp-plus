@@ -221,14 +221,10 @@ impl TuiApp {
             // S 键标记（输入为空时，不干扰打字），长按持续有效
             KeyCode::Char('s') if self.input.is_empty() => { self.scroll_key_pressed = true; }
             KeyCode::Char('S') if self.input.is_empty() => { self.scroll_key_pressed = true; }
-            KeyCode::Char(c) => {
-                let mut chars: Vec<char> = self.input.chars().collect();
-                let pos = self.cursor_pos.min(chars.len());
-                chars.insert(pos, c);
-                self.input = chars.into_iter().collect();
-                self.cursor_pos = pos + 1;
-            }
-            KeyCode::Backspace => {
+            // Backspace（某些终端发送 Char(0x7f) 或 Char(0x08)）
+            KeyCode::Backspace
+            | KeyCode::Char('\x7f')
+            | KeyCode::Char('\x08') => {
                 if self.cursor_pos > 0 {
                     let mut chars: Vec<char> = self.input.chars().collect();
                     let pos = self.cursor_pos.saturating_sub(1).min(chars.len().saturating_sub(1));
@@ -238,6 +234,13 @@ impl TuiApp {
                         self.cursor_pos = pos;
                     }
                 }
+            }
+            KeyCode::Char(c) => {
+                let mut chars: Vec<char> = self.input.chars().collect();
+                let pos = self.cursor_pos.min(chars.len());
+                chars.insert(pos, c);
+                self.input = chars.into_iter().collect();
+                self.cursor_pos = pos + 1;
             }
             KeyCode::Delete => {
                 let mut chars: Vec<char> = self.input.chars().collect();
