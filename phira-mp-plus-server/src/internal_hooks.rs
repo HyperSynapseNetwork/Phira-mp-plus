@@ -34,11 +34,13 @@ impl Default for WelcomeConfig {
     fn default() -> Self {
         Self {
             messages: vec![
-                "欢迎 [user_name] 来到 Phira-mp+！当前在线 [player-count] 人".into(),
-                "[user_name] 来了！在线 [player-count] 人".into(),
+                "欢迎 [user_name] 来到 HSN Phira-mp+！当前在线 [player-count] 人".into(),
+                "您在本服务器上游玩了[playtime]".into(),
+                "游玩时间排行榜：[top_playtime]".into(),
+                "活跃房间：[active_rooms]".into(),
             ],
             show_time: true,
-            time_format: "%H:%M".into(),
+            time_format: "%Y-%m-%d %H:%M".into(),
         }
     }
 }
