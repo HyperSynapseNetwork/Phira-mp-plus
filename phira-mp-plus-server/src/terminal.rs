@@ -1,0 +1,217 @@
+use std::env;
+use std::io::{self, IsTerminal};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TuiCapabilities {
+    pub colors: bool,
+    pub mouse_capture: bool,
+    pub bracketed_paste: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConsoleMode {
+    Line,
+    Tui(TuiCapabilities),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TerminalProfile {
+    tui: bool,
+    screen: bool,
+    color: bool,
+}
+
+impl TerminalProfile {
+    pub fn detect() -> Self {
+        let term = env::var("TERM").unwrap_or_default();
+        Self::from_context(
+            &term,
+            env::var_os("STY").is_some(),
+            env::var_os("TMUX").is_some(),
+            env::var_os("NO_COLOR").is_some(),
+            io::stdin().is_terminal() && io::stdout().is_terminal(),
+        )
+    }
+
+    fn from_context(
+        term: &str,
+        has_sty: bool,
+        has_tmux: bool,
+        no_color: bool,
+        interactive: bool,
+    ) -> Self {
+        let screen = has_sty || (term.starts_with("screen") && !has_tmux);
+        let tui = interactive && !screen && !term.is_empty() && term != "dumb";
+        Self {
+            tui,
+            screen,
+            color: tui && !no_color,
+        }
+    }
+
+    pub fn console_mode(self) -> ConsoleMode {
+        if !self.tui {
+            return ConsoleMode::Line;
+        }
+
+        ConsoleMode::Tui(TuiCapabilities {
+            colors: self.color,
+            mouse_capture: true,
+            bracketed_paste: true,
+        })
+    }
+
+    pub fn is_screen(self) -> bool {
+        self.screen
+    }
+
+    pub fn apply_environment(self) {
+        if !self.color {
+            env::set_var("NO_COLOR", "1");
+            env::set_var("CLICOLOR", "0");
+            env::set_var("CLICOLOR_FORCE", "0");
+        }
+    }
+}
+
+pub fn strip_ansi(input: &str) -> String {
+    let chars = input.chars().collect::<Vec<_>>();
+    let mut output = String::with_capacity(input.len());
+    let mut index = 0;
+
+    while index < chars.len() {
+        match chars[index] {
+            '\u{001b}' => skip_escape_sequence(&chars, &mut index),
+            '\u{009b}' => skip_csi(&chars, &mut index),
+            '\u{009d}' | '\u{0090}' | '\u{009e}' | '\u{009f}' => {
+                skip_control_string(&chars, &mut index)
+            }
+            ch if ('\u{0080}'..='\u{009f}').contains(&ch) => index += 1,
+            ch => {
+                output.push(ch);
+                index += 1;
+            }
+        }
+    }
+
+    output
+}
+
+pub fn sanitize_paste(input: &str) -> String {
+    strip_ansi(input)
+        .replace('\r', " ")
+        .replace('\n', " ")
+        .chars()
+        .filter(|ch| !ch.is_control() || *ch == '\t')
+        .collect()
+}
+
+fn skip_escape_sequence(chars: &[char], index: &mut usize) {
+    *index += 1;
+    let Some(next) = chars.get(*index).copied() else {
+        return;
+    };
+
+    match next {
+        '[' => {
+            *index += 1;
+            skip_csi(chars, index);
+        }
+        ']' | 'P' | '^' | '_' => {
+            *index += 1;
+            skip_control_string(chars, index);
+        }
+        _ => {
+            while chars
+                .get(*index)
+                .is_some_and(|ch| ('\u{0020}'..='\u{002f}').contains(ch))
+            {
+                *index += 1;
+            }
+            if chars
+                .get(*index)
+                .is_some_and(|ch| ('\u{0030}'..='\u{007e}').contains(ch))
+            {
+                *index += 1;
+            }
+        }
+    }
+}
+
+fn skip_csi(chars: &[char], index: &mut usize) {
+    while let Some(ch) = chars.get(*index).copied() {
+        *index += 1;
+        if ('\u{0040}'..='\u{007e}').contains(&ch) {
+            break;
+        }
+    }
+}
+
+fn skip_control_string(chars: &[char], index: &mut usize) {
+    while let Some(ch) = chars.get(*index).copied() {
+        match ch {
+            '\u{0007}' | '\u{009c}' => {
+                *index += 1;
+                break;
+            }
+            '\u{001b}' if chars.get(*index + 1) == Some(&'\\') => {
+                *index += 2;
+                break;
+            }
+            _ => *index += 1,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn screen_uses_line_console() {
+        let profile = TerminalProfile::from_context("screen-256color", false, false, false, true);
+        assert_eq!(profile.console_mode(), ConsoleMode::Line);
+
+        let profile = TerminalProfile::from_context("xterm-256color", true, false, false, true);
+        assert_eq!(profile.console_mode(), ConsoleMode::Line);
+    }
+
+    #[test]
+    fn normal_tty_keeps_tui() {
+        let profile = TerminalProfile::from_context("xterm-256color", false, false, false, true);
+        assert!(matches!(profile.console_mode(), ConsoleMode::Tui(_)));
+    }
+
+    #[test]
+    fn no_color_keeps_tui_without_styles() {
+        let profile = TerminalProfile::from_context("xterm-256color", false, false, true, true);
+        assert_eq!(
+            profile.console_mode(),
+            ConsoleMode::Tui(TuiCapabilities {
+                colors: false,
+                mouse_capture: true,
+                bracketed_paste: true,
+            })
+        );
+    }
+
+    #[test]
+    fn tmux_does_not_trigger_screen_fallback() {
+        let profile = TerminalProfile::from_context("screen-256color", false, true, false, true);
+        assert!(matches!(profile.console_mode(), ConsoleMode::Tui(_)));
+    }
+
+    #[test]
+    fn strips_terminal_control_sequences() {
+        assert_eq!(strip_ansi("\x1b[31mred\x1b[0m"), "red");
+        assert_eq!(strip_ansi("a\x1b]0;title\x07b"), "ab");
+        assert_eq!(strip_ansi("a\x1bPpayload\x1b\\b"), "ab");
+        assert_eq!(strip_ansi("a\x1b(Bb"), "ab");
+        assert_eq!(strip_ansi("a\u{009b}32mb"), "ab");
+    }
+
+    #[test]
+    fn paste_is_single_line_plain_text() {
+        assert_eq!(sanitize_paste("a\x1b[32mb\x1b[0m\r\nc"), "ab  c");
+    }
+}

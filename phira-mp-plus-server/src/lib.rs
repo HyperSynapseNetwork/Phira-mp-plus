@@ -10,15 +10,17 @@ pub mod db;
 pub mod extensions;
 pub mod internal_hooks;
 pub mod l10n;
+pub mod logging;
 pub mod plugin;
 pub mod plugin_http;
 pub mod rate_limiter;
-pub mod round_store;
-#[cfg(feature = "plugin-system")]
-pub mod wasm_host;
 pub mod room;
+pub mod round_store;
 pub mod server;
 pub mod session;
+pub mod terminal;
+#[cfg(feature = "plugin-system")]
+pub mod wasm_host;
 
 pub use l10n::*;
 pub use room::*;

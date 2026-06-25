@@ -1,24 +1,22 @@
 # Phira-mp +
 
-> 使用AI开发
-
 [![License](https://img.shields.io/badge/License-AGPLv3-blue.svg)](LICENSE)
 
 ## 简介
 
-**Phira-mp +** 是基于 [Phira-mp By HSN](https://github.com/HyperSynapseNetwork/phira-mp) 开发的Phira多人游戏服务端，使用Rust开发，支持WASM插件系统，旨在提供稳定，高性能，高拓展性的Phira多人游戏服务端。
+**Phira-mp +** 是基于 [phira-mp](https://github.com/HyperSynapseNetwork/phira-mp) 扩展的 Phira 多人游戏服务端，提供 WASM 插件、管理控制台、HTTP API 与监控数据流。
 
 ### 核心特性
 
-- **🧩 WASM 插件系统** — 基于 wasmtime 动态加载，通过 `phira:host/api` 访问全部服务端能力
-- **🖥️ TUI 管理控制台** — 基于 `ratatui` + `crossterm` 的终端界面，支持命令输入、日志实时显示
-- **📦 内置功能** — 房间信息 Web API、黑名单管理、轮次数据持久化、速率限制等均集成在核心中
+- **WASM 插件系统** — 基于 wasmtime 动态加载，通过 `phira:host/api` 访问全部服务端能力
+- **TUI 管理控制台** — 基于 `ratatui` + `crossterm` 的终端界面，支持命令输入、日志实时显示
+- **内置功能** — 房间信息 Web API、黑名单管理、轮次数据持久化、速率限制等均集成在核心中
 
 ## 技术栈
 
 | 技术 | 用途 |
 |------|------|
-| [Rust](https://www.rust-lang.org/) | 主开发语言 (2024 Edition) |
+| [Rust](https://www.rust-lang.org/) | 主开发语言（2021 Edition） |
 | [Tokio](https://tokio.rs/) | 异步运行时 |
 | [ratatui](https://ratatui.rs/) + [crossterm](https://github.com/crossterm-rs/crossterm) | TUI 终端界面 |
 | [Clap](https://clap.rs/) | CLI 参数解析 |
@@ -31,7 +29,7 @@
 
 ## 快速开始
 
-确保已安装 Rust 工具链（建议 1.70+）：
+确保已安装当前稳定版 Rust 工具链：
 
 ```bash
 # 安装/更新 Rust
@@ -50,7 +48,7 @@ cargo build
 # 指定自定义配置文件启动
 ./target/debug/phira-mp-plus-server --config my_config.yml
 
-# 💡 release 模式对应路径为 ./target/release/phira-mp-plus-server
+# release 模式对应路径为 ./target/release/phira-mp-plus-server
 ```
 
 ### 自定义配置
@@ -79,7 +77,7 @@ phira-mp-plus-server [OPTIONS]
   -p, --port <PORT>          服务器监听端口 [默认: 12346]
   -d, --plugins-dir <DIR>    插件目录 [默认: "plugins"]
   -e, --ext-file <FILE>      扩展数据持久化文件 [默认: "data/extensions.json"]
-      --no-cli               禁用 TUI 管理控制台
+      --no-cli               禁用管理控制台
   -l, --log-file <NAME>      日志文件基础名称 [默认: "phira-mp-plus"]
   -m, --monitor <IDS>...     允许旁观的用户 ID
       --http-port <PORT>     HTTP/SSE 服务端口 [默认: 12347]
@@ -105,14 +103,16 @@ Phira-mp-plus/
 │   └── plugins/                 #   插件私有数据
 ├── log/                         # 运行日志（每小时轮转）
 │
-├── phira-mp-plus-server/        # ★ 服务端核心
+├── phira-mp-plus-server/        # 服务端核心
 │   ├── Cargo.toml               #   axum / tokio / wasmtime / clap 等依赖
 │   ├── locales/                 #   Fluent i18n 翻译文件
 │   │   ├── en-US.ftl
 │   │   ├── zh-CN.ftl
 │   │   └── zh-TW.ftl
 │   └── src/
-│       ├── main.rs              #   入口: CLI 解析 → 日志初始化 → TUI → accept 循环
+│       ├── main.rs              #   进程入口与生命周期
+│       ├── logging.rs           #   tracing 输出与日志轮转
+│       ├── terminal.rs          #   终端能力检测与 Screen 降级策略
 │       ├── lib.rs               #   模块导出
 │       ├── server.rs            #   服务器核心: PlusConfig / PlusServerState / PlusServer
 │       │                        #     accept 循环、压测方法 (run_benchmark_sync)、
@@ -123,7 +123,11 @@ Phira-mp-plus/
 │       │                        #     选谱→准备→游玩→结算、玩家实时数据缓存
 │       ├── plugin.rs            #   插件管理器 + WASM 宿主: PluginManager / PluginHost trait
 │       │                        #     插件加载、事件分发、CLI/HTTP/API 注册
-│       ├── plugin_http.rs       #   中央 HTTP/SSE/WS 服务器: 动态路由 / SSE / WebSocket
+│       ├── plugin_http.rs       #   HTTP 服务装配与动态请求分发
+│       ├── plugin_http/
+│       │   ├── router.rs        #   动态路由匹配
+│       │   ├── sse.rs           #   SSE 事件总线、快照与流转换
+│       │   └── websocket.rs     #   实时 WebSocket 桥接
 │       ├── wasm_host.rs         #   WASM 运行时: wasmtime 实例、JSON ABI、host/api 桥接
 │       ├── extensions.rs        #   扩展数据系统: 用户/房间 KV 存储 + auth 缓存持久化
 │       ├── ban.rs               #   黑名单系统: 全局封禁 + 房间黑名单
@@ -133,11 +137,11 @@ Phira-mp-plus/
 │       ├── cli_tui.rs           #   TUI 终端界面: ratatui + crossterm
 │       └── l10n.rs              #   本地化: Fluent Bundle / tl! 宏
 │
-├── phira-mp-plus-server-api/    # ★ WASM 插件共享类型 crate
+├── phira-mp-plus-server-api/    # WASM 插件共享类型 crate
 │   └── src/lib.rs               #   PluginEvent / PluginInfo / HttpHandle
 │                                #   ServerStateQuery / PluginApiHandler
 │
-├── phira-mp/                    # ★ 上游 phira-mp By HSN 子模块 (协议层 + 原始服务端)
+├── phira-mp/                    # 上游 phira-mp 子模块（协议层与原始服务端）
 │   ├── phira-mp-common/         #   网络协议: 二进制编码 (BinaryData trait)、
 │   │   └── src/                 #     命令定义 (ClientCommand / ServerCommand)、
 │   │       ├── lib.rs           #     Stream 帧协议、RoomId / RoomState / 消息类型
@@ -154,6 +158,19 @@ Phira-mp-plus/
 │
 ├── server_config.yml            # YAML 配置文件 (同级副本, 运行时读取)
 └── LICENSE
+```
+
+
+## 终端兼容性
+
+启动时会检测 stdin/stdout、`TERM`、`STY` 与 `TMUX`。GNU Screen 自动切换到逐行兼容控制台，不启用颜色、备用屏幕、鼠标捕获或 Bracketed Paste；tmux 仍可使用完整 TUI。项目同时遵循 `NO_COLOR`，逐行输出会再次过滤残留控制序列。非交互环境同样使用逐行控制台。
+
+## SSE 房间事件
+
+`GET /rooms/listen` 建立连接后先发送 `ready`，随后以 `update_room` 补发当前房间快照，再持续推送 `create_room`、`update_room`、`join_room`、`leave_room` 和 `new_round`。可用下列命令直接检查数据流：
+
+```bash
+curl -N http://127.0.0.1:12347/rooms/listen
 ```
 
 ## CLI 命令
@@ -179,7 +196,7 @@ WASM 插件通过 `phira:host/api` 和 `phira:host/log` 等导入函数与宿主
 
 | 特性 | 说明 | 默认 |
 |------|------|------|
-| `plugin-system` | WASM 插件支持（wasmtime） | ✅ |
+| `plugin-system` | WASM 插件支持（wasmtime） | 是 |
 
 ## 配置参考
 
@@ -206,8 +223,6 @@ AGPLv3 — 详见 [LICENSE](LICENSE)。
 
 ## 致谢
 
-感谢[TeamFlos](https://github.com/TeamFlos)开发并维护Phira,Phira-mp项目
+感谢 [TeamFlos](https://github.com/TeamFlos) 开发和维护 Phira、phira-mp 项目。
 
-感谢[tphira-mp](https://github.com/Pimeng/tphira-mp),[jphira-mp](https://github.com/lRENyaaa/jphira-mp)的启发
-
-感谢所有资助过我们的用户[捐献页](https://phira.htadiy.com/about)
+感谢 [tphira-mp](https://github.com/Pimeng/tphira-mp) 与 [jphira-mp](https://github.com/lRENyaaa/jphira-mp) 提供的实现思路，以及所有支持本项目的用户。

@@ -1,254 +1,116 @@
-//! 中央 HTTP/SSE/WS 服务器
-//!
-//! 插件通过 PluginContext 注册路由和推送 SSE 事件，
-//! 统一在单个端口暴露，无需每个插件自建 HTTP 服务。
-//! 支持运行时动态注册路由（所有请求通过 catch-all 处理器派发）。
-//! `/ws/live` and `/rooms/listen` are retained as legacy extension bridges.
-//! Official phira-web-monitor compatibility uses the native TCP monitor protocol.
+//! HTTP extension routes, SSE streams, and the live WebSocket bridge.
+
+mod router;
+mod sse;
+mod websocket;
 
 use crate::server::PlusServerState;
 use axum::{
-    Router, Json,
-    extract::ws::{Message, WebSocket, WebSocketUpgrade},
-    http::{StatusCode, Uri, Method},
-    response::sse::{Event, KeepAlive, Sse},
-    response::IntoResponse,
-    routing::any,
+    extract::State,
+    http::{header, HeaderName, HeaderValue, Method, StatusCode, Uri},
+    response::{
+        sse::{KeepAlive, Sse},
+        IntoResponse, Response,
+    },
+    routing::{any, get},
+    Json, Router,
 };
-use futures::stream::Stream;
+use phira_mp_plus_server_api as api;
 use serde_json::Value;
-use std::convert::Infallible;
 use std::sync::Arc;
-use tokio::sync::{RwLock, broadcast};
-use tokio_stream::wrappers::BroadcastStream;
-use tokio_stream::StreamExt as _;
+use std::time::Duration;
+use tokio::sync::{broadcast, RwLock};
 use tower_http::cors::CorsLayer;
 use tracing::{error, info};
-use phira_mp_plus_server_api as api;
 
-/// SSE 事件
-#[derive(Debug, Clone)]
-pub struct SseEvent {
-    pub event_type: String,
-    pub data: String,
-}
+pub use router::HttpHandler;
+pub use sse::{SseEvent, SseHub};
+use router::DynamicRouter;
 
-/// 通用 HTTP 处理器：接收 (请求体JSON, 路径参数) → 返回 JSON
-pub type HttpHandler = Arc<dyn Fn(Option<Value>, Vec<String>) -> Result<Value, (u16, String)> + Send + Sync>;
-
-struct RouteEntry {
-    path: String,
-    handler: HttpHandler,
-}
-
-/// 动态路由表（支持运行时注册和查找）
-struct DynamicRouter {
-    /// 注册的路由条目（保持注册顺序，精确优先于通配）
-    entries: Vec<RouteEntry>,
-}
-
-impl DynamicRouter {
-    fn new() -> Self {
-        Self { entries: Vec::new() }
-    }
-
-    fn add(&mut self, path: String, handler: HttpHandler) {
-        self.entries.push(RouteEntry { path, handler });
-    }
-
-    /// 查找匹配的路由处理器。
-    /// 支持两种参数语法: `<param>` 和 `{param}`
-    fn resolve(&self, _method: &Method, uri: &Uri) -> Option<(HttpHandler, Vec<String>)> {
-        let path = uri.path();
-        for entry in &self.entries {
-            if let Some(params) = match_route(&entry.path, path) {
-                return Some((Arc::clone(&entry.handler), params));
-            }
-        }
-        None
-    }
-}
-
-/// 匹配路由模式与请求路径。返回路径参数（如果有）。
-/// 模式 "/api/round/last/<room_id>" 匹配 "/api/round/last/abc" → ["abc"]
-fn match_route(pattern: &str, path: &str) -> Option<Vec<String>> {
-    let p_segs: Vec<&str> = pattern.split('/').collect();
-    let u_segs: Vec<&str> = path.split('/').collect();
-    if p_segs.len() != u_segs.len() {
-        return None;
-    }
-    let mut params = Vec::new();
-    for (p, u) in p_segs.iter().zip(u_segs.iter()) {
-        if p.starts_with('<') && p.ends_with('>') {
-            params.push(u.to_string());
-        } else if p.starts_with('{') && p.ends_with('}') {
-            params.push(u.to_string());
-        } else if p != u {
-            return None;
-        }
-    }
-    Some(params)
-}
-
-/// 中央 HTTP/SSE/WS 服务器
 pub struct PluginHttpServer {
-    /// 共享动态路由表
     router: Arc<RwLock<DynamicRouter>>,
-    /// 通用 SSE 事件
-    sse_tx: broadcast::Sender<SseEvent>,
-    /// Legacy WebSocket live event bridge.
+    events: Arc<SseHub>,
     ws_live_tx: broadcast::Sender<Vec<u8>>,
-    /// Legacy room SSE event bridge.
-    room_sse_tx: broadcast::Sender<SseEvent>,
-    /// 来自 session.rs 的 RoomEvent 字符串广播
-    server_sse_tx: Option<tokio::sync::broadcast::Sender<String>>,
     port: u16,
 }
 
 impl PluginHttpServer {
-    pub fn new(port: u16) -> Self {
-        let (sse_tx, _) = broadcast::channel(256);
+    pub fn new(port: u16, events: Arc<SseHub>) -> Self {
         let (ws_live_tx, _) = broadcast::channel(256);
-        let (room_sse_tx, _) = broadcast::channel(256);
         Self {
-            router: Arc::new(RwLock::new(DynamicRouter::new())),
-            sse_tx,
+            router: Arc::new(RwLock::new(DynamicRouter::default())),
+            events,
             ws_live_tx,
-            room_sse_tx,
-            server_sse_tx: None,
             port,
         }
     }
 
     pub fn sse_sender(&self) -> broadcast::Sender<SseEvent> {
-        self.sse_tx.clone()
+        self.events.general_sender()
     }
 
-    /// WebSocket live 事件发送者（用于推送 Touches/Judges）
+    pub fn room_sse_sender(&self) -> broadcast::Sender<SseEvent> {
+        self.events.room_sender()
+    }
+
     pub fn ws_live_sender(&self) -> broadcast::Sender<Vec<u8>> {
         self.ws_live_tx.clone()
     }
 
-    /// Legacy room SSE event sender.
-    pub fn room_sse_sender(&self) -> broadcast::Sender<SseEvent> {
-        self.room_sse_tx.clone()
-    }
-
-    /// 注册 HTTP 路由（异步）
     pub async fn register_route(&self, path: &str, handler: HttpHandler) {
         self.router.write().await.add(path.to_string(), handler);
-        info!("registered HTTP route: {path}");
+        info!(path, "HTTP route registered");
     }
 
-    /// 注册 HTTP 路由（同步，用于 init 等非 async 环境）
     pub fn register_route_sync(&self, path: &str, handler: HttpHandler) {
         let path = path.to_string();
-        if let Ok(mut routes) = self.router.try_write() {
-            routes.add(path.clone(), handler);
-            info!("registered HTTP route: {path}");
-        } else {
-            // 极罕见 — 仅发生在另一个写入正在进行时。异步重试。
-            let router = Arc::clone(&self.router);
-            let path = path.clone();
-            tokio::spawn(async move {
-                router.write().await.add(path.clone(), handler);
-                info!("registered HTTP route (deferred): {path}");
-            });
+        if let Ok(mut router) = self.router.try_write() {
+            router.add(path.clone(), handler);
+            info!(path, "HTTP route registered");
+            return;
         }
-    }
 
-    /// 广播 SSE 事件
-    pub fn broadcast(&self, event_type: &str, data: &str) {
-        let _ = self.sse_tx.send(SseEvent {
-            event_type: event_type.to_string(),
-            data: data.to_string(),
-        });
-    }
-
-    /// 启动服务器
-    pub async fn start(&self, server: Arc<PlusServerState>) {
         let router = Arc::clone(&self.router);
-        let sse_tx = self.sse_tx.clone();
-        let ws_live_tx = self.ws_live_tx.clone();
-        let room_sse_tx = self.room_sse_tx.clone();
-        // 共享 SSE 发送器给 server state（供 session.rs 广播 RoomEvent）
-        let (sse_str_tx, _) = tokio::sync::broadcast::channel::<String>(256);
-        let sse_str_tx_for_spawn = sse_str_tx.clone();
-        *server.room_sse_tx.write().await = Some(sse_str_tx.clone());
-        // 转发 SseEvent → String SSE
-        let mut rx = room_sse_tx.subscribe();
         tokio::spawn(async move {
-            while let Ok(ev) = rx.recv().await {
-                let _ = sse_str_tx_for_spawn.send(serde_json::json!({"type": ev.event_type, "data": ev.data}).to_string());
-            }
+            router.write().await.add(path.clone(), handler);
+            info!(path, "HTTP route registered");
         });
-        let state = Arc::new(HttpAppState { router, sse_tx, ws_live_tx, room_sse_tx, server_sse_tx: Some(sse_str_tx) });
+    }
 
+    pub fn broadcast(&self, event_type: &str, data: &str) {
+        self.events.publish(SseEvent::new(event_type, data));
+    }
+
+    pub async fn start(&self, server: Arc<PlusServerState>) {
+        let state = Arc::new(HttpAppState {
+            router: Arc::clone(&self.router),
+            events: Arc::clone(&self.events),
+            ws_live_tx: self.ws_live_tx.clone(),
+            server,
+        });
         let app = Router::new()
-            // 通用 SSE 端点
-            .route("/api/events", axum::routing::get(sse_handler))
-            // Legacy room SSE bridge (not the native monitor protocol)
-            .route("/rooms/listen", axum::routing::get(room_sse_handler))
-            // Legacy WebSocket live bridge
-            .route("/ws/live", axum::routing::get(ws_live_handler))
-            // 动态路由 — 所有其他请求通过匹配派发
+            .route("/api/events", get(general_sse_handler))
+            .route("/rooms/listen", get(room_sse_handler))
+            .route("/ws/live", get(websocket::handler))
             .route("/{*path}", any(dynamic_handler))
             .layer(CorsLayer::permissive())
             .with_state(state);
 
-        let addr = format!("0.0.0.0:{}", self.port);
-        info!("Plugin HTTP/SSE on http://{}", addr);
-        let listener = match tokio::net::TcpListener::bind(&addr).await {
-            Ok(l) => l,
-            Err(e) => { error!("Bind plugin HTTP: {e}"); return; }
-        };
-        if let Err(e) = axum::serve(listener, app).await {
-            error!("Plugin HTTP server: {e}");
-        }
-    }
-}
-
-/// 所有注册路由的 catch-all 处理器
-async fn dynamic_handler(
-    axum::extract::State(st): axum::extract::State<Arc<HttpAppState>>,
-    method: Method,
-    uri: Uri,
-    body: Option<axum::extract::Json<Value>>,
-) -> impl IntoResponse {
-    // 尝试从动态路由表查找匹配
-    let handler = {
-        let guard = st.router.read().await;
-        guard.resolve(&method, &uri)
-    };
-
-    match handler {
-        Some((h, params)) => {
-            let request_body = body.map(|j| j.0);
-            // 在 blocking 线程中运行处理器
-            let result = tokio::task::spawn_blocking(move || {
-                h(request_body, params)
-            }).await;
-
-            match result {
-                Ok(Ok(json)) => (StatusCode::OK, Json(json)).into_response(),
-                Ok(Err((code, msg))) => {
-                    let err = serde_json::json!({"error": msg});
-                    (StatusCode::from_u16(code).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR), Json(err)).into_response()
-                }
-                Err(_) => {
-                    let err = serde_json::json!({"error": "handler panicked"});
-                    (StatusCode::INTERNAL_SERVER_ERROR, Json(err)).into_response()
-                }
+        let address = format!("0.0.0.0:{}", self.port);
+        let listener = match tokio::net::TcpListener::bind(&address).await {
+            Ok(listener) => listener,
+            Err(err) => {
+                error!(%address, ?err, "failed to bind HTTP server");
+                return;
             }
-        }
-        None => {
-            let err = serde_json::json!({"error": format!("route not found: {}", uri.path())});
-            (StatusCode::NOT_FOUND, Json(err)).into_response()
+        };
+        info!(%address, "HTTP server started");
+        if let Err(err) = axum::serve(listener, app).await {
+            error!(?err, "HTTP server stopped unexpectedly");
         }
     }
 }
 
-/// 桥接：将 api::HttpHandleInner 连接到 PluginHttpServer
 pub struct HttpHandleBridge(pub Arc<PluginHttpServer>);
 
 impl api::HttpHandleInner for HttpHandleBridge {
@@ -257,94 +119,68 @@ impl api::HttpHandleInner for HttpHandleBridge {
     }
 }
 
-/// Axum 共享状态
-struct HttpAppState {
+pub(super) struct HttpAppState {
     router: Arc<RwLock<DynamicRouter>>,
-    sse_tx: broadcast::Sender<SseEvent>,
+    events: Arc<SseHub>,
     ws_live_tx: broadcast::Sender<Vec<u8>>,
-    room_sse_tx: broadcast::Sender<SseEvent>,
-    /// 来自 session.rs 的 RoomEvent 字符串广播
-    server_sse_tx: Option<tokio::sync::broadcast::Sender<String>>,
+    server: Arc<PlusServerState>,
 }
 
-// ── 通用 SSE 端点 ──
-async fn sse_handler(
-    axum::extract::State(st): axum::extract::State<Arc<HttpAppState>>,
-) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
-    let rx = st.sse_tx.subscribe();
-    let stream = BroadcastStream::new(rx).filter_map(|result| match result {
-        Ok(ev) => Some(Ok(Event::default().event(ev.event_type).data(ev.data))),
-        Err(_) => None,
-    });
-    Sse::new(stream).keep_alive(KeepAlive::default())
+async fn general_sse_handler(State(state): State<Arc<HttpAppState>>) -> Response {
+    sse_response(
+        sse::general_stream(state.events.subscribe_general()),
+        Duration::from_secs(15),
+    )
 }
 
-// ── Legacy room SSE bridge ──
-async fn room_sse_handler(
-    axum::extract::State(st): axum::extract::State<Arc<HttpAppState>>,
-) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
-    //
-    // 合并两个流：SseEvent 流 + String 流（来自 session.rs RoomEvent）
-    let rx1 = st.room_sse_tx.subscribe();
-    use futures::stream::StreamExt as _;
-    let event_stream = tokio_stream::StreamExt::filter_map(BroadcastStream::new(rx1), |result| match result {
-        Ok(ev) => Some(Ok(Event::default().event(ev.event_type).data(ev.data))),
-        Err(_) => None,
-    });
-    // 附加 String 流（来自 session.rs RoomEvent）
-    let room_stream = match st.server_sse_tx.as_ref() {
-        Some(tx) => {
-            let rx2 = tx.subscribe();
-            let s = tokio_stream::StreamExt::filter_map(BroadcastStream::new(rx2), |result| match result {
-                Ok(data) => Some(Ok(Event::default().event("room_event").data(data))),
-                Err(_) => None,
-            });
-            s.boxed()
-        }
-        None => futures::stream::empty().boxed(),
-    };
-    let stream = event_stream.merge(room_stream);
-    Sse::new(stream).keep_alive(KeepAlive::default())
+async fn room_sse_handler(State(state): State<Arc<HttpAppState>>) -> Response {
+    let stream = sse::room_stream(
+        Arc::clone(&state.server),
+        state.events.subscribe_rooms(),
+    )
+    .await;
+    sse_response(stream, Duration::from_secs(10))
 }
 
-// ── Legacy WebSocket live bridge ──
-async fn ws_live_handler(
-    ws: WebSocketUpgrade,
-    axum::extract::State(st): axum::extract::State<Arc<HttpAppState>>,
+fn sse_response(stream: sse::EventStream, interval: Duration) -> Response {
+    let mut response = Sse::new(stream)
+        .keep_alive(KeepAlive::new().interval(interval).text("keep-alive"))
+        .into_response();
+    let headers = response.headers_mut();
+    headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-cache"));
+    headers.insert(
+        HeaderName::from_static("x-accel-buffering"),
+        HeaderValue::from_static("no"),
+    );
+    response
+}
+
+async fn dynamic_handler(
+    State(state): State<Arc<HttpAppState>>,
+    method: Method,
+    uri: Uri,
+    body: Option<Json<Value>>,
 ) -> impl IntoResponse {
-    ws.on_upgrade(move |socket| handle_ws_socket(socket, st))
-}
+    let route = state.router.read().await.resolve(&method, &uri);
+    let Some((handler, params)) = route else {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({"error": format!("route not found: {}", uri.path())})),
+        )
+            .into_response();
+    };
 
-async fn handle_ws_socket(mut socket: WebSocket, st: Arc<HttpAppState>) {
-    let mut rx = st.ws_live_tx.subscribe();
-    let (_tx, rx2) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
-
-    // 读取 WebSocket 消息（心跳处理）
-    let _recv_fut = Box::pin(async {
-        use tokio_stream::StreamExt as _;
-        let mut stream = tokio_stream::wrappers::UnboundedReceiverStream::new(rx2);
-        while let Some(_) = stream.next().await {}
-    });
-
-    loop {
-        tokio::select! {
-            result = rx.recv() => {
-                match result {
-                    Ok(data) => {
-                        if socket.send(Message::Binary(axum::body::Bytes::from(data))).await.is_err() {
-                            break;
-                        }
-                    }
-                    Err(_) => break,
-                }
-            }
-            msg = socket.recv() => {
-                match msg {
-                    Some(Ok(Message::Close(_) | Message::Ping(_) | Message::Pong(_))) => break,
-                    None | Some(Err(_)) => break,
-                    _ => {}
-                }
-            }
-        }
+    match tokio::task::spawn_blocking(move || handler(body.map(|body| body.0), params)).await {
+        Ok(Ok(value)) => (StatusCode::OK, Json(value)).into_response(),
+        Ok(Err((status, message))) => (
+            StatusCode::from_u16(status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
+            Json(serde_json::json!({"error": message})),
+        )
+            .into_response(),
+        Err(err) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": format!("handler failed: {err}")})),
+        )
+            .into_response(),
     }
 }

@@ -21,8 +21,7 @@ phira-mp-plus-server [OPTIONS]
 
 ## 交互式管理控制台
 
-服务器启动后自动进入 TUI（基于 ratatui）管理控制台（screen/tmux 下回落为 stdin CLI）。
-支持命令输入和日志实时显示。
+服务器在普通交互式终端和 tmux 中启动 ratatui 管理控制台。GNU Screen 环境自动切换为逐行兼容控制台，不输出颜色、备用屏幕、鼠标或 Bracketed Paste 控制序列；重定向、systemd 和其他非 TTY 环境也使用逐行控制台。设置 `NO_COLOR` 可在其他终端中关闭颜色。
 
 ### 命令列表
 

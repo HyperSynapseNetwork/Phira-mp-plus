@@ -1,9 +1,6 @@
-//! Phira-mp+ interactive terminal console.
-//!
-//! The renderer keeps logical output lines separate from wrapped visual rows.
-//! This avoids the mixed scroll-index model that caused corrupted layouts after
-//! scrolling, especially inside GNU screen/tmux.
+//! Interactive administrative console.
 
+use crate::terminal::{sanitize_paste, strip_ansi, TuiCapabilities};
 use crossterm::{
     cursor::{Hide, Show},
     event::{
@@ -34,55 +31,55 @@ use unicode_width::UnicodeWidthChar;
 const MAX_LOGICAL_LINES: usize = 10_000;
 const RETAIN_LOGICAL_LINES: usize = 8_000;
 
-/// Restores the terminal even when the TUI exits through an error path.
-struct TerminalSession;
+struct TerminalSession {
+    capabilities: TuiCapabilities,
+}
 
 impl TerminalSession {
-    fn enter() -> io::Result<Self> {
+    fn enter(capabilities: TuiCapabilities) -> io::Result<Self> {
         enable_raw_mode()?;
         let mut stdout = io::stdout();
-        if let Err(err) = execute!(
-            stdout,
-            EnterAlternateScreen,
-            EnableBracketedPaste,
-            EnableMouseCapture,
-            DisableLineWrap,
-            Hide,
-        ) {
+        if let Err(err) = execute!(stdout, EnterAlternateScreen, DisableLineWrap, Hide) {
             let _ = disable_raw_mode();
             return Err(err);
         }
-        Ok(Self)
+        let session = Self { capabilities };
+        if capabilities.bracketed_paste {
+            execute!(stdout, EnableBracketedPaste)?;
+        }
+        if capabilities.mouse_capture {
+            execute!(stdout, EnableMouseCapture)?;
+        }
+        Ok(session)
     }
 }
 
 impl Drop for TerminalSession {
     fn drop(&mut self) {
         let mut stdout = io::stdout();
-        let _ = execute!(
-            stdout,
-            Show,
-            EnableLineWrap,
-            DisableMouseCapture,
-            DisableBracketedPaste,
-            LeaveAlternateScreen,
-        );
+        if self.capabilities.mouse_capture {
+            let _ = execute!(stdout, DisableMouseCapture);
+        }
+        if self.capabilities.bracketed_paste {
+            let _ = execute!(stdout, DisableBracketedPaste);
+        }
+        let _ = execute!(stdout, Show, EnableLineWrap, LeaveAlternateScreen);
         let _ = disable_raw_mode();
     }
 }
 
-/// Run the interactive TUI on the current thread.
 pub fn run_tui(
     cmd_tx: mpsc::UnboundedSender<String>,
     mut out_rx: mpsc::UnboundedReceiver<String>,
     mut log_rx: mpsc::UnboundedReceiver<String>,
+    capabilities: TuiCapabilities,
 ) -> io::Result<()> {
-    let _session = TerminalSession::enter()?;
+    let _session = TerminalSession::enter(capabilities)?;
     let backend = CrosstermBackend::new(io::stdout());
     let mut terminal = Terminal::new(backend)?;
     terminal.clear()?;
 
-    let mut app = TuiApp::new(cmd_tx);
+    let mut app = TuiApp::new(cmd_tx, capabilities.colors);
     let result = app.run_loop(&mut terminal, &mut out_rx, &mut log_rx);
     let _ = terminal.show_cursor();
     result
@@ -101,10 +98,11 @@ struct TuiApp {
     running: bool,
     last_wrap_width: usize,
     last_page_height: usize,
+    colors: bool,
 }
 
 impl TuiApp {
-    fn new(cmd_tx: mpsc::UnboundedSender<String>) -> Self {
+    fn new(cmd_tx: mpsc::UnboundedSender<String>, colors: bool) -> Self {
         Self {
             output_lines: Vec::with_capacity(1024),
             scroll_from_bottom: 0,
@@ -116,6 +114,7 @@ impl TuiApp {
             running: true,
             last_wrap_width: 80,
             last_page_height: 20,
+            colors,
         }
     }
 
@@ -399,7 +398,7 @@ impl TuiApp {
             let y = chunks[0].y
                 + ((from_top * output_height.saturating_sub(1)) / max_offset) as u16;
             frame.render_widget(
-                Paragraph::new(Span::styled("┃", Style::default().fg(Color::Cyan))),
+                Paragraph::new(Span::styled("┃", self.accent_style())),
                 ratatui::layout::Rect::new(
                     chunks[0].x + chunks[0].width.saturating_sub(1),
                     y,
@@ -412,9 +411,9 @@ impl TuiApp {
         let input_width = chunks[1].width.saturating_sub(2) as usize;
         let (input_visible, cursor_col) = input_window(&self.input, self.cursor_pos, input_width);
         let prompt = if self.input.is_empty() {
-            Span::styled("→ ", Style::default().fg(Color::DarkGray))
+            Span::styled("→ ", self.muted_style())
         } else {
-            Span::styled("→ ", Style::default().fg(Color::Cyan))
+            Span::styled("→ ", self.accent_style())
         };
         frame.render_widget(
             Paragraph::new(Line::from(vec![prompt, Span::raw(input_visible)])),
@@ -434,9 +433,25 @@ impl TuiApp {
             )
         };
         frame.render_widget(
-            Paragraph::new(Span::styled(status, Style::default().fg(Color::DarkGray))),
+            Paragraph::new(Span::styled(status, self.muted_style())),
             chunks[2],
         );
+    }
+
+    fn accent_style(&self) -> Style {
+        if self.colors {
+            Style::default().fg(Color::Cyan)
+        } else {
+            Style::default()
+        }
+    }
+
+    fn muted_style(&self) -> Style {
+        if self.colors {
+            Style::default().fg(Color::DarkGray)
+        } else {
+            Style::default()
+        }
     }
 }
 
@@ -518,57 +533,6 @@ fn input_window(input: &str, cursor_pos: usize, max_width: usize) -> (String, us
     (visible, cursor_width)
 }
 
-fn sanitize_paste(text: &str) -> String {
-    strip_ansi(text)
-        .replace('\r', " ").replace('\n', " ")
-        .chars()
-        .filter(|ch| !ch.is_control() || *ch == '\t')
-        .collect()
-}
-
-/// Remove CSI/OSC and common two-byte ANSI escape sequences.
-fn strip_ansi(s: &str) -> String {
-    let chars: Vec<char> = s.chars().collect();
-    let mut out = String::with_capacity(s.len());
-    let mut i = 0;
-    while i < chars.len() {
-        if chars[i] != '\x1b' {
-            out.push(chars[i]);
-            i += 1;
-            continue;
-        }
-        i += 1;
-        match chars.get(i).copied() {
-            Some('[') => {
-                i += 1;
-                while let Some(ch) = chars.get(i).copied() {
-                    i += 1;
-                    if ('\x40'..='\x7e').contains(&ch) {
-                        break;
-                    }
-                }
-            }
-            Some(']') => {
-                i += 1;
-                while i < chars.len() {
-                    if chars[i] == '\x07' {
-                        i += 1;
-                        break;
-                    }
-                    if chars[i] == '\x1b' && chars.get(i + 1) == Some(&'\\') {
-                        i += 2;
-                        break;
-                    }
-                    i += 1;
-                }
-            }
-            Some(ch) if ('\x40'..='\x5f').contains(&ch) => i += 1,
-            _ => {}
-        }
-    }
-    out
-}
-
 /// Line-oriented fallback used when stdin/stdout are redirected or not TTYs.
 pub fn run_stdin_cli(
     cmd_tx: mpsc::UnboundedSender<String>,
@@ -585,12 +549,12 @@ pub fn run_stdin_cli_with_logs(
 ) {
     std::thread::spawn(move || {
         while let Some(line) = out_rx.blocking_recv() {
-            println!("{line}");
+            println!("{}", strip_ansi(&line));
         }
     });
     std::thread::spawn(move || {
         while let Some(line) = log_rx.blocking_recv() {
-            print!("{line}");
+            print!("{}", strip_ansi(&line));
             let _ = io::stdout().flush();
         }
     });
@@ -639,14 +603,9 @@ mod tests {
     }
 
     #[test]
-    fn strips_ansi_sequences() {
-        assert_eq!(strip_ansi("\x1b[31mred\x1b[0m"), "red");
-    }
-
-    #[test]
     fn screen_ctrl_h_is_backspace_but_plain_h_is_text() {
         let (tx, _rx) = mpsc::unbounded_channel();
-        let mut app = TuiApp::new(tx);
+        let mut app = TuiApp::new(tx, false);
         app.insert_text("ah");
         app.handle_key(KeyEvent::new(KeyCode::Char('h'), KeyModifiers::CONTROL));
         assert_eq!(app.input, "a");

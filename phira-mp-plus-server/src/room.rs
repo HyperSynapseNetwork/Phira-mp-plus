@@ -1,20 +1,20 @@
-//! Phira-mp+ 房间管理
-//!
-//! 增强的房间管理，集成插件事件系统。记录每轮游玩结算数据，
-//! 支持查询历史、转移房主等管理功能。
+//! Room state, gameplay lifecycle, and live telemetry.
 
-use crate::plugin::{PluginEvent, PluginManager, TouchEventPoint, JudgeEventItem};
+use crate::plugin::{JudgeEventItem, PluginEvent, PluginManager, TouchEventPoint};
 use crate::server::Chart;
-use anyhow::{Result, bail};
-use phira_mp_common::{ClientRoomState, Message, RoomId, RoomState, ServerCommand};
+use anyhow::{bail, Result};
+use phira_mp_common::{
+    ClientRoomState, Message, PartialRoomData, RoomEvent, RoomId, RoomState, RoundData,
+    ServerCommand, StrippedRoomState,
+};
 use rand::seq::IndexedRandom;
 use serde::Serialize;
 use std::{
     collections::{HashMap, HashSet},
     ops::Deref,
     sync::{
-        Arc, Weak,
         atomic::{AtomicBool, AtomicUsize, Ordering},
+        Arc, Weak,
     },
 };
 use tokio::sync::RwLock;
@@ -39,6 +39,14 @@ impl InternalRoomState {
             Self::SelectChart => RoomState::SelectChart(chart),
             Self::WaitForReady { .. } => RoomState::WaitingForReady,
             Self::Playing { .. } => RoomState::Playing,
+        }
+    }
+
+    fn stripped(&self) -> StrippedRoomState {
+        match self {
+            Self::SelectChart => StrippedRoomState::SelectingChart,
+            Self::WaitForReady { .. } => StrippedRoomState::WaitingForReady,
+            Self::Playing { .. } => StrippedRoomState::Playing,
         }
     }
 }
@@ -100,12 +108,37 @@ pub struct PlayResult {
     pub std_score: f32,
 }
 
+fn protocol_round(round: &PlayRound) -> RoundData {
+    RoundData {
+        chart: round.chart_id,
+        records: round
+            .results
+            .iter()
+            .map(|result| phira_mp_common::Record {
+                id: 0,
+                player: result.user_id,
+                score: result.score,
+                perfect: result.perfect,
+                good: result.good,
+                bad: result.bad,
+                miss: result.miss,
+                max_combo: result.max_combo,
+                accuracy: result.accuracy,
+                full_combo: result.full_combo,
+                std: 0.0,
+                std_score: result.std_score,
+            })
+            .collect(),
+    }
+}
+
 pub struct Room {
     pub id: RoomId,
     /// 房间唯一标识符
     pub uuid: uuid::Uuid,
     /// 用于触发 RoundComplete 事件的插件管理器
     pub plugin_manager: Option<Arc<PluginManager>>,
+    server: Weak<crate::server::PlusServerState>,
     pub host: RwLock<Weak<super::session::User>>,
     pub state: RwLock<InternalRoomState>,
 
@@ -128,7 +161,7 @@ pub struct Room {
     /// 各玩家实时触控/判定数据缓存（供插件 WASM host API 查询）
     pub player_data: RwLock<HashMap<i32, PlayerLiveData>>,
 
-    /// 轮次数据持久化存储（代替直接的 server 弱引用）
+    /// 轮次数据持久化存储。
     pub round_store: Option<Arc<crate::round_store::RoundStore>>,
 
     /// 房间创建时间戳（Unix 毫秒）
@@ -140,6 +173,7 @@ impl Room {
         id: RoomId,
         host: Weak<super::session::User>,
         plugin_manager: Option<Arc<PluginManager>>,
+        server: Weak<crate::server::PlusServerState>,
         max_users: usize,
         round_store: Option<Arc<crate::round_store::RoundStore>>,
     ) -> Self {
@@ -163,14 +197,13 @@ impl Room {
             play_history: RwLock::new(Vec::new()),
             current_round_id: RwLock::new(None),
             plugin_manager,
+            server,
             max_users: AtomicUsize::new(max_users),
             player_data: RwLock::new(HashMap::new()),
             round_store,
             created_at: now,
         }
     }
-
-    // ── 查询方法 ──
 
     pub fn is_live(&self) -> bool {
         self.live.load(Ordering::SeqCst)
@@ -243,30 +276,14 @@ impl Room {
         let host = room.host.read().await.upgrade().map(|u| u.id).unwrap_or(-1);
         let users: Vec<i32> = room.users().await.into_iter().map(|u| u.id).collect();
         let chart = room.chart.read().await.as_ref().map(|c| c.id);
-        let state = match &*room.state.read().await {
-            InternalRoomState::SelectChart => phira_mp_common::StrippedRoomState::SelectingChart,
-            InternalRoomState::WaitForReady { .. } => phira_mp_common::StrippedRoomState::WaitingForReady,
-            InternalRoomState::Playing { .. } => phira_mp_common::StrippedRoomState::Playing,
-        };
-        let rounds = room.play_history.read().await.iter().map(|r| {
-            phira_mp_common::RoundData {
-                chart: r.chart_id,
-                records: r.results.iter().map(|res| phira_mp_common::Record {
-                    id: 0,
-                    player: res.user_id,
-                    score: res.score,
-                    perfect: res.perfect,
-                    good: res.good,
-                    bad: res.bad,
-                    miss: res.miss,
-                    max_combo: res.max_combo,
-                    accuracy: res.accuracy,
-                    full_combo: res.full_combo,
-                    std: 0.0,
-                    std_score: res.std_score,
-                }).collect(),
-            }
-        }).collect();
+        let state = room.state.read().await.stripped();
+        let rounds = room
+            .play_history
+            .read()
+            .await
+            .iter()
+            .map(protocol_round)
+            .collect();
         phira_mp_common::RoomData {
             host,
             users,
@@ -278,12 +295,27 @@ impl Room {
         }
     }
 
+    pub(crate) async fn publish_update(&self, data: PartialRoomData) {
+        if let Some(server) = self.server.upgrade() {
+            server
+                .publish_room_event(RoomEvent::UpdateRoom {
+                    room: self.id.clone(),
+                    data,
+                })
+                .await;
+        }
+    }
+
     pub async fn on_state_change(&self) {
         self.broadcast(ServerCommand::ChangeState(self.client_room_state().await))
             .await;
+        let state = self.state.read().await.stripped();
+        self.publish_update(PartialRoomData {
+            state: Some(state),
+            ..Default::default()
+        })
+        .await;
     }
-
-    // ── 实时监测数据 ──
 
     /// 存储玩家的触控帧数据（供 WASM 插件 host API 查询）
     pub async fn store_player_touches(&self, user_id: i32, data: &[TouchEventPoint]) {
@@ -312,8 +344,6 @@ impl Room {
             .map(|d| d.judges.clone())
             .unwrap_or_default()
     }
-
-    // ── 用户管理 ──
 
     pub async fn add_user(&self, user: Weak<super::session::User>, monitor: bool) -> bool {
         if monitor {
@@ -358,9 +388,7 @@ impl Room {
         Ok(())
     }
 
-    /// 转移房主
     pub async fn transfer_host(&self, new_host_id: i32) -> Result<()> {
-        // 通知旧房主
         if let Some(old_host) = self.host.read().await.upgrade() {
             if old_host.id != new_host_id {
                 old_host.try_send(ServerCommand::ChangeHost(false)).await;
@@ -376,10 +404,13 @@ impl Room {
         *self.host.write().await = weak;
         self.send(Message::NewHost { user: new_host_id }).await;
         user.try_send(ServerCommand::ChangeHost(true)).await;
+        self.publish_update(PartialRoomData {
+            host: Some(new_host_id),
+            ..Default::default()
+        })
+        .await;
         Ok(())
     }
-
-    // ── 消息广播 ──
 
     #[inline]
     pub async fn send(&self, msg: Message) {
@@ -448,13 +479,16 @@ impl Room {
                 *self.host.write().await = Arc::downgrade(user);
                 self.send(Message::NewHost { user: user.id }).await;
                 user.try_send(ServerCommand::ChangeHost(true)).await;
+                self.publish_update(PartialRoomData {
+                    host: Some(user.id),
+                    ..Default::default()
+                })
+                .await;
             }
         }
         self.check_all_ready().await;
         false
     }
-
-    // ── 游戏流程 ──
 
     pub async fn reset_game_time(&self) {
         for user in self.users().await {
@@ -463,8 +497,7 @@ impl Room {
         }
     }
 
-    /// 保存当前轮次的结算数据到历史记录
-    async fn save_round_history(&self) {
+    async fn save_round_history(&self) -> Option<RoundData> {
         let round_id = self.current_round_id.read().await.unwrap_or(uuid::Uuid::nil());
         let (chart_id, chart_name, results, aborted) = {
             let guard = self.state.read().await;
@@ -473,13 +506,13 @@ impl Room {
                     let cid = self.chart.read().await.as_ref().map(|c| (c.id, c.name.clone()));
                     let (cid, cn) = match cid {
                         Some((id, name)) => (id, name),
-                        None => return, // 没有谱面信息，跳过
+                        None => return None,
                     };
                     let results = results.clone();
                     let aborted = aborted.clone();
                     (cid, cn, results, aborted)
                 }
-                _ => return,
+                _ => return None,
             }
         };
 
@@ -534,12 +567,14 @@ impl Room {
             results: play_results,
         };
 
+        let event = protocol_round(&round);
         self.play_history.write().await.push(round);
         info!(
             room = self.id.to_string(),
             "saved play round history (total {})",
             self.play_history.read().await.len()
         );
+        Some(event)
     }
 
     pub async fn check_all_ready(&self) {
@@ -598,9 +633,18 @@ impl Room {
                     .all(|it| results.contains_key(&it.id) || aborted.contains(&it.id))
                 {
                     drop(guard);
-                    // 保存历史记录
                     let rid = *self.current_round_id.read().await;
-                    self.save_round_history().await;
+                    let completed_round = self.save_round_history().await;
+                    if let (Some(server), Some(round)) =
+                        (self.server.upgrade(), completed_round)
+                    {
+                        server
+                            .publish_room_event(RoomEvent::NewRound {
+                                room: self.id.clone(),
+                                round,
+                            })
+                            .await;
+                    }
 
                     // 关闭轮次数据存储
                     if let Some(rid) = rid {
@@ -658,6 +702,11 @@ impl Room {
                             old.try_send(ServerCommand::ChangeHost(false)).await;
                         }
                         new_host.try_send(ServerCommand::ChangeHost(true)).await;
+                        self.publish_update(PartialRoomData {
+                            host: Some(new_host.id),
+                            ..Default::default()
+                        })
+                        .await;
                     }
                     self.on_state_change().await;
                 }

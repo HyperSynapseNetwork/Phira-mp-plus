@@ -1,32 +1,32 @@
-//! Phira-mp+ 会话管理与命令处理
-//!
-//! 增强的会话管理，集成插件事件系统。
+//! Client sessions, authentication, and command dispatch.
 
-use crate::l10n::{LANGUAGE, Language};
+use crate::l10n::{Language, LANGUAGE};
 use crate::plugin::PluginEvent;
 use crate::server::PlusServerState;
 use crate::tl;
-use anyhow::{Result, anyhow, bail};
+use anyhow::{anyhow, bail, Result};
 use phira_mp_common::{
     ClientCommand, JoinRoomResponse, Message, PartialRoomData, RoomEvent, ServerCommand, Stream,
     StrippedRoomState, UserInfo,
 };
-
-const HEARTBEAT_DISCONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(600);
 use serde::Deserialize;
-use std::sync::{
-    Arc, Weak,
-    atomic::{AtomicBool, AtomicU32, Ordering},
+use std::{
+    sync::{
+        atomic::{AtomicBool, AtomicU32, Ordering},
+        Arc, Weak,
+    },
+    time::{Duration, Instant},
 };
-use std::time::{Duration, Instant};
 use tokio::{
     net::TcpStream,
     sync::{Mutex, Notify, OnceCell, RwLock},
     task::JoinHandle,
     time,
 };
-use tracing::{Instrument, debug, debug_span, error, info, trace, warn};
+use tracing::{debug, debug_span, error, info, trace, warn, Instrument};
 use uuid::Uuid;
+
+const HEARTBEAT_DISCONNECT_TIMEOUT: Duration = Duration::from_secs(600);
 
 #[derive(Debug, Deserialize)]
 struct AuthUserInfo {
@@ -116,9 +116,7 @@ impl User {
         let room = guard.as_ref().map(Arc::clone);
         drop(guard);
 
-        // Protocol peers use synthetic negative IDs and are not reconnectable
-        // players. Remove them immediately and do not emit player lifecycle
-        // events into plugins or the room monitor.
+        // Monitor sessions are transient and never enter the player lifecycle.
         if self.id < 0 {
             if let Some(room) = room {
                 if room.on_user_leave(&self).await {
@@ -151,10 +149,19 @@ impl User {
                     }
                 }
                 drop(guard);
+                let room_id = room.id.clone();
+                let was_monitor = self.monitor.load(Ordering::SeqCst);
                 if room.on_user_leave(&self).await {
-                    self.server.rooms.write().await.remove(&room.id);
+                    self.server.rooms.write().await.remove(&room_id);
                 }
-                // 触发插件事件
+                if !was_monitor {
+                    self.server
+                        .publish_room_event(RoomEvent::LeaveRoom {
+                            room: room_id,
+                            user: self.id,
+                        })
+                        .await;
+                }
                 self.server.plugin_manager.trigger(&PluginEvent::UserDisconnect {
                     user_id: self.id,
                     user_name: self.name.clone(),
@@ -163,7 +170,6 @@ impl User {
                 return;
             }
         }
-        // 触发插件事件
         self.server.plugin_manager.trigger(&PluginEvent::UserDisconnect {
             user_id: self.id,
             user_name: self.name.clone(),
@@ -189,8 +195,18 @@ impl User {
                                 users.remove(&self_.id);
                             }
                         }
+                        let room_id = room.id.clone();
+                        let was_monitor = self_.monitor.load(Ordering::SeqCst);
                         if room.on_user_leave(&self_).await {
-                            self_.server.rooms.write().await.remove(&room.id);
+                            self_.server.rooms.write().await.remove(&room_id);
+                        }
+                        if !was_monitor {
+                            self_.server
+                                .publish_room_event(RoomEvent::LeaveRoom {
+                                    room: room_id,
+                                    user: self_.id,
+                                })
+                                .await;
                         }
                     }
                 }
@@ -289,7 +305,6 @@ impl Session {
                                             Sha256::digest(token.as_bytes())[..8].try_into().unwrap()
                                         );
 
-                                        // ★ 优先检查缓存：如果 token 已缓存，直接验证封禁状态，跳过 API 请求
                                         let user_info = {
                                             let ac = server.extensions.get_auth_cache().await;
                                             ac.get(&token_hash).cloned()
@@ -365,8 +380,8 @@ impl Session {
                                                     user_id: user_info.id,
                                                     user_name: user_info.name.clone(),
                                                     user_ip,
-                                                }).await;
-                                            // 内置 hooks
+                                                })
+                                                .await;
                                             let online = {
                                                 let rooms = server.rooms.read().await;
                                                 let mut in_room: std::collections::HashSet<i32> = std::collections::HashSet::new();
@@ -397,7 +412,6 @@ impl Session {
                                                 .await;
                                             users_guard.insert(user_info.id, Arc::clone(&user));
 
-                                            // 触发插件事件：用户连接
                                             let user_ip = this.get().map(|s| s.ip.clone()).unwrap_or_default();
                                             server.plugin_manager
                                                 .trigger(&PluginEvent::UserConnect {
@@ -406,7 +420,6 @@ impl Session {
                                                     user_ip,
                                                 })
                                                 .await;
-                                            // 内置 hooks
                                             let online = {
                                                 let rooms = server.rooms.read().await;
                                                 let mut in_room: std::collections::HashSet<i32> = std::collections::HashSet::new();
@@ -728,13 +741,6 @@ async fn process(user: Arc<User>, category: SessionCategory, cmd: ClientCommand)
         return None;
     }
 
-    macro_rules! send_room_event {
-        ($event_type:ident $data:tt $(,)?) => {
-            if let Some(peer) = user.server.get_room_monitor().await {
-                peer.try_send(ServerCommand::RoomEvent(RoomEvent::$event_type $data)).await;
-            }
-        };
-    }
     match cmd {
         ClientCommand::Ping => unreachable!(),
         ClientCommand::Authenticate { .. } => Some(ServerCommand::Authenticate(Err(
@@ -756,7 +762,6 @@ async fn process(user: Arc<User>, category: SessionCategory, cmd: ClientCommand)
                 if let Some(frame) = frames.last() {
                     user.game_time.store(frame.time.to_bits(), Ordering::SeqCst);
                 }
-                // 转换触控数据并存入房间缓存（供 WASM host API 查询）
                 let touch_data: Vec<crate::plugin::TouchEventPoint> = frames
                     .iter()
                     .flat_map(|frame| {
@@ -772,14 +777,12 @@ async fn process(user: Arc<User>, category: SessionCategory, cmd: ClientCommand)
                     .collect();
                 if !touch_data.is_empty() {
                     room.store_player_touches(user.id, &touch_data).await;
-                    // 同时写入轮次持久化存储
                     if let Some(rid) = room.current_round_id.read().await.as_ref() {
                         if let Some(rs) = &room.round_store {
                             rs.append_touches(&rid.to_string(), user.id, &touch_data).await;
                         }
                     }
                 }
-                // 触发插件事件：玩家触摸
                 let pm = Arc::clone(&user.server.plugin_manager);
                 let room_id = room.id.to_string();
                 let touch_data_for_event = touch_data.clone();
@@ -807,7 +810,6 @@ async fn process(user: Arc<User>, category: SessionCategory, cmd: ClientCommand)
             get_room!(~ room);
             if room.is_live() {
                 debug!("received {} judge events from {}", judges.len(), user.id);
-                // 转换判定数据并存入房间缓存（供 WASM host API 查询）
                 let judge_data: Vec<crate::plugin::JudgeEventItem> = judges
                     .iter()
                     .map(|j| crate::plugin::JudgeEventItem {
@@ -819,14 +821,12 @@ async fn process(user: Arc<User>, category: SessionCategory, cmd: ClientCommand)
                     .collect();
                 if !judge_data.is_empty() {
                     room.store_player_judges(user.id, &judge_data).await;
-                    // 同时写入轮次持久化存储
                     if let Some(rid) = room.current_round_id.read().await.as_ref() {
                         if let Some(rs) = &room.round_store {
                             rs.append_judges(&rid.to_string(), user.id, &judge_data).await;
                         }
                     }
                 }
-                // 触发插件事件：玩家判定
                 let pm = Arc::clone(&user.server.plugin_manager);
                 let room_id = room.id.to_string();
                 let judge_data_for_event = judge_data.clone();
@@ -836,7 +836,7 @@ async fn process(user: Arc<User>, category: SessionCategory, cmd: ClientCommand)
                         user_id: uid,
                         room_id,
                         data: judge_data_for_event,
-                        }).await;
+                    }).await;
                 });
                 tokio::spawn(async move {
                     room.broadcast_monitors(ServerCommand::Judges {
@@ -863,6 +863,7 @@ async fn process(user: Arc<User>, category: SessionCategory, cmd: ClientCommand)
                     id.clone(),
                     Arc::downgrade(&user),
                     Some(Arc::clone(&user.server.plugin_manager)),
+                    Arc::downgrade(&user.server),
                     max_users,
                     Some(Arc::clone(&user.server.round_store)),
                 ));
@@ -877,13 +878,17 @@ async fn process(user: Arc<User>, category: SessionCategory, cmd: ClientCommand)
                 let room_uuid = room.uuid;
                 room.send(Message::CreateRoom { user: user.id }).await;
                 drop(map_guard);
-                send_room_event!(CreateRoom { room: id.clone(), data: crate::room::Room::into_data(&room).await });
+                user.server
+                    .publish_room_event(RoomEvent::CreateRoom {
+                        room: id.clone(),
+                        data: crate::room::Room::into_data(&room).await,
+                    })
+                    .await;
                 *room_guard = Some(room);
 
                 info!(user = user.id, room = id.to_string(), room_uuid = %room_uuid, "user create room");
                 info!("房间 '{}' 唯一标识: {}", id, room_uuid);
 
-                // 触发插件事件
                 user.server.plugin_manager
                     .trigger(&PluginEvent::RoomCreate {
                         user_id: user.id,
@@ -935,7 +940,12 @@ async fn process(user: Arc<User>, category: SessionCategory, cmd: ClientCommand)
                         user: user.id,
                         name: user.name.clone(),
                     }).await;
-                    send_room_event!(JoinRoom { room: id.clone(), user: user.id });
+                    user.server
+                        .publish_room_event(RoomEvent::JoinRoom {
+                            room: id.clone(),
+                            user: user.id,
+                        })
+                        .await;
                 }
                 *room_guard = Some(Arc::clone(&room));
 
@@ -973,14 +983,19 @@ async fn process(user: Arc<User>, category: SessionCategory, cmd: ClientCommand)
                     room = room.id.to_string(),
                     "user leave room"
                 );
+                let was_monitor = user.monitor.load(Ordering::SeqCst);
                 if room.on_user_leave(&user).await {
                     user.server.rooms.write().await.remove(&room.id);
                 }
-                if category == SessionCategory::Normal {
-                    send_room_event!(LeaveRoom { room: room.id.clone(), user: user.id });
+                if category == SessionCategory::Normal && !was_monitor {
+                    user.server
+                        .publish_room_event(RoomEvent::LeaveRoom {
+                            room: room.id.clone(),
+                            user: user.id,
+                        })
+                        .await;
                 }
 
-                // Monitors are protocol peers, not room members exposed to plugins.
                 if category == SessionCategory::Normal {
                     user.server.plugin_manager
                         .trigger(&PluginEvent::RoomLeave {
@@ -1007,9 +1022,12 @@ async fn process(user: Arc<User>, category: SessionCategory, cmd: ClientCommand)
                 );
                 room.locked.store(lock, Ordering::SeqCst);
                 room.send(Message::LockRoom { lock }).await;
-                send_room_event!(UpdateRoom { room: room.id.clone(), data: PartialRoomData { lock: Some(lock), ..Default::default() } });
+                room.publish_update(PartialRoomData {
+                    lock: Some(lock),
+                    ..Default::default()
+                })
+                .await;
 
-                // 触发插件事件
                 user.server.plugin_manager
                     .trigger(&PluginEvent::RoomModify {
                         user_id: user.id,
@@ -1035,9 +1053,12 @@ async fn process(user: Arc<User>, category: SessionCategory, cmd: ClientCommand)
                 );
                 room.cycle.store(cycle, Ordering::SeqCst);
                 room.send(Message::CycleRoom { cycle }).await;
-                send_room_event!(UpdateRoom { room: room.id.clone(), data: PartialRoomData { cycle: Some(cycle), ..Default::default() } });
+                room.publish_update(PartialRoomData {
+                    cycle: Some(cycle),
+                    ..Default::default()
+                })
+                .await;
 
-                // 触发插件事件
                 user.server.plugin_manager
                     .trigger(&PluginEvent::RoomModify {
                         user_id: user.id,
@@ -1077,7 +1098,11 @@ async fn process(user: Arc<User>, category: SessionCategory, cmd: ClientCommand)
                     .await;
                     *room.chart.write().await = Some(res);
                     room.on_state_change().await;
-                    send_room_event!(UpdateRoom { room: room.id.clone(), data: PartialRoomData { chart: Some(id), ..Default::default() } });
+                    room.publish_update(PartialRoomData {
+                        chart: Some(id),
+                        ..Default::default()
+                    })
+                    .await;
                     Ok(())
                 }
                 .instrument(span)
@@ -1102,7 +1127,6 @@ async fn process(user: Arc<User>, category: SessionCategory, cmd: ClientCommand)
                 room.on_state_change().await;
                 room.check_all_ready().await;
 
-                // 触发插件事件
                 user.server.plugin_manager
                     .trigger(&PluginEvent::GameStart {
                         user_id: user.id,
@@ -1196,7 +1220,6 @@ async fn process(user: Arc<User>, category: SessionCategory, cmd: ClientCommand)
                     drop(guard);
                     room.check_all_ready().await;
 
-                    // 触发插件事件
                     user.server.plugin_manager
                         .trigger(&PluginEvent::GameEnd {
                             user_id: user.id,
@@ -1238,7 +1261,6 @@ async fn process(user: Arc<User>, category: SessionCategory, cmd: ClientCommand)
             .await;
             Some(ServerCommand::Abort(err_to_str(res)))
         }
-        // ── Monitor 协议 ──
         ClientCommand::QueryRoomInfo => {
             let res: Result<ServerCommand> = async move {
                 let rooms_guard = user.server.rooms.read().await;

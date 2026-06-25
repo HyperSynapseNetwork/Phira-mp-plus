@@ -1,16 +1,4 @@
-//! Phira-mp+ CLI 交互式管理控制台
-//!
-//! 提供管理员可通过命令行执行的管理操作：
-//! - 插件管理（列表、启用、禁用、重载）
-//! - 用户管理（列表、踢出）
-//! - 房间管理（列表、踢出、关闭）
-//! - 服务器状态与关闭
-//! - 消息广播
-//! - 插件扩展命令
-//!
-//! 本模块不直接读写终端，而是通过 mpsc 通道与 TUI 层通信：
-//! - 从 `cmd_rx` 接收命令字符串
-//! - 向 `out_tx` 发送输出文本
+//! Administrative command parsing and dispatch.
 
 use crate::plugin::PluginEvent;
 use crate::server::PlusServerState;
@@ -18,15 +6,36 @@ use std::sync::Arc;
 use tokio::sync::{mpsc, RwLock};
 use tracing::info;
 
-// ── ANSI 颜色辅助 ──
 mod c {
-    pub fn green(s: &str) -> String { format!("\x1b[32m{}\x1b[0m", s) }
-    pub fn cyan(s: &str) -> String { format!("\x1b[36m{}\x1b[0m", s) }
-    pub fn yellow(s: &str) -> String { format!("\x1b[33m{}\x1b[0m", s) }
-    pub fn red(s: &str) -> String { format!("\x1b[31m{}\x1b[0m", s) }
-    pub fn bold(s: &str) -> String { format!("\x1b[1m{}\x1b[0m", s) }
-    pub fn dim(s: &str) -> String { format!("\x1b[2m{}\x1b[0m", s) }
-    pub fn magenta(s: &str) -> String { format!("\x1b[35m{}\x1b[0m", s) }
+    fn paint(code: &str, text: &str) -> String {
+        if std::env::var_os("NO_COLOR").is_some() {
+            text.to_string()
+        } else {
+            format!("\x1b[{code}m{text}\x1b[0m")
+        }
+    }
+
+    pub fn green(text: &str) -> String {
+        paint("32", text)
+    }
+    pub fn cyan(text: &str) -> String {
+        paint("36", text)
+    }
+    pub fn yellow(text: &str) -> String {
+        paint("33", text)
+    }
+    pub fn red(text: &str) -> String {
+        paint("31", text)
+    }
+    pub fn bold(text: &str) -> String {
+        paint("1", text)
+    }
+    pub fn dim(text: &str) -> String {
+        paint("2", text)
+    }
+    pub fn magenta(text: &str) -> String {
+        paint("35", text)
+    }
 }
 
 /// CLI 命令处理器
@@ -145,7 +154,6 @@ impl CliHandler {
                 }
                 "users" | "u" => self.list_users().await,
                 "rooms" | "r" => self.list_rooms().await,
-                // ── 统一 room 子命令 ──
                 "room" => {
                     let sub = args.first().copied().unwrap_or("");
                     match sub {
@@ -453,7 +461,6 @@ impl CliHandler {
         self.out(format!("  {} ─────────────────────────────────────────────", c::dim("")));
     }
 
-    // ── 插件管理 ──
 
     async fn list_plugins(&self) {
         let plugins = self.state.plugin_manager.list_plugins().await;
@@ -545,7 +552,6 @@ impl CliHandler {
         }
     }
 
-    // ── 用户管理 ──
 
     async fn list_users(&self) {
         let users = self.state.users.read().await;
@@ -828,7 +834,6 @@ impl CliHandler {
         }
     }
 
-    // ── 房间管理增强 ──
 
     /// 从字符串查找房间
     async fn find_room(&self, room_id: &str) -> Option<Arc<crate::room::Room>> {
@@ -907,7 +912,6 @@ impl CliHandler {
         };
         room.on_state_change().await;
         room.check_all_ready().await;
-        // 触发插件事件
         if let Some(pm) = &room.plugin_manager {
             pm.trigger(&PluginEvent::GameStart {
                 user_id: 0, room_id: room_id.to_string(),
@@ -923,17 +927,17 @@ impl CliHandler {
             None => { self.out(format!("  {} 未找到房间 {}", c::red("✗"), room_id)); return; }
         };
         let canceled = {
-            let mut guard = room.state.write().await;
-            if let crate::room::InternalRoomState::WaitForReady { .. } = &*guard {
+            let mut state = room.state.write().await;
+            if matches!(&*state, crate::room::InternalRoomState::WaitForReady { .. }) {
                 room.send(phira_mp_common::Message::CancelGame { user: 0 }).await;
-                *guard = crate::room::InternalRoomState::SelectChart;
-                room.on_state_change().await;
+                *state = crate::room::InternalRoomState::SelectChart;
                 true
             } else {
                 false
             }
         };
         if canceled {
+            room.on_state_change().await;
             self.out(format!("  {} 已取消准备状态", c::green("✓")));
         } else {
             self.out(format!("  {} 当前状态不需要取消", c::yellow("!")));
@@ -945,12 +949,10 @@ impl CliHandler {
             Some(r) => r,
             None => { self.out(format!("  {} 未找到房间 {}", c::red("✗"), room_id)); return; }
         };
-        // 获取用户名
         let user_name = room.users().await.iter()
             .find(|u| u.id == user_id)
             .map(|u| u.name.clone())
             .unwrap_or_else(|| format!("{}", user_id));
-        // 发送房间通知
         room.send(phira_mp_common::Message::Chat {
             user: 0,
             content: format!("房主已转移给 {}", user_name),
@@ -972,8 +974,11 @@ impl CliHandler {
                 let v = value == "true" || value == "1" || value == "锁定";
                 room.locked.store(v, Ordering::SeqCst);
                 room.send(phira_mp_common::Message::LockRoom { lock: v }).await;
-                room.on_state_change().await;
-                // 触发插件事件
+                room.publish_update(phira_mp_common::PartialRoomData {
+                    lock: Some(v),
+                    ..Default::default()
+                })
+                .await;
                 self.state.plugin_manager
                     .trigger(&PluginEvent::RoomModify {
                         user_id: 0,
@@ -986,8 +991,11 @@ impl CliHandler {
                 let v = value == "true" || value == "1" || value == "轮换";
                 room.cycle.store(v, Ordering::SeqCst);
                 room.send(phira_mp_common::Message::CycleRoom { cycle: v }).await;
-                room.on_state_change().await;
-                // 触发插件事件
+                room.publish_update(phira_mp_common::PartialRoomData {
+                    cycle: Some(v),
+                    ..Default::default()
+                })
+                .await;
                 self.state.plugin_manager
                     .trigger(&PluginEvent::RoomModify {
                         user_id: 0,
@@ -1001,7 +1009,6 @@ impl CliHandler {
                     Ok(id) => id,
                     Err(_) => { self.out(format!("  {} 无效的谱面ID", c::red("✗"))); return; }
                 };
-                // 从 API 获取谱面信息（模拟玩家选曲）
                 let chart = match reqwest::get(format!("https://phira.5wyxi.com/chart/{cid}")).await {
                     Ok(resp) => match resp.error_for_status() {
                         Ok(resp) => resp.json::<crate::server::Chart>().await.ok(),
@@ -1018,8 +1025,11 @@ impl CliHandler {
                     id: chart.id,
                 }).await;
                 room.chart.write().await.replace(chart);
-                room.on_state_change().await;
-                // 触发插件事件
+                room.publish_update(phira_mp_common::PartialRoomData {
+                    chart: Some(cid),
+                    ..Default::default()
+                })
+                .await;
                 self.state.plugin_manager
                     .trigger(&PluginEvent::RoomModify {
                         user_id: 0,
@@ -1063,7 +1073,6 @@ impl CliHandler {
         }
     }
 
-    // ── UUID / 轮次查询 ──
 
     /// 显示房间 UUID
     async fn room_show_uuid(&self, room_id: &str) {
@@ -1198,7 +1207,6 @@ impl CliHandler {
             self.state.config.port, users, sessions, rooms, plugins));
     }
 
-    // ── 黑名单管理 ──
 
     async fn ban_user(&self, target: &str, reason: &str) {
         let uid: i32 = match target.parse() {
@@ -1253,7 +1261,6 @@ impl CliHandler {
         self.out(format!("  {} 房间 {} 黑名单: {:?}", c::green("◆"), room_id, list));
     }
 
-    // ── 扩展数据 ──
 
     async fn list_extensions(&self) {
         let user_fields = self.state.extensions.list_user_fields().await;

@@ -19,7 +19,7 @@
     "lock": false,
     "cycle": false,
     "chart": 12345,
-    "state": "SELECTING_CHAR T",
+    "state": "SELECTING_CHART",
     "rounds": []
   }
 ]
@@ -61,18 +61,36 @@
 {"count": 5}
 ```
 
-### 通用 SSE 事件
+### SSE 事件
 
 #### `GET /api/events`
-通用 SSE 流。
+
+统一事件流。连接建立后立即发送 `ready`，房间生命周期事件也会进入该流。
 
 #### `GET /rooms/listen`
-房间事件 SSE 流（web-monitor 兼容）。
 
-**事件类型：**
-- `update_room` — 房间状态更新
-- `join_room` — 玩家加入
-- `leave_room` — 玩家离开
+房间事件流。连接建立时的发送顺序如下：
+
+1. `ready`：表示流已建立；
+2. 每个现有房间对应一条 `update_room` 快照；
+3. 持续发送后续房间事件。
+
+事件数据与 `phira-web-monitor` 的房间事件结构一致：
+
+- `create_room`：`{ "room": string, "data": RoomData }`
+- `update_room`：`{ "room": string, "data": PartialRoomData | RoomData }`
+- `join_room`：`{ "room": string, "user": number }`
+- `leave_room`：`{ "room": string, "user": number }`
+- `new_round`：`{ "room": string, "round": RoundData }`
+- `stream_lagged`：消费者落后于广播缓冲区，`skipped` 表示丢弃的事件数
+
+验证命令：
+
+```bash
+curl -N http://127.0.0.1:12347/rooms/listen
+```
+
+即使当前没有房间，也应立即看到 `event: ready`，而不是只有 keep-alive 注释。响应包含 `Cache-Control: no-cache` 与 `X-Accel-Buffering: no`，用于避免常见反向代理缓冲事件流。
 
 ### WebSocket
 
@@ -118,7 +136,6 @@
 | `ban <user_id> [reason]` | 封禁用户 |
 | `unban <user_id>` | 解封用户 |
 | `kick <user_id>` | 踢出用户 |
-| `ban <user_id> [reason]` | 封禁 |
 | `pardon <user_id>` | 解封 |
 
 ### 游玩统计
@@ -151,7 +168,7 @@
 
 ---
 
-## WebSocket 协议（端口 12346）
+## TCP 二进制协议（端口 12346）
 
 与 Phira 游戏客户端通信的二进制协议。使用自定义二进制格式（`BinaryData` derive），详见 `phira-mp-common`。
 

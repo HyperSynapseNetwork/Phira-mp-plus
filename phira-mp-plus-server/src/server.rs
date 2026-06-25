@@ -1,17 +1,24 @@
-//! Phira-mp+ 增强服务器
-//!
-//! 在原始 phira-mp 服务器基础上增加 WASM 插件系统支持、
-//! CLI 管理控制台和扩展数据系统。支持 YAML 配置文件。
+//! Server configuration and runtime state.
 
 use crate::ban::BanManager;
 use crate::extensions::ExtensionManager;
 use crate::plugin::{PluginEvent, PluginManager, WasmRuntimeConfig};
-use crate::plugin_http::PluginHttpServer;
-use phira_mp_plus_server_api as api;
+use crate::plugin_http::{PluginHttpServer, SseHub};
 use anyhow::Result;
-use phira_mp_common::{RoomId, generate_secret_key};
+use phira_mp_common::{generate_secret_key, RoomEvent, RoomId, ServerCommand};
+use phira_mp_plus_server_api as api;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::{
+    collections::HashMap,
+    sync::{atomic::Ordering, Arc, Weak},
+};
+use tokio::{
+    net::TcpListener,
+    sync::{mpsc, Notify, RwLock},
+};
+use tracing::{info, trace, warn};
+use uuid::Uuid;
 
 /// Chart information from the Phira API
 #[derive(Debug, Deserialize, Clone)]
@@ -36,15 +43,6 @@ pub struct Record {
     pub std: f32,
     pub std_score: f32,
 }
-use std::collections::HashMap;
-use std::sync::Arc;
-use tokio::net::TcpListener;
-use tokio::sync::{Notify, RwLock, mpsc};
-use tracing::{info, trace, warn};
-
-use uuid::Uuid;
-use std::sync::Weak;
-use std::sync::atomic::Ordering;
 
 pub type SafeMap<K, V> = RwLock<HashMap<K, V>>;
 
@@ -66,11 +64,26 @@ pub type IdMap<V> = SafeMap<Uuid, V>;
 
 /// 自旋获取 tokio RwLock 读锁（同步上下文，如压测）
 macro_rules! sync_read {
-    ($lock:expr) => { loop { match $lock.try_read() { Ok(g) => break g, Err(_) => std::thread::yield_now() } } };
+    ($lock:expr) => {{
+        loop {
+            match $lock.try_read() {
+                Ok(guard) => break guard,
+                Err(_) => std::thread::yield_now(),
+            }
+        }
+    }};
 }
+
 /// 自旋获取 tokio RwLock 写锁（同步上下文，如压测）
 macro_rules! sync_write {
-    ($lock:expr) => { loop { match $lock.try_write() { Ok(g) => break g, Err(_) => std::thread::yield_now() } } };
+    ($lock:expr) => {{
+        loop {
+            match $lock.try_write() {
+                Ok(guard) => break guard,
+                Err(_) => std::thread::yield_now(),
+            }
+        }
+    }};
 }
 
 /// Phira-mp+ 增强配置（支持 YAML 文件、环境变量、CLI 参数三层覆盖）
@@ -203,8 +216,7 @@ pub struct PlusServerState {
     pub bench_tx: tokio::sync::mpsc::UnboundedSender<BenchRequest>,
     /// 房间 monitor key（与 phira-web-monitor 共享密钥）
     pub room_monitor_key: Vec<u8>,
-    /// Legacy HTTP room-event bridge; native monitors use the TCP protocol.
-    pub room_sse_tx: RwLock<Option<tokio::sync::broadcast::Sender<String>>>,
+    pub events: Arc<SseHub>,
     /// 房间 monitor 会话（唯一）
     pub room_monitor: RwLock<Option<Weak<super::session::Session>>>,
     /// 游戏 monitor 会话（按用户 ID）
@@ -254,6 +266,7 @@ impl PlusServer {
         let retention_days = config.round_data_retention_days;
         let (bench_tx, bench_rx) = tokio::sync::mpsc::unbounded_channel::<BenchRequest>();
 
+        let events = Arc::new(SseHub::new());
         let state = Arc::new(PlusServerState {
             config,
             sessions: IdMap::default(),
@@ -277,9 +290,8 @@ impl PlusServer {
             room_monitor_key: generate_secret_key("room_monitor", 64).unwrap_or_default(),
             room_monitor: RwLock::new(None),
             game_monitors: SafeMap::default(),
-            room_sse_tx: RwLock::new(None),
+            events,
         });
-        // 压测背景任务
         let bench_state = Arc::clone(&state);
         tokio::spawn(async move {
             let mut bench_rx = bench_rx;
@@ -341,8 +353,10 @@ impl PlusServer {
         });
         state.plugin_manager.set_default_state(state_query_all).await;
 
-        // 初始化中央 HTTP/SSE 服务器（插件可通过 PluginContext 注册路由）
-        let http_server = Arc::new(PluginHttpServer::new(http_port));
+        let http_server = Arc::new(PluginHttpServer::new(
+            http_port,
+            Arc::clone(&state.events),
+        ));
         let http_handle = api::HttpHandle::new(crate::plugin_http::HttpHandleBridge(Arc::clone(&http_server)));
         state.plugin_manager.set_http_handle(http_handle).await;
 
@@ -350,8 +364,6 @@ impl PlusServer {
         let plugin_count = state.plugin_manager.load_plugins().await.unwrap_or(0);
         info!("loaded {} plugin(s)", plugin_count);
 
-        // ── 注册内置功能（原内置插件系统已合并入核心） ──
-        // Web API 路由
         let state_for_webapi = Arc::clone(&state);
         let webapi_state_query = api::ServerStateQuery::new(move |method: &str, args: &[Value]| {
             server_state_query(&state_for_webapi, method, args)
@@ -501,8 +513,6 @@ pub struct ServerStats {
     pub port: u16,
 }
 
-// ── Monitor 助手 ──
-
 impl PlusServerState {
     /// 获取房间 monitor 会话
     pub async fn get_room_monitor(&self) -> Option<Arc<super::session::Session>> {
@@ -520,9 +530,14 @@ impl PlusServerState {
     pub async fn set_game_monitor(&self, player_id: i32, session: Weak<super::session::Session>) {
         self.game_monitors.write().await.insert(player_id, session);
     }
-}
 
-// ── 压测方法 ──
+    pub async fn publish_room_event(&self, event: RoomEvent) {
+        self.events.publish_room_event(event.clone());
+        if let Some(monitor) = self.get_room_monitor().await {
+            monitor.try_send(ServerCommand::RoomEvent(event)).await;
+        }
+    }
+}
 
 impl PlusServerState {
     /// 运行压测（同步版 — 在 ServerStateQuery 线程中调用，无 tokio）
@@ -534,7 +549,6 @@ impl PlusServerState {
 
         eprintln!("  ⟳ 压测: {target_rooms} 房间 / {duration_secs}s");
 
-        // ── 阶段1: 顺序创建目标房间 ──
         o!("  ◆ Phira-mp+ 服务端压测");
         o!("  │ 目标房间: {target_rooms}  测试时长: {duration_secs}s");
         o!("  │");
@@ -558,6 +572,7 @@ impl PlusServerState {
             let room = Arc::new(crate::room::Room::new(
                 rid.clone(), Arc::downgrade(&test_user),
                 Some(Arc::clone(&self.plugin_manager)),
+                Arc::downgrade(self),
                 self.config.max_users_per_room.unwrap_or(8), None,
             ));
             let mut rooms = sync_write!(self.rooms);
@@ -577,7 +592,6 @@ impl PlusServerState {
         o!("  │ ✓ 创建 {created} 间, 耗时 {:.1}s ({:.0} 间/秒)", phase1.as_secs_f64(), create_rate);
 
         eprintln!("  ⟳ 50% 用户填充完成");
-        // ── 阶段2: 模拟用户加入 ──
         o!("  │");
         o!("  ├─ [阶段2] 填充用户 (每房间+4人)");
         eprintln!("  ⟳ 25% 填充用户...");
@@ -604,7 +618,6 @@ impl PlusServerState {
         o!("  │ ✓ 加入 {joined} 人, 耗时 {:.1}s ({:.0} 人/秒)", phase2.as_secs_f64(), joined as f64 / phase2.as_secs_f64().max(0.001));
 
         eprintln!("  ⟳ 75% 压力测试中...");
-        // ── 阶段3: 压力保持 ──
         o!("  │");
         o!("  ├─ [阶段3] 压力保持 {duration_secs}s");
         let t0 = Instant::now();
@@ -646,7 +659,6 @@ impl PlusServerState {
         }
         o!("  │ ✓ 操作 {op_count} 次 | avg={avg_lat:.0}µs p99={p99:.0}µs");
 
-        // ── 阶段4: 清理 ──
         o!("  │");
         o!("  ├─ [阶段4] 清理测试数据");
         eprintln!("  ⟳ 100% 清理中");
@@ -655,7 +667,6 @@ impl PlusServerState {
         sync_write!(self.users).retain(|id, _| *id < TEST_USER_ID_BASE || *id >= TEST_USER_ID_BASE + 10_000_000);
         o!("  │ ✓ 清理完成 ({:.1}s)", t4.elapsed().as_secs_f64());
 
-        // ── 汇总 ──
         let total = started_at.elapsed();
         o!("  │");
         o!("  └─ 压测完成 ({:.1}s)", total.as_secs_f64());
@@ -682,10 +693,6 @@ impl PlusServerState {
     }
 }
 
-// ── HTTP 真实请求压测 ──
-
-// ── 状态查询 / Room/User 管理（供 WASM host API / dispatch） ──
-
 /// 从房间踢出用户
 async fn run_room_kick(state: &PlusServerState, room_id: &str, target_id: i32) -> Result<Value, String> {
     use phira_mp_common::RoomId;
@@ -699,7 +706,19 @@ async fn run_room_kick(state: &PlusServerState, room_id: &str, target_id: i32) -
     room.send(phira_mp_common::Message::Chat {
         user: 0, content: format!("用户 {} 已被管理员踢出房间", user.name),
     }).await;
-    let _ = room.on_user_leave(&user).await;
+    let was_monitor = user.monitor.load(Ordering::SeqCst);
+    let should_drop = room.on_user_leave(&user).await;
+    if should_drop {
+        state.rooms.write().await.remove(&rid);
+    }
+    if !was_monitor {
+        state
+            .publish_room_event(RoomEvent::LeaveRoom {
+                room: rid.clone(),
+                user: target_id,
+            })
+            .await;
+    }
     state.plugin_manager.trigger(&PluginEvent::RoomModify {
         user_id: target_id, room_id: room_id.to_string(),
         data: r#"{"action":"kicked"}"#.to_string(),
@@ -728,7 +747,11 @@ async fn run_room_set_lock(state: &PlusServerState, room_id: &str, locked: bool)
         .ok_or("room not found")?;
     room.locked.store(locked, Ordering::SeqCst);
     room.send(phira_mp_common::Message::LockRoom { lock: locked }).await;
-    room.on_state_change().await;
+    room.publish_update(phira_mp_common::PartialRoomData {
+        lock: Some(locked),
+        ..Default::default()
+    })
+    .await;
     Ok(serde_json::json!({"ok": true, "locked": locked}))
 }
 
@@ -741,8 +764,19 @@ async fn run_room_close(state: &PlusServerState, room_id: &str) -> Result<Value,
     room.send(phira_mp_common::Message::Chat {
         user: 0, content: "房间已被管理员关闭".to_string(),
     }).await;
-    for u in room.users().await { *u.room.write().await = None; }
-    for u in room.monitors().await { *u.room.write().await = None; }
+    let users = room.users().await;
+    for user in &users {
+        *user.room.write().await = None;
+        state
+            .publish_room_event(RoomEvent::LeaveRoom {
+                room: rid.clone(),
+                user: user.id,
+            })
+            .await;
+    }
+    for monitor in room.monitors().await {
+        *monitor.room.write().await = None;
+    }
     state.rooms.write().await.remove(&rid);
     Ok(serde_json::json!({"ok": true}))
 }
@@ -755,10 +789,26 @@ async fn run_admin_kick_user(state: &PlusServerState, target_id: i32, reason: &s
         let room_clone = user.room.read().await.as_ref().map(Arc::clone);
         if let Some(room) = room_clone {
             let room_id = room.id.to_string();
+            let room_key = room.id.clone();
+            let was_monitor = user.monitor.load(Ordering::SeqCst);
             if room.on_user_leave(&user).await {
-                state.rooms.write().await.remove(&room.id);
+                state.rooms.write().await.remove(&room_key);
             }
-            state.plugin_manager.trigger(&PluginEvent::RoomLeave { user_id: target_id, room_id }).await;
+            if !was_monitor {
+                state
+                    .publish_room_event(RoomEvent::LeaveRoom {
+                        room: room_key,
+                        user: target_id,
+                    })
+                    .await;
+            }
+            state
+                .plugin_manager
+                .trigger(&PluginEvent::RoomLeave {
+                    user_id: target_id,
+                    room_id,
+                })
+                .await;
         }
     }
     {
@@ -877,7 +927,6 @@ fn server_state_query_inner(state: &Arc<PlusServerState>, method: &str, args: &[
             state.cleanup_benchmark_sync();
             Ok(serde_json::json!({"ok": true}))
         }
-        // ── 房间/轮次查询接口 ──
         "room.uuid" => {
             let room_id = args.get(0).and_then(|v| v.as_str()).unwrap_or("").to_string();
             if room_id.is_empty() { return Err("missing room_id".to_string()); }
@@ -967,7 +1016,6 @@ fn server_state_query_inner(state: &Arc<PlusServerState>, method: &str, args: &[
             rx.recv_timeout(std::time::Duration::from_secs(3))
                 .unwrap_or(Err("room.list_since timeout".to_string()))
         }
-        // ── 房间管理（room-management host API） ──
         "room.kick" => {
             let room_id = args.get(0).and_then(|v| v.as_str()).unwrap_or("").to_string();
             let target_id = args.get(1).and_then(|v| v.as_i64()).unwrap_or(0) as i32;
@@ -1019,7 +1067,6 @@ fn server_state_query_inner(state: &Arc<PlusServerState>, method: &str, args: &[
             rx.recv_timeout(std::time::Duration::from_secs(5))
                 .unwrap_or(Err("room.close timeout".to_string()))
         }
-        // ── 用户管理（user-management host API） ──
         "admin.kick_user" => {
             let uid = args.get(0).and_then(|v| v.as_i64()).unwrap_or(0) as i32;
             if uid <= 0 { return Err("invalid user_id".to_string()); }

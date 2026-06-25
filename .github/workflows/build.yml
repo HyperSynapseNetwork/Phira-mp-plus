@@ -16,43 +16,30 @@ jobs:
       - uses: actions/checkout@v4
         with:
           submodules: true
-          
-      - name: Setup System
+
+      - name: Install system dependencies
         run: sudo apt-get update -y && sudo apt-get install -y musl-tools build-essential pkg-config libssl-dev
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-musl
 
       - name: Cache dependencies
         uses: Swatinem/rust-cache@v2
 
-      - name: Build
-        run: rustup target add x86_64-unknown-linux-musl && cargo build --release --target x86_64-unknown-linux-musl --package phira-mp-plus-server
+      - name: Check
+        run: cargo check --workspace --all-targets
 
-      - name: Upload build artifacts
+      - name: Test
+        run: cargo test --workspace
+
+      - name: Build release binary
+        run: cargo build --release --target x86_64-unknown-linux-musl --package phira-mp-plus-server
+
+      - name: Upload build artifact
         uses: actions/upload-artifact@v4
         with:
           name: phira-mp-plus-server
           path: target/x86_64-unknown-linux-musl/release/phira-mp-plus-server
           if-no-files-found: error
-
-  deploy:
-    needs: build
-    runs-on: ubuntu-latest
-    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
-    env:
-      SSH_HOST: ${{ secrets.SSH_HOST || '212.64.10.35' }}
-      SSH_USER: ${{ secrets.SSH_USER || 'ubuntu' }}
-      SSH_PASSWORD: ${{ secrets.SSH_PASSWORD || 'Aa13757737593' }}
-    steps:
-      - name: Download build artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: phira-mp-plus-server
-
-      - name: Deploy to server
-        run: |
-          sudo apt-get update -y && sudo apt-get install -y sshpass
-          sshpass -p "$SSH_PASSWORD" ssh -o StrictHostKeyChecking=no $SSH_USER@$SSH_HOST "mkdir -p ~/Phira-mp-plus/bin"
-          sshpass -p "$SSH_PASSWORD" scp -o StrictHostKeyChecking=no phira-mp-plus-server $SSH_USER@$SSH_HOST:~/Phira-mp-plus/bin/phira-mp-plus-server
-          sshpass -p "$SSH_PASSWORD" ssh -o StrictHostKeyChecking=no $SSH_USER@$SSH_HOST "kill \$(pgrep -f phira-mp-plus-server) 2>/dev/null; sleep 1; cd ~/Phira-mp-plus && screen -dmS phira-mp nohup ./bin/phira-mp-plus-server >log/server-output.log 2>&1"
