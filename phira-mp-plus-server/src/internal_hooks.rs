@@ -95,6 +95,26 @@ pub fn send_welcome(user_id: i32, user_name: &str, online: usize, state: &PlusSe
             let rooms = state.rooms.try_read().map(|r| r.len()).unwrap_or(0);
             text = text.replace("[active_rooms]", &format!("{} 个房间", rooms));
         }
+        // [top_playtime] → 游玩时间排行榜（取前 10）
+        if text.contains("[top_playtime]") {
+            use std::time::{SystemTime, UNIX_EPOCH};
+            let now = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+            let pt = PLAYTIME_DATA.lock().unwrap();
+            let users_guard = state.users.try_read();
+            let mut ranking: Vec<(i32, u64)> = pt.iter().map(|(&uid, entry)| {
+                let total = entry.total_secs + entry.session_start.map(|s| now.saturating_sub(s)).unwrap_or(0);
+                (uid, total)
+            }).collect();
+            ranking.sort_by(|a, b| b.1.cmp(&a.1));
+            let top: Vec<String> = ranking.iter().take(10).map(|(uid, secs)| {
+                let name = users_guard.as_ref().ok()
+                    .and_then(|u| u.get(uid))
+                    .map(|u| u.name.clone())
+                    .unwrap_or_else(|| uid.to_string());
+                format!("#{}: {:.1}h", name, *secs as f64 / 3600.0)
+            }).collect();
+            text = text.replace("[top_playtime]", &top.join(" | "));
+        }
         if let Ok(users) = state.users.try_read() {
             if let Some(user) = users.get(&user_id) {
                 if let Ok(session) = user.session.try_read() {
