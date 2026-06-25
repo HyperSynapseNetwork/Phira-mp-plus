@@ -9,9 +9,17 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
+use std::sync::OnceLock;
 use tracing::info;
 
+/// 全局数据库管理器（PostgreSQL 回退 JSON）
+pub static DB: OnceLock<super::db::DbManager> = OnceLock::new();
+
 pub async fn init_internal_hooks(state: &PlusServerState, http: &PluginHttpServer, pm: &PluginManager) {
+    // 初始化数据库连接
+    let db = super::db::DbManager::new(state.config.database_url.as_deref()).await;
+    let _ = DB.set(db);
+
     init_welcome(state, pm).await;
     init_player_tracker(state, http, pm).await;
     init_playtime_tracker(state, http, pm).await;
@@ -226,11 +234,19 @@ struct PlaytimeEntry {
 }
 
 pub fn playtime_connect(user_id: i32) {
+    // PostgreSQL 双写
+    if let Some(db) = DB.get() {
+        db.set_online_sync(user_id);
+    }
     let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
     PLAYTIME_DATA.lock().unwrap().entry(user_id).or_default().session_start = Some(now);
 }
 
 pub fn playtime_disconnect(user_id: i32) {
+    // PostgreSQL 双写
+    if let Some(db) = DB.get() {
+        db.set_offline_sync(user_id);
+    }
     let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
     let mut data = PLAYTIME_DATA.lock().unwrap();
     if let Some(entry) = data.get_mut(&user_id) {

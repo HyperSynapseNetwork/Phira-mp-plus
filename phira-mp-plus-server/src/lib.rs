@@ -6,6 +6,7 @@
 pub mod ban;
 pub mod cli;
 pub mod cli_tui;
+pub mod db;
 pub mod extensions;
 pub mod internal_hooks;
 pub mod l10n;

@@ -105,6 +105,10 @@ pub struct PlusConfig {
     /// 轮次 Touches/Judges 数据保留天数（0 = 不保留）
     #[serde(default = "default_retention_days")]
     pub round_data_retention_days: u32,
+    /// PostgreSQL 数据库连接 URL（如 postgres://user:pass@localhost/dbname）
+    /// 未设置时自动回退 JSON 文件存储
+    #[serde(default)]
+    pub database_url: Option<String>,
 }
 
 fn default_http_port() -> u16 { 12347 }
@@ -133,6 +137,7 @@ impl Default for PlusConfig {
             phira_api_endpoint: "https://phira.5wyxi.com".to_string(),
             chat_enabled: true,
             round_data_retention_days: 7,
+            database_url: None,
         }
     }
 }

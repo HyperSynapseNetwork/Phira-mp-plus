@@ -40,6 +40,6 @@ phira-mp-common = { path = "../phira-mp/phira-mp-common" }
 phira-mp-macros = { path = "../phira-mp/phira-mp-macros" }
 phira-mp-plus-server-api = { path = "../phira-mp-plus-server-api" }
 [features]
-default = ["plugin-system"]
+default = ["plugin-system", "postgres"]
 plugin-system = ["dep:wasmtime"]
 postgres = ["dep:sqlx"]
