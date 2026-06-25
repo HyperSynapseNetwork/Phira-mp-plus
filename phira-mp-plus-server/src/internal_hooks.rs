@@ -102,10 +102,22 @@ pub fn send_welcome(user_id: i32, user_name: &str, online: usize, state: &PlusSe
                         let max = room.max_users_count();
                         let chart = room.chart.try_read().ok()
                             .and_then(|c| c.as_ref().map(|c| c.name.clone())).unwrap_or_default();
-                        let state_str = if room.locked.load(std::sync::atomic::Ordering::SeqCst) { " [锁定]" } else { "" };
-                        format!("{}{} ({}) [{}/{}]{}",
-                            id, state_str, host_name, players, max,
-                            if chart.is_empty() { String::new() } else { format!(" - {}", chart) }
+                        let locked = room.locked.load(std::sync::atomic::Ordering::SeqCst);
+                        let cycling = room.cycle.load(std::sync::atomic::Ordering::SeqCst);
+                        let state_desc = room.state.try_read().ok().map(|s| {
+                            match &*s {
+                                crate::room::InternalRoomState::SelectChart => "选曲中",
+                                crate::room::InternalRoomState::WaitForReady { .. } => "等待准备",
+                                crate::room::InternalRoomState::Playing { .. } => "游戏中",
+                            }
+                        }).unwrap_or("?");
+                        let mut flags = Vec::new();
+                        if locked { flags.push("锁定"); }
+                        if cycling { flags.push("循环"); }
+                        let flag_str = if flags.is_empty() { String::new() } else { format!(" [{}]", flags.join(",")) };
+                        format!("房间:{}{} 房主:{} [{}/{}] {}{}",
+                            id, flag_str, host_name, players, max, state_desc,
+                            if chart.is_empty() { String::new() } else { format!(" | {}", chart) }
                         )
                     }).collect()
                 }
