@@ -106,9 +106,12 @@ broadcast user <用户ID> <消息>    发送给指定用户
 | `GET /api/rooms` | 房间列表（含详情） |
 | `GET /api/rooms/{name}` | 指定房间信息 |
 | `GET /api/user_name/{id}` | 用户名称查询 |
-| `GET /api/rooms/listen` | SSE 事件流（web-monitor 兼容） |
+| `GET /api/players/count` | 在线玩家数 |
 | `GET /api/events` | 统一 SSE 端点 |
-| `WS /ws/live` | WebSocket 实时监测（web-monitor 兼容） |
+| `GET /rooms/listen` | SSE 房间事件流（web-monitor 兼容） |
+| `GET /ws/live` | WebSocket 实时监测（web-monitor 兼容） |
+
+详细 API 文档见 [api.md](api.md)。
 
 ## WASM 插件系统
 
