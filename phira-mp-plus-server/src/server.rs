@@ -514,7 +514,7 @@ impl PlusServerState {
         use std::time::Instant;
         let started_at = Instant::now();
         let mut out = String::new();
-        macro_rules! o { ($($t:tt)*) => { out.push_str(&format!($($t)*)); out.push('\n'); } }
+        macro_rules! o { ($($t:tt)*) => { let ln = format!($($t)*); eprintln!("{ln}"); out.push_str(&ln); out.push('\n'); } }
 
         eprintln!("  ⟳ 压测: {target_rooms} 房间 / {duration_secs}s");
 

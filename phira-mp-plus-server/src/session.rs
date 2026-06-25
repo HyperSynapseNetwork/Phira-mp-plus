@@ -293,6 +293,8 @@ impl Session {
                                             // 内置 hooks
                                             crate::internal_hooks::track_player(user_info.id, &user_info.name);
                                             crate::internal_hooks::playtime_connect(user_info.id);
+                                            let online = server.users.read().await.len();
+                                            crate::internal_hooks::send_welcome(user_info.id, &user_info.name, online, &server);
                                         } else {
                                             let user = Arc::new(User::new(
                                                 user_info.id,
@@ -321,6 +323,8 @@ impl Session {
                                             // 内置 hooks
                                             crate::internal_hooks::track_player(user_info.id, &user.name);
                                             crate::internal_hooks::playtime_connect(user_info.id);
+                                            let online = server.users.read().await.len();
+                                            crate::internal_hooks::send_welcome(user_info.id, &user.name, online, &server);
                                         }
                                         Ok(())
                                     }

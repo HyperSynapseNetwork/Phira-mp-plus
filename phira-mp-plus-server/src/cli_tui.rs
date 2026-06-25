@@ -401,10 +401,11 @@ impl TuiApp {
 
         // 压测进度条（每次渲染步进，模拟进度）
         if hide_progress {
+            use std::sync::atomic::{AtomicUsize, Ordering};
+            static PROGRESS: AtomicUsize = AtomicUsize::new(0);
+            let step = PROGRESS.fetch_add(1, Ordering::SeqCst) % 21;
             let bar_w = output_w.min(40);
-            // 用渲染帧计数做进度动画，每次步进 5%
-            self.scroll_repeat = (self.scroll_repeat + 1) % 21;
-            let pct = (self.scroll_repeat as f64 / 20.0 * 100.0) as usize;
+            let pct = (step * 5).min(100);
             let filled = (bar_w * pct / 100).min(bar_w);
             let bar = format!("  ⟳ 压测中 [{}{}] {}%", "█".repeat(filled), "░".repeat(bar_w.saturating_sub(filled)), pct);
             frame.render_widget(
