@@ -17,7 +17,7 @@ jobs:
         with:
           submodules: true
       - name: Setup System
-        run: apt-get install -y musl-tools build-essential
+        run: apt-get update -y && apt-get install -y musl-tools build-essential
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
