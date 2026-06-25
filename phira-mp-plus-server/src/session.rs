@@ -603,7 +603,7 @@ async fn process(user: Arc<User>, cmd: ClientCommand) -> Option<ServerCommand> {
                 .await;
             }
             // 同时广播到 SSE（web-monitor /rooms/listen）
-            if let Some(tx) = user.server.room_sse_tx.read().await.as_ref() {
+            if let Some(tx) = &*user.server.room_sse_tx.read().await {
                 let _ = tx.send(stringify!($event_type).to_string());
             }
         };
