@@ -750,6 +750,7 @@ async fn process(user: Arc<User>, cmd: ClientCommand) -> Option<ServerCommand> {
                 let room_uuid = room.uuid;
                 room.send(Message::CreateRoom { user: user.id }).await;
                 drop(map_guard);
+                send_room_event!(CreateRoom { room: id.clone(), data: crate::room::Room::into_data(&room).await });
                 *room_guard = Some(room);
 
                 info!(user = user.id, room = id.to_string(), room_uuid = %room_uuid, "user create room");
@@ -808,6 +809,7 @@ async fn process(user: Arc<User>, cmd: ClientCommand) -> Option<ServerCommand> {
                     name: user.name.clone(),
                 })
                 .await;
+                send_room_event!(JoinRoom { room: id.clone(), user: user.id });
                 *room_guard = Some(Arc::clone(&room));
 
                 // 触发插件事件
@@ -846,6 +848,7 @@ async fn process(user: Arc<User>, cmd: ClientCommand) -> Option<ServerCommand> {
                 if room.on_user_leave(&user).await {
                     user.server.rooms.write().await.remove(&room.id);
                 }
+                send_room_event!(LeaveRoom { room: room.id.clone(), user: user.id });
 
                 // 触发插件事件
                 user.server.plugin_manager
