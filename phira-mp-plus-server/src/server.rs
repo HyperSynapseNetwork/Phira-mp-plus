@@ -199,6 +199,8 @@ pub struct PlusServerState {
     pub bench_tx: tokio::sync::mpsc::UnboundedSender<BenchRequest>,
     /// 房间 monitor key（与 phira-web-monitor 共享密钥）
     pub room_monitor_key: Vec<u8>,
+    /// SSE 房间事件广播（web-monitor /rooms/listen 用）
+    pub room_sse_tx: RwLock<Option<tokio::sync::broadcast::Sender<String>>>,
     /// 房间 monitor 会话（唯一）
     pub room_monitor: RwLock<Option<Weak<super::session::Session>>>,
     /// 游戏 monitor 会话（按用户 ID）
@@ -270,6 +272,7 @@ impl PlusServer {
             room_monitor_key: generate_secret_key("room_monitor", 64).unwrap_or_default(),
             room_monitor: RwLock::new(None),
             game_monitors: SafeMap::default(),
+            room_sse_tx: RwLock::new(None),
         });
         // 压测背景任务
         let bench_state = Arc::clone(&state);

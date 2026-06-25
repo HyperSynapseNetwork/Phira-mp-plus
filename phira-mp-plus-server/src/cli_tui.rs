@@ -218,9 +218,9 @@ impl TuiApp {
             }
             // 非 S/方向键时清除滚动标记
             KeyCode::Char(c) if self.scroll_key_pressed && c != 's' && c != 'S' => { self.scroll_key_pressed = false; }
-            // S 键标记（输入为空时，不干扰打字），长按持续有效
-            KeyCode::Char('s') if self.input.is_empty() => { self.scroll_key_pressed = true; }
-            KeyCode::Char('S') if self.input.is_empty() => { self.scroll_key_pressed = true; }
+            // S 键标记（仅在有输出可滚动时激活），长按持续有效
+            KeyCode::Char('s') if self.output_lines.len() > 10 => { self.scroll_key_pressed = true; }
+            KeyCode::Char('S') if self.output_lines.len() > 10 => { self.scroll_key_pressed = true; }
             // Backspace（某些终端发送 Char(0x7f) 或 Char(0x08)）
             KeyCode::Backspace
             | KeyCode::Char('\x7f')

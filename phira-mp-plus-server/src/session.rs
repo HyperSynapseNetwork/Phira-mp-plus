@@ -593,7 +593,7 @@ async fn process(user: Arc<User>, cmd: ClientCommand) -> Option<ServerCommand> {
             }
         };
     }
-    // 向 room monitor 广播 RoomEvent
+    // 向 room monitor 和 SSE 广播 RoomEvent
     macro_rules! send_room_event {
         ($event_type:ident $data:tt $(,)?) => {
             if let Some(p) = user.server.get_room_monitor().await {
@@ -601,6 +601,10 @@ async fn process(user: Arc<User>, cmd: ClientCommand) -> Option<ServerCommand> {
                     RoomEvent::$event_type $data
                 ))
                 .await;
+            }
+            // 同时广播到 SSE（web-monitor /rooms/listen）
+            if let Some(tx) = user.server.room_sse_tx.read().await.as_ref() {
+                let _ = tx.send(stringify!($event_type).to_string());
             }
         };
     }

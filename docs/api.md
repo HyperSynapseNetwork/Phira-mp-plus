@@ -97,29 +97,29 @@
 
 | 命令 | 说明 |
 |------|------|
-| `rooms` | 列出所有房间 |
-| `room <id>` | 查看房间详情 |
-| `room users <id>` | 查看房间内用户 |
+| `rooms` / `r` | 列出所有房间 |
+| `room info <id>` / `room i <id>` | 查看房间详情 |
 | `room kick <id> <user_id>` | 踢出用户 |
-| `room lock <id>` | 锁定房间 |
-| `room unlock <id>` | 解锁房间 |
 | `room close <id>` | 关闭房间 |
 | `room transfer <id> <user_id>` | 转移房主 |
-| `room history <id>` | 房间游玩历史 |
-| `room round <id> [round_idx]` | 轮次详情 |
+| `room set <id> <字段> <值>` | 修改房间设置（lock/cycle 等） |
+| `room history <id>` | 房间游玩历史（替代废弃的 round-last） |
 | `room uuid <id>` | 房间 UUID |
-| `room list-since <time>` | 指定时间后的房间 |
+| `room ban <id> <user_id>` | 拉黑用户 |
+| `room unban <id> <user_id>` | 取消拉黑 |
+| `room banlist <id>` | 房间黑名单 |
 
 ### 玩家管理
 
 | 命令 | 说明 |
 |------|------|
-| `users` | 列出所有在线玩家 |
-| `user-rooms <user_id>` | 玩家的房间访问历史 |
+| `users` / `u` | 列出所有在线玩家 |
+| `user-rooms <user_id>` / `rh <user_id>` | 玩家的房间访问历史 |
 | `ban <user_id> [reason]` | 封禁用户 |
 | `unban <user_id>` | 解封用户 |
-| `bans` | 封禁列表 |
 | `kick <user_id>` | 踢出用户 |
+| `ban <user_id> [reason]` | 封禁 |
+| `pardon <user_id>` | 解封 |
 
 ### 游玩统计
 
@@ -127,7 +127,7 @@
 |------|------|
 | `playtime <user_id>` | 查询用户游玩时间 |
 | `player-count` | 游玩过的玩家总数 |
-| `round-last <room_id>` | 最近一轮结算 |
+| `room history <room_id>` | 查看房间游玩记录（替代废弃的 round-last） |
 
 ### 欢迎语
 

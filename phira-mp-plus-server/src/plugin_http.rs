@@ -162,11 +162,27 @@ impl PluginHttpServer {
     }
 
     /// 启动服务器
-    pub async fn start(&self, _server: Arc<PlusServerState>) {
+    pub async fn start(&self, server: Arc<PlusServerState>) {
         let router = Arc::clone(&self.router);
         let sse_tx = self.sse_tx.clone();
         let ws_live_tx = self.ws_live_tx.clone();
         let room_sse_tx = self.room_sse_tx.clone();
+        // 共享 SSE 发送器给 server state（供 session.rs 广播 RoomEvent）
+        let room_sse_tx_str = self.room_sse_tx.clone().map(|tx| {
+            let (new_tx, _) = tokio::sync::broadcast::channel::<String>(256);
+            // 转发 SseEvent → String
+            let mut rx = tx.subscribe();
+            let forward_tx = new_tx.clone();
+            tokio::spawn(async move {
+                while let Ok(ev) = rx.recv().await {
+                    let _ = forward_tx.send(serde_json::json!({"type": ev.event_type, "data": ev.data}).to_string());
+                }
+            });
+            new_tx
+        });
+        if let Some(ref tx) = room_sse_tx_str {
+            *server.room_sse_tx.write().await = Some(tx.clone());
+        }
         let state = Arc::new(HttpAppState { router, sse_tx, ws_live_tx, room_sse_tx });
 
         let app = Router::new()
