@@ -293,7 +293,16 @@ impl Session {
                                                     user_ip,
                                                 }).await;
                                             // 内置 hooks
-                                            let online = users_guard.len();
+                                            let online = {
+                                                let rooms = server.rooms.read().await;
+                                                let mut in_room: std::collections::HashSet<i32> = std::collections::HashSet::new();
+                                                for (_id, room) in rooms.iter() {
+                                                    for u in room.users().await {
+                                                        in_room.insert(u.id);
+                                                    }
+                                                }
+                                                in_room.len()
+                                            };
                                             drop(users_guard);
                                             crate::internal_hooks::track_player(user_info.id, &user_info.name);
                                             crate::internal_hooks::playtime_connect(user_info.id);
@@ -324,7 +333,16 @@ impl Session {
                                                 })
                                                 .await;
                                             // 内置 hooks
-                                            let online = users_guard.len();
+                                            let online = {
+                                                let rooms = server.rooms.read().await;
+                                                let mut in_room: std::collections::HashSet<i32> = std::collections::HashSet::new();
+                                                for (_id, room) in rooms.iter() {
+                                                    for u in room.users().await {
+                                                        in_room.insert(u.id);
+                                                    }
+                                                }
+                                                in_room.len()
+                                            };
                                             drop(users_guard);
                                             crate::internal_hooks::track_player(user_info.id, &user.name);
                                             crate::internal_hooks::playtime_connect(user_info.id);
