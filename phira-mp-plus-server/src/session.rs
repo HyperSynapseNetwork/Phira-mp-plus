@@ -8,9 +8,11 @@ use crate::server::PlusServerState;
 use crate::tl;
 use anyhow::{Result, anyhow, bail};
 use phira_mp_common::{
-    ClientCommand, HEARTBEAT_DISCONNECT_TIMEOUT, JoinRoomResponse, Message, ServerCommand, Stream,
+    ClientCommand, JoinRoomResponse, Message, ServerCommand, Stream,
     UserInfo,
 };
+
+const HEARTBEAT_DISCONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(600);
 use serde::Deserialize;
 use std::sync::{
     Arc, Weak,
@@ -183,9 +185,9 @@ impl Session {
                         if panicked.load(Ordering::SeqCst) {
                             return;
                         }
+                        *last_recv.lock().await = Instant::now();
                         if matches!(cmd, ClientCommand::Ping) {
                             let _ = send_tx.send(ServerCommand::Pong).await;
-                            *last_recv.lock().await = Instant::now();
                             return;
                         }
                         if waiting_for_authenticate.load(Ordering::SeqCst) {
@@ -291,9 +293,10 @@ impl Session {
                                                     user_ip,
                                                 }).await;
                                             // 内置 hooks
+                                            let online = users_guard.len();
+                                            drop(users_guard);
                                             crate::internal_hooks::track_player(user_info.id, &user_info.name);
                                             crate::internal_hooks::playtime_connect(user_info.id);
-                                            let online = server.users.read().await.len();
                                             crate::internal_hooks::send_welcome(user_info.id, &user_info.name, online, &server);
                                         } else {
                                             let user = Arc::new(User::new(
@@ -321,9 +324,10 @@ impl Session {
                                                 })
                                                 .await;
                                             // 内置 hooks
+                                            let online = users_guard.len();
+                                            drop(users_guard);
                                             crate::internal_hooks::track_player(user_info.id, &user.name);
                                             crate::internal_hooks::playtime_connect(user_info.id);
-                                            let online = server.users.read().await.len();
                                             crate::internal_hooks::send_welcome(user_info.id, &user.name, online, &server);
                                         }
                                         Ok(())
@@ -345,12 +349,14 @@ impl Session {
                                         Some(room) => Some(room.client_state(user).await),
                                         None => None,
                                     };
+                                    debug!("sending auth OK to user {}", user.id);
                                     let _ = send_tx
                                         .send(ServerCommand::Authenticate(Ok((
                                             user.to_info(),
                                             room_state,
                                         ))))
                                         .await;
+                                    debug!("auth response sent");
                                     // 通知 room monitor 新用户
                                     let uid = user.id;
                                     let _session = this.get().map(|s| Arc::clone(s));
@@ -434,7 +440,6 @@ impl Session {
                             }
                         }
                         let user = this.get().map(|it| Arc::clone(&it.user)).unwrap();
-                        *last_recv.lock().await = Instant::now();
 
                         // 命令速率限制
                         let session_ref = this.get().map(|s| Arc::clone(s));

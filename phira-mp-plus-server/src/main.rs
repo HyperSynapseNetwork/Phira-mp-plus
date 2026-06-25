@@ -129,7 +129,7 @@ fn init_log(file: &str, log_tx: Option<mpsc::UnboundedSender<String>>) -> Result
     let file_layer = fmt::layer()
         .with_writer(non_blocking)
         .with_ansi(false)
-        .with_filter(LevelFilter::DEBUG);
+        .with_filter(LevelFilter::TRACE);
 
     // 终端过滤器
     let filter = EnvFilter::try_from_default_env()
