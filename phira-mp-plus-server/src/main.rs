@@ -8,6 +8,7 @@ use clap::Parser;
 use phira_mp_plus_server::cli::CliHandler;
 use phira_mp_plus_server::server::{PlusConfig, PlusConfigCli, PlusServer};
 use std::io;
+use std::io::IsTerminal;
 use std::path::Path;
 use std::sync::Arc;
 use tokio::sync::mpsc;
@@ -257,11 +258,20 @@ async fn main() -> Result<()> {
         info!("CLI management console started");
     }
 
-    // ── 启动 TUI（screen/tmux 下也使用 TUI，部分终端可正常显示） ──
+    // ── 启动交互前端 ──
+    // screen/tmux 都仍是 TTY，因此使用 TUI；管道、systemd、Docker 等
+    // 非交互环境自动退回逐行 stdin，避免 raw-mode/alternate-screen 破坏日志。
+    let use_tui = cli_enabled && io::stdin().is_terminal() && io::stdout().is_terminal();
     let tui_handle = if let (Some(cmd_tx), Some(out_rx), Some(log_rx)) = (cmd_tx, out_rx, log_rx) {
         Some(std::thread::spawn(move || {
-            if let Err(e) = phira_mp_plus_server::cli_tui::run_tui(cmd_tx, out_rx, log_rx) {
-                eprintln!("TUI error (try --no-cli): {e}");
+            if use_tui {
+                if let Err(e) = phira_mp_plus_server::cli_tui::run_tui(cmd_tx, out_rx, log_rx) {
+                    eprintln!("TUI error: {e}");
+                }
+            } else {
+                phira_mp_plus_server::cli_tui::run_stdin_cli_with_logs(
+                    cmd_tx, out_rx, log_rx,
+                );
             }
         }))
     } else {

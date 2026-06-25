@@ -125,7 +125,7 @@ pub struct Room {
     /// 房间最大玩家数（来自服务器配置或默认值）
     pub max_users: AtomicUsize,
 
-    /// 各玩家实时触控/判定数据缓存（供插件 WASM WIT API 查询）
+    /// 各玩家实时触控/判定数据缓存（供插件 WASM host API 查询）
     pub player_data: RwLock<HashMap<i32, PlayerLiveData>>,
 
     /// 轮次数据持久化存储（代替直接的 server 弱引用）
@@ -225,12 +225,14 @@ impl Room {
             cycle: self.is_cycle(),
             is_host: self.check_host(user).await.is_ok(),
             is_ready: matches!(&*self.state.read().await, InternalRoomState::WaitForReady { started } if started.contains(&user.id)),
+            // Protocol observers are intentionally absent from the public
+            // player roster; phira-web-monitor creates a scene for every user
+            // returned here.
             users: self
                 .users
                 .read()
                 .await
                 .iter()
-                .chain(self.monitors.read().await.iter())
                 .filter_map(|it| it.upgrade().map(|it| (it.id, it.to_info())))
                 .collect(),
         }
@@ -283,28 +285,28 @@ impl Room {
 
     // ── 实时监测数据 ──
 
-    /// 存储玩家的触控帧数据（供 WASM 插件 WIT API 查询）
+    /// 存储玩家的触控帧数据（供 WASM 插件 host API 查询）
     pub async fn store_player_touches(&self, user_id: i32, data: &[TouchEventPoint]) {
         if data.is_empty() { return; }
         let mut guard = self.player_data.write().await;
         guard.entry(user_id).or_default().push_touches(data);
     }
 
-    /// 存储玩家的判定事件数据（供 WASM 插件 WIT API 查询）
+    /// 存储玩家的判定事件数据（供 WASM 插件 host API 查询）
     pub async fn store_player_judges(&self, user_id: i32, data: &[JudgeEventItem]) {
         if data.is_empty() { return; }
         let mut guard = self.player_data.write().await;
         guard.entry(user_id).or_default().push_judges(data);
     }
 
-    /// 获取玩家的触控数据（WASM WIT API 用）
+    /// 获取玩家的触控数据（WASM host API 用）
     pub async fn get_player_touches(&self, user_id: i32) -> Vec<TouchEventPoint> {
         self.player_data.read().await.get(&user_id)
             .map(|d| d.touches.clone())
             .unwrap_or_default()
     }
 
-    /// 获取玩家的判定数据（WASM WIT API 用）
+    /// 获取玩家的判定数据（WASM host API 用）
     pub async fn get_player_judges(&self, user_id: i32) -> Vec<JudgeEventItem> {
         self.player_data.read().await.get(&user_id)
             .map(|d| d.judges.clone())
@@ -414,20 +416,26 @@ impl Room {
     /// Return: should the room be dropped
     #[must_use]
     pub async fn on_user_leave(&self, user: &super::session::User) -> bool {
-        self.send(Message::LeaveRoom {
-            user: user.id,
-            name: user.name.clone(),
-        })
-        .await;
+        let is_monitor = user.monitor.load(Ordering::SeqCst);
+        if !is_monitor {
+            self.send(Message::LeaveRoom {
+                user: user.id,
+                name: user.name.clone(),
+            }).await;
+        }
         *user.room.write().await = None;
-        (if user.monitor.load(Ordering::SeqCst) {
-            &self.monitors
-        } else {
-            &self.users
-        })
-        .write()
-        .await
-        .retain(|it| it.upgrade().is_some_and(|it| it.id != user.id));
+        (if is_monitor { &self.monitors } else { &self.users })
+            .write()
+            .await
+            .retain(|it| it.upgrade().is_some_and(|it| it.id != user.id));
+
+        if is_monitor {
+            if self.monitors().await.is_empty() {
+                self.live.store(false, Ordering::SeqCst);
+            }
+            return false;
+        }
+
         if self.check_host(user).await.is_ok() {
             info!("host disconnected!");
             let users = self.users().await;

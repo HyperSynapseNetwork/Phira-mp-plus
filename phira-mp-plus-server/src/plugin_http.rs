@@ -3,7 +3,8 @@
 //! 插件通过 PluginContext 注册路由和推送 SSE 事件，
 //! 统一在单个端口暴露，无需每个插件自建 HTTP 服务。
 //! 支持运行时动态注册路由（所有请求通过 catch-all 处理器派发）。
-//! 额外提供 /ws/live 和 /rooms/listen 端点供 web-monitor 使用。
+//! `/ws/live` and `/rooms/listen` are retained as legacy extension bridges.
+//! Official phira-web-monitor compatibility uses the native TCP monitor protocol.
 
 use crate::server::PlusServerState;
 use axum::{
@@ -95,9 +96,9 @@ pub struct PluginHttpServer {
     router: Arc<RwLock<DynamicRouter>>,
     /// 通用 SSE 事件
     sse_tx: broadcast::Sender<SseEvent>,
-    /// WebSocket live 事件（web-monitor 用）
+    /// Legacy WebSocket live event bridge.
     ws_live_tx: broadcast::Sender<Vec<u8>>,
-    /// 房间 SSE 事件（web-monitor 用）
+    /// Legacy room SSE event bridge.
     room_sse_tx: broadcast::Sender<SseEvent>,
     /// 来自 session.rs 的 RoomEvent 字符串广播
     server_sse_tx: Option<tokio::sync::broadcast::Sender<String>>,
@@ -128,7 +129,7 @@ impl PluginHttpServer {
         self.ws_live_tx.clone()
     }
 
-    /// 房间 SSE 事件发送者（web-monitor /rooms/listen 用）
+    /// Legacy room SSE event sender.
     pub fn room_sse_sender(&self) -> broadcast::Sender<SseEvent> {
         self.room_sse_tx.clone()
     }
@@ -186,9 +187,9 @@ impl PluginHttpServer {
         let app = Router::new()
             // 通用 SSE 端点
             .route("/api/events", axum::routing::get(sse_handler))
-            // 房间 SSE 端点（web-monitor 兼容）
+            // Legacy room SSE bridge (not the native monitor protocol)
             .route("/rooms/listen", axum::routing::get(room_sse_handler))
-            // WebSocket 实时监测（web-monitor 兼容）
+            // Legacy WebSocket live bridge
             .route("/ws/live", axum::routing::get(ws_live_handler))
             // 动态路由 — 所有其他请求通过匹配派发
             .route("/{*path}", any(dynamic_handler))
@@ -278,7 +279,7 @@ async fn sse_handler(
     Sse::new(stream).keep_alive(KeepAlive::default())
 }
 
-// ── 房间 SSE 端点（web-monitor 兼容） ──
+// ── Legacy room SSE bridge ──
 async fn room_sse_handler(
     axum::extract::State(st): axum::extract::State<Arc<HttpAppState>>,
 ) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
@@ -306,7 +307,7 @@ async fn room_sse_handler(
     Sse::new(stream).keep_alive(KeepAlive::default())
 }
 
-// ── WebSocket Live 端点（web-monitor 兼容） ──
+// ── Legacy WebSocket live bridge ──
 async fn ws_live_handler(
     ws: WebSocketUpgrade,
     axum::extract::State(st): axum::extract::State<Arc<HttpAppState>>,

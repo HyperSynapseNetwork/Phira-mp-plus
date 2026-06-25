@@ -28,6 +28,30 @@ use tokio::{
 use tracing::{Instrument, debug, debug_span, error, info, trace, warn};
 use uuid::Uuid;
 
+#[derive(Debug, Deserialize)]
+struct AuthUserInfo {
+    id: i32,
+    name: String,
+    language: String,
+}
+
+async fn authenticate_remote(server: &PlusServerState, token: &str) -> Result<AuthUserInfo> {
+    if token.len() > 128 {
+        bail!("invalid token");
+    }
+    reqwest::Client::builder()
+        .timeout(Duration::from_secs(3))
+        .build()?
+        .get(format!("{}/me", server.config.phira_api_endpoint))
+        .header(reqwest::header::AUTHORIZATION, format!("Bearer {token}"))
+        .send()
+        .await?
+        .error_for_status()?
+        .json::<AuthUserInfo>()
+        .await
+        .map_err(Into::into)
+}
+
 pub struct User {
     pub id: i32,
     pub name: String,
@@ -91,11 +115,41 @@ impl User {
         let guard = self.room.read().await;
         let room = guard.as_ref().map(Arc::clone);
         drop(guard);
+
+        // Protocol peers use synthetic negative IDs and are not reconnectable
+        // players. Remove them immediately and do not emit player lifecycle
+        // events into plugins or the room monitor.
+        if self.id < 0 {
+            if let Some(room) = room {
+                if room.on_user_leave(&self).await {
+                    self.server.rooms.write().await.remove(&room.id);
+                }
+            }
+            let mut users = self.server.users.write().await;
+            if users
+                .get(&self.id)
+                .is_some_and(|current| Arc::ptr_eq(current, &self))
+            {
+                users.remove(&self.id);
+            }
+            drop(users);
+            self.server.game_monitors.write().await.remove(&self.id);
+            return;
+        }
+
         if let Some(room) = room {
             let guard = room.state.read().await;
             if matches!(*guard, crate::room::InternalRoomState::Playing { .. }) {
                 warn!(user = self.id, "lost connection on playing, aborting");
-                self.server.users.write().await.remove(&self.id);
+                {
+                    let mut users = self.server.users.write().await;
+                    if users
+                        .get(&self.id)
+                        .is_some_and(|current| Arc::ptr_eq(current, &self))
+                    {
+                        users.remove(&self.id);
+                    }
+                }
                 drop(guard);
                 if room.on_user_leave(&self).await {
                     self.server.rooms.write().await.remove(&room.id);
@@ -126,7 +180,15 @@ impl User {
                     let room = guard.as_ref().map(Arc::clone);
                     drop(guard);
                     if let Some(room) = room {
-                        self_.server.users.write().await.remove(&self_.id);
+                        {
+                            let mut users = self_.server.users.write().await;
+                            if users
+                                .get(&self_.id)
+                                .is_some_and(|current| Arc::ptr_eq(current, &self_))
+                            {
+                                users.remove(&self_.id);
+                            }
+                        }
                         if room.on_user_leave(&self_).await {
                             self_.server.rooms.write().await.remove(&room.id);
                         }
@@ -137,11 +199,20 @@ impl User {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SessionCategory {
+    Normal,
+    Console,
+    RoomMonitor,
+    GameMonitor,
+}
+
 pub struct Session {
     pub id: Uuid,
     pub ip: String,
     pub stream: Stream<ServerCommand, ClientCommand>,
     pub user: Arc<User>,
+    pub category: SessionCategory,
 
     monitor_task_handle: JoinHandle<()>,
     /// 命令速率限制器（按类别）
@@ -158,7 +229,7 @@ impl Session {
         stream.set_nodelay(true)?;
         let this = Arc::new(OnceCell::<Arc<Session>>::new());
         let this_inited = Arc::new(Notify::new());
-        let (tx, rx) = tokio::sync::oneshot::channel::<Arc<User>>();
+        let (tx, rx) = tokio::sync::oneshot::channel::<(Arc<User>, SessionCategory)>();
         let last_recv: Arc<Mutex<Instant>> = Arc::new(Mutex::new(Instant::now()));
         let server_clone = Arc::clone(&server);
 
@@ -176,7 +247,17 @@ impl Session {
                 move |send_tx, cmd| {
                     let this = Arc::clone(&this);
                     let this_inited = Arc::clone(&this_inited);
-                    let tx = tx.take();
+                    let tx = if matches!(
+                        &cmd,
+                        ClientCommand::Authenticate { .. }
+                            | ClientCommand::ConsoleAuthenticate { .. }
+                            | ClientCommand::RoomMonitorAuthenticate { .. }
+                            | ClientCommand::GameMonitorAuthenticate { .. }
+                    ) {
+                        tx.take()
+                    } else {
+                        None
+                    };
                     let server = Arc::clone(&server);
                     let last_recv = Arc::clone(&last_recv);
                     let waiting_for_authenticate = Arc::clone(&waiting_for_authenticate);
@@ -186,29 +267,22 @@ impl Session {
                             return;
                         }
                         *last_recv.lock().await = Instant::now();
-                        if matches!(cmd, ClientCommand::Ping) {
+                        if matches!(&cmd, ClientCommand::Ping) {
                             let _ = send_tx.send(ServerCommand::Pong).await;
                             return;
                         }
                         if waiting_for_authenticate.load(Ordering::SeqCst) {
-                            if let ClientCommand::Authenticate { token } = cmd {
+                            if let ClientCommand::Authenticate { token } = &cmd {
                                 let Some(tx) = tx else { return };
                                 let res: Result<()> = {
                                     let this = Arc::clone(&this);
                                     let server = Arc::clone(&server);
                                     async move {
-                                        let token = token.into_inner();
+                                        let token = token.clone().into_inner();
                                         if token.len() > 32 {
                                             bail!("invalid token");
                                         }
-                                        debug!("session {id}: authenticate {token}");
-                                        #[derive(Debug, Deserialize)]
-                                        struct AuthUserInfo {
-                                            id: i32,
-                                            name: String,
-                                            language: String,
-                                        }
-
+                                        debug!("session {id}: authenticating");
                                         // 计算 token 哈希作为缓存键（使用 SHA-256）
                                         use sha2::{Sha256, Digest};
                                         let token_hash = u64::from_le_bytes(
@@ -280,7 +354,7 @@ impl Session {
                                         let mut users_guard = server.users.write().await;
                                         if let Some(user) = users_guard.get(&user_info.id) {
                                             info!("reconnect");
-                                            let _ = tx.send(Arc::clone(user));
+                                            let _ = tx.send((Arc::clone(user), SessionCategory::Normal));
                                             this_inited.notified().await;
                                             user.set_session(Arc::downgrade(this.get().unwrap()))
                                                 .await;
@@ -317,7 +391,7 @@ impl Session {
                                                     .unwrap_or_default(),
                                                 Arc::clone(&server),
                                             ));
-                                            let _ = tx.send(Arc::clone(&user));
+                                            let _ = tx.send((Arc::clone(&user), SessionCategory::Normal));
                                             this_inited.notified().await;
                                             user.set_session(Arc::downgrade(this.get().unwrap()))
                                                 .await;
@@ -386,17 +460,35 @@ impl Session {
                                     waiting_for_authenticate.store(false, Ordering::SeqCst);
                                 }
                                 return;
-                            } else if let ClientCommand::ConsoleAuthenticate { .. } = cmd {
-                                // 控制台客户端 - 简单放行
+                            } else if let ClientCommand::ConsoleAuthenticate { token } = &cmd {
                                 let Some(tx) = tx else { return };
-                                let user = Arc::new(User::new(-2, "$console".into(), Language::default(), Arc::clone(&server)));
-                                let _ = tx.send(Arc::clone(&user));
-                                this_inited.notified().await;
-                                user.set_session(Arc::downgrade(this.get().unwrap())).await;
-                                let _ = send_tx.send(ServerCommand::Authenticate(Ok((user.to_info(), None)))).await;
-                                waiting_for_authenticate.store(false, Ordering::SeqCst);
+                                match authenticate_remote(&server, token).await {
+                                    Ok(info) => {
+                                        let user = Arc::new(User::new(
+                                            info.id,
+                                            info.name,
+                                            info.language.parse().map(Language).unwrap_or_default(),
+                                            Arc::clone(&server),
+                                        ));
+                                        let _ = tx.send((Arc::clone(&user), SessionCategory::Console));
+                                        this_inited.notified().await;
+                                        user.set_session(Arc::downgrade(this.get().unwrap())).await;
+                                        let _ = send_tx
+                                            .send(ServerCommand::Authenticate(Ok((user.to_info(), None))))
+                                            .await;
+                                        waiting_for_authenticate.store(false, Ordering::SeqCst);
+                                    }
+                                    Err(err) => {
+                                        warn!("console authentication failed: {err}");
+                                        let _ = send_tx
+                                            .send(ServerCommand::Authenticate(Err("authentication failed".into())))
+                                            .await;
+                                        panicked.store(true, Ordering::SeqCst);
+                                        let _ = server.lost_con_tx.send(id).await;
+                                    }
+                                }
                                 return;
-                            } else if let ClientCommand::RoomMonitorAuthenticate { key } = cmd {
+                            } else if let ClientCommand::RoomMonitorAuthenticate { key } = &cmd {
                                 let Some(tx) = tx else { return };
                                 if server.room_monitor.read().await.as_ref().and_then(|w| w.upgrade()).is_some() {
                                     let _ = send_tx.send(ServerCommand::Authenticate(Err("more than one room monitor".into()))).await;
@@ -404,7 +496,7 @@ impl Session {
                                     let _ = server.lost_con_tx.send(id).await;
                                     return;
                                 }
-                                if server.room_monitor_key != key {
+                                if server.room_monitor_key.as_slice() != key.as_slice() {
                                     let _ = send_tx.send(ServerCommand::Authenticate(Err("secret key mismatch".into()))).await;
                                     panicked.store(true, Ordering::SeqCst);
                                     let _ = server.lost_con_tx.send(id).await;
@@ -412,41 +504,46 @@ impl Session {
                                 }
                                 info!("new room monitor connected");
                                 let user = Arc::new(User::new(-1, "$server_room_monitor".into(), Language::default(), Arc::clone(&server)));
-                                let _ = tx.send(Arc::clone(&user));
+                                let _ = tx.send((Arc::clone(&user), SessionCategory::RoomMonitor));
                                 this_inited.notified().await;
                                 user.set_session(Arc::downgrade(this.get().unwrap())).await;
                                 *server.room_monitor.write().await = Some(Arc::downgrade(this.get().unwrap()));
                                 let _ = send_tx.send(ServerCommand::Authenticate(Ok((user.to_info(), None)))).await;
                                 waiting_for_authenticate.store(false, Ordering::SeqCst);
                                 return;
-                            } else if let ClientCommand::GameMonitorAuthenticate { token } = cmd {
-                                // 类似 RoomMonitor，但创建普通用户可以旁观
+                            } else if let ClientCommand::GameMonitorAuthenticate { token } = &cmd {
                                 let Some(tx) = tx else { return };
-                                let token_str = String::from(token.into_inner());
-                                match async {
-                                    reqwest::Client::builder().timeout(std::time::Duration::from_secs(3)).build()
-                                        .map_err(|_| "build client")?
-                                        .get(format!("{}/me", &server.config.phira_api_endpoint))
-                                        .header(reqwest::header::AUTHORIZATION, format!("Bearer {token_str}"))
-                                        .send().await.map_err(|_| "send")?
-                                        .error_for_status().map_err(|_| "status")?
-                                        .json::<serde_json::Value>().await.map_err(|_| "json")
-                                }.await {
+                                match authenticate_remote(&server, token).await {
                                     Ok(info) => {
-                                        let uid = info.get("id").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
-                                        let name = info.get("name").and_then(|v| v.as_str()).unwrap_or("unknown");
-                                        let lang = info.get("language").and_then(|v| v.as_str()).unwrap_or("en-US");
-                                        let user = Arc::new(User::new(-uid, format!("{name} (monitor)"), lang.parse().map(Language).unwrap_or_default(), Arc::clone(&server)));
-                                        let _ = tx.send(Arc::clone(&user));
+                                        let Some(monitor_id) = info.id.checked_neg().filter(|id| *id < 0) else {
+                                            let _ = send_tx
+                                                .send(ServerCommand::Authenticate(Err("invalid monitor identity".into())))
+                                                .await;
+                                            return;
+                                        };
+                                        let user = Arc::new(User::new(
+                                            monitor_id,
+                                            format!("{} (monitor)", info.name),
+                                            info.language.parse().map(Language).unwrap_or_default(),
+                                            Arc::clone(&server),
+                                        ));
+                                        let _ = tx.send((Arc::clone(&user), SessionCategory::GameMonitor));
                                         this_inited.notified().await;
                                         user.set_session(Arc::downgrade(this.get().unwrap())).await;
-                                        server.users.write().await.insert(-uid, Arc::clone(&user));
-                                        server.set_game_monitor(-uid, Arc::downgrade(this.get().unwrap())).await;
-                                        let _ = send_tx.send(ServerCommand::Authenticate(Ok((user.to_info(), None)))).await;
+                                        server.users.write().await.insert(monitor_id, Arc::clone(&user));
+                                        server
+                                            .set_game_monitor(monitor_id, Arc::downgrade(this.get().unwrap()))
+                                            .await;
+                                        let _ = send_tx
+                                            .send(ServerCommand::Authenticate(Ok((user.to_info(), None))))
+                                            .await;
                                         waiting_for_authenticate.store(false, Ordering::SeqCst);
                                     }
-                                    Err(_) => {
-                                        let _ = send_tx.send(ServerCommand::Authenticate(Err("game monitor auth failed".into()))).await;
+                                    Err(err) => {
+                                        warn!("game monitor authentication failed: {err}");
+                                        let _ = send_tx
+                                            .send(ServerCommand::Authenticate(Err("game monitor auth failed".into())))
+                                            .await;
                                         panicked.store(true, Ordering::SeqCst);
                                         let _ = server.lost_con_tx.send(id).await;
                                     }
@@ -481,7 +578,10 @@ impl Session {
                         }
 
                         let result = LANGUAGE
-                            .scope(Arc::new(user.lang.clone()), process(user, cmd))
+                            .scope(
+                                Arc::new(user.lang.clone()),
+                                process(user, this.get().unwrap().category, cmd),
+                            )
                             .await;
                         if let Some(resp) = result {
                             if let Err(err) = send_tx.send(resp).await {
@@ -518,7 +618,7 @@ impl Session {
             }
         });
 
-        let user = rx.await?;
+        let (user, category) = rx.await?;
 
         let ip = addr.ip().to_string();
         let res = Arc::new(Self {
@@ -526,6 +626,7 @@ impl Session {
             ip,
             stream,
             user,
+            category,
             monitor_task_handle,
             cmd_limiter: crate::rate_limiter::CommandRateLimiter::new(),
         });
@@ -555,7 +656,7 @@ impl Drop for Session {
     }
 }
 
-async fn process(user: Arc<User>, cmd: ClientCommand) -> Option<ServerCommand> {
+async fn process(user: Arc<User>, category: SessionCategory, cmd: ClientCommand) -> Option<ServerCommand> {
     #[inline]
     fn err_to_str<T>(result: Result<T>) -> Result<T, String> {
         result.map_err(|it| it.to_string())
@@ -593,21 +694,44 @@ async fn process(user: Arc<User>, cmd: ClientCommand) -> Option<ServerCommand> {
             }
         };
     }
-    // 向 room monitor 和 SSE 广播 RoomEvent
+    let permitted = match category {
+        SessionCategory::Normal => !matches!(&cmd, ClientCommand::QueryRoomInfo),
+        SessionCategory::GameMonitor => matches!(
+            &cmd,
+            ClientCommand::JoinRoom { monitor: true, .. }
+                | ClientCommand::LeaveRoom
+                | ClientCommand::Ready
+                | ClientCommand::CancelReady
+                | ClientCommand::Authenticate { .. }
+                | ClientCommand::ConsoleAuthenticate { .. }
+                | ClientCommand::RoomMonitorAuthenticate { .. }
+                | ClientCommand::GameMonitorAuthenticate { .. }
+        ),
+        SessionCategory::RoomMonitor => matches!(
+            &cmd,
+            ClientCommand::QueryRoomInfo
+                | ClientCommand::Authenticate { .. }
+                | ClientCommand::ConsoleAuthenticate { .. }
+                | ClientCommand::RoomMonitorAuthenticate { .. }
+                | ClientCommand::GameMonitorAuthenticate { .. }
+        ),
+        SessionCategory::Console => matches!(
+            &cmd,
+            ClientCommand::Authenticate { .. }
+                | ClientCommand::ConsoleAuthenticate { .. }
+                | ClientCommand::RoomMonitorAuthenticate { .. }
+                | ClientCommand::GameMonitorAuthenticate { .. }
+        ),
+    };
+    if !permitted {
+        warn!(user = user.id, ?category, ?cmd, "command rejected for session category");
+        return None;
+    }
+
     macro_rules! send_room_event {
         ($event_type:ident $data:tt $(,)?) => {
-            eprintln!("PLUS_DEBUG: send_room_event! {}", stringify!($event_type));
-            if let Some(p) = user.server.get_room_monitor().await {
-                p.try_send(ServerCommand::RoomEvent(
-                    RoomEvent::$event_type $data
-                ))
-                .await;
-            }
-            // 同时广播到 SSE（web-monitor /rooms/listen）
-            eprintln!("PLUS_DEBUG: room_sse_tx.read().await = {:?}", &*user.server.room_sse_tx.read().await);
-            if let Some(tx) = &*user.server.room_sse_tx.read().await {
-                eprintln!("PLUS_DEBUG: sending to SSE channel");
-                let _ = tx.send(stringify!($event_type).to_string());
+            if let Some(peer) = user.server.get_room_monitor().await {
+                peer.try_send(ServerCommand::RoomEvent(RoomEvent::$event_type $data)).await;
             }
         };
     }
@@ -632,7 +756,7 @@ async fn process(user: Arc<User>, cmd: ClientCommand) -> Option<ServerCommand> {
                 if let Some(frame) = frames.last() {
                     user.game_time.store(frame.time.to_bits(), Ordering::SeqCst);
                 }
-                // 转换触控数据并存入房间缓存（供 WASM WIT API 查询）
+                // 转换触控数据并存入房间缓存（供 WASM host API 查询）
                 let touch_data: Vec<crate::plugin::TouchEventPoint> = frames
                     .iter()
                     .flat_map(|frame| {
@@ -683,7 +807,7 @@ async fn process(user: Arc<User>, cmd: ClientCommand) -> Option<ServerCommand> {
             get_room!(~ room);
             if room.is_live() {
                 debug!("received {} judge events from {}", judges.len(), user.id);
-                // 转换判定数据并存入房间缓存（供 WASM WIT API 查询）
+                // 转换判定数据并存入房间缓存（供 WASM host API 查询）
                 let judge_data: Vec<crate::plugin::JudgeEventItem> = judges
                     .iter()
                     .map(|j| crate::plugin::JudgeEventItem {
@@ -805,24 +929,26 @@ async fn process(user: Arc<User>, cmd: ClientCommand) -> Option<ServerCommand> {
                 if monitor && !room.live.fetch_or(true, Ordering::SeqCst) {
                     info!(room = id.to_string(), "room goes live");
                 }
-                room.broadcast(ServerCommand::OnJoinRoom(user.to_info()))
-                    .await;
-                room.send(Message::JoinRoom {
-                    user: user.id,
-                    name: user.name.clone(),
-                })
-                .await;
-                send_room_event!(JoinRoom { room: id.clone(), user: user.id });
+                if !monitor {
+                    room.broadcast(ServerCommand::OnJoinRoom(user.to_info())).await;
+                    room.send(Message::JoinRoom {
+                        user: user.id,
+                        name: user.name.clone(),
+                    }).await;
+                    send_room_event!(JoinRoom { room: id.clone(), user: user.id });
+                }
                 *room_guard = Some(Arc::clone(&room));
 
-                // 触发插件事件
-                user.server.plugin_manager
-                    .trigger(&PluginEvent::RoomJoin {
-                        user_id: user.id,
-                        room_id: id.to_string(),
-                        is_monitor: monitor,
-                    })
-                    .await;
+                // Protocol-only game monitors are not exposed as players to plugins.
+                if category == SessionCategory::Normal {
+                    user.server.plugin_manager
+                        .trigger(&PluginEvent::RoomJoin {
+                            user_id: user.id,
+                            room_id: id.to_string(),
+                            is_monitor: monitor,
+                        })
+                        .await;
+                }
 
                 Ok(JoinRoomResponse {
                     state: room.client_room_state().await,
@@ -830,7 +956,6 @@ async fn process(user: Arc<User>, cmd: ClientCommand) -> Option<ServerCommand> {
                         .users()
                         .await
                         .into_iter()
-                        .chain(room.monitors().await.into_iter())
                         .map(|it| it.to_info())
                         .collect(),
                     live: room.is_live(),
@@ -851,15 +976,19 @@ async fn process(user: Arc<User>, cmd: ClientCommand) -> Option<ServerCommand> {
                 if room.on_user_leave(&user).await {
                     user.server.rooms.write().await.remove(&room.id);
                 }
-                send_room_event!(LeaveRoom { room: room.id.clone(), user: user.id });
+                if category == SessionCategory::Normal {
+                    send_room_event!(LeaveRoom { room: room.id.clone(), user: user.id });
+                }
 
-                // 触发插件事件
-                user.server.plugin_manager
-                    .trigger(&PluginEvent::RoomLeave {
-                        user_id: user.id,
-                        room_id: room_id.to_string(),
-                    })
-                    .await;
+                // Monitors are protocol peers, not room members exposed to plugins.
+                if category == SessionCategory::Normal {
+                    user.server.plugin_manager
+                        .trigger(&PluginEvent::RoomLeave {
+                            user_id: user.id,
+                            room_id: room_id.to_string(),
+                        })
+                        .await;
+                }
 
                 Ok(())
             }

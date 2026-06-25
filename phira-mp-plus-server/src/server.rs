@@ -5,7 +5,7 @@
 
 use crate::ban::BanManager;
 use crate::extensions::ExtensionManager;
-use crate::plugin::{PluginEvent, PluginManager};
+use crate::plugin::{PluginEvent, PluginManager, WasmRuntimeConfig};
 use crate::plugin_http::PluginHttpServer;
 use phira_mp_plus_server_api as api;
 use anyhow::Result;
@@ -109,6 +109,9 @@ pub struct PlusConfig {
     /// 未设置时自动回退 JSON 文件存储
     #[serde(default)]
     pub database_url: Option<String>,
+    /// WASM sandbox/resource limits.
+    #[serde(default)]
+    pub wasm_runtime: WasmRuntimeConfig,
 }
 
 fn default_http_port() -> u16 { 12347 }
@@ -138,6 +141,7 @@ impl Default for PlusConfig {
             chat_enabled: true,
             round_data_retention_days: 7,
             database_url: None,
+            wasm_runtime: WasmRuntimeConfig::default(),
         }
     }
 }
@@ -199,7 +203,7 @@ pub struct PlusServerState {
     pub bench_tx: tokio::sync::mpsc::UnboundedSender<BenchRequest>,
     /// 房间 monitor key（与 phira-web-monitor 共享密钥）
     pub room_monitor_key: Vec<u8>,
-    /// SSE 房间事件广播（web-monitor /rooms/listen 用）
+    /// Legacy HTTP room-event bridge; native monitors use the TCP protocol.
     pub room_sse_tx: RwLock<Option<tokio::sync::broadcast::Sender<String>>>,
     /// 房间 monitor 会话（唯一）
     pub room_monitor: RwLock<Option<Weak<super::session::Session>>>,
@@ -238,6 +242,7 @@ impl PlusServer {
         let plugin_manager = Arc::new(PluginManager::new(
             &config.plugins_dir,
             Arc::clone(&extensions),
+            config.wasm_runtime.clone(),
         ));
 
         // 初始化黑名单管理器
@@ -327,7 +332,7 @@ impl PlusServer {
             });
         })).await;
 
-        // 设置默认状态查询（所有插件可用 ctx.state / WIT API state.query）
+        // 设置默认状态查询（所有插件可用 state.query host API）
         let state_query_all = api::ServerStateQuery::new({
             let s = Arc::clone(&state);
             move |method: &str, args: &[Value]| -> Result<Value, String> {
@@ -472,7 +477,7 @@ impl PlusServer {
 
     /// 获取服务器统计信息
     pub async fn stats(&self) -> ServerStats {
-        let user_count = self.state.users.read().await.len();
+        let user_count = self.state.users.read().await.values().filter(|user| user.id > 0).count();
         let room_count = self.state.rooms.read().await.len();
         let session_count = self.state.sessions.read().await.len();
         let plugin_count = self.state.plugin_manager.list_plugins().await.len();
@@ -679,7 +684,7 @@ impl PlusServerState {
 
 // ── HTTP 真实请求压测 ──
 
-// ── 状态查询 / Room/User 管理（供 WASM WIT API / dispatch） ──
+// ── 状态查询 / Room/User 管理（供 WASM host API / dispatch） ──
 
 /// 从房间踢出用户
 async fn run_room_kick(state: &PlusServerState, room_id: &str, target_id: i32) -> Result<Value, String> {
@@ -770,7 +775,7 @@ async fn run_admin_kick_user(state: &PlusServerState, target_id: i32, reason: &s
         }
     }
     state.users.write().await.remove(&target_id);
-    info!(user = target_id, reason = %reason, "kicked from server by admin (WIT)");
+    info!(user = target_id, reason = %reason, "kicked from server by admin");
     state.plugin_manager.trigger(&PluginEvent::UserDisconnect {
         user_id: target_id,
         user_name: user.name.clone(),
@@ -778,7 +783,7 @@ async fn run_admin_kick_user(state: &PlusServerState, target_id: i32, reason: &s
     Ok(serde_json::json!({"ok": true, "reason": reason}))
 }
 
-/// 统一状态查询入口（插件 / WASM WIT API 均通过此函数查询）
+/// 统一状态查询入口（插件 / WASM host API 均通过此函数查询）
 ///
 /// 支持的 method:
 /// - `player.touches`  → 查询指定用户的最近触控数据
@@ -962,7 +967,7 @@ fn server_state_query_inner(state: &Arc<PlusServerState>, method: &str, args: &[
             rx.recv_timeout(std::time::Duration::from_secs(3))
                 .unwrap_or(Err("room.list_since timeout".to_string()))
         }
-        // ── 房间管理（WIT room-management 接口） ──
+        // ── 房间管理（room-management host API） ──
         "room.kick" => {
             let room_id = args.get(0).and_then(|v| v.as_str()).unwrap_or("").to_string();
             let target_id = args.get(1).and_then(|v| v.as_i64()).unwrap_or(0) as i32;
@@ -1014,7 +1019,7 @@ fn server_state_query_inner(state: &Arc<PlusServerState>, method: &str, args: &[
             rx.recv_timeout(std::time::Duration::from_secs(5))
                 .unwrap_or(Err("room.close timeout".to_string()))
         }
-        // ── 用户管理（WIT user-management 接口） ──
+        // ── 用户管理（user-management host API） ──
         "admin.kick_user" => {
             let uid = args.get(0).and_then(|v| v.as_i64()).unwrap_or(0) as i32;
             if uid <= 0 { return Err("invalid user_id".to_string()); }
@@ -1082,7 +1087,7 @@ fn server_state_query_inner(state: &Arc<PlusServerState>, method: &str, args: &[
             let s = Arc::clone(state);
             tokio::spawn(async move {
                 let users = s.users.read().await;
-                let list: Vec<Value> = users.values().map(|u| serde_json::json!({
+                let list: Vec<Value> = users.values().filter(|user| user.id > 0).map(|u| serde_json::json!({
                     "id": u.id, "name": u.name, "monitor": u.monitor.load(Ordering::SeqCst)
                 })).collect();
                 let _ = tx.send(Ok(serde_json::to_value(list).unwrap_or_default()));

@@ -125,14 +125,21 @@ impl CliHandler {
                         "reload" | "r" => self.reload_plugins().await,
                         "info" => {
                             if args.len() < 2 {
-                                self.out(format!("  {} {} plugin info <插件名>", c::yellow("?"), c::bold("用法")));
+                                self.out(format!("  {} {} plugin info <插件ID或名称>", c::yellow("?"), c::bold("用法")));
                             } else {
                                 self.plugin_info(args[1]).await;
                             }
                         }
+                        "call" => {
+                            if args.len() < 3 {
+                                self.out(format!("  {} {} plugin call <插件ID或名称> <方法> [JSON数组]", c::yellow("?"), c::bold("用法")));
+                            } else {
+                                self.plugin_call(args[1], args[2], &args[3..].join(" ")).await;
+                            }
+                        }
                         _ => {
                             self.out(format!("  {} 未知子命令: {}  ", c::red("✗"), c::yellow(sub)));
-                            self.out(format!("  {} 可用: plugin list | enable | disable | reload | info", c::dim("▸")));
+                            self.out(format!("  {} 可用: plugin list | enable | disable | reload | info | call", c::dim("▸")));
                         }
                     }
                 }
@@ -405,7 +412,8 @@ impl CliHandler {
         self.out(format!("    {:<22} {}", c::dim("plugin list"), "列出所有 WASM 插件"));
         self.out(format!("    {:<22} {}", c::dim("plugin enable <名>"), "启用插件"));
         self.out(format!("    {:<22} {}", c::dim("plugin disable <名>"), "禁用插件"));
-        self.out(format!("    {:<22} {}", c::dim("plugin info <名>"), "插件详情"));
+        self.out(format!("    {:<22} {}", c::dim("plugin info <ID>"), "插件详情"));
+        self.out(format!("    {:<22} {}", c::dim("plugin call <ID> <方法> [JSON]"), "调用插件导出 API"));
         self.out(format!("    {:<22} {}", c::dim("plugin reload"), "重载所有插件"));
         self.out(format!(""));
         self.out(format!("  {} 用户", c::cyan("▸")));
@@ -456,14 +464,17 @@ impl CliHandler {
         self.out(format!("  {} 已加载插件 ({})", c::green("◆"), plugins.len()));
         self.out(format!("  {}", c::dim("  ────────────────────────────────────────────")));
         for p in &plugins {
-            let state_str = match p.state {
+            let state_str = match &p.state {
                 crate::plugin::PluginState::Enabled => c::green("启用"),
                 crate::plugin::PluginState::Disabled => c::yellow("禁用"),
                 crate::plugin::PluginState::Loaded => c::cyan("已加载"),
                 crate::plugin::PluginState::Error(_) => c::red("错误"),
             };
-            self.out(format!("  {} {:<20} {} {}",
-                c::dim("│"), p.info.name, c::dim(p.info.version.as_str()), state_str));
+            let stable_id = std::path::Path::new(&p.path)
+                .file_stem().and_then(|value| value.to_str()).unwrap_or("?");
+            self.out(format!("  {} {:<18} {} {}  {}",
+                c::dim("│"), stable_id, c::dim(p.info.version.as_str()), state_str,
+                c::dim(&format!("({})", p.info.name))));
         }
     }
 
@@ -491,14 +502,20 @@ impl CliHandler {
 
     async fn plugin_info(&self, name: &str) {
         let plugins = self.state.plugin_manager.list_plugins().await;
-        if let Some(p) = plugins.into_iter().find(|p| p.info.name == name) {
-            let state_str = match p.state {
+        if let Some(p) = plugins.into_iter().find(|p| {
+            p.info.name == name || std::path::Path::new(&p.path)
+                .file_stem().and_then(|value| value.to_str()) == Some(name)
+        }) {
+            let state_str = match &p.state {
                 crate::plugin::PluginState::Enabled => c::green("启用"),
                 crate::plugin::PluginState::Disabled => c::yellow("禁用"),
                 crate::plugin::PluginState::Loaded => c::cyan("已加载"),
                 crate::plugin::PluginState::Error(ref e) => c::red(&format!("错误: {}", e)),
             };
             self.out(format!("  {} 插件详情: {}", c::green("◆"), c::bold(&p.info.name)));
+            let stable_id = std::path::Path::new(&p.path)
+                .file_stem().and_then(|value| value.to_str()).unwrap_or("?");
+            self.out(format!("  {} ID:       {}", c::dim("│"), stable_id));
             self.out(format!("  {} 版本:     {}", c::dim("│"), p.info.version));
             self.out(format!("  {} 作者:     {}", c::dim("│"), p.info.author));
             self.out(format!("  {} 描述:     {}", c::dim("│"), p.info.description));
@@ -509,16 +526,36 @@ impl CliHandler {
         }
     }
 
+
+    async fn plugin_call(&self, plugin: &str, method: &str, args_json: &str) {
+        let args = if args_json.trim().is_empty() {
+            Vec::new()
+        } else {
+            match serde_json::from_str::<Vec<serde_json::Value>>(args_json) {
+                Ok(value) => value,
+                Err(error) => {
+                    self.out(format!("  {} 参数必须是 JSON 数组: {}", c::red("✗"), error));
+                    return;
+                }
+            }
+        };
+        match self.state.plugin_manager.call_plugin_api(plugin, method, args).await {
+            Ok(value) => self.out(format!("  {} {}", c::green("✓"), value)),
+            Err(error) => self.out(format!("  {} {}", c::red("✗"), error)),
+        }
+    }
+
     // ── 用户管理 ──
 
     async fn list_users(&self) {
         let users = self.state.users.read().await;
-        if users.is_empty() {
+        let player_count = users.values().filter(|user| user.id > 0).count();
+        if player_count == 0 {
             self.out(format!("  {} 当前无在线用户", c::dim("·")));
         } else {
-            self.out(format!("  {} 在线用户 ({})", c::green("◆"), users.len()));
+            self.out(format!("  {} 在线用户 ({})", c::green("◆"), player_count));
             self.out(format!("  {}", c::dim("  ────────────────────────────────────────────")));
-            for user in users.values() {
+            for user in users.values().filter(|user| user.id > 0) {
                 let monitor = if user.monitor.load(std::sync::atomic::Ordering::SeqCst) {
                     c::yellow(" [观]")
                 } else {
@@ -1152,7 +1189,7 @@ impl CliHandler {
     }
 
     async fn status(&self) {
-        let users = self.state.users.read().await.len();
+        let users = self.state.users.read().await.values().filter(|user| user.id > 0).count();
         let rooms = self.state.rooms.read().await.len();
         let sessions = self.state.sessions.read().await.len();
         let plugins = self.state.plugin_manager.list_plugins().await.len();

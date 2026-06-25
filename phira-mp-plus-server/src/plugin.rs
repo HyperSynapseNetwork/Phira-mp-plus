@@ -1,35 +1,64 @@
-//! Phira-mp+ WASM 插件系统
+//! Phira-mp+ WASM plugin manager.
 //!
-//! 基于 wasmtime 的 WASM 运行时，支持从 WIT 接口规范加载并运行插件。
-//! 插件可以提供事件监听、数据处理、API扩展等功能。
+//! Guest execution is moved off Tokio worker threads and serialized per plugin.
+//! The async plugin-list lock is never held while guest code is running.
 
 use crate::extensions::ExtensionManager;
 use phira_mp_plus_server_api as api;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
-use std::sync::Mutex;
-use std::sync::Arc;
-use tokio::sync::RwLock;
+use std::sync::{Arc, Mutex};
+use tokio::sync::{RwLock, Semaphore};
 use tracing::{info, warn};
 
-/// 插件信息（来自 server-api）
-pub use api::PluginInfo;
+pub use api::{HttpHandle, JudgeEventItem, PluginEvent, PluginInfo, TouchEventPoint};
 
-/// 插件事件（来自 server-api）
-pub use api::PluginEvent;
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WasmRuntimeConfig {
+    #[serde(default = "default_wasm_memory_mb")]
+    pub max_memory_mb: usize,
+    /// Fuel added before each guest call. Zero disables metering.
+    #[serde(default = "default_wasm_fuel")]
+    pub fuel_per_call: u64,
+    #[serde(default = "default_wasm_stack_bytes")]
+    pub max_stack_bytes: usize,
+    #[serde(default = "default_wasm_http_timeout")]
+    pub http_timeout_secs: u64,
+    #[serde(default = "default_wasm_http_response_bytes")]
+    pub max_http_response_bytes: usize,
+    #[serde(default = "default_wasm_file_bytes")]
+    pub max_file_bytes: usize,
+    /// Disabled by default to reduce SSRF exposure.
+    #[serde(default)]
+    pub allow_private_network: bool,
+    #[serde(default = "default_wasm_event_concurrency")]
+    pub max_event_concurrency: usize,
+}
 
-/// 触摸事件点（来自 server-api）
-pub use api::TouchEventPoint;
+const fn default_wasm_memory_mb() -> usize { 64 }
+const fn default_wasm_fuel() -> u64 { 10_000_000 }
+const fn default_wasm_stack_bytes() -> usize { 2 * 1024 * 1024 }
+const fn default_wasm_http_timeout() -> u64 { 10 }
+const fn default_wasm_http_response_bytes() -> usize { 2 * 1024 * 1024 }
+const fn default_wasm_file_bytes() -> usize { 4 * 1024 * 1024 }
+const fn default_wasm_event_concurrency() -> usize { 8 }
 
-/// 判定事件（来自 server-api）
-pub use api::JudgeEventItem;
+impl Default for WasmRuntimeConfig {
+    fn default() -> Self {
+        Self {
+            max_memory_mb: default_wasm_memory_mb(),
+            fuel_per_call: default_wasm_fuel(),
+            max_stack_bytes: default_wasm_stack_bytes(),
+            http_timeout_secs: default_wasm_http_timeout(),
+            max_http_response_bytes: default_wasm_http_response_bytes(),
+            max_file_bytes: default_wasm_file_bytes(),
+            allow_private_network: false,
+            max_event_concurrency: default_wasm_event_concurrency(),
+        }
+    }
+}
 
-/// 插件 HTTP 句柄（来自 server-api）
-pub use api::HttpHandle;
-
-
-/// 插件状态
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum PluginState {
     Loaded,
@@ -38,7 +67,6 @@ pub enum PluginState {
     Error(String),
 }
 
-/// 插件元数据
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PluginMeta {
     pub info: PluginInfo,
@@ -47,49 +75,41 @@ pub struct PluginMeta {
     pub enabled: bool,
 }
 
-/// 插件宿主特征 - 所有插件运行时需实现此特征
-pub trait PluginHost: Send + Sync {
-    /// 获取插件元数据
+pub trait PluginHost: Send {
     fn meta(&self) -> &PluginMeta;
-    /// 获取可变的插件元数据
     fn meta_mut(&mut self) -> &mut PluginMeta;
-    /// 初始化插件
     fn init(&mut self) -> Result<(), String>;
-    /// 清理插件
     fn cleanup(&mut self);
-    /// 触发事件
-    fn trigger_event(&self, event: &PluginEvent) -> Vec<String>;
+    fn trigger_event(&mut self, event: &PluginEvent) -> Result<Vec<String>, String>;
+    fn call_api(
+        &mut self,
+        _method: &str,
+        _args: &[serde_json::Value],
+    ) -> Result<serde_json::Value, String> {
+        Err("plugin does not export phira_on_api".to_string())
+    }
 }
 
-/// WASM 运行时插件（需要 wasmtime 特性）
+type PluginSlot = Arc<Mutex<Box<dyn PluginHost>>>;
+
 #[cfg(feature = "plugin-system")]
 pub mod wasm {
     use super::*;
     use crate::wasm_host;
-    use std::sync::Arc;
-    use std::sync::Mutex;
 
-    /// WASM 插件实例包装器
-    ///
-    /// 实现 PluginHost trait，内部使用 wasm_host::WasmPluginInstance
-    /// 进行实际的 WASM 运行时交互。
-    /// 使用 Mutex 实现内部可变性，满足 trigger_event(&self) 的签名要求。
     pub struct WasmPlugin {
         meta: PluginMeta,
-        /// 共享的宿主服务
         services: Arc<wasm_host::WasmPluginServices>,
-        /// 已加载的 WASM 运行时实例（init 后创建）
-        /// 使用 Mutex 实现内部可变性以兼容 &self 事件分发
-        instance: Mutex<Option<wasm_host::WasmPluginInstance>>,
+        runtime: WasmRuntimeConfig,
+        instance: Option<wasm_host::WasmPluginInstance>,
     }
 
     impl WasmPlugin {
-        /// 创建新的 WASM 插件（尚未加载 WASM 模块）
-        /// 实际加载在 init() 中完成
         pub fn new(
             path: &str,
             info: PluginInfo,
             services: Arc<wasm_host::WasmPluginServices>,
+            runtime: WasmRuntimeConfig,
         ) -> Self {
             Self {
                 meta: PluginMeta {
@@ -99,105 +119,108 @@ pub mod wasm {
                     enabled: true,
                 },
                 services,
-                instance: Mutex::new(None),
+                runtime,
+                instance: None,
             }
         }
     }
 
     impl PluginHost for WasmPlugin {
-        fn meta(&self) -> &PluginMeta {
-            &self.meta
-        }
-
-        fn meta_mut(&mut self) -> &mut PluginMeta {
-            &mut self.meta
-        }
+        fn meta(&self) -> &PluginMeta { &self.meta }
+        fn meta_mut(&mut self) -> &mut PluginMeta { &mut self.meta }
 
         fn init(&mut self) -> Result<(), String> {
-            // 读取 WASM 文件字节码
-            let wasm_bytes = std::fs::read(&self.meta.path)
-                .map_err(|e| format!("failed to read WASM file '{}': {}", self.meta.path, e))?;
-
-            // 创建 WASM 实例
+            let bytes = std::fs::read(&self.meta.path)
+                .map_err(|e| format!("read WASM '{}': {e}", self.meta.path))?;
             let mut instance = wasm_host::WasmPluginInstance::new(
-                &wasm_bytes,
+                &bytes,
                 &self.meta.path,
                 Arc::clone(&self.services),
+                self.runtime.clone(),
             )?;
-
-            // 更新元数据为 WASM 模块中声明的信息
-            self.meta.info = super::PluginInfo {
-                name: instance.info.name.clone(),
-                version: instance.info.version.clone(),
-                author: instance.info.author.clone(),
-                description: instance.info.description.clone(),
-            };
-
-            // 调用 WASM 模块的 init 导出函数
+            self.meta.info = instance.info.clone();
             instance.call_init()?;
-
-            // 保存实例
-            *self.instance.lock().unwrap() = Some(instance);
+            self.instance = Some(instance);
             self.meta.state = PluginState::Enabled;
-
-            info!("WASM plugin '{}' loaded and initialized", self.meta.info.name);
+            info!("WASM plugin '{}' loaded", self.meta.info.name);
             Ok(())
         }
 
         fn cleanup(&mut self) {
-            if let Some(ref mut instance) = *self.instance.lock().unwrap() {
+            if let Some(instance) = self.instance.as_mut() {
                 instance.call_cleanup();
             }
-            *self.instance.lock().unwrap() = None;
+            self.instance = None;
             self.meta.state = PluginState::Disabled;
-            info!("WASM plugin '{}' cleaned up", self.meta.info.name);
         }
 
-        fn trigger_event(&self, event: &PluginEvent) -> Vec<String> {
+        fn trigger_event(&mut self, event: &PluginEvent) -> Result<Vec<String>, String> {
             if !self.meta.enabled {
-                return Vec::new();
+                return Ok(Vec::new());
             }
+            let instance = self
+                .instance
+                .as_mut()
+                .ok_or_else(|| "plugin is not initialized".to_string())?;
+            let code = instance.call_on_event(event)?;
+            if code < 0 {
+                Err(format!("guest returned event error {code}"))
+            } else {
+                Ok(Vec::new())
+            }
+        }
 
-            // 通过 Mutex 获取实例的可变引用
-            let mut guard = self.instance.lock().unwrap();
-            let instance = match guard.as_mut() {
-                Some(inst) => inst,
-                None => return Vec::new(),
-            };
-
-            // 使用统一的 call_on_event 接口传递所有事件
-            instance.call_on_event(event);
-
-            Vec::new()
+        fn call_api(
+            &mut self,
+            method: &str,
+            args: &[serde_json::Value],
+        ) -> Result<serde_json::Value, String> {
+            if !self.meta.enabled {
+                return Err("plugin is disabled".to_string());
+            }
+            self.instance
+                .as_mut()
+                .ok_or_else(|| "plugin is not initialized".to_string())?
+                .call_api(method, args)
         }
     }
 }
 
-/// 插件处理器 - 负责加载、管理和调度插件
 pub struct PluginManager {
-    plugins: Arc<RwLock<Vec<Box<dyn PluginHost>>>>,
+    plugins: Arc<RwLock<Vec<PluginSlot>>>,
     cli_commands: Arc<Mutex<HashMap<String, CliCommand>>>,
     api_handlers: Arc<Mutex<HashMap<String, api::PluginApiHandler>>>,
     plugins_dir: String,
+    runtime: WasmRuntimeConfig,
+    event_gate: Arc<Semaphore>,
     http_handle: Arc<RwLock<Option<api::HttpHandle>>>,
     send_chat: Arc<RwLock<Option<Arc<dyn Fn(i32, String) + Send + Sync>>>>,
     default_state: Arc<RwLock<Option<api::ServerStateQuery>>>,
-    /// WASM 插件共享服务（仅 plugin-system feature 启用时使用）
     #[cfg(feature = "plugin-system")]
     wasm_services: Arc<crate::wasm_host::WasmPluginServices>,
 }
 
 impl PluginManager {
-    pub fn new(plugins_dir: &str, extensions: Arc<ExtensionManager>) -> Self {
+    pub fn new(
+        plugins_dir: &str,
+        extensions: Arc<ExtensionManager>,
+        runtime: WasmRuntimeConfig,
+    ) -> Self {
         #[cfg(feature = "plugin-system")]
-        let wasm_services = {
-            Arc::new(crate::wasm_host::WasmPluginServices::new(extensions))
-        };
+        let wasm_services = Arc::new(crate::wasm_host::WasmPluginServices::new(
+            extensions,
+            runtime.clone(),
+        ));
+        #[cfg(not(feature = "plugin-system"))]
+        let _ = extensions;
+
         Self {
             plugins: Arc::new(RwLock::new(Vec::new())),
             cli_commands: Arc::new(Mutex::new(HashMap::new())),
             api_handlers: Arc::new(Mutex::new(HashMap::new())),
             plugins_dir: plugins_dir.to_string(),
+            event_gate: Arc::new(Semaphore::new(runtime.max_event_concurrency.max(1))),
+            runtime,
             http_handle: Arc::new(RwLock::new(None)),
             send_chat: Arc::new(RwLock::new(None)),
             default_state: Arc::new(RwLock::new(None)),
@@ -206,219 +229,290 @@ impl PluginManager {
         }
     }
 
-    /// 设置默认状态查询句柄（提供给所有插件）
-    pub async fn set_default_state(&self, q: api::ServerStateQuery) {
+    pub async fn set_default_state(&self, query: api::ServerStateQuery) {
         #[cfg(feature = "plugin-system")]
         {
-            *self.wasm_services.state_query.write().unwrap() = Some(q.clone());
+            *self
+                .wasm_services
+                .state_query
+                .write()
+                .unwrap_or_else(|e| e.into_inner()) = Some(query.clone());
         }
-        *self.default_state.write().await = Some(q);
+        *self.default_state.write().await = Some(query);
     }
 
-    /// 设置发送聊天消息的句柄
-    pub async fn set_send_chat(&self, f: Arc<dyn Fn(i32, String) + Send + Sync>) {
+    pub async fn set_send_chat(&self, callback: Arc<dyn Fn(i32, String) + Send + Sync>) {
         #[cfg(feature = "plugin-system")]
         {
-            *self.wasm_services.send_chat.write().unwrap() = Some(Arc::clone(&f));
+            *self
+                .wasm_services
+                .send_chat
+                .write()
+                .unwrap_or_else(|e| e.into_inner()) = Some(Arc::clone(&callback));
         }
-        *self.send_chat.write().await = Some(f);
+        *self.send_chat.write().await = Some(callback);
     }
 
-    /// 设置中央 HTTP 句柄（让插件在 init 中注册路由）
     pub async fn set_http_handle(&self, handle: api::HttpHandle) {
         #[cfg(feature = "plugin-system")]
         {
-            *self.wasm_services.http_handle.write().unwrap() = Some(handle.clone());
+            *self
+                .wasm_services
+                .http_handle
+                .write()
+                .unwrap_or_else(|e| e.into_inner()) = Some(handle.clone());
         }
         *self.http_handle.write().await = Some(handle);
     }
 
-    /// 注册插件 API（供其他插件调用）
     pub async fn register_plugin_api(&self, name: &str, handler: api::PluginApiHandler) {
-        self.api_handlers.lock().unwrap_or_else(|e| e.into_inner()).insert(name.to_string(), handler);
+        self.api_handlers
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(name.to_string(), Arc::clone(&handler));
+        #[cfg(feature = "plugin-system")]
+        self.wasm_services
+            .api_handlers
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(name.to_string(), handler);
     }
 
-    /// 从指定目录加载所有 WASM 插件
     pub async fn load_plugins(&self) -> Result<usize, String> {
         let dir = Path::new(&self.plugins_dir);
         if !dir.exists() {
-            std::fs::create_dir_all(dir).map_err(|e| format!("create plugins dir: {}", e))?;
-            info!("created plugins directory: {}", self.plugins_dir);
+            std::fs::create_dir_all(dir).map_err(|e| format!("create plugins dir: {e}"))?;
             return Ok(0);
         }
+        let mut paths = std::fs::read_dir(dir)
+            .map_err(|e| format!("read plugins dir: {e}"))?
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .filter(|path| path.extension().and_then(|ext| ext.to_str()) == Some("wasm"))
+            .collect::<Vec<_>>();
+        paths.sort();
 
-        let mut loaded = 0usize;
-        let mut entries = Vec::new();
-
-        if let Ok(read_dir) = std::fs::read_dir(dir) {
-            for entry in read_dir.flatten() {
-                let path = entry.path();
-                if path.extension().is_some_and(|ext| ext == "wasm")
-                    || path.extension().is_some_and(|ext| ext == "so")
-                    || path.extension().is_some_and(|ext| ext == "dylib")
-                {
-                    entries.push(path);
-                }
-            }
-        }
-
-        entries.sort();
-        for path in &entries {
-            match self.load_plugin(path).await {
+        let mut loaded = 0;
+        for path in paths {
+            match self.load_plugin(&path).await {
                 Ok(meta) => {
                     info!("loaded plugin: {} v{}", meta.info.name, meta.info.version);
                     loaded += 1;
                 }
-                Err(e) => {
-                    warn!("failed to load plugin '{}': {}", path.display(), e);
-                }
+                Err(err) => warn!("failed to load plugin '{}': {err}", path.display()),
             }
         }
-
         Ok(loaded)
     }
 
-    /// 加载单个 WASM 插件
     async fn load_plugin(&self, path: &Path) -> Result<PluginMeta, String> {
-        let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
-
-        match ext {
-            "wasm" => {
-                #[cfg(feature = "plugin-system")]
-                {
-                    let info = PluginInfo {
-                        name: path.file_stem().and_then(|s| s.to_str()).unwrap_or("unknown").to_string(),
-                        version: "0.1.0".to_string(),
-                        author: "unknown".to_string(),
-                        description: format!("WASM plugin from {}", path.display()),
-                    };
-                    let plugin = wasm::WasmPlugin::new(
-                        path.to_str().unwrap_or(""),
-                        info.clone(),
-                        Arc::clone(&self.wasm_services),
-                    );
-                    let mut p = Box::new(plugin);
-                    let result = tokio::task::spawn_blocking(move || {
-                        p.init()?;
-                        Ok::<_, String>(p)
-                    }).await.map_err(|e| format!("spawn_blocking: {e}"))??;
-                    let meta = result.meta().clone();
-                    self.plugins.write().await.push(result);
-                    Ok(meta)
-                }
-                #[cfg(not(feature = "plugin-system"))]
-                {
-                    Err("WASM plugin support not enabled".to_string())
-                }
-            }
-            _ => Err(format!("unsupported plugin type: {}", ext)),
+        if path.extension().and_then(|ext| ext.to_str()) != Some("wasm") {
+            return Err("only .wasm plugins are supported".to_string());
         }
-    }
-
-    /// 触发事件 - 向所有已启用插件分发事件
-    pub async fn trigger(&self, event: &PluginEvent) -> Vec<PluginEventResult> {
-        let plugins = self.plugins.read().await;
-        let mut results = Vec::new();
-
-        for plugin in plugins.iter() {
-            if !plugin.meta().enabled {
-                continue;
-            }
-            let responses = plugin.trigger_event(event);
-            if !responses.is_empty() {
-                results.push(PluginEventResult {
-                    plugin_name: plugin.meta().info.name.clone(),
-                    responses,
-                });
-            }
-        }
-
-        results
-    }
-
-    /// 获取所有插件列表
-    pub async fn list_plugins(&self) -> Vec<PluginMeta> {
-        let guard = self.plugins.read().await;
-        guard.iter().map(|p| p.meta().clone()).collect()
-    }
-
-    /// 启用插件
-    pub async fn enable_plugin(&self, name: &str) -> Result<(), String> {
-        let mut guard = self.plugins.write().await;
-        for plugin in guard.iter_mut() {
-            if plugin.meta().info.name == name {
-                plugin.meta_mut().enabled = true;
-                plugin.meta_mut().state = PluginState::Enabled;
-                return Ok(());
-            }
-        }
-        Err(format!("plugin '{}' not found", name))
-    }
-
-    /// 禁用插件
-    pub async fn disable_plugin(&self, name: &str) -> Result<(), String> {
-        let mut guard = self.plugins.write().await;
-        for plugin in guard.iter_mut() {
-            if plugin.meta().info.name == name {
-                plugin.meta_mut().enabled = false;
-                plugin.meta_mut().state = PluginState::Disabled;
-                return Ok(());
-            }
-        }
-        Err(format!("plugin '{}' not found", name))
-    }
-
-    /// 重新加载所有插件
-    pub async fn reload_plugins(&self) -> Result<usize, String> {
-        // 清理所有现有插件
+        #[cfg(feature = "plugin-system")]
         {
-            let mut guard = self.plugins.write().await;
-            for plugin in guard.iter_mut() {
-                plugin.cleanup();
+            let stable_id = path
+                .file_stem()
+                .and_then(|value| value.to_str())
+                .ok_or_else(|| "plugin filename is not UTF-8".to_string())?
+                .to_string();
+            let info = PluginInfo {
+                name: stable_id.clone(),
+                version: "0.1.0".to_string(),
+                author: "unknown".to_string(),
+                description: format!("WASM plugin from {}", path.display()),
+            };
+            let mut plugin: Box<dyn PluginHost> = Box::new(wasm::WasmPlugin::new(
+                path.to_str().ok_or_else(|| "plugin path is not UTF-8".to_string())?,
+                info,
+                Arc::clone(&self.wasm_services),
+                self.runtime.clone(),
+            ));
+            let plugin = tokio::task::spawn_blocking(move || {
+                plugin.init()?;
+                Ok::<_, String>(plugin)
+            })
+            .await
+            .map_err(|e| format!("plugin loader task failed: {e}"))??;
+            let meta = plugin.meta().clone();
+
+            let existing: HashSet<String> = self
+                .list_plugins()
+                .await
+                .into_iter()
+                .map(|item| item.info.name)
+                .collect();
+            if existing.contains(&meta.info.name) {
+                return Err(format!("duplicate plugin display name '{}'", meta.info.name));
             }
-            guard.clear();
+
+            let slot = Arc::new(Mutex::new(plugin));
+            self.wasm_services
+                .register_plugin_runtime(stable_id, Arc::downgrade(&slot));
+            self.plugins.write().await.push(slot);
+            Ok(meta)
         }
-        // 重新加载
+        #[cfg(not(feature = "plugin-system"))]
+        {
+            let _ = path;
+            Err("WASM plugin support not enabled".to_string())
+        }
+    }
+
+    pub async fn trigger(&self, event: &PluginEvent) -> Vec<PluginEventResult> {
+        let _permit = match self.event_gate.acquire().await {
+            Ok(permit) => permit,
+            Err(_) => return Vec::new(),
+        };
+        let slots = self.plugins.read().await.clone();
+        let event = event.clone();
+        match tokio::task::spawn_blocking(move || {
+            let mut results = Vec::new();
+            for slot in slots {
+                let mut plugin = slot.lock().unwrap_or_else(|e| e.into_inner());
+                if !plugin.meta().enabled {
+                    continue;
+                }
+                let name = plugin.meta().info.name.clone();
+                match plugin.trigger_event(&event) {
+                    Ok(responses) if !responses.is_empty() => results.push(PluginEventResult {
+                        plugin_name: name,
+                        responses,
+                    }),
+                    Ok(_) => {}
+                    Err(err) => {
+                        plugin.meta_mut().enabled = false;
+                        plugin.meta_mut().state = PluginState::Error(err.clone());
+                        warn!("plugin '{}' failed and was disabled: {err}", name);
+                    }
+                }
+            }
+            results
+        })
+        .await
+        {
+            Ok(results) => results,
+            Err(err) => {
+                warn!("plugin event task failed: {err}");
+                Vec::new()
+            }
+        }
+    }
+
+    pub async fn list_plugins(&self) -> Vec<PluginMeta> {
+        self.plugins
+            .read()
+            .await
+            .clone()
+            .into_iter()
+            .map(|slot| slot.lock().unwrap_or_else(|e| e.into_inner()).meta().clone())
+            .collect()
+    }
+
+    pub async fn call_plugin_api(
+        &self,
+        plugin_id: &str,
+        method: &str,
+        args: Vec<serde_json::Value>,
+    ) -> Result<serde_json::Value, String> {
+        let slots = self.plugins.read().await.clone();
+        let selected = slots.into_iter().find(|slot| {
+            let plugin = slot.lock().unwrap_or_else(|e| e.into_inner());
+            plugin_matches(plugin.meta(), plugin_id)
+        });
+        let slot = selected.ok_or_else(|| format!("plugin '{plugin_id}' not found"))?;
+        let method = method.to_string();
+        tokio::task::spawn_blocking(move || {
+            slot.lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .call_api(&method, &args)
+        })
+        .await
+        .map_err(|e| format!("plugin API task failed: {e}"))?
+    }
+
+    pub async fn enable_plugin(&self, id: &str) -> Result<(), String> {
+        self.set_enabled(id, true).await
+    }
+
+    pub async fn disable_plugin(&self, id: &str) -> Result<(), String> {
+        self.set_enabled(id, false).await
+    }
+
+    async fn set_enabled(&self, id: &str, enabled: bool) -> Result<(), String> {
+        for slot in self.plugins.read().await.clone() {
+            let mut plugin = slot.lock().unwrap_or_else(|e| e.into_inner());
+            if plugin_matches(plugin.meta(), id) {
+                plugin.meta_mut().enabled = enabled;
+                plugin.meta_mut().state = if enabled {
+                    PluginState::Enabled
+                } else {
+                    PluginState::Disabled
+                };
+                return Ok(());
+            }
+        }
+        Err(format!("plugin '{id}' not found"))
+    }
+
+    pub async fn reload_plugins(&self) -> Result<usize, String> {
+        self.cleanup_all().await;
         self.load_plugins().await
     }
 
-    /// 清理所有插件
     pub async fn cleanup_all(&self) {
-        let mut guard = self.plugins.write().await;
-        for plugin in guard.iter_mut() {
-            plugin.cleanup();
+        let slots = {
+            let mut guard = self.plugins.write().await;
+            std::mem::take(&mut *guard)
+        };
+        if let Err(err) = tokio::task::spawn_blocking(move || {
+            for slot in slots {
+                slot.lock().unwrap_or_else(|e| e.into_inner()).cleanup();
+            }
+        })
+        .await
+        {
+            warn!("plugin cleanup task failed: {err}");
         }
-        guard.clear();
+        #[cfg(feature = "plugin-system")]
+        self.wasm_services.clear_dynamic_registrations();
     }
 
-    /// 注册插件 CLI 命令
-    pub async fn register_cli_command(&self, cmd: CliCommand) -> Result<(), String> {
-        let mut guard = self.cli_commands.lock().unwrap();
-        if guard.contains_key(&cmd.name) {
-            return Err(format!("CLI command '{}' is already registered", cmd.name));
+    pub async fn register_cli_command(&self, command: CliCommand) -> Result<(), String> {
+        let mut commands = self.cli_commands.lock().unwrap_or_else(|e| e.into_inner());
+        if commands.contains_key(&command.name) {
+            return Err(format!("CLI command '{}' already registered", command.name));
         }
-        info!("registered CLI command: {}", cmd.name);
-        guard.insert(cmd.name.clone(), cmd);
+        commands.insert(command.name.clone(), command);
         Ok(())
     }
 
-    /// 执行插件 CLI 命令，返回输出行
     pub async fn execute_cli_command(&self, name: &str, args: &[&str]) -> Option<Vec<String>> {
-        let guard = self.cli_commands.lock().ok()?;
-        guard.get(name).map(|cmd| (cmd.handler)(args))
+        let handler = self
+            .cli_commands
+            .lock()
+            .ok()?
+            .get(name)
+            .map(|command| Arc::clone(&command.handler))?;
+        Some(handler(args))
     }
 
-    /// 列出所有已注册的插件 CLI 命令
     pub async fn list_cli_commands(&self) -> Vec<CliCommand> {
-        if let Ok(guard) = self.cli_commands.lock() {
-            guard.values().cloned().collect()
-        } else {
-            Vec::new()
-        }
+        self.cli_commands
+            .lock()
+            .map(|commands| commands.values().cloned().collect())
+            .unwrap_or_default()
     }
 }
 
-/// 插件 CLI 命令
+fn plugin_matches(meta: &PluginMeta, selector: &str) -> bool {
+    Path::new(&meta.path)
+        .file_stem()
+        .and_then(|value| value.to_str())
+        == Some(selector)
+        || meta.info.name == selector
+}
+
 pub struct CliCommand {
     pub name: String,
     pub description: String,
@@ -447,10 +541,8 @@ impl Clone for CliCommand {
     }
 }
 
-/// 插件事件处理结果
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PluginEventResult {
     pub plugin_name: String,
     pub responses: Vec<String>,
 }
-

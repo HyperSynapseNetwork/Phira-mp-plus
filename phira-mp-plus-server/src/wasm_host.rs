@@ -1,44 +1,32 @@
-//! WASM 插件宿主运行时
+//! WASM plugin host runtime.
 //!
-//! 基于 wasmtime 的简化 WASM 运行时，采用 JSON ABI 接口：
+//! Guest ABI:
+//! - `phira_init() -> i32`
+//! - `phira_get_info()` writes `[len:u32-le][metadata JSON]` at memory offset 0
+//! - `phira_cleanup()`
+//! - `phira_on_event(ptr: i32, len: i32) -> i32`
+//! - `phira_on_api(method_ptr, method_len, args_ptr, args_len) -> i64`
+//! - `phira_alloc(size: i32) -> i32`
+//! - `phira_dealloc(ptr: i32, size: i32)`
 //!
-//! - WASM 插件导出以下函数（通过 wasmtime::Func 调用）：
-//!   - `phira_init() -> i32` (0=success)
-//!   - `phira_get_info() -> i32` 填写 info 指针
-//!   - `phira_cleanup()`
-//!   - `phira_on_event(event_json_ptr: i32) -> i32` (0=handled, 1=unhandled)
-//!   - `phira_alloc(size: i32) -> i32` 分配内存
-//!   - `phira_dealloc(ptr: i32, size: i32)`
-//!
-//! - 宿主（服务器）提供以下导入函数：
-//!   - `phira:host/log(level_ptr, level_len, msg_ptr, msg_len)`  — 记录日志
-//!   - `phira:host/uuid(out_ptr, out_len)`                  — 生成 UUID
-//!   - `phira:host/time() -> i64`                            — 获取时间戳(ms)
-//!   - `phira:host/api(method_ptr,method_len,args_ptr,args_len,out_ptr,out_len) -> i32`
-//!      通用 API 桥接，method + args (JSON) → result (JSON)
-//!
-//!  `phira:host/api` 支持的方法（与原生插件 PluginContext API 完全对应）：
-//!    state.query   — 查询房间/用户/服务器状态 (对应 ctx.state.call())
-//!    send.to_user  — 发送消息给指定用户 (对应 ctx.send_chat())
-//!    send.to_room  — 向房间广播消息
-//!    send.to_all   — 向所有用户广播
-//!    ext.get/set   — 读写用户/房间扩展数据
-//!    config.get/set— 读写插件配置
-//!    http.get/post — 发送 HTTP 请求
-//!    file.read/write— 读写插件数据文件
-//!    uuid.v4       — 生成 UUID v4
-//!    time.now      — 获取 Unix 时间戳
-//!
-//! 所有字符串/数据交换通过 WASM 线性内存中的 JSON 完成。
-//! 插件通过 `phira_alloc` 分配内存，宿主写入结果。
+//! Host imports use module `phira` and names `host/log`, `host/uuid`,
+//! `host/time`, and `host/api`. Data exchange uses UTF-8 and JSON-compatible
+//! payloads in guest linear memory. Every guest call is fuel-metered when
+//! configured and each plugin has an independent memory ceiling.
 
 use crate::extensions::ExtensionManager;
-use crate::plugin::{CliCommand, PluginEvent, PluginInfo};
+use crate::plugin::{CliCommand, PluginEvent, PluginHost, PluginInfo, WasmRuntimeConfig};
 use phira_mp_plus_server_api as api;
 use wasmtime::AsContext;
-use std::collections::HashMap;
-use std::sync::Arc;
+use std::collections::{HashMap, HashSet};
+use std::io::Read;
+use std::net::{IpAddr, ToSocketAddrs};
+use std::path::{Component, Path, PathBuf};
+use std::sync::{Arc, Mutex, Weak};
 use tracing::{error, info, warn};
+
+const MAX_HOST_INPUT_BYTES: usize = 8 * 1024 * 1024;
+const MAX_HOST_OUTPUT_BYTES: usize = 4 * 1024 * 1024;
 
 // ── 共享宿主服务 ──
 
@@ -50,24 +38,89 @@ pub struct WasmPluginServices {
     pub extensions: Arc<ExtensionManager>,
     pub state_query: std::sync::RwLock<Option<api::ServerStateQuery>>,
     pub send_chat: std::sync::RwLock<Option<Arc<dyn Fn(i32, String) + Send + Sync>>>,
-    pub cli_commands: std::sync::Mutex<HashMap<String, CliCommand>>,
+    pub cli_commands: Mutex<HashMap<String, CliCommand>>,
     pub plugin_configs: std::sync::RwLock<HashMap<String, HashMap<String, String>>>,
     pub http_handle: std::sync::RwLock<Option<api::HttpHandle>>,
-    pub api_handlers: std::sync::Mutex<HashMap<String, api::PluginApiHandler>>,
+    pub api_handlers: Mutex<HashMap<String, api::PluginApiHandler>>,
+    pub runtime: WasmRuntimeConfig,
+    pub http_client: reqwest::blocking::Client,
+    capabilities: Mutex<HashMap<String, HashSet<String>>>,
+    registered_apis: Mutex<HashMap<String, HashSet<String>>>,
+    plugin_runtimes: Mutex<HashMap<String, Weak<Mutex<Box<dyn PluginHost>>>>>,
 }
 
 impl WasmPluginServices {
-    pub fn new(extensions: Arc<ExtensionManager>) -> Self {
+    pub fn new(extensions: Arc<ExtensionManager>, runtime: WasmRuntimeConfig) -> Self {
+        let http_client = reqwest::blocking::Client::builder()
+            .timeout(std::time::Duration::from_secs(runtime.http_timeout_secs.max(1)))
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .unwrap_or_else(|_| reqwest::blocking::Client::new());
         Self {
             extensions,
             state_query: std::sync::RwLock::new(None),
             send_chat: std::sync::RwLock::new(None),
-            cli_commands: std::sync::Mutex::new(HashMap::new()),
+            cli_commands: Mutex::new(HashMap::new()),
             plugin_configs: std::sync::RwLock::new(HashMap::new()),
             http_handle: std::sync::RwLock::new(None),
-            api_handlers: std::sync::Mutex::new(HashMap::new()),
+            api_handlers: Mutex::new(HashMap::new()),
+            runtime,
+            http_client,
+            capabilities: Mutex::new(HashMap::new()),
+            registered_apis: Mutex::new(HashMap::new()),
+            plugin_runtimes: Mutex::new(HashMap::new()),
         }
     }
+
+    pub fn register_plugin_runtime(
+        &self,
+        plugin_id: String,
+        runtime: Weak<Mutex<Box<dyn PluginHost>>>,
+    ) {
+        self.plugin_runtimes
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(plugin_id, runtime);
+    }
+
+    pub fn clear_dynamic_registrations(&self) {
+        self.cli_commands
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clear();
+        self.registered_apis
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clear();
+        self.plugin_runtimes
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clear();
+        self.capabilities
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clear();
+        // api_handlers may contain native registrations and is intentionally kept.
+    }
+
+    fn set_capabilities(&self, plugin: &str, caps: HashSet<String>) {
+        self.capabilities
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(plugin.to_string(), caps);
+    }
+
+    fn has_capability(&self, plugin: &str, capability: &str) -> bool {
+        self.capabilities
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(plugin)
+            .is_some_and(|caps| caps.contains("*") || caps.contains(capability))
+    }
+}
+
+struct HostState {
+    limits: wasmtime::StoreLimits,
 }
 
 // ── WASM 插件实例 ──
@@ -75,39 +128,47 @@ impl WasmPluginServices {
 /// WASM 插件在 wasmtime 中的导出函数表
 pub struct WasmPluginInstance {
     instance: wasmtime::Instance,
-    store: wasmtime::Store<()>,
+    store: wasmtime::Store<HostState>,
 
     // 导出的函数
     func_init: Option<wasmtime::TypedFunc<(), i32>>,
     func_get_info: Option<wasmtime::TypedFunc<(), ()>>,
     func_cleanup: Option<wasmtime::TypedFunc<(), ()>>,
     func_on_event: Option<wasmtime::TypedFunc<(i32, i32), i32>>,
+    func_on_api: Option<wasmtime::TypedFunc<(i32, i32, i32, i32), i64>>,
     func_alloc: Option<wasmtime::TypedFunc<i32, i32>>,
+    func_dealloc: Option<wasmtime::TypedFunc<(i32, i32), ()>>,
 
     // 插件元数据
     pub info: PluginInfo,
     pub plugin_name: String,
     pub plugin_path: String,
     pub initialized: bool,
+    runtime: WasmRuntimeConfig,
 }
-
-unsafe impl Send for WasmPluginInstance {}
-unsafe impl Sync for WasmPluginInstance {}
 
 impl WasmPluginInstance {
     pub fn new(
         wasm_bytes: &[u8],
         plugin_path: &str,
         services: Arc<WasmPluginServices>,
+        runtime: WasmRuntimeConfig,
     ) -> Result<Self, String> {
-        let plugin_name = std::path::Path::new(plugin_path)
+        let plugin_name = Path::new(plugin_path)
             .file_stem()
             .and_then(|s| s.to_str())
-            .unwrap_or("unknown")
+            .ok_or_else(|| "plugin filename is not valid UTF-8".to_string())?
             .to_string();
+        validate_identifier(&plugin_name)?;
+        services.set_capabilities(
+            &plugin_name,
+            load_manifest_capabilities(plugin_path)?,
+        );
 
-        // 创建引擎
-        let engine_config = wasmtime::Config::new();
+        // Configure deterministic resource ceilings before compiling guest code.
+        let mut engine_config = wasmtime::Config::new();
+        engine_config.consume_fuel(runtime.fuel_per_call > 0);
+        engine_config.max_wasm_stack(runtime.max_stack_bytes.max(64 * 1024));
         let engine = wasmtime::Engine::new(&engine_config)
             .map_err(|e| format!("engine creation: {}", e))?;
 
@@ -116,7 +177,7 @@ impl WasmPluginInstance {
             .map_err(|e| format!("module compile error: {}", e))?;
 
         // 创建链接器并注册宿主函数
-        let mut linker = wasmtime::Linker::new(&engine);
+        let mut linker: wasmtime::Linker<HostState> = wasmtime::Linker::new(&engine);
 
         let svc = Arc::clone(&services);
 
@@ -125,7 +186,7 @@ impl WasmPluginInstance {
             .func_wrap(
                 "phira",
                 "host/log",
-                |mut caller: wasmtime::Caller<'_, ()>, level_ptr: i32, level_len: i32, msg_ptr: i32, msg_len: i32| {
+                |mut caller: wasmtime::Caller<'_, HostState>, level_ptr: i32, level_len: i32, msg_ptr: i32, msg_len: i32| {
                     let memory = match caller.get_export("memory").and_then(|e| e.into_memory()) {
                         Some(m) => m,
                         None => { warn!("WASM plugin has no memory export"); return; }
@@ -146,11 +207,14 @@ impl WasmPluginInstance {
             .func_wrap(
                 "phira",
                 "host/uuid",
-                |mut caller: wasmtime::Caller<'_, ()>, out_ptr: i32, out_len: i32| {
+                |mut caller: wasmtime::Caller<'_, HostState>, out_ptr: i32, out_len: i32| {
                     let memory = match caller.get_export("memory").and_then(|e| e.into_memory()) {
                         Some(m) => m,
                         None => return,
                     };
+                    if out_ptr < 0 || out_len <= 0 {
+                        return;
+                    }
                     let uuid = uuid::Uuid::new_v4().to_string();
                     let bytes = uuid.as_bytes();
                     let len = bytes.len().min(out_len as usize);
@@ -189,7 +253,7 @@ impl WasmPluginInstance {
                 {
                     let svc = Arc::clone(&svc);
                     let pn = plugin_name.clone();
-                    move |mut caller: wasmtime::Caller<'_, ()>,
+                    move |mut caller: wasmtime::Caller<'_, HostState>,
                           method_ptr: i32, method_len: i32,
                           args_ptr: i32, args_len: i32,
                           out_ptr: i32, out_len: i32| -> i32 {
@@ -204,6 +268,9 @@ impl WasmPluginInstance {
                         let args_str = read_str_from_memory(&memory, caller.as_context(), args_ptr, args_len)
                             .unwrap_or_default();
 
+                        if out_ptr < 0 || out_len < 4 || out_len as usize > MAX_HOST_OUTPUT_BYTES {
+                            return -3;
+                        }
                         let result = Self::dispatch_api(&svc, &pn, &method, &args_str);
 
                         match result {
@@ -219,7 +286,8 @@ impl WasmPluginInstance {
                                 if memory.write(&mut caller, out_ptr as usize, &len_prefix).is_err() {
                                     return -4;
                                 }
-                                if memory.write(&mut caller, (out_ptr + 4) as usize, bytes).is_err() {
+                                let Some(data_ptr) = out_ptr.checked_add(4) else { return -5; };
+                                if memory.write(&mut caller, data_ptr as usize, bytes).is_err() {
                                     return -5;
                                 }
                                 0
@@ -231,7 +299,9 @@ impl WasmPluginInstance {
                                 if total_len as i32 <= out_len {
                                     let len_prefix = (err_bytes.len() as i32).to_le_bytes();
                                     let _ = memory.write(&mut caller, out_ptr as usize, &len_prefix);
-                                    let _ = memory.write(&mut caller, (out_ptr + 4) as usize, err_bytes);
+                                    if let Some(data_ptr) = out_ptr.checked_add(4) {
+                                        let _ = memory.write(&mut caller, data_ptr as usize, err_bytes);
+                                    }
                                 }
                                 -1
                             }
@@ -241,8 +311,21 @@ impl WasmPluginInstance {
             )
             .map_err(|e| format!("link api: {}", e))?;
 
-        // 创建 store 和实例
-        let mut store = wasmtime::Store::new(&engine, ());
+        // Create one limited store per plugin.
+        let memory_limit = runtime
+            .max_memory_mb
+            .max(1)
+            .saturating_mul(1024 * 1024);
+        let limits = wasmtime::StoreLimitsBuilder::new()
+            .memory_size(memory_limit)
+            .build();
+        let mut store = wasmtime::Store::new(&engine, HostState { limits });
+        store.limiter(|state| &mut state.limits);
+        if runtime.fuel_per_call > 0 {
+            store
+                .set_fuel(runtime.fuel_per_call)
+                .map_err(|e| format!("set initial fuel: {e}"))?;
+        }
         let instance = linker
             .instantiate(&mut store, &module)
             .map_err(|e| format!("instantiate '{}': {}", plugin_name, e))?;
@@ -260,10 +343,13 @@ impl WasmPluginInstance {
         let func_on_event = instance
             .get_typed_func::<(i32, i32), i32>(&mut store, "phira_on_event")
             .ok();
+        let func_on_api = instance
+            .get_typed_func::<(i32, i32, i32, i32), i64>(&mut store, "phira_on_api")
+            .ok();
         let func_alloc = instance
             .get_typed_func::<i32, i32>(&mut store, "phira_alloc")
             .ok();
-        let _func_dealloc = instance
+        let func_dealloc = instance
             .get_typed_func::<(i32, i32), ()>(&mut store, "phira_dealloc")
             .ok();
 
@@ -275,7 +361,9 @@ impl WasmPluginInstance {
             func_get_info,
             func_cleanup,
             func_on_event,
+            func_on_api,
             func_alloc,
+            func_dealloc,
             info: PluginInfo {
                 name: pn.clone(),
                 version: "0.1.0".to_string(),
@@ -285,6 +373,7 @@ impl WasmPluginInstance {
             plugin_name: pn.clone(),
             plugin_path: plugin_path.to_string(),
             initialized: false,
+            runtime,
         };
 
         // 尝试从 WASM 内存读取插件信息
@@ -293,173 +382,201 @@ impl WasmPluginInstance {
         Ok(plugin)
     }
 
-    /// 从 WASM 线性内存读取插件元数据
-    ///
-    /// 优先通过 phira_get_info 导出函数获取，
-    /// 回退到从偏移 0 读取长度前缀的 JSON。
+    fn reset_fuel(&mut self) -> Result<(), String> {
+        if self.runtime.fuel_per_call > 0 {
+            self.store
+                .set_fuel(self.runtime.fuel_per_call)
+                .map_err(|e| format!("set fuel: {e}"))?;
+        }
+        Ok(())
+    }
+
+    /// Read metadata written at memory offset zero as `[len:u32][json]`.
     fn read_plugin_info(&mut self) {
-        // 方案一：如果插件导出 phira_get_info，先调用它以填充元数据
-        let called_get_info = if let Some(ref get_info) = self.func_get_info {
-            get_info.call(&mut self.store, ()).is_ok()
-        } else {
-            false
+        if self.reset_fuel().is_err() {
+            return;
+        }
+        let called_get_info = self
+            .func_get_info
+            .as_ref()
+            .is_some_and(|get_info| get_info.call(&mut self.store, ()).is_ok());
+        let Some(memory) = self.instance.get_memory(&mut self.store, "memory") else {
+            return;
         };
-
-        // 方案二：从内存偏移 0 读取长度前缀的 JSON 元数据（兼容模式）
-        if let Some(memory) = self.instance.get_memory(&mut self.store, "memory") {
-            let mut header = [0u8; 4];
-            if memory.read(&self.store, 0, &mut header).is_ok() {
-                let len = i32::from_le_bytes(header) as usize;
-                if len > 0 && len < 65536 {
-                    let mut buf = vec![0u8; len];
-                    if memory.read(&self.store, 4, &mut buf).is_ok() {
-                        if let Ok(json) = String::from_utf8(buf) {
-                            if let Ok(info) = serde_json::from_str::<serde_json::Value>(&json) {
-                                if let Some(name) = info.get("name").and_then(|v| v.as_str()) {
-                                    self.info.name = name.to_string();
-                                }
-                                if let Some(version) = info.get("version").and_then(|v| v.as_str()) {
-                                    self.info.version = version.to_string();
-                                }
-                                if let Some(author) = info.get("author").and_then(|v| v.as_str()) {
-                                    self.info.author = author.to_string();
-                                }
-                                if let Some(desc) = info.get("description").and_then(|v| v.as_str()) {
-                                    self.info.description = desc.to_string();
-                                }
-                            }
-                        }
-                    }
+        let mut header = [0u8; 4];
+        if memory.read(&self.store, 0, &mut header).is_err() {
+            return;
+        }
+        let len = u32::from_le_bytes(header) as usize;
+        if len == 0 || len > 64 * 1024 {
+            return;
+        }
+        let mut buf = vec![0u8; len];
+        if memory.read(&self.store, 4, &mut buf).is_err() {
+            return;
+        }
+        if let Ok(info) = serde_json::from_slice::<serde_json::Value>(&buf) {
+            if let Some(name) = info.get("name").and_then(|v| v.as_str()) {
+                if validate_display_name(name).is_ok() {
+                    self.info.name = name.to_string();
                 }
             }
+            if let Some(version) = info.get("version").and_then(|v| v.as_str()) {
+                self.info.version = truncate_string(version, 128);
+            }
+            if let Some(author) = info.get("author").and_then(|v| v.as_str()) {
+                self.info.author = truncate_string(author, 256);
+            }
+            if let Some(description) = info.get("description").and_then(|v| v.as_str()) {
+                self.info.description = truncate_string(description, 2048);
+            }
         }
-
         if called_get_info {
-            info!("WASM plugin '{}' metadata read via phira_get_info", self.plugin_name);
+            info!("WASM plugin '{}' metadata loaded", self.plugin_name);
         }
     }
 
-    /// 调用插件 init
     pub fn call_init(&mut self) -> Result<(), String> {
-        if let Some(ref init) = self.func_init {
-            match init.call(&mut self.store, ()) {
-                Ok(0) => {
-                    self.initialized = true;
-                    info!("WASM plugin '{}' initialized", self.plugin_name);
-                    Ok(())
-                }
-                Ok(code) => {
-                    let msg = format!("WASM plugin '{}' init returned error code {}", self.plugin_name, code);
-                    error!("{}", msg);
-                    Err(msg)
-                }
-                Err(trap) => {
-                    let msg = format!("WASM plugin '{}' init trap: {}", self.plugin_name, trap);
-                    error!("{}", msg);
-                    Err(msg)
-                }
-            }
-        } else {
-            // 没有 phira_init 导出，可能是个纯数据处理插件
-            self.initialized = true;
-            Ok(())
+        self.reset_fuel()?;
+        let code = match self.func_init.as_ref() {
+            Some(init) => init
+                .call(&mut self.store, ())
+                .map_err(|e| format!("plugin '{}' init trap: {e}", self.plugin_name))?,
+            None => 0,
+        };
+        if code != 0 {
+            return Err(format!(
+                "plugin '{}' init returned error code {code}",
+                self.plugin_name
+            ));
         }
+        self.initialized = true;
+        info!("WASM plugin '{}' initialized", self.plugin_name);
+        Ok(())
     }
 
-    /// 调用插件 cleanup
     pub fn call_cleanup(&mut self) {
         if !self.initialized {
             return;
         }
-        if let Some(ref cleanup) = self.func_cleanup {
-            if let Err(e) = cleanup.call(&mut self.store, ()) {
-                warn!("plugin '{}' cleanup error: {}", self.plugin_name, e);
+        let _ = self.reset_fuel();
+        if let Some(cleanup) = self.func_cleanup.as_ref() {
+            if let Err(err) = cleanup.call(&mut self.store, ()) {
+                warn!("plugin '{}' cleanup error: {err}", self.plugin_name);
             }
         }
         self.initialized = false;
-        info!("WASM plugin '{}' cleaned up", self.plugin_name);
     }
 
-    /// 获取事件对应的 JSON 字符串
     fn event_to_json(event: &PluginEvent) -> String {
         match event {
-            PluginEvent::UserConnect { user_id, user_name, user_ip } => {
-                serde_json::json!({"type": "user_connect", "user_id": user_id, "user_name": user_name, "user_ip": user_ip}).to_string()
-            }
-            PluginEvent::UserDisconnect { user_id, user_name } => {
-                serde_json::json!({"type": "user_disconnect", "user_id": user_id, "user_name": user_name}).to_string()
-            }
-            PluginEvent::RoomCreate { user_id, room_id } => {
-                serde_json::json!({"type": "room_create", "user_id": user_id, "room_id": room_id}).to_string()
-            }
-            PluginEvent::RoomJoin { user_id, room_id, is_monitor } => {
-                serde_json::json!({"type": "room_join", "user_id": user_id, "room_id": room_id, "is_monitor": is_monitor}).to_string()
-            }
-            PluginEvent::RoomLeave { user_id, room_id } => {
-                serde_json::json!({"type": "room_leave", "user_id": user_id, "room_id": room_id}).to_string()
-            }
-            PluginEvent::RoomModify { user_id, room_id, data } => {
-                serde_json::json!({"type": "room_modify", "user_id": user_id, "room_id": room_id, "data": data}).to_string()
-            }
-            PluginEvent::GameStart { user_id, room_id } => {
-                serde_json::json!({"type": "game_start", "user_id": user_id, "room_id": room_id}).to_string()
-            }
-            PluginEvent::GameEnd { user_id, user_name, room_id, score, accuracy, perfect, good, bad, miss, max_combo, full_combo } => {
-                serde_json::json!({"type": "game_end", "user_id": user_id, "user_name": user_name, "room_id": room_id, "score": score, "accuracy": accuracy, "perfect": perfect, "good": good, "bad": bad, "miss": miss, "max_combo": max_combo, "full_combo": full_combo}).to_string()
-            }
-            PluginEvent::PlayerTouches { user_id, room_id, data } => {
-                serde_json::json!({"type": "player_touches", "user_id": user_id, "room_id": room_id, "data": data}).to_string()
-            }
-            PluginEvent::PlayerJudges { user_id, room_id, data } => {
-                serde_json::json!({"type": "player_judges", "user_id": user_id, "room_id": room_id, "data": data}).to_string()
-            }
-            PluginEvent::RoundComplete { room_id, chart_id, chart_name } => {
-                serde_json::json!({"type": "round_complete", "room_id": room_id, "chart_id": chart_id, "chart_name": chart_name}).to_string()
-            }
+            PluginEvent::UserConnect { user_id, user_name, user_ip } => serde_json::json!({"type":"user_connect","user_id":user_id,"user_name":user_name,"user_ip":user_ip}),
+            PluginEvent::UserDisconnect { user_id, user_name } => serde_json::json!({"type":"user_disconnect","user_id":user_id,"user_name":user_name}),
+            PluginEvent::RoomCreate { user_id, room_id } => serde_json::json!({"type":"room_create","user_id":user_id,"room_id":room_id}),
+            PluginEvent::RoomJoin { user_id, room_id, is_monitor } => serde_json::json!({"type":"room_join","user_id":user_id,"room_id":room_id,"is_monitor":is_monitor}),
+            PluginEvent::RoomLeave { user_id, room_id } => serde_json::json!({"type":"room_leave","user_id":user_id,"room_id":room_id}),
+            PluginEvent::RoomModify { user_id, room_id, data } => serde_json::json!({"type":"room_modify","user_id":user_id,"room_id":room_id,"data":data}),
+            PluginEvent::GameStart { user_id, room_id } => serde_json::json!({"type":"game_start","user_id":user_id,"room_id":room_id}),
+            PluginEvent::GameEnd { user_id, user_name, room_id, score, accuracy, perfect, good, bad, miss, max_combo, full_combo } => serde_json::json!({"type":"game_end","user_id":user_id,"user_name":user_name,"room_id":room_id,"score":score,"accuracy":accuracy,"perfect":perfect,"good":good,"bad":bad,"miss":miss,"max_combo":max_combo,"full_combo":full_combo}),
+            PluginEvent::PlayerTouches { user_id, room_id, data } => serde_json::json!({"type":"player_touches","user_id":user_id,"room_id":room_id,"data":data}),
+            PluginEvent::PlayerJudges { user_id, room_id, data } => serde_json::json!({"type":"player_judges","user_id":user_id,"room_id":room_id,"data":data}),
+            PluginEvent::RoundComplete { room_id, chart_id, chart_name } => serde_json::json!({"type":"round_complete","room_id":room_id,"chart_id":chart_id,"chart_name":chart_name}),
         }
+        .to_string()
     }
 
-    /// 将事件 JSON 写入 WASM 内存并调用 phira_on_event
-    pub fn call_on_event(&mut self, event: &PluginEvent) -> i32 {
+    pub fn call_on_event(&mut self, event: &PluginEvent) -> Result<i32, String> {
+        let Some(on_event) = self.func_on_event.clone() else {
+            return Ok(1);
+        };
+        self.reset_fuel()?;
         let json = Self::event_to_json(event);
-        let bytes = json.as_bytes();
-        let len = bytes.len() as i32;
+        let (ptr, len) = self.write_to_wasm(json.as_bytes())?;
+        let result = on_event
+            .call(&mut self.store, (ptr, len))
+            .map_err(|e| format!("plugin '{}' event trap: {e}", self.plugin_name));
+        self.dealloc(ptr, len);
+        result
+    }
 
-        match self.write_to_wasm(bytes) {
-            Some((ptr, _)) => {
-                if let Some(ref on_event) = self.func_on_event {
-                    match on_event.call(&mut self.store, (ptr, len)) {
-                        Ok(code) => code,
-                        Err(e) => {
-                            warn!("plugin '{}' on_event error: {}", self.plugin_name, e);
-                            -1
-                        }
-                    }
-                } else {
-                    1 // 插件未实现事件处理
-                }
+    /// Call the optional guest-to-guest API export.
+    /// Return value packs `(len << 32) | ptr` as unsigned 32-bit fields.
+    pub fn call_api(
+        &mut self,
+        method: &str,
+        args: &[serde_json::Value],
+    ) -> Result<serde_json::Value, String> {
+        let on_api = self
+            .func_on_api
+            .clone()
+            .ok_or_else(|| "plugin does not export phira_on_api".to_string())?;
+        self.reset_fuel()?;
+        let args_json = serde_json::to_vec(args).map_err(|e| format!("encode args: {e}"))?;
+        let (method_ptr, method_len) = self.write_to_wasm(method.as_bytes())?;
+        let (args_ptr, args_len) = match self.write_to_wasm(&args_json) {
+            Ok(value) => value,
+            Err(err) => {
+                self.dealloc(method_ptr, method_len);
+                return Err(err);
             }
-            None => -2, // 内存分配失败
+        };
+        let packed = on_api
+            .call(
+                &mut self.store,
+                (method_ptr, method_len, args_ptr, args_len),
+            )
+            .map_err(|e| format!("plugin '{}' API trap: {e}", self.plugin_name));
+        self.dealloc(method_ptr, method_len);
+        self.dealloc(args_ptr, args_len);
+        let packed = packed? as u64;
+        let ptr = (packed & 0xffff_ffff) as u32 as usize;
+        let len = (packed >> 32) as u32 as usize;
+        if len == 0 || len > MAX_HOST_OUTPUT_BYTES {
+            return Err(format!("invalid plugin API result length {len}"));
         }
+        let memory = self
+            .instance
+            .get_memory(&mut self.store, "memory")
+            .ok_or_else(|| "plugin has no exported memory".to_string())?;
+        let mut bytes = vec![0u8; len];
+        memory
+            .read(&self.store, ptr, &mut bytes)
+            .map_err(|e| format!("read plugin API result: {e}"))?;
+        self.dealloc(ptr as i32, len as i32);
+        serde_json::from_slice(&bytes).map_err(|e| format!("invalid plugin API JSON: {e}"))
     }
 
-    /// 将数据写入 WASM 线性内存
-    fn write_to_wasm(&mut self, data: &[u8]) -> Option<(i32, i32)> {
+    fn write_to_wasm(&mut self, data: &[u8]) -> Result<(i32, i32), String> {
+        if data.len() > MAX_HOST_INPUT_BYTES || data.len() > i32::MAX as usize {
+            return Err("guest input exceeds host limit".to_string());
+        }
         let len = data.len() as i32;
-        let ptr = self.alloc(len)?;
-        if let Some(ref memory) = self.instance.get_memory(&mut self.store, "memory") {
-            memory
-                .write(&mut self.store, ptr as usize, data)
-                .ok()?;
+        let ptr = self
+            .func_alloc
+            .as_ref()
+            .ok_or_else(|| "plugin does not export phira_alloc".to_string())?
+            .call(&mut self.store, len)
+            .map_err(|e| format!("plugin allocation failed: {e}"))?;
+        if ptr < 0 {
+            return Err("plugin returned an invalid allocation pointer".to_string());
         }
-        Some((ptr, len))
+        let memory = self
+            .instance
+            .get_memory(&mut self.store, "memory")
+            .ok_or_else(|| "plugin has no exported memory".to_string())?;
+        memory
+            .write(&mut self.store, ptr as usize, data)
+            .map_err(|e| format!("write guest memory: {e}"))?;
+        Ok((ptr, len))
     }
 
-    /// 在 WASM 线性内存中分配空间
-    fn alloc(&mut self, size: i32) -> Option<i32> {
-        self.func_alloc
-            .as_ref()
-            .and_then(|alloc| alloc.call(&mut self.store, size).ok())
+    fn dealloc(&mut self, ptr: i32, len: i32) {
+        if ptr < 0 || len < 0 {
+            return;
+        }
+        if let Some(dealloc) = self.func_dealloc.as_ref() {
+            let _ = dealloc.call(&mut self.store, (ptr, len));
+        }
     }
 
     /// 通用 API 分发：处理 WASM 插件的 `phira:host/api` 调用
@@ -480,12 +597,12 @@ impl WasmPluginInstance {
     /// - `ext.set_user`   → 设置用户扩展数据
     /// - `ext.get_room`   → 获取房间扩展数据
     /// - `ext.set_room`   → 设置房间扩展数据
-    /// ── 房间管理（WIT room-management） ──
+    /// ── 房间管理（room-management） ──
     /// - `room.kick`         → 从房间踢出用户
     /// - `room.transfer_host`→ 转移房主
     /// - `room.set_lock`     → 锁定/解锁房间
     /// - `room.close`        → 解散房间
-    /// ── 用户管理（WIT user-management） ──
+    /// ── 用户管理（user-management） ──
     /// - `admin.kick_user`  → 从服务器踢出用户
     /// - `admin.ban_user`   → 封禁用户
     /// - `admin.unban_user` → 解封用户
@@ -501,417 +618,193 @@ impl WasmPluginInstance {
     /// ── 插件互调用（WASM 插件注册/调用 API） ──
     /// - `plugin.api_call`    → 调用其他 WASM 插件的 API
     /// - `plugin.api_register`→ 注册本插件的 API 供其他 WASM 插件调用
-    fn dispatch_api(svc: &WasmPluginServices, plugin_name: &str, method: &str, args: &str) -> Result<String, String> {
-        let (method_name, rest) = method.split_once('.').unwrap_or((method, ""));
-        match (method_name, rest) {
-            ("state", "query") => {
-                let args_val: serde_json::Value = serde_json::from_str(args)
-                    .map_err(|e| format!("invalid state.query args: {}", e))?;
-                let qmethod = args_val.get("method").and_then(|v| v.as_str()).ok_or("state.query: missing 'method' field")?;
-                let qparams: Vec<serde_json::Value> = args_val.get("params")
-                    .and_then(|v| v.as_array())
-                    .map(|a| a.clone())
-                    .unwrap_or_default();
-                let guard = svc.state_query.read().map_err(|e| format!("lock error: {}", e))?;
-                match guard.as_ref() {
-                    Some(sq) => sq.call(qmethod, &qparams).map(|v| v.to_string()),
-                    None => Err("server state query not available".to_string()),
-                }
+    fn dispatch_api(
+        svc: &WasmPluginServices,
+        plugin_name: &str,
+        method: &str,
+        args: &str,
+    ) -> Result<String, String> {
+        if args.len() > MAX_HOST_INPUT_BYTES {
+            return Err("API arguments exceed host limit".to_string());
+        }
+        if let Some(capability) = required_capability(method) {
+            if !svc.has_capability(plugin_name, capability) {
+                return Err(format!("capability '{capability}' is required for {method}"));
             }
-            ("send", "to_user") => {
-                let args_val: serde_json::Value = serde_json::from_str(args)
-                    .map_err(|e| format!("invalid args: {}", e))?;
-                let uid = args_val.get("user_id").and_then(|v| v.as_i64()).ok_or("missing user_id")? as i32;
-                let msg = args_val.get("message").and_then(|v| v.as_str()).ok_or("missing message")?.to_string();
-                let guard = svc.send_chat.read().map_err(|e| format!("lock error: {}", e))?;
-                match guard.as_ref() {
-                    Some(sc) => { sc(uid, msg); Ok("ok".to_string()) }
-                    None => Err("send_chat not available".to_string()),
-                }
+        }
+        let value: serde_json::Value = if args.trim().is_empty() {
+            serde_json::json!({})
+        } else {
+            serde_json::from_str(args).map_err(|e| format!("invalid args: {e}"))?
+        };
+        let get_str = |name: &str| {
+            value.get(name).and_then(|v| v.as_str())
+                .ok_or_else(|| format!("missing {name}"))
+        };
+        let get_i32 = |name: &str| {
+            value.get(name).and_then(|v| v.as_i64())
+                .and_then(|v| i32::try_from(v).ok())
+                .ok_or_else(|| format!("missing or invalid {name}"))
+        };
+
+        match method {
+            "state.query" => {
+                let query = get_str("method")?;
+                let params = value.get("params").and_then(|v| v.as_array()).cloned().unwrap_or_default();
+                state_call(svc, query, &params)
             }
-            ("send", "to_room") => {
-                let args_val: serde_json::Value = serde_json::from_str(args)
-                    .map_err(|e| format!("invalid args: {}", e))?;
-                let room_id = args_val.get("room_id").and_then(|v| v.as_str()).ok_or("missing room_id")?;
-                let msg = args_val.get("message").and_then(|v| v.as_str()).ok_or("missing message")?;
-                let guard = svc.state_query.read().map_err(|e| format!("lock error: {}", e))?;
-                match guard.as_ref() {
-                    Some(sq) => sq.call("send_room_chat", &[serde_json::json!(room_id), serde_json::json!(msg)]).map(|v| v.to_string()),
-                    None => Err("state query not available".to_string()),
-                }
+            "send.to_user" => {
+                let uid = get_i32("user_id")?;
+                let message = get_str("message")?.to_string();
+                let callback = svc.send_chat.read().map_err(|e| format!("lock error: {e}"))?;
+                callback.as_ref().ok_or("send_chat not available")?(uid, message);
+                Ok("ok".to_string())
             }
-            ("send", "to_all") => {
-                let args_val: serde_json::Value = serde_json::from_str(args)
-                    .map_err(|e| format!("invalid args: {}", e))?;
-                let msg = args_val.get("message").and_then(|v| v.as_str()).ok_or("missing message")?;
-                let guard = svc.send_chat.read().map_err(|e| format!("lock error: {}", e))?;
-                match guard.as_ref() {
-                    Some(sc) => { sc(0, msg.to_string()); Ok("ok".to_string()) }
-                    None => Err("send_chat not available".to_string()),
-                }
+            "send.to_room" => state_call(svc, "send_room_chat", &[serde_json::json!(get_str("room_id")?), serde_json::json!(get_str("message")?)]),
+            "send.to_all" => {
+                let message = get_str("message")?.to_string();
+                let callback = svc.send_chat.read().map_err(|e| format!("lock error: {e}"))?;
+                callback.as_ref().ok_or("send_chat not available")?(0, message);
+                Ok("ok".to_string())
             }
-            ("ext", "get_user") => {
-                let args_val: serde_json::Value = serde_json::from_str(args)
-                    .map_err(|e| format!("invalid args: {}", e))?;
-                let uid = args_val.get("user_id").and_then(|v| v.as_i64()).ok_or("missing user_id")? as i32;
-                let key = args_val.get("key").and_then(|v| v.as_str()).ok_or("missing key")?;
+            "ext.get_user" => {
+                let uid = get_i32("user_id")?;
+                let key = get_str("key")?;
                 let store = svc.extensions.store();
                 let guard = store.try_read().map_err(|_| "extension store busy".to_string())?;
-                guard.get_user_extra(uid, key).cloned()
-                    .ok_or_else(|| format!("field '{}' not found for user {}", key, uid))
+                guard.get_user_extra(uid, key).cloned().ok_or_else(|| format!("field '{key}' not found for user {uid}"))
             }
-            ("ext", "set_user") => {
-                let args_val: serde_json::Value = serde_json::from_str(args)
-                    .map_err(|e| format!("invalid args: {}", e))?;
-                let uid = args_val.get("user_id").and_then(|v| v.as_i64()).ok_or("missing user_id")? as i32;
-                let key = args_val.get("key").and_then(|v| v.as_str()).ok_or("missing key")?;
-                let value = args_val.get("value").and_then(|v| v.as_str()).ok_or("missing value")?;
+            "ext.set_user" => {
+                let uid = get_i32("user_id")?;
+                let key = get_str("key")?;
+                let content = get_str("value")?;
                 let store = svc.extensions.store();
-                let mut guard = store.try_write().map_err(|_| "extension store busy".to_string())?;
-                guard.set_user_extra(uid, key, value.to_string())
-                    .map_err(|e| format!("set_user_extra: {}", e))?;
+                store.try_write().map_err(|_| "extension store busy".to_string())?
+                    .set_user_extra(uid, key, content.to_string()).map_err(|e| format!("set_user_extra: {e}"))?;
                 Ok("ok".to_string())
             }
-            ("ext", "get_room") => {
-                let args_val: serde_json::Value = serde_json::from_str(args)
-                    .map_err(|e| format!("invalid args: {}", e))?;
-                let room_id = args_val.get("room_id").and_then(|v| v.as_str()).ok_or("missing room_id")?;
-                let key = args_val.get("key").and_then(|v| v.as_str()).ok_or("missing key")?;
+            "ext.get_room" => {
+                let room_id = get_str("room_id")?;
+                let key = get_str("key")?;
                 let store = svc.extensions.store();
                 let guard = store.try_read().map_err(|_| "extension store busy".to_string())?;
-                guard.get_room_extra(room_id, key).cloned()
-                    .ok_or_else(|| format!("field '{}' not found for room {}", key, room_id))
+                guard.get_room_extra(room_id, key).cloned().ok_or_else(|| format!("field '{key}' not found for room {room_id}"))
             }
-            ("ext", "set_room") => {
-                let args_val: serde_json::Value = serde_json::from_str(args)
-                    .map_err(|e| format!("invalid args: {}", e))?;
-                let room_id = args_val.get("room_id").and_then(|v| v.as_str()).ok_or("missing room_id")?;
-                let key = args_val.get("key").and_then(|v| v.as_str()).ok_or("missing key")?;
-                let value = args_val.get("value").and_then(|v| v.as_str()).ok_or("missing value")?;
+            "ext.set_room" => {
+                let room_id = get_str("room_id")?;
+                let key = get_str("key")?;
+                let content = get_str("value")?;
                 let store = svc.extensions.store();
-                let mut guard = store.try_write().map_err(|_| "extension store busy".to_string())?;
-                guard.set_room_extra(room_id, key, value.to_string())
-                    .map_err(|e| format!("set_room_extra: {}", e))?;
+                store.try_write().map_err(|_| "extension store busy".to_string())?
+                    .set_room_extra(room_id, key, content.to_string()).map_err(|e| format!("set_room_extra: {e}"))?;
                 Ok("ok".to_string())
             }
-            ("config", "get") => {
-                let args_val: serde_json::Value = serde_json::from_str(args)
-                    .map_err(|e| format!("invalid args: {}", e))?;
-                let key = args_val.get("key").and_then(|v| v.as_str()).ok_or("missing key")?;
-                let configs = svc.plugin_configs.read().map_err(|e| format!("lock error: {}", e))?;
-                configs
-                    .get(plugin_name)
-                    .and_then(|cfg| cfg.get(key).cloned())
-                    .ok_or_else(|| format!("config '{}' not found", key))
+            "config.get" => {
+                let key = get_str("key")?;
+                validate_config_key(key)?;
+                ensure_config_loaded(svc, plugin_name)?;
+                svc.plugin_configs.read().map_err(|e| format!("lock error: {e}"))?
+                    .get(plugin_name).and_then(|cfg| cfg.get(key).cloned())
+                    .ok_or_else(|| format!("config '{key}' not found"))
             }
-            ("config", "set") => {
-                let args_val: serde_json::Value = serde_json::from_str(args)
-                    .map_err(|e| format!("invalid args: {}", e))?;
-                let key = args_val.get("key").and_then(|v| v.as_str()).ok_or("missing key")?;
-                let value = args_val.get("value").and_then(|v| v.as_str()).ok_or("missing value")?;
-                let mut configs = svc.plugin_configs.write().map_err(|e| format!("lock error: {}", e))?;
-                configs.entry(plugin_name.to_string()).or_default().insert(key.to_string(), value.to_string());
-                Ok("ok".to_string())
-            }
-            ("http", "get") => {
-                let args_val: serde_json::Value = serde_json::from_str(args)
-                    .map_err(|e| format!("invalid args: {}", e))?;
-                let url = args_val.get("url").and_then(|v| v.as_str()).ok_or("missing url")?;
-                let response = reqwest::blocking::get(url)
-                    .map_err(|e| format!("HTTP GET failed: {}", e))?;
-                response.text().map_err(|e| format!("HTTP GET read failed: {}", e))
-            }
-            ("http", "post") => {
-                let args_val: serde_json::Value = serde_json::from_str(args)
-                    .map_err(|e| format!("invalid args: {}", e))?;
-                let url = args_val.get("url").and_then(|v| v.as_str()).ok_or("missing url")?;
-                let body = args_val.get("body").and_then(|v| v.as_str()).unwrap_or("");
-                let content_type = args_val.get("content_type").and_then(|v| v.as_str()).unwrap_or("application/json");
-                let client = reqwest::blocking::Client::new();
-                let response = client
-                    .post(url)
-                    .header("Content-Type", content_type)
-                    .body(body.to_string())
-                    .send()
-                    .map_err(|e| format!("HTTP POST failed: {}", e))?;
-                response.text().map_err(|e| format!("HTTP POST read failed: {}", e))
-            }
-            ("file", "read") => {
-                let args_val: serde_json::Value = serde_json::from_str(args)
-                    .map_err(|e| format!("invalid args: {}", e))?;
-                let path = args_val.get("path").and_then(|v| v.as_str()).ok_or("missing path")?;
-                let full_path = if path.starts_with('/') {
-                    path.to_string()
-                } else {
-                    format!("data/plugins/{}/{}", plugin_name, path)
+            "config.set" => {
+                let key = get_str("key")?;
+                let content = get_str("value")?;
+                validate_config_key(key)?;
+                if content.len() > svc.runtime.max_file_bytes { return Err("config value exceeds plugin limit".to_string()); }
+                ensure_config_loaded(svc, plugin_name)?;
+                let snapshot = {
+                    let mut configs = svc.plugin_configs.write().map_err(|e| format!("lock error: {e}"))?;
+                    let config = configs.entry(plugin_name.to_string()).or_default();
+                    config.insert(key.to_string(), content.to_string());
+                    config.clone()
                 };
-                std::fs::read_to_string(&full_path)
-                    .map_err(|e| format!("file read failed: {}", e))
-            }
-            ("file", "write") => {
-                let args_val: serde_json::Value = serde_json::from_str(args)
-                    .map_err(|e| format!("invalid args: {}", e))?;
-                let path = args_val.get("path").and_then(|v| v.as_str()).ok_or("missing path")?;
-                let content = args_val.get("content").and_then(|v| v.as_str()).ok_or("missing content")?;
-                let full_path = if path.starts_with('/') {
-                    path.to_string()
-                } else {
-                    format!("data/plugins/{}/{}", plugin_name, path)
-                };
-                if let Some(parent) = std::path::Path::new(&full_path).parent() {
-                    std::fs::create_dir_all(parent)
-                        .map_err(|e| format!("create dir failed: {}", e))?;
-                }
-                std::fs::write(&full_path, content)
-                    .map_err(|e| format!("file write failed: {}", e))?;
+                persist_plugin_config(plugin_name, &snapshot)?;
                 Ok("ok".to_string())
             }
-            ("uuid", "v4") => {
-                Ok(uuid::Uuid::new_v4().to_string())
+            "http.get" => {
+                let url = get_str("url")?;
+                validate_http_url(url, svc.runtime.allow_private_network)?;
+                let response = svc.http_client.get(url).send().map_err(|e| format!("HTTP GET failed: {e}"))?;
+                read_limited_response(response, svc.runtime.max_http_response_bytes)
             }
-            ("time", "now") => {
-                let now = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map(|d| d.as_secs_f64())
-                    .unwrap_or(0.0);
-                Ok(format!("{}", now)) // 返回 Unix 时间戳（秒）
+            "http.post" => {
+                let url = get_str("url")?;
+                let body = value.get("body").and_then(|v| v.as_str()).unwrap_or("");
+                let content_type = value.get("content_type").and_then(|v| v.as_str()).unwrap_or("application/json");
+                if body.len() > MAX_HOST_INPUT_BYTES { return Err("HTTP request body exceeds host limit".to_string()); }
+                validate_http_url(url, svc.runtime.allow_private_network)?;
+                let response = svc.http_client.post(url).header("Content-Type", content_type).body(body.to_string())
+                    .send().map_err(|e| format!("HTTP POST failed: {e}"))?;
+                read_limited_response(response, svc.runtime.max_http_response_bytes)
             }
-            ("player", "touches") => {
-                // 查询指定用户的最近触控数据
-                let args_val: serde_json::Value = serde_json::from_str(args)
-                    .map_err(|e| format!("invalid args: {}", e))?;
-                let uid = args_val.get("user_id").and_then(|v| v.as_i64()).ok_or("missing user_id")? as i32;
-                let guard = svc.state_query.read().map_err(|e| format!("lock error: {}", e))?;
-                match guard.as_ref() {
-                    Some(sq) => sq.call("player.touches", &[serde_json::json!(uid)])
-                        .map(|v| v.to_string()),
-                    None => Err("state query not available".to_string()),
+            "file.read" => {
+                let path = plugin_data_path(plugin_name, get_str("path")?, false)?;
+                let metadata = std::fs::metadata(&path).map_err(|e| format!("file metadata failed: {e}"))?;
+                if metadata.len() > svc.runtime.max_file_bytes as u64 { return Err("file exceeds plugin read limit".to_string()); }
+                let bytes = std::fs::read(path).map_err(|e| format!("file read failed: {e}"))?;
+                String::from_utf8(bytes).map_err(|e| format!("file is not UTF-8: {e}"))
+            }
+            "file.write" => {
+                let content = get_str("content")?;
+                if content.len() > svc.runtime.max_file_bytes { return Err("file exceeds plugin write limit".to_string()); }
+                let path = plugin_data_path(plugin_name, get_str("path")?, true)?;
+                atomic_write(&path, content.as_bytes())?;
+                Ok("ok".to_string())
+            }
+            "uuid.v4" => Ok(uuid::Uuid::new_v4().to_string()),
+            "time.now" => Ok(std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs_f64()).unwrap_or(0.0).to_string()),
+            "player.touches" => state_call(svc, "player.touches", &[serde_json::json!(get_i32("user_id")?)]),
+            "player.judges" => state_call(svc, "player.judges", &[serde_json::json!(get_i32("user_id")?)]),
+            "round.data" => state_call(svc, "round.data", &[serde_json::json!(get_str("round_uuid")?), serde_json::json!(get_i32("player_id")?)]),
+            "round.list" => state_call(svc, "round.list", &[]),
+            "room.kick" => state_call(svc, "room.kick", &[serde_json::json!(get_str("room_id")?), serde_json::json!(get_i32("target_id")?)]),
+            "room.transfer_host" => state_call(svc, "room.transfer_host", &[serde_json::json!(get_str("room_id")?), serde_json::json!(get_i32("target_id")?)]),
+            "room.set_lock" => state_call(svc, "room.set_lock", &[serde_json::json!(get_str("room_id")?), serde_json::json!(value.get("locked").and_then(|v| v.as_bool()).ok_or("missing locked")?)]),
+            "room.close" => state_call(svc, "room.close", &[serde_json::json!(get_str("room_id")?)]),
+            "room.uuid" => state_call(svc, "room.uuid", &[serde_json::json!(get_str("room_id")?)]),
+            "room.history" => state_call(svc, "room.history", &[serde_json::json!(get_str("room_id")?)]),
+            "room.round_info" => state_call(svc, "room.round_info", &[serde_json::json!(get_str("round_uuid")?)]),
+            "room.list_since" => state_call(svc, "room.list_since", &[serde_json::json!(value.get("since_ms").and_then(|v| v.as_i64()).unwrap_or(0))]),
+            "admin.kick_user" => state_call(svc, "admin.kick_user", &[serde_json::json!(get_i32("user_id")?), serde_json::json!(value.get("reason").and_then(|v| v.as_str()).unwrap_or("kicked by admin"))]),
+            "admin.ban_user" => state_call(svc, "admin.ban_user", &[serde_json::json!(get_i32("user_id")?), serde_json::json!(value.get("reason").and_then(|v| v.as_str()).unwrap_or("banned"))]),
+            "admin.unban_user" => state_call(svc, "admin.unban_user", &[serde_json::json!(get_i32("user_id")?)]),
+            "admin.is_banned" => state_call(svc, "admin.is_banned", &[serde_json::json!(get_i32("user_id")?)]),
+            "admin.ban_list" => state_call(svc, "admin.ban_list", &[]),
+            "admin.list_users" => state_call(svc, "admin.list_users", &[]),
+            "user.room_history" => state_call(svc, "user.room_history", &[serde_json::json!(get_i32("user_id")?)]),
+            "plugin.api_register" => {
+                let api_method = get_str("method")?;
+                validate_identifier(api_method)?;
+                let mut registrations = svc.registered_apis.lock().map_err(|e| format!("lock: {e}"))?;
+                if !registrations.entry(plugin_name.to_string()).or_default().insert(api_method.to_string()) {
+                    return Err(format!("API '{api_method}' is already registered"));
                 }
+                Ok(format!("registered plugin API: {plugin_name}.{api_method}"))
             }
-            ("player", "judges") => {
-                // 查询指定用户的最近判定数据
-                let args_val: serde_json::Value = serde_json::from_str(args)
-                    .map_err(|e| format!("invalid args: {}", e))?;
-                let uid = args_val.get("user_id").and_then(|v| v.as_i64()).ok_or("missing user_id")? as i32;
-                let guard = svc.state_query.read().map_err(|e| format!("lock error: {}", e))?;
-                match guard.as_ref() {
-                    Some(sq) => sq.call("player.judges", &[serde_json::json!(uid)])
-                        .map(|v| v.to_string()),
-                    None => Err("state query not available".to_string()),
+            "plugin.api_call" => {
+                let target = get_str("plugin")?;
+                let api_method = get_str("method")?;
+                let api_args = value.get("args").and_then(|v| v.as_array()).cloned().unwrap_or_default();
+                if target == plugin_name { return Err("a plugin cannot synchronously call itself".to_string()); }
+                let key = format!("{target}:{api_method}");
+                let native = {
+                    let handlers = svc.api_handlers.lock().map_err(|e| format!("lock: {e}"))?;
+                    handlers.get(&key).or_else(|| handlers.get(target)).cloned()
+                };
+                if let Some(handler) = native {
+                    return handler(api_method, &api_args).map(|v| v.to_string());
                 }
+                let is_registered = svc.registered_apis.lock().map_err(|e| format!("lock: {e}"))?
+                    .get(target).is_some_and(|methods| methods.contains(api_method));
+                if !is_registered { return Err(format!("plugin '{target}' has no registered API '{api_method}'")); }
+                let runtime = svc.plugin_runtimes.lock().map_err(|e| format!("lock: {e}"))?
+                    .get(target).and_then(Weak::upgrade).ok_or_else(|| format!("plugin '{target}' is unavailable"))?;
+                let mut plugin = runtime.try_lock().map_err(|_| format!("plugin '{target}' is busy"))?;
+                plugin.call_api(api_method, &api_args).map(|v| v.to_string())
             }
-            ("round", "data") => {
-                // 查询指定轮次+玩家的完整 Touches/Judges
-                let args_val: serde_json::Value = serde_json::from_str(args)
-                    .map_err(|e| format!("invalid args: {}", e))?;
-                let round_uuid = args_val.get("round_uuid").and_then(|v| v.as_str()).ok_or("missing round_uuid")?;
-                let player_id = args_val.get("player_id").and_then(|v| v.as_i64()).ok_or("missing player_id")? as i32;
-                let guard = svc.state_query.read().map_err(|e| format!("lock error: {}", e))?;
-                match guard.as_ref() {
-                    Some(sq) => sq.call("round.data", &[serde_json::json!(round_uuid), serde_json::json!(player_id)])
-                        .map(|v| v.to_string()),
-                    None => Err("state query not available".to_string()),
-                }
-            }
-            ("round", "list") => {
-                // 列出所有已记录的轮次
-                let guard = svc.state_query.read().map_err(|e| format!("lock error: {}", e))?;
-                match guard.as_ref() {
-                    Some(sq) => sq.call("round.list", &[])
-                        .map(|v| v.to_string()),
-                    None => Err("state query not available".to_string()),
-                }
-            }
-            // ── 房间管理（WIT room-management 接口） ──
-            ("room", "kick") => {
-                let args_val: serde_json::Value = serde_json::from_str(args)
-                    .map_err(|e| format!("invalid args: {}", e))?;
-                let room_id = args_val.get("room_id").and_then(|v| v.as_str()).ok_or("missing room_id")?.to_string();
-                let target_id = args_val.get("target_id").and_then(|v| v.as_i64()).ok_or("missing target_id")? as i32;
-                let guard = svc.state_query.read().map_err(|e| format!("lock error: {}", e))?;
-                match guard.as_ref() {
-                    Some(sq) => sq.call("room.kick", &[serde_json::json!(room_id), serde_json::json!(target_id)]).map(|v| v.to_string()),
-                    None => Err("state query not available".to_string()),
-                }
-            }
-            ("room", "transfer_host") => {
-                let args_val: serde_json::Value = serde_json::from_str(args)
-                    .map_err(|e| format!("invalid args: {}", e))?;
-                let room_id = args_val.get("room_id").and_then(|v| v.as_str()).ok_or("missing room_id")?.to_string();
-                let target_id = args_val.get("target_id").and_then(|v| v.as_i64()).ok_or("missing target_id")? as i32;
-                let guard = svc.state_query.read().map_err(|e| format!("lock error: {}", e))?;
-                match guard.as_ref() {
-                    Some(sq) => sq.call("room.transfer_host", &[serde_json::json!(room_id), serde_json::json!(target_id)]).map(|v| v.to_string()),
-                    None => Err("state query not available".to_string()),
-                }
-            }
-            ("room", "set_lock") => {
-                let args_val: serde_json::Value = serde_json::from_str(args)
-                    .map_err(|e| format!("invalid args: {}", e))?;
-                let room_id = args_val.get("room_id").and_then(|v| v.as_str()).ok_or("missing room_id")?.to_string();
-                let locked = args_val.get("locked").and_then(|v| v.as_bool()).ok_or("missing locked")?;
-                let guard = svc.state_query.read().map_err(|e| format!("lock error: {}", e))?;
-                match guard.as_ref() {
-                    Some(sq) => sq.call("room.set_lock", &[serde_json::json!(room_id), serde_json::json!(locked)]).map(|v| v.to_string()),
-                    None => Err("state query not available".to_string()),
-                }
-            }
-            ("room", "close") => {
-                let args_val: serde_json::Value = serde_json::from_str(args)
-                    .map_err(|e| format!("invalid args: {}", e))?;
-                let room_id = args_val.get("room_id").and_then(|v| v.as_str()).ok_or("missing room_id")?.to_string();
-                let guard = svc.state_query.read().map_err(|e| format!("lock error: {}", e))?;
-                match guard.as_ref() {
-                    Some(sq) => sq.call("room.close", &[serde_json::json!(room_id)]).map(|v| v.to_string()),
-                    None => Err("state query not available".to_string()),
-                }
-            }
-            // ── 房间/轮次查询接口 ──
-            ("room", "uuid") => {
-                let args_val: serde_json::Value = serde_json::from_str(args)
-                    .map_err(|e| format!("invalid args: {}", e))?;
-                let room_id = args_val.get("room_id").and_then(|v| v.as_str()).ok_or("missing room_id")?.to_string();
-                let guard = svc.state_query.read().map_err(|e| format!("lock error: {}", e))?;
-                match guard.as_ref() {
-                    Some(sq) => sq.call("room.uuid", &[serde_json::json!(room_id)]).map(|v| v.to_string()),
-                    None => Err("state query not available".to_string()),
-                }
-            }
-            ("room", "history") => {
-                let args_val: serde_json::Value = serde_json::from_str(args)
-                    .map_err(|e| format!("invalid args: {}", e))?;
-                let room_id = args_val.get("room_id").and_then(|v| v.as_str()).ok_or("missing room_id")?.to_string();
-                let guard = svc.state_query.read().map_err(|e| format!("lock error: {}", e))?;
-                match guard.as_ref() {
-                    Some(sq) => sq.call("room.history", &[serde_json::json!(room_id)]).map(|v| v.to_string()),
-                    None => Err("state query not available".to_string()),
-                }
-            }
-            ("room", "round_info") => {
-                let args_val: serde_json::Value = serde_json::from_str(args)
-                    .map_err(|e| format!("invalid args: {}", e))?;
-                let round_uuid = args_val.get("round_uuid").and_then(|v| v.as_str()).ok_or("missing round_uuid")?.to_string();
-                let guard = svc.state_query.read().map_err(|e| format!("lock error: {}", e))?;
-                match guard.as_ref() {
-                    Some(sq) => sq.call("room.round_info", &[serde_json::json!(round_uuid)]).map(|v| v.to_string()),
-                    None => Err("state query not available".to_string()),
-                }
-            }
-            ("room", "list_since") => {
-                let args_val: serde_json::Value = serde_json::from_str(args)
-                    .map_err(|e| format!("invalid args: {}", e))?;
-                let since_ms = args_val.get("since_ms").and_then(|v| v.as_i64()).unwrap_or(0);
-                let guard = svc.state_query.read().map_err(|e| format!("lock error: {}", e))?;
-                match guard.as_ref() {
-                    Some(sq) => sq.call("room.list_since", &[serde_json::json!(since_ms)]).map(|v| v.to_string()),
-                    None => Err("state query not available".to_string()),
-                }
-            }
-            // ── 用户管理（WIT user-management 接口） ──
-            ("admin", "kick_user") => {
-                let args_val: serde_json::Value = serde_json::from_str(args)
-                    .map_err(|e| format!("invalid args: {}", e))?;
-                let uid = args_val.get("user_id").and_then(|v| v.as_i64()).ok_or("missing user_id")? as i32;
-                let reason = args_val.get("reason").and_then(|v| v.as_str()).unwrap_or("kicked by admin");
-                let guard = svc.state_query.read().map_err(|e| format!("lock error: {}", e))?;
-                match guard.as_ref() {
-                    Some(sq) => sq.call("admin.kick_user", &[serde_json::json!(uid), serde_json::json!(reason)]).map(|v| v.to_string()),
-                    None => Err("state query not available".to_string()),
-                }
-            }
-            ("admin", "ban_user") => {
-                let args_val: serde_json::Value = serde_json::from_str(args)
-                    .map_err(|e| format!("invalid args: {}", e))?;
-                let uid = args_val.get("user_id").and_then(|v| v.as_i64()).ok_or("missing user_id")? as i32;
-                let reason = args_val.get("reason").and_then(|v| v.as_str()).unwrap_or("banned");
-                let guard = svc.state_query.read().map_err(|e| format!("lock error: {}", e))?;
-                match guard.as_ref() {
-                    Some(sq) => sq.call("admin.ban_user", &[serde_json::json!(uid), serde_json::json!(reason)]).map(|v| v.to_string()),
-                    None => Err("state query not available".to_string()),
-                }
-            }
-            ("admin", "unban_user") => {
-                let args_val: serde_json::Value = serde_json::from_str(args)
-                    .map_err(|e| format!("invalid args: {}", e))?;
-                let uid = args_val.get("user_id").and_then(|v| v.as_i64()).ok_or("missing user_id")? as i32;
-                let guard = svc.state_query.read().map_err(|e| format!("lock error: {}", e))?;
-                match guard.as_ref() {
-                    Some(sq) => sq.call("admin.unban_user", &[serde_json::json!(uid)]).map(|v| v.to_string()),
-                    None => Err("state query not available".to_string()),
-                }
-            }
-            ("admin", "is_banned") => {
-                let args_val: serde_json::Value = serde_json::from_str(args)
-                    .map_err(|e| format!("invalid args: {}", e))?;
-                let uid = args_val.get("user_id").and_then(|v| v.as_i64()).ok_or("missing user_id")? as i32;
-                let guard = svc.state_query.read().map_err(|e| format!("lock error: {}", e))?;
-                match guard.as_ref() {
-                    Some(sq) => sq.call("admin.is_banned", &[serde_json::json!(uid)]).map(|v| v.to_string()),
-                    None => Err("state query not available".to_string()),
-                }
-            }
-            ("admin", "ban_list") => {
-                let guard = svc.state_query.read().map_err(|e| format!("lock error: {}", e))?;
-                match guard.as_ref() {
-                    Some(sq) => sq.call("admin.ban_list", &[]).map(|v| v.to_string()),
-                    None => Err("state query not available".to_string()),
-                }
-            }
-            ("admin", "list_users") => {
-                let guard = svc.state_query.read().map_err(|e| format!("lock error: {}", e))?;
-                match guard.as_ref() {
-                    Some(sq) => sq.call("admin.list_users", &[]).map(|v| v.to_string()),
-                    None => Err("state query not available".to_string()),
-                }
-            }
-            // ── 用户房间历史 ──
-            ("user", "room_history") => {
-                let args_val: serde_json::Value = serde_json::from_str(args)
-                    .map_err(|e| format!("invalid args: {}", e))?;
-                let uid = args_val.get("user_id").and_then(|v| v.as_i64()).ok_or("missing user_id")? as i32;
-                let guard = svc.state_query.read().map_err(|e| format!("lock error: {}", e))?;
-                match guard.as_ref() {
-                    Some(sq) => sq.call("user.room_history", &[serde_json::json!(uid)]).map(|v| v.to_string()),
-                    None => Err("state query not available".to_string()),
-                }
-            }
-            // ── 插件互调用（WASM 插件 API） ──
-            ("plugin", "api_call") => {
-                let args_val: serde_json::Value = serde_json::from_str(args)
-                    .map_err(|e| format!("invalid args: {}", e))?;
-                let target_plugin = args_val.get("plugin").and_then(|v| v.as_str()).ok_or("missing plugin")?;
-                let api_method = args_val.get("method").and_then(|v| v.as_str()).ok_or("missing method")?;
-                let api_args = args_val.get("args").and_then(|v| v.as_array()).cloned().unwrap_or_default();
-                let key = format!("{}:{}", target_plugin, api_method);
-                let handlers = svc.api_handlers.lock().map_err(|e| format!("lock: {}", e))?;
-                match handlers.get(&key) {
-                    Some(h) => h(api_method, &api_args).map(|v| v.to_string()),
-                    None => {
-                        // 也尝试不带插件名前缀的直接查找（兼容原生插件注册 API）
-                        match handlers.get(target_plugin) {
-                            Some(h) => h(api_method, &api_args).map(|v| v.to_string()),
-                            None => Err(format!("plugin '{}' has no API '{}'", target_plugin, api_method)),
-                        }
-                    }
-                }
-            }
-            ("plugin", "api_register") => {
-                let args_val: serde_json::Value = serde_json::from_str(args)
-                    .map_err(|e| format!("invalid args: {}", e))?;
-                let api_method = args_val.get("method").and_then(|v| v.as_str()).ok_or("missing method")?.to_string();
-                let key = format!("{}:{}", plugin_name, api_method);
-                let mut handlers = svc.api_handlers.lock().map_err(|e| format!("lock: {}", e))?;
-                if handlers.contains_key(&key) {
-                    return Err(format!("API '{}' already registered by this plugin", api_method));
-                }
-                // 注册一个 passthrough 处理器：调用时通过 state.query 返回给调用方
-                // 完整双向 WASM 回调需要 wasmtime 支持，暂用同步 stub
-                handlers.insert(key, Arc::new(move |method: &str, args: &[serde_json::Value]| {
-                    Ok(serde_json::json!({"method": method, "args": args, "note": "WASM callback stub"}))
-                }));
-                Ok(format!("registered plugin API: {}.{}", plugin_name, api_method))
-            }
-            _ => Err(format!("unknown API method: {}.{}", method_name, rest)),
+            _ => Err(format!("unknown API method: {method}")),
         }
     }
 }
@@ -926,17 +819,200 @@ impl Drop for WasmPluginInstance {
 
 // ── 辅助函数 ──
 
-/// 从 WASM 线性内存读取字符串
-fn read_str_from_memory(
-    memory: &wasmtime::Memory,
-    ctx: impl wasmtime::AsContext,
-    ptr: i32,
-    len: i32,
-) -> Option<String> {
-    if len <= 0 || ptr < 0 {
-        return None;
+fn state_call(svc: &WasmPluginServices, method: &str, args: &[serde_json::Value]) -> Result<String, String> {
+    let guard = svc.state_query.read().map_err(|e| format!("lock error: {e}"))?;
+    guard.as_ref().ok_or_else(|| "state query not available".to_string())?
+        .call(method, args).map(|value| value.to_string())
+}
+
+fn truncate_string(value: &str, max: usize) -> String { value.chars().take(max).collect() }
+
+fn validate_display_name(value: &str) -> Result<(), String> {
+    if value.trim().is_empty() || value.chars().count() > 128 || value.chars().any(char::is_control) {
+        return Err("invalid plugin display name".to_string());
     }
-    let mut buf = vec![0u8; len as usize];
-    memory.read(ctx, ptr as usize, &mut buf).ok()?;
-    String::from_utf8(buf).ok()
+    Ok(())
+}
+
+fn validate_identifier(value: &str) -> Result<(), String> {
+    if value.is_empty() || value.len() > 96 || !value.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-' | b'.')) {
+        return Err(format!("invalid identifier '{value}'"));
+    }
+    Ok(())
+}
+
+fn validate_config_key(value: &str) -> Result<(), String> {
+    if value.is_empty() || value.len() > 256 || value.chars().any(char::is_control) { return Err("invalid config key".to_string()); }
+    Ok(())
+}
+
+fn default_capabilities() -> HashSet<String> {
+    ["state.read", "send", "ext", "config", "file.read", "file.write", "plugin.call", "plugin.register"]
+        .into_iter().map(str::to_string).collect()
+}
+
+fn load_manifest_capabilities(plugin_path: &str) -> Result<HashSet<String>, String> {
+    let manifest = Path::new(plugin_path).with_extension("json");
+    if !manifest.exists() { return Ok(default_capabilities()); }
+    let bytes = std::fs::read(&manifest).map_err(|e| format!("read manifest '{}': {e}", manifest.display()))?;
+    if bytes.len() > 64 * 1024 { return Err("plugin manifest is too large".to_string()); }
+    let value: serde_json::Value = serde_json::from_slice(&bytes).map_err(|e| format!("invalid plugin manifest: {e}"))?;
+    let array = value.get("capabilities").and_then(|v| v.as_array()).ok_or("manifest must contain a capabilities array")?;
+    let mut capabilities = HashSet::new();
+    for item in array {
+        let capability = item.as_str().ok_or("capability must be a string")?;
+        validate_identifier(capability)?;
+        capabilities.insert(capability.to_string());
+    }
+    Ok(capabilities)
+}
+
+fn required_capability(method: &str) -> Option<&'static str> {
+    match method {
+        "uuid.v4" | "time.now" => None,
+        value if value.starts_with("admin.") => Some("admin"),
+        "room.kick" | "room.transfer_host" | "room.set_lock" | "room.close" => Some("room.manage"),
+        value if value.starts_with("room.") || value.starts_with("player.") || value.starts_with("round.") || value.starts_with("user.") || value == "state.query" => Some("state.read"),
+        value if value.starts_with("send.") => Some("send"),
+        value if value.starts_with("ext.") => Some("ext"),
+        value if value.starts_with("config.") => Some("config"),
+        value if value.starts_with("http.") => Some("http"),
+        "file.read" => Some("file.read"), "file.write" => Some("file.write"),
+        "plugin.api_call" => Some("plugin.call"), "plugin.api_register" => Some("plugin.register"),
+        _ => Some("unknown"),
+    }
+}
+
+fn config_path(plugin: &str) -> PathBuf { Path::new("data/plugins").join(plugin).join("config.json") }
+
+fn ensure_config_loaded(svc: &WasmPluginServices, plugin: &str) -> Result<(), String> {
+    if svc.plugin_configs.read().map_err(|e| format!("lock error: {e}"))?.contains_key(plugin) { return Ok(()); }
+    let path = config_path(plugin);
+    let config = if path.exists() {
+        let bytes = std::fs::read(&path).map_err(|e| format!("read config: {e}"))?;
+        if bytes.len() > svc.runtime.max_file_bytes { return Err("config file exceeds plugin limit".to_string()); }
+        serde_json::from_slice::<HashMap<String, String>>(&bytes).map_err(|e| format!("invalid config file: {e}"))?
+    } else { HashMap::new() };
+    svc.plugin_configs.write().map_err(|e| format!("lock error: {e}"))?.entry(plugin.to_string()).or_insert(config);
+    Ok(())
+}
+
+fn persist_plugin_config(plugin: &str, config: &HashMap<String, String>) -> Result<(), String> {
+    let bytes = serde_json::to_vec_pretty(config).map_err(|e| format!("encode config: {e}"))?;
+    atomic_write(&config_path(plugin), &bytes)
+}
+
+fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), String> {
+    let parent = path.parent().ok_or("path has no parent")?;
+    std::fs::create_dir_all(parent).map_err(|e| format!("create directory: {e}"))?;
+    reject_symlink_components(parent)?;
+    let temp = parent.join(format!(".{}.{}.tmp", path.file_name().and_then(|v| v.to_str()).unwrap_or("data"), uuid::Uuid::new_v4()));
+    std::fs::write(&temp, bytes).map_err(|e| format!("write temporary file: {e}"))?;
+    std::fs::rename(&temp, path).map_err(|e| { let _ = std::fs::remove_file(&temp); format!("replace file: {e}") })
+}
+
+fn plugin_data_path(plugin: &str, relative: &str, create_parent: bool) -> Result<PathBuf, String> {
+    validate_identifier(plugin)?;
+    let relative = Path::new(relative);
+    if relative.as_os_str().is_empty() || relative.is_absolute() { return Err("plugin paths must be non-empty and relative".to_string()); }
+    if relative.components().any(|part| !matches!(part, Component::Normal(_))) { return Err("plugin path traversal is not allowed".to_string()); }
+    let root = Path::new("data/plugins").join(plugin);
+    std::fs::create_dir_all(&root).map_err(|e| format!("create plugin data directory: {e}"))?;
+    reject_symlink_components(&root)?;
+    let target = root.join(relative);
+    if create_parent {
+        let parent = target.parent().ok_or("path has no parent")?;
+        std::fs::create_dir_all(parent).map_err(|e| format!("create plugin data directory: {e}"))?;
+        reject_symlink_components(parent)?;
+        if target.exists() && std::fs::symlink_metadata(&target).map_err(|e| e.to_string())?.file_type().is_symlink() { return Err("symbolic links are not allowed in plugin storage".to_string()); }
+    } else {
+        let canonical_root = std::fs::canonicalize(&root).map_err(|e| format!("canonicalize plugin root: {e}"))?;
+        let canonical_target = std::fs::canonicalize(&target).map_err(|e| format!("canonicalize plugin file: {e}"))?;
+        if !canonical_target.starts_with(canonical_root) { return Err("plugin path escaped its data directory".to_string()); }
+    }
+    Ok(target)
+}
+
+fn reject_symlink_components(path: &Path) -> Result<(), String> {
+    let mut current = PathBuf::new();
+    for component in path.components() {
+        current.push(component.as_os_str());
+        if current.exists() && std::fs::symlink_metadata(&current).map_err(|e| format!("inspect path: {e}"))?.file_type().is_symlink() {
+            return Err("symbolic links are not allowed in plugin storage".to_string());
+        }
+    }
+    Ok(())
+}
+
+fn validate_http_url(value: &str, allow_private: bool) -> Result<(), String> {
+    let url = reqwest::Url::parse(value).map_err(|e| format!("invalid URL: {e}"))?;
+    if !matches!(url.scheme(), "http" | "https") { return Err("only HTTP(S) URLs are allowed".to_string()); }
+    if !url.username().is_empty() || url.password().is_some() { return Err("URL credentials are not allowed".to_string()); }
+    let host = url.host_str().ok_or("URL is missing a host")?;
+    if !allow_private {
+        if host.eq_ignore_ascii_case("localhost") { return Err("private network access is disabled".to_string()); }
+        let port = url.port_or_known_default().ok_or("URL is missing a port")?;
+        let addresses = (host, port).to_socket_addrs().map_err(|e| format!("resolve host: {e}"))?.collect::<Vec<_>>();
+        if addresses.is_empty() || addresses.iter().any(|address| is_private_ip(address.ip())) { return Err("private or unresolved network targets are disabled".to_string()); }
+    }
+    Ok(())
+}
+
+fn is_private_ip(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(ip) => ip.is_private() || ip.is_loopback() || ip.is_link_local() || ip.is_broadcast() || ip.is_documentation() || ip.is_unspecified() || ip.is_multicast(),
+        IpAddr::V6(ip) => ip.is_loopback() || ip.is_unspecified() || ip.is_multicast() || ip.is_unique_local() || ip.is_unicast_link_local(),
+    }
+}
+
+fn read_limited_response(mut response: reqwest::blocking::Response, limit: usize) -> Result<String, String> {
+    if !response.status().is_success() { return Err(format!("HTTP request returned {}", response.status())); }
+    if response.content_length().is_some_and(|length| length > limit as u64) { return Err("HTTP response exceeds plugin limit".to_string()); }
+    let mut bytes = Vec::new();
+    response.by_ref().take(limit.saturating_add(1) as u64).read_to_end(&mut bytes).map_err(|e| format!("read HTTP response: {e}"))?;
+    if bytes.len() > limit { return Err("HTTP response exceeds plugin limit".to_string()); }
+    String::from_utf8(bytes).map_err(|e| format!("HTTP response is not UTF-8: {e}"))
+}
+
+fn read_str_from_memory(memory: &wasmtime::Memory, ctx: impl wasmtime::AsContext, ptr: i32, len: i32) -> Option<String> {
+    if len <= 0 || ptr < 0 || len as usize > MAX_HOST_INPUT_BYTES { return None; }
+    let mut bytes = vec![0u8; len as usize];
+    memory.read(ctx, ptr as usize, &mut bytes).ok()?;
+    String::from_utf8(bytes).ok()
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn identifiers_are_restricted() {
+        assert!(validate_identifier("plugin.api-v1").is_ok());
+        assert!(validate_identifier("../escape").is_err());
+        assert!(validate_identifier("has space").is_err());
+    }
+
+    #[test]
+    fn default_capabilities_are_not_privileged() {
+        let caps = default_capabilities();
+        assert!(caps.contains("state.read"));
+        assert!(!caps.contains("admin"));
+        assert!(!caps.contains("room.manage"));
+        assert!(!caps.contains("http"));
+    }
+
+    #[test]
+    fn private_networks_are_detected() {
+        assert!(is_private_ip("127.0.0.1".parse().unwrap()));
+        assert!(is_private_ip("10.0.0.1".parse().unwrap()));
+        assert!(is_private_ip("::1".parse().unwrap()));
+        assert!(!is_private_ip("8.8.8.8".parse().unwrap()));
+    }
+
+    #[test]
+    fn plugin_paths_reject_traversal_before_io() {
+        assert!(plugin_data_path("test-plugin", "../secret", false).is_err());
+        assert!(plugin_data_path("test-plugin", "/absolute", false).is_err());
+    }
 }

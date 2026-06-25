@@ -1,7 +1,7 @@
 //! Phira-mp+ - 增强版 Phira 多人游戏服务端
 //!
-//! 基于 Phira-mp 二次开发，通过完善的 WASM 插件系统与基于 WIT 实现的 API 系统
-//! 使其获得了强大的拓展性，同时得益于 WASM 和 Rust，兼具高性能与高稳定性。
+//! 基于 Phira-mp 二次开发，通过受控的 WASM JSON ABI、管理控制台和扩展 API
+//! 提供可部署、可观察、可扩展的多人游戏服务。
 
 pub mod ban;
 pub mod cli;

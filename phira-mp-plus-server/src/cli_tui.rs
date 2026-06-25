@@ -1,122 +1,137 @@
-//! Phira-mp+ CLI TUI 界面
+//! Phira-mp+ interactive terminal console.
 //!
-//! 使用 ratatui + crossterm 实现的交互式终端界面，
-//! 以独立的输出区域和输入行避免日志输出干扰命令输入。
+//! The renderer keeps logical output lines separate from wrapped visual rows.
+//! This avoids the mixed scroll-index model that caused corrupted layouts after
+//! scrolling, especially inside GNU screen/tmux.
 
-use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
+use crossterm::{
+    cursor::{Hide, Show},
+    event::{
+        self, DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste,
+        EnableMouseCapture, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers,
+        MouseEventKind,
+    },
+    execute,
+    terminal::{
+        disable_raw_mode, enable_raw_mode, DisableLineWrap, EnableLineWrap,
+        EnterAlternateScreen, LeaveAlternateScreen,
+    },
+};
 use ratatui::{
     backend::CrosstermBackend,
     layout::{Constraint, Direction, Layout, Position},
     style::{Color, Style},
-    text::{Line, Span, Text},
+    text::{Line, Span},
     widgets::{Clear, Paragraph},
     Frame, Terminal,
 };
-use std::io;
+use std::io::{self, Write};
 use std::time::Duration;
 use tokio::sync::mpsc;
 use tokio::sync::mpsc::error::TryRecvError;
-use unicode_width::UnicodeWidthStr;
+use unicode_width::UnicodeWidthChar;
 
-/// 运行 TUI 主循环（阻塞当前线程）
+const MAX_LOGICAL_LINES: usize = 10_000;
+const RETAIN_LOGICAL_LINES: usize = 8_000;
+
+/// Restores the terminal even when the TUI exits through an error path.
+struct TerminalSession;
+
+impl TerminalSession {
+    fn enter() -> io::Result<Self> {
+        enable_raw_mode()?;
+        let mut stdout = io::stdout();
+        if let Err(err) = execute!(
+            stdout,
+            EnterAlternateScreen,
+            EnableBracketedPaste,
+            EnableMouseCapture,
+            DisableLineWrap,
+            Hide,
+        ) {
+            let _ = disable_raw_mode();
+            return Err(err);
+        }
+        Ok(Self)
+    }
+}
+
+impl Drop for TerminalSession {
+    fn drop(&mut self) {
+        let mut stdout = io::stdout();
+        let _ = execute!(
+            stdout,
+            Show,
+            EnableLineWrap,
+            DisableMouseCapture,
+            DisableBracketedPaste,
+            LeaveAlternateScreen,
+        );
+        let _ = disable_raw_mode();
+    }
+}
+
+/// Run the interactive TUI on the current thread.
 pub fn run_tui(
     cmd_tx: mpsc::UnboundedSender<String>,
     mut out_rx: mpsc::UnboundedReceiver<String>,
     mut log_rx: mpsc::UnboundedReceiver<String>,
 ) -> io::Result<()> {
-    // 设置终端
-    crossterm::terminal::enable_raw_mode()?;
-    let mut stdout = io::stdout();
-    crossterm::execute!(
-        stdout,
-        crossterm::terminal::EnterAlternateScreen,
-    )?;
-
-    let backend = CrosstermBackend::new(stdout);
+    let _session = TerminalSession::enter()?;
+    let backend = CrosstermBackend::new(io::stdout());
     let mut terminal = Terminal::new(backend)?;
     terminal.clear()?;
 
     let mut app = TuiApp::new(cmd_tx);
     let result = app.run_loop(&mut terminal, &mut out_rx, &mut log_rx);
-
-    // 恢复终端
-    let _ = crossterm::execute!(
-        terminal.backend_mut(),
-        crossterm::terminal::LeaveAlternateScreen,
-    );
-    crossterm::terminal::disable_raw_mode()?;
-    terminal.show_cursor()?;
-
+    let _ = terminal.show_cursor();
     result
 }
 
-/// TUI 应用状态
 struct TuiApp {
-    /// 输出行缓冲区（按行存储）
     output_lines: Vec<String>,
-    /// 输出滚动偏移
-    scroll_offset: usize,
-    /// 是否自动滚动到底部
-    auto_scroll: bool,
-
-    /// 当前输入缓冲区
+    /// Number of visual rows above the bottom. Zero means follow output.
+    scroll_from_bottom: usize,
     input: String,
-    /// 光标在输入中的位置
+    /// Cursor position measured in Unicode scalar values, not bytes/cells.
     cursor_pos: usize,
-
-    /// 命令历史
     history: Vec<String>,
-    /// 历史浏览位置
     history_idx: Option<usize>,
-
-    /// 向 CLI 处理器发送命令
     cmd_tx: mpsc::UnboundedSender<String>,
-
-    /// 运行状态
     running: bool,
-
-    /// 滚动加速：连续按键次数（长按变快）
-    scroll_repeat: usize,
-    /// 上次滚动时间
-    scroll_last_time: std::time::Instant,
-    /// S 键按下标志：S+↑↓ 滚动模式
-    scroll_key_pressed: bool,
-    /// 压测执行中（禁用输入，显示进度）
-    benchmark_running: bool,
+    last_wrap_width: usize,
+    last_page_height: usize,
 }
 
 impl TuiApp {
     fn new(cmd_tx: mpsc::UnboundedSender<String>) -> Self {
         Self {
             output_lines: Vec::with_capacity(1024),
-            scroll_offset: 0,
-            auto_scroll: true,
+            scroll_from_bottom: 0,
             input: String::new(),
             cursor_pos: 0,
             history: Vec::new(),
             history_idx: None,
             cmd_tx,
             running: true,
-            scroll_repeat: 0,
-            scroll_last_time: std::time::Instant::now(),
-            scroll_key_pressed: false,
-            benchmark_running: false,
+            last_wrap_width: 80,
+            last_page_height: 20,
         }
     }
 
-    /// TUI 主循环
     fn run_loop(
         &mut self,
         terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
         out_rx: &mut mpsc::UnboundedReceiver<String>,
         log_rx: &mut mpsc::UnboundedReceiver<String>,
     ) -> io::Result<()> {
-        // 简洁欢迎
-        self.add_output(format!("Phira-mp+ v{} 管理控制台 — 输入 help 查看命令", env!("CARGO_PKG_VERSION")));
+        self.add_output(format!(
+            "Phira-mp+ v{} 管理控制台 — 输入 help 查看命令",
+            env!("CARGO_PKG_VERSION")
+        ));
         self.add_output(String::new());
 
         while self.running {
-            // 清空输出通道（CLI 处理器发来的结果）
             loop {
                 match out_rx.try_recv() {
                     Ok(msg) => self.add_output(strip_ansi(&msg)),
@@ -127,437 +142,515 @@ impl TuiApp {
                     }
                 }
             }
-            // 检测压测结束
-            if self.benchmark_running {
-                let last_lines: Vec<String> = self.output_lines.iter().rev().take(5).cloned().collect();
-                let done = last_lines.iter().any(|l| l.contains("压测完成") || l.contains("BUILD EXIT") || l.contains("cleanup"));
-                if done { self.benchmark_running = false; }
-            }
-            // 清空日志通道（tracing 发来的日志）
             while let Ok(msg) = log_rx.try_recv() {
                 self.add_output(strip_ansi(&msg));
             }
-
-            // CLI 端已断开 → 退出 TUI
             if !self.running {
                 break;
             }
 
-            // 检查键盘输入（带超时，让位给通道检查）
-            if event::poll(Duration::from_millis(50))? {
+            if event::poll(Duration::from_millis(40))? {
                 match event::read()? {
-                    Event::Key(key) => {
-                        self.handle_key(key);
+                    Event::Key(key)
+                        if matches!(key.kind, KeyEventKind::Press | KeyEventKind::Repeat) =>
+                    {
+                        self.handle_key(key)
                     }
+                    Event::Paste(text) => self.insert_text(&sanitize_paste(&text)),
+                    Event::Mouse(mouse) => match mouse.kind {
+                        MouseEventKind::ScrollUp => self.scroll_up(3),
+                        MouseEventKind::ScrollDown => self.scroll_down(3),
+                        _ => {}
+                    },
                     Event::Resize(_, _) => {}
                     _ => {}
                 }
             }
 
-            // 检查运行状态
-            if !self.running {
-                break;
+            if self.running {
+                terminal.draw(|frame| self.render(frame))?;
             }
-
-            // 渲染
-            terminal.draw(|frame| self.render(frame))?;
         }
         Ok(())
     }
 
-    /// 添加一行输出
     fn add_output(&mut self, msg: String) {
-        for line in msg.lines() {
-            self.output_lines.push(line.to_string());
+        let lines: Vec<String> = if msg.is_empty() {
+            vec![String::new()]
+        } else {
+            msg.split_terminator('\n')
+                .map(|line| line.trim_end_matches('\r').to_string())
+                .collect()
+        };
+
+        if self.scroll_from_bottom > 0 {
+            let added_rows = lines
+                .iter()
+                .map(|line| wrap_display_line(line, self.last_wrap_width).len())
+                .sum::<usize>();
+            self.scroll_from_bottom = self.scroll_from_bottom.saturating_add(added_rows);
         }
-        // 限制缓冲区大小，防止内存无限增长
-        if self.output_lines.len() > 10000 {
-            self.output_lines.drain(0..self.output_lines.len() - 8000);
-        }
-        if self.auto_scroll {
-            self.scroll_offset = self.output_lines.len().saturating_sub(1);
+        self.output_lines.extend(lines);
+
+        if self.output_lines.len() > MAX_LOGICAL_LINES {
+            let remove = self.output_lines.len() - RETAIN_LOGICAL_LINES;
+            let removed_rows = self.output_lines[..remove]
+                .iter()
+                .map(|line| wrap_display_line(line, self.last_wrap_width).len())
+                .sum::<usize>();
+            self.output_lines.drain(..remove);
+            self.scroll_from_bottom = self.scroll_from_bottom.saturating_sub(removed_rows);
         }
     }
 
-    /// 处理键盘事件
-    fn handle_key(&mut self, key: crossterm::event::KeyEvent) {
-        if key.kind != KeyEventKind::Press { return; }
-        // 压测中只允许 Ctrl+C
-        if self.benchmark_running {
-            if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
-                let _ = self.cmd_tx.send("exit".to_string());
-                self.add_output("> exit".to_string());
-                self.benchmark_running = false;
-                self.running = false;
-            }
-            return;
-        }
-
+    fn handle_key(&mut self, key: KeyEvent) {
+        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         match key.code {
-            KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                // Ctrl+C: 发送 exit 命令，退出 TUI
+            KeyCode::Char('c') if ctrl => {
                 let _ = self.cmd_tx.send("exit".to_string());
                 self.add_output("> exit".to_string());
                 self.add_output("  ⟳ 正在关闭服务器...".to_string());
                 self.running = false;
             }
-            KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                // Ctrl+D: 强制退出（不发送 exit）
-                self.running = false;
-            }
-            KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                // Ctrl+U: 清除当前输入
+            KeyCode::Char('d') if ctrl => self.running = false,
+            KeyCode::Char('u') if ctrl => {
                 self.input.clear();
                 self.cursor_pos = 0;
             }
-            KeyCode::Char('l') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                // Ctrl+L: 清屏
+            KeyCode::Char('l') if ctrl => {
                 self.output_lines.clear();
-                self.scroll_offset = 0;
-                self.auto_scroll = true;
+                self.scroll_from_bottom = 0;
             }
-            // 输入 's' 时正常输入（不再吞首字）
-            // J/K：输入为空时滚动，否则正常输入
-            KeyCode::Char('j') if self.input.is_empty() => { self.scroll_down(); }
-            KeyCode::Char('k') if self.input.is_empty() => { self.scroll_up(); }
-            // Backspace（某些终端发送 Char(0x7f) 或 Char(0x08)）
-            KeyCode::Backspace
-            | KeyCode::Char('\x7f')
-            | KeyCode::Char('\x08') => {
-                if self.cursor_pos > 0 {
-                    let mut chars: Vec<char> = self.input.chars().collect();
-                    let pos = self.cursor_pos.saturating_sub(1).min(chars.len().saturating_sub(1));
-                    if pos < chars.len() {
-                        chars.remove(pos);
-                        self.input = chars.into_iter().collect();
-                        self.cursor_pos = pos;
-                    }
-                }
+            KeyCode::Char('w') if ctrl => self.delete_previous_word(),
+            // GNU screen commonly translates Backspace into Ctrl+H.
+            KeyCode::Char('h') if ctrl => self.backspace(),
+            KeyCode::Backspace | KeyCode::Char('\x08') | KeyCode::Char('\x7f') => {
+                self.backspace()
             }
-            KeyCode::Char(c) => {
-                let mut chars: Vec<char> = self.input.chars().collect();
-                let pos = self.cursor_pos.min(chars.len());
-                chars.insert(pos, c);
-                self.input = chars.into_iter().collect();
-                self.cursor_pos = pos + 1;
+            KeyCode::Delete => self.delete_forward(),
+            KeyCode::Enter => self.submit(),
+            KeyCode::Up if key.modifiers.contains(KeyModifiers::SHIFT) => self.scroll_up(1),
+            KeyCode::Down if key.modifiers.contains(KeyModifiers::SHIFT) => self.scroll_down(1),
+            KeyCode::PageUp => self.scroll_up(self.last_page_height.max(1)),
+            KeyCode::PageDown => self.scroll_down(self.last_page_height.max(1)),
+            KeyCode::Up => self.history_previous(),
+            KeyCode::Down => self.history_next(),
+            KeyCode::Left => self.cursor_pos = self.cursor_pos.saturating_sub(1),
+            KeyCode::Right => {
+                self.cursor_pos = (self.cursor_pos + 1).min(self.input.chars().count())
             }
-            KeyCode::Delete => {
-                let mut chars: Vec<char> = self.input.chars().collect();
-                let pos = self.cursor_pos.min(chars.len().saturating_sub(1));
-                if pos < chars.len() {
-                    chars.remove(pos);
-                    self.input = chars.into_iter().collect();
-                }
-            }
-            KeyCode::Enter => {
-                let cmd = self.input.trim().to_string();
-                if !cmd.is_empty() {
-                    self.history.push(cmd.clone());
-                    self.history_idx = None;
-                    self.auto_scroll = true;
-                    self.add_output(format!("> {}", cmd));
-                    let is_bench = cmd.starts_with("benchmark") || cmd == "bench";
-                    let _ = self.cmd_tx.send(cmd);
-                    if is_bench {
-                        self.benchmark_running = true;
-                    }
-                }
+            KeyCode::Home => self.cursor_pos = 0,
+            KeyCode::End => self.cursor_pos = self.input.chars().count(),
+            KeyCode::Esc => {
                 self.input.clear();
                 self.cursor_pos = 0;
+                self.history_idx = None;
             }
-            // Shift+↑↓：滚动输出（需在普通↑↓之前匹配）
-            KeyCode::Up if key.modifiers.contains(KeyModifiers::SHIFT) => { self.scroll_up(); }
-            KeyCode::Down if key.modifiers.contains(KeyModifiers::SHIFT) => { self.scroll_down(); }
-            // ↑↓：命令历史
-            KeyCode::Up => {
-                if self.history.is_empty() { return; }
-                let idx = self.history_idx.get_or_insert(self.history.len());
-                if *idx > 0 { *idx -= 1; self.input = self.history[*idx].clone(); self.cursor_pos = self.input.chars().count(); }
-            }
-            KeyCode::Down => {
-                if let Some(idx) = &mut self.history_idx {
-                    if *idx + 1 < self.history.len() { *idx += 1; self.input = self.history[*idx].clone(); }
-                    else { self.history_idx = None; self.input.clear(); }
-                    self.cursor_pos = self.input.chars().count();
-                }
-            }
-            KeyCode::Left => {
-                if self.cursor_pos > 0 {
-                    self.cursor_pos -= 1;
-                }
-            }
-            KeyCode::Right => {
-                if self.cursor_pos < self.input.chars().count() {
-                    self.cursor_pos += 1;
-                }
-            }
-            KeyCode::Home => {
-                self.cursor_pos = 0;
-            }
-            KeyCode::End => {
-                self.cursor_pos = self.input.chars().count();
-            }
-            KeyCode::PageUp => {
-                let page_lines = 20.max(1);
-                self.scroll_offset = self.scroll_offset.saturating_sub(page_lines);
-                self.auto_scroll = false;
-            }
-            KeyCode::PageDown => {
-                let max_scroll = self.output_lines.len().saturating_sub(1);
-                self.scroll_offset = self
-                    .scroll_offset
-                    .saturating_add(20)
-                    .min(max_scroll);
-                if self.scroll_offset >= max_scroll {
-                    self.auto_scroll = true;
-                }
-            }
+            KeyCode::Char(ch) if !ctrl => self.insert_char(ch),
             _ => {}
         }
     }
 
-    /// 向上滚动（含加速）
-    fn scroll_up(&mut self) {
-        let now = std::time::Instant::now();
-        if now.duration_since(self.scroll_last_time).as_millis() < 200 {
-            self.scroll_repeat += 1;
-        } else {
-            self.scroll_repeat = 0;
-        }
-        self.scroll_last_time = now;
-        let step = 1 + self.scroll_repeat.min(10); // 最多一次跳 11 行
-        if self.scroll_offset >= step {
-            self.scroll_offset -= step;
-        } else {
-            self.scroll_offset = 0;
-        }
-        self.auto_scroll = false;
+    fn insert_char(&mut self, ch: char) {
+        let byte = char_to_byte_index(&self.input, self.cursor_pos);
+        self.input.insert(byte, ch);
+        self.cursor_pos += 1;
+        self.history_idx = None;
     }
 
-    /// 向下滚动（含加速）
-    fn scroll_down(&mut self) {
-        let now = std::time::Instant::now();
-        if now.duration_since(self.scroll_last_time).as_millis() < 200 {
-            self.scroll_repeat += 1;
-        } else {
-            self.scroll_repeat = 0;
+    fn insert_text(&mut self, text: &str) {
+        if text.is_empty() {
+            return;
         }
-        self.scroll_last_time = now;
-        let step = 1 + self.scroll_repeat.min(10);
-        let max = self.output_lines.len().saturating_sub(1);
-        if self.scroll_offset + step <= max {
-            self.scroll_offset += step;
-        } else {
-            self.scroll_offset = max;
-            self.auto_scroll = true;
+        let byte = char_to_byte_index(&self.input, self.cursor_pos);
+        self.input.insert_str(byte, text);
+        self.cursor_pos += text.chars().count();
+        self.history_idx = None;
+    }
+
+    fn backspace(&mut self) {
+        if self.cursor_pos == 0 {
+            return;
+        }
+        let end = char_to_byte_index(&self.input, self.cursor_pos);
+        let start = char_to_byte_index(&self.input, self.cursor_pos - 1);
+        self.input.replace_range(start..end, "");
+        self.cursor_pos -= 1;
+        self.history_idx = None;
+    }
+
+    fn delete_forward(&mut self) {
+        let count = self.input.chars().count();
+        if self.cursor_pos >= count {
+            return;
+        }
+        let start = char_to_byte_index(&self.input, self.cursor_pos);
+        let end = char_to_byte_index(&self.input, self.cursor_pos + 1);
+        self.input.replace_range(start..end, "");
+        self.history_idx = None;
+    }
+
+    fn delete_previous_word(&mut self) {
+        let chars: Vec<char> = self.input.chars().collect();
+        let mut start = self.cursor_pos.min(chars.len());
+        while start > 0 && chars[start - 1].is_whitespace() {
+            start -= 1;
+        }
+        while start > 0 && !chars[start - 1].is_whitespace() {
+            start -= 1;
+        }
+        if start < self.cursor_pos {
+            let byte_start = char_to_byte_index(&self.input, start);
+            let byte_end = char_to_byte_index(&self.input, self.cursor_pos);
+            self.input.replace_range(byte_start..byte_end, "");
+            self.cursor_pos = start;
+            self.history_idx = None;
         }
     }
 
-    /// 渲染一帧 — 简洁 Claude Code 风格
-    fn render(&self, frame: &mut Frame) {
+    fn submit(&mut self) {
+        let cmd = self.input.trim().to_string();
+        if !cmd.is_empty() {
+            if self.history.last() != Some(&cmd) {
+                self.history.push(cmd.clone());
+            }
+            self.history_idx = None;
+            self.scroll_from_bottom = 0;
+            self.add_output(format!("> {cmd}"));
+            let _ = self.cmd_tx.send(cmd);
+        }
+        self.input.clear();
+        self.cursor_pos = 0;
+    }
+
+    fn history_previous(&mut self) {
+        if self.history.is_empty() {
+            return;
+        }
+        let idx = self.history_idx.unwrap_or(self.history.len());
+        let next = idx.saturating_sub(1);
+        self.history_idx = Some(next);
+        self.input = self.history[next].clone();
+        self.cursor_pos = self.input.chars().count();
+    }
+
+    fn history_next(&mut self) {
+        let Some(idx) = self.history_idx else { return };
+        if idx + 1 < self.history.len() {
+            let next = idx + 1;
+            self.history_idx = Some(next);
+            self.input = self.history[next].clone();
+        } else {
+            self.history_idx = None;
+            self.input.clear();
+        }
+        self.cursor_pos = self.input.chars().count();
+    }
+
+    fn scroll_up(&mut self, rows: usize) {
+        self.scroll_from_bottom = self.scroll_from_bottom.saturating_add(rows.max(1));
+    }
+
+    fn scroll_down(&mut self, rows: usize) {
+        self.scroll_from_bottom = self.scroll_from_bottom.saturating_sub(rows.max(1));
+    }
+
+    fn render(&mut self, frame: &mut Frame) {
         let area = frame.area();
-        if area.width < 20 || area.height < 5 { return; }
-
-        // 三个区域：输出(填充) + 输入行 + 状态栏
+        if area.width < 12 || area.height < 4 {
+            return;
+        }
         let chunks = Layout::default()
             .direction(Direction::Vertical)
-            .constraints([Constraint::Min(1), Constraint::Length(1), Constraint::Length(1)])
+            .constraints([
+                Constraint::Min(1),
+                Constraint::Length(1),
+                Constraint::Length(1),
+            ])
             .split(area);
 
-        let total_lines = self.output_lines.len();
-        let output_h = chunks[0].height.saturating_sub(1) as usize;
-        let output_w = chunks[0].width.saturating_sub(2) as usize; // 留出滚动指示器空间
+        let output_height = chunks[0].height as usize;
+        let output_width = chunks[0].width.saturating_sub(1).max(1) as usize;
+        self.last_wrap_width = output_width;
+        self.last_page_height = output_height;
 
-        let scroll = if self.auto_scroll || total_lines <= output_h {
-            total_lines.saturating_sub(output_h)
-        } else {
-            self.scroll_offset.min(total_lines.saturating_sub(1))
-        };
+        let visual_rows: Vec<String> = self
+            .output_lines
+            .iter()
+            .flat_map(|line| wrap_display_line(line, output_width))
+            .collect();
+        let max_start = visual_rows.len().saturating_sub(output_height);
+        self.scroll_from_bottom = self.scroll_from_bottom.min(max_start);
+        let start = max_start.saturating_sub(self.scroll_from_bottom);
+        let visible = visual_rows
+            .iter()
+            .skip(start)
+            .take(output_height)
+            .cloned()
+            .collect::<Vec<_>>()
+            .join("\n");
 
-        // ── 输出区域 — 纯文本，CJK 宽度感知 ──
-        let hide_progress = self.benchmark_running;
-        // 纯文本渲染，避开 ratatui Line/Span CJK 宽度计算 bug
-        let mut rendered = String::with_capacity(output_h * (output_w + 1));
-        for s in self.output_lines.iter().skip(scroll).take(output_h) {
-            if s.is_empty() { rendered.push('\n'); continue; }
-            let truncated = truncate_line(s, output_w);
-            rendered.push_str(&truncated);
-            rendered.push('\n');
-        }
         frame.render_widget(Clear, chunks[0]);
-        let para = Paragraph::new(Text::from(rendered));
-        frame.render_widget(para, chunks[0]);
+        frame.render_widget(Paragraph::new(visible), chunks[0]);
 
-        // 压测进度条（每次渲染步进，模拟进度）
-        if hide_progress {
-            use std::sync::atomic::{AtomicUsize, Ordering};
-            static PROGRESS: AtomicUsize = AtomicUsize::new(0);
-            let step = PROGRESS.fetch_add(1, Ordering::SeqCst) % 21;
-            let bar_w = output_w.min(40);
-            let pct = (step * 5).min(100);
-            let filled = (bar_w * pct / 100).min(bar_w);
-            let bar = format!("  ⟳ 压测中 [{}{}] {}%", "█".repeat(filled), "░".repeat(bar_w.saturating_sub(filled)), pct);
+        if self.scroll_from_bottom > 0 && output_height > 0 {
+            let max_offset = max_start.max(1);
+            let from_top = max_start.saturating_sub(self.scroll_from_bottom);
+            let y = chunks[0].y
+                + ((from_top * output_height.saturating_sub(1)) / max_offset) as u16;
             frame.render_widget(
-                Paragraph::new(Line::from(Span::styled(bar, Style::default().fg(Color::Cyan)))),
-                ratatui::layout::Rect::new(chunks[0].x + 1, chunks[0].y + chunks[0].height.saturating_sub(2), bar_w as u16 + 6, 1),
+                Paragraph::new(Span::styled("┃", Style::default().fg(Color::Cyan))),
+                ratatui::layout::Rect::new(
+                    chunks[0].x + chunks[0].width.saturating_sub(1),
+                    y,
+                    1,
+                    1,
+                ),
             );
         }
 
-        // ── 滚动指示器 ──
-        if !self.auto_scroll && total_lines > output_h && output_h > 1 {
-            let pct = scroll as f64 / (total_lines.saturating_sub(output_h)).max(1) as f64;
-            let max_y = chunks[0].y + chunks[0].height.saturating_sub(1);
-            let bar_y = (chunks[0].y as f64 + pct * (output_h as f64 - 1.0)).round() as u16;
-            if bar_y <= max_y {
-                frame.render_widget(
-                    Paragraph::new(Span::styled("┃", Style::default().fg(Color::Cyan))),
-                    ratatui::layout::Rect::new(chunks[0].x + chunks[0].width.saturating_sub(1), bar_y, 1, 1),
-                );
-            }
-        }
-
-        // ── 输入行（压测中禁用） ──
-        let input_prompt = if hide_progress {
-            Span::styled("⏳ ", Style::default().fg(Color::DarkGray))
-        } else if self.input.is_empty() {
+        let input_width = chunks[1].width.saturating_sub(2) as usize;
+        let (input_visible, cursor_col) = input_window(&self.input, self.cursor_pos, input_width);
+        let prompt = if self.input.is_empty() {
             Span::styled("→ ", Style::default().fg(Color::DarkGray))
         } else {
             Span::styled("→ ", Style::default().fg(Color::Cyan))
         };
-        let input_content = if hide_progress {
-            Span::styled("压测执行中，请等待...", Style::default().fg(Color::DarkGray))
-        } else {
-            Span::raw(&self.input)
-        };
         frame.render_widget(
-            Paragraph::new(Line::from(vec![input_prompt, input_content])),
+            Paragraph::new(Line::from(vec![prompt, Span::raw(input_visible)])),
             chunks[1],
         );
-        // 光标（压测中隐藏）
-        if !hide_progress {
-            frame.set_cursor_position(Position::new(
-                chunks[1].x + 2 + self.cursor_pos.min(self.input.chars().count()) as u16,
-                chunks[1].y,
-            ));
-        }
+        frame.set_cursor_position(Position::new(
+            chunks[1].x + 2 + cursor_col.min(input_width) as u16,
+            chunks[1].y,
+        ));
 
-        // ── 状态栏 ──
-        let scroll_info = match total_lines {
-            0 => "".into(),
-            _ if self.auto_scroll => format!("{} 行", total_lines),
-            _ => format!("{:.0}%  ↑", scroll as f64 / (total_lines - 1).max(1) as f64 * 100.0),
+        let status = if self.scroll_from_bottom == 0 {
+            format!("  {} 行  Shift+↑↓/PgUp/PgDn滚动  Ctrl+C退出", visual_rows.len())
+        } else {
+            format!(
+                "  距底部 {} 行  Shift+↓/PgDn返回  Ctrl+C退出",
+                self.scroll_from_bottom
+            )
         };
-        let suffix = if hide_progress { "  ⟳ 压测中...  Ctrl+C强制退出" } else { "  ↑↓历史  S+↑↓滚动  Ctrl+C退出" };
-        let status_text = format!("  {scroll_info}{suffix}");
         frame.render_widget(
-            Paragraph::new(Line::from(Span::styled(status_text, Style::default().fg(Color::DarkGray)))),
+            Paragraph::new(Span::styled(status, Style::default().fg(Color::DarkGray))),
             chunks[2],
         );
     }
 }
 
-/// 按 CJK 显示宽度截断字符串，防止溢出换行打乱布局
-fn truncate_line(s: &str, max_width: usize) -> String {
-    if max_width < 3 { return s.chars().take(max_width).collect(); }
-    let w = UnicodeWidthStr::width(s);
-    if w <= max_width { return s.to_string(); }
-    let mut out = String::with_capacity(max_width);
-    let mut cur = 0usize;
-    for c in s.chars() {
-        let cw = UnicodeWidthStr::width(c.to_string().as_str());
-        if cur + cw > max_width.saturating_sub(2) {
-            out.push_str("…");
-            break;
-        }
-        out.push(c);
-        cur += cw;
-    }
-    out
+fn char_to_byte_index(value: &str, char_index: usize) -> usize {
+    value
+        .char_indices()
+        .nth(char_index)
+        .map(|(index, _)| index)
+        .unwrap_or(value.len())
 }
 
-/// 去除 ANSI 转义序列
-///
-/// 先将字符串解码为 char 数组（正确处理多字节 UTF-8），
-/// 再用索引遍历跳过转义序列。
+fn wrap_display_line(line: &str, max_width: usize) -> Vec<String> {
+    let max_width = max_width.max(1);
+    if line.is_empty() {
+        return vec![String::new()];
+    }
+    let mut rows = Vec::new();
+    let mut row = String::new();
+    let mut width = 0usize;
+    for ch in line.chars() {
+        if ch == '\t' {
+            let spaces = 4 - (width % 4);
+            for _ in 0..spaces {
+                if width == max_width {
+                    rows.push(std::mem::take(&mut row));
+                    width = 0;
+                }
+                row.push(' ');
+                width += 1;
+            }
+            continue;
+        }
+        let cell_width = UnicodeWidthChar::width(ch).unwrap_or(0);
+        if width > 0 && width + cell_width > max_width {
+            rows.push(std::mem::take(&mut row));
+            width = 0;
+        }
+        row.push(ch);
+        width += cell_width;
+        if width >= max_width {
+            rows.push(std::mem::take(&mut row));
+            width = 0;
+        }
+    }
+    if !row.is_empty() || rows.is_empty() {
+        rows.push(row);
+    }
+    rows
+}
+
+fn input_window(input: &str, cursor_pos: usize, max_width: usize) -> (String, usize) {
+    if max_width == 0 {
+        return (String::new(), 0);
+    }
+    let chars: Vec<char> = input.chars().collect();
+    let cursor = cursor_pos.min(chars.len());
+    let mut start = 0usize;
+    let mut cursor_width = chars[..cursor]
+        .iter()
+        .map(|ch| UnicodeWidthChar::width(*ch).unwrap_or(0))
+        .sum::<usize>();
+    while cursor_width >= max_width && start < cursor {
+        cursor_width = cursor_width.saturating_sub(
+            UnicodeWidthChar::width(chars[start]).unwrap_or(0),
+        );
+        start += 1;
+    }
+
+    let mut visible = String::new();
+    let mut width = 0usize;
+    for ch in chars.into_iter().skip(start) {
+        let cell_width = UnicodeWidthChar::width(ch).unwrap_or(0);
+        if width + cell_width > max_width {
+            break;
+        }
+        visible.push(ch);
+        width += cell_width;
+    }
+    (visible, cursor_width)
+}
+
+fn sanitize_paste(text: &str) -> String {
+    strip_ansi(text)
+        .replace('\r', " ").replace('\n', " ")
+        .chars()
+        .filter(|ch| !ch.is_control() || *ch == '\t')
+        .collect()
+}
+
+/// Remove CSI/OSC and common two-byte ANSI escape sequences.
 fn strip_ansi(s: &str) -> String {
     let chars: Vec<char> = s.chars().collect();
     let mut out = String::with_capacity(s.len());
     let mut i = 0;
     while i < chars.len() {
-        if chars[i] == '\x1b' {
-            i += 1; // 跳过 ESC
-            if i < chars.len() && chars[i] == '[' {
-                // CSI: ESC [ param* intermediate* final
-                // param: 0x30-0x3F, intermediate: 0x20-0x2F, final: 0x40-0x7E
+        if chars[i] != '\x1b' {
+            out.push(chars[i]);
+            i += 1;
+            continue;
+        }
+        i += 1;
+        match chars.get(i).copied() {
+            Some('[') => {
                 i += 1;
-                while i < chars.len() {
-                    let c = chars[i];
+                while let Some(ch) = chars.get(i).copied() {
                     i += 1;
-                    if c >= '\x40' && c <= '\x7E' {
-                        break; // final byte
+                    if ('\x40'..='\x7e').contains(&ch) {
+                        break;
                     }
                 }
-            } else if i < chars.len() && chars[i] == ']' {
-                // OSC: ESC ] ... ST (\x1b\\) 或 BEL (\x07)
+            }
+            Some(']') => {
                 i += 1;
                 while i < chars.len() {
                     if chars[i] == '\x07' {
                         i += 1;
                         break;
                     }
-                    if chars[i] == '\x1b' && i + 1 < chars.len() && chars[i + 1] == '\\' {
+                    if chars[i] == '\x1b' && chars.get(i + 1) == Some(&'\\') {
                         i += 2;
                         break;
                     }
                     i += 1;
                 }
-            } else if i < chars.len() && chars[i] >= '\x40' && chars[i] <= '\x5F' {
-                // 两字符 ESC 序列
-                i += 1;
             }
-            // 其他未知前缀：忽略 ESC 及其后的内容
-        } else {
-            out.push(chars[i]);
-            i += 1;
+            Some(ch) if ('\x40'..='\x5f').contains(&ch) => i += 1,
+            _ => {}
         }
     }
     out
 }
 
-/// 简单 stdin CLI（screen/tmux 等无 TUI 环境使用）
-pub fn run_stdin_cli(cmd_tx: tokio::sync::mpsc::UnboundedSender<String>, mut out_rx: tokio::sync::mpsc::UnboundedReceiver<String>) {
-    use std::io::Write;
-    // 启动输出读取线程
+/// Line-oriented fallback used when stdin/stdout are redirected or not TTYs.
+pub fn run_stdin_cli(
+    cmd_tx: mpsc::UnboundedSender<String>,
+    out_rx: mpsc::UnboundedReceiver<String>,
+) {
+    let (_log_tx, log_rx) = mpsc::unbounded_channel();
+    run_stdin_cli_with_logs(cmd_tx, out_rx, log_rx);
+}
+
+pub fn run_stdin_cli_with_logs(
+    cmd_tx: mpsc::UnboundedSender<String>,
+    mut out_rx: mpsc::UnboundedReceiver<String>,
+    mut log_rx: mpsc::UnboundedReceiver<String>,
+) {
     std::thread::spawn(move || {
         while let Some(line) = out_rx.blocking_recv() {
             println!("{line}");
         }
     });
-    let stdin = std::io::stdin();
+    std::thread::spawn(move || {
+        while let Some(line) = log_rx.blocking_recv() {
+            print!("{line}");
+            let _ = io::stdout().flush();
+        }
+    });
+
+    let stdin = io::stdin();
     let mut line_buf = String::new();
     loop {
         print!("> ");
-        let _ = std::io::stdout().flush();
+        let _ = io::stdout().flush();
         line_buf.clear();
         match stdin.read_line(&mut line_buf) {
-            Ok(0) => break, // EOF
-            Err(e) => {
-                // screen 下中文 IME 可能发送转义干扰 read_line，记录后跳过
-                eprintln!("\n[input error: {e}, type help for commands]");
+            Ok(0) => break,
+            Err(err) => {
+                eprintln!("\n[input error: {err}]");
                 continue;
             }
             Ok(_) => {
-                // 清理可能混入的 ANSI 转义（IME 有时会残留 ESC 序列）
-                let raw = strip_ansi(&line_buf);
-                let trimmed = raw.trim().to_string();
-                if trimmed.eq_ignore_ascii_case("exit") || trimmed.eq_ignore_ascii_case("quit") || trimmed == "q" {
-                    let _ = cmd_tx.send(trimmed);
-                    break;
+                let command = strip_ansi(&line_buf).trim().to_string();
+                if command.is_empty() {
+                    continue;
                 }
-                if !trimmed.is_empty() {
-                    let _ = cmd_tx.send(trimmed);
+                let exiting = matches!(command.as_str(), "exit" | "quit" | "q");
+                let _ = cmd_tx.send(command);
+                if exiting {
+                    break;
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn wraps_cjk_by_display_cells() {
+        assert_eq!(wrap_display_line("ab中文", 4), vec!["ab中", "文"]);
+    }
+
+    #[test]
+    fn input_window_keeps_cjk_cursor_visible() {
+        let (visible, cursor) = input_window("ab中文cd", 6, 5);
+        assert!(cursor < 5);
+        assert!(!visible.is_empty());
+    }
+
+    #[test]
+    fn strips_ansi_sequences() {
+        assert_eq!(strip_ansi("\x1b[31mred\x1b[0m"), "red");
+    }
+
+    #[test]
+    fn screen_ctrl_h_is_backspace_but_plain_h_is_text() {
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let mut app = TuiApp::new(tx);
+        app.insert_text("ah");
+        app.handle_key(KeyEvent::new(KeyCode::Char('h'), KeyModifiers::CONTROL));
+        assert_eq!(app.input, "a");
+        app.handle_key(KeyEvent::new(KeyCode::Char('h'), KeyModifiers::NONE));
+        assert_eq!(app.input, "ah");
     }
 }
