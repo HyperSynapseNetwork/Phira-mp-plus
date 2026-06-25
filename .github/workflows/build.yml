@@ -25,3 +25,10 @@ jobs:
 
       - name: Build
         run: cargo build --workspace --verbose
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: phira-mp-plus-server
+          path: target/debug/phira-mp-plus-server
+          if-no-files-found: error
