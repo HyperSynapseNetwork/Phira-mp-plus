@@ -596,6 +596,7 @@ async fn process(user: Arc<User>, cmd: ClientCommand) -> Option<ServerCommand> {
     // 向 room monitor 和 SSE 广播 RoomEvent
     macro_rules! send_room_event {
         ($event_type:ident $data:tt $(,)?) => {
+            eprintln!("PLUS_DEBUG: send_room_event! {}", stringify!($event_type));
             if let Some(p) = user.server.get_room_monitor().await {
                 p.try_send(ServerCommand::RoomEvent(
                     RoomEvent::$event_type $data
@@ -603,7 +604,9 @@ async fn process(user: Arc<User>, cmd: ClientCommand) -> Option<ServerCommand> {
                 .await;
             }
             // 同时广播到 SSE（web-monitor /rooms/listen）
+            eprintln!("PLUS_DEBUG: room_sse_tx.read().await = {:?}", &*user.server.room_sse_tx.read().await);
             if let Some(tx) = &*user.server.room_sse_tx.read().await {
+                eprintln!("PLUS_DEBUG: sending to SSE channel");
                 let _ = tx.send(stringify!($event_type).to_string());
             }
         };
