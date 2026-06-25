@@ -18,8 +18,8 @@ jobs:
           submodules: true
           
       - name: Setup System
-        run: sudo apt-get update -y && sudo apt-get install -y musl-tools build-essential
-        
+        run: sudo apt-get update -y && sudo apt-get install -y musl-tools build-essential pkg-config libssl-dev
+
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
@@ -27,7 +27,7 @@ jobs:
         uses: Swatinem/rust-cache@v2
 
       - name: Build
-        run: rustup target add x86_64-unknown-linux-musl && cargo build --release --target x86_64-unknown-linux-musl
+        run: rustup target add x86_64-unknown-linux-musl && cargo build --release --target x86_64-unknown-linux-musl --package phira-mp-plus-server
 
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
