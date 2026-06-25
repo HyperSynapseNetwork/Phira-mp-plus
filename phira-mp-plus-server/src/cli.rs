@@ -374,6 +374,11 @@ impl CliHandler {
                         self.room_history(args[0]).await;
                     }
                 }
+                "user-rooms" | "ur" => {
+                    if args.is_empty() { self.out(format!("  {} user-rooms <用户ID>", c::yellow("?"))); }
+                    else if let Ok(uid) = args[0].parse() { self.user_room_history(uid).await; }
+                    else { self.out(format!("  {} 无效的用户ID", c::red("✗"))); }
+                }
                 _ => {
                     // 尝试插件命令
                     if !self.try_plugin_command(command, &args).await {
@@ -1070,6 +1075,23 @@ impl CliHandler {
             }
         }
         self.out(format!("  ✗ 未找到轮次 {round_uuid}"));
+    }
+
+    /// 查询用户访问过的所有房间
+    async fn user_room_history(&self, uid: i32) {
+        let history = self.state.user_room_history.read().await;
+        let entries = history.get(&uid).cloned().unwrap_or_default();
+        if entries.is_empty() {
+            self.out(format!("  · 用户 {uid} 没有房间访问记录"));
+            return;
+        }
+        self.out(format!("  ◆ 用户 {uid} 访问过的房间 ({})", entries.len()));
+        for (room_id, room_uuid, ts) in &entries {
+            let t = chrono::DateTime::from_timestamp_millis(*ts)
+                .map(|t| t.format("%m-%d %H:%M").to_string())
+                .unwrap_or_else(|| ts.to_string());
+            self.out(format!("  │ {}  {t}  uuid:{room_uuid}", c::bold(room_id)));
+        }
     }
 
     /// 广播给所有用户

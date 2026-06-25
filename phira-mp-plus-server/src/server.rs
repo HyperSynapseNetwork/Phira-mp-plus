@@ -188,6 +188,8 @@ pub struct PlusServerState {
     pub connection_limiter: super::rate_limiter::ConnectionRateLimiter,
     /// 轮次数据持久化存储（Touches/Judges 按轮次写入磁盘）
     pub round_store: Arc<super::round_store::RoundStore>,
+    /// 用户房间访问历史: user_id → (room_id, room_uuid, join_timestamp_ms)
+    pub user_room_history: SafeMap<i32, Vec<(String, String, i64)>>,
     /// 压测请求发送端（背景 tokio 任务消费）
     pub bench_tx: tokio::sync::mpsc::UnboundedSender<BenchRequest>,
     /// 房间 monitor key（与 phira-web-monitor 共享密钥）
@@ -258,6 +260,7 @@ impl PlusServer {
                 "data",
                 retention_days,
             )),
+            user_room_history: SafeMap::default(),
             bench_tx: bench_tx.clone(),
             room_monitor_key: generate_secret_key("room_monitor", 64).unwrap_or_default(),
             room_monitor: RwLock::new(None),
@@ -514,7 +517,7 @@ impl PlusServerState {
         use std::time::Instant;
         let started_at = Instant::now();
         let mut out = String::new();
-        macro_rules! o { ($($t:tt)*) => { let ln = format!($($t)*); eprintln!("{ln}"); out.push_str(&ln); out.push('\n'); } }
+        macro_rules! o { ($($t:tt)*) => { out.push_str(&format!($($t)*)); out.push('\n'); } }
 
         eprintln!("  ⟳ 压测: {target_rooms} 房间 / {duration_secs}s");
 
@@ -1078,6 +1081,22 @@ fn server_state_query_inner(state: &Arc<PlusServerState>, method: &str, args: &[
             });
             rx.recv_timeout(std::time::Duration::from_secs(5))
                 .unwrap_or(Err("admin.list_users timeout".to_string()))
+        }
+        "user.room_history" => {
+            let uid = args.get(0).and_then(|v| v.as_i64()).unwrap_or(0) as i32;
+            if uid <= 0 { return Err("invalid user_id".to_string()); }
+            let (tx, rx) = std::sync::mpsc::channel();
+            let s = Arc::clone(state);
+            tokio::spawn(async move {
+                let history = s.user_room_history.read().await;
+                let entries = history.get(&uid).cloned().unwrap_or_default();
+                let list: Vec<Value> = entries.iter().map(|(room_id, room_uuid, ts)| {
+                    serde_json::json!({"room_id": room_id, "room_uuid": room_uuid, "joined_at": ts})
+                }).collect();
+                let _ = tx.send(Ok(serde_json::json!({"rooms": list, "total": list.len()})));
+            });
+            rx.recv_timeout(std::time::Duration::from_secs(5))
+                .unwrap_or(Err("user.room_history timeout".to_string()))
         }
         _ => {
             // webapi feature 下的扩展查询

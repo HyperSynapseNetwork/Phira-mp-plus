@@ -864,6 +864,17 @@ impl WasmPluginInstance {
                     None => Err("state query not available".to_string()),
                 }
             }
+            // ── 用户房间历史 ──
+            ("user", "room_history") => {
+                let args_val: serde_json::Value = serde_json::from_str(args)
+                    .map_err(|e| format!("invalid args: {}", e))?;
+                let uid = args_val.get("user_id").and_then(|v| v.as_i64()).ok_or("missing user_id")? as i32;
+                let guard = svc.state_query.read().map_err(|e| format!("lock error: {}", e))?;
+                match guard.as_ref() {
+                    Some(sq) => sq.call("user.room_history", &[serde_json::json!(uid)]).map(|v| v.to_string()),
+                    None => Err("state query not available".to_string()),
+                }
+            }
             // ── 插件互调用（WASM 插件 API） ──
             ("plugin", "api_call") => {
                 let args_val: serde_json::Value = serde_json::from_str(args)
