@@ -8,7 +8,7 @@ use crate::server::PlusServerState;
 use crate::tl;
 use anyhow::{Result, anyhow, bail};
 use phira_mp_common::{
-    ClientCommand, JoinRoomResponse, Message, ServerCommand, Stream,
+    ClientCommand, JoinRoomResponse, Message, RoomEvent, ServerCommand, Stream,
     UserInfo,
 };
 
@@ -590,6 +590,17 @@ async fn process(user: Arc<User>, cmd: ClientCommand) -> Option<ServerCommand> {
                 .ok_or_else(|| anyhow!("{}", tl!("no-room")))?;
             if !matches!(&*$d.state.read().await, $($pt)*) {
                 bail!("{}", tl!("invalid-state"));
+            }
+        };
+    }
+    // 向 room monitor 广播 RoomEvent
+    macro_rules! send_room_event {
+        ($event_type:ident $data:tt $(,)?) => {
+            if let Some(p) = user.server.get_room_monitor().await {
+                p.try_send(ServerCommand::RoomEvent(
+                    RoomEvent::$event_type $data
+                ))
+                .await;
             }
         };
     }
