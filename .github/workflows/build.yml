@@ -33,5 +33,5 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: phira-mp-plus-server
-          path: target/release/x86_64-unknown-linux-musl/phira-mp-plus-server
+          path: target/x86_64-unknown-linux-musl/release/phira-mp-plus-server
           if-no-files-found: error
