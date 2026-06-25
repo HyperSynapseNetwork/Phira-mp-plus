@@ -24,11 +24,11 @@ jobs:
         uses: Swatinem/rust-cache@v2
 
       - name: Build
-        run: rustup target add x86_64-unknown-linux-musl && cargo build --workspace --verbose
+        run: rustup target add x86_64-unknown-linux-musl && cargo build --release --target x86_64-unknown-linux-musl
 
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
         with:
           name: phira-mp-plus-server
-          path: target/debug/phira-mp-plus-server
+          path: target/release/x86_64-unknown-linux-musl/phira-mp-plus-server
           if-no-files-found: error
