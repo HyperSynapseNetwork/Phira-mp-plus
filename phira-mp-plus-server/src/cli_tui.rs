@@ -216,11 +216,10 @@ impl TuiApp {
                 self.scroll_offset = 0;
                 self.auto_scroll = true;
             }
-            // 非 S/方向键时清除滚动标记
-            KeyCode::Char(c) if self.scroll_key_pressed && c != 's' && c != 'S' => { self.scroll_key_pressed = false; }
-            // S 键标记（仅在有输出可滚动时激活），长按持续有效
-            KeyCode::Char('s') if self.output_lines.len() > 10 => { self.scroll_key_pressed = true; }
-            KeyCode::Char('S') if self.output_lines.len() > 10 => { self.scroll_key_pressed = true; }
+            // 输入 's' 时正常输入（不再吞首字）
+            // J/K：滚动输出（不吞字）
+            KeyCode::Char('j') => { self.scroll_down(); }
+            KeyCode::Char('k') => { self.scroll_up(); }
             // Backspace（某些终端发送 Char(0x7f) 或 Char(0x08)）
             KeyCode::Backspace
             | KeyCode::Char('\x7f')
@@ -266,21 +265,22 @@ impl TuiApp {
                 self.input.clear();
                 self.cursor_pos = 0;
             }
-            // ↑↓：S 键按下时滚动，否则命令历史
+            // Shift+↑：上滚 / ↑：命令历史
             KeyCode::Up => {
-                if self.scroll_key_pressed { self.scroll_up(); return; }
                 if self.history.is_empty() { return; }
                 let idx = self.history_idx.get_or_insert(self.history.len());
                 if *idx > 0 { *idx -= 1; self.input = self.history[*idx].clone(); self.cursor_pos = self.input.chars().count(); }
             }
             KeyCode::Down => {
-                if self.scroll_key_pressed { self.scroll_down(); return; }
                 if let Some(idx) = &mut self.history_idx {
                     if *idx + 1 < self.history.len() { *idx += 1; self.input = self.history[*idx].clone(); }
                     else { self.history_idx = None; self.input.clear(); }
                     self.cursor_pos = self.input.chars().count();
                 }
             }
+            // Shift+↑↓ / PageUp/Down：滚动输出
+            KeyCode::Up if key.modifiers.contains(KeyModifiers::SHIFT) => { self.scroll_up(); }
+            KeyCode::Down if key.modifiers.contains(KeyModifiers::SHIFT) => { self.scroll_down(); }
             KeyCode::Left => {
                 if self.cursor_pos > 0 {
                     self.cursor_pos -= 1;
