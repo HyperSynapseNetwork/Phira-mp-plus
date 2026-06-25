@@ -14,7 +14,7 @@ use std::{
     ops::Deref,
     sync::{
         Arc, Weak,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
     },
 };
 use tokio::sync::RwLock;
@@ -123,7 +123,7 @@ pub struct Room {
     pub current_round_id: RwLock<Option<uuid::Uuid>>,
 
     /// 房间最大玩家数（来自服务器配置或默认值）
-    pub max_users: usize,
+    pub max_users: AtomicUsize,
 
     /// 各玩家实时触控/判定数据缓存（供插件 WASM WIT API 查询）
     pub player_data: RwLock<HashMap<i32, PlayerLiveData>>,
@@ -163,7 +163,7 @@ impl Room {
             play_history: RwLock::new(Vec::new()),
             current_round_id: RwLock::new(None),
             plugin_manager,
-            max_users,
+            max_users: AtomicUsize::new(max_users),
             player_data: RwLock::new(HashMap::new()),
             round_store,
             created_at: now,
@@ -187,6 +187,16 @@ impl Room {
     /// 获取房主用户 ID
     pub async fn host_id(&self) -> Option<i32> {
         self.host.read().await.upgrade().map(|u| u.id)
+    }
+
+    /// 获取房间最大玩家数
+    pub fn max_users_count(&self) -> usize {
+        self.max_users.load(Ordering::Relaxed)
+    }
+
+    /// 设置房间最大玩家数
+    pub fn set_max_users(&self, n: usize) {
+        self.max_users.store(n, Ordering::Relaxed);
     }
 
     /// 获取当前谱面 ID
@@ -312,7 +322,7 @@ impl Room {
         } else {
             let mut guard = self.users.write().await;
             guard.retain(|it| it.strong_count() > 0);
-            if guard.len() >= self.max_users {
+            if guard.len() >= self.max_users.load(Ordering::Relaxed) {
                 false
             } else {
                 guard.push(user);

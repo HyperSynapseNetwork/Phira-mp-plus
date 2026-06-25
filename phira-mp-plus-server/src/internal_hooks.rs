@@ -90,10 +90,28 @@ pub fn send_welcome(user_id: i32, user_name: &str, online: usize, state: &PlusSe
             }).unwrap_or(0);
             text = text.replace("[playtime]", &format!("{:.1}h", secs as f64 / 3600.0));
         }
-        // [active_rooms]
+        // [active_rooms] → 活跃房间详情
         if text.contains("[active_rooms]") {
-            let rooms = state.rooms.try_read().map(|r| r.len()).unwrap_or(0);
-            text = text.replace("[active_rooms]", &format!("{} 个房间", rooms));
+            let rooms_guard = state.rooms.try_read();
+            let room_list: Vec<String> = match rooms_guard {
+                Ok(ref rooms) if !rooms.is_empty() => {
+                    rooms.iter().take(10).map(|(id, room)| {
+                        let host_name = room.host.try_read().ok()
+                            .and_then(|h| h.upgrade()).map(|u| u.name.clone()).unwrap_or_default();
+                        let players = room.users.try_read().ok().map(|u| u.len()).unwrap_or(0);
+                        let max = room.max_users_count();
+                        let chart = room.chart.try_read().ok()
+                            .and_then(|c| c.as_ref().map(|c| c.name.clone())).unwrap_or_default();
+                        let state_str = if room.locked.load(std::sync::atomic::Ordering::SeqCst) { " [锁定]" } else { "" };
+                        format!("{}{} ({}) [{}/{}]{}",
+                            id, state_str, host_name, players, max,
+                            if chart.is_empty() { String::new() } else { format!(" - {}", chart) }
+                        )
+                    }).collect()
+                }
+                _ => vec!["暂无房间".into()],
+            };
+            text = text.replace("[active_rooms]", &room_list.join(" | "));
         }
         // [top_playtime] → 游玩时间排行榜（取前 10）
         if text.contains("[top_playtime]") {

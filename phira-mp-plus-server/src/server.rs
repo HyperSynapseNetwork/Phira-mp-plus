@@ -583,7 +583,7 @@ impl PlusServerState {
                 let weak = Arc::downgrade(&test_user);
                 let mut uguard = sync_write!(room.users);
                 uguard.retain(|it| it.strong_count() > 0);
-                if uguard.len() < room.max_users { uguard.push(weak); }
+                if uguard.len() < room.max_users_count() { uguard.push(weak); }
                 joined += 1;
             }
         }
