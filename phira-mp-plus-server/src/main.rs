@@ -322,10 +322,8 @@ async fn main() -> Result<()> {
         warn!("failed to persist extension data: {e}");
     }
 
-    // 等待 TUI 线程结束（在 blocking 线程中执行，避免阻塞 async 运行时）
-    if let Some(handle) = tui_handle {
-        let _ = tokio::task::spawn_blocking(move || handle.join()).await;
-    }
+    // TUI 线程已随主线程退出
+    drop(tui_handle);
 
     info!("Server shut down.");
     Ok(())
