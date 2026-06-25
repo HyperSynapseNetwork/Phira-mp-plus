@@ -265,7 +265,10 @@ impl TuiApp {
                 self.input.clear();
                 self.cursor_pos = 0;
             }
-            // Shift+↑：上滚 / ↑：命令历史
+            // Shift+↑↓：滚动输出（需在普通↑↓之前匹配）
+            KeyCode::Up if key.modifiers.contains(KeyModifiers::SHIFT) => { self.scroll_up(); }
+            KeyCode::Down if key.modifiers.contains(KeyModifiers::SHIFT) => { self.scroll_down(); }
+            // ↑↓：命令历史
             KeyCode::Up => {
                 if self.history.is_empty() { return; }
                 let idx = self.history_idx.get_or_insert(self.history.len());
@@ -278,9 +281,6 @@ impl TuiApp {
                     self.cursor_pos = self.input.chars().count();
                 }
             }
-            // Shift+↑↓ / PageUp/Down：滚动输出
-            KeyCode::Up if key.modifiers.contains(KeyModifiers::SHIFT) => { self.scroll_up(); }
-            KeyCode::Down if key.modifiers.contains(KeyModifiers::SHIFT) => { self.scroll_down(); }
             KeyCode::Left => {
                 if self.cursor_pos > 0 {
                     self.cursor_pos -= 1;

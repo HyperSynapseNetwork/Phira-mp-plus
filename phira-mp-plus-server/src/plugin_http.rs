@@ -99,6 +99,8 @@ pub struct PluginHttpServer {
     ws_live_tx: broadcast::Sender<Vec<u8>>,
     /// 房间 SSE 事件（web-monitor 用）
     room_sse_tx: broadcast::Sender<SseEvent>,
+    /// 来自 session.rs 的 RoomEvent 字符串广播
+    server_sse_tx: Option<tokio::sync::broadcast::Sender<String>>,
     port: u16,
 }
 
@@ -112,6 +114,7 @@ impl PluginHttpServer {
             sse_tx,
             ws_live_tx,
             room_sse_tx,
+            server_sse_tx: None,
             port,
         }
     }
@@ -169,15 +172,16 @@ impl PluginHttpServer {
         let room_sse_tx = self.room_sse_tx.clone();
         // 共享 SSE 发送器给 server state（供 session.rs 广播 RoomEvent）
         let (sse_str_tx, _) = tokio::sync::broadcast::channel::<String>(256);
+        let sse_str_tx_for_spawn = sse_str_tx.clone();
         *server.room_sse_tx.write().await = Some(sse_str_tx.clone());
         // 转发 SseEvent → String SSE
         let mut rx = room_sse_tx.subscribe();
         tokio::spawn(async move {
             while let Ok(ev) = rx.recv().await {
-                let _ = sse_str_tx.send(serde_json::json!({"type": ev.event_type, "data": ev.data}).to_string());
+                let _ = sse_str_tx_for_spawn.send(serde_json::json!({"type": ev.event_type, "data": ev.data}).to_string());
             }
         });
-        let state = Arc::new(HttpAppState { router, sse_tx, ws_live_tx, room_sse_tx });
+        let state = Arc::new(HttpAppState { router, sse_tx, ws_live_tx, room_sse_tx, server_sse_tx: Some(sse_str_tx) });
 
         let app = Router::new()
             // 通用 SSE 端点
@@ -258,6 +262,8 @@ struct HttpAppState {
     sse_tx: broadcast::Sender<SseEvent>,
     ws_live_tx: broadcast::Sender<Vec<u8>>,
     room_sse_tx: broadcast::Sender<SseEvent>,
+    /// 来自 session.rs 的 RoomEvent 字符串广播
+    server_sse_tx: Option<tokio::sync::broadcast::Sender<String>>,
 }
 
 // ── 通用 SSE 端点 ──
@@ -276,11 +282,27 @@ async fn sse_handler(
 async fn room_sse_handler(
     axum::extract::State(st): axum::extract::State<Arc<HttpAppState>>,
 ) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
-    let rx = st.room_sse_tx.subscribe();
-    let stream = BroadcastStream::new(rx).filter_map(|result| match result {
+    //
+    // 合并两个流：SseEvent 流 + String 流（来自 session.rs RoomEvent）
+    let rx1 = st.room_sse_tx.subscribe();
+    use futures::stream::StreamExt as _;
+    let event_stream = tokio_stream::StreamExt::filter_map(BroadcastStream::new(rx1), |result| match result {
         Ok(ev) => Some(Ok(Event::default().event(ev.event_type).data(ev.data))),
         Err(_) => None,
     });
+    // 附加 String 流（来自 session.rs RoomEvent）
+    let room_stream = match st.server_sse_tx.as_ref() {
+        Some(tx) => {
+            let rx2 = tx.subscribe();
+            let s = tokio_stream::StreamExt::filter_map(BroadcastStream::new(rx2), |result| match result {
+                Ok(data) => Some(Ok(Event::default().event("room_event").data(data))),
+                Err(_) => None,
+            });
+            s.boxed()
+        }
+        None => futures::stream::empty().boxed(),
+    };
+    let stream = event_stream.merge(room_stream);
     Sse::new(stream).keep_alive(KeepAlive::default())
 }
 
