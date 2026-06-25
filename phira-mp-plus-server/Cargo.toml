@@ -24,6 +24,7 @@ tracing-appender = "0.2.4"
 tracing-subscriber = { version = "0.3.22", features = ["env-filter"] }
 unic-langid = { version = "0.9.6", features = ["macros"] }
 unicode-width = { workspace = true }
+sqlx = { version = "0.8", features = ["runtime-tokio", "postgres", "chrono"], optional = true }
 uuid = { workspace = true, features = ["v4"] }
 wasmtime = { version = "30", features = ["component-model"], optional = true }
 
@@ -41,3 +42,4 @@ phira-mp-plus-server-api = { path = "../phira-mp-plus-server-api" }
 [features]
 default = ["plugin-system"]
 plugin-system = ["dep:wasmtime"]
+postgres = ["dep:sqlx"]
