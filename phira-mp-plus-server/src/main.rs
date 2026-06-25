@@ -141,13 +141,20 @@ fn init_log(file: &str, log_tx: Option<mpsc::UnboundedSender<String>>) -> Result
         .add_directive("reqwest=info".parse().unwrap())
         .add_directive("wasmtime=info".parse().unwrap());
 
-    // stdout 层
+    // stdout 层（TUI 模式时用 sink 避免日志污染界面）
+    struct StdoutWriter(bool);
+    impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for StdoutWriter {
+        type Writer = Box<dyn io::Write + Send + Sync>;
+        fn make_writer(&'a self) -> Self::Writer {
+            if self.0 { Box::new(io::sink()) } else { Box::new(io::stdout()) }
+        }
+    }
     let stdout_layer = fmt::layer()
-        .with_writer(io::stdout)
+        .with_writer(StdoutWriter(log_tx.is_some()))
         .with_ansi(false)
         .with_filter(filter.clone());
 
-    // TUI 通道层（有通道时发到通道，否则也写 stdout）
+    // TUI 通道层（有通道时发到通道，否则也不写 stdout — 由 stdout_layer 处理）
     let tui_layer = fmt::layer()
         .with_writer(OutputWriterMaker(log_tx))
         .with_ansi(false)
