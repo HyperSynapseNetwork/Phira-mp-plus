@@ -36,19 +36,21 @@
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 rustup update stable
 
+# 添加 musl 目标平台并安装链接器（Ubuntu/Debian）
+rustup target add x86_64-unknown-linux-musl
+sudo apt update && sudo apt install -y musl-tools
+
 # 克隆仓库后进入目录
 cd phira-mp-plus
 
-# 构建（所有功能默认开启，首次编译约需 2-5 分钟）
-cargo build
+# 构建静态链接二进制文件（首次编译约需 5-10 分钟）
+cargo build --release --target x86_64-unknown-linux-musl
 
-# 使用默认配置启动（debug 模式）
-./target/debug/phira-mp-plus-server
+# 使用默认配置启动
+./target/x86_64-unknown-linux-musl/release/phira-mp-plus-server
 
 # 指定自定义配置文件启动
-./target/debug/phira-mp-plus-server --config my_config.yml
-
-# release 模式对应路径为 ./target/release/phira-mp-plus-server
+./target/x86_64-unknown-linux-musl/release/phira-mp-plus-server --config my_config.yml
 ```
 
 ### 自定义配置
