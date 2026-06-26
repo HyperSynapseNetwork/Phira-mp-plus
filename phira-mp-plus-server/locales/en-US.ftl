@@ -22,6 +22,7 @@ repeated-authenticate = Repeated authentication request
 auth-invalid-token = Invalid authentication token
 auth-server-unreachable = Authentication server unreachable, please try again later
 auth-banned = You have been banned from this server. Reason: { $reason }
+auth-banned-default-reason = Violation of server rules
 auth-cache-hit = Authentication cache hit for user { $user_id }
 reconnect = Reconnecting...
 no-room = Not in a room

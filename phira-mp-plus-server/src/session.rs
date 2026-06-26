@@ -27,6 +27,8 @@ use tracing::{debug, debug_span, error, info, trace, warn, Instrument};
 use uuid::Uuid;
 
 const HEARTBEAT_DISCONNECT_TIMEOUT: Duration = Duration::from_secs(600);
+const AUTH_FAILURE_RESPONSE_DELAY: Duration = Duration::from_millis(50);
+const MAX_CLIENT_BAN_REASON_CHARS: usize = 160;
 
 #[derive(Debug, Deserialize)]
 struct AuthUserInfo {
@@ -50,6 +52,27 @@ async fn authenticate_remote(server: &PlusServerState, token: &str) -> Result<Au
         .json::<AuthUserInfo>()
         .await
         .map_err(Into::into)
+}
+
+fn ban_rejection_message(language: &str, reason: &str) -> String {
+    let language = language.parse::<Language>().unwrap_or_default();
+    let mut reason = reason.split_whitespace().collect::<Vec<_>>().join(" ");
+
+    if reason.is_empty() || reason == "你的账号已被封禁" {
+        reason = crate::l10n::try_translate(&language.0, "auth-banned-default-reason");
+    }
+
+    if reason.chars().count() > MAX_CLIENT_BAN_REASON_CHARS {
+        reason = reason
+            .chars()
+            .take(MAX_CLIENT_BAN_REASON_CHARS.saturating_sub(1))
+            .collect::<String>();
+        reason.push('…');
+    }
+
+    let mut args = fluent::FluentArgs::new();
+    args.set("reason", reason);
+    crate::l10n::try_translate_with_args(&language.0, "auth-banned", args)
 }
 
 pub struct User {
@@ -318,10 +341,9 @@ impl Session {
                                         };
                                         let user_info = if let Some(entry) = user_info {
                                             // 封禁检查（拒绝前不走 API，毫秒级响应）
-                                            if server.ban_manager.is_banned(entry.user_id).await {
-                                                let reason = server.ban_manager.get_ban_reason(entry.user_id).await;
+                                            if let Some(reason) = server.ban_manager.ban_reason(entry.user_id).await {
                                                 warn!("banned user {}({}) tried to connect (cache)", entry.name, entry.user_id);
-                                                bail!("{}", reason);
+                                                bail!("{}", ban_rejection_message(&entry.language, &reason));
                                             }
                                             debug!("cache hit for user {}", entry.user_id);
                                             AuthUserInfo {
@@ -360,10 +382,9 @@ impl Session {
                                                         },
                                                     ).await;
                                                     // 封禁检查
-                                                    if server.ban_manager.is_banned(info.id).await {
-                                                        let reason = server.ban_manager.get_ban_reason(info.id).await;
+                                                    if let Some(reason) = server.ban_manager.ban_reason(info.id).await {
                                                         warn!("banned user {}({}) tried to connect", info.name, info.id);
-                                                        bail!("{}", reason);
+                                                        bail!("{}", ban_rejection_message(&info.language, &reason));
                                                     }
                                                     info
                                                 }
@@ -448,6 +469,7 @@ impl Session {
                                 .await;
                                 if let Err(err) = res {
                                     warn!("failed to authenticate: {err:?}");
+                                    time::sleep(AUTH_FAILURE_RESPONSE_DELAY).await;
                                     let _ = send_tx
                                         .send(ServerCommand::Authenticate(Err(err.to_string())))
                                         .await;

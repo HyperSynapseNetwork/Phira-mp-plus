@@ -22,6 +22,7 @@ repeated-authenticate = 重复的认证请求
 auth-invalid-token = 无效的认证令牌
 auth-server-unreachable = 认证服务器不可达，请稍后重试
 auth-banned = 你已被此服务器封禁。原因：{ $reason }
+auth-banned-default-reason = 违反服务器规则
 auth-cache-hit = 认证缓存命中，用户 { $user_id }
 reconnect = 重新连接中...
 no-room = 不在房间中

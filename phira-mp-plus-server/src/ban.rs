@@ -1,112 +1,110 @@
-//! Phira-mp+ 黑名单管理系统
-//!
-//! 提供全局玩家封禁和房间黑名单。封禁原因直接作为客户端拒绝提示。
-//! 数据存储在 ExtensionManager 中，作为额外用户/房间信息的一部分。
-
-use crate::extensions::ExtensionManager;
+use crate::extensions::{ExtensionDataStore, ExtensionManager};
 use serde::Serialize;
 use std::sync::Arc;
-use tracing::info;
+use tracing::{info, warn};
 
-/// 封禁条目
+const BAN_STATUS_KEY: &str = "ban-status";
+const BAN_REASON_KEY: &str = "ban-reason";
+const BANNED_STATUS: &str = "banned";
+const DEFAULT_BAN_REASON: &str = "违反服务器规则";
+
 #[derive(Debug, Clone, Serialize)]
 pub struct BanEntry {
     pub user_id: i32,
     pub reason: String,
 }
 
-/// 黑名单管理器
 pub struct BanManager {
     extensions: Arc<ExtensionManager>,
 }
 
 impl BanManager {
-    /// 创建黑名单管理器
     pub fn new(extensions: Arc<ExtensionManager>) -> Self {
         Self { extensions }
     }
 
-    /// 注册扩展字段（启动时调用）
     pub async fn register_fields(&self) {
         let _ = self
             .extensions
-            .register_user_field("ban-status", "", "mp", "封禁状态: banned 或空")
+            .register_user_field(BAN_STATUS_KEY, "", "mp", "封禁状态: banned 或空")
             .await;
         let _ = self
             .extensions
-            .register_user_field("ban-reason", "", "mp", "封禁原因")
+            .register_user_field(BAN_REASON_KEY, "", "mp", "封禁原因")
             .await;
         let _ = self
             .extensions
             .register_room_field("blacklist", "[]", "mp", "房间黑名单用户ID列表 (JSON)")
             .await;
+
+        self.repair_legacy_reasons().await;
         info!("blacklist manager initialized");
     }
 
-    // ── 全局封禁 ──
-
-    /// 封禁用户
-    pub async fn ban_user(&self, user_id: i32, reason: &str) -> Result<(), String> {
-        self.extensions
-            .set_user_extra(user_id, "ban-status", "banned".to_string())
-            .await?;
-        self.extensions
-            .set_user_extra(user_id, "ban-reason", reason.to_string())
-            .await?;
-        let _ = self.extensions.persist().await;
+    pub async fn ban_user(&self, user_id: i32, reason: &str) -> Result<String, String> {
+        let reason = normalize_reason(reason);
+        {
+            let mut store = self.extensions.store().write().await;
+            set_ban_record(&mut store, user_id, BANNED_STATUS, &reason)?;
+        }
+        self.extensions.persist().await?;
         info!(user = user_id, reason = %reason, "user banned");
-        Ok(())
+        Ok(reason)
     }
 
-    /// 解封用户
     pub async fn unban_user(&self, user_id: i32) -> Result<(), String> {
-        self.extensions
-            .set_user_extra(user_id, "ban-status", String::new())
-            .await?;
-        self.extensions
-            .set_user_extra(user_id, "ban-reason", String::new())
-            .await?;
-        let _ = self.extensions.persist().await;
+        {
+            let mut store = self.extensions.store().write().await;
+            set_ban_record(&mut store, user_id, "", "")?;
+        }
+        self.extensions.persist().await?;
         info!(user = user_id, "user unbanned");
         Ok(())
     }
 
-    /// 检查用户是否被封禁
+    pub async fn ban_reason(&self, user_id: i32) -> Option<String> {
+        let store = self.extensions.store().read().await;
+        let data = store.user_data.get(&user_id)?;
+        if data.get(BAN_STATUS_KEY).map(String::as_str) != Some(BANNED_STATUS) {
+            return None;
+        }
+        Some(normalize_reason(
+            data.get(BAN_REASON_KEY).map(String::as_str).unwrap_or_default(),
+        ))
+    }
+
     pub async fn is_banned(&self, user_id: i32) -> bool {
-        self.extensions
-            .get_user_extra(user_id, "ban-status")
-            .await
-            .as_deref()
-            == Some("banned")
+        self.ban_reason(user_id).await.is_some()
     }
 
-    /// 获取封禁原因（作为拒绝提示）
     pub async fn get_ban_reason(&self, user_id: i32) -> String {
-        self.extensions
-            .get_user_extra(user_id, "ban-reason")
+        self.ban_reason(user_id)
             .await
-            .filter(|r| !r.is_empty())
-            .unwrap_or_else(|| "你的账号已被封禁".to_string())
+            .unwrap_or_else(|| DEFAULT_BAN_REASON.to_string())
     }
 
-    /// 列出所有被封禁的用户
     pub async fn list_banned(&self) -> Vec<BanEntry> {
         let store = self.extensions.store().read().await;
-        let mut result = Vec::new();
-        for (&uid, data) in &store.user_data {
-            if data.get("ban-status").map(|s| s.as_str()) == Some("banned") {
-                result.push(BanEntry {
-                    user_id: uid,
-                    reason: data.get("ban-reason").cloned().unwrap_or_default(),
-                });
-            }
-        }
+        let mut result = store
+            .user_data
+            .iter()
+            .filter_map(|(&user_id, data)| {
+                (data.get(BAN_STATUS_KEY).map(String::as_str) == Some(BANNED_STATUS)).then(|| {
+                    BanEntry {
+                        user_id,
+                        reason: normalize_reason(
+                            data.get(BAN_REASON_KEY)
+                                .map(String::as_str)
+                                .unwrap_or_default(),
+                        ),
+                    }
+                })
+            })
+            .collect::<Vec<_>>();
+        result.sort_unstable_by_key(|entry| entry.user_id);
         result
     }
 
-    // ── 房间黑名单 ──
-
-    /// 将用户加入房间黑名单
     pub async fn room_ban_user(&self, room_id: &str, user_id: i32) -> Result<(), String> {
         let mut list = self.get_room_ban_list_raw(room_id).await;
         if list.contains(&user_id) {
@@ -118,11 +116,10 @@ impl BanManager {
         self.extensions
             .set_room_extra(room_id, "blacklist", json)
             .await?;
-        let _ = self.extensions.persist().await;
+        self.extensions.persist().await?;
         Ok(())
     }
 
-    /// 将用户移出房间黑名单
     pub async fn room_unban_user(&self, room_id: &str, user_id: i32) -> Result<(), String> {
         let mut list = self.get_room_ban_list_raw(room_id).await;
         let before = list.len();
@@ -135,18 +132,16 @@ impl BanManager {
         self.extensions
             .set_room_extra(room_id, "blacklist", json)
             .await?;
-        let _ = self.extensions.persist().await;
+        self.extensions.persist().await?;
         Ok(())
     }
 
-    /// 检查用户是否在房间黑名单中
     pub async fn is_room_banned(&self, room_id: &str, user_id: i32) -> bool {
         self.get_room_ban_list_raw(room_id)
             .await
             .contains(&user_id)
     }
 
-    /// 获取房间黑名单列表
     pub async fn list_room_bans(&self, room_id: &str) -> Vec<i32> {
         self.get_room_ban_list_raw(room_id).await
     }
@@ -157,5 +152,98 @@ impl BanManager {
             .await
             .and_then(|json| serde_json::from_str(&json).ok())
             .unwrap_or_default()
+    }
+
+    async fn repair_legacy_reasons(&self) {
+        let repaired = {
+            let mut store = self.extensions.store().write().await;
+            let mut repaired = 0usize;
+            for data in store.user_data.values_mut() {
+                if data.get(BAN_STATUS_KEY).map(String::as_str) != Some(BANNED_STATUS) {
+                    continue;
+                }
+                let reason = normalize_reason(
+                    data.get(BAN_REASON_KEY)
+                        .map(String::as_str)
+                        .unwrap_or_default(),
+                );
+                if data.get(BAN_REASON_KEY).map(String::as_str) != Some(reason.as_str()) {
+                    data.insert(BAN_REASON_KEY.to_string(), reason);
+                    repaired += 1;
+                }
+            }
+            repaired
+        };
+
+        if repaired > 0 {
+            if let Err(err) = self.extensions.persist().await {
+                warn!(repaired, %err, "failed to persist repaired ban reasons");
+            } else {
+                info!(repaired, "repaired legacy ban reasons");
+            }
+        }
+    }
+}
+
+fn set_ban_record(
+    store: &mut ExtensionDataStore,
+    user_id: i32,
+    status: &str,
+    reason: &str,
+) -> Result<(), String> {
+    for key in [BAN_STATUS_KEY, BAN_REASON_KEY] {
+        if !store.fields.contains_key(key) {
+            return Err(format!("field '{}' is not registered", key));
+        }
+    }
+
+    let data = store.user_data.entry(user_id).or_default();
+    data.insert(BAN_REASON_KEY.to_string(), reason.to_string());
+    data.insert(BAN_STATUS_KEY.to_string(), status.to_string());
+    Ok(())
+}
+
+fn normalize_reason(reason: &str) -> String {
+    let mut normalized = String::with_capacity(reason.len());
+    let mut pending_space = false;
+
+    for ch in reason.trim().chars() {
+        if ch.is_control() {
+            pending_space = true;
+            continue;
+        }
+        if pending_space
+            && !normalized.is_empty()
+            && !normalized
+                .chars()
+                .last()
+                .is_some_and(char::is_whitespace)
+        {
+            normalized.push(' ');
+        }
+        pending_space = false;
+        normalized.push(ch);
+    }
+
+    let normalized = normalized.trim();
+    if normalized.is_empty() {
+        DEFAULT_BAN_REASON.to_string()
+    } else {
+        normalized.to_string()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{normalize_reason, DEFAULT_BAN_REASON};
+
+    #[test]
+    fn normalizes_empty_reason() {
+        assert_eq!(normalize_reason(" \t\n "), DEFAULT_BAN_REASON);
+    }
+
+    #[test]
+    fn strips_control_characters_without_hiding_text() {
+        assert_eq!(normalize_reason("  spam\nlinks\u{7}  "), "spam links");
     }
 }

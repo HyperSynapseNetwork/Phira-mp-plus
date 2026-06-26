@@ -56,9 +56,9 @@ WASM 插件通过 JSON 字符串与宿主通信：
 | `room.set_lock` | `{ room_id, locked }` | `{"ok": true}` | 锁定/解锁房间 |
 | `room.close` | `{ room_id }` | `{"ok": true}` | 解散房间 |
 | `admin.kick_user` | `{ user_id, reason }` | `{"ok": true}` | 从服务器踢出用户 |
-| `admin.ban_user` | `{ user_id, reason }` | `{"ok": true}` | 封禁用户 |
+| `admin.ban_user` | `{ user_id, reason }` | `{"ok": true, "reason": string}` | 封禁用户，返回规范化后的原因 |
 | `admin.unban_user` | `{ user_id }` | `{"ok": true}` | 解封用户 |
-| `admin.is_banned` | `{ user_id }` | `{"banned": bool}` | 检查封禁状态 |
+| `admin.is_banned` | `{ user_id }` | `{"banned": bool, "reason": string?}` | 检查封禁状态及原因 |
 | `admin.ban_list` | `{}` | 封禁列表 | 获取所有封禁 |
 | `admin.list_users` | `{}` | 用户列表 | 列出所有在线用户 |
 | `plugin.api_call` | `{ plugin, method, args }` | 调用结果 | 调用其他插件注册的 API |

@@ -1227,7 +1227,12 @@ impl CliHandler {
             }
         };
         match self.state.ban_manager.ban_user(uid, reason).await {
-            Ok(_) => self.out(format!("  {} 用户 {} 已封禁\n    {}", c::green("✓"), uid, c::yellow(reason))),
+            Ok(reason) => self.out(format!(
+                "  {} 用户 {} 已封禁\n    理由：{}",
+                c::green("✓"),
+                uid,
+                c::yellow(&reason),
+            )),
             Err(e) => self.out(format!("  {} {}", c::red("✗"), e)),
         }
     }

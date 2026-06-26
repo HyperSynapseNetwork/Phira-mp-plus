@@ -1102,8 +1102,11 @@ fn server_state_query_inner(state: &Arc<PlusServerState>, method: &str, args: &[
             let (tx, rx) = std::sync::mpsc::channel();
             let s = Arc::clone(state);
             tokio::spawn(async move {
-                let result = s.ban_manager.ban_user(uid, &reason).await
-                    .map(|_| serde_json::json!({"ok": true}));
+                let result = s
+                    .ban_manager
+                    .ban_user(uid, &reason)
+                    .await
+                    .map(|reason| serde_json::json!({"ok": true, "reason": reason}));
                 let _ = tx.send(result);
             });
             rx.recv_timeout(std::time::Duration::from_secs(5))
@@ -1128,8 +1131,11 @@ fn server_state_query_inner(state: &Arc<PlusServerState>, method: &str, args: &[
             let (tx, rx) = std::sync::mpsc::channel();
             let s = Arc::clone(state);
             tokio::spawn(async move {
-                let banned = s.ban_manager.is_banned(uid).await;
-                let _ = tx.send(Ok(serde_json::json!({"banned": banned})));
+                let reason = s.ban_manager.ban_reason(uid).await;
+                let _ = tx.send(Ok(serde_json::json!({
+                    "banned": reason.is_some(),
+                    "reason": reason,
+                })));
             });
             rx.recv_timeout(std::time::Duration::from_secs(5))
                 .unwrap_or(Err("admin.is_banned timeout".to_string()))
