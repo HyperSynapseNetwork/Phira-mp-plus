@@ -14,6 +14,54 @@ pub enum ConsoleMode {
     Tui(TuiCapabilities),
 }
 
+#[cfg(unix)]
+pub struct EraseKeyGuard {
+    fd: std::os::fd::RawFd,
+    original: libc::termios,
+}
+
+#[cfg(unix)]
+impl EraseKeyGuard {
+    pub fn ctrl_h() -> io::Result<Self> {
+        use std::mem::MaybeUninit;
+        use std::os::fd::AsRawFd;
+
+        let fd = io::stdin().as_raw_fd();
+        let mut attributes = MaybeUninit::<libc::termios>::uninit();
+        if unsafe { libc::tcgetattr(fd, attributes.as_mut_ptr()) } != 0 {
+            return Err(io::Error::last_os_error());
+        }
+
+        let original = unsafe { attributes.assume_init() };
+        let mut updated = original;
+        updated.c_cc[libc::VERASE] = b'\x08' as libc::cc_t;
+        if unsafe { libc::tcsetattr(fd, libc::TCSANOW, &updated) } != 0 {
+            return Err(io::Error::last_os_error());
+        }
+
+        Ok(Self { fd, original })
+    }
+}
+
+#[cfg(unix)]
+impl Drop for EraseKeyGuard {
+    fn drop(&mut self) {
+        unsafe {
+            libc::tcsetattr(self.fd, libc::TCSANOW, &self.original);
+        }
+    }
+}
+
+#[cfg(not(unix))]
+pub struct EraseKeyGuard;
+
+#[cfg(not(unix))]
+impl EraseKeyGuard {
+    pub fn ctrl_h() -> io::Result<Self> {
+        Ok(Self)
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TerminalProfile {
     tui: bool,

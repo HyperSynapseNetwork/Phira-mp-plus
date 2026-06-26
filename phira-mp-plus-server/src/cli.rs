@@ -704,12 +704,25 @@ impl CliHandler {
             };
 
             if let Some(user) = user_to_kick {
-                // 向房间内其他用户发送通知
                 room.send(phira_mp_common::Message::Chat {
                     user: 0,
                     content: format!("用户 {} 已被管理员踢出房间", user.name),
                 }).await;
-                let _ = room.on_user_leave(&user).await;
+
+                let was_monitor = user.monitor.load(std::sync::atomic::Ordering::SeqCst);
+                let should_drop = room.on_user_leave(&user).await;
+                if should_drop {
+                    self.state.rooms.write().await.remove(&room.id);
+                }
+                if !was_monitor {
+                    self.state
+                        .publish_room_event(phira_mp_common::RoomEvent::LeaveRoom {
+                            room: room.id.clone(),
+                            user: target,
+                        })
+                        .await;
+                }
+
                 info!(user = target, room = room_id, "kicked from room by admin");
                 self.state.plugin_manager
                     .trigger(&PluginEvent::RoomModify {

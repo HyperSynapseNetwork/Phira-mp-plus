@@ -2022,6 +2022,7 @@ dependencies = [
  "crossterm",
  "fluent",
  "futures",
+ "libc",
  "once_cell",
  "phira-mp-common",
  "phira-mp-macros",

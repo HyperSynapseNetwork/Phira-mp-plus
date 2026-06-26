@@ -1,6 +1,6 @@
 //! Interactive administrative console.
 
-use crate::terminal::{sanitize_paste, strip_ansi, TuiCapabilities};
+use crate::terminal::{sanitize_paste, strip_ansi, EraseKeyGuard, TuiCapabilities};
 use crossterm::{
     cursor::{Hide, Show},
     event::{
@@ -539,14 +539,20 @@ pub fn run_stdin_cli(
     out_rx: mpsc::UnboundedReceiver<String>,
 ) {
     let (_log_tx, log_rx) = mpsc::unbounded_channel();
-    run_stdin_cli_with_logs(cmd_tx, out_rx, log_rx);
+    run_stdin_cli_with_logs(cmd_tx, out_rx, log_rx, false);
 }
 
 pub fn run_stdin_cli_with_logs(
     cmd_tx: mpsc::UnboundedSender<String>,
     mut out_rx: mpsc::UnboundedReceiver<String>,
     mut log_rx: mpsc::UnboundedReceiver<String>,
+    ctrl_h_backspace: bool,
 ) {
+    let _erase_key_guard = if ctrl_h_backspace {
+        EraseKeyGuard::ctrl_h().ok()
+    } else {
+        None
+    };
     std::thread::spawn(move || {
         while let Some(line) = out_rx.blocking_recv() {
             println!("{}", strip_ansi(&line));
@@ -572,7 +578,7 @@ pub fn run_stdin_cli_with_logs(
                 continue;
             }
             Ok(_) => {
-                let command = strip_ansi(&line_buf).trim().to_string();
+                let command = normalize_line_input(&strip_ansi(&line_buf)).trim().to_string();
                 if command.is_empty() {
                     continue;
                 }
@@ -584,6 +590,19 @@ pub fn run_stdin_cli_with_logs(
             }
         }
     }
+}
+
+fn normalize_line_input(input: &str) -> String {
+    let mut normalized = String::with_capacity(input.len());
+    for ch in input.chars() {
+        match ch {
+            '\x08' | '\x7f' => {
+                normalized.pop();
+            }
+            _ => normalized.push(ch),
+        }
+    }
+    normalized
 }
 
 #[cfg(test)]
@@ -611,5 +630,11 @@ mod tests {
         assert_eq!(app.input, "a");
         app.handle_key(KeyEvent::new(KeyCode::Char('h'), KeyModifiers::NONE));
         assert_eq!(app.input, "ah");
+    }
+
+    #[test]
+    fn line_console_applies_ctrl_h_and_delete_as_backspace() {
+        assert_eq!(normalize_line_input("roomx\x08 list\n"), "room list\n");
+        assert_eq!(normalize_line_input("helpx\x7f\n"), "help\n");
     }
 }

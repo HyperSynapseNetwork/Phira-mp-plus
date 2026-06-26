@@ -8,9 +8,13 @@
 
 ```json
 {
-  "welcome_messages": [
-    "欢迎 [user_name] 来到 Phira-mp+！当前在线 [player-count] 人",
-    "[user_name] 来了！在线 [players] 人"
+  "messages": [
+    "欢迎 [user_name] 来到 HSN Phira-mp+！当前在线 [player-count] 人.可以前往 https://phira.htadiy.com/ 使用更多相关功能哦。也欢迎加入我们的QQ交流群1049578201！",
+    "您在本服务器上游玩了[playtime]",
+    "--------------------------------------------------",
+    "游玩时间排行榜：[top_playtime]",
+    "--------------------------------------------------",
+    "活跃房间：[active_rooms]"
   ],
   "show_time": true,
   "time_format": "%Y-%m-%d %H:%M"
@@ -43,9 +47,13 @@
 welcome-config
   ◆ 欢迎语配置
   │ 配置文件: data/welcome-config.json
-  │ 消息数量: 2
-  │ [0] 欢迎 [user_name] 来到 Phira-mp+！当前在线 [player-count] 人
-  │ [1] [user_name] 来了！在线 [players] 人
+  │ 消息数量: 6
+  │ [0] 欢迎 [user_name] 来到 HSN Phira-mp+！当前在线 [player-count] 人...
+  │ [1] 您在本服务器上游玩了[playtime]
+  │ [2] --------------------------------------------------
+  │ [3] 游玩时间排行榜：[top_playtime]
+  │ [4] --------------------------------------------------
+  │ [5] 活跃房间：[active_rooms]
   │ 显示时间: true
   │ 时间格式: %Y-%m-%d %H:%M
 

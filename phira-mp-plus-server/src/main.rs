@@ -113,7 +113,8 @@ async fn main() -> Result<()> {
     let console_handle = match (cmd_tx, out_rx, log_rx) {
         (Some(cmd_tx), Some(out_rx), Some(log_rx)) => {
             let mode = terminal.console_mode();
-            if terminal.is_screen() {
+            let screen_compat = terminal.is_screen();
+            if screen_compat {
                 info!("GNU Screen detected; using the line-oriented compatibility console");
             }
             Some(std::thread::spawn(move || match mode {
@@ -129,7 +130,10 @@ async fn main() -> Result<()> {
                 }
                 ConsoleMode::Line => {
                     phira_mp_plus_server::cli_tui::run_stdin_cli_with_logs(
-                        cmd_tx, out_rx, log_rx,
+                        cmd_tx,
+                        out_rx,
+                        log_rx,
+                        screen_compat,
                     );
                 }
             }))
