@@ -1127,10 +1127,14 @@ async fn process(user: Arc<User>, category: SessionCategory, cmd: ClientCommand)
             let res: Result<()> = async move {
                 get_room!(room, crate::room::InternalRoomState::SelectChart);
                 room.check_host(&user).await?;
+                if room.admin_start_pending() {
+                    bail!("administrative start is already in progress");
+                }
                 if room.chart.read().await.is_none() {
                     bail!(tl!("start-no-chart-selected"));
                 }
                 debug!(room = room.id.to_string(), "room wait for ready");
+                room.finish_admin_start().await;
                 room.reset_game_time().await;
                 room.send(Message::GameStart { user: user.id }).await;
                 *room.state.write().await = crate::room::InternalRoomState::WaitForReady {
@@ -1180,6 +1184,7 @@ async fn process(user: Arc<User>, category: SessionCategory, cmd: ClientCommand)
                         room.send(Message::CancelGame { user: user.id }).await;
                         *guard = crate::room::InternalRoomState::SelectChart;
                         drop(guard);
+                        room.finish_admin_start().await;
                         room.on_state_change().await;
                     } else {
                         room.send(Message::CancelReady { user: user.id }).await;

@@ -880,44 +880,25 @@ impl CliHandler {
         }
     }
 
-    /// 强制开始游戏（管理员操作）
+    /// 由管理员发起游戏，等待所有客户端完成谱面加载后再开始。
     async fn room_start(&self, room_id: &str) {
         let room = match self.find_room(room_id).await {
             Some(r) => r,
             None => { self.out(format!("  {} 未找到房间 {}", c::red("✗"), room_id)); return; }
         };
-        // 检查状态
-        {
-            let guard = room.state.read().await;
-            match &*guard {
-                crate::room::InternalRoomState::Playing { .. } => {
-                    self.out(format!("  {} 游戏已在进行中", c::yellow("!")));
-                    return;
-                }
-                _ => {}
-            }
-        }
-        // 检查谱面
-        if room.chart.read().await.is_none() {
-            self.out(format!("  {} 尚未选择谱面", c::yellow("!")));
+        if let Err(err) = room.begin_admin_start().await {
+            self.out(format!("  {} 无法开始游戏: {}", c::red("✗"), err));
             return;
         }
-        // 将所有用户标记为已准备
-        let users = room.users().await;
-        let user_ids: std::collections::HashSet<i32> = users.iter().map(|u| u.id).collect();
-        room.reset_game_time().await;
-        room.send(phira_mp_common::Message::GameStart { user: 0 }).await;
-        *room.state.write().await = crate::room::InternalRoomState::WaitForReady {
-            started: user_ids,
-        };
-        room.on_state_change().await;
-        room.check_all_ready().await;
         if let Some(pm) = &room.plugin_manager {
             pm.trigger(&PluginEvent::GameStart {
                 user_id: 0, room_id: room_id.to_string(),
             }).await;
         }
-        self.out(format!("  {} 游戏已开始", c::green("✓")));
+        self.out(format!(
+            "  {} 已发起游戏，正在等待玩家和监控端加载谱面",
+            c::green("✓")
+        ));
     }
 
     /// 取消准备状态（管理员操作）
@@ -937,6 +918,7 @@ impl CliHandler {
             }
         };
         if canceled {
+            room.finish_admin_start().await;
             room.on_state_change().await;
             self.out(format!("  {} 已取消准备状态", c::green("✓")));
         } else {
@@ -1005,11 +987,23 @@ impl CliHandler {
                 self.out(format!("  {} 房间 {} 已{}轮换", c::green("✓"), room_id, if v { "开启" } else { "关闭" }));
             }
             "chart-id" | "chart" => {
+                if !matches!(
+                    *room.state.read().await,
+                    crate::room::InternalRoomState::SelectChart
+                ) {
+                    self.out(format!("  {} 只能在选曲阶段更换谱面", c::yellow("!")));
+                    return;
+                }
                 let cid: i32 = match value.parse() {
                     Ok(id) => id,
                     Err(_) => { self.out(format!("  {} 无效的谱面ID", c::red("✗"))); return; }
                 };
-                let chart = match reqwest::get(format!("https://phira.5wyxi.com/chart/{cid}")).await {
+                let chart = match reqwest::get(format!(
+                    "{}/chart/{cid}",
+                    &self.state.config.phira_api_endpoint
+                ))
+                .await
+                {
                     Ok(resp) => match resp.error_for_status() {
                         Ok(resp) => resp.json::<crate::server::Chart>().await.ok(),
                         Err(_) => None,
@@ -1025,6 +1019,9 @@ impl CliHandler {
                     id: chart.id,
                 }).await;
                 room.chart.write().await.replace(chart);
+                // The client derives its active chart id from ChangeState, not from the
+                // human-readable SelectChart message. Keep both protocol paths in sync.
+                room.on_state_change().await;
                 room.publish_update(phira_mp_common::PartialRoomData {
                     chart: Some(cid),
                     ..Default::default()

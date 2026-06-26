@@ -145,6 +145,7 @@ pub struct Room {
     pub live: AtomicBool,
     pub locked: AtomicBool,
     pub cycle: AtomicBool,
+    admin_start_pending: AtomicBool,
 
     pub users: RwLock<Vec<Weak<super::session::User>>>,
     pub monitors: RwLock<Vec<Weak<super::session::User>>>,
@@ -189,6 +190,7 @@ impl Room {
             live: AtomicBool::new(false),
             locked: AtomicBool::new(false),
             cycle: AtomicBool::new(false),
+            admin_start_pending: AtomicBool::new(false),
 
             users: vec![host].into(),
             monitors: Vec::new().into(),
@@ -391,6 +393,77 @@ impl Room {
             bail!("only host can do this");
         }
         Ok(())
+    }
+
+    pub fn admin_start_pending(&self) -> bool {
+        self.admin_start_pending.load(Ordering::SeqCst)
+    }
+
+    /// Start a round from the administrative console without bypassing client loading.
+    ///
+    /// The official client assumes that the room host has already downloaded the chart
+    /// when it receives `WaitingForReady`. An administrative start has no such client-side
+    /// preparation step, so the host is temporarily presented as a regular player until it
+    /// reports `Ready`. The real server-side host never changes.
+    pub async fn begin_admin_start(&self) -> Result<()> {
+        if self
+            .admin_start_pending
+            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+            .is_err()
+        {
+            bail!("administrative start is already in progress");
+        }
+
+        let result: Result<()> = async {
+            if !matches!(*self.state.read().await, InternalRoomState::SelectChart) {
+                bail!("room is not selecting a chart");
+            }
+            if self.chart.read().await.is_none() {
+                bail!("no chart selected");
+            }
+
+            // Message::SelectChart is informational in the official client. It learns the
+            // active chart id from SelectChart(Some(id)) in ChangeState.
+            self.on_state_change().await;
+
+            let host = self
+                .host
+                .read()
+                .await
+                .upgrade()
+                .ok_or_else(|| anyhow::anyhow!("room host disconnected"))?;
+            host.try_send(ServerCommand::ChangeHost(false)).await;
+
+            self.reset_game_time().await;
+            self.send(Message::GameStart { user: 0 }).await;
+            self.send(Message::Chat {
+                user: 0,
+                content: "服务器已发起游戏，请加载谱面并点击准备".to_string(),
+            })
+            .await;
+            *self.state.write().await = InternalRoomState::WaitForReady {
+                started: HashSet::new(),
+            };
+            self.on_state_change().await;
+            self.check_all_ready().await;
+            Ok(())
+        }
+        .await;
+
+        if result.is_err() {
+            self.admin_start_pending.store(false, Ordering::SeqCst);
+        }
+        result
+    }
+
+    /// Restore the client's host flag after an administrative start completes or is cancelled.
+    pub async fn finish_admin_start(&self) {
+        if !self.admin_start_pending.swap(false, Ordering::SeqCst) {
+            return;
+        }
+        if let Some(host) = self.host.read().await.upgrade() {
+            host.try_send(ServerCommand::ChangeHost(true)).await;
+        }
     }
 
     pub async fn transfer_host(&self, new_host_id: i32) -> Result<()> {
@@ -606,6 +679,7 @@ impl Room {
                     .all(|it| started.contains(&it.id))
                 {
                     drop(guard);
+                    self.finish_admin_start().await;
                     let round_id = uuid::Uuid::new_v4();
                     *self.current_round_id.write().await = Some(round_id);
                     info!(room = self.id.to_string(), round = %round_id, "game start");

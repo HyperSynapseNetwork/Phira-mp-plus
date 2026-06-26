@@ -66,7 +66,7 @@ broadcast user <用户ID> <消息>    发送给指定用户
 |------|------|
 | `rooms` / `room list` | 列出活跃房间 |
 | `room info <房间ID>` | 房间详情（状态、房主、谱面、历史） |
-| `room start <房间ID>` | 强制开始游戏 |
+| `room start <房间ID>` | 由服务端发起游戏；等待所有玩家和监控端完成谱面加载后开始 |
 | `room cancel <房间ID>` | 取消准备状态 |
 | `room kick <房间ID> <用户ID>` | 从房间踢出用户 |
 | `room transfer <房间ID> <用户ID>` | 转移房主 |
@@ -76,6 +76,8 @@ broadcast user <用户ID> <消息>    发送给指定用户
 | `room ban <房间ID> <用户ID>` | 房间加入黑名单 |
 | `room unban <房间ID> <用户ID>` | 房间移出黑名单 |
 | `room banlist <房间ID>` | 房间黑名单列表 |
+
+> 服务端选谱后会同步完整房间状态。`room start` 不再跳过客户端的下载与准备阶段，避免客户端在本地尚无谱面时直接进入游玩。
 
 兼容旧别名：`rooms`, `room-info` / `ri`, `room-start` / `rs`, `room-cancel` / `rc`,
 `room-transfer` / `rt`, `room-history` / `rh`, `close-room` / `cr`,
