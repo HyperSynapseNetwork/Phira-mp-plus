@@ -201,6 +201,17 @@ async fn init_welcome(_state: &PlusServerState, pm: &PluginManager) {
 static PLAYERS: once_cell::sync::Lazy<Mutex<HashMap<i32, String>>> =
     once_cell::sync::Lazy::new(|| Mutex::new(HashMap::new()));
 
+/// 所有连接过服务器的玩家总数
+pub fn player_count() -> usize {
+    PLAYERS.lock().unwrap().len()
+}
+
+/// 获取所有连接过服务器的玩家 (id → name)
+pub fn all_players() -> Vec<(i32, String)> {
+    let guard = PLAYERS.lock().unwrap();
+    guard.iter().map(|(&id, name)| (id, name.clone())).collect()
+}
+
 pub fn track_player(user_id: i32, user_name: &str) {
     PLAYERS.lock().unwrap().entry(user_id).or_insert_with(|| user_name.to_string());
 }

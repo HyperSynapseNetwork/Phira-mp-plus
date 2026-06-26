@@ -371,8 +371,24 @@ impl PlusServer {
         let http_for_webapi = Arc::clone(&http_server);
         let state_for_webapi2 = Arc::clone(&state);
         let sq = webapi_state_query.clone();
+        let sq_rooms = sq.clone();
+        let state_rooms = Arc::clone(&state_for_webapi2);
         http_for_webapi.register_route_sync("/api/rooms", Arc::new(move |_, _| {
-            sq.call("rooms.list", &[]).map_err(|e| (500u16, e))
+            let rooms = sq_rooms.call("rooms.list", &[]).map_err(|e| (500u16, e))?;
+            let online_count = state_rooms.users.read().await.len();
+            Ok(serde_json::json!({
+                "rooms": rooms,
+                "player_count": online_count,
+                "total_players": crate::internal_hooks::player_count(),
+            }))
+        }));
+        // GET /api/players/all — 所有连接过服务器的玩家
+        let state_all = Arc::clone(&state_for_webapi2);
+        http_for_webapi.register_route_sync("/api/players/all", Arc::new(move |_, _| {
+            let players: Vec<serde_json::Value> = crate::internal_hooks::all_players()
+                .into_iter().map(|(id, name)| serde_json::json!({"id": id, "name": name}))
+                .collect();
+            Ok(serde_json::json!({"total": players.len(), "players": players}))
         }));
         let s2 = Arc::clone(&state_for_webapi2);
         http_for_webapi.register_route_sync("/api/rooms/<name>", Arc::new(move |_, params| {

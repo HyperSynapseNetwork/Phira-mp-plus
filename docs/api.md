@@ -7,23 +7,33 @@
 ### 房间信息
 
 #### `GET /api/rooms`
-返回所有活跃房间列表。
+返回所有活跃房间列表及服务器统计。
 
-**响应：** `200 OK` JSON 数组
+**响应：** `200 OK` JSON
 ```json
-[
-  {
-    "name": "room1",
-    "host": 16,
-    "users": [16, 17],
-    "lock": false,
-    "cycle": false,
-    "chart": 12345,
-    "state": "SELECTING_CHART",
-    "rounds": []
-  }
-]
+{
+  "rooms": [
+    {
+      "name": "room1",
+      "host": 16,
+      "users": [16, 17],
+      "lock": false,
+      "cycle": false,
+      "chart": 12345,
+      "state": "SELECTING_CHART",
+      "rounds": []
+    }
+  ],
+  "player_count": 5,
+  "total_players": 42
+}
 ```
+
+| 字段 | 说明 |
+|------|------|
+| `rooms` | 活跃房间列表 |
+| `player_count` | 当前在线玩家数 |
+| `total_players` | 连接过服务器的总玩家数 |
 
 #### `GET /api/rooms/<name>`
 返回指定房间详情。
@@ -59,6 +69,20 @@
 **响应：** `200 OK`
 ```json
 {"count": 5}
+```
+
+#### `GET /api/players/all`
+获取所有连接过服务器的玩家列表。
+
+**响应：** `200 OK`
+```json
+{
+  "total": 42,
+  "players": [
+    {"id": 16, "name": "FireflyF09"},
+    {"id": 17, "name": "HyperSynapse Network"}
+  ]
+}
 ```
 
 ### SSE 事件
