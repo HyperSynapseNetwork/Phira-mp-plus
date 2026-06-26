@@ -131,7 +131,14 @@ impl User {
                 users.remove(&self.id);
             }
             drop(users);
-            self.server.game_monitors.write().await.remove(&self.id);
+            let mut monitors = self.server.game_monitors.write().await;
+            if monitors
+                .get(&self.id)
+                .and_then(Weak::upgrade)
+                .is_some_and(|session| Arc::ptr_eq(&session.user, &self))
+            {
+                monitors.remove(&self.id);
+            }
             return;
         }
 
@@ -757,7 +764,7 @@ async fn process(user: Arc<User>, category: SessionCategory, cmd: ClientCommand)
         }
         ClientCommand::Touches { frames } => {
             get_room!(~ room);
-            if room.is_live() {
+            if room.has_active_monitors().await {
                 debug!("received {} touch events from {}", frames.len(), user.id);
                 if let Some(frame) = frames.last() {
                     user.game_time.store(frame.time.to_bits(), Ordering::SeqCst);
@@ -808,7 +815,7 @@ async fn process(user: Arc<User>, category: SessionCategory, cmd: ClientCommand)
         }
         ClientCommand::Judges { judges } => {
             get_room!(~ room);
-            if room.is_live() {
+            if room.has_active_monitors().await {
                 debug!("received {} judge events from {}", judges.len(), user.id);
                 let judge_data: Vec<crate::plugin::JudgeEventItem> = judges
                     .iter()
@@ -934,12 +941,17 @@ async fn process(user: Arc<User>, category: SessionCategory, cmd: ClientCommand)
                 if monitor && !room.live.fetch_or(true, Ordering::SeqCst) {
                     info!(room = id.to_string(), "room goes live");
                 }
-                if !monitor {
-                    room.broadcast(ServerCommand::OnJoinRoom(user.to_info())).await;
-                    room.send(Message::JoinRoom {
-                        user: user.id,
-                        name: user.name.clone(),
-                    }).await;
+                let join = ServerCommand::OnJoinRoom(user.to_info());
+                let message = ServerCommand::Message(Message::JoinRoom {
+                    user: user.id,
+                    name: user.name.clone(),
+                });
+                if monitor {
+                    room.broadcast_players(join).await;
+                    room.broadcast_players(message).await;
+                } else {
+                    room.broadcast(join).await;
+                    room.broadcast(message).await;
                     user.server
                         .publish_room_event(RoomEvent::JoinRoom {
                             room: id.clone(),
@@ -960,14 +972,14 @@ async fn process(user: Arc<User>, category: SessionCategory, cmd: ClientCommand)
                         .await;
                 }
 
+                let mut users = room.users().await;
+                if category != SessionCategory::GameMonitor {
+                    users.extend(room.monitors().await);
+                }
+
                 Ok(JoinRoomResponse {
                     state: room.client_room_state().await,
-                    users: room
-                        .users()
-                        .await
-                        .into_iter()
-                        .map(|it| it.to_info())
-                        .collect(),
+                    users: users.into_iter().map(|user| user.to_info()).collect(),
                     live: room.is_live(),
                 })
             }

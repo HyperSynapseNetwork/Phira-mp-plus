@@ -250,6 +250,14 @@ impl Room {
     }
 
     pub async fn client_state(&self, user: &super::session::User) -> ClientRoomState {
+        let users = self
+            .users()
+            .await
+            .into_iter()
+            .chain(self.monitors().await)
+            .map(|user| (user.id, user.to_info()))
+            .collect();
+
         ClientRoomState {
             id: self.id.clone(),
             state: self.client_room_state().await,
@@ -258,16 +266,7 @@ impl Room {
             cycle: self.is_cycle(),
             is_host: self.check_host(user).await.is_ok(),
             is_ready: matches!(&*self.state.read().await, InternalRoomState::WaitForReady { started } if started.contains(&user.id)),
-            // Protocol observers are intentionally absent from the public
-            // player roster; phira-web-monitor creates a scene for every user
-            // returned here.
-            users: self
-                .users
-                .read()
-                .await
-                .iter()
-                .filter_map(|it| it.upgrade().map(|it| (it.id, it.to_info())))
-                .collect(),
+            users,
         }
     }
 
@@ -381,6 +380,12 @@ impl Room {
             .collect()
     }
 
+    pub async fn has_active_monitors(&self) -> bool {
+        let active = !self.monitors().await.is_empty();
+        self.live.store(active, Ordering::SeqCst);
+        active
+    }
+
     pub async fn check_host(&self, user: &super::session::User) -> Result<()> {
         if self.host.read().await.upgrade().map(|it| it.id) != Some(user.id) {
             bail!("only host can do this");
@@ -423,8 +428,14 @@ impl Room {
             .users()
             .await
             .into_iter()
-            .chain(self.monitors().await.into_iter())
+            .chain(self.monitors().await)
         {
+            session.try_send(cmd.clone()).await;
+        }
+    }
+
+    pub async fn broadcast_players(&self, cmd: ServerCommand) {
+        for session in self.users().await {
             session.try_send(cmd.clone()).await;
         }
     }
@@ -448,22 +459,28 @@ impl Room {
     #[must_use]
     pub async fn on_user_leave(&self, user: &super::session::User) -> bool {
         let is_monitor = user.monitor.load(Ordering::SeqCst);
-        if !is_monitor {
-            self.send(Message::LeaveRoom {
-                user: user.id,
-                name: user.name.clone(),
-            }).await;
+        let leave = ServerCommand::Message(Message::LeaveRoom {
+            user: user.id,
+            name: user.name.clone(),
+        });
+        if is_monitor {
+            self.broadcast_players(leave).await;
+        } else {
+            self.broadcast(leave).await;
         }
+
         *user.room.write().await = None;
         (if is_monitor { &self.monitors } else { &self.users })
             .write()
             .await
-            .retain(|it| it.upgrade().is_some_and(|it| it.id != user.id));
+            .retain(|entry| {
+                entry
+                    .upgrade()
+                    .is_some_and(|current| !std::ptr::eq(Arc::as_ptr(&current), user))
+            });
 
         if is_monitor {
-            if self.monitors().await.is_empty() {
-                self.live.store(false, Ordering::SeqCst);
-            }
+            self.has_active_monitors().await;
             return false;
         }
 
