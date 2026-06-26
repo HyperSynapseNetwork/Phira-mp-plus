@@ -375,7 +375,7 @@ impl PlusServer {
         let state_rooms = Arc::clone(&state_for_webapi2);
         http_for_webapi.register_route_sync("/api/rooms", Arc::new(move |_, _| {
             let rooms = sq_rooms.call("rooms.list", &[]).map_err(|e| (500u16, e))?;
-            let online_count = state_rooms.users.read().await.len();
+            let online_count = state_rooms.users.try_read().map(|g| g.len()).unwrap_or(0);
             Ok(serde_json::json!({
                 "rooms": rooms,
                 "player_count": online_count,
