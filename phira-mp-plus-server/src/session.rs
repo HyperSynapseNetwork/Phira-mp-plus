@@ -271,6 +271,11 @@ pub enum SessionCategory {
     GameMonitor,
 }
 
+enum AuthenticationOutcome {
+    Accepted(Arc<User>, SessionCategory),
+    Rejected,
+}
+
 pub struct Session {
     pub id: Uuid,
     pub ip: String,
@@ -293,7 +298,7 @@ impl Session {
         stream.set_nodelay(true)?;
         let this = Arc::new(OnceCell::<Arc<Session>>::new());
         let this_inited = Arc::new(Notify::new());
-        let (tx, rx) = tokio::sync::oneshot::channel::<(Arc<User>, SessionCategory)>();
+        let (tx, rx) = tokio::sync::oneshot::channel::<AuthenticationOutcome>();
         let last_recv: Arc<Mutex<Instant>> = Arc::new(Mutex::new(Instant::now()));
         let server_clone = Arc::clone(&server);
 
@@ -338,9 +343,11 @@ impl Session {
                         if waiting_for_authenticate.load(Ordering::SeqCst) {
                             if let ClientCommand::Authenticate { token } = &cmd {
                                 let Some(tx) = tx else { return };
+                                let mut auth_tx = Some(tx);
                                 let res: Result<()> = {
                                     let this = Arc::clone(&this);
                                     let server = Arc::clone(&server);
+                                    let auth_tx = &mut auth_tx;
                                     async move {
                                         let token = token.clone().into_inner();
                                         if token.len() > 32 {
@@ -415,7 +422,12 @@ impl Session {
                                         let mut users_guard = server.users.write().await;
                                         if let Some(user) = users_guard.get(&user_info.id) {
                                             info!("reconnect");
-                                            let _ = tx.send((Arc::clone(user), SessionCategory::Normal));
+                                            let _ = auth_tx.take().unwrap().send(
+                                                AuthenticationOutcome::Accepted(
+                                                    Arc::clone(user),
+                                                    SessionCategory::Normal,
+                                                ),
+                                            );
                                             this_inited.notified().await;
                                             user.set_session(Arc::downgrade(this.get().unwrap()))
                                                 .await;
@@ -452,7 +464,12 @@ impl Session {
                                                     .unwrap_or_default(),
                                                 Arc::clone(&server),
                                             ));
-                                            let _ = tx.send((Arc::clone(&user), SessionCategory::Normal));
+                                            let _ = auth_tx.take().unwrap().send(
+                                                AuthenticationOutcome::Accepted(
+                                                    Arc::clone(&user),
+                                                    SessionCategory::Normal,
+                                                ),
+                                            );
                                             this_inited.notified().await;
                                             user.set_session(Arc::downgrade(this.get().unwrap()))
                                                 .await;
@@ -488,6 +505,9 @@ impl Session {
                                 if let Err(err) = res {
                                     warn!("failed to authenticate: {err:?}");
                                     send_auth_rejection(&send_tx, err.to_string()).await;
+                                    if let Some(tx) = auth_tx.take() {
+                                        let _ = tx.send(AuthenticationOutcome::Rejected);
+                                    }
                                     panicked.store(true, Ordering::SeqCst);
                                 } else {
                                     let user = &this.get().unwrap().user;
@@ -524,7 +544,10 @@ impl Session {
                                             info.language.parse().map(Language).unwrap_or_default(),
                                             Arc::clone(&server),
                                         ));
-                                        let _ = tx.send((Arc::clone(&user), SessionCategory::Console));
+                                        let _ = tx.send(AuthenticationOutcome::Accepted(
+                                            Arc::clone(&user),
+                                            SessionCategory::Console,
+                                        ));
                                         this_inited.notified().await;
                                         user.set_session(Arc::downgrade(this.get().unwrap())).await;
                                         let _ = send_tx
@@ -539,6 +562,7 @@ impl Session {
                                             "authentication failed".into(),
                                         )
                                         .await;
+                                        let _ = tx.send(AuthenticationOutcome::Rejected);
                                         panicked.store(true, Ordering::SeqCst);
                                     }
                                 }
@@ -551,18 +575,23 @@ impl Session {
                                         "more than one room monitor".into(),
                                     )
                                     .await;
+                                    let _ = tx.send(AuthenticationOutcome::Rejected);
                                     panicked.store(true, Ordering::SeqCst);
                                     return;
                                 }
                                 if server.room_monitor_key.as_slice() != key.as_slice() {
                                     send_auth_rejection(&send_tx, "secret key mismatch".into())
                                         .await;
+                                    let _ = tx.send(AuthenticationOutcome::Rejected);
                                     panicked.store(true, Ordering::SeqCst);
                                     return;
                                 }
                                 info!("new room monitor connected");
                                 let user = Arc::new(User::new(-1, "$server_room_monitor".into(), Language::default(), Arc::clone(&server)));
-                                let _ = tx.send((Arc::clone(&user), SessionCategory::RoomMonitor));
+                                let _ = tx.send(AuthenticationOutcome::Accepted(
+                                    Arc::clone(&user),
+                                    SessionCategory::RoomMonitor,
+                                ));
                                 this_inited.notified().await;
                                 user.set_session(Arc::downgrade(this.get().unwrap())).await;
                                 *server.room_monitor.write().await = Some(Arc::downgrade(this.get().unwrap()));
@@ -579,6 +608,7 @@ impl Session {
                                                 "invalid monitor identity".into(),
                                             )
                                             .await;
+                                            let _ = tx.send(AuthenticationOutcome::Rejected);
                                             panicked.store(true, Ordering::SeqCst);
                                             return;
                                         };
@@ -588,7 +618,10 @@ impl Session {
                                             info.language.parse().map(Language).unwrap_or_default(),
                                             Arc::clone(&server),
                                         ));
-                                        let _ = tx.send((Arc::clone(&user), SessionCategory::GameMonitor));
+                                        let _ = tx.send(AuthenticationOutcome::Accepted(
+                                            Arc::clone(&user),
+                                            SessionCategory::GameMonitor,
+                                        ));
                                         this_inited.notified().await;
                                         user.set_session(Arc::downgrade(this.get().unwrap())).await;
                                         server.users.write().await.insert(monitor_id, Arc::clone(&user));
@@ -607,6 +640,7 @@ impl Session {
                                             "game monitor auth failed".into(),
                                         )
                                         .await;
+                                        let _ = tx.send(AuthenticationOutcome::Rejected);
                                         panicked.store(true, Ordering::SeqCst);
                                     }
                                 }
@@ -680,9 +714,13 @@ impl Session {
             }
         });
 
-        let (user, category) = rx
-            .await
-            .map_err(|_| anyhow!("authentication rejected"))?;
+        let (user, category) = match rx.await {
+            Ok(AuthenticationOutcome::Accepted(user, category)) => (user, category),
+            Ok(AuthenticationOutcome::Rejected) => {
+                return Err(anyhow!("authentication rejected after response flush"));
+            }
+            Err(_) => return Err(anyhow!("authentication channel closed")),
+        };
 
         let ip = addr.ip().to_string();
         let res = Arc::new(Self {
