@@ -30,7 +30,7 @@ mod stream_impl {
     use tokio::{
         io::{AsyncReadExt, AsyncWriteExt},
         net::TcpStream,
-        sync::mpsc,
+        sync::{mpsc, oneshot},
         task::JoinHandle,
     };
     use tracing::{error, trace, warn};
@@ -39,10 +39,57 @@ mod stream_impl {
     pub const HEARTBEAT_TIMEOUT: Duration = Duration::from_secs(2);
     pub const HEARTBEAT_DISCONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 
+    struct Outbound<S> {
+        payload: S,
+        flushed: Option<oneshot::Sender<std::result::Result<(), String>>>,
+    }
+
+    pub struct StreamSender<S> {
+        tx: mpsc::Sender<Outbound<S>>,
+    }
+
+    impl<S> StreamSender<S> {
+        pub async fn send(&self, payload: S) -> Result<()> {
+            self.tx
+                .send(Outbound {
+                    payload,
+                    flushed: None,
+                })
+                .await
+                .map_err(|_| anyhow!("send queue closed"))
+        }
+
+        pub async fn send_and_flush(&self, payload: S) -> Result<()> {
+            let (flushed_tx, flushed_rx) = oneshot::channel();
+            self.tx
+                .send(Outbound {
+                    payload,
+                    flushed: Some(flushed_tx),
+                })
+                .await
+                .map_err(|_| anyhow!("send queue closed"))?;
+
+            match flushed_rx.await {
+                Ok(Ok(())) => Ok(()),
+                Ok(Err(message)) => Err(anyhow!(message)),
+                Err(_) => Err(anyhow!("send task stopped before flushing packet")),
+            }
+        }
+
+        pub fn blocking_send(&self, payload: S) -> Result<()> {
+            self.tx
+                .blocking_send(Outbound {
+                    payload,
+                    flushed: None,
+                })
+                .map_err(|_| anyhow!("send queue closed"))
+        }
+    }
+
     pub struct Stream<S, R> {
         version: u8,
 
-        send_tx: Arc<mpsc::Sender<S>>,
+        send_tx: Arc<StreamSender<S>>,
 
         send_task_handle: JoinHandle<()>,
         recv_task_handle: JoinHandle<Result<()>>,
@@ -58,7 +105,7 @@ mod stream_impl {
         pub async fn new<F>(
             version: Option<u8>,
             stream: TcpStream,
-            mut handler: Box<dyn FnMut(Arc<mpsc::Sender<S>>, R) -> F + Send + Sync>,
+            mut handler: Box<dyn FnMut(Arc<StreamSender<S>>, R) -> F + Send + Sync>,
         ) -> Result<Self>
         where
             F: Future<Output = ()> + Send + 'static,
@@ -73,12 +120,13 @@ mod stream_impl {
             };
 
             let (send_tx, mut send_rx) = mpsc::channel(1024);
-            let send_tx = Arc::new(send_tx);
+            let send_tx = Arc::new(StreamSender { tx: send_tx });
             let send_task_handle = tokio::spawn({
                 async move {
                     let mut buffer = Vec::new();
                     let mut len_buf = [0u8; 5];
-                    while let Some(payload) = send_rx.recv().await {
+                    while let Some(outbound) = send_rx.recv().await {
+                        let Outbound { payload, flushed } = outbound;
                         buffer.clear();
                         encode_packet(&payload, &mut buffer);
                         trace!("sending {} bytes ({payload:?}): {buffer:?}", buffer.len());
@@ -96,14 +144,25 @@ mod stream_impl {
                             }
                         }
 
-                        if let Err(err) = async {
+                        let result = async {
                             write.write_all(&len_buf[..n]).await?;
                             write.write_all(&buffer).await?;
+                            write.flush().await?;
                             Ok::<_, Error>(())
                         }
-                        .await
-                        {
+                        .await;
+
+                        if let Some(flushed) = flushed {
+                            let status = result
+                                .as_ref()
+                                .map(|_| ())
+                                .map_err(|err| err.to_string());
+                            let _ = flushed.send(status);
+                        }
+
+                        if let Err(err) = result {
                             error!("failed to send: {err:?}");
+                            break;
                         }
                     }
                 }
@@ -168,13 +227,15 @@ mod stream_impl {
         }
 
         pub async fn send(&self, payload: S) -> Result<()> {
-            self.send_tx.send(payload).await?;
-            Ok(())
+            self.send_tx.send(payload).await
+        }
+
+        pub async fn send_and_flush(&self, payload: S) -> Result<()> {
+            self.send_tx.send_and_flush(payload).await
         }
 
         pub fn blocking_send(&self, payload: S) -> Result<()> {
-            self.send_tx.blocking_send(payload)?;
-            Ok(())
+            self.send_tx.blocking_send(payload)
         }
     }
 

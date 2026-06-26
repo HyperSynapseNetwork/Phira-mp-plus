@@ -7,7 +7,7 @@ use crate::tl;
 use anyhow::{anyhow, bail, Result};
 use phira_mp_common::{
     ClientCommand, JoinRoomResponse, Message, PartialRoomData, RoomEvent, ServerCommand, Stream,
-    StrippedRoomState, UserInfo,
+    StreamSender, StrippedRoomState, UserInfo,
 };
 use serde::Deserialize;
 use std::{
@@ -28,6 +28,7 @@ use uuid::Uuid;
 
 const HEARTBEAT_DISCONNECT_TIMEOUT: Duration = Duration::from_secs(600);
 const AUTH_FAILURE_RESPONSE_DELAY: Duration = Duration::from_millis(50);
+const AUTH_FAILURE_FLUSH_TIMEOUT: Duration = Duration::from_secs(1);
 const MAX_CLIENT_BAN_REASON_CHARS: usize = 160;
 
 #[derive(Debug, Deserialize)]
@@ -73,6 +74,23 @@ fn ban_rejection_message(language: &str, reason: &str) -> String {
     let mut args = fluent::FluentArgs::new();
     args.set("reason", reason);
     crate::l10n::try_translate_with_args(&language.0, "auth-banned", args)
+        .chars()
+        .filter(|ch| !matches!(ch, '\u{2068}' | '\u{2069}'))
+        .collect()
+}
+
+async fn send_auth_rejection(send_tx: &StreamSender<ServerCommand>, message: String) {
+    time::sleep(AUTH_FAILURE_RESPONSE_DELAY).await;
+    match time::timeout(
+        AUTH_FAILURE_FLUSH_TIMEOUT,
+        send_tx.send_and_flush(ServerCommand::Authenticate(Err(message))),
+    )
+    .await
+    {
+        Ok(Ok(())) => {}
+        Ok(Err(err)) => warn!("failed to deliver authentication rejection: {err:?}"),
+        Err(_) => warn!("timed out while delivering authentication rejection"),
+    }
 }
 
 pub struct User {
@@ -469,14 +487,8 @@ impl Session {
                                 .await;
                                 if let Err(err) = res {
                                     warn!("failed to authenticate: {err:?}");
-                                    time::sleep(AUTH_FAILURE_RESPONSE_DELAY).await;
-                                    let _ = send_tx
-                                        .send(ServerCommand::Authenticate(Err(err.to_string())))
-                                        .await;
+                                    send_auth_rejection(&send_tx, err.to_string()).await;
                                     panicked.store(true, Ordering::SeqCst);
-                                    if let Err(err) = server.lost_con_tx.send(id).await {
-                                        error!("failed to mark lost connection ({id}): {err:?}");
-                                    }
                                 } else {
                                     let user = &this.get().unwrap().user;
                                     let room_state = match user.room.read().await.as_ref() {
@@ -522,26 +534,30 @@ impl Session {
                                     }
                                     Err(err) => {
                                         warn!("console authentication failed: {err}");
-                                        let _ = send_tx
-                                            .send(ServerCommand::Authenticate(Err("authentication failed".into())))
-                                            .await;
+                                        send_auth_rejection(
+                                            &send_tx,
+                                            "authentication failed".into(),
+                                        )
+                                        .await;
                                         panicked.store(true, Ordering::SeqCst);
-                                        let _ = server.lost_con_tx.send(id).await;
                                     }
                                 }
                                 return;
                             } else if let ClientCommand::RoomMonitorAuthenticate { key } = &cmd {
                                 let Some(tx) = tx else { return };
                                 if server.room_monitor.read().await.as_ref().and_then(|w| w.upgrade()).is_some() {
-                                    let _ = send_tx.send(ServerCommand::Authenticate(Err("more than one room monitor".into()))).await;
+                                    send_auth_rejection(
+                                        &send_tx,
+                                        "more than one room monitor".into(),
+                                    )
+                                    .await;
                                     panicked.store(true, Ordering::SeqCst);
-                                    let _ = server.lost_con_tx.send(id).await;
                                     return;
                                 }
                                 if server.room_monitor_key.as_slice() != key.as_slice() {
-                                    let _ = send_tx.send(ServerCommand::Authenticate(Err("secret key mismatch".into()))).await;
+                                    send_auth_rejection(&send_tx, "secret key mismatch".into())
+                                        .await;
                                     panicked.store(true, Ordering::SeqCst);
-                                    let _ = server.lost_con_tx.send(id).await;
                                     return;
                                 }
                                 info!("new room monitor connected");
@@ -558,9 +574,12 @@ impl Session {
                                 match authenticate_remote(&server, token).await {
                                     Ok(info) => {
                                         let Some(monitor_id) = info.id.checked_neg().filter(|id| *id < 0) else {
-                                            let _ = send_tx
-                                                .send(ServerCommand::Authenticate(Err("invalid monitor identity".into())))
-                                                .await;
+                                            send_auth_rejection(
+                                                &send_tx,
+                                                "invalid monitor identity".into(),
+                                            )
+                                            .await;
+                                            panicked.store(true, Ordering::SeqCst);
                                             return;
                                         };
                                         let user = Arc::new(User::new(
@@ -583,11 +602,12 @@ impl Session {
                                     }
                                     Err(err) => {
                                         warn!("game monitor authentication failed: {err}");
-                                        let _ = send_tx
-                                            .send(ServerCommand::Authenticate(Err("game monitor auth failed".into())))
-                                            .await;
+                                        send_auth_rejection(
+                                            &send_tx,
+                                            "game monitor auth failed".into(),
+                                        )
+                                        .await;
                                         panicked.store(true, Ordering::SeqCst);
-                                        let _ = server.lost_con_tx.send(id).await;
                                     }
                                 }
                                 return;
@@ -660,7 +680,9 @@ impl Session {
             }
         });
 
-        let (user, category) = rx.await?;
+        let (user, category) = rx
+            .await
+            .map_err(|_| anyhow!("authentication rejected"))?;
 
         let ip = addr.ip().to_string();
         let res = Arc::new(Self {
