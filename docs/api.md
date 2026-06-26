@@ -72,16 +72,13 @@
 ```
 
 #### `GET /api/players/all`
-获取所有连接过服务器的玩家列表。
+获取所有连接过服务器的玩家 ID 列表。
 
 **响应：** `200 OK`
 ```json
 {
   "total": 42,
-  "players": [
-    {"id": 16, "name": "FireflyF09"},
-    {"id": 17, "name": "HyperSynapse Network"}
-  ]
+  "players": [16, 17, 18, 19]
 }
 ```
 
