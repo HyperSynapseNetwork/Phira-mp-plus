@@ -18,8 +18,8 @@ http_port: 12347
 monitors:
   - 2
 
-# Phira API 端点。认证、查谱面、查成绩会使用它。
-# 通常无需修改；如果使用自建/代理 API，可在这里替换。
+# 全局 Phira API 端点。认证默认使用它；房间未设置覆盖时，查谱面、查成绩也使用它。
+# 单个房间可用 `room set <房间ID> phira_api_endpoint <url>` 临时覆盖，设置后立即生效。
 phira_api_endpoint: "https://phira.5wyxi.com"
 
 # ---- 真实网络压测账号 ----

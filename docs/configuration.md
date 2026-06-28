@@ -85,7 +85,7 @@ wasm_runtime:
 | `port` | `u16` | `12346` | TCP 游戏协议监听端口。Phira 客户端连接这个端口。 |
 | `http_port` | `u16` | `12347` | HTTP API、SSE、WebSocket 监听端口。 |
 | `monitors` | `Vec<i32>` | `[2]` | 允许用 room monitor 协议旁观的 Phira 用户 ID。 |
-| `phira_api_endpoint` | `String` | `https://phira.5wyxi.com` | Phira API 地址。认证、查谱面、查成绩都会访问它。 |
+| `phira_api_endpoint` | `String` | `https://phira.5wyxi.com` | 全局 Phira API 地址。认证默认访问它；房间未配置覆盖时，查谱面、查成绩也访问它。 |
 | `plugins_dir` | `String` | `plugins` | WASM 插件目录。服务端启动时会自动创建。 |
 | `extensions_file` | `String?` | CLI 默认 `data/extensions.json` | 扩展数据持久化 JSON 路径。 |
 | `cli_enabled` | `bool` | `true` | 是否启用交互式 TUI/CLI 管理控制台。`--no-cli` 会覆盖为 false。 |
@@ -103,6 +103,27 @@ wasm_runtime:
 | `wasm_runtime` | `object` | 见下表 | WASM 插件运行时资源限制。 |
 
 > 注意：`chat_enabled` 的 Rust 结构体默认值是 `false`，但项目示例配置显式设置为 `true`。如果希望聊天可用，请在 `server_config.yml` 里明确写 `chat_enabled: true`。
+
+
+## 房间独立 Phira API endpoint
+
+`server_config.yml` 中的 `phira_api_endpoint` 是全局默认值。管理员可以为某个正在运行的房间单独配置 endpoint：
+
+```bash
+room set <房间ID> phira_api_endpoint https://phira.example.com
+room set <房间ID> endpoint https://phira.example.com
+room set <房间ID> phira_api_endpoint default
+```
+
+规则：
+
+- 房间覆盖值只保存在运行中的房间状态中，设置后立即生效。
+- 值必须是 `http://` 或 `https://` URL；末尾 `/` 会自动去掉。
+- `default` / `global` / `none` / `null` / `clear` / `默认` / `全局` / `清除` 会清除覆盖，恢复全局配置。
+- 能确定房间上下文的 Phira API 请求优先使用房间 endpoint，例如客户端选谱 `/chart/<id>`、提交成绩 `/record/<id>`，以及服务端命令 `room set <id> chart-id <谱面ID>`。
+- 登录认证 `/me` 发生在用户加入任何房间之前，没有房间上下文，因此仍使用全局 `phira_api_endpoint`。
+
+WASM/host API 也支持：`room.set_phira_api_endpoint`、`room.get_phira_api_endpoint`、`room.clear_phira_api_endpoint`。
 
 ## 压测 token 配置
 

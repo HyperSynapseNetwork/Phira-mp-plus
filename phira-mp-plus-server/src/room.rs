@@ -146,6 +146,7 @@ pub struct Room {
     pub locked: AtomicBool,
     pub cycle: AtomicBool,
     hidden: AtomicBool,
+    phira_api_endpoint: RwLock<Option<String>>,
     admin_start_pending: AtomicBool,
 
     pub users: RwLock<Vec<Weak<super::session::User>>>,
@@ -198,6 +199,7 @@ impl Room {
             locked: AtomicBool::new(false),
             cycle: AtomicBool::new(false),
             hidden: AtomicBool::new(hidden),
+            phira_api_endpoint: RwLock::new(None),
             admin_start_pending: AtomicBool::new(false),
 
             users: vec![host].into(),
@@ -233,6 +235,33 @@ impl Room {
 
     pub fn set_hidden(&self, hidden: bool) {
         self.hidden.store(hidden, Ordering::SeqCst);
+    }
+
+    pub async fn phira_api_endpoint_override(&self) -> Option<String> {
+        self.phira_api_endpoint.read().await.clone()
+    }
+
+    pub async fn set_phira_api_endpoint_override(&self, endpoint: Option<String>) {
+        *self.phira_api_endpoint.write().await = endpoint;
+    }
+
+    pub async fn effective_phira_api_endpoint(&self, server: &crate::server::PlusServerState) -> String {
+        self.phira_api_endpoint
+            .read()
+            .await
+            .clone()
+            .unwrap_or_else(|| server.config.phira_api_endpoint.clone())
+    }
+
+    pub(crate) fn phira_api_endpoint_override_sync(&self) -> Option<String> {
+        self.phira_api_endpoint.try_read().ok().and_then(|guard| guard.clone())
+    }
+
+    pub(crate) fn effective_phira_api_endpoint_sync(&self, fallback: &str) -> String {
+        match self.phira_api_endpoint.try_read() {
+            Ok(guard) => guard.clone().unwrap_or_else(|| fallback.to_string()),
+            Err(_) => fallback.to_string(),
+        }
     }
 
     /// 获取房主用户 ID

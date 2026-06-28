@@ -303,6 +303,19 @@ round_data_retention_days: 7
 2. 如果配置文件未提供 token，读取 `data/benchmark-auth.json`；
 3. 两处都没有时，命令会提示运行 `benchmark-bind <token1[,token2...]>` 或修改配置文件。
 
+
+### 房间独立 Phira API endpoint
+
+房间可通过 CLI 或 WASM/host API 覆盖全局 `phira_api_endpoint`：
+
+- CLI：`room set <room_id> phira_api_endpoint <url>`
+- 清除覆盖：`room set <room_id> phira_api_endpoint default`
+- Host API：`room.set_phira_api_endpoint`，参数 `{"room_id":"...","endpoint":"https://..."}`
+- Host API 清除：`room.set_phira_api_endpoint` 传 `endpoint: null`，或调用 `room.clear_phira_api_endpoint`
+- 查询：`room.get_phira_api_endpoint`
+
+`rooms.list`、`rooms.by_name`、`rooms.by_user` 和 `room.info` 会返回当前生效的 `phira_api_endpoint`，并在可用时返回 `phira_api_endpoint_override`。设置后立即生效：房间内选谱 `/chart/<id>`、提交成绩 `/record/<id>` 等能确定所属房间的服务端请求都会使用房间 endpoint；认证 `/me` 没有房间上下文，仍使用全局配置。
+
 ### 隐藏房间
 
 隐藏房间不会出现在 `GET /api/rooms`、`GET /api/rooms/<name>` 和欢迎语 `[active_rooms]` 中。房间名以 `-` 开头时默认隐藏，也可以通过 `room hide/unhide`、`room set <id> hidden true|false`、WASM/host API `room.set_hidden` 手动管理。隐藏只影响公开展示，不等于权限隔离。
@@ -328,6 +341,7 @@ round_data_retention_days: 7
 | `room.set_lock` | 设置锁定 |
 | `room.force_move` | 强制迁移用户到房间 |
 | `room.set_hidden` / `room.is_hidden` | 设置/查询隐藏状态 |
+| `room.set_phira_api_endpoint` / `room.get_phira_api_endpoint` / `room.clear_phira_api_endpoint` | 设置/查询/清除房间独立 Phira API endpoint |
 | `room.close` | 关闭房间 |
 | `admin.kick_user` | 管理员踢人 |
 | `admin.ban_user` | 封禁 |

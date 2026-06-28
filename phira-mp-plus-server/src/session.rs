@@ -78,6 +78,7 @@ fn phira_error_retryable(err: &reqwest::Error) -> bool {
 
 async fn phira_get_json_with_retry<T>(
     server: &PlusServerState,
+    endpoint_override: Option<String>,
     path: &str,
     bearer: Option<&str>,
     target: RetryNoticeTarget<'_>,
@@ -88,7 +89,10 @@ where
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(5))
         .build()?;
-    let endpoint = server.config.phira_api_endpoint.trim_end_matches('/');
+    let endpoint = endpoint_override
+        .as_deref()
+        .unwrap_or(&server.config.phira_api_endpoint)
+        .trim_end_matches('/');
     let path = if path.starts_with('/') { path.to_string() } else { format!("/{path}") };
     let url = format!("{endpoint}{path}");
 
@@ -137,7 +141,7 @@ async fn authenticate_remote_with_notice(
     if token.len() > 128 {
         bail!("invalid token");
     }
-    phira_get_json_with_retry(server, "/me", Some(token), target).await
+    phira_get_json_with_retry(server, None, "/me", Some(token), target).await
 }
 
 fn ban_rejection_message(language: &str, reason: &str) -> String {
@@ -466,6 +470,7 @@ impl Session {
                                             // 缓存未命中，请求 API；遇到 “认证失败 502错误”/502/5xx 时重试并提示该客户端。
                                             match phira_get_json_with_retry::<AuthUserInfo>(
                                                 &server,
+                                                None,
                                                 "/me",
                                                 Some(&token),
                                                 RetryNoticeTarget::Stream(retry_send_tx.as_ref()),
@@ -1252,8 +1257,10 @@ async fn process(user: Arc<User>, category: SessionCategory, cmd: ClientCommand)
                 );
                 async move {
                     trace!("fetch");
+                    let endpoint = room.effective_phira_api_endpoint(&user.server).await;
                     let res: crate::server::Chart = phira_get_json_with_retry(
                         &user.server,
+                        Some(endpoint),
                         &format!("/chart/{id}"),
                         None,
                         RetryNoticeTarget::User(user.as_ref()),
@@ -1355,8 +1362,10 @@ async fn process(user: Arc<User>, category: SessionCategory, cmd: ClientCommand)
         ClientCommand::Played { id } => {
             let res: Result<()> = async move {
                 get_room!(room);
+                let endpoint = room.effective_phira_api_endpoint(&user.server).await;
                 let res: crate::server::Record = phira_get_json_with_retry(
                     &user.server,
+                    Some(endpoint),
                     &format!("/record/{id}"),
                     None,
                     RetryNoticeTarget::User(user.as_ref()),

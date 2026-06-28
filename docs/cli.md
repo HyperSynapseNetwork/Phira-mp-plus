@@ -91,14 +91,14 @@ broadcast user <用户ID> <消息>    发送给指定用户
 | 命令 | 说明 |
 |------|------|
 | `rooms` / `room list` | 列出活跃房间 |
-| `room info <房间ID>` | 房间详情（状态、房主、谱面、历史） |
+| `room info <房间ID>` | 房间详情（状态、房主、谱面、Phira API、历史） |
 | `room start <房间ID>` | 由服务端发起游戏；等待所有玩家和监控端完成谱面加载后开始 |
 | `room cancel <房间ID>` | 取消准备状态 |
 | `room kick <房间ID> <用户ID>` | 从房间踢出用户 |
 | `room transfer <房间ID> <用户ID>` | 转移房主 |
 | `room force-move <房间ID> <用户ID> [monitor]` | 强制迁移在线用户到指定房间 |
 | `room hide <房间ID>` / `room unhide <房间ID>` | 隐藏/取消隐藏房间 |
-| `room set <房间ID> <字段> <值>` | 修改房间设置（lock/cycle/hidden/chart-id） |
+| `room set <房间ID> <字段> <值>` | 修改房间设置（lock/cycle/hidden/chart-id/phira_api_endpoint） |
 | `room close <房间ID>` | 解散房间 |
 | `room history <房间ID>` | 查看游玩记录 |
 | `room ban <房间ID> <用户ID>` | 房间加入黑名单 |
@@ -106,6 +106,19 @@ broadcast user <用户ID> <消息>    发送给指定用户
 | `room banlist <房间ID>` | 房间黑名单列表 |
 
 > 服务端选谱后会同步完整房间状态。`room start` 不再跳过客户端的下载与准备阶段，避免客户端在本地尚无谱面时直接进入游玩。
+
+##### 房间独立 Phira API endpoint
+
+每个房间可以临时覆盖全局 `phira_api_endpoint`，设置后立即生效，不需要重启服务器，也不需要重建房间。
+
+```bash
+room set <房间ID> phira_api_endpoint https://phira.example.com
+room set <房间ID> endpoint https://phira.example.com
+room set <房间ID> phira_api_endpoint default   # 清除覆盖，恢复全局配置
+room info <房间ID>                             # 查看当前生效 endpoint
+```
+
+覆盖后，房间内用户选谱、提交成绩等服务端代表该房间访问 Phira API 的行为都会使用房间 endpoint。用户登录认证 `/me` 发生在加入房间之前，仍使用全局 `server_config.yml` 的 `phira_api_endpoint`。
 
 兼容旧别名：`rooms`, `room-info` / `ri`, `room-start` / `rs`, `room-cancel` / `rc`,
 `room-transfer` / `rt`, `room-move` / `rmv`, `room-hide`, `room-unhide`, `room-history` / `rh`, `close-room` / `cr`,

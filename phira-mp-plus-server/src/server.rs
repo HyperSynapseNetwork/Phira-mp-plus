@@ -46,6 +46,36 @@ pub struct Record {
 
 pub type SafeMap<K, V> = RwLock<HashMap<K, V>>;
 
+pub(crate) fn normalize_phira_api_endpoint(value: &str) -> Result<String, String> {
+    let endpoint = value.trim().trim_end_matches('/').to_string();
+    if endpoint.is_empty() {
+        return Err("phira_api_endpoint cannot be empty".to_string());
+    }
+    let url = reqwest::Url::parse(&endpoint).map_err(|e| format!("invalid phira_api_endpoint: {e}"))?;
+    match url.scheme() {
+        "http" | "https" => Ok(endpoint),
+        other => Err(format!("unsupported phira_api_endpoint scheme: {other}")),
+    }
+}
+
+pub(crate) fn parse_room_endpoint_value(value: &str) -> Result<Option<String>, String> {
+    let raw = value.trim();
+    if raw.is_empty()
+        || raw.eq_ignore_ascii_case("default")
+        || raw.eq_ignore_ascii_case("global")
+        || raw.eq_ignore_ascii_case("none")
+        || raw.eq_ignore_ascii_case("null")
+        || raw.eq_ignore_ascii_case("clear")
+        || raw == "全局"
+        || raw == "默认"
+        || raw == "清除"
+    {
+        Ok(None)
+    } else {
+        normalize_phira_api_endpoint(raw).map(Some)
+    }
+}
+
 /// 测试用 sim 用户 ID 起点（避免与真实用户冲突）
 const TEST_USER_ID_BASE: i32 = 1_000_000_000;
 
@@ -1037,6 +1067,59 @@ impl PlusServerState {
         }).await;
         Ok(serde_json::json!({"ok": true, "room_id": rid.to_string(), "hidden": hidden}))
     }
+
+    pub async fn get_room_phira_api_endpoint(&self, room_id: &str) -> Result<Value, String> {
+        let rid: RoomId = room_id.to_string().try_into().map_err(|_| "invalid room_id".to_string())?;
+        let room = {
+            let rooms = self.rooms.read().await;
+            rooms.get(&rid).map(Arc::clone).ok_or("room not found")?
+        };
+        let override_endpoint = room.phira_api_endpoint_override().await;
+        let using_room_override = override_endpoint.is_some();
+        let effective_endpoint = override_endpoint
+            .clone()
+            .unwrap_or_else(|| self.config.phira_api_endpoint.clone());
+        Ok(serde_json::json!({
+            "ok": true,
+            "room_id": rid.to_string(),
+            "phira_api_endpoint": effective_endpoint,
+            "phira_api_endpoint_override": override_endpoint,
+            "using_room_override": using_room_override,
+        }))
+    }
+
+    pub async fn set_room_phira_api_endpoint(&self, room_id: &str, endpoint: Option<String>) -> Result<Value, String> {
+        let rid: RoomId = room_id.to_string().try_into().map_err(|_| "invalid room_id".to_string())?;
+        let room = {
+            let rooms = self.rooms.read().await;
+            rooms.get(&rid).map(Arc::clone).ok_or("room not found")?
+        };
+        let normalized = match endpoint {
+            Some(value) => Some(normalize_phira_api_endpoint(&value)?),
+            None => None,
+        };
+        room.set_phira_api_endpoint_override(normalized.clone()).await;
+        let using_room_override = normalized.is_some();
+        let effective_endpoint = normalized
+            .clone()
+            .unwrap_or_else(|| self.config.phira_api_endpoint.clone());
+        self.plugin_manager.trigger(&PluginEvent::RoomModify {
+            user_id: 0,
+            room_id: rid.to_string(),
+            data: serde_json::json!({
+                "action": "phira_api_endpoint",
+                "value": normalized.clone(),
+                "effective": effective_endpoint.clone(),
+            }).to_string(),
+        }).await;
+        Ok(serde_json::json!({
+            "ok": true,
+            "room_id": rid.to_string(),
+            "phira_api_endpoint": effective_endpoint,
+            "phira_api_endpoint_override": normalized,
+            "using_room_override": using_room_override,
+        }))
+    }
 }
 
 async fn bench_send_command(stream: &mut tokio::net::TcpStream, payload: &phira_mp_common::ClientCommand) -> Result<(), String> {
@@ -1502,6 +1585,7 @@ fn server_state_query_inner(state: &Arc<PlusServerState>, method: &str, args: &[
                         "room_id": r.id.to_string(),
                         "uuid": r.uuid.to_string(),
                         "created_at": r.created_at,
+                        "phira_api_endpoint": r.effective_phira_api_endpoint_sync(&s.config.phira_api_endpoint),
                     })
                 }).collect();
                 let _ = tx.send(Ok(serde_json::json!({"rooms": list, "total": list.len()})));
@@ -1583,6 +1667,46 @@ fn server_state_query_inner(state: &Arc<PlusServerState>, method: &str, args: &[
             let rooms = state.rooms.try_read().map_err(|_| "lock error".to_string())?;
             let room = rooms.get(&rid).ok_or("room not found")?;
             Ok(serde_json::json!({"room_id": room_id, "hidden": room.is_hidden()}))
+        }
+        "room.get_phira_api_endpoint" => {
+            let room_id = args.get(0).and_then(|v| v.as_str()).unwrap_or("").to_string();
+            if room_id.is_empty() { return Err("missing room_id".to_string()); }
+            let (tx, rx) = std::sync::mpsc::channel();
+            let s = Arc::clone(state);
+            tokio::spawn(async move {
+                let result = s.get_room_phira_api_endpoint(&room_id).await;
+                let _ = tx.send(result);
+            });
+            rx.recv_timeout(std::time::Duration::from_secs(5))
+                .unwrap_or(Err("room.get_phira_api_endpoint timeout".to_string()))
+        }
+        "room.set_phira_api_endpoint" => {
+            let room_id = args.get(0).and_then(|v| v.as_str()).unwrap_or("").to_string();
+            if room_id.is_empty() { return Err("missing room_id".to_string()); }
+            let endpoint = match args.get(1) {
+                Some(Value::Null) | None => None,
+                Some(v) => Some(parse_room_endpoint_value(v.as_str().unwrap_or(""))?),
+            }.flatten();
+            let (tx, rx) = std::sync::mpsc::channel();
+            let s = Arc::clone(state);
+            tokio::spawn(async move {
+                let result = s.set_room_phira_api_endpoint(&room_id, endpoint).await;
+                let _ = tx.send(result);
+            });
+            rx.recv_timeout(std::time::Duration::from_secs(5))
+                .unwrap_or(Err("room.set_phira_api_endpoint timeout".to_string()))
+        }
+        "room.clear_phira_api_endpoint" => {
+            let room_id = args.get(0).and_then(|v| v.as_str()).unwrap_or("").to_string();
+            if room_id.is_empty() { return Err("missing room_id".to_string()); }
+            let (tx, rx) = std::sync::mpsc::channel();
+            let s = Arc::clone(state);
+            tokio::spawn(async move {
+                let result = s.set_room_phira_api_endpoint(&room_id, None).await;
+                let _ = tx.send(result);
+            });
+            rx.recv_timeout(std::time::Duration::from_secs(5))
+                .unwrap_or(Err("room.clear_phira_api_endpoint timeout".to_string()))
         }
         "room.close" => {
             let room_id = args.get(0).and_then(|v| v.as_str()).unwrap_or("").to_string();
@@ -1720,6 +1844,8 @@ fn server_state_query(state: &Arc<PlusServerState>, method: &str, args: &[Value]
         playing_users: Vec<i32>,
         rounds: Vec<RoundInfo>,
         hidden: bool,
+        phira_api_endpoint: String,
+        phira_api_endpoint_override: Option<String>,
     }
     #[derive(Serialize)]
     struct RoundInfo {
@@ -1727,7 +1853,7 @@ fn server_state_query(state: &Arc<PlusServerState>, method: &str, args: &[Value]
         records: Vec<Value>,
     }
 
-    fn build_snapshot(name: &str, room: &crate::room::Room) -> RoomSnapshot {
+    fn build_snapshot(state: &PlusServerState, name: &str, room: &crate::room::Room) -> RoomSnapshot {
         let chart_op = read_lock!(room.chart).clone();
         let guard = read_lock!(room.state);
         let ul = read_lock!(room.users);
@@ -1753,6 +1879,8 @@ fn server_state_query(state: &Arc<PlusServerState>, method: &str, args: &[Value]
         drop(ul); drop(ml);
 
         let host = read_lock!(room.host).upgrade().map(|u| u.id).unwrap_or(0);
+        let phira_api_endpoint = room.effective_phira_api_endpoint_sync(&state.config.phira_api_endpoint);
+        let phira_api_endpoint_override = room.phira_api_endpoint_override_sync();
         let hist = read_lock!(room.play_history);
         let rounds: Vec<RoundInfo> = hist.iter().map(|r| RoundInfo {
             chart: r.chart_id,
@@ -1777,6 +1905,8 @@ fn server_state_query(state: &Arc<PlusServerState>, method: &str, args: &[Value]
                 playing_users: pu,
                 rounds,
                 hidden: room.is_hidden(),
+                phira_api_endpoint,
+                phira_api_endpoint_override,
             },
         }
     }
@@ -1787,7 +1917,7 @@ fn server_state_query(state: &Arc<PlusServerState>, method: &str, args: &[Value]
             let list: Vec<Value> = rooms.iter().filter(|(_, room)| {
                 !room.is_hidden()
             }).map(|(rid, room)| {
-                let ss = build_snapshot(&rid.to_string(), room);
+                let ss = build_snapshot(state, &rid.to_string(), room);
                 serde_json::to_value(ss).unwrap_or_default()
             }).collect();
             Ok(Value::Array(list))
@@ -1799,7 +1929,7 @@ fn server_state_query(state: &Arc<PlusServerState>, method: &str, args: &[Value]
             let rooms = read_lock!(state.rooms);
             let room = rooms.get(&rid).ok_or("room not found")?;
             if room.is_hidden() { return Err("room not found".to_string()); }
-            let ss = build_snapshot(name, room);
+            let ss = build_snapshot(state, name, room);
             serde_json::to_value(ss).map_err(|e| e.to_string())
         }
         "user_name" => {
@@ -1879,7 +2009,7 @@ fn server_state_query(state: &Arc<PlusServerState>, method: &str, args: &[Value]
             let rg = read_lock!(user.room);
             let room = rg.as_ref().ok_or("user not in room")?;
             let name = room.id.to_string();
-            let ss = build_snapshot(&name, room);
+            let ss = build_snapshot(state, &name, room);
             serde_json::to_value(ss).map_err(|e| e.to_string())
         }
         _ => Err(format!("unknown query method: {method}")),

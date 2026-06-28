@@ -219,7 +219,7 @@ WASM 插件通过 `phira:host/api` 和 `phira:host/log` 等导入函数与宿主
 | `port` | u16 | `12346` | TCP 监听端口 |
 | `http_port` | u16 | `12347` | HTTP/SSE/WebSocket 服务端口 |
 | `monitors` | Vec<i32> | `[2]` | 允许旁观的用户 ID |
-| `phira_api_endpoint` | String | `https://phira.5wyxi.com` | Phira API 端点 |
+| `phira_api_endpoint` | String | `https://phira.5wyxi.com` | 全局 Phira API 端点；房间可临时覆盖 |
 | `plugins_dir` | String | `plugins` | WASM 插件目录 |
 | `extensions_file` | String | `data/extensions.json` | 扩展数据持久化文件 |
 | `benchmark_phira_tokens` | Vec<String> | `[]` | 真实网络压测使用的 Phira token 列表 |
@@ -235,7 +235,7 @@ WASM 插件通过 `phira:host/api` 和 `phira:host/log` 等导入函数与宿主
 | `server_name` | String | — | 服务器名称 |
 | `wasm_runtime.*` | object | 见文档 | WASM 插件资源限制 |
 
-压测 token 可直接写入 `server_config.yml`，也可通过 `benchmark-bind <token1[,token2...]>` 写入 `data/benchmark-auth.json`；如果配置文件中已有 token，压测优先使用配置文件。隐藏房间通过房间名前缀 `-`、`room hide/unhide` 或 `room.set_hidden` 管理，不是全局配置项。
+压测 token 可直接写入 `server_config.yml`，也可通过 `benchmark-bind <token1[,token2...]>` 写入 `data/benchmark-auth.json`；如果配置文件中已有 token，压测优先使用配置文件。隐藏房间通过房间名前缀 `-`、`room hide/unhide` 或 `room.set_hidden` 管理，不是全局配置项。房间也可以用 `room set <房间ID> phira_api_endpoint <url>` 临时覆盖全局 Phira API，房间内选谱和提交成绩会立刻使用该 endpoint，`default`/`clear` 可恢复全局配置。
 
 ## 许可证
 

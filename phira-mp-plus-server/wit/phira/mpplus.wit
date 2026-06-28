@@ -95,6 +95,8 @@ interface room-info {
         locked: bool,
         cycling: bool,
         hidden: bool,
+        /// 当前生效的 Phira API endpoint（房间覆盖优先，否则为全局配置）
+        phira-api-endpoint: string,
     }
 
     /// 获取房间基础信息
@@ -120,6 +122,9 @@ interface room-info {
 
     /// 列出所有活跃房间
     list-rooms: func() -> list<string>;
+
+    /// 查询房间当前生效的 Phira API endpoint
+    get-room-phira-api-endpoint: func(room-id: string) -> result<string, string>;
 }
 
 /// 消息发送接口
@@ -156,6 +161,12 @@ interface room-management {
 
     /// 查询房间隐藏状态
     is-room-hidden: func(room-id: string) -> result<bool, string>;
+
+    /// 为房间设置独立 Phira API endpoint，设置后立即生效
+    set-room-phira-api-endpoint: func(room-id: string, endpoint: string) -> result<_, string>;
+
+    /// 清除房间 Phira API endpoint 覆盖，恢复使用全局配置，立即生效
+    clear-room-phira-api-endpoint: func(room-id: string) -> result<_, string>;
 
     /// 关闭/解散房间
     close-room: func(room-id: string) -> result<_, string>;

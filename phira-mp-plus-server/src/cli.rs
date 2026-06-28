@@ -436,7 +436,7 @@ impl CliHandler {
                 "room-set" => {
                     if args.len() < 3 {
                         self.out(format!("  {} {} <房间ID> <字段> <值>", c::yellow("?"), c::bold("room-set")));
-                        self.out(format!("  {} 字段: lock | cycle | hidden | chart-id",
+                        self.out(format!("  {} 字段: lock | cycle | hidden | chart-id | phira_api_endpoint",
                             c::dim("▸")));
                     } else {
                         self.room_set(args[0], args[1], &args[2..].join(" ")).await;
@@ -578,7 +578,7 @@ impl CliHandler {
         self.out(format!("    {:<22} {}", c::dim("room transfer <ID> <用户>"), "转移房主"));
         self.out(format!("    {:<22} {}", c::dim("room force-move <ID> <用户>"), "强制迁移用户"));
         self.out(format!("    {:<22} {}", c::dim("room hide|unhide <ID>"), "隐藏/取消隐藏房间"));
-        self.out(format!("    {:<22} {}", c::dim("room set <ID> <字段> <值>"), "修改设置"));
+        self.out(format!("    {:<22} {}", c::dim("room set <ID> <字段> <值>"), "修改设置（含 phira_api_endpoint）"));
         self.out(format!("    {:<22} {}", c::dim("room history <ID>"), "游玩记录"));
         self.out(format!("    {:<22} {}", c::dim("room ban|unban|banlist"), "房间黑名单"));
         self.out(format!(""));
@@ -1026,6 +1026,11 @@ impl CliHandler {
             Some(c) => format!("{} (id={})", c.name, c.id),
             None => "未选择".to_string(),
         };
+        let endpoint_override = room.phira_api_endpoint_override().await;
+        let endpoint_info = endpoint_override
+            .clone()
+            .unwrap_or_else(|| self.state.config.phira_api_endpoint.clone());
+        let endpoint_mode = if endpoint_override.is_some() { "房间覆盖" } else { "全局默认" };
         let host_name = room.host_id().await
             .and_then(|hid| users.iter().find(|u| u.id == hid).map(|u| u.name.clone()))
             .unwrap_or_else(|| "未知".to_string());
@@ -1034,6 +1039,7 @@ impl CliHandler {
         self.out(format!("  {} 状态: {} | {} | {} | {}", c::dim("│"), state_str, locked, cycling, hidden));
         self.out(format!("  {} 房主: {}", c::dim("│"), host_name));
         self.out(format!("  {} 谱面: {}", c::dim("│"), chart_info));
+        self.out(format!("  {} Phira API: {} ({})", c::dim("│"), endpoint_info, endpoint_mode));
         self.out(format!("  {} 玩家: {}", c::dim("│"),
             users.iter().map(|u| format!("{}({})", u.name, u.id)).collect::<Vec<_>>().join(", ")));
         if !monitors.is_empty() {
@@ -1180,6 +1186,23 @@ impl CliHandler {
                     Err(e) => self.out(format!("  {} {}", c::red("✗"), e)),
                 }
             }
+            "phira_api_endpoint" | "phira-api-endpoint" | "api-endpoint" | "endpoint" => {
+                match crate::server::parse_room_endpoint_value(value) {
+                    Ok(endpoint) => match self.state.set_room_phira_api_endpoint(room_id, endpoint).await {
+                        Ok(res) => {
+                            let effective = res.get("phira_api_endpoint").and_then(|v| v.as_str()).unwrap_or("");
+                            let using_override = res.get("using_room_override").and_then(|v| v.as_bool()).unwrap_or(false);
+                            if using_override {
+                                self.out(format!("  {} 房间 {} 的 Phira API 已切换为 {}，立即生效", c::green("✓"), room_id, effective));
+                            } else {
+                                self.out(format!("  {} 房间 {} 已恢复使用全局 Phira API {}，立即生效", c::green("✓"), room_id, effective));
+                            }
+                        }
+                        Err(e) => self.out(format!("  {} {}", c::red("✗"), e)),
+                    },
+                    Err(e) => self.out(format!("  {} {}", c::red("✗"), e)),
+                }
+            }
             "chart-id" | "chart" => {
                 if !matches!(
                     *room.state.read().await,
@@ -1192,9 +1215,10 @@ impl CliHandler {
                     Ok(id) => id,
                     Err(_) => { self.out(format!("  {} 无效的谱面ID", c::red("✗"))); return; }
                 };
+                let endpoint = room.effective_phira_api_endpoint(&self.state).await;
                 let chart = match reqwest::get(format!(
                     "{}/chart/{cid}",
-                    &self.state.config.phira_api_endpoint
+                    endpoint.trim_end_matches('/')
                 ))
                 .await
                 {
@@ -1231,7 +1255,7 @@ impl CliHandler {
             }
             _ => {
                 self.out(format!("  {} 未知字段: {}", c::red("✗"), field));
-                self.out(format!("  {} 支持: lock, cycle, hidden, chart-id", c::dim("▸")));
+                self.out(format!("  {} 支持: lock, cycle, hidden, chart-id, phira_api_endpoint", c::dim("▸")));
             }
         }
     }

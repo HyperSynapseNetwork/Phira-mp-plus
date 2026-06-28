@@ -57,6 +57,9 @@ WASM 插件通过 JSON 字符串与宿主通信：
 | `room.force_move` | `{ room_id, target_id, monitor }` | `{"ok": true}` | 强制迁移用户到房间 |
 | `room.set_hidden` | `{ room_id, hidden }` | `{"ok": true, "hidden": bool}` | 设置隐藏状态 |
 | `room.is_hidden` | `{ room_id }` | `{"hidden": bool}` | 查询隐藏状态 |
+| `room.set_phira_api_endpoint` | `{ room_id, endpoint }` | `{"ok": true, "phira_api_endpoint": string}` | 设置房间独立 Phira API，传 `null`/`default` 清除 |
+| `room.get_phira_api_endpoint` | `{ room_id }` | `{"phira_api_endpoint": string, "using_room_override": bool}` | 查询当前生效 Phira API |
+| `room.clear_phira_api_endpoint` | `{ room_id }` | `{"ok": true}` | 清除房间覆盖，恢复全局配置 |
 | `room.close` | `{ room_id }` | `{"ok": true}` | 解散房间 |
 | `admin.kick_user` | `{ user_id, reason }` | `{"ok": true}` | 从服务器踢出用户 |
 | `admin.ban_user` | `{ user_id, reason }` | `{"ok": true, "reason": string}` | 封禁用户，返回规范化后的原因 |
