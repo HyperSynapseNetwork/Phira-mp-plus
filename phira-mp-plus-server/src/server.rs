@@ -217,7 +217,7 @@ fn sanitize_benchmark_tokens<I>(items: I) -> Vec<String>
 where
     I: IntoIterator<Item = String>,
 {
-    let mut out = Vec::new();
+    let mut out: Vec<String> = Vec::new();
     for item in items {
         for token in item.split(|ch: char| ch == ',' || ch == ';' || ch.is_whitespace()) {
             let token = token.trim();
@@ -502,7 +502,7 @@ impl PlusServer {
         let _ = state.plugin_manager.register_cli_command(crate::plugin::CliCommand {
             name: "benchmark-bind".to_string(),
             description: "绑定真实 Phira 账号 token 供 benchmark 使用".to_string(),
-            usage: "benchmark-bind <token1[,token2...]>",
+            usage: "benchmark-bind <token1[,token2...]>".to_string(),
             handler: Arc::new(move |args| {
                 if args.is_empty() {
                     return vec!["  ✗ 用法: benchmark-bind <token1[,token2...]>".to_string()];

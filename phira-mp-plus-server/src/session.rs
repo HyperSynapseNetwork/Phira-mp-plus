@@ -7,7 +7,7 @@ use crate::tl;
 use anyhow::{anyhow, bail, Result};
 use phira_mp_common::{
     ClientCommand, JoinRoomResponse, Message, PartialRoomData, RoomEvent, ServerCommand, Stream,
-    StreamSender, StrippedRoomState, UserInfo,
+    StreamSender, UserInfo,
 };
 use serde::Deserialize;
 use std::{
@@ -429,6 +429,7 @@ impl Session {
                             if let ClientCommand::Authenticate { token } = &cmd {
                                 let Some(tx) = tx else { return };
                                 let mut auth_tx = Some(tx);
+                                let retry_send_tx = Arc::clone(&send_tx);
                                 let res: Result<()> = {
                                     let this = Arc::clone(&this);
                                     let server = Arc::clone(&server);
@@ -467,7 +468,7 @@ impl Session {
                                                 &server,
                                                 "/me",
                                                 Some(&token),
-                                                RetryNoticeTarget::Stream(send_tx.as_ref()),
+                                                RetryNoticeTarget::Stream(retry_send_tx.as_ref()),
                                             ).await {
                                                 Ok(info) => {
                                                     // API 成功，更新缓存并持久化

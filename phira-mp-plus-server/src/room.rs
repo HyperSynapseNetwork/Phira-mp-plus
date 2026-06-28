@@ -382,14 +382,14 @@ impl Room {
 
     /// 管理员强制迁移用户时使用：绕过房间人数、锁定和状态限制，并去重。
     pub async fn force_add_user(&self, user: Weak<super::session::User>, monitor: bool) {
-        let target_ptr = user.as_ptr();
+        let target_ptr = user.as_ptr() as usize;
         {
             let mut players = self.users.write().await;
-            players.retain(|entry| entry.strong_count() > 0 && entry.as_ptr() != target_ptr);
+            players.retain(|entry| entry.strong_count() > 0 && entry.as_ptr() as usize != target_ptr);
         }
         {
             let mut monitors = self.monitors.write().await;
-            monitors.retain(|entry| entry.strong_count() > 0 && entry.as_ptr() != target_ptr);
+            monitors.retain(|entry| entry.strong_count() > 0 && entry.as_ptr() as usize != target_ptr);
         }
         if monitor {
             self.monitors.write().await.push(user);
