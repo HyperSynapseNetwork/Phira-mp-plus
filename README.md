@@ -55,7 +55,7 @@ cargo build --release --target x86_64-unknown-linux-musl
 
 ### 自定义配置
 
-创建 `server_config.yml`（见项目根目录的示例文件）：
+创建或修改 `server_config.yml`（见项目根目录的示例文件）：
 
 ```yaml
 port: 12346
@@ -63,13 +63,21 @@ http_port: 12347
 monitors:
   - 12345
   - 67890
+phira_api_endpoint: "https://phira.5wyxi.com"
+plugins_dir: plugins
 connection_rate_limit: 60
 connection_rate_window: 10
+round_data_retention_days: 7
 server_name: "My Phira Server"
 chat_enabled: true
+cli_enabled: true
+
+# 真实网络压测账号。也可以在 TUI/CLI 中执行 benchmark-bind <token1[,token2...]> 生成 data/benchmark-auth.json。
+benchmark_phira_tokens:
+  - "your-phira-token"
 ```
 
-配置加载顺序（后覆盖前）：YAML 配置文件 < CLI 参数。
+配置加载规则：默认读取 `server_config.yml`，也可通过 `--config <FILE>` 指定；配置文件缺失时使用默认值；命令行参数会覆盖端口、插件目录、监控 ID、扩展数据路径和 CLI 开关等同名设置。完整说明见 [docs/configuration.md](docs/configuration.md)。
 
 ### 命令行参数
 
@@ -155,6 +163,7 @@ Phira-mp-plus/
 │   └── phira-mp-client/         #   TCP 客户端库 (供游戏集成)
 │
 ├── docs/                        # 文档
+│   ├── configuration.md         #   配置文件、压测 token 与运行时参数说明
 │   ├── cli.md                   #   CLI 命令参考
 │   └── plugin-dev.md            #   WASM 插件开发指南 + WIT API 参考
 │
@@ -203,22 +212,30 @@ WASM 插件通过 `phira:host/api` 和 `phira:host/log` 等导入函数与宿主
 
 ## 配置参考
 
-完整的配置项见 `server_config.yml`：
+完整的配置项见 `server_config.yml` 与 [docs/configuration.md](docs/configuration.md)。常用项如下：
 
 | 配置项 | 类型 | 默认值 | 说明 |
 |--------|------|--------|------|
 | `port` | u16 | `12346` | TCP 监听端口 |
-| `http_port` | u16 | `12347` | HTTP/SSE 服务端口 |
+| `http_port` | u16 | `12347` | HTTP/SSE/WebSocket 服务端口 |
 | `monitors` | Vec<i32> | `[2]` | 允许旁观的用户 ID |
 | `phira_api_endpoint` | String | `https://phira.5wyxi.com` | Phira API 端点 |
-| `plugins_dir` | String | `plugins` | 插件目录 |
-| `chat_enabled` | bool | `true` | 聊天功能开关 |
-| `cli_enabled` | bool | `true` | CLI 控制台开关 |
+| `plugins_dir` | String | `plugins` | WASM 插件目录 |
+| `extensions_file` | String | `data/extensions.json` | 扩展数据持久化文件 |
+| `benchmark_phira_tokens` | Vec<String> | `[]` | 真实网络压测使用的 Phira token 列表 |
+| `benchmark_phira_token` | String | — | 单账号压测 token 兼容写法 |
+| `chat_enabled` | bool | 示例为 `true` | 聊天功能开关 |
+| `cli_enabled` | bool | `true` | TUI/CLI 控制台开关 |
 | `connection_rate_limit` | u32 | `30` | 连接速率限制（窗口内允许次数） |
 | `connection_rate_window` | u32 | `10` | 连接速率统计窗口（秒） |
+| `max_rooms` | usize | — | 最大房间数（未设置为不限制） |
 | `max_users_per_room` | usize | `8` | 每房间最大玩家数 |
 | `round_data_retention_days` | u32 | `7` | 轮次 Touches/Judges 保留天数（0=不保留） |
+| `database_url` | String | — | PostgreSQL 连接串，未设置时回退文件存储 |
 | `server_name` | String | — | 服务器名称 |
+| `wasm_runtime.*` | object | 见文档 | WASM 插件资源限制 |
+
+压测 token 可直接写入 `server_config.yml`，也可通过 `benchmark-bind <token1[,token2...]>` 写入 `data/benchmark-auth.json`；如果配置文件中已有 token，压测优先使用配置文件。隐藏房间通过房间名前缀 `-`、`room hide/unhide` 或 `room.set_hidden` 管理，不是全局配置项。
 
 ## 许可证
 

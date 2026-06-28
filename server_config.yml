@@ -1,48 +1,67 @@
 # Phira-mp+ 服务端配置文件
-# 所有选项均有默认值，可按需覆盖
-# 配置加载顺序（后覆盖前）：此文件 < 环境变量 < CLI 参数
+# 所有选项均有默认值，可按需覆盖。
+# 默认读取当前工作目录的 server_config.yml，也可通过 --config <FILE> 指定。
+# 命令行参数会覆盖同名 YAML 字段；RUST_LOG/NO_COLOR 只影响日志或终端显示。
+# 完整说明见 docs/configuration.md。
 
 # ---- 网络 ----
 
 # TCP 监听端口（游戏客户端直连）
 port: 12346
 
-# HTTP/SSE 服务端口（REST API 和管理面板）
+# HTTP/SSE/WebSocket 服务端口（REST API、监控面板、事件流）
 http_port: 12347
 
-# 隐藏房间前缀：房间名以 "-" 开头时默认隐藏，不在 Web API 与欢迎语公开房间中显示
-# 也可用 CLI/WIT API 手动设置隐藏状态；知道房间名的玩家仍可被管理员或插件定向管理
-
-# ---- 认证 ----
+# ---- 认证 / Phira API ----
 
 # 允许旁观的 Phira 用户 ID 列表
 monitors:
   - 2
 
-# Phira API 端点（通常无需修改）
+# Phira API 端点。认证、查谱面、查成绩会使用它。
+# 通常无需修改；如果使用自建/代理 API，可在这里替换。
 phira_api_endpoint: "https://phira.5wyxi.com"
 
-# 压测使用真实 Phira 账号 token。未配置时 benchmark 会提示先绑定。
-# 可通过 CLI 执行 benchmark-bind <token1[,token2...]> 写入 data/benchmark-auth.json，或直接在这里配置。
+# ---- 真实网络压测账号 ----
+
+# benchmark 使用真实 Phira token 通过 TCP 连接本服务端执行压测。
+# 未配置时执行 benchmark 会提示先绑定或修改配置。
+# 推荐多账号写法：一个 token 通常对应一个压测房间。
 # benchmark_phira_tokens:
-#   - "your-phira-token"
-# 兼容单账号写法：
+#   - "your-phira-token-1"
+#   - "your-phira-token-2"
+
+# 兼容单账号写法。已配置 benchmark_phira_tokens 时通常不需要它。
 # benchmark_phira_token: "your-phira-token"
 
-# ---- 插件 ----
+# 也可在 TUI/CLI 中执行：benchmark-bind <token1[,token2...]>
+# 该命令会写入 data/benchmark-auth.json；如果上面的 YAML token 非空，则优先使用 YAML token。
+
+# ---- 插件 / 数据 ----
 
 # 插件目录路径（存放 .wasm 文件）
 plugins_dir: plugins
+
+# 扩展数据持久化 JSON 文件路径
+# extensions_file: data/extensions.json
+
+# PostgreSQL 数据库连接（未设置时使用 JSON/文件存储回退）
+# database_url: "postgres://user:password@localhost:5432/phira_mp_plus"
 
 # ---- 功能开关 ----
 
 # 是否启用聊天功能
 chat_enabled: true
 
-# 是否启用 CLI 管理控制台
+# 是否启用交互式 TUI/CLI 管理控制台
 cli_enabled: true
 
-# ---- 限制 ----
+# ---- 房间 / 公开展示 ----
+
+# 隐藏房间不是全局配置项，而是房间状态：
+# - 房间名以 "-" 开头时默认隐藏，兼容旧写法 "+-"；
+# - 隐藏房间不会出现在 Web API 与欢迎语 [active_rooms] 中；
+# - 可通过 room hide/unhide、room set <id> hidden true|false、WIT/API 手动管理。
 
 # 最大房间数（不设则无限制）
 # max_rooms: 100
@@ -50,7 +69,9 @@ cli_enabled: true
 # 每房间最大玩家数（不设则使用默认 8）
 # max_users_per_room: 8
 
-# 连接速率限制（窗口内允许次数）
+# ---- 限速 / 数据保留 ----
+
+# 连接速率限制（每个窗口内允许的连接次数）
 connection_rate_limit: 30
 
 # 连接速率统计窗口（秒）
@@ -59,13 +80,23 @@ connection_rate_window: 10
 # 轮次 Touches/Judges 数据保留天数（0 为不保留）
 round_data_retention_days: 7
 
-# PostgreSQL 数据库连接（未设置时使用 JSON 文件存储）
-# database_url: "postgres://user:password@localhost:5432/phira_mp_plus"
+# ---- WASM 运行时限制 ----
 
-# ---- 定制 ----
+# WASM 插件资源限制。一般无需修改；插件较大或事件较多时可按需调高。
+# wasm_runtime:
+#   max_memory_mb: 64
+#   fuel_per_call: 10000000
+#   max_stack_bytes: 2097152
+#   http_timeout_secs: 10
+#   max_http_response_bytes: 2097152
+#   max_file_bytes: 4194304
+#   allow_private_network: false
+#   max_event_concurrency: 8
+
+# ---- 定制 / 管理 ----
 
 # 服务器名称（显示在欢迎语等位置）
 # server_name: "My Phira Server"
 
-# 管理员 API 令牌（用于 HTTP admin 接口）
+# 管理员 API 令牌（预留/供管理接口或自定义扩展使用）
 # admin_token: "your-secret-token"
