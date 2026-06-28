@@ -601,6 +601,9 @@ impl WasmPluginInstance {
     /// - `room.kick`         → 从房间踢出用户
     /// - `room.transfer_host`→ 转移房主
     /// - `room.set_lock`     → 锁定/解锁房间
+    /// - `room.force_move`   → 强制迁移用户到房间
+    /// - `room.set_hidden`   → 设置房间隐藏状态
+    /// - `room.is_hidden`    → 查询房间隐藏状态
     /// - `room.close`        → 解散房间
     /// ── 用户管理（user-management） ──
     /// - `admin.kick_user`  → 从服务器踢出用户
@@ -762,6 +765,16 @@ impl WasmPluginInstance {
             "room.kick" => state_call(svc, "room.kick", &[serde_json::json!(get_str("room_id")?), serde_json::json!(get_i32("target_id")?)]),
             "room.transfer_host" => state_call(svc, "room.transfer_host", &[serde_json::json!(get_str("room_id")?), serde_json::json!(get_i32("target_id")?)]),
             "room.set_lock" => state_call(svc, "room.set_lock", &[serde_json::json!(get_str("room_id")?), serde_json::json!(value.get("locked").and_then(|v| v.as_bool()).ok_or("missing locked")?)]),
+            "room.force_move" => state_call(svc, "room.force_move", &[
+                serde_json::json!(get_str("room_id")?),
+                serde_json::json!(get_i32("target_id")?),
+                serde_json::json!(value.get("monitor").and_then(|v| v.as_bool()).unwrap_or(false)),
+            ]),
+            "room.set_hidden" => state_call(svc, "room.set_hidden", &[
+                serde_json::json!(get_str("room_id")?),
+                serde_json::json!(value.get("hidden").and_then(|v| v.as_bool()).ok_or("missing hidden")?),
+            ]),
+            "room.is_hidden" => state_call(svc, "room.is_hidden", &[serde_json::json!(get_str("room_id")?)]),
             "room.close" => state_call(svc, "room.close", &[serde_json::json!(get_str("room_id")?)]),
             "room.uuid" => state_call(svc, "room.uuid", &[serde_json::json!(get_str("room_id")?)]),
             "room.history" => state_call(svc, "room.history", &[serde_json::json!(get_str("room_id")?)]),
@@ -871,7 +884,7 @@ fn required_capability(method: &str) -> Option<&'static str> {
     match method {
         "uuid.v4" | "time.now" => None,
         value if value.starts_with("admin.") => Some("admin"),
-        "room.kick" | "room.transfer_host" | "room.set_lock" | "room.close" => Some("room.manage"),
+        "room.kick" | "room.transfer_host" | "room.set_lock" | "room.force_move" | "room.set_hidden" | "room.close" => Some("room.manage"),
         value if value.starts_with("room.") || value.starts_with("player.") || value.starts_with("round.") || value.starts_with("user.") || value == "state.query" => Some("state.read"),
         value if value.starts_with("send.") => Some("send"),
         value if value.starts_with("ext.") => Some("ext"),

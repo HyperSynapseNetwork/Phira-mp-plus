@@ -122,6 +122,12 @@ pub struct PlusConfig {
     /// 未设置时自动回退 JSON 文件存储
     #[serde(default)]
     pub database_url: Option<String>,
+    /// 压测使用的 Phira token 列表。可在配置文件中直接填写，或通过 benchmark-bind 命令写入 data/benchmark-auth.json。
+    #[serde(default)]
+    pub benchmark_phira_tokens: Vec<String>,
+    /// 兼容单账号配置：benchmark_phira_token: "..."。
+    #[serde(default)]
+    pub benchmark_phira_token: Option<String>,
     /// WASM sandbox/resource limits.
     #[serde(default)]
     pub wasm_runtime: WasmRuntimeConfig,
@@ -154,6 +160,8 @@ impl Default for PlusConfig {
             chat_enabled: true,
             round_data_retention_days: 7,
             database_url: None,
+            benchmark_phira_tokens: Vec::new(),
+            benchmark_phira_token: None,
             wasm_runtime: WasmRuntimeConfig::default(),
         }
     }
@@ -195,6 +203,74 @@ pub struct PlusConfigCli {
 /// 压测请求: (时长s, 房间数, 结果回传)
 type BenchRequest = (u64, usize, std::sync::mpsc::Sender<String>);
 
+const BENCH_AUTH_FILE: &str = "data/benchmark-auth.json";
+
+#[derive(Debug, Default, Deserialize, Serialize)]
+struct BenchmarkAuthFile {
+    #[serde(default)]
+    token: Option<String>,
+    #[serde(default)]
+    tokens: Vec<String>,
+}
+
+fn sanitize_benchmark_tokens<I>(items: I) -> Vec<String>
+where
+    I: IntoIterator<Item = String>,
+{
+    let mut out = Vec::new();
+    for item in items {
+        for token in item.split(|ch: char| ch == ',' || ch == ';' || ch.is_whitespace()) {
+            let token = token.trim();
+            if token.is_empty() || token.len() > 32 {
+                continue;
+            }
+            if !out.iter().any(|existing| existing.as_str() == token) {
+                out.push(token.to_string());
+            }
+        }
+    }
+    out
+}
+
+fn load_benchmark_tokens(config: &PlusConfig) -> Vec<String> {
+    let mut configured = config.benchmark_phira_tokens.clone();
+    if let Some(token) = &config.benchmark_phira_token {
+        configured.push(token.clone());
+    }
+    let configured = sanitize_benchmark_tokens(configured);
+    if !configured.is_empty() {
+        return configured;
+    }
+
+    let Ok(content) = std::fs::read_to_string(BENCH_AUTH_FILE) else {
+        return Vec::new();
+    };
+    match serde_json::from_str::<BenchmarkAuthFile>(&content) {
+        Ok(file) => {
+            let mut tokens = file.tokens;
+            if let Some(token) = file.token {
+                tokens.push(token);
+            }
+            sanitize_benchmark_tokens(tokens)
+        }
+        Err(err) => {
+            warn!(path = BENCH_AUTH_FILE, "failed to parse benchmark auth file: {err}");
+            Vec::new()
+        }
+    }
+}
+
+fn save_benchmark_tokens(tokens: &[String]) -> Result<(), String> {
+    std::fs::create_dir_all("data").map_err(|e| format!("create data directory: {e}"))?;
+    let file = BenchmarkAuthFile {
+        token: None,
+        tokens: tokens.to_vec(),
+    };
+    let payload = serde_json::to_string_pretty(&file).map_err(|e| format!("serialize benchmark auth: {e}"))?;
+    std::fs::write(BENCH_AUTH_FILE, payload).map_err(|e| format!("write {BENCH_AUTH_FILE}: {e}"))
+}
+
+
 /// Phira-mp+ 服务器状态
 pub struct PlusServerState {
     pub config: PlusConfig,
@@ -214,6 +290,8 @@ pub struct PlusServerState {
     pub user_room_history: SafeMap<i32, Vec<(String, String, i64)>>,
     /// 压测请求发送端（背景 tokio 任务消费）
     pub bench_tx: tokio::sync::mpsc::UnboundedSender<BenchRequest>,
+    /// 压测用 Phira token 列表（来自配置或 benchmark-bind 命令）。
+    pub bench_tokens: RwLock<Vec<String>>,
     /// 房间 monitor key（与 phira-web-monitor 共享密钥）
     pub room_monitor_key: Vec<u8>,
     pub events: Arc<SseHub>,
@@ -264,6 +342,7 @@ impl PlusServer {
         let rate_limit = config.connection_rate_limit;
         let rate_window = config.connection_rate_window;
         let retention_days = config.round_data_retention_days;
+        let bench_tokens = load_benchmark_tokens(&config);
         let (bench_tx, bench_rx) = tokio::sync::mpsc::unbounded_channel::<BenchRequest>();
 
         let events = Arc::new(SseHub::new());
@@ -287,6 +366,7 @@ impl PlusServer {
             )),
             user_room_history: SafeMap::default(),
             bench_tx: bench_tx.clone(),
+            bench_tokens: RwLock::new(bench_tokens),
             room_monitor_key: generate_secret_key("room_monitor", 64).unwrap_or_default(),
             room_monitor: RwLock::new(None),
             game_monitors: SafeMap::default(),
@@ -297,9 +377,7 @@ impl PlusServer {
             let mut bench_rx = bench_rx;
             while let Some((duration, rooms, result_tx)) = bench_rx.recv().await {
                 let bs = Arc::clone(&bench_state);
-                let output = tokio::task::spawn_blocking(move || {
-                    bs.run_benchmark_sync(duration, rooms)
-                }).await.unwrap_or_else(|e| format!("benchmark panicked: {e}"));
+                let output = bs.run_benchmark_network(duration, rooms).await;
                 let _ = result_tx.send(output);
             }
         });
@@ -404,11 +482,11 @@ impl PlusServer {
         let bench_state = Arc::clone(&state);
         let _ = state.plugin_manager.register_cli_command(crate::plugin::CliCommand {
             name: "benchmark".to_string(),
-            description: "运行服务端压力测试".to_string(),
+            description: "运行真实网络压力测试（需要已绑定 Phira 账号 token）".to_string(),
             usage: "benchmark [dur_s=30] [rooms=100]".to_string(),
             handler: Arc::new(move |args| {
                 let duration: u64 = args.first().and_then(|a| a.parse().ok()).filter(|&v| v >= 5 && v <= 300).unwrap_or(30);
-                let rooms: usize = args.get(1).and_then(|a| a.parse().ok()).unwrap_or(100).max(10).min(5000);
+                let rooms: usize = args.get(1).and_then(|a| a.parse().ok()).unwrap_or(100).max(1).min(5000);
                 let sq = bench_state.clone();
                 match crate::server::server_state_query_inner(
                     &sq, "test.run_benchmark", &[serde_json::json!(duration), serde_json::json!(rooms)]
@@ -416,6 +494,28 @@ impl PlusServer {
                     Ok(v) => v.get("output").and_then(|o| o.as_str())
                         .map(|s| s.lines().map(|l| l.to_string()).collect())
                         .unwrap_or_else(|| vec!["  ✗ parse error".to_string()]),
+                    Err(e) => vec![format!("  ✗ {}", e)],
+                }
+            }),
+        }).await;
+        let bind_state = Arc::clone(&state);
+        let _ = state.plugin_manager.register_cli_command(crate::plugin::CliCommand {
+            name: "benchmark-bind".to_string(),
+            description: "绑定真实 Phira 账号 token 供 benchmark 使用".to_string(),
+            usage: "benchmark-bind <token1[,token2...]>",
+            handler: Arc::new(move |args| {
+                if args.is_empty() {
+                    return vec!["  ✗ 用法: benchmark-bind <token1[,token2...]>".to_string()];
+                }
+                let sq = bind_state.clone();
+                match crate::server::server_state_query_inner(
+                    &sq, "test.bind_phira_tokens", &[serde_json::json!(args.join(" "))]
+                ) {
+                    Ok(v) => vec![format!(
+                        "  ✓ 已绑定 {} 个压测账号，保存到 {}",
+                        v.get("count").and_then(|c| c.as_u64()).unwrap_or(0),
+                        v.get("path").and_then(|p| p.as_str()).unwrap_or(BENCH_AUTH_FILE),
+                    )],
                     Err(e) => vec![format!("  ✗ {}", e)],
                 }
             }),
@@ -706,6 +806,405 @@ impl PlusServerState {
         sync_write!(self.rooms).retain(|rid, _| !rid.to_string().starts_with("bench-"));
         sync_write!(self.users).retain(|id, _| *id < TEST_USER_ID_BASE || *id >= TEST_USER_ID_BASE + 10_000_000);
     }
+
+    /// 绑定真实 Phira 账号 token 作为网络压测客户端。
+    pub async fn bind_benchmark_tokens(&self, raw_tokens: Vec<String>) -> Result<usize, String> {
+        let tokens = sanitize_benchmark_tokens(raw_tokens);
+        if tokens.is_empty() {
+            return Err("未提供有效 token；可传入空格/逗号分隔的 1 个或多个 Phira token".to_string());
+        }
+        save_benchmark_tokens(&tokens)?;
+        let count = tokens.len();
+        *self.bench_tokens.write().await = tokens;
+        Ok(count)
+    }
+
+    /// 通过真实 TCP 协议连接本服务端执行压测；不再直接篡改内存状态。
+    pub async fn run_benchmark_network(&self, duration_secs: u64, target_rooms: usize) -> String {
+        use std::time::Instant;
+
+        struct BenchClient {
+            stream: tokio::net::TcpStream,
+            room_id: String,
+        }
+
+        let tokens = self.bench_tokens.read().await.clone();
+        let mut out = String::new();
+        macro_rules! o { ($($t:tt)*) => { out.push_str(&format!($($t)*)); out.push('\n'); } }
+
+        o!("  ◆ Phira-mp+ 真实网络压测");
+        o!("  │ 目标房间: {target_rooms}  测试时长: {duration_secs}s");
+        o!("  │");
+        if tokens.is_empty() {
+            o!("  ✗ 未配置 Phira 压测账号");
+            o!("  │  请先执行: benchmark-bind <token1[,token2...]>");
+            o!("  │  或直接修改 server_config.yml: benchmark_phira_tokens: [\"...\"]");
+            o!("  │  也可以写入 {BENCH_AUTH_FILE}: {{\"tokens\":[\"...\"]}}");
+            return out;
+        }
+
+        let room_count = target_rooms.min(tokens.len()).max(1);
+        if room_count < target_rooms {
+            o!("  │ 账号不足：已按已配置的 {} 个 token 创建 {} 间房间", tokens.len(), room_count);
+            o!("  │ 想压更多房间，请为 benchmark_phira_tokens 配置更多不同 Phira 账号 token");
+            o!("  │");
+        }
+
+        let addr = std::net::SocketAddr::from(([127, 0, 0, 1], self.config.port));
+        let started_at = Instant::now();
+        let mut clients: Vec<BenchClient> = Vec::new();
+        let mut created = 0usize;
+        let mut joined = 0usize;
+        let mut failures: Vec<String> = Vec::new();
+
+        o!("  ├─ [阶段1] 真实 TCP 连接 + 认证 + 创建房间");
+        let phase1 = Instant::now();
+        for (i, token) in tokens.iter().take(room_count).enumerate() {
+            let room_id = format!("bench-{i}");
+            match bench_connect_auth(addr, token).await {
+                Ok(mut stream) => match bench_create_room(&mut stream, &room_id).await {
+                    Ok(()) => {
+                        clients.push(BenchClient { stream, room_id });
+                        created += 1;
+                    }
+                    Err(err) => failures.push(format!("create {room_id}: {err}")),
+                },
+                Err(err) => failures.push(format!("auth host#{i}: {err}")),
+            }
+        }
+        o!("  │ ✓ 创建 {created} 间, 耗时 {:.1}s", phase1.elapsed().as_secs_f64());
+
+        if created == 0 {
+            o!("  │");
+            o!("  ✗ 没有成功创建任何房间，压测停止");
+            for failure in failures.iter().take(8) {
+                o!("  │  - {failure}");
+            }
+            return out;
+        }
+
+        o!("  │");
+        o!("  ├─ [阶段2] 剩余账号真实 JoinRoom 填充房间");
+        let phase2 = Instant::now();
+        for (i, token) in tokens.iter().enumerate().skip(room_count) {
+            let room_id = format!("bench-{}", (i - room_count) % created);
+            match bench_connect_auth(addr, token).await {
+                Ok(mut stream) => match bench_join_room(&mut stream, &room_id, false).await {
+                    Ok(()) => {
+                        clients.push(BenchClient { stream, room_id });
+                        joined += 1;
+                    }
+                    Err(err) => failures.push(format!("join token#{i}: {err}")),
+                },
+                Err(err) => failures.push(format!("auth guest#{i}: {err}")),
+            }
+        }
+        o!("  │ ✓ 加入 {joined} 人, 活跃客户端 {}, 耗时 {:.1}s", clients.len(), phase2.elapsed().as_secs_f64());
+
+        o!("  │");
+        o!("  ├─ [阶段3] 保持连接并通过 Ping/Pong 测网络链路 {duration_secs}s");
+        let phase3 = Instant::now();
+        let mut op_count = 0u64;
+        let mut failed_ops = 0u64;
+        let mut latencies = Vec::new();
+        while phase3.elapsed().as_secs() < duration_secs {
+            for client in &mut clients {
+                let t = Instant::now();
+                match bench_ping(&mut client.stream).await {
+                    Ok(()) => {
+                        op_count += 1;
+                        latencies.push(t.elapsed().as_secs_f64() * 1000.0);
+                    }
+                    Err(err) => {
+                        failed_ops += 1;
+                        if failures.len() < 16 {
+                            failures.push(format!("ping {}: {err}", client.room_id));
+                        }
+                    }
+                }
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+        let avg_ms = if latencies.is_empty() { 0.0 } else { latencies.iter().sum::<f64>() / latencies.len() as f64 };
+        let p99_ms = if latencies.len() > 1 {
+            let mut sorted = latencies.clone();
+            sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+            sorted[((sorted.len() - 1) as f64 * 0.99).round() as usize]
+        } else { avg_ms };
+        o!("  │ ✓ Ping/Pong {op_count} 次, 失败 {failed_ops} 次, avg={avg_ms:.2}ms p99={p99_ms:.2}ms");
+
+        o!("  │");
+        o!("  ├─ [阶段4] 通过协议 LeaveRoom 并清理 bench-* 房间");
+        for client in &mut clients {
+            let _ = bench_leave_room(&mut client.stream).await;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        self.rooms.write().await.retain(|rid, _| !rid.to_string().starts_with("bench-"));
+        o!("  │ ✓ 清理完成");
+
+        o!("  │");
+        o!("  └─ 压测完成 ({:.1}s)", started_at.elapsed().as_secs_f64());
+        o!("");
+        o!("  ◆ 报告");
+        o!("  │  真实客户端: {}  房间: {created}  加入用户: {joined}", clients.len());
+        o!("  │  网络操作: {op_count}  失败: {failed_ops}");
+        o!("  │  延迟: avg={avg_ms:.2}ms  p99={p99_ms:.2}ms");
+        if !failures.is_empty() {
+            o!("  │");
+            o!("  ├─ 失败样例（最多显示 8 条）");
+            for failure in failures.iter().take(8) {
+                o!("  │  · {failure}");
+            }
+        }
+        out
+    }
+
+    /// 管理员强制把用户迁移到指定房间，绕过房间人数、锁定、进行中等普通加入限制。
+    pub async fn force_move_user_to_room(&self, room_id: &str, target_id: i32, monitor: bool) -> Result<Value, String> {
+        let rid: RoomId = room_id.to_string().try_into().map_err(|_| "invalid room_id".to_string())?;
+        let target_room = {
+            let rooms = self.rooms.read().await;
+            rooms.get(&rid).map(Arc::clone).ok_or("room not found")?
+        };
+        let user = {
+            let users = self.users.read().await;
+            users.get(&target_id).map(Arc::clone).ok_or("user not found")?
+        };
+
+        let old_room = user.room.read().await.as_ref().map(Arc::clone);
+        let old_room_id = old_room.as_ref().map(|room| room.id.to_string());
+        let was_monitor = user.monitor.load(Ordering::SeqCst);
+        let same_room = old_room.as_ref().is_some_and(|room| room.id.to_string() == rid.to_string());
+
+        if let Some(room) = old_room.as_ref().filter(|_| !same_room) {
+            let old_id = room.id.clone();
+            let old_id_text = old_id.to_string();
+            if room.on_user_leave(&user).await {
+                self.rooms.write().await.remove(&old_id);
+            }
+            if !was_monitor {
+                self.publish_room_event(RoomEvent::LeaveRoom {
+                    room: old_id,
+                    user: target_id,
+                }).await;
+            }
+            self.plugin_manager.trigger(&PluginEvent::RoomLeave {
+                user_id: target_id,
+                room_id: old_id_text,
+            }).await;
+        }
+
+        user.monitor.store(monitor, Ordering::SeqCst);
+        target_room.force_add_user(Arc::downgrade(&user), monitor).await;
+        *user.room.write().await = Some(Arc::clone(&target_room));
+        if monitor {
+            target_room.live.store(true, Ordering::SeqCst);
+        }
+
+        let join = ServerCommand::OnJoinRoom(user.to_info());
+        let message = ServerCommand::Message(phira_mp_common::Message::JoinRoom {
+            user: user.id,
+            name: user.name.clone(),
+        });
+        if monitor {
+            target_room.broadcast_players(join).await;
+            target_room.broadcast_players(message).await;
+        } else {
+            target_room.broadcast(join).await;
+            target_room.broadcast(message).await;
+            if !same_room || was_monitor {
+                self.publish_room_event(RoomEvent::JoinRoom {
+                    room: rid.clone(),
+                    user: target_id,
+                }).await;
+            }
+        }
+
+        let mut users = target_room.users().await;
+        users.extend(target_room.monitors().await);
+        user.try_send(ServerCommand::JoinRoom(Ok(phira_mp_common::JoinRoomResponse {
+            state: target_room.client_room_state().await,
+            users: users.into_iter().map(|user| user.to_info()).collect(),
+            live: target_room.is_live(),
+        }))).await;
+        user.try_send(ServerCommand::ChangeHost(target_room.check_host(&user).await.is_ok())).await;
+
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as i64)
+            .unwrap_or(0);
+        self.user_room_history.write().await
+            .entry(target_id)
+            .or_default()
+            .push((rid.to_string(), target_room.uuid.to_string(), now));
+
+        self.plugin_manager.trigger(&PluginEvent::RoomJoin {
+            user_id: target_id,
+            room_id: rid.to_string(),
+            is_monitor: monitor,
+        }).await;
+        self.plugin_manager.trigger(&PluginEvent::RoomModify {
+            user_id: target_id,
+            room_id: rid.to_string(),
+            data: serde_json::json!({"action":"force-move","from": old_room_id.clone(),"monitor": monitor}).to_string(),
+        }).await;
+
+        target_room.send(phira_mp_common::Message::Chat {
+            user: 0,
+            content: format!("用户 {} 已被管理员强制转移到本房间", user.name),
+        }).await;
+
+        Ok(serde_json::json!({
+            "ok": true,
+            "room_id": rid.to_string(),
+            "target_id": target_id,
+            "monitor": monitor,
+            "from": old_room_id,
+        }))
+    }
+
+    pub async fn set_room_hidden(&self, room_id: &str, hidden: bool) -> Result<Value, String> {
+        let rid: RoomId = room_id.to_string().try_into().map_err(|_| "invalid room_id".to_string())?;
+        let room = {
+            let rooms = self.rooms.read().await;
+            rooms.get(&rid).map(Arc::clone).ok_or("room not found")?
+        };
+        room.set_hidden(hidden);
+        self.plugin_manager.trigger(&PluginEvent::RoomModify {
+            user_id: 0,
+            room_id: rid.to_string(),
+            data: format!(r#"{{"action":"hidden","value":{hidden}}}"#),
+        }).await;
+        Ok(serde_json::json!({"ok": true, "room_id": rid.to_string(), "hidden": hidden}))
+    }
+}
+
+async fn bench_send_command(stream: &mut tokio::net::TcpStream, payload: &phira_mp_common::ClientCommand) -> Result<(), String> {
+    use tokio::io::AsyncWriteExt;
+    let mut buffer = Vec::new();
+    phira_mp_common::encode_packet(payload, &mut buffer);
+    let mut len_buf = [0u8; 5];
+    let mut x = buffer.len() as u32;
+    let mut n = 0usize;
+    loop {
+        len_buf[n] = (x & 0x7f) as u8;
+        n += 1;
+        x >>= 7;
+        if x == 0 {
+            break;
+        }
+        len_buf[n - 1] |= 0x80;
+    }
+    stream.write_all(&len_buf[..n]).await.map_err(|e| format!("write length: {e}"))?;
+    stream.write_all(&buffer).await.map_err(|e| format!("write payload: {e}"))?;
+    stream.flush().await.map_err(|e| format!("flush: {e}"))
+}
+
+async fn bench_recv_command(stream: &mut tokio::net::TcpStream) -> Result<phira_mp_common::ServerCommand, String> {
+    use tokio::io::AsyncReadExt;
+    let mut len = 0u32;
+    let mut pos = 0;
+    loop {
+        let byte = stream.read_u8().await.map_err(|e| format!("read length: {e}"))?;
+        len |= ((byte & 0x7f) as u32) << pos;
+        pos += 7;
+        if byte & 0x80 == 0 {
+            break;
+        }
+        if pos > 32 {
+            return Err("invalid packet length".to_string());
+        }
+    }
+    if len > 2 * 1024 * 1024 {
+        return Err("packet too large".to_string());
+    }
+    let mut buffer = vec![0u8; len as usize];
+    stream.read_exact(&mut buffer).await.map_err(|e| format!("read payload: {e}"))?;
+    phira_mp_common::decode_packet(&buffer).map_err(|e| format!("decode packet: {e}"))
+}
+
+async fn bench_connect_auth(addr: std::net::SocketAddr, token: &str) -> Result<tokio::net::TcpStream, String> {
+    use tokio::io::AsyncWriteExt;
+    let mut stream = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        tokio::net::TcpStream::connect(addr),
+    ).await.map_err(|_| "connect timeout".to_string())?
+        .map_err(|e| format!("connect: {e}"))?;
+    stream.set_nodelay(true).map_err(|e| format!("set_nodelay: {e}"))?;
+    stream.write_u8(1).await.map_err(|e| format!("write protocol version: {e}"))?;
+    bench_send_command(&mut stream, &phira_mp_common::ClientCommand::Authenticate {
+        token: token.to_string().try_into().map_err(|e| format!("invalid token: {e}"))?,
+    }).await?;
+    tokio::time::timeout(std::time::Duration::from_secs(8), async {
+        loop {
+            match bench_recv_command(&mut stream).await? {
+                phira_mp_common::ServerCommand::Authenticate(Ok(_)) => return Ok(()),
+                phira_mp_common::ServerCommand::Authenticate(Err(err)) => return Err(format!("authenticate rejected: {err}")),
+                phira_mp_common::ServerCommand::Message(_) => {}
+                other => trace!(?other, "benchmark ignored packet while authenticating"),
+            }
+        }
+    }).await.map_err(|_| "authenticate timeout".to_string())??;
+    Ok(stream)
+}
+
+async fn bench_create_room(stream: &mut tokio::net::TcpStream, room_id: &str) -> Result<(), String> {
+    bench_send_command(stream, &phira_mp_common::ClientCommand::CreateRoom {
+        id: room_id.to_string().try_into().map_err(|e| format!("invalid room id: {e}"))?,
+    }).await?;
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            match bench_recv_command(stream).await? {
+                phira_mp_common::ServerCommand::CreateRoom(Ok(())) => return Ok(()),
+                phira_mp_common::ServerCommand::CreateRoom(Err(err)) => return Err(format!("create room rejected: {err}")),
+                phira_mp_common::ServerCommand::Message(_) | phira_mp_common::ServerCommand::OnJoinRoom(_) => {}
+                other => trace!(?other, "benchmark ignored packet while creating room"),
+            }
+        }
+    }).await.map_err(|_| "create room timeout".to_string())?
+}
+
+async fn bench_join_room(stream: &mut tokio::net::TcpStream, room_id: &str, monitor: bool) -> Result<(), String> {
+    bench_send_command(stream, &phira_mp_common::ClientCommand::JoinRoom {
+        id: room_id.to_string().try_into().map_err(|e| format!("invalid room id: {e}"))?,
+        monitor,
+    }).await?;
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            match bench_recv_command(stream).await? {
+                phira_mp_common::ServerCommand::JoinRoom(Ok(_)) => return Ok(()),
+                phira_mp_common::ServerCommand::JoinRoom(Err(err)) => return Err(format!("join room rejected: {err}")),
+                phira_mp_common::ServerCommand::Message(_) | phira_mp_common::ServerCommand::OnJoinRoom(_) => {}
+                other => trace!(?other, "benchmark ignored packet while joining room"),
+            }
+        }
+    }).await.map_err(|_| "join room timeout".to_string())?
+}
+
+async fn bench_ping(stream: &mut tokio::net::TcpStream) -> Result<(), String> {
+    bench_send_command(stream, &phira_mp_common::ClientCommand::Ping).await?;
+    tokio::time::timeout(std::time::Duration::from_secs(3), async {
+        loop {
+            match bench_recv_command(stream).await? {
+                phira_mp_common::ServerCommand::Pong => return Ok(()),
+                phira_mp_common::ServerCommand::Message(_) | phira_mp_common::ServerCommand::OnJoinRoom(_) => {}
+                other => trace!(?other, "benchmark ignored packet while waiting pong"),
+            }
+        }
+    }).await.map_err(|_| "pong timeout".to_string())?
+}
+
+async fn bench_leave_room(stream: &mut tokio::net::TcpStream) -> Result<(), String> {
+    bench_send_command(stream, &phira_mp_common::ClientCommand::LeaveRoom).await?;
+    tokio::time::timeout(std::time::Duration::from_secs(3), async {
+        loop {
+            match bench_recv_command(stream).await? {
+                phira_mp_common::ServerCommand::LeaveRoom(_) => return Ok(()),
+                phira_mp_common::ServerCommand::Message(_) | phira_mp_common::ServerCommand::OnJoinRoom(_) => {}
+                _ => {}
+            }
+        }
+    }).await.map_err(|_| "leave timeout".to_string())?
 }
 
 /// 从房间踢出用户
@@ -926,7 +1425,7 @@ fn server_state_query_inner(state: &Arc<PlusServerState>, method: &str, args: &[
         }
         "test.run_benchmark" => {
             let duration = args.get(0).and_then(|v| v.as_u64()).unwrap_or(10).max(5).min(300);
-            let rooms = args.get(1).and_then(|v| v.as_u64()).unwrap_or(100).max(10).min(5000) as usize;
+            let rooms = args.get(1).and_then(|v| v.as_u64()).unwrap_or(100).max(1).min(5000) as usize;
 
             // 通过 mpsc 通道发送请求给背景 tokio 任务，阻塞等待结果
             let (tx, rx) = std::sync::mpsc::channel();
@@ -937,6 +1436,25 @@ fn server_state_query_inner(state: &Arc<PlusServerState>, method: &str, args: &[
                 Ok(result) => Ok(serde_json::json!({"output": result})),
                 Err(_) => Err("benchmark timeout or cancelled".to_string()),
             }
+        }
+        "test.bind_phira_tokens" => {
+            let mut raw = Vec::new();
+            for arg in args {
+                if let Some(s) = arg.as_str() {
+                    raw.push(s.to_string());
+                } else if let Some(list) = arg.as_array() {
+                    raw.extend(list.iter().filter_map(|v| v.as_str().map(ToString::to_string)));
+                }
+            }
+            let (tx, rx) = std::sync::mpsc::channel();
+            let s = Arc::clone(state);
+            tokio::spawn(async move {
+                let result = s.bind_benchmark_tokens(raw).await
+                    .map(|count| serde_json::json!({"ok": true, "count": count, "path": BENCH_AUTH_FILE}));
+                let _ = tx.send(result);
+            });
+            rx.recv_timeout(std::time::Duration::from_secs(5))
+                .unwrap_or(Err("test.bind_phira_tokens timeout".to_string()))
         }
         "test.cleanup" => {
             state.cleanup_benchmark_sync();
@@ -1057,6 +1575,21 @@ fn server_state_query_inner(state: &Arc<PlusServerState>, method: &str, args: &[
             rx.recv_timeout(std::time::Duration::from_secs(5))
                 .unwrap_or(Err("room.transfer_host timeout".to_string()))
         }
+        "room.force_move" => {
+            let room_id = args.get(0).and_then(|v| v.as_str()).unwrap_or("").to_string();
+            let target_id = args.get(1).and_then(|v| v.as_i64()).unwrap_or(0) as i32;
+            let monitor = args.get(2).and_then(|v| v.as_bool()).unwrap_or(false);
+            if room_id.is_empty() { return Err("missing room_id".to_string()); }
+            if target_id == 0 { return Err("invalid target_id".to_string()); }
+            let (tx, rx) = std::sync::mpsc::channel();
+            let s = Arc::clone(state);
+            tokio::spawn(async move {
+                let result = s.force_move_user_to_room(&room_id, target_id, monitor).await;
+                let _ = tx.send(result);
+            });
+            rx.recv_timeout(std::time::Duration::from_secs(5))
+                .unwrap_or(Err("room.force_move timeout".to_string()))
+        }
         "room.set_lock" => {
             let room_id = args.get(0).and_then(|v| v.as_str()).unwrap_or("").to_string();
             let locked = args.get(1).and_then(|v| v.as_bool()).unwrap_or(true);
@@ -1069,6 +1602,27 @@ fn server_state_query_inner(state: &Arc<PlusServerState>, method: &str, args: &[
             });
             rx.recv_timeout(std::time::Duration::from_secs(5))
                 .unwrap_or(Err("room.set_lock timeout".to_string()))
+        }
+        "room.set_hidden" => {
+            let room_id = args.get(0).and_then(|v| v.as_str()).unwrap_or("").to_string();
+            let hidden = args.get(1).and_then(|v| v.as_bool()).unwrap_or(true);
+            if room_id.is_empty() { return Err("missing room_id".to_string()); }
+            let (tx, rx) = std::sync::mpsc::channel();
+            let s = Arc::clone(state);
+            tokio::spawn(async move {
+                let result = s.set_room_hidden(&room_id, hidden).await;
+                let _ = tx.send(result);
+            });
+            rx.recv_timeout(std::time::Duration::from_secs(5))
+                .unwrap_or(Err("room.set_hidden timeout".to_string()))
+        }
+        "room.is_hidden" => {
+            let room_id = args.get(0).and_then(|v| v.as_str()).unwrap_or("");
+            if room_id.is_empty() { return Err("missing room_id".to_string()); }
+            let rid: RoomId = room_id.to_string().try_into().map_err(|_| "invalid room_id".to_string())?;
+            let rooms = state.rooms.try_read().map_err(|_| "lock error".to_string())?;
+            let room = rooms.get(&rid).ok_or("room not found")?;
+            Ok(serde_json::json!({"room_id": room_id, "hidden": room.is_hidden()}))
         }
         "room.close" => {
             let room_id = args.get(0).and_then(|v| v.as_str()).unwrap_or("").to_string();
@@ -1205,6 +1759,7 @@ fn server_state_query(state: &Arc<PlusServerState>, method: &str, args: &[Value]
         state: String,
         playing_users: Vec<i32>,
         rounds: Vec<RoundInfo>,
+        hidden: bool,
     }
     #[derive(Serialize)]
     struct RoundInfo {
@@ -1261,6 +1816,7 @@ fn server_state_query(state: &Arc<PlusServerState>, method: &str, args: &[Value]
                 state: st,
                 playing_users: pu,
                 rounds,
+                hidden: room.is_hidden(),
             },
         }
     }
@@ -1268,8 +1824,8 @@ fn server_state_query(state: &Arc<PlusServerState>, method: &str, args: &[Value]
     match method {
         "rooms.list" => {
             let rooms = read_lock!(state.rooms);
-            let list: Vec<Value> = rooms.iter().filter(|(rid, _)| {
-                !rid.to_string().starts_with("+-")
+            let list: Vec<Value> = rooms.iter().filter(|(_, room)| {
+                !room.is_hidden()
             }).map(|(rid, room)| {
                 let ss = build_snapshot(&rid.to_string(), room);
                 serde_json::to_value(ss).unwrap_or_default()
@@ -1278,11 +1834,11 @@ fn server_state_query(state: &Arc<PlusServerState>, method: &str, args: &[Value]
         }
         "rooms.by_name" => {
             let name = args.get(0).and_then(|v| v.as_str()).unwrap_or("");
-            if name.starts_with("+-") { return Err("room not found".to_string()); }
             let rid: phira_mp_common::RoomId = name.to_string().try_into()
                 .map_err(|_| "invalid room name".to_string())?;
             let rooms = read_lock!(state.rooms);
             let room = rooms.get(&rid).ok_or("room not found")?;
+            if room.is_hidden() { return Err("room not found".to_string()); }
             let ss = build_snapshot(name, room);
             serde_json::to_value(ss).map_err(|e| e.to_string())
         }

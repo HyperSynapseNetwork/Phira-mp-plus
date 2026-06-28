@@ -94,6 +94,7 @@ interface room-info {
         state: string,
         locked: bool,
         cycling: bool,
+        hidden: bool,
     }
 
     /// 获取房间基础信息
@@ -146,6 +147,15 @@ interface room-management {
 
     /// 锁定/解锁房间
     set-room-lock: func(room-id: string, locked: bool) -> result<_, string>;
+
+    /// 强制把在线用户迁移到指定房间（不受原房间、锁定、人数、进行中状态限制）
+    force-move-user: func(room-id: string, target-id: s32, monitor: bool) -> result<_, string>;
+
+    /// 设置房间隐藏状态；隐藏房间不会出现在 Web API 与欢迎语中
+    set-room-hidden: func(room-id: string, hidden: bool) -> result<_, string>;
+
+    /// 查询房间隐藏状态
+    is-room-hidden: func(room-id: string) -> result<bool, string>;
 
     /// 关闭/解散房间
     close-room: func(room-id: string) -> result<_, string>;

@@ -130,7 +130,8 @@ curl -N http://127.0.0.1:12347/rooms/listen
 |------|------|
 | `help` | 显示所有可用命令 |
 | `exit` / `quit` | 关闭服务器 |
-| `benchmark [dur_s=30] [rooms=100]` | 压力测试 |
+| `benchmark [dur_s=30] [rooms=100]` | 真实网络压力测试（需先配置/绑定 Phira token） |
+| `benchmark-bind <token1[,token2...]>` | 绑定压测 Phira 账号 token |
 
 ### 房间管理
 
@@ -141,7 +142,9 @@ curl -N http://127.0.0.1:12347/rooms/listen
 | `room kick <id> <user_id>` | 踢出用户 |
 | `room close <id>` | 关闭房间 |
 | `room transfer <id> <user_id>` | 转移房主 |
-| `room set <id> <字段> <值>` | 修改房间设置（lock/cycle 等） |
+| `room force-move <id> <user_id> [monitor]` | 强制迁移用户到房间 |
+| `room hide <id>` / `room unhide <id>` | 设置房间隐藏状态 |
+| `room set <id> <字段> <值>` | 修改房间设置（lock/cycle/hidden 等） |
 | `room history <id>` | 房间游玩历史（替代废弃的 round-last） |
 | `room uuid <id>` | 房间 UUID |
 | `room ban <id> <user_id>` | 拉黑用户 |
@@ -293,6 +296,8 @@ round_data_retention_days: 7   # 轮次数据保留天数
 | `room.kick` | 踢出玩家 |
 | `room.transfer_host` | 转移房主 |
 | `room.set_lock` | 设置锁定 |
+| `room.force_move` | 强制迁移用户到房间 |
+| `room.set_hidden` / `room.is_hidden` | 设置/查询隐藏状态 |
 | `room.close` | 关闭房间 |
 | `admin.kick_user` | 管理员踢人 |
 | `admin.ban_user` | 封禁 |
@@ -305,5 +310,6 @@ round_data_retention_days: 7   # 轮次数据保留天数
 | `rooms.by_name` | 按名称查找房间 |
 | `rooms.by_user` | 按用户查找房间 |
 | `user_name` | 用户名查询 |
-| `test.run_benchmark` | 压测 |
+| `test.run_benchmark` | 真实网络压测 |
+| `test.bind_phira_tokens` | 绑定压测账号 token |
 | `test.cleanup` | 清理测试数据 |

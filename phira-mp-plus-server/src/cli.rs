@@ -38,6 +38,13 @@ mod c {
     }
 }
 
+fn parse_cli_bool(value: &str) -> bool {
+    matches!(
+        value.trim().to_ascii_lowercase().as_str(),
+        "true" | "1" | "yes" | "y" | "on" | "enable" | "enabled" | "hide" | "hidden" | "锁定" | "隐藏" | "是"
+    )
+}
+
 /// CLI 命令处理器
 pub struct CliHandler {
     state: Arc<PlusServerState>,
@@ -179,6 +186,20 @@ impl CliHandler {
                             else { let uid: i32 = match args[2].parse() { Ok(id) => id, Err(_) => { self.out(format!("  {} 无效的用户ID", c::red("✗"))); return; } };
                                 self.room_transfer(args[1], uid).await; }
                         }
+                        "force-move" | "move" | "fm" => {
+                            if args.len() < 3 { self.out(format!("  {} {} room force-move <房间ID> <用户ID> [monitor]", c::yellow("?"), c::bold("用法"))); }
+                            else { let uid: i32 = match args[2].parse() { Ok(id) => id, Err(_) => { self.out(format!("  {} 无效的用户ID", c::red("✗"))); return; } };
+                                let monitor = args.get(3).map(|v| parse_cli_bool(v)).unwrap_or(false);
+                                self.room_force_move(args[1], uid, monitor).await; }
+                        }
+                        "hide" => {
+                            if args.len() < 2 { self.out(format!("  {} {} room hide <房间ID> [true|false]", c::yellow("?"), c::bold("用法"))); }
+                            else { self.room_hide(args[1], args.get(2).map(|v| parse_cli_bool(v)).unwrap_or(true)).await; }
+                        }
+                        "unhide" => {
+                            if args.len() < 2 { self.out(format!("  {} {} room unhide <房间ID>", c::yellow("?"), c::bold("用法"))); }
+                            else { self.room_hide(args[1], false).await; }
+                        }
                         "close" | "cl" => {
                             if args.len() < 2 { self.out(format!("  {} {} room close <房间ID>", c::yellow("?"), c::bold("用法"))); }
                             else { self.close_room(args[1]).await; }
@@ -225,7 +246,7 @@ impl CliHandler {
                         }
                         _ => {
                             self.out(format!("  {} 未知子命令: {}  ", c::red("✗"), c::yellow(sub)));
-                            self.out(format!("  {} 可用: room list|info|start|cancel|kick|transfer|close|set|history|rounds|round|uuid|ban|unban|banlist", c::dim("▸")));
+                            self.out(format!("  {} 可用: room list|info|start|cancel|kick|transfer|force-move|hide|unhide|close|set|history|rounds|round|uuid|ban|unban|banlist", c::dim("▸")));
                         }
                     }
                 }
@@ -373,10 +394,36 @@ impl CliHandler {
                         self.room_transfer(args[0], uid).await;
                     }
                 }
+                "room-move" | "rmv" => {
+                    if args.len() < 2 {
+                        self.out(format!("  {} {} <房间ID> <用户ID> [monitor]", c::yellow("?"), c::bold("room-move")));
+                    } else {
+                        let uid: i32 = match args[1].parse() {
+                            Ok(id) => id,
+                            Err(_) => { self.out(format!("  {} 无效的用户ID", c::red("✗"))); return; }
+                        };
+                        let monitor = args.get(2).map(|v| parse_cli_bool(v)).unwrap_or(false);
+                        self.room_force_move(args[0], uid, monitor).await;
+                    }
+                }
+                "room-hide" => {
+                    if args.is_empty() {
+                        self.out(format!("  {} {} <房间ID> [true|false]", c::yellow("?"), c::bold("room-hide")));
+                    } else {
+                        self.room_hide(args[0], args.get(1).map(|v| parse_cli_bool(v)).unwrap_or(true)).await;
+                    }
+                }
+                "room-unhide" => {
+                    if args.is_empty() {
+                        self.out(format!("  {} {} <房间ID>", c::yellow("?"), c::bold("room-unhide")));
+                    } else {
+                        self.room_hide(args[0], false).await;
+                    }
+                }
                 "room-set" => {
                     if args.len() < 3 {
                         self.out(format!("  {} {} <房间ID> <字段> <值>", c::yellow("?"), c::bold("room-set")));
-                        self.out(format!("  {} 字段: lock (true/false) | cycle (true/false) | chart-id (<谱面ID>)",
+                        self.out(format!("  {} 字段: lock | cycle | hidden | chart-id",
                             c::dim("▸")));
                     } else {
                         self.room_set(args[0], args[1], &args[2..].join(" ")).await;
@@ -436,6 +483,8 @@ impl CliHandler {
         self.out(format!("    {:<22} {}", c::dim("room start|cancel <ID>"), "开始/取消"));
         self.out(format!("    {:<22} {}", c::dim("room close <ID>"), "解散"));
         self.out(format!("    {:<22} {}", c::dim("room transfer <ID> <用户>"), "转移房主"));
+        self.out(format!("    {:<22} {}", c::dim("room force-move <ID> <用户>"), "强制迁移用户"));
+        self.out(format!("    {:<22} {}", c::dim("room hide|unhide <ID>"), "隐藏/取消隐藏房间"));
         self.out(format!("    {:<22} {}", c::dim("room set <ID> <字段> <值>"), "修改设置"));
         self.out(format!("    {:<22} {}", c::dim("room history <ID>"), "游玩记录"));
         self.out(format!("    {:<22} {}", c::dim("room ban|unban|banlist"), "房间黑名单"));
@@ -627,9 +676,10 @@ impl CliHandler {
             } else {
                 c::dim("不轮换")
             };
+            let hidden = if room.is_hidden() { c::magenta("隐藏") } else { c::dim("公开") };
 
             self.out(format!("  {} {}", c::dim("┏"), c::bold(&room.id.to_string())));
-            self.out(format!("  {} 状态: {}  {}  {}  {}", c::dim("┃"), state_str, locked, cycling,
+            self.out(format!("  {} 状态: {}  {}  {}  {}  {}", c::dim("┃"), state_str, locked, cycling, hidden,
                 if users_in_room.len() + monitors_in_room.len() > 0 {
                     c::cyan(&format!("{} 人在线", users_in_room.len() + monitors_in_room.len()))
                 } else {
@@ -868,6 +918,7 @@ impl CliHandler {
         };
         let locked = if room.locked.load(std::sync::atomic::Ordering::SeqCst) { c::yellow("锁定") } else { c::dim("未锁定") };
         let cycling = if room.cycle.load(std::sync::atomic::Ordering::SeqCst) { c::cyan("轮换") } else { c::dim("不轮换") };
+        let hidden = if room.is_hidden() { c::magenta("隐藏") } else { c::dim("公开") };
         let chart_info = match room.chart.read().await.as_ref() {
             Some(c) => format!("{} (id={})", c.name, c.id),
             None => "未选择".to_string(),
@@ -877,7 +928,7 @@ impl CliHandler {
             .unwrap_or_else(|| "未知".to_string());
 
         self.out(format!("  {} 房间: {}", c::green("◆"), c::bold(room_id)));
-        self.out(format!("  {} 状态: {} | {} | {}", c::dim("│"), state_str, locked, cycling));
+        self.out(format!("  {} 状态: {} | {} | {} | {}", c::dim("│"), state_str, locked, cycling, hidden));
         self.out(format!("  {} 房主: {}", c::dim("│"), host_name));
         self.out(format!("  {} 谱面: {}", c::dim("│"), chart_info));
         self.out(format!("  {} 玩家: {}", c::dim("│"),
@@ -958,6 +1009,26 @@ impl CliHandler {
         }
     }
 
+    async fn room_force_move(&self, room_id: &str, user_id: i32, monitor: bool) {
+        match self.state.force_move_user_to_room(room_id, user_id, monitor).await {
+            Ok(_) => self.out(format!(
+                "  {} 已强制转移用户 {} 到房间 {}{}",
+                c::green("✓"), user_id, c::bold(room_id), if monitor { "（旁观）" } else { "" }
+            )),
+            Err(e) => self.out(format!("  {} {}", c::red("✗"), e)),
+        }
+    }
+
+    async fn room_hide(&self, room_id: &str, hidden: bool) {
+        match self.state.set_room_hidden(room_id, hidden).await {
+            Ok(_) => self.out(format!(
+                "  {} 房间 {} 已{}隐藏",
+                c::green("✓"), c::bold(room_id), if hidden { "设为" } else { "取消" }
+            )),
+            Err(e) => self.out(format!("  {} {}", c::red("✗"), e)),
+        }
+    }
+
     async fn room_set(&self, room_id: &str, field: &str, value: &str) {
         use std::sync::atomic::Ordering;
         let room = match self.find_room(room_id).await {
@@ -998,6 +1069,13 @@ impl CliHandler {
                         data: format!(r#"{{"action":"cycle","value":{v}}}"#),
                     }).await;
                 self.out(format!("  {} 房间 {} 已{}轮换", c::green("✓"), room_id, if v { "开启" } else { "关闭" }));
+            }
+            "hidden" | "hide" => {
+                let v = parse_cli_bool(value);
+                match self.state.set_room_hidden(room_id, v).await {
+                    Ok(_) => self.out(format!("  {} 房间 {} 已{}隐藏", c::green("✓"), room_id, if v { "设为" } else { "取消" })),
+                    Err(e) => self.out(format!("  {} {}", c::red("✗"), e)),
+                }
             }
             "chart-id" | "chart" => {
                 if !matches!(
@@ -1050,7 +1128,7 @@ impl CliHandler {
             }
             _ => {
                 self.out(format!("  {} 未知字段: {}", c::red("✗"), field));
-                self.out(format!("  {} 支持: lock, cycle, chart-id", c::dim("▸")));
+                self.out(format!("  {} 支持: lock, cycle, hidden, chart-id", c::dim("▸")));
             }
         }
     }

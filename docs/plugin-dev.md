@@ -54,6 +54,9 @@ WASM 插件通过 JSON 字符串与宿主通信：
 | `room.kick` | `{ room_id, target_id }` | `{"ok": true}` | 从房间踢出用户 |
 | `room.transfer_host` | `{ room_id, target_id }` | `{"ok": true}` | 转移房主 |
 | `room.set_lock` | `{ room_id, locked }` | `{"ok": true}` | 锁定/解锁房间 |
+| `room.force_move` | `{ room_id, target_id, monitor }` | `{"ok": true}` | 强制迁移用户到房间 |
+| `room.set_hidden` | `{ room_id, hidden }` | `{"ok": true, "hidden": bool}` | 设置隐藏状态 |
+| `room.is_hidden` | `{ room_id }` | `{"hidden": bool}` | 查询隐藏状态 |
 | `room.close` | `{ room_id }` | `{"ok": true}` | 解散房间 |
 | `admin.kick_user` | `{ user_id, reason }` | `{"ok": true}` | 从服务器踢出用户 |
 | `admin.ban_user` | `{ user_id, reason }` | `{"ok": true, "reason": string}` | 封禁用户，返回规范化后的原因 |

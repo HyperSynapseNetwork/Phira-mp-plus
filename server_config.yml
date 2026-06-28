@@ -10,8 +10,8 @@ port: 12346
 # HTTP/SSE 服务端口（REST API 和管理面板）
 http_port: 12347
 
-# 隐藏房间前缀：房间名以 "+-" 开头时不在公开列表中显示
-# （仅限知道房间名的玩家通过直接加入访问）
+# 隐藏房间前缀：房间名以 "-" 开头时默认隐藏，不在 Web API 与欢迎语公开房间中显示
+# 也可用 CLI/WIT API 手动设置隐藏状态；知道房间名的玩家仍可被管理员或插件定向管理
 
 # ---- 认证 ----
 
@@ -21,6 +21,13 @@ monitors:
 
 # Phira API 端点（通常无需修改）
 phira_api_endpoint: "https://phira.5wyxi.com"
+
+# 压测使用真实 Phira 账号 token。未配置时 benchmark 会提示先绑定。
+# 可通过 CLI 执行 benchmark-bind <token1[,token2...]> 写入 data/benchmark-auth.json，或直接在这里配置。
+# benchmark_phira_tokens:
+#   - "your-phira-token"
+# 兼容单账号写法：
+# benchmark_phira_token: "your-phira-token"
 
 # ---- 插件 ----
 

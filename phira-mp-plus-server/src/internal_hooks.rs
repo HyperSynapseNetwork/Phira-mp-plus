@@ -104,8 +104,15 @@ pub fn send_welcome(user_id: i32, user_name: &str, online: usize, state: &PlusSe
         if text.contains("[active_rooms]") {
             let rooms_guard = state.rooms.try_read();
             let room_list: Vec<String> = match rooms_guard {
-                Ok(ref rooms) if !rooms.is_empty() => {
-                    rooms.iter().take(10).map(|(id, room)| {
+                Ok(ref rooms) => {
+                    let visible_rooms: Vec<_> = rooms.iter()
+                        .filter(|(_, room)| !room.is_hidden())
+                        .take(10)
+                        .collect();
+                    if visible_rooms.is_empty() {
+                        vec!["暂无房间".into()]
+                    } else {
+                        visible_rooms.into_iter().map(|(id, room)| {
                         let host_name = room.host.try_read().ok()
                             .and_then(|h| h.upgrade()).map(|u| u.name.clone()).unwrap_or_default();
                         let players = room.users.try_read().ok().map(|u| u.len()).unwrap_or(0);
@@ -130,6 +137,7 @@ pub fn send_welcome(user_id: i32, user_name: &str, online: usize, state: &PlusSe
                             if chart.is_empty() { String::new() } else { format!(" | {}", chart) }
                         )
                     }).collect()
+                    }
                 }
                 _ => vec!["暂无房间".into()],
             };

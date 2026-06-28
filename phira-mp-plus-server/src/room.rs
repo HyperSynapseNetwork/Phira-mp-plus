@@ -145,6 +145,7 @@ pub struct Room {
     pub live: AtomicBool,
     pub locked: AtomicBool,
     pub cycle: AtomicBool,
+    hidden: AtomicBool,
     admin_start_pending: AtomicBool,
 
     pub users: RwLock<Vec<Weak<super::session::User>>>,
@@ -169,6 +170,11 @@ pub struct Room {
     pub created_at: i64,
 }
 
+/// 房间名以前缀 `-`（兼容旧版 `+-`）开头时默认隐藏。
+pub fn room_id_is_hidden(room_id: &str) -> bool {
+    room_id.starts_with('-') || room_id.starts_with("+-")
+}
+
 impl Room {
     pub fn new(
         id: RoomId,
@@ -182,6 +188,7 @@ impl Room {
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_millis() as i64)
             .unwrap_or(0);
+        let hidden = room_id_is_hidden(&id.to_string());
         Self {
             id,
             host: host.clone().into(),
@@ -190,6 +197,7 @@ impl Room {
             live: AtomicBool::new(false),
             locked: AtomicBool::new(false),
             cycle: AtomicBool::new(false),
+            hidden: AtomicBool::new(hidden),
             admin_start_pending: AtomicBool::new(false),
 
             users: vec![host].into(),
@@ -217,6 +225,14 @@ impl Room {
 
     pub fn is_cycle(&self) -> bool {
         self.cycle.load(Ordering::SeqCst)
+    }
+
+    pub fn is_hidden(&self) -> bool {
+        self.hidden.load(Ordering::SeqCst)
+    }
+
+    pub fn set_hidden(&self, hidden: bool) {
+        self.hidden.store(hidden, Ordering::SeqCst);
     }
 
     /// 获取房主用户 ID
@@ -361,6 +377,25 @@ impl Room {
                 guard.push(user);
                 true
             }
+        }
+    }
+
+    /// 管理员强制迁移用户时使用：绕过房间人数、锁定和状态限制，并去重。
+    pub async fn force_add_user(&self, user: Weak<super::session::User>, monitor: bool) {
+        let target_ptr = user.as_ptr();
+        {
+            let mut players = self.users.write().await;
+            players.retain(|entry| entry.strong_count() > 0 && entry.as_ptr() != target_ptr);
+        }
+        {
+            let mut monitors = self.monitors.write().await;
+            monitors.retain(|entry| entry.strong_count() > 0 && entry.as_ptr() != target_ptr);
+        }
+        if monitor {
+            self.monitors.write().await.push(user);
+            self.has_active_monitors().await;
+        } else {
+            self.users.write().await.push(user);
         }
     }
 

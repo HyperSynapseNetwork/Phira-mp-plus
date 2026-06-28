@@ -30,6 +30,8 @@ const HEARTBEAT_DISCONNECT_TIMEOUT: Duration = Duration::from_secs(600);
 const AUTH_FAILURE_RESPONSE_DELAY: Duration = Duration::from_millis(50);
 const AUTH_FAILURE_FLUSH_TIMEOUT: Duration = Duration::from_secs(1);
 const MAX_CLIENT_BAN_REASON_CHARS: usize = 160;
+const PHIRA_RETRY_NOTICE: &str = "Phira服务器太烂了，我们正在重试以保证你的流畅体验";
+const PHIRA_MAX_RETRIES: usize = 3;
 
 #[derive(Debug, Deserialize)]
 struct AuthUserInfo {
@@ -38,21 +40,104 @@ struct AuthUserInfo {
     language: String,
 }
 
+enum RetryNoticeTarget<'a> {
+    None,
+    Stream(&'a StreamSender<ServerCommand>),
+    User(&'a User),
+}
+
+async fn send_phira_retry_notice(target: &RetryNoticeTarget<'_>) {
+    let cmd = ServerCommand::Message(Message::Chat {
+        user: 0,
+        content: PHIRA_RETRY_NOTICE.to_string(),
+    });
+    match target {
+        RetryNoticeTarget::None => {}
+        RetryNoticeTarget::Stream(sender) => {
+            if let Err(err) = sender.send(cmd).await {
+                warn!("failed to send Phira retry notice: {err:?}");
+            }
+        }
+        RetryNoticeTarget::User(user) => user.try_send(cmd).await,
+    }
+}
+
+fn phira_status_retryable(status: reqwest::StatusCode, body: &str) -> bool {
+    status == reqwest::StatusCode::BAD_GATEWAY
+        || status == reqwest::StatusCode::TOO_MANY_REQUESTS
+        || status.is_server_error()
+        || body.contains("认证失败 502错误")
+}
+
+fn phira_error_retryable(err: &reqwest::Error) -> bool {
+    err.is_timeout()
+        || err.is_connect()
+        || err.status().is_some_and(|status| phira_status_retryable(status, ""))
+        || err.to_string().contains("认证失败 502错误")
+}
+
+async fn phira_get_json_with_retry<T>(
+    server: &PlusServerState,
+    path: &str,
+    bearer: Option<&str>,
+    target: RetryNoticeTarget<'_>,
+) -> Result<T>
+where
+    T: serde::de::DeserializeOwned,
+{
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(5))
+        .build()?;
+    let endpoint = server.config.phira_api_endpoint.trim_end_matches('/');
+    let path = if path.starts_with('/') { path.to_string() } else { format!("/{path}") };
+    let url = format!("{endpoint}{path}");
+
+    for attempt in 0..=PHIRA_MAX_RETRIES {
+        let mut request = client.get(&url);
+        if let Some(token) = bearer {
+            request = request.header(reqwest::header::AUTHORIZATION, format!("Bearer {token}"));
+        }
+        match request.send().await {
+            Ok(response) => {
+                let status = response.status();
+                if status.is_success() {
+                    return response.json::<T>().await.map_err(Into::into);
+                }
+                let body = response.text().await.unwrap_or_default();
+                let retryable = phira_status_retryable(status, &body);
+                if retryable && attempt < PHIRA_MAX_RETRIES {
+                    send_phira_retry_notice(&target).await;
+                    time::sleep(Duration::from_millis(200 * (attempt as u64 + 1))).await;
+                    continue;
+                }
+                if status == reqwest::StatusCode::BAD_GATEWAY || body.contains("认证失败 502错误") {
+                    bail!("认证失败 502错误");
+                }
+                bail!("Phira API request failed: {status} {body}");
+            }
+            Err(err) if phira_error_retryable(&err) && attempt < PHIRA_MAX_RETRIES => {
+                send_phira_retry_notice(&target).await;
+                time::sleep(Duration::from_millis(200 * (attempt as u64 + 1))).await;
+            }
+            Err(err) => return Err(err.into()),
+        }
+    }
+    bail!("Phira API request failed after retries")
+}
+
 async fn authenticate_remote(server: &PlusServerState, token: &str) -> Result<AuthUserInfo> {
+    authenticate_remote_with_notice(server, token, RetryNoticeTarget::None).await
+}
+
+async fn authenticate_remote_with_notice(
+    server: &PlusServerState,
+    token: &str,
+    target: RetryNoticeTarget<'_>,
+) -> Result<AuthUserInfo> {
     if token.len() > 128 {
         bail!("invalid token");
     }
-    reqwest::Client::builder()
-        .timeout(Duration::from_secs(3))
-        .build()?
-        .get(format!("{}/me", server.config.phira_api_endpoint))
-        .header(reqwest::header::AUTHORIZATION, format!("Bearer {token}"))
-        .send()
-        .await?
-        .error_for_status()?
-        .json::<AuthUserInfo>()
-        .await
-        .map_err(Into::into)
+    phira_get_json_with_retry(server, "/me", Some(token), target).await
 }
 
 fn ban_rejection_message(language: &str, reason: &str) -> String {
@@ -377,25 +462,13 @@ impl Session {
                                                 language: entry.language,
                                             }
                                         } else {
-                                            // 缓存未命中，请求 API（3 秒超时）
-                                            match async {
-                                                reqwest::Client::builder()
-                                                    .timeout(std::time::Duration::from_secs(3))
-                                                    .build()
-                                                    .map_err(|_| "build client")?
-                                                    .get(format!("{}/me", &server.config.phira_api_endpoint))
-                                                    .header(reqwest::header::AUTHORIZATION, format!("Bearer {token}"))
-                                                    .send()
-                                                    .await
-                                                    .map_err(|_| "send")?
-                                                    .error_for_status()
-                                                    .map_err(|_| "status")?
-                                                    .json::<AuthUserInfo>()
-                                                    .await
-                                                    .map_err(|_| "json")
-                                            }
-                                            .await
-                                            {
+                                            // 缓存未命中，请求 API；遇到 “认证失败 502错误”/502/5xx 时重试并提示该客户端。
+                                            match phira_get_json_with_retry::<AuthUserInfo>(
+                                                &server,
+                                                "/me",
+                                                Some(&token),
+                                                RetryNoticeTarget::Stream(send_tx.as_ref()),
+                                            ).await {
                                                 Ok(info) => {
                                                     // API 成功，更新缓存并持久化
                                                     server.extensions.update_auth_cache(
@@ -413,8 +486,8 @@ impl Session {
                                                     }
                                                     info
                                                 }
-                                                Err(_) => {
-                                                    bail!("Authentication server unreachable, please try again later");
+                                                Err(err) => {
+                                                    bail!("{}", err);
                                                 }
                                             }
                                         };
@@ -536,7 +609,7 @@ impl Session {
                                 return;
                             } else if let ClientCommand::ConsoleAuthenticate { token } = &cmd {
                                 let Some(tx) = tx else { return };
-                                match authenticate_remote(&server, token).await {
+                                match authenticate_remote_with_notice(&server, token, RetryNoticeTarget::Stream(send_tx.as_ref())).await {
                                     Ok(info) => {
                                         let user = Arc::new(User::new(
                                             info.id,
@@ -600,7 +673,7 @@ impl Session {
                                 return;
                             } else if let ClientCommand::GameMonitorAuthenticate { token } = &cmd {
                                 let Some(tx) = tx else { return };
-                                match authenticate_remote(&server, token).await {
+                                match authenticate_remote_with_notice(&server, token, RetryNoticeTarget::Stream(send_tx.as_ref())).await {
                                     Ok(info) => {
                                         let Some(monitor_id) = info.id.checked_neg().filter(|id| *id < 0) else {
                                             send_auth_rejection(
@@ -1178,11 +1251,12 @@ async fn process(user: Arc<User>, category: SessionCategory, cmd: ClientCommand)
                 );
                 async move {
                     trace!("fetch");
-                    let res: crate::server::Chart = reqwest::get(format!("{}/chart/{id}", &user.server.config.phira_api_endpoint))
-                        .await?
-                        .error_for_status()?
-                        .json()
-                        .await?;
+                    let res: crate::server::Chart = phira_get_json_with_retry(
+                        &user.server,
+                        &format!("/chart/{id}"),
+                        None,
+                        RetryNoticeTarget::User(user.as_ref()),
+                    ).await?;
                     debug!("chart is {res:?}");
                     room.send(Message::SelectChart {
                         user: user.id,
@@ -1280,11 +1354,12 @@ async fn process(user: Arc<User>, category: SessionCategory, cmd: ClientCommand)
         ClientCommand::Played { id } => {
             let res: Result<()> = async move {
                 get_room!(room);
-                let res: crate::server::Record = reqwest::get(format!("{}/record/{id}", &user.server.config.phira_api_endpoint))
-                    .await?
-                    .error_for_status()?
-                    .json()
-                    .await?;
+                let res: crate::server::Record = phira_get_json_with_retry(
+                    &user.server,
+                    &format!("/record/{id}"),
+                    None,
+                    RetryNoticeTarget::User(user.as_ref()),
+                ).await?;
                 if res.player != user.id {
                     bail!(tl!("invalid-record"));
                 }
