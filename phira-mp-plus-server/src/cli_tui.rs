@@ -39,7 +39,12 @@ impl TerminalSession {
     fn enter(capabilities: TuiCapabilities) -> io::Result<Self> {
         enable_raw_mode()?;
         let mut stdout = io::stdout();
-        if let Err(err) = execute!(stdout, EnterAlternateScreen, DisableLineWrap, Hide) {
+        let enter_result = if capabilities.alternate_screen {
+            execute!(stdout, EnterAlternateScreen, DisableLineWrap, Hide)
+        } else {
+            execute!(stdout, DisableLineWrap, Hide)
+        };
+        if let Err(err) = enter_result {
             let _ = disable_raw_mode();
             return Err(err);
         }
@@ -63,7 +68,11 @@ impl Drop for TerminalSession {
         if self.capabilities.bracketed_paste {
             let _ = execute!(stdout, DisableBracketedPaste);
         }
-        let _ = execute!(stdout, Show, EnableLineWrap, LeaveAlternateScreen);
+        if self.capabilities.alternate_screen {
+            let _ = execute!(stdout, Show, EnableLineWrap, LeaveAlternateScreen);
+        } else {
+            let _ = execute!(stdout, Show, EnableLineWrap);
+        }
         let _ = disable_raw_mode();
     }
 }
@@ -74,10 +83,21 @@ pub fn run_tui(
     mut log_rx: mpsc::UnboundedReceiver<String>,
     capabilities: TuiCapabilities,
 ) -> io::Result<()> {
-    let _session = TerminalSession::enter(capabilities)?;
+    let _session = match TerminalSession::enter(capabilities) {
+        Ok(session) => session,
+        Err(err) => {
+            eprintln!(
+                "TUI unavailable ({err}); falling back to the line-oriented compatibility console."
+            );
+            run_stdin_cli_with_logs(cmd_tx, out_rx, log_rx, capabilities.ctrl_h_backspace);
+            return Ok(());
+        }
+    };
     let backend = CrosstermBackend::new(io::stdout());
     let mut terminal = Terminal::new(backend)?;
-    terminal.clear()?;
+    if capabilities.alternate_screen {
+        terminal.clear()?;
+    }
 
     let mut app = TuiApp::new(cmd_tx, capabilities.colors);
     let result = app.run_loop(&mut terminal, &mut out_rx, &mut log_rx);
@@ -100,6 +120,21 @@ struct TuiApp {
     last_page_height: usize,
     colors: bool,
 }
+
+const ROOT_COMPLETIONS: &[&str] = &[
+    "help", "status", "users", "rooms", "room", "plugin", "plugins", "broadcast",
+    "benchmark", "benchmark-bind", "benchmark-cleanup", "ban", "unban", "banlist",
+    "ext-list", "ext-get", "kick", "exit",
+];
+
+const ROOM_COMPLETIONS: &[&str] = &[
+    "list", "info", "start", "cancel", "kick", "transfer", "force-move", "hide",
+    "unhide", "close", "set", "history", "rounds", "round", "uuid", "ban", "unban",
+    "banlist",
+];
+
+const PLUGIN_COMPLETIONS: &[&str] = &["list", "enable", "disable", "reload", "info", "call"];
+const BROADCAST_COMPLETIONS: &[&str] = &["all", "room", "user"];
 
 impl TuiApp {
     fn new(cmd_tx: mpsc::UnboundedSender<String>, colors: bool) -> Self {
@@ -221,12 +256,23 @@ impl TuiApp {
                 self.scroll_from_bottom = 0;
             }
             KeyCode::Char('w') if ctrl => self.delete_previous_word(),
+            KeyCode::Char('k') if ctrl => self.delete_to_end(),
+            KeyCode::Char('a') if ctrl => self.cursor_pos = 0,
+            KeyCode::Char('e') if ctrl => self.cursor_pos = self.input.chars().count(),
+            KeyCode::Char('b') if ctrl => self.cursor_pos = self.cursor_pos.saturating_sub(1),
+            KeyCode::Char('f') if ctrl => {
+                self.cursor_pos = (self.cursor_pos + 1).min(self.input.chars().count())
+            }
+            KeyCode::Char('p') if ctrl => self.history_previous(),
+            KeyCode::Char('n') if ctrl => self.history_next(),
             // GNU screen commonly translates Backspace into Ctrl+H.
             KeyCode::Char('h') if ctrl => self.backspace(),
             KeyCode::Backspace | KeyCode::Char('\x08') | KeyCode::Char('\x7f') => {
                 self.backspace()
             }
+            KeyCode::Delete if key.modifiers.contains(KeyModifiers::ALT) => self.delete_next_word(),
             KeyCode::Delete => self.delete_forward(),
+            KeyCode::Tab => self.complete_input(),
             KeyCode::Enter => self.submit(),
             KeyCode::Up if key.modifiers.contains(KeyModifiers::SHIFT) => self.scroll_up(1),
             KeyCode::Down if key.modifiers.contains(KeyModifiers::SHIFT) => self.scroll_down(1),
@@ -234,6 +280,8 @@ impl TuiApp {
             KeyCode::PageDown => self.scroll_down(self.last_page_height.max(1)),
             KeyCode::Up => self.history_previous(),
             KeyCode::Down => self.history_next(),
+            KeyCode::Left if key.modifiers.contains(KeyModifiers::ALT) => self.move_previous_word(),
+            KeyCode::Right if key.modifiers.contains(KeyModifiers::ALT) => self.move_next_word(),
             KeyCode::Left => self.cursor_pos = self.cursor_pos.saturating_sub(1),
             KeyCode::Right => {
                 self.cursor_pos = (self.cursor_pos + 1).min(self.input.chars().count())
@@ -307,6 +355,99 @@ impl TuiApp {
         }
     }
 
+    fn delete_to_end(&mut self) {
+        let start = char_to_byte_index(&self.input, self.cursor_pos);
+        self.input.truncate(start);
+        self.history_idx = None;
+    }
+
+    fn move_previous_word(&mut self) {
+        let chars: Vec<char> = self.input.chars().collect();
+        let mut pos = self.cursor_pos.min(chars.len());
+        while pos > 0 && chars[pos - 1].is_whitespace() {
+            pos -= 1;
+        }
+        while pos > 0 && !chars[pos - 1].is_whitespace() {
+            pos -= 1;
+        }
+        self.cursor_pos = pos;
+    }
+
+    fn move_next_word(&mut self) {
+        let chars: Vec<char> = self.input.chars().collect();
+        let mut pos = self.cursor_pos.min(chars.len());
+        while pos < chars.len() && !chars[pos].is_whitespace() {
+            pos += 1;
+        }
+        while pos < chars.len() && chars[pos].is_whitespace() {
+            pos += 1;
+        }
+        self.cursor_pos = pos;
+    }
+
+    fn delete_next_word(&mut self) {
+        let chars: Vec<char> = self.input.chars().collect();
+        let start = self.cursor_pos.min(chars.len());
+        let mut end = start;
+        while end < chars.len() && chars[end].is_whitespace() {
+            end += 1;
+        }
+        while end < chars.len() && !chars[end].is_whitespace() {
+            end += 1;
+        }
+        if end > start {
+            let byte_start = char_to_byte_index(&self.input, start);
+            let byte_end = char_to_byte_index(&self.input, end);
+            self.input.replace_range(byte_start..byte_end, "");
+            self.history_idx = None;
+        }
+    }
+
+    fn complete_input(&mut self) {
+        let before_cursor = self
+            .input
+            .chars()
+            .take(self.cursor_pos)
+            .collect::<String>();
+        let trimmed_start = before_cursor.trim_start();
+        if trimmed_start.is_empty() {
+            self.add_output("  补全: help  status  users  rooms  room  plugin  benchmark".to_string());
+            return;
+        }
+
+        let (prefix, candidates): (&str, &[&str]) = if let Some(rest) = trimmed_start.strip_prefix("room ") {
+            (rest.split_whitespace().last().unwrap_or(""), ROOM_COMPLETIONS)
+        } else if let Some(rest) = trimmed_start.strip_prefix("plugin ") {
+            (rest.split_whitespace().last().unwrap_or(""), PLUGIN_COMPLETIONS)
+        } else if let Some(rest) = trimmed_start.strip_prefix("broadcast ") {
+            (rest.split_whitespace().last().unwrap_or(""), BROADCAST_COMPLETIONS)
+        } else {
+            (trimmed_start.split_whitespace().last().unwrap_or(""), ROOT_COMPLETIONS)
+        };
+
+        let matches = candidates
+            .iter()
+            .copied()
+            .filter(|candidate| candidate.starts_with(prefix))
+            .collect::<Vec<_>>();
+        match matches.as_slice() {
+            [] => self.add_output(format!("  无补全候选: {prefix}")),
+            [only] => self.apply_completion(prefix, only),
+            many => self.add_output(format!("  补全: {}", many.join("  "))),
+        }
+    }
+
+    fn apply_completion(&mut self, prefix: &str, completion: &str) {
+        if completion.len() < prefix.len() {
+            return;
+        }
+        let suffix = &completion[prefix.len()..];
+        self.insert_text(suffix);
+        if !self.input.ends_with(' ') {
+            self.insert_char(' ');
+        }
+    }
+
     fn submit(&mut self) {
         let cmd = self.input.trim().to_string();
         if !cmd.is_empty() {
@@ -362,14 +503,28 @@ impl TuiApp {
         let chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
+                Constraint::Length(1),
                 Constraint::Min(1),
                 Constraint::Length(1),
                 Constraint::Length(1),
             ])
             .split(area);
 
-        let output_height = chunks[0].height as usize;
-        let output_width = chunks[0].width.saturating_sub(1).max(1) as usize;
+        let header = Line::from(vec![
+            Span::styled("◆ Phira-mp+", self.accent_style()),
+            Span::raw("  "),
+            Span::styled("help", self.muted_style()),
+            Span::raw(" / "),
+            Span::styled("status", self.muted_style()),
+            Span::raw(" / "),
+            Span::styled("benchmark", self.muted_style()),
+            Span::raw("   "),
+            Span::styled("Tab补全  Ctrl+A/E首尾  Alt+←/→按词移动", self.muted_style()),
+        ]);
+        frame.render_widget(Paragraph::new(header), chunks[0]);
+
+        let output_height = chunks[1].height as usize;
+        let output_width = chunks[1].width.saturating_sub(1).max(1) as usize;
         self.last_wrap_width = output_width;
         self.last_page_height = output_height;
 
@@ -389,18 +544,18 @@ impl TuiApp {
             .collect::<Vec<_>>()
             .join("\n");
 
-        frame.render_widget(Clear, chunks[0]);
-        frame.render_widget(Paragraph::new(visible), chunks[0]);
+        frame.render_widget(Clear, chunks[1]);
+        frame.render_widget(Paragraph::new(visible), chunks[1]);
 
         if self.scroll_from_bottom > 0 && output_height > 0 {
             let max_offset = max_start.max(1);
             let from_top = max_start.saturating_sub(self.scroll_from_bottom);
-            let y = chunks[0].y
+            let y = chunks[1].y
                 + ((from_top * output_height.saturating_sub(1)) / max_offset) as u16;
             frame.render_widget(
                 Paragraph::new(Span::styled("┃", self.accent_style())),
                 ratatui::layout::Rect::new(
-                    chunks[0].x + chunks[0].width.saturating_sub(1),
+                    chunks[1].x + chunks[1].width.saturating_sub(1),
                     y,
                     1,
                     1,
@@ -408,7 +563,7 @@ impl TuiApp {
             );
         }
 
-        let input_width = chunks[1].width.saturating_sub(2) as usize;
+        let input_width = chunks[2].width.saturating_sub(2) as usize;
         let (input_visible, cursor_col) = input_window(&self.input, self.cursor_pos, input_width);
         let prompt = if self.input.is_empty() {
             Span::styled("→ ", self.muted_style())
@@ -417,11 +572,11 @@ impl TuiApp {
         };
         frame.render_widget(
             Paragraph::new(Line::from(vec![prompt, Span::raw(input_visible)])),
-            chunks[1],
+            chunks[2],
         );
         frame.set_cursor_position(Position::new(
-            chunks[1].x + 2 + cursor_col.min(input_width) as u16,
-            chunks[1].y,
+            chunks[2].x + 2 + cursor_col.min(input_width) as u16,
+            chunks[2].y,
         ));
 
         let status = if self.scroll_from_bottom == 0 {
@@ -434,7 +589,7 @@ impl TuiApp {
         };
         frame.render_widget(
             Paragraph::new(Span::styled(status, self.muted_style())),
-            chunks[2],
+            chunks[3],
         );
     }
 

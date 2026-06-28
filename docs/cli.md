@@ -21,7 +21,9 @@ phira-mp-plus-server [OPTIONS]
 
 ## 交互式管理控制台
 
-服务器在普通交互式终端和 tmux 中启动 ratatui 管理控制台。GNU Screen 环境自动切换为逐行兼容控制台，不输出颜色、备用屏幕、鼠标或 Bracketed Paste 控制序列；重定向、systemd 和其他非 TTY 环境也使用逐行控制台。设置 `NO_COLOR` 可在其他终端中关闭颜色。
+服务器在普通交互式终端和 tmux 中启动 ratatui 管理控制台。GNU Screen、Linux console、`ansi`/`cons25` 等兼容性较差的终端会进入保守 TUI：不启用备用屏幕、鼠标捕获或 Bracketed Paste，并修正 Ctrl+H Backspace；如果 TUI 初始化失败，会自动回落到逐行兼容控制台。重定向、systemd 和其他非 TTY 环境始终使用逐行控制台。设置 `NO_COLOR` 可关闭颜色。
+
+TUI 快捷键：`Tab` 补全、`Ctrl+A/E` 跳到行首/行尾、`Ctrl+B/F` 左右移动、`Alt+←/→` 按词移动、`Ctrl+W` 删除前一个词、`Alt+Delete` 删除后一个词、`Ctrl+K` 删除到行尾、`Ctrl+L` 清屏、`PgUp/PgDn` 或 `Shift+↑/↓` 滚动日志。
 
 ### 命令列表
 
@@ -32,6 +34,28 @@ phira-mp-plus-server [OPTIONS]
 | `help` | `h`, `?` | 显示帮助信息 |
 | `exit` | `quit`, `q` | 关闭服务器 |
 | `status` | `st` | 显示服务器状态 |
+
+#### 诊断 / 压测
+
+| 命令 | 别名 | 说明 |
+|------|------|------|
+| `benchmark [秒=30] [房间=100]` | `bench` | 后台运行真实 TCP 网络压测，立即回显提交状态，完成后输出结果 |
+| `benchmark-bind <token1[,token2...]>` | `bench-bind` | 绑定真实 Phira token 到 `data/benchmark-auth.json` |
+| `benchmark-cleanup` | `bench-cleanup` | 清理残留 `bench-*` 房间 |
+
+这些是核心命令，不属于 WASM 插件命令分区。未配置压测账号时，`benchmark` 会提示先执行 `benchmark-bind` 或修改 `server_config.yml` 的 `benchmark_phira_tokens`。
+
+
+#### 内置扩展命令
+
+| 命令 | 说明 |
+|------|------|
+| `welcome-config` | 查看欢迎语配置与占位符说明 |
+| `player-count` | 查看历史玩家总数 |
+| `playtime <用户ID>` | 查询用户游玩时间 |
+| `round-last <房间ID>` | 查看最近一轮结算提示 |
+
+这些命令由服务端内置模块注册，帮助中显示在“内置扩展”，不会再归到“WASM 插件扩展”。
 
 #### 插件管理（WASM）
 

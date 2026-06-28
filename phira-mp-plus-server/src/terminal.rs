@@ -4,8 +4,14 @@ use std::io::{self, IsTerminal};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TuiCapabilities {
     pub colors: bool,
+    /// Use the terminal alternate screen buffer. Disabled for GNU screen and other conservative profiles.
+    pub alternate_screen: bool,
+    /// Enable mouse reporting. Disabled for multiplexers/legacy consoles that often leak escape sequences.
     pub mouse_capture: bool,
+    /// Enable bracketed paste. Disabled for terminals that are known to mis-handle it.
     pub bracketed_paste: bool,
+    /// Line-mode fallback should rewrite VERASE to Ctrl+H for terminals that emit BS.
+    pub ctrl_h_backspace: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -67,6 +73,10 @@ pub struct TerminalProfile {
     tui: bool,
     screen: bool,
     color: bool,
+    alternate_screen: bool,
+    mouse_capture: bool,
+    bracketed_paste: bool,
+    ctrl_h_backspace: bool,
 }
 
 impl TerminalProfile {
@@ -88,12 +98,23 @@ impl TerminalProfile {
         no_color: bool,
         interactive: bool,
     ) -> Self {
-        let screen = has_sty || (term.starts_with("screen") && !has_tmux);
-        let tui = interactive && !screen && !term.is_empty() && term != "dumb";
+        let term_lc = term.to_ascii_lowercase();
+        let screen = has_sty || (term_lc.starts_with("screen") && !has_tmux);
+        let dumb = term_lc.is_empty() || term_lc == "dumb";
+        let linux_console = term_lc == "linux" || term_lc.starts_with("vt");
+        let ansi_console = term_lc == "ansi" || term_lc == "cons25";
+        let emacs_shell = term_lc.contains("emacs");
+        let conservative = screen || linux_console || ansi_console;
+        let tui = interactive && !dumb && !emacs_shell;
+        let color = interactive && !no_color && !dumb;
         Self {
             tui,
             screen,
-            color: tui && !no_color,
+            color,
+            alternate_screen: tui && !conservative,
+            mouse_capture: tui && !conservative,
+            bracketed_paste: tui && !conservative,
+            ctrl_h_backspace: screen && !has_tmux,
         }
     }
 
@@ -104,8 +125,10 @@ impl TerminalProfile {
 
         ConsoleMode::Tui(TuiCapabilities {
             colors: self.color,
-            mouse_capture: true,
-            bracketed_paste: true,
+            alternate_screen: self.alternate_screen,
+            mouse_capture: self.mouse_capture,
+            bracketed_paste: self.bracketed_paste,
+            ctrl_h_backspace: self.ctrl_h_backspace,
         })
     }
 
@@ -216,12 +239,30 @@ mod tests {
     use super::*;
 
     #[test]
-    fn screen_uses_line_console() {
+    fn screen_uses_conservative_tui() {
         let profile = TerminalProfile::from_context("screen-256color", false, false, false, true);
-        assert_eq!(profile.console_mode(), ConsoleMode::Line);
+        assert_eq!(
+            profile.console_mode(),
+            ConsoleMode::Tui(TuiCapabilities {
+                colors: true,
+                alternate_screen: false,
+                mouse_capture: false,
+                bracketed_paste: false,
+                ctrl_h_backspace: true,
+            })
+        );
 
         let profile = TerminalProfile::from_context("xterm-256color", true, false, false, true);
-        assert_eq!(profile.console_mode(), ConsoleMode::Line);
+        assert_eq!(
+            profile.console_mode(),
+            ConsoleMode::Tui(TuiCapabilities {
+                colors: true,
+                alternate_screen: false,
+                mouse_capture: false,
+                bracketed_paste: false,
+                ctrl_h_backspace: true,
+            })
+        );
     }
 
     #[test]
@@ -237,8 +278,10 @@ mod tests {
             profile.console_mode(),
             ConsoleMode::Tui(TuiCapabilities {
                 colors: false,
+                alternate_screen: true,
                 mouse_capture: true,
                 bracketed_paste: true,
+                ctrl_h_backspace: false,
             })
         );
     }

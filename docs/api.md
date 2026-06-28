@@ -132,6 +132,7 @@ curl -N http://127.0.0.1:12347/rooms/listen
 | `exit` / `quit` | 关闭服务器 |
 | `benchmark [dur_s=30] [rooms=100]` | 真实网络压力测试（需先配置/绑定 Phira token） |
 | `benchmark-bind <token1[,token2...]>` | 绑定压测 Phira 账号 token |
+| `benchmark-cleanup` | 清理残留 `bench-*` 房间 |
 
 ### 房间管理
 
@@ -310,6 +311,6 @@ round_data_retention_days: 7   # 轮次数据保留天数
 | `rooms.by_name` | 按名称查找房间 |
 | `rooms.by_user` | 按用户查找房间 |
 | `user_name` | 用户名查询 |
-| `test.run_benchmark` | 真实网络压测 |
+| `test.run_benchmark` | 真实网络压测；CLI `benchmark` 通过核心命令后台调用，不再注册为 WASM 插件命令 |
 | `test.bind_phira_tokens` | 绑定压测账号 token |
 | `test.cleanup` | 清理测试数据 |

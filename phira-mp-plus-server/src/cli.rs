@@ -45,6 +45,13 @@ fn parse_cli_bool(value: &str) -> bool {
     )
 }
 
+fn is_core_registered_command(name: &str) -> bool {
+    matches!(
+        name,
+        "welcome-config" | "player-count" | "playtime" | "round-last"
+    )
+}
+
 /// CLI 命令处理器
 pub struct CliHandler {
     state: Arc<PlusServerState>,
@@ -296,6 +303,12 @@ impl CliHandler {
                     }
                 }
                 "status" | "st" => self.status().await,
+                "benchmark" | "bench" => self.start_benchmark(&args).await,
+                "benchmark-bind" | "bench-bind" => self.bind_benchmark(&args).await,
+                "benchmark-cleanup" | "bench-cleanup" => {
+                    self.state.cleanup_benchmark_sync();
+                    self.out(format!("  {} 已清理 bench-* 压测房间", c::green("✓")));
+                }
                 "ext-list" | "el" => self.list_extensions().await,
                 "ext-get" | "eg" => {
                     if args.len() < 2 {
@@ -454,6 +467,81 @@ impl CliHandler {
         info!("CLI session ended");
     }
 
+    async fn start_benchmark(&self, args: &[&str]) {
+        let duration: u64 = args
+            .first()
+            .and_then(|value| value.parse().ok())
+            .filter(|value| (5..=300).contains(value))
+            .unwrap_or(30);
+        let rooms: usize = args
+            .get(1)
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(100)
+            .clamp(1, 5000);
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        if self.state.bench_tx.send((duration, rooms, tx)).is_err() {
+            self.out(format!("  {} benchmark channel closed", c::red("✗")));
+            return;
+        }
+
+        self.out(format!(
+            "  {} 已提交真实网络压测: {} 秒 / 目标 {} 房间（后台运行，完成后会输出结果）",
+            c::green("✓"),
+            duration,
+            rooms,
+        ));
+        self.out(format!(
+            "  {} 未配置账号时会提示执行 benchmark-bind <token1[,token2...]>；运行期间仍可继续输入其它命令",
+            c::dim("▸")
+        ));
+
+        let out_tx = self.out_tx.clone();
+        tokio::spawn(async move {
+            let timeout_secs = duration.saturating_add(120);
+            let result = tokio::task::spawn_blocking(move || {
+                rx.recv_timeout(std::time::Duration::from_secs(timeout_secs))
+            })
+            .await;
+
+            match result {
+                Ok(Ok(output)) => {
+                    let _ = out_tx.send(format!("  ◆ benchmark 完成（{} 秒 / {} 房间）", duration, rooms));
+                    for line in output.lines() {
+                        let _ = out_tx.send(line.to_string());
+                    }
+                }
+                Ok(Err(_)) => {
+                    let _ = out_tx.send(format!(
+                        "  ✗ benchmark 超时或被取消（等待 {} 秒后仍无结果）",
+                        timeout_secs
+                    ));
+                }
+                Err(err) => {
+                    let _ = out_tx.send(format!("  ✗ benchmark 等待任务失败: {err}"));
+                }
+            }
+        });
+    }
+
+    async fn bind_benchmark(&self, args: &[&str]) {
+        if args.is_empty() {
+            self.out(format!("  {} {} <token1[,token2...]> 或多个 token 参数", c::yellow("?"), c::bold("benchmark-bind")));
+            self.out(format!("  {} 也可以直接修改 server_config.yml: benchmark_phira_tokens: [\"...\"]", c::dim("▸")));
+            return;
+        }
+
+        let raw = args.iter().map(|value| (*value).to_string()).collect::<Vec<_>>();
+        match self.state.bind_benchmark_tokens(raw).await {
+            Ok(count) => self.out(format!(
+                "  {} 已绑定 {} 个压测账号，保存到 data/benchmark-auth.json",
+                c::green("✓"),
+                count,
+            )),
+            Err(err) => self.out(format!("  {} {}", c::red("✗"), err)),
+        }
+    }
+
     async fn print_help(&self) {
         self.out(format!("  {} Phira-mp+ 管理命令", c::bold("◆")));
         self.out(format!("  {} ─────────────────────────────────────────────", c::dim("")));
@@ -462,6 +550,11 @@ impl CliHandler {
         self.out(format!("    {:<22} {}", c::dim("help"), "显示此帮助"));
         self.out(format!("    {:<22} {}", c::dim("exit"), "关闭服务器"));
         self.out(format!("    {:<22} {}", c::dim("status"), "服务器状态"));
+        self.out(format!(""));
+        self.out(format!("  {} 诊断 / 压测", c::cyan("▸")));
+        self.out(format!("    {:<22} {}", c::dim("benchmark [秒] [房间]"), "后台运行真实网络压测"));
+        self.out(format!("    {:<22} {}", c::dim("benchmark-bind <token>"), "绑定压测用 Phira token"));
+        self.out(format!("    {:<22} {}", c::dim("benchmark-cleanup"), "清理 bench-* 房间"));
         self.out(format!(""));
         self.out(format!("  {} WASM 插件", c::cyan("▸")));
         self.out(format!("    {:<22} {}", c::dim("plugin list"), "列出所有 WASM 插件"));
@@ -499,10 +592,20 @@ impl CliHandler {
         self.out(format!("    {:<22} {}", c::dim("ext-get <ID> <key>"), "查看扩展数据"));
 
         let plugin_cmds = self.state.plugin_manager.list_cli_commands().await;
-        if !plugin_cmds.is_empty() {
+        let (core_cmds, wasm_cmds): (Vec<_>, Vec<_>) = plugin_cmds
+            .into_iter()
+            .partition(|cmd| is_core_registered_command(&cmd.name));
+        if !core_cmds.is_empty() {
+            self.out(format!(""));
+            self.out(format!("  {} 内置扩展", c::cyan("▸")));
+            for cmd in &core_cmds {
+                self.out(format!("    {:<22} {}", c::dim(&cmd.name), cmd.description));
+            }
+        }
+        if !wasm_cmds.is_empty() {
             self.out(format!(""));
             self.out(format!("  {} WASM 插件扩展", c::magenta("▸")));
-            for cmd in &plugin_cmds {
+            for cmd in &wasm_cmds {
                 self.out(format!("    {:<22} {}", c::dim(&cmd.name), cmd.description));
             }
         }

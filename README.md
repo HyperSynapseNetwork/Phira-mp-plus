@@ -165,7 +165,7 @@ Phira-mp-plus/
 
 ## 终端兼容性
 
-启动时会检测 stdin/stdout、`TERM`、`STY` 与 `TMUX`。GNU Screen 自动切换到逐行兼容控制台，不启用颜色、备用屏幕、鼠标捕获或 Bracketed Paste；tmux 仍可使用完整 TUI。项目同时遵循 `NO_COLOR`，逐行输出会再次过滤残留控制序列。非交互环境同样使用逐行控制台。
+启动时会检测 stdin/stdout、`TERM`、`STY` 与 `TMUX`。GNU Screen、Linux console、`ansi`/`cons25` 等环境使用保守 TUI：禁用备用屏幕、鼠标捕获和 Bracketed Paste，并修正 Ctrl+H Backspace；如果 TUI 初始化失败，会自动降级到逐行兼容控制台。tmux、xterm、WezTerm、iTerm、Kitty 等普通终端继续使用完整 TUI。项目遵循 `NO_COLOR`，逐行输出会再次过滤残留控制序列；非交互环境同样使用逐行控制台。
 
 ## SSE 房间事件
 
@@ -182,9 +182,10 @@ curl -N http://127.0.0.1:12347/rooms/listen
 | 分组 | 命令 | 说明 |
 |------|------|------|
 | 通用 | `help`, `exit`, `status` | 帮助/退出/状态 |
+| 诊断/压测 | `benchmark`, `benchmark-bind`, `benchmark-cleanup` | 真实网络压测和账号绑定 |
 | WASM 插件 | `plugin list/enable/disable/info/reload` | 插件管理 |
 | 用户 | `users`, `kick`, `broadcast` | 用户管理和消息 |
-| 房间 | `room list/info/start/cancel/kick/transfer/set/close/history` | 房间管理子命令 |
+| 房间 | `room list/info/start/cancel/kick/transfer/force-move/hide/set/close/history` | 房间管理子命令 |
 | 黑名单 | `ban`, `unban`, `banlist` | 封禁管理 |
 | 扩展数据 | `ext-list`, `ext-get` | 扩展字段 |
 

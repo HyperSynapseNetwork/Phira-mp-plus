@@ -115,7 +115,7 @@ async fn main() -> Result<()> {
             let mode = terminal.console_mode();
             let screen_compat = terminal.is_screen();
             if screen_compat {
-                info!("GNU Screen detected; using the line-oriented compatibility console");
+                info!("GNU Screen detected; using conservative TUI capabilities with Ctrl+H backspace compatibility");
             }
             Some(std::thread::spawn(move || match mode {
                 ConsoleMode::Tui(capabilities) => {

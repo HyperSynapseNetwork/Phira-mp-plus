@@ -478,48 +478,8 @@ impl PlusServer {
             let uid: i32 = params.first().and_then(|p| p.parse().ok()).unwrap_or(0);
             sq.call("user_name", &[serde_json::json!(uid)]).map_err(|e| (500u16, e))
         }));
-        // 压测 CLI 命令注册
-        let bench_state = Arc::clone(&state);
-        let _ = state.plugin_manager.register_cli_command(crate::plugin::CliCommand {
-            name: "benchmark".to_string(),
-            description: "运行真实网络压力测试（需要已绑定 Phira 账号 token）".to_string(),
-            usage: "benchmark [dur_s=30] [rooms=100]".to_string(),
-            handler: Arc::new(move |args| {
-                let duration: u64 = args.first().and_then(|a| a.parse().ok()).filter(|&v| v >= 5 && v <= 300).unwrap_or(30);
-                let rooms: usize = args.get(1).and_then(|a| a.parse().ok()).unwrap_or(100).max(1).min(5000);
-                let sq = bench_state.clone();
-                match crate::server::server_state_query_inner(
-                    &sq, "test.run_benchmark", &[serde_json::json!(duration), serde_json::json!(rooms)]
-                ) {
-                    Ok(v) => v.get("output").and_then(|o| o.as_str())
-                        .map(|s| s.lines().map(|l| l.to_string()).collect())
-                        .unwrap_or_else(|| vec!["  ✗ parse error".to_string()]),
-                    Err(e) => vec![format!("  ✗ {}", e)],
-                }
-            }),
-        }).await;
-        let bind_state = Arc::clone(&state);
-        let _ = state.plugin_manager.register_cli_command(crate::plugin::CliCommand {
-            name: "benchmark-bind".to_string(),
-            description: "绑定真实 Phira 账号 token 供 benchmark 使用".to_string(),
-            usage: "benchmark-bind <token1[,token2...]>".to_string(),
-            handler: Arc::new(move |args| {
-                if args.is_empty() {
-                    return vec!["  ✗ 用法: benchmark-bind <token1[,token2...]>".to_string()];
-                }
-                let sq = bind_state.clone();
-                match crate::server::server_state_query_inner(
-                    &sq, "test.bind_phira_tokens", &[serde_json::json!(args.join(" "))]
-                ) {
-                    Ok(v) => vec![format!(
-                        "  ✓ 已绑定 {} 个压测账号，保存到 {}",
-                        v.get("count").and_then(|c| c.as_u64()).unwrap_or(0),
-                        v.get("path").and_then(|p| p.as_str()).unwrap_or(BENCH_AUTH_FILE),
-                    )],
-                    Err(e) => vec![format!("  ✗ {}", e)],
-                }
-            }),
-        }).await;
+        // 内置 benchmark/benchmark-bind 已由 CLI 核心直接处理；
+        // test.* WIT/host API 仍保留给插件和自动化调用。
 
         // 初始化内置功能（欢迎语/追踪/排行等）
         crate::internal_hooks::init_internal_hooks(&state, &http_server, &state.plugin_manager).await;
