@@ -16,10 +16,10 @@ use crossterm::{
 };
 use ratatui::{
     backend::CrosstermBackend,
-    layout::{Constraint, Direction, Layout, Position},
+    layout::{Constraint, Direction, Layout, Position, Rect},
     style::{Color, Style},
     text::{Line, Span},
-    widgets::{Clear, Paragraph},
+    widgets::{Block, Borders, Clear, Paragraph},
     Frame, Terminal,
 };
 use std::io::{self, Write};
@@ -497,7 +497,7 @@ impl TuiApp {
 
     fn render(&mut self, frame: &mut Frame) {
         let area = frame.area();
-        if area.width < 12 || area.height < 4 {
+        if area.width < 12 || area.height < 6 {
             return;
         }
         let chunks = Layout::default()
@@ -505,7 +505,7 @@ impl TuiApp {
             .constraints([
                 Constraint::Length(1),
                 Constraint::Min(1),
-                Constraint::Length(1),
+                Constraint::Length(3),
                 Constraint::Length(1),
             ])
             .split(area);
@@ -519,12 +519,14 @@ impl TuiApp {
             Span::raw(" / "),
             Span::styled("benchmark", self.muted_style()),
             Span::raw("   "),
-            Span::styled("Tab补全  Ctrl+A/E首尾  Alt+←/→按词移动", self.muted_style()),
+            Span::styled("输出区和命令输入区已分离", self.muted_style()),
         ]);
         frame.render_widget(Paragraph::new(header), chunks[0]);
 
-        let output_height = chunks[1].height as usize;
-        let output_width = chunks[1].width.saturating_sub(1).max(1) as usize;
+        let output_area = chunks[1];
+        let output_inner = inner_rect(output_area);
+        let output_height = output_inner.height as usize;
+        let output_width = output_inner.width.saturating_sub(1).max(1) as usize;
         self.last_wrap_width = output_width;
         self.last_page_height = output_height;
 
@@ -544,18 +546,25 @@ impl TuiApp {
             .collect::<Vec<_>>()
             .join("\n");
 
-        frame.render_widget(Clear, chunks[1]);
-        frame.render_widget(Paragraph::new(visible), chunks[1]);
+        frame.render_widget(Clear, output_area);
+        frame.render_widget(
+            Block::default()
+                .title(" 输出 / 日志 ")
+                .borders(Borders::ALL)
+                .border_style(self.border_style()),
+            output_area,
+        );
+        frame.render_widget(Paragraph::new(visible), output_inner);
 
-        if self.scroll_from_bottom > 0 && output_height > 0 {
+        if self.scroll_from_bottom > 0 && output_height > 0 && output_inner.width > 0 {
             let max_offset = max_start.max(1);
             let from_top = max_start.saturating_sub(self.scroll_from_bottom);
-            let y = chunks[1].y
+            let y = output_inner.y
                 + ((from_top * output_height.saturating_sub(1)) / max_offset) as u16;
             frame.render_widget(
                 Paragraph::new(Span::styled("┃", self.accent_style())),
-                ratatui::layout::Rect::new(
-                    chunks[1].x + chunks[1].width.saturating_sub(1),
+                Rect::new(
+                    output_inner.x + output_inner.width.saturating_sub(1),
                     y,
                     1,
                     1,
@@ -563,27 +572,37 @@ impl TuiApp {
             );
         }
 
-        let input_width = chunks[2].width.saturating_sub(2) as usize;
+        let input_area = chunks[2];
+        let input_inner = inner_rect(input_area);
+        let input_width = input_inner.width.saturating_sub(2) as usize;
         let (input_visible, cursor_col) = input_window(&self.input, self.cursor_pos, input_width);
         let prompt = if self.input.is_empty() {
-            Span::styled("→ ", self.muted_style())
+            Span::styled("› ", self.muted_style())
         } else {
-            Span::styled("→ ", self.accent_style())
+            Span::styled("› ", self.accent_style())
         };
+        frame.render_widget(Clear, input_area);
+        frame.render_widget(
+            Block::default()
+                .title(" 命令输入 ")
+                .borders(Borders::ALL)
+                .border_style(self.input_border_style()),
+            input_area,
+        );
         frame.render_widget(
             Paragraph::new(Line::from(vec![prompt, Span::raw(input_visible)])),
-            chunks[2],
+            input_inner,
         );
         frame.set_cursor_position(Position::new(
-            chunks[2].x + 2 + cursor_col.min(input_width) as u16,
-            chunks[2].y,
+            input_inner.x + 2 + cursor_col.min(input_width) as u16,
+            input_inner.y,
         ));
 
         let status = if self.scroll_from_bottom == 0 {
-            format!("  {} 行  Shift+↑↓/PgUp/PgDn滚动  Ctrl+C退出", visual_rows.len())
+            format!("  {} 行  Tab补全  ↑↓历史  PgUp/PgDn滚动  Ctrl+C退出", visual_rows.len())
         } else {
             format!(
-                "  距底部 {} 行  Shift+↓/PgDn返回  Ctrl+C退出",
+                "  距底部 {} 行  Shift+↓/PgDn返回底部  Ctrl+L清屏  Esc清空输入",
                 self.scroll_from_bottom
             )
         };
@@ -608,6 +627,31 @@ impl TuiApp {
             Style::default()
         }
     }
+
+    fn border_style(&self) -> Style {
+        if self.colors {
+            Style::default().fg(Color::DarkGray)
+        } else {
+            Style::default()
+        }
+    }
+
+    fn input_border_style(&self) -> Style {
+        if self.colors {
+            Style::default().fg(Color::Cyan)
+        } else {
+            Style::default()
+        }
+    }
+}
+
+fn inner_rect(area: Rect) -> Rect {
+    Rect::new(
+        area.x.saturating_add(1),
+        area.y.saturating_add(1),
+        area.width.saturating_sub(2),
+        area.height.saturating_sub(2),
+    )
 }
 
 fn char_to_byte_index(value: &str, char_index: usize) -> usize {
