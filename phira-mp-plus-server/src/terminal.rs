@@ -12,6 +12,8 @@ pub struct TuiCapabilities {
     pub bracketed_paste: bool,
     /// Line-mode fallback should rewrite VERASE to Ctrl+H for terminals that emit BS.
     pub ctrl_h_backspace: bool,
+    /// Use only ASCII layout primitives and avoid heavy terminal features.
+    pub plain_ui: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -77,6 +79,7 @@ pub struct TerminalProfile {
     mouse_capture: bool,
     bracketed_paste: bool,
     ctrl_h_backspace: bool,
+    plain_ui: bool,
 }
 
 impl TerminalProfile {
@@ -115,6 +118,7 @@ impl TerminalProfile {
             mouse_capture: tui && !conservative,
             bracketed_paste: tui && !conservative,
             ctrl_h_backspace: screen && !has_tmux,
+            plain_ui: conservative,
         }
     }
 
@@ -129,6 +133,7 @@ impl TerminalProfile {
             mouse_capture: self.mouse_capture,
             bracketed_paste: self.bracketed_paste,
             ctrl_h_backspace: self.ctrl_h_backspace,
+            plain_ui: self.plain_ui,
         })
     }
 
@@ -249,6 +254,7 @@ mod tests {
                 mouse_capture: false,
                 bracketed_paste: false,
                 ctrl_h_backspace: true,
+                plain_ui: true,
             })
         );
 
@@ -261,6 +267,7 @@ mod tests {
                 mouse_capture: false,
                 bracketed_paste: false,
                 ctrl_h_backspace: true,
+                plain_ui: true,
             })
         );
     }
@@ -282,6 +289,7 @@ mod tests {
                 mouse_capture: true,
                 bracketed_paste: true,
                 ctrl_h_backspace: false,
+                plain_ui: false,
             })
         );
     }

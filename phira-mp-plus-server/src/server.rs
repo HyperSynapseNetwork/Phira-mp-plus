@@ -622,7 +622,7 @@ impl PlusServerState {
         let mut out = String::new();
         macro_rules! o { ($($t:tt)*) => { out.push_str(&format!($($t)*)); out.push('\n'); } }
 
-        eprintln!("  ⟳ 压测: {target_rooms} 房间 / {duration_secs}s");
+        info!(target_rooms, duration_secs, "benchmark started");
 
         o!("  ◆ Phira-mp+ 服务端压测");
         o!("  │ 目标房间: {target_rooms}  测试时长: {duration_secs}s");
@@ -666,10 +666,10 @@ impl PlusServerState {
         let create_rate = if phase1.as_secs_f64() > 0.0 { created as f64 / phase1.as_secs_f64() } else { 0.0 };
         o!("  │ ✓ 创建 {created} 间, 耗时 {:.1}s ({:.0} 间/秒)", phase1.as_secs_f64(), create_rate);
 
-        eprintln!("  ⟳ 50% 用户填充完成");
+        info!("benchmark phase: room creation complete");
         o!("  │");
         o!("  ├─ [阶段2] 填充用户 (每房间+4人)");
-        eprintln!("  ⟳ 25% 填充用户...");
+        info!("benchmark phase: filling users");
         let t0 = Instant::now();
         let mut joined = 0usize;
         let rooms_snapshot: Vec<Arc<crate::room::Room>> = sync_read!(self.rooms).values().map(Arc::clone).collect();
@@ -692,7 +692,7 @@ impl PlusServerState {
         let phase2 = t0.elapsed();
         o!("  │ ✓ 加入 {joined} 人, 耗时 {:.1}s ({:.0} 人/秒)", phase2.as_secs_f64(), joined as f64 / phase2.as_secs_f64().max(0.001));
 
-        eprintln!("  ⟳ 75% 压力测试中...");
+        info!("benchmark phase: pressure loop");
         o!("  │");
         o!("  ├─ [阶段3] 压力保持 {duration_secs}s");
         let t0 = Instant::now();
@@ -736,7 +736,7 @@ impl PlusServerState {
 
         o!("  │");
         o!("  ├─ [阶段4] 清理测试数据");
-        eprintln!("  ⟳ 100% 清理中");
+        info!("benchmark phase: cleanup");
         let t4 = Instant::now();
         sync_write!(self.rooms).retain(|rid, _| !rid.to_string().starts_with("bench-"));
         sync_write!(self.users).retain(|id, _| *id < TEST_USER_ID_BASE || *id >= TEST_USER_ID_BASE + 10_000_000);

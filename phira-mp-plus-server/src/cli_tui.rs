@@ -95,11 +95,12 @@ pub fn run_tui(
     };
     let backend = CrosstermBackend::new(io::stdout());
     let mut terminal = Terminal::new(backend)?;
-    if capabilities.alternate_screen {
-        terminal.clear()?;
-    }
+    // Always clear once before the first draw. This is especially important when
+    // running without alternate-screen in GNU screen/linux console, otherwise
+    // old shell/compiler output can remain under ratatui's diff renderer.
+    terminal.clear()?;
 
-    let mut app = TuiApp::new(cmd_tx, capabilities.colors);
+    let mut app = TuiApp::new(cmd_tx, capabilities.colors, capabilities.plain_ui);
     let result = app.run_loop(&mut terminal, &mut out_rx, &mut log_rx);
     let _ = terminal.show_cursor();
     result
@@ -119,6 +120,7 @@ struct TuiApp {
     last_wrap_width: usize,
     last_page_height: usize,
     colors: bool,
+    plain_ui: bool,
 }
 
 const ROOT_COMPLETIONS: &[&str] = &[
@@ -137,7 +139,7 @@ const PLUGIN_COMPLETIONS: &[&str] = &["list", "enable", "disable", "reload", "in
 const BROADCAST_COMPLETIONS: &[&str] = &["all", "room", "user"];
 
 impl TuiApp {
-    fn new(cmd_tx: mpsc::UnboundedSender<String>, colors: bool) -> Self {
+    fn new(cmd_tx: mpsc::UnboundedSender<String>, colors: bool, plain_ui: bool) -> Self {
         Self {
             output_lines: Vec::with_capacity(1024),
             scroll_from_bottom: 0,
@@ -150,6 +152,7 @@ impl TuiApp {
             last_wrap_width: 80,
             last_page_height: 20,
             colors,
+            plain_ui,
         }
     }
 
@@ -168,7 +171,7 @@ impl TuiApp {
         while self.running {
             loop {
                 match out_rx.try_recv() {
-                    Ok(msg) => self.add_output(strip_ansi(&msg)),
+                    Ok(msg) => self.add_output(sanitize_output(&msg)),
                     Err(TryRecvError::Empty) => break,
                     Err(TryRecvError::Disconnected) => {
                         self.running = false;
@@ -177,7 +180,7 @@ impl TuiApp {
                 }
             }
             while let Ok(msg) = log_rx.try_recv() {
-                self.add_output(strip_ansi(&msg));
+                self.add_output(sanitize_output(&msg));
             }
             if !self.running {
                 break;
@@ -500,6 +503,11 @@ impl TuiApp {
         if area.width < 12 || area.height < 6 {
             return;
         }
+        if self.plain_ui {
+            self.render_plain(frame, area);
+            return;
+        }
+
         let chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
@@ -518,9 +526,8 @@ impl TuiApp {
             Span::styled("status", self.muted_style()),
             Span::raw(" / "),
             Span::styled("benchmark", self.muted_style()),
-            Span::raw("   "),
-            Span::styled("输出区和命令输入区已分离", self.muted_style()),
         ]);
+        frame.render_widget(Clear, chunks[0]);
         frame.render_widget(Paragraph::new(header), chunks[0]);
 
         let output_area = chunks[1];
@@ -606,10 +613,73 @@ impl TuiApp {
                 self.scroll_from_bottom
             )
         };
+        frame.render_widget(Clear, chunks[3]);
         frame.render_widget(
             Paragraph::new(Span::styled(status, self.muted_style())),
             chunks[3],
         );
+    }
+
+    fn render_plain(&mut self, frame: &mut Frame, area: Rect) {
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(1),
+                Constraint::Length(1),
+                Constraint::Min(1),
+                Constraint::Length(1),
+                Constraint::Length(1),
+                Constraint::Length(1),
+            ])
+            .split(area);
+        let width = area.width.max(1) as usize;
+
+        frame.render_widget(Clear, area);
+        frame.render_widget(
+            Paragraph::new(pad_cells("Phira-mp+  help / status / benchmark", width)),
+            chunks[0],
+        );
+        frame.render_widget(Paragraph::new("-".repeat(width)), chunks[1]);
+
+        let output_area = chunks[2];
+        let output_height = output_area.height as usize;
+        let output_width = output_area.width.max(1) as usize;
+        self.last_wrap_width = output_width;
+        self.last_page_height = output_height;
+        let visual_rows: Vec<String> = self
+            .output_lines
+            .iter()
+            .flat_map(|line| wrap_display_line(line, output_width))
+            .collect();
+        let max_start = visual_rows.len().saturating_sub(output_height);
+        self.scroll_from_bottom = self.scroll_from_bottom.min(max_start);
+        let start = max_start.saturating_sub(self.scroll_from_bottom);
+        let visible = visual_rows
+            .iter()
+            .skip(start)
+            .take(output_height)
+            .map(|line| pad_cells(line, output_width))
+            .collect::<Vec<_>>()
+            .join("\n");
+        frame.render_widget(Paragraph::new(visible), output_area);
+
+        frame.render_widget(Paragraph::new("-".repeat(width)), chunks[3]);
+        let prompt = "> ";
+        let input_width = width.saturating_sub(prompt.len()).max(1);
+        let (input_visible, cursor_col) = input_window(&self.input, self.cursor_pos, input_width);
+        let input_line = pad_cells(&format!("{prompt}{input_visible}"), width);
+        frame.render_widget(Paragraph::new(input_line), chunks[4]);
+        frame.set_cursor_position(Position::new(
+            chunks[4].x + prompt.len() as u16 + cursor_col.min(input_width) as u16,
+            chunks[4].y,
+        ));
+
+        let status = if self.scroll_from_bottom == 0 {
+            format!("{} lines | Tab complete | Up/Down history | PgUp/PgDn scroll | Ctrl+C exit", visual_rows.len())
+        } else {
+            format!("{} lines from bottom | PgDn returns | Ctrl+L clear | Esc clears input", self.scroll_from_bottom)
+        };
+        frame.render_widget(Paragraph::new(pad_cells(&status, width)), chunks[5]);
     }
 
     fn accent_style(&self) -> Style {
@@ -732,6 +802,32 @@ fn input_window(input: &str, cursor_pos: usize, max_width: usize) -> (String, us
     (visible, cursor_width)
 }
 
+
+fn sanitize_output(input: &str) -> String {
+    strip_ansi(input)
+        .replace('\r', "\n")
+        .chars()
+        .filter(|ch| matches!(*ch, '\n' | '\t') || !ch.is_control())
+        .collect()
+}
+
+fn pad_cells(input: &str, width: usize) -> String {
+    let mut out = String::new();
+    let mut used = 0usize;
+    for ch in input.chars() {
+        let cell_width = UnicodeWidthChar::width(ch).unwrap_or(0);
+        if used + cell_width > width {
+            break;
+        }
+        out.push(ch);
+        used += cell_width;
+    }
+    if used < width {
+        out.push_str(&" ".repeat(width - used));
+    }
+    out
+}
+
 /// Line-oriented fallback used when stdin/stdout are redirected or not TTYs.
 pub fn run_stdin_cli(
     cmd_tx: mpsc::UnboundedSender<String>,
@@ -823,7 +919,7 @@ mod tests {
     #[test]
     fn screen_ctrl_h_is_backspace_but_plain_h_is_text() {
         let (tx, _rx) = mpsc::unbounded_channel();
-        let mut app = TuiApp::new(tx, false);
+        let mut app = TuiApp::new(tx, false, false);
         app.insert_text("ah");
         app.handle_key(KeyEvent::new(KeyCode::Char('h'), KeyModifiers::CONTROL));
         assert_eq!(app.input, "a");
@@ -835,5 +931,16 @@ mod tests {
     fn line_console_applies_ctrl_h_and_delete_as_backspace() {
         assert_eq!(normalize_line_input("roomx\x08 list\n"), "room list\n");
         assert_eq!(normalize_line_input("helpx\x7f\n"), "help\n");
+    }
+
+    #[test]
+    fn output_sanitizer_removes_cursor_control_noise() {
+        assert_eq!(sanitize_output("a\r\x1b[31mb\x1b[0m\x08c"), "a\nbc");
+    }
+
+    #[test]
+    fn plain_padding_respects_cjk_display_width() {
+        assert_eq!(pad_cells("ab中", 5), "ab中 ");
+        assert_eq!(pad_cells("ab中文", 5), "ab中 ");
     }
 }
