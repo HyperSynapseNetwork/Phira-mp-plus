@@ -2,16 +2,17 @@
 
 use crate::terminal::{sanitize_paste, strip_ansi, EraseKeyGuard, TuiCapabilities};
 use crossterm::{
-    cursor::{Hide, Show},
+    cursor::{Hide, MoveTo, Show},
     event::{
         self, DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste,
         EnableMouseCapture, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers,
         MouseEventKind,
     },
     execute,
+    style::{Attribute, ResetColor, SetAttribute},
     terminal::{
-        disable_raw_mode, enable_raw_mode, DisableLineWrap, EnableLineWrap,
-        EnterAlternateScreen, LeaveAlternateScreen,
+        disable_raw_mode, enable_raw_mode, Clear as TermClear, ClearType, DisableLineWrap,
+        EnableLineWrap, EnterAlternateScreen, LeaveAlternateScreen,
     },
 };
 use ratatui::{
@@ -39,10 +40,38 @@ impl TerminalSession {
     fn enter(capabilities: TuiCapabilities) -> io::Result<Self> {
         enable_raw_mode()?;
         let mut stdout = io::stdout();
-        let enter_result = if capabilities.alternate_screen {
-            execute!(stdout, EnterAlternateScreen, DisableLineWrap, Hide)
+        let enter_result = if capabilities.plain_ui {
+            // Plain mode targets old screen/linux/ansi-like environments. Avoid
+            // DEC private mode toggles such as cursor hide and line-wrap disable;
+            // some consoles render the final bytes of those sequences literally.
+            execute!(
+                stdout,
+                ResetColor,
+                SetAttribute(Attribute::Reset),
+                TermClear(ClearType::All),
+                MoveTo(0, 0)
+            )
+        } else if capabilities.alternate_screen {
+            execute!(
+                stdout,
+                ResetColor,
+                SetAttribute(Attribute::Reset),
+                EnterAlternateScreen,
+                TermClear(ClearType::All),
+                MoveTo(0, 0),
+                DisableLineWrap,
+                Hide
+            )
         } else {
-            execute!(stdout, DisableLineWrap, Hide)
+            execute!(
+                stdout,
+                ResetColor,
+                SetAttribute(Attribute::Reset),
+                TermClear(ClearType::All),
+                MoveTo(0, 0),
+                DisableLineWrap,
+                Hide
+            )
         };
         if let Err(err) = enter_result {
             let _ = disable_raw_mode();
@@ -68,11 +97,28 @@ impl Drop for TerminalSession {
         if self.capabilities.bracketed_paste {
             let _ = execute!(stdout, DisableBracketedPaste);
         }
-        if self.capabilities.alternate_screen {
-            let _ = execute!(stdout, Show, EnableLineWrap, LeaveAlternateScreen);
+        let _ = execute!(stdout, ResetColor, SetAttribute(Attribute::Reset));
+        if self.capabilities.plain_ui {
+            let _ = execute!(stdout, TermClear(ClearType::All), MoveTo(0, 0));
+        } else if self.capabilities.alternate_screen {
+            let _ = execute!(
+                stdout,
+                Show,
+                EnableLineWrap,
+                LeaveAlternateScreen,
+                TermClear(ClearType::All),
+                MoveTo(0, 0)
+            );
         } else {
-            let _ = execute!(stdout, Show, EnableLineWrap);
+            let _ = execute!(
+                stdout,
+                Show,
+                EnableLineWrap,
+                TermClear(ClearType::All),
+                MoveTo(0, 0)
+            );
         }
+        let _ = stdout.flush();
         let _ = disable_raw_mode();
     }
 }
@@ -100,9 +146,16 @@ pub fn run_tui(
     // old shell/compiler output can remain under ratatui's diff renderer.
     terminal.clear()?;
 
-    let mut app = TuiApp::new(cmd_tx, capabilities.colors, capabilities.plain_ui);
+    let mut app = TuiApp::new(
+        cmd_tx,
+        capabilities.colors && !capabilities.plain_ui,
+        capabilities.plain_ui,
+    );
     let result = app.run_loop(&mut terminal, &mut out_rx, &mut log_rx);
-    let _ = terminal.show_cursor();
+    let _ = terminal.clear();
+    if !capabilities.plain_ui {
+        let _ = terminal.show_cursor();
+    }
     result
 }
 
@@ -205,6 +258,14 @@ impl TuiApp {
             }
 
             if self.running {
+                if self.plain_ui {
+                    // Conservative terminals and old GNU screen sessions are the
+                    // places where wide CJK glyphs and diff-based redraws most
+                    // often disagree. Clear before every frame in this mode so
+                    // stale SGR/cursor fragments cannot remain between Chinese
+                    // characters or leak into the input line.
+                    terminal.clear()?;
+                }
                 terminal.draw(|frame| self.render(frame))?;
             }
         }

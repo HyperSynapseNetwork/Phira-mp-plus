@@ -109,7 +109,11 @@ impl TerminalProfile {
         let emacs_shell = term_lc.contains("emacs");
         let conservative = screen || linux_console || ansi_console;
         let tui = interactive && !dumb && !emacs_shell;
-        let color = interactive && !no_color && !dumb;
+        // Conservative profiles are exactly where ANSI SGR sequences are most
+        // likely to leak as visible "0m/2m/36m" fragments. Disable colors at the
+        // profile level so both the TUI renderer and command help output remain
+        // plain text there.
+        let color = interactive && !no_color && !dumb && !conservative;
         Self {
             tui,
             screen,
@@ -249,7 +253,7 @@ mod tests {
         assert_eq!(
             profile.console_mode(),
             ConsoleMode::Tui(TuiCapabilities {
-                colors: true,
+                colors: false,
                 alternate_screen: false,
                 mouse_capture: false,
                 bracketed_paste: false,
@@ -262,7 +266,7 @@ mod tests {
         assert_eq!(
             profile.console_mode(),
             ConsoleMode::Tui(TuiCapabilities {
-                colors: true,
+                colors: false,
                 alternate_screen: false,
                 mouse_capture: false,
                 bracketed_paste: false,
