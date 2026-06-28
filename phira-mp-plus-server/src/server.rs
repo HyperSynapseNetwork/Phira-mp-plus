@@ -27,6 +27,26 @@ pub struct Chart {
     pub name: String,
 }
 
+#[derive(Debug, Deserialize)]
+struct PhiraUserProfile {
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    username: Option<String>,
+    #[serde(default)]
+    display_name: Option<String>,
+}
+
+impl PhiraUserProfile {
+    fn into_name(self) -> Option<String> {
+        self.name
+            .or(self.username)
+            .or(self.display_name)
+            .map(|name| name.trim().to_string())
+            .filter(|name| !name.is_empty())
+    }
+}
+
 /// Record information from the Phira API
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct Record {
@@ -322,6 +342,8 @@ pub struct PlusServerState {
     pub bench_tx: tokio::sync::mpsc::UnboundedSender<BenchRequest>,
     /// 压测用 Phira token 列表（来自配置或 benchmark-bind 命令）。
     pub bench_tokens: RwLock<Vec<String>>,
+    /// 房间 endpoint 下用户显示名缓存：(endpoint, user_id) → name。
+    pub phira_display_name_cache: SafeMap<(String, i32), String>,
     /// 房间 monitor key（与 phira-web-monitor 共享密钥）
     pub room_monitor_key: Vec<u8>,
     pub events: Arc<SseHub>,
@@ -397,6 +419,7 @@ impl PlusServer {
             user_room_history: SafeMap::default(),
             bench_tx: bench_tx.clone(),
             bench_tokens: RwLock::new(bench_tokens),
+            phira_display_name_cache: SafeMap::default(),
             room_monitor_key: generate_secret_key("room_monitor", 64).unwrap_or_default(),
             room_monitor: RwLock::new(None),
             game_monitors: SafeMap::default(),
@@ -641,6 +664,78 @@ impl PlusServerState {
         if let Some(monitor) = self.get_room_monitor().await {
             monitor.try_send(ServerCommand::RoomEvent(event)).await;
         }
+    }
+
+    pub fn cached_display_name_for_endpoint(&self, endpoint: &str, user_id: i32, fallback: &str) -> String {
+        let endpoint = endpoint.trim_end_matches('/').to_string();
+        match self.phira_display_name_cache.try_read() {
+            Ok(cache) => cache
+                .get(&(endpoint, user_id))
+                .cloned()
+                .unwrap_or_else(|| fallback.to_string()),
+            Err(_) => fallback.to_string(),
+        }
+    }
+
+    pub async fn display_name_for_endpoint(&self, endpoint: &str, user_id: i32, fallback: &str) -> String {
+        let endpoint = endpoint.trim_end_matches('/').to_string();
+        if let Some(name) = self
+            .phira_display_name_cache
+            .read()
+            .await
+            .get(&(endpoint.clone(), user_id))
+            .cloned()
+        {
+            return name;
+        }
+
+        let client = match reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(3))
+            .build()
+        {
+            Ok(client) => client,
+            Err(_) => return fallback.to_string(),
+        };
+
+        for path in [format!("/user/{user_id}"), format!("/users/{user_id}")] {
+            let url = format!("{}{}", endpoint, path);
+            let Ok(response) = client.get(&url).send().await else { continue; };
+            let Ok(response) = response.error_for_status() else { continue; };
+            let Ok(profile) = response.json::<PhiraUserProfile>().await else { continue; };
+            let Some(name) = profile.into_name() else { continue; };
+            self.phira_display_name_cache
+                .write()
+                .await
+                .insert((endpoint.clone(), user_id), name.clone());
+            return name;
+        }
+
+        fallback.to_string()
+    }
+
+    pub async fn room_display_name(&self, room: &crate::room::Room, user: &super::session::User) -> String {
+        let endpoint = room.effective_phira_api_endpoint(self).await;
+        self.display_name_for_endpoint(&endpoint, user.id, &user.name).await
+    }
+
+    pub async fn refresh_room_display_names(&self, room: &Arc<crate::room::Room>) {
+        let endpoint = room.effective_phira_api_endpoint(self).await;
+        let mut users = room.users().await;
+        users.extend(room.monitors().await);
+        for user in users {
+            let _ = self.display_name_for_endpoint(&endpoint, user.id, &user.name).await;
+        }
+    }
+
+    pub async fn refresh_room_chart_metadata(&self, room: &Arc<crate::room::Room>) {
+        let chart_id = room.chart.read().await.as_ref().map(|chart| chart.id);
+        let Some(chart_id) = chart_id else { return; };
+        let endpoint = room.effective_phira_api_endpoint(self).await;
+        let url = format!("{}/chart/{chart_id}", endpoint.trim_end_matches('/'));
+        let Ok(response) = reqwest::get(url).await else { return; };
+        let Ok(response) = response.error_for_status() else { return; };
+        let Ok(chart) = response.json::<Chart>().await else { return; };
+        room.chart.write().await.replace(chart);
     }
 }
 
@@ -987,6 +1082,10 @@ impl PlusServerState {
         user.monitor.store(monitor, Ordering::SeqCst);
         target_room.force_add_user(Arc::downgrade(&user), monitor).await;
         *user.room.write().await = Some(Arc::clone(&target_room));
+        if !monitor {
+            target_room.set_host_if_missing(&user).await;
+        }
+        self.refresh_room_display_names(&target_room).await;
         if monitor {
             target_room.live.store(true, Ordering::SeqCst);
         }
@@ -1053,6 +1152,86 @@ impl PlusServerState {
         }))
     }
 
+    pub async fn create_empty_room(
+        self: &Arc<Self>,
+        room_id: &str,
+        persistent: bool,
+        endpoint: Option<String>,
+        hidden: Option<bool>,
+    ) -> Result<Value, String> {
+        let rid: RoomId = room_id.to_string().try_into().map_err(|_| "invalid room_id".to_string())?;
+        let normalized_endpoint = match endpoint {
+            Some(value) => Some(normalize_phira_api_endpoint(&value)?),
+            None => None,
+        };
+        let max_users = self.config.max_users_per_room.unwrap_or(8);
+        let room = Arc::new(crate::room::Room::new_empty(
+            rid.clone(),
+            Some(Arc::clone(&self.plugin_manager)),
+            Arc::downgrade(self),
+            max_users,
+            Some(Arc::clone(&self.round_store)),
+        ));
+        room.set_persistent(persistent);
+        if let Some(hidden) = hidden {
+            room.set_hidden(hidden);
+        }
+        room.set_phira_api_endpoint_override(normalized_endpoint.clone()).await;
+
+        {
+            let mut rooms = self.rooms.write().await;
+            if rooms.contains_key(&rid) {
+                return Err("room already exists".to_string());
+            }
+            rooms.insert(rid.clone(), Arc::clone(&room));
+        }
+
+        self.publish_room_event(RoomEvent::CreateRoom {
+            room: rid.clone(),
+            data: crate::room::Room::into_data(&room).await,
+        })
+        .await;
+        self.plugin_manager.trigger(&PluginEvent::RoomCreate {
+            user_id: 0,
+            room_id: rid.to_string(),
+        }).await;
+        self.plugin_manager.trigger(&PluginEvent::RoomModify {
+            user_id: 0,
+            room_id: rid.to_string(),
+            data: serde_json::json!({
+                "action": "create-empty",
+                "persistent": persistent,
+                "phira_api_endpoint": normalized_endpoint,
+            }).to_string(),
+        }).await;
+
+        Ok(serde_json::json!({
+            "ok": true,
+            "room_id": rid.to_string(),
+            "uuid": room.uuid.to_string(),
+            "created_at": room.created_at,
+            "persistent": room.is_persistent(),
+            "hidden": room.is_hidden(),
+            "phira_api_endpoint": room.effective_phira_api_endpoint_sync(&self.config.phira_api_endpoint),
+            "phira_api_endpoint_override": room.phira_api_endpoint_override_sync(),
+        }))
+    }
+
+    pub async fn set_room_persistent(&self, room_id: &str, persistent: bool) -> Result<Value, String> {
+        let rid: RoomId = room_id.to_string().try_into().map_err(|_| "invalid room_id".to_string())?;
+        let room = {
+            let rooms = self.rooms.read().await;
+            rooms.get(&rid).map(Arc::clone).ok_or("room not found")?
+        };
+        room.set_persistent(persistent);
+        self.plugin_manager.trigger(&PluginEvent::RoomModify {
+            user_id: 0,
+            room_id: rid.to_string(),
+            data: format!(r#"{{"action":"persistent","value":{persistent}}}"#),
+        }).await;
+        Ok(serde_json::json!({"ok": true, "room_id": rid.to_string(), "persistent": persistent}))
+    }
+
     pub async fn set_room_hidden(&self, room_id: &str, hidden: bool) -> Result<Value, String> {
         let rid: RoomId = room_id.to_string().try_into().map_err(|_| "invalid room_id".to_string())?;
         let room = {
@@ -1099,6 +1278,8 @@ impl PlusServerState {
             None => None,
         };
         room.set_phira_api_endpoint_override(normalized.clone()).await;
+        self.refresh_room_chart_metadata(&room).await;
+        self.refresh_room_display_names(&room).await;
         let using_room_override = normalized.is_some();
         let effective_endpoint = normalized
             .clone()
@@ -1593,6 +1774,37 @@ fn server_state_query_inner(state: &Arc<PlusServerState>, method: &str, args: &[
             rx.recv_timeout(std::time::Duration::from_secs(3))
                 .unwrap_or(Err("room.list_since timeout".to_string()))
         }
+        "room.create_empty" => {
+            let room_id = args.get(0).and_then(|v| v.as_str()).unwrap_or("").to_string();
+            if room_id.is_empty() { return Err("missing room_id".to_string()); }
+            let endpoint = args.get(1).and_then(|v| match v {
+                Value::Null => None,
+                v => v.as_str().map(ToString::to_string),
+            });
+            let persistent = args.get(2).and_then(|v| v.as_bool()).unwrap_or(true);
+            let hidden = args.get(3).and_then(|v| v.as_bool());
+            let (tx, rx) = std::sync::mpsc::channel();
+            let s = Arc::clone(state);
+            tokio::spawn(async move {
+                let result = s.create_empty_room(&room_id, persistent, endpoint, hidden).await;
+                let _ = tx.send(result);
+            });
+            rx.recv_timeout(std::time::Duration::from_secs(5))
+                .unwrap_or(Err("room.create_empty timeout".to_string()))
+        }
+        "room.set_persistent" => {
+            let room_id = args.get(0).and_then(|v| v.as_str()).unwrap_or("").to_string();
+            let persistent = args.get(1).and_then(|v| v.as_bool()).unwrap_or(true);
+            if room_id.is_empty() { return Err("missing room_id".to_string()); }
+            let (tx, rx) = std::sync::mpsc::channel();
+            let s = Arc::clone(state);
+            tokio::spawn(async move {
+                let result = s.set_room_persistent(&room_id, persistent).await;
+                let _ = tx.send(result);
+            });
+            rx.recv_timeout(std::time::Duration::from_secs(5))
+                .unwrap_or(Err("room.set_persistent timeout".to_string()))
+        }
         "room.kick" => {
             let room_id = args.get(0).and_then(|v| v.as_str()).unwrap_or("").to_string();
             let target_id = args.get(1).and_then(|v| v.as_i64()).unwrap_or(0) as i32;
@@ -1833,24 +2045,55 @@ fn server_state_query(state: &Arc<PlusServerState>, method: &str, args: &[Value]
         data: RoomData,
     }
     #[derive(Serialize)]
+    struct UserSnapshot {
+        id: i32,
+        name: String,
+        auth_name: String,
+        monitor: bool,
+        is_host: bool,
+    }
+    #[derive(Serialize)]
     struct RoomData {
+        uuid: String,
+        created_at: i64,
         host: i32,
+        host_name: Option<String>,
         users: Vec<i32>,
+        monitors: Vec<i32>,
+        players: Vec<UserSnapshot>,
+        monitor_users: Vec<UserSnapshot>,
+        player_count: usize,
+        monitor_count: usize,
+        max_users: usize,
         lock: bool,
         cycle: bool,
+        live: bool,
+        hidden: bool,
+        persistent: bool,
         chart: Option<i32>,
         chart_name: Option<String>,
         state: String,
+        ready_users: Vec<i32>,
         playing_users: Vec<i32>,
+        current_round_id: Option<String>,
+        admin_start_pending: bool,
         rounds: Vec<RoundInfo>,
-        hidden: bool,
+        play_history: Vec<PlayHistoryInfo>,
         phira_api_endpoint: String,
         phira_api_endpoint_override: Option<String>,
     }
     #[derive(Serialize)]
     struct RoundInfo {
         chart: i32,
+        chart_name: String,
         records: Vec<Value>,
+    }
+    #[derive(Serialize)]
+    struct PlayHistoryInfo {
+        round_id: String,
+        chart_id: i32,
+        chart_name: String,
+        results: Vec<Value>,
     }
 
     fn build_snapshot(state: &PlusServerState, name: &str, room: &crate::room::Room) -> RoomSnapshot {
@@ -1858,7 +2101,13 @@ fn server_state_query(state: &Arc<PlusServerState>, method: &str, args: &[Value]
         let guard = read_lock!(room.state);
         let ul = read_lock!(room.users);
         let ml = read_lock!(room.monitors);
+        let phira_api_endpoint = room.effective_phira_api_endpoint_sync(&state.config.phira_api_endpoint);
+        let phira_api_endpoint_override = room.phira_api_endpoint_override_sync();
 
+        let ready_users = match &*guard {
+            crate::room::InternalRoomState::WaitForReady { started } => started.iter().copied().collect(),
+            _ => Vec::new(),
+        };
         let (st, pu) = match &*guard {
             crate::room::InternalRoomState::SelectChart =>
                 ("SELECTING_CHART".into(), vec![]),
@@ -1874,37 +2123,97 @@ fn server_state_query(state: &Arc<PlusServerState>, method: &str, args: &[Value]
         };
         drop(guard);
 
-        let mut users: Vec<i32> = ul.iter().filter_map(|w| w.upgrade().map(|u| u.id)).collect();
-        users.extend(ml.iter().filter_map(|w| w.upgrade().map(|u| u.id)));
-        drop(ul); drop(ml);
+        let host_user = read_lock!(room.host).upgrade();
+        let host = host_user.as_ref().map(|u| u.id).unwrap_or(0);
+        let host_name = host_user.as_ref().map(|u| {
+            state.cached_display_name_for_endpoint(&phira_api_endpoint, u.id, &u.name)
+        });
 
-        let host = read_lock!(room.host).upgrade().map(|u| u.id).unwrap_or(0);
-        let phira_api_endpoint = room.effective_phira_api_endpoint_sync(&state.config.phira_api_endpoint);
-        let phira_api_endpoint_override = room.phira_api_endpoint_override_sync();
+        let players: Vec<UserSnapshot> = ul.iter().filter_map(|w| {
+            let u = w.upgrade()?;
+            Some(UserSnapshot {
+                id: u.id,
+                name: state.cached_display_name_for_endpoint(&phira_api_endpoint, u.id, &u.name),
+                auth_name: u.name.clone(),
+                monitor: false,
+                is_host: host == u.id,
+            })
+        }).collect();
+        let monitor_users: Vec<UserSnapshot> = ml.iter().filter_map(|w| {
+            let u = w.upgrade()?;
+            Some(UserSnapshot {
+                id: u.id,
+                name: state.cached_display_name_for_endpoint(&phira_api_endpoint, u.id, &u.name),
+                auth_name: u.name.clone(),
+                monitor: true,
+                is_host: host == u.id,
+            })
+        }).collect();
+        let player_ids: Vec<i32> = players.iter().map(|u| u.id).collect();
+        let monitors: Vec<i32> = monitor_users.iter().map(|u| u.id).collect();
+        let mut users = player_ids.clone();
+        users.extend(monitors.iter().copied());
+        drop(ul);
+        drop(ml);
+
         let hist = read_lock!(room.play_history);
         let rounds: Vec<RoundInfo> = hist.iter().map(|r| RoundInfo {
             chart: r.chart_id,
+            chart_name: r.chart_name.clone(),
             records: r.results.iter().map(|res| serde_json::json!({
-                "player": res.user_id, "score": res.score, "accuracy": res.accuracy,
+                "player": res.user_id, "player_name": res.user_name,
+                "score": res.score, "accuracy": res.accuracy,
                 "perfect": res.perfect, "good": res.good, "bad": res.bad,
                 "miss": res.miss, "max_combo": res.max_combo, "full_combo": res.full_combo,
+                "aborted": res.aborted, "std_score": res.std_score,
+            })).collect(),
+        }).collect();
+        let play_history: Vec<PlayHistoryInfo> = hist.iter().map(|r| PlayHistoryInfo {
+            round_id: r.round_id.to_string(),
+            chart_id: r.chart_id,
+            chart_name: r.chart_name.clone(),
+            results: r.results.iter().map(|res| serde_json::json!({
+                "user_id": res.user_id, "user_name": res.user_name,
+                "score": res.score, "accuracy": res.accuracy,
+                "perfect": res.perfect, "good": res.good, "bad": res.bad,
+                "miss": res.miss, "max_combo": res.max_combo, "full_combo": res.full_combo,
+                "aborted": res.aborted, "std_score": res.std_score,
             })).collect(),
         }).collect();
         drop(hist);
+        let current_round_id = {
+            let current_round = read_lock!(room.current_round_id);
+            current_round.as_ref().map(|id| id.to_string())
+        };
 
         RoomSnapshot {
             name: name.into(),
             data: RoomData {
+                uuid: room.uuid.to_string(),
+                created_at: room.created_at,
                 host,
+                host_name,
+                player_count: players.len(),
+                monitor_count: monitor_users.len(),
                 users,
+                monitors,
+                players,
+                monitor_users,
+                max_users: room.max_users_count(),
                 lock: room.locked.load(Ordering::SeqCst),
                 cycle: room.cycle.load(Ordering::SeqCst),
+                live: room.is_live(),
+                hidden: room.is_hidden(),
+                persistent: room.is_persistent(),
                 chart: chart_op.as_ref().map(|c| c.id),
                 chart_name: chart_op.as_ref().map(|c| c.name.clone()),
                 state: st,
+                ready_users,
                 playing_users: pu,
+                current_round_id,
+                admin_start_pending: room.admin_start_pending(),
                 rounds,
-                hidden: room.is_hidden(),
+                play_history,
                 phira_api_endpoint,
                 phira_api_endpoint_override,
             },
@@ -1922,7 +2231,7 @@ fn server_state_query(state: &Arc<PlusServerState>, method: &str, args: &[Value]
             }).collect();
             Ok(Value::Array(list))
         }
-        "rooms.by_name" => {
+        "rooms.by_name" | "room.info" => {
             let name = args.get(0).and_then(|v| v.as_str()).unwrap_or("");
             let rid: phira_mp_common::RoomId = name.to_string().try_into()
                 .map_err(|_| "invalid room name".to_string())?;

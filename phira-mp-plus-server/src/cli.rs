@@ -172,6 +172,19 @@ impl CliHandler {
                     let sub = args.first().copied().unwrap_or("");
                     match sub {
                         "list" | "ls" | "" => self.list_rooms().await,
+                        "create" | "create-empty" | "empty" => {
+                            if args.len() < 2 {
+                                self.out(format!("  {} {} room create <房间ID> [phira_api_endpoint|default] [hidden]", c::yellow("?"), c::bold("用法")));
+                            } else {
+                                let endpoint = args.get(2).copied();
+                                let hidden = args.get(3).map(|v| parse_cli_bool(v));
+                                self.room_create_empty(args[1], endpoint, hidden).await;
+                            }
+                        }
+                        "keep" | "persistent" | "keep-alive" => {
+                            if args.len() < 3 { self.out(format!("  {} {} room keep <房间ID> <true|false>", c::yellow("?"), c::bold("用法"))); }
+                            else { self.room_persistent(args[1], parse_cli_bool(args[2])).await; }
+                        }
                         "info" | "i" => {
                             if args.len() < 2 { self.out(format!("  {} {} room info <房间ID>", c::yellow("?"), c::bold("用法"))); }
                             else { self.room_info(args[1]).await; }
@@ -253,7 +266,7 @@ impl CliHandler {
                         }
                         _ => {
                             self.out(format!("  {} 未知子命令: {}  ", c::red("✗"), c::yellow(sub)));
-                            self.out(format!("  {} 可用: room list|info|start|cancel|kick|transfer|force-move|hide|unhide|close|set|history|rounds|round|uuid|ban|unban|banlist", c::dim("▸")));
+                            self.out(format!("  {} 可用: room list|create|info|start|cancel|kick|transfer|force-move|hide|unhide|keep|close|set|history|rounds|round|uuid|ban|unban|banlist", c::dim("▸")));
                         }
                     }
                 }
@@ -436,7 +449,7 @@ impl CliHandler {
                 "room-set" => {
                     if args.len() < 3 {
                         self.out(format!("  {} {} <房间ID> <字段> <值>", c::yellow("?"), c::bold("room-set")));
-                        self.out(format!("  {} 字段: lock | cycle | hidden | chart-id | phira_api_endpoint",
+                        self.out(format!("  {} 字段: lock | cycle | hidden | persistent | chart-id | phira_api_endpoint",
                             c::dim("▸")));
                     } else {
                         self.room_set(args[0], args[1], &args[2..].join(" ")).await;
@@ -571,6 +584,7 @@ impl CliHandler {
         self.out(format!(""));
         self.out(format!("  {} 房间 (room <子命令>)", c::cyan("▸")));
         self.out(format!("    {:<22} {}", c::dim("room list"), "活跃房间"));
+        self.out(format!("    {:<22} {}", c::dim("room create <ID>"), "创建无人持久空房间"));
         self.out(format!("    {:<22} {}", c::dim("room info <ID>"), "房间详情"));
         self.out(format!("    {:<22} {}", c::dim("room kick <ID> <用户>"), "踢出"));
         self.out(format!("    {:<22} {}", c::dim("room start|cancel <ID>"), "开始/取消"));
@@ -578,6 +592,7 @@ impl CliHandler {
         self.out(format!("    {:<22} {}", c::dim("room transfer <ID> <用户>"), "转移房主"));
         self.out(format!("    {:<22} {}", c::dim("room force-move <ID> <用户>"), "强制迁移用户"));
         self.out(format!("    {:<22} {}", c::dim("room hide|unhide <ID>"), "隐藏/取消隐藏房间"));
+        self.out(format!("    {:<22} {}", c::dim("room keep <ID> <bool>"), "设置无人保留"));
         self.out(format!("    {:<22} {}", c::dim("room set <ID> <字段> <值>"), "修改设置（含 phira_api_endpoint）"));
         self.out(format!("    {:<22} {}", c::dim("room history <ID>"), "游玩记录"));
         self.out(format!("    {:<22} {}", c::dim("room ban|unban|banlist"), "房间黑名单"));
@@ -780,9 +795,10 @@ impl CliHandler {
                 c::dim("不轮换")
             };
             let hidden = if room.is_hidden() { c::magenta("隐藏") } else { c::dim("公开") };
+            let persistent = if room.is_persistent() { c::magenta("保留") } else { c::dim("临时") };
 
             self.out(format!("  {} {}", c::dim("┏"), c::bold(&room.id.to_string())));
-            self.out(format!("  {} 状态: {}  {}  {}  {}  {}", c::dim("┃"), state_str, locked, cycling, hidden,
+            self.out(format!("  {} 状态: {}  {}  {}  {}  {}  {}", c::dim("┃"), state_str, locked, cycling, hidden, persistent,
                 if users_in_room.len() + monitors_in_room.len() > 0 {
                     c::cyan(&format!("{} 人在线", users_in_room.len() + monitors_in_room.len()))
                 } else {
@@ -790,20 +806,20 @@ impl CliHandler {
                 }
             ));
             if !users_in_room.is_empty() {
-                self.out(format!("  {} 玩家: {}", c::dim("┃"),
-                    users_in_room.iter()
-                        .map(|u| format!("{}({})", c::bold(&u.name), u.id))
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                ));
+                let mut names = Vec::new();
+                for user in &users_in_room {
+                    let name = self.state.room_display_name(room.as_ref(), user.as_ref()).await;
+                    names.push(format!("{}({})", c::bold(&name), user.id));
+                }
+                self.out(format!("  {} 玩家: {}", c::dim("┃"), names.join(", ")));
             }
             if !monitors_in_room.is_empty() {
-                self.out(format!("  {} 旁观: {}", c::dim("┃"),
-                    monitors_in_room.iter()
-                        .map(|u| format!("{}({})", c::bold(&u.name), u.id))
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                ));
+                let mut names = Vec::new();
+                for user in &monitors_in_room {
+                    let name = self.state.room_display_name(room.as_ref(), user.as_ref()).await;
+                    names.push(format!("{}({})", c::bold(&name), user.id));
+                }
+                self.out(format!("  {} 旁观: {}", c::dim("┃"), names.join(", ")));
             }
             self.out(format!("  {}", c::dim("  ─ ─ ─ ─ ─ ─")));
         }
@@ -1007,6 +1023,32 @@ impl CliHandler {
         self.state.rooms.read().await.get(&rid).map(Arc::clone)
     }
 
+    async fn room_create_empty(&self, room_id: &str, endpoint_arg: Option<&str>, hidden: Option<bool>) {
+        let endpoint = match endpoint_arg {
+            Some(value) => match crate::server::parse_room_endpoint_value(value) {
+                Ok(endpoint) => endpoint,
+                Err(e) => { self.out(format!("  {} {}", c::red("✗"), e)); return; }
+            },
+            None => None,
+        };
+        match self.state.create_empty_room(room_id, true, endpoint, hidden).await {
+            Ok(res) => {
+                let uuid = res.get("uuid").and_then(|v| v.as_str()).unwrap_or("");
+                let endpoint = res.get("phira_api_endpoint").and_then(|v| v.as_str()).unwrap_or("");
+                self.out(format!("  {} 已创建无人持久房间 {} ({})", c::green("✓"), room_id, uuid));
+                self.out(format!("  {} Phira API: {}", c::dim("│"), endpoint));
+            }
+            Err(e) => self.out(format!("  {} {}", c::red("✗"), e)),
+        }
+    }
+
+    async fn room_persistent(&self, room_id: &str, persistent: bool) {
+        match self.state.set_room_persistent(room_id, persistent).await {
+            Ok(_) => self.out(format!("  {} 房间 {} 已{}无人保留", c::green("✓"), room_id, if persistent { "开启" } else { "关闭" })),
+            Err(e) => self.out(format!("  {} {}", c::red("✗"), e)),
+        }
+    }
+
     async fn room_info(&self, room_id: &str) {
         let room = match self.find_room(room_id).await {
             Some(r) => r,
@@ -1022,6 +1064,7 @@ impl CliHandler {
         let locked = if room.locked.load(std::sync::atomic::Ordering::SeqCst) { c::yellow("锁定") } else { c::dim("未锁定") };
         let cycling = if room.cycle.load(std::sync::atomic::Ordering::SeqCst) { c::cyan("轮换") } else { c::dim("不轮换") };
         let hidden = if room.is_hidden() { c::magenta("隐藏") } else { c::dim("公开") };
+        let persistent = if room.is_persistent() { c::magenta("无人保留") } else { c::dim("无人清理") };
         let chart_info = match room.chart.read().await.as_ref() {
             Some(c) => format!("{} (id={})", c.name, c.id),
             None => "未选择".to_string(),
@@ -1031,20 +1074,33 @@ impl CliHandler {
             .clone()
             .unwrap_or_else(|| self.state.config.phira_api_endpoint.clone());
         let endpoint_mode = if endpoint_override.is_some() { "房间覆盖" } else { "全局默认" };
-        let host_name = room.host_id().await
-            .and_then(|hid| users.iter().find(|u| u.id == hid).map(|u| u.name.clone()))
-            .unwrap_or_else(|| "未知".to_string());
+        let host_name = match room.host_id().await {
+            Some(hid) => match users.iter().find(|u| u.id == hid) {
+                Some(user) => self.state.room_display_name(room.as_ref(), user.as_ref()).await,
+                None => format!("用户 {hid}"),
+            },
+            None => "无（等待首个普通玩家加入）".to_string(),
+        };
+        let mut player_names = Vec::new();
+        for user in &users {
+            let name = self.state.room_display_name(room.as_ref(), user.as_ref()).await;
+            player_names.push(format!("{}({})", name, user.id));
+        }
+        let mut monitor_names = Vec::new();
+        for user in &monitors {
+            let name = self.state.room_display_name(room.as_ref(), user.as_ref()).await;
+            monitor_names.push(format!("{}({})", name, user.id));
+        }
 
         self.out(format!("  {} 房间: {}", c::green("◆"), c::bold(room_id)));
-        self.out(format!("  {} 状态: {} | {} | {} | {}", c::dim("│"), state_str, locked, cycling, hidden));
+        self.out(format!("  {} 状态: {} | {} | {} | {} | {}", c::dim("│"), state_str, locked, cycling, hidden, persistent));
         self.out(format!("  {} 房主: {}", c::dim("│"), host_name));
         self.out(format!("  {} 谱面: {}", c::dim("│"), chart_info));
         self.out(format!("  {} Phira API: {} ({})", c::dim("│"), endpoint_info, endpoint_mode));
         self.out(format!("  {} 玩家: {}", c::dim("│"),
-            users.iter().map(|u| format!("{}({})", u.name, u.id)).collect::<Vec<_>>().join(", ")));
-        if !monitors.is_empty() {
-            self.out(format!("  {} 旁观: {}", c::dim("│"),
-                monitors.iter().map(|u| format!("{}({})", u.name, u.id)).collect::<Vec<_>>().join(", ")));
+            if player_names.is_empty() { "无".to_string() } else { player_names.join(", ") }));
+        if !monitor_names.is_empty() {
+            self.out(format!("  {} 旁观: {}", c::dim("│"), monitor_names.join(", ")));
         }
         // 历史记录统计
         let history = room.play_history.read().await;
@@ -1186,6 +1242,10 @@ impl CliHandler {
                     Err(e) => self.out(format!("  {} {}", c::red("✗"), e)),
                 }
             }
+            "persistent" | "keep" | "keep-alive" => {
+                let v = parse_cli_bool(value);
+                self.room_persistent(room_id, v).await;
+            }
             "phira_api_endpoint" | "phira-api-endpoint" | "api-endpoint" | "endpoint" => {
                 match crate::server::parse_room_endpoint_value(value) {
                     Ok(endpoint) => match self.state.set_room_phira_api_endpoint(room_id, endpoint).await {
@@ -1255,7 +1315,7 @@ impl CliHandler {
             }
             _ => {
                 self.out(format!("  {} 未知字段: {}", c::red("✗"), field));
-                self.out(format!("  {} 支持: lock, cycle, hidden, chart-id, phira_api_endpoint", c::dim("▸")));
+                self.out(format!("  {} 支持: lock, cycle, hidden, persistent, chart-id, phira_api_endpoint", c::dim("▸")));
             }
         }
     }

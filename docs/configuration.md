@@ -120,10 +120,10 @@ room set <房间ID> phira_api_endpoint default
 - 房间覆盖值只保存在运行中的房间状态中，设置后立即生效。
 - 值必须是 `http://` 或 `https://` URL；末尾 `/` 会自动去掉。
 - `default` / `global` / `none` / `null` / `clear` / `默认` / `全局` / `清除` 会清除覆盖，恢复全局配置。
-- 能确定房间上下文的 Phira API 请求优先使用房间 endpoint，例如客户端选谱 `/chart/<id>`、提交成绩 `/record/<id>`，以及服务端命令 `room set <id> chart-id <谱面ID>`。
+- 能确定房间上下文的 Phira API 请求优先使用房间 endpoint，例如客户端选谱时服务端查 `/chart/<id>`、提交成绩时服务端校验 `/record/<id>`、服务端命令 `room set <id> chart-id <谱面ID>`，以及终端/Web API/欢迎语展示谱面名和用户名。
 - 登录认证 `/me` 发生在用户加入任何房间之前，没有房间上下文，因此仍使用全局 `phira_api_endpoint`。
 
-WASM/host API 也支持：`room.set_phira_api_endpoint`、`room.get_phira_api_endpoint`、`room.clear_phira_api_endpoint`。
+WASM/host API 也支持：`room.set_phira_api_endpoint`、`room.get_phira_api_endpoint`、`room.clear_phira_api_endpoint`。房间 endpoint 只影响服务端侧查询和展示；认证 `/me` 保持全局 endpoint，服务端不会改写客户端本机 Phira API 请求行为。
 
 ## 压测 token 配置
 
@@ -167,6 +167,19 @@ benchmark-bind token1,token2,token3
 ### 多账号与房间数
 
 每个压测房间至少需要一个可认证的 Phira token。请求 `benchmark 30 100` 但只配置 3 个 token 时，服务端会按 3 个账号创建 3 个压测房间，并提示账号不足。要压更多房间，请配置更多不同账号 token。
+
+
+## 无人持久房间
+
+管理员可以创建没有初始房主和玩家的空房间，并让它在无人在线时继续保留：
+
+```bash
+room create <房间ID> [phira_api_endpoint|default] [hidden]
+room keep <房间ID> true
+room set <房间ID> persistent true
+```
+
+这类房间的房主初始为空；第一个普通玩家加入时会自动成为房主。最后一名普通玩家离开时，如果 `persistent=true`，房间不会被清理，房主会重新变为空，等待下一位普通玩家加入。WASM/host API 对应 `room.create_empty` 与 `room.set_persistent`。
 
 ## 隐藏房间配置与行为
 
