@@ -66,14 +66,14 @@ fn phira_status_retryable(status: reqwest::StatusCode, body: &str) -> bool {
     status == reqwest::StatusCode::BAD_GATEWAY
         || status == reqwest::StatusCode::TOO_MANY_REQUESTS
         || status.is_server_error()
-        || body.contains("认证失败 502错误")
+        || body.contains("认证失败 502错误 Phira服务器太烂了，我们正在重试以保证你的流畅体验 /拜谢")
 }
 
 fn phira_error_retryable(err: &reqwest::Error) -> bool {
     err.is_timeout()
         || err.is_connect()
         || err.status().is_some_and(|status| phira_status_retryable(status, ""))
-        || err.to_string().contains("认证失败 502错误")
+        || err.to_string().contains("认证失败 502错误 Phira服务器太烂了，我们正在重试以保证你的流畅体验 /拜谢")
 }
 
 async fn phira_get_json_with_retry<T>(
