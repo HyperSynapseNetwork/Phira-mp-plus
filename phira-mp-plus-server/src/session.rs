@@ -115,7 +115,7 @@ where
                     continue;
                 }
                 if status == reqwest::StatusCode::BAD_GATEWAY || body.contains("认证失败 502错误") {
-                    bail!("认证失败 502错误");
+                    bail!("认证失败 502错误 Phira服务器太烂了，我们正在重试以保证你的流畅体验 /拜谢");
                 }
                 bail!("Phira API request failed: {status} {body}");
             }
