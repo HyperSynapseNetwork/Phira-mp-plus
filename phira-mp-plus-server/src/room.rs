@@ -146,7 +146,6 @@ pub struct Room {
     pub locked: AtomicBool,
     pub cycle: AtomicBool,
     hidden: AtomicBool,
-    persistent: AtomicBool,
     phira_api_endpoint: RwLock<Option<String>>,
     admin_start_pending: AtomicBool,
 
@@ -200,7 +199,6 @@ impl Room {
             locked: AtomicBool::new(false),
             cycle: AtomicBool::new(false),
             hidden: AtomicBool::new(hidden),
-            persistent: AtomicBool::new(false),
             phira_api_endpoint: RwLock::new(None),
             admin_start_pending: AtomicBool::new(false),
 
@@ -217,29 +215,6 @@ impl Room {
             round_store,
             created_at: now,
         }
-    }
-
-    /// 创建一个没有初始房主/玩家的持久房间。
-    ///
-    /// 该房间不会因为无人在线被自动清理；第一个普通玩家加入时会自动成为房主。
-    pub fn new_empty(
-        id: RoomId,
-        plugin_manager: Option<Arc<PluginManager>>,
-        server: Weak<crate::server::PlusServerState>,
-        max_users: usize,
-        round_store: Option<Arc<crate::round_store::RoundStore>>,
-    ) -> Self {
-        let mut room = Self::new(
-            id,
-            Weak::new(),
-            plugin_manager,
-            server,
-            max_users,
-            round_store,
-        );
-        room.users = Vec::new().into();
-        room.persistent.store(true, Ordering::SeqCst);
-        room
     }
 
     pub fn is_live(&self) -> bool {
@@ -260,14 +235,6 @@ impl Room {
 
     pub fn set_hidden(&self, hidden: bool) {
         self.hidden.store(hidden, Ordering::SeqCst);
-    }
-
-    pub fn is_persistent(&self) -> bool {
-        self.persistent.load(Ordering::SeqCst)
-    }
-
-    pub fn set_persistent(&self, persistent: bool) {
-        self.persistent.store(persistent, Ordering::SeqCst);
     }
 
     pub async fn phira_api_endpoint_override(&self) -> Option<String> {
@@ -300,25 +267,6 @@ impl Room {
     /// 获取房主用户 ID
     pub async fn host_id(&self) -> Option<i32> {
         self.host.read().await.upgrade().map(|u| u.id)
-    }
-
-    /// 当持久空房没有房主时，将首个普通玩家设为房主。
-    pub async fn set_host_if_missing(&self, user: &Arc<super::session::User>) -> bool {
-        {
-            let host = self.host.read().await;
-            if host.upgrade().is_some() {
-                return false;
-            }
-        }
-        *self.host.write().await = Arc::downgrade(user);
-        self.send(Message::NewHost { user: user.id }).await;
-        user.try_send(ServerCommand::ChangeHost(true)).await;
-        self.publish_update(PartialRoomData {
-            host: Some(user.id),
-            ..Default::default()
-        })
-        .await;
-        true
     }
 
     /// 获取房间最大玩家数
@@ -677,16 +625,6 @@ impl Room {
             info!("host disconnected!");
             let users = self.users().await;
             if users.is_empty() {
-                *self.host.write().await = Weak::new();
-                if self.is_persistent() {
-                    info!("persistent room users all disconnected, keeping room");
-                    self.publish_update(PartialRoomData {
-                        host: Some(0),
-                        ..Default::default()
-                    })
-                    .await;
-                    return false;
-                }
                 info!("room users all disconnected, dropping room");
                 return true;
             } else {
@@ -732,17 +670,13 @@ impl Room {
             }
         };
 
-        // 收集用户名。这里按房间自定义 Phira API endpoint 做服务端展示名解析；
-        // 若远端没有提供用户查询接口或请求失败，则回退到认证时的名称。
-        let server = self.server.upgrade();
-        let mut users_map: HashMap<i32, String> = HashMap::new();
-        for user in self.users().await {
-            let name = match server.as_ref() {
-                Some(server) => server.room_display_name(self, user.as_ref()).await,
-                None => user.name.clone(),
-            };
-            users_map.insert(user.id, name);
-        }
+        // 收集用户名
+        let users_map: HashMap<i32, String> = self
+            .users()
+            .await
+            .into_iter()
+            .map(|u| (u.id, u.name.clone()))
+            .collect();
 
         let mut play_results = Vec::new();
         for (uid, rec) in &results {

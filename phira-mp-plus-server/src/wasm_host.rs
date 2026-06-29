@@ -598,8 +598,6 @@ impl WasmPluginInstance {
     /// - `ext.get_room`   → 获取房间扩展数据
     /// - `ext.set_room`   → 设置房间扩展数据
     /// ── 房间管理（room-management） ──
-    /// - `room.create_empty` → 创建无人持久空房间
-    /// - `room.set_persistent` → 设置房间无人保留
     /// - `room.kick`         → 从房间踢出用户
     /// - `room.transfer_host`→ 转移房主
     /// - `room.set_lock`     → 锁定/解锁房间
@@ -766,23 +764,6 @@ impl WasmPluginInstance {
             "player.judges" => state_call(svc, "player.judges", &[serde_json::json!(get_i32("user_id")?)]),
             "round.data" => state_call(svc, "round.data", &[serde_json::json!(get_str("round_uuid")?), serde_json::json!(get_i32("player_id")?)]),
             "round.list" => state_call(svc, "round.list", &[]),
-            "room.create_empty" => {
-                let endpoint = value
-                    .get("endpoint")
-                    .or_else(|| value.get("phira_api_endpoint"))
-                    .cloned()
-                    .unwrap_or(serde_json::Value::Null);
-                state_call(svc, "room.create_empty", &[
-                    serde_json::json!(get_str("room_id")?),
-                    endpoint,
-                    serde_json::json!(value.get("persistent").and_then(|v| v.as_bool()).unwrap_or(true)),
-                    value.get("hidden").cloned().unwrap_or(serde_json::Value::Null),
-                ])
-            }
-            "room.set_persistent" => state_call(svc, "room.set_persistent", &[
-                serde_json::json!(get_str("room_id")?),
-                serde_json::json!(value.get("persistent").and_then(|v| v.as_bool()).ok_or("missing persistent")?),
-            ]),
             "room.kick" => state_call(svc, "room.kick", &[serde_json::json!(get_str("room_id")?), serde_json::json!(get_i32("target_id")?)]),
             "room.transfer_host" => state_call(svc, "room.transfer_host", &[serde_json::json!(get_str("room_id")?), serde_json::json!(get_i32("target_id")?)]),
             "room.set_lock" => state_call(svc, "room.set_lock", &[serde_json::json!(get_str("room_id")?), serde_json::json!(value.get("locked").and_then(|v| v.as_bool()).ok_or("missing locked")?)]),
@@ -917,7 +898,7 @@ fn required_capability(method: &str) -> Option<&'static str> {
     match method {
         "uuid.v4" | "time.now" => None,
         value if value.starts_with("admin.") => Some("admin"),
-        "room.create_empty" | "room.set_persistent" | "room.kick" | "room.transfer_host" | "room.set_lock" | "room.force_move" | "room.set_hidden" | "room.set_phira_api_endpoint" | "room.clear_phira_api_endpoint" | "room.close" => Some("room.manage"),
+        "room.kick" | "room.transfer_host" | "room.set_lock" | "room.force_move" | "room.set_hidden" | "room.set_phira_api_endpoint" | "room.clear_phira_api_endpoint" | "room.close" => Some("room.manage"),
         value if value.starts_with("room.") || value.starts_with("player.") || value.starts_with("round.") || value.starts_with("user.") || value == "state.query" => Some("state.read"),
         value if value.starts_with("send.") => Some("send"),
         value if value.starts_with("ext.") => Some("ext"),

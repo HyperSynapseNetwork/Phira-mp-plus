@@ -113,11 +113,8 @@ pub fn send_welcome(user_id: i32, user_name: &str, online: usize, state: &PlusSe
                         vec!["暂无房间".into()]
                     } else {
                         visible_rooms.into_iter().map(|(id, room)| {
-                        let endpoint = room.effective_phira_api_endpoint_sync(&state.config.phira_api_endpoint);
                         let host_name = room.host.try_read().ok()
-                            .and_then(|h| h.upgrade())
-                            .map(|u| state.cached_display_name_for_endpoint(&endpoint, u.id, &u.name))
-                            .unwrap_or_else(|| "无房主".to_string());
+                            .and_then(|h| h.upgrade()).map(|u| u.name.clone()).unwrap_or_default();
                         let players = room.users.try_read().ok().map(|u| u.len()).unwrap_or(0);
                         let max = room.max_users_count();
                         let chart = room.chart.try_read().ok()

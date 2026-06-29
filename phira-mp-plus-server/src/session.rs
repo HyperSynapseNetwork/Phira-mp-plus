@@ -1121,10 +1121,6 @@ async fn process(user: Arc<User>, category: SessionCategory, cmd: ClientCommand)
                         .await;
                 }
                 *room_guard = Some(Arc::clone(&room));
-                if !monitor {
-                    room.set_host_if_missing(&user).await;
-                }
-                user.server.refresh_room_display_names(&room).await;
 
                 // Protocol-only game monitors are not exposed as players to plugins.
                 if category == SessionCategory::Normal {
