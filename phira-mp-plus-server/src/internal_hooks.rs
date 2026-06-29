@@ -114,7 +114,9 @@ pub fn send_welcome(user_id: i32, user_name: &str, online: usize, state: &PlusSe
                     } else {
                         visible_rooms.into_iter().map(|(id, room)| {
                         let host_name = room.host.try_read().ok()
-                            .and_then(|h| h.upgrade()).map(|u| u.name.clone()).unwrap_or_default();
+                            .and_then(|h| h.upgrade())
+                            .map(|u| room.display_name_sync(&u))
+                            .unwrap_or_default();
                         let players = room.users.try_read().ok().map(|u| u.len()).unwrap_or(0);
                         let max = room.max_users_count();
                         let chart = room.chart.try_read().ok()

@@ -120,10 +120,21 @@ room set <房间ID> phira_api_endpoint default
 - 房间覆盖值只保存在运行中的房间状态中，设置后立即生效。
 - 值必须是 `http://` 或 `https://` URL；末尾 `/` 会自动去掉。
 - `default` / `global` / `none` / `null` / `clear` / `默认` / `全局` / `清除` 会清除覆盖，恢复全局配置。
-- 能确定房间上下文的 Phira API 请求优先使用房间 endpoint，例如客户端选谱 `/chart/<id>`、提交成绩 `/record/<id>`，以及服务端命令 `room set <id> chart-id <谱面ID>`。
-- 登录认证 `/me` 发生在用户加入任何房间之前，没有房间上下文，因此仍使用全局 `phira_api_endpoint`。
+- 能确定房间上下文的服务端 Phira API 请求优先使用房间 endpoint，例如房间命令查谱、服务端记录校验、终端/欢迎语/Web API 展示中的谱面名和用户名刷新。
+- MP 服务端不会尝试改写客户端本机 Phira API 请求行为。
+- 登录认证 `/me` 仍使用全局 `phira_api_endpoint`。
 
-WASM/host API 也支持：`room.set_phira_api_endpoint`、`room.get_phira_api_endpoint`、`room.clear_phira_api_endpoint`。
+WASM/host API 也支持：`room.create_empty`、`room.set_persistent_empty`、`room.set_phira_api_endpoint`、`room.get_phira_api_endpoint`、`room.clear_phira_api_endpoint`。
+
+无人持久房间配置不写入全局配置文件，而是运行时房间状态：
+
+```bash
+room create-empty <房间ID> [phira_api_endpoint]
+room set <房间ID> persistent true
+room set <房间ID> persistent false
+```
+
+`persistent=true` 时最后一名玩家离开后房间仍保留；空房间没有房主，首个普通玩家加入时会自动成为房主。
 
 ## 压测 token 配置
 

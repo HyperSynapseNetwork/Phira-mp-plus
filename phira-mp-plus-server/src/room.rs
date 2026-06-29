@@ -146,7 +146,9 @@ pub struct Room {
     pub locked: AtomicBool,
     pub cycle: AtomicBool,
     hidden: AtomicBool,
+    persistent_empty: AtomicBool,
     phira_api_endpoint: RwLock<Option<String>>,
+    display_names: RwLock<HashMap<i32, String>>,
     admin_start_pending: AtomicBool,
 
     pub users: RwLock<Vec<Weak<super::session::User>>>,
@@ -199,7 +201,9 @@ impl Room {
             locked: AtomicBool::new(false),
             cycle: AtomicBool::new(false),
             hidden: AtomicBool::new(hidden),
+            persistent_empty: AtomicBool::new(false),
             phira_api_endpoint: RwLock::new(None),
+            display_names: RwLock::new(HashMap::new()),
             admin_start_pending: AtomicBool::new(false),
 
             users: vec![host].into(),
@@ -215,6 +219,26 @@ impl Room {
             round_store,
             created_at: now,
         }
+    }
+
+    pub fn new_empty(
+        id: RoomId,
+        plugin_manager: Option<Arc<PluginManager>>,
+        server: Weak<crate::server::PlusServerState>,
+        max_users: usize,
+        round_store: Option<Arc<crate::round_store::RoundStore>>,
+    ) -> Self {
+        let mut room = Self::new(
+            id,
+            Weak::<super::session::User>::new(),
+            plugin_manager,
+            server,
+            max_users,
+            round_store,
+        );
+        room.users = Vec::new().into();
+        room.persistent_empty.store(true, Ordering::SeqCst);
+        room
     }
 
     pub fn is_live(&self) -> bool {
@@ -235,6 +259,35 @@ impl Room {
 
     pub fn set_hidden(&self, hidden: bool) {
         self.hidden.store(hidden, Ordering::SeqCst);
+    }
+
+    pub fn is_persistent_empty(&self) -> bool {
+        self.persistent_empty.load(Ordering::SeqCst)
+    }
+
+    pub fn set_persistent_empty(&self, persistent: bool) {
+        self.persistent_empty.store(persistent, Ordering::SeqCst);
+    }
+
+    pub async fn set_display_name(&self, user_id: i32, name: String) {
+        self.display_names.write().await.insert(user_id, name);
+    }
+
+    pub async fn display_name(&self, user: &super::session::User) -> String {
+        self.display_names
+            .read()
+            .await
+            .get(&user.id)
+            .cloned()
+            .unwrap_or_else(|| user.name.clone())
+    }
+
+    pub(crate) fn display_name_sync(&self, user: &super::session::User) -> String {
+        self.display_names
+            .try_read()
+            .ok()
+            .and_then(|names| names.get(&user.id).cloned())
+            .unwrap_or_else(|| user.name.clone())
     }
 
     pub async fn phira_api_endpoint_override(&self) -> Option<String> {
@@ -267,6 +320,10 @@ impl Room {
     /// 获取房主用户 ID
     pub async fn host_id(&self) -> Option<i32> {
         self.host.read().await.upgrade().map(|u| u.id)
+    }
+
+    pub async fn has_host(&self) -> bool {
+        self.host.read().await.upgrade().is_some()
     }
 
     /// 获取房间最大玩家数
@@ -625,6 +682,11 @@ impl Room {
             info!("host disconnected!");
             let users = self.users().await;
             if users.is_empty() {
+                if self.is_persistent_empty() {
+                    info!("room users all disconnected, preserving persistent empty room");
+                    *self.host.write().await = Weak::<super::session::User>::new();
+                    return false;
+                }
                 info!("room users all disconnected, dropping room");
                 return true;
             } else {
@@ -671,12 +733,10 @@ impl Room {
         };
 
         // 收集用户名
-        let users_map: HashMap<i32, String> = self
-            .users()
-            .await
-            .into_iter()
-            .map(|u| (u.id, u.name.clone()))
-            .collect();
+        let mut users_map: HashMap<i32, String> = HashMap::new();
+        for u in self.users().await {
+            users_map.insert(u.id, self.display_name(&u).await);
+        }
 
         let mut play_results = Vec::new();
         for (uid, rec) in &results {

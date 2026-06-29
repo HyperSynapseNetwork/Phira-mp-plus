@@ -144,6 +144,9 @@ interface messaging {
 
 /// 房间管理接口
 interface room-management {
+    /// 创建无人持久空房间；没有初始房主，首个加入的普通玩家会自动成为房主
+    create-empty-room: func(room-id: string, endpoint: option<string>) -> result<_, string>;
+
     /// 将用户踢出房间
     kick-from-room: func(room-id: string, target-id: s32) -> result<_, string>;
 
@@ -162,8 +165,11 @@ interface room-management {
     /// 查询房间隐藏状态
     is-room-hidden: func(room-id: string) -> result<bool, string>;
 
+    /// 设置房间是否无人保留；开启后最后一名玩家离开也不会自动清除
+    set-room-persistent-empty: func(room-id: string, persistent: bool) -> result<_, string>;
+
     /// 为房间设置独立 Phira API endpoint，设置后立即生效
-    set-room-phira-api-endpoint: func(room-id: string, endpoint: string) -> result<_, string>;
+    set-room-phira-api-endpoint: func(room-id: string, endpoint: option<string>) -> result<_, string>;
 
     /// 清除房间 Phira API endpoint 覆盖，恢复使用全局配置，立即生效
     clear-room-phira-api-endpoint: func(room-id: string) -> result<_, string>;

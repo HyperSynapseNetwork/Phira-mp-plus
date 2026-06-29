@@ -188,6 +188,7 @@ pub struct User {
     pub lang: Language,
 
     pub server: Arc<PlusServerState>,
+    pub auth_token: RwLock<Option<String>>,
     pub session: RwLock<Option<Weak<Session>>>,
     pub room: RwLock<Option<Arc<super::room::Room>>>,
 
@@ -198,13 +199,14 @@ pub struct User {
 }
 
 impl User {
-    pub fn new(id: i32, name: String, lang: Language, server: Arc<PlusServerState>) -> Self {
+    pub fn new(id: i32, name: String, lang: Language, server: Arc<PlusServerState>, auth_token: Option<String>) -> Self {
         Self {
             id,
             name,
             lang,
 
             server,
+            auth_token: RwLock::new(auth_token),
             session: RwLock::default(),
             room: RwLock::default(),
 
@@ -230,6 +232,18 @@ impl User {
     pub async fn set_session(&self, session: Weak<Session>) {
         *self.session.write().await = Some(session);
         *self.dangle_mark.lock().await = None;
+    }
+
+    pub async fn set_auth_token(&self, token: Option<String>) {
+        *self.auth_token.write().await = token;
+    }
+
+    pub async fn auth_token(&self) -> Option<String> {
+        self.auth_token.read().await.clone()
+    }
+
+    pub fn auth_token_sync(&self) -> Option<String> {
+        self.auth_token.try_read().ok().and_then(|token| token.clone())
     }
 
     pub async fn try_send(&self, cmd: ServerCommand) {
@@ -510,6 +524,7 @@ impl Session {
                                             this_inited.notified().await;
                                             user.set_session(Arc::downgrade(this.get().unwrap()))
                                                 .await;
+                                            user.set_auth_token(Some(token.clone())).await;
                                             // 重连也需要触发 UserConnect（欢迎语等依赖此事件）
                                             let user_ip = this.get().map(|s| s.ip.clone()).unwrap_or_default();
                                             server.plugin_manager
@@ -542,6 +557,7 @@ impl Session {
                                                     .map(Language)
                                                     .unwrap_or_default(),
                                                 Arc::clone(&server),
+                                                Some(token.clone()),
                                             ));
                                             let _ = auth_tx.take().unwrap().send(
                                                 AuthenticationOutcome::Accepted(
@@ -622,6 +638,7 @@ impl Session {
                                             info.name,
                                             info.language.parse().map(Language).unwrap_or_default(),
                                             Arc::clone(&server),
+                                            Some(token.clone()),
                                         ));
                                         let _ = tx.send(AuthenticationOutcome::Accepted(
                                             Arc::clone(&user),
@@ -666,7 +683,7 @@ impl Session {
                                     return;
                                 }
                                 info!("new room monitor connected");
-                                let user = Arc::new(User::new(-1, "$server_room_monitor".into(), Language::default(), Arc::clone(&server)));
+                                let user = Arc::new(User::new(-1, "$server_room_monitor".into(), Language::default(), Arc::clone(&server), None));
                                 let _ = tx.send(AuthenticationOutcome::Accepted(
                                     Arc::clone(&user),
                                     SessionCategory::RoomMonitor,
@@ -696,6 +713,7 @@ impl Session {
                                             format!("{} (monitor)", info.name),
                                             info.language.parse().map(Language).unwrap_or_default(),
                                             Arc::clone(&server),
+                                            Some(token.clone()),
                                         ));
                                         let _ = tx.send(AuthenticationOutcome::Accepted(
                                             Arc::clone(&user),
@@ -1044,6 +1062,7 @@ async fn process(user: Arc<User>, category: SessionCategory, cmd: ClientCommand)
                     }
                 }
                 let room_uuid = room.uuid;
+                room.set_display_name(user.id, user.name.clone()).await;
                 room.send(Message::CreateRoom { user: user.id }).await;
                 drop(map_guard);
                 user.server
@@ -1102,6 +1121,8 @@ async fn process(user: Arc<User>, category: SessionCategory, cmd: ClientCommand)
                 if monitor && !room.live.fetch_or(true, Ordering::SeqCst) {
                     info!(room = id.to_string(), "room goes live");
                 }
+                user.server.assign_room_host_if_missing(&room, &user, monitor).await;
+                user.server.refresh_room_display_metadata(&room).await;
                 let join = ServerCommand::OnJoinRoom(user.to_info());
                 let message = ServerCommand::Message(Message::JoinRoom {
                     user: user.id,

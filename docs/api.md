@@ -309,12 +309,15 @@ round_data_retention_days: 7
 房间可通过 CLI 或 WASM/host API 覆盖全局 `phira_api_endpoint`：
 
 - CLI：`room set <room_id> phira_api_endpoint <url>`
+- 创建无人持久房间：`room create-empty <room_id> [endpoint]`
 - 清除覆盖：`room set <room_id> phira_api_endpoint default`
 - Host API：`room.set_phira_api_endpoint`，参数 `{"room_id":"...","endpoint":"https://..."}`
+- Host API 创建无人持久房间：`room.create_empty`，参数 `{"room_id":"...","endpoint":"https://..."}`
+- Host API 设置无人保留：`room.set_persistent_empty`，参数 `{"room_id":"...","persistent":true}`
 - Host API 清除：`room.set_phira_api_endpoint` 传 `endpoint: null`，或调用 `room.clear_phira_api_endpoint`
 - 查询：`room.get_phira_api_endpoint`
 
-`rooms.list`、`rooms.by_name`、`rooms.by_user` 和 `room.info` 会返回当前生效的 `phira_api_endpoint`，并在可用时返回 `phira_api_endpoint_override`。设置后立即生效：房间内选谱 `/chart/<id>`、提交成绩 `/record/<id>` 等能确定所属房间的服务端请求都会使用房间 endpoint；认证 `/me` 没有房间上下文，仍使用全局配置。
+`rooms.list`、`rooms.by_name`、`rooms.by_user` 和 `room.info` 会返回完整房间信息，包括 `uuid`、`created_at`、`live`、`locked`、`cycling`、`hidden`、`persistent_empty`、`max_users`、房主/玩家/旁观者详情、当前谱面、当前状态详情、当前轮次、历史轮次、当前生效的 `phira_api_endpoint` 与可选的 `phira_api_endpoint_override`。设置后立即生效：能确定所属房间的服务端请求、终端展示、欢迎语 `[active_rooms]`、Web API 中的谱面名与用户名刷新都会使用房间 endpoint；认证 `/me` 仍使用全局配置。MP 服务端不会尝试改写客户端本机 Phira API 请求。
 
 ### 隐藏房间
 
@@ -341,6 +344,7 @@ round_data_retention_days: 7
 | `room.set_lock` | 设置锁定 |
 | `room.force_move` | 强制迁移用户到房间 |
 | `room.set_hidden` / `room.is_hidden` | 设置/查询隐藏状态 |
+| `room.create_empty` / `room.set_persistent_empty` | 创建无人持久空房间；设置最后一名玩家离开后是否保留 |
 | `room.set_phira_api_endpoint` / `room.get_phira_api_endpoint` / `room.clear_phira_api_endpoint` | 设置/查询/清除房间独立 Phira API endpoint |
 | `room.close` | 关闭房间 |
 | `admin.kick_user` | 管理员踢人 |

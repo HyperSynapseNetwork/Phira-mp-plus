@@ -235,7 +235,7 @@ WASM 插件通过 `phira:host/api` 和 `phira:host/log` 等导入函数与宿主
 | `server_name` | String | — | 服务器名称 |
 | `wasm_runtime.*` | object | 见文档 | WASM 插件资源限制 |
 
-压测 token 可直接写入 `server_config.yml`，也可通过 `benchmark-bind <token1[,token2...]>` 写入 `data/benchmark-auth.json`；如果配置文件中已有 token，压测优先使用配置文件。隐藏房间通过房间名前缀 `-`、`room hide/unhide` 或 `room.set_hidden` 管理，不是全局配置项。房间也可以用 `room set <房间ID> phira_api_endpoint <url>` 临时覆盖全局 Phira API，房间内选谱和提交成绩会立刻使用该 endpoint，`default`/`clear` 可恢复全局配置。
+压测 token 可直接写入 `server_config.yml`，也可通过 `benchmark-bind <token1[,token2...]>` 写入 `data/benchmark-auth.json`；如果配置文件中已有 token，压测优先使用配置文件。隐藏房间通过房间名前缀 `-`、`room hide/unhide` 或 `room.set_hidden` 管理，不是全局配置项。房间也可以用 `room set <房间ID> phira_api_endpoint <url>` 临时覆盖全局 Phira API；服务端按房间获取谱面名、用户名、欢迎语与记录校验时会立即使用该 endpoint，`default`/`clear` 可恢复全局配置。`/me` 登录认证仍使用全局 endpoint。无人持久房间可通过 `room create-empty <ID> [API]` 或 `room.create_empty` 创建，最后一名玩家离开后不会自动删除。
 
 ## 许可证
 

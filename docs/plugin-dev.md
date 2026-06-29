@@ -51,6 +51,8 @@ WASM 插件通过 JSON 字符串与宿主通信：
 | `ext.set_user` | `{ user_id, key, value }` | `"ok"` | 设置用户扩展数据 |
 | `ext.get_room` | `{ room_id, key }` | 字段值 | 获取房间扩展数据 |
 | `ext.set_room` | `{ room_id, key, value }` | `"ok"` | 设置房间扩展数据 |
+| `room.create_empty` | `{ room_id, endpoint? }` | `{"ok": true, "room_id": string}` | 创建无人持久空房间，endpoint 为空时使用全局 Phira API |
+| `room.set_persistent_empty` | `{ room_id, persistent }` | `{"ok": true, "persistent_empty": bool}` | 设置房间无人时是否保留 |
 | `room.kick` | `{ room_id, target_id }` | `{"ok": true}` | 从房间踢出用户 |
 | `room.transfer_host` | `{ room_id, target_id }` | `{"ok": true}` | 转移房主 |
 | `room.set_lock` | `{ room_id, locked }` | `{"ok": true}` | 锁定/解锁房间 |
