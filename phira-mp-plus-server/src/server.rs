@@ -10,7 +10,7 @@ use phira_mp_plus_server_api as api;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     sync::{atomic::Ordering, Arc, Weak},
 };
 use tokio::{
@@ -149,9 +149,15 @@ pub struct PlusConfig {
     #[serde(default = "default_retention_days")]
     pub round_data_retention_days: u32,
     /// PostgreSQL 数据库连接 URL（如 postgres://user:pass@localhost/dbname）
-    /// 未设置时自动回退 JSON 文件存储
+    /// 未设置时保留旧 JSON/文件回退，但统一结构化持久化需要配置 PostgreSQL。
     #[serde(default)]
     pub database_url: Option<String>,
+    /// 统一持久化数据保留天数（0 = 不自动清理 PostgreSQL 历史数据）。
+    #[serde(default = "default_persistence_retention_days")]
+    pub persistence_retention_days: u32,
+    /// 拥有游戏内 `_+命令` 入口和管理 WIT/API 的 Phira 用户 ID 列表。
+    #[serde(default)]
+    pub admin_phira_ids: Vec<i32>,
     /// 压测使用的 Phira token 列表。可在配置文件中直接填写，或通过 benchmark-bind 命令写入 data/benchmark-auth.json。
     #[serde(default)]
     pub benchmark_phira_tokens: Vec<String>,
@@ -170,6 +176,7 @@ fn default_rate_limit() -> u32 { 30 }
 fn default_rate_window() -> u32 { 10 }
 fn default_phira_api() -> String { "https://phira.5wyxi.com".to_string() }
 fn default_retention_days() -> u32 { 7 }
+fn default_persistence_retention_days() -> u32 { 30 }
 
 impl Default for PlusConfig {
     fn default() -> Self {
@@ -190,6 +197,8 @@ impl Default for PlusConfig {
             chat_enabled: true,
             round_data_retention_days: 7,
             database_url: None,
+            persistence_retention_days: 30,
+            admin_phira_ids: Vec::new(),
             benchmark_phira_tokens: Vec::new(),
             benchmark_phira_token: None,
             wasm_runtime: WasmRuntimeConfig::default(),
@@ -366,6 +375,8 @@ pub struct PlusServerState {
     pub bench_tx: tokio::sync::mpsc::UnboundedSender<BenchRequest>,
     /// 压测用 Phira token 列表（来自配置或 benchmark-bind 命令）。
     pub bench_tokens: RwLock<Vec<String>>,
+    /// 管理员 Phira ID 集合。可由配置、PostgreSQL 设置、CLI/WIT 动态修改。
+    pub admin_ids: RwLock<HashSet<i32>>,
     /// 房间 monitor key（与 phira-web-monitor 共享密钥）
     pub room_monitor_key: Vec<u8>,
     pub events: Arc<SseHub>,
@@ -417,6 +428,14 @@ impl PlusServer {
         let rate_window = config.connection_rate_window;
         let retention_days = config.round_data_retention_days;
         let bench_tokens = load_benchmark_tokens(&config);
+        let mut admin_ids: HashSet<i32> = config.admin_phira_ids.iter().copied().collect();
+        if admin_ids.is_empty() {
+            if let Ok(raw) = std::fs::read_to_string("data/admin-phira-ids.json") {
+                if let Ok(ids) = serde_json::from_str::<Vec<i32>>(&raw) {
+                    admin_ids.extend(ids.into_iter().filter(|id| *id > 0));
+                }
+            }
+        }
         let (bench_tx, bench_rx) = tokio::sync::mpsc::unbounded_channel::<BenchRequest>();
 
         let events = Arc::new(SseHub::new());
@@ -441,6 +460,7 @@ impl PlusServer {
             user_room_history: SafeMap::default(),
             bench_tx: bench_tx.clone(),
             bench_tokens: RwLock::new(bench_tokens),
+            admin_ids: RwLock::new(admin_ids),
             room_monitor_key: generate_secret_key("room_monitor", 64).unwrap_or_default(),
             room_monitor: RwLock::new(None),
             game_monitors: SafeMap::default(),
@@ -574,13 +594,16 @@ impl PlusServer {
             }
         });
 
-        // 轮次数据定期清理（每小时检查一次）
-        if retention_days > 0 {
+        // 轮次文件与统一 PostgreSQL 持久化定期清理（每小时检查一次）
+        if retention_days > 0 || state.config.persistence_retention_days > 0 {
             let cleanup_state = Arc::clone(&state);
             tokio::spawn(async move {
                 loop {
                     tokio::time::sleep(std::time::Duration::from_secs(3600)).await;
                     cleanup_state.round_store.cleanup_expired().await;
+                    if let Some(db) = crate::internal_hooks::DB.get() {
+                        db.cleanup_expired(cleanup_state.config.persistence_retention_days).await;
+                    }
                 }
             });
         }
@@ -680,6 +703,23 @@ impl PlusServerState {
     }
 
     pub async fn publish_room_event(&self, event: RoomEvent) {
+        if let Some(db) = crate::internal_hooks::DB.get() {
+            let (room_id, user_id) = match &event {
+                RoomEvent::CreateRoom { room, .. }
+                | RoomEvent::UpdateRoom { room, .. }
+                | RoomEvent::NewRound { room, .. } => (Some(room.to_string()), None),
+                RoomEvent::JoinRoom { room, user }
+                | RoomEvent::LeaveRoom { room, user } => (Some(room.to_string()), Some(*user)),
+            };
+            db.record_room_event_sync(event.event_type(), room_id.clone(), user_id, event.clone().inner());
+            if let Some(room_id) = room_id {
+                if let Ok(rid) = room_id.clone().try_into() {
+                    if let Some(room) = self.rooms.read().await.get(&rid).map(Arc::clone) {
+                        self.persist_room_snapshot_background(room);
+                    }
+                }
+            }
+        }
         self.events.publish_room_event(event.clone());
         if let Some(monitor) = self.get_room_monitor().await {
             monitor.try_send(ServerCommand::RoomEvent(event)).await;
@@ -766,6 +806,66 @@ impl PlusServerState {
         room.set_host(Some(user.id), announce).await.is_ok()
     }
 
+
+    fn persist_room_snapshot_background(&self, room: Arc<crate::room::Room>) {
+        let fallback_endpoint = self.config.phira_api_endpoint.clone();
+        tokio::spawn(async move {
+            let Some(db) = crate::internal_hooks::DB.get() else { return; };
+            if !db.is_active() { return; }
+            let users = room.users().await;
+            let monitors = room.monitors().await;
+            let host_id = room.host_id().await.or_else(|| room.is_system_host().then_some(-1));
+            let chart = room.chart.read().await.clone();
+            let state = match &*room.state.read().await {
+                crate::room::InternalRoomState::SelectChart => serde_json::json!({"kind":"select_chart"}),
+                crate::room::InternalRoomState::WaitForReady { started } => {
+                    let mut ready: Vec<i32> = started.iter().copied().collect();
+                    ready.sort_unstable();
+                    serde_json::json!({"kind":"wait_for_ready", "ready_users": ready})
+                }
+                crate::room::InternalRoomState::Playing { results, aborted } => {
+                    let mut finished: Vec<i32> = results.keys().copied().collect();
+                    finished.sort_unstable();
+                    let mut aborted_users: Vec<i32> = aborted.iter().copied().collect();
+                    aborted_users.sort_unstable();
+                    serde_json::json!({"kind":"playing", "finished_users": finished, "aborted_users": aborted_users})
+                }
+            };
+            let mut user_values = Vec::new();
+            for u in &users {
+                user_values.push(serde_json::json!({"id": u.id, "name": room.display_name(u).await, "monitor": false}));
+            }
+            let mut monitor_values = Vec::new();
+            for u in &monitors {
+                monitor_values.push(serde_json::json!({"id": u.id, "name": room.display_name(u).await, "monitor": true}));
+            }
+            let endpoint_override = room.phira_api_endpoint_override().await;
+            let endpoint = endpoint_override.clone().unwrap_or(fallback_endpoint);
+            let payload = serde_json::json!({
+                "id": room.id.to_string(),
+                "uuid": room.uuid.to_string(),
+                "created_at": room.created_at,
+                "updated_at": std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as i64).unwrap_or(0),
+                "host": host_id,
+                "host_is_system": room.is_system_host(),
+                "users": user_values,
+                "monitors": monitor_values,
+                "locked": room.is_locked(),
+                "cycling": room.is_cycle(),
+                "hidden": room.is_hidden(),
+                "persistent_empty": room.is_persistent_empty(),
+                "live": room.is_live(),
+                "max_users": room.max_users_count(),
+                "chart": chart.as_ref().map(|c| serde_json::json!({"id": c.id, "name": c.name.clone()})),
+                "state": state,
+                "current_round_id": room.current_round_id.read().await.as_ref().map(|id| id.to_string()),
+                "phira_api_endpoint": endpoint,
+                "phira_api_endpoint_override": endpoint_override,
+            });
+            db.record_room_snapshot_sync(room.id.to_string(), room.uuid.to_string(), payload);
+        });
+    }
+
     /// 刷新房间内展示用用户名与谱面名。只影响服务端 TUI/Web/欢迎语/历史展示；不改客户端本机 Phira API。
     pub async fn refresh_room_display_metadata(&self, room: &Arc<crate::room::Room>) {
         let endpoint = room.effective_phira_api_endpoint(self).await;
@@ -816,6 +916,54 @@ impl PlusServerState {
 }
 
 impl PlusServerState {
+
+    pub async fn admin_id_list(&self) -> Vec<i32> {
+        let mut ids: Vec<i32> = self.admin_ids.read().await.iter().copied().collect();
+        ids.sort_unstable();
+        ids
+    }
+
+    pub async fn is_admin_id(&self, user_id: i32) -> bool {
+        self.admin_ids.read().await.contains(&user_id)
+    }
+
+    async fn persist_admin_ids(&self) {
+        let ids = self.admin_id_list().await;
+        if let Some(db) = crate::internal_hooks::DB.get() {
+            if let Err(err) = db.set_admin_ids(&ids).await {
+                warn!("persist admin ids failed: {err}");
+            }
+        }
+        let _ = std::fs::create_dir_all("data");
+        if let Ok(json) = serde_json::to_string_pretty(&ids) {
+            let _ = std::fs::write("data/admin-phira-ids.json", json);
+        }
+    }
+
+    pub async fn set_admin_ids(&self, ids: Vec<i32>) -> Vec<i32> {
+        {
+            let mut guard = self.admin_ids.write().await;
+            guard.clear();
+            guard.extend(ids.into_iter().filter(|id| *id > 0));
+        }
+        self.persist_admin_ids().await;
+        self.admin_id_list().await
+    }
+
+    pub async fn add_admin_id(&self, user_id: i32) -> Vec<i32> {
+        if user_id > 0 {
+            self.admin_ids.write().await.insert(user_id);
+        }
+        self.persist_admin_ids().await;
+        self.admin_id_list().await
+    }
+
+    pub async fn remove_admin_id(&self, user_id: i32) -> Vec<i32> {
+        self.admin_ids.write().await.remove(&user_id);
+        self.persist_admin_ids().await;
+        self.admin_id_list().await
+    }
+
     /// 运行压测（同步版 — 在 ServerStateQuery 线程中调用，无 tokio）
     pub fn run_benchmark_sync(self: &Arc<Self>, duration_secs: u64, target_rooms: usize) -> String {
         use std::time::Instant;
@@ -1005,28 +1153,37 @@ impl PlusServerState {
             return out;
         }
 
-        let room_count = target_rooms.min(tokens.len()).max(1);
-        if room_count < target_rooms {
-            o!("  │ 账号不足：已按已配置的 {} 个 token 创建 {} 间房间", tokens.len(), room_count);
-            o!("  │ 想压更多房间，请为 benchmark_phira_tokens 配置更多不同 Phira 账号 token");
+        let room_count = target_rooms.max(1);
+        let token_slots = tokens.len().max(1);
+        if tokens.len() < target_rooms {
+            o!("  │ 账号不足：将复用 {} 个 token 分批创建/重建 {} 间房间", tokens.len(), target_rooms);
+            o!("  │ 最终只保持最多 {} 个真实客户端在线；创建吞吐仍覆盖目标房间数", tokens.len());
             o!("  │");
         }
 
         let addr = std::net::SocketAddr::from(([127, 0, 0, 1], self.config.port));
         let started_at = Instant::now();
-        let mut clients: Vec<BenchClient> = Vec::new();
+        let mut clients_by_slot: Vec<Option<BenchClient>> = (0..token_slots).map(|_| None).collect();
         let mut created = 0usize;
+        let mut rebuilt = 0usize;
         let mut joined = 0usize;
         let mut failures: Vec<String> = Vec::new();
 
-        o!("  ├─ [阶段1] 真实 TCP 连接 + 认证 + 创建房间");
+        o!("  ├─ [阶段1] 真实 TCP 连接 + 认证 + 创建/重建房间");
         let phase1 = Instant::now();
-        for (i, token) in tokens.iter().take(room_count).enumerate() {
+        for i in 0..room_count {
+            let slot = i % tokens.len();
+            if let Some(mut old) = clients_by_slot[slot].take() {
+                let _ = bench_leave_room(&mut old.stream).await;
+                rebuilt += 1;
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+            let token = &tokens[slot];
             let room_id = format!("bench-{i}");
             match bench_connect_auth(addr, token).await {
                 Ok(mut stream) => match bench_create_room(&mut stream, &room_id).await {
                     Ok(()) => {
-                        clients.push(BenchClient { stream, room_id });
+                        clients_by_slot[slot] = Some(BenchClient { stream, room_id });
                         created += 1;
                     }
                     Err(err) => failures.push(format!("create {room_id}: {err}")),
@@ -1034,7 +1191,8 @@ impl PlusServerState {
                 Err(err) => failures.push(format!("auth host#{i}: {err}")),
             }
         }
-        o!("  │ ✓ 创建 {created} 间, 耗时 {:.1}s", phase1.elapsed().as_secs_f64());
+        let mut clients: Vec<BenchClient> = clients_by_slot.into_iter().flatten().collect();
+        o!("  │ ✓ 创建/重建 {created} 间, 重建 {rebuilt} 次, 当前保持 {} 个客户端, 耗时 {:.1}s", clients.len(), phase1.elapsed().as_secs_f64());
 
         if created == 0 {
             o!("  │");
@@ -1048,18 +1206,22 @@ impl PlusServerState {
         o!("  │");
         o!("  ├─ [阶段2] 剩余账号真实 JoinRoom 填充房间");
         let phase2 = Instant::now();
-        for (i, token) in tokens.iter().enumerate().skip(room_count) {
-            let room_id = format!("bench-{}", (i - room_count) % created);
-            match bench_connect_auth(addr, token).await {
-                Ok(mut stream) => match bench_join_room(&mut stream, &room_id, false).await {
-                    Ok(()) => {
-                        clients.push(BenchClient { stream, room_id });
-                        joined += 1;
-                    }
-                    Err(err) => failures.push(format!("join token#{i}: {err}")),
-                },
-                Err(err) => failures.push(format!("auth guest#{i}: {err}")),
+        if tokens.len() > target_rooms {
+            for (i, token) in tokens.iter().enumerate().skip(room_count) {
+                let room_id = format!("bench-{}", (i - room_count) % created.max(1));
+                match bench_connect_auth(addr, token).await {
+                    Ok(mut stream) => match bench_join_room(&mut stream, &room_id, false).await {
+                        Ok(()) => {
+                            clients.push(BenchClient { stream, room_id });
+                            joined += 1;
+                        }
+                        Err(err) => failures.push(format!("join token#{i}: {err}")),
+                    },
+                    Err(err) => failures.push(format!("auth guest#{i}: {err}")),
+                }
             }
+        } else {
+            o!("  │ 无剩余 token 可填充玩家，已跳过；账号不足时重点测试创建/重建与连接稳定性");
         }
         o!("  │ ✓ 加入 {joined} 人, 活跃客户端 {}, 耗时 {:.1}s", clients.len(), phase2.elapsed().as_secs_f64());
 
@@ -1108,7 +1270,7 @@ impl PlusServerState {
         o!("  └─ 压测完成 ({:.1}s)", started_at.elapsed().as_secs_f64());
         o!("");
         o!("  ◆ 报告");
-        o!("  │  真实客户端: {}  房间: {created}  加入用户: {joined}", clients.len());
+        o!("  │  真实客户端: {}  创建/重建房间: {created}  重建次数: {rebuilt}  加入用户: {joined}", clients.len());
         o!("  │  网络操作: {op_count}  失败: {failed_ops}");
         o!("  │  延迟: avg={avg_ms:.2}ms  p99={p99_ms:.2}ms");
         if !failures.is_empty() {
@@ -1201,6 +1363,9 @@ impl PlusServerState {
             .entry(target_id)
             .or_default()
             .push((rid.to_string(), target_room.uuid.to_string(), now));
+        if let Some(db) = crate::internal_hooks::DB.get() {
+            db.record_user_room_history_sync(target_id, rid.to_string(), target_room.uuid.to_string(), now);
+        }
 
         self.plugin_manager.trigger(&PluginEvent::RoomJoin {
             user_id: target_id,
@@ -1727,7 +1892,8 @@ fn server_state_query_inner(state: &Arc<PlusServerState>, method: &str, args: &[
                             "chart_name": r.chart_name,
                             "players": r.results.len(),
                         })).collect();
-                        Ok(serde_json::json!({"rounds": rounds, "total": rounds.len()}))
+                        let total = rounds.len();
+                        Ok(serde_json::json!({"rounds": rounds, "total": total}))
                     }
                     None => Err("room not found".to_string()),
                 };
@@ -1783,7 +1949,8 @@ fn server_state_query_inner(state: &Arc<PlusServerState>, method: &str, args: &[
                         "phira_api_endpoint": r.effective_phira_api_endpoint_sync(&s.config.phira_api_endpoint),
                     })
                 }).collect();
-                let _ = tx.send(Ok(serde_json::json!({"rooms": list, "total": list.len()})));
+                let total = list.len();
+                let _ = tx.send(Ok(serde_json::json!({"rooms": list, "total": total})));
             });
             rx.recv_timeout(std::time::Duration::from_secs(3))
                 .unwrap_or(Err("room.list_since timeout".to_string()))
@@ -2056,10 +2223,128 @@ fn server_state_query_inner(state: &Arc<PlusServerState>, method: &str, args: &[
                 let list: Vec<Value> = entries.iter().map(|(room_id, room_uuid, ts)| {
                     serde_json::json!({"room_id": room_id, "room_uuid": room_uuid, "joined_at": ts})
                 }).collect();
-                let _ = tx.send(Ok(serde_json::json!({"rooms": list, "total": list.len()})));
+                let total = list.len();
+                let _ = tx.send(Ok(serde_json::json!({"rooms": list, "total": total})));
             });
             rx.recv_timeout(std::time::Duration::from_secs(5))
                 .unwrap_or(Err("user.room_history timeout".to_string()))
+        }
+
+        "persist.events" => {
+            let since = args.get(0).and_then(|v| v.as_i64()).unwrap_or(0);
+            let limit = args.get(1).and_then(|v| v.as_i64()).unwrap_or(100).clamp(1, 1000);
+            let kind = args.get(2).and_then(|v| v.as_str()).map(str::to_string);
+            let room_id = args.get(3).and_then(|v| v.as_str()).map(str::to_string);
+            let user_id = args.get(4).and_then(|v| v.as_i64()).and_then(|v| i32::try_from(v).ok());
+            let (tx, rx) = std::sync::mpsc::channel();
+            tokio::spawn(async move {
+                let rows = if let Some(db) = crate::internal_hooks::DB.get() {
+                    db.query_events(since, limit, kind.as_deref(), room_id.as_deref(), user_id).await
+                } else { Vec::new() };
+                let total = rows.len();
+                let _ = tx.send(Ok(serde_json::json!({"events": rows, "total": total})));
+            });
+            rx.recv_timeout(std::time::Duration::from_secs(5))
+                .unwrap_or(Err("persist.events timeout".to_string()))
+        }
+        "persist.rooms" => {
+            let since = args.get(0).and_then(|v| v.as_i64()).unwrap_or(0);
+            let limit = args.get(1).and_then(|v| v.as_i64()).unwrap_or(100).clamp(1, 1000);
+            let (tx, rx) = std::sync::mpsc::channel();
+            tokio::spawn(async move {
+                let rows = if let Some(db) = crate::internal_hooks::DB.get() {
+                    db.query_room_snapshots(since, limit).await
+                } else { Vec::new() };
+                let total = rows.len();
+                let _ = tx.send(Ok(serde_json::json!({"rooms": rows, "total": total})));
+            });
+            rx.recv_timeout(std::time::Duration::from_secs(5))
+                .unwrap_or(Err("persist.rooms timeout".to_string()))
+        }
+        "persist.playtime" => {
+            let uid = args.get(0).and_then(|v| v.as_i64()).unwrap_or(0) as i32;
+            if uid <= 0 { return Err("invalid user_id".to_string()); }
+            let (tx, rx) = std::sync::mpsc::channel();
+            tokio::spawn(async move {
+                let row = if let Some(db) = crate::internal_hooks::DB.get() { db.get_playtime(uid).await } else { None };
+                let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0);
+                let total = row.as_ref().map(|r| r.total_secs + r.session_start.map(|s| now.saturating_sub(s)).unwrap_or(0)).unwrap_or(0);
+                let _ = tx.send(Ok(serde_json::json!({"user_id": uid, "total_secs": total, "session_start": row.and_then(|r| r.session_start)})));
+            });
+            rx.recv_timeout(std::time::Duration::from_secs(5))
+                .unwrap_or(Err("persist.playtime timeout".to_string()))
+        }
+        "persist.top_playtime" => {
+            let limit = args.get(0).and_then(|v| v.as_i64()).unwrap_or(10).clamp(1, 100);
+            let (tx, rx) = std::sync::mpsc::channel();
+            tokio::spawn(async move {
+                let rows = if let Some(db) = crate::internal_hooks::DB.get() { db.top_playtime(limit).await } else { Vec::new() };
+                let total = rows.len();
+                let _ = tx.send(Ok(serde_json::json!({"players": rows, "total": total})));
+            });
+            rx.recv_timeout(std::time::Duration::from_secs(5))
+                .unwrap_or(Err("persist.top_playtime timeout".to_string()))
+        }
+        "admin.ids" => {
+            let (tx, rx) = std::sync::mpsc::channel();
+            let s = Arc::clone(state);
+            tokio::spawn(async move {
+                let ids = s.admin_id_list().await;
+                let _ = tx.send(Ok(serde_json::json!({"admin_phira_ids": ids})));
+            });
+            rx.recv_timeout(std::time::Duration::from_secs(5))
+                .unwrap_or(Err("admin.ids timeout".to_string()))
+        }
+        "admin.is_admin" => {
+            let uid = args.get(0).and_then(|v| v.as_i64()).unwrap_or(0) as i32;
+            let (tx, rx) = std::sync::mpsc::channel();
+            let s = Arc::clone(state);
+            tokio::spawn(async move {
+                let value = s.is_admin_id(uid).await;
+                let _ = tx.send(Ok(serde_json::json!({"user_id": uid, "admin": value})));
+            });
+            rx.recv_timeout(std::time::Duration::from_secs(5))
+                .unwrap_or(Err("admin.is_admin timeout".to_string()))
+        }
+        "admin.add_id" => {
+            let uid = args.get(0).and_then(|v| v.as_i64()).unwrap_or(0) as i32;
+            if uid <= 0 { return Err("invalid user_id".to_string()); }
+            let (tx, rx) = std::sync::mpsc::channel();
+            let s = Arc::clone(state);
+            tokio::spawn(async move {
+                let ids = s.add_admin_id(uid).await;
+                let _ = tx.send(Ok(serde_json::json!({"admin_phira_ids": ids})));
+            });
+            rx.recv_timeout(std::time::Duration::from_secs(5))
+                .unwrap_or(Err("admin.add_id timeout".to_string()))
+        }
+        "admin.remove_id" => {
+            let uid = args.get(0).and_then(|v| v.as_i64()).unwrap_or(0) as i32;
+            if uid <= 0 { return Err("invalid user_id".to_string()); }
+            let (tx, rx) = std::sync::mpsc::channel();
+            let s = Arc::clone(state);
+            tokio::spawn(async move {
+                let ids = s.remove_admin_id(uid).await;
+                let _ = tx.send(Ok(serde_json::json!({"admin_phira_ids": ids})));
+            });
+            rx.recv_timeout(std::time::Duration::from_secs(5))
+                .unwrap_or(Err("admin.remove_id timeout".to_string()))
+        }
+        "admin.set_ids" => {
+            let mut ids = Vec::new();
+            if let Some(array) = args.get(0).and_then(|v| v.as_array()) {
+                ids.extend(array.iter().filter_map(|v| v.as_i64()).filter_map(|v| i32::try_from(v).ok()).filter(|id| *id > 0));
+            } else {
+                ids.extend(args.iter().filter_map(|v| v.as_i64()).filter_map(|v| i32::try_from(v).ok()).filter(|id| *id > 0));
+            }
+            let (tx, rx) = std::sync::mpsc::channel();
+            let s = Arc::clone(state);
+            tokio::spawn(async move {
+                let ids = s.set_admin_ids(ids).await;
+                let _ = tx.send(Ok(serde_json::json!({"admin_phira_ids": ids})));
+            });
+            rx.recv_timeout(std::time::Duration::from_secs(5))
+                .unwrap_or(Err("admin.set_ids timeout".to_string()))
         }
         _ => {
             // webapi feature 下的扩展查询

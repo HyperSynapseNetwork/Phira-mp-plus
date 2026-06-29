@@ -133,6 +133,7 @@ curl -N http://127.0.0.1:12347/rooms/listen
 | `benchmark [dur_s=30] [rooms=100]` | 真实网络压力测试（需先配置/绑定 Phira token） |
 | `benchmark-bind <token1[,token2...]>` | 绑定压测 Phira 账号 token |
 | `benchmark-cleanup` | 清理残留 `bench-*` 房间 |
+| `admin-id list/add/remove/set` | 查看或修改游戏内管理员 Phira ID |
 
 ### 房间管理
 
@@ -303,6 +304,25 @@ round_data_retention_days: 7
 2. 如果配置文件未提供 token，读取 `data/benchmark-auth.json`；
 3. 两处都没有时，命令会提示运行 `benchmark-bind <token1[,token2...]>` 或修改配置文件。
 
+当 token 数量少于目标房间数时，benchmark 会重复使用已有 token：离开/断开上一个 `bench-*` 客户端，再重连创建下一个房间，用于反复覆盖创建/重建逻辑。
+
+
+
+### 统一持久化读取 API
+
+启用 PostgreSQL 后，WIT/host API 可读取统一持久化数据：
+
+| 方法 | 参数 | 说明 |
+|---|---|---|
+| `persist.events` | `since_sequence`, `limit`, `kind?`, `room_id?`, `user_id?` | 增量读取事件流。 |
+| `persist.rooms` | `since_sequence`, `limit` | 增量读取房间快照。 |
+| `persist.playtime` | `user_id` | 读取指定用户游玩时间。 |
+| `persist.top_playtime` | `limit` | 读取游玩时间排行。 |
+| `admin.ids` | — | 读取管理员 Phira ID。 |
+| `admin.is_admin` | `user_id` | 判断某用户是否管理员。 |
+| `admin.add_id` / `admin.remove_id` / `admin.set_ids` | `user_id` 或 `ids` | 修改管理员 Phira ID。 |
+
+WIT 文件还提供了 `persistence` 与 `admin-config` import interface，便于组件插件按强类型方式调用。
 
 ### 房间独立 Phira API endpoint
 

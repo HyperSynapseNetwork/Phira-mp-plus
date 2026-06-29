@@ -50,6 +50,7 @@ benchmark_phira_tokens:
 plugins_dir: plugins
 extensions_file: data/extensions.json
 # database_url: "postgres://user:password@localhost:5432/phira_mp_plus"
+persistence_retention_days: 30
 
 # ---- 功能开关 ----
 chat_enabled: true
@@ -65,6 +66,7 @@ round_data_retention_days: 7
 # ---- 展示 / 管理 ----
 # server_name: "My Phira Server"
 # admin_token: "your-secret-token"
+admin_phira_ids: []
 
 # ---- WASM 运行时限制 ----
 wasm_runtime:
@@ -94,16 +96,49 @@ wasm_runtime:
 | `max_users_per_room` | `usize?` | `8` | 每个房间最大玩家数。 |
 | `connection_rate_limit` | `u32` | `30` | 每个统计窗口内允许的连接次数。 |
 | `connection_rate_window` | `u32` | `10` | 连接限速窗口，单位秒。 |
-| `round_data_retention_days` | `u32` | `7` | Touches/Judges 轮次数据保留天数，`0` 表示不保留。 |
-| `database_url` | `String?` | 未设置 | PostgreSQL 连接串；未设置时回退 JSON/文件存储。 |
+| `round_data_retention_days` | `u32` | `7` | Touches/Judges 轮次文件保留天数，`0` 表示不清理轮次文件。 |
+| `database_url` | `String?` | 未设置 | PostgreSQL 连接串；配置后启用统一结构化持久化。未设置时保留旧 JSON/文件回退。 |
+| `persistence_retention_days` | `u32` | `30` | PostgreSQL 统一持久化历史数据保留天数，`0` 表示不自动清理。 |
 | `server_name` | `String?` | 未设置 | 服务器展示名称，可用于欢迎语等场景。 |
 | `admin_token` | `String?` | 未设置 | 管理令牌预留/供管理接口或自定义扩展使用。基础公开 API 不需要配置。 |
+| `admin_phira_ids` | `Vec<i32>` | `[]` | 游戏内管理员 Phira ID。管理员可在创建房间弹窗输入 `_+命令` 执行 CLI 命令。 |
 | `benchmark_phira_tokens` | `Vec<String>` | `[]` | 真实网络压测使用的 Phira 账号 token 列表。 |
 | `benchmark_phira_token` | `String?` | 未设置 | 单账号兼容写法，会并入压测 token 列表。 |
 | `wasm_runtime` | `object` | 见下表 | WASM 插件运行时资源限制。 |
 
 > 注意：`chat_enabled` 的 Rust 结构体默认值是 `false`，但项目示例配置显式设置为 `true`。如果希望聊天可用，请在 `server_config.yml` 里明确写 `chat_enabled: true`。
 
+
+
+## 统一 PostgreSQL 持久化
+
+配置 `database_url` 后，服务端会自动创建统一持久化表。旧的 `playtime`、`room_history`、轮次文件存储仍兼容读取/写入，但新的结构化数据统一写入 PostgreSQL。
+
+当前会保存的主要信息：
+
+- 用户：Phira ID、用户名、语言、首次/最近出现时间、上线/下线时间。
+- 房间：房间完整快照、UUID、房主、系统房主、用户/monitor 列表、锁定/循环/隐藏/持久空房、谱面、状态、房间级 Phira API endpoint。
+- 事件：用户连接/断开、加入房间、房间修改、房间快照、轮次开始/结束、结算等。
+- 游玩：游玩时间、用户房间历史、轮次元数据、每玩家 Touches/Judges、结算结果。
+- 设置：管理员 Phira ID 等运行时可变配置。
+
+所有会变化的数据都会记录修改时间，并尽量使用全局 `sequence` 保留事件/快照/结算的写入顺序，方便外部面板或插件增量读取。
+
+保留时间由 `persistence_retention_days` 控制：
+
+```yaml
+database_url: "postgres://user:password@localhost:5432/phira_mp_plus"
+persistence_retention_days: 30   # 0 = 不自动清理 PG 历史数据
+```
+
+插件/WIT/host API 可读取：
+
+```text
+persist.events          # 参数：since_sequence, limit, kind?, room_id?, user_id?
+persist.rooms           # 参数：since_sequence, limit
+persist.playtime        # 参数：user_id
+persist.top_playtime    # 参数：limit
+```
 
 ## 房间独立 Phira API endpoint
 
@@ -179,7 +214,39 @@ benchmark-bind token1,token2,token3
 
 ### 多账号与房间数
 
-每个压测房间至少需要一个可认证的 Phira token。请求 `benchmark 30 100` 但只配置 3 个 token 时，服务端会按 3 个账号创建 3 个压测房间，并提示账号不足。要压更多房间，请配置更多不同账号 token。
+压测使用真实 TCP 客户端。token 数量少于目标房间数时，服务端会重复使用已有 token：先离开/断开上一个 `bench-*` 房间，再重连并创建下一个压测房间，因此可以用少量账号反复创建/重建更多房间。并发活跃客户端数量仍受 token 数量限制，结果报告会显示创建/重建数量。
+
+
+## 游戏内管理员与 `_+` 命令入口
+
+管理员 Phira ID 可写在配置文件：
+
+```yaml
+admin_phira_ids:
+  - 123456
+  - 234567
+```
+
+也可在 TUI/CLI 中维护：
+
+```text
+admin-id list
+admin-id add <Phira用户ID>
+admin-id remove <Phira用户ID>
+admin-id set <ID1> <ID2> ...
+```
+
+WIT/host API 支持：
+
+```text
+admin.ids
+admin.is_admin
+admin.add_id
+admin.remove_id
+admin.set_ids
+```
+
+管理员在客户端“创建房间”弹窗输入 `_+<CLI命令>` 时，服务端不会创建房间，而是执行对应 CLI 命令，并将输出通过聊天消息发回该客户端。非管理员输入 `_+...` 会按普通房间名处理。
 
 ## 隐藏房间配置与行为
 

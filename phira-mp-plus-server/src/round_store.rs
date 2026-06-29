@@ -101,6 +101,9 @@ impl RoundStore {
         tokio::fs::write(self.meta_path(&meta.round_uuid), json).await?;
 
         self.active_rounds.write().await.insert(meta.round_uuid.clone(), true);
+        if let Some(db) = crate::internal_hooks::DB.get() {
+            db.open_round(meta).await;
+        }
         info!("round store: opened round {} (chart={})", meta.round_uuid, meta.chart_name);
         Ok(())
     }
@@ -119,6 +122,9 @@ impl RoundStore {
             }
         }
         self.active_rounds.write().await.insert(round_uuid.to_string(), false);
+        if let Some(db) = crate::internal_hooks::DB.get() {
+            db.close_round(round_uuid).await;
+        }
         info!("round store: closed round {round_uuid}");
     }
 
@@ -150,6 +156,9 @@ impl RoundStore {
                 let _ = file.write_all(format!("{line}\n").as_bytes()).await;
             }
         }
+        if let Some(db) = crate::internal_hooks::DB.get() {
+            db.append_touches(round_uuid, player_id, data).await;
+        }
     }
 
     /// 追加判定数据到指定轮次+玩家
@@ -178,6 +187,9 @@ impl RoundStore {
                 let _ = file.write_all(format!("{line}\n").as_bytes()).await;
             }
         }
+        if let Some(db) = crate::internal_hooks::DB.get() {
+            db.append_judges(round_uuid, player_id, data).await;
+        }
     }
 
     // ── 数据读取 ──
@@ -195,6 +207,11 @@ impl RoundStore {
         round_uuid: &str,
         player_id: i32,
     ) -> Option<RoundPlayerData> {
+        if let Some(db) = crate::internal_hooks::DB.get() {
+            if let Some(data) = db.read_round_player_data(round_uuid, player_id).await {
+                return Some(data);
+            }
+        }
         let touches = self.read_touches(round_uuid, player_id).await;
         let judges = self.read_judges(round_uuid, player_id).await;
 
@@ -220,6 +237,12 @@ impl RoundStore {
 
     /// 列出所有已记录的轮次
     pub async fn list_rounds(&self) -> Vec<RoundMeta> {
+        if let Some(db) = crate::internal_hooks::DB.get() {
+            let rows = db.list_rounds(1000).await;
+            if !rows.is_empty() {
+                return rows;
+            }
+        }
         let mut rounds = Vec::new();
         let mut entries = match tokio::fs::read_dir(&self.base_dir).await {
             Ok(e) => e,

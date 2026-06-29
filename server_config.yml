@@ -45,8 +45,12 @@ plugins_dir: plugins
 # 扩展数据持久化 JSON 文件路径
 # extensions_file: data/extensions.json
 
-# PostgreSQL 数据库连接（未设置时使用 JSON/文件存储回退）
+# PostgreSQL 数据库连接。配置后会启用统一结构化持久化：用户、房间快照、事件、轮次、结算、游玩时间等写入 mp_* 表。
+# 未设置时仍保留旧 JSON/文件回退，方便轻量部署。
 # database_url: "postgres://user:password@localhost:5432/phira_mp_plus"
+
+# 统一 PostgreSQL 历史数据保留天数。0 表示不自动清理。
+persistence_retention_days: 30
 
 # ---- 功能开关 ----
 
@@ -100,3 +104,8 @@ round_data_retention_days: 7
 
 # 管理员 API 令牌（预留/供管理接口或自定义扩展使用）
 # admin_token: "your-secret-token"
+
+# 游戏内管理员 Phira ID。管理员在创建房间弹窗输入 _+<CLI命令> 时不会创建房间，
+# 而是执行服务端 CLI 命令，并把输出通过聊天消息发回该客户端。
+# 也可通过 CLI admin-id 或 WIT/host admin.* 动态维护。
+admin_phira_ids: []

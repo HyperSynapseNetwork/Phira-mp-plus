@@ -19,6 +19,12 @@ pub async fn init_internal_hooks(state: &PlusServerState, http: &PluginHttpServe
     // 初始化数据库连接
     let db = super::db::DbManager::new(state.config.database_url.as_deref()).await;
     let _ = DB.set(db);
+    if let Some(db) = DB.get() {
+        if let Some(ids) = db.get_admin_ids().await {
+            let mut guard = state.admin_ids.write().await;
+            for id in ids { guard.insert(id); }
+        }
+    }
 
     init_welcome(state, pm).await;
     init_player_tracker(state, http, pm).await;
@@ -42,7 +48,7 @@ impl Default for WelcomeConfig {
     fn default() -> Self {
         Self {
             messages: vec![
-                "欢迎 [user_name] 来到 HSN Phira-mp+！当前在线 [player-count] 人.可以前往 https://phira.htadiy.com/ 使用更多相关功能哦。也欢迎加入我们的QQ交流群1049578201！".into(),
+                "欢迎 [user_name] 来到 HSN Phira-mp+！当前在线 [player-count] 人。以-开头的房间会被隐藏。可以前往 https://phira.htadiy.com/ 使用更多相关功能哦。也欢迎加入我们的QQ交流群1049578201！".into(),
                 "您在本服务器上游玩了[playtime]".into(),
                 "--------------------------------------------------".into(),
                 "游玩时间排行榜：[top_playtime]".into(),

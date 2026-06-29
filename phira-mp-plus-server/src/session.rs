@@ -317,6 +317,9 @@ impl User {
                     user_id: self.id,
                     user_name: self.name.clone(),
                 }).await;
+                if let Some(db) = crate::internal_hooks::DB.get() {
+                    db.record_user_disconnect_sync(self.id, &self.name);
+                }
                 crate::internal_hooks::playtime_disconnect(self.id);
                 return;
             }
@@ -325,6 +328,9 @@ impl User {
             user_id: self.id,
             user_name: self.name.clone(),
         }).await;
+        if let Some(db) = crate::internal_hooks::DB.get() {
+            db.record_user_disconnect_sync(self.id, &self.name);
+        }
 
         let dangle_mark = Arc::new(());
         *self.dangle_mark.lock().await = Some(Arc::clone(&dangle_mark));
@@ -512,6 +518,10 @@ impl Session {
                                             }
                                         };
 
+                                        if let Some(db) = crate::internal_hooks::DB.get() {
+                                            db.record_user_seen_sync(user_info.id, &user_info.name, &user_info.language, Some(addr.ip().to_string()));
+                                        }
+
                                         let mut users_guard = server.users.write().await;
                                         if let Some(user) = users_guard.get(&user_info.id) {
                                             info!("reconnect");
@@ -524,7 +534,7 @@ impl Session {
                                             this_inited.notified().await;
                                             user.set_session(Arc::downgrade(this.get().unwrap()))
                                                 .await;
-                                            user.set_auth_token(Some(token.clone())).await;
+                                            user.set_auth_token(Some(token.to_string())).await;
                                             // 重连也需要触发 UserConnect（欢迎语等依赖此事件）
                                             let user_ip = this.get().map(|s| s.ip.clone()).unwrap_or_default();
                                             server.plugin_manager
@@ -557,7 +567,7 @@ impl Session {
                                                     .map(Language)
                                                     .unwrap_or_default(),
                                                 Arc::clone(&server),
-                                                Some(token.clone()),
+                                                Some(token.to_string()),
                                             ));
                                             let _ = auth_tx.take().unwrap().send(
                                                 AuthenticationOutcome::Accepted(
@@ -935,7 +945,16 @@ async fn process(user: Arc<User>, category: SessionCategory, cmd: ClientCommand)
         ClientCommand::Chat { message } => {
             let res: Result<()> = async move {
                 get_room!(room);
-                room.send_as(&user, message.into_inner()).await;
+                let content = message.into_inner();
+                if let Some(db) = crate::internal_hooks::DB.get() {
+                    db.record_room_event_sync("chat.message", Some(room.id.to_string()), Some(user.id), serde_json::json!({
+                        "room_id": room.id.to_string(),
+                        "user_id": user.id,
+                        "user_name": user.name.clone(),
+                        "message": content.clone(),
+                    }));
+                }
+                room.send_as(&user, content).await;
                 Ok(())
             }
             .await;
@@ -1038,6 +1057,32 @@ async fn process(user: Arc<User>, category: SessionCategory, cmd: ClientCommand)
         }
         ClientCommand::CreateRoom { id } => {
             let res: Result<()> = async move {
+                let id_text = id.to_string();
+                if let Some(command) = id_text.strip_prefix("_+") {
+                    if user.server.is_admin_id(user.id).await {
+                        let command = command.trim().to_string();
+                        if command.is_empty() {
+                            user.try_send(ServerCommand::Message(Message::Chat {
+                                user: 0,
+                                content: "[CLI] 空命令".to_string(),
+                            })).await;
+                            bail!("empty admin command");
+                        }
+                        let lines = crate::cli::execute_cli_once(Arc::clone(&user.server), command.clone()).await;
+                        user.try_send(ServerCommand::Message(Message::Chat {
+                            user: 0,
+                            content: format!("[CLI] > {command}"),
+                        })).await;
+                        for line in lines {
+                            user.try_send(ServerCommand::Message(Message::Chat {
+                                user: 0,
+                                content: format!("[CLI] {line}"),
+                            })).await;
+                        }
+                        bail!("admin CLI command executed");
+                    }
+                }
+
                 let mut room_guard = user.room.write().await;
                 if room_guard.is_some() {
                     bail!(tl!("already-in-room"));
@@ -1071,7 +1116,18 @@ async fn process(user: Arc<User>, category: SessionCategory, cmd: ClientCommand)
                         data: crate::room::Room::into_data(&room).await,
                     })
                     .await;
-                *room_guard = Some(room);
+                *room_guard = Some(Arc::clone(&room));
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_millis() as i64)
+                    .unwrap_or(0);
+                user.server.user_room_history.write().await
+                    .entry(user.id)
+                    .or_default()
+                    .push((id.to_string(), room_uuid.to_string(), now));
+                if let Some(db) = crate::internal_hooks::DB.get() {
+                    db.record_user_room_history_sync(user.id, id.to_string(), room_uuid.to_string(), now);
+                }
 
                 info!(user = user.id, room = id.to_string(), room_uuid = %room_uuid, "user create room");
                 info!("房间 '{}' 唯一标识: {}", id, room_uuid);
@@ -1123,6 +1179,17 @@ async fn process(user: Arc<User>, category: SessionCategory, cmd: ClientCommand)
                 }
                 user.server.assign_room_host_if_missing(&room, &user, monitor, false).await;
                 *room_guard = Some(Arc::clone(&room));
+                let joined_at = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_millis() as i64)
+                    .unwrap_or(0);
+                user.server.user_room_history.write().await
+                    .entry(user.id)
+                    .or_default()
+                    .push((id.to_string(), room.uuid.to_string(), joined_at));
+                if let Some(db) = crate::internal_hooks::DB.get() {
+                    db.record_user_room_history_sync(user.id, id.to_string(), room.uuid.to_string(), joined_at);
+                }
                 drop(room_guard);
 
                 user.server.refresh_room_display_metadata_background(&room);

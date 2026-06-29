@@ -241,6 +241,40 @@ interface database {
     execute: func(sql: string) -> result<_, string>;
 }
 
+
+/// 统一持久化读取接口
+interface persistence {
+    /// 读取持久化事件，返回 JSON 数组字符串。
+    query-events: func(since-sequence: s64, limit: u32, kind: option<string>, room-id: option<string>, user-id: option<s32>) -> result<string, string>;
+
+    /// 读取房间快照，返回 JSON 数组字符串。
+    query-room-snapshots: func(since-sequence: s64, limit: u32) -> result<string, string>;
+
+    /// 读取用户游玩时间，返回 JSON 字符串。
+    get-playtime: func(user-id: s32) -> result<string, string>;
+
+    /// 读取游玩时间排行，返回 JSON 数组字符串。
+    top-playtime: func(limit: u32) -> result<string, string>;
+}
+
+/// 管理员 Phira ID 配置接口
+interface admin-config {
+    /// 列出管理员 Phira ID，返回 JSON 数组字符串。
+    list-admin-ids: func() -> result<string, string>;
+
+    /// 判断用户是否管理员。
+    is-admin-id: func(user-id: s32) -> bool;
+
+    /// 添加管理员 Phira ID。
+    add-admin-id: func(user-id: s32) -> result<_, string>;
+
+    /// 移除管理员 Phira ID。
+    remove-admin-id: func(user-id: s32) -> result<_, string>;
+
+    /// 设置完整管理员 Phira ID 列表；参数为 JSON 数组字符串。
+    set-admin-ids: func(ids-json: string) -> result<_, string>;
+}
+
 /// 插件配置接口
 interface plugin-config {
     /// 获取插件配置值
@@ -311,6 +345,8 @@ world plugin-world {
     import user-management;
     import utilities;
     import database;
+    import persistence;
+    import admin-config;
     import plugin-config;
 
     export plugin;

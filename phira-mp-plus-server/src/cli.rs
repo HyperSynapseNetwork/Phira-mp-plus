@@ -66,6 +66,69 @@ fn is_core_registered_command(name: &str) -> bool {
     )
 }
 
+
+/// Execute one CLI command and collect its output.
+///
+/// Used by the in-game admin `_+<command>` room creation shortcut. The normal
+/// interactive banner is filtered so the client receives only command output.
+pub async fn execute_cli_once(state: Arc<PlusServerState>, line: String) -> Vec<String> {
+    let (out_tx, mut out_rx) = mpsc::unbounded_channel::<String>();
+    let (cmd_tx, cmd_rx) = mpsc::unbounded_channel::<String>();
+    let handler = CliHandler::new(state, out_tx);
+    let task = tokio::spawn(async move {
+        handler.start(cmd_rx).await;
+    });
+    let _ = cmd_tx.send(line);
+    drop(cmd_tx);
+
+    let mut lines = Vec::new();
+    loop {
+        match tokio::time::timeout(std::time::Duration::from_millis(800), out_rx.recv()).await {
+            Ok(Some(line)) => {
+                let trimmed = strip_ansi_for_client(&line).trim().to_string();
+                if trimmed.is_empty()
+                    || trimmed.contains("管理控制台")
+                    || trimmed.contains("输入 help 查看命令帮助")
+                {
+                    continue;
+                }
+                lines.push(trimmed);
+                if lines.len() >= 48 {
+                    lines.push("……输出过长，已截断".to_string());
+                    break;
+                }
+            }
+            Ok(None) => break,
+            Err(_) => break,
+        }
+    }
+    task.abort();
+    if lines.is_empty() {
+        lines.push("命令已执行，无输出".to_string());
+    }
+    lines
+}
+
+fn strip_ansi_for_client(input: &str) -> String {
+    let mut out = String::with_capacity(input.len());
+    let mut chars = input.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if ch == '\u{1b}' {
+            if matches!(chars.peek(), Some('[')) {
+                chars.next();
+                while let Some(c) = chars.next() {
+                    if ('@'..='~').contains(&c) { break; }
+                }
+            }
+            continue;
+        }
+        if !ch.is_control() || ch == '\t' {
+            out.push(ch);
+        }
+    }
+    out
+}
+
 /// CLI 命令处理器
 pub struct CliHandler {
     state: Arc<PlusServerState>,
@@ -332,6 +395,7 @@ impl CliHandler {
                     self.state.cleanup_benchmark_sync();
                     self.out(format!("  {} 已清理 bench-* 压测房间", c::green("✓")));
                 }
+                "admin-id" | "admin-ids" | "admins" => self.admin_ids(&args).await,
                 "ext-list" | "el" => self.list_extensions().await,
                 "ext-get" | "eg" => {
                     if args.len() < 2 {
@@ -598,6 +662,7 @@ impl CliHandler {
         self.out(format!("    {:<22} {}", c::dim("users"), "在线用户"));
         self.out(format!("    {:<22} {}", c::dim("kick <用户ID>"), "踢出用户"));
         self.out(format!("    {:<22} {}", c::dim("broadcast <消息>"), "广播消息"));
+        self.out(format!("    {:<22} {}", c::dim("admin-id list|add|remove"), "配置游戏内管理员 Phira ID"));
         self.out(format!(""));
         self.out(format!("  {} 房间 (room <子命令>)", c::cyan("▸")));
         self.out(format!("    {:<22} {}", c::dim("room list"), "活跃房间"));
@@ -1503,6 +1568,48 @@ impl CliHandler {
             self.out(format!("  {} 已发送给用户 {}", c::green("✓"), user_id));
         } else {
             self.out(format!("  {} 未找到用户 {}", c::red("✗"), user_id));
+        }
+    }
+
+
+    async fn admin_ids(&self, args: &[&str]) {
+        let sub = args.first().copied().unwrap_or("list");
+        match sub {
+            "list" | "ls" | "" => {
+                let mut ids: Vec<i32> = self.state.admin_ids.read().await.iter().copied().collect();
+                ids.sort_unstable();
+                if ids.is_empty() {
+                    self.out(format!("  {} 当前没有配置管理员 Phira ID", c::yellow("!")));
+                } else {
+                    self.out(format!("  {} 管理员 Phira ID: {}", c::green("◆"), ids.iter().map(ToString::to_string).collect::<Vec<_>>().join(", ")));
+                }
+            }
+            "add" | "+" => {
+                if args.len() < 2 { self.out(format!("  {} admin-id add <PhiraID>", c::yellow("?"))); return; }
+                let Ok(id) = args[1].parse::<i32>() else { self.out(format!("  {} 无效 Phira ID", c::red("✗"))); return; };
+                self.state.add_admin_id(id).await;
+                self.out(format!("  {} 已添加管理员 {}", c::green("✓"), id));
+            }
+            "remove" | "rm" | "del" | "-" => {
+                if args.len() < 2 { self.out(format!("  {} admin-id remove <PhiraID>", c::yellow("?"))); return; }
+                let Ok(id) = args[1].parse::<i32>() else { self.out(format!("  {} 无效 Phira ID", c::red("✗"))); return; };
+                self.state.remove_admin_id(id).await;
+                self.out(format!("  {} 已移除管理员 {}", c::green("✓"), id));
+            }
+            "set" => {
+                let mut ids = Vec::new();
+                for arg in &args[1..] {
+                    match arg.parse::<i32>() {
+                        Ok(id) => ids.push(id),
+                        Err(_) => { self.out(format!("  {} 无效 Phira ID: {}", c::red("✗"), arg)); return; }
+                    }
+                }
+                self.state.set_admin_ids(ids.clone()).await;
+                self.out(format!("  {} 已设置管理员列表: {}", c::green("✓"), ids.iter().map(ToString::to_string).collect::<Vec<_>>().join(", ")));
+            }
+            _ => {
+                self.out(format!("  {} admin-id list|add|remove|set", c::yellow("?")));
+            }
         }
     }
 

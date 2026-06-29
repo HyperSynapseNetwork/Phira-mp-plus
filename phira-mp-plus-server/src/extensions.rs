@@ -191,13 +191,16 @@ impl ExtensionManager {
         &self.store
     }
 
-    /// 持久化数据到磁盘
+    /// 持久化数据到磁盘，并在启用 PostgreSQL 时同步写入统一事件流。
     pub async fn persist(&self) -> Result<(), String> {
+        let data = self.store.read().await;
+        let value = serde_json::to_value(&*data).map_err(|e| format!("serialize: {}", e))?;
         if let Some(ref path) = self.persist_path {
-            let data = self.store.read().await;
-            let json =
-                serde_json::to_string_pretty(&*data).map_err(|e| format!("serialize: {}", e))?;
+            let json = serde_json::to_string_pretty(&value).map_err(|e| format!("serialize: {}", e))?;
             std::fs::write(path, json).map_err(|e| format!("write: {}", e))?;
+        }
+        if let Some(db) = crate::internal_hooks::DB.get() {
+            db.record_room_event_sync("extensions.snapshot", None, None, value);
         }
         Ok(())
     }
@@ -211,10 +214,21 @@ impl ExtensionManager {
         registered_by: &str,
         description: &str,
     ) -> Result<(), String> {
-        self.store
+        let result = self.store
             .write()
             .await
-            .register_user_field(key, default_value, registered_by, description)
+            .register_user_field(key, default_value, registered_by, description);
+        if result.is_ok() {
+            if let Some(db) = crate::internal_hooks::DB.get() {
+                db.record_room_event_sync("extensions.user_field.register", None, None, serde_json::json!({
+                    "key": key,
+                    "default_value": default_value,
+                    "registered_by": registered_by,
+                    "description": description,
+                }));
+            }
+        }
+        result
     }
 
     pub async fn register_room_field(
@@ -224,10 +238,21 @@ impl ExtensionManager {
         registered_by: &str,
         description: &str,
     ) -> Result<(), String> {
-        self.store
+        let result = self.store
             .write()
             .await
-            .register_room_field(key, default_value, registered_by, description)
+            .register_room_field(key, default_value, registered_by, description);
+        if result.is_ok() {
+            if let Some(db) = crate::internal_hooks::DB.get() {
+                db.record_room_event_sync("extensions.room_field.register", None, None, serde_json::json!({
+                    "key": key,
+                    "default_value": default_value,
+                    "registered_by": registered_by,
+                    "description": description,
+                }));
+            }
+        }
+        result
     }
 
     pub async fn get_user_extra(&self, user_id: i32, key: &str) -> Option<String> {
@@ -244,10 +269,21 @@ impl ExtensionManager {
         key: &str,
         value: String,
     ) -> Result<(), String> {
-        self.store
+        let key_owned = key.to_string();
+        let result = self.store
             .write()
             .await
-            .set_user_extra(user_id, key, value)
+            .set_user_extra(user_id, key, value.clone());
+        if result.is_ok() {
+            if let Some(db) = crate::internal_hooks::DB.get() {
+                db.record_room_event_sync("extensions.user.set", None, Some(user_id), serde_json::json!({
+                    "user_id": user_id,
+                    "key": key_owned,
+                    "value": value,
+                }));
+            }
+        }
+        result
     }
 
     pub async fn get_room_extra(&self, room_id: &str, key: &str) -> Option<String> {
@@ -264,10 +300,22 @@ impl ExtensionManager {
         key: &str,
         value: String,
     ) -> Result<(), String> {
-        self.store
+        let room_owned = room_id.to_string();
+        let key_owned = key.to_string();
+        let result = self.store
             .write()
             .await
-            .set_room_extra(room_id, key, value)
+            .set_room_extra(room_id, key, value.clone());
+        if result.is_ok() {
+            if let Some(db) = crate::internal_hooks::DB.get() {
+                db.record_room_event_sync("extensions.room.set", Some(room_owned.clone()), None, serde_json::json!({
+                    "room_id": room_owned,
+                    "key": key_owned,
+                    "value": value,
+                }));
+            }
+        }
+        result
     }
 
     pub async fn list_user_fields(&self) -> Vec<String> {

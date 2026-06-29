@@ -689,6 +689,14 @@ impl WasmPluginInstance {
                 let store = svc.extensions.store();
                 store.try_write().map_err(|_| "extension store busy".to_string())?
                     .set_user_extra(uid, key, content.to_string()).map_err(|e| format!("set_user_extra: {e}"))?;
+                if let Some(db) = crate::internal_hooks::DB.get() {
+                    db.record_room_event_sync("extensions.user.set", None, Some(uid), serde_json::json!({
+                        "user_id": uid,
+                        "key": key,
+                        "value": content,
+                        "source": "wasm_host",
+                    }));
+                }
                 Ok("ok".to_string())
             }
             "ext.get_room" => {
@@ -705,6 +713,14 @@ impl WasmPluginInstance {
                 let store = svc.extensions.store();
                 store.try_write().map_err(|_| "extension store busy".to_string())?
                     .set_room_extra(room_id, key, content.to_string()).map_err(|e| format!("set_room_extra: {e}"))?;
+                if let Some(db) = crate::internal_hooks::DB.get() {
+                    db.record_room_event_sync("extensions.room.set", Some(room_id.to_string()), None, serde_json::json!({
+                        "room_id": room_id,
+                        "key": key,
+                        "value": content,
+                        "source": "wasm_host",
+                    }));
+                }
                 Ok("ok".to_string())
             }
             "config.get" => {
@@ -728,6 +744,13 @@ impl WasmPluginInstance {
                     config.clone()
                 };
                 persist_plugin_config(plugin_name, &snapshot)?;
+                if let Some(db) = crate::internal_hooks::DB.get() {
+                    db.record_room_event_sync("plugin.config.set", None, None, serde_json::json!({
+                        "plugin": plugin_name,
+                        "key": key,
+                        "value": content,
+                    }));
+                }
                 Ok("ok".to_string())
             }
             "http.get" => {
@@ -826,6 +849,28 @@ impl WasmPluginInstance {
             "admin.ban_list" => state_call(svc, "admin.ban_list", &[]),
             "admin.list_users" => state_call(svc, "admin.list_users", &[]),
             "user.room_history" => state_call(svc, "user.room_history", &[serde_json::json!(get_i32("user_id")?)]),
+
+            "persist.events" => state_call(svc, "persist.events", &[
+                serde_json::json!(value.get("since_sequence").or_else(|| value.get("since")).and_then(|v| v.as_i64()).unwrap_or(0)),
+                serde_json::json!(value.get("limit").and_then(|v| v.as_i64()).unwrap_or(100)),
+                value.get("kind").cloned().unwrap_or(serde_json::Value::Null),
+                value.get("room_id").cloned().unwrap_or(serde_json::Value::Null),
+                value.get("user_id").cloned().unwrap_or(serde_json::Value::Null),
+            ]),
+            "persist.rooms" => state_call(svc, "persist.rooms", &[
+                serde_json::json!(value.get("since_sequence").or_else(|| value.get("since")).and_then(|v| v.as_i64()).unwrap_or(0)),
+                serde_json::json!(value.get("limit").and_then(|v| v.as_i64()).unwrap_or(100)),
+            ]),
+            "persist.playtime" => state_call(svc, "persist.playtime", &[serde_json::json!(get_i32("user_id")?)]),
+            "persist.top_playtime" => state_call(svc, "persist.top_playtime", &[serde_json::json!(value.get("limit").and_then(|v| v.as_i64()).unwrap_or(10))]),
+            "admin.ids" => state_call(svc, "admin.ids", &[]),
+            "admin.is_admin" => state_call(svc, "admin.is_admin", &[serde_json::json!(get_i32("user_id")?)]),
+            "admin.add_id" => state_call(svc, "admin.add_id", &[serde_json::json!(get_i32("user_id")?)]),
+            "admin.remove_id" => state_call(svc, "admin.remove_id", &[serde_json::json!(get_i32("user_id")?)]),
+            "admin.set_ids" => {
+                let ids = value.get("ids").or_else(|| value.get("admin_phira_ids")).cloned().unwrap_or(serde_json::Value::Array(Vec::new()));
+                state_call(svc, "admin.set_ids", &[ids])
+            },
             "plugin.api_register" => {
                 let api_method = get_str("method")?;
                 validate_identifier(api_method)?;
@@ -924,7 +969,7 @@ fn required_capability(method: &str) -> Option<&'static str> {
         "uuid.v4" | "time.now" => None,
         value if value.starts_with("admin.") => Some("admin"),
         "room.create_empty" | "room.kick" | "room.transfer_host" | "room.set_host" | "room.clear_host" | "room.set_lock" | "room.force_move" | "room.set_hidden" | "room.set_persistent_empty" | "room.set_phira_api_endpoint" | "room.clear_phira_api_endpoint" | "room.close" => Some("room.manage"),
-        value if value.starts_with("room.") || value.starts_with("player.") || value.starts_with("round.") || value.starts_with("user.") || value == "state.query" => Some("state.read"),
+        value if value.starts_with("room.") || value.starts_with("player.") || value.starts_with("round.") || value.starts_with("user.") || value.starts_with("persist.") || value == "state.query" => Some("state.read"),
         value if value.starts_with("send.") => Some("send"),
         value if value.starts_with("ext.") => Some("ext"),
         value if value.starts_with("config.") => Some("config"),

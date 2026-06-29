@@ -224,6 +224,9 @@ WASM 插件通过 `phira:host/api` 和 `phira:host/log` 等导入函数与宿主
 | `extensions_file` | String | `data/extensions.json` | 扩展数据持久化文件 |
 | `benchmark_phira_tokens` | Vec<String> | `[]` | 真实网络压测使用的 Phira token 列表 |
 | `benchmark_phira_token` | String | — | 单账号压测 token 兼容写法 |
+| `database_url` | String | — | PostgreSQL 统一持久化连接串 |
+| `persistence_retention_days` | u32 | 30 | PG 历史数据保留天数，0 为不清理 |
+| `admin_phira_ids` | Vec<i32> | [] | 游戏内管理员 ID，可使用 `_+命令` 入口 |
 | `chat_enabled` | bool | 示例为 `true` | 聊天功能开关 |
 | `cli_enabled` | bool | `true` | TUI/CLI 控制台开关 |
 | `connection_rate_limit` | u32 | `30` | 连接速率限制（窗口内允许次数） |
@@ -235,7 +238,7 @@ WASM 插件通过 `phira:host/api` 和 `phira:host/log` 等导入函数与宿主
 | `server_name` | String | — | 服务器名称 |
 | `wasm_runtime.*` | object | 见文档 | WASM 插件资源限制 |
 
-压测 token 可直接写入 `server_config.yml`，也可通过 `benchmark-bind <token1[,token2...]>` 写入 `data/benchmark-auth.json`；如果配置文件中已有 token，压测优先使用配置文件。隐藏房间通过房间名前缀 `-`、`room hide/unhide` 或 `room.set_hidden` 管理，不是全局配置项。房间也可以用 `room set <房间ID> phira_api_endpoint <url>` 临时覆盖全局 Phira API；服务端按房间获取谱面名、用户名、欢迎语与记录校验时会立即使用该 endpoint，`default`/`clear` 可恢复全局配置。`/me` 登录认证仍使用全局 endpoint。无人持久房间可通过 `room create-empty <ID> [API]` 或 `room.create_empty` 创建，最后一名玩家离开后不会自动删除；首个玩家加入空房间时静默成为房主，`room host <ID> ?` / `room.set_host` 可显式设置系统 `?` 房主。
+压测 token 可直接写入 `server_config.yml`，也可通过 `benchmark-bind <token1[,token2...]>` 写入 `data/benchmark-auth.json`；如果配置文件中已有 token，压测优先使用配置文件。token 不足时 benchmark 会反复离开、重连并创建/重建 `bench-*` 房间。配置 `database_url` 后会启用统一 PostgreSQL 持久化，保存用户、房间、事件、轮次、结算和游玩时间；WIT/host API 可通过 `persist.*` 读取。管理员 ID 可用 `admin-id` 命令或 `admin.*` API 管理，管理员在创建房间名输入 `_+命令` 会执行 CLI 并收到聊天形式的输出。隐藏房间通过房间名前缀 `-`、`room hide/unhide` 或 `room.set_hidden` 管理，不是全局配置项。房间也可以用 `room set <房间ID> phira_api_endpoint <url>` 临时覆盖全局 Phira API；服务端按房间获取谱面名、用户名、欢迎语与记录校验时会立即使用该 endpoint，`default`/`clear` 可恢复全局配置。`/me` 登录认证仍使用全局 endpoint。无人持久房间可通过 `room create-empty <ID> [API]` 或 `room.create_empty` 创建，最后一名玩家离开后不会自动删除；首个玩家加入空房间时静默成为房主，`room host <ID> ?` / `room.set_host` 可显式设置系统 `?` 房主。
 
 ## 许可证
 

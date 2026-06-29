@@ -70,6 +70,11 @@ WASM 插件通过 JSON 字符串与宿主通信：
 | `admin.is_banned` | `{ user_id }` | `{"banned": bool, "reason": string?}` | 检查封禁状态及原因 |
 | `admin.ban_list` | `{}` | 封禁列表 | 获取所有封禁 |
 | `admin.list_users` | `{}` | 用户列表 | 列出所有在线用户 |
+| `persist.events` | `{ since_sequence?, limit?, kind?, room_id?, user_id? }` | 事件数组 | 读取统一 PG 持久化事件 |
+| `persist.rooms` | `{ since_sequence?, limit? }` | 房间快照数组 | 读取统一 PG 房间快照 |
+| `persist.playtime` | `{ user_id }` | 游玩时间 | 读取统一 PG 游玩时间 |
+| `persist.top_playtime` | `{ limit? }` | 排行数组 | 读取游玩时间排行 |
+| `admin.ids` / `admin.is_admin` / `admin.add_id` / `admin.remove_id` / `admin.set_ids` | 见 `docs/api.md` | 管理员 ID | 读取或维护游戏内管理员 |
 | `plugin.api_call` | `{ plugin, method, args }` | 调用结果 | 调用其他插件注册的 API |
 | `plugin.api_register` | `{ method }` | 注册确认 | 注册本插件 API 供其他插件调用 |
 | `config.get` | `{ key }` | 配置值 | 获取插件配置 |
@@ -81,7 +86,7 @@ WASM 插件通过 JSON 字符串与宿主通信：
 | `uuid.v4` | `{}` | UUID 字符串 | 生成 UUID |
 | `time.now` | `{}` | Unix 时间戳 | 获取当前时间 |
 
-完整 WIT 定义见 `wit/phira/mpplus.wit`。
+完整 WIT 定义见 `wit/phira/mpplus.wit`；其中 `persistence` 与 `admin-config` import interface 对应统一 PG 持久化读取和管理员 ID 管理。
 
 ### 插件事件
 

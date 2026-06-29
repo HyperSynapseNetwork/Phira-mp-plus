@@ -818,6 +818,11 @@ impl Room {
             results: play_results,
         };
 
+        if let Some(db) = crate::internal_hooks::DB.get() {
+            for result in &round.results {
+                db.record_round_result(&round.round_id.to_string(), &self.id.to_string(), result).await;
+            }
+        }
         let event = protocol_round(&round);
         self.play_history.write().await.push(round);
         info!(
