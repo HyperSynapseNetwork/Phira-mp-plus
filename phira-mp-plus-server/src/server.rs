@@ -769,6 +769,10 @@ impl PlusServerState {
     /// 刷新房间内展示用用户名与谱面名。只影响服务端 TUI/Web/欢迎语/历史展示；不改客户端本机 Phira API。
     pub async fn refresh_room_display_metadata(&self, room: &Arc<crate::room::Room>) {
         let endpoint = room.effective_phira_api_endpoint(self).await;
+        Self::refresh_room_display_metadata_with_endpoint(room, endpoint).await;
+    }
+
+    async fn refresh_room_display_metadata_with_endpoint(room: &Arc<crate::room::Room>, endpoint: String) {
         let people = room.users().await.into_iter().chain(room.monitors().await.into_iter()).collect::<Vec<_>>();
         for user in people {
             let mut display = user.name.clone();
@@ -798,11 +802,15 @@ impl PlusServerState {
     /// 这个流程会访问 Phira `/me` 和 `/chart/<id>`，自定义 endpoint 慢、不可达或 502 时可能
     /// 等到 reqwest 超时。加入房间、强制迁移、设置 endpoint 等协议关键路径不能等待它，
     /// 否则客户端会先看到 timeout，随后重连才发现服务端其实已经把用户放进房间。
-    pub fn refresh_room_display_metadata_background(self: &Arc<Self>, room: &Arc<crate::room::Room>) {
-        let server = Arc::clone(self);
+    pub fn refresh_room_display_metadata_background(&self, room: &Arc<crate::room::Room>) {
         let room = Arc::clone(room);
+        let fallback_endpoint = self.config.phira_api_endpoint.clone();
         tokio::spawn(async move {
-            server.refresh_room_display_metadata(&room).await;
+            let endpoint = room
+                .phira_api_endpoint_override()
+                .await
+                .unwrap_or(fallback_endpoint);
+            PlusServerState::refresh_room_display_metadata_with_endpoint(&room, endpoint).await;
         });
     }
 }
