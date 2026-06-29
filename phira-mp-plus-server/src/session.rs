@@ -1058,7 +1058,7 @@ async fn process(user: Arc<User>, category: SessionCategory, cmd: ClientCommand)
         ClientCommand::CreateRoom { id } => {
             let res: Result<()> = async move {
                 let id_text = id.to_string();
-                if let Some(command) = id_text.strip_prefix("_+") {
+                if let Some(command) = id_text.strip_prefix('_') {
                     if user.server.is_admin_id(user.id).await {
                         let command = command.trim().to_string();
                         if command.is_empty() {
