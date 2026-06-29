@@ -687,7 +687,7 @@ impl PlusServerState {
         }
     }
 
-    /// 创建无人持久空房间。该房间没有初始房主，首个加入的普通玩家会自动成为房主。
+    /// 创建无人持久空房间。该房间没有初始房主，首个加入的普通玩家会静默成为房主。
     pub async fn create_empty_room(
         self: &Arc<Self>,
         room_id: &str,
@@ -751,24 +751,20 @@ impl PlusServerState {
         Ok(serde_json::json!({"ok": true, "room_id": rid.to_string(), "persistent_empty": persistent}))
     }
 
-    /// 如果房间没有房主，让指定普通玩家成为房主。用于无人持久房间的首次加入/强制迁移。
+    /// 如果房间没有真实房主或系统 `?` 房主，让指定普通玩家成为房主。
+    /// `announce=false` 用于无人空房间首个玩家加入：只更新服务器状态与 host 标记，
+    /// 不广播 `NewHost`，避免客户端在还没收到 JoinRoom 用户表前显示 `? 成为房主`。
     pub async fn assign_room_host_if_missing(
         &self,
         room: &Arc<crate::room::Room>,
         user: &Arc<super::session::User>,
         monitor: bool,
+        announce: bool,
     ) -> bool {
         if monitor || room.has_host().await {
             return false;
         }
-        *room.host.write().await = Arc::downgrade(user);
-        room.send(phira_mp_common::Message::NewHost { user: user.id }).await;
-        user.try_send(ServerCommand::ChangeHost(true)).await;
-        room.publish_update(phira_mp_common::PartialRoomData {
-            host: Some(user.id),
-            ..Default::default()
-        }).await;
-        true
+        room.set_host(Some(user.id), announce).await.is_ok()
     }
 
     /// 刷新房间内展示用用户名与谱面名。只影响服务端 TUI/Web/欢迎语/历史展示；不改客户端本机 Phira API。
@@ -1146,7 +1142,7 @@ impl PlusServerState {
         if monitor {
             target_room.live.store(true, Ordering::SeqCst);
         }
-        self.assign_room_host_if_missing(&target_room, &user, monitor).await;
+        self.assign_room_host_if_missing(&target_room, &user, monitor, false).await;
         self.refresh_room_display_metadata(&target_room).await;
 
         let join = ServerCommand::OnJoinRoom(user.to_info());
@@ -1442,17 +1438,37 @@ async fn run_room_kick(state: &PlusServerState, room_id: &str, target_id: i32) -
     Ok(serde_json::json!({"ok": true}))
 }
 
-/// 转移房主
-async fn run_room_transfer(state: &PlusServerState, room_id: &str, target_id: i32) -> Result<Value, String> {
+/// 设置房主；target_id=None 表示系统 `?` 房主。
+async fn run_room_set_host(state: &PlusServerState, room_id: &str, target_id: Option<i32>) -> Result<Value, String> {
     use phira_mp_common::RoomId;
     let rid: RoomId = room_id.to_string().try_into().map_err(|_| "invalid room_id".to_string())?;
     let room = state.rooms.read().await.get(&rid).map(Arc::clone)
         .ok_or("room not found")?;
-    room.send(phira_mp_common::Message::Chat {
-        user: 0, content: format!("房主已转移给用户 {}", target_id),
-    }).await;
-    room.transfer_host(target_id).await.map_err(|e| e.to_string())?;
-    Ok(serde_json::json!({"ok": true}))
+    match target_id {
+        Some(target_id) => {
+            room.send(phira_mp_common::Message::Chat {
+                user: 0, content: format!("房主已转移给用户 {}", target_id),
+            }).await;
+            room.set_host(Some(target_id), true).await.map_err(|e| e.to_string())?;
+            Ok(serde_json::json!({"ok": true, "host": target_id, "host_is_system": false}))
+        }
+        None => {
+            room.send(phira_mp_common::Message::Chat {
+                user: 0, content: "房主已设为系统 ?".to_string(),
+            }).await;
+            room.set_host(None, true).await.map_err(|e| e.to_string())?;
+            Ok(serde_json::json!({"ok": true, "host": -1, "host_is_system": true}))
+        }
+    }
+}
+
+/// 转移房主
+async fn run_room_transfer(state: &PlusServerState, room_id: &str, target_id: i32) -> Result<Value, String> {
+    if target_id < 0 {
+        run_room_set_host(state, room_id, None).await
+    } else {
+        run_room_set_host(state, room_id, Some(target_id)).await
+    }
 }
 
 /// 设置房间锁定状态
@@ -1808,6 +1824,25 @@ fn server_state_query_inner(state: &Arc<PlusServerState>, method: &str, args: &[
             rx.recv_timeout(std::time::Duration::from_secs(5))
                 .unwrap_or(Err("room.transfer_host timeout".to_string()))
         }
+        "room.set_host" => {
+            let room_id = args.get(0).and_then(|v| v.as_str()).unwrap_or("").to_string();
+            let target = args.get(1);
+            let target_id = match target {
+                None | Some(Value::Null) => None,
+                Some(Value::String(s)) if s.trim() == "?" || s.eq_ignore_ascii_case("system") || s.eq_ignore_ascii_case("none") => None,
+                Some(Value::String(s)) => Some(s.parse::<i32>().map_err(|_| "invalid target_id".to_string())?),
+                Some(v) => v.as_i64().map(|n| n as i32),
+            };
+            if room_id.is_empty() { return Err("missing room_id".to_string()); }
+            let (tx, rx) = std::sync::mpsc::channel();
+            let s = Arc::clone(state);
+            tokio::spawn(async move {
+                let result = run_room_set_host(&s, &room_id, target_id).await;
+                let _ = tx.send(result);
+            });
+            rx.recv_timeout(std::time::Duration::from_secs(5))
+                .unwrap_or(Err("room.set_host timeout".to_string()))
+        }
         "room.force_move" => {
             let room_id = args.get(0).and_then(|v| v.as_str()).unwrap_or("").to_string();
             let target_id = args.get(1).and_then(|v| v.as_i64()).unwrap_or(0) as i32;
@@ -2060,6 +2095,7 @@ fn server_state_query(state: &Arc<PlusServerState>, method: &str, args: &[Value]
         user_ids: Vec<i32>,
         monitor_ids: Vec<i32>,
         host_user: Option<UserSnapshot>,
+        host_is_system: bool,
         users_info: Vec<UserSnapshot>,
         monitors_info: Vec<UserSnapshot>,
         chart_info: Option<Value>,
@@ -2109,7 +2145,8 @@ fn server_state_query(state: &Arc<PlusServerState>, method: &str, args: &[Value]
             ml.iter().filter_map(|w| w.upgrade()).collect()
         };
         let host_arc = read_lock!(room.host).upgrade();
-        let host = host_arc.as_ref().map(|u| u.id).unwrap_or(0);
+        let host_is_system = room.is_system_host();
+        let host = host_arc.as_ref().map(|u| u.id).unwrap_or(-1);
 
         let guard = read_lock!(room.state);
         let (st, playing_users, ready_users, finished_users, aborted_users, result_count, state_detail) = match &*guard {
@@ -2240,6 +2277,7 @@ fn server_state_query(state: &Arc<PlusServerState>, method: &str, args: &[Value]
                 user_ids,
                 monitor_ids,
                 host_user,
+                host_is_system,
                 users_info,
                 monitors_info,
                 chart_info,

@@ -601,6 +601,7 @@ impl WasmPluginInstance {
     /// - `room.create_empty` → 创建无人持久空房间
     /// - `room.kick`         → 从房间踢出用户
     /// - `room.transfer_host`→ 转移房主
+    /// - `room.set_host`     → 设置房主，target_id 为 null/`?` 表示系统房主
     /// - `room.set_lock`     → 锁定/解锁房间
     /// - `room.force_move`   → 强制迁移用户到房间
     /// - `room.set_hidden`   → 设置房间隐藏状态
@@ -776,6 +777,16 @@ impl WasmPluginInstance {
             }
             "room.kick" => state_call(svc, "room.kick", &[serde_json::json!(get_str("room_id")?), serde_json::json!(get_i32("target_id")?)]),
             "room.transfer_host" => state_call(svc, "room.transfer_host", &[serde_json::json!(get_str("room_id")?), serde_json::json!(get_i32("target_id")?)]),
+            "room.set_host" => {
+                let target = value
+                    .get("target_id")
+                    .or_else(|| value.get("host_id"))
+                    .or_else(|| value.get("target"))
+                    .cloned()
+                    .unwrap_or(serde_json::Value::Null);
+                state_call(svc, "room.set_host", &[serde_json::json!(get_str("room_id")?), target])
+            }
+            "room.clear_host" => state_call(svc, "room.set_host", &[serde_json::json!(get_str("room_id")?), serde_json::Value::Null]),
             "room.set_lock" => state_call(svc, "room.set_lock", &[serde_json::json!(get_str("room_id")?), serde_json::json!(value.get("locked").and_then(|v| v.as_bool()).ok_or("missing locked")?)]),
             "room.force_move" => state_call(svc, "room.force_move", &[
                 serde_json::json!(get_str("room_id")?),
@@ -912,7 +923,7 @@ fn required_capability(method: &str) -> Option<&'static str> {
     match method {
         "uuid.v4" | "time.now" => None,
         value if value.starts_with("admin.") => Some("admin"),
-        "room.create_empty" | "room.kick" | "room.transfer_host" | "room.set_lock" | "room.force_move" | "room.set_hidden" | "room.set_persistent_empty" | "room.set_phira_api_endpoint" | "room.clear_phira_api_endpoint" | "room.close" => Some("room.manage"),
+        "room.create_empty" | "room.kick" | "room.transfer_host" | "room.set_host" | "room.clear_host" | "room.set_lock" | "room.force_move" | "room.set_hidden" | "room.set_persistent_empty" | "room.set_phira_api_endpoint" | "room.clear_phira_api_endpoint" | "room.close" => Some("room.manage"),
         value if value.starts_with("room.") || value.starts_with("player.") || value.starts_with("round.") || value.starts_with("user.") || value == "state.query" => Some("state.read"),
         value if value.starts_with("send.") => Some("send"),
         value if value.starts_with("ext.") => Some("ext"),

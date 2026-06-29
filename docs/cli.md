@@ -92,14 +92,14 @@ broadcast user <用户ID> <消息>    发送给指定用户
 |------|------|
 | `rooms` / `room list` | 列出活跃房间 |
 | `room info <房间ID>` | 房间详情（状态、房主、谱面、Phira API、无人保留、历史） |
-| `room create-empty <房间ID> [phira_api_endpoint]` | 创建无人持久空房间；首个普通玩家加入后自动成为房主 |
+| `room create-empty <房间ID> [phira_api_endpoint]` | 创建无人持久空房间；首个普通玩家加入后静默成为房主，不再弹出 `? 成为房主` |
 | `room start <房间ID>` | 由服务端发起游戏；等待所有玩家和监控端完成谱面加载后开始 |
 | `room cancel <房间ID>` | 取消准备状态 |
 | `room kick <房间ID> <用户ID>` | 从房间踢出用户 |
-| `room transfer <房间ID> <用户ID>` | 转移房主 |
+| `room host <房间ID> <用户ID|?>` / `room transfer <房间ID> <用户ID|?>` | 设置房主；`?` 表示系统房主 |
 | `room force-move <房间ID> <用户ID> [monitor]` | 强制迁移在线用户到指定房间 |
 | `room hide <房间ID>` / `room unhide <房间ID>` | 隐藏/取消隐藏房间 |
-| `room set <房间ID> <字段> <值>` | 修改房间设置（lock/cycle/hidden/persistent/chart-id/phira_api_endpoint） |
+| `room set <房间ID> <字段> <值>` | 修改房间设置（lock/cycle/hidden/persistent/host/chart-id/phira_api_endpoint） |
 | `room close <房间ID>` | 解散房间 |
 | `room history <房间ID>` | 查看游玩记录 |
 | `room ban <房间ID> <用户ID>` | 房间加入黑名单 |
@@ -130,7 +130,7 @@ room set <房间ID> persistent true
 room set <房间ID> persistent false
 ```
 
-`persistent=true` 时房间即使没有玩家也不会因无人自动清除；没有房主的空房间会在首个普通玩家加入时自动把该玩家设为房主。
+`persistent=true` 时房间即使没有玩家也不会因无人自动清除；没有房主的空房间会在首个普通玩家加入时静默把该玩家设为房主。用 `room host <房间ID> ?` 或 `room set <房间ID> host ?` 可显式设置系统 `?` 房主，此状态不会被后续加入者自动接管。
 
 兼容旧别名：`rooms`, `room-info` / `ri`, `room-start` / `rs`, `room-cancel` / `rc`,
 `room-transfer` / `rt`, `room-move` / `rmv`, `room-hide`, `room-unhide`, `room-history` / `rh`, `close-room` / `cr`,
@@ -174,7 +174,7 @@ room set <房间ID> persistent false
 
 - 状态查询：rooms.list, player.touches, round.data 等
 - 消息发送：send.to_user, send.to_room, send.to_all
-- 房间管理：room.kick, room.transfer_host, room.set_lock, room.force_move, room.set_hidden, room.is_hidden, room.close
+- 房间管理：room.kick, room.transfer_host, room.set_host, room.clear_host, room.set_lock, room.force_move, room.set_hidden, room.is_hidden, room.close
 - 用户管理：admin.kick_user, admin.ban_user, admin.unban_user, admin.is_banned
 - 插件互调用：plugin.api_call, plugin.api_register
 - 数据读写：ext.get/set, config.get/set, file.read/write

@@ -124,7 +124,7 @@ room set <房间ID> phira_api_endpoint default
 - MP 服务端不会尝试改写客户端本机 Phira API 请求行为。
 - 登录认证 `/me` 仍使用全局 `phira_api_endpoint`。
 
-WASM/host API 也支持：`room.create_empty`、`room.set_persistent_empty`、`room.set_phira_api_endpoint`、`room.get_phira_api_endpoint`、`room.clear_phira_api_endpoint`。
+WASM/host API 也支持：`room.create_empty`、`room.set_persistent_empty`、`room.set_host`、`room.clear_host`、`room.set_phira_api_endpoint`、`room.get_phira_api_endpoint`、`room.clear_phira_api_endpoint`。
 
 无人持久房间配置不写入全局配置文件，而是运行时房间状态：
 
@@ -132,9 +132,11 @@ WASM/host API 也支持：`room.create_empty`、`room.set_persistent_empty`、`r
 room create-empty <房间ID> [phira_api_endpoint]
 room set <房间ID> persistent true
 room set <房间ID> persistent false
+room host <房间ID> ?              # 显式设为系统房主，不被后续加入者自动接管
+room set <房间ID> host ?
 ```
 
-`persistent=true` 时最后一名玩家离开后房间仍保留；空房间没有房主，首个普通玩家加入时会自动成为房主。
+`persistent=true` 时最后一名玩家离开后房间仍保留；空房间没有房主，首个普通玩家加入时会静默成为房主，不会广播 `NewHost` 造成 `? 成为房主` 提示。
 
 ## 压测 token 配置
 

@@ -144,7 +144,7 @@ interface messaging {
 
 /// 房间管理接口
 interface room-management {
-    /// 创建无人持久空房间；没有初始房主，首个加入的普通玩家会自动成为房主
+    /// 创建无人持久空房间；没有初始房主，首个加入的普通玩家会静默成为房主
     create-empty-room: func(room-id: string, endpoint: option<string>) -> result<_, string>;
 
     /// 将用户踢出房间
@@ -152,6 +152,12 @@ interface room-management {
 
     /// 转移房主权限
     transfer-host: func(room-id: string, target-id: s32) -> result<_, string>;
+
+    /// 设置房主；target-id 为空表示系统 `?` 房主，不会被后续加入者自动接管
+    set-host: func(room-id: string, target-id: option<s32>) -> result<_, string>;
+
+    /// 清除真实房主并设置为系统 `?` 房主
+    clear-host: func(room-id: string) -> result<_, string>;
 
     /// 锁定/解锁房间
     set-room-lock: func(room-id: string, locked: bool) -> result<_, string>;

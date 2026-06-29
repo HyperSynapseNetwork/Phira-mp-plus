@@ -147,6 +147,7 @@ pub struct Room {
     pub cycle: AtomicBool,
     hidden: AtomicBool,
     persistent_empty: AtomicBool,
+    system_host: AtomicBool,
     phira_api_endpoint: RwLock<Option<String>>,
     display_names: RwLock<HashMap<i32, String>>,
     admin_start_pending: AtomicBool,
@@ -202,6 +203,7 @@ impl Room {
             cycle: AtomicBool::new(false),
             hidden: AtomicBool::new(hidden),
             persistent_empty: AtomicBool::new(false),
+            system_host: AtomicBool::new(false),
             phira_api_endpoint: RwLock::new(None),
             display_names: RwLock::new(HashMap::new()),
             admin_start_pending: AtomicBool::new(false),
@@ -322,8 +324,12 @@ impl Room {
         self.host.read().await.upgrade().map(|u| u.id)
     }
 
+    pub fn is_system_host(&self) -> bool {
+        self.system_host.load(Ordering::SeqCst)
+    }
+
     pub async fn has_host(&self) -> bool {
-        self.host.read().await.upgrade().is_some()
+        self.is_system_host() || self.host.read().await.upgrade().is_some()
     }
 
     /// 获取房间最大玩家数
@@ -588,26 +594,54 @@ impl Room {
     }
 
     pub async fn transfer_host(&self, new_host_id: i32) -> Result<()> {
-        if let Some(old_host) = self.host.read().await.upgrade() {
-            if old_host.id != new_host_id {
-                old_host.try_send(ServerCommand::ChangeHost(false)).await;
+        self.set_host(Some(new_host_id), true).await
+    }
+
+    /// 设置房主。`None` 表示显式设置为系统 `?` 房主；这种状态不会被后续加入者自动接管。
+    pub async fn set_host(&self, new_host_id: Option<i32>, announce: bool) -> Result<()> {
+        let old_host = self.host.read().await.upgrade();
+        match new_host_id {
+            Some(new_host_id) => {
+                let user = self
+                    .users()
+                    .await
+                    .into_iter()
+                    .find(|u| u.id == new_host_id)
+                    .ok_or_else(|| anyhow::anyhow!("user not in room"))?;
+                let old_id = old_host.as_ref().map(|u| u.id);
+                if old_id != Some(new_host_id) {
+                    if let Some(old_host) = old_host {
+                        old_host.try_send(ServerCommand::ChangeHost(false)).await;
+                    }
+                    if announce {
+                        self.send(Message::NewHost { user: new_host_id }).await;
+                    }
+                }
+                self.system_host.store(false, Ordering::SeqCst);
+                *self.host.write().await = Arc::downgrade(&user);
+                user.try_send(ServerCommand::ChangeHost(true)).await;
+                self.publish_update(PartialRoomData {
+                    host: Some(new_host_id),
+                    ..Default::default()
+                })
+                .await;
+            }
+            None => {
+                if let Some(old_host) = old_host {
+                    old_host.try_send(ServerCommand::ChangeHost(false)).await;
+                }
+                self.system_host.store(true, Ordering::SeqCst);
+                *self.host.write().await = Weak::<super::session::User>::new();
+                if announce {
+                    self.send(Message::NewHost { user: -1 }).await;
+                }
+                self.publish_update(PartialRoomData {
+                    host: Some(-1),
+                    ..Default::default()
+                })
+                .await;
             }
         }
-        let user = self
-            .users()
-            .await
-            .into_iter()
-            .find(|u| u.id == new_host_id)
-            .ok_or_else(|| anyhow::anyhow!("user not in room"))?;
-        let weak = Arc::downgrade(&user);
-        *self.host.write().await = weak;
-        self.send(Message::NewHost { user: new_host_id }).await;
-        user.try_send(ServerCommand::ChangeHost(true)).await;
-        self.publish_update(PartialRoomData {
-            host: Some(new_host_id),
-            ..Default::default()
-        })
-        .await;
         Ok(())
     }
 
@@ -678,29 +712,32 @@ impl Room {
             return false;
         }
 
+        let users = self.users().await;
+        if users.is_empty() {
+            if self.is_persistent_empty() {
+                info!("room users all disconnected, preserving persistent empty room");
+                if !self.is_system_host() {
+                    *self.host.write().await = Weak::<super::session::User>::new();
+                }
+                return false;
+            }
+            info!("room users all disconnected, dropping room");
+            return true;
+        }
+
         if self.check_host(user).await.is_ok() {
             info!("host disconnected!");
-            let users = self.users().await;
-            if users.is_empty() {
-                if self.is_persistent_empty() {
-                    info!("room users all disconnected, preserving persistent empty room");
-                    *self.host.write().await = Weak::<super::session::User>::new();
-                    return false;
-                }
-                info!("room users all disconnected, dropping room");
-                return true;
-            } else {
-                let user = users.choose(&mut rand::rng()).unwrap();
-                debug!("selected {} as host", user.id);
-                *self.host.write().await = Arc::downgrade(user);
-                self.send(Message::NewHost { user: user.id }).await;
-                user.try_send(ServerCommand::ChangeHost(true)).await;
-                self.publish_update(PartialRoomData {
-                    host: Some(user.id),
-                    ..Default::default()
-                })
-                .await;
-            }
+            let user = users.choose(&mut rand::rng()).unwrap();
+            debug!("selected {} as host", user.id);
+            self.system_host.store(false, Ordering::SeqCst);
+            *self.host.write().await = Arc::downgrade(user);
+            self.send(Message::NewHost { user: user.id }).await;
+            user.try_send(ServerCommand::ChangeHost(true)).await;
+            self.publish_update(PartialRoomData {
+                host: Some(user.id),
+                ..Default::default()
+            })
+            .await;
         }
         self.check_all_ready().await;
         false
@@ -899,29 +936,36 @@ impl Room {
                     }
                     self.send(Message::GameEnd).await;
                     *self.state.write().await = InternalRoomState::SelectChart;
-                    if self.is_cycle() {
+                    if self.is_cycle() && !self.is_system_host() {
                         debug!(room = self.id.to_string(), "cycling");
                         let host = Weak::clone(&*self.host.read().await);
                         let new_host = {
                             let users = self.users().await;
-                            let index = users
-                                .iter()
-                                .position(|it| host.ptr_eq(&Arc::downgrade(it)))
-                                .map(|it| (it + 1) % users.len())
-                                .unwrap_or_default();
-                            users.into_iter().nth(index).unwrap()
+                            if users.is_empty() {
+                                None
+                            } else {
+                                let index = users
+                                    .iter()
+                                    .position(|it| host.ptr_eq(&Arc::downgrade(it)))
+                                    .map(|it| (it + 1) % users.len())
+                                    .unwrap_or_default();
+                                users.into_iter().nth(index)
+                            }
                         };
-                        *self.host.write().await = Arc::downgrade(&new_host);
-                        self.send(Message::NewHost { user: new_host.id }).await;
-                        if let Some(old) = host.upgrade() {
-                            old.try_send(ServerCommand::ChangeHost(false)).await;
+                        if let Some(new_host) = new_host {
+                            self.system_host.store(false, Ordering::SeqCst);
+                            *self.host.write().await = Arc::downgrade(&new_host);
+                            self.send(Message::NewHost { user: new_host.id }).await;
+                            if let Some(old) = host.upgrade() {
+                                old.try_send(ServerCommand::ChangeHost(false)).await;
+                            }
+                            new_host.try_send(ServerCommand::ChangeHost(true)).await;
+                            self.publish_update(PartialRoomData {
+                                host: Some(new_host.id),
+                                ..Default::default()
+                            })
+                            .await;
                         }
-                        new_host.try_send(ServerCommand::ChangeHost(true)).await;
-                        self.publish_update(PartialRoomData {
-                            host: Some(new_host.id),
-                            ..Default::default()
-                        })
-                        .await;
                     }
                     self.on_state_change().await;
                 }

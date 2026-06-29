@@ -45,6 +45,20 @@ fn parse_cli_bool(value: &str) -> bool {
     )
 }
 
+fn parse_room_host_target(value: &str) -> Result<Option<i32>, std::num::ParseIntError> {
+    let trimmed = value.trim();
+    if trimmed == "?"
+        || trimmed == "-"
+        || trimmed.eq_ignore_ascii_case("system")
+        || trimmed.eq_ignore_ascii_case("none")
+        || trimmed.eq_ignore_ascii_case("null")
+    {
+        Ok(None)
+    } else {
+        trimmed.parse::<i32>().map(Some)
+    }
+}
+
 fn is_core_registered_command(name: &str) -> bool {
     matches!(
         name,
@@ -192,10 +206,15 @@ impl CliHandler {
                             if args.len() < 3 { self.out(format!("  {} {} room kick <房间ID> <用户ID>", c::yellow("?"), c::bold("用法"))); }
                             else { self.kick_from_room(args[1], args[2]).await; }
                         }
-                        "transfer" | "t" => {
-                            if args.len() < 3 { self.out(format!("  {} {} room transfer <房间ID> <用户ID>", c::yellow("?"), c::bold("用法"))); }
-                            else { let uid: i32 = match args[2].parse() { Ok(id) => id, Err(_) => { self.out(format!("  {} 无效的用户ID", c::red("✗"))); return; } };
-                                self.room_transfer(args[1], uid).await; }
+                        "transfer" | "t" | "host" | "set-host" => {
+                            if args.len() < 3 { self.out(format!("  {} {} room host <房间ID> <用户ID|?>", c::yellow("?"), c::bold("用法"))); }
+                            else {
+                                let target = match parse_room_host_target(args[2]) {
+                                    Ok(target) => target,
+                                    Err(_) => { self.out(format!("  {} 无效的房主目标：请使用用户ID或 ?", c::red("✗"))); return; }
+                                };
+                                self.room_set_host(args[1], target).await;
+                            }
                         }
                         "force-move" | "move" | "fm" => {
                             if args.len() < 3 { self.out(format!("  {} {} room force-move <房间ID> <用户ID> [monitor]", c::yellow("?"), c::bold("用法"))); }
@@ -400,15 +419,15 @@ impl CliHandler {
                         self.room_info(args[0]).await;
                     }
                 }
-                "room-transfer" | "rt" => {
+                "room-transfer" | "room-host" | "room-set-host" | "rt" => {
                     if args.len() < 2 {
-                        self.out(format!("  {} {} <房间ID> <用户ID>", c::yellow("?"), c::bold("room-transfer")));
+                        self.out(format!("  {} {} <房间ID> <用户ID|?>", c::yellow("?"), c::bold("room-host")));
                     } else {
-                        let uid: i32 = match args[1].parse() {
-                            Ok(id) => id,
-                            Err(_) => { self.out(format!("  {} 无效的用户ID", c::red("✗"))); return; }
+                        let target = match parse_room_host_target(args[1]) {
+                            Ok(target) => target,
+                            Err(_) => { self.out(format!("  {} 无效的房主目标：请使用用户ID或 ?", c::red("✗"))); return; }
                         };
-                        self.room_transfer(args[0], uid).await;
+                        self.room_set_host(args[0], target).await;
                     }
                 }
                 "room-create-empty" | "room-create" | "rce" => {
@@ -587,7 +606,7 @@ impl CliHandler {
         self.out(format!("    {:<22} {}", c::dim("room kick <ID> <用户>"), "踢出"));
         self.out(format!("    {:<22} {}", c::dim("room start|cancel <ID>"), "开始/取消"));
         self.out(format!("    {:<22} {}", c::dim("room close <ID>"), "解散"));
-        self.out(format!("    {:<22} {}", c::dim("room transfer <ID> <用户>"), "转移房主"));
+        self.out(format!("    {:<22} {}", c::dim("room host <ID> <用户|?>"), "设置房主（? 为系统房主）"));
         self.out(format!("    {:<22} {}", c::dim("room force-move <ID> <用户>"), "强制迁移用户"));
         self.out(format!("    {:<22} {}", c::dim("room hide|unhide <ID>"), "隐藏/取消隐藏房间"));
         self.out(format!("    {:<22} {}", c::dim("room set <ID> <字段> <值>"), "修改设置（含 phira_api_endpoint）"));
@@ -1051,7 +1070,8 @@ impl CliHandler {
                     None => hid.to_string(),
                 }
             }
-            None => "无（无人持久房间）".to_string(),
+            None if room.is_system_host() => "?（系统房主）".to_string(),
+            None => "无（等待首个玩家）".to_string(),
         };
 
         self.out(format!("  {} 房间: {}", c::green("◆"), c::bold(room_id)));
@@ -1125,25 +1145,39 @@ impl CliHandler {
         }
     }
 
-    async fn room_transfer(&self, room_id: &str, user_id: i32) {
+    async fn room_set_host(&self, room_id: &str, target: Option<i32>) {
         let room = match self.find_room(room_id).await {
             Some(r) => r,
             None => { self.out(format!("  {} 未找到房间 {}", c::red("✗"), room_id)); return; }
         };
-        let mut user_name = format!("{}", user_id);
-        for u in room.users().await {
-            if u.id == user_id {
-                user_name = room.display_name(&u).await;
-                break;
+        match target {
+            Some(user_id) => {
+                let mut user_name = format!("{}", user_id);
+                for u in room.users().await {
+                    if u.id == user_id {
+                        user_name = room.display_name(&u).await;
+                        break;
+                    }
+                }
+                room.send(phira_mp_common::Message::Chat {
+                    user: 0,
+                    content: format!("房主已转移给 {}", user_name),
+                }).await;
+                match room.set_host(Some(user_id), true).await {
+                    Ok(_) => self.out(format!("  {} 房主已设为用户 {} ({})", c::green("✓"), user_name, user_id)),
+                    Err(e) => self.out(format!("  {} {}", c::red("✗"), e)),
+                }
             }
-        }
-        room.send(phira_mp_common::Message::Chat {
-            user: 0,
-            content: format!("房主已转移给 {}", user_name),
-        }).await;
-        match room.transfer_host(user_id).await {
-            Ok(_) => self.out(format!("  {} 房主已转移给用户 {} ({})", c::green("✓"), user_name, user_id)),
-            Err(e) => self.out(format!("  {} {}", c::red("✗"), e)),
+            None => {
+                room.send(phira_mp_common::Message::Chat {
+                    user: 0,
+                    content: "房主已设为系统 ?".to_string(),
+                }).await;
+                match room.set_host(None, true).await {
+                    Ok(_) => self.out(format!("  {} 房主已设为系统 ?", c::green("✓"))),
+                    Err(e) => self.out(format!("  {} {}", c::red("✗"), e)),
+                }
+            }
         }
     }
 
@@ -1256,6 +1290,13 @@ impl CliHandler {
                     Err(e) => self.out(format!("  {} {}", c::red("✗"), e)),
                 }
             }
+            "host" | "host-id" | "host_id" => {
+                let target = match parse_room_host_target(value) {
+                    Ok(target) => target,
+                    Err(_) => { self.out(format!("  {} 无效的房主目标：请使用用户ID或 ?", c::red("✗"))); return; }
+                };
+                self.room_set_host(room_id, target).await;
+            }
             "chart-id" | "chart" => {
                 if !matches!(
                     *room.state.read().await,
@@ -1308,7 +1349,7 @@ impl CliHandler {
             }
             _ => {
                 self.out(format!("  {} 未知字段: {}", c::red("✗"), field));
-                self.out(format!("  {} 支持: lock, cycle, hidden, persistent, chart-id, phira_api_endpoint", c::dim("▸")));
+                self.out(format!("  {} 支持: lock, cycle, hidden, persistent, host, chart-id, phira_api_endpoint", c::dim("▸")));
             }
         }
     }

@@ -142,7 +142,7 @@ curl -N http://127.0.0.1:12347/rooms/listen
 | `room info <id>` / `room i <id>` | 查看房间详情 |
 | `room kick <id> <user_id>` | 踢出用户 |
 | `room close <id>` | 关闭房间 |
-| `room transfer <id> <user_id>` | 转移房主 |
+| `room host <id> <user_id|?>` / `room transfer <id> <user_id|?>` | 设置房主；`?` 表示系统房主 |
 | `room force-move <id> <user_id> [monitor]` | 强制迁移用户到房间 |
 | `room hide <id>` / `room unhide <id>` | 设置房间隐藏状态 |
 | `room set <id> <字段> <值>` | 修改房间设置（lock/cycle/hidden 等） |
@@ -340,11 +340,12 @@ round_data_retention_days: 7
 | `room.round_info` | 轮次详情 |
 | `room.list_since` | 指定时间后的房间 |
 | `room.kick` | 踢出玩家 |
-| `room.transfer_host` | 转移房主 |
+| `room.transfer_host` | 转移房主；`target_id:-1` 表示系统 `?` 房主 |
+| `room.set_host` / `room.clear_host` | 设置房主；`target_id:null`/`?` 表示系统 `?` 房主 |
 | `room.set_lock` | 设置锁定 |
 | `room.force_move` | 强制迁移用户到房间 |
 | `room.set_hidden` / `room.is_hidden` | 设置/查询隐藏状态 |
-| `room.create_empty` / `room.set_persistent_empty` | 创建无人持久空房间；设置最后一名玩家离开后是否保留 |
+| `room.create_empty` / `room.set_persistent_empty` | 创建无人持久空房间；设置最后一名玩家离开后是否保留。首个普通玩家加入空房间时静默成为房主，不发送 `NewHost` 提示 |
 | `room.set_phira_api_endpoint` / `room.get_phira_api_endpoint` / `room.clear_phira_api_endpoint` | 设置/查询/清除房间独立 Phira API endpoint |
 | `room.close` | 关闭房间 |
 | `admin.kick_user` | 管理员踢人 |

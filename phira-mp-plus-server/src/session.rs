@@ -1121,7 +1121,7 @@ async fn process(user: Arc<User>, category: SessionCategory, cmd: ClientCommand)
                 if monitor && !room.live.fetch_or(true, Ordering::SeqCst) {
                     info!(room = id.to_string(), "room goes live");
                 }
-                user.server.assign_room_host_if_missing(&room, &user, monitor).await;
+                user.server.assign_room_host_if_missing(&room, &user, monitor, false).await;
                 user.server.refresh_room_display_metadata(&room).await;
                 let join = ServerCommand::OnJoinRoom(user.to_info());
                 let message = ServerCommand::Message(Message::JoinRoom {

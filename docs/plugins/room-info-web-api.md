@@ -14,6 +14,7 @@
     "name": "房间名",
     "data": {
       "host": 16,
+      "host_is_system": false,
       "users": [16],
       "lock": false,
       "cycle": false,
@@ -34,7 +35,7 @@
 
 ### `GET /api/rooms/info/{name}`
 
-获取指定房间信息。路径参数为房间名称。
+获取指定房间信息。路径参数为房间名称。`host` 为 `-1` 且 `host_is_system=true` 时表示房主为系统 `?`。
 
 ### `GET /api/rooms/user/{user_id}`
 
