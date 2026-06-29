@@ -861,6 +861,18 @@ impl WasmPluginInstance {
                 serde_json::json!(value.get("since_sequence").or_else(|| value.get("since")).and_then(|v| v.as_i64()).unwrap_or(0)),
                 serde_json::json!(value.get("limit").and_then(|v| v.as_i64()).unwrap_or(100)),
             ]),
+            "persist.touches" => state_call(svc, "persist.touches", &[
+                serde_json::json!(value.get("since_sequence").or_else(|| value.get("since")).and_then(|v| v.as_i64()).unwrap_or(0)),
+                serde_json::json!(value.get("limit").and_then(|v| v.as_i64()).unwrap_or(100)),
+                value.get("round_uuid").cloned().unwrap_or(serde_json::Value::Null),
+                value.get("player_id").or_else(|| value.get("user_id")).cloned().unwrap_or(serde_json::Value::Null),
+            ]),
+            "persist.judges" => state_call(svc, "persist.judges", &[
+                serde_json::json!(value.get("since_sequence").or_else(|| value.get("since")).and_then(|v| v.as_i64()).unwrap_or(0)),
+                serde_json::json!(value.get("limit").and_then(|v| v.as_i64()).unwrap_or(100)),
+                value.get("round_uuid").cloned().unwrap_or(serde_json::Value::Null),
+                value.get("player_id").or_else(|| value.get("user_id")).cloned().unwrap_or(serde_json::Value::Null),
+            ]),
             "persist.playtime" => state_call(svc, "persist.playtime", &[serde_json::json!(get_i32("user_id")?)]),
             "persist.top_playtime" => state_call(svc, "persist.top_playtime", &[serde_json::json!(value.get("limit").and_then(|v| v.as_i64()).unwrap_or(10))]),
             "admin.ids" => state_call(svc, "admin.ids", &[]),

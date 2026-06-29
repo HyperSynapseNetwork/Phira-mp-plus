@@ -376,11 +376,65 @@ impl DbManager {
     }
 
     pub async fn append_touches(&self, round_uuid: &str, player_id: i32, data: &[crate::plugin::TouchEventPoint]) {
-        self.append_player_array(round_uuid, player_id, "touches", serde_json::to_value(data).unwrap_or(Value::Array(Vec::new()))).await;
+        if data.is_empty() { return; }
+        let value = serde_json::to_value(data).unwrap_or(Value::Array(Vec::new()));
+        self.append_player_array(round_uuid, player_id, "touches", value.clone()).await;
+        self.append_touch_batch(round_uuid, player_id, data, value).await;
     }
 
     pub async fn append_judges(&self, round_uuid: &str, player_id: i32, data: &[crate::plugin::JudgeEventItem]) {
-        self.append_player_array(round_uuid, player_id, "judges", serde_json::to_value(data).unwrap_or(Value::Array(Vec::new()))).await;
+        if data.is_empty() { return; }
+        let value = serde_json::to_value(data).unwrap_or(Value::Array(Vec::new()));
+        self.append_player_array(round_uuid, player_id, "judges", value.clone()).await;
+        self.append_judge_batch(round_uuid, player_id, data, value).await;
+    }
+
+    async fn append_touch_batch(&self, round_uuid: &str, player_id: i32, data: &[crate::plugin::TouchEventPoint], payload: Value) {
+        #[cfg(feature = "postgres")]
+        if let Self::Pg(pool) = self {
+            let (first_game_time, last_game_time) = telemetry_time_range(data.iter().map(|p| p.time as f64));
+            let now = now_ms();
+            let count = i32::try_from(data.len()).unwrap_or(i32::MAX);
+            let payload = payload.to_string();
+            let _ = sqlx::query(
+                "INSERT INTO mp_round_touch_batches
+                   (round_uuid, player_id, count, first_game_time, last_game_time, payload, created_at, sequence)
+                 VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, nextval('mp_persist_sequence'))"
+            )
+            .bind(round_uuid)
+            .bind(player_id)
+            .bind(count)
+            .bind(first_game_time)
+            .bind(last_game_time)
+            .bind(payload)
+            .bind(now)
+            .execute(pool)
+            .await;
+        }
+    }
+
+    async fn append_judge_batch(&self, round_uuid: &str, player_id: i32, data: &[crate::plugin::JudgeEventItem], payload: Value) {
+        #[cfg(feature = "postgres")]
+        if let Self::Pg(pool) = self {
+            let (first_game_time, last_game_time) = telemetry_time_range(data.iter().map(|p| p.time as f64));
+            let now = now_ms();
+            let count = i32::try_from(data.len()).unwrap_or(i32::MAX);
+            let payload = payload.to_string();
+            let _ = sqlx::query(
+                "INSERT INTO mp_round_judge_batches
+                   (round_uuid, player_id, count, first_game_time, last_game_time, payload, created_at, sequence)
+                 VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, nextval('mp_persist_sequence'))"
+            )
+            .bind(round_uuid)
+            .bind(player_id)
+            .bind(count)
+            .bind(first_game_time)
+            .bind(last_game_time)
+            .bind(payload)
+            .bind(now)
+            .execute(pool)
+            .await;
+        }
     }
 
     async fn append_player_array(&self, round_uuid: &str, player_id: i32, column: &str, data: Value) {
@@ -560,24 +614,120 @@ impl DbManager {
         Vec::new()
     }
 
-    pub async fn cleanup_expired(&self, retention_days: u32) {
+    pub async fn query_touch_batches(&self, since_sequence: i64, limit: i64, round_uuid: Option<&str>, player_id: Option<i32>) -> Vec<Value> {
         #[cfg(feature = "postgres")]
         if let Self::Pg(pool) = self {
-            if retention_days == 0 {
-                return;
+            return query_telemetry_batches(pool, "mp_round_touch_batches", since_sequence, limit, round_uuid, player_id).await;
+        }
+        Vec::new()
+    }
+
+    pub async fn query_judge_batches(&self, since_sequence: i64, limit: i64, round_uuid: Option<&str>, player_id: Option<i32>) -> Vec<Value> {
+        #[cfg(feature = "postgres")]
+        if let Self::Pg(pool) = self {
+            return query_telemetry_batches(pool, "mp_round_judge_batches", since_sequence, limit, round_uuid, player_id).await;
+        }
+        Vec::new()
+    }
+
+    pub async fn cleanup_expired(&self, retention_days: u32, touch_judge_retention_days: u32) {
+        #[cfg(feature = "postgres")]
+        if let Self::Pg(pool) = self {
+            if retention_days > 0 {
+                let cutoff = now_ms().saturating_sub(retention_days as i64 * 86_400_000);
+                for sql in [
+                    "DELETE FROM mp_events WHERE created_at < $1",
+                    "DELETE FROM mp_user_room_history WHERE created_at < $1",
+                    "DELETE FROM mp_round_results WHERE updated_at < $1",
+                ] {
+                    let _ = sqlx::query(sql).bind(cutoff).execute(pool).await;
+                }
             }
-            let cutoff = now_ms().saturating_sub(retention_days as i64 * 86_400_000);
-            for sql in [
-                "DELETE FROM mp_events WHERE created_at < $1",
-                "DELETE FROM mp_user_room_history WHERE created_at < $1",
-                "DELETE FROM mp_round_player_data WHERE updated_at < $1",
-                "DELETE FROM mp_round_results WHERE updated_at < $1",
-                "DELETE FROM mp_rounds WHERE updated_at < $1",
-            ] {
-                let _ = sqlx::query(sql).bind(cutoff).execute(pool).await;
+
+            if touch_judge_retention_days > 0 {
+                let cutoff = now_ms().saturating_sub(touch_judge_retention_days as i64 * 86_400_000);
+                for sql in [
+                    "DELETE FROM mp_round_player_data WHERE updated_at < $1",
+                    "DELETE FROM mp_round_touch_batches WHERE created_at < $1",
+                    "DELETE FROM mp_round_judge_batches WHERE created_at < $1",
+                ] {
+                    let _ = sqlx::query(sql).bind(cutoff).execute(pool).await;
+                }
+            }
+
+            // 轮次元数据是 Touches/Judges 的索引上下文；如果遥测保留更久，就不要先删元数据。
+            let round_meta_retention_days = match (retention_days, touch_judge_retention_days) {
+                (0, _) | (_, 0) => 0,
+                (a, b) => a.max(b),
+            };
+            if round_meta_retention_days > 0 {
+                let cutoff = now_ms().saturating_sub(round_meta_retention_days as i64 * 86_400_000);
+                let _ = sqlx::query("DELETE FROM mp_rounds WHERE updated_at < $1")
+                    .bind(cutoff)
+                    .execute(pool)
+                    .await;
             }
         }
     }
+}
+
+fn telemetry_time_range<I>(times: I) -> (Option<f64>, Option<f64>)
+where
+    I: IntoIterator<Item = f64>,
+{
+    let mut first = None;
+    let mut last = None;
+    for time in times {
+        first = Some(first.map_or(time, |v: f64| v.min(time)));
+        last = Some(last.map_or(time, |v: f64| v.max(time)));
+    }
+    (first, last)
+}
+
+#[cfg(feature = "postgres")]
+async fn query_telemetry_batches(
+    pool: &sqlx::PgPool,
+    table: &str,
+    since_sequence: i64,
+    limit: i64,
+    round_uuid: Option<&str>,
+    player_id: Option<i32>,
+) -> Vec<Value> {
+    let table = match table {
+        "mp_round_judge_batches" => "mp_round_judge_batches",
+        _ => "mp_round_touch_batches",
+    };
+    let sql = format!(
+        "SELECT sequence, round_uuid, player_id, count, first_game_time, last_game_time, payload::text AS payload, created_at
+         FROM {table}
+         WHERE sequence > $1
+           AND ($2::text IS NULL OR round_uuid = $2)
+           AND ($3::int IS NULL OR player_id = $3)
+         ORDER BY sequence ASC LIMIT $4"
+    );
+    let rows = sqlx::query(&sql)
+        .bind(since_sequence)
+        .bind(round_uuid)
+        .bind(player_id)
+        .bind(limit)
+        .fetch_all(pool)
+        .await
+        .unwrap_or_default();
+    rows.into_iter().map(|row| {
+        let payload = row.try_get::<String, _>("payload").ok()
+            .and_then(|s| serde_json::from_str::<Value>(&s).ok())
+            .unwrap_or(Value::Array(Vec::new()));
+        serde_json::json!({
+            "sequence": row.try_get::<i64, _>("sequence").unwrap_or_default(),
+            "round_uuid": row.try_get::<String, _>("round_uuid").unwrap_or_default(),
+            "player_id": row.try_get::<i32, _>("player_id").unwrap_or_default(),
+            "count": row.try_get::<i32, _>("count").unwrap_or_default(),
+            "first_game_time": row.try_get::<Option<f64>, _>("first_game_time").ok().flatten(),
+            "last_game_time": row.try_get::<Option<f64>, _>("last_game_time").ok().flatten(),
+            "data": payload,
+            "created_at": row.try_get::<i64, _>("created_at").unwrap_or_default(),
+        })
+    }).collect()
 }
 
 #[cfg(feature = "postgres")]
@@ -727,6 +877,36 @@ async fn init_tables(pool: &sqlx::PgPool) -> Result<()> {
     .await?;
 
     sqlx::query(
+        "CREATE TABLE IF NOT EXISTS mp_round_touch_batches (
+            sequence BIGINT PRIMARY KEY DEFAULT nextval('mp_persist_sequence'),
+            round_uuid TEXT NOT NULL,
+            player_id INTEGER NOT NULL,
+            count INTEGER NOT NULL,
+            first_game_time DOUBLE PRECISION,
+            last_game_time DOUBLE PRECISION,
+            payload JSONB NOT NULL,
+            created_at BIGINT NOT NULL
+        )"
+    )
+    .execute(pool)
+    .await?;
+
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS mp_round_judge_batches (
+            sequence BIGINT PRIMARY KEY DEFAULT nextval('mp_persist_sequence'),
+            round_uuid TEXT NOT NULL,
+            player_id INTEGER NOT NULL,
+            count INTEGER NOT NULL,
+            first_game_time DOUBLE PRECISION,
+            last_game_time DOUBLE PRECISION,
+            payload JSONB NOT NULL,
+            created_at BIGINT NOT NULL
+        )"
+    )
+    .execute(pool)
+    .await?;
+
+    sqlx::query(
         "CREATE TABLE IF NOT EXISTS mp_round_player_data (
             round_uuid TEXT NOT NULL,
             player_id INTEGER NOT NULL,
@@ -773,6 +953,10 @@ async fn init_tables(pool: &sqlx::PgPool) -> Result<()> {
         "CREATE INDEX IF NOT EXISTS idx_mp_events_room ON mp_events(room_id)",
         "CREATE INDEX IF NOT EXISTS idx_mp_events_user ON mp_events(user_id)",
         "CREATE INDEX IF NOT EXISTS idx_mp_rounds_started ON mp_rounds(started_at)",
+        "CREATE INDEX IF NOT EXISTS idx_mp_touch_batches_round_player_seq ON mp_round_touch_batches(round_uuid, player_id, sequence)",
+        "CREATE INDEX IF NOT EXISTS idx_mp_touch_batches_created ON mp_round_touch_batches(created_at)",
+        "CREATE INDEX IF NOT EXISTS idx_mp_judge_batches_round_player_seq ON mp_round_judge_batches(round_uuid, player_id, sequence)",
+        "CREATE INDEX IF NOT EXISTS idx_mp_judge_batches_created ON mp_round_judge_batches(created_at)",
         "CREATE INDEX IF NOT EXISTS idx_mp_user_room_history_user ON mp_user_room_history(user_id)",
     ] {
         sqlx::query(index).execute(pool).await?;

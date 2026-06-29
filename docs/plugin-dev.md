@@ -74,6 +74,8 @@ WASM 插件通过 JSON 字符串与宿主通信：
 | `persist.rooms` | `{ since_sequence?, limit? }` | 房间快照数组 | 读取统一 PG 房间快照 |
 | `persist.playtime` | `{ user_id }` | 游玩时间 | 读取统一 PG 游玩时间 |
 | `persist.top_playtime` | `{ limit? }` | 排行数组 | 读取游玩时间排行 |
+| `persist.touches` | `{ since_sequence?, limit?, round_uuid?, player_id? }` | 批次数组 | 从 PostgreSQL 读取 Touches 追加批次 |
+| `persist.judges` | `{ since_sequence?, limit?, round_uuid?, player_id? }` | 批次数组 | 从 PostgreSQL 读取 Judges 追加批次 |
 | `admin.ids` / `admin.is_admin` / `admin.add_id` / `admin.remove_id` / `admin.set_ids` | 见 `docs/api.md` | 管理员 ID | 读取或维护游戏内管理员 |
 | `plugin.api_call` | `{ plugin, method, args }` | 调用结果 | 调用其他插件注册的 API |
 | `plugin.api_register` | `{ method }` | 注册确认 | 注册本插件 API 供其他插件调用 |
@@ -163,7 +165,7 @@ api.call('plugin.api_register', {
 
 ## 实时数据流
 
-Touches/Judges 数据通过 `player_touches` 和 `player_judges` 事件推送到 WASM 插件的 `phira_on_event` 处理器，无需主动轮询。
+Touches/Judges 数据通过 `player_touches` 和 `player_judges` 事件推送到 WASM 插件的 `phira_on_event` 处理器，无需主动轮询。配置 PostgreSQL 后，服务端同时写入 `mp_round_touch_batches` / `mp_round_judge_batches` 追加批次表；插件可用 `persist.touches` / `persist.judges` 按全局 `sequence` 增量读取，保留期由 `touch_judge_retention_days` 控制，未设置时遵循 `persistence_retention_days`。
 
 ## 构建 WASM 插件
 

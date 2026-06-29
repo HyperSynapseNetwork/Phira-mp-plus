@@ -155,6 +155,10 @@ pub struct PlusConfig {
     /// 统一持久化数据保留天数（0 = 不自动清理 PostgreSQL 历史数据）。
     #[serde(default = "default_persistence_retention_days")]
     pub persistence_retention_days: u32,
+    /// Touches/Judges 高频遥测在 PostgreSQL 中的独立保留天数。
+    /// 未设置时遵循 `persistence_retention_days`；设置为 0 表示不自动清理遥测。
+    #[serde(default)]
+    pub touch_judge_retention_days: Option<u32>,
     /// 拥有游戏内 `_+命令` 入口和管理 WIT/API 的 Phira 用户 ID 列表。
     #[serde(default)]
     pub admin_phira_ids: Vec<i32>,
@@ -198,6 +202,7 @@ impl Default for PlusConfig {
             round_data_retention_days: 7,
             database_url: None,
             persistence_retention_days: 30,
+            touch_judge_retention_days: None,
             admin_phira_ids: Vec::new(),
             benchmark_phira_tokens: Vec::new(),
             benchmark_phira_token: None,
@@ -595,14 +600,25 @@ impl PlusServer {
         });
 
         // 轮次文件与统一 PostgreSQL 持久化定期清理（每小时检查一次）
-        if retention_days > 0 || state.config.persistence_retention_days > 0 {
+        let telemetry_retention_days = state
+            .config
+            .touch_judge_retention_days
+            .unwrap_or(state.config.persistence_retention_days);
+        if retention_days > 0 || state.config.persistence_retention_days > 0 || telemetry_retention_days > 0 {
             let cleanup_state = Arc::clone(&state);
             tokio::spawn(async move {
                 loop {
                     tokio::time::sleep(std::time::Duration::from_secs(3600)).await;
                     cleanup_state.round_store.cleanup_expired().await;
                     if let Some(db) = crate::internal_hooks::DB.get() {
-                        db.cleanup_expired(cleanup_state.config.persistence_retention_days).await;
+                        let telemetry_retention_days = cleanup_state
+                            .config
+                            .touch_judge_retention_days
+                            .unwrap_or(cleanup_state.config.persistence_retention_days);
+                        db.cleanup_expired(
+                            cleanup_state.config.persistence_retention_days,
+                            telemetry_retention_days,
+                        ).await;
                     }
                 }
             });
@@ -2260,6 +2276,39 @@ fn server_state_query_inner(state: &Arc<PlusServerState>, method: &str, args: &[
             });
             rx.recv_timeout(std::time::Duration::from_secs(5))
                 .unwrap_or(Err("persist.rooms timeout".to_string()))
+        }
+
+        "persist.touches" => {
+            let since = args.get(0).and_then(|v| v.as_i64()).unwrap_or(0);
+            let limit = args.get(1).and_then(|v| v.as_i64()).unwrap_or(100).clamp(1, 1000);
+            let round_uuid = args.get(2).and_then(|v| v.as_str()).filter(|v| !v.is_empty()).map(str::to_string);
+            let player_id = args.get(3).and_then(|v| v.as_i64()).and_then(|v| i32::try_from(v).ok());
+            let (tx, rx) = std::sync::mpsc::channel();
+            tokio::spawn(async move {
+                let rows = if let Some(db) = crate::internal_hooks::DB.get() {
+                    db.query_touch_batches(since, limit, round_uuid.as_deref(), player_id).await
+                } else { Vec::new() };
+                let total = rows.len();
+                let _ = tx.send(Ok(serde_json::json!({"touches": rows, "total": total})));
+            });
+            rx.recv_timeout(std::time::Duration::from_secs(5))
+                .unwrap_or(Err("persist.touches timeout".to_string()))
+        }
+        "persist.judges" => {
+            let since = args.get(0).and_then(|v| v.as_i64()).unwrap_or(0);
+            let limit = args.get(1).and_then(|v| v.as_i64()).unwrap_or(100).clamp(1, 1000);
+            let round_uuid = args.get(2).and_then(|v| v.as_str()).filter(|v| !v.is_empty()).map(str::to_string);
+            let player_id = args.get(3).and_then(|v| v.as_i64()).and_then(|v| i32::try_from(v).ok());
+            let (tx, rx) = std::sync::mpsc::channel();
+            tokio::spawn(async move {
+                let rows = if let Some(db) = crate::internal_hooks::DB.get() {
+                    db.query_judge_batches(since, limit, round_uuid.as_deref(), player_id).await
+                } else { Vec::new() };
+                let total = rows.len();
+                let _ = tx.send(Ok(serde_json::json!({"judges": rows, "total": total})));
+            });
+            rx.recv_timeout(std::time::Duration::from_secs(5))
+                .unwrap_or(Err("persist.judges timeout".to_string()))
         }
         "persist.playtime" => {
             let uid = args.get(0).and_then(|v| v.as_i64()).unwrap_or(0) as i32;

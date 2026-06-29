@@ -51,6 +51,7 @@ plugins_dir: plugins
 extensions_file: data/extensions.json
 # database_url: "postgres://user:password@localhost:5432/phira_mp_plus"
 persistence_retention_days: 30
+# touch_judge_retention_days: 7
 
 # ---- 功能开关 ----
 chat_enabled: true
@@ -99,6 +100,7 @@ wasm_runtime:
 | `round_data_retention_days` | `u32` | `7` | Touches/Judges 轮次文件保留天数，`0` 表示不清理轮次文件。 |
 | `database_url` | `String?` | 未设置 | PostgreSQL 连接串；配置后启用统一结构化持久化。未设置时保留旧 JSON/文件回退。 |
 | `persistence_retention_days` | `u32` | `30` | PostgreSQL 统一持久化历史数据保留天数，`0` 表示不自动清理。 |
+| `touch_judge_retention_days` | `u32?` | 未设置 | Touches/Judges 高频遥测独立保留天数；未设置时遵循 `persistence_retention_days`，`0` 表示不自动清理遥测。 |
 | `server_name` | `String?` | 未设置 | 服务器展示名称，可用于欢迎语等场景。 |
 | `admin_token` | `String?` | 未设置 | 管理令牌预留/供管理接口或自定义扩展使用。基础公开 API 不需要配置。 |
 | `admin_phira_ids` | `Vec<i32>` | `[]` | 游戏内管理员 Phira ID。管理员可在创建房间弹窗输入 `_+命令` 执行 CLI 命令。 |
@@ -124,11 +126,18 @@ wasm_runtime:
 
 所有会变化的数据都会记录修改时间，并尽量使用全局 `sequence` 保留事件/快照/结算的写入顺序，方便外部面板或插件增量读取。
 
-保留时间由 `persistence_retention_days` 控制：
+Touches/Judges 在 PG 中采用“双层结构”：
+
+- `mp_round_touch_batches` / `mp_round_judge_batches`：追加式明细批次表，是高频遥测的主要持久化结构；每批都有全局 `sequence`、`created_at`、`count`、`first_game_time`、`last_game_time` 和 JSONB 数据，适合外部面板增量同步。
+- `mp_round_player_data`：按 `round_uuid + player_id` 聚合的兼容快照，用于 `round.data` 一次性读回完整 Touches/Judges。
+
+
+保留时间由 `persistence_retention_days` 控制。Touches/Judges 属于高频遥测，可用 `touch_judge_retention_days` 单独设置；未设置时遵循全局保留时间。
 
 ```yaml
 database_url: "postgres://user:password@localhost:5432/phira_mp_plus"
-persistence_retention_days: 30   # 0 = 不自动清理 PG 历史数据
+persistence_retention_days: 30      # 0 = 不自动清理 PG 历史数据
+# touch_judge_retention_days: 7     # 未设置 = 使用 persistence_retention_days；0 = 不清理遥测
 ```
 
 插件/WIT/host API 可读取：
@@ -138,6 +147,8 @@ persist.events          # 参数：since_sequence, limit, kind?, room_id?, user_
 persist.rooms           # 参数：since_sequence, limit
 persist.playtime        # 参数：user_id
 persist.top_playtime    # 参数：limit
+persist.touches         # 参数：since_sequence?, limit?, round_uuid?, player_id?
+persist.judges          # 参数：since_sequence?, limit?, round_uuid?, player_id?
 ```
 
 ## 房间独立 Phira API endpoint

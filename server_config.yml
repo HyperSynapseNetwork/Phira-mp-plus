@@ -52,6 +52,10 @@ plugins_dir: plugins
 # 统一 PostgreSQL 历史数据保留天数。0 表示不自动清理。
 persistence_retention_days: 30
 
+# Touches/Judges 高频遥测在 PostgreSQL 中的独立保留天数。
+# 未设置时遵循 persistence_retention_days；设为 0 表示不自动清理遥测。
+# touch_judge_retention_days: 7
+
 # ---- 功能开关 ----
 
 # 是否启用聊天功能

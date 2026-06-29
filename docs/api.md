@@ -318,6 +318,8 @@ round_data_retention_days: 7
 | `persist.rooms` | `since_sequence`, `limit` | 增量读取房间快照。 |
 | `persist.playtime` | `user_id` | 读取指定用户游玩时间。 |
 | `persist.top_playtime` | `limit` | 读取游玩时间排行。 |
+| `persist.touches` | `since_sequence?`, `limit?`, `round_uuid?`, `player_id?` | 从 PG Touches 批次表增量读取触控数据。 |
+| `persist.judges` | `since_sequence?`, `limit?`, `round_uuid?`, `player_id?` | 从 PG Judges 批次表增量读取判定数据。 |
 | `admin.ids` | — | 读取管理员 Phira ID。 |
 | `admin.is_admin` | `user_id` | 判断某用户是否管理员。 |
 | `admin.add_id` / `admin.remove_id` / `admin.set_ids` | `user_id` 或 `ids` | 修改管理员 Phira ID。 |
