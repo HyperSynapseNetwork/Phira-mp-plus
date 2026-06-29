@@ -33,6 +33,29 @@ const MAX_CLIENT_BAN_REASON_CHARS: usize = 160;
 const PHIRA_RETRY_NOTICE: &str = "Phira服务器太烂了，我们正在重试以保证你的流畅体验";
 const PHIRA_MAX_RETRIES: usize = 3;
 
+fn decode_admin_room_command(input: &str) -> String {
+    // Phira's room-name input box may not allow spaces. For the in-game admin
+    // shortcut, the leading `_` is the command prefix and underscores after it
+    // are treated as CLI spaces: `_room_list` => `room list`. A doubled
+    // underscore escapes a literal underscore: `_room_info_my__room` =>
+    // `room info my_room`.
+    let mut out = String::with_capacity(input.len());
+    let mut chars = input.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if ch == '_' {
+            if matches!(chars.peek(), Some('_')) {
+                chars.next();
+                out.push('_');
+            } else {
+                out.push(' ');
+            }
+        } else {
+            out.push(ch);
+        }
+    }
+    out.trim().to_string()
+}
+
 #[derive(Debug, Deserialize)]
 struct AuthUserInfo {
     id: i32,
@@ -1060,7 +1083,7 @@ async fn process(user: Arc<User>, category: SessionCategory, cmd: ClientCommand)
                 let id_text = id.to_string();
                 if let Some(command) = id_text.strip_prefix('_') {
                     if user.server.is_admin_id(user.id).await {
-                        let command = command.trim().to_string();
+                        let command = decode_admin_room_command(command);
                         if command.is_empty() {
                             user.try_send(ServerCommand::Message(Message::Chat {
                                 user: 0,
