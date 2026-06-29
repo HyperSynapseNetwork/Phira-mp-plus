@@ -535,7 +535,6 @@ impl PlusServer {
             }))
         }));
         // GET /api/players/all — 所有连接过服务器的玩家
-        let state_all = Arc::clone(&state_for_webapi2);
         http_for_webapi.register_route_sync("/api/players/all", Arc::new(move |_, _| {
             let players: Vec<i32> = crate::internal_hooks::all_players()
                 .into_iter().map(|(id, _)| id).collect();

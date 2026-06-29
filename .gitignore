@@ -32,3 +32,4 @@ phira-mp/phira-mp-server/
 phira-mp/phira-mp-client/
 phira-mp/target/
 phira-mp/Cargo.lock
+*.patch

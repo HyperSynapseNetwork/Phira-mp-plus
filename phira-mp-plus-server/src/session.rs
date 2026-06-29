@@ -638,7 +638,7 @@ impl Session {
                                             info.name,
                                             info.language.parse().map(Language).unwrap_or_default(),
                                             Arc::clone(&server),
-                                            Some(token.clone()),
+                                            Some(token.to_string()),
                                         ));
                                         let _ = tx.send(AuthenticationOutcome::Accepted(
                                             Arc::clone(&user),
@@ -713,7 +713,7 @@ impl Session {
                                             format!("{} (monitor)", info.name),
                                             info.language.parse().map(Language).unwrap_or_default(),
                                             Arc::clone(&server),
-                                            Some(token.clone()),
+                                            Some(token.to_string()),
                                         ));
                                         let _ = tx.send(AuthenticationOutcome::Accepted(
                                             Arc::clone(&user),
