@@ -1122,7 +1122,10 @@ async fn process(user: Arc<User>, category: SessionCategory, cmd: ClientCommand)
                     info!(room = id.to_string(), "room goes live");
                 }
                 user.server.assign_room_host_if_missing(&room, &user, monitor, false).await;
-                user.server.refresh_room_display_metadata(&room).await;
+                *room_guard = Some(Arc::clone(&room));
+                drop(room_guard);
+
+                user.server.refresh_room_display_metadata_background(&room);
                 let join = ServerCommand::OnJoinRoom(user.to_info());
                 let message = ServerCommand::Message(Message::JoinRoom {
                     user: user.id,
@@ -1141,17 +1144,22 @@ async fn process(user: Arc<User>, category: SessionCategory, cmd: ClientCommand)
                         })
                         .await;
                 }
-                *room_guard = Some(Arc::clone(&room));
 
                 // Protocol-only game monitors are not exposed as players to plugins.
+                // 插件事件可能执行 WASM/HTTP 逻辑，不能阻塞 JoinRoom 响应。
                 if category == SessionCategory::Normal {
-                    user.server.plugin_manager
-                        .trigger(&PluginEvent::RoomJoin {
-                            user_id: user.id,
-                            room_id: id.to_string(),
-                            is_monitor: monitor,
-                        })
-                        .await;
+                    let plugin_manager = Arc::clone(&user.server.plugin_manager);
+                    let room_id = id.to_string();
+                    let user_id = user.id;
+                    tokio::spawn(async move {
+                        plugin_manager
+                            .trigger(&PluginEvent::RoomJoin {
+                                user_id,
+                                room_id,
+                                is_monitor: monitor,
+                            })
+                            .await;
+                    });
                 }
 
                 let mut users = room.users().await;

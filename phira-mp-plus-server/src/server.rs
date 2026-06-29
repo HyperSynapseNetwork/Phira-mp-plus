@@ -792,6 +792,19 @@ impl PlusServerState {
             }
         }
     }
+
+    /// 后台刷新房间展示元数据。
+    ///
+    /// 这个流程会访问 Phira `/me` 和 `/chart/<id>`，自定义 endpoint 慢、不可达或 502 时可能
+    /// 等到 reqwest 超时。加入房间、强制迁移、设置 endpoint 等协议关键路径不能等待它，
+    /// 否则客户端会先看到 timeout，随后重连才发现服务端其实已经把用户放进房间。
+    pub fn refresh_room_display_metadata_background(self: &Arc<Self>, room: &Arc<crate::room::Room>) {
+        let server = Arc::clone(self);
+        let room = Arc::clone(room);
+        tokio::spawn(async move {
+            server.refresh_room_display_metadata(&room).await;
+        });
+    }
 }
 
 impl PlusServerState {
@@ -1142,7 +1155,7 @@ impl PlusServerState {
             target_room.live.store(true, Ordering::SeqCst);
         }
         self.assign_room_host_if_missing(&target_room, &user, monitor, false).await;
-        self.refresh_room_display_metadata(&target_room).await;
+        self.refresh_room_display_metadata_background(&target_room);
 
         let join = ServerCommand::OnJoinRoom(user.to_info());
         let message = ServerCommand::Message(phira_mp_common::Message::JoinRoom {
@@ -1252,7 +1265,7 @@ impl PlusServerState {
             None => None,
         };
         room.set_phira_api_endpoint_override(normalized.clone()).await;
-        self.refresh_room_display_metadata(&room).await;
+        self.refresh_room_display_metadata_background(&room);
         let using_room_override = normalized.is_some();
         let effective_endpoint = normalized
             .clone()
