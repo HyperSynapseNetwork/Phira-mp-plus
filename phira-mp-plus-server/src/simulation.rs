@@ -378,25 +378,33 @@ impl SimulationManager {
         for _ in 0..count {
             let tick = state.counters.ticks + 1;
             let config = state.config.clone();
-            let counters = &mut state.counters;
-            counters.ticks = tick;
+
+            state.counters.ticks = tick;
             if config.chat {
-                counters.chat_messages += (config.users.max(1) / 10).max(1) as u64;
+                state.counters.chat_messages += (config.users.max(1) / 10).max(1) as u64;
             }
             if config.ready {
-                counters.ready_events += config.users.max(1) as u64;
+                state.counters.ready_events += config.users.max(1) as u64;
             }
             if config.touch {
-                counters.touch_batches += config.rooms.max(1) as u64;
+                state.counters.touch_batches += config.rooms.max(1) as u64;
             }
             if config.judge {
-                counters.judge_batches += config.rooms.max(1) as u64;
+                state.counters.judge_batches += config.rooms.max(1) as u64;
             }
             if config.rounds {
-                counters.round_results += config.rooms.max(1) as u64;
+                state.counters.round_results += config.rooms.max(1) as u64;
             }
+
+            // Avoid holding a mutable borrow of `state.counters` while also
+            // mutably borrowing `state.world`. Rust rightfully rejects that
+            // with E0499 because both fields live under the same state guard.
+            // The shadow world only needs a read-only counter snapshot for the
+            // event message, so clone after the counter update and then borrow
+            // the world separately.
+            let counters_snapshot = state.counters.clone();
             if let Some(world) = &mut state.world {
-                advance_shadow_world(world, tick, &config, counters);
+                advance_shadow_world(world, tick, &config, &counters_snapshot);
             }
         }
         state.note = format!("simulation advanced by {count} deterministic tick(s)");
