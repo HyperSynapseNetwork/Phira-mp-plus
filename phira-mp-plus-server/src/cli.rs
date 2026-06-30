@@ -445,6 +445,7 @@ impl CliHandler {
                 }
                 "status" | "st" => self.status().await,
                 "benchmark" | "bench" => self.start_benchmark(&args).await,
+                "simulation" | "sim" => self.simulation_command(&args).await,
                 "benchmark-bind" | "bench-bind" => self.bind_benchmark(&args).await,
                 "benchmark-cleanup" | "bench-cleanup" => {
                     self.state.cleanup_benchmark_sync();
@@ -644,6 +645,10 @@ impl CliHandler {
             "  {} 未配置账号时会提示执行 benchmark-bind <token1[,token2...]>；运行期间仍可继续输入其它命令",
             c::dim("▸")
         ));
+        self.out(format!(
+            "  {} Runtime v2 默认压测入口将是 simulation；当前 benchmark 仍是显式 real-network 兼容性测试",
+            c::dim("▸")
+        ));
 
         let out_tx = self.out_tx.clone();
         tokio::spawn(async move {
@@ -677,6 +682,7 @@ impl CliHandler {
         if args.is_empty() {
             self.out(format!("  {} {} <token1[,token2...]> 或多个 token 参数", c::yellow("?"), c::bold("benchmark-bind")));
             self.out(format!("  {} 也可以直接修改 server_config.yml: benchmark_phira_tokens: [\"...\"]", c::dim("▸")));
+            self.out(format!("  {} 不要把真实 Phira token 提交到 Git；优先使用本地配置或环境变量", c::dim("▸")));
             return;
         }
 
@@ -691,6 +697,51 @@ impl CliHandler {
         }
     }
 
+    async fn simulation_command(&self, args: &[&str]) {
+        let sub = args.first().copied().unwrap_or("status");
+        match sub {
+            "status" | "st" | "" => {
+                let status = self.state.simulation.status().await;
+                self.out(format!("  {} Runtime v2 Simulation", c::green("◆")));
+                self.out(format!("  {} running:        {}", c::dim("│"), status.running));
+                self.out(format!("  {} run_id:         {}", c::dim("│"), status.run_id.map(|id| id.to_string()).unwrap_or_else(|| "-".to_string())));
+                self.out(format!("  {} seed:           {}", c::dim("│"), status.seed));
+                self.out(format!("  {} preset:         {:?}", c::dim("│"), status.config.preset));
+                self.out(format!("  {} target:         {} users / {} rooms / {}s", c::dim("│"), status.config.users, status.config.rooms, status.config.duration_secs));
+                self.out(format!("  {} virtual state:  {} users / {} rooms", c::dim("│"), status.virtual_users, status.virtual_rooms));
+                self.out(format!("  {} note:           {}", c::dim("│"), status.note));
+            }
+            "seed" => {
+                if args.len() < 2 {
+                    self.out(format!("  {} {} seed <u64>", c::yellow("?"), c::bold("simulation")));
+                    return;
+                }
+                match args[1].parse::<u64>() {
+                    Ok(seed) => {
+                        self.state.simulation.set_seed(seed).await;
+                        self.out(format!("  {} simulation seed 已设置为 {}", c::green("✓"), seed));
+                    }
+                    Err(_) => self.out(format!("  {} 无效 seed，必须是 u64", c::red("✗"))),
+                }
+            }
+            "cleanup" | "clean" => {
+                let status = self.state.simulation.cleanup().await;
+                self.out(format!("  {} {}", c::green("✓"), status.note));
+            }
+            "sample" => {
+                let status = self.state.simulation.status().await;
+                let touches = crate::simulation::SimulationManager::sample_touches(status.seed);
+                let judges = crate::simulation::SimulationManager::sample_judges(status.seed);
+                self.out(format!("  {} sample touches: {} 条；sample judges: {} 条；seed={}", c::green("◆"), touches.len(), judges.len(), status.seed));
+                self.out(format!("  {} Step 1 只生成 deterministic 示例数据，不写入数据库，不污染真实房间", c::dim("▸")));
+            }
+            _ => {
+                self.out(format!("  {} 未知 simulation 子命令: {}", c::red("✗"), c::yellow(sub)));
+                self.out(format!("  {} 可用: simulation status | seed <u64> | cleanup | sample", c::dim("▸")));
+            }
+        }
+    }
+
     async fn print_help(&self) {
         self.out(format!("  {} Phira-mp+ 管理命令", c::bold("◆")));
         self.out(format!("  {} ─────────────────────────────────────────────", c::dim("")));
@@ -702,7 +753,10 @@ impl CliHandler {
         self.out(format!("    {:<22} {}", c::dim("status"), "服务器状态"));
         self.out(format!(""));
         self.out(format!("  {} 诊断 / 压测", c::cyan("▸")));
-        self.out(format!("    {:<22} {}", c::dim("benchmark [秒] [房间]"), "后台运行真实网络压测"));
+        self.out(format!("    {:<22} {}", c::dim("simulation status"), "查看 Runtime v2 Simulation 状态"));
+        self.out(format!("    {:<22} {}", c::dim("simulation seed <值>"), "设置 deterministic seed"));
+        self.out(format!("    {:<22} {}", c::dim("simulation cleanup"), "清理 Simulation 内存状态"));
+        self.out(format!("    {:<22} {}", c::dim("benchmark [秒] [房间]"), "显式真实网络压测，需要 Phira token"));
         self.out(format!("    {:<22} {}", c::dim("benchmark-bind <token>"), "绑定压测用 Phira token"));
         self.out(format!("    {:<22} {}", c::dim("benchmark-cleanup"), "清理 bench-* 房间"));
         self.out(format!(""));

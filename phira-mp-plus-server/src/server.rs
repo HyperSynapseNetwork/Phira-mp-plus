@@ -378,6 +378,14 @@ pub struct PlusServerState {
     pub user_room_history: SafeMap<i32, Vec<(String, String, i64)>>,
     /// 压测请求发送端（背景 tokio 任务消费）
     pub bench_tx: tokio::sync::mpsc::UnboundedSender<BenchRequest>,
+    /// Runtime v2 命令元数据注册表。Step 1 仅用于 help/补全/未来统一入口，不改变现有执行逻辑。
+    pub command_registry: Arc<crate::command_registry::CommandRegistry>,
+    /// Runtime v2 事件总线。Step 1 仅作为新增功能的可选事件脊柱。
+    pub event_bus: Arc<crate::event_bus::EventBus>,
+    /// Runtime v2 Simulation 状态管理器。Step 1 不创建真实/虚拟房间。
+    pub simulation: Arc<crate::simulation::SimulationManager>,
+    /// Runtime v2 持久化 Worker 骨架。现有 db.rs 写入路径暂不迁移。
+    pub persistence_worker: Arc<crate::persistence_worker::PersistenceWorker>,
     /// 压测用 Phira token 列表（来自配置或 benchmark-bind 命令）。
     pub bench_tokens: RwLock<Vec<String>>,
     /// 管理员 Phira ID 集合。可由配置、PostgreSQL 设置、CLI/WIT 动态修改。
@@ -443,6 +451,11 @@ impl PlusServer {
         }
         let (bench_tx, bench_rx) = tokio::sync::mpsc::unbounded_channel::<BenchRequest>();
 
+        let command_registry = Arc::new(crate::command_registry::runtime_v2_registry());
+        let event_bus = Arc::new(crate::event_bus::EventBus::new(1024));
+        let simulation = Arc::new(crate::simulation::SimulationManager::new());
+        let persistence_worker = crate::persistence_worker::PersistenceWorker::spawn(4096);
+
         let events = Arc::new(SseHub::new());
         let state = Arc::new(PlusServerState {
             config,
@@ -464,6 +477,10 @@ impl PlusServer {
             )),
             user_room_history: SafeMap::default(),
             bench_tx: bench_tx.clone(),
+            command_registry,
+            event_bus,
+            simulation,
+            persistence_worker,
             bench_tokens: RwLock::new(bench_tokens),
             admin_ids: RwLock::new(admin_ids),
             room_monitor_key: generate_secret_key("room_monitor", 64).unwrap_or_default(),
@@ -507,16 +524,32 @@ impl PlusServer {
         let s = Arc::clone(&state);
         state.plugin_manager.set_send_chat(Arc::new(move |uid, msg| {
             let s = Arc::clone(&s);
-            let cmd = phira_mp_common::ServerCommand::Message(
-                phira_mp_common::Message::Chat { user: 0, content: msg },
-            );
             tokio::spawn(async move {
-                let users = s.users.read().await;
-                if let Some(user) = users.get(&uid) {
-                    let session = user.session.read().await;
-                    if let Some(session) = session.as_ref().and_then(|w| w.upgrade()) {
-                        let _ = session.stream.send(cmd).await;
+                let cmd = phira_mp_common::ServerCommand::Message(
+                    phira_mp_common::Message::Chat { user: 0, content: msg },
+                );
+
+                // WASM `send.to_all` uses uid = 0.  Older code only looked up a
+                // concrete user id, so `send.to_all` could silently send to no
+                // one.  Clone user Arcs before awaiting to avoid holding the
+                // global users lock across network sends.
+                if uid == 0 {
+                    let recipients = {
+                        let users = s.users.read().await;
+                        users.values().cloned().collect::<Vec<_>>()
+                    };
+                    for user in recipients {
+                        user.try_send(cmd.clone()).await;
                     }
+                    return;
+                }
+
+                let user = {
+                    let users = s.users.read().await;
+                    users.get(&uid).cloned()
+                };
+                if let Some(user) = user {
+                    user.try_send(cmd).await;
                 }
             });
         })).await;
