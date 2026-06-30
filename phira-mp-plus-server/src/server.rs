@@ -779,6 +779,29 @@ impl PlusServerState {
         self.event_bus.publish(event)
     }
 
+    /// Broadcast a system chat message to every currently connected normal user.
+    ///
+    /// This is intentionally small and side-effect-only. Runtime v2 background
+    /// tasks use it for simulation lifecycle notices without reaching into the
+    /// CLI handler. User Arcs are cloned before awaiting so the global users lock
+    /// is never held across network sends.
+    pub async fn broadcast_system_message(&self, message: &str) -> usize {
+        let recipients = {
+            let users = self.users.read().await;
+            users.values().cloned().collect::<Vec<_>>()
+        };
+        let cmd = ServerCommand::Message(phira_mp_common::Message::Chat {
+            user: 0,
+            content: format!("[系统广播] {message}"),
+        });
+        let mut sent = 0usize;
+        for user in recipients {
+            user.try_send(cmd.clone()).await;
+            sent += 1;
+        }
+        sent
+    }
+
     async fn mirror_room_event_to_runtime_bus(&self, event: &RoomEvent) {
         use crate::event_bus::MpEvent;
 

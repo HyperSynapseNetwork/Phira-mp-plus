@@ -161,6 +161,94 @@ fn redact_cli_command_for_event(line: &str) -> String {
     }
 }
 
+
+fn publish_simulation_tick_event(state: &PlusServerState, status: &crate::simulation::SimulationStatus) {
+    state.publish_runtime_event(crate::event_bus::MpEvent::Custom {
+        kind: "simulation.tick".to_string(),
+        payload: serde_json::json!({
+            "run_id": status.run_id.map(|id| id.to_string()),
+            "ticks": status.counters.ticks,
+            "elapsed_secs": status.elapsed_secs,
+            "remaining_secs": status.remaining_secs,
+            "chat_messages": status.counters.chat_messages,
+            "ready_events": status.counters.ready_events,
+            "touch_batches": status.counters.touch_batches,
+            "judge_batches": status.counters.judge_batches,
+            "round_results": status.counters.round_results,
+        }),
+    });
+}
+
+async fn publish_simulation_snapshot(
+    state: &Arc<PlusServerState>,
+    run_id: uuid::Uuid,
+    status: &crate::simulation::SimulationStatus,
+    source: &str,
+) {
+    let world = state.simulation.world_snapshot(64).await;
+    state.publish_runtime_event(crate::event_bus::MpEvent::Custom {
+        kind: "simulation.snapshot".to_string(),
+        payload: serde_json::json!({
+            "run_id": run_id.to_string(),
+            "status": status,
+            "world": world,
+            "source": source,
+        }),
+    });
+}
+
+fn spawn_simulation_runner(
+    state: Arc<PlusServerState>,
+    out_tx: mpsc::UnboundedSender<String>,
+    run_id: uuid::Uuid,
+    config: crate::simulation::SimulationConfig,
+) {
+    tokio::spawn(async move {
+        let interval = std::time::Duration::from_millis(config.tick_interval_ms);
+        let _ = out_tx.send(format!(
+            "  ◆ simulation runner started: run_id={} tick_ms={} duration={}s persist_every={}",
+            run_id, config.tick_interval_ms, config.duration_secs, config.persist_every_ticks
+        ));
+
+        loop {
+            tokio::time::sleep(interval).await;
+            let status = match state.simulation.advance_ticks_for_run(run_id, 1).await {
+                Ok(status) => status,
+                Err(_) => break,
+            };
+            publish_simulation_tick_event(&state, &status);
+
+            if config.persist_every_ticks > 0
+                && status.counters.ticks > 0
+                && status.counters.ticks % config.persist_every_ticks == 0
+            {
+                publish_simulation_snapshot(&state, run_id, &status, "simulation.runner.periodic").await;
+            }
+
+            if status.elapsed_secs >= config.duration_secs {
+                let reason = format!("duration {}s reached", config.duration_secs);
+                if let Some(stopped) = state.simulation.stop_if_run(run_id, reason.clone()).await {
+                    state.publish_runtime_event(crate::event_bus::MpEvent::SimulationStopped {
+                        run_id,
+                        reason: reason.clone(),
+                    });
+                    let _ = state
+                        .broadcast_system_message("性能测试已结束。Runtime v2 simulation runner reached its configured duration.")
+                        .await;
+                    let _ = out_tx.send(format!(
+                        "  ✓ simulation runner stopped: run_id={} ticks={} elapsed={}s reason={}",
+                        run_id, stopped.counters.ticks, stopped.elapsed_secs, reason
+                    ));
+                    if config.persist_every_ticks > 0 {
+                        publish_simulation_snapshot(&state, run_id, &stopped, "simulation.runner.final").await;
+                    }
+                }
+                break;
+            }
+        }
+    });
+}
+
 fn strip_ansi_for_client(input: &str) -> String {
     let mut out = String::with_capacity(input.len());
     let mut chars = input.chars().peekable();
@@ -735,17 +823,7 @@ impl CliHandler {
                 let count = args.get(1).and_then(|value| value.parse::<u64>().ok()).unwrap_or(1);
                 match self.state.simulation.advance_ticks(count).await {
                     Ok(status) => {
-                        self.state.event_bus.publish(crate::event_bus::MpEvent::Custom {
-                            kind: "simulation.tick".to_string(),
-                            payload: serde_json::json!({
-                                "ticks": status.counters.ticks,
-                                "chat_messages": status.counters.chat_messages,
-                                "ready_events": status.counters.ready_events,
-                                "touch_batches": status.counters.touch_batches,
-                                "judge_batches": status.counters.judge_batches,
-                                "round_results": status.counters.round_results,
-                            }),
-                        });
+                        publish_simulation_tick_event(&self.state, &status);
                         self.out(format!("  {} simulation 已推进 {} tick(s)", c::green("✓"), count.clamp(1, 10_000)));
                         self.out(format!("  {} ticks={} chats={} ready={} touch_batches={} judge_batches={} round_results={}",
                             c::dim("│"), status.counters.ticks, status.counters.chat_messages,
@@ -807,7 +885,7 @@ impl CliHandler {
         let option_start = if args.first().and_then(|value| crate::simulation::SimulationPreset::parse(value)).is_some() { 1 } else { 0 };
         for token in &args[option_start..] {
             let Some((key, value)) = token.split_once('=') else {
-                self.out(format!("  {} 无效参数：{}；请使用 users=500 rooms=50 duration=300 touch=true judge=true", c::red("✗"), token));
+                self.out(format!("  {} 无效参数：{}；请使用 users=500 rooms=50 duration=300 tick_ms=1000 auto=true persist_every=0", c::red("✗"), token));
                 return;
             };
             if let Err(err) = config.apply_kv(key, value) {
@@ -827,9 +905,17 @@ impl CliHandler {
                     c::dim("│"), status.config.preset, status.config.users, status.config.rooms,
                     status.config.duration_secs, status.config.touch, status.config.judge,
                     status.config.chat, status.config.ready, status.config.rounds));
+                self.out(format!("  {} runner: auto={} tick_ms={} persist_every={}",
+                    c::dim("│"), status.config.auto_tick, status.config.tick_interval_ms, status.config.persist_every_ticks));
                 self.out(format!("  {} shadow world: {} users / {} rooms / {} rounds materialized",
                     c::dim("│"), status.materialized_users, status.materialized_rooms, status.materialized_rounds));
-                self.out(format!("  {} Step 3 已创建隔离 shadow world，但仍不写入真实 rooms/users/db", c::dim("▸")));
+                if status.config.auto_tick {
+                    spawn_simulation_runner(Arc::clone(&self.state), self.out_tx.clone(), run_id, status.config.clone());
+                    self.out(format!("  {} 自动 runner 已启动；到达 duration 后会自动 stop", c::dim("▸")));
+                } else {
+                    self.out(format!("  {} auto=false，需手动执行 simulation tick [n] 推进", c::dim("▸")));
+                }
+                self.out(format!("  {} Step 7 已启用隔离 runner；仍不写入真实 rooms/users 表", c::dim("▸")));
             }
             Err(err) => self.out(format!("  {} {}", c::red("✗"), err)),
         }
@@ -841,17 +927,7 @@ impl CliHandler {
             self.out(format!("  {} simulation 未运行，无法生成 snapshot", c::red("✗")));
             return;
         };
-        let world = self.state.simulation.world_snapshot(64).await;
-        let payload = serde_json::json!({
-            "run_id": run_id.to_string(),
-            "status": status,
-            "world": world,
-            "source": "cli.simulation.persist",
-        });
-        self.state.event_bus.publish(crate::event_bus::MpEvent::Custom {
-            kind: "simulation.snapshot".to_string(),
-            payload,
-        });
+        publish_simulation_snapshot(&self.state, run_id, &status, "cli.simulation.persist").await;
         self.out(format!("  {} simulation snapshot 已发送到 EventBus / PersistenceWorker", c::green("✓")));
         self.out(format!("  {} run_id={}", c::dim("│"), run_id));
         self.out(format!("  {} 这是 simulation 专用诊断数据，不会写入真实 mp_* 玩家/房间表", c::dim("▸")));
@@ -865,6 +941,8 @@ impl CliHandler {
         self.out(format!("  {} seed:           {}", c::dim("│"), status.seed));
         self.out(format!("  {} preset:         {:?}", c::dim("│"), status.config.preset));
         self.out(format!("  {} target:         {} users / {} rooms / {}s", c::dim("│"), status.config.users, status.config.rooms, status.config.duration_secs));
+        self.out(format!("  {} elapsed/remain: {}/{}s", c::dim("│"), status.elapsed_secs, status.remaining_secs.map(|v| v.to_string()).unwrap_or_else(|| "-".to_string())));
+        self.out(format!("  {} runner:         auto={} tick_ms={} persist_every={}", c::dim("│"), status.runner_enabled, status.config.tick_interval_ms, status.config.persist_every_ticks));
         self.out(format!("  {} touch/judge:    {} / {}", c::dim("│"), status.config.touch, status.config.judge));
         self.out(format!("  {} virtual state:  {} users / {} rooms", c::dim("│"), status.virtual_users, status.virtual_rooms));
         self.out(format!("  {} materialized:   {} users / {} rooms / {} rounds", c::dim("│"), status.materialized_users, status.materialized_rooms, status.materialized_rounds));

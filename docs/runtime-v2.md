@@ -126,3 +126,29 @@ Step 6 adds the first concrete simulation-only persistence sink while still keep
 - Production events mirrored through `PersistenceWorker` are still diagnostic-only and do not replace existing `db.rs` direct production writes.
 
 This is intentionally a simulation-only write path. It gives Runtime v2 a real persistence target for test data without contaminating the normal `mp_users`, `mp_room_snapshots`, `mp_events` or round result tables.
+
+## Step 7 implementation status
+
+Step 7 makes Simulation runnable without manually typing `simulation tick`:
+
+- `simulation run ...` now starts a background runner by default (`auto=true`).
+- The runner advances the isolated shadow world every `tick_ms` milliseconds.
+- The runner automatically stops the same run when `duration` seconds is reached.
+- Manual mode is still available with `simulation run ... auto=false`, then `simulation tick [count]`.
+- Optional periodic simulation snapshots can be emitted with `persist_every=N`; `0` disables periodic snapshots.
+- Status output now includes elapsed/remaining seconds and runner settings.
+- The runner broadcasts the normal start/end notices to real players, but still does not insert simulation users/rooms into production state.
+
+Useful examples:
+
+```text
+simulation run baseline
+simulation run small duration=30 tick_ms=500
+simulation run custom users=500 rooms=50 duration=300 tick_ms=1000 persist_every=30
+simulation run baseline auto=false
+simulation tick 10
+simulation stop
+simulation cleanup
+```
+
+This is still not a Room/Session state-machine migration. It is a controllable Runtime v2 load generator running entirely inside the simulation shadow world.

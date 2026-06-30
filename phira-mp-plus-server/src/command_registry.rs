@@ -376,12 +376,13 @@ pub fn runtime_v2_registry() -> CommandRegistry {
         CommandSpec::new(
             "simulation run",
             "simulation",
-            "启动隔离 shadow world，不创建真实房间、不写真实用户表。",
-            "simulation run <baseline|small|medium|large|custom> [users=N] [rooms=N] [duration=N] [touch=true] [judge=true] [chat=true] [ready=true] [rounds=true]",
+            "启动隔离 shadow world；默认自动 tick，到达 duration 后自动停止。",
+            "simulation run <baseline|small|medium|large|custom> [users=N] [rooms=N] [duration=N] [tick_ms=N] [auto=true] [persist_every=N] [touch=true] [judge=true]",
         )
         .example("simulation run baseline")
-        .example("simulation run custom users=500 rooms=50 duration=300"),
-        CommandSpec::new("simulation tick", "simulation", "推进 deterministic shadow world tick，用于制造可观察的仿真事件。", "simulation tick [count]")
+        .example("simulation run custom users=500 rooms=50 duration=300 tick_ms=1000 persist_every=30")
+        .example("simulation run small auto=false"),
+        CommandSpec::new("simulation tick", "simulation", "手动推进 deterministic shadow world tick；auto=false 时常用。", "simulation tick [count]")
             .alias("simulation advance")
             .example("simulation tick 10"),
         CommandSpec::new("simulation inspect", "simulation", "查看 shadow users/rooms/rounds/recent events 样本。", "simulation inspect [limit]")

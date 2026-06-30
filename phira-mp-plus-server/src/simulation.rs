@@ -75,6 +75,9 @@ impl SimulationPreset {
             chat: true,
             ready: true,
             rounds: true,
+            auto_tick: true,
+            tick_interval_ms: 1_000,
+            persist_every_ticks: 0,
         }
     }
 }
@@ -97,6 +100,11 @@ pub struct SimulationConfig {
     pub chat: bool,
     pub ready: bool,
     pub rounds: bool,
+    pub auto_tick: bool,
+    pub tick_interval_ms: u64,
+    /// 0 means disabled. When enabled, the CLI runner emits simulation.snapshot
+    /// events every N ticks so PersistenceWorker can write mp_sim_events.
+    pub persist_every_ticks: u64,
 }
 
 impl SimulationConfig {
@@ -116,6 +124,17 @@ impl SimulationConfig {
             "chat" | "chats" => self.chat = parse_bool(value)?,
             "ready" | "readies" => self.ready = parse_bool(value)?,
             "round" | "rounds" | "game" | "games" => self.rounds = parse_bool(value)?,
+            "auto" | "auto_tick" | "autotick" | "runner" => self.auto_tick = parse_bool(value)?,
+            "tick_ms" | "interval_ms" | "tick_interval_ms" => {
+                self.tick_interval_ms = value
+                    .parse::<u64>()
+                    .map_err(|_| "tick_ms must be u64 milliseconds".to_string())?;
+            }
+            "persist_every" | "persist_every_ticks" | "snapshot_every" => {
+                self.persist_every_ticks = value
+                    .parse::<u64>()
+                    .map_err(|_| "persist_every must be u64 ticks; 0 disables periodic snapshot".to_string())?;
+            }
             "seed" => self.seed = value.parse::<u64>().map_err(|_| "seed must be u64".to_string())?,
             other => return Err(format!("unknown simulation option: {other}")),
         }
@@ -138,6 +157,9 @@ impl SimulationConfig {
         }
         if self.rooms > 20_000 {
             return Err("simulation rooms is too large for the current safe shadow-world stage".to_string());
+        }
+        if !(50..=60_000).contains(&self.tick_interval_ms) {
+            return Err("simulation tick_ms must be between 50 and 60000".to_string());
         }
         Ok(())
     }
@@ -238,6 +260,11 @@ pub struct SimulationStatus {
     pub materialized_rooms: usize,
     pub materialized_rounds: usize,
     pub counters: SimulationCounters,
+    pub started_at_ms: Option<i64>,
+    pub last_tick_at_ms: Option<i64>,
+    pub elapsed_secs: u64,
+    pub remaining_secs: Option<u64>,
+    pub runner_enabled: bool,
     pub note: String,
 }
 
@@ -260,6 +287,8 @@ struct SimulationState {
     virtual_users: usize,
     virtual_rooms: usize,
     counters: SimulationCounters,
+    started_at_ms: Option<i64>,
+    last_tick_at_ms: Option<i64>,
     world: Option<SimulationWorld>,
     note: String,
 }
@@ -282,6 +311,8 @@ impl SimulationManager {
                 virtual_users: 0,
                 virtual_rooms: 0,
                 counters: SimulationCounters::default(),
+                started_at_ms: None,
+                last_tick_at_ms: None,
                 world: None,
                 note: "Runtime v2 simulation manager is installed; no real rooms/users are modified.".to_string(),
             })),
@@ -331,6 +362,9 @@ impl SimulationManager {
         state.virtual_users = config.users;
         state.virtual_rooms = config.rooms;
         state.counters = SimulationCounters::default();
+        let started_at_ms = now_ms();
+        state.started_at_ms = Some(started_at_ms);
+        state.last_tick_at_ms = Some(started_at_ms);
         state.note = format!(
             "simulation {} started with isolated shadow world; real rooms/users are untouched",
             config.preset.as_str()
@@ -354,6 +388,7 @@ impl SimulationManager {
         };
         state.virtual_users = 0;
         state.virtual_rooms = 0;
+        state.last_tick_at_ms = Some(now_ms());
         self.snapshot(&state)
     }
 
@@ -364,51 +399,48 @@ impl SimulationManager {
         state.virtual_users = 0;
         state.virtual_rooms = 0;
         state.counters = SimulationCounters::default();
+        state.started_at_ms = None;
+        state.last_tick_at_ms = None;
         state.world = None;
         state.note = "simulation shadow world cleaned; real rooms/users were not touched".to_string();
         self.snapshot(&state)
     }
+
 
     pub async fn advance_ticks(&self, count: u64) -> Result<SimulationStatus, String> {
         let mut state = self.state.write().await;
         if !state.running {
             return Err("simulation is not running".to_string());
         }
-        let count = count.clamp(1, 10_000);
-        for _ in 0..count {
-            let tick = state.counters.ticks + 1;
-            let config = state.config.clone();
-
-            state.counters.ticks = tick;
-            if config.chat {
-                state.counters.chat_messages += (config.users.max(1) / 10).max(1) as u64;
-            }
-            if config.ready {
-                state.counters.ready_events += config.users.max(1) as u64;
-            }
-            if config.touch {
-                state.counters.touch_batches += config.rooms.max(1) as u64;
-            }
-            if config.judge {
-                state.counters.judge_batches += config.rooms.max(1) as u64;
-            }
-            if config.rounds {
-                state.counters.round_results += config.rooms.max(1) as u64;
-            }
-
-            // Avoid holding a mutable borrow of `state.counters` while also
-            // mutably borrowing `state.world`. Rust rightfully rejects that
-            // with E0499 because both fields live under the same state guard.
-            // The shadow world only needs a read-only counter snapshot for the
-            // event message, so clone after the counter update and then borrow
-            // the world separately.
-            let counters_snapshot = state.counters.clone();
-            if let Some(world) = &mut state.world {
-                advance_shadow_world(world, tick, &config, &counters_snapshot);
-            }
-        }
-        state.note = format!("simulation advanced by {count} deterministic tick(s)");
+        advance_state(&mut state, count);
         Ok(self.snapshot(&state))
+    }
+
+    pub async fn advance_ticks_for_run(&self, run_id: Uuid, count: u64) -> Result<SimulationStatus, String> {
+        let mut state = self.state.write().await;
+        if !state.running || state.run_id != Some(run_id) {
+            return Err("simulation run changed or stopped".to_string());
+        }
+        advance_state(&mut state, count);
+        Ok(self.snapshot(&state))
+    }
+
+    pub async fn stop_if_run(&self, run_id: Uuid, reason: impl Into<String>) -> Option<SimulationStatus> {
+        let mut state = self.state.write().await;
+        if !state.running || state.run_id != Some(run_id) {
+            return None;
+        }
+        let reason = reason.into();
+        if let Some(world) = &mut state.world {
+            push_event(world, "stopped", reason.clone());
+        }
+        state.running = false;
+        state.note = format!("simulation {run_id} stopped: {reason}");
+        state.run_id = None;
+        state.virtual_users = 0;
+        state.virtual_rooms = 0;
+        state.last_tick_at_ms = Some(now_ms());
+        Some(self.snapshot(&state))
     }
 
     pub async fn world_snapshot(&self, limit: usize) -> Option<SimulationWorldSnapshot> {
@@ -476,6 +508,11 @@ impl SimulationManager {
             materialized_rooms,
             materialized_rounds,
             counters: state.counters.clone(),
+            started_at_ms: state.started_at_ms,
+            last_tick_at_ms: state.last_tick_at_ms,
+            elapsed_secs: elapsed_secs(state),
+            remaining_secs: remaining_secs(state),
+            runner_enabled: state.running && state.config.auto_tick,
             note: state.note.clone(),
         }
     }
@@ -485,6 +522,64 @@ impl Default for SimulationManager {
     fn default() -> Self {
         Self::new()
     }
+}
+
+fn advance_state(state: &mut SimulationState, count: u64) {
+    let count = count.clamp(1, 10_000);
+    for _ in 0..count {
+        let tick = state.counters.ticks + 1;
+        let config = state.config.clone();
+
+        state.counters.ticks = tick;
+        if config.chat {
+            state.counters.chat_messages += (config.users.max(1) / 10).max(1) as u64;
+        }
+        if config.ready {
+            state.counters.ready_events += config.users.max(1) as u64;
+        }
+        if config.touch {
+            state.counters.touch_batches += config.rooms.max(1) as u64;
+        }
+        if config.judge {
+            state.counters.judge_batches += config.rooms.max(1) as u64;
+        }
+        if config.rounds {
+            state.counters.round_results += config.rooms.max(1) as u64;
+        }
+
+        let counters_snapshot = state.counters.clone();
+        if let Some(world) = &mut state.world {
+            advance_shadow_world(world, tick, &config, &counters_snapshot);
+        }
+    }
+    state.last_tick_at_ms = Some(now_ms());
+    state.note = format!("simulation advanced by {count} deterministic tick(s)");
+}
+
+fn elapsed_secs(state: &SimulationState) -> u64 {
+    let Some(started) = state.started_at_ms else {
+        return 0;
+    };
+    let end = if state.running {
+        now_ms()
+    } else {
+        state.last_tick_at_ms.unwrap_or_else(now_ms)
+    };
+    end.saturating_sub(started).max(0) as u64 / 1000
+}
+
+fn remaining_secs(state: &SimulationState) -> Option<u64> {
+    if !state.running {
+        return None;
+    }
+    Some(state.config.duration_secs.saturating_sub(elapsed_secs(state)))
+}
+
+fn now_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_millis().min(i64::MAX as u128) as i64)
+        .unwrap_or(0)
 }
 
 fn build_shadow_world(run_id: Uuid, config: &SimulationConfig) -> SimulationWorld {
@@ -645,6 +740,8 @@ mod tests {
         assert_eq!(config.users, 500);
         assert_eq!(config.rooms, 50);
         assert_eq!(config.seed, 42);
+        assert!(config.auto_tick);
+        assert_eq!(config.tick_interval_ms, 1_000);
     }
 
     #[test]
@@ -652,9 +749,15 @@ mod tests {
         let mut config = SimulationConfig::default();
         config.apply_kv("users", "123").unwrap();
         config.apply_kv("touch", "false").unwrap();
+        config.apply_kv("auto", "false").unwrap();
+        config.apply_kv("tick_ms", "250").unwrap();
+        config.apply_kv("persist_every", "5").unwrap();
         assert_eq!(config.preset, SimulationPreset::Custom);
         assert_eq!(config.users, 123);
         assert!(!config.touch);
+        assert!(!config.auto_tick);
+        assert_eq!(config.tick_interval_ms, 250);
+        assert_eq!(config.persist_every_ticks, 5);
     }
 
     #[test]
