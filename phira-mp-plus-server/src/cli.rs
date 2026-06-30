@@ -731,6 +731,34 @@ impl CliHandler {
                 self.broadcast_all("性能测试已结束。Real rooms/users were not modified by the Runtime v2 skeleton.").await;
                 self.out(format!("  {} {}", c::green("✓"), status.note));
             }
+            "tick" | "advance" => {
+                let count = args.get(1).and_then(|value| value.parse::<u64>().ok()).unwrap_or(1);
+                match self.state.simulation.advance_ticks(count).await {
+                    Ok(status) => {
+                        self.state.event_bus.publish(crate::event_bus::MpEvent::Custom {
+                            kind: "simulation.tick".to_string(),
+                            payload: serde_json::json!({
+                                "ticks": status.counters.ticks,
+                                "chat_messages": status.counters.chat_messages,
+                                "ready_events": status.counters.ready_events,
+                                "touch_batches": status.counters.touch_batches,
+                                "judge_batches": status.counters.judge_batches,
+                                "round_results": status.counters.round_results,
+                            }),
+                        });
+                        self.out(format!("  {} simulation 已推进 {} tick(s)", c::green("✓"), count.clamp(1, 10_000)));
+                        self.out(format!("  {} ticks={} chats={} ready={} touch_batches={} judge_batches={} round_results={}",
+                            c::dim("│"), status.counters.ticks, status.counters.chat_messages,
+                            status.counters.ready_events, status.counters.touch_batches,
+                            status.counters.judge_batches, status.counters.round_results));
+                    }
+                    Err(err) => self.out(format!("  {} {}", c::red("✗"), err)),
+                }
+            }
+            "inspect" | "world" | "rooms" | "users" => {
+                let limit = args.get(1).and_then(|value| value.parse::<usize>().ok()).unwrap_or(10);
+                self.print_simulation_world(limit).await;
+            }
             "seed" => {
                 if args.len() < 2 {
                     self.out(format!("  {} {} seed <u64>", c::yellow("?"), c::bold("simulation")));
@@ -759,11 +787,11 @@ impl CliHandler {
                 if let Some(first) = judges.first() {
                     self.out(format!("  {} first judge: t={}ms {} +{}", c::dim("│"), first.time_ms, first.judge, first.score_delta));
                 }
-                self.out(format!("  {} Step 2 只生成 deterministic 示例数据，不写入数据库，不污染真实房间", c::dim("▸")));
+                self.out(format!("  {} Step 3 示例数据由 shadow world 复用，仍不写入真实数据库/房间", c::dim("▸")));
             }
             _ => {
                 self.out(format!("  {} 未知 simulation 子命令: {}", c::red("✗"), c::yellow(sub)));
-                self.out(format!("  {} 可用: simulation status | run <preset> | stop | seed <u64> | cleanup | sample", c::dim("▸")));
+                self.out(format!("  {} 可用: simulation status | run <preset> | tick [n] | inspect [limit] | stop | seed <u64> | cleanup | sample", c::dim("▸")));
             }
         }
     }
@@ -794,10 +822,13 @@ impl CliHandler {
                 }
                 self.broadcast_all("服务器正在进行性能测试，期间可能出现短暂卡顿。Runtime v2 当前为安全骨架模式，不会创建真实房间。").await;
                 self.out(format!("  {} simulation 已启动: {:?}", c::green("✓"), status.run_id));
-                self.out(format!("  {} preset={:?} users={} rooms={} duration={}s touch={} judge={}",
+                self.out(format!("  {} preset={:?} users={} rooms={} duration={}s touch={} judge={} chat={} ready={} rounds={}",
                     c::dim("│"), status.config.preset, status.config.users, status.config.rooms,
-                    status.config.duration_secs, status.config.touch, status.config.judge));
-                self.out(format!("  {} Step 2 只维护内存计数和广播提示，不写入数据库，不污染真实房间", c::dim("▸")));
+                    status.config.duration_secs, status.config.touch, status.config.judge,
+                    status.config.chat, status.config.ready, status.config.rounds));
+                self.out(format!("  {} shadow world: {} users / {} rooms / {} rounds materialized",
+                    c::dim("│"), status.materialized_users, status.materialized_rooms, status.materialized_rounds));
+                self.out(format!("  {} Step 3 已创建隔离 shadow world，但仍不写入真实 rooms/users/db", c::dim("▸")));
             }
             Err(err) => self.out(format!("  {} {}", c::red("✗"), err)),
         }
@@ -813,7 +844,49 @@ impl CliHandler {
         self.out(format!("  {} target:         {} users / {} rooms / {}s", c::dim("│"), status.config.users, status.config.rooms, status.config.duration_secs));
         self.out(format!("  {} touch/judge:    {} / {}", c::dim("│"), status.config.touch, status.config.judge));
         self.out(format!("  {} virtual state:  {} users / {} rooms", c::dim("│"), status.virtual_users, status.virtual_rooms));
+        self.out(format!("  {} materialized:   {} users / {} rooms / {} rounds", c::dim("│"), status.materialized_users, status.materialized_rooms, status.materialized_rounds));
+        self.out(format!("  {} counters:       ticks={} chats={} ready={} touch={} judge={} result={}",
+            c::dim("│"), status.counters.ticks, status.counters.chat_messages,
+            status.counters.ready_events, status.counters.touch_batches,
+            status.counters.judge_batches, status.counters.round_results));
         self.out(format!("  {} note:           {}", c::dim("│"), status.note));
+    }
+
+    async fn print_simulation_world(&self, limit: usize) {
+        let Some(world) = self.state.simulation.world_snapshot(limit).await else {
+            self.out(format!("  {} simulation shadow world 不存在；请先执行 simulation run baseline", c::yellow("!")));
+            return;
+        };
+        self.out(format!("  {} Simulation Shadow World", c::green("◆")));
+        self.out(format!("  {} run_id:       {}", c::dim("│"), world.run_id.as_ref().map(|id| id.to_string()).unwrap_or_else(|| "-".to_string())));
+        self.out(format!("  {} totals:       {} users / {} rooms", c::dim("│"), world.users_total, world.rooms_total));
+        self.out(format!("  {} materialized: {} users / {} rooms / {} rounds", c::dim("│"), world.users_materialized, world.rooms_materialized, world.rounds_materialized));
+        self.out(format!("  {} {}", c::dim("▸"), world.materialization_note));
+        self.out(format!("  {} sample rooms", c::cyan("▸")));
+        for room in world.sample_rooms.iter().take(8) {
+            self.out(format!("    {} chart={} members={} ready={} playing={} round={}",
+                c::bold(&room.id), room.chart_id, room.member_ids.len(), room.ready_count,
+                room.playing, room.round_id.as_deref().unwrap_or("-")));
+        }
+        self.out(format!("  {} sample users", c::cyan("▸")));
+        for user in world.sample_users.iter().take(8) {
+            self.out(format!("    {} id={} room={} ready={} playing={}",
+                c::bold(&user.name), user.id, user.room_id.as_deref().unwrap_or("-"), user.ready, user.playing));
+        }
+        if !world.sample_rounds.is_empty() {
+            self.out(format!("  {} sample rounds", c::cyan("▸")));
+            for round in world.sample_rounds.iter().take(6) {
+                self.out(format!("    {} room={} chart={} players={} score={} touch={} judge={}",
+                    c::bold(&round.round_id), round.room_id, round.chart_id, round.players,
+                    round.sample_score, round.sample_touches, round.sample_judges));
+            }
+        }
+        if !world.recent_events.is_empty() {
+            self.out(format!("  {} recent events", c::cyan("▸")));
+            for event in world.recent_events.iter().take(8) {
+                self.out(format!("    #{:<4} {:<10} {}", event.seq, event.kind, event.message));
+            }
+        }
     }
 
     async fn runtime_command(&self, args: &[&str]) {
@@ -823,8 +896,10 @@ impl CliHandler {
                 let sim = self.state.simulation.status().await;
                 let persistence = self.state.persistence_worker.stats().await;
                 self.out(format!("  {} Runtime v2 skeleton", c::green("◆")));
+                let event_stats = self.state.event_bus.stats(5);
                 self.out(format!("  {} command specs:      {}", c::dim("│"), self.state.command_registry.iter().count()));
-                self.out(format!("  {} event subscribers:  {}", c::dim("│"), self.state.event_bus.receiver_count()));
+                self.out(format!("  {} event subscribers:  {}", c::dim("│"), event_stats.receiver_count));
+                self.out(format!("  {} events published:   {}", c::dim("│"), event_stats.published));
                 self.out(format!("  {} simulation running: {}", c::dim("│"), sim.running));
                 self.out(format!("  {} persistence queue:  queued={} processed={} dropped={}", c::dim("│"), persistence.queued, persistence.processed, persistence.dropped));
                 self.out(format!("  {} 现有 Room/Session/DB 主逻辑仍未迁移到 Runtime v2", c::dim("▸")));
@@ -836,8 +911,19 @@ impl CliHandler {
                 self.out(format!("  {} roots:  {}", c::dim("│"), self.state.command_registry.root_commands().join(", ")));
             }
             "events" | "event" => {
+                let stats = self.state.event_bus.stats(12);
                 self.out(format!("  {} EventBus", c::green("◆")));
-                self.out(format!("  {} subscribers: {}", c::dim("│"), self.state.event_bus.receiver_count()));
+                self.out(format!("  {} subscribers:      {}", c::dim("│"), stats.receiver_count));
+                self.out(format!("  {} published:        {}", c::dim("│"), stats.published));
+                self.out(format!("  {} delivered_total:  {}", c::dim("│"), stats.delivered_total));
+                self.out(format!("  {} no_subscriber:    {}", c::dim("│"), stats.no_subscriber));
+                self.out(format!("  {} lagged_or_closed: {}", c::dim("│"), stats.lagged_or_closed));
+                if !stats.recent.is_empty() {
+                    self.out(format!("  {} recent", c::cyan("▸")));
+                    for event in stats.recent {
+                        self.out(format!("    #{:<4} {:<24} subscribers={} {}", event.seq, event.kind, event.subscribers, event.summary));
+                    }
+                }
                 self.out(format!("  {} 当前只作为 Runtime v2 新功能事件脊柱，未替换旧插件/房间调用", c::dim("▸")));
             }
             "persistence" | "persist" | "db" => {

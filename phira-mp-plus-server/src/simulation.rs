@@ -1,16 +1,28 @@
-//! Runtime v2 simulation skeleton.
+//! Runtime v2 simulation manager.
 //!
-//! Step 2 still does not create virtual users or rooms. It adds safe lifecycle
-//! state (`run`/`stop`/`cleanup`) and deterministic sample data so CLI/TUI/Web
-//! integration can be tested before touching the real room/session state machine.
+//! Step 3 creates an isolated **shadow world** for deterministic simulation.
+//! Shadow users/rooms/rounds are stored only inside [`SimulationManager`]; they
+//! are not inserted into the real `PlusServerState.rooms` / `users` maps, are not
+//! returned by `/api/rooms`, and are not written to normal persistence tables.
+//! This gives us something useful to inspect and test before moving any real
+//! Room/Session state-machine logic.
 
 use serde::{Deserialize, Serialize};
-use std::sync::{
-    atomic::{AtomicU64, Ordering},
-    Arc,
+use std::{
+    collections::{HashSet, VecDeque},
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Arc,
+    },
 };
 use tokio::sync::RwLock;
 use uuid::Uuid;
+
+pub const DEFAULT_SIMULATION_SEED: u64 = 114_514;
+const MAX_SHADOW_USERS: usize = 50_000;
+const MAX_SHADOW_ROOMS: usize = 10_000;
+const MAX_ROOM_MEMBERS: usize = 16;
+const MAX_EVENT_LOG: usize = 256;
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -60,6 +72,9 @@ impl SimulationPreset {
             touch: true,
             judge: true,
             seed,
+            chat: true,
+            ready: true,
+            rounds: true,
         }
     }
 }
@@ -79,6 +94,9 @@ pub struct SimulationConfig {
     pub touch: bool,
     pub judge: bool,
     pub seed: u64,
+    pub chat: bool,
+    pub ready: bool,
+    pub rounds: bool,
 }
 
 impl SimulationConfig {
@@ -95,6 +113,9 @@ impl SimulationConfig {
             }
             "touch" | "touches" => self.touch = parse_bool(value)?,
             "judge" | "judges" => self.judge = parse_bool(value)?,
+            "chat" | "chats" => self.chat = parse_bool(value)?,
+            "ready" | "readies" => self.ready = parse_bool(value)?,
+            "round" | "rounds" | "game" | "games" => self.rounds = parse_bool(value)?,
             "seed" => self.seed = value.parse::<u64>().map_err(|_| "seed must be u64".to_string())?,
             other => return Err(format!("unknown simulation option: {other}")),
         }
@@ -113,10 +134,10 @@ impl SimulationConfig {
             return Err("simulation duration must be greater than 0".to_string());
         }
         if self.users > 200_000 {
-            return Err("simulation users is too large for the safe skeleton stage".to_string());
+            return Err("simulation users is too large for the current safe shadow-world stage".to_string());
         }
         if self.rooms > 20_000 {
-            return Err("simulation rooms is too large for the safe skeleton stage".to_string());
+            return Err("simulation rooms is too large for the current safe shadow-world stage".to_string());
         }
         Ok(())
     }
@@ -142,6 +163,69 @@ pub struct SampleJudge {
     pub score_delta: i32,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct SimulationCounters {
+    pub ticks: u64,
+    pub chat_messages: u64,
+    pub ready_events: u64,
+    pub touch_batches: u64,
+    pub judge_batches: u64,
+    pub round_results: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VirtualUser {
+    pub id: i32,
+    pub name: String,
+    pub room_id: Option<String>,
+    pub ready: bool,
+    pub playing: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VirtualRoom {
+    pub id: String,
+    pub hidden: bool,
+    pub chart_id: i32,
+    pub member_ids: Vec<i32>,
+    pub ready_count: usize,
+    pub playing: bool,
+    pub round_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VirtualRound {
+    pub round_id: String,
+    pub room_id: String,
+    pub chart_id: i32,
+    pub players: usize,
+    pub sample_score: i32,
+    pub sample_touches: usize,
+    pub sample_judges: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SimulationEventLogEntry {
+    pub seq: u64,
+    pub kind: String,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SimulationWorldSnapshot {
+    pub run_id: Option<Uuid>,
+    pub users_total: usize,
+    pub rooms_total: usize,
+    pub users_materialized: usize,
+    pub rooms_materialized: usize,
+    pub rounds_materialized: usize,
+    pub sample_users: Vec<VirtualUser>,
+    pub sample_rooms: Vec<VirtualRoom>,
+    pub sample_rounds: Vec<VirtualRound>,
+    pub recent_events: Vec<SimulationEventLogEntry>,
+    pub materialization_note: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SimulationStatus {
     pub running: bool,
@@ -150,7 +234,22 @@ pub struct SimulationStatus {
     pub config: SimulationConfig,
     pub virtual_users: usize,
     pub virtual_rooms: usize,
+    pub materialized_users: usize,
+    pub materialized_rooms: usize,
+    pub materialized_rounds: usize,
+    pub counters: SimulationCounters,
     pub note: String,
+}
+
+#[derive(Debug, Clone)]
+struct SimulationWorld {
+    users_total: usize,
+    rooms_total: usize,
+    users: Vec<VirtualUser>,
+    rooms: Vec<VirtualRoom>,
+    rounds: Vec<VirtualRound>,
+    events: VecDeque<SimulationEventLogEntry>,
+    next_seq: u64,
 }
 
 #[derive(Debug)]
@@ -160,6 +259,8 @@ struct SimulationState {
     config: SimulationConfig,
     virtual_users: usize,
     virtual_rooms: usize,
+    counters: SimulationCounters,
+    world: Option<SimulationWorld>,
     note: String,
 }
 
@@ -168,8 +269,6 @@ pub struct SimulationManager {
     seed: AtomicU64,
     state: Arc<RwLock<SimulationState>>,
 }
-
-pub const DEFAULT_SIMULATION_SEED: u64 = 114_514;
 
 impl SimulationManager {
     pub fn new() -> Self {
@@ -182,7 +281,9 @@ impl SimulationManager {
                 config,
                 virtual_users: 0,
                 virtual_rooms: 0,
-                note: "Runtime v2 simulation skeleton is installed; no virtual rooms are created in step 2.".to_string(),
+                counters: SimulationCounters::default(),
+                world: None,
+                note: "Runtime v2 simulation manager is installed; no real rooms/users are modified.".to_string(),
             })),
         }
     }
@@ -197,6 +298,9 @@ impl SimulationManager {
         let mut state = self.state.write().await;
         state.config.seed = seed;
         state.note = format!("simulation seed updated to {seed}; deterministic replay uses it for sample data");
+        if let Some(world) = &mut state.world {
+            push_event(world, "seed", format!("seed updated to {seed}; running world will use it on next restart"));
+        }
     }
 
     pub async fn start(&self, config: SimulationConfig) -> Result<SimulationStatus, String> {
@@ -210,21 +314,38 @@ impl SimulationManager {
             ));
         }
         let run_id = Uuid::new_v4();
+        let mut world = build_shadow_world(run_id, &config);
+        push_event(
+            &mut world,
+            "started",
+            format!(
+                "shadow world started: preset={} users={} rooms={} seed={}",
+                config.preset.as_str(),
+                config.users,
+                config.rooms,
+                config.seed
+            ),
+        );
         state.running = true;
         state.run_id = Some(run_id);
         state.virtual_users = config.users;
         state.virtual_rooms = config.rooms;
+        state.counters = SimulationCounters::default();
         state.note = format!(
-            "simulation {} started in safe skeleton mode; virtual users/rooms are counters only and do not touch real room state",
+            "simulation {} started with isolated shadow world; real rooms/users are untouched",
             config.preset.as_str()
         );
         state.config = config;
+        state.world = Some(world);
         Ok(self.snapshot(&state))
     }
 
     pub async fn stop(&self, reason: impl Into<String>) -> SimulationStatus {
         let mut state = self.state.write().await;
         let reason = reason.into();
+        if let Some(world) = &mut state.world {
+            push_event(world, "stopped", reason.clone());
+        }
         state.running = false;
         state.note = if let Some(run_id) = state.run_id.take() {
             format!("simulation {run_id} stopped: {reason}")
@@ -242,8 +363,63 @@ impl SimulationManager {
         state.run_id = None;
         state.virtual_users = 0;
         state.virtual_rooms = 0;
-        state.note = "simulation memory state cleaned; real rooms/users were not touched".to_string();
+        state.counters = SimulationCounters::default();
+        state.world = None;
+        state.note = "simulation shadow world cleaned; real rooms/users were not touched".to_string();
         self.snapshot(&state)
+    }
+
+    pub async fn advance_ticks(&self, count: u64) -> Result<SimulationStatus, String> {
+        let mut state = self.state.write().await;
+        if !state.running {
+            return Err("simulation is not running".to_string());
+        }
+        let count = count.clamp(1, 10_000);
+        for _ in 0..count {
+            let tick = state.counters.ticks + 1;
+            let config = state.config.clone();
+            let counters = &mut state.counters;
+            counters.ticks = tick;
+            if config.chat {
+                counters.chat_messages += (config.users.max(1) / 10).max(1) as u64;
+            }
+            if config.ready {
+                counters.ready_events += config.users.max(1) as u64;
+            }
+            if config.touch {
+                counters.touch_batches += config.rooms.max(1) as u64;
+            }
+            if config.judge {
+                counters.judge_batches += config.rooms.max(1) as u64;
+            }
+            if config.rounds {
+                counters.round_results += config.rooms.max(1) as u64;
+            }
+            if let Some(world) = &mut state.world {
+                advance_shadow_world(world, tick, &config, counters);
+            }
+        }
+        state.note = format!("simulation advanced by {count} deterministic tick(s)");
+        Ok(self.snapshot(&state))
+    }
+
+    pub async fn world_snapshot(&self, limit: usize) -> Option<SimulationWorldSnapshot> {
+        let state = self.state.read().await;
+        let world = state.world.as_ref()?;
+        let limit = limit.clamp(1, 200);
+        Some(SimulationWorldSnapshot {
+            run_id: state.run_id,
+            users_total: world.users_total,
+            rooms_total: world.rooms_total,
+            users_materialized: world.users.len(),
+            rooms_materialized: world.rooms.len(),
+            rounds_materialized: world.rounds.len(),
+            sample_users: world.users.iter().take(limit).cloned().collect(),
+            sample_rooms: world.rooms.iter().take(limit).cloned().collect(),
+            sample_rounds: world.rounds.iter().take(limit).cloned().collect(),
+            recent_events: world.events.iter().rev().take(limit).cloned().collect(),
+            materialization_note: materialization_note(world.users_total, world.rooms_total),
+        })
     }
 
     pub fn sample_touches(seed: u64) -> Vec<SampleTouch> {
@@ -276,6 +452,11 @@ impl SimulationManager {
     }
 
     fn snapshot(&self, state: &SimulationState) -> SimulationStatus {
+        let (materialized_users, materialized_rooms, materialized_rounds) = state
+            .world
+            .as_ref()
+            .map(|world| (world.users.len(), world.rooms.len(), world.rounds.len()))
+            .unwrap_or((0, 0, 0));
         SimulationStatus {
             running: state.running,
             run_id: state.run_id,
@@ -283,6 +464,10 @@ impl SimulationManager {
             config: state.config.clone(),
             virtual_users: state.virtual_users,
             virtual_rooms: state.virtual_rooms,
+            materialized_users,
+            materialized_rooms,
+            materialized_rounds,
+            counters: state.counters.clone(),
             note: state.note.clone(),
         }
     }
@@ -291,6 +476,146 @@ impl SimulationManager {
 impl Default for SimulationManager {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+fn build_shadow_world(run_id: Uuid, config: &SimulationConfig) -> SimulationWorld {
+    let users_materialized = config.users.min(MAX_SHADOW_USERS);
+    let rooms_materialized = config.rooms.min(MAX_SHADOW_ROOMS);
+    let seed_offset = (config.seed % 10_000) as i32;
+    let mut users = Vec::with_capacity(users_materialized);
+    let mut rooms = Vec::with_capacity(rooms_materialized);
+    for idx in 0..users_materialized {
+        let id = -1_000_000 - seed_offset - idx as i32;
+        let room_idx = if rooms_materialized > 0 { idx % rooms_materialized } else { 0 };
+        users.push(VirtualUser {
+            id,
+            name: format!("sim-user-{idx:05}"),
+            room_id: Some(format!("sim-{:04}", room_idx)),
+            ready: config.ready && idx % 3 != 0,
+            playing: false,
+        });
+    }
+    for idx in 0..rooms_materialized {
+        let member_ids = users
+            .iter()
+            .skip(idx)
+            .step_by(rooms_materialized.max(1))
+            .take(MAX_ROOM_MEMBERS)
+            .map(|user| user.id)
+            .collect::<Vec<_>>();
+        let ready_count = member_ids
+            .iter()
+            .filter(|id| users.iter().any(|user| user.id == **id && user.ready))
+            .count();
+        rooms.push(VirtualRoom {
+            id: format!("sim-{idx:04}"),
+            hidden: true,
+            chart_id: 10_000_000 + ((config.seed as usize + idx) % 10_000) as i32,
+            member_ids,
+            ready_count,
+            playing: false,
+            round_id: None,
+        });
+    }
+    let mut world = SimulationWorld {
+        users_total: config.users,
+        rooms_total: config.rooms,
+        users,
+        rooms,
+        rounds: Vec::new(),
+        events: VecDeque::with_capacity(MAX_EVENT_LOG),
+        next_seq: 1,
+    };
+    push_event(&mut world, "world", format!("shadow world allocated for run {run_id}"));
+    world
+}
+
+fn advance_shadow_world(
+    world: &mut SimulationWorld,
+    tick: u64,
+    config: &SimulationConfig,
+    counters: &SimulationCounters,
+) {
+    if config.ready {
+        for (idx, user) in world.users.iter_mut().enumerate() {
+            user.ready = ((idx as u64 + tick + config.seed) % 4) != 0;
+        }
+    }
+    if config.rounds {
+        let seed = config.seed;
+        let touches_len = SimulationManager::sample_touches(seed).len();
+        let judges_len = SimulationManager::sample_judges(seed).len();
+        let mut new_rounds = Vec::new();
+        for (idx, room) in world.rooms.iter_mut().enumerate().take(128) {
+            let should_play = (idx as u64 + tick + seed) % 2 == 0;
+            room.playing = should_play;
+            room.ready_count = room.member_ids.len().saturating_sub(((idx as u64 + tick) % 2) as usize);
+            if should_play {
+                let round_id = format!("sim-round-{tick:06}-{idx:04}");
+                room.round_id = Some(round_id.clone());
+                new_rounds.push(VirtualRound {
+                    round_id,
+                    room_id: room.id.clone(),
+                    chart_id: room.chart_id,
+                    players: room.member_ids.len(),
+                    sample_score: 1_000_000 - ((seed as i32 + idx as i32 + tick as i32) % 50_000),
+                    sample_touches: if config.touch { touches_len } else { 0 },
+                    sample_judges: if config.judge { judges_len } else { 0 },
+                });
+            } else {
+                room.round_id = None;
+            }
+        }
+        world.rounds = new_rounds;
+        let playing_rooms = world
+            .rooms
+            .iter()
+            .filter(|room| room.playing)
+            .map(|room| room.id.clone())
+            .collect::<HashSet<_>>();
+        for user in &mut world.users {
+            user.playing = user
+                .room_id
+                .as_ref()
+                .map(|room_id| playing_rooms.contains(room_id))
+                .unwrap_or(false);
+        }
+    }
+    push_event(
+        world,
+        "tick",
+        format!(
+            "tick={tick} chat={} ready={} touch_batches={} judge_batches={} round_results={}",
+            counters.chat_messages,
+            counters.ready_events,
+            counters.touch_batches,
+            counters.judge_batches,
+            counters.round_results
+        ),
+    );
+}
+
+fn push_event(world: &mut SimulationWorld, kind: impl Into<String>, message: impl Into<String>) {
+    if world.events.len() >= MAX_EVENT_LOG {
+        world.events.pop_front();
+    }
+    world.events.push_back(SimulationEventLogEntry {
+        seq: world.next_seq,
+        kind: kind.into(),
+        message: message.into(),
+    });
+    world.next_seq += 1;
+}
+
+fn materialization_note(users_total: usize, rooms_total: usize) -> String {
+    let users_capped = users_total > MAX_SHADOW_USERS;
+    let rooms_capped = rooms_total > MAX_SHADOW_ROOMS;
+    match (users_capped, rooms_capped) {
+        (false, false) => "all shadow users and rooms are materialized in memory".to_string(),
+        (true, false) => format!("shadow users capped at {MAX_SHADOW_USERS}; totals still track requested user count"),
+        (false, true) => format!("shadow rooms capped at {MAX_SHADOW_ROOMS}; totals still track requested room count"),
+        (true, true) => format!("shadow users capped at {MAX_SHADOW_USERS}, rooms capped at {MAX_SHADOW_ROOMS}; totals still track requested counts"),
     }
 }
 
@@ -328,5 +653,18 @@ mod tests {
     fn sample_data_is_seeded() {
         assert_ne!(SimulationManager::sample_touches(1)[0].time_ms, SimulationManager::sample_touches(2)[0].time_ms);
         assert_eq!(SimulationManager::sample_judges(114_514).len(), 8);
+    }
+
+    #[tokio::test]
+    async fn start_builds_isolated_shadow_world() {
+        let manager = SimulationManager::new();
+        let status = manager.start(SimulationPreset::Small.defaults(7)).await.unwrap();
+        assert!(status.running);
+        assert_eq!(status.virtual_users, 100);
+        let world = manager.world_snapshot(5).await.unwrap();
+        assert_eq!(world.users_total, 100);
+        assert_eq!(world.rooms_total, 10);
+        assert!(!world.sample_rooms.is_empty());
+        assert!(world.sample_rooms[0].hidden);
     }
 }

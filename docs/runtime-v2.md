@@ -70,3 +70,22 @@ Step 2 connects the skeletons to low-risk operational surfaces:
 - Existing `benchmark` remains the explicit real-network compatibility path.
 
 Step 2 deliberately does not migrate Room, Session, PostgreSQL writes or plugin events to Runtime v2. The next safe migration target is adding a simulation data isolation design before any real virtual room/player objects are created.
+
+## Step 3 implementation status
+
+Step 3 turns Simulation from a pure counter skeleton into an isolated shadow world:
+
+- `simulation run ...` materializes deterministic shadow users, rooms and sample rounds inside `SimulationManager`.
+- Shadow rooms are marked hidden and are **not** inserted into the production `rooms` map.
+- Shadow users are negative-ID simulation users and are **not** inserted into the production `users` map.
+- `/api/rooms` still returns only real, non-hidden production rooms.
+- New diagnostic Web API routes are available:
+  - `/api/runtime`
+  - `/api/simulation`
+  - `/api/simulation/world`
+- New CLI commands are available:
+  - `simulation tick [count]`
+  - `simulation inspect [limit]`
+- `EventBus` now keeps basic publish/delivery counters and a bounded recent-event trace for diagnostics.
+
+Step 3 still deliberately avoids moving real Room/Session state-machine ownership into Runtime v2. The next safe cut is to let Simulation publish more structured Runtime v2 events and to add a simulation-only persistence path; after that, selected low-risk Room events can be mirrored into EventBus.

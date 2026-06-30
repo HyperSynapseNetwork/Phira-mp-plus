@@ -380,9 +380,9 @@ pub struct PlusServerState {
     pub bench_tx: tokio::sync::mpsc::UnboundedSender<BenchRequest>,
     /// Runtime v2 命令元数据注册表。Step 1 仅用于 help/补全/未来统一入口，不改变现有执行逻辑。
     pub command_registry: Arc<crate::command_registry::CommandRegistry>,
-    /// Runtime v2 事件总线。Step 1 仅作为新增功能的可选事件脊柱。
+    /// Runtime v2 事件总线。当前记录新增 Runtime v2 事件和诊断统计，旧路径仍逐步迁移。
     pub event_bus: Arc<crate::event_bus::EventBus>,
-    /// Runtime v2 Simulation 状态管理器。Step 1 不创建真实/虚拟房间。
+    /// Runtime v2 Simulation 状态管理器。当前只创建隔离 shadow world，不污染真实 rooms/users。
     pub simulation: Arc<crate::simulation::SimulationManager>,
     /// Runtime v2 持久化 Worker 骨架。现有 db.rs 写入路径暂不迁移。
     pub persistence_worker: Arc<crate::persistence_worker::PersistenceWorker>,
@@ -591,6 +591,21 @@ impl PlusServer {
                 "player_count": online_count,
                 "total_players": crate::internal_hooks::player_count(),
             }))
+        }));
+        let runtime_state = Arc::clone(&state_for_webapi2);
+        http_for_webapi.register_route_sync("/api/runtime", Arc::new(move |_, _| {
+            server_state_query_inner(&runtime_state, "runtime.status", &[])
+                .map_err(|e| (500u16, e))
+        }));
+        let simulation_state = Arc::clone(&state_for_webapi2);
+        http_for_webapi.register_route_sync("/api/simulation", Arc::new(move |_, _| {
+            server_state_query_inner(&simulation_state, "simulation.status", &[])
+                .map_err(|e| (500u16, e))
+        }));
+        let simulation_world_state = Arc::clone(&state_for_webapi2);
+        http_for_webapi.register_route_sync("/api/simulation/world", Arc::new(move |_, _| {
+            server_state_query_inner(&simulation_world_state, "simulation.world", &[serde_json::json!(20)])
+                .map_err(|e| (500u16, e))
         }));
         // GET /api/players/all — 所有连接过服务器的玩家
         http_for_webapi.register_route_sync("/api/players/all", Arc::new(move |_, _| {
@@ -1807,6 +1822,52 @@ async fn run_admin_kick_user(state: &PlusServerState, target_id: i32, reason: &s
 /// - 其它方法委托给 webapi feature 下的 server_state_query
 fn server_state_query_inner(state: &Arc<PlusServerState>, method: &str, args: &[Value]) -> Result<Value, String> {
     match method {
+        "runtime.status" => {
+            let (tx, rx) = std::sync::mpsc::channel();
+            let s = Arc::clone(state);
+            tokio::spawn(async move {
+                let simulation = s.simulation.status().await;
+                let persistence = s.persistence_worker.stats().await;
+                let events = s.event_bus.stats(16);
+                let commands = s.command_registry.iter().count();
+                let _ = tx.send(Ok(serde_json::json!({
+                    "runtime_v2": true,
+                    "note": "Runtime v2 is partially installed; real Room/Session runtime is still the current production path.",
+                    "commands": {"registered": commands},
+                    "event_bus": events,
+                    "simulation": simulation,
+                    "persistence_worker": persistence,
+                })));
+            });
+            rx.recv_timeout(std::time::Duration::from_millis(2000))
+                .unwrap_or(Err("runtime.status timeout".to_string()))
+        }
+        "simulation.status" => {
+            let (tx, rx) = std::sync::mpsc::channel();
+            let s = Arc::clone(state);
+            tokio::spawn(async move {
+                let status = s.simulation.status().await;
+                let _ = tx.send(Ok(serde_json::to_value(status).unwrap_or_default()));
+            });
+            rx.recv_timeout(std::time::Duration::from_millis(2000))
+                .unwrap_or(Err("simulation.status timeout".to_string()))
+        }
+        "simulation.world" => {
+            let limit = args.get(0).and_then(|v| v.as_u64()).unwrap_or(20) as usize;
+            let (tx, rx) = std::sync::mpsc::channel();
+            let s = Arc::clone(state);
+            tokio::spawn(async move {
+                let result = s
+                    .simulation
+                    .world_snapshot(limit)
+                    .await
+                    .map(|world| serde_json::to_value(world).unwrap_or_default())
+                    .ok_or_else(|| "simulation shadow world not available".to_string());
+                let _ = tx.send(result);
+            });
+            rx.recv_timeout(std::time::Duration::from_millis(2000))
+                .unwrap_or(Err("simulation.world timeout".to_string()))
+        }
         "player.touches" => {
             let uid = args.get(0).and_then(|v| v.as_i64()).unwrap_or(0) as i32;
             let (tx, rx) = std::sync::mpsc::channel();

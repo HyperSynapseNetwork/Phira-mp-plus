@@ -1,14 +1,25 @@
-//! Runtime v2 event bus skeleton.
+//! Runtime v2 event bus.
 //!
-//! The current server still uses direct calls for most side effects.  This bus
-//! is introduced as an opt-in spine for new Runtime v2 features first, so old
+//! The current server still uses direct calls for most side effects. This bus is
+//! introduced as an opt-in spine for new Runtime v2 features first, so old
 //! room/session/plugin behavior can be migrated gradually instead of rewritten
 //! in one risky patch.
 
 use phira_mp_common::RoomId;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::{
+    collections::VecDeque,
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Mutex,
+    },
+    time::{SystemTime, UNIX_EPOCH},
+};
 use tokio::sync::broadcast;
 use uuid::Uuid;
+
+const MAX_EVENT_TRACE: usize = 256;
 
 #[derive(Debug, Clone)]
 pub enum MpEvent {
@@ -32,19 +43,122 @@ pub enum MpEvent {
     Custom { kind: String, payload: Value },
 }
 
+impl MpEvent {
+    pub fn kind(&self) -> &'static str {
+        match self {
+            Self::UserConnected { .. } => "user.connected",
+            Self::UserDisconnected { .. } => "user.disconnected",
+            Self::RoomCreated { .. } => "room.created",
+            Self::RoomJoined { .. } => "room.joined",
+            Self::RoomLeft { .. } => "room.left",
+            Self::RoomUpdated { .. } => "room.updated",
+            Self::HostChanged { .. } => "room.host_changed",
+            Self::ChartSelected { .. } => "room.chart_selected",
+            Self::GameStarted { .. } => "game.started",
+            Self::TouchesReceived { .. } => "touches.received",
+            Self::JudgesReceived { .. } => "judges.received",
+            Self::RoundCompleted { .. } => "round.completed",
+            Self::ChatMessage { .. } => "chat.message",
+            Self::AdminCommandExecuted { .. } => "admin.command_executed",
+            Self::SimulationStarted { .. } => "simulation.started",
+            Self::SimulationStopped { .. } => "simulation.stopped",
+            Self::PersistenceWritten { .. } => "persistence.written",
+            Self::Custom { .. } => "custom",
+        }
+    }
+
+    pub fn summary(&self) -> String {
+        match self {
+            Self::UserConnected { user_id } => format!("user_id={user_id}"),
+            Self::UserDisconnected { user_id } => format!("user_id={user_id}"),
+            Self::RoomCreated { room_id, room_uuid } => format!("room_id={room_id} uuid={room_uuid}"),
+            Self::RoomJoined { room_id, user_id } => format!("room_id={room_id} user_id={user_id}"),
+            Self::RoomLeft { room_id, user_id } => format!("room_id={room_id} user_id={user_id}"),
+            Self::RoomUpdated { room_id } => format!("room_id={room_id}"),
+            Self::HostChanged { room_id, host } => format!("room_id={room_id} host={host:?}"),
+            Self::ChartSelected { room_id, chart_id } => format!("room_id={room_id} chart_id={chart_id}"),
+            Self::GameStarted { room_id, round_id } => format!("room_id={room_id} round_id={round_id}"),
+            Self::TouchesReceived { room_id, user_id, count } => format!("room_id={room_id} user_id={user_id} count={count}"),
+            Self::JudgesReceived { room_id, user_id, count } => format!("room_id={room_id} user_id={user_id} count={count}"),
+            Self::RoundCompleted { room_id, round_id } => format!("room_id={room_id} round_id={round_id}"),
+            Self::ChatMessage { room_id, user_id } => format!("room_id={room_id:?} user_id={user_id}"),
+            Self::AdminCommandExecuted { user_id, command } => format!("user_id={user_id:?} command={command}"),
+            Self::SimulationStarted { run_id } => format!("run_id={run_id}"),
+            Self::SimulationStopped { run_id, reason } => format!("run_id={run_id} reason={reason}"),
+            Self::PersistenceWritten { table, rows } => format!("table={table} rows={rows}"),
+            Self::Custom { kind, .. } => format!("kind={kind}"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EventTraceEntry {
+    pub seq: u64,
+    pub at_ms: i64,
+    pub kind: String,
+    pub subscribers: usize,
+    pub summary: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EventBusStats {
+    pub published: u64,
+    pub delivered_total: u64,
+    pub no_subscriber: u64,
+    pub lagged_or_closed: u64,
+    pub receiver_count: usize,
+    pub recent: Vec<EventTraceEntry>,
+}
+
+#[derive(Debug, Default)]
+struct EventBusCounters {
+    published: AtomicU64,
+    delivered_total: AtomicU64,
+    no_subscriber: AtomicU64,
+    lagged_or_closed: AtomicU64,
+}
+
 #[derive(Debug)]
 pub struct EventBus {
     tx: broadcast::Sender<MpEvent>,
+    counters: EventBusCounters,
+    recent: Mutex<VecDeque<EventTraceEntry>>,
 }
 
 impl EventBus {
     pub fn new(capacity: usize) -> Self {
         let (tx, _) = broadcast::channel(capacity.max(16));
-        Self { tx }
+        Self {
+            tx,
+            counters: EventBusCounters::default(),
+            recent: Mutex::new(VecDeque::with_capacity(MAX_EVENT_TRACE)),
+        }
     }
 
     pub fn publish(&self, event: MpEvent) -> usize {
-        self.tx.send(event).unwrap_or(0)
+        let seq = self.counters.published.fetch_add(1, Ordering::Relaxed) + 1;
+        let kind = event.kind().to_string();
+        let summary = event.summary();
+        let subscribers = self.tx.receiver_count();
+        let delivered = match self.tx.send(event) {
+            Ok(delivered) => delivered,
+            Err(_) => {
+                self.counters.lagged_or_closed.fetch_add(1, Ordering::Relaxed);
+                0
+            }
+        };
+        if delivered == 0 {
+            self.counters.no_subscriber.fetch_add(1, Ordering::Relaxed);
+        }
+        self.counters.delivered_total.fetch_add(delivered as u64, Ordering::Relaxed);
+        self.push_trace(EventTraceEntry {
+            seq,
+            at_ms: now_ms(),
+            kind,
+            subscribers,
+            summary,
+        });
+        delivered
     }
 
     pub fn subscribe(&self) -> broadcast::Receiver<MpEvent> {
@@ -54,4 +168,37 @@ impl EventBus {
     pub fn receiver_count(&self) -> usize {
         self.tx.receiver_count()
     }
+
+    pub fn stats(&self, limit: usize) -> EventBusStats {
+        let limit = limit.clamp(1, MAX_EVENT_TRACE);
+        let recent = self
+            .recent
+            .lock()
+            .map(|trace| trace.iter().rev().take(limit).cloned().collect())
+            .unwrap_or_default();
+        EventBusStats {
+            published: self.counters.published.load(Ordering::Relaxed),
+            delivered_total: self.counters.delivered_total.load(Ordering::Relaxed),
+            no_subscriber: self.counters.no_subscriber.load(Ordering::Relaxed),
+            lagged_or_closed: self.counters.lagged_or_closed.load(Ordering::Relaxed),
+            receiver_count: self.receiver_count(),
+            recent,
+        }
+    }
+
+    fn push_trace(&self, entry: EventTraceEntry) {
+        if let Ok(mut trace) = self.recent.lock() {
+            if trace.len() >= MAX_EVENT_TRACE {
+                trace.pop_front();
+            }
+            trace.push_back(entry);
+        }
+    }
+}
+
+fn now_ms() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis() as i64)
+        .unwrap_or(0)
 }

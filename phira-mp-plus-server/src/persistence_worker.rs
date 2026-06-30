@@ -4,6 +4,7 @@
 //! bounded queue and stats holder for gradually migrating high-frequency writes
 //! to batched background persistence without changing current database behavior.
 
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::sync::Arc;
 use tokio::sync::{mpsc, RwLock};
@@ -19,7 +20,7 @@ pub enum PersistenceEvent {
     Shutdown,
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct PersistenceStats {
     pub queued: u64,
     pub processed: u64,

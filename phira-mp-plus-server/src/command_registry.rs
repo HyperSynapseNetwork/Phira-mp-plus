@@ -365,7 +365,7 @@ pub fn runtime_v2_registry() -> CommandRegistry {
     for spec in [
         CommandSpec::new("runtime status", "runtime-v2", "查看 Runtime v2 骨架状态。", "runtime status"),
         CommandSpec::new("runtime commands", "runtime-v2", "查看 Command Registry 统计。", "runtime commands"),
-        CommandSpec::new("runtime events", "runtime-v2", "查看 EventBus 订阅者数量。", "runtime events"),
+        CommandSpec::new("runtime events", "runtime-v2", "查看 EventBus 发布统计与最近事件。", "runtime events"),
         CommandSpec::new("runtime persistence", "runtime-v2", "查看 Persistence Worker 队列统计。", "runtime persistence"),
     ] {
         register(&mut registry, spec.example("runtime status"));
@@ -373,10 +373,23 @@ pub fn runtime_v2_registry() -> CommandRegistry {
 
     for spec in [
         CommandSpec::new("simulation status", "simulation", "查看 Runtime v2 Simulation 状态。", "simulation status"),
-        CommandSpec::new("simulation run", "simulation", "启动安全的内存态 Simulation 骨架，不创建真实房间。", "simulation run <baseline|small|medium|large>"),
-        CommandSpec::new("simulation stop", "simulation", "停止当前 Simulation 骨架运行状态并广播结束提示。", "simulation stop"),
+        CommandSpec::new(
+            "simulation run",
+            "simulation",
+            "启动隔离 shadow world，不创建真实房间、不写真实用户表。",
+            "simulation run <baseline|small|medium|large|custom> [users=N] [rooms=N] [duration=N] [touch=true] [judge=true] [chat=true] [ready=true] [rounds=true]",
+        )
+        .example("simulation run baseline")
+        .example("simulation run custom users=500 rooms=50 duration=300"),
+        CommandSpec::new("simulation tick", "simulation", "推进 deterministic shadow world tick，用于制造可观察的仿真事件。", "simulation tick [count]")
+            .alias("simulation advance")
+            .example("simulation tick 10"),
+        CommandSpec::new("simulation inspect", "simulation", "查看 shadow users/rooms/rounds/recent events 样本。", "simulation inspect [limit]")
+            .aliases(["simulation world", "simulation rooms", "simulation users"])
+            .example("simulation inspect 20"),
+        CommandSpec::new("simulation stop", "simulation", "停止当前 Simulation 运行状态并广播结束提示。", "simulation stop"),
         CommandSpec::new("simulation seed", "simulation", "设置 deterministic simulation seed。", "simulation seed <value>"),
-        CommandSpec::new("simulation cleanup", "simulation", "清理 Runtime v2 Simulation 内存状态。", "simulation cleanup"),
+        CommandSpec::new("simulation cleanup", "simulation", "清理 Runtime v2 Simulation shadow world。", "simulation cleanup"),
         CommandSpec::new("simulation sample", "simulation", "查看 deterministic touches/judges 示例数据规模。", "simulation sample"),
     ] {
         register(&mut registry, spec);
