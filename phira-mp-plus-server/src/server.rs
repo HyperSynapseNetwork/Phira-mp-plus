@@ -473,6 +473,10 @@ impl PlusServer {
         spawn_runtime_event_observer(Arc::clone(&event_bus));
         let simulation = Arc::new(crate::simulation::SimulationManager::new());
         let persistence_worker = crate::persistence_worker::PersistenceWorker::spawn(4096);
+        crate::persistence_worker::spawn_event_bus_mirror(
+            Arc::clone(&event_bus),
+            Arc::clone(&persistence_worker),
+        );
 
         let events = Arc::new(SseHub::new());
         let state = Arc::new(PlusServerState {

@@ -102,3 +102,15 @@ Step 4 starts connecting the production runtime to `EventBus` as an observation-
 - Legacy behavior remains unchanged: plugin callbacks, SSE room monitor events, room state transitions and current PostgreSQL direct writes still run on the old path.
 
 This is intentionally not a state-machine migration. The goal is to make real production events visible to Runtime v2 before any ownership is moved away from the existing Room/Session code.
+
+## Step 5 implementation status
+
+Step 5 connects `EventBus` to `PersistenceWorker` as a diagnostic mirror only:
+
+- The existing `db.rs` direct PostgreSQL write paths remain the source of truth.
+- Low-frequency production events are converted into `PersistenceEvent` values and queued through the worker.
+- Touches/Judges are intentionally skipped for now because they need a real batching and simulation-isolation policy before migration.
+- `runtime persistence` now reports queue capacity, pending count, mirrored/skipped EventBus counts, lag counters, per-kind queue counts and recent worker trace entries.
+- `/api/runtime` exposes the same worker stats for external observability.
+
+This step validates the Worker queue and backpressure behavior without changing persisted production data. The next safe step is to add explicit simulation persistence isolation metadata/table planning, then migrate one low-frequency database write path behind a feature flag or dual-write guard.

@@ -935,11 +935,28 @@ impl CliHandler {
             "persistence" | "persist" | "db" => {
                 let stats = self.state.persistence_worker.stats().await;
                 self.out(format!("  {} Persistence Worker", c::green("◆")));
+                self.out(format!("  {} capacity:  {}", c::dim("│"), stats.capacity));
                 self.out(format!("  {} queued:    {}", c::dim("│"), stats.queued));
                 self.out(format!("  {} processed: {}", c::dim("│"), stats.processed));
+                self.out(format!("  {} pending:   {}", c::dim("│"), stats.pending));
                 self.out(format!("  {} dropped:   {}", c::dim("│"), stats.dropped));
-                self.out(format!("  {} last_err:  {}", c::dim("│"), stats.last_error.unwrap_or_else(|| "-".to_string())));
-                self.out(format!("  {} 现有 db.rs 直接写入路径仍保持不变", c::dim("▸")));
+                self.out(format!("  {} mirrored:  {}", c::dim("│"), stats.mirrored_from_event_bus));
+                self.out(format!("  {} skipped:   {}", c::dim("│"), stats.skipped_event_bus_events));
+                self.out(format!("  {} lagged:    {}", c::dim("│"), stats.bridge_lagged));
+                self.out(format!("  {} last_err:  {}", c::dim("│"), stats.last_error.clone().unwrap_or_else(|| "-".to_string())));
+                if !stats.by_kind.is_empty() {
+                    self.out(format!("  {} by kind", c::cyan("▸")));
+                    for (kind, count) in stats.by_kind.iter().rev().take(16) {
+                        self.out(format!("    {:<28} {}", kind, count));
+                    }
+                }
+                if !stats.recent.is_empty() {
+                    self.out(format!("  {} recent", c::cyan("▸")));
+                    for event in stats.recent.iter().rev().take(12) {
+                        self.out(format!("    #{:<4} {:<9} {:<24} sim={} {}", event.seq, event.action, event.kind, event.simulation, event.summary));
+                    }
+                }
+                self.out(format!("  {} 当前只是 EventBus → Worker 镜像，现有 db.rs 直接写入路径仍保持不变", c::dim("▸")));
             }
             _ => {
                 self.out(format!("  {} 未知 runtime 子命令: {}", c::red("✗"), c::yellow(sub)));
