@@ -849,6 +849,12 @@ impl Room {
                     let round_id = uuid::Uuid::new_v4();
                     *self.current_round_id.write().await = Some(round_id);
                     info!(room = self.id.to_string(), round = %round_id, "game start");
+                    if let Some(server) = self.server.upgrade() {
+                        server.publish_runtime_event(crate::event_bus::MpEvent::GameStarted {
+                            room_id: self.id.clone(),
+                            round_id: round_id.to_string(),
+                        });
+                    }
                     self.send(Message::StartPlaying).await;
                     self.reset_game_time().await;
                     *self.state.write().await = InternalRoomState::Playing {

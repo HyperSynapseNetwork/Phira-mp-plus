@@ -89,3 +89,16 @@ Step 3 turns Simulation from a pure counter skeleton into an isolated shadow wor
 - `EventBus` now keeps basic publish/delivery counters and a bounded recent-event trace for diagnostics.
 
 Step 3 still deliberately avoids moving real Room/Session state-machine ownership into Runtime v2. The next safe cut is to let Simulation publish more structured Runtime v2 events and to add a simulation-only persistence path; after that, selected low-risk Room events can be mirrored into EventBus.
+
+## Step 4 implementation status
+
+Step 4 starts connecting the production runtime to `EventBus` as an observation-only mirror:
+
+- `publish_room_event` now mirrors low-risk `RoomEvent` values into typed Runtime v2 events.
+- Normal client authentication/reconnect publishes `user.connected`.
+- Normal disconnect/kick paths publish `user.disconnected`.
+- Chat, ready/cancel-ready, touches, judges, game start and round completion now have EventBus signals.
+- `EventBus` diagnostics include per-kind counters in addition to the recent trace.
+- Legacy behavior remains unchanged: plugin callbacks, SSE room monitor events, room state transitions and current PostgreSQL direct writes still run on the old path.
+
+This is intentionally not a state-machine migration. The goal is to make real production events visible to Runtime v2 before any ownership is moved away from the existing Room/Session code.

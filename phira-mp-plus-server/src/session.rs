@@ -336,6 +336,9 @@ impl User {
                     user_id: self.id,
                     user_name: self.name.clone(),
                 }).await;
+                self.server.publish_runtime_event(crate::event_bus::MpEvent::UserDisconnected {
+                    user_id: self.id,
+                });
                 if let Some(db) = crate::internal_hooks::DB.get() {
                     db.record_user_disconnect_sync(self.id, &self.name);
                 }
@@ -347,6 +350,9 @@ impl User {
             user_id: self.id,
             user_name: self.name.clone(),
         }).await;
+        self.server.publish_runtime_event(crate::event_bus::MpEvent::UserDisconnected {
+            user_id: self.id,
+        });
         if let Some(db) = crate::internal_hooks::DB.get() {
             db.record_user_disconnect_sync(self.id, &self.name);
         }
@@ -563,6 +569,11 @@ impl Session {
                                                     user_ip,
                                                 })
                                                 .await;
+                                            server.publish_runtime_event(
+                                                crate::event_bus::MpEvent::UserConnected {
+                                                    user_id: user_info.id,
+                                                },
+                                            );
                                             let online = {
                                                 let rooms = server.rooms.read().await;
                                                 let mut in_room: std::collections::HashSet<i32> = std::collections::HashSet::new();
@@ -607,6 +618,11 @@ impl Session {
                                                     user_ip,
                                                 })
                                                 .await;
+                                            server.publish_runtime_event(
+                                                crate::event_bus::MpEvent::UserConnected {
+                                                    user_id: user_info.id,
+                                                },
+                                            );
                                             let online = {
                                                 let rooms = server.rooms.read().await;
                                                 let mut in_room: std::collections::HashSet<i32> = std::collections::HashSet::new();
@@ -974,6 +990,10 @@ async fn process(user: Arc<User>, category: SessionCategory, cmd: ClientCommand)
                     }));
                 }
                 room.send_as(&user, content).await;
+                user.server.publish_runtime_event(crate::event_bus::MpEvent::ChatMessage {
+                    room_id: Some(room.id.clone()),
+                    user_id: user.id,
+                });
                 Ok(())
             }
             .await;
@@ -982,6 +1002,7 @@ async fn process(user: Arc<User>, category: SessionCategory, cmd: ClientCommand)
         ClientCommand::Touches { frames } => {
             get_room!(~ room);
             if room.has_active_monitors().await {
+                let frame_count = frames.len();
                 debug!("received {} touch events from {}", frames.len(), user.id);
                 if let Some(frame) = frames.last() {
                     user.game_time.store(frame.time.to_bits(), Ordering::SeqCst);
@@ -1007,6 +1028,11 @@ async fn process(user: Arc<User>, category: SessionCategory, cmd: ClientCommand)
                         }
                     }
                 }
+                user.server.publish_runtime_event(crate::event_bus::MpEvent::TouchesReceived {
+                    room_id: room.id.clone(),
+                    user_id: user.id,
+                    count: frame_count,
+                });
                 let pm = Arc::clone(&user.server.plugin_manager);
                 let room_id = room.id.to_string();
                 let touch_data_for_event = touch_data.clone();
@@ -1033,6 +1059,7 @@ async fn process(user: Arc<User>, category: SessionCategory, cmd: ClientCommand)
         ClientCommand::Judges { judges } => {
             get_room!(~ room);
             if room.has_active_monitors().await {
+                let judge_count = judges.len();
                 debug!("received {} judge events from {}", judges.len(), user.id);
                 let judge_data: Vec<crate::plugin::JudgeEventItem> = judges
                     .iter()
@@ -1051,6 +1078,11 @@ async fn process(user: Arc<User>, category: SessionCategory, cmd: ClientCommand)
                         }
                     }
                 }
+                user.server.publish_runtime_event(crate::event_bus::MpEvent::JudgesReceived {
+                    room_id: room.id.clone(),
+                    user_id: user.id,
+                    count: judge_count,
+                });
                 let pm = Arc::clone(&user.server.plugin_manager);
                 let room_id = room.id.to_string();
                 let judge_data_for_event = judge_data.clone();
@@ -1463,6 +1495,11 @@ async fn process(user: Arc<User>, category: SessionCategory, cmd: ClientCommand)
                         bail!(tl!("already-ready"));
                     }
                     room.send(Message::Ready { user: user.id }).await;
+                    user.server.publish_runtime_event(crate::event_bus::MpEvent::PlayerReadyChanged {
+                        room_id: room.id.clone(),
+                        user_id: user.id,
+                        ready: true,
+                    });
                     drop(guard);
                     room.check_all_ready().await;
                 }
@@ -1488,6 +1525,11 @@ async fn process(user: Arc<User>, category: SessionCategory, cmd: ClientCommand)
                     } else {
                         room.send(Message::CancelReady { user: user.id }).await;
                     }
+                    user.server.publish_runtime_event(crate::event_bus::MpEvent::PlayerReadyChanged {
+                        room_id: room.id.clone(),
+                        user_id: user.id,
+                        ready: false,
+                    });
                 }
                 Ok(())
             }

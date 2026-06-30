@@ -406,6 +406,23 @@ pub struct PlusServer {
     _lost_con_handle: tokio::task::JoinHandle<()>,
 }
 
+fn spawn_runtime_event_observer(event_bus: Arc<crate::event_bus::EventBus>) {
+    let mut rx = event_bus.subscribe();
+    tokio::spawn(async move {
+        loop {
+            match rx.recv().await {
+                Ok(event) => {
+                    trace!(kind = event.kind(), summary = %event.summary(), "runtime event observed");
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
+                    warn!(skipped, "runtime event observer lagged");
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+            }
+        }
+    });
+}
+
 impl PlusServer {
     /// 创建新的 Phira-mp+ 服务器
     pub async fn new(config: PlusConfig) -> Result<Self> {
@@ -453,6 +470,7 @@ impl PlusServer {
 
         let command_registry = Arc::new(crate::command_registry::runtime_v2_registry());
         let event_bus = Arc::new(crate::event_bus::EventBus::new(1024));
+        spawn_runtime_event_observer(Arc::clone(&event_bus));
         let simulation = Arc::new(crate::simulation::SimulationManager::new());
         let persistence_worker = crate::persistence_worker::PersistenceWorker::spawn(4096);
 
@@ -749,6 +767,104 @@ pub struct ServerStats {
 }
 
 impl PlusServerState {
+    /// Publish a Runtime v2 event without changing the legacy side-effect path.
+    ///
+    /// Step 4 uses this as an observation-only mirror: plugins, room monitor,
+    /// SSE and PostgreSQL direct writes continue to run exactly as before.
+    pub fn publish_runtime_event(&self, event: crate::event_bus::MpEvent) -> usize {
+        self.event_bus.publish(event)
+    }
+
+    async fn mirror_room_event_to_runtime_bus(&self, event: &RoomEvent) {
+        use crate::event_bus::MpEvent;
+
+        match event {
+            RoomEvent::CreateRoom { room, .. } => {
+                let room_uuid = self
+                    .rooms
+                    .read()
+                    .await
+                    .get(room)
+                    .map(|room| room.uuid)
+                    .unwrap_or_else(Uuid::nil);
+                self.publish_runtime_event(MpEvent::RoomCreated {
+                    room_id: room.clone(),
+                    room_uuid,
+                });
+                self.publish_runtime_event(MpEvent::RoomUpdated {
+                    room_id: room.clone(),
+                });
+            }
+            RoomEvent::UpdateRoom { room, data } => {
+                self.publish_runtime_event(MpEvent::RoomUpdated {
+                    room_id: room.clone(),
+                });
+                if let Some(host) = data.host {
+                    self.publish_runtime_event(MpEvent::HostChanged {
+                        room_id: room.clone(),
+                        host: Some(host),
+                    });
+                }
+                if let Some(lock) = data.lock {
+                    self.publish_runtime_event(MpEvent::RoomLocked {
+                        room_id: room.clone(),
+                        locked: lock,
+                    });
+                }
+                if let Some(cycle) = data.cycle {
+                    self.publish_runtime_event(MpEvent::RoomCycled {
+                        room_id: room.clone(),
+                        cycle,
+                    });
+                }
+                if let Some(chart_id) = data.chart {
+                    self.publish_runtime_event(MpEvent::ChartSelected {
+                        room_id: room.clone(),
+                        chart_id,
+                    });
+                }
+                if let Some(state) = data.state {
+                    self.publish_runtime_event(MpEvent::RoomStateChanged {
+                        room_id: room.clone(),
+                        state: format!("{state:?}"),
+                    });
+                }
+            }
+            RoomEvent::JoinRoom { room, user } => {
+                self.publish_runtime_event(MpEvent::RoomJoined {
+                    room_id: room.clone(),
+                    user_id: *user,
+                });
+            }
+            RoomEvent::LeaveRoom { room, user } => {
+                self.publish_runtime_event(MpEvent::RoomLeft {
+                    room_id: room.clone(),
+                    user_id: *user,
+                });
+            }
+            RoomEvent::NewRound { room, .. } => {
+                let room_ref = {
+                    let rooms = self.rooms.read().await;
+                    rooms.get(room).map(Arc::clone)
+                };
+                let round_id = if let Some(room_ref) = room_ref {
+                    room_ref
+                        .current_round_id
+                        .read()
+                        .await
+                        .map(|round_id| round_id.to_string())
+                        .unwrap_or_else(|| "unknown".to_string())
+                } else {
+                    "unknown".to_string()
+                };
+                self.publish_runtime_event(MpEvent::RoundCompleted {
+                    room_id: room.clone(),
+                    round_id,
+                });
+            }
+        }
+    }
+
     /// 获取房间 monitor 会话
     pub async fn get_room_monitor(&self) -> Option<Arc<super::session::Session>> {
         self.room_monitor.read().await.as_ref().and_then(Weak::upgrade)
@@ -767,6 +883,7 @@ impl PlusServerState {
     }
 
     pub async fn publish_room_event(&self, event: RoomEvent) {
+        self.mirror_room_event_to_runtime_bus(&event).await;
         if let Some(db) = crate::internal_hooks::DB.get() {
             let (room_id, user_id) = match &event {
                 RoomEvent::CreateRoom { room, .. }
@@ -1811,6 +1928,9 @@ async fn run_admin_kick_user(state: &PlusServerState, target_id: i32, reason: &s
         user_id: target_id,
         user_name: user.name.clone(),
     }).await;
+    state.publish_runtime_event(crate::event_bus::MpEvent::UserDisconnected {
+        user_id: target_id,
+    });
     Ok(serde_json::json!({"ok": true, "reason": reason}))
 }
 

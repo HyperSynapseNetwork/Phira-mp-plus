@@ -9,7 +9,7 @@ use phira_mp_common::RoomId;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{
-    collections::VecDeque,
+    collections::{BTreeMap, VecDeque},
     sync::{
         atomic::{AtomicU64, Ordering},
         Mutex,
@@ -23,15 +23,20 @@ const MAX_EVENT_TRACE: usize = 256;
 
 #[derive(Debug, Clone)]
 pub enum MpEvent {
+    /// A normal game client authenticated or reconnected. Monitor/console sessions are excluded.
     UserConnected { user_id: i32 },
     UserDisconnected { user_id: i32 },
     RoomCreated { room_id: RoomId, room_uuid: Uuid },
     RoomJoined { room_id: RoomId, user_id: i32 },
     RoomLeft { room_id: RoomId, user_id: i32 },
     RoomUpdated { room_id: RoomId },
+    RoomLocked { room_id: RoomId, locked: bool },
+    RoomCycled { room_id: RoomId, cycle: bool },
+    RoomStateChanged { room_id: RoomId, state: String },
     HostChanged { room_id: RoomId, host: Option<i32> },
     ChartSelected { room_id: RoomId, chart_id: i32 },
     GameStarted { room_id: RoomId, round_id: String },
+    PlayerReadyChanged { room_id: RoomId, user_id: i32, ready: bool },
     TouchesReceived { room_id: RoomId, user_id: i32, count: usize },
     JudgesReceived { room_id: RoomId, user_id: i32, count: usize },
     RoundCompleted { room_id: RoomId, round_id: String },
@@ -52,9 +57,13 @@ impl MpEvent {
             Self::RoomJoined { .. } => "room.joined",
             Self::RoomLeft { .. } => "room.left",
             Self::RoomUpdated { .. } => "room.updated",
+            Self::RoomLocked { .. } => "room.locked",
+            Self::RoomCycled { .. } => "room.cycled",
+            Self::RoomStateChanged { .. } => "room.state_changed",
             Self::HostChanged { .. } => "room.host_changed",
             Self::ChartSelected { .. } => "room.chart_selected",
             Self::GameStarted { .. } => "game.started",
+            Self::PlayerReadyChanged { .. } => "player.ready_changed",
             Self::TouchesReceived { .. } => "touches.received",
             Self::JudgesReceived { .. } => "judges.received",
             Self::RoundCompleted { .. } => "round.completed",
@@ -75,9 +84,13 @@ impl MpEvent {
             Self::RoomJoined { room_id, user_id } => format!("room_id={room_id} user_id={user_id}"),
             Self::RoomLeft { room_id, user_id } => format!("room_id={room_id} user_id={user_id}"),
             Self::RoomUpdated { room_id } => format!("room_id={room_id}"),
+            Self::RoomLocked { room_id, locked } => format!("room_id={room_id} locked={locked}"),
+            Self::RoomCycled { room_id, cycle } => format!("room_id={room_id} cycle={cycle}"),
+            Self::RoomStateChanged { room_id, state } => format!("room_id={room_id} state={state}"),
             Self::HostChanged { room_id, host } => format!("room_id={room_id} host={host:?}"),
             Self::ChartSelected { room_id, chart_id } => format!("room_id={room_id} chart_id={chart_id}"),
             Self::GameStarted { room_id, round_id } => format!("room_id={room_id} round_id={round_id}"),
+            Self::PlayerReadyChanged { room_id, user_id, ready } => format!("room_id={room_id} user_id={user_id} ready={ready}"),
             Self::TouchesReceived { room_id, user_id, count } => format!("room_id={room_id} user_id={user_id} count={count}"),
             Self::JudgesReceived { room_id, user_id, count } => format!("room_id={room_id} user_id={user_id} count={count}"),
             Self::RoundCompleted { room_id, round_id } => format!("room_id={room_id} round_id={round_id}"),
@@ -101,12 +114,19 @@ pub struct EventTraceEntry {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EventKindStats {
+    pub kind: String,
+    pub count: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EventBusStats {
     pub published: u64,
     pub delivered_total: u64,
     pub no_subscriber: u64,
     pub lagged_or_closed: u64,
     pub receiver_count: usize,
+    pub by_kind: Vec<EventKindStats>,
     pub recent: Vec<EventTraceEntry>,
 }
 
@@ -123,6 +143,7 @@ pub struct EventBus {
     tx: broadcast::Sender<MpEvent>,
     counters: EventBusCounters,
     recent: Mutex<VecDeque<EventTraceEntry>>,
+    by_kind: Mutex<BTreeMap<String, u64>>,
 }
 
 impl EventBus {
@@ -132,6 +153,7 @@ impl EventBus {
             tx,
             counters: EventBusCounters::default(),
             recent: Mutex::new(VecDeque::with_capacity(MAX_EVENT_TRACE)),
+            by_kind: Mutex::new(BTreeMap::new()),
         }
     }
 
@@ -139,6 +161,7 @@ impl EventBus {
         let seq = self.counters.published.fetch_add(1, Ordering::Relaxed) + 1;
         let kind = event.kind().to_string();
         let summary = event.summary();
+        self.bump_kind(&kind);
         let subscribers = self.tx.receiver_count();
         let delivered = match self.tx.send(event) {
             Ok(delivered) => delivered,
@@ -176,13 +199,33 @@ impl EventBus {
             .lock()
             .map(|trace| trace.iter().rev().take(limit).cloned().collect())
             .unwrap_or_default();
+        let by_kind = self
+            .by_kind
+            .lock()
+            .map(|stats| {
+                stats
+                    .iter()
+                    .map(|(kind, count)| EventKindStats {
+                        kind: kind.clone(),
+                        count: *count,
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
         EventBusStats {
             published: self.counters.published.load(Ordering::Relaxed),
             delivered_total: self.counters.delivered_total.load(Ordering::Relaxed),
             no_subscriber: self.counters.no_subscriber.load(Ordering::Relaxed),
             lagged_or_closed: self.counters.lagged_or_closed.load(Ordering::Relaxed),
             receiver_count: self.receiver_count(),
+            by_kind,
             recent,
+        }
+    }
+
+    fn bump_kind(&self, kind: &str) {
+        if let Ok(mut stats) = self.by_kind.lock() {
+            *stats.entry(kind.to_string()).or_insert(0) += 1;
         }
     }
 
