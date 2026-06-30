@@ -219,6 +219,7 @@ pub struct User {
     pub game_time: AtomicU32,
 
     pub dangle_mark: Mutex<Option<Arc<()>>>,
+    pub admin_cli_pending: Mutex<Option<String>>,
 }
 
 impl User {
@@ -237,6 +238,7 @@ impl User {
             game_time: AtomicU32::default(),
 
             dangle_mark: Mutex::default(),
+            admin_cli_pending: Mutex::default(),
         }
     }
 
@@ -1084,6 +1086,26 @@ async fn process(user: Arc<User>, category: SessionCategory, cmd: ClientCommand)
                 if let Some(command) = id_text.strip_prefix('_') {
                     if user.server.is_admin_id(user.id).await {
                         let command = decode_admin_room_command(command);
+                        let command = {
+                            let mut pending = user.admin_cli_pending.lock().await;
+                            match crate::cli::collect_cli_continuation(&mut *pending, command) {
+                                Ok(Some(command)) => command,
+                                Ok(None) => {
+                                    user.try_send(ServerCommand::Message(Message::Chat {
+                                        user: 0,
+                                        content: "[CLI] 已暂存续行；下一条命令需以 -- 开头".to_string(),
+                                    })).await;
+                                    bail!("admin CLI command pending");
+                                }
+                                Err(err) => {
+                                    user.try_send(ServerCommand::Message(Message::Chat {
+                                        user: 0,
+                                        content: format!("[CLI] {err}"),
+                                    })).await;
+                                    bail!("admin CLI continuation error");
+                                }
+                            }
+                        };
                         if command.is_empty() {
                             user.try_send(ServerCommand::Message(Message::Chat {
                                 user: 0,

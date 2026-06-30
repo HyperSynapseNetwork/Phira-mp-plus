@@ -67,9 +67,51 @@ fn is_core_registered_command(name: &str) -> bool {
 }
 
 
+const CLIENT_CLI_OUTPUT_LINE_LIMIT: usize = 512;
+
+fn strip_trailing_cli_join_marker(value: &str) -> Option<String> {
+    let trimmed_len = value.trim_end().len();
+    let without_trailing_ws = &value[..trimmed_len];
+    without_trailing_ws
+        .strip_suffix("--")
+        .map(|prefix| prefix.to_string())
+}
+
+/// Merge CLI continuation fragments.
+///
+/// A line ending in `--` is kept pending and must be continued by the next
+/// line beginning with `--`. Markers are removed before concatenation, so:
+/// `room set a--` + `-- b--` + `-- c` becomes `room set a b c`.
+pub fn collect_cli_continuation(
+    pending: &mut Option<String>,
+    line: String,
+) -> Result<Option<String>, String> {
+    let line = line.trim().to_string();
+    if line.is_empty() {
+        return Ok(None);
+    }
+
+    let mut merged = if let Some(mut prefix) = pending.take() {
+        let Some(suffix) = line.trim_start().strip_prefix("--") else {
+            return Err("上一条命令以 -- 结尾，下一条必须以 -- 开头；已取消续行".to_string());
+        };
+        prefix.push_str(suffix);
+        prefix
+    } else {
+        line
+    };
+
+    if let Some(prefix) = strip_trailing_cli_join_marker(&merged) {
+        *pending = Some(prefix);
+        return Ok(None);
+    }
+
+    Ok(Some(std::mem::take(&mut merged).trim().to_string()))
+}
+
 /// Execute one CLI command and collect its output.
 ///
-/// Used by the in-game admin `_+<command>` room creation shortcut. The normal
+/// Used by the in-game admin `_<command>` room creation shortcut. The normal
 /// interactive banner is filtered so the client receives only command output.
 pub async fn execute_cli_once(state: Arc<PlusServerState>, line: String) -> Vec<String> {
     let (out_tx, mut out_rx) = mpsc::unbounded_channel::<String>();
@@ -93,8 +135,8 @@ pub async fn execute_cli_once(state: Arc<PlusServerState>, line: String) -> Vec<
                     continue;
                 }
                 lines.push(trimmed);
-                if lines.len() >= 48 {
-                    lines.push("……输出过长，已截断".to_string());
+                if lines.len() >= CLIENT_CLI_OUTPUT_LINE_LIMIT {
+                    lines.push(format!("……输出过长，仅显示前 {CLIENT_CLI_OUTPUT_LINE_LIMIT} 行"));
                     break;
                 }
             }
@@ -164,13 +206,26 @@ impl CliHandler {
             c::dim("▸"), c::cyan("help"), c::red("exit")));
         self.out(String::new());
 
+        let mut pending_line: Option<String> = None;
         while let Some(line) = cmd_rx.recv().await {
             // 如果未运行（exit 后），直接退出
             if !*self.running.read().await {
                 break;
             }
 
-            let line = line.trim().to_string();
+            let line = match collect_cli_continuation(&mut pending_line, line) {
+                Ok(Some(line)) => line,
+                Ok(None) => {
+                    if pending_line.is_some() {
+                        self.out(format!("  {} 已暂存续行；下一条命令需以 -- 开头", c::dim("▸")));
+                    }
+                    continue;
+                }
+                Err(err) => {
+                    self.out(format!("  {} {err}", c::red("✗")));
+                    continue;
+                }
+            };
             if line.is_empty() {
                 continue;
             }
@@ -642,6 +697,7 @@ impl CliHandler {
         self.out(format!(""));
         self.out(format!("  {} 通用", c::cyan("▸")));
         self.out(format!("    {:<22} {}", c::dim("help"), "显示此帮助"));
+        self.out(format!("    {:<22} {}", c::dim("cmd-- / --next"), "多段命令合并；直到片段不再以 -- 结尾"));
         self.out(format!("    {:<22} {}", c::dim("exit"), "关闭服务器"));
         self.out(format!("    {:<22} {}", c::dim("status"), "服务器状态"));
         self.out(format!(""));
