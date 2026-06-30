@@ -87,6 +87,7 @@ pub struct PersistenceStats {
     pub mirrored_from_event_bus: u64,
     pub skipped_event_bus_events: u64,
     pub bridge_lagged: u64,
+    pub simulation_persist_requests: u64,
     pub by_kind: BTreeMap<String, u64>,
     pub recent: Vec<PersistenceTraceEntry>,
     pub last_error: Option<String>,
@@ -113,6 +114,9 @@ impl PersistenceWorker {
                 let kind = event.kind();
                 let simulation = event.is_simulation();
                 let summary = event.summary();
+                if persist_simulation_event_if_needed(&event) {
+                    record_simulation_persist_request(&worker_stats).await;
+                }
                 match event {
                     PersistenceEvent::Shutdown => {
                         debug!(kind = %kind, "persistence worker shutdown requested");
@@ -335,6 +339,60 @@ fn server_event(kind: &str, payload: Value, simulation: bool) -> Option<Persiste
         payload,
         simulation,
     })
+}
+
+fn persist_simulation_event_if_needed(event: &PersistenceEvent) -> bool {
+    if !event.is_simulation() {
+        return false;
+    }
+    let Some(db) = crate::internal_hooks::DB.get() else {
+        return false;
+    };
+
+    match event {
+        PersistenceEvent::ServerEvent { kind, payload, .. } => {
+            db.record_sim_event_sync(extract_run_id(payload), kind, payload.clone());
+            true
+        }
+        PersistenceEvent::RoomSnapshot { room_id, payload, .. } => {
+            let mut payload = payload.clone();
+            if let Some(obj) = payload.as_object_mut() {
+                obj.entry("room_id".to_string()).or_insert_with(|| serde_json::json!(room_id));
+            }
+            db.record_sim_event_sync(extract_run_id(&payload), "simulation.room_snapshot", payload);
+            true
+        }
+        PersistenceEvent::TouchBatch { round_id, user_id, payload, .. } => {
+            let mut payload = payload.clone();
+            if let Some(obj) = payload.as_object_mut() {
+                obj.entry("round_id".to_string()).or_insert_with(|| serde_json::json!(round_id));
+                obj.entry("user_id".to_string()).or_insert_with(|| serde_json::json!(user_id));
+            }
+            db.record_sim_event_sync(extract_run_id(&payload), "simulation.touch_batch", payload);
+            true
+        }
+        PersistenceEvent::JudgeBatch { round_id, user_id, payload, .. } => {
+            let mut payload = payload.clone();
+            if let Some(obj) = payload.as_object_mut() {
+                obj.entry("round_id".to_string()).or_insert_with(|| serde_json::json!(round_id));
+                obj.entry("user_id".to_string()).or_insert_with(|| serde_json::json!(user_id));
+            }
+            db.record_sim_event_sync(extract_run_id(&payload), "simulation.judge_batch", payload);
+            true
+        }
+        PersistenceEvent::Flush | PersistenceEvent::Shutdown => false,
+    }
+}
+
+fn extract_run_id(payload: &Value) -> Option<String> {
+    payload
+        .get("run_id")
+        .and_then(Value::as_str)
+        .map(ToString::to_string)
+}
+
+async fn record_simulation_persist_request(stats: &Arc<RwLock<PersistenceStats>>) {
+    stats.write().await.simulation_persist_requests += 1;
 }
 
 async fn record_queued(

@@ -201,6 +201,27 @@ impl DbManager {
         }
     }
 
+    pub fn record_sim_event_sync(&self, run_id: Option<String>, kind: &str, payload: Value) {
+        #[cfg(feature = "postgres")]
+        if let Self::Pg(pool) = self {
+            let pool = pool.clone();
+            let kind = kind.to_string();
+            tokio::spawn(async move {
+                let now = now_ms();
+                let _ = sqlx::query(
+                    "INSERT INTO mp_sim_events (run_id, kind, payload, created_at)
+                     VALUES ($1, $2, $3, $4)"
+                )
+                .bind(run_id.as_deref())
+                .bind(&kind)
+                .bind(payload)
+                .bind(now)
+                .execute(&pool)
+                .await;
+            });
+        }
+    }
+
     pub fn record_room_snapshot_sync(&self, room_id: String, room_uuid: String, payload: Value) {
         #[cfg(feature = "postgres")]
         if let Self::Pg(pool) = self {
@@ -938,6 +959,18 @@ async fn init_tables(pool: &sqlx::PgPool) -> Result<()> {
     .await?;
 
     sqlx::query(
+        "CREATE TABLE IF NOT EXISTS mp_sim_events (
+            sequence BIGINT PRIMARY KEY DEFAULT nextval('mp_persist_sequence'),
+            run_id TEXT,
+            kind TEXT NOT NULL,
+            payload JSONB NOT NULL,
+            created_at BIGINT NOT NULL
+        )"
+    )
+    .execute(pool)
+    .await?;
+
+    sqlx::query(
         "CREATE TABLE IF NOT EXISTS mp_settings (
             key TEXT PRIMARY KEY,
             value JSONB NOT NULL,
@@ -958,6 +991,9 @@ async fn init_tables(pool: &sqlx::PgPool) -> Result<()> {
         "CREATE INDEX IF NOT EXISTS idx_mp_judge_batches_round_player_seq ON mp_round_judge_batches(round_uuid, player_id, sequence)",
         "CREATE INDEX IF NOT EXISTS idx_mp_judge_batches_created ON mp_round_judge_batches(created_at)",
         "CREATE INDEX IF NOT EXISTS idx_mp_user_room_history_user ON mp_user_room_history(user_id)",
+        "CREATE INDEX IF NOT EXISTS idx_mp_sim_events_run ON mp_sim_events(run_id)",
+        "CREATE INDEX IF NOT EXISTS idx_mp_sim_events_kind ON mp_sim_events(kind)",
+        "CREATE INDEX IF NOT EXISTS idx_mp_sim_events_created ON mp_sim_events(created_at)",
     ] {
         sqlx::query(index).execute(pool).await?;
     }

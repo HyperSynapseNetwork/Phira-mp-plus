@@ -114,3 +114,15 @@ Step 5 connects `EventBus` to `PersistenceWorker` as a diagnostic mirror only:
 - `/api/runtime` exposes the same worker stats for external observability.
 
 This step validates the Worker queue and backpressure behavior without changing persisted production data. The next safe step is to add explicit simulation persistence isolation metadata/table planning, then migrate one low-frequency database write path behind a feature flag or dual-write guard.
+
+## Step 6 implementation status
+
+Step 6 adds the first concrete simulation-only persistence sink while still keeping production data safe:
+
+- The `rt` top-level alias was removed from `runtime` because it conflicted with the existing `room-transfer` alias and produced an unreachable-pattern warning.
+- `simulation persist` / `simulation snapshot` publishes the current shadow-world snapshot as a `simulation.snapshot` Runtime v2 event.
+- `PersistenceWorker` now requests PostgreSQL writes only for events marked as simulation data.
+- Simulation diagnostics are written to the dedicated `mp_sim_events` table when PostgreSQL is enabled and initialized.
+- Production events mirrored through `PersistenceWorker` are still diagnostic-only and do not replace existing `db.rs` direct production writes.
+
+This is intentionally a simulation-only write path. It gives Runtime v2 a real persistence target for test data without contaminating the normal `mp_users`, `mp_room_snapshots`, `mp_events` or round result tables.

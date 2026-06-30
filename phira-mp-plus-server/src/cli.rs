@@ -463,7 +463,7 @@ impl CliHandler {
                 "status" | "st" => self.status().await,
                 "benchmark" | "bench" => self.start_benchmark(&args).await,
                 "simulation" | "sim" => self.simulation_command(&args).await,
-                "runtime" | "rt" => self.runtime_command(&args).await,
+                "runtime" => self.runtime_command(&args).await,
                 "benchmark-bind" | "bench-bind" => self.bind_benchmark(&args).await,
                 "benchmark-cleanup" | "bench-cleanup" => {
                     self.state.cleanup_benchmark_sync();
@@ -776,6 +776,7 @@ impl CliHandler {
                 let status = self.state.simulation.cleanup().await;
                 self.out(format!("  {} {}", c::green("✓"), status.note));
             }
+            "persist" | "snapshot" => self.simulation_persist().await,
             "sample" => {
                 let status = self.state.simulation.status().await;
                 let touches = crate::simulation::SimulationManager::sample_touches(status.seed);
@@ -791,7 +792,7 @@ impl CliHandler {
             }
             _ => {
                 self.out(format!("  {} 未知 simulation 子命令: {}", c::red("✗"), c::yellow(sub)));
-                self.out(format!("  {} 可用: simulation status | run <preset> | tick [n] | inspect [limit] | stop | seed <u64> | cleanup | sample", c::dim("▸")));
+                self.out(format!("  {} 可用: simulation status | run <preset> | tick [n] | inspect [limit] | persist | stop | seed <u64> | cleanup | sample", c::dim("▸")));
             }
         }
     }
@@ -832,6 +833,28 @@ impl CliHandler {
             }
             Err(err) => self.out(format!("  {} {}", c::red("✗"), err)),
         }
+    }
+
+    async fn simulation_persist(&self) {
+        let status = self.state.simulation.status().await;
+        let Some(run_id) = status.run_id else {
+            self.out(format!("  {} simulation 未运行，无法生成 snapshot", c::red("✗")));
+            return;
+        };
+        let world = self.state.simulation.world_snapshot(64).await;
+        let payload = serde_json::json!({
+            "run_id": run_id.to_string(),
+            "status": status,
+            "world": world,
+            "source": "cli.simulation.persist",
+        });
+        self.state.event_bus.publish(crate::event_bus::MpEvent::Custom {
+            kind: "simulation.snapshot".to_string(),
+            payload,
+        });
+        self.out(format!("  {} simulation snapshot 已发送到 EventBus / PersistenceWorker", c::green("✓")));
+        self.out(format!("  {} run_id={}", c::dim("│"), run_id));
+        self.out(format!("  {} 这是 simulation 专用诊断数据，不会写入真实 mp_* 玩家/房间表", c::dim("▸")));
     }
 
     async fn print_simulation_status(&self) {
@@ -943,6 +966,7 @@ impl CliHandler {
                 self.out(format!("  {} mirrored:  {}", c::dim("│"), stats.mirrored_from_event_bus));
                 self.out(format!("  {} skipped:   {}", c::dim("│"), stats.skipped_event_bus_events));
                 self.out(format!("  {} lagged:    {}", c::dim("│"), stats.bridge_lagged));
+                self.out(format!("  {} sim_db_req:{}", c::dim("│"), stats.simulation_persist_requests));
                 self.out(format!("  {} last_err:  {}", c::dim("│"), stats.last_error.clone().unwrap_or_else(|| "-".to_string())));
                 if !stats.by_kind.is_empty() {
                     self.out(format!("  {} by kind", c::cyan("▸")));

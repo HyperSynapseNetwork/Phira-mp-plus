@@ -390,6 +390,9 @@ pub fn runtime_v2_registry() -> CommandRegistry {
         CommandSpec::new("simulation stop", "simulation", "停止当前 Simulation 运行状态并广播结束提示。", "simulation stop"),
         CommandSpec::new("simulation seed", "simulation", "设置 deterministic simulation seed。", "simulation seed <value>"),
         CommandSpec::new("simulation cleanup", "simulation", "清理 Runtime v2 Simulation shadow world。", "simulation cleanup"),
+        CommandSpec::new("simulation persist", "simulation", "将当前 shadow world snapshot 发送到 EventBus / PersistenceWorker 的 simulation 专用路径。", "simulation persist")
+            .alias("simulation snapshot")
+            .example("simulation persist"),
         CommandSpec::new("simulation sample", "simulation", "查看 deterministic touches/judges 示例数据规模。", "simulation sample"),
     ] {
         register(&mut registry, spec);
