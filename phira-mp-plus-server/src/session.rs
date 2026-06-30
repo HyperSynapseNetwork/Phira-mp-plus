@@ -64,7 +64,6 @@ struct AuthUserInfo {
 }
 
 enum RetryNoticeTarget<'a> {
-    None,
     Stream(&'a StreamSender<ServerCommand>),
     User(&'a User),
 }
@@ -75,7 +74,6 @@ async fn send_phira_retry_notice(target: &RetryNoticeTarget<'_>) {
         content: PHIRA_RETRY_NOTICE.to_string(),
     });
     match target {
-        RetryNoticeTarget::None => {}
         RetryNoticeTarget::Stream(sender) => {
             if let Err(err) = sender.send(cmd).await {
                 warn!("failed to send Phira retry notice: {err:?}");
@@ -150,10 +148,6 @@ where
         }
     }
     bail!("Phira API request failed after retries")
-}
-
-async fn authenticate_remote(server: &PlusServerState, token: &str) -> Result<AuthUserInfo> {
-    authenticate_remote_with_notice(server, token, RetryNoticeTarget::None).await
 }
 
 async fn authenticate_remote_with_notice(

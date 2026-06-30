@@ -1,5 +1,6 @@
 //! Interactive administrative console.
 
+use crate::command_registry::runtime_v2_registry;
 use crate::terminal::{sanitize_paste, strip_ansi, EraseKeyGuard, TuiCapabilities};
 use crossterm::{
     cursor::{Hide, MoveTo, Show},
@@ -176,20 +177,13 @@ struct TuiApp {
     plain_ui: bool,
 }
 
-const ROOT_COMPLETIONS: &[&str] = &[
-    "help", "status", "users", "rooms", "room", "plugin", "plugins", "broadcast",
-    "benchmark", "benchmark-bind", "benchmark-cleanup", "ban", "unban", "banlist",
-    "ext-list", "ext-get", "kick", "exit",
-];
-
-const ROOM_COMPLETIONS: &[&str] = &[
-    "list", "info", "start", "cancel", "kick", "transfer", "force-move", "hide",
-    "unhide", "close", "set", "history", "rounds", "round", "uuid", "ban", "unban",
-    "banlist",
-];
-
-const PLUGIN_COMPLETIONS: &[&str] = &["list", "enable", "disable", "reload", "info", "call"];
-const BROADCAST_COMPLETIONS: &[&str] = &["all", "room", "user"];
+fn completion_prefix(before_cursor: &str) -> &str {
+    if before_cursor.chars().last().is_some_and(char::is_whitespace) {
+        ""
+    } else {
+        before_cursor.split_whitespace().last().unwrap_or("")
+    }
+}
 
 impl TuiApp {
     fn new(cmd_tx: mpsc::UnboundedSender<String>, colors: bool, plain_ui: bool) -> Self {
@@ -474,26 +468,9 @@ impl TuiApp {
             .take(self.cursor_pos)
             .collect::<String>();
         let trimmed_start = before_cursor.trim_start();
-        if trimmed_start.is_empty() {
-            self.add_output("  补全: help  status  users  rooms  room  plugin  benchmark".to_string());
-            return;
-        }
-
-        let (prefix, candidates): (&str, &[&str]) = if let Some(rest) = trimmed_start.strip_prefix("room ") {
-            (rest.split_whitespace().last().unwrap_or(""), ROOM_COMPLETIONS)
-        } else if let Some(rest) = trimmed_start.strip_prefix("plugin ") {
-            (rest.split_whitespace().last().unwrap_or(""), PLUGIN_COMPLETIONS)
-        } else if let Some(rest) = trimmed_start.strip_prefix("broadcast ") {
-            (rest.split_whitespace().last().unwrap_or(""), BROADCAST_COMPLETIONS)
-        } else {
-            (trimmed_start.split_whitespace().last().unwrap_or(""), ROOT_COMPLETIONS)
-        };
-
-        let matches = candidates
-            .iter()
-            .copied()
-            .filter(|candidate| candidate.starts_with(prefix))
-            .collect::<Vec<_>>();
+        let prefix = completion_prefix(trimmed_start);
+        let registry = runtime_v2_registry();
+        let matches = registry.complete_line(trimmed_start);
         match matches.as_slice() {
             [] => self.add_output(format!("  无补全候选: {prefix}")),
             [only] => self.apply_completion(prefix, only),

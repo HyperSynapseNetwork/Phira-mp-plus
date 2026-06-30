@@ -151,6 +151,16 @@ pub async fn execute_cli_once(state: Arc<PlusServerState>, line: String) -> Vec<
     lines
 }
 
+fn redact_cli_command_for_event(line: &str) -> String {
+    let mut parts = line.split_whitespace();
+    let command = parts.next().unwrap_or_default();
+    match command {
+        "benchmark-bind" => "benchmark-bind <redacted>".to_string(),
+        "plugin" if matches!(parts.next(), Some("call")) => "plugin call <args>".to_string(),
+        _ => line.to_string(),
+    }
+}
+
 fn strip_ansi_for_client(input: &str) -> String {
     let mut out = String::with_capacity(input.len());
     let mut chars = input.chars().peekable();
@@ -234,6 +244,13 @@ impl CliHandler {
             let command = parts.next().unwrap_or("");
             let args: Vec<&str> = parts.collect();
 
+            if !command.is_empty() {
+                self.state.event_bus.publish(crate::event_bus::MpEvent::AdminCommandExecuted {
+                    user_id: None,
+                    command: redact_cli_command_for_event(&line),
+                });
+            }
+
             match command {
                 "exit" | "quit" | "q" => {
                     self.out(format!("  {} 正在关闭服务器...", c::yellow("⟳")));
@@ -242,7 +259,7 @@ impl CliHandler {
                     self.out(format!("  {} 已发送关闭信号", c::green("✓")));
                     break;
                 }
-                "help" | "h" | "?" => self.print_help().await,
+                "help" | "h" | "?" => self.print_help(&args).await,
                 "plugins" | "pl" => self.list_plugins().await,
                 "plug-enable" | "pe" => {
                     if args.is_empty() {
@@ -446,6 +463,7 @@ impl CliHandler {
                 "status" | "st" => self.status().await,
                 "benchmark" | "bench" => self.start_benchmark(&args).await,
                 "simulation" | "sim" => self.simulation_command(&args).await,
+                "runtime" | "rt" => self.runtime_command(&args).await,
                 "benchmark-bind" | "bench-bind" => self.bind_benchmark(&args).await,
                 "benchmark-cleanup" | "bench-cleanup" => {
                     self.state.cleanup_benchmark_sync();
@@ -607,8 +625,7 @@ impl CliHandler {
                 _ => {
                     // 尝试插件命令
                     if !self.try_plugin_command(command, &args).await {
-                        self.out(format!("  {} 未知命令: {}   输入 {} 查看帮助",
-                            c::red("✗"), c::yellow(command), c::cyan("help")));
+                        self.out(format!("  {} {}", c::red("✗"), self.state.command_registry.format_unknown(command)));
                     }
                 }
             }
@@ -700,16 +717,19 @@ impl CliHandler {
     async fn simulation_command(&self, args: &[&str]) {
         let sub = args.first().copied().unwrap_or("status");
         match sub {
-            "status" | "st" | "" => {
-                let status = self.state.simulation.status().await;
-                self.out(format!("  {} Runtime v2 Simulation", c::green("◆")));
-                self.out(format!("  {} running:        {}", c::dim("│"), status.running));
-                self.out(format!("  {} run_id:         {}", c::dim("│"), status.run_id.map(|id| id.to_string()).unwrap_or_else(|| "-".to_string())));
-                self.out(format!("  {} seed:           {}", c::dim("│"), status.seed));
-                self.out(format!("  {} preset:         {:?}", c::dim("│"), status.config.preset));
-                self.out(format!("  {} target:         {} users / {} rooms / {}s", c::dim("│"), status.config.users, status.config.rooms, status.config.duration_secs));
-                self.out(format!("  {} virtual state:  {} users / {} rooms", c::dim("│"), status.virtual_users, status.virtual_rooms));
-                self.out(format!("  {} note:           {}", c::dim("│"), status.note));
+            "status" | "st" | "" => self.print_simulation_status().await,
+            "run" | "start" => self.simulation_run(&args[1..]).await,
+            "stop" => {
+                let before = self.state.simulation.status().await;
+                let status = self.state.simulation.stop("stopped by admin command").await;
+                if let Some(run_id) = before.run_id {
+                    self.state.event_bus.publish(crate::event_bus::MpEvent::SimulationStopped {
+                        run_id,
+                        reason: "stopped by admin command".to_string(),
+                    });
+                }
+                self.broadcast_all("性能测试已结束。Real rooms/users were not modified by the Runtime v2 skeleton.").await;
+                self.out(format!("  {} {}", c::green("✓"), status.note));
             }
             "seed" => {
                 if args.len() < 2 {
@@ -733,92 +753,154 @@ impl CliHandler {
                 let touches = crate::simulation::SimulationManager::sample_touches(status.seed);
                 let judges = crate::simulation::SimulationManager::sample_judges(status.seed);
                 self.out(format!("  {} sample touches: {} 条；sample judges: {} 条；seed={}", c::green("◆"), touches.len(), judges.len(), status.seed));
-                self.out(format!("  {} Step 1 只生成 deterministic 示例数据，不写入数据库，不污染真实房间", c::dim("▸")));
+                if let Some(first) = touches.first() {
+                    self.out(format!("  {} first touch: t={}ms lane={} pressed={}", c::dim("│"), first.time_ms, first.lane, first.pressed));
+                }
+                if let Some(first) = judges.first() {
+                    self.out(format!("  {} first judge: t={}ms {} +{}", c::dim("│"), first.time_ms, first.judge, first.score_delta));
+                }
+                self.out(format!("  {} Step 2 只生成 deterministic 示例数据，不写入数据库，不污染真实房间", c::dim("▸")));
             }
             _ => {
                 self.out(format!("  {} 未知 simulation 子命令: {}", c::red("✗"), c::yellow(sub)));
-                self.out(format!("  {} 可用: simulation status | seed <u64> | cleanup | sample", c::dim("▸")));
+                self.out(format!("  {} 可用: simulation status | run <preset> | stop | seed <u64> | cleanup | sample", c::dim("▸")));
             }
         }
     }
 
-    async fn print_help(&self) {
-        self.out(format!("  {} Phira-mp+ 管理命令", c::bold("◆")));
-        self.out(format!("  {} ─────────────────────────────────────────────", c::dim("")));
-        self.out(format!(""));
-        self.out(format!("  {} 通用", c::cyan("▸")));
-        self.out(format!("    {:<22} {}", c::dim("help"), "显示此帮助"));
-        self.out(format!("    {:<22} {}", c::dim("cmd-- / --next"), "多段命令合并；直到片段不再以 -- 结尾"));
-        self.out(format!("    {:<22} {}", c::dim("exit"), "关闭服务器"));
-        self.out(format!("    {:<22} {}", c::dim("status"), "服务器状态"));
-        self.out(format!(""));
-        self.out(format!("  {} 诊断 / 压测", c::cyan("▸")));
-        self.out(format!("    {:<22} {}", c::dim("simulation status"), "查看 Runtime v2 Simulation 状态"));
-        self.out(format!("    {:<22} {}", c::dim("simulation seed <值>"), "设置 deterministic seed"));
-        self.out(format!("    {:<22} {}", c::dim("simulation cleanup"), "清理 Simulation 内存状态"));
-        self.out(format!("    {:<22} {}", c::dim("benchmark [秒] [房间]"), "显式真实网络压测，需要 Phira token"));
-        self.out(format!("    {:<22} {}", c::dim("benchmark-bind <token>"), "绑定压测用 Phira token"));
-        self.out(format!("    {:<22} {}", c::dim("benchmark-cleanup"), "清理 bench-* 房间"));
-        self.out(format!(""));
-        self.out(format!("  {} WASM 插件", c::cyan("▸")));
-        self.out(format!("    {:<22} {}", c::dim("plugin list"), "列出所有 WASM 插件"));
-        self.out(format!("    {:<22} {}", c::dim("plugin enable <名>"), "启用插件"));
-        self.out(format!("    {:<22} {}", c::dim("plugin disable <名>"), "禁用插件"));
-        self.out(format!("    {:<22} {}", c::dim("plugin info <ID>"), "插件详情"));
-        self.out(format!("    {:<22} {}", c::dim("plugin call <ID> <方法> [JSON]"), "调用插件导出 API"));
-        self.out(format!("    {:<22} {}", c::dim("plugin reload"), "重载所有插件"));
-        self.out(format!(""));
-        self.out(format!("  {} 用户", c::cyan("▸")));
-        self.out(format!("    {:<22} {}", c::dim("users"), "在线用户"));
-        self.out(format!("    {:<22} {}", c::dim("kick <用户ID>"), "踢出用户"));
-        self.out(format!("    {:<22} {}", c::dim("broadcast <消息>"), "广播消息"));
-        self.out(format!("    {:<22} {}", c::dim("admin-id list|add|remove"), "配置游戏内管理员 Phira ID"));
-        self.out(format!(""));
-        self.out(format!("  {} 房间 (room <子命令>)", c::cyan("▸")));
-        self.out(format!("    {:<22} {}", c::dim("room list"), "活跃房间"));
-        self.out(format!("    {:<22} {}", c::dim("room create-empty <ID> [API]"), "创建无人持久空房间"));
-        self.out(format!("    {:<22} {}", c::dim("room info <ID>"), "房间详情"));
-        self.out(format!("    {:<22} {}", c::dim("room kick <ID> <用户>"), "踢出"));
-        self.out(format!("    {:<22} {}", c::dim("room start|cancel <ID>"), "开始/取消"));
-        self.out(format!("    {:<22} {}", c::dim("room close <ID>"), "解散"));
-        self.out(format!("    {:<22} {}", c::dim("room host <ID> <用户|?>"), "设置房主（? 为系统房主）"));
-        self.out(format!("    {:<22} {}", c::dim("room force-move <ID> <用户>"), "强制迁移用户"));
-        self.out(format!("    {:<22} {}", c::dim("room hide|unhide <ID>"), "隐藏/取消隐藏房间"));
-        self.out(format!("    {:<22} {}", c::dim("room set <ID> <字段> <值>"), "修改设置（含 phira_api_endpoint）"));
-        self.out(format!("    {:<22} {}", c::dim("room history <ID>"), "游玩记录"));
-        self.out(format!("    {:<22} {}", c::dim("room ban|unban|banlist"), "房间黑名单"));
-        self.out(format!(""));
-        self.out(format!("  {} 黑名单", c::cyan("▸")));
-        self.out(format!("    {:<22} {}", c::dim("ban <用户ID> [原因]"), "封禁"));
-        self.out(format!("    {:<22} {}", c::dim("unban <用户ID>"), "解封"));
-        self.out(format!("    {:<22} {}", c::dim("banlist"), "封禁列表"));
-        self.out(format!(""));
-        self.out(format!("  {} 扩展", c::cyan("▸")));
-        self.out(format!("    {:<22} {}", c::dim("ext-list"), "扩展字段列表"));
-        self.out(format!("    {:<22} {}", c::dim("ext-get <ID> <key>"), "查看扩展数据"));
+    async fn simulation_run(&self, args: &[&str]) {
+        let seed = self.state.simulation.status().await.seed;
+        let preset = args
+            .first()
+            .and_then(|value| crate::simulation::SimulationPreset::parse(value))
+            .unwrap_or(crate::simulation::SimulationPreset::Baseline);
+        let mut config = preset.defaults(seed);
+        let option_start = if args.first().and_then(|value| crate::simulation::SimulationPreset::parse(value)).is_some() { 1 } else { 0 };
+        for token in &args[option_start..] {
+            let Some((key, value)) = token.split_once('=') else {
+                self.out(format!("  {} 无效参数：{}；请使用 users=500 rooms=50 duration=300 touch=true judge=true", c::red("✗"), token));
+                return;
+            };
+            if let Err(err) = config.apply_kv(key, value) {
+                self.out(format!("  {} {}", c::red("✗"), err));
+                return;
+            }
+        }
+
+        match self.state.simulation.start(config).await {
+            Ok(status) => {
+                if let Some(run_id) = status.run_id {
+                    self.state.event_bus.publish(crate::event_bus::MpEvent::SimulationStarted { run_id });
+                }
+                self.broadcast_all("服务器正在进行性能测试，期间可能出现短暂卡顿。Runtime v2 当前为安全骨架模式，不会创建真实房间。").await;
+                self.out(format!("  {} simulation 已启动: {:?}", c::green("✓"), status.run_id));
+                self.out(format!("  {} preset={:?} users={} rooms={} duration={}s touch={} judge={}",
+                    c::dim("│"), status.config.preset, status.config.users, status.config.rooms,
+                    status.config.duration_secs, status.config.touch, status.config.judge));
+                self.out(format!("  {} Step 2 只维护内存计数和广播提示，不写入数据库，不污染真实房间", c::dim("▸")));
+            }
+            Err(err) => self.out(format!("  {} {}", c::red("✗"), err)),
+        }
+    }
+
+    async fn print_simulation_status(&self) {
+        let status = self.state.simulation.status().await;
+        self.out(format!("  {} Runtime v2 Simulation", c::green("◆")));
+        self.out(format!("  {} running:        {}", c::dim("│"), status.running));
+        self.out(format!("  {} run_id:         {}", c::dim("│"), status.run_id.as_ref().map(|id| id.to_string()).unwrap_or_else(|| "-".to_string())));
+        self.out(format!("  {} seed:           {}", c::dim("│"), status.seed));
+        self.out(format!("  {} preset:         {:?}", c::dim("│"), status.config.preset));
+        self.out(format!("  {} target:         {} users / {} rooms / {}s", c::dim("│"), status.config.users, status.config.rooms, status.config.duration_secs));
+        self.out(format!("  {} touch/judge:    {} / {}", c::dim("│"), status.config.touch, status.config.judge));
+        self.out(format!("  {} virtual state:  {} users / {} rooms", c::dim("│"), status.virtual_users, status.virtual_rooms));
+        self.out(format!("  {} note:           {}", c::dim("│"), status.note));
+    }
+
+    async fn runtime_command(&self, args: &[&str]) {
+        let sub = args.first().copied().unwrap_or("status");
+        match sub {
+            "status" | "st" | "" => {
+                let sim = self.state.simulation.status().await;
+                let persistence = self.state.persistence_worker.stats().await;
+                self.out(format!("  {} Runtime v2 skeleton", c::green("◆")));
+                self.out(format!("  {} command specs:      {}", c::dim("│"), self.state.command_registry.iter().count()));
+                self.out(format!("  {} event subscribers:  {}", c::dim("│"), self.state.event_bus.receiver_count()));
+                self.out(format!("  {} simulation running: {}", c::dim("│"), sim.running));
+                self.out(format!("  {} persistence queue:  queued={} processed={} dropped={}", c::dim("│"), persistence.queued, persistence.processed, persistence.dropped));
+                self.out(format!("  {} 现有 Room/Session/DB 主逻辑仍未迁移到 Runtime v2", c::dim("▸")));
+            }
+            "commands" | "cmds" => {
+                self.out(format!("  {} Command Registry", c::green("◆")));
+                self.out(format!("  {} groups: {}", c::dim("│"), self.state.command_registry.groups().join(", ")));
+                self.out(format!("  {} specs:  {}", c::dim("│"), self.state.command_registry.iter().count()));
+                self.out(format!("  {} roots:  {}", c::dim("│"), self.state.command_registry.root_commands().join(", ")));
+            }
+            "events" | "event" => {
+                self.out(format!("  {} EventBus", c::green("◆")));
+                self.out(format!("  {} subscribers: {}", c::dim("│"), self.state.event_bus.receiver_count()));
+                self.out(format!("  {} 当前只作为 Runtime v2 新功能事件脊柱，未替换旧插件/房间调用", c::dim("▸")));
+            }
+            "persistence" | "persist" | "db" => {
+                let stats = self.state.persistence_worker.stats().await;
+                self.out(format!("  {} Persistence Worker", c::green("◆")));
+                self.out(format!("  {} queued:    {}", c::dim("│"), stats.queued));
+                self.out(format!("  {} processed: {}", c::dim("│"), stats.processed));
+                self.out(format!("  {} dropped:   {}", c::dim("│"), stats.dropped));
+                self.out(format!("  {} last_err:  {}", c::dim("│"), stats.last_error.unwrap_or_else(|| "-".to_string())));
+                self.out(format!("  {} 现有 db.rs 直接写入路径仍保持不变", c::dim("▸")));
+            }
+            _ => {
+                self.out(format!("  {} 未知 runtime 子命令: {}", c::red("✗"), c::yellow(sub)));
+                self.out(format!("  {} 可用: runtime status | commands | events | persistence", c::dim("▸")));
+            }
+        }
+    }
+
+    async fn print_help(&self, args: &[&str]) {
+        if !args.is_empty() {
+            let query = args.join(" ");
+            if let Some(help) = self.state.command_registry.format_help(&query) {
+                for line in help.lines() {
+                    self.out(format!("  {line}"));
+                }
+                return;
+            }
+            self.out(format!("  {} 未找到命令帮助: {}", c::yellow("!"), query));
+            self.out(format!("  {} {}", c::dim("▸"), self.state.command_registry.format_unknown(&query)));
+            return;
+        }
+
+        for line in self.state.command_registry.format_overview().lines() {
+            if line.starts_with('▸') {
+                self.out(format!("  {}", c::cyan(line)));
+            } else if line.starts_with('─') || line.starts_with("提示") {
+                self.out(format!("  {}", c::dim(line)));
+            } else {
+                self.out(format!("  {line}"));
+            }
+        }
 
         let plugin_cmds = self.state.plugin_manager.list_cli_commands().await;
         let (core_cmds, wasm_cmds): (Vec<_>, Vec<_>) = plugin_cmds
             .into_iter()
             .partition(|cmd| is_core_registered_command(&cmd.name));
         if !core_cmds.is_empty() {
-            self.out(format!(""));
+            self.out(String::new());
             self.out(format!("  {} 内置扩展", c::cyan("▸")));
             for cmd in &core_cmds {
                 self.out(format!("    {:<22} {}", c::dim(&cmd.name), cmd.description));
             }
         }
         if !wasm_cmds.is_empty() {
-            self.out(format!(""));
+            self.out(String::new());
             self.out(format!("  {} WASM 插件扩展", c::magenta("▸")));
             for cmd in &wasm_cmds {
                 self.out(format!("    {:<22} {}", c::dim(&cmd.name), cmd.description));
             }
         }
-        self.out(format!(""));
-        self.out(format!("  {} ─────────────────────────────────────────────", c::dim("")));
+        self.out(String::new());
+        self.out(format!("  {} help <命令> 查看统一详情；Tab 补全来自 Command Registry", c::dim("▸")));
     }
-
 
     async fn list_plugins(&self) {
         let plugins = self.state.plugin_manager.list_plugins().await;
@@ -1626,23 +1708,29 @@ impl CliHandler {
 
     /// 广播给所有用户
     async fn broadcast_all(&self, message: &str) {
-        let users = self.state.users.read().await;
+        let users = {
+            let users = self.state.users.read().await;
+            users.values().cloned().collect::<Vec<_>>()
+        };
         let content = format!("[系统广播] {}", message);
         let msg = phira_mp_common::ServerCommand::Message(
             phira_mp_common::Message::Chat { user: 0, content },
         );
         let mut sent = 0usize;
-        for user in users.values() {
+        for user in &users {
             user.try_send(msg.clone()).await;
             sent += 1;
         }
-        drop(users);
         info!(sent, message = %message, "broadcast to all");
         self.state.plugin_manager
             .trigger(&PluginEvent::RoomModify {
                 user_id: 0,
                 room_id: "*broadcast*".to_string(),
-                data: format!(r#"{{"action":"broadcast","scope":"all","message":"{}"}}"#, message),
+                data: serde_json::json!({
+                    "action": "broadcast",
+                    "scope": "all",
+                    "message": message,
+                }).to_string(),
             }).await;
         self.out(format!("  {} 已广播给 {} 个用户", c::green("✓"), sent));
     }
@@ -1661,15 +1749,22 @@ impl CliHandler {
             .trigger(&PluginEvent::RoomModify {
                 user_id: 0,
                 room_id: room_id.to_string(),
-                data: format!(r#"{{"action":"broadcast","scope":"room","message":"{}"}}"#, message),
+                data: serde_json::json!({
+                    "action": "broadcast",
+                    "scope": "room",
+                    "message": message,
+                }).to_string(),
             }).await;
         self.out(format!("  {} 已发送房间广播 ({} 人)", c::green("✓"), users));
     }
 
     /// 发送给指定用户
     async fn broadcast_user(&self, user_id: i32, message: &str) {
-        let users = self.state.users.read().await;
-        if let Some(user) = users.get(&user_id) {
+        let user = {
+            let users = self.state.users.read().await;
+            users.get(&user_id).cloned()
+        };
+        if let Some(user) = user {
             let content = format!("[管理员消息] {}", message);
             user.try_send(phira_mp_common::ServerCommand::Message(
                 phira_mp_common::Message::Chat { user: 0, content },

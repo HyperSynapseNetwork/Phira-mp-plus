@@ -57,3 +57,16 @@ must not be treated as the default Runtime v2 stress test.
 3. EventBus publication for admin and simulation events.
 4. Persistence Worker for room snapshots and low-frequency events.
 5. Dedicated simulation data isolation.
+
+## Step 2 implementation status
+
+Step 2 connects the skeletons to low-risk operational surfaces:
+
+- `help` can now render detailed metadata from `CommandRegistry`.
+- TUI tab completion reads the same registry instead of hard-coded arrays.
+- `runtime status|commands|events|persistence` exposes skeleton health.
+- `simulation run|stop` manages in-memory lifecycle counters and broadcasts start/stop notices to real players.
+- Simulation still does **not** create virtual users, virtual rooms, database rows, Web API records or WIT-visible records.
+- Existing `benchmark` remains the explicit real-network compatibility path.
+
+Step 2 deliberately does not migrate Room, Session, PostgreSQL writes or plugin events to Runtime v2. The next safe migration target is adding a simulation data isolation design before any real virtual room/player objects are created.
