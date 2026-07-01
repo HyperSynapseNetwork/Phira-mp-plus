@@ -4,6 +4,7 @@
 //! 提供可部署、可观察、可扩展的多人游戏服务。
 
 pub mod actor_runtime;
+pub mod benchmark_report;
 pub mod ban;
 pub mod cli;
 pub mod cli_tui;

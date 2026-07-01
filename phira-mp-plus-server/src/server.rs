@@ -1,6 +1,7 @@
 //! Server configuration and runtime state.
 
 use crate::ban::BanManager;
+use crate::benchmark_report::{BenchmarkMode, BenchmarkReport};
 use crate::extensions::ExtensionManager;
 use crate::plugin::{PluginEvent, PluginManager, WasmRuntimeConfig};
 use crate::plugin_http::{PluginHttpServer, SseHub};
@@ -1526,18 +1527,25 @@ impl PlusServerState {
             config.endpoint_override.as_deref().unwrap_or("<global phira_api_endpoint>"),
         );
         let switches = config.enabled_switches();
+        let mut report = BenchmarkReport::new(BenchmarkMode::Hybrid, "hybrid Phira probe", config.duration_secs);
         if switches.is_empty() {
+            report.probes.record_skipped();
+            report.add_note("dry-run: no Phira request was sent because all hybrid switches are disabled");
+            report.add_note("simulation remains the default pressure path; real Phira probes require explicit switches");
             o!("  │ switches: none");
             o!("  │");
             o!("  ✓ hybrid dry-run complete: no Phira request was sent");
             o!("  │ simulation remains the default pressure path; real Phira probes require explicit switches");
+            out.push_str(&report.render_text());
             return out;
         }
         o!("  │ switches: {}", switches.join(", "));
         o!("  │");
 
         if let Err(err) = config.validate() {
+            report.add_failure_sample("config", err.clone());
             o!("  ✗ invalid hybrid config: {err}");
+            out.push_str(&report.render_text());
             return out;
         }
 
@@ -1558,15 +1566,20 @@ impl PlusServerState {
                 ).await {
                     Ok(user) => {
                         ok += 1;
+                        report.probes.record_success();
                         o!("  │ ✓ authenticated as {} ({})", user.name, user.id);
                     }
                     Err(err) => {
                         failed += 1;
+                        report.probes.record_failure();
+                        report.add_failure_sample("authenticate", err.to_string());
                         o!("  │ ✗ authenticate failed: {err}");
                     }
                 }
             } else {
                 failed += 1;
+                report.probes.record_skipped();
+                report.add_failure_sample("authenticate", "no benchmark token configured");
                 o!("  │ ✗ skipped: no benchmark token configured");
                 o!("  │   run benchmark-bind <token1[,token2...]> or set benchmark_phira_tokens locally");
             }
@@ -1583,10 +1596,13 @@ impl PlusServerState {
             ).await {
                 Ok(chart) => {
                     ok += 1;
+                    report.probes.record_success();
                     o!("  │ ✓ chart {}: {}", chart.id, chart.name);
                 }
                 Err(err) => {
                     failed += 1;
+                    report.probes.record_failure();
+                    report.add_failure_sample("chart_lookup", err.to_string());
                     o!("  │ ✗ chart lookup failed: {err}");
                 }
             }
@@ -1603,10 +1619,13 @@ impl PlusServerState {
             ).await {
                 Ok(record) => {
                     ok += 1;
+                    report.probes.record_success();
                     o!("  │ ✓ record {}: player={} score={} acc={:.4}", record.id, record.player, record.score, record.accuracy);
                 }
                 Err(err) => {
                     failed += 1;
+                    report.probes.record_failure();
+                    report.add_failure_sample("record_lookup", err.to_string());
                     o!("  │ ✗ record lookup failed: {err}");
                 }
             }
@@ -1614,6 +1633,8 @@ impl PlusServerState {
 
         if config.upload_record {
             failed += 1;
+            report.probes.record_blocked();
+            report.add_failure_sample("upload_record", "hybrid write probes are intentionally disabled until upload semantics are specified");
             o!("  ├─ upload_record");
             o!("  │ ✗ blocked: hybrid write probes are intentionally disabled until upload semantics are specified");
         }
@@ -1623,6 +1644,11 @@ impl PlusServerState {
         o!("  └─ hybrid complete: ok={ok} failed={failed}");
         o!("  │ phira_http: requests={} successes={} failures={} retry_attempts={} circuit_open={}",
             stats.requests, stats.successes, stats.failures, stats.retry_attempts, stats.circuit_open_rejections);
+        report.add_note(format!(
+            "phira_http requests={} successes={} failures={} retry_attempts={} circuit_open={}",
+            stats.requests, stats.successes, stats.failures, stats.retry_attempts, stats.circuit_open_rejections,
+        ));
+        out.push_str(&report.render_text());
         out
     }
 
@@ -1645,8 +1671,13 @@ impl PlusServerState {
         if tokens.is_empty() {
             o!("  ✗ 未配置 Phira 压测账号");
             o!("  │  请先执行: benchmark-bind <token1[,token2...]>");
-            o!("  │  或直接修改 server_config.yml: benchmark_phira_tokens: [\"...\"]");
-            o!("  │  也可以写入 {BENCH_AUTH_FILE}: {{\"tokens\":[\"...\"]}}");
+            o!("  │  或直接修改 server_config.yml: benchmark_phira_tokens: ["..."]");
+            o!("  │  也可以写入 {BENCH_AUTH_FILE}: {{"tokens":["..."]}}");
+            let mut report = BenchmarkReport::new(BenchmarkMode::Real, "real TCP compatibility benchmark", duration_secs)
+                .with_target_rooms(target_rooms);
+            report.add_failure_sample("config", "no benchmark Phira tokens configured");
+            report.add_note("real benchmark is explicit and requires local benchmark tokens; simulation remains the default pressure path");
+            out.push_str(&report.render_text());
             return out;
         }
 
@@ -1766,17 +1797,26 @@ impl PlusServerState {
         o!("  │");
         o!("  └─ 压测完成 ({:.1}s)", started_at.elapsed().as_secs_f64());
         o!("");
-        o!("  ◆ 报告");
-        o!("  │  真实客户端: {}  创建/重建房间: {created}  重建次数: {rebuilt}  加入用户: {joined}", clients.len());
-        o!("  │  网络操作: {op_count}  失败: {failed_ops}");
-        o!("  │  延迟: avg={avg_ms:.2}ms  p99={p99_ms:.2}ms");
-        if !failures.is_empty() {
-            o!("  │");
-            o!("  ├─ 失败样例（最多显示 8 条）");
-            for failure in failures.iter().take(8) {
-                o!("  │  · {failure}");
-            }
+        let mut report = BenchmarkReport::new(BenchmarkMode::Real, "real TCP compatibility benchmark", duration_secs)
+            .with_target_rooms(target_rooms);
+        report.active_clients = Some(clients.len());
+        report.rooms_created = Some(created);
+        report.rooms_rebuilt = Some(rebuilt);
+        report.users_joined = Some(joined);
+        report.operations = Some(op_count);
+        report.failed_operations = Some(failed_ops);
+        report.avg_latency_ms = Some(avg_ms);
+        report.p99_latency_ms = Some(p99_ms);
+        if tokens.len() < target_rooms {
+            report.add_note(format!(
+                "benchmark tokens were fewer than target rooms; {} tokens were reused for {} target rooms",
+                tokens.len(), target_rooms,
+            ));
         }
+        for failure in failures.iter().take(8) {
+            report.add_failure_sample("real_network", failure.clone());
+        }
+        out.push_str(&report.render_text());
         out
     }
 

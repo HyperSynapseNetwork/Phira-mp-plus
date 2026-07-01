@@ -534,12 +534,12 @@ pub fn runtime_v2_registry() -> CommandRegistry {
     );
     register(
         &mut registry,
-        CommandSpec::new("benchmark run real", "diagnostics", "显式运行真实 TCP + 真实 Phira token 兼容性测试。", "benchmark run real [seconds] [rooms]").advanced()
+        CommandSpec::new("benchmark run real", "diagnostics", "显式运行真实 TCP + 真实 Phira token 兼容性测试，并输出统一 BenchmarkReport 摘要。", "benchmark run real [seconds] [rooms]").advanced()
             .example("benchmark run real 30 100"),
     );
     register(
         &mut registry,
-        CommandSpec::new("benchmark run hybrid", "diagnostics", "显式运行 Hybrid Phira probe；authenticate/chart_lookup/record_lookup/upload_record 独立开关，默认全部关闭。", "benchmark run hybrid [duration] [authenticate=true] [chart_lookup=<id>] [record_lookup=<id>]").advanced()
+        CommandSpec::new("benchmark run hybrid", "diagnostics", "显式运行 Hybrid Phira probe；authenticate/chart_lookup/record_lookup/upload_record 独立开关，默认全部关闭，并输出统一 BenchmarkReport 摘要。", "benchmark run hybrid [duration] [authenticate=true] [chart_lookup=<id>] [record_lookup=<id>]").advanced()
             .example("benchmark run hybrid")
             .example("benchmark run hybrid authenticate=true chart_lookup=1 record_lookup=1"),
     );
