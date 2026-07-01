@@ -241,8 +241,7 @@ impl CliHandler {
         let limit = rest
             .iter()
             .find_map(|value| value.parse::<usize>().ok())
-            .unwrap_or(self.state.runtime_budget.recent_list_limit)
-            .clamp(1, self.state.runtime_budget.benchmark_report_capacity.max(1));
+            .unwrap_or(crate::runtime_diagnostics::BENCHMARK_REPORT_RECENT_DEFAULT);
 
         self.out(format!("  {} Benchmark reports", c::green("◆")));
         if let Some(mode) = mode {
@@ -266,10 +265,10 @@ impl CliHandler {
 
         let snapshot = self.state.benchmark_reports.snapshot(limit);
         self.out(format!(
-            "  {} total={} capacity={} recent={}",
+            "  {} total={} retained={} recent={}",
             c::dim("│"),
             snapshot.total,
-            snapshot.capacity,
+            snapshot.retained,
             snapshot.recent.len(),
         ));
         if snapshot.latest_by_mode.is_empty() {
@@ -284,7 +283,7 @@ impl CliHandler {
                 item.count,
                 item.latest_seq,
                 item.latest.title,
-                item.latest.failed_operations.unwrap_or(0),
+                item.latest.failed_operations,
             ));
         }
         if !snapshot.recent.is_empty() {
@@ -294,10 +293,10 @@ impl CliHandler {
                     "    #{:<4} {:<10} duration={}s title={} failed={} probes_failed={}",
                     entry.seq,
                     entry.mode.as_str(),
-                    entry.report.duration_secs,
-                    entry.report.title,
-                    entry.report.failed_operations.unwrap_or(0),
-                    entry.report.probes.failed,
+                    entry.duration_secs,
+                    entry.title,
+                    entry.failed_operations,
+                    entry.probes_failed,
                 ));
             }
         }

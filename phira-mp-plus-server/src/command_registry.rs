@@ -448,9 +448,6 @@ pub fn runtime_v2_registry() -> CommandRegistry {
         CommandSpec::new("runtime status", "runtime-v2", "查看 Runtime v2 骨架状态。", "runtime status"),
         CommandSpec::new("runtime roadmap", "runtime-v2", "查看 Runtime v2 总目标工作板，防止长期目标在迭代中丢失。", "runtime roadmap")
             .advanced(),
-        CommandSpec::new("runtime budget", "runtime-v2", "查看低 CPU/RAM Runtime v2 资源预算、 bounded EventBus trace 与 benchmark report snapshot 容量。", "runtime budget")
-            .advanced(),
-
         CommandSpec::new("runtime phira", "runtime-v2", "查看统一 Phira HTTP RetryClient 统计和策略。", "runtime phira").advanced(),
         CommandSpec::new("runtime commands", "runtime-v2", "查看 Command Registry 统计。", "runtime commands").advanced(),
         CommandSpec::new("runtime events", "runtime-v2", "查看 EventBus 发布统计与最近事件。", "runtime events").advanced(),

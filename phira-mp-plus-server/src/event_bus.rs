@@ -19,7 +19,7 @@ use std::{
 use tokio::sync::broadcast;
 use uuid::Uuid;
 
-const DEFAULT_MAX_EVENT_TRACE: usize = 256;
+const DEFAULT_MAX_EVENT_TRACE: usize = crate::runtime_diagnostics::EVENT_TRACE_WINDOW;
 
 #[derive(Debug, Clone)]
 pub enum MpEvent {
@@ -296,7 +296,7 @@ mod tests {
     }
 
     #[test]
-    fn event_bus_trace_capacity_is_bounded() {
+    fn event_bus_trace_window_keeps_recent_observability_entries() {
         let bus = EventBus::new_with_trace(16, 2);
         bus.publish(MpEvent::Custom { kind: "a".to_string(), payload: serde_json::json!({}) });
         bus.publish(MpEvent::Custom { kind: "b".to_string(), payload: serde_json::json!({}) });

@@ -3,7 +3,6 @@
 use crate::ban::BanManager;
 use crate::benchmark_report::{BenchmarkMode, BenchmarkReport};
 use crate::benchmark_snapshot::BenchmarkReportStore;
-use crate::runtime_budget::RuntimeResourceBudget;
 use crate::extensions::ExtensionManager;
 use crate::plugin::{PluginEvent, PluginManager, WasmRuntimeConfig};
 use crate::plugin_http::{PluginHttpServer, SseHub};
@@ -192,9 +191,6 @@ pub struct RuntimeV2Config {
     /// Startup cutover mode for production Touch/Judge persistence.
     #[serde(default)]
     pub telemetry_cutover_mode: crate::telemetry_batcher::TelemetryCutoverMode,
-    /// Low CPU/RAM infrastructure budget for bounded Runtime v2 diagnostics.
-    #[serde(default)]
-    pub budget: crate::runtime_budget::RuntimeResourceBudgetConfig,
     /// Unified Phira HTTP retry/timeout/circuit-breaker policy.
     #[serde(default)]
     pub phira_http: crate::phira_client::PhiraHttpPolicyConfig,
@@ -206,7 +202,6 @@ impl Default for RuntimeV2Config {
             persistence_queue_capacity: default_runtime_persistence_queue_capacity(),
             telemetry_batcher: crate::telemetry_batcher::TelemetryBatcherPolicy::default(),
             telemetry_cutover_mode: crate::telemetry_batcher::TelemetryCutoverMode::default(),
-            budget: crate::runtime_budget::RuntimeResourceBudgetConfig::default(),
             phira_http: crate::phira_client::PhiraHttpPolicyConfig::default(),
         }
     }
@@ -524,8 +519,6 @@ pub struct PlusServerState {
     pub command_registry: Arc<crate::command_registry::CommandRegistry>,
     /// Runtime v2 事件总线。当前记录新增 Runtime v2 事件和诊断统计，旧路径仍逐步迁移。
     pub event_bus: Arc<crate::event_bus::EventBus>,
-    /// Runtime v2 low CPU/RAM budget: bounded traces, snapshots and diagnostics timeouts.
-    pub runtime_budget: RuntimeResourceBudget,
     /// Runtime v2 benchmark 报告只读快照。CLI/TUI/Web 诊断读这里，不解析 EventBus 字符串。
     pub benchmark_reports: Arc<BenchmarkReportStore>,
     /// Runtime v2 Simulation 状态管理器。当前只创建隔离 shadow world，不污染真实 rooms/users。
@@ -623,15 +616,14 @@ impl PlusServer {
         let (bench_tx, bench_rx) = tokio::sync::mpsc::unbounded_channel::<BenchRequest>();
 
         let runtime_v2 = config.runtime_v2.clone();
-        let resource_budget = runtime_v2.budget.sanitized();
         let command_registry = Arc::new(crate::command_registry::runtime_v2_registry());
         let event_bus = Arc::new(crate::event_bus::EventBus::new_with_trace(
-            resource_budget.event_bus_capacity,
-            resource_budget.event_trace_capacity,
+            crate::runtime_diagnostics::EVENT_BUS_CHANNEL_CAPACITY,
+            crate::runtime_diagnostics::EVENT_TRACE_WINDOW,
         ));
         spawn_runtime_event_observer(Arc::clone(&event_bus));
         let benchmark_reports = Arc::new(BenchmarkReportStore::new(
-            resource_budget.benchmark_report_capacity,
+            crate::runtime_diagnostics::BENCHMARK_REPORT_HISTORY,
         ));
         let simulation = Arc::new(crate::simulation::SimulationManager::new());
         let persistence_worker = crate::persistence_worker::PersistenceWorker::spawn_with_policy(
@@ -672,7 +664,6 @@ impl PlusServer {
             bench_tx: bench_tx.clone(),
             command_registry,
             event_bus,
-            runtime_budget: resource_budget,
             benchmark_reports,
             simulation,
             persistence_worker,
@@ -825,11 +816,6 @@ impl PlusServer {
         let benchmark_report_state = Arc::clone(&state_for_webapi2);
         http_for_webapi.register_route_sync("/api/benchmark/reports", Arc::new(move |_, _| {
             server_state_query_inner(&benchmark_report_state, "benchmark.reports", &[])
-                .map_err(|e| (500u16, e))
-        }));
-        let runtime_budget_state = Arc::clone(&state_for_webapi2);
-        http_for_webapi.register_route_sync("/api/runtime/budget", Arc::new(move |_, _| {
-            server_state_query_inner(&runtime_budget_state, "runtime.budget", &[])
                 .map_err(|e| (500u16, e))
         }));
         // GET /api/players/all — 所有连接过服务器的玩家
@@ -2261,8 +2247,8 @@ async fn run_admin_kick_user(state: &PlusServerState, target_id: i32, reason: &s
 /// - `player.touches`  → 查询指定用户的最近触控数据
 /// - `player.judges`   → 查询指定用户的最近判定数据
 /// - 其它方法委托给 webapi feature 下的 server_state_query
-fn runtime_state_query_timeout(state: &Arc<PlusServerState>) -> std::time::Duration {
-    state.runtime_budget.state_query_timeout()
+fn runtime_state_query_timeout() -> std::time::Duration {
+    crate::runtime_diagnostics::RUNTIME_STATE_QUERY_TIMEOUT
 }
 
 fn server_state_query_inner(state: &Arc<PlusServerState>, method: &str, args: &[Value]) -> Result<Value, String> {
@@ -2273,12 +2259,11 @@ fn server_state_query_inner(state: &Arc<PlusServerState>, method: &str, args: &[
             tokio::spawn(async move {
                 let simulation = s.simulation.status().await;
                 let persistence = s.persistence_worker.stats().await;
-                let events = s.event_bus.stats(16);
+                let events = s.event_bus.stats(crate::runtime_diagnostics::BENCHMARK_REPORT_RECENT_DEFAULT);
                 let commands = s.command_registry.iter().count();
                 let room_commands = s.room_commands.stats();
                 let phira_http = s.phira_client.stats();
-                let benchmark_reports = s.benchmark_reports.snapshot(s.runtime_budget.recent_list_limit);
-                let resource_budget = s.runtime_budget.summary();
+                let benchmark_reports = s.benchmark_reports.snapshot(crate::runtime_diagnostics::BENCHMARK_REPORT_RECENT_DEFAULT);
                 let plan = s.runtime_plan.snapshot();
                 let _ = tx.send(Ok(serde_json::json!({
                     "runtime_v2": true,
@@ -2290,11 +2275,10 @@ fn server_state_query_inner(state: &Arc<PlusServerState>, method: &str, args: &[
                     "room_command_gateway": room_commands,
                     "phira_http": phira_http,
                     "benchmark_reports": benchmark_reports,
-                    "resource_budget": resource_budget,
                     "plan": plan,
                 })));
             });
-            rx.recv_timeout(runtime_state_query_timeout(state))
+            rx.recv_timeout(runtime_state_query_timeout())
                 .unwrap_or(Err("runtime.status timeout".to_string()))
         }
         "simulation.status" => {
@@ -2304,7 +2288,7 @@ fn server_state_query_inner(state: &Arc<PlusServerState>, method: &str, args: &[
                 let status = s.simulation.status().await;
                 let _ = tx.send(Ok(serde_json::to_value(status).unwrap_or_default()));
             });
-            rx.recv_timeout(runtime_state_query_timeout(state))
+            rx.recv_timeout(runtime_state_query_timeout())
                 .unwrap_or(Err("simulation.status timeout".to_string()))
         }
         "simulation.world" => {
@@ -2320,7 +2304,7 @@ fn server_state_query_inner(state: &Arc<PlusServerState>, method: &str, args: &[
                     .ok_or_else(|| "simulation shadow world not available".to_string());
                 let _ = tx.send(result);
             });
-            rx.recv_timeout(runtime_state_query_timeout(state))
+            rx.recv_timeout(runtime_state_query_timeout())
                 .unwrap_or(Err("simulation.world timeout".to_string()))
         },
         "benchmark.reports" => {
@@ -2328,11 +2312,8 @@ fn server_state_query_inner(state: &Arc<PlusServerState>, method: &str, args: &[
                 .get(0)
                 .and_then(|v| v.as_u64())
                 .map(|value| value as usize)
-                .unwrap_or(state.runtime_budget.recent_list_limit);
+                .unwrap_or(crate::runtime_diagnostics::BENCHMARK_REPORT_RECENT_DEFAULT);
             Ok(serde_json::to_value(state.benchmark_reports.snapshot(limit)).unwrap_or_default())
-        },
-        "runtime.budget" => {
-            Ok(serde_json::to_value(state.runtime_budget.summary()).unwrap_or_default())
         },
         "benchmark.latest" => {
             let mode = args.get(0).and_then(|v| v.as_str()).unwrap_or("");
@@ -2369,7 +2350,7 @@ fn server_state_query_inner(state: &Arc<PlusServerState>, method: &str, args: &[
                 }.await;
                 let _ = tx.send(result);
             });
-            rx.recv_timeout(runtime_state_query_timeout(state))
+            rx.recv_timeout(runtime_state_query_timeout())
                 .unwrap_or(Err("query timeout".to_string()))
         },
         "player.judges" => {
@@ -2389,7 +2370,7 @@ fn server_state_query_inner(state: &Arc<PlusServerState>, method: &str, args: &[
                 }.await;
                 let _ = tx.send(result);
             });
-            rx.recv_timeout(runtime_state_query_timeout(state))
+            rx.recv_timeout(runtime_state_query_timeout())
                 .unwrap_or(Err("query timeout".to_string()))
         },
         "round.data" => {
@@ -2407,7 +2388,7 @@ fn server_state_query_inner(state: &Arc<PlusServerState>, method: &str, args: &[
                     .ok_or_else(|| "round data not found".to_string());
                 let _ = tx.send(result);
             });
-            rx.recv_timeout(runtime_state_query_timeout(state))
+            rx.recv_timeout(runtime_state_query_timeout())
                 .unwrap_or(Err("query timeout".to_string()))
         },
         "round.list" => {
@@ -2417,7 +2398,7 @@ fn server_state_query_inner(state: &Arc<PlusServerState>, method: &str, args: &[
                 let rounds = s.round_store.list_rounds().await;
                 let _ = tx.send(Ok(serde_json::to_value(rounds).unwrap_or_default()));
             });
-            rx.recv_timeout(runtime_state_query_timeout(state))
+            rx.recv_timeout(runtime_state_query_timeout())
                 .unwrap_or(Err("query timeout".to_string()))
         },
         "test.run_benchmark" => {
