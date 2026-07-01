@@ -1527,7 +1527,7 @@ impl CliHandler {
                     }
                 }
                 self.out(format!("  {} note:      {}", c::dim("│"), stats.note));
-                self.out(format!("  {} set_lock/set_cycle/set_host/close/kick 已穿过 per-room mailbox registry；start/cancel 仍走 inline facade", c::dim("▸")));
+                self.out(format!("  {} set_lock/set_cycle/set_host/close/kick/start/cancel 已穿过 per-room mailbox registry", c::dim("▸")));
             }
             "actors" | "actor" | "actor-model" => {
                 let stats = self.state.actor_runtime.stats().await;

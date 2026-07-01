@@ -108,7 +108,7 @@ fn default_boundaries() -> Vec<ActorBoundary> {
             responsibility: "Own one room state machine, membership, host transfer, ready/start/play/result lifecycle, and telemetry fan-in.".to_string(),
             source_files: vec!["room.rs".to_string()],
             status: ActorBoundaryStatus::Planned,
-            next_step: "audit start/cancel wait-state transitions before moving them into per-room mailbox ownership".to_string(),
+            next_step: "start/cancel now cross the per-room mailbox; next split RoomCommandGateway handlers into actor-owned room state modules".to_string(),
         },
         ActorBoundary {
             name: "persistence-actor".to_string(),

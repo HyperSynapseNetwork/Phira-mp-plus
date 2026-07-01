@@ -249,3 +249,33 @@ Next cut:
 2. Add tests around the gateway fallback behavior.
 3. Begin moving selected room-owned state into actor-local ownership once the
    command boundary has stable failure and latency metrics.
+
+## Step 17 update: start/cancel mailbox path
+
+Step 17 completes the first admin room-write sweep through the per-room mailbox
+registry by moving the higher-risk start/cancel operations behind the same
+command boundary.
+
+Commands now routed through the per-room mailbox registry:
+
+- `room set <id> lock <bool>`
+- `room set <id> cycle <bool>`
+- `room host <id> <user|?>` / host transfer
+- `room close <id>`
+- `room kick <id> <user_id>` / `room.kick`
+- `room start <id>` / `room-start`
+- `room cancel <id>` / `room-cancel`
+
+The cancel path was also tightened so it no longer awaits client sends while
+holding the room-state write lock.  It performs the state transition in the
+critical section, releases the lock, then sends `CancelGame` and publishes the
+state update.
+
+Next cut:
+
+1. Extract `RoomCommandGateway` handlers into smaller command modules so
+   `room_actor.rs` does not become the next large file.
+2. Introduce typed `RoomCommand`/`RoomCommandResult` enums instead of passing
+   ad-hoc JSON values through the actor boundary.
+3. Start moving selected room-owned state into an actor-owned struct after the
+   mailbox route remains stable under real and simulation suite tests.

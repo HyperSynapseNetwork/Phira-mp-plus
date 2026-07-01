@@ -379,3 +379,28 @@ Still intentionally not done:
 
 This step gives the Actor migration measurable command latency and failure
 telemetry before moving higher-risk state-machine transitions.
+
+## Step 17 implementation status
+
+Step 17 moves the remaining higher-risk admin start/cancel room commands behind
+`RoomCommandGateway`'s per-room mailbox registry:
+
+- `room start <room_id>` / legacy `room-start` now crosses the per-room mailbox.
+- `room cancel <room_id>` / legacy `room-cancel` now crosses the per-room mailbox.
+- `Room::begin_admin_start` still owns the actual protocol behavior; the gateway
+  only serializes the command with other per-room admin writes.
+- `cancel_start` no longer sends `CancelGame` while holding the room-state write
+  lock. It changes `WaitForReady -> SelectChart` inside the critical section,
+  drops the lock, then sends control messages and publishes the state update.
+- All admin room writes currently routed through the gateway are audited via
+  `room.command` events and `runtime rooms` latency/error counters.
+
+Still intentionally not done:
+
+- The existing `Room` type still owns the real room state machine.
+- The gateway is not yet a full actor-owned room-state implementation.
+- There is still no privileged Web management API.
+
+The next migration step should split the gateway handlers into smaller
+actor-owned command modules and start moving state ownership out of `room.rs`
+only after the mailbox path stays stable under suite/real tests.
