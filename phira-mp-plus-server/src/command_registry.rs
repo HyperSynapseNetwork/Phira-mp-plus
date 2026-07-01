@@ -1,13 +1,17 @@
 //! Command metadata registry for Runtime v2.
 //!
-//! This module stores command metadata, help text and completion hints only.
-//! The existing CLI dispatcher remains the source of truth for command
-//! execution until commands are migrated one by one. Keeping metadata separate
-//! lets TUI completion, in-game admin commands and WIT APIs converge on the
-//! same usage model without a risky rewrite of `cli.rs`. Runtime v2 intentionally
-//! does not add a privileged Web management API.
+//! This module stores command metadata, help text, completion hints, and
+//! optional execution handlers. The existing CLI dispatcher remains the
+//! fallback, but new commands should register a handler here to converge
+//! CLI/TUI/admin _ /WIT execution on a single path.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
+
+use crate::server::PlusServerState;
+
+/// Handler signature for a registered CLI command.
+pub type CommandHandler = Arc<dyn Fn(&PlusServerState, &[&str]) -> Vec<String> + Send + Sync>;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CommandArgSpec {
@@ -52,7 +56,7 @@ impl CommandAudience {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone)]
 pub struct CommandSpec {
     pub name: String,
     pub group: String,
@@ -61,6 +65,8 @@ pub struct CommandSpec {
     pub args: Vec<CommandArgSpec>,
     pub examples: Vec<String>,
     pub audience: CommandAudience,
+    /// Optional handler for executing this command via the registry.
+    pub handler: Option<CommandHandler>,
 }
 
 impl CommandSpec {
@@ -78,6 +84,7 @@ impl CommandSpec {
             args: Vec::new(),
             examples: Vec::new(),
             audience: CommandAudience::Primary,
+            handler: None,
         }
     }
 
@@ -97,13 +104,17 @@ impl CommandSpec {
         self
     }
 
+    pub fn handler(mut self, handler: CommandHandler) -> Self {
+        self.handler = Some(handler);
+        self
+    }
 
     pub fn is_primary(&self) -> bool {
         self.audience == CommandAudience::Primary
     }
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Clone, Default)]
 pub struct CommandRegistry {
     commands: BTreeMap<String, CommandSpec>,
     roots: BTreeSet<String>,
@@ -395,6 +406,17 @@ impl CommandRegistry {
         }
     }
 
+    /// Execute a command by name with the given server state and arguments.
+    ///
+    /// Returns `Some(output_lines)` if a registered handler was found and executed,
+    /// or `None` if no handler is registered (caller should fall back to old dispatch).
+    pub fn execute(&self, state: &PlusServerState, command: &str, args: &[&str]) -> Option<Vec<String>> {
+        let name = normalize_command_name(command);
+        self.commands.get(&name).and_then(|spec| {
+            spec.handler.as_ref().map(|handler| handler(state, args))
+        })
+    }
+
     fn index_command_path(&mut self, name: &str) {
         let tokens = name.split_whitespace().collect::<Vec<_>>();
         if let Some(root) = tokens.first() {
@@ -441,7 +463,14 @@ pub fn runtime_v2_registry() -> CommandRegistry {
     register(
         &mut registry,
         CommandSpec::new("status", "core", "查看服务器运行状态。", "status")
-            .example("status"),
+            .example("status")
+            .handler(Arc::new(|state, _args| {
+                let rooms = state.rooms.try_read().map(|r| r.len()).unwrap_or(0);
+                vec![
+                    format!("  ◆ Phira-mp+ v{}  │ 端口 {}  │ 房间 {}",
+                        env!("CARGO_PKG_VERSION"), state.config.port, rooms),
+                ]
+            })),
     );
 
     for spec in [

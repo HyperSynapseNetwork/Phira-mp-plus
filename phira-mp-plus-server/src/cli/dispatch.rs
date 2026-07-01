@@ -93,7 +93,12 @@ impl CliHandler {
                 true
             }
             _ => {
-                if !self.try_plugin_command(command, args).await {
+                // Try CommandRegistry execute first (Runtime v2 unified execution path)
+                if let Some(output) = self.state.command_registry.execute(&self.state, command, args) {
+                    for line in output {
+                        self.out(line);
+                    }
+                } else if !self.try_plugin_command(command, args).await {
                     self.out(format!(
                         "  {} {}",
                         c::red("✗"),
