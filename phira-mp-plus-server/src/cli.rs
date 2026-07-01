@@ -1629,6 +1629,8 @@ impl CliHandler {
                 self.out(format!("  {} skipped:   {}", c::dim("│"), stats.skipped_event_bus_events));
                 self.out(format!("  {} lagged:    {}", c::dim("│"), stats.bridge_lagged));
                 self.out(format!("  {} sim_db_req:{}", c::dim("│"), stats.simulation_persist_requests));
+                self.out(format!("  {} prod_db_req:{}", c::dim("│"), stats.production_persist_requests));
+                self.out(format!("  {} prod_skip: {}", c::dim("│"), stats.production_persist_skipped));
                 self.out(format!("  {} last_err:  {}", c::dim("│"), stats.last_error.clone().unwrap_or_else(|| "-".to_string())));
                 if !stats.by_kind.is_empty() {
                     self.out(format!("  {} by kind", c::cyan("▸")));
@@ -1642,7 +1644,8 @@ impl CliHandler {
                         self.out(format!("    #{:<4} {:<9} {:<24} sim={} {}", event.seq, event.action, event.kind, event.simulation, event.summary));
                     }
                 }
-                self.out(format!("  {} 当前只是 EventBus → Worker 镜像，现有 db.rs 直接写入路径仍保持不变", c::dim("▸")));
+                self.out(format!("  {} 低频生产事件已 EventBus → Worker → mp_events 双写；现有 db.rs 直接写入路径仍保持不变", c::dim("▸")));
+                self.out(format!("  {} 生产 Touch/Judge 仍走现有直写路径，等批量 worker 策略稳定后再迁移", c::dim("▸")));
             }
             _ => {
                 self.out(format!("  {} 未知 runtime 子命令: {}", c::red("✗"), c::yellow(sub)));

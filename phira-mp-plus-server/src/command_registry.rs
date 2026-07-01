@@ -372,7 +372,7 @@ pub fn runtime_v2_registry() -> CommandRegistry {
         CommandSpec::new("runtime phira", "runtime-v2", "查看统一 Phira HTTP RetryClient 统计和策略。", "runtime phira"),
         CommandSpec::new("runtime commands", "runtime-v2", "查看 Command Registry 统计。", "runtime commands"),
         CommandSpec::new("runtime events", "runtime-v2", "查看 EventBus 发布统计与最近事件。", "runtime events"),
-        CommandSpec::new("runtime persistence", "runtime-v2", "查看 Persistence Worker 队列统计。", "runtime persistence"),
+        CommandSpec::new("runtime persistence", "runtime-v2", "查看 Persistence Worker 队列统计、simulation 写库请求和低频生产事件双写请求。", "runtime persistence"),
         CommandSpec::new("runtime rooms", "runtime-v2", "查看 RoomCommandGateway / RoomActor mailbox 迁移状态、命令审计与耗时。", "runtime rooms"),
         CommandSpec::new("runtime actors", "runtime-v2", "查看 Actor 模型迁移蓝图。", "runtime actors"),
     ] {

@@ -76,7 +76,7 @@ impl RuntimePlan {
                     title: "Persistence Worker ownership",
                     status: "active",
                     priority: "P1",
-                    next_step: "Move low-frequency production events to dual-write worker path before high-frequency batches.",
+                    next_step: "Low-frequency production events now dual-write through PersistenceWorker; next migrate one direct db.rs low-frequency caller behind a worker-only path.",
                 },
                 RuntimeObjective {
                     key: "eventbus",

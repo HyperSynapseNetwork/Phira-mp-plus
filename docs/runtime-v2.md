@@ -117,7 +117,7 @@ Step 5 connects `EventBus` to `PersistenceWorker` as a diagnostic mirror only:
 - `runtime persistence` now reports queue capacity, pending count, mirrored/skipped EventBus counts, lag counters, per-kind queue counts and recent worker trace entries.
 - `/api/runtime` exposes the same worker stats for external observability.
 
-This step validates the Worker queue and backpressure behavior without changing persisted production data. The next safe step is to add explicit simulation persistence isolation metadata/table planning, then migrate one low-frequency database write path behind a feature flag or dual-write guard.
+Step 5 validated the Worker queue and backpressure behavior without changing persisted production data. Step 20 now starts the dual-write guard for low-frequency production events while keeping old direct writes alive.
 
 ## Step 6 implementation status
 
@@ -471,3 +471,16 @@ runtime phira
 
 The client still does not implement a full circuit breaker; that remains planned
 until real retry/failure metrics are available under Actions and server tests.
+
+## Step 20 implementation status
+
+Step 20 starts the first production-facing PersistenceWorker dual-write path:
+
+- Low-frequency production `EventBus` events are still mirrored into `PersistenceWorker`.
+- The worker now writes those low-frequency production events into `mp_events` through the existing `DbManager::record_room_event_sync` helper.
+- Existing `db.rs` direct writes remain active and remain the compatibility source of truth for now.
+- Worker-written production events include `runtime_v2_source = "persistence_worker"` and `runtime_v2_dual_write = true` in the JSON payload so duplicated direct-path writes are easy to identify during testing.
+- Production Touch/Judge batches are **not** migrated to the worker yet. They were already fixed to persist without active monitors, but their high-frequency write path needs explicit batching/backpressure/flush semantics before worker ownership.
+- `runtime persistence` now reports `prod_db_req` and `prod_skip` counters in addition to simulation persistence counters.
+
+This is a deliberate dual-write stage, not a cutover. The next safe step is to move one low-frequency direct caller to worker-only mode after comparing `mp_events` output from the direct path and Runtime v2 worker path.

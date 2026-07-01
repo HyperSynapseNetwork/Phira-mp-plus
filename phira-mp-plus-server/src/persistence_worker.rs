@@ -4,9 +4,11 @@
 //! bounded queue and stats holder for gradually migrating high-frequency writes
 //! to batched background persistence without changing current database behavior.
 //!
-//! Step 5 wires a low-risk EventBus mirror into this worker.  Mirrored events
-//! are diagnostic-only for now: they prove queueing, backpressure and event
-//! classification without replacing the current PostgreSQL write paths.
+//! Step 5 wires a low-risk EventBus mirror into this worker. Step 20 starts
+//! dual-writing low-frequency production events into `mp_events` while keeping
+//! existing `db.rs` direct writes as the source of truth. High-frequency
+//! production Touch/Judge batches are still intentionally skipped until the
+//! batching policy is migrated.
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -88,6 +90,8 @@ pub struct PersistenceStats {
     pub skipped_event_bus_events: u64,
     pub bridge_lagged: u64,
     pub simulation_persist_requests: u64,
+    pub production_persist_requests: u64,
+    pub production_persist_skipped: u64,
     pub by_kind: BTreeMap<String, u64>,
     pub recent: Vec<PersistenceTraceEntry>,
     pub last_error: Option<String>,
@@ -116,6 +120,10 @@ impl PersistenceWorker {
                 let summary = event.summary();
                 if persist_simulation_event_if_needed(&event) {
                     record_simulation_persist_request(&worker_stats).await;
+                } else if persist_production_event_if_needed(&event) {
+                    record_production_persist_request(&worker_stats).await;
+                } else if !event.is_simulation() && !matches!(&event, PersistenceEvent::Flush | PersistenceEvent::Shutdown) {
+                    record_production_persist_skipped(&worker_stats).await;
                 }
                 match event {
                     PersistenceEvent::Shutdown => {
@@ -327,6 +335,9 @@ fn mirror_event_bus_event(event: &crate::event_bus::MpEvent) -> Option<Persisten
         MpEvent::Custom { kind, payload } if kind.starts_with("simulation.") => {
             simulation_custom_event(kind, payload)
         }
+        MpEvent::Custom { kind, payload } if kind == "room.command" || kind.starts_with("room.command.") => {
+            server_event(kind, payload.clone(), false)
+        }
         MpEvent::Custom { .. } => None,
     }
 }
@@ -416,6 +427,72 @@ fn persist_simulation_event_if_needed(event: &PersistenceEvent) -> bool {
     }
 }
 
+fn persist_production_event_if_needed(event: &PersistenceEvent) -> bool {
+    if event.is_simulation() {
+        return false;
+    }
+    let Some(db) = crate::internal_hooks::DB.get() else {
+        return false;
+    };
+
+    match event {
+        PersistenceEvent::ServerEvent { kind, payload, .. } => {
+            let payload = with_runtime_v2_persistence_meta(payload.clone());
+            db.record_room_event_sync(
+                kind,
+                extract_room_id(&payload),
+                extract_user_id(&payload),
+                payload,
+            );
+            true
+        }
+        PersistenceEvent::RoomSnapshot { room_id, payload, .. } => {
+            let mut payload = with_runtime_v2_persistence_meta(payload.clone());
+            if let Some(obj) = payload.as_object_mut() {
+                obj.entry("room_id".to_string()).or_insert_with(|| serde_json::json!(room_id));
+            }
+            db.record_room_event_sync(
+                "runtime.room_snapshot",
+                Some(room_id.clone()),
+                extract_user_id(&payload),
+                payload,
+            );
+            true
+        }
+        // Production Touch/Judge batches are already persisted by the direct
+        // RoundStore/db path. They will move here only after the batching worker
+        // has backpressure and flush semantics strong enough for high frequency
+        // gameplay telemetry.
+        PersistenceEvent::TouchBatch { .. } | PersistenceEvent::JudgeBatch { .. } => false,
+        PersistenceEvent::Flush | PersistenceEvent::Shutdown => false,
+    }
+}
+
+fn with_runtime_v2_persistence_meta(mut payload: Value) -> Value {
+    if let Some(obj) = payload.as_object_mut() {
+        obj.entry("runtime_v2_source".to_string())
+            .or_insert_with(|| serde_json::json!("persistence_worker"));
+        obj.entry("runtime_v2_dual_write".to_string())
+            .or_insert_with(|| serde_json::json!(true));
+    }
+    payload
+}
+
+fn extract_room_id(payload: &Value) -> Option<String> {
+    payload
+        .get("room_id")
+        .and_then(Value::as_str)
+        .filter(|room_id| !room_id.is_empty())
+        .map(ToString::to_string)
+}
+
+fn extract_user_id(payload: &Value) -> Option<i32> {
+    payload
+        .get("user_id")
+        .and_then(Value::as_i64)
+        .and_then(|value| i32::try_from(value).ok())
+}
+
 fn extract_run_id(payload: &Value) -> Option<String> {
     payload
         .get("run_id")
@@ -425,6 +502,14 @@ fn extract_run_id(payload: &Value) -> Option<String> {
 
 async fn record_simulation_persist_request(stats: &Arc<RwLock<PersistenceStats>>) {
     stats.write().await.simulation_persist_requests += 1;
+}
+
+async fn record_production_persist_request(stats: &Arc<RwLock<PersistenceStats>>) {
+    stats.write().await.production_persist_requests += 1;
+}
+
+async fn record_production_persist_skipped(stats: &Arc<RwLock<PersistenceStats>>) {
+    stats.write().await.production_persist_skipped += 1;
 }
 
 async fn record_queued(
