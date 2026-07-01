@@ -7,6 +7,8 @@
 //! so plugins and dashboards can reconstruct modification time and order.
 
 use anyhow::Result;
+#[cfg(feature = "postgres")]
+use serde::de::DeserializeOwned;
 use serde_json::Value;
 
 #[cfg(feature = "postgres")]
@@ -690,7 +692,7 @@ impl DbManager {
     pub async fn read_round_player_data(&self, round_uuid: &str, player_id: i32) -> Option<crate::round_store::RoundPlayerData> {
         #[cfg(feature = "postgres")]
         if let Self::Pg(pool) = self {
-            let row = sqlx::query(
+            let legacy_row = sqlx::query(
                 "SELECT touches::text AS touches, judges::text AS judges
                  FROM mp_round_player_data WHERE round_uuid = $1 AND player_id = $2"
             )
@@ -698,14 +700,49 @@ impl DbManager {
             .bind(player_id)
             .fetch_optional(pool)
             .await
-            .ok()??;
-            let touches_raw = row.try_get::<String, _>("touches").unwrap_or_else(|_| "[]".to_string());
-            let judges_raw = row.try_get::<String, _>("judges").unwrap_or_else(|_| "[]".to_string());
+            .ok()
+            .flatten();
+
+            let mut touches = Vec::new();
+            let mut judges = Vec::new();
+            if let Some(row) = legacy_row {
+                let touches_raw = row.try_get::<String, _>("touches").unwrap_or_else(|_| "[]".to_string());
+                let judges_raw = row.try_get::<String, _>("judges").unwrap_or_else(|_| "[]".to_string());
+                touches = serde_json::from_str(&touches_raw).unwrap_or_default();
+                judges = serde_json::from_str(&judges_raw).unwrap_or_default();
+            }
+
+            // Runtime v2 worker_only/fallback_only modes may skip the legacy
+            // mp_round_player_data row entirely.  Read normalized raw items as
+            // a fallback so existing RoundStore/WIT/plugin read paths keep
+            // working after telemetry cutover.
+            if touches.is_empty() {
+                touches = query_runtime_telemetry_items::<crate::plugin::TouchEventPoint>(
+                    pool,
+                    "touch",
+                    round_uuid,
+                    player_id,
+                )
+                .await;
+            }
+            if judges.is_empty() {
+                judges = query_runtime_telemetry_items::<crate::plugin::JudgeEventItem>(
+                    pool,
+                    "judge",
+                    round_uuid,
+                    player_id,
+                )
+                .await;
+            }
+
+            if touches.is_empty() && judges.is_empty() {
+                return None;
+            }
             return Some(crate::round_store::RoundPlayerData {
                 round_uuid: round_uuid.to_string(),
                 player_id,
-                touches: serde_json::from_str(&touches_raw).unwrap_or_default(),
-                judges: serde_json::from_str(&judges_raw).unwrap_or_default(),
+                touches,
+                judges,
             });
         }
         None
@@ -780,7 +817,11 @@ impl DbManager {
     pub async fn query_touch_batches(&self, since_sequence: i64, limit: i64, round_uuid: Option<&str>, player_id: Option<i32>) -> Vec<Value> {
         #[cfg(feature = "postgres")]
         if let Self::Pg(pool) = self {
-            return query_telemetry_batches(pool, "mp_round_touch_batches", since_sequence, limit, round_uuid, player_id).await;
+            let legacy = query_telemetry_batches(pool, "mp_round_touch_batches", since_sequence, limit, round_uuid, player_id).await;
+            if !legacy.is_empty() {
+                return legacy;
+            }
+            return query_runtime_telemetry_batches(pool, "touch", since_sequence, limit, round_uuid, player_id).await;
         }
         Vec::new()
     }
@@ -788,7 +829,11 @@ impl DbManager {
     pub async fn query_judge_batches(&self, since_sequence: i64, limit: i64, round_uuid: Option<&str>, player_id: Option<i32>) -> Vec<Value> {
         #[cfg(feature = "postgres")]
         if let Self::Pg(pool) = self {
-            return query_telemetry_batches(pool, "mp_round_judge_batches", since_sequence, limit, round_uuid, player_id).await;
+            let legacy = query_telemetry_batches(pool, "mp_round_judge_batches", since_sequence, limit, round_uuid, player_id).await;
+            if !legacy.is_empty() {
+                return legacy;
+            }
+            return query_runtime_telemetry_batches(pool, "judge", since_sequence, limit, round_uuid, player_id).await;
         }
         Vec::new()
     }
@@ -889,6 +934,99 @@ async fn query_telemetry_batches(
             "last_game_time": row.try_get::<Option<f64>, _>("last_game_time").ok().flatten(),
             "data": payload,
             "created_at": row.try_get::<i64, _>("created_at").unwrap_or_default(),
+        })
+    }).collect()
+}
+
+#[cfg(feature = "postgres")]
+async fn query_runtime_telemetry_items<T>(
+    pool: &sqlx::PgPool,
+    kind: &str,
+    round_uuid: &str,
+    player_id: i32,
+) -> Vec<T>
+where
+    T: DeserializeOwned,
+{
+    let rows = sqlx::query(
+        "SELECT payload::text AS payload
+         FROM mp_runtime_telemetry_items
+         WHERE kind = $1 AND round_uuid = $2 AND player_id = $3
+         ORDER BY sequence ASC"
+    )
+    .bind(kind)
+    .bind(round_uuid)
+    .bind(player_id)
+    .fetch_all(pool)
+    .await
+    .unwrap_or_default();
+
+    rows.into_iter()
+        .filter_map(|row| {
+            row.try_get::<String, _>("payload")
+                .ok()
+                .and_then(|raw| serde_json::from_str::<T>(&raw).ok())
+        })
+        .collect()
+}
+
+#[cfg(feature = "postgres")]
+async fn query_runtime_telemetry_batches(
+    pool: &sqlx::PgPool,
+    kind: &str,
+    since_sequence: i64,
+    limit: i64,
+    round_uuid: Option<&str>,
+    player_id: Option<i32>,
+) -> Vec<Value> {
+    let kind = match kind {
+        "judge" => "judge",
+        _ => "touch",
+    };
+    let rows = sqlx::query(
+        "SELECT sequence, batch_uuid, run_id, scope, pipeline, kind, room_id, round_uuid, player_id,
+                item_count, payload::text AS payload, created_at, source, dual_write, schema_version, flush_reason
+         FROM mp_runtime_telemetry_batches
+         WHERE kind = $1
+           AND sequence > $2
+           AND ($3::text IS NULL OR round_uuid = $3)
+           AND ($4::int IS NULL OR player_id = $4)
+         ORDER BY sequence ASC LIMIT $5"
+    )
+    .bind(kind)
+    .bind(since_sequence)
+    .bind(round_uuid)
+    .bind(player_id)
+    .bind(limit)
+    .fetch_all(pool)
+    .await
+    .unwrap_or_default();
+
+    rows.into_iter().map(|row| {
+        let payload = row.try_get::<String, _>("payload").ok()
+            .and_then(|s| serde_json::from_str::<Value>(&s).ok())
+            .unwrap_or(Value::Null);
+        let data = payload.get("data").cloned().unwrap_or_else(|| payload.clone());
+        serde_json::json!({
+            "sequence": row.try_get::<i64, _>("sequence").unwrap_or_default(),
+            "batch_uuid": row.try_get::<String, _>("batch_uuid").unwrap_or_default(),
+            "run_id": row.try_get::<Option<String>, _>("run_id").ok().flatten(),
+            "scope": row.try_get::<String, _>("scope").unwrap_or_else(|_| "production".to_string()),
+            "pipeline": row.try_get::<String, _>("pipeline").unwrap_or_default(),
+            "kind": row.try_get::<String, _>("kind").unwrap_or_default(),
+            "room_id": row.try_get::<Option<String>, _>("room_id").ok().flatten(),
+            "round_uuid": row.try_get::<Option<String>, _>("round_uuid").ok().flatten().unwrap_or_default(),
+            "player_id": row.try_get::<i32, _>("player_id").unwrap_or_default(),
+            "count": row.try_get::<i32, _>("item_count").unwrap_or_default(),
+            "item_count": row.try_get::<i32, _>("item_count").unwrap_or_default(),
+            "data": data,
+            "payload": payload,
+            "created_at": row.try_get::<i64, _>("created_at").unwrap_or_default(),
+            "source": row.try_get::<String, _>("source").unwrap_or_default(),
+            "dual_write": row.try_get::<bool, _>("dual_write").unwrap_or_default(),
+            "schema_version": row.try_get::<i32, _>("schema_version").unwrap_or_default(),
+            "flush_reason": row.try_get::<String, _>("flush_reason").unwrap_or_default(),
+            "runtime_v2_read_path": true,
         })
     }).collect()
 }

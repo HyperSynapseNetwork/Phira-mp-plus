@@ -619,3 +619,37 @@ runtime cutover fallback_only # verify enqueue failure fallback semantics
 Because this branch is not production yet, database schema and persistence
 behavior can continue to evolve.  The important invariant is that the active mode
 must always be visible through CLI diagnostics and database meta rows.
+
+
+## Step 25: Runtime telemetry read path
+
+Step 24 made `worker_only` possible for production Touch/Judge writes.  Step 25
+makes that mode usable by adding the corresponding read path:
+
+- `DbManager::read_round_player_data()` now reads legacy `mp_round_player_data`
+  first and falls back to normalized `mp_runtime_telemetry_items` when legacy
+  data is absent.  This keeps existing `round.data` / WIT / plugin read callers
+  working after `runtime cutover worker_only`.
+- `persist.touches` and `persist.judges` keep their legacy batch query shape but
+  fall back to `mp_runtime_telemetry_batches` when legacy batch rows are absent.
+- Runtime v2 batch rows include `runtime_v2_read_path=true` in the returned JSON
+  so callers can distinguish the new storage path during testing.
+- This step also fixes two mechanical schema-v2 patch hazards in `db.rs`: a
+  duplicated `schema_version` bind in telemetry batch insertion and a duplicated
+  `.await?` in table initialization.
+
+Recommended worker-only validation:
+
+```text
+runtime cutover worker_only
+# play one real round
+round.data <round_uuid> <player_id>
+persist.touches 0 20 <round_uuid> <player_id>
+persist.judges 0 20 <round_uuid> <player_id>
+runtime persistence
+```
+
+Because the project is still in test stage, this read path intentionally favors
+clarity and debuggability over backward-compatible schema minimalism.  The next
+step can cut over more consumers from legacy batch tables to the normalized item
+stream once the worker-only path is verified.

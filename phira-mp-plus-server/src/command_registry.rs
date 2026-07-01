@@ -378,7 +378,7 @@ pub fn runtime_v2_registry() -> CommandRegistry {
             .arg(CommandArgSpec::optional("mode", "legacy_only、dual_write、worker_only 或 fallback_only"))
             .example("runtime cutover")
             .example("runtime cutover worker_only"),
-        CommandSpec::new("runtime schema", "runtime-v2", "查看 Runtime v2 持久化 schema、telemetry batch/item 表和 retention policy 说明。", "runtime schema")
+        CommandSpec::new("runtime schema", "runtime-v2", "查看 Runtime v2 持久化 schema、telemetry batch/item 表、读路径和 retention policy 说明。", "runtime schema")
             .aliases(["runtime storage", "runtime telemetry"]),
         CommandSpec::new("runtime rooms", "runtime-v2", "查看 RoomCommandGateway / RoomActor mailbox 迁移状态、命令审计与耗时。", "runtime rooms"),
         CommandSpec::new("runtime actors", "runtime-v2", "查看 Actor 模型迁移蓝图。", "runtime actors"),
