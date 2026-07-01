@@ -1,6 +1,6 @@
 use axum::response::sse::Event;
 use futures::{stream, Stream, StreamExt};
-use phira_mp_common::{RoomData, RoomEvent, StrippedRoomState};
+use phira_mp_common::RoomEvent;
 use serde_json::json;
 use std::convert::Infallible;
 use std::pin::Pin;
@@ -92,7 +92,7 @@ fn updates(rx: broadcast::Receiver<SseEvent>) -> impl Stream<Item = Result<Event
 #[cfg(test)]
 mod tests {
     use super::*;
-    use phira_mp_common::RoomId;
+    use phira_mp_common::{RoomData, RoomId, StrippedRoomState};
 
     #[tokio::test]
     async fn room_events_reach_general_stream() {

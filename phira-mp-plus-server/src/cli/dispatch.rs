@@ -49,24 +49,23 @@ impl CliHandler {
                 true
             }
             "benchmark" => {
-                self.start_benchmark(args).await;
+                self.dispatch_benchmark_command(args).await;
                 true
             }
             "simulation" => {
-                self.simulation_command(args).await;
+                self.dispatch_simulation_command(args).await;
                 true
             }
             "runtime" => {
-                self.runtime_command(args).await;
+                self.dispatch_runtime_command(args).await;
                 true
             }
             "benchmark-bind" => {
-                self.bind_benchmark(args).await;
+                self.dispatch_benchmark_bind_command(args).await;
                 true
             }
             "benchmark-cleanup" => {
-                self.state.cleanup_benchmark_sync();
-                self.out(format!("  {} 已清理 bench-* 压测房间", c::green("✓")));
+                self.dispatch_benchmark_cleanup_command().await;
                 true
             }
             "admin-id" => {
