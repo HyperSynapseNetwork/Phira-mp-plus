@@ -1,13 +1,21 @@
 //! Runtime v2 persistence infrastructure.
 //!
-//! This module contains typed persistence envelopes and schema contracts shared
-//! by `persistence_worker.rs` and `db.rs`.  The current worker remains the public
-//! runtime facade for now; these smaller modules prevent the next persistence
-//! phase from turning one file into another large bucket.
+//! This module contains typed persistence envelopes, queue diagnostics, EventBus
+//! mirror adapters, worker runtime and schema contracts. Keeping these pieces
+//! split prevents the persistence subsystem from becoming another large bucket.
 
 pub mod benchmark;
 pub mod diagnostics;
+pub mod message;
+pub mod mirror;
+pub mod pipeline;
 pub mod schema;
+pub mod stats;
+pub mod worker;
 
 pub use benchmark::{BenchmarkReportHistoryQuery, BenchmarkReportHistoryRow, BenchmarkReportPersistenceRecord};
 pub use diagnostics::{PersistencePipeline, PersistenceQueueHealth};
+pub use message::PersistenceEvent;
+pub use mirror::spawn_event_bus_mirror;
+pub use stats::{PersistenceStats, PersistenceTraceEntry};
+pub use worker::PersistenceWorker;

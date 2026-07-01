@@ -83,14 +83,14 @@ impl RuntimePlan {
                     title: "Persistence Worker ownership",
                     status: "active",
                     priority: "P1",
-                    next_step: "PersistenceWorker now owns typed envelopes for low-frequency EventBus mirrors, telemetry staging and BenchmarkReport history; next step is queue/backpressure diagnostics and worker-only telemetry dry-run.",
+                    next_step: "PersistenceWorker is now split into message/stats/mirror/pipeline/worker modules, exposes backpressure as observation rather than throttling, and owns typed envelopes for EventBus mirrors, telemetry staging and BenchmarkReport history; next step is worker-only telemetry dry-run and DB latency attribution.",
                 },
                 RuntimeObjective {
                     key: "eventbus",
                     title: "EventBus as runtime spine",
                     status: "active",
                     priority: "P1",
-                    next_step: "benchmark.completed is typed, cached as low-overhead BenchmarkReport digests and mirrored through PersistenceWorker into mp_runtime_benchmark_reports for CLI/Web readonly history.",
+                    next_step: "benchmark.completed is typed, cached as low-overhead BenchmarkReport digests and mirrored through the split PersistenceWorker pipeline into mp_runtime_benchmark_reports for CLI/Web readonly history.",
                 },
                 RuntimeObjective {
                     key: "plugin-abi-v2",

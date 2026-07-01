@@ -15,7 +15,7 @@ impl CliHandler {
         let room_commands = self.state.room_commands.stats();
         let benchmark_reports = self.state.benchmark_reports.snapshot(3);
         self.out(format!("  {} simulation running: {}", c::dim("│"), sim.running));
-        self.out(format!("  {} persistence queue:  queued={} processed={} dropped={}", c::dim("│"), persistence.queued, persistence.processed, persistence.dropped));
+        self.out(format!("  {} persistence queue:  queued={} processed={} dropped={} health={} pending={}%", c::dim("│"), persistence.queued, persistence.processed, persistence.dropped, persistence.queue_health, persistence.pending_ratio_percent));
         self.out(format!("  {} telemetry cutover:  {}", c::dim("│"), persistence.telemetry_cutover_mode));
         let phira = self.state.phira_client.stats();
         let plan = self.state.runtime_plan.snapshot();

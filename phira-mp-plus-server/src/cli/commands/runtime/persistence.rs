@@ -10,7 +10,8 @@ impl CliHandler {
         self.out(format!("  {} queued:    {}", c::dim("│"), stats.queued));
         self.out(format!("  {} processed: {}", c::dim("│"), stats.processed));
         self.out(format!("  {} pending:   {}", c::dim("│"), stats.pending));
-        self.out(format!("  {} health:    {}", c::dim("│"), stats.queue_health));
+        self.out(format!("  {} health:    {} (pending={}%)", c::dim("│"), stats.queue_health, stats.pending_ratio_percent));
+        self.out(format!("  {} advice:    {}", c::dim("│"), stats.backpressure_advice));
         self.out(format!("  {} dropped:   {}", c::dim("│"), stats.dropped));
         self.out(format!("  {} mirrored:  {}", c::dim("│"), stats.mirrored_from_event_bus));
         self.out(format!("  {} skipped:   {}", c::dim("│"), stats.skipped_event_bus_events));
@@ -62,6 +63,6 @@ impl CliHandler {
         self.out(format!("  {} 生产 Touch/Judge cutover={}；EventBus 只保留计数观测，完整 payload 走 Session → Worker", c::dim("▸"), stats.telemetry_cutover_mode));
         self.out(format!("  {} Touch/Judge 持久化不依赖 active monitor；active monitor 只控制实时 monitor 广播", c::dim("▸")));
         self.out(format!("  {} BenchmarkReport 已通过 benchmark.completed → PersistenceWorker → mp_runtime_benchmark_reports 镜像，供 CLI/Web 只读历史查询", c::dim("▸")));
-        self.out(format!("  {} Step 53 schema: telemetry batch/item + benchmark report history + persistence meta/retention policy，测试阶段可继续自由演进", c::dim("▸")));
+        self.out(format!("  {} Step 54 infra: PersistenceWorker 已拆为 message/stats/mirror/pipeline/worker，backpressure 为观测信号，不是粗暴限流", c::dim("▸")));
     }
 }
