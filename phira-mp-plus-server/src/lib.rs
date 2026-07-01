@@ -5,6 +5,7 @@
 
 pub mod actor_runtime;
 pub mod benchmark_report;
+pub mod benchmark_snapshot;
 pub mod ban;
 pub mod cli;
 pub mod cli_tui;

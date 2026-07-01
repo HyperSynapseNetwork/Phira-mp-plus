@@ -13,6 +13,7 @@ impl CliHandler {
         self.out(format!("  {} events published:   {}", c::dim("│"), event_stats.published));
         let actors = self.state.actor_runtime.stats().await;
         let room_commands = self.state.room_commands.stats();
+        let benchmark_reports = self.state.benchmark_reports.snapshot(3);
         self.out(format!("  {} simulation running: {}", c::dim("│"), sim.running));
         self.out(format!("  {} persistence queue:  queued={} processed={} dropped={}", c::dim("│"), persistence.queued, persistence.processed, persistence.dropped));
         self.out(format!("  {} telemetry cutover:  {}", c::dim("│"), persistence.telemetry_cutover_mode));
@@ -20,6 +21,7 @@ impl CliHandler {
         let plan = self.state.runtime_plan.snapshot();
         self.out(format!("  {} room command gw:    routed={} ok={} failed={} mailbox={}", c::dim("│"), room_commands.routed, room_commands.succeeded, room_commands.failed, room_commands.mailbox_enabled));
         self.out(format!("  {} phira http:         requests={} retry={} failures={}", c::dim("│"), phira.requests, phira.retry_attempts, phira.failures));
+        self.out(format!("  {} benchmark reports:  total={} latest_modes={} recent={}", c::dim("│"), benchmark_reports.total, benchmark_reports.latest_by_mode.len(), benchmark_reports.recent.len()));
         self.out(format!("  {} runtime plan:       total={} active={} planned={} blocked={}", c::dim("│"), plan.total, plan.active, plan.planned, plan.blocked));
         self.out(format!("  {} actor blueprint:    {} boundaries", c::dim("│"), actors.boundaries.len()));
         self.out(format!("  {} web management API: {}", c::dim("│"), actors.web_management_api));

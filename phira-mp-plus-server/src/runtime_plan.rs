@@ -41,14 +41,14 @@ impl RuntimePlan {
                     title: "Simulation default benchmark path",
                     status: "active",
                     priority: "P0",
-                    next_step: "Simulation suite reports now adapt into BenchmarkReport and publish benchmark.completed; next step is cleanup hardening and persisted report snapshot query APIs.",
+                    next_step: "Simulation suite reports adapt into BenchmarkReport, publish benchmark.completed and update readonly report snapshots; next step is cleanup hardening plus persisted report history.",
                 },
                 RuntimeObjective {
                     key: "benchmark-modes",
                     title: "Benchmark modes: simulation / hybrid / real",
                     status: "active",
                     priority: "P0",
-                    next_step: "Simulation, hybrid and real now share BenchmarkReport output and emit benchmark.completed; next step is readonly status snapshots for Web/TUI diagnostics.",
+                    next_step: "Simulation, hybrid and real share BenchmarkReport output, emit benchmark.completed and populate readonly CLI/Web snapshots; next step is persisted report history and TUI panels.",
                 },
                 RuntimeObjective {
                     key: "actor-model",
@@ -83,7 +83,7 @@ impl RuntimePlan {
                     title: "EventBus as runtime spine",
                     status: "active",
                     priority: "P1",
-                    next_step: "benchmark.completed is now a typed Runtime v2 event; next add readonly subscribers for Web/TUI panels and persisted report snapshots.",
+                    next_step: "benchmark.completed is typed and mirrored into an in-memory BenchmarkReportStore for CLI/Web readonly diagnostics; next persist report snapshots and wire TUI panels.",
                 },
                 RuntimeObjective {
                     key: "plugin-abi-v2",

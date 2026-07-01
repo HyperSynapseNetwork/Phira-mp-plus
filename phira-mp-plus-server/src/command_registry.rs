@@ -545,6 +545,13 @@ pub fn runtime_v2_registry() -> CommandRegistry {
     );
     register(
         &mut registry,
+        CommandSpec::new("benchmark report", "diagnostics", "查看最近 real / hybrid / simulation 统一 BenchmarkReport 只读快照。", "benchmark report [simulation|hybrid|real|limit]").advanced()
+            .example("benchmark report")
+            .example("benchmark report simulation")
+            .example("benchmark report 16"),
+    );
+    register(
+        &mut registry,
         CommandSpec::new("benchmark-bind", "diagnostics", "绑定真实网络压测使用的 Phira token。", "benchmark-bind <token1[,token2...]>").advanced()
             .arg(CommandArgSpec::required("token", "Phira token；不要提交到 Git")),
     );

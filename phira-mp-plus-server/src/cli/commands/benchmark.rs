@@ -19,6 +19,10 @@ impl CliHandler {
             self.print_benchmark_modes();
             return;
         }
+        if matches!(args.first().copied(), Some("report") | Some("reports") | Some("latest") | Some("history")) {
+            self.print_benchmark_reports(args);
+            return;
+        }
         if matches!(args.first().copied(), Some("hybrid"))
             || (matches!(args.first().copied(), Some("run")) && matches!(args.get(1).copied(), Some("hybrid")))
         {
@@ -225,6 +229,81 @@ impl CliHandler {
         self.out("    benchmark modes".to_string());
     }
 
+
+    fn print_benchmark_reports(&self, args: &[&str]) {
+        let sub = args.first().copied().unwrap_or("report");
+        let rest = if matches!(sub, "report" | "reports" | "latest" | "history") {
+            &args[1..]
+        } else {
+            args
+        };
+        let mode = rest.first().and_then(|value| parse_benchmark_mode(value));
+        let limit = rest
+            .iter()
+            .find_map(|value| value.parse::<usize>().ok())
+            .unwrap_or(8)
+            .clamp(1, 64);
+
+        self.out(format!("  {} Benchmark reports", c::green("◆")));
+        if let Some(mode) = mode {
+            match self.state.benchmark_reports.latest(mode) {
+                Some(entry) => {
+                    self.out(format!(
+                        "  {} latest {} report: seq={} at_ms={}",
+                        c::dim("│"),
+                        mode.as_str(),
+                        entry.seq,
+                        entry.at_ms,
+                    ));
+                    for line in entry.report.render_text().lines() {
+                        self.out(line.to_string());
+                    }
+                }
+                None => self.out(format!("  {} no {} benchmark report yet", c::yellow("?"), mode.as_str())),
+            }
+            return;
+        }
+
+        let snapshot = self.state.benchmark_reports.snapshot(limit);
+        self.out(format!(
+            "  {} total={} capacity={} recent={}",
+            c::dim("│"),
+            snapshot.total,
+            snapshot.capacity,
+            snapshot.recent.len(),
+        ));
+        if snapshot.latest_by_mode.is_empty() {
+            self.out(format!("  {} 尚无 benchmark.completed 报告；先运行 simulation suite / benchmark run hybrid / benchmark run real", c::yellow("?")));
+            return;
+        }
+        self.out(format!("  {} latest by mode", c::cyan("▸")));
+        for item in &snapshot.latest_by_mode {
+            self.out(format!(
+                "    {:<10} count={} latest_seq={} title={} failed={}",
+                item.mode.as_str(),
+                item.count,
+                item.latest_seq,
+                item.latest.title,
+                item.latest.failed_operations.unwrap_or(0),
+            ));
+        }
+        if !snapshot.recent.is_empty() {
+            self.out(format!("  {} recent", c::cyan("▸")));
+            for entry in snapshot.recent {
+                self.out(format!(
+                    "    #{:<4} {:<10} duration={}s title={} failed={} probes_failed={}",
+                    entry.seq,
+                    entry.mode.as_str(),
+                    entry.report.duration_secs,
+                    entry.report.title,
+                    entry.report.failed_operations.unwrap_or(0),
+                    entry.report.probes.failed,
+                ));
+            }
+        }
+        self.out(format!("  {} examples: benchmark report simulation | benchmark report hybrid | benchmark report real | benchmark report 16", c::dim("▸")));
+    }
+
     async fn bind_benchmark(&self, args: &[&str]) {
         if args.is_empty() {
             self.out(format!("  {} {} <token1[,token2...]> 或多个 token 参数", c::yellow("?"), c::bold("benchmark-bind")));
@@ -302,5 +381,14 @@ mod tests {
     #[test]
     fn hybrid_true_lookup_requires_id() {
         assert!(CliHandler::parse_hybrid_benchmark_config(&["chart_lookup=true"]).is_err());
+    }
+}
+
+fn parse_benchmark_mode(value: &&str) -> Option<crate::benchmark_report::BenchmarkMode> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "simulation" | "sim" => Some(crate::benchmark_report::BenchmarkMode::Simulation),
+        "hybrid" => Some(crate::benchmark_report::BenchmarkMode::Hybrid),
+        "real" => Some(crate::benchmark_report::BenchmarkMode::Real),
+        _ => None,
     }
 }

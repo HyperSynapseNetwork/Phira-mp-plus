@@ -2,6 +2,7 @@
 
 use crate::ban::BanManager;
 use crate::benchmark_report::{BenchmarkMode, BenchmarkReport};
+use crate::benchmark_snapshot::BenchmarkReportStore;
 use crate::extensions::ExtensionManager;
 use crate::plugin::{PluginEvent, PluginManager, WasmRuntimeConfig};
 use crate::plugin_http::{PluginHttpServer, SseHub};
@@ -518,6 +519,8 @@ pub struct PlusServerState {
     pub command_registry: Arc<crate::command_registry::CommandRegistry>,
     /// Runtime v2 事件总线。当前记录新增 Runtime v2 事件和诊断统计，旧路径仍逐步迁移。
     pub event_bus: Arc<crate::event_bus::EventBus>,
+    /// Runtime v2 benchmark 报告只读快照。CLI/TUI/Web 诊断读这里，不解析 EventBus 字符串。
+    pub benchmark_reports: Arc<BenchmarkReportStore>,
     /// Runtime v2 Simulation 状态管理器。当前只创建隔离 shadow world，不污染真实 rooms/users。
     pub simulation: Arc<crate::simulation::SimulationManager>,
     /// Runtime v2 持久化 Worker 骨架。现有 db.rs 写入路径暂不迁移。
@@ -616,6 +619,7 @@ impl PlusServer {
         let command_registry = Arc::new(crate::command_registry::runtime_v2_registry());
         let event_bus = Arc::new(crate::event_bus::EventBus::new(1024));
         spawn_runtime_event_observer(Arc::clone(&event_bus));
+        let benchmark_reports = Arc::new(BenchmarkReportStore::new(64));
         let simulation = Arc::new(crate::simulation::SimulationManager::new());
         let persistence_worker = crate::persistence_worker::PersistenceWorker::spawn_with_policy(
             runtime_v2.persistence_queue_capacity,
@@ -655,6 +659,7 @@ impl PlusServer {
             bench_tx: bench_tx.clone(),
             command_registry,
             event_bus,
+            benchmark_reports,
             simulation,
             persistence_worker,
             actor_runtime,
@@ -801,6 +806,11 @@ impl PlusServer {
         let simulation_world_state = Arc::clone(&state_for_webapi2);
         http_for_webapi.register_route_sync("/api/simulation/world", Arc::new(move |_, _| {
             server_state_query_inner(&simulation_world_state, "simulation.world", &[serde_json::json!(20)])
+                .map_err(|e| (500u16, e))
+        }));
+        let benchmark_report_state = Arc::clone(&state_for_webapi2);
+        http_for_webapi.register_route_sync("/api/benchmark/reports", Arc::new(move |_, _| {
+            server_state_query_inner(&benchmark_report_state, "benchmark.reports", &[serde_json::json!(16)])
                 .map_err(|e| (500u16, e))
         }));
         // GET /api/players/all — 所有连接过服务器的玩家
@@ -950,6 +960,9 @@ impl PlusServerState {
     /// Step 4 uses this as an observation-only mirror: plugins, room monitor,
     /// SSE and PostgreSQL direct writes continue to run exactly as before.
     pub fn publish_runtime_event(&self, event: crate::event_bus::MpEvent) -> usize {
+        if let crate::event_bus::MpEvent::BenchmarkCompleted { report } = &event {
+            self.benchmark_reports.record(report.clone());
+        }
         self.event_bus.publish(event)
     }
 
@@ -2241,6 +2254,7 @@ fn server_state_query_inner(state: &Arc<PlusServerState>, method: &str, args: &[
                 let commands = s.command_registry.iter().count();
                 let room_commands = s.room_commands.stats();
                 let phira_http = s.phira_client.stats();
+                let benchmark_reports = s.benchmark_reports.snapshot(8);
                 let plan = s.runtime_plan.snapshot();
                 let _ = tx.send(Ok(serde_json::json!({
                     "runtime_v2": true,
@@ -2251,6 +2265,7 @@ fn server_state_query_inner(state: &Arc<PlusServerState>, method: &str, args: &[
                     "persistence_worker": persistence,
                     "room_command_gateway": room_commands,
                     "phira_http": phira_http,
+                    "benchmark_reports": benchmark_reports,
                     "plan": plan,
                 })));
             });
@@ -2282,7 +2297,29 @@ fn server_state_query_inner(state: &Arc<PlusServerState>, method: &str, args: &[
             });
             rx.recv_timeout(std::time::Duration::from_millis(2000))
                 .unwrap_or(Err("simulation.world timeout".to_string()))
-        }
+        },
+        "benchmark.reports" => {
+            let limit = args.get(0).and_then(|v| v.as_u64()).unwrap_or(16) as usize;
+            Ok(serde_json::to_value(state.benchmark_reports.snapshot(limit)).unwrap_or_default())
+        },
+        "benchmark.latest" => {
+            let mode = args.get(0).and_then(|v| v.as_str()).unwrap_or("");
+            let mode = match mode {
+                "simulation" | "sim" => Some(BenchmarkMode::Simulation),
+                "hybrid" => Some(BenchmarkMode::Hybrid),
+                "real" => Some(BenchmarkMode::Real),
+                _ => None,
+            };
+            if let Some(mode) = mode {
+                state
+                    .benchmark_reports
+                    .latest(mode)
+                    .map(|entry| serde_json::to_value(entry).unwrap_or_default())
+                    .ok_or_else(|| format!("no benchmark report for mode {}", mode.as_str()))
+            } else {
+                Err("benchmark.latest requires mode: simulation|hybrid|real".to_string())
+            }
+        },
         "player.touches" => {
             let uid = args.get(0).and_then(|v| v.as_i64()).unwrap_or(0) as i32;
             let (tx, rx) = std::sync::mpsc::channel();
