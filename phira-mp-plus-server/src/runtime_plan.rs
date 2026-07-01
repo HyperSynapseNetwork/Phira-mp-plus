@@ -83,7 +83,7 @@ impl RuntimePlan {
                     title: "Persistence Worker ownership",
                     status: "active",
                     priority: "P1",
-                    next_step: "PersistenceWorker is now split into message/stats/mirror/pipeline/worker modules, exposes backpressure as observation rather than throttling, and records telemetry cutover readiness plus DB dispatch latency by pipeline; next step is async DB acknowledgement paths for high-frequency telemetry and simulation cleanup.",
+                    next_step: "PersistenceWorker is split into message/stats/mirror/pipeline/worker modules; TelemetryBatcher is split into telemetry/cutover,item,stats,db,batcher; high-frequency telemetry and benchmark/simulation mirrors now use async DB acknowledgement paths so latency reflects SQL completion rather than only spawn dispatch.",
                 },
                 RuntimeObjective {
                     key: "eventbus",

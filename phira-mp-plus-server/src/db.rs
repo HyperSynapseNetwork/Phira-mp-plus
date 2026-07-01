@@ -228,106 +228,141 @@ impl DbManager {
         }
     }
 
-    pub fn record_runtime_telemetry_batches_sync(&self, records: Vec<RuntimeTelemetryBatchRecord>) -> bool {
+    pub async fn record_runtime_telemetry_batches(&self, records: Vec<RuntimeTelemetryBatchRecord>) -> bool {
         if records.is_empty() {
             return true;
         }
         #[cfg(feature = "postgres")]
         if let Self::Pg(pool) = self {
-            let pool = pool.clone();
-            tokio::spawn(async move {
-                let now = now_ms();
-                for record in records {
-                    let batch_uuid = record.batch_uuid.clone();
-                    let payload = with_telemetry_storage_meta(record.payload.clone(), &record, now);
-                    let _ = sqlx::query(
-                        "INSERT INTO mp_runtime_telemetry_batches
-                           (batch_uuid, run_id, scope, pipeline, kind, room_id, round_uuid, player_id, item_count,
-                            payload, created_at, source, dual_write, schema_version, flush_reason)
-                         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)"
+            let now = now_ms();
+            for record in records {
+                let batch_uuid = record.batch_uuid.clone();
+                let payload = with_telemetry_storage_meta(record.payload.clone(), &record, now);
+                if sqlx::query(
+                    "INSERT INTO mp_runtime_telemetry_batches
+                       (batch_uuid, run_id, scope, pipeline, kind, room_id, round_uuid, player_id, item_count,
+                        payload, created_at, source, dual_write, schema_version, flush_reason)
+                     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)"
+                )
+                .bind(&record.batch_uuid)
+                .bind(record.run_id.as_deref())
+                .bind(&record.scope)
+                .bind(&record.pipeline)
+                .bind(&record.kind)
+                .bind(record.room_id.as_deref())
+                .bind(record.round_uuid.as_deref())
+                .bind(record.player_id)
+                .bind(record.item_count)
+                .bind(&payload)
+                .bind(now)
+                .bind(&record.source)
+                .bind(record.dual_write)
+                .bind(record.schema_version)
+                .bind(&record.flush_reason)
+                .execute(pool)
+                .await
+                .is_err()
+                {
+                    return false;
+                }
+
+                for (ordinal, raw_item) in telemetry_item_rows(&payload).into_iter().enumerate() {
+                    if sqlx::query(
+                        "INSERT INTO mp_runtime_telemetry_items
+                           (batch_uuid, ordinal, kind, room_id, round_uuid, player_id, payload, created_at, schema_version)
+                         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)"
                     )
-                    .bind(&record.batch_uuid)
-                    .bind(record.run_id.as_deref())
-                    .bind(&record.scope)
-                    .bind(&record.pipeline)
+                    .bind(&batch_uuid)
+                    .bind(i32::try_from(ordinal).unwrap_or(i32::MAX))
                     .bind(&record.kind)
                     .bind(record.room_id.as_deref())
                     .bind(record.round_uuid.as_deref())
                     .bind(record.player_id)
-                    .bind(record.item_count)
-                    .bind(&payload)
+                    .bind(raw_item)
                     .bind(now)
-                    .bind(&record.source)
-                    .bind(record.dual_write)
                     .bind(record.schema_version)
-                    .bind(&record.flush_reason)
-                    .execute(&pool)
-                    .await;
-
-                    for (ordinal, raw_item) in telemetry_item_rows(&payload).into_iter().enumerate() {
-                        let _ = sqlx::query(
-                            "INSERT INTO mp_runtime_telemetry_items
-                               (batch_uuid, ordinal, kind, room_id, round_uuid, player_id, payload, created_at, schema_version)
-                             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)"
-                        )
-                        .bind(&batch_uuid)
-                        .bind(i32::try_from(ordinal).unwrap_or(i32::MAX))
-                        .bind(&record.kind)
-                        .bind(record.room_id.as_deref())
-                        .bind(record.round_uuid.as_deref())
-                        .bind(record.player_id)
-                        .bind(raw_item)
-                        .bind(now)
-                        .bind(record.schema_version)
-                        .execute(&pool)
-                        .await;
+                    .execute(pool)
+                    .await
+                    .is_err()
+                    {
+                        return false;
                     }
                 }
+            }
+            return true;
+        }
+        #[cfg(not(feature = "postgres"))]
+        let _ = records;
+        false
+    }
+
+    pub fn record_runtime_telemetry_batches_sync(&self, records: Vec<RuntimeTelemetryBatchRecord>) -> bool {
+        if records.is_empty() {
+            return true;
+        }
+        #[cfg(feature = "postgres")]
+        if matches!(self, Self::Pg(_)) {
+            let db = self.clone();
+            tokio::spawn(async move {
+                let _ = db.record_runtime_telemetry_batches(records).await;
             });
             return true;
         }
+        #[cfg(not(feature = "postgres"))]
+        let _ = records;
         false
     }
 
 
-    pub fn record_runtime_benchmark_report_sync(&self, record: crate::persistence::BenchmarkReportPersistenceRecord) -> bool {
-        #[cfg(not(feature = "postgres"))]
-        let _ = &record;
+    pub async fn record_runtime_benchmark_report(&self, record: crate::persistence::BenchmarkReportPersistenceRecord) -> bool {
         #[cfg(feature = "postgres")]
         if let Self::Pg(pool) = self {
-            let pool = pool.clone();
+            let now = now_ms();
+            let payload = record.payload();
+            return sqlx::query(
+                "INSERT INTO mp_runtime_benchmark_reports
+                   (mode, title, duration_secs, is_simulation, operations, failed_operations,
+                    probes_attempted, probes_succeeded, probes_failed, probes_blocked, probes_skipped,
+                    failure_samples, notes, report, created_at, source, schema_version)
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)"
+            )
+            .bind(record.mode.as_str())
+            .bind(&record.title)
+            .bind(i64::try_from(record.duration_secs).unwrap_or(i64::MAX))
+            .bind(record.is_simulation)
+            .bind(record.operations.and_then(|value| i64::try_from(value).ok()))
+            .bind(record.failed_operations.and_then(|value| i64::try_from(value).ok()))
+            .bind(i64::try_from(record.probes_attempted).unwrap_or(i64::MAX))
+            .bind(i64::try_from(record.probes_succeeded).unwrap_or(i64::MAX))
+            .bind(i64::try_from(record.probes_failed).unwrap_or(i64::MAX))
+            .bind(i64::try_from(record.probes_blocked).unwrap_or(i64::MAX))
+            .bind(i64::try_from(record.probes_skipped).unwrap_or(i64::MAX))
+            .bind(i32::try_from(record.failure_samples).unwrap_or(i32::MAX))
+            .bind(i32::try_from(record.notes).unwrap_or(i32::MAX))
+            .bind(payload)
+            .bind(now)
+            .bind(&record.source)
+            .bind(record.schema_version)
+            .execute(pool)
+            .await
+            .is_ok();
+        }
+        #[cfg(not(feature = "postgres"))]
+        let _ = &record;
+        false
+    }
+
+    pub fn record_runtime_benchmark_report_sync(&self, record: crate::persistence::BenchmarkReportPersistenceRecord) -> bool {
+        #[cfg(feature = "postgres")]
+        if matches!(self, Self::Pg(_)) {
+            let db = self.clone();
             tokio::spawn(async move {
-                let now = now_ms();
-                let payload = record.payload();
-                let _ = sqlx::query(
-                    "INSERT INTO mp_runtime_benchmark_reports
-                       (mode, title, duration_secs, is_simulation, operations, failed_operations,
-                        probes_attempted, probes_succeeded, probes_failed, probes_blocked, probes_skipped,
-                        failure_samples, notes, report, created_at, source, schema_version)
-                     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)"
-                )
-                .bind(record.mode.as_str())
-                .bind(&record.title)
-                .bind(i64::try_from(record.duration_secs).unwrap_or(i64::MAX))
-                .bind(record.is_simulation)
-                .bind(record.operations.and_then(|value| i64::try_from(value).ok()))
-                .bind(record.failed_operations.and_then(|value| i64::try_from(value).ok()))
-                .bind(i64::try_from(record.probes_attempted).unwrap_or(i64::MAX))
-                .bind(i64::try_from(record.probes_succeeded).unwrap_or(i64::MAX))
-                .bind(i64::try_from(record.probes_failed).unwrap_or(i64::MAX))
-                .bind(i64::try_from(record.probes_blocked).unwrap_or(i64::MAX))
-                .bind(i64::try_from(record.probes_skipped).unwrap_or(i64::MAX))
-                .bind(i32::try_from(record.failure_samples).unwrap_or(i32::MAX))
-                .bind(i32::try_from(record.notes).unwrap_or(i32::MAX))
-                .bind(payload)
-                .bind(now)
-                .bind(&record.source)
-                .bind(record.schema_version)
-                .execute(&pool)
-                .await;
+                let _ = db.record_runtime_benchmark_report(record).await;
             });
             return true;
         }
+        #[cfg(not(feature = "postgres"))]
+        let _ = &record;
         false
     }
 
@@ -450,25 +485,38 @@ impl DbManager {
         }
     }
 
-    pub fn record_sim_event_sync(&self, run_id: Option<String>, kind: &str, payload: Value) {
+    pub async fn record_sim_event(&self, run_id: Option<String>, kind: &str, payload: Value) -> bool {
         #[cfg(feature = "postgres")]
         if let Self::Pg(pool) = self {
-            let pool = pool.clone();
+            let now = now_ms();
+            return sqlx::query(
+                "INSERT INTO mp_sim_events (run_id, kind, payload, created_at)
+                 VALUES ($1, $2, $3, $4)"
+            )
+            .bind(run_id.as_deref())
+            .bind(kind)
+            .bind(payload)
+            .bind(now)
+            .execute(pool)
+            .await
+            .is_ok();
+        }
+        #[cfg(not(feature = "postgres"))]
+        let _ = (run_id, kind, payload);
+        false
+    }
+
+    pub fn record_sim_event_sync(&self, run_id: Option<String>, kind: &str, payload: Value) {
+        #[cfg(feature = "postgres")]
+        if matches!(self, Self::Pg(_)) {
+            let db = self.clone();
             let kind = kind.to_string();
             tokio::spawn(async move {
-                let now = now_ms();
-                let _ = sqlx::query(
-                    "INSERT INTO mp_sim_events (run_id, kind, payload, created_at)
-                     VALUES ($1, $2, $3, $4)"
-                )
-                .bind(run_id.as_deref())
-                .bind(&kind)
-                .bind(payload)
-                .bind(now)
-                .execute(&pool)
-                .await;
+                let _ = db.record_sim_event(run_id, &kind, payload).await;
             });
         }
+        #[cfg(not(feature = "postgres"))]
+        let _ = (run_id, kind, payload);
     }
 
     pub fn record_room_snapshot_sync(&self, room_id: String, room_uuid: String, payload: Value) {
@@ -481,15 +529,27 @@ impl DbManager {
         }
     }
 
-    pub fn record_room_event_sync(&self, kind: &str, room_id: Option<String>, user_id: Option<i32>, payload: Value) {
+    pub async fn record_room_event(&self, kind: &str, room_id: Option<String>, user_id: Option<i32>, payload: Value) -> bool {
         #[cfg(feature = "postgres")]
         if let Self::Pg(pool) = self {
-            let pool = pool.clone();
+            return append_event_pg(pool, kind, room_id.as_deref(), user_id, payload).await.is_ok();
+        }
+        #[cfg(not(feature = "postgres"))]
+        let _ = (kind, room_id, user_id, payload);
+        false
+    }
+
+    pub fn record_room_event_sync(&self, kind: &str, room_id: Option<String>, user_id: Option<i32>, payload: Value) {
+        #[cfg(feature = "postgres")]
+        if matches!(self, Self::Pg(_)) {
+            let db = self.clone();
             let kind = kind.to_string();
             tokio::spawn(async move {
-                let _ = append_event_pg(&pool, &kind, room_id.as_deref(), user_id, payload).await;
+                let _ = db.record_room_event(&kind, room_id, user_id, payload).await;
             });
         }
+        #[cfg(not(feature = "postgres"))]
+        let _ = (kind, room_id, user_id, payload);
     }
 
     pub fn record_user_room_history_sync(&self, user_id: i32, room_id: String, room_uuid: String, joined_at: i64) {

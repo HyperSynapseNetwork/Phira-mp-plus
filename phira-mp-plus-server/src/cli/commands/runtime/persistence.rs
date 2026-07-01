@@ -64,9 +64,11 @@ impl CliHandler {
             stats.telemetry.write_item_rows, stats.telemetry.write_errors
         ));
         self.out(format!(
-            "    db_dispatch_ms(avg/max/last)={}/{}/{} samples={}",
+            "    db_dispatch_ms(avg/max/last)={}/{}/{} samples={} db_ack_ms(avg/max/last)={}/{}/{} samples={}",
             stats.telemetry.db_dispatch_avg_ms, stats.telemetry.db_dispatch_max_ms,
-            stats.telemetry.db_dispatch_last_ms, stats.telemetry.db_dispatch_samples
+            stats.telemetry.db_dispatch_last_ms, stats.telemetry.db_dispatch_samples,
+            stats.telemetry.db_ack_avg_ms, stats.telemetry.db_ack_max_ms,
+            stats.telemetry.db_ack_last_ms, stats.telemetry.db_ack_samples
         ));
         self.out(format!(
             "    schema_v={} last_batch={} touch_items={} judge_items={}",
@@ -81,7 +83,7 @@ impl CliHandler {
         self.out(format!("    telemetry_last_err={}", stats.telemetry.last_error.clone().unwrap_or_else(|| "-".to_string())));
         self.out(format!("  {} last_err:  {}", c::dim("│"), stats.last_error.clone().unwrap_or_else(|| "-".to_string())));
         if !stats.db_dispatch.is_empty() {
-            self.out(format!("  {} db dispatch latency by pipeline", c::cyan("▸")));
+            self.out(format!("  {} db ack latency by pipeline", c::cyan("▸")));
             for (pipeline, latency) in &stats.db_dispatch {
                 let failures = stats.db_dispatch_failures.get(pipeline).copied().unwrap_or(0);
                 let skipped = stats.db_dispatch_skipped_no_database.get(pipeline).copied().unwrap_or(0);
@@ -108,6 +110,6 @@ impl CliHandler {
         self.out(format!("  {} Touch/Judge 持久化不依赖 active monitor；active monitor 只控制实时 monitor 广播", c::dim("▸")));
         self.out(format!("  {} BenchmarkReport 已通过 benchmark.completed → PersistenceWorker → mp_runtime_benchmark_reports 镜像，供 CLI/Web 只读历史查询", c::dim("▸")));
         self.out(format!("  {} Step 54 infra: PersistenceWorker 已拆为 message/stats/mirror/pipeline/worker，backpressure 为观测信号，不是粗暴限流", c::dim("▸")));
-        self.out(format!("  {} Step 55 infra: direct write / worker enqueue / DB dispatch latency 已分开观测，用于评估 worker_only，而不是强制切换", c::dim("▸")));
+        self.out(format!("  {} Step 56 infra: TelemetryBatcher 与 Persistence pipeline 已走 async DB ack，延迟观测更接近真实 SQL 完成耗时", c::dim("▸")));
     }
 }

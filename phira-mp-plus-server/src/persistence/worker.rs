@@ -80,8 +80,8 @@ impl PersistenceWorker {
                 let kind = event.kind();
                 let simulation = event.is_simulation();
                 let summary = event.summary();
-                match persist_benchmark_report_if_needed(&event) {
-                    BenchmarkReportStage::Dispatched { elapsed_ms } => {
+                match persist_benchmark_report_if_needed(&event).await {
+                    BenchmarkReportStage::Acknowledged { elapsed_ms } => {
                         record_benchmark_report_persist_request(&worker_stats).await;
                         record_db_dispatch_success(
                             &worker_stats,
@@ -106,8 +106,8 @@ impl PersistenceWorker {
                         ).await;
                     }
                     BenchmarkReportStage::NotBenchmark => {
-                        match persist_simulation_event_if_needed(&event) {
-                            PersistenceWriteStage::Dispatched { pipeline, elapsed_ms } => {
+                        match persist_simulation_event_if_needed(&event).await {
+                            PersistenceWriteStage::Acknowledged { pipeline, elapsed_ms } => {
                                 record_simulation_persist_request(&worker_stats).await;
                                 record_db_dispatch_success(&worker_stats, pipeline, elapsed_ms).await;
                             }
@@ -127,8 +127,8 @@ impl PersistenceWorker {
                                         record_production_telemetry_stage_failed(&worker_stats, error).await;
                                     }
                                     ProductionTelemetryStage::NotTelemetry => {
-                                        match persist_production_event_if_needed(&event) {
-                                            PersistenceWriteStage::Dispatched { pipeline, elapsed_ms } => {
+                                        match persist_production_event_if_needed(&event).await {
+                                            PersistenceWriteStage::Acknowledged { pipeline, elapsed_ms } => {
                                                 record_production_persist_request(&worker_stats).await;
                                                 record_db_dispatch_success(&worker_stats, pipeline, elapsed_ms).await;
                                             }
