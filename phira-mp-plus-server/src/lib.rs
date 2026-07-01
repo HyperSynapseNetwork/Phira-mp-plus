@@ -27,6 +27,7 @@ pub mod room;
 pub mod room_actor;
 pub mod round_store;
 pub mod runtime_plan;
+pub mod runtime_budget;
 pub mod telemetry_batcher;
 pub mod server;
 pub mod session;

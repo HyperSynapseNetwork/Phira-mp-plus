@@ -4,6 +4,7 @@
 //! not become the next CLI junk drawer after `cli.rs` was reduced.
 
 mod actors;
+mod budget;
 mod commands;
 mod cutover;
 mod events;
@@ -26,6 +27,7 @@ impl CliHandler {
         match sub {
             "status" | "" => self.print_runtime_status().await,
             "roadmap" => self.print_runtime_roadmap(),
+            "budget" => self.print_runtime_budget(),
             "phira" => self.print_runtime_phira(),
             "commands" => self.print_runtime_commands(),
             "events" => self.print_runtime_events(),
@@ -36,7 +38,7 @@ impl CliHandler {
             "persistence" => self.print_runtime_persistence().await,
             _ => {
                 self.out(format!("  {} 未知 runtime 子命令: {}", c::red("✗"), c::yellow(sub)));
-                self.out(format!("  {} 可用: runtime status | roadmap | phira | commands | events | persistence | schema | cutover | actors | rooms", c::dim("▸")));
+                self.out(format!("  {} 可用: runtime status | roadmap | budget | phira | commands | events | persistence | schema | cutover | actors | rooms", c::dim("▸")));
             }
         }
     }

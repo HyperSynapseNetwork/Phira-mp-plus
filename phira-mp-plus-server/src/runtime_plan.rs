@@ -48,14 +48,21 @@ impl RuntimePlan {
                     title: "Benchmark modes: simulation / hybrid / real",
                     status: "active",
                     priority: "P0",
-                    next_step: "Simulation, hybrid and real share BenchmarkReport output, emit benchmark.completed and populate readonly CLI/Web snapshots; next step is persisted report history and TUI panels.",
+                    next_step: "Simulation, hybrid and real share BenchmarkReport output, emit benchmark.completed and populate bounded readonly CLI/Web snapshots; next step is persisted report history after the low-resource budget is stable.",
+                },
+                RuntimeObjective {
+                    key: "resource-budget",
+                    title: "Low CPU/RAM bounded infrastructure budget",
+                    status: "active",
+                    priority: "P0",
+                    next_step: "Runtime v2 now centralizes EventBus channel capacity, trace depth, benchmark report retention and readonly state.query timeout under runtime_v2.budget; next step is applying the same budget discipline to TUI dirty render and Web snapshot caches.",
                 },
                 RuntimeObjective {
                     key: "actor-model",
                     title: "Actor model migration",
                     status: "active",
                     priority: "P0",
-                    next_step: "Expand typed command/result/handler boundaries, but keep shipping practical runtime tracks in parallel: simulation, persistence, plugin ABI, Phira HTTP and observability.",
+                    next_step: "Expand typed command/result/handler boundaries, but keep shipping practical runtime tracks in parallel: simulation, persistence, plugin ABI, Phira HTTP, low-resource budgets and observability.",
                 },
                 RuntimeObjective {
                     key: "touch-judge-persistence",

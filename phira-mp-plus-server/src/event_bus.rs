@@ -19,7 +19,7 @@ use std::{
 use tokio::sync::broadcast;
 use uuid::Uuid;
 
-const MAX_EVENT_TRACE: usize = 256;
+const DEFAULT_MAX_EVENT_TRACE: usize = 256;
 
 #[derive(Debug, Clone)]
 pub enum MpEvent {
@@ -136,6 +136,8 @@ pub struct EventBusStats {
     pub no_subscriber: u64,
     pub lagged_or_closed: u64,
     pub receiver_count: usize,
+    pub channel_capacity: usize,
+    pub trace_capacity: usize,
     pub by_kind: Vec<EventKindStats>,
     pub recent: Vec<EventTraceEntry>,
 }
@@ -154,16 +156,26 @@ pub struct EventBus {
     counters: EventBusCounters,
     recent: Mutex<VecDeque<EventTraceEntry>>,
     by_kind: Mutex<BTreeMap<String, u64>>,
+    channel_capacity: usize,
+    trace_capacity: usize,
 }
 
 impl EventBus {
     pub fn new(capacity: usize) -> Self {
-        let (tx, _) = broadcast::channel(capacity.max(16));
+        Self::new_with_trace(capacity, DEFAULT_MAX_EVENT_TRACE)
+    }
+
+    pub fn new_with_trace(capacity: usize, trace_capacity: usize) -> Self {
+        let channel_capacity = capacity.max(16);
+        let trace_capacity = trace_capacity.clamp(1, DEFAULT_MAX_EVENT_TRACE.max(trace_capacity));
+        let (tx, _) = broadcast::channel(channel_capacity);
         Self {
             tx,
             counters: EventBusCounters::default(),
-            recent: Mutex::new(VecDeque::with_capacity(MAX_EVENT_TRACE)),
+            recent: Mutex::new(VecDeque::with_capacity(trace_capacity)),
             by_kind: Mutex::new(BTreeMap::new()),
+            channel_capacity,
+            trace_capacity,
         }
     }
 
@@ -203,7 +215,7 @@ impl EventBus {
     }
 
     pub fn stats(&self, limit: usize) -> EventBusStats {
-        let limit = limit.clamp(1, MAX_EVENT_TRACE);
+        let limit = limit.clamp(1, self.trace_capacity.max(1));
         let recent = self
             .recent
             .lock()
@@ -228,6 +240,8 @@ impl EventBus {
             no_subscriber: self.counters.no_subscriber.load(Ordering::Relaxed),
             lagged_or_closed: self.counters.lagged_or_closed.load(Ordering::Relaxed),
             receiver_count: self.receiver_count(),
+            channel_capacity: self.channel_capacity,
+            trace_capacity: self.trace_capacity,
             by_kind,
             recent,
         }
@@ -241,7 +255,7 @@ impl EventBus {
 
     fn push_trace(&self, entry: EventTraceEntry) {
         if let Ok(mut trace) = self.recent.lock() {
-            if trace.len() >= MAX_EVENT_TRACE {
+            while trace.len() >= self.trace_capacity.max(1) {
                 trace.pop_front();
             }
             trace.push_back(entry);
@@ -279,5 +293,18 @@ mod tests {
         assert!(summary.contains("failed_operations=2"));
         assert!(summary.contains("probes_failed=1"));
         assert!(summary.contains("probes_blocked=1"));
+    }
+
+    #[test]
+    fn event_bus_trace_capacity_is_bounded() {
+        let bus = EventBus::new_with_trace(16, 2);
+        bus.publish(MpEvent::Custom { kind: "a".to_string(), payload: serde_json::json!({}) });
+        bus.publish(MpEvent::Custom { kind: "b".to_string(), payload: serde_json::json!({}) });
+        bus.publish(MpEvent::Custom { kind: "c".to_string(), payload: serde_json::json!({}) });
+        let stats = bus.stats(16);
+        assert_eq!(stats.channel_capacity, 16);
+        assert_eq!(stats.trace_capacity, 2);
+        assert_eq!(stats.recent.len(), 2);
+        assert_eq!(stats.recent[0].kind, "custom");
     }
 }

@@ -241,8 +241,8 @@ impl CliHandler {
         let limit = rest
             .iter()
             .find_map(|value| value.parse::<usize>().ok())
-            .unwrap_or(8)
-            .clamp(1, 64);
+            .unwrap_or(self.state.runtime_budget.recent_list_limit)
+            .clamp(1, self.state.runtime_budget.benchmark_report_capacity.max(1));
 
         self.out(format!("  {} Benchmark reports", c::green("◆")));
         if let Some(mode) = mode {

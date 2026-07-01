@@ -326,8 +326,7 @@ impl CommandRegistry {
         }
 
         lines.push("─────────────────────────────────────────────".to_string());
-        lines.join("
-")
+        lines.join("\n")
     }
 
     pub fn format_overview_all(&self) -> String {
@@ -341,8 +340,7 @@ impl CommandRegistry {
             lines.push(self.format_group(&group, true));
             lines.push(String::new());
         }
-        lines.join("
-")
+        lines.join("\n")
     }
 
     pub fn format_groups(&self) -> String {
@@ -354,8 +352,7 @@ impl CommandRegistry {
             let total = self.commands.values().filter(|cmd| cmd.group == group).count();
             lines.push(format!("    {:<16} primary={} total={}    help group {}", group, primary, total, group));
         }
-        lines.join("
-")
+        lines.join("\n")
     }
 
     pub fn format_group(&self, group: &str, include_advanced: bool) -> String {
@@ -382,8 +379,7 @@ impl CommandRegistry {
                 spec.usage, marker, spec.description
             ));
         }
-        lines.join("
-")
+        lines.join("\n")
     }
 
     pub fn format_unknown(&self, command: &str) -> String {
@@ -451,6 +447,8 @@ pub fn runtime_v2_registry() -> CommandRegistry {
     for spec in [
         CommandSpec::new("runtime status", "runtime-v2", "查看 Runtime v2 骨架状态。", "runtime status"),
         CommandSpec::new("runtime roadmap", "runtime-v2", "查看 Runtime v2 总目标工作板，防止长期目标在迭代中丢失。", "runtime roadmap")
+            .advanced(),
+        CommandSpec::new("runtime budget", "runtime-v2", "查看低 CPU/RAM Runtime v2 资源预算、 bounded EventBus trace 与 benchmark report snapshot 容量。", "runtime budget")
             .advanced(),
 
         CommandSpec::new("runtime phira", "runtime-v2", "查看统一 Phira HTTP RetryClient 统计和策略。", "runtime phira").advanced(),

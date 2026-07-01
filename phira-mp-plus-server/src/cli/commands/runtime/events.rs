@@ -7,6 +7,8 @@ impl CliHandler {
         let stats = self.state.event_bus.stats(12);
         self.out(format!("  {} EventBus", c::green("◆")));
         self.out(format!("  {} subscribers:      {}", c::dim("│"), stats.receiver_count));
+        self.out(format!("  {} channel_capacity: {}", c::dim("│"), stats.channel_capacity));
+        self.out(format!("  {} trace_capacity:   {}", c::dim("│"), stats.trace_capacity));
         self.out(format!("  {} published:        {}", c::dim("│"), stats.published));
         self.out(format!("  {} delivered_total:  {}", c::dim("│"), stats.delivered_total));
         self.out(format!("  {} no_subscriber:    {}", c::dim("│"), stats.no_subscriber));
