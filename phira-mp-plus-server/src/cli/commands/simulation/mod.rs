@@ -1,11 +1,17 @@
+//! Runtime v2 simulation CLI command family.
+//!
+//! Keep simulation command routing and presentation out of `cli.rs`. The
+//! simulation runtime itself still lives in `crate::simulation`; this module is
+//! only the CLI adapter layer.
+
 use super::super::*;
+
+mod reports;
+mod runner;
+mod world;
 
 impl CliHandler {
     pub(in crate::cli) async fn dispatch_simulation_command(&self, args: &[&str]) {
-        self.simulation_command(args).await;
-    }
-
-    async fn simulation_command(&self, args: &[&str]) {
         let sub = args.first().copied().unwrap_or("status");
         match sub {
             "status" | "" => self.print_simulation_status().await,
@@ -26,8 +32,8 @@ impl CliHandler {
                 let count = args.get(1).and_then(|value| value.parse::<u64>().ok()).unwrap_or(1);
                 match self.state.simulation.advance_ticks_with_events(count).await {
                     Ok((status, events)) => {
-                        publish_simulation_tick_event(&self.state, &status);
-                        publish_simulation_generated_events(&self.state, &events);
+                        runner::publish_simulation_tick_event(&self.state, &status);
+                        runner::publish_simulation_generated_events(&self.state, &events);
                         self.out(format!("  {} simulation 已推进 {} tick(s)", c::green("✓"), count.clamp(1, 10_000)));
                         self.out(format!("  {} ticks={} chats={} ready={} touch_batches={} judge_batches={} round_results={}",
                             c::dim("│"), status.counters.ticks, status.counters.chat_messages,
@@ -69,19 +75,7 @@ impl CliHandler {
                 self.out(format!("  {} {}", c::green("✓"), status.note));
             }
             "persist" => self.simulation_persist().await,
-            "sample" => {
-                let status = self.state.simulation.status().await;
-                let touches = crate::simulation::SimulationManager::sample_touches(status.seed);
-                let judges = crate::simulation::SimulationManager::sample_judges(status.seed);
-                self.out(format!("  {} sample touches: {} 条；sample judges: {} 条；seed={}", c::green("◆"), touches.len(), judges.len(), status.seed));
-                if let Some(first) = touches.first() {
-                    self.out(format!("  {} first touch: t={}ms lane={} pressed={}", c::dim("│"), first.time_ms, first.lane, first.pressed));
-                }
-                if let Some(first) = judges.first() {
-                    self.out(format!("  {} first judge: t={}ms {} +{}", c::dim("│"), first.time_ms, first.judge, first.score_delta));
-                }
-                self.out(format!("  {} Step 3 示例数据由 shadow world 复用，仍不写入真实数据库/房间", c::dim("▸")));
-            }
+            "sample" => self.print_simulation_sample().await,
             _ => {
                 self.out(format!("  {} 未知 simulation 子命令: {}", c::red("✗"), c::yellow(sub)));
                 self.out(format!("  {} 可用: simulation status | run <preset> | suite <name> | report | scenarios | tick [n] | inspect [limit] | persist | stop | seed <u64> | cleanup | sample", c::dim("▸")));
@@ -89,4 +83,53 @@ impl CliHandler {
         }
     }
 
+    pub(in crate::cli) async fn simulation_run(&self, args: &[&str]) {
+        let seed = self.state.simulation.status().await.seed;
+        let preset = args
+            .first()
+            .and_then(|value| crate::simulation::SimulationPreset::parse(value))
+            .unwrap_or(crate::simulation::SimulationPreset::Baseline);
+        let mut config = preset.defaults(seed);
+        let option_start = if args.first().and_then(|value| crate::simulation::SimulationPreset::parse(value)).is_some() { 1 } else { 0 };
+        for token in &args[option_start..] {
+            let Some((key, value)) = token.split_once('=') else {
+                self.out(format!("  {} 无效参数：{}；请使用 users=500 rooms=50 duration=300 scenario=chat_storm tick_ms=1000 auto=true persist_every=0", c::red("✗"), token));
+                return;
+            };
+            if let Err(err) = config.apply_kv(key, value) {
+                self.out(format!("  {} {}", c::red("✗"), err));
+                return;
+            }
+        }
+
+        match self.state.simulation.start(config).await {
+            Ok(status) => {
+                if let Some(run_id) = status.run_id {
+                    self.state.event_bus.publish(crate::event_bus::MpEvent::SimulationStarted { run_id });
+                }
+                self.broadcast_all("服务器正在进行性能测试，期间可能出现短暂卡顿。Runtime v2 当前为安全骨架模式，不会创建真实房间。").await;
+                self.out(format!("  {} simulation 已启动: {:?}", c::green("✓"), status.run_id));
+                self.out(format!("  {} preset={:?} scenario={} users={} rooms={} duration={}s touch={} judge={} chat={} ready={} rounds={}",
+                    c::dim("│"), status.config.preset, status.config.scenario.as_str(), status.config.users, status.config.rooms,
+                    status.config.duration_secs, status.config.touch, status.config.judge,
+                    status.config.chat, status.config.ready, status.config.rounds));
+                self.out(format!("  {} runner: auto={} tick_ms={} persist_every={}",
+                    c::dim("│"), status.config.auto_tick, status.config.tick_interval_ms, status.config.persist_every_ticks));
+                self.out(format!("  {} shadow world: {} users / {} rooms / {} rounds materialized",
+                    c::dim("│"), status.materialized_users, status.materialized_rooms, status.materialized_rounds));
+                if status.config.auto_tick {
+                    if let Some(run_id) = status.run_id {
+                        runner::spawn_simulation_runner(std::sync::Arc::clone(&self.state), self.out_tx.clone(), run_id, status.config.clone());
+                        self.out(format!("  {} 自动 runner 已启动；到达 duration 后会自动 stop", c::dim("▸")));
+                    } else {
+                        self.out(format!("  {} simulation 已启动但缺少 run_id，自动 runner 未启动", c::yellow("!")));
+                    }
+                } else {
+                    self.out(format!("  {} auto=false，需手动执行 simulation tick [n] 推进", c::dim("▸")));
+                }
+                self.out(format!("  {} Step 8 已启用聚合仿真事件；仍不写入真实 rooms/users 表", c::dim("▸")));
+            }
+            Err(err) => self.out(format!("  {} {}", c::red("✗"), err)),
+        }
+    }
 }
