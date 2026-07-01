@@ -825,3 +825,12 @@ Canonical examples:
 
 This keeps the command system small enough to continue building Runtime v2
 without turning CLI compatibility into a permanent maintenance burden.
+
+### Step 34：Plugin ABI / 测试目标纳入 Runtime v2 主线
+
+Runtime v2 明确新增两条 P1 主线：
+
+- `plugin-abi-v2`：当前 WASM 插件 ABI 仍是 JSON 字符串穿过 guest memory 的 `abi-json-v1`。这会隐藏 schema drift、字段名漂移和 Touch/Judge 大 payload 的重复 JSON 编解码成本。Step 34 先把 JSON ABI 编解码集中到 `plugin_abi.rs`，后续目标是以 WIT/component-model typed ABI 替换它。
+- `test-coverage`：当前单元测试/集成测试不足。后续 Runtime v2 cutover 前必须补齐 plugin ABI contract tests、command registry tests、telemetry cutover tests、room gateway tests 和 session handler tests。
+
+开发节奏调整：先快速完成 `session.rs / cli.rs / wasm_host.rs` 的边界分离，再回到主线 cutover。不要把 JSON ABI、临时命令、测试缺口继续散落在大文件里。

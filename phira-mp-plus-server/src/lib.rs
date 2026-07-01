@@ -18,6 +18,7 @@ pub mod internal_hooks;
 pub mod l10n;
 pub mod logging;
 pub mod plugin;
+pub mod plugin_abi;
 pub mod plugin_http;
 pub mod rate_limiter;
 pub mod room;

@@ -197,3 +197,14 @@ WASM 插件可通过 `config.get` / `config.set` API 读写自己的配置（内
 - `plugin-config` — 插件配置
 - `plugin` — 插件主入口
 - `cli` — CLI 命令接口
+
+## Runtime v2 插件 ABI 方向
+
+当前 WASM 插件仍使用 `abi-json-v1`：宿主把事件和 API 参数编码成 JSON 字符串，写入 guest memory，再由插件侧解析。这不是 Runtime v2 的最终 ABI，因为它有几个问题：
+
+- host 与 guest 的字段 schema 不一致时，编译期发现不了；
+- Touch/Judge 这类大 payload 需要重复 JSON 编解码；
+- ABI 版本、字段变更、必填字段缺失都缺少统一 contract test；
+- 项目已经有 WIT/WASM Host API 方向，但 JSON 字符串仍是实际传输层。
+
+Step 34 起，所有 JSON ABI 编解码应集中在 `plugin_abi.rs`。后续应先补齐 contract tests，再把 guest-facing ABI 迁移到 typed WIT/component-model 接口。

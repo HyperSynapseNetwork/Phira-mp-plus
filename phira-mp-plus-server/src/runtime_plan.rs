@@ -86,6 +86,20 @@ impl RuntimePlan {
                     next_step: "Mirror fewer ad-hoc plugin/server calls and add typed subscribers for persistence and TUI.",
                 },
                 RuntimeObjective {
+                    key: "plugin-abi-v2",
+                    title: "Typed WASM plugin ABI",
+                    status: "active",
+                    priority: "P1",
+                    next_step: "Current plugin ABI is centralized as abi-json-v1; write WIT/component ABI definitions and contract tests before switching guests to typed abi-wit-v2.",
+                },
+                RuntimeObjective {
+                    key: "test-coverage",
+                    title: "Unit and integration test coverage",
+                    status: "active",
+                    priority: "P1",
+                    next_step: "Add contract tests around plugin ABI, command registry, telemetry cutover, room gateway and session handlers before further cutover.",
+                },
+                RuntimeObjective {
                     key: "tui-v2",
                     title: "TUI v2 observability panels",
                     status: "planned",
