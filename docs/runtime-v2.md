@@ -653,3 +653,39 @@ Because the project is still in test stage, this read path intentionally favors
 clarity and debuggability over backward-compatible schema minimalism.  The next
 step can cut over more consumers from legacy batch tables to the normalized item
 stream once the worker-only path is verified.
+
+
+## Step 26: Config-driven runtime policy, fewer CLI knobs
+
+Step 26 deliberately returns to a calmer development rhythm.  No new user-facing
+management command is added in this step.  Runtime v2 persistence policy is now
+configured from `server_config.yml` through the `runtime_v2` block:
+
+```yaml
+runtime_v2:
+  persistence_queue_capacity: 4096
+  telemetry_cutover_mode: dual_write
+  telemetry_batcher:
+    enabled: true
+    dry_run: false
+    queue_capacity: 8192
+    max_items_per_batch: 256
+    flush_interval_ms: 1000
+```
+
+This keeps the operational command surface from growing while the project is
+still in heavy test-stage iteration.  Runtime diagnostics remain available, but
+new defaults and pipeline policy should prefer configuration over more tiny CLI
+subcommands.
+
+Implementation notes:
+
+- `PlusConfig::runtime_v2` owns startup defaults for PersistenceWorker and
+  TelemetryBatcher.
+- `PersistenceWorker::spawn_with_policy()` accepts queue capacity, batcher
+  policy and initial Touch/Judge cutover mode.
+- Internal hooks record the active policy into `mp_runtime_persistence_meta`
+  after database initialization, so the running behavior is visible without
+  adding another management command.
+- Existing `runtime cutover` remains for quick testing, but future work should
+  avoid adding one-off commands unless they are truly needed.

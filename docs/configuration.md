@@ -101,6 +101,7 @@ wasm_runtime:
 | `database_url` | `String?` | 未设置 | PostgreSQL 连接串；配置后启用统一结构化持久化。未设置时保留旧 JSON/文件回退。 |
 | `persistence_retention_days` | `u32` | `30` | PostgreSQL 统一持久化历史数据保留天数，`0` 表示不自动清理。 |
 | `touch_judge_retention_days` | `u32?` | 未设置 | Touches/Judges 高频遥测独立保留天数；未设置时遵循 `persistence_retention_days`，`0` 表示不自动清理遥测。 |
+| `runtime_v2` | `object` | 见下文 | Runtime v2 内部策略。用于配置 PersistenceWorker、TelemetryBatcher 和启动 cutover 模式，避免继续膨胀管理命令。 |
 | `server_name` | `String?` | 未设置 | 服务器展示名称，可用于欢迎语等场景。 |
 | `admin_token` | `String?` | 未设置 | 管理令牌预留/供管理接口或自定义扩展使用。基础公开 API 不需要配置。 |
 | `admin_phira_ids` | `Vec<i32>` | `[]` | 游戏内管理员 Phira ID。管理员可在创建房间弹窗输入 `_+命令` 执行 CLI 命令。 |
@@ -139,6 +140,24 @@ database_url: "postgres://user:password@localhost:5432/phira_mp_plus"
 persistence_retention_days: 30      # 0 = 不自动清理 PG 历史数据
 # touch_judge_retention_days: 7     # 未设置 = 使用 persistence_retention_days；0 = 不清理遥测
 ```
+
+### Runtime v2 内部策略
+
+Runtime v2 的内部策略优先放在配置文件中，避免继续新增过多管理命令。测试阶段可直接修改这些值并重启服务。
+
+```yaml
+runtime_v2:
+  persistence_queue_capacity: 4096
+  telemetry_cutover_mode: dual_write   # legacy_only / dual_write / worker_only / fallback_only
+  telemetry_batcher:
+    enabled: true
+    dry_run: false
+    queue_capacity: 8192
+    max_items_per_batch: 256
+    flush_interval_ms: 1000
+```
+
+`dual_write` 适合对比旧表和 Runtime v2 表；确认 Runtime v2 遥测表读写稳定后，可以在测试环境改成 `worker_only`。`fallback_only` 适合验证 Worker 队列异常时是否能回退旧直写路径。
 
 插件/WIT/host API 可读取：
 

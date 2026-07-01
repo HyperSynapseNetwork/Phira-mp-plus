@@ -88,21 +88,31 @@ impl TelemetryCutoverMode {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TelemetryBatcherPolicy {
+    #[serde(default = "default_enabled")]
     pub enabled: bool,
+    #[serde(default)]
     pub dry_run: bool,
+    #[serde(default = "default_queue_capacity")]
     pub queue_capacity: usize,
+    #[serde(default = "default_max_items_per_batch")]
     pub max_items_per_batch: usize,
+    #[serde(default = "default_flush_interval_ms")]
     pub flush_interval_ms: u64,
 }
+
+fn default_enabled() -> bool { true }
+fn default_queue_capacity() -> usize { 8192 }
+fn default_max_items_per_batch() -> usize { 256 }
+fn default_flush_interval_ms() -> u64 { 1000 }
 
 impl Default for TelemetryBatcherPolicy {
     fn default() -> Self {
         Self {
-            enabled: true,
+            enabled: default_enabled(),
             dry_run: false,
-            queue_capacity: 8192,
-            max_items_per_batch: 256,
-            flush_interval_ms: 1000,
+            queue_capacity: default_queue_capacity(),
+            max_items_per_batch: default_max_items_per_batch(),
+            flush_interval_ms: default_flush_interval_ms(),
         }
     }
 }

@@ -56,6 +56,21 @@ persistence_retention_days: 30
 # 未设置时遵循 persistence_retention_days；设为 0 表示不自动清理遥测。
 # touch_judge_retention_days: 7
 
+# ---- Runtime v2 内部策略 ----
+
+# Runtime v2 不再继续膨胀管理命令；核心开关尽量放在配置里。
+# telemetry_cutover_mode 可选：legacy_only / dual_write / worker_only / fallback_only。
+# 测试阶段推荐 dual_write 对比旧表与 Runtime v2 表；确认稳定后可改 worker_only。
+# runtime_v2:
+#   persistence_queue_capacity: 4096
+#   telemetry_cutover_mode: dual_write
+#   telemetry_batcher:
+#     enabled: true
+#     dry_run: false
+#     queue_capacity: 8192
+#     max_items_per_batch: 256
+#     flush_interval_ms: 1000
+
 # ---- 功能开关 ----
 
 # 是否启用聊天功能

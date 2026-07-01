@@ -112,14 +112,26 @@ pub struct PersistenceWorker {
 
 impl PersistenceWorker {
     pub fn spawn(queue_capacity: usize) -> Arc<Self> {
+        Self::spawn_with_policy(
+            queue_capacity,
+            TelemetryBatcherPolicy::default(),
+            TelemetryCutoverMode::default(),
+        )
+    }
+
+    pub fn spawn_with_policy(
+        queue_capacity: usize,
+        telemetry_policy: TelemetryBatcherPolicy,
+        telemetry_cutover_mode: TelemetryCutoverMode,
+    ) -> Arc<Self> {
         let capacity = queue_capacity.max(16);
         let (tx, mut rx) = mpsc::channel::<PersistenceEvent>(capacity);
-        let telemetry_policy = TelemetryBatcherPolicy::default();
+        let initial_cutover = telemetry_cutover_mode;
         let telemetry_batcher = TelemetryBatcher::spawn(telemetry_policy.clone());
-        let telemetry_cutover_mode = Arc::new(RwLock::new(TelemetryCutoverMode::default()));
+        let telemetry_cutover_mode = Arc::new(RwLock::new(initial_cutover));
         let stats = Arc::new(RwLock::new(PersistenceStats {
             capacity,
-            telemetry_cutover_mode: TelemetryCutoverMode::default().as_str().to_string(),
+            telemetry_cutover_mode: initial_cutover.as_str().to_string(),
             telemetry: TelemetryBatcherStats::from_policy(&telemetry_policy),
             ..PersistenceStats::default()
         }));
@@ -208,6 +220,26 @@ impl PersistenceWorker {
 
     pub async fn telemetry_cutover_mode(&self) -> TelemetryCutoverMode {
         *self.telemetry_cutover_mode.read().await
+    }
+
+
+    pub async fn record_runtime_config_snapshot(&self) {
+        let stats = self.stats().await;
+        if let Some(db) = crate::internal_hooks::DB.get() {
+            db.record_runtime_persistence_meta_sync("runtime_v2.persistence_policy", json!({
+                "queue_capacity": stats.capacity,
+                "telemetry_cutover_mode": stats.telemetry_cutover_mode,
+                "telemetry": {
+                    "enabled": stats.telemetry.enabled,
+                    "dry_run": stats.telemetry.dry_run,
+                    "queue_capacity": stats.telemetry.queue_capacity,
+                    "max_items_per_batch": stats.telemetry.max_items_per_batch,
+                    "flush_interval_ms": stats.telemetry.flush_interval_ms,
+                    "schema_version": stats.telemetry.schema_version
+                },
+                "source": "server_config.runtime_v2"
+            }));
+        }
     }
 
     pub async fn set_telemetry_cutover_mode(&self, mode: TelemetryCutoverMode) -> TelemetryCutoverMode {

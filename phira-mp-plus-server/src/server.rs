@@ -171,6 +171,34 @@ pub struct PlusConfig {
     /// WASM sandbox/resource limits.
     #[serde(default)]
     pub wasm_runtime: WasmRuntimeConfig,
+    /// Runtime v2 internal policy. This is intentionally config-driven so the
+    /// test-stage server can change persistence/telemetry behavior without
+    /// adding more CLI surface area.
+    #[serde(default)]
+    pub runtime_v2: RuntimeV2Config,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct RuntimeV2Config {
+    /// Bounded queue size for Runtime v2 PersistenceWorker.
+    #[serde(default = "default_runtime_persistence_queue_capacity")]
+    pub persistence_queue_capacity: usize,
+    /// Batcher policy for production Touch/Judge telemetry.
+    #[serde(default)]
+    pub telemetry_batcher: crate::telemetry_batcher::TelemetryBatcherPolicy,
+    /// Startup cutover mode for production Touch/Judge persistence.
+    #[serde(default)]
+    pub telemetry_cutover_mode: crate::telemetry_batcher::TelemetryCutoverMode,
+}
+
+impl Default for RuntimeV2Config {
+    fn default() -> Self {
+        Self {
+            persistence_queue_capacity: default_runtime_persistence_queue_capacity(),
+            telemetry_batcher: crate::telemetry_batcher::TelemetryBatcherPolicy::default(),
+            telemetry_cutover_mode: crate::telemetry_batcher::TelemetryCutoverMode::default(),
+        }
+    }
 }
 
 fn default_http_port() -> u16 { 12347 }
@@ -181,6 +209,7 @@ fn default_rate_window() -> u32 { 10 }
 fn default_phira_api() -> String { "https://phira.5wyxi.com".to_string() }
 fn default_retention_days() -> u32 { 7 }
 fn default_persistence_retention_days() -> u32 { 30 }
+fn default_runtime_persistence_queue_capacity() -> usize { 4096 }
 
 impl Default for PlusConfig {
     fn default() -> Self {
@@ -207,6 +236,7 @@ impl Default for PlusConfig {
             benchmark_phira_tokens: Vec::new(),
             benchmark_phira_token: None,
             wasm_runtime: WasmRuntimeConfig::default(),
+            runtime_v2: RuntimeV2Config::default(),
         }
     }
 }
@@ -476,11 +506,16 @@ impl PlusServer {
         }
         let (bench_tx, bench_rx) = tokio::sync::mpsc::unbounded_channel::<BenchRequest>();
 
+        let runtime_v2 = config.runtime_v2.clone();
         let command_registry = Arc::new(crate::command_registry::runtime_v2_registry());
         let event_bus = Arc::new(crate::event_bus::EventBus::new(1024));
         spawn_runtime_event_observer(Arc::clone(&event_bus));
         let simulation = Arc::new(crate::simulation::SimulationManager::new());
-        let persistence_worker = crate::persistence_worker::PersistenceWorker::spawn(4096);
+        let persistence_worker = crate::persistence_worker::PersistenceWorker::spawn_with_policy(
+            runtime_v2.persistence_queue_capacity,
+            runtime_v2.telemetry_batcher.clone(),
+            runtime_v2.telemetry_cutover_mode,
+        );
         crate::persistence_worker::spawn_event_bus_mirror(
             Arc::clone(&event_bus),
             Arc::clone(&persistence_worker),

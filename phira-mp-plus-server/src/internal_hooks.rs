@@ -25,6 +25,7 @@ pub async fn init_internal_hooks(state: &PlusServerState, http: &PluginHttpServe
             for id in ids { guard.insert(id); }
         }
     }
+    state.persistence_worker.record_runtime_config_snapshot().await;
 
     init_welcome(state, pm).await;
     init_player_tracker(state, http, pm).await;
