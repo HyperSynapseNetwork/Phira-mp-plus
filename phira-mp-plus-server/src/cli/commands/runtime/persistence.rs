@@ -58,6 +58,7 @@ impl CliHandler {
         }
         self.out(format!("  {} 低频生产事件已 EventBus → Worker → mp_events 双写；现有 db.rs 直接写入路径仍保持不变", c::dim("▸")));
         self.out(format!("  {} 生产 Touch/Judge cutover={}；EventBus 只保留计数观测，完整 payload 走 Session → Worker", c::dim("▸"), stats.telemetry_cutover_mode));
+        self.out(format!("  {} Touch/Judge 持久化不依赖 active monitor；active monitor 只控制实时 monitor 广播", c::dim("▸")));
         self.out(format!("  {} Step 23 schema: batch header 表 + raw item 表 + persistence meta/retention policy，测试阶段可继续自由演进", c::dim("▸")));
     }
 }

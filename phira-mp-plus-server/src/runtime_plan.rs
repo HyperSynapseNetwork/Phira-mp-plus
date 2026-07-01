@@ -62,7 +62,7 @@ impl RuntimePlan {
                     title: "Touches/Judges persistence without active monitor",
                     status: "active",
                     priority: "P0",
-                    next_step: "Production Touch/Judge now has explicit direct_only/dual_write/worker_only/fallback_only cutover modes backed by Runtime v2 telemetry batch/item schema.",
+                    next_step: "Session telemetry path is audited and contract-tested: active monitors only control realtime broadcast, while Touch/Judge persistence still runs for active rounds without monitors; continue hardening worker-only cutover and recovery diagnostics.",
                 },
                 RuntimeObjective {
                     key: "phira-http",
@@ -97,7 +97,7 @@ impl RuntimePlan {
                     title: "Unit and integration test coverage",
                     status: "active",
                     priority: "P1",
-                    next_step: "Add contract tests around plugin ABI, command registry, telemetry cutover, room gateway and session handlers before further cutover.",
+                    next_step: "Add contract tests around plugin ABI, command registry, telemetry cutover, room gateway and session handlers; monitor-independent Touch/Judge persistence now has a focused session telemetry contract.",
                 },
                 RuntimeObjective {
                     key: "technical-debt-triage",

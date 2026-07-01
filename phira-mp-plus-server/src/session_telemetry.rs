@@ -35,7 +35,7 @@ pub(crate) async fn handle_touches(user: Arc<User>, room: Arc<Room>, frames: Arc
         .collect();
 
     if !touch_data.is_empty() {
-        persist_touches(&user, &room, &touch_data).await;
+        persist_touches(&user, &room, &touch_data, has_active_monitors).await;
     }
 
     user.server.publish_runtime_event(crate::event_bus::MpEvent::TouchesReceived {
@@ -57,7 +57,7 @@ pub(crate) async fn handle_touches(user: Arc<User>, room: Arc<Room>, frames: Arc
         .await;
     });
 
-    if has_active_monitors {
+    if should_broadcast_monitor_telemetry(has_active_monitors) {
         let monitor_room = Arc::clone(&room);
         tokio::spawn(async move {
             monitor_room
@@ -90,7 +90,7 @@ pub(crate) async fn handle_judges(user: Arc<User>, room: Arc<Room>, judges: Arc<
         .collect();
 
     if !judge_data.is_empty() {
-        persist_judges(&user, &room, &judge_data).await;
+        persist_judges(&user, &room, &judge_data, has_active_monitors).await;
     }
 
     user.server.publish_runtime_event(crate::event_bus::MpEvent::JudgesReceived {
@@ -112,7 +112,7 @@ pub(crate) async fn handle_judges(user: Arc<User>, room: Arc<Room>, judges: Arc<
         .await;
     });
 
-    if has_active_monitors {
+    if should_broadcast_monitor_telemetry(has_active_monitors) {
         let monitor_room = Arc::clone(&room);
         tokio::spawn(async move {
             monitor_room
@@ -127,17 +127,32 @@ pub(crate) async fn handle_judges(user: Arc<User>, room: Arc<Room>, judges: Arc<
     }
 }
 
+
+fn should_persist_round_telemetry(
+    item_count: usize,
+    has_current_round: bool,
+    _has_active_monitors: bool,
+) -> bool {
+    item_count > 0 && has_current_round
+}
+
+fn should_broadcast_monitor_telemetry(has_active_monitors: bool) -> bool {
+    has_active_monitors
+}
+
 async fn persist_touches(
     user: &Arc<User>,
     room: &Arc<Room>,
     touch_data: &[crate::plugin::TouchEventPoint],
+    has_active_monitors: bool,
 ) {
     // Touches are gameplay telemetry, not monitor-only data. Persist them
     // whenever a round is active so unattended real games do not silently lose
     // touch batches.
     room.store_player_touches(user.id, touch_data).await;
     let round_id = room.current_round_id.read().await.as_ref().map(|rid| rid.to_string());
-    if let Some(rid) = round_id.as_ref() {
+    if should_persist_round_telemetry(touch_data.len(), round_id.is_some(), has_active_monitors) {
+        let rid = round_id.as_ref().expect("round id checked by telemetry persistence plan");
         let telemetry_mode = user.server.persistence_worker.telemetry_cutover_mode().await;
         let cutover = telemetry_mode.cutover_decision();
         let mut runtime_enqueue_ok = false;
@@ -180,13 +195,15 @@ async fn persist_judges(
     user: &Arc<User>,
     room: &Arc<Room>,
     judge_data: &[crate::plugin::JudgeEventItem],
+    has_active_monitors: bool,
 ) {
     // Judges are gameplay telemetry, not monitor-only data. Persist them
     // whenever a round is active so unattended real games do not silently lose
     // judge batches.
     room.store_player_judges(user.id, judge_data).await;
     let round_id = room.current_round_id.read().await.as_ref().map(|rid| rid.to_string());
-    if let Some(rid) = round_id.as_ref() {
+    if should_persist_round_telemetry(judge_data.len(), round_id.is_some(), has_active_monitors) {
+        let rid = round_id.as_ref().expect("round id checked by telemetry persistence plan");
         let telemetry_mode = user.server.persistence_worker.telemetry_cutover_mode().await;
         let cutover = telemetry_mode.cutover_decision();
         let mut runtime_enqueue_ok = false;
@@ -222,5 +239,30 @@ async fn persist_judges(
         }
     } else {
         debug!(room = %room.id, user_id = user.id, "judge data received without current round; cached only");
+    }
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn touch_judge_round_persistence_does_not_require_active_monitor() {
+        assert!(should_persist_round_telemetry(1, true, false));
+        assert!(should_persist_round_telemetry(1, true, true));
+    }
+
+    #[test]
+    fn touch_judge_round_persistence_still_requires_payload_and_round() {
+        assert!(!should_persist_round_telemetry(0, true, false));
+        assert!(!should_persist_round_telemetry(1, false, false));
+        assert!(!should_persist_round_telemetry(0, false, true));
+    }
+
+    #[test]
+    fn active_monitor_only_controls_realtime_broadcast() {
+        assert!(should_broadcast_monitor_telemetry(true));
+        assert!(!should_broadcast_monitor_telemetry(false));
     }
 }
