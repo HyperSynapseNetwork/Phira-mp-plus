@@ -1,6 +1,9 @@
 //! Mailbox-backed routing for room commands.
 
-use super::{command::RoomActorCommand, RoomCommandDelivery, RoomCommandGateway, RoomCommandResult};
+use super::{
+    command::RoomActorCommand, context::RoomCommandContext, handler::RoomCommandHandler,
+    RoomCommandDelivery, RoomCommandGateway, RoomCommandResult,
+};
 use crate::server::PlusServerState;
 use serde_json::Value;
 use std::{
@@ -120,51 +123,12 @@ impl RoomCommandGateway {
         state: &PlusServerState,
         command: RoomActorCommand,
     ) -> bool {
-        let mut stop_after = command.kind().stops_room_mailbox_after_execution();
-        let result = match &command {
-            RoomActorCommand::SetLock { room_id, locked, .. } => RoomCommandResult::from_legacy(
-                self.set_lock_inline(state, room_id, *locked).await,
-                RoomCommandDelivery::PerRoomMailbox,
-            ),
-            RoomActorCommand::SetCycle { room_id, cycle, .. } => RoomCommandResult::from_legacy(
-                self.set_cycle_inline(state, room_id, *cycle).await,
-                RoomCommandDelivery::PerRoomMailbox,
-            ),
-            RoomActorCommand::SetHost { room_id, target_id, .. } => RoomCommandResult::from_legacy(
-                self.set_host_inline(state, room_id, *target_id).await,
-                RoomCommandDelivery::PerRoomMailbox,
-            ),
-            RoomActorCommand::CloseRoom { room_id, .. } => RoomCommandResult::from_legacy(
-                self.close_room_inline(state, room_id).await,
-                RoomCommandDelivery::PerRoomMailbox,
-            ),
-            RoomActorCommand::KickUser { room_id, target_id, .. } => {
-                let result = RoomCommandResult::from_legacy(
-                    self.kick_user_inline(state, room_id, *target_id).await,
-                    RoomCommandDelivery::PerRoomMailbox,
-                );
-                if result
-                    .payload()
-                    .and_then(|value| value.get("room_dropped"))
-                    .and_then(Value::as_bool)
-                    .unwrap_or(false)
-                {
-                    stop_after = true;
-                }
-                result
-            }
-            RoomActorCommand::StartRoom { room_id, .. } => RoomCommandResult::from_legacy(
-                self.start_room_inline(state, room_id).await,
-                RoomCommandDelivery::PerRoomMailbox,
-            ),
-            RoomActorCommand::CancelStart { room_id, .. } => RoomCommandResult::from_legacy(
-                self.cancel_start_inline(state, room_id).await,
-                RoomCommandDelivery::PerRoomMailbox,
-            ),
-        };
+        let ctx = RoomCommandContext::new(self, state);
+        let result = RoomCommandHandler::execute(ctx, &command).await;
+        let should_stop = RoomCommandHandler::should_stop_room_mailbox(&command, &result);
         self.observe_mailbox_result(&result);
         command.reply_with(result);
-        stop_after
+        should_stop
     }
 
     pub(super) fn observe_mailbox_result(&self, result: &RoomCommandResult) {

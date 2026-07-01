@@ -55,7 +55,7 @@ impl RuntimePlan {
                     title: "Actor model migration",
                     status: "active",
                     priority: "P0",
-                    next_step: "Expand typed command/result boundaries and gradually move room/session ownership into actors.",
+                    next_step: "Expand typed command/result/handler boundaries, but keep shipping practical runtime tracks in parallel: simulation, persistence, plugin ABI, Phira HTTP and observability.",
                 },
                 RuntimeObjective {
                     key: "touch-judge-persistence",

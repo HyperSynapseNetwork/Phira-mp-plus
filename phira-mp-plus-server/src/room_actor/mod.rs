@@ -13,6 +13,8 @@
 
 mod audit;
 mod command;
+mod context;
+mod handler;
 mod mailbox;
 mod ops;
 mod result;
