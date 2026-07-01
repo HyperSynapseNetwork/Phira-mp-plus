@@ -153,3 +153,32 @@ Near-term cut:
 3. Replace `RoomCommandGateway` inline methods with a mailbox-backed per-room actor for one low-risk command.
 4. Session command handler extraction.
 5. Plugin dispatch isolation so slow plugins cannot block Room/Session hot paths.
+
+## Step 14 update: first mailbox-backed room command path
+
+Step 14 starts turning `RoomCommandGateway` from an inline facade into an
+actor-shaped command boundary.
+
+Implemented now:
+
+- `room set <id> lock <bool>` / `room.set_lock` still use the same public gateway
+  method, but the actual write crosses a bounded mailbox first.
+- `room set <id> cycle <bool>` uses the same mailbox path.
+- The mailbox worker falls back to the inline path if the queue is unavailable,
+  so this migration step does not brick admin commands during early testing.
+- `runtime rooms` reports mailbox counters: enabled, enqueued, completed,
+  failed, fallback and closed.
+
+Still intentionally not done:
+
+- no per-room mailbox ownership yet;
+- no full `Room` state-machine rewrite;
+- no Web management API;
+- no migration of start/cancel/host/kick/close into mailbox yet.
+
+Next cut:
+
+1. Move one more command family, probably host transfer or close, through the
+   mailbox after `set_lock/set_cycle` pass Actions and manual room tests.
+2. Split the gateway worker into per-room mailboxes.
+3. Only after that, move selected state-machine transitions out of `room.rs`.

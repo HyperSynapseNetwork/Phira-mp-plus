@@ -1468,7 +1468,7 @@ impl CliHandler {
                 let room_commands = self.state.room_commands.stats();
                 self.out(format!("  {} simulation running: {}", c::dim("│"), sim.running));
                 self.out(format!("  {} persistence queue:  queued={} processed={} dropped={}", c::dim("│"), persistence.queued, persistence.processed, persistence.dropped));
-                self.out(format!("  {} room command gw:    routed={} ok={} failed={}", c::dim("│"), room_commands.routed, room_commands.succeeded, room_commands.failed));
+                self.out(format!("  {} room command gw:    routed={} ok={} failed={} mailbox={}", c::dim("│"), room_commands.routed, room_commands.succeeded, room_commands.failed, room_commands.mailbox_enabled));
                 self.out(format!("  {} actor blueprint:    {} boundaries", c::dim("│"), actors.boundaries.len()));
                 self.out(format!("  {} web management API: {}", c::dim("│"), actors.web_management_api));
                 self.out(format!("  {} 现有 Room/Session/DB 主逻辑仍未迁移到 Runtime v2；Actor 模型是最终迁移目标", c::dim("▸")));
@@ -1508,8 +1508,11 @@ impl CliHandler {
                 self.out(format!("  {} routed:    {}", c::dim("│"), stats.routed));
                 self.out(format!("  {} succeeded: {}", c::dim("│"), stats.succeeded));
                 self.out(format!("  {} failed:    {}", c::dim("│"), stats.failed));
+                self.out(format!("  {} mailbox:   enabled={} enqueued={} completed={} failed={} fallback={} closed={}",
+                    c::dim("│"), stats.mailbox_enabled, stats.mailbox_enqueued, stats.mailbox_completed,
+                    stats.mailbox_failed, stats.mailbox_fallback, stats.mailbox_closed));
                 self.out(format!("  {} note:      {}", c::dim("│"), stats.note));
-                self.out(format!("  {} 当前 CLI/admin/StateQuery 的部分房间写命令已统一走该 Gateway；下一步才替换为 per-room mailbox actor", c::dim("▸")));
+                self.out(format!("  {} set_lock/set_cycle 已先穿过 mailbox-backed gateway；其余房间写命令仍走 inline facade", c::dim("▸")));
             }
             "actors" | "actor" | "actor-model" => {
                 let stats = self.state.actor_runtime.stats().await;
@@ -1518,7 +1521,7 @@ impl CliHandler {
                 self.out(format!("  {} web management API: {}", c::dim("│"), stats.web_management_api));
                 self.out(format!("  {} rule:               {}", c::dim("│"), stats.rule));
                 let room_commands = self.state.room_commands.stats();
-                self.out(format!("  {} room gateway:       phase={} routed={} ok={} failed={}", c::dim("│"), room_commands.phase, room_commands.routed, room_commands.succeeded, room_commands.failed));
+                self.out(format!("  {} room gateway:       phase={} routed={} ok={} failed={} mailbox={}", c::dim("│"), room_commands.phase, room_commands.routed, room_commands.succeeded, room_commands.failed, room_commands.mailbox_enabled));
                 self.out(format!("  {} boundaries", c::cyan("▸")));
                 for boundary in stats.boundaries {
                     self.out(format!(

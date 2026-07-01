@@ -483,14 +483,6 @@ impl PlusServer {
         );
         let actor_runtime = Arc::new(crate::actor_runtime::ActorRuntime::new_blueprint());
         let room_commands = Arc::new(crate::room_actor::RoomCommandGateway::new());
-        actor_runtime
-            .mark_status(
-                "room-actor",
-                crate::actor_runtime::ActorBoundaryStatus::WriteRouted,
-                "admin/StateQuery room writes route through RoomCommandGateway; next step is mailbox-backed per-room actors",
-            )
-            .await;
-
         let events = Arc::new(SseHub::new());
         let state = Arc::new(PlusServerState {
             config,
@@ -525,6 +517,17 @@ impl PlusServer {
             game_monitors: SafeMap::default(),
             events,
         });
+        state
+            .room_commands
+            .start_mailbox(Arc::clone(&state), 1024);
+        state
+            .actor_runtime
+            .mark_status(
+                "room-actor",
+                crate::actor_runtime::ActorBoundaryStatus::WriteRouted,
+                "set_lock/set_cycle now cross a mailbox-backed gateway path; remaining room writes still use the inline gateway facade",
+            )
+            .await;
         let bench_state = Arc::clone(&state);
         tokio::spawn(async move {
             let mut bench_rx = bench_rx;

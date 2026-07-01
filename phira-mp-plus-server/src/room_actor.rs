@@ -7,8 +7,9 @@
 //!
 //! 1. route duplicate room write commands through this gateway;
 //! 2. add metrics, tests, and simulation coverage around the gateway;
-//! 3. replace the inline implementation with mailbox-backed per-room actors;
-//! 4. remove the old direct calls from `cli.rs`, `server.rs`, and `session.rs`.
+//! 3. route low-risk commands through a mailbox-backed path;
+//! 4. replace the remaining inline implementation with per-room actors;
+//! 5. remove the old direct calls from `cli.rs`, `server.rs`, and `session.rs`.
 
 use crate::plugin::PluginEvent;
 use crate::server::PlusServerState;
@@ -17,37 +18,152 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{
     sync::atomic::{AtomicU64, Ordering},
-    sync::Arc,
+    sync::{Arc, RwLock as StdRwLock},
 };
+use tokio::sync::{mpsc, oneshot};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RoomCommandGatewayStats {
     pub routed: u64,
     pub succeeded: u64,
     pub failed: u64,
+    pub mailbox_enabled: bool,
+    pub mailbox_enqueued: u64,
+    pub mailbox_completed: u64,
+    pub mailbox_failed: u64,
+    pub mailbox_fallback: u64,
+    pub mailbox_closed: u64,
     pub phase: String,
     pub note: String,
 }
 
-#[derive(Debug, Default)]
 pub struct RoomCommandGateway {
     routed: AtomicU64,
     succeeded: AtomicU64,
     failed: AtomicU64,
+    mailbox_tx: StdRwLock<Option<mpsc::Sender<RoomActorCommand>>>,
+    mailbox_enqueued: AtomicU64,
+    mailbox_completed: AtomicU64,
+    mailbox_failed: AtomicU64,
+    mailbox_fallback: AtomicU64,
+    mailbox_closed: AtomicU64,
+}
+
+enum RoomActorCommand {
+    SetLock {
+        room_id: String,
+        locked: bool,
+        reply: oneshot::Sender<Result<Value, String>>,
+    },
+    SetCycle {
+        room_id: String,
+        cycle: bool,
+        reply: oneshot::Sender<Result<Value, String>>,
+    },
 }
 
 impl RoomCommandGateway {
     pub fn new() -> Self {
-        Self::default()
+        Self {
+            routed: AtomicU64::new(0),
+            succeeded: AtomicU64::new(0),
+            failed: AtomicU64::new(0),
+            mailbox_tx: StdRwLock::new(None),
+            mailbox_enqueued: AtomicU64::new(0),
+            mailbox_completed: AtomicU64::new(0),
+            mailbox_failed: AtomicU64::new(0),
+            mailbox_fallback: AtomicU64::new(0),
+            mailbox_closed: AtomicU64::new(0),
+        }
+    }
+
+    /// Start the first mailbox-backed path for low-risk room commands.
+    ///
+    /// Runtime v2 Step 14 intentionally keeps this as a gateway-level worker,
+    /// not yet a true per-room actor.  The important migration property is that
+    /// selected writes now cross an async command boundary before touching the
+    /// existing `Room` state machine.  Once this proves stable, the worker can
+    /// be split into per-room mailboxes without changing CLI/admin callers.
+    pub fn start_mailbox(self: &Arc<Self>, state: Arc<PlusServerState>, capacity: usize) {
+        let (tx, mut rx) = mpsc::channel::<RoomActorCommand>(capacity.max(1));
+        if let Ok(mut guard) = self.mailbox_tx.write() {
+            *guard = Some(tx);
+        } else {
+            self.mailbox_closed.fetch_add(1, Ordering::Relaxed);
+            return;
+        }
+
+        let gateway = Arc::clone(self);
+        let state = Arc::downgrade(&state);
+        tokio::spawn(async move {
+            while let Some(command) = rx.recv().await {
+                let Some(state) = state.upgrade() else {
+                    gateway.mailbox_closed.fetch_add(1, Ordering::Relaxed);
+                    match command {
+                        RoomActorCommand::SetLock { reply, .. } => {
+                            let result = Err("server state dropped before room command could run".to_string());
+                            gateway.observe_mailbox_result(&result);
+                            let _ = reply.send(result);
+                        }
+                        RoomActorCommand::SetCycle { reply, .. } => {
+                            let result = Err("server state dropped before room command could run".to_string());
+                            gateway.observe_mailbox_result(&result);
+                            let _ = reply.send(result);
+                        }
+                    }
+                    continue;
+                };
+
+                match command {
+                    RoomActorCommand::SetLock { room_id, locked, reply } => {
+                        let result = gateway.set_lock_inline(&state, &room_id, locked).await;
+                        gateway.observe_mailbox_result(&result);
+                        let _ = reply.send(result);
+                    }
+                    RoomActorCommand::SetCycle { room_id, cycle, reply } => {
+                        let result = gateway.set_cycle_inline(&state, &room_id, cycle).await;
+                        gateway.observe_mailbox_result(&result);
+                        let _ = reply.send(result);
+                    }
+                }
+            }
+            gateway.mailbox_closed.fetch_add(1, Ordering::Relaxed);
+        });
+    }
+
+    fn mailbox_sender(&self) -> Option<mpsc::Sender<RoomActorCommand>> {
+        self.mailbox_tx.read().ok().and_then(|guard| guard.clone())
+    }
+
+    fn mailbox_enabled(&self) -> bool {
+        self.mailbox_sender().is_some()
+    }
+
+    fn observe_mailbox_result<T>(&self, result: &Result<T, String>) {
+        match result {
+            Ok(_) => {
+                self.mailbox_completed.fetch_add(1, Ordering::Relaxed);
+            }
+            Err(_) => {
+                self.mailbox_failed.fetch_add(1, Ordering::Relaxed);
+            }
+        }
     }
 
     pub fn stats(&self) -> RoomCommandGatewayStats {
+        let mailbox_enabled = self.mailbox_enabled();
         RoomCommandGatewayStats {
             routed: self.routed.load(Ordering::Relaxed),
             succeeded: self.succeeded.load(Ordering::Relaxed),
             failed: self.failed.load(Ordering::Relaxed),
-            phase: "inline_facade".to_string(),
-            note: "CLI/admin room writes are routed through one gateway; per-room mailbox actors are not enabled yet".to_string(),
+            mailbox_enabled,
+            mailbox_enqueued: self.mailbox_enqueued.load(Ordering::Relaxed),
+            mailbox_completed: self.mailbox_completed.load(Ordering::Relaxed),
+            mailbox_failed: self.mailbox_failed.load(Ordering::Relaxed),
+            mailbox_fallback: self.mailbox_fallback.load(Ordering::Relaxed),
+            mailbox_closed: self.mailbox_closed.load(Ordering::Relaxed),
+            phase: if mailbox_enabled { "mailbox_partial" } else { "inline_facade" }.to_string(),
+            note: "set_lock/set_cycle now cross a mailbox-backed command boundary; remaining room writes still use the inline gateway facade".to_string(),
         }
     }
 
@@ -273,27 +389,61 @@ impl RoomCommandGateway {
         room_id: &str,
         locked: bool,
     ) -> Result<Value, String> {
-        let result = async {
-            let (_rid, room) = self.find_room(state, room_id).await?;
-            room.locked.store(locked, Ordering::SeqCst);
-            room.send(Message::LockRoom { lock: locked }).await;
-            room.publish_update(PartialRoomData {
-                lock: Some(locked),
-                ..Default::default()
+        let result = if let Some(tx) = self.mailbox_sender() {
+            let (reply, rx) = oneshot::channel();
+            self.mailbox_enqueued.fetch_add(1, Ordering::Relaxed);
+            match tx
+                .send(RoomActorCommand::SetLock {
+                    room_id: room_id.to_string(),
+                    locked,
+                    reply,
+                })
+                .await
+            {
+                Ok(()) => match rx.await {
+                    Ok(result) => result,
+                    Err(_) => {
+                        self.mailbox_closed.fetch_add(1, Ordering::Relaxed);
+                        self.mailbox_fallback.fetch_add(1, Ordering::Relaxed);
+                        self.set_lock_inline(state, room_id, locked).await
+                    }
+                },
+                Err(_) => {
+                    self.mailbox_closed.fetch_add(1, Ordering::Relaxed);
+                    self.mailbox_fallback.fetch_add(1, Ordering::Relaxed);
+                    self.set_lock_inline(state, room_id, locked).await
+                }
+            }
+        } else {
+            self.mailbox_fallback.fetch_add(1, Ordering::Relaxed);
+            self.set_lock_inline(state, room_id, locked).await
+        };
+        self.observe(result)
+    }
+
+    async fn set_lock_inline(
+        &self,
+        state: &PlusServerState,
+        room_id: &str,
+        locked: bool,
+    ) -> Result<Value, String> {
+        let (_rid, room) = self.find_room(state, room_id).await?;
+        room.locked.store(locked, Ordering::SeqCst);
+        room.send(Message::LockRoom { lock: locked }).await;
+        room.publish_update(PartialRoomData {
+            lock: Some(locked),
+            ..Default::default()
+        })
+        .await;
+        state
+            .plugin_manager
+            .trigger(&PluginEvent::RoomModify {
+                user_id: 0,
+                room_id: room_id.to_string(),
+                data: serde_json::json!({"action":"lock","value":locked}).to_string(),
             })
             .await;
-            state
-                .plugin_manager
-                .trigger(&PluginEvent::RoomModify {
-                    user_id: 0,
-                    room_id: room_id.to_string(),
-                    data: serde_json::json!({"action":"lock","value":locked}).to_string(),
-                })
-                .await;
-            Ok(serde_json::json!({"ok": true, "room_id": room_id, "locked": locked}))
-        }
-        .await;
-        self.observe(result)
+        Ok(serde_json::json!({"ok": true, "room_id": room_id, "locked": locked}))
     }
 
     pub async fn set_cycle(
@@ -302,26 +452,60 @@ impl RoomCommandGateway {
         room_id: &str,
         cycle: bool,
     ) -> Result<Value, String> {
-        let result = async {
-            let (_rid, room) = self.find_room(state, room_id).await?;
-            room.cycle.store(cycle, Ordering::SeqCst);
-            room.send(Message::CycleRoom { cycle }).await;
-            room.publish_update(PartialRoomData {
-                cycle: Some(cycle),
-                ..Default::default()
+        let result = if let Some(tx) = self.mailbox_sender() {
+            let (reply, rx) = oneshot::channel();
+            self.mailbox_enqueued.fetch_add(1, Ordering::Relaxed);
+            match tx
+                .send(RoomActorCommand::SetCycle {
+                    room_id: room_id.to_string(),
+                    cycle,
+                    reply,
+                })
+                .await
+            {
+                Ok(()) => match rx.await {
+                    Ok(result) => result,
+                    Err(_) => {
+                        self.mailbox_closed.fetch_add(1, Ordering::Relaxed);
+                        self.mailbox_fallback.fetch_add(1, Ordering::Relaxed);
+                        self.set_cycle_inline(state, room_id, cycle).await
+                    }
+                },
+                Err(_) => {
+                    self.mailbox_closed.fetch_add(1, Ordering::Relaxed);
+                    self.mailbox_fallback.fetch_add(1, Ordering::Relaxed);
+                    self.set_cycle_inline(state, room_id, cycle).await
+                }
+            }
+        } else {
+            self.mailbox_fallback.fetch_add(1, Ordering::Relaxed);
+            self.set_cycle_inline(state, room_id, cycle).await
+        };
+        self.observe(result)
+    }
+
+    async fn set_cycle_inline(
+        &self,
+        state: &PlusServerState,
+        room_id: &str,
+        cycle: bool,
+    ) -> Result<Value, String> {
+        let (_rid, room) = self.find_room(state, room_id).await?;
+        room.cycle.store(cycle, Ordering::SeqCst);
+        room.send(Message::CycleRoom { cycle }).await;
+        room.publish_update(PartialRoomData {
+            cycle: Some(cycle),
+            ..Default::default()
+        })
+        .await;
+        state
+            .plugin_manager
+            .trigger(&PluginEvent::RoomModify {
+                user_id: 0,
+                room_id: room_id.to_string(),
+                data: serde_json::json!({"action":"cycle","value":cycle}).to_string(),
             })
             .await;
-            state
-                .plugin_manager
-                .trigger(&PluginEvent::RoomModify {
-                    user_id: 0,
-                    room_id: room_id.to_string(),
-                    data: serde_json::json!({"action":"cycle","value":cycle}).to_string(),
-                })
-                .await;
-            Ok(serde_json::json!({"ok": true, "room_id": room_id, "cycle": cycle}))
-        }
-        .await;
-        self.observe(result)
+        Ok(serde_json::json!({"ok": true, "room_id": room_id, "cycle": cycle}))
     }
 }

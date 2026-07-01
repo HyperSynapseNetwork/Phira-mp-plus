@@ -308,3 +308,21 @@ Step 13 starts the first production-facing Actor migration seam by adding a
 This step is intentionally more than documentation: it removes duplicate room
 write logic from the large command surfaces and creates the seam that a future
 per-room mailbox actor can implement without changing CLI/WIT/admin semantics.
+
+## Step 14 implementation status
+
+Step 14 begins the Room Actor migration with the first mailbox-backed production
+write path:
+
+- `RoomCommandGateway` now owns a bounded async mailbox.
+- `set_lock` and `set_cycle` cross that mailbox before touching the existing
+  `Room` state machine.
+- The old inline implementation is retained as a fallback if the mailbox is not
+  available, which keeps this step reversible during testing.
+- `runtime rooms`, `runtime actors` and `/api/runtime` expose mailbox counters.
+- This is still not a full per-room actor. Room state ownership remains in the
+  existing `Room` type while the command boundary is being proven.
+
+This step is the first production-facing actor-shaped write path. It is designed
+specifically to reduce future growth in `server.rs`, `cli.rs` and `room.rs`
+without rewriting the whole room lifecycle in one patch.
