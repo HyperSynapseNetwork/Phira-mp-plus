@@ -29,6 +29,7 @@ use std::time::Duration;
 use tokio::sync::mpsc;
 use tokio::sync::mpsc::error::TryRecvError;
 use unicode_width::UnicodeWidthChar;
+use std::collections::HashMap;
 
 const MAX_LOGICAL_LINES: usize = 10_000;
 const RETAIN_LOGICAL_LINES: usize = 8_000;
@@ -175,6 +176,8 @@ struct TuiApp {
     last_page_height: usize,
     colors: bool,
     plain_ui: bool,
+    dirty: bool,
+    cached_stats: String,
 }
 
 fn completion_prefix(before_cursor: &str) -> &str {
@@ -200,6 +203,8 @@ impl TuiApp {
             last_page_height: 20,
             colors,
             plain_ui,
+            dirty: true,
+            cached_stats: String::new(),
         }
     }
 
@@ -238,20 +243,32 @@ impl TuiApp {
                     Event::Key(key)
                         if matches!(key.kind, KeyEventKind::Press | KeyEventKind::Repeat) =>
                     {
-                        self.handle_key(key)
+                        self.handle_key(key);
+                        self.dirty = true;
                     }
-                    Event::Paste(text) => self.insert_text(&sanitize_paste(&text)),
+                    Event::Paste(text) => {
+                        self.insert_text(&sanitize_paste(&text));
+                        self.dirty = true;
+                    }
                     Event::Mouse(mouse) => match mouse.kind {
-                        MouseEventKind::ScrollUp => self.scroll_up(3),
-                        MouseEventKind::ScrollDown => self.scroll_down(3),
+                        MouseEventKind::ScrollUp => {
+                            self.scroll_up(3);
+                            self.dirty = true;
+                        }
+                        MouseEventKind::ScrollDown => {
+                            self.scroll_down(3);
+                            self.dirty = true;
+                        }
                         _ => {}
                     },
-                    Event::Resize(_, _) => {}
+                    Event::Resize(_, _) => {
+                        self.dirty = true;
+                    }
                     _ => {}
                 }
             }
 
-            if self.running {
+            if self.running && self.dirty {
                 if self.plain_ui {
                     // Conservative terminals and old GNU screen sessions are the
                     // places where wide CJK glyphs and diff-based redraws most
@@ -261,12 +278,20 @@ impl TuiApp {
                     terminal.clear()?;
                 }
                 terminal.draw(|frame| self.render(frame))?;
+                self.dirty = false;
             }
         }
         Ok(())
     }
 
     fn add_output(&mut self, msg: String) {
+        // Parse 📊 stats lines: cache for panels, don't show in output
+        if msg.starts_with('📊') {
+            self.cached_stats = msg;
+            self.dirty = true;
+            return;
+        }
+
         let lines: Vec<String> = if msg.is_empty() {
             vec![String::new()]
         } else {
@@ -293,6 +318,8 @@ impl TuiApp {
             self.output_lines.drain(..remove);
             self.scroll_from_bottom = self.scroll_from_bottom.saturating_sub(removed_rows);
         }
+
+        self.dirty = true;
     }
 
     fn handle_key(&mut self, key: KeyEvent) {
@@ -546,29 +573,106 @@ impl TuiApp {
             return;
         }
 
+        // Overall vertical layout
         let chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
-                Constraint::Length(1),
-                Constraint::Min(1),
-                Constraint::Length(3),
-                Constraint::Length(1),
+                Constraint::Length(1), // Header
+                Constraint::Length(6), // Top panels (Rooms | Users)
+                Constraint::Min(1),    // Output / Log area
+                Constraint::Length(3), // Command input area
+                Constraint::Length(1), // Status bar
             ])
             .split(area);
 
-        let header = Line::from(vec![
-            Span::styled("◆ Phira-mp+", self.accent_style()),
-            Span::raw("  "),
-            Span::styled("help", self.muted_style()),
-            Span::raw(" / "),
-            Span::styled("status", self.muted_style()),
-            Span::raw(" / "),
-            Span::styled("benchmark", self.muted_style()),
-        ]);
+        // ── Header ──────────────────────────────────────────────────
+        let header_text = if self.cached_stats.is_empty() {
+            format!(
+                "◆ Phira-mp+ v{}  —  等待统计数据...",
+                env!("CARGO_PKG_VERSION")
+            )
+        } else {
+            let stats_display = self.cached_stats.trim_start_matches('📊').trim();
+            format!(
+                "◆ Phira-mp+ v{}  {}",
+                env!("CARGO_PKG_VERSION"),
+                stats_display
+            )
+        };
         frame.render_widget(Clear, chunks[0]);
-        frame.render_widget(Paragraph::new(header), chunks[0]);
+        frame.render_widget(
+            Paragraph::new(Span::styled(header_text, self.accent_style())),
+            chunks[0],
+        );
 
-        let output_area = chunks[1];
+        // ── Top panels (Rooms | Users) ──────────────────────────────
+        let panel_area = chunks[1];
+        let panel_chunks = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Percentage(40), Constraint::Percentage(60)])
+            .split(panel_area);
+
+        let stats = parse_stats(&self.cached_stats);
+
+        // Left panel: Rooms
+        let room_count = stats
+            .get("rooms")
+            .map(|s| s.as_str())
+            .unwrap_or("?");
+        let session_count = stats
+            .get("sessions")
+            .map(|s| s.as_str())
+            .unwrap_or("?");
+        let sim_state = stats
+            .get("sim")
+            .map(|s| s.as_str())
+            .unwrap_or("?");
+        let left_lines = vec![
+            format!("rooms:     {}", room_count),
+            format!("sessions:  {}", session_count),
+            format!("sim:       {}", sim_state),
+        ];
+        let left_content = left_lines.join("\n");
+
+        frame.render_widget(Clear, panel_chunks[0]);
+        frame.render_widget(
+            Block::default()
+                .title(" Rooms ")
+                .borders(Borders::ALL)
+                .border_style(self.border_style()),
+            panel_chunks[0],
+        );
+        let left_inner = inner_rect(panel_chunks[0]);
+        frame.render_widget(Paragraph::new(left_content), left_inner);
+
+        // Right panel: Users
+        let user_count = stats
+            .get("users")
+            .map(|s| s.as_str())
+            .unwrap_or("?");
+        let plugin_count = stats
+            .get("plugins")
+            .map(|s| s.as_str())
+            .unwrap_or("?");
+        let right_lines = vec![
+            format!("users:    {}", user_count),
+            format!("plugins:  {}", plugin_count),
+        ];
+        let right_content = right_lines.join("\n");
+
+        frame.render_widget(Clear, panel_chunks[1]);
+        frame.render_widget(
+            Block::default()
+                .title(" Users ")
+                .borders(Borders::ALL)
+                .border_style(self.border_style()),
+            panel_chunks[1],
+        );
+        let right_inner = inner_rect(panel_chunks[1]);
+        frame.render_widget(Paragraph::new(right_content), right_inner);
+
+        // ── Output / Log area ───────────────────────────────────────
+        let output_area = chunks[2];
         let output_inner = inner_rect(output_area);
         let output_height = output_inner.height as usize;
         let output_width = output_inner.width.saturating_sub(1).max(1) as usize;
@@ -617,7 +721,8 @@ impl TuiApp {
             );
         }
 
-        let input_area = chunks[2];
+        // ── Input area ──────────────────────────────────────────────
+        let input_area = chunks[3];
         let input_inner = inner_rect(input_area);
         let input_width = input_inner.width.saturating_sub(2) as usize;
         let (input_visible, cursor_col) = input_window(&self.input, self.cursor_pos, input_width);
@@ -643,6 +748,7 @@ impl TuiApp {
             input_inner.y,
         ));
 
+        // ── Status bar ──────────────────────────────────────────────
         let scroll_info = if self.scroll_from_bottom == 0 {
             format!("{}行", visual_rows.len())
         } else {
@@ -652,10 +758,10 @@ impl TuiApp {
             " {}  |  Tab补全  ↑↓历史  PgUp/PgDn  ^C退出",
             scroll_info,
         );
-        frame.render_widget(Clear, chunks[3]);
+        frame.render_widget(Clear, chunks[4]);
         frame.render_widget(
             Paragraph::new(Span::styled(status, self.muted_style())),
-            chunks[3],
+            chunks[4],
         );
     }
 
@@ -752,6 +858,18 @@ impl TuiApp {
             Style::default()
         }
     }
+}
+
+fn parse_stats(line: &str) -> HashMap<String, String> {
+    let mut map = HashMap::new();
+    if let Some(stats) = line.strip_prefix('📊') {
+        for part in stats.split_whitespace() {
+            if let Some((key, value)) = part.split_once('=') {
+                map.insert(key.to_string(), value.to_string());
+            }
+        }
+    }
+    map
 }
 
 fn inner_rect(area: Rect) -> Rect {
