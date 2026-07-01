@@ -170,6 +170,7 @@ fn publish_simulation_tick_event(state: &PlusServerState, status: &crate::simula
             "ticks": status.counters.ticks,
             "elapsed_secs": status.elapsed_secs,
             "remaining_secs": status.remaining_secs,
+            "scenario": status.config.scenario.as_str(),
             "chat_messages": status.counters.chat_messages,
             "ready_events": status.counters.ready_events,
             "touch_batches": status.counters.touch_batches,
@@ -843,7 +844,7 @@ impl CliHandler {
                             c::dim("│"), status.counters.ticks, status.counters.chat_messages,
                             status.counters.ready_events, status.counters.touch_batches,
                             status.counters.judge_batches, status.counters.round_results));
-                        self.out(format!("  {} generated_events={} kinds=simulation.chat/ready/touch/judge/round", c::dim("│"), events.len()));
+                        self.out(format!("  {} scenario={} generated_events={} kinds=simulation.chat/ready/touch/judge/round", c::dim("│"), status.config.scenario.as_str(), events.len()));
                     }
                     Err(err) => self.out(format!("  {} {}", c::red("✗"), err)),
                 }
@@ -851,6 +852,13 @@ impl CliHandler {
             "inspect" | "world" | "rooms" | "users" => {
                 let limit = args.get(1).and_then(|value| value.parse::<usize>().ok()).unwrap_or(10);
                 self.print_simulation_world(limit).await;
+            }
+            "scenarios" | "profiles" | "scenario" | "profile" => {
+                self.out(format!("  {} Simulation scenarios", c::green("◆")));
+                for scenario in crate::simulation::SimulationScenario::all() {
+                    self.out(format!("  {} {:<18} {}", c::dim("│"), scenario.as_str(), scenario.description()));
+                }
+                self.out(format!("  {} 用法：simulation run baseline scenario=chat_storm", c::dim("▸")));
             }
             "seed" => {
                 if args.len() < 2 {
@@ -885,7 +893,7 @@ impl CliHandler {
             }
             _ => {
                 self.out(format!("  {} 未知 simulation 子命令: {}", c::red("✗"), c::yellow(sub)));
-                self.out(format!("  {} 可用: simulation status | run <preset> | tick [n] | inspect [limit] | persist | stop | seed <u64> | cleanup | sample", c::dim("▸")));
+                self.out(format!("  {} 可用: simulation status | run <preset> | scenarios | tick [n] | inspect [limit] | persist | stop | seed <u64> | cleanup | sample", c::dim("▸")));
             }
         }
     }
@@ -900,7 +908,7 @@ impl CliHandler {
         let option_start = if args.first().and_then(|value| crate::simulation::SimulationPreset::parse(value)).is_some() { 1 } else { 0 };
         for token in &args[option_start..] {
             let Some((key, value)) = token.split_once('=') else {
-                self.out(format!("  {} 无效参数：{}；请使用 users=500 rooms=50 duration=300 tick_ms=1000 auto=true persist_every=0", c::red("✗"), token));
+                self.out(format!("  {} 无效参数：{}；请使用 users=500 rooms=50 duration=300 scenario=chat_storm tick_ms=1000 auto=true persist_every=0", c::red("✗"), token));
                 return;
             };
             if let Err(err) = config.apply_kv(key, value) {
@@ -916,8 +924,8 @@ impl CliHandler {
                 }
                 self.broadcast_all("服务器正在进行性能测试，期间可能出现短暂卡顿。Runtime v2 当前为安全骨架模式，不会创建真实房间。").await;
                 self.out(format!("  {} simulation 已启动: {:?}", c::green("✓"), status.run_id));
-                self.out(format!("  {} preset={:?} users={} rooms={} duration={}s touch={} judge={} chat={} ready={} rounds={}",
-                    c::dim("│"), status.config.preset, status.config.users, status.config.rooms,
+                self.out(format!("  {} preset={:?} scenario={} users={} rooms={} duration={}s touch={} judge={} chat={} ready={} rounds={}",
+                    c::dim("│"), status.config.preset, status.config.scenario.as_str(), status.config.users, status.config.rooms,
                     status.config.duration_secs, status.config.touch, status.config.judge,
                     status.config.chat, status.config.ready, status.config.rounds));
                 self.out(format!("  {} runner: auto={} tick_ms={} persist_every={}",
@@ -959,6 +967,7 @@ impl CliHandler {
         self.out(format!("  {} run_id:         {}", c::dim("│"), status.run_id.as_ref().map(|id| id.to_string()).unwrap_or_else(|| "-".to_string())));
         self.out(format!("  {} seed:           {}", c::dim("│"), status.seed));
         self.out(format!("  {} preset:         {:?}", c::dim("│"), status.config.preset));
+        self.out(format!("  {} scenario:       {} - {}", c::dim("│"), status.config.scenario.as_str(), status.config.scenario.description()));
         self.out(format!("  {} target:         {} users / {} rooms / {}s", c::dim("│"), status.config.users, status.config.rooms, status.config.duration_secs));
         self.out(format!("  {} elapsed/remain: {}/{}s", c::dim("│"), status.elapsed_secs, status.remaining_secs.map(|v| v.to_string()).unwrap_or_else(|| "-".to_string())));
         self.out(format!("  {} runner:         auto={} tick_ms={} persist_every={}", c::dim("│"), status.runner_enabled, status.config.tick_interval_ms, status.config.persist_every_ticks));

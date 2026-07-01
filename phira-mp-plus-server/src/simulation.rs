@@ -35,6 +35,72 @@ pub enum SimulationPreset {
     Custom,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SimulationScenario {
+    Balanced,
+    ChatStorm,
+    ReadyStorm,
+    RoundStorm,
+    TouchJudgeBurst,
+    Idle,
+}
+
+impl SimulationScenario {
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().replace('-', "_").as_str() {
+            "balanced" | "balance" | "default" | "normal" | "mixed" => Some(Self::Balanced),
+            "chat" | "chat_storm" | "chatstorm" => Some(Self::ChatStorm),
+            "ready" | "ready_storm" | "readystorm" => Some(Self::ReadyStorm),
+            "round" | "rounds" | "round_storm" | "roundstorm" => Some(Self::RoundStorm),
+            "touch" | "judge" | "touch_judge" | "touch_judge_burst" | "touchjudgeburst" | "burst" => {
+                Some(Self::TouchJudgeBurst)
+            }
+            "idle" | "noop" | "quiet" => Some(Self::Idle),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Balanced => "balanced",
+            Self::ChatStorm => "chat_storm",
+            Self::ReadyStorm => "ready_storm",
+            Self::RoundStorm => "round_storm",
+            Self::TouchJudgeBurst => "touch_judge_burst",
+            Self::Idle => "idle",
+        }
+    }
+
+    pub fn description(self) -> &'static str {
+        match self {
+            Self::Balanced => "mixed chat/ready/round/touch/judge load",
+            Self::ChatStorm => "chat-heavy workload with smaller gameplay pressure",
+            Self::ReadyStorm => "ready/cancel-ready toggle storm",
+            Self::RoundStorm => "frequent room state and round completion pressure",
+            Self::TouchJudgeBurst => "touch/judge batch-heavy pressure path",
+            Self::Idle => "shadow world stays running with almost no workload",
+        }
+    }
+
+    pub fn all() -> &'static [Self] {
+        &[
+            Self::Balanced,
+            Self::ChatStorm,
+            Self::ReadyStorm,
+            Self::RoundStorm,
+            Self::TouchJudgeBurst,
+            Self::Idle,
+        ]
+    }
+}
+
+impl Default for SimulationScenario {
+    fn default() -> Self {
+        Self::Balanced
+    }
+}
+
 impl SimulationPreset {
     pub fn parse(value: &str) -> Option<Self> {
         match value.trim().to_ascii_lowercase().as_str() {
@@ -73,6 +139,7 @@ impl SimulationPreset {
             touch: true,
             judge: true,
             seed,
+            scenario: SimulationScenario::Balanced,
             chat: true,
             ready: true,
             rounds: true,
@@ -98,6 +165,7 @@ pub struct SimulationConfig {
     pub touch: bool,
     pub judge: bool,
     pub seed: u64,
+    pub scenario: SimulationScenario,
     pub chat: bool,
     pub ready: bool,
     pub rounds: bool,
@@ -137,6 +205,10 @@ impl SimulationConfig {
                     .map_err(|_| "persist_every must be u64 ticks; 0 disables periodic snapshot".to_string())?;
             }
             "seed" => self.seed = value.parse::<u64>().map_err(|_| "seed must be u64".to_string())?,
+            "scenario" | "profile" | "mode" | "workload" => {
+                self.scenario = SimulationScenario::parse(value)
+                    .ok_or_else(|| format!("unknown simulation scenario: {value}"))?;
+            }
             other => return Err(format!("unknown simulation option: {other}")),
         }
         self.preset = SimulationPreset::Custom;
@@ -359,8 +431,9 @@ impl SimulationManager {
             &mut world,
             "started",
             format!(
-                "shadow world started: preset={} users={} rooms={} seed={}",
+                "shadow world started: preset={} scenario={} users={} rooms={} seed={}",
                 config.preset.as_str(),
+                config.scenario.as_str(),
                 config.users,
                 config.rooms,
                 config.seed
@@ -375,8 +448,9 @@ impl SimulationManager {
         state.started_at_ms = Some(started_at_ms);
         state.last_tick_at_ms = Some(started_at_ms);
         state.note = format!(
-            "simulation {} started with isolated shadow world; real rooms/users are untouched",
-            config.preset.as_str()
+            "simulation {} scenario={} started with isolated shadow world; real rooms/users are untouched",
+            config.preset.as_str(),
+            config.scenario.as_str()
         );
         state.config = config;
         state.world = Some(world);
@@ -552,6 +626,35 @@ impl Default for SimulationManager {
     }
 }
 
+#[derive(Debug, Clone, Copy)]
+struct WorkloadDeltas {
+    chat_messages: u64,
+    ready_events: u64,
+    touch_batches: u64,
+    judge_batches: u64,
+    round_results: u64,
+}
+
+fn workload_deltas(config: &SimulationConfig) -> WorkloadDeltas {
+    let users = config.users.max(1) as u64;
+    let rooms = config.rooms.max(1) as u64;
+    let (chat_base, ready_base, touch_base, judge_base, round_base) = match config.scenario {
+        SimulationScenario::Balanced => ((users / 10).max(1), users, rooms, rooms, rooms),
+        SimulationScenario::ChatStorm => ((users / 2).max(1), (users / 10).max(1), (rooms / 4).max(1), (rooms / 4).max(1), (rooms / 5).max(1)),
+        SimulationScenario::ReadyStorm => ((users / 20).max(1), users.saturating_mul(3), 0, 0, (rooms / 10).max(1)),
+        SimulationScenario::RoundStorm => ((users / 20).max(1), users, rooms, rooms, rooms.saturating_mul(3)),
+        SimulationScenario::TouchJudgeBurst => ((users / 50).max(1), (users / 5).max(1), rooms.saturating_mul(5), rooms.saturating_mul(5), rooms),
+        SimulationScenario::Idle => (0, 0, 0, 0, 0),
+    };
+    WorkloadDeltas {
+        chat_messages: if config.chat { chat_base } else { 0 },
+        ready_events: if config.ready { ready_base } else { 0 },
+        touch_batches: if config.touch { touch_base } else { 0 },
+        judge_batches: if config.judge { judge_base } else { 0 },
+        round_results: if config.rounds { round_base } else { 0 },
+    }
+}
+
 fn advance_state(state: &mut SimulationState, count: u64) -> Vec<SimulationGeneratedEvent> {
     let count = count.clamp(1, 10_000);
     let mut generated = Vec::new();
@@ -560,15 +663,12 @@ fn advance_state(state: &mut SimulationState, count: u64) -> Vec<SimulationGener
         let config = state.config.clone();
         let run_id = state.run_id;
 
-        let chat_delta = if config.chat {
-            (config.users.max(1) / 10).max(1) as u64
-        } else {
-            0
-        };
-        let ready_delta = if config.ready { config.users.max(1) as u64 } else { 0 };
-        let touch_delta = if config.touch { config.rooms.max(1) as u64 } else { 0 };
-        let judge_delta = if config.judge { config.rooms.max(1) as u64 } else { 0 };
-        let round_delta = if config.rounds { config.rooms.max(1) as u64 } else { 0 };
+        let deltas = workload_deltas(&config);
+        let chat_delta = deltas.chat_messages;
+        let ready_delta = deltas.ready_events;
+        let touch_delta = deltas.touch_batches;
+        let judge_delta = deltas.judge_batches;
+        let round_delta = deltas.round_results;
 
         state.counters.ticks = tick;
         state.counters.chat_messages += chat_delta;
@@ -619,6 +719,7 @@ fn generated_events_for_tick(
             run_id,
             tick,
             json!({
+                "scenario": config.scenario.as_str(),
                 "messages": chat_delta,
                 "sample_user_id": world_tick.and_then(|tick| tick.sample_user_id),
                 "sample_room_id": world_tick.and_then(|tick| tick.sample_room_id.clone()),
@@ -631,6 +732,7 @@ fn generated_events_for_tick(
             run_id,
             tick,
             json!({
+                "scenario": config.scenario.as_str(),
                 "changed": ready_delta,
                 "ready_users_materialized": world_tick.map(|tick| tick.ready_users).unwrap_or(0),
             }),
@@ -642,6 +744,7 @@ fn generated_events_for_tick(
             run_id,
             tick,
             json!({
+                "scenario": config.scenario.as_str(),
                 "batches": touch_delta,
                 "sample_touches": SimulationManager::sample_touches(config.seed),
                 "sample_room_id": world_tick.and_then(|tick| tick.sample_room_id.clone()),
@@ -655,6 +758,7 @@ fn generated_events_for_tick(
             run_id,
             tick,
             json!({
+                "scenario": config.scenario.as_str(),
                 "batches": judge_delta,
                 "sample_judges": SimulationManager::sample_judges(config.seed),
                 "sample_room_id": world_tick.and_then(|tick| tick.sample_room_id.clone()),
@@ -668,6 +772,7 @@ fn generated_events_for_tick(
             run_id,
             tick,
             json!({
+                "scenario": config.scenario.as_str(),
                 "completed": round_delta,
                 "playing_rooms_materialized": world_tick.map(|tick| tick.playing_rooms).unwrap_or(0),
                 "sample_round_id": world_tick.and_then(|tick| tick.sample_round_id.clone()),
@@ -909,12 +1014,25 @@ mod tests {
         config.apply_kv("auto", "false").unwrap();
         config.apply_kv("tick_ms", "250").unwrap();
         config.apply_kv("persist_every", "5").unwrap();
+        config.apply_kv("scenario", "chat-storm").unwrap();
         assert_eq!(config.preset, SimulationPreset::Custom);
         assert_eq!(config.users, 123);
+        assert_eq!(config.scenario, SimulationScenario::ChatStorm);
         assert!(!config.touch);
         assert!(!config.auto_tick);
         assert_eq!(config.tick_interval_ms, 250);
         assert_eq!(config.persist_every_ticks, 5);
+    }
+
+    #[test]
+    fn scenario_changes_workload_shape() {
+        let mut chat = SimulationPreset::Baseline.defaults(1);
+        chat.scenario = SimulationScenario::ChatStorm;
+        let mut touch = SimulationPreset::Baseline.defaults(1);
+        touch.scenario = SimulationScenario::TouchJudgeBurst;
+        assert!(workload_deltas(&chat).chat_messages > workload_deltas(&SimulationPreset::Baseline.defaults(1)).chat_messages);
+        assert!(workload_deltas(&touch).touch_batches > workload_deltas(&SimulationPreset::Baseline.defaults(1)).touch_batches);
+        assert_eq!(SimulationScenario::parse("ready-storm"), Some(SimulationScenario::ReadyStorm));
     }
 
     #[test]

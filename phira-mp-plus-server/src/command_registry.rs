@@ -377,12 +377,15 @@ pub fn runtime_v2_registry() -> CommandRegistry {
             "simulation run",
             "simulation",
             "启动隔离 shadow world；默认自动 tick，到达 duration 后自动停止。",
-            "simulation run <baseline|small|medium|large|custom> [users=N] [rooms=N] [duration=N] [tick_ms=N] [auto=true] [persist_every=N] [touch=true] [judge=true]",
+            "simulation run <baseline|small|medium|large|custom> [scenario=balanced|chat_storm|ready_storm|round_storm|touch_judge_burst|idle] [users=N] [rooms=N] [duration=N] [tick_ms=N] [auto=true] [persist_every=N] [touch=true] [judge=true]",
         )
         .example("simulation run baseline")
-        .example("simulation run custom users=500 rooms=50 duration=300 tick_ms=1000 persist_every=30")
+        .example("simulation run custom users=500 rooms=50 duration=300 scenario=touch_judge_burst tick_ms=1000 persist_every=30")
         .example("simulation run small auto=false"),
-        CommandSpec::new("simulation tick", "simulation", "手动推进 deterministic shadow world tick，并发布聚合 simulation.chat/ready/touch/judge/round 事件。", "simulation tick [count]")
+        CommandSpec::new("simulation scenarios", "simulation", "列出可用 Simulation workload scenario/profile。", "simulation scenarios")
+            .aliases(["simulation profiles", "simulation scenario", "simulation profile"])
+            .example("simulation scenarios"),
+        CommandSpec::new("simulation tick", "simulation", "手动推进 deterministic shadow world tick，并按 scenario 发布聚合 simulation.chat/ready/touch/judge/round 事件。", "simulation tick [count]")
             .alias("simulation advance")
             .example("simulation tick 10"),
         CommandSpec::new("simulation inspect", "simulation", "查看 shadow users/rooms/rounds/recent events 样本。", "simulation inspect [limit]")

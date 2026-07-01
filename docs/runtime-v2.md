@@ -179,3 +179,34 @@ simulation inspect 20
 ```
 
 This gives Runtime v2 a safer high-frequency rehearsal path before touching real Room/Session hot paths.
+
+## Step 9 implementation status
+
+Step 9 adds Simulation workload scenarios/profiles on top of the Step 8 aggregate-event generator:
+
+- `SimulationConfig` now carries a `scenario` field.
+- Available scenarios are:
+  - `balanced`
+  - `chat_storm`
+  - `ready_storm`
+  - `round_storm`
+  - `touch_judge_burst`
+  - `idle`
+- `simulation scenarios` lists the available scenarios and their intended pressure shape.
+- `simulation run ... scenario=<name>` changes the deterministic per-tick aggregate workload without changing the requested preset size.
+- Generated `simulation.tick`, `simulation.chat`, `simulation.ready`, `simulation.touch`, `simulation.judge` and `simulation.round` payloads include the scenario name.
+- The scenario system still runs inside the isolated shadow world and still does not insert virtual users/rooms into production maps.
+
+Useful examples:
+
+```text
+simulation scenarios
+simulation run baseline scenario=chat_storm duration=30 tick_ms=500
+simulation run medium scenario=touch_judge_burst persist_every=10
+simulation run custom users=200 rooms=20 scenario=idle auto=false
+simulation tick 5
+runtime events
+runtime persistence
+```
+
+This gives Runtime v2 a repeatable way to test different pressure shapes before migrating any production Room/Session hot path into the new runtime services.
