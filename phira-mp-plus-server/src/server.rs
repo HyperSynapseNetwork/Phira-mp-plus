@@ -953,6 +953,17 @@ impl PlusServerState {
         self.event_bus.publish(event)
     }
 
+    pub fn publish_benchmark_completed(&self, report: &BenchmarkReport) -> usize {
+        self.publish_runtime_event(crate::event_bus::MpEvent::BenchmarkCompleted {
+            report: report.clone(),
+        })
+    }
+
+    fn append_benchmark_report(&self, out: &mut String, report: BenchmarkReport) {
+        out.push_str(&report.render_text());
+        self.publish_benchmark_completed(&report);
+    }
+
     /// Broadcast a system chat message to every currently connected normal user.
     ///
     /// This is intentionally small and side-effect-only. Runtime v2 background
@@ -1536,7 +1547,7 @@ impl PlusServerState {
             o!("  │");
             o!("  ✓ hybrid dry-run complete: no Phira request was sent");
             o!("  │ simulation remains the default pressure path; real Phira probes require explicit switches");
-            out.push_str(&report.render_text());
+            self.append_benchmark_report(&mut out, report);
             return out;
         }
         o!("  │ switches: {}", switches.join(", "));
@@ -1545,7 +1556,7 @@ impl PlusServerState {
         if let Err(err) = config.validate() {
             report.add_failure_sample("config", err.clone());
             o!("  ✗ invalid hybrid config: {err}");
-            out.push_str(&report.render_text());
+            self.append_benchmark_report(&mut out, report);
             return out;
         }
 
@@ -1648,7 +1659,7 @@ impl PlusServerState {
             "phira_http requests={} successes={} failures={} retry_attempts={} circuit_open={}",
             stats.requests, stats.successes, stats.failures, stats.retry_attempts, stats.circuit_open_rejections,
         ));
-        out.push_str(&report.render_text());
+        self.append_benchmark_report(&mut out, report);
         out
     }
 
@@ -1677,7 +1688,7 @@ impl PlusServerState {
                 .with_target_rooms(target_rooms);
             report.add_failure_sample("config", "no benchmark Phira tokens configured");
             report.add_note("real benchmark is explicit and requires local benchmark tokens; simulation remains the default pressure path");
-            out.push_str(&report.render_text());
+            self.append_benchmark_report(&mut out, report);
             return out;
         }
 
@@ -1728,6 +1739,15 @@ impl PlusServerState {
             for failure in failures.iter().take(8) {
                 o!("  │  - {failure}");
             }
+            let mut report = BenchmarkReport::new(BenchmarkMode::Real, "real TCP compatibility benchmark", duration_secs)
+                .with_target_rooms(target_rooms);
+            report.rooms_created = Some(0);
+            report.rooms_rebuilt = Some(rebuilt);
+            report.failed_operations = Some(failures.len() as u64);
+            for failure in failures.iter().take(8) {
+                report.add_failure_sample("real_network", failure.clone());
+            }
+            self.append_benchmark_report(&mut out, report);
             return out;
         }
 
@@ -1816,7 +1836,7 @@ impl PlusServerState {
         for failure in failures.iter().take(8) {
             report.add_failure_sample("real_network", failure.clone());
         }
-        out.push_str(&report.render_text());
+        self.append_benchmark_report(&mut out, report);
         out
     }
 

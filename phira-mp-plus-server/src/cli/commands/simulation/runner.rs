@@ -349,6 +349,7 @@ pub(super) fn spawn_simulation_suite_runner(
             report.workload_events_per_sec
         ));
         let benchmark_report = crate::benchmark_report::BenchmarkReport::from_simulation_suite(&report);
+        state.publish_benchmark_completed(&benchmark_report);
         for line in benchmark_report.render_text().lines() {
             let _ = out_tx.send(line.to_string());
         }

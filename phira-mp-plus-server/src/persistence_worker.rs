@@ -443,6 +443,11 @@ fn mirror_event_bus_event(event: &crate::event_bus::MpEvent) -> Option<Persisten
         ),
         // Avoid recursive noise once the worker later publishes successful writes.
         MpEvent::PersistenceWritten { .. } => None,
+        MpEvent::BenchmarkCompleted { report } => server_event(
+            event.kind(),
+            serde_json::to_value(report).unwrap_or_else(|err| json!({"serialize_error": err.to_string()})),
+            report.mode == crate::benchmark_report::BenchmarkMode::Simulation,
+        ),
         MpEvent::Custom { kind, payload } if kind.starts_with("simulation.") => {
             simulation_custom_event(kind, payload)
         }

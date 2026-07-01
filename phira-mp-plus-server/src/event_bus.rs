@@ -45,6 +45,7 @@ pub enum MpEvent {
     SimulationStarted { run_id: Uuid },
     SimulationStopped { run_id: Uuid, reason: String },
     PersistenceWritten { table: String, rows: usize },
+    BenchmarkCompleted { report: crate::benchmark_report::BenchmarkReport },
     Custom { kind: String, payload: Value },
 }
 
@@ -72,6 +73,7 @@ impl MpEvent {
             Self::SimulationStarted { .. } => "simulation.started",
             Self::SimulationStopped { .. } => "simulation.stopped",
             Self::PersistenceWritten { .. } => "persistence.written",
+            Self::BenchmarkCompleted { .. } => "benchmark.completed",
             Self::Custom { .. } => "custom",
         }
     }
@@ -99,6 +101,14 @@ impl MpEvent {
             Self::SimulationStarted { run_id } => format!("run_id={run_id}"),
             Self::SimulationStopped { run_id, reason } => format!("run_id={run_id} reason={reason}"),
             Self::PersistenceWritten { table, rows } => format!("table={table} rows={rows}"),
+            Self::BenchmarkCompleted { report } => format!(
+                "mode={} title={} failed_operations={} probes_failed={} probes_blocked={}",
+                report.mode.as_str(),
+                report.title.as_str(),
+                report.failed_operations.unwrap_or(0),
+                report.probes.failed,
+                report.probes.blocked,
+            ),
             Self::Custom { kind, .. } => format!("kind={kind}"),
         }
     }
@@ -244,4 +254,30 @@ fn now_ms() -> i64 {
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_millis() as i64)
         .unwrap_or(0)
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn benchmark_completed_has_stable_kind_and_summary() {
+        let mut report = crate::benchmark_report::BenchmarkReport::new(
+            crate::benchmark_report::BenchmarkMode::Hybrid,
+            "hybrid probe",
+            30,
+        );
+        report.failed_operations = Some(2);
+        report.probes.record_failure();
+        report.probes.record_blocked();
+
+        let event = MpEvent::BenchmarkCompleted { report };
+        assert_eq!(event.kind(), "benchmark.completed");
+        let summary = event.summary();
+        assert!(summary.contains("mode=hybrid"));
+        assert!(summary.contains("failed_operations=2"));
+        assert!(summary.contains("probes_failed=1"));
+        assert!(summary.contains("probes_blocked=1"));
+    }
 }
