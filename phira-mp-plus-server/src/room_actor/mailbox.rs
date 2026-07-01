@@ -120,7 +120,7 @@ impl RoomCommandGateway {
         state: &PlusServerState,
         command: RoomActorCommand,
     ) -> bool {
-        let mut stop_after = matches!(&command, RoomActorCommand::CloseRoom { .. });
+        let mut stop_after = command.kind().stops_room_mailbox_after_execution();
         let result = match &command {
             RoomActorCommand::SetLock { room_id, locked, .. } => RoomCommandResult::from_legacy(
                 self.set_lock_inline(state, room_id, *locked).await,

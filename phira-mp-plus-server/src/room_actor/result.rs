@@ -118,4 +118,22 @@ mod tests {
         assert_eq!(result.error_message().as_deref(), Some("room not found"));
         assert_eq!(result.into_legacy().unwrap_err(), "room not found");
     }
+    #[test]
+    fn delivery_names_are_stable_contract() {
+        assert_eq!(RoomCommandDelivery::Inline.as_str(), "inline");
+        assert_eq!(RoomCommandDelivery::PerRoomMailbox.as_str(), "per_room_mailbox");
+        assert_eq!(RoomCommandDelivery::FallbackInline.as_str(), "fallback_inline");
+        assert_eq!(RoomCommandDelivery::MailboxError.as_str(), "mailbox_error");
+    }
+
+    #[test]
+    fn mailbox_error_keeps_typed_delivery_and_legacy_error() {
+        let result = RoomCommandResult::mailbox_error("reply lost");
+
+        assert!(!result.is_ok());
+        assert_eq!(result.delivery(), RoomCommandDelivery::MailboxError);
+        assert_eq!(result.error_message().as_deref(), Some("reply lost"));
+        assert_eq!(result.into_legacy().unwrap_err(), "reply lost");
+    }
+
 }
