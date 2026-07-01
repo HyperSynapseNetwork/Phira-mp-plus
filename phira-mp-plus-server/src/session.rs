@@ -948,6 +948,21 @@ async fn process(user: Arc<User>, category: SessionCategory, cmd: ClientCommand)
                     if let Some(rs) = &room.round_store {
                         rs.append_touches(rid, user.id, &touch_data).await;
                     }
+                    let payload = serde_json::json!({
+                        "runtime_v2_source": "session_direct",
+                        "runtime_v2_stage": "telemetry_batcher_guarded_write",
+                        "room_id": room.id.to_string(),
+                        "round_id": rid,
+                        "user_id": user.id,
+                        "count": touch_data.len(),
+                        "data": &touch_data,
+                    });
+                    let _ = user.server.persistence_worker.enqueue(crate::persistence_worker::PersistenceEvent::TouchBatch {
+                        round_id: rid.to_string(),
+                        user_id: user.id,
+                        payload,
+                        simulation: false,
+                    }).await;
                 } else {
                     debug!(room = %room.id, user_id = user.id, "touch data received without current round; cached only");
                 }
@@ -1009,6 +1024,21 @@ async fn process(user: Arc<User>, category: SessionCategory, cmd: ClientCommand)
                     if let Some(rs) = &room.round_store {
                         rs.append_judges(rid, user.id, &judge_data).await;
                     }
+                    let payload = serde_json::json!({
+                        "runtime_v2_source": "session_direct",
+                        "runtime_v2_stage": "telemetry_batcher_guarded_write",
+                        "room_id": room.id.to_string(),
+                        "round_id": rid,
+                        "user_id": user.id,
+                        "count": judge_data.len(),
+                        "data": &judge_data,
+                    });
+                    let _ = user.server.persistence_worker.enqueue(crate::persistence_worker::PersistenceEvent::JudgeBatch {
+                        round_id: rid.to_string(),
+                        user_id: user.id,
+                        payload,
+                        simulation: false,
+                    }).await;
                 } else {
                     debug!(room = %room.id, user_id = user.id, "judge data received without current round; cached only");
                 }

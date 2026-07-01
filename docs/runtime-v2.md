@@ -510,3 +510,32 @@ observe real Touch/Judge throughput before moving production high-frequency data
 into worker-owned batch database writes.  Step 22 should add a guarded batch-write
 mode and keep the direct persistence path as the compatibility fallback until the
 new path has been validated under simulation and real clients.
+
+## Step 22 implementation status
+
+Step 22 switches high-frequency production telemetry from dry-run staging to
+**guarded batch-write dual-write** mode.  The project is still in test stage, so
+schema evolution is allowed and this step adds a Runtime v2-owned telemetry table
+instead of treating the old schema as immutable.
+
+New in this step:
+
+- `TelemetryBatcherPolicy::default()` now uses `dry_run = false`, so accepted
+  production Touch/Judge telemetry is flushed to database by default.
+- `mp_runtime_telemetry_batches` stores Runtime v2 worker-owned telemetry rows
+  with `kind`, `room_id`, `round_uuid`, `player_id`, `item_count`, full JSON
+  payload, source marker and dual-write marker.
+- `session.rs` now stages the actual Touch/Judge payload and current round id
+  directly into `PersistenceWorker`.  EventBus `touches.received` /
+  `judges.received` remain count-only observability events and are no longer
+  persisted by the worker mirror to avoid duplicate count-only rows.
+- The legacy direct `RoundStore` / `db.rs` path still writes the production
+  touch/judge data.  Runtime v2 writes a second copy into the dedicated
+  batch-write table so test runs can compare both paths before cutover.
+- `runtime persistence` now reports `db_write_batches`, `db_write_items` and
+  `db_write_errors` for the telemetry batcher.
+
+The next step should compare `mp_round_touch_batches` / `mp_round_judge_batches`
+with `mp_runtime_telemetry_batches` under simulation and real clients.  Once the
+worker path is verified, a later step can remove the direct hot-path write or
+turn it into fallback-only mode.

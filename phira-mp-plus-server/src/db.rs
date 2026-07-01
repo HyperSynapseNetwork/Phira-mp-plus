@@ -20,6 +20,17 @@ pub struct PlaytimeRow {
 }
 
 /// 数据库管理器
+
+#[derive(Debug, Clone)]
+pub struct RuntimeTelemetryBatchRecord {
+    pub kind: String,
+    pub room_id: Option<String>,
+    pub round_uuid: Option<String>,
+    pub player_id: i32,
+    pub item_count: i32,
+    pub payload: Value,
+}
+
 pub enum DbManager {
     /// PostgreSQL 已连接
     #[cfg(feature = "postgres")]
@@ -143,6 +154,38 @@ impl DbManager {
                 let _ = append_event_pg(&pool, "user.offline", None, Some(user_id), serde_json::json!({"user_id": user_id})).await;
             });
         }
+    }
+
+
+    pub fn record_runtime_telemetry_batches_sync(&self, records: Vec<RuntimeTelemetryBatchRecord>) -> bool {
+        if records.is_empty() {
+            return true;
+        }
+        #[cfg(feature = "postgres")]
+        if let Self::Pg(pool) = self {
+            let pool = pool.clone();
+            tokio::spawn(async move {
+                let now = now_ms();
+                for record in records {
+                    let _ = sqlx::query(
+                        "INSERT INTO mp_runtime_telemetry_batches
+                           (kind, room_id, round_uuid, player_id, item_count, payload, created_at, source, dual_write)
+                         VALUES ($1, $2, $3, $4, $5, $6, $7, 'telemetry_batcher', TRUE)"
+                    )
+                    .bind(&record.kind)
+                    .bind(record.room_id.as_deref())
+                    .bind(record.round_uuid.as_deref())
+                    .bind(record.player_id)
+                    .bind(record.item_count)
+                    .bind(record.payload)
+                    .bind(now)
+                    .execute(&pool)
+                    .await;
+                }
+            });
+            return true;
+        }
+        false
     }
 
     pub fn record_user_seen_sync(&self, user_id: i32, name: &str, language: &str, ip: Option<String>) {
@@ -958,6 +1001,24 @@ async fn init_tables(pool: &sqlx::PgPool) -> Result<()> {
     .execute(pool)
     .await?;
 
+
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS mp_runtime_telemetry_batches (
+            sequence BIGINT PRIMARY KEY DEFAULT nextval('mp_persist_sequence'),
+            kind TEXT NOT NULL,
+            room_id TEXT,
+            round_uuid TEXT,
+            player_id INTEGER NOT NULL,
+            item_count INTEGER NOT NULL,
+            payload JSONB NOT NULL,
+            created_at BIGINT NOT NULL,
+            source TEXT NOT NULL DEFAULT 'telemetry_batcher',
+            dual_write BOOLEAN NOT NULL DEFAULT TRUE
+        )"
+    )
+    .execute(pool)
+    .await?;
+
     sqlx::query(
         "CREATE TABLE IF NOT EXISTS mp_sim_events (
             sequence BIGINT PRIMARY KEY DEFAULT nextval('mp_persist_sequence'),
@@ -991,6 +1052,10 @@ async fn init_tables(pool: &sqlx::PgPool) -> Result<()> {
         "CREATE INDEX IF NOT EXISTS idx_mp_judge_batches_round_player_seq ON mp_round_judge_batches(round_uuid, player_id, sequence)",
         "CREATE INDEX IF NOT EXISTS idx_mp_judge_batches_created ON mp_round_judge_batches(created_at)",
         "CREATE INDEX IF NOT EXISTS idx_mp_user_room_history_user ON mp_user_room_history(user_id)",
+        "CREATE INDEX IF NOT EXISTS idx_mp_runtime_telemetry_created ON mp_runtime_telemetry_batches(created_at)",
+        "CREATE INDEX IF NOT EXISTS idx_mp_runtime_telemetry_kind ON mp_runtime_telemetry_batches(kind)",
+        "CREATE INDEX IF NOT EXISTS idx_mp_runtime_telemetry_round_player ON mp_runtime_telemetry_batches(round_uuid, player_id, sequence)",
+        "CREATE INDEX IF NOT EXISTS idx_mp_runtime_telemetry_room ON mp_runtime_telemetry_batches(room_id)",
         "CREATE INDEX IF NOT EXISTS idx_mp_sim_events_run ON mp_sim_events(run_id)",
         "CREATE INDEX IF NOT EXISTS idx_mp_sim_events_kind ON mp_sim_events(kind)",
         "CREATE INDEX IF NOT EXISTS idx_mp_sim_events_created ON mp_sim_events(created_at)",

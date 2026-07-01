@@ -1637,9 +1637,12 @@ impl CliHandler {
                     stats.telemetry.enabled, stats.telemetry.dry_run, stats.telemetry.queued,
                     stats.telemetry.accepted, stats.telemetry.dropped, stats.telemetry.pending,
                     stats.telemetry.flushed_batches, stats.telemetry.flushed_items));
+                self.out(format!("    db_write_batches={} db_write_items={} db_write_errors={}",
+                    stats.telemetry.write_batches, stats.telemetry.write_items, stats.telemetry.write_errors));
                 self.out(format!("    touch_items={} judge_items={} max_batch={} interval={}ms",
                     stats.telemetry.touch_items, stats.telemetry.judge_items,
                     stats.telemetry.max_items_per_batch, stats.telemetry.flush_interval_ms));
+                self.out(format!("    telemetry_last_err={}", stats.telemetry.last_error.clone().unwrap_or_else(|| "-".to_string())));
                 self.out(format!("  {} last_err:  {}", c::dim("│"), stats.last_error.clone().unwrap_or_else(|| "-".to_string())));
                 if !stats.by_kind.is_empty() {
                     self.out(format!("  {} by kind", c::cyan("▸")));
@@ -1654,7 +1657,7 @@ impl CliHandler {
                     }
                 }
                 self.out(format!("  {} 低频生产事件已 EventBus → Worker → mp_events 双写；现有 db.rs 直接写入路径仍保持不变", c::dim("▸")));
-                self.out(format!("  {} 生产 Touch/Judge 仍走现有直写路径；Runtime v2 只把 count-only 镜像送入 dry-run TelemetryBatcher", c::dim("▸")));
+                self.out(format!("  {} 生产 Touch/Judge 现为直写路径 + Runtime v2 TelemetryBatcher guarded batch-write 双写；EventBus 只保留计数观测", c::dim("▸")));
             }
             _ => {
                 self.out(format!("  {} 未知 runtime 子命令: {}", c::red("✗"), c::yellow(sub)));

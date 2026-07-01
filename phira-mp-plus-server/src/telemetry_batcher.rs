@@ -1,9 +1,11 @@
 //! Runtime v2 high-frequency telemetry batcher.
 //!
 //! This is the staging layer for moving production Touch/Judge persistence away
-//! from direct hot-path writes and into an actor/worker based pipeline. Step 21
-//! deliberately runs in dry-run mode: production Touch/Judge events are accepted,
-//! batched, flushed, and measured, but not written to production tables yet.
+//! from direct hot-path writes and into an actor/worker based pipeline.
+//! Step 22 enables guarded batch-write mode by default for the test-stage
+//! project: production Touch/Judge events are accepted, batched, flushed, and
+//! dual-written into Runtime v2 telemetry tables while the direct legacy path
+//! remains available for compatibility comparison.
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -26,7 +28,7 @@ impl Default for TelemetryBatcherPolicy {
     fn default() -> Self {
         Self {
             enabled: true,
-            dry_run: true,
+            dry_run: false,
             queue_capacity: 8192,
             max_items_per_batch: 256,
             flush_interval_ms: 1000,
@@ -46,6 +48,9 @@ pub struct TelemetryBatcherStats {
     pub dropped: u64,
     pub flushed_batches: u64,
     pub flushed_items: u64,
+    pub write_batches: u64,
+    pub write_items: u64,
+    pub write_errors: u64,
     pub touch_items: u64,
     pub judge_items: u64,
     pub pending: usize,
@@ -73,6 +78,9 @@ impl TelemetryBatcherStats {
             dropped: 0,
             flushed_batches: 0,
             flushed_items: 0,
+            write_batches: 0,
+            write_items: 0,
+            write_errors: 0,
             touch_items: 0,
             judge_items: 0,
             pending: 0,
@@ -252,17 +260,38 @@ async fn flush_pending(
 
     let items = pending.len();
     let telemetry_points: usize = pending.iter().map(|item| item.item_count).sum();
-    let first = pending.front().cloned();
-    pending.clear();
+    let mut flushed = Vec::with_capacity(items);
+    while let Some(item) = pending.pop_front() {
+        flushed.push(item);
+    }
+    let first = flushed.first().cloned();
+    let write_result = if policy.dry_run {
+        Ok(false)
+    } else {
+        write_runtime_telemetry_batch(&flushed, reason).map(|_| true)
+    };
 
     let mut stats = stats.write().await;
     stats.flushed_batches += 1;
     stats.flushed_items += telemetry_points as u64;
     stats.pending = 0;
+    let action = match write_result {
+        Ok(true) => {
+            stats.write_batches += 1;
+            stats.write_items += telemetry_points as u64;
+            "db_flush"
+        }
+        Ok(false) => "dry_flush",
+        Err(err) => {
+            stats.write_errors += 1;
+            stats.last_error = Some(err);
+            "write_failed"
+        }
+    };
     if let Some(item) = first {
         push_trace(
             &mut stats,
-            if policy.dry_run { "dry_flush" } else { "flush" },
+            action,
             item.kind.as_str().to_string(),
             item.room_id,
             item.user_id,
@@ -271,6 +300,56 @@ async fn flush_pending(
     }
 
     trace!(items, telemetry_points, dry_run = policy.dry_run, reason, "telemetry batcher flushed batch");
+}
+
+
+fn write_runtime_telemetry_batch(items: &[TelemetryItem], reason: &str) -> Result<(), String> {
+    let Some(db) = crate::internal_hooks::DB.get() else {
+        return Err("database manager is not initialized".to_string());
+    };
+    let records: Vec<crate::db::RuntimeTelemetryBatchRecord> = items
+        .iter()
+        .map(|item| {
+            let mut payload = item.payload.clone();
+            if let Some(obj) = payload.as_object_mut() {
+                obj.entry("runtime_v2_source".to_string())
+                    .or_insert_with(|| serde_json::json!("telemetry_batcher"));
+                obj.entry("runtime_v2_dual_write".to_string())
+                    .or_insert_with(|| serde_json::json!(true));
+                obj.entry("runtime_v2_stage".to_string())
+                    .or_insert_with(|| serde_json::json!("guarded_batch_write"));
+                obj.entry("flush_reason".to_string())
+                    .or_insert_with(|| serde_json::json!(reason));
+                obj.entry("kind".to_string())
+                    .or_insert_with(|| serde_json::json!(item.kind.as_str()));
+                obj.entry("user_id".to_string())
+                    .or_insert_with(|| serde_json::json!(item.user_id));
+                obj.entry("count".to_string())
+                    .or_insert_with(|| serde_json::json!(item.item_count));
+                if let Some(room_id) = &item.room_id {
+                    obj.entry("room_id".to_string())
+                        .or_insert_with(|| serde_json::json!(room_id));
+                }
+                if let Some(round_id) = &item.round_id {
+                    obj.entry("round_id".to_string())
+                        .or_insert_with(|| serde_json::json!(round_id));
+                }
+            }
+            crate::db::RuntimeTelemetryBatchRecord {
+                kind: item.kind.as_str().to_string(),
+                room_id: item.room_id.clone(),
+                round_uuid: item.round_id.clone(),
+                player_id: item.user_id,
+                item_count: i32::try_from(item.item_count).unwrap_or(i32::MAX),
+                payload,
+            }
+        })
+        .collect();
+    if db.record_runtime_telemetry_batches_sync(records) {
+        Ok(())
+    } else {
+        Err("database is not active; telemetry batch was not written".to_string())
+    }
 }
 
 fn push_trace(

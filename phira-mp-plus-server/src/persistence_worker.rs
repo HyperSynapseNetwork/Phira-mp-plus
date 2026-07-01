@@ -7,8 +7,7 @@
 //! Step 5 wires a low-risk EventBus mirror into this worker. Step 20 starts
 //! dual-writing low-frequency production events into `mp_events` while keeping
 //! existing `db.rs` direct writes as the source of truth. High-frequency
-//! production Touch/Judge batches are still intentionally skipped until the
-//! batching policy is migrated.
+//! production Touch/Judge batches now enter the guarded TelemetryBatcher batch-write path while the direct legacy path remains available for comparison.
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -312,30 +311,11 @@ fn mirror_event_bus_event(event: &crate::event_bus::MpEvent) -> Option<Persisten
             json!({ "room_id": room_id.to_string(), "user_id": user_id, "ready": ready }),
             false,
         ),
-        MpEvent::TouchesReceived { room_id, user_id, count } => Some(PersistenceEvent::TouchBatch {
-            round_id: "eventbus-touch".to_string(),
-            user_id: *user_id,
-            payload: json!({
-                "room_id": room_id.to_string(),
-                "user_id": user_id,
-                "count": count,
-                "runtime_v2_source": "event_bus_count_only",
-                "runtime_v2_stage": "telemetry_batcher_dry_run",
-            }),
-            simulation: false,
-        }),
-        MpEvent::JudgesReceived { room_id, user_id, count } => Some(PersistenceEvent::JudgeBatch {
-            round_id: "eventbus-judge".to_string(),
-            user_id: *user_id,
-            payload: json!({
-                "room_id": room_id.to_string(),
-                "user_id": user_id,
-                "count": count,
-                "runtime_v2_source": "event_bus_count_only",
-                "runtime_v2_stage": "telemetry_batcher_dry_run",
-            }),
-            simulation: false,
-        }),
+        // Production Touch/Judge persistence is now staged from `session.rs`
+        // with the actual payload and round id.  Keep EventBus count-only
+        // events for runtime stats, but do not persist them or they would
+        // duplicate the richer session-direct telemetry item.
+        MpEvent::TouchesReceived { .. } | MpEvent::JudgesReceived { .. } => None,
         MpEvent::RoundCompleted { room_id, round_id } => server_event(
             event.kind(),
             json!({ "room_id": room_id.to_string(), "round_id": round_id }),
@@ -527,10 +507,8 @@ fn persist_production_event_if_needed(event: &PersistenceEvent) -> bool {
             );
             true
         }
-        // Production Touch/Judge batches are already persisted by the direct
-        // RoundStore/db path. They will move here only after the batching worker
-        // has backpressure and flush semantics strong enough for high frequency
-        // gameplay telemetry.
+        // Production Touch/Judge batches are handled by `stage_production_telemetry_if_needed`.
+        // They are intentionally not written as generic low-frequency `mp_events`.
         PersistenceEvent::TouchBatch { .. } | PersistenceEvent::JudgeBatch { .. } => false,
         PersistenceEvent::Flush | PersistenceEvent::Shutdown => false,
     }
