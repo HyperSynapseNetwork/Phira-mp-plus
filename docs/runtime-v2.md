@@ -757,3 +757,25 @@ Future Session decomposition should follow the same pattern: extract cohesive
 hot-path responsibilities behind small internal modules first, then route the
 remaining command handling through actor-shaped boundaries once behavior is easy
 to test and compare.
+
+## Step 29: Session room-command module split
+
+Step 29 continues the same restrained development rhythm: it does not add new
+runtime commands or database objects.  It moves client-side room lifecycle and
+room gameplay command handling out of `session.rs` into `session_room.rs`.
+
+The extracted module owns the behavior for:
+
+- in-game admin CLI room-name shortcut decoding;
+- create/join/leave room;
+- client lock/cycle room toggles;
+- select chart and request start;
+- ready/cancel-ready;
+- played/abort;
+- query-room-info response assembly.
+
+This is still a behavior-preserving split.  It does not replace the existing
+Room state machine, and it does not move Session ownership to an actor yet.  The
+purpose is to make the next Session Actor pass safer: `session.rs` can remain the
+socket/authentication dispatcher, while room command semantics live behind a
+single internal module boundary.

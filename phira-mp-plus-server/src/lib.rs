@@ -29,6 +29,7 @@ pub mod server;
 pub mod session;
 mod session_auth;
 mod session_telemetry;
+mod session_room;
 pub mod terminal;
 #[cfg(feature = "plugin-system")]
 pub mod wasm_host;
