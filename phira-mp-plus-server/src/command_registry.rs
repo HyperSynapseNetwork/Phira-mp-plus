@@ -385,6 +385,16 @@ pub fn runtime_v2_registry() -> CommandRegistry {
         CommandSpec::new("simulation scenarios", "simulation", "列出可用 Simulation workload scenario/profile。", "simulation scenarios")
             .aliases(["simulation profiles", "simulation scenario", "simulation profile"])
             .example("simulation scenarios"),
+        CommandSpec::new(
+            "simulation suite",
+            "simulation",
+            "按顺序运行多个 Simulation scenario，用于一次性比较不同压力形状。",
+            "simulation suite <smoke|mixed|stress> [duration=N] [tick_ms=N] [persist_every=N] [users=N] [rooms=N]",
+        )
+        .aliases(["simulation suites", "simulation batch", "simulation batch-run"])
+        .example("simulation suite smoke")
+        .example("simulation suite mixed duration=15 tick_ms=500 persist_every=5")
+        .example("simulation suite stress users=800 rooms=80"),
         CommandSpec::new("simulation tick", "simulation", "手动推进 deterministic shadow world tick，并按 scenario 发布聚合 simulation.chat/ready/touch/judge/round 事件。", "simulation tick [count]")
             .alias("simulation advance")
             .example("simulation tick 10"),

@@ -263,6 +263,199 @@ fn spawn_simulation_runner(
     });
 }
 
+
+fn spawn_simulation_suite_runner(
+    state: Arc<PlusServerState>,
+    out_tx: mpsc::UnboundedSender<String>,
+    suite: crate::simulation::SimulationSuite,
+    steps: Vec<crate::simulation::SimulationSuiteStep>,
+) {
+    tokio::spawn(async move {
+        let suite_run_id = uuid::Uuid::new_v4();
+        let total_steps = steps.len();
+        let plan: Vec<_> = steps
+            .iter()
+            .enumerate()
+            .map(|(idx, step)| {
+                serde_json::json!({
+                    "index": idx + 1,
+                    "name": step.name.as_str(),
+                    "preset": step.config.preset.as_str(),
+                    "scenario": step.config.scenario.as_str(),
+                    "users": step.config.users,
+                    "rooms": step.config.rooms,
+                    "duration_secs": step.config.duration_secs,
+                    "tick_ms": step.config.tick_interval_ms,
+                    "persist_every": step.config.persist_every_ticks,
+                })
+            })
+            .collect();
+
+        state.publish_runtime_event(crate::event_bus::MpEvent::Custom {
+            kind: "simulation.suite_started".to_string(),
+            payload: serde_json::json!({
+                "suite_run_id": suite_run_id.to_string(),
+                "suite": suite.as_str(),
+                "steps": plan,
+            }),
+        });
+        let _ = out_tx.send(format!(
+            "  ◆ simulation suite started: suite={} suite_run_id={} steps={}",
+            suite.as_str(), suite_run_id, total_steps
+        ));
+        let _ = state
+            .broadcast_system_message("服务器正在进行 Runtime v2 Simulation suite；期间可能出现短暂卡顿。")
+            .await;
+
+        let mut completed_steps = 0usize;
+        let mut aborted = false;
+        for (idx, step) in steps.into_iter().enumerate() {
+            let step_index = idx + 1;
+            if state.simulation.status().await.running {
+                let _ = out_tx.send(format!(
+                    "  ! simulation suite aborted before step {} because another simulation is running",
+                    step_index
+                ));
+                aborted = true;
+                break;
+            }
+
+            let status = match state.simulation.start(step.config.clone()).await {
+                Ok(status) => status,
+                Err(err) => {
+                    let _ = out_tx.send(format!(
+                        "  ✗ simulation suite step {} failed to start: {}",
+                        step_index, err
+                    ));
+                    aborted = true;
+                    break;
+                }
+            };
+            let Some(run_id) = status.run_id else {
+                let _ = out_tx.send(format!(
+                    "  ✗ simulation suite step {} started without run_id; aborting suite",
+                    step_index
+                ));
+                aborted = true;
+                break;
+            };
+
+            state.publish_runtime_event(crate::event_bus::MpEvent::SimulationStarted { run_id });
+            state.publish_runtime_event(crate::event_bus::MpEvent::Custom {
+                kind: "simulation.suite_step_started".to_string(),
+                payload: serde_json::json!({
+                    "suite_run_id": suite_run_id.to_string(),
+                    "suite": suite.as_str(),
+                    "step_index": step_index,
+                    "step_total": total_steps,
+                    "step": step.name.as_str(),
+                    "run_id": run_id.to_string(),
+                    "scenario": step.config.scenario.as_str(),
+                }),
+            });
+            let _ = out_tx.send(format!(
+                "  ◆ suite step {}/{} started: {} scenario={} run_id={}",
+                step_index,
+                total_steps,
+                step.name,
+                step.config.scenario.as_str(),
+                run_id
+            ));
+
+            let interval = std::time::Duration::from_millis(step.config.tick_interval_ms);
+            loop {
+                tokio::time::sleep(interval).await;
+                let (status, events) = match state
+                    .simulation
+                    .advance_ticks_for_run_with_events(run_id, 1)
+                    .await
+                {
+                    Ok(result) => result,
+                    Err(_) => {
+                        let _ = out_tx.send(format!(
+                            "  ! simulation suite step {} stopped externally; aborting remaining steps",
+                            step.name
+                        ));
+                        aborted = true;
+                        break;
+                    }
+                };
+                publish_simulation_tick_event(&state, &status);
+                publish_simulation_generated_events(&state, &events);
+
+                if step.config.persist_every_ticks > 0
+                    && status.counters.ticks > 0
+                    && status.counters.ticks % step.config.persist_every_ticks == 0
+                {
+                    publish_simulation_snapshot(&state, run_id, &status, "simulation.suite.periodic").await;
+                }
+
+                if status.elapsed_secs >= step.config.duration_secs {
+                    let reason = format!(
+                        "suite {} step {} duration {}s reached",
+                        suite.as_str(), step.name, step.config.duration_secs
+                    );
+                    if let Some(stopped) = state.simulation.stop_if_run(run_id, reason.clone()).await {
+                        state.publish_runtime_event(crate::event_bus::MpEvent::SimulationStopped {
+                            run_id,
+                            reason: reason.clone(),
+                        });
+                        state.publish_runtime_event(crate::event_bus::MpEvent::Custom {
+                            kind: "simulation.suite_step_completed".to_string(),
+                            payload: serde_json::json!({
+                                "suite_run_id": suite_run_id.to_string(),
+                                "suite": suite.as_str(),
+                                "step_index": step_index,
+                                "step_total": total_steps,
+                                "step": step.name.as_str(),
+                                "run_id": run_id.to_string(),
+                                "scenario": step.config.scenario.as_str(),
+                                "ticks": stopped.counters.ticks,
+                                "elapsed_secs": stopped.elapsed_secs,
+                            }),
+                        });
+                        if step.config.persist_every_ticks > 0 {
+                            publish_simulation_snapshot(&state, run_id, &stopped, "simulation.suite.final").await;
+                        }
+                        let _ = out_tx.send(format!(
+                            "  ✓ suite step {}/{} completed: {} ticks={} elapsed={}s",
+                            step_index, total_steps, step.name, stopped.counters.ticks, stopped.elapsed_secs
+                        ));
+                    }
+                    completed_steps += 1;
+                    break;
+                }
+            }
+
+            if aborted {
+                break;
+            }
+        }
+
+        state.publish_runtime_event(crate::event_bus::MpEvent::Custom {
+            kind: "simulation.suite_completed".to_string(),
+            payload: serde_json::json!({
+                "suite_run_id": suite_run_id.to_string(),
+                "suite": suite.as_str(),
+                "completed_steps": completed_steps,
+                "total_steps": total_steps,
+                "aborted": aborted,
+            }),
+        });
+        let _ = state
+            .broadcast_system_message("Runtime v2 Simulation suite 已结束。")
+            .await;
+        let _ = out_tx.send(format!(
+            "  {} simulation suite finished: suite={} completed={}/{} aborted={}",
+            if aborted { "!" } else { "✓" },
+            suite.as_str(),
+            completed_steps,
+            total_steps,
+            aborted
+        ));
+    });
+}
+
 fn strip_ansi_for_client(input: &str) -> String {
     let mut out = String::with_capacity(input.len());
     let mut chars = input.chars().peekable();
@@ -860,6 +1053,7 @@ impl CliHandler {
                 }
                 self.out(format!("  {} 用法：simulation run baseline scenario=chat_storm", c::dim("▸")));
             }
+            "suite" | "suites" | "batch" | "batch-run" => self.simulation_suite(&args[1..]).await,
             "seed" => {
                 if args.len() < 2 {
                     self.out(format!("  {} {} seed <u64>", c::yellow("?"), c::bold("simulation")));
@@ -893,9 +1087,96 @@ impl CliHandler {
             }
             _ => {
                 self.out(format!("  {} 未知 simulation 子命令: {}", c::red("✗"), c::yellow(sub)));
-                self.out(format!("  {} 可用: simulation status | run <preset> | scenarios | tick [n] | inspect [limit] | persist | stop | seed <u64> | cleanup | sample", c::dim("▸")));
+                self.out(format!("  {} 可用: simulation status | run <preset> | suite <name> | scenarios | tick [n] | inspect [limit] | persist | stop | seed <u64> | cleanup | sample", c::dim("▸")));
             }
         }
+    }
+
+    async fn simulation_suite(&self, args: &[&str]) {
+        let first = args.first().copied().unwrap_or("list");
+        if matches!(first, "list" | "ls" | "show" | "help" | "") {
+            self.print_simulation_suites();
+            return;
+        }
+
+        let Some(suite) = crate::simulation::SimulationSuite::parse(first) else {
+            self.out(format!("  {} 未知 simulation suite: {}", c::red("✗"), c::yellow(first)));
+            self.print_simulation_suites();
+            return;
+        };
+
+        let seed = self.state.simulation.status().await.seed;
+        let mut steps = suite.plan(seed);
+        for token in &args[1..] {
+            let Some((key, value)) = token.split_once('=') else {
+                self.out(format!("  {} 无效 suite 参数：{}；请使用 duration=30 tick_ms=500 persist_every=5 users=100 rooms=10", c::red("✗"), token));
+                return;
+            };
+            for step in &mut steps {
+                if let Err(err) = step.config.apply_kv(key, value) {
+                    self.out(format!("  {} {}", c::red("✗"), err));
+                    return;
+                }
+                // A suite is always an automatic sequential runner even when the
+                // user reuses generic SimulationConfig keys.
+                step.config.auto_tick = true;
+            }
+        }
+
+        for step in &steps {
+            if let Err(err) = step.config.validate() {
+                self.out(format!("  {} suite step {} invalid: {}", c::red("✗"), c::yellow(&step.name), err));
+                return;
+            }
+        }
+
+        if self.state.simulation.status().await.running {
+            self.out(format!("  {} simulation 正在运行，请先执行 simulation stop 或等待当前 runner 结束", c::red("✗")));
+            return;
+        }
+
+        self.out(format!("  {} simulation suite 计划: {} - {}", c::green("◆"), suite.as_str(), suite.description()));
+        for (idx, step) in steps.iter().enumerate() {
+            self.out(format!(
+                "  {} {:>2}. {:<22} preset={} scenario={} users={} rooms={} duration={}s tick_ms={} persist_every={}",
+                c::dim("│"),
+                idx + 1,
+                step.name,
+                step.config.preset.as_str(),
+                step.config.scenario.as_str(),
+                step.config.users,
+                step.config.rooms,
+                step.config.duration_secs,
+                step.config.tick_interval_ms,
+                step.config.persist_every_ticks
+            ));
+        }
+        spawn_simulation_suite_runner(Arc::clone(&self.state), self.out_tx.clone(), suite, steps);
+        self.out(format!("  {} suite runner 已启动；每个 step 会独立 run/stop 并写入 simulation.* 事件", c::dim("▸")));
+    }
+
+    fn print_simulation_suites(&self) {
+        self.out(format!("  {} Simulation suites", c::green("◆")));
+        for suite in crate::simulation::SimulationSuite::all() {
+            let plan = suite.plan(self.state.simulation.seed_hint());
+            self.out(format!(
+                "  {} {:<8} {} steps - {}",
+                c::dim("│"),
+                suite.as_str(),
+                plan.len(),
+                suite.description()
+            ));
+            for step in plan.iter().take(4) {
+                self.out(format!(
+                    "      {:<22} scenario={} duration={}s tick_ms={}",
+                    step.name,
+                    step.config.scenario.as_str(),
+                    step.config.duration_secs,
+                    step.config.tick_interval_ms
+                ));
+            }
+        }
+        self.out(format!("  {} 用法：simulation suite smoke | simulation suite mixed duration=15 tick_ms=500", c::dim("▸")));
     }
 
     async fn simulation_run(&self, args: &[&str]) {

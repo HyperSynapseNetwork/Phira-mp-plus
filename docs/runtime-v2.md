@@ -210,3 +210,35 @@ runtime persistence
 ```
 
 This gives Runtime v2 a repeatable way to test different pressure shapes before migrating any production Room/Session hot path into the new runtime services.
+
+## Step 10 implementation status
+
+Step 10 adds Simulation suites/batch runs so one command can exercise several workload shapes in sequence:
+
+- `SimulationSuite` defines repeatable suite presets:
+  - `smoke`: short sanity check for CI/manual smoke testing.
+  - `mixed`: balanced sweep across chat, ready, round and touch/judge scenarios.
+  - `stress`: heavier sweep for sustained EventBus/PersistenceWorker pressure.
+- `simulation suite` lists available suites and their planned steps.
+- `simulation suite <smoke|mixed|stress>` starts a background suite runner.
+- Each suite step is still a normal isolated shadow-world run with its own `run_id`.
+- The suite runner publishes:
+  - `simulation.suite_started`
+  - `simulation.suite_step_started`
+  - `simulation.suite_step_completed`
+  - `simulation.suite_completed`
+- Suite events flow through EventBus and the simulation-only PersistenceWorker path, so they can be observed via `runtime events`, `runtime persistence` and `mp_sim_events`.
+- A suite never inserts virtual users/rooms into production `users` or `rooms` maps.
+
+Useful examples:
+
+```text
+simulation suite
+simulation suite smoke
+simulation suite mixed duration=15 tick_ms=500 persist_every=5
+simulation suite stress users=800 rooms=80 duration=30
+runtime events
+runtime persistence
+```
+
+This step makes Simulation usable as a repeatable regression/load workflow instead of a single one-off scenario run.

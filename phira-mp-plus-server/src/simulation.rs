@@ -101,6 +101,99 @@ impl Default for SimulationScenario {
     }
 }
 
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SimulationSuite {
+    Smoke,
+    Mixed,
+    Stress,
+}
+
+impl SimulationSuite {
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().replace('-', "_").as_str() {
+            "smoke" | "quick" | "q" => Some(Self::Smoke),
+            "mixed" | "default" | "all" | "suite" => Some(Self::Mixed),
+            "stress" | "heavy" | "load" => Some(Self::Stress),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Smoke => "smoke",
+            Self::Mixed => "mixed",
+            Self::Stress => "stress",
+        }
+    }
+
+    pub fn description(self) -> &'static str {
+        match self {
+            Self::Smoke => "short sanity suite: balanced + idle, useful for CI smoke checks",
+            Self::Mixed => "balanced scenario sweep: chat, ready, round, touch/judge",
+            Self::Stress => "heavier scenario sweep for sustained EventBus/PersistenceWorker pressure",
+        }
+    }
+
+    pub fn all() -> &'static [Self] {
+        &[Self::Smoke, Self::Mixed, Self::Stress]
+    }
+
+    pub fn plan(self, seed: u64) -> Vec<SimulationSuiteStep> {
+        let mut steps = match self {
+            Self::Smoke => vec![
+                suite_step("smoke-balanced", SimulationPreset::Baseline, SimulationScenario::Balanced, seed, 10, 500, 5),
+                suite_step("smoke-idle", SimulationPreset::Baseline, SimulationScenario::Idle, seed.wrapping_add(1), 5, 500, 0),
+            ],
+            Self::Mixed => vec![
+                suite_step("mixed-chat", SimulationPreset::Small, SimulationScenario::ChatStorm, seed, 20, 500, 10),
+                suite_step("mixed-ready", SimulationPreset::Small, SimulationScenario::ReadyStorm, seed.wrapping_add(1), 20, 500, 10),
+                suite_step("mixed-round", SimulationPreset::Small, SimulationScenario::RoundStorm, seed.wrapping_add(2), 20, 500, 10),
+                suite_step("mixed-touch-judge", SimulationPreset::Small, SimulationScenario::TouchJudgeBurst, seed.wrapping_add(3), 20, 500, 10),
+            ],
+            Self::Stress => vec![
+                suite_step("stress-chat", SimulationPreset::Medium, SimulationScenario::ChatStorm, seed, 45, 250, 20),
+                suite_step("stress-touch-judge", SimulationPreset::Medium, SimulationScenario::TouchJudgeBurst, seed.wrapping_add(1), 45, 250, 20),
+                suite_step("stress-round", SimulationPreset::Medium, SimulationScenario::RoundStorm, seed.wrapping_add(2), 45, 250, 20),
+            ],
+        };
+        for step in &mut steps {
+            step.suite = self;
+        }
+        steps
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SimulationSuiteStep {
+    pub suite: SimulationSuite,
+    pub name: String,
+    pub config: SimulationConfig,
+}
+
+fn suite_step(
+    name: &str,
+    preset: SimulationPreset,
+    scenario: SimulationScenario,
+    seed: u64,
+    duration_secs: u64,
+    tick_interval_ms: u64,
+    persist_every_ticks: u64,
+) -> SimulationSuiteStep {
+    let mut config = preset.defaults(seed);
+    config.scenario = scenario;
+    config.duration_secs = duration_secs;
+    config.tick_interval_ms = tick_interval_ms;
+    config.persist_every_ticks = persist_every_ticks;
+    config.auto_tick = true;
+    SimulationSuiteStep {
+        suite: SimulationSuite::Smoke,
+        name: name.to_string(),
+        config,
+    }
+}
+
 impl SimulationPreset {
     pub fn parse(value: &str) -> Option<Self> {
         match value.trim().to_ascii_lowercase().as_str() {
@@ -403,6 +496,10 @@ impl SimulationManager {
     pub async fn status(&self) -> SimulationStatus {
         let state = self.state.read().await;
         self.snapshot(&state)
+    }
+
+    pub fn seed_hint(&self) -> u64 {
+        self.seed.load(Ordering::Relaxed)
     }
 
     pub async fn set_seed(&self, seed: u64) {
@@ -1039,6 +1136,17 @@ mod tests {
     fn sample_data_is_seeded() {
         assert_ne!(SimulationManager::sample_touches(1)[0].time_ms, SimulationManager::sample_touches(2)[0].time_ms);
         assert_eq!(SimulationManager::sample_judges(114_514).len(), 8);
+    }
+
+    #[test]
+    fn suite_plans_are_repeatable() {
+        let smoke = SimulationSuite::Smoke.plan(99);
+        assert_eq!(smoke.len(), 2);
+        assert_eq!(smoke[0].suite, SimulationSuite::Smoke);
+        assert_eq!(smoke[0].config.scenario, SimulationScenario::Balanced);
+        assert_eq!(smoke[1].config.scenario, SimulationScenario::Idle);
+        assert_eq!(SimulationSuite::parse("touch"), None);
+        assert_eq!(SimulationSuite::parse("stress"), Some(SimulationSuite::Stress));
     }
 
     #[tokio::test]
