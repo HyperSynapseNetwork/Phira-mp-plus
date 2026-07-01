@@ -1513,8 +1513,21 @@ impl CliHandler {
                     stats.mailbox_enqueued, stats.mailbox_completed, stats.mailbox_failed,
                     stats.mailbox_fallback, stats.mailbox_closed));
                 self.out(format!("  {} registry:  hit={} miss={}", c::dim("│"), stats.mailbox_registry_hit, stats.mailbox_registry_miss));
+                let avg_us = if stats.audited > 0 { stats.latency_total_us / stats.audited } else { 0 };
+                self.out(format!("  {} audit:     commands={} avg_us={} max_us={}", c::dim("│"), stats.audited, avg_us, stats.latency_max_us));
+                if !stats.recent_commands.is_empty() {
+                    self.out(format!("  {} recent commands", c::cyan("▸")));
+                    for item in stats.recent_commands.iter().take(8) {
+                        let status = if item.ok { c::green("ok") } else { c::red("err") };
+                        let err = item.error.as_deref().unwrap_or("");
+                        self.out(format!(
+                            "    #{:<4} {:<9} room={} {:>6}us {} {}",
+                            item.command_id, item.action, item.room_id, item.latency_us, status, err
+                        ));
+                    }
+                }
                 self.out(format!("  {} note:      {}", c::dim("│"), stats.note));
-                self.out(format!("  {} set_lock/set_cycle/set_host/close 已穿过 per-room mailbox registry；kick/start/cancel 仍走 inline facade", c::dim("▸")));
+                self.out(format!("  {} set_lock/set_cycle/set_host/close/kick 已穿过 per-room mailbox registry；start/cancel 仍走 inline facade", c::dim("▸")));
             }
             "actors" | "actor" | "actor-model" => {
                 let stats = self.state.actor_runtime.stats().await;
@@ -1523,7 +1536,7 @@ impl CliHandler {
                 self.out(format!("  {} web management API: {}", c::dim("│"), stats.web_management_api));
                 self.out(format!("  {} rule:               {}", c::dim("│"), stats.rule));
                 let room_commands = self.state.room_commands.stats();
-                self.out(format!("  {} room gateway:       phase={} routed={} ok={} failed={} mailbox={}", c::dim("│"), room_commands.phase, room_commands.routed, room_commands.succeeded, room_commands.failed, room_commands.mailbox_enabled));
+                self.out(format!("  {} room gateway:       phase={} routed={} ok={} failed={} mailbox={} audited={} max_us={}", c::dim("│"), room_commands.phase, room_commands.routed, room_commands.succeeded, room_commands.failed, room_commands.mailbox_enabled, room_commands.audited, room_commands.latency_max_us));
                 self.out(format!("  {} boundaries", c::cyan("▸")));
                 for boundary in stats.boundaries {
                     self.out(format!(

@@ -354,3 +354,28 @@ Still intentionally not done:
 This step is the first real movement from a gateway-wide worker toward true
 per-room actors while keeping the current protocol and room state machine
 compatible.
+
+## Step 16 implementation status
+
+Step 16 continues the Room Actor migration by moving `kick` into the per-room
+mailbox path and adding command-level audit telemetry:
+
+- `room kick <room_id> <user_id>` and the corresponding internal `room.kick`
+  path now cross the per-room mailbox registry.
+- If kicking the target causes the room to be dropped, the mailbox worker exits
+  and removes that room mailbox from the registry.
+- `RoomCommandGateway` now records command id, room id, action, success/failure,
+  latency and recent error text for room write commands.
+- Each audited command also publishes a Runtime v2 `room.command` custom event.
+- `runtime rooms`, `runtime actors` and `/api/runtime` expose command audit
+  counters and recent command samples.
+
+Still intentionally not done:
+
+- `start` and `cancel` remain inline gateway calls until their `WaitForReady`
+  locking and send behavior are audited separately.
+- Room state ownership still lives in the existing `Room` type.
+- There is still no privileged Web management API.
+
+This step gives the Actor migration measurable command latency and failure
+telemetry before moving higher-risk state-machine transitions.

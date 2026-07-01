@@ -219,3 +219,33 @@ Next cut:
    state-machine transitions.
 4. Start extracting actual room-owned state into actor-local ownership only after
    the mailbox path has stable counters and test coverage.
+
+## Step 16 update: kick mailbox path and command audit
+
+Step 16 adds the next real command family to the per-room mailbox registry and
+adds command-level observability.
+
+Commands now routed through the per-room mailbox registry:
+
+- `room set <id> lock <bool>`
+- `room set <id> cycle <bool>`
+- `room host <id> <user|?>` / host transfer
+- `room close <id>`
+- `room kick <id> <user_id>` / `room.kick`
+
+Command audit telemetry now records:
+
+- monotonically increasing command id;
+- room id;
+- action;
+- success/failure;
+- latency in microseconds;
+- recent error message when a command fails.
+
+Next cut:
+
+1. Audit `start` and `cancel` carefully before moving them into the mailbox,
+   because they touch `WaitForReady` state and send game-control messages.
+2. Add tests around the gateway fallback behavior.
+3. Begin moving selected room-owned state into actor-local ownership once the
+   command boundary has stable failure and latency metrics.
