@@ -15,6 +15,7 @@ pub mod persistence;
 pub mod persistence_worker;
 pub mod phira_client;
 pub mod simulation;
+pub mod simulation_realistic;
 pub mod db;
 pub mod extensions;
 pub mod internal_hooks;

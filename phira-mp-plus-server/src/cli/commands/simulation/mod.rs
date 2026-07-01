@@ -84,6 +84,35 @@ impl CliHandler {
     }
 
     pub(in crate::cli) async fn simulation_run(&self, args: &[&str]) {
+        // Check for "realistic" keyword — uses RealisticSimulationRunner
+        if args.first().copied() == Some("realistic") {
+            let seed = self.state.simulation.status().await.seed;
+            let preset = args
+                .get(1)
+                .and_then(|value| crate::simulation::SimulationPreset::parse(value))
+                .unwrap_or(crate::simulation::SimulationPreset::Baseline);
+            let mut config = preset.defaults(seed);
+            for token in &args[2..] {
+                let Some((key, value)) = token.split_once('=') else {
+                    self.out(format!("  {} 无效参数：{token}", c::red("✗")));
+                    return;
+                };
+                if let Err(err) = config.apply_kv(key, value) {
+                    self.out(format!("  {} {}", c::red("✗"), err));
+                    return;
+                }
+            }
+            match crate::simulation_realistic::RealisticSimulationRunner::start(&self.state, config).await {
+                Ok(runner) => {
+                    self.out(format!("  {} Realistic simulation 已启动: run_id={}", c::green("✓"), runner.run_id));
+                    self.out(format!("  {} rooms={} users={} duration_secs={} (创建了真实 Room/User 对象)",
+                        c::dim("│"), runner.rooms.len(), runner.user_ids.len(), runner.config.duration_secs));
+                }
+                Err(err) => self.out(format!("  {} {}", c::red("✗"), err)),
+            }
+            return;
+        }
+
         let seed = self.state.simulation.status().await.seed;
         let preset = args
             .first()
