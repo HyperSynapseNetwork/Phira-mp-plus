@@ -925,8 +925,12 @@ impl CliHandler {
                 self.out(format!("  {} shadow world: {} users / {} rooms / {} rounds materialized",
                     c::dim("│"), status.materialized_users, status.materialized_rooms, status.materialized_rounds));
                 if status.config.auto_tick {
-                    spawn_simulation_runner(Arc::clone(&self.state), self.out_tx.clone(), run_id, status.config.clone());
-                    self.out(format!("  {} 自动 runner 已启动；到达 duration 后会自动 stop", c::dim("▸")));
+                    if let Some(run_id) = status.run_id {
+                        spawn_simulation_runner(Arc::clone(&self.state), self.out_tx.clone(), run_id, status.config.clone());
+                        self.out(format!("  {} 自动 runner 已启动；到达 duration 后会自动 stop", c::dim("▸")));
+                    } else {
+                        self.out(format!("  {} simulation 已启动但缺少 run_id，自动 runner 未启动", c::yellow("!")));
+                    }
                 } else {
                     self.out(format!("  {} auto=false，需手动执行 simulation tick [n] 推进", c::dim("▸")));
                 }
