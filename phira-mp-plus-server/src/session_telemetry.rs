@@ -9,7 +9,7 @@ use crate::plugin::PluginEvent;
 use crate::room::Room;
 use crate::session::User;
 use phira_mp_common::{JudgeEvent, ServerCommand, TouchFrame};
-use std::sync::{atomic::Ordering, Arc};
+use std::{sync::{atomic::Ordering, Arc}, time::Instant};
 use tracing::{debug, trace};
 
 pub(crate) async fn handle_touches(user: Arc<User>, room: Arc<Room>, frames: Arc<Vec<TouchFrame>>) {
@@ -140,6 +140,10 @@ fn should_broadcast_monitor_telemetry(has_active_monitors: bool) -> bool {
     has_active_monitors
 }
 
+fn elapsed_ms(start: Instant) -> u64 {
+    u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX)
+}
+
 async fn persist_touches(
     user: &Arc<User>,
     room: &Arc<Room>,
@@ -156,6 +160,7 @@ async fn persist_touches(
         let telemetry_mode = user.server.persistence_worker.telemetry_cutover_mode().await;
         let cutover = telemetry_mode.cutover_decision();
         let mut runtime_enqueue_ok = false;
+        let mut runtime_enqueue_ms = 0;
         if cutover.enqueue_worker {
             let payload = serde_json::json!({
                 "runtime_v2_source": "session_direct",
@@ -167,6 +172,7 @@ async fn persist_touches(
                 "count": touch_data.len(),
                 "data": touch_data,
             });
+            let enqueue_started = Instant::now();
             runtime_enqueue_ok = user
                 .server
                 .persistence_worker
@@ -178,14 +184,35 @@ async fn persist_touches(
                 })
                 .await
                 .is_ok();
+            runtime_enqueue_ms = elapsed_ms(enqueue_started);
         }
-        if cutover.should_write_direct_after_worker_enqueue(runtime_enqueue_ok) {
+        let direct_attempted = cutover.should_write_direct_after_worker_enqueue(runtime_enqueue_ok);
+        let mut direct_written = false;
+        let mut direct_write_ms = None;
+        if direct_attempted {
             if let Some(rs) = &room.round_store {
+                let direct_started = Instant::now();
                 rs.append_touches(rid, user.id, touch_data).await;
+                direct_write_ms = Some(elapsed_ms(direct_started));
+                direct_written = true;
             }
         } else {
             trace!(room = %room.id, user_id = user.id, mode = telemetry_mode.as_str(), "touch direct write skipped by telemetry cutover mode");
         }
+        user.server.persistence_worker.record_telemetry_cutover_observation(
+            crate::persistence::TelemetryCutoverObservation {
+                kind: "touch".to_string(),
+                mode: telemetry_mode.as_str().to_string(),
+                item_count: touch_data.len(),
+                worker_attempted: cutover.enqueue_worker,
+                worker_enqueued: runtime_enqueue_ok,
+                worker_enqueue_ms: runtime_enqueue_ms,
+                direct_attempted,
+                direct_written,
+                direct_write_ms,
+                fallback_direct: cutover.fallback_to_direct_on_enqueue_failure && direct_attempted && !runtime_enqueue_ok,
+            },
+        ).await;
     } else {
         debug!(room = %room.id, user_id = user.id, "touch data received without current round; cached only");
     }
@@ -207,6 +234,7 @@ async fn persist_judges(
         let telemetry_mode = user.server.persistence_worker.telemetry_cutover_mode().await;
         let cutover = telemetry_mode.cutover_decision();
         let mut runtime_enqueue_ok = false;
+        let mut runtime_enqueue_ms = 0;
         if cutover.enqueue_worker {
             let payload = serde_json::json!({
                 "runtime_v2_source": "session_direct",
@@ -218,6 +246,7 @@ async fn persist_judges(
                 "count": judge_data.len(),
                 "data": judge_data,
             });
+            let enqueue_started = Instant::now();
             runtime_enqueue_ok = user
                 .server
                 .persistence_worker
@@ -229,14 +258,35 @@ async fn persist_judges(
                 })
                 .await
                 .is_ok();
+            runtime_enqueue_ms = elapsed_ms(enqueue_started);
         }
-        if cutover.should_write_direct_after_worker_enqueue(runtime_enqueue_ok) {
+        let direct_attempted = cutover.should_write_direct_after_worker_enqueue(runtime_enqueue_ok);
+        let mut direct_written = false;
+        let mut direct_write_ms = None;
+        if direct_attempted {
             if let Some(rs) = &room.round_store {
+                let direct_started = Instant::now();
                 rs.append_judges(rid, user.id, judge_data).await;
+                direct_write_ms = Some(elapsed_ms(direct_started));
+                direct_written = true;
             }
         } else {
             trace!(room = %room.id, user_id = user.id, mode = telemetry_mode.as_str(), "judge direct write skipped by telemetry cutover mode");
         }
+        user.server.persistence_worker.record_telemetry_cutover_observation(
+            crate::persistence::TelemetryCutoverObservation {
+                kind: "judge".to_string(),
+                mode: telemetry_mode.as_str().to_string(),
+                item_count: judge_data.len(),
+                worker_attempted: cutover.enqueue_worker,
+                worker_enqueued: runtime_enqueue_ok,
+                worker_enqueue_ms: runtime_enqueue_ms,
+                direct_attempted,
+                direct_written,
+                direct_write_ms,
+                fallback_direct: cutover.fallback_to_direct_on_enqueue_failure && direct_attempted && !runtime_enqueue_ok,
+            },
+        ).await;
     } else {
         debug!(room = %room.id, user_id = user.id, "judge data received without current round; cached only");
     }

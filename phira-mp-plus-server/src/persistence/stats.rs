@@ -1,6 +1,6 @@
 //! Low-overhead PersistenceWorker stats and trace helpers.
 
-use crate::persistence::PersistenceQueueHealth;
+use crate::persistence::{PersistencePipeline, PersistenceQueueHealth};
 use crate::telemetry_batcher::TelemetryBatcherStats;
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeMap, sync::Arc};
@@ -15,6 +15,133 @@ pub struct PersistenceTraceEntry {
     pub kind: String,
     pub simulation: bool,
     pub summary: String,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct PersistenceLatencyStats {
+    pub samples: u64,
+    pub total_ms: u64,
+    pub avg_ms: u64,
+    pub max_ms: u64,
+    pub last_ms: u64,
+}
+
+impl PersistenceLatencyStats {
+    pub fn record(&mut self, elapsed_ms: u64) {
+        self.samples += 1;
+        self.total_ms = self.total_ms.saturating_add(elapsed_ms);
+        self.last_ms = elapsed_ms;
+        self.max_ms = self.max_ms.max(elapsed_ms);
+        self.avg_ms = if self.samples == 0 { 0 } else { self.total_ms / self.samples };
+    }
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct TelemetryCutoverObservation {
+    pub kind: String,
+    pub mode: String,
+    pub item_count: usize,
+    pub worker_attempted: bool,
+    pub worker_enqueued: bool,
+    pub worker_enqueue_ms: u64,
+    pub direct_attempted: bool,
+    pub direct_written: bool,
+    pub direct_write_ms: Option<u64>,
+    pub fallback_direct: bool,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct TelemetryCutoverStats {
+    pub observed_batches: u64,
+    pub observed_items: u64,
+    pub worker_attempted_batches: u64,
+    pub worker_enqueued_batches: u64,
+    pub worker_failed_batches: u64,
+    pub worker_enqueued_items: u64,
+    pub direct_attempted_batches: u64,
+    pub direct_written_batches: u64,
+    pub direct_skipped_batches: u64,
+    pub direct_written_items: u64,
+    pub fallback_direct_batches: u64,
+    pub worker_only_dry_run_success_batches: u64,
+    pub worker_only_dry_run_failed_batches: u64,
+    pub worker_enqueue_success_ratio_percent: u8,
+    pub worker_only_dry_run_success_ratio_percent: u8,
+    pub readiness: String,
+    pub worker_enqueue_latency: PersistenceLatencyStats,
+    pub direct_write_latency: PersistenceLatencyStats,
+}
+
+impl TelemetryCutoverStats {
+    pub fn record(&mut self, observation: &TelemetryCutoverObservation) {
+        self.observed_batches += 1;
+        self.observed_items = self.observed_items.saturating_add(observation.item_count as u64);
+        if observation.worker_attempted {
+            self.worker_attempted_batches += 1;
+            self.worker_enqueue_latency.record(observation.worker_enqueue_ms);
+            if observation.worker_enqueued {
+                self.worker_enqueued_batches += 1;
+                self.worker_enqueued_items = self.worker_enqueued_items.saturating_add(observation.item_count as u64);
+            } else {
+                self.worker_failed_batches += 1;
+            }
+        }
+        if observation.direct_attempted {
+            self.direct_attempted_batches += 1;
+            if observation.direct_written {
+                self.direct_written_batches += 1;
+                self.direct_written_items = self.direct_written_items.saturating_add(observation.item_count as u64);
+                if let Some(elapsed_ms) = observation.direct_write_ms {
+                    self.direct_write_latency.record(elapsed_ms);
+                }
+            } else {
+                self.direct_skipped_batches += 1;
+            }
+        } else {
+            self.direct_skipped_batches += 1;
+        }
+        if observation.fallback_direct {
+            self.fallback_direct_batches += 1;
+        }
+        if observation.mode == "dual_write" && observation.worker_attempted && observation.direct_attempted {
+            if observation.worker_enqueued {
+                self.worker_only_dry_run_success_batches += 1;
+            } else {
+                self.worker_only_dry_run_failed_batches += 1;
+            }
+        }
+        self.refresh_derived();
+    }
+
+    pub fn refresh_derived(&mut self) {
+        self.worker_enqueue_success_ratio_percent = percent(
+            self.worker_enqueued_batches,
+            self.worker_attempted_batches,
+        );
+        let dry_total = self
+            .worker_only_dry_run_success_batches
+            .saturating_add(self.worker_only_dry_run_failed_batches);
+        self.worker_only_dry_run_success_ratio_percent = percent(
+            self.worker_only_dry_run_success_batches,
+            dry_total,
+        );
+        self.readiness = if dry_total == 0 {
+            "insufficient_dual_write_samples".to_string()
+        } else if self.worker_only_dry_run_failed_batches == 0 {
+            "enqueue_path_ready_for_worker_only_trial".to_string()
+        } else if self.worker_only_dry_run_success_ratio_percent >= 99 {
+            "nearly_ready_but_investigate_enqueue_failures".to_string()
+        } else {
+            "not_ready_worker_enqueue_failures_present".to_string()
+        };
+    }
+}
+
+fn percent(numerator: u64, denominator: u64) -> u8 {
+    if denominator == 0 {
+        return 0;
+    }
+    ((numerator.saturating_mul(100)) / denominator).min(100) as u8
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -35,6 +162,10 @@ pub struct PersistenceStats {
     pub production_persist_skipped: u64,
     pub production_telemetry_staged: u64,
     pub production_telemetry_stage_failed: u64,
+    pub telemetry_cutover: TelemetryCutoverStats,
+    pub db_dispatch: BTreeMap<String, PersistenceLatencyStats>,
+    pub db_dispatch_failures: BTreeMap<String, u64>,
+    pub db_dispatch_skipped_no_database: BTreeMap<String, u64>,
     pub benchmark_report_persist_requests: u64,
     pub benchmark_report_persist_skipped: u64,
     pub telemetry_cutover_mode: String,
@@ -55,9 +186,10 @@ impl PersistenceStats {
         self.backpressure_advice = match health {
             PersistenceQueueHealth::Idle => "idle; no persistence backlog".to_string(),
             PersistenceQueueHealth::Healthy => "healthy; keep observing worker latency".to_string(),
-            PersistenceQueueHealth::Backlogged => "backlogged; inspect DB latency before increasing queue capacity".to_string(),
+            PersistenceQueueHealth::Backlogged => "backlogged; inspect DB dispatch latency before increasing queue capacity".to_string(),
             PersistenceQueueHealth::Dropping => "dropping; fix downstream persistence pressure before adding features".to_string(),
         };
+        self.telemetry_cutover.refresh_derived();
     }
 }
 
@@ -92,6 +224,72 @@ pub async fn record_production_telemetry_stage_failed(
     let mut stats = stats.write().await;
     stats.production_telemetry_stage_failed += 1;
     stats.last_error = Some(error);
+}
+
+pub async fn record_telemetry_cutover_observation(
+    stats: &Arc<RwLock<PersistenceStats>>,
+    observation: TelemetryCutoverObservation,
+) {
+    let mut stats = stats.write().await;
+    stats.telemetry_cutover.record(&observation);
+    push_trace(
+        &mut stats,
+        "telemetry_cutover",
+        format!("telemetry.{}", observation.kind),
+        false,
+        format!(
+            "mode={} items={} worker={}/{} worker_ms={} direct={}/{} direct_ms={} fallback={}",
+            observation.mode,
+            observation.item_count,
+            observation.worker_attempted,
+            observation.worker_enqueued,
+            observation.worker_enqueue_ms,
+            observation.direct_attempted,
+            observation.direct_written,
+            observation.direct_write_ms.unwrap_or(0),
+            observation.fallback_direct,
+        ),
+    );
+}
+
+pub async fn record_db_dispatch_success(
+    stats: &Arc<RwLock<PersistenceStats>>,
+    pipeline: PersistencePipeline,
+    elapsed_ms: u64,
+) {
+    let mut stats = stats.write().await;
+    stats
+        .db_dispatch
+        .entry(pipeline.as_str().to_string())
+        .or_default()
+        .record(elapsed_ms);
+}
+
+pub async fn record_db_dispatch_failure(
+    stats: &Arc<RwLock<PersistenceStats>>,
+    pipeline: PersistencePipeline,
+    elapsed_ms: u64,
+    error: String,
+) {
+    let mut stats = stats.write().await;
+    stats
+        .db_dispatch
+        .entry(pipeline.as_str().to_string())
+        .or_default()
+        .record(elapsed_ms);
+    *stats.db_dispatch_failures.entry(pipeline.as_str().to_string()).or_insert(0) += 1;
+    stats.last_error = Some(error);
+}
+
+pub async fn record_db_dispatch_skipped_no_database(
+    stats: &Arc<RwLock<PersistenceStats>>,
+    pipeline: PersistencePipeline,
+) {
+    let mut stats = stats.write().await;
+    *stats
+        .db_dispatch_skipped_no_database
+        .entry(pipeline.as_str().to_string())
+        .or_insert(0) += 1;
 }
 
 pub async fn record_queued(
@@ -168,6 +366,39 @@ mod tests {
         assert_eq!(stats.pending, 80);
         assert_eq!(stats.pending_ratio_percent, 80);
         assert_eq!(stats.queue_health, "backlogged");
-        assert!(stats.backpressure_advice.contains("DB latency"));
+        assert!(stats.backpressure_advice.contains("DB dispatch latency"));
+    }
+
+    #[test]
+    fn telemetry_cutover_readiness_uses_dual_write_enqueue_observations() {
+        let mut cutover = TelemetryCutoverStats::default();
+        cutover.record(&TelemetryCutoverObservation {
+            kind: "touch".to_string(),
+            mode: "dual_write".to_string(),
+            item_count: 8,
+            worker_attempted: true,
+            worker_enqueued: true,
+            worker_enqueue_ms: 2,
+            direct_attempted: true,
+            direct_written: true,
+            direct_write_ms: Some(7),
+            fallback_direct: false,
+        });
+        assert_eq!(cutover.worker_enqueue_success_ratio_percent, 100);
+        assert_eq!(cutover.worker_only_dry_run_success_ratio_percent, 100);
+        assert_eq!(cutover.readiness, "enqueue_path_ready_for_worker_only_trial");
+        assert_eq!(cutover.worker_enqueue_latency.last_ms, 2);
+        assert_eq!(cutover.direct_write_latency.last_ms, 7);
+    }
+
+    #[test]
+    fn latency_stats_keep_constant_size_aggregates() {
+        let mut latency = PersistenceLatencyStats::default();
+        latency.record(4);
+        latency.record(8);
+        assert_eq!(latency.samples, 2);
+        assert_eq!(latency.avg_ms, 6);
+        assert_eq!(latency.max_ms, 8);
+        assert_eq!(latency.last_ms, 8);
     }
 }

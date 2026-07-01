@@ -21,6 +21,34 @@ impl CliHandler {
         self.out(format!("  {} prod_skip: {}", c::dim("│"), stats.production_persist_skipped));
         self.out(format!("  {} telemetry_staged: {}", c::dim("│"), stats.production_telemetry_staged));
         self.out(format!("  {} telemetry_failed: {}", c::dim("│"), stats.production_telemetry_stage_failed));
+        self.out(format!("  {} telemetry cutover", c::cyan("▸")));
+        self.out(format!(
+            "    observed_batches={} items={} worker_attempted={} worker_ok={} worker_failed={} enqueue_ok={}%% readiness={}",
+            stats.telemetry_cutover.observed_batches,
+            stats.telemetry_cutover.observed_items,
+            stats.telemetry_cutover.worker_attempted_batches,
+            stats.telemetry_cutover.worker_enqueued_batches,
+            stats.telemetry_cutover.worker_failed_batches,
+            stats.telemetry_cutover.worker_enqueue_success_ratio_percent,
+            stats.telemetry_cutover.readiness
+        ));
+        self.out(format!(
+            "    direct_attempted={} direct_written={} direct_skipped={} fallback_direct={} dry_run_ok={}%%",
+            stats.telemetry_cutover.direct_attempted_batches,
+            stats.telemetry_cutover.direct_written_batches,
+            stats.telemetry_cutover.direct_skipped_batches,
+            stats.telemetry_cutover.fallback_direct_batches,
+            stats.telemetry_cutover.worker_only_dry_run_success_ratio_percent
+        ));
+        self.out(format!(
+            "    enqueue_ms(avg/max/last)={}/{}/{} direct_ms(avg/max/last)={}/{}/{}",
+            stats.telemetry_cutover.worker_enqueue_latency.avg_ms,
+            stats.telemetry_cutover.worker_enqueue_latency.max_ms,
+            stats.telemetry_cutover.worker_enqueue_latency.last_ms,
+            stats.telemetry_cutover.direct_write_latency.avg_ms,
+            stats.telemetry_cutover.direct_write_latency.max_ms,
+            stats.telemetry_cutover.direct_write_latency.last_ms
+        ));
         self.out(format!("  {} benchmark_reports: queued={} skipped_no_db={}", c::dim("│"), stats.benchmark_report_persist_requests, stats.benchmark_report_persist_skipped));
         self.out(format!("  {} telemetry_mode:   {} (changes={})", c::dim("│"), stats.telemetry_cutover_mode, stats.telemetry_cutover_changes));
         self.out(format!("  {} telemetry batcher", c::cyan("▸")));
@@ -36,6 +64,11 @@ impl CliHandler {
             stats.telemetry.write_item_rows, stats.telemetry.write_errors
         ));
         self.out(format!(
+            "    db_dispatch_ms(avg/max/last)={}/{}/{} samples={}",
+            stats.telemetry.db_dispatch_avg_ms, stats.telemetry.db_dispatch_max_ms,
+            stats.telemetry.db_dispatch_last_ms, stats.telemetry.db_dispatch_samples
+        ));
+        self.out(format!(
             "    schema_v={} last_batch={} touch_items={} judge_items={}",
             stats.telemetry.schema_version,
             stats.telemetry.last_batch_uuid.clone().unwrap_or_else(|| "-".to_string()),
@@ -47,6 +80,17 @@ impl CliHandler {
         ));
         self.out(format!("    telemetry_last_err={}", stats.telemetry.last_error.clone().unwrap_or_else(|| "-".to_string())));
         self.out(format!("  {} last_err:  {}", c::dim("│"), stats.last_error.clone().unwrap_or_else(|| "-".to_string())));
+        if !stats.db_dispatch.is_empty() {
+            self.out(format!("  {} db dispatch latency by pipeline", c::cyan("▸")));
+            for (pipeline, latency) in &stats.db_dispatch {
+                let failures = stats.db_dispatch_failures.get(pipeline).copied().unwrap_or(0);
+                let skipped = stats.db_dispatch_skipped_no_database.get(pipeline).copied().unwrap_or(0);
+                self.out(format!(
+                    "    {:<22} samples={} avg={}ms max={}ms last={}ms failures={} skipped_no_db={}",
+                    pipeline, latency.samples, latency.avg_ms, latency.max_ms, latency.last_ms, failures, skipped
+                ));
+            }
+        }
         if !stats.by_kind.is_empty() {
             self.out(format!("  {} by kind", c::cyan("▸")));
             for (kind, count) in stats.by_kind.iter().rev().take(16) {
@@ -64,5 +108,6 @@ impl CliHandler {
         self.out(format!("  {} Touch/Judge 持久化不依赖 active monitor；active monitor 只控制实时 monitor 广播", c::dim("▸")));
         self.out(format!("  {} BenchmarkReport 已通过 benchmark.completed → PersistenceWorker → mp_runtime_benchmark_reports 镜像，供 CLI/Web 只读历史查询", c::dim("▸")));
         self.out(format!("  {} Step 54 infra: PersistenceWorker 已拆为 message/stats/mirror/pipeline/worker，backpressure 为观测信号，不是粗暴限流", c::dim("▸")));
+        self.out(format!("  {} Step 55 infra: direct write / worker enqueue / DB dispatch latency 已分开观测，用于评估 worker_only，而不是强制切换", c::dim("▸")));
     }
 }

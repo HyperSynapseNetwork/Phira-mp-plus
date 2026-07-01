@@ -69,7 +69,7 @@ impl RuntimePlan {
                     title: "Touches/Judges persistence without active monitor",
                     status: "active",
                     priority: "P0",
-                    next_step: "Session telemetry path is audited and contract-tested: active monitors only control realtime broadcast, while Touch/Judge persistence still runs for active rounds without monitors; continue hardening worker-only cutover and recovery diagnostics.",
+                    next_step: "Session telemetry path is audited and contract-tested: active monitors only control realtime broadcast, while Touch/Judge persistence still runs for active rounds without monitors; direct write, worker enqueue and worker-only dry-run readiness are now separately observable before changing defaults.",
                 },
                 RuntimeObjective {
                     key: "phira-http",
@@ -83,7 +83,7 @@ impl RuntimePlan {
                     title: "Persistence Worker ownership",
                     status: "active",
                     priority: "P1",
-                    next_step: "PersistenceWorker is now split into message/stats/mirror/pipeline/worker modules, exposes backpressure as observation rather than throttling, and owns typed envelopes for EventBus mirrors, telemetry staging and BenchmarkReport history; next step is worker-only telemetry dry-run and DB latency attribution.",
+                    next_step: "PersistenceWorker is now split into message/stats/mirror/pipeline/worker modules, exposes backpressure as observation rather than throttling, and records telemetry cutover readiness plus DB dispatch latency by pipeline; next step is async DB acknowledgement paths for high-frequency telemetry and simulation cleanup.",
                 },
                 RuntimeObjective {
                     key: "eventbus",

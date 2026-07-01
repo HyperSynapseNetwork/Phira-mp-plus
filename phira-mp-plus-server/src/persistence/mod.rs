@@ -17,5 +17,5 @@ pub use benchmark::{BenchmarkReportHistoryQuery, BenchmarkReportHistoryRow, Benc
 pub use diagnostics::{PersistencePipeline, PersistenceQueueHealth};
 pub use message::PersistenceEvent;
 pub use mirror::spawn_event_bus_mirror;
-pub use stats::{PersistenceStats, PersistenceTraceEntry};
+pub use stats::{PersistenceLatencyStats, PersistenceStats, PersistenceTraceEntry, TelemetryCutoverObservation, TelemetryCutoverStats};
 pub use worker::PersistenceWorker;

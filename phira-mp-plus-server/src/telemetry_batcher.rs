@@ -13,7 +13,7 @@
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::{collections::VecDeque, sync::{atomic::{AtomicU64, Ordering}, Arc}, time::{Duration, SystemTime, UNIX_EPOCH}};
+use std::{collections::VecDeque, sync::{atomic::{AtomicU64, Ordering}, Arc}, time::{Duration, Instant, SystemTime, UNIX_EPOCH}};
 use tokio::sync::{mpsc, RwLock};
 use tracing::{debug, trace, warn};
 
@@ -182,6 +182,11 @@ pub struct TelemetryBatcherStats {
     pub write_items: u64,
     pub write_item_rows: u64,
     pub write_errors: u64,
+    pub db_dispatch_samples: u64,
+    pub db_dispatch_total_ms: u64,
+    pub db_dispatch_avg_ms: u64,
+    pub db_dispatch_max_ms: u64,
+    pub db_dispatch_last_ms: u64,
     pub schema_version: i32,
     pub last_batch_uuid: Option<String>,
     pub touch_items: u64,
@@ -216,6 +221,11 @@ impl TelemetryBatcherStats {
             write_items: 0,
             write_item_rows: 0,
             write_errors: 0,
+            db_dispatch_samples: 0,
+            db_dispatch_total_ms: 0,
+            db_dispatch_avg_ms: 0,
+            db_dispatch_max_ms: 0,
+            db_dispatch_last_ms: 0,
             schema_version: TELEMETRY_SCHEMA_VERSION,
             last_batch_uuid: None,
             touch_items: 0,
@@ -386,6 +396,18 @@ async fn update_pending(stats: &Arc<RwLock<TelemetryBatcherStats>>, pending: usi
     stats.write().await.pending = pending;
 }
 
+fn elapsed_ms(start: Instant) -> u64 {
+    u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX)
+}
+
+fn record_db_dispatch_latency(stats: &mut TelemetryBatcherStats, elapsed_ms: u64) {
+    stats.db_dispatch_samples += 1;
+    stats.db_dispatch_total_ms = stats.db_dispatch_total_ms.saturating_add(elapsed_ms);
+    stats.db_dispatch_last_ms = elapsed_ms;
+    stats.db_dispatch_max_ms = stats.db_dispatch_max_ms.max(elapsed_ms);
+    stats.db_dispatch_avg_ms = stats.db_dispatch_total_ms / stats.db_dispatch_samples.max(1);
+}
+
 async fn flush_pending(
     policy: &TelemetryBatcherPolicy,
     pending: &mut VecDeque<TelemetryItem>,
@@ -405,16 +427,21 @@ async fn flush_pending(
     }
     let first = flushed.first().cloned();
     let batch_uuid = next_batch_uuid();
+    let write_started = Instant::now();
     let write_result = if policy.dry_run {
         Ok((false, 0usize))
     } else {
         write_runtime_telemetry_batch(&batch_uuid, &flushed, reason).map(|item_rows| (true, item_rows))
     };
+    let write_elapsed_ms = elapsed_ms(write_started);
 
     let mut stats = stats.write().await;
     stats.flushed_batches += 1;
     stats.flushed_items += telemetry_points as u64;
     stats.pending = 0;
+    if !policy.dry_run {
+        record_db_dispatch_latency(&mut stats, write_elapsed_ms);
+    }
     let action = match write_result {
         Ok((true, item_rows)) => {
             stats.write_batches += 1;
@@ -608,4 +635,15 @@ mod tests {
             );
         }
     }
+    #[test]
+    fn db_dispatch_latency_uses_constant_size_aggregates() {
+        let mut stats = TelemetryBatcherStats::default();
+        record_db_dispatch_latency(&mut stats, 3);
+        record_db_dispatch_latency(&mut stats, 7);
+        assert_eq!(stats.db_dispatch_samples, 2);
+        assert_eq!(stats.db_dispatch_avg_ms, 5);
+        assert_eq!(stats.db_dispatch_max_ms, 7);
+        assert_eq!(stats.db_dispatch_last_ms, 7);
+    }
+
 }
