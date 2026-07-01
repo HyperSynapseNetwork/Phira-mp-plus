@@ -6,6 +6,7 @@ use std::sync::Arc;
 use tokio::sync::{mpsc, RwLock};
 use tracing::info;
 
+mod commands;
 mod dispatch;
 
 mod c {

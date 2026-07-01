@@ -853,3 +853,20 @@ This is a fast structural split, not a compatibility pass and not a new command
 surface.  Follow-up work can split `cli/dispatch.rs` further into
 `room/plugin/runtime/simulation/benchmark` modules, but only after the first
 boundary compiles cleanly in Actions.
+
+### Step 36: CLI command-family split
+
+Step 36 continues the CLI separation without adding new commands or changing
+command semantics.  The `cli/dispatch.rs` top-level router now delegates
+argument validation and command-family routing to `cli/commands/` modules:
+
+- `cli/commands/plugin.rs`
+- `cli/commands/room.rs`
+- `cli/commands/broadcast.rs`
+- `cli/commands/admin.rs`
+
+The goal is to stop the dispatch layer from becoming another monolith after it
+was split out of `cli.rs`.  Concrete command implementation methods still remain
+on `CliHandler` for now; this is intentional so the first family split stays
+low-risk.  Future steps can move the implementation bodies themselves into the
+same command-family modules after Actions validates this dispatch-only split.
