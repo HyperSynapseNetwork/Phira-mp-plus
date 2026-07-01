@@ -62,7 +62,7 @@ impl RuntimePlan {
                     title: "Touches/Judges persistence without active monitor",
                     status: "active",
                     priority: "P0",
-                    next_step: "Move high-frequency production telemetry to a batching worker after real-path validation.",
+                    next_step: "Production Touch/Judge now mirrors into a dry-run TelemetryBatcher; next step is validated batch database writes behind an explicit cutover switch.",
                 },
                 RuntimeObjective {
                     key: "phira-http",
@@ -76,7 +76,7 @@ impl RuntimePlan {
                     title: "Persistence Worker ownership",
                     status: "active",
                     priority: "P1",
-                    next_step: "Low-frequency production events now dual-write through PersistenceWorker; next migrate one direct db.rs low-frequency caller behind a worker-only path.",
+                    next_step: "Low-frequency production events dual-write through PersistenceWorker; high-frequency telemetry has a dry-run batcher and should gain validated batch writes next.",
                 },
                 RuntimeObjective {
                     key: "eventbus",

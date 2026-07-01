@@ -16,6 +16,8 @@ use std::{collections::BTreeMap, sync::Arc};
 use tokio::sync::{broadcast, mpsc, RwLock};
 use tracing::{debug, trace, warn};
 
+use crate::telemetry_batcher::{TelemetryBatcher, TelemetryBatcherPolicy, TelemetryBatcherStats, TelemetryItem, TelemetryKind};
+
 const MAX_PERSISTENCE_TRACE: usize = 128;
 
 #[derive(Debug, Clone)]
@@ -92,8 +94,10 @@ pub struct PersistenceStats {
     pub simulation_persist_requests: u64,
     pub production_persist_requests: u64,
     pub production_persist_skipped: u64,
+    pub production_telemetry_staged: u64,
     pub by_kind: BTreeMap<String, u64>,
     pub recent: Vec<PersistenceTraceEntry>,
+    pub telemetry: TelemetryBatcherStats,
     pub last_error: Option<String>,
 }
 
@@ -101,17 +105,21 @@ pub struct PersistenceStats {
 pub struct PersistenceWorker {
     tx: mpsc::Sender<PersistenceEvent>,
     stats: Arc<RwLock<PersistenceStats>>,
+    telemetry_batcher: Arc<TelemetryBatcher>,
 }
 
 impl PersistenceWorker {
     pub fn spawn(queue_capacity: usize) -> Arc<Self> {
         let capacity = queue_capacity.max(16);
         let (tx, mut rx) = mpsc::channel::<PersistenceEvent>(capacity);
+        let telemetry_batcher = TelemetryBatcher::spawn(TelemetryBatcherPolicy::default());
         let stats = Arc::new(RwLock::new(PersistenceStats {
             capacity,
+            telemetry: TelemetryBatcherStats::from_policy(&TelemetryBatcherPolicy::default()),
             ..PersistenceStats::default()
         }));
         let worker_stats = Arc::clone(&stats);
+        let worker_telemetry = Arc::clone(&telemetry_batcher);
 
         tokio::spawn(async move {
             while let Some(event) = rx.recv().await {
@@ -120,6 +128,8 @@ impl PersistenceWorker {
                 let summary = event.summary();
                 if persist_simulation_event_if_needed(&event) {
                     record_simulation_persist_request(&worker_stats).await;
+                } else if stage_production_telemetry_if_needed(&event, &worker_telemetry).await {
+                    record_production_telemetry_staged(&worker_stats).await;
                 } else if persist_production_event_if_needed(&event) {
                     record_production_persist_request(&worker_stats).await;
                 } else if !event.is_simulation() && !matches!(&event, PersistenceEvent::Flush | PersistenceEvent::Shutdown) {
@@ -142,7 +152,7 @@ impl PersistenceWorker {
             }
         });
 
-        Arc::new(Self { tx, stats })
+        Arc::new(Self { tx, stats, telemetry_batcher })
     }
 
     pub async fn enqueue(&self, event: PersistenceEvent) -> Result<(), PersistenceEvent> {
@@ -184,6 +194,7 @@ impl PersistenceWorker {
     pub async fn stats(&self) -> PersistenceStats {
         let mut stats = self.stats.read().await.clone();
         stats.pending = stats.queued.saturating_sub(stats.processed);
+        stats.telemetry = self.telemetry_batcher.stats().await;
         stats
     }
 
@@ -301,10 +312,30 @@ fn mirror_event_bus_event(event: &crate::event_bus::MpEvent) -> Option<Persisten
             json!({ "room_id": room_id.to_string(), "user_id": user_id, "ready": ready }),
             false,
         ),
-        // Touches/Judges are intentionally not mirrored yet. They are high-frequency
-        // payloads and should move only after batching policy and simulation data
-        // isolation are both finalized.
-        MpEvent::TouchesReceived { .. } | MpEvent::JudgesReceived { .. } => None,
+        MpEvent::TouchesReceived { room_id, user_id, count } => Some(PersistenceEvent::TouchBatch {
+            round_id: "eventbus-touch".to_string(),
+            user_id: *user_id,
+            payload: json!({
+                "room_id": room_id.to_string(),
+                "user_id": user_id,
+                "count": count,
+                "runtime_v2_source": "event_bus_count_only",
+                "runtime_v2_stage": "telemetry_batcher_dry_run",
+            }),
+            simulation: false,
+        }),
+        MpEvent::JudgesReceived { room_id, user_id, count } => Some(PersistenceEvent::JudgeBatch {
+            round_id: "eventbus-judge".to_string(),
+            user_id: *user_id,
+            payload: json!({
+                "room_id": room_id.to_string(),
+                "user_id": user_id,
+                "count": count,
+                "runtime_v2_source": "event_bus_count_only",
+                "runtime_v2_stage": "telemetry_batcher_dry_run",
+            }),
+            simulation: false,
+        }),
         MpEvent::RoundCompleted { room_id, round_id } => server_event(
             event.kind(),
             json!({ "room_id": room_id.to_string(), "round_id": round_id }),
@@ -427,6 +458,43 @@ fn persist_simulation_event_if_needed(event: &PersistenceEvent) -> bool {
     }
 }
 
+
+async fn stage_production_telemetry_if_needed(
+    event: &PersistenceEvent,
+    batcher: &Arc<TelemetryBatcher>,
+) -> bool {
+    if event.is_simulation() {
+        return false;
+    }
+
+    let item = match event {
+        PersistenceEvent::TouchBatch { round_id, user_id, payload, .. } => Some(TelemetryItem {
+            kind: TelemetryKind::Touch,
+            room_id: extract_room_id(payload),
+            round_id: Some(round_id.clone()),
+            user_id: *user_id,
+            item_count: extract_item_count(payload),
+            payload: payload.clone(),
+        }),
+        PersistenceEvent::JudgeBatch { round_id, user_id, payload, .. } => Some(TelemetryItem {
+            kind: TelemetryKind::Judge,
+            room_id: extract_room_id(payload),
+            round_id: Some(round_id.clone()),
+            user_id: *user_id,
+            item_count: extract_item_count(payload),
+            payload: payload.clone(),
+        }),
+        _ => None,
+    };
+
+    let Some(item) = item else {
+        return false;
+    };
+
+    let _ = batcher.enqueue(item).await;
+    true
+}
+
 fn persist_production_event_if_needed(event: &PersistenceEvent) -> bool {
     if event.is_simulation() {
         return false;
@@ -493,6 +561,15 @@ fn extract_user_id(payload: &Value) -> Option<i32> {
         .and_then(|value| i32::try_from(value).ok())
 }
 
+fn extract_item_count(payload: &Value) -> usize {
+    payload
+        .get("count")
+        .and_then(Value::as_u64)
+        .and_then(|value| usize::try_from(value).ok())
+        .unwrap_or(1)
+        .max(1)
+}
+
 fn extract_run_id(payload: &Value) -> Option<String> {
     payload
         .get("run_id")
@@ -510,6 +587,10 @@ async fn record_production_persist_request(stats: &Arc<RwLock<PersistenceStats>>
 
 async fn record_production_persist_skipped(stats: &Arc<RwLock<PersistenceStats>>) {
     stats.write().await.production_persist_skipped += 1;
+}
+
+async fn record_production_telemetry_staged(stats: &Arc<RwLock<PersistenceStats>>) {
+    stats.write().await.production_telemetry_staged += 1;
 }
 
 async fn record_queued(

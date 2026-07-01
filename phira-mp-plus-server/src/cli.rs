@@ -1631,6 +1631,15 @@ impl CliHandler {
                 self.out(format!("  {} sim_db_req:{}", c::dim("│"), stats.simulation_persist_requests));
                 self.out(format!("  {} prod_db_req:{}", c::dim("│"), stats.production_persist_requests));
                 self.out(format!("  {} prod_skip: {}", c::dim("│"), stats.production_persist_skipped));
+                self.out(format!("  {} telemetry_staged: {}", c::dim("│"), stats.production_telemetry_staged));
+                self.out(format!("  {} telemetry batcher", c::cyan("▸")));
+                self.out(format!("    enabled={} dry_run={} queued={} accepted={} dropped={} pending={} flushes={} flushed_items={}",
+                    stats.telemetry.enabled, stats.telemetry.dry_run, stats.telemetry.queued,
+                    stats.telemetry.accepted, stats.telemetry.dropped, stats.telemetry.pending,
+                    stats.telemetry.flushed_batches, stats.telemetry.flushed_items));
+                self.out(format!("    touch_items={} judge_items={} max_batch={} interval={}ms",
+                    stats.telemetry.touch_items, stats.telemetry.judge_items,
+                    stats.telemetry.max_items_per_batch, stats.telemetry.flush_interval_ms));
                 self.out(format!("  {} last_err:  {}", c::dim("│"), stats.last_error.clone().unwrap_or_else(|| "-".to_string())));
                 if !stats.by_kind.is_empty() {
                     self.out(format!("  {} by kind", c::cyan("▸")));
@@ -1645,7 +1654,7 @@ impl CliHandler {
                     }
                 }
                 self.out(format!("  {} 低频生产事件已 EventBus → Worker → mp_events 双写；现有 db.rs 直接写入路径仍保持不变", c::dim("▸")));
-                self.out(format!("  {} 生产 Touch/Judge 仍走现有直写路径，等批量 worker 策略稳定后再迁移", c::dim("▸")));
+                self.out(format!("  {} 生产 Touch/Judge 仍走现有直写路径；Runtime v2 只把 count-only 镜像送入 dry-run TelemetryBatcher", c::dim("▸")));
             }
             _ => {
                 self.out(format!("  {} 未知 runtime 子命令: {}", c::red("✗"), c::yellow(sub)));

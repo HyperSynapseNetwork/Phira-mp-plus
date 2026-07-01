@@ -484,3 +484,29 @@ Step 20 starts the first production-facing PersistenceWorker dual-write path:
 - `runtime persistence` now reports `prod_db_req` and `prod_skip` counters in addition to simulation persistence counters.
 
 This is a deliberate dual-write stage, not a cutover. The next safe step is to move one low-frequency direct caller to worker-only mode after comparing `mp_events` output from the direct path and Runtime v2 worker path.
+
+
+## Step 21 implementation status
+
+Step 21 adds the high-frequency telemetry batching staging layer without yet
+cutting production Touch/Judge persistence over to the worker.  The production
+truth path is still the Step 11 direct persistence fix, which stores
+Touches/Judges even when no active monitor is connected.
+
+New in this step:
+
+- `telemetry_batcher.rs` provides a bounded queue, batch sizing, interval flushes,
+  dry-run mode, drop counters and recent trace entries.
+- Production `touches.received` and `judges.received` EventBus events are now
+  mirrored into `PersistenceWorker` as count-only `TouchBatch` / `JudgeBatch`
+  staging events.
+- `PersistenceWorker` routes those production telemetry staging events into the
+  dry-run `TelemetryBatcher` instead of writing them to production tables.
+- `runtime persistence` now shows telemetry staged count, accepted/dropped counts,
+  pending queue size, flush count and touch/judge item totals.
+
+This is intentionally a measurement and backpressure step.  It lets the server
+observe real Touch/Judge throughput before moving production high-frequency data
+into worker-owned batch database writes.  Step 22 should add a guarded batch-write
+mode and keep the direct persistence path as the compatibility fallback until the
+new path has been validated under simulation and real clients.
