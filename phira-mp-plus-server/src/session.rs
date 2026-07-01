@@ -1001,108 +1001,130 @@ async fn process(user: Arc<User>, category: SessionCategory, cmd: ClientCommand)
         }
         ClientCommand::Touches { frames } => {
             get_room!(~ room);
-            if room.has_active_monitors().await {
-                let frame_count = frames.len();
-                debug!("received {} touch events from {}", frames.len(), user.id);
-                if let Some(frame) = frames.last() {
-                    user.game_time.store(frame.time.to_bits(), Ordering::SeqCst);
-                }
-                let touch_data: Vec<crate::plugin::TouchEventPoint> = frames
-                    .iter()
-                    .flat_map(|frame| {
-                        frame.points.iter().map(|(finger, pos)| {
-                            crate::plugin::TouchEventPoint {
-                                time: frame.time,
-                                finger: *finger,
-                                x: pos.x(),
-                                y: pos.y(),
-                            }
-                        })
-                    })
-                    .collect();
-                if !touch_data.is_empty() {
-                    room.store_player_touches(user.id, &touch_data).await;
-                    if let Some(rid) = room.current_round_id.read().await.as_ref() {
-                        if let Some(rs) = &room.round_store {
-                            rs.append_touches(&rid.to_string(), user.id, &touch_data).await;
+            let frame_count = frames.len();
+            let has_active_monitors = room.has_active_monitors().await;
+            debug!(
+                "received {} touch frames from {} (active_monitors={})",
+                frame_count, user.id, has_active_monitors
+            );
+            if let Some(frame) = frames.last() {
+                user.game_time.store(frame.time.to_bits(), Ordering::SeqCst);
+            }
+            let touch_data: Vec<crate::plugin::TouchEventPoint> = frames
+                .iter()
+                .flat_map(|frame| {
+                    frame.points.iter().map(|(finger, pos)| {
+                        crate::plugin::TouchEventPoint {
+                            time: frame.time,
+                            finger: *finger,
+                            x: pos.x(),
+                            y: pos.y(),
                         }
+                    })
+                })
+                .collect();
+            if !touch_data.is_empty() {
+                // Touches are gameplay telemetry, not monitor-only data.  Persist
+                // them whenever a round is active so unattended real games do not
+                // silently lose touch batches.
+                room.store_player_touches(user.id, &touch_data).await;
+                let round_id = room.current_round_id.read().await.as_ref().map(|rid| rid.to_string());
+                if let Some(rid) = round_id.as_ref() {
+                    if let Some(rs) = &room.round_store {
+                        rs.append_touches(rid, user.id, &touch_data).await;
                     }
+                } else {
+                    debug!(room = %room.id, user_id = user.id, "touch data received without current round; cached only");
                 }
-                user.server.publish_runtime_event(crate::event_bus::MpEvent::TouchesReceived {
-                    room_id: room.id.clone(),
-                    user_id: user.id,
-                    count: frame_count,
-                });
-                let pm = Arc::clone(&user.server.plugin_manager);
-                let room_id = room.id.to_string();
-                let touch_data_for_event = touch_data.clone();
-                let uid = user.id;
+            }
+            user.server.publish_runtime_event(crate::event_bus::MpEvent::TouchesReceived {
+                room_id: room.id.clone(),
+                user_id: user.id,
+                count: frame_count,
+            });
+            let pm = Arc::clone(&user.server.plugin_manager);
+            let room_id = room.id.to_string();
+            let touch_data_for_event = touch_data.clone();
+            let uid = user.id;
+            tokio::spawn(async move {
+                pm.trigger(&PluginEvent::PlayerTouches {
+                    user_id: uid,
+                    room_id,
+                    data: touch_data_for_event,
+                }).await;
+            });
+            if has_active_monitors {
+                let monitor_room = Arc::clone(&room);
                 tokio::spawn(async move {
-                    pm.trigger(&PluginEvent::PlayerTouches {
-                        user_id: uid,
-                        room_id,
-                        data: touch_data_for_event,
-                    }).await;
-                });
-                tokio::spawn(async move {
-                    room.broadcast_monitors(ServerCommand::Touches {
+                    monitor_room.broadcast_monitors(ServerCommand::Touches {
                         player: user.id,
                         frames,
                     })
                     .await;
                 });
             } else {
-                warn!("received touch events in non-live mode");
+                trace!(room = %room.id, user_id = user.id, "touch data persisted without active monitor broadcast");
             }
             None
         }
         ClientCommand::Judges { judges } => {
             get_room!(~ room);
-            if room.has_active_monitors().await {
-                let judge_count = judges.len();
-                debug!("received {} judge events from {}", judges.len(), user.id);
-                let judge_data: Vec<crate::plugin::JudgeEventItem> = judges
-                    .iter()
-                    .map(|j| crate::plugin::JudgeEventItem {
-                        time: j.time,
-                        line_id: j.line_id,
-                        note_id: j.note_id,
-                        judgement: format!("{:?}", j.judgement),
-                    })
-                    .collect();
-                if !judge_data.is_empty() {
-                    room.store_player_judges(user.id, &judge_data).await;
-                    if let Some(rid) = room.current_round_id.read().await.as_ref() {
-                        if let Some(rs) = &room.round_store {
-                            rs.append_judges(&rid.to_string(), user.id, &judge_data).await;
-                        }
+            let judge_count = judges.len();
+            let has_active_monitors = room.has_active_monitors().await;
+            debug!(
+                "received {} judge events from {} (active_monitors={})",
+                judge_count, user.id, has_active_monitors
+            );
+            let judge_data: Vec<crate::plugin::JudgeEventItem> = judges
+                .iter()
+                .map(|j| crate::plugin::JudgeEventItem {
+                    time: j.time,
+                    line_id: j.line_id,
+                    note_id: j.note_id,
+                    judgement: format!("{:?}", j.judgement),
+                })
+                .collect();
+            if !judge_data.is_empty() {
+                // Judges are gameplay telemetry, not monitor-only data.  Persist
+                // them whenever a round is active so unattended real games do not
+                // silently lose judge batches.
+                room.store_player_judges(user.id, &judge_data).await;
+                let round_id = room.current_round_id.read().await.as_ref().map(|rid| rid.to_string());
+                if let Some(rid) = round_id.as_ref() {
+                    if let Some(rs) = &room.round_store {
+                        rs.append_judges(rid, user.id, &judge_data).await;
                     }
+                } else {
+                    debug!(room = %room.id, user_id = user.id, "judge data received without current round; cached only");
                 }
-                user.server.publish_runtime_event(crate::event_bus::MpEvent::JudgesReceived {
-                    room_id: room.id.clone(),
-                    user_id: user.id,
-                    count: judge_count,
-                });
-                let pm = Arc::clone(&user.server.plugin_manager);
-                let room_id = room.id.to_string();
-                let judge_data_for_event = judge_data.clone();
-                let uid = user.id;
+            }
+            user.server.publish_runtime_event(crate::event_bus::MpEvent::JudgesReceived {
+                room_id: room.id.clone(),
+                user_id: user.id,
+                count: judge_count,
+            });
+            let pm = Arc::clone(&user.server.plugin_manager);
+            let room_id = room.id.to_string();
+            let judge_data_for_event = judge_data.clone();
+            let uid = user.id;
+            tokio::spawn(async move {
+                pm.trigger(&PluginEvent::PlayerJudges {
+                    user_id: uid,
+                    room_id,
+                    data: judge_data_for_event,
+                }).await;
+            });
+            if has_active_monitors {
+                let monitor_room = Arc::clone(&room);
                 tokio::spawn(async move {
-                    pm.trigger(&PluginEvent::PlayerJudges {
-                        user_id: uid,
-                        room_id,
-                        data: judge_data_for_event,
-                    }).await;
-                });
-                tokio::spawn(async move {
-                    room.broadcast_monitors(ServerCommand::Judges {
+                    monitor_room.broadcast_monitors(ServerCommand::Judges {
                         player: user.id,
                         judges,
                     })
                     .await;
                 });
             } else {
-                warn!("received judge events in non-live mode");
+                trace!(room = %room.id, user_id = user.id, "judge data persisted without active monitor broadcast");
             }
             None
         }

@@ -30,16 +30,20 @@ The existing room/session/CLI/database paths remain the source of truth.
 ## Target runtime layers
 
 ```text
-CLI / TUI / in-game admin / WIT / future Web admin
+CLI / TUI / in-game admin / WIT
         ↓
 Command Registry / Command Tree
         ↓
-Runtime Services
+Actor Runtime facade
         ↓
-EventBus
+Server / Session / Room / Persistence / Plugin / Simulation actors
         ↓
-Plugin / Web API / Metrics / Persistence / TUI / Simulation
+EventBus / Metrics / Persistence / TUI diagnostics
 ```
+
+Web management API is intentionally out of scope.  Web routes may expose read-only
+diagnostics such as `/api/runtime`, but Runtime v2 should not add privileged write
+operations through Web management endpoints.
 
 ## Simulation modes
 
@@ -242,3 +246,19 @@ runtime persistence
 ```
 
 This step makes Simulation usable as a repeatable regression/load workflow instead of a single one-off scenario run.
+
+
+## Step 11 implementation status
+
+Step 11 fixes a real production data-path issue and records the Actor-model destination more explicitly:
+
+- Production `Touches` and `Judges` are now persisted/cached even when there is no active game monitor.
+- Active monitors now only control live monitor broadcast, not whether gameplay telemetry is stored.
+- Player live telemetry caches and `RoundStore` appends run whenever the room has a current round.
+- Plugin `PlayerTouches` / `PlayerJudges` and Runtime v2 `touches.received` / `judges.received` signals are emitted regardless of monitor presence.
+- The old warning for non-live Touch/Judge receipt is replaced with trace/debug diagnostics because this is now an expected unattended-game path.
+- `actor_runtime.rs` introduces the first explicit Actor-model blueprint for splitting responsibilities currently concentrated in `server.rs`, `session.rs`, `room.rs` and `cli.rs`.
+- `runtime actors` prints the migration boundaries and next step for each actor boundary.
+- Web management API remains out of scope; the project keeps CLI/TUI/in-game admin/WIT as write-capable control surfaces.
+
+This is the first Step that intentionally fixes a production gameplay data problem while still avoiding a risky Room state-machine ownership migration.

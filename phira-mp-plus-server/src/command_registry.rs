@@ -3,8 +3,9 @@
 //! This module stores command metadata, help text and completion hints only.
 //! The existing CLI dispatcher remains the source of truth for command
 //! execution until commands are migrated one by one. Keeping metadata separate
-//! lets TUI completion, in-game admin commands, WIT APIs and future Web admin
-//! APIs converge on the same usage model without a risky rewrite of `cli.rs`.
+//! lets TUI completion, in-game admin commands and WIT APIs converge on the
+//! same usage model without a risky rewrite of `cli.rs`. Runtime v2 intentionally
+//! does not add a privileged Web management API.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -367,6 +368,7 @@ pub fn runtime_v2_registry() -> CommandRegistry {
         CommandSpec::new("runtime commands", "runtime-v2", "查看 Command Registry 统计。", "runtime commands"),
         CommandSpec::new("runtime events", "runtime-v2", "查看 EventBus 发布统计与最近事件。", "runtime events"),
         CommandSpec::new("runtime persistence", "runtime-v2", "查看 Persistence Worker 队列统计。", "runtime persistence"),
+        CommandSpec::new("runtime actors", "runtime-v2", "查看 Actor 模型迁移蓝图。", "runtime actors"),
     ] {
         register(&mut registry, spec.example("runtime status"));
     }

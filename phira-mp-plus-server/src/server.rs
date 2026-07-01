@@ -386,6 +386,8 @@ pub struct PlusServerState {
     pub simulation: Arc<crate::simulation::SimulationManager>,
     /// Runtime v2 持久化 Worker 骨架。现有 db.rs 写入路径暂不迁移。
     pub persistence_worker: Arc<crate::persistence_worker::PersistenceWorker>,
+    /// Runtime v2 Actor 模型迁移蓝图。当前是诊断/路线层，不替换真实协议热路径。
+    pub actor_runtime: Arc<crate::actor_runtime::ActorRuntime>,
     /// 压测用 Phira token 列表（来自配置或 benchmark-bind 命令）。
     pub bench_tokens: RwLock<Vec<String>>,
     /// 管理员 Phira ID 集合。可由配置、PostgreSQL 设置、CLI/WIT 动态修改。
@@ -477,6 +479,7 @@ impl PlusServer {
             Arc::clone(&event_bus),
             Arc::clone(&persistence_worker),
         );
+        let actor_runtime = Arc::new(crate::actor_runtime::ActorRuntime::new_blueprint());
 
         let events = Arc::new(SseHub::new());
         let state = Arc::new(PlusServerState {
@@ -503,6 +506,7 @@ impl PlusServer {
             event_bus,
             simulation,
             persistence_worker,
+            actor_runtime,
             bench_tokens: RwLock::new(bench_tokens),
             admin_ids: RwLock::new(admin_ids),
             room_monitor_key: generate_secret_key("room_monitor", 64).unwrap_or_default(),

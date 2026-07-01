@@ -1310,9 +1310,12 @@ impl CliHandler {
                 self.out(format!("  {} command specs:      {}", c::dim("│"), self.state.command_registry.iter().count()));
                 self.out(format!("  {} event subscribers:  {}", c::dim("│"), event_stats.receiver_count));
                 self.out(format!("  {} events published:   {}", c::dim("│"), event_stats.published));
+                let actors = self.state.actor_runtime.stats().await;
                 self.out(format!("  {} simulation running: {}", c::dim("│"), sim.running));
                 self.out(format!("  {} persistence queue:  queued={} processed={} dropped={}", c::dim("│"), persistence.queued, persistence.processed, persistence.dropped));
-                self.out(format!("  {} 现有 Room/Session/DB 主逻辑仍未迁移到 Runtime v2", c::dim("▸")));
+                self.out(format!("  {} actor blueprint:    {} boundaries", c::dim("│"), actors.boundaries.len()));
+                self.out(format!("  {} web management API: {}", c::dim("│"), actors.web_management_api));
+                self.out(format!("  {} 现有 Room/Session/DB 主逻辑仍未迁移到 Runtime v2；Actor 模型是最终迁移目标", c::dim("▸")));
             }
             "commands" | "cmds" => {
                 self.out(format!("  {} Command Registry", c::green("◆")));
@@ -1341,6 +1344,25 @@ impl CliHandler {
                     }
                 }
                 self.out(format!("  {} 当前只作为 Runtime v2 新功能事件脊柱，未替换旧插件/房间调用", c::dim("▸")));
+            }
+            "actors" | "actor" | "actor-model" => {
+                let stats = self.state.actor_runtime.stats().await;
+                self.out(format!("  {} Runtime v2 Actor Model Blueprint", c::green("◆")));
+                self.out(format!("  {} phase:              {}", c::dim("│"), stats.phase));
+                self.out(format!("  {} web management API: {}", c::dim("│"), stats.web_management_api));
+                self.out(format!("  {} rule:               {}", c::dim("│"), stats.rule));
+                self.out(format!("  {} boundaries", c::cyan("▸")));
+                for boundary in stats.boundaries {
+                    self.out(format!(
+                        "    {:<20} {:<12} {}",
+                        c::bold(&boundary.name),
+                        boundary.status.as_str(),
+                        boundary.responsibility
+                    ));
+                    self.out(format!("      {} next: {}", c::dim("▸"), boundary.next_step));
+                    self.out(format!("      {} files: {}", c::dim("▸"), boundary.source_files.join(", ")));
+                }
+                self.out(format!("  {} 迁移节奏：先镜像事件，再迁移读路径，再迁移写路径，最后删旧直连调用", c::dim("▸")));
             }
             "persistence" | "persist" | "db" => {
                 let stats = self.state.persistence_worker.stats().await;
@@ -1371,7 +1393,7 @@ impl CliHandler {
             }
             _ => {
                 self.out(format!("  {} 未知 runtime 子命令: {}", c::red("✗"), c::yellow(sub)));
-                self.out(format!("  {} 可用: runtime status | commands | events | persistence", c::dim("▸")));
+                self.out(format!("  {} 可用: runtime status | commands | events | persistence | actors", c::dim("▸")));
             }
         }
     }
