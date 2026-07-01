@@ -278,8 +278,109 @@ pub struct PlusConfigCli {
     pub log_file: String,
 }
 
-/// 压测请求: (时长s, 房间数, 结果回传)
-type BenchRequest = (u64, usize, std::sync::mpsc::Sender<String>);
+/// Runtime v2 benchmark request.
+///
+/// Simulation remains the default benchmark path and is handled by
+/// [`crate::simulation::SimulationManager`]. This queue is only for explicit
+/// benchmark modes: real network compatibility tests and hybrid Phira probes.
+pub struct BenchRequest {
+    pub kind: BenchRequestKind,
+    pub result_tx: std::sync::mpsc::Sender<String>,
+}
+
+impl BenchRequest {
+    pub fn real(duration_secs: u64, target_rooms: usize, result_tx: std::sync::mpsc::Sender<String>) -> Self {
+        Self {
+            kind: BenchRequestKind::Real { duration_secs, target_rooms },
+            result_tx,
+        }
+    }
+
+    pub fn hybrid(config: HybridBenchmarkConfig, result_tx: std::sync::mpsc::Sender<String>) -> Self {
+        Self {
+            kind: BenchRequestKind::Hybrid(config),
+            result_tx,
+        }
+    }
+
+    pub fn timeout_secs(&self) -> u64 {
+        match &self.kind {
+            BenchRequestKind::Real { duration_secs, .. } => duration_secs.saturating_add(120),
+            BenchRequestKind::Hybrid(config) => config.timeout_secs(),
+        }
+    }
+}
+
+pub enum BenchRequestKind {
+    Real { duration_secs: u64, target_rooms: usize },
+    Hybrid(HybridBenchmarkConfig),
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HybridBenchmarkConfig {
+    /// Compatibility window used for CLI timeout/reporting. This is not a
+    /// load duration until hybrid grows a sustained runner.
+    pub duration_secs: u64,
+    /// Optional `/me` probe. Requires at least one benchmark token.
+    pub authenticate: bool,
+    /// Optional `/chart/<id>` probe.
+    pub chart_lookup: Option<i32>,
+    /// Optional `/record/<id>` probe.
+    pub record_lookup: Option<i32>,
+    /// Reserved write-path switch. It is parsed and reported, but intentionally
+    /// blocked until upload semantics are made explicit.
+    pub upload_record: bool,
+    /// Optional Phira endpoint override for hybrid probes only.
+    pub endpoint_override: Option<String>,
+}
+
+impl Default for HybridBenchmarkConfig {
+    fn default() -> Self {
+        Self {
+            duration_secs: 30,
+            authenticate: false,
+            chart_lookup: None,
+            record_lookup: None,
+            upload_record: false,
+            endpoint_override: None,
+        }
+    }
+}
+
+impl HybridBenchmarkConfig {
+    pub fn timeout_secs(&self) -> u64 {
+        self.duration_secs.clamp(5, 300).saturating_add(120)
+    }
+
+    pub fn touches_phira(&self) -> bool {
+        self.authenticate || self.chart_lookup.is_some() || self.record_lookup.is_some() || self.upload_record
+    }
+
+    pub fn enabled_switches(&self) -> Vec<String> {
+        let mut out = Vec::new();
+        if self.authenticate { out.push("authenticate".to_string()); }
+        if let Some(id) = self.chart_lookup { out.push(format!("chart_lookup={id}")); }
+        if let Some(id) = self.record_lookup { out.push(format!("record_lookup={id}")); }
+        if self.upload_record { out.push("upload_record".to_string()); }
+        out
+    }
+
+    pub fn validate(&self) -> Result<(), String> {
+        if !(5..=300).contains(&self.duration_secs) {
+            return Err("hybrid duration must be between 5 and 300 seconds".to_string());
+        }
+        if let Some(id) = self.chart_lookup {
+            if id <= 0 { return Err("hybrid chart_lookup id must be positive".to_string()); }
+        }
+        if let Some(id) = self.record_lookup {
+            if id <= 0 { return Err("hybrid record_lookup id must be positive".to_string()); }
+        }
+        if let Some(endpoint) = &self.endpoint_override {
+            normalize_phira_api_endpoint(endpoint)?;
+        }
+        Ok(())
+    }
+}
 
 const BENCH_AUTH_FILE: &str = "data/benchmark-auth.json";
 
@@ -580,10 +681,15 @@ impl PlusServer {
         let bench_state = Arc::clone(&state);
         tokio::spawn(async move {
             let mut bench_rx = bench_rx;
-            while let Some((duration, rooms, result_tx)) = bench_rx.recv().await {
+            while let Some(request) = bench_rx.recv().await {
                 let bs = Arc::clone(&bench_state);
-                let output = bs.run_benchmark_network(duration, rooms).await;
-                let _ = result_tx.send(output);
+                let output = match request.kind {
+                    BenchRequestKind::Real { duration_secs, target_rooms } => {
+                        bs.run_benchmark_network(duration_secs, target_rooms).await
+                    }
+                    BenchRequestKind::Hybrid(config) => bs.run_benchmark_hybrid(config).await,
+                };
+                let _ = request.result_tx.send(output);
             }
         });
 
@@ -1404,6 +1510,122 @@ impl PlusServerState {
         Ok(count)
     }
 
+    /// Runtime v2 hybrid benchmark probe.
+    ///
+    /// Hybrid is explicit and switch-driven. With all switches disabled it is a
+    /// dry-run contract check and does not contact Phira. Read probes go through
+    /// the unified PhiraRetryClient; write probes are intentionally blocked until
+    /// upload-record semantics and safety limits are specified.
+    pub async fn run_benchmark_hybrid(&self, config: HybridBenchmarkConfig) -> String {
+        let mut out = String::new();
+        macro_rules! o { ($($t:tt)*) => { out.push_str(&format!($($t)*)); out.push('\n'); } }
+
+        o!("  ◆ Phira-mp+ Hybrid benchmark probe");
+        o!("  │ duration={}s  endpoint={}",
+            config.duration_secs,
+            config.endpoint_override.as_deref().unwrap_or("<global phira_api_endpoint>"),
+        );
+        let switches = config.enabled_switches();
+        if switches.is_empty() {
+            o!("  │ switches: none");
+            o!("  │");
+            o!("  ✓ hybrid dry-run complete: no Phira request was sent");
+            o!("  │ simulation remains the default pressure path; real Phira probes require explicit switches");
+            return out;
+        }
+        o!("  │ switches: {}", switches.join(", "));
+        o!("  │");
+
+        if let Err(err) = config.validate() {
+            o!("  ✗ invalid hybrid config: {err}");
+            return out;
+        }
+
+        let endpoint_override = config.endpoint_override.as_deref();
+        let tokens = self.bench_tokens.read().await.clone();
+        let mut ok = 0usize;
+        let mut failed = 0usize;
+
+        if config.authenticate {
+            o!("  ├─ authenticate /me");
+            if let Some(token) = tokens.first() {
+                match self.phira_client.get_json::<RemotePhiraUserInfo>(
+                    &self.config.phira_api_endpoint,
+                    endpoint_override,
+                    "/me",
+                    Some(token),
+                    crate::phira_client::PhiraRetryNoticeTarget::Silent,
+                ).await {
+                    Ok(user) => {
+                        ok += 1;
+                        o!("  │ ✓ authenticated as {} ({})", user.name, user.id);
+                    }
+                    Err(err) => {
+                        failed += 1;
+                        o!("  │ ✗ authenticate failed: {err}");
+                    }
+                }
+            } else {
+                failed += 1;
+                o!("  │ ✗ skipped: no benchmark token configured");
+                o!("  │   run benchmark-bind <token1[,token2...]> or set benchmark_phira_tokens locally");
+            }
+        }
+
+        if let Some(chart_id) = config.chart_lookup {
+            o!("  ├─ chart_lookup /chart/{chart_id}");
+            match self.phira_client.get_json::<Chart>(
+                &self.config.phira_api_endpoint,
+                endpoint_override,
+                &format!("/chart/{chart_id}"),
+                None,
+                crate::phira_client::PhiraRetryNoticeTarget::Silent,
+            ).await {
+                Ok(chart) => {
+                    ok += 1;
+                    o!("  │ ✓ chart {}: {}", chart.id, chart.name);
+                }
+                Err(err) => {
+                    failed += 1;
+                    o!("  │ ✗ chart lookup failed: {err}");
+                }
+            }
+        }
+
+        if let Some(record_id) = config.record_lookup {
+            o!("  ├─ record_lookup /record/{record_id}");
+            match self.phira_client.get_json::<Record>(
+                &self.config.phira_api_endpoint,
+                endpoint_override,
+                &format!("/record/{record_id}"),
+                None,
+                crate::phira_client::PhiraRetryNoticeTarget::Silent,
+            ).await {
+                Ok(record) => {
+                    ok += 1;
+                    o!("  │ ✓ record {}: player={} score={} acc={:.4}", record.id, record.player, record.score, record.accuracy);
+                }
+                Err(err) => {
+                    failed += 1;
+                    o!("  │ ✗ record lookup failed: {err}");
+                }
+            }
+        }
+
+        if config.upload_record {
+            failed += 1;
+            o!("  ├─ upload_record");
+            o!("  │ ✗ blocked: hybrid write probes are intentionally disabled until upload semantics are specified");
+        }
+
+        let stats = self.phira_client.stats();
+        o!("  │");
+        o!("  └─ hybrid complete: ok={ok} failed={failed}");
+        o!("  │ phira_http: requests={} successes={} failures={} retry_attempts={} circuit_open={}",
+            stats.requests, stats.successes, stats.failures, stats.retry_attempts, stats.circuit_open_rejections);
+        out
+    }
+
     /// 通过真实 TCP 协议连接本服务端执行压测；不再直接篡改内存状态。
     pub async fn run_benchmark_network(&self, duration_secs: u64, target_rooms: usize) -> String {
         use std::time::Instant;
@@ -2075,7 +2297,7 @@ fn server_state_query_inner(state: &Arc<PlusServerState>, method: &str, args: &[
 
             // 通过 mpsc 通道发送请求给背景 tokio 任务，阻塞等待结果
             let (tx, rx) = std::sync::mpsc::channel();
-            if state.bench_tx.send((duration, rooms, tx)).is_err() {
+            if state.bench_tx.send(BenchRequest::real(duration, rooms, tx)).is_err() {
                 return Err("benchmark channel closed".to_string());
             }
             match rx.recv_timeout(std::time::Duration::from_secs(duration + 120)) {

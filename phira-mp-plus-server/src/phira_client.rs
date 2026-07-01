@@ -311,6 +311,10 @@ enum PhiraHttpFailureKind {
 }
 
 pub enum PhiraRetryNoticeTarget<'a> {
+    /// No user-facing retry notice target. Used by diagnostics, simulation and
+    /// hybrid benchmark probes where retry behavior should be measured without
+    /// sending chat messages to real players.
+    Silent,
     Stream(&'a StreamSender<ServerCommand>),
     User(&'a crate::session::User),
 }
@@ -457,6 +461,7 @@ impl PhiraRetryClient {
             content: PHIRA_RETRY_NOTICE.to_string(),
         });
         match target {
+            PhiraRetryNoticeTarget::Silent => {}
             PhiraRetryNoticeTarget::Stream(sender) => {
                 self.counters.retry_notices.fetch_add(1, Ordering::Relaxed);
                 if let Err(err) = sender.send(cmd).await {

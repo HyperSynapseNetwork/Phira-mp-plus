@@ -539,7 +539,9 @@ pub fn runtime_v2_registry() -> CommandRegistry {
     );
     register(
         &mut registry,
-        CommandSpec::new("benchmark run hybrid", "diagnostics", "Hybrid 压测模式占位；未来按开关访问部分 Phira API，默认关闭。", "benchmark run hybrid").advanced(),
+        CommandSpec::new("benchmark run hybrid", "diagnostics", "显式运行 Hybrid Phira probe；authenticate/chart_lookup/record_lookup/upload_record 独立开关，默认全部关闭。", "benchmark run hybrid [duration] [authenticate=true] [chart_lookup=<id>] [record_lookup=<id>]").advanced()
+            .example("benchmark run hybrid")
+            .example("benchmark run hybrid authenticate=true chart_lookup=1 record_lookup=1"),
     );
     register(
         &mut registry,

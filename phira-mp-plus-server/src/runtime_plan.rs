@@ -48,7 +48,7 @@ impl RuntimePlan {
                     title: "Benchmark modes: simulation / hybrid / real",
                     status: "active",
                     priority: "P0",
-                    next_step: "Keep real benchmark explicit; introduce hybrid switches only after Phira client is centralized.",
+                    next_step: "Hybrid switches are now parsed and routed through PhiraRetryClient with all Phira probes disabled by default; next step is sustained hybrid runner metrics and safe real benchmark report unification.",
                 },
                 RuntimeObjective {
                     key: "actor-model",
