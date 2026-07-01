@@ -140,6 +140,7 @@ impl RealisticSimulationRunner {
     /// → start → touches/judges → results → back to SelectChart).
     /// Uses deterministic data from `SimulationManager::sample_*` so same
     /// seed produces the same activity pattern.
+    /// Records all events to `mp_sim_events` when PG is configured.
     pub async fn tick(&self, state: &Arc<PlusServerState>, seed: u64) -> SimulationCounters {
         use crate::room::InternalRoomState;
         use phira_mp_common::Message;
@@ -232,6 +233,22 @@ impl RealisticSimulationRunner {
             let mut c = self.counters.write().await;
             c.add_assign(&counters);
         }
+
+        // Record tick summary to mp_sim_events when PG is available
+        state.db_manager.record_sim_event_sync(
+            Some(self.run_id.to_string()),
+            "sim.tick",
+            serde_json::json!({
+                "tick": counters.ticks,
+                "chat": counters.chat_messages,
+                "ready": counters.ready_events,
+                "touch": counters.touch_batches,
+                "judge": counters.judge_batches,
+                "round": counters.round_results,
+                "rooms": self.rooms.len(),
+                "users": self.user_ids.len(),
+            }),
+        );
         counters
     }
 
