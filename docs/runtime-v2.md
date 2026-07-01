@@ -589,13 +589,11 @@ Step 24 adds an explicit production Touch/Judge persistence cutover switch.  The
 project is still in test stage, so the switch is intentionally operational rather
 than hidden behind a compatibility promise.
 
-Available modes:
+Available modes (simplified from 4 to 2 in Phase-0):
 
 ```text
 direct_only    only the direct RoundStore/db.rs path writes Touch/Judge data
-dual_write     direct write + Runtime v2 TelemetryBatcher batch-write
 worker_only    Runtime v2 TelemetryBatcher batch-write only
-fallback_only  Runtime v2 enqueue first; direct write only if enqueue fails immediately
 ```
 
 New in this step:

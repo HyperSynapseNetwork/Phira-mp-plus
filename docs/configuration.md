@@ -148,7 +148,7 @@ Runtime v2 的内部策略优先放在配置文件中，避免继续新增过多
 ```yaml
 runtime_v2:
   persistence_queue_capacity: 4096
-  telemetry_cutover_mode: dual_write   # direct_only / dual_write / worker_only / fallback_only
+  telemetry_cutover_mode: worker_only   # direct_only / worker_only
   telemetry_batcher:
     enabled: true
     dry_run: false
@@ -166,7 +166,7 @@ runtime_v2:
       open_duration_ms: 20000
 ```
 
-`dual_write` 适合对比旧表和 Runtime v2 表；确认 Runtime v2 遥测表读写稳定后，可以在测试环境改成 `worker_only`。`fallback_only` 适合验证 Worker 队列异常时是否能回退旧直写路径。
+`worker_only` 只通过 Runtime v2 TelemetryBatcher 写入（默认）。`direct_only` 回退到旧 RoundStore/JSONL 直写路径。DualWrite/FallbackOnly 模式已在简化中移除。
 
 `phira_http` 控制统一 Phira RetryClient。默认策略会在连续失败达到阈值后短暂打开熔断器，避免 Phira 官方服务 502/超时期间继续把认证、选谱、成绩查询压在业务热路径上。Simulation 默认不访问 Phira；real/hybrid benchmark 必须显式走这套 client。
 
