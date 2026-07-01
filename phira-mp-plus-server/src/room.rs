@@ -26,6 +26,7 @@ pub enum InternalRoomState {
     SelectChart,
     WaitForReady {
         started: HashSet<i32>,
+        admin_started: bool,
     },
     Playing {
         results: HashMap<i32, crate::server::Record>,
@@ -375,7 +376,7 @@ impl Room {
             locked: self.is_locked(),
             cycle: self.is_cycle(),
             is_host: self.check_host(user).await.is_ok(),
-            is_ready: matches!(&*self.state.read().await, InternalRoomState::WaitForReady { started } if started.contains(&user.id)),
+            is_ready: matches!(&*self.state.read().await, InternalRoomState::WaitForReady { started, .. } if started.contains(&user.id)),
             users,
         }
     }
@@ -570,6 +571,7 @@ impl Room {
             .await;
             *self.state.write().await = InternalRoomState::WaitForReady {
                 started: HashSet::new(),
+                admin_started: true,
             };
             self.on_state_change().await;
             self.check_all_ready().await;
@@ -836,7 +838,7 @@ impl Room {
     pub async fn check_all_ready(&self) {
         let guard = self.state.read().await;
         match guard.deref() {
-            InternalRoomState::WaitForReady { started } => {
+            InternalRoomState::WaitForReady { started, .. } => {
                 if self
                     .users()
                     .await

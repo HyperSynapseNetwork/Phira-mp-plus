@@ -24,7 +24,7 @@ const DEFAULT_MAX_EVENT_TRACE: usize = crate::runtime_diagnostics::EVENT_TRACE_W
 #[derive(Debug, Clone)]
 pub enum MpEvent {
     /// A normal game client authenticated or reconnected. Monitor/console sessions are excluded.
-    UserConnected { user_id: i32 },
+    UserConnected { user_id: i32, user_name: String, user_ip: String, user_language: String },
     UserDisconnected { user_id: i32 },
     RoomCreated { room_id: RoomId, room_uuid: Uuid },
     RoomJoined { room_id: RoomId, user_id: i32 },
@@ -80,7 +80,7 @@ impl MpEvent {
 
     pub fn summary(&self) -> String {
         match self {
-            Self::UserConnected { user_id } => format!("user_id={user_id}"),
+            Self::UserConnected { user_id, user_name, .. } => format!("user_id={user_id} user_name={user_name}"),
             Self::UserDisconnected { user_id } => format!("user_id={user_id}"),
             Self::RoomCreated { room_id, room_uuid } => format!("room_id={room_id} uuid={room_uuid}"),
             Self::RoomJoined { room_id, user_id } => format!("room_id={room_id} user_id={user_id}"),

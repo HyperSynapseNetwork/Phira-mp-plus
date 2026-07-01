@@ -382,6 +382,7 @@ pub async fn request_start(user: Arc<User>) -> Result<()> {
     room.send(Message::GameStart { user: user.id }).await;
     *room.state.write().await = crate::room::InternalRoomState::WaitForReady {
         started: std::iter::once(user.id).collect(),
+        admin_started: false,
     };
     room.on_state_change().await;
     room.check_all_ready().await;
@@ -399,7 +400,7 @@ pub async fn request_start(user: Arc<User>) -> Result<()> {
 pub async fn ready(user: Arc<User>) -> Result<()> {
     let room = current_room(&user).await?;
     let mut guard = room.state.write().await;
-    if let crate::room::InternalRoomState::WaitForReady { started } = &mut *guard {
+    if let crate::room::InternalRoomState::WaitForReady { started, .. } = &mut *guard {
         if !started.insert(user.id) {
             bail!("{}", tl!("already-ready"));
         }
@@ -418,7 +419,7 @@ pub async fn ready(user: Arc<User>) -> Result<()> {
 pub async fn cancel_ready(user: Arc<User>) -> Result<()> {
     let room = current_room(&user).await?;
     let mut guard = room.state.write().await;
-    if let crate::room::InternalRoomState::WaitForReady { started } = &mut *guard {
+    if let crate::room::InternalRoomState::WaitForReady { started, .. } = &mut *guard {
         if !started.remove(&user.id) {
             bail!("{}", tl!("not-ready"));
         }

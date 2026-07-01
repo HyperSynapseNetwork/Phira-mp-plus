@@ -12,18 +12,16 @@ use std::sync::{Arc, Mutex};
 use std::sync::OnceLock;
 use tracing::info;
 
-/// 全局数据库管理器（PostgreSQL 回退 JSON）
+/// 全局数据库管理器（保留静态用于未迁移的模块）
 pub static DB: OnceLock<super::db::DbManager> = OnceLock::new();
 
 pub async fn init_internal_hooks(state: &PlusServerState, http: &PluginHttpServer, pm: &PluginManager) {
-    // 初始化数据库连接
-    let db = super::db::DbManager::new(state.config.database_url.as_deref()).await;
-    let _ = DB.set(db);
-    if let Some(db) = DB.get() {
-        if let Some(ids) = db.get_admin_ids().await {
-            let mut guard = state.admin_ids.write().await;
-            for id in ids { guard.insert(id); }
-        }
+    // Set the legacy static reference from the state's db_manager
+    let _ = DB.set(state.db_manager.clone());
+    // Load admin IDs from database if configured
+    if let Some(ids) = state.db_manager.get_admin_ids().await {
+        let mut guard = state.admin_ids.write().await;
+        for id in ids { guard.insert(id); }
     }
     state.persistence_worker.record_runtime_config_snapshot().await;
 

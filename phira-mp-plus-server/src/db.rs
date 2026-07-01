@@ -41,6 +41,7 @@ pub struct RuntimeTelemetryBatchRecord {
     pub payload: Value,
 }
 
+#[derive(Debug, Clone)]
 pub enum DbManager {
     /// PostgreSQL 已连接
     #[cfg(feature = "postgres")]

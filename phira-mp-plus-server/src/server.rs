@@ -4,6 +4,7 @@ use crate::ban::BanManager;
 use crate::benchmark_report::{BenchmarkMode, BenchmarkReport};
 use crate::benchmark_snapshot::BenchmarkReportStore;
 use crate::extensions::ExtensionManager;
+use crate::event_bus::MpEvent;
 use crate::plugin::{PluginEvent, PluginManager, WasmRuntimeConfig};
 use crate::plugin_http::{PluginHttpServer, SseHub};
 use anyhow::Result;
@@ -517,6 +518,8 @@ pub struct PlusServerState {
     pub room_monitor: RwLock<Option<Weak<super::session::Session>>>,
     /// 游戏 monitor 会话（按用户 ID）
     pub game_monitors: SafeMap<i32, Weak<super::session::Session>>,
+    /// PostgreSQL 数据库管理器。
+    pub db_manager: super::db::DbManager,
 }
 
 /// Phira-mp+ 服务器
@@ -536,6 +539,100 @@ fn spawn_runtime_event_observer(event_bus: Arc<crate::event_bus::EventBus>) {
                 }
                 Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
                     warn!(skipped, "runtime event observer lagged");
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+            }
+        }
+    });
+}
+
+/// Subscribe to EventBus events and drive real side effects.
+///
+/// This is the Runtime v2 event-driven subscriber that gradually replaces direct
+/// calls in session.rs / runner.rs. Old paths remain intact (dual-write) until
+/// the EventBus path is proven stable.
+fn spawn_event_subscribers(state: &Arc<PlusServerState>) {
+    let mut rx = state.event_bus.subscribe();
+    let state_clone = Arc::clone(state);
+    tokio::spawn(async move {
+        loop {
+            match rx.recv().await {
+                Ok(event) => {
+                    match &event {
+                        MpEvent::SimulationStarted { .. } => {
+                            state_clone
+                                .broadcast_system_message("服务器正在进行性能测试，期间可能出现短暂卡顿。")
+                                .await;
+                        }
+                        MpEvent::SimulationStopped { .. } => {
+                            state_clone
+                                .broadcast_system_message("性能测试已结束。")
+                                .await;
+                        }
+                        MpEvent::BenchmarkCompleted { report } => {
+                            use crate::persistence::message::PersistenceEvent;
+                            let persistence_event = PersistenceEvent::BenchmarkReport {
+                                report: report.clone(),
+                            };
+                            let _ = state_clone
+                                .persistence_worker
+                                .enqueue(persistence_event)
+                                .await;
+                        }
+                        MpEvent::UserConnected {
+                            user_id,
+                            user_name,
+                            user_ip,
+                            user_language,
+                        } => {
+                            // 1. Trigger plugin event
+                            state_clone
+                                .plugin_manager
+                                .trigger(&PluginEvent::UserConnect {
+                                    user_id: *user_id,
+                                    user_name: user_name.clone(),
+                                    user_ip: user_ip.clone(),
+                                })
+                                .await;
+
+                            // 2. Record in DB if available
+                            if let Some(db) = crate::internal_hooks::DB.get() {
+                                db.record_user_seen_sync(
+                                    *user_id,
+                                    user_name,
+                                    user_language,
+                                    Some(user_ip.clone()),
+                                );
+                            }
+
+                            // 3. Track player and playtime
+                            crate::internal_hooks::track_player(*user_id, user_name);
+                            crate::internal_hooks::playtime_connect(*user_id);
+
+                            // 4. Calculate online count for welcome message
+                            let online = {
+                                let rooms = state_clone.rooms.read().await;
+                                let mut in_room: std::collections::HashSet<i32> =
+                                    std::collections::HashSet::new();
+                                for (_id, room) in rooms.iter() {
+                                    for u in room.users().await {
+                                        in_room.insert(u.id);
+                                    }
+                                }
+                                in_room.len()
+                            };
+                            crate::internal_hooks::send_welcome(
+                                *user_id,
+                                user_name,
+                                online,
+                                &state_clone,
+                            );
+                        }
+                        _ => {}
+                    }
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
+                    warn!(skipped, "event subscriber lagged");
                 }
                 Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
             }
@@ -615,6 +712,8 @@ impl PlusServer {
         )?);
         let runtime_plan = Arc::new(crate::runtime_plan::RuntimePlan::master_plan());
         let events = Arc::new(SseHub::new());
+        // Initialize database connection early so it's available throughout
+        let db_manager = super::db::DbManager::new(config.database_url.as_deref()).await;
         let state = Arc::new(PlusServerState {
             config,
             sessions: IdMap::default(),
@@ -650,7 +749,9 @@ impl PlusServer {
             room_monitor: RwLock::new(None),
             game_monitors: SafeMap::default(),
             events,
+            db_manager,
         });
+        spawn_event_subscribers(&state);
         state
             .room_commands
             .start_mailbox(Arc::clone(&state), 1024);
@@ -1207,7 +1308,7 @@ impl PlusServerState {
             let chart = room.chart.read().await.clone();
             let state = match &*room.state.read().await {
                 crate::room::InternalRoomState::SelectChart => serde_json::json!({"kind":"select_chart"}),
-                crate::room::InternalRoomState::WaitForReady { started } => {
+                crate::room::InternalRoomState::WaitForReady { started, .. } => {
                     let mut ready: Vec<i32> = started.iter().copied().collect();
                     ready.sort_unstable();
                     serde_json::json!({"kind":"wait_for_ready", "ready_users": ready})
@@ -2919,7 +3020,7 @@ fn server_state_query(state: &Arc<PlusServerState>, method: &str, args: &[Value]
                 0usize,
                 serde_json::json!({"kind":"select_chart"}),
             ),
-            crate::room::InternalRoomState::WaitForReady { started } => {
+            crate::room::InternalRoomState::WaitForReady { started, .. } => {
                 let mut ready: Vec<i32> = started.iter().copied().collect();
                 ready.sort_unstable();
                 (

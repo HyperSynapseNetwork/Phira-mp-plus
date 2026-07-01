@@ -397,9 +397,13 @@ impl Session {
                                                     user_ip,
                                                 })
                                                 .await;
+                                            let user_ip = this.get().map(|s| s.ip.clone()).unwrap_or_default();
                                             server.publish_runtime_event(
                                                 crate::event_bus::MpEvent::UserConnected {
                                                     user_id: user_info.id,
+                                                    user_name: user_info.name.clone(),
+                                                    user_ip: user_ip.clone(),
+                                                    user_language: user_info.language.clone(),
                                                 },
                                             );
                                             let online = {
@@ -449,6 +453,9 @@ impl Session {
                                             server.publish_runtime_event(
                                                 crate::event_bus::MpEvent::UserConnected {
                                                     user_id: user_info.id,
+                                                    user_name: user.name.clone(),
+                                                    user_ip: this.get().map(|s| s.ip.clone()).unwrap_or_default(),
+                                                    user_language: user.lang.0.to_string(),
                                                 },
                                             );
                                             let online = {

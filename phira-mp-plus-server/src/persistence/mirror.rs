@@ -37,7 +37,7 @@ pub(crate) fn mirror_event_bus_event(event: &crate::event_bus::MpEvent) -> Optio
     use crate::event_bus::MpEvent;
 
     match event {
-        MpEvent::UserConnected { user_id } => server_event(event.kind(), json!({ "user_id": user_id }), false),
+        MpEvent::UserConnected { user_id, .. } => server_event(event.kind(), json!({ "user_id": user_id }), false),
         MpEvent::UserDisconnected { user_id } => server_event(event.kind(), json!({ "user_id": user_id }), false),
         MpEvent::RoomCreated { room_id, room_uuid } => Some(PersistenceEvent::RoomSnapshot {
             room_id: room_id.to_string(),
