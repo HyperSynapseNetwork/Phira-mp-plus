@@ -152,3 +152,30 @@ simulation cleanup
 ```
 
 This is still not a Room/Session state-machine migration. It is a controllable Runtime v2 load generator running entirely inside the simulation shadow world.
+
+
+## Step 8 implementation status
+
+Step 8 makes Simulation events more realistic while keeping the shadow world isolated:
+
+- Each Simulation tick still publishes the summary `simulation.tick` event.
+- The same tick now also emits bounded aggregate events:
+  - `simulation.chat`
+  - `simulation.ready`
+  - `simulation.touch`
+  - `simulation.judge`
+  - `simulation.round`
+- These are aggregate-per-tick events, not one event per virtual user or note, so the EventBus and PersistenceWorker are not flooded during early Runtime v2 testing.
+- `simulation.touch` and `simulation.judge` are mapped to the worker's simulation-only `TouchBatch` / `JudgeBatch` paths, then stored through `mp_sim_events` when PostgreSQL is enabled.
+- Production Touches/Judges are still not migrated to the worker path. The current production `db.rs` writes remain unchanged.
+
+Useful checks:
+
+```text
+simulation run baseline duration=10 tick_ms=500 persist_every=5
+runtime events
+runtime persistence
+simulation inspect 20
+```
+
+This gives Runtime v2 a safer high-frequency rehearsal path before touching real Room/Session hot paths.

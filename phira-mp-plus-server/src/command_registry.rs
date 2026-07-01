@@ -382,7 +382,7 @@ pub fn runtime_v2_registry() -> CommandRegistry {
         .example("simulation run baseline")
         .example("simulation run custom users=500 rooms=50 duration=300 tick_ms=1000 persist_every=30")
         .example("simulation run small auto=false"),
-        CommandSpec::new("simulation tick", "simulation", "手动推进 deterministic shadow world tick；auto=false 时常用。", "simulation tick [count]")
+        CommandSpec::new("simulation tick", "simulation", "手动推进 deterministic shadow world tick，并发布聚合 simulation.chat/ready/touch/judge/round 事件。", "simulation tick [count]")
             .alias("simulation advance")
             .example("simulation tick 10"),
         CommandSpec::new("simulation inspect", "simulation", "查看 shadow users/rooms/rounds/recent events 样本。", "simulation inspect [limit]")

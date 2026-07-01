@@ -324,12 +324,44 @@ fn mirror_event_bus_event(event: &crate::event_bus::MpEvent) -> Option<Persisten
         ),
         // Avoid recursive noise once the worker later publishes successful writes.
         MpEvent::PersistenceWritten { .. } => None,
-        MpEvent::Custom { kind, payload } if kind.starts_with("simulation.") => server_event(
-            kind,
-            payload.clone(),
-            true,
-        ),
+        MpEvent::Custom { kind, payload } if kind.starts_with("simulation.") => {
+            simulation_custom_event(kind, payload)
+        }
         MpEvent::Custom { .. } => None,
+    }
+}
+
+fn simulation_custom_event(kind: &str, payload: &Value) -> Option<PersistenceEvent> {
+    match kind {
+        "simulation.touch" => Some(PersistenceEvent::TouchBatch {
+            round_id: payload
+                .get("sample_round_id")
+                .and_then(Value::as_str)
+                .unwrap_or("simulation-touch")
+                .to_string(),
+            user_id: payload
+                .get("sample_user_id")
+                .and_then(Value::as_i64)
+                .and_then(|value| i32::try_from(value).ok())
+                .unwrap_or(0),
+            payload: payload.clone(),
+            simulation: true,
+        }),
+        "simulation.judge" => Some(PersistenceEvent::JudgeBatch {
+            round_id: payload
+                .get("sample_round_id")
+                .and_then(Value::as_str)
+                .unwrap_or("simulation-judge")
+                .to_string(),
+            user_id: payload
+                .get("sample_user_id")
+                .and_then(Value::as_i64)
+                .and_then(|value| i32::try_from(value).ok())
+                .unwrap_or(0),
+            payload: payload.clone(),
+            simulation: true,
+        }),
+        _ => server_event(kind, payload.clone(), true),
     }
 }
 

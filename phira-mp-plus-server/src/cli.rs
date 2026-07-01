@@ -179,6 +179,18 @@ fn publish_simulation_tick_event(state: &PlusServerState, status: &crate::simula
     });
 }
 
+fn publish_simulation_generated_events(
+    state: &PlusServerState,
+    events: &[crate::simulation::SimulationGeneratedEvent],
+) {
+    for event in events {
+        state.publish_runtime_event(crate::event_bus::MpEvent::Custom {
+            kind: event.kind.clone(),
+            payload: event.payload.clone(),
+        });
+    }
+}
+
 async fn publish_simulation_snapshot(
     state: &Arc<PlusServerState>,
     run_id: uuid::Uuid,
@@ -212,11 +224,12 @@ fn spawn_simulation_runner(
 
         loop {
             tokio::time::sleep(interval).await;
-            let status = match state.simulation.advance_ticks_for_run(run_id, 1).await {
-                Ok(status) => status,
+            let (status, events) = match state.simulation.advance_ticks_for_run_with_events(run_id, 1).await {
+                Ok(result) => result,
                 Err(_) => break,
             };
             publish_simulation_tick_event(&state, &status);
+            publish_simulation_generated_events(&state, &events);
 
             if config.persist_every_ticks > 0
                 && status.counters.ticks > 0
@@ -821,14 +834,16 @@ impl CliHandler {
             }
             "tick" | "advance" => {
                 let count = args.get(1).and_then(|value| value.parse::<u64>().ok()).unwrap_or(1);
-                match self.state.simulation.advance_ticks(count).await {
-                    Ok(status) => {
+                match self.state.simulation.advance_ticks_with_events(count).await {
+                    Ok((status, events)) => {
                         publish_simulation_tick_event(&self.state, &status);
+                        publish_simulation_generated_events(&self.state, &events);
                         self.out(format!("  {} simulation 已推进 {} tick(s)", c::green("✓"), count.clamp(1, 10_000)));
                         self.out(format!("  {} ticks={} chats={} ready={} touch_batches={} judge_batches={} round_results={}",
                             c::dim("│"), status.counters.ticks, status.counters.chat_messages,
                             status.counters.ready_events, status.counters.touch_batches,
                             status.counters.judge_batches, status.counters.round_results));
+                        self.out(format!("  {} generated_events={} kinds=simulation.chat/ready/touch/judge/round", c::dim("│"), events.len()));
                     }
                     Err(err) => self.out(format!("  {} {}", c::red("✗"), err)),
                 }
@@ -915,7 +930,7 @@ impl CliHandler {
                 } else {
                     self.out(format!("  {} auto=false，需手动执行 simulation tick [n] 推进", c::dim("▸")));
                 }
-                self.out(format!("  {} Step 7 已启用隔离 runner；仍不写入真实 rooms/users 表", c::dim("▸")));
+                self.out(format!("  {} Step 8 已启用聚合仿真事件；仍不写入真实 rooms/users 表", c::dim("▸")));
             }
             Err(err) => self.out(format!("  {} {}", c::red("✗"), err)),
         }

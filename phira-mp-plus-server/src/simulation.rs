@@ -8,6 +8,7 @@
 //! Room/Session state-machine logic.
 
 use serde::{Deserialize, Serialize};
+use serde_json::{json, Value};
 use std::{
     collections::{HashSet, VecDeque},
     sync::{
@@ -234,6 +235,14 @@ pub struct SimulationEventLogEntry {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SimulationGeneratedEvent {
+    pub kind: String,
+    pub run_id: Option<Uuid>,
+    pub tick: u64,
+    pub payload: Value,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SimulationWorldSnapshot {
     pub run_id: Option<Uuid>,
     pub users_total: usize,
@@ -408,21 +417,40 @@ impl SimulationManager {
 
 
     pub async fn advance_ticks(&self, count: u64) -> Result<SimulationStatus, String> {
+        self.advance_ticks_with_events(count)
+            .await
+            .map(|(status, _events)| status)
+    }
+
+    pub async fn advance_ticks_with_events(
+        &self,
+        count: u64,
+    ) -> Result<(SimulationStatus, Vec<SimulationGeneratedEvent>), String> {
         let mut state = self.state.write().await;
         if !state.running {
             return Err("simulation is not running".to_string());
         }
-        advance_state(&mut state, count);
-        Ok(self.snapshot(&state))
+        let events = advance_state(&mut state, count);
+        Ok((self.snapshot(&state), events))
     }
 
     pub async fn advance_ticks_for_run(&self, run_id: Uuid, count: u64) -> Result<SimulationStatus, String> {
+        self.advance_ticks_for_run_with_events(run_id, count)
+            .await
+            .map(|(status, _events)| status)
+    }
+
+    pub async fn advance_ticks_for_run_with_events(
+        &self,
+        run_id: Uuid,
+        count: u64,
+    ) -> Result<(SimulationStatus, Vec<SimulationGeneratedEvent>), String> {
         let mut state = self.state.write().await;
         if !state.running || state.run_id != Some(run_id) {
             return Err("simulation run changed or stopped".to_string());
         }
-        advance_state(&mut state, count);
-        Ok(self.snapshot(&state))
+        let events = advance_state(&mut state, count);
+        Ok((self.snapshot(&state), events))
     }
 
     pub async fn stop_if_run(&self, run_id: Uuid, reason: impl Into<String>) -> Option<SimulationStatus> {
@@ -524,36 +552,144 @@ impl Default for SimulationManager {
     }
 }
 
-fn advance_state(state: &mut SimulationState, count: u64) {
+fn advance_state(state: &mut SimulationState, count: u64) -> Vec<SimulationGeneratedEvent> {
     let count = count.clamp(1, 10_000);
+    let mut generated = Vec::new();
     for _ in 0..count {
         let tick = state.counters.ticks + 1;
         let config = state.config.clone();
+        let run_id = state.run_id;
+
+        let chat_delta = if config.chat {
+            (config.users.max(1) / 10).max(1) as u64
+        } else {
+            0
+        };
+        let ready_delta = if config.ready { config.users.max(1) as u64 } else { 0 };
+        let touch_delta = if config.touch { config.rooms.max(1) as u64 } else { 0 };
+        let judge_delta = if config.judge { config.rooms.max(1) as u64 } else { 0 };
+        let round_delta = if config.rounds { config.rooms.max(1) as u64 } else { 0 };
 
         state.counters.ticks = tick;
-        if config.chat {
-            state.counters.chat_messages += (config.users.max(1) / 10).max(1) as u64;
-        }
-        if config.ready {
-            state.counters.ready_events += config.users.max(1) as u64;
-        }
-        if config.touch {
-            state.counters.touch_batches += config.rooms.max(1) as u64;
-        }
-        if config.judge {
-            state.counters.judge_batches += config.rooms.max(1) as u64;
-        }
-        if config.rounds {
-            state.counters.round_results += config.rooms.max(1) as u64;
-        }
+        state.counters.chat_messages += chat_delta;
+        state.counters.ready_events += ready_delta;
+        state.counters.touch_batches += touch_delta;
+        state.counters.judge_batches += judge_delta;
+        state.counters.round_results += round_delta;
 
         let counters_snapshot = state.counters.clone();
-        if let Some(world) = &mut state.world {
-            advance_shadow_world(world, tick, &config, &counters_snapshot);
-        }
+        let world_tick = if let Some(world) = &mut state.world {
+            Some(advance_shadow_world(world, tick, &config, &counters_snapshot))
+        } else {
+            None
+        };
+
+        generated.extend(generated_events_for_tick(
+            run_id,
+            tick,
+            &config,
+            chat_delta,
+            ready_delta,
+            touch_delta,
+            judge_delta,
+            round_delta,
+            world_tick.as_ref(),
+        ));
     }
     state.last_tick_at_ms = Some(now_ms());
     state.note = format!("simulation advanced by {count} deterministic tick(s)");
+    generated
+}
+
+fn generated_events_for_tick(
+    run_id: Option<Uuid>,
+    tick: u64,
+    config: &SimulationConfig,
+    chat_delta: u64,
+    ready_delta: u64,
+    touch_delta: u64,
+    judge_delta: u64,
+    round_delta: u64,
+    world_tick: Option<&SimulationWorldTick>,
+) -> Vec<SimulationGeneratedEvent> {
+    let mut events = Vec::with_capacity(5);
+    if chat_delta > 0 {
+        events.push(sim_event(
+            "simulation.chat",
+            run_id,
+            tick,
+            json!({
+                "messages": chat_delta,
+                "sample_user_id": world_tick.and_then(|tick| tick.sample_user_id),
+                "sample_room_id": world_tick.and_then(|tick| tick.sample_room_id.clone()),
+            }),
+        ));
+    }
+    if ready_delta > 0 {
+        events.push(sim_event(
+            "simulation.ready",
+            run_id,
+            tick,
+            json!({
+                "changed": ready_delta,
+                "ready_users_materialized": world_tick.map(|tick| tick.ready_users).unwrap_or(0),
+            }),
+        ));
+    }
+    if touch_delta > 0 {
+        events.push(sim_event(
+            "simulation.touch",
+            run_id,
+            tick,
+            json!({
+                "batches": touch_delta,
+                "sample_touches": SimulationManager::sample_touches(config.seed),
+                "sample_room_id": world_tick.and_then(|tick| tick.sample_room_id.clone()),
+                "sample_round_id": world_tick.and_then(|tick| tick.sample_round_id.clone()),
+            }),
+        ));
+    }
+    if judge_delta > 0 {
+        events.push(sim_event(
+            "simulation.judge",
+            run_id,
+            tick,
+            json!({
+                "batches": judge_delta,
+                "sample_judges": SimulationManager::sample_judges(config.seed),
+                "sample_room_id": world_tick.and_then(|tick| tick.sample_room_id.clone()),
+                "sample_round_id": world_tick.and_then(|tick| tick.sample_round_id.clone()),
+            }),
+        ));
+    }
+    if round_delta > 0 {
+        events.push(sim_event(
+            "simulation.round",
+            run_id,
+            tick,
+            json!({
+                "completed": round_delta,
+                "playing_rooms_materialized": world_tick.map(|tick| tick.playing_rooms).unwrap_or(0),
+                "sample_round_id": world_tick.and_then(|tick| tick.sample_round_id.clone()),
+            }),
+        ));
+    }
+    events
+}
+
+fn sim_event(kind: &str, run_id: Option<Uuid>, tick: u64, mut payload: Value) -> SimulationGeneratedEvent {
+    if let Some(obj) = payload.as_object_mut() {
+        obj.insert("tick".to_string(), json!(tick));
+        if let Some(run_id) = run_id {
+            obj.insert("run_id".to_string(), json!(run_id.to_string()));
+        }
+    }
+    SimulationGeneratedEvent {
+        kind: kind.to_string(),
+        run_id,
+        tick,
+        payload,
+    }
 }
 
 fn elapsed_secs(state: &SimulationState) -> u64 {
@@ -634,12 +770,21 @@ fn build_shadow_world(run_id: Uuid, config: &SimulationConfig) -> SimulationWorl
     world
 }
 
+#[derive(Debug, Clone)]
+struct SimulationWorldTick {
+    ready_users: usize,
+    playing_rooms: usize,
+    sample_user_id: Option<i32>,
+    sample_room_id: Option<String>,
+    sample_round_id: Option<String>,
+}
+
 fn advance_shadow_world(
     world: &mut SimulationWorld,
     tick: u64,
     config: &SimulationConfig,
     counters: &SimulationCounters,
-) {
+) -> SimulationWorldTick {
     if config.ready {
         for (idx, user) in world.users.iter_mut().enumerate() {
             user.ready = ((idx as u64 + tick + config.seed) % 4) != 0;
@@ -685,6 +830,11 @@ fn advance_shadow_world(
                 .unwrap_or(false);
         }
     }
+    let ready_users = world.users.iter().filter(|user| user.ready).count();
+    let playing_rooms = world.rooms.iter().filter(|room| room.playing).count();
+    let sample_user_id = world.users.first().map(|user| user.id);
+    let sample_room_id = world.rooms.first().map(|room| room.id.clone());
+    let sample_round_id = world.rounds.first().map(|round| round.round_id.clone());
     push_event(
         world,
         "tick",
@@ -697,6 +847,13 @@ fn advance_shadow_world(
             counters.round_results
         ),
     );
+    SimulationWorldTick {
+        ready_users,
+        playing_rooms,
+        sample_user_id,
+        sample_room_id,
+        sample_round_id,
+    }
 }
 
 fn push_event(world: &mut SimulationWorld, kind: impl Into<String>, message: impl Into<String>) {
