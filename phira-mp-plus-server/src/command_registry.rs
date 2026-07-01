@@ -397,6 +397,16 @@ pub fn runtime_v2_registry() -> CommandRegistry {
         .example("simulation suite smoke")
         .example("simulation suite mixed duration=15 tick_ms=500 persist_every=5")
         .example("simulation suite stress users=800 rooms=80"),
+        CommandSpec::new(
+            "simulation report",
+            "simulation",
+            "查看最近一次 Simulation suite 汇总报告，包含每个 step 的 ticks/chat/ready/touch/judge/round 统计。",
+            "simulation report [latest|list|clear]",
+        )
+        .aliases(["simulation reports", "simulation summary", "simulation summaries"])
+        .example("simulation report")
+        .example("simulation report list 8")
+        .example("simulation report clear"),
         CommandSpec::new("simulation tick", "simulation", "手动推进 deterministic shadow world tick，并按 scenario 发布聚合 simulation.chat/ready/touch/judge/round 事件。", "simulation tick [count]")
             .alias("simulation advance")
             .example("simulation tick 10"),

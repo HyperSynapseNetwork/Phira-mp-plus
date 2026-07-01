@@ -24,6 +24,7 @@ const MAX_SHADOW_USERS: usize = 50_000;
 const MAX_SHADOW_ROOMS: usize = 10_000;
 const MAX_ROOM_MEMBERS: usize = 16;
 const MAX_EVENT_LOG: usize = 256;
+const MAX_SUITE_REPORTS: usize = 32;
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -162,6 +163,120 @@ impl SimulationSuite {
             step.suite = self;
         }
         steps
+    }
+}
+
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SimulationRunReport {
+    pub suite_run_id: Option<Uuid>,
+    pub run_id: Option<Uuid>,
+    pub step_name: String,
+    pub suite: Option<SimulationSuite>,
+    pub preset: SimulationPreset,
+    pub scenario: SimulationScenario,
+    pub users: usize,
+    pub rooms: usize,
+    pub duration_secs: u64,
+    pub tick_interval_ms: u64,
+    pub persist_every_ticks: u64,
+    pub started_at_ms: Option<i64>,
+    pub finished_at_ms: i64,
+    pub elapsed_secs: u64,
+    pub aborted: bool,
+    pub reason: String,
+    pub counters: SimulationCounters,
+    pub workload_events: u64,
+    pub workload_events_per_sec: f64,
+}
+
+impl SimulationRunReport {
+    pub fn from_status(
+        suite_run_id: Option<Uuid>,
+        suite: Option<SimulationSuite>,
+        step_name: impl Into<String>,
+        status: &SimulationStatus,
+        aborted: bool,
+        reason: impl Into<String>,
+    ) -> Self {
+        let workload_events = status.counters.workload_events();
+        let elapsed_secs = status.elapsed_secs.max(1);
+        Self {
+            suite_run_id,
+            run_id: status.run_id,
+            step_name: step_name.into(),
+            suite,
+            preset: status.config.preset,
+            scenario: status.config.scenario,
+            users: status.config.users,
+            rooms: status.config.rooms,
+            duration_secs: status.config.duration_secs,
+            tick_interval_ms: status.config.tick_interval_ms,
+            persist_every_ticks: status.config.persist_every_ticks,
+            started_at_ms: status.started_at_ms,
+            finished_at_ms: now_ms(),
+            elapsed_secs: status.elapsed_secs,
+            aborted,
+            reason: reason.into(),
+            counters: status.counters.clone(),
+            workload_events,
+            workload_events_per_sec: workload_events as f64 / elapsed_secs as f64,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SimulationSuiteReport {
+    pub suite_run_id: Uuid,
+    pub suite: SimulationSuite,
+    pub started_at_ms: i64,
+    pub finished_at_ms: i64,
+    pub total_steps: usize,
+    pub completed_steps: usize,
+    pub aborted: bool,
+    pub reason: String,
+    pub steps: Vec<SimulationRunReport>,
+    pub totals: SimulationCounters,
+    pub total_elapsed_secs: u64,
+    pub workload_events: u64,
+    pub workload_events_per_sec: f64,
+}
+
+impl SimulationSuiteReport {
+    pub fn new(
+        suite_run_id: Uuid,
+        suite: SimulationSuite,
+        started_at_ms: i64,
+        finished_at_ms: i64,
+        total_steps: usize,
+        completed_steps: usize,
+        aborted: bool,
+        reason: impl Into<String>,
+        steps: Vec<SimulationRunReport>,
+    ) -> Self {
+        let mut totals = SimulationCounters::default();
+        let mut total_elapsed_secs = 0u64;
+        for step in &steps {
+            totals.add_assign(&step.counters);
+            total_elapsed_secs = total_elapsed_secs.saturating_add(step.elapsed_secs);
+        }
+        let workload_events = totals.workload_events();
+        let denom = total_elapsed_secs.max(1);
+        Self {
+            suite_run_id,
+            suite,
+            started_at_ms,
+            finished_at_ms,
+            total_steps,
+            completed_steps,
+            aborted,
+            reason: reason.into(),
+            steps,
+            totals,
+            total_elapsed_secs,
+            workload_events,
+            workload_events_per_sec: workload_events as f64 / denom as f64,
+        }
     }
 }
 
@@ -361,6 +476,25 @@ pub struct SimulationCounters {
     pub round_results: u64,
 }
 
+impl SimulationCounters {
+    pub fn workload_events(&self) -> u64 {
+        self.chat_messages
+            .saturating_add(self.ready_events)
+            .saturating_add(self.touch_batches)
+            .saturating_add(self.judge_batches)
+            .saturating_add(self.round_results)
+    }
+
+    pub fn add_assign(&mut self, other: &SimulationCounters) {
+        self.ticks = self.ticks.saturating_add(other.ticks);
+        self.chat_messages = self.chat_messages.saturating_add(other.chat_messages);
+        self.ready_events = self.ready_events.saturating_add(other.ready_events);
+        self.touch_batches = self.touch_batches.saturating_add(other.touch_batches);
+        self.judge_batches = self.judge_batches.saturating_add(other.judge_batches);
+        self.round_results = self.round_results.saturating_add(other.round_results);
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VirtualUser {
     pub id: i32,
@@ -464,6 +598,7 @@ struct SimulationState {
     started_at_ms: Option<i64>,
     last_tick_at_ms: Option<i64>,
     world: Option<SimulationWorld>,
+    suite_reports: VecDeque<SimulationSuiteReport>,
     note: String,
 }
 
@@ -488,6 +623,7 @@ impl SimulationManager {
                 started_at_ms: None,
                 last_tick_at_ms: None,
                 world: None,
+                suite_reports: VecDeque::with_capacity(MAX_SUITE_REPORTS),
                 note: "Runtime v2 simulation manager is installed; no real rooms/users are modified.".to_string(),
             })),
         }
@@ -659,6 +795,40 @@ impl SimulationManager {
             recent_events: world.events.iter().rev().take(limit).cloned().collect(),
             materialization_note: materialization_note(world.users_total, world.rooms_total),
         })
+    }
+
+    pub async fn record_suite_report(&self, report: SimulationSuiteReport) {
+        let mut state = self.state.write().await;
+        if state.suite_reports.len() >= MAX_SUITE_REPORTS {
+            state.suite_reports.pop_front();
+        }
+        state.note = format!(
+            "recorded simulation suite report: suite={} completed={}/{} aborted={}",
+            report.suite.as_str(),
+            report.completed_steps,
+            report.total_steps,
+            report.aborted
+        );
+        state.suite_reports.push_back(report);
+    }
+
+    pub async fn suite_reports(&self, limit: usize) -> Vec<SimulationSuiteReport> {
+        let state = self.state.read().await;
+        let limit = limit.clamp(1, MAX_SUITE_REPORTS);
+        state.suite_reports.iter().rev().take(limit).cloned().collect()
+    }
+
+    pub async fn latest_suite_report(&self) -> Option<SimulationSuiteReport> {
+        let state = self.state.read().await;
+        state.suite_reports.back().cloned()
+    }
+
+    pub async fn clear_suite_reports(&self) -> usize {
+        let mut state = self.state.write().await;
+        let count = state.suite_reports.len();
+        state.suite_reports.clear();
+        state.note = format!("cleared {count} simulation suite report(s)");
+        count
     }
 
     pub fn sample_touches(seed: u64) -> Vec<SampleTouch> {
@@ -1147,6 +1317,20 @@ mod tests {
         assert_eq!(smoke[1].config.scenario, SimulationScenario::Idle);
         assert_eq!(SimulationSuite::parse("touch"), None);
         assert_eq!(SimulationSuite::parse("stress"), Some(SimulationSuite::Stress));
+    }
+
+    #[test]
+    fn suite_report_sums_step_counters() {
+        let mut counters = SimulationCounters::default();
+        counters.ticks = 2;
+        counters.chat_messages = 3;
+        counters.ready_events = 4;
+        assert_eq!(counters.workload_events(), 7);
+        let mut other = SimulationCounters::default();
+        other.touch_batches = 5;
+        counters.add_assign(&other);
+        assert_eq!(counters.touch_batches, 5);
+        assert_eq!(counters.workload_events(), 12);
     }
 
     #[tokio::test]

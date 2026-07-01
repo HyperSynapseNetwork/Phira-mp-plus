@@ -151,6 +151,28 @@ pub async fn execute_cli_once(state: Arc<PlusServerState>, line: String) -> Vec<
     lines
 }
 
+
+fn cli_now_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_millis().min(i64::MAX as u128) as i64)
+        .unwrap_or(0)
+}
+
+fn workload_line(prefix: &str, counters: &crate::simulation::SimulationCounters) -> String {
+    format!(
+        "{} ticks={} chats={} ready={} touch_batches={} judge_batches={} round_results={} workload_events={}",
+        prefix,
+        counters.ticks,
+        counters.chat_messages,
+        counters.ready_events,
+        counters.touch_batches,
+        counters.judge_batches,
+        counters.round_results,
+        counters.workload_events()
+    )
+}
+
 fn redact_cli_command_for_event(line: &str) -> String {
     let mut parts = line.split_whitespace();
     let command = parts.next().unwrap_or_default();
@@ -272,6 +294,7 @@ fn spawn_simulation_suite_runner(
 ) {
     tokio::spawn(async move {
         let suite_run_id = uuid::Uuid::new_v4();
+        let suite_started_at_ms = cli_now_ms();
         let total_steps = steps.len();
         let plan: Vec<_> = steps
             .iter()
@@ -309,9 +332,12 @@ fn spawn_simulation_suite_runner(
 
         let mut completed_steps = 0usize;
         let mut aborted = false;
+        let mut abort_reason = "completed".to_string();
+        let mut step_reports: Vec<crate::simulation::SimulationRunReport> = Vec::new();
         for (idx, step) in steps.into_iter().enumerate() {
             let step_index = idx + 1;
             if state.simulation.status().await.running {
+                abort_reason = format!("another simulation was running before step {step_index}");
                 let _ = out_tx.send(format!(
                     "  ! simulation suite aborted before step {} because another simulation is running",
                     step_index
@@ -323,6 +349,7 @@ fn spawn_simulation_suite_runner(
             let status = match state.simulation.start(step.config.clone()).await {
                 Ok(status) => status,
                 Err(err) => {
+                    abort_reason = format!("step {} failed to start: {}", step.name, err);
                     let _ = out_tx.send(format!(
                         "  ✗ simulation suite step {} failed to start: {}",
                         step_index, err
@@ -332,6 +359,7 @@ fn spawn_simulation_suite_runner(
                 }
             };
             let Some(run_id) = status.run_id else {
+                abort_reason = format!("step {} started without run_id", step.name);
                 let _ = out_tx.send(format!(
                     "  ✗ simulation suite step {} started without run_id; aborting suite",
                     step_index
@@ -372,6 +400,7 @@ fn spawn_simulation_suite_runner(
                 {
                     Ok(result) => result,
                     Err(_) => {
+                        abort_reason = format!("step {} stopped externally", step.name);
                         let _ = out_tx.send(format!(
                             "  ! simulation suite step {} stopped externally; aborting remaining steps",
                             step.name
@@ -412,14 +441,28 @@ fn spawn_simulation_suite_runner(
                                 "scenario": step.config.scenario.as_str(),
                                 "ticks": stopped.counters.ticks,
                                 "elapsed_secs": stopped.elapsed_secs,
+                                "workload_events": stopped.counters.workload_events(),
                             }),
                         });
                         if step.config.persist_every_ticks > 0 {
                             publish_simulation_snapshot(&state, run_id, &stopped, "simulation.suite.final").await;
                         }
+                        step_reports.push(crate::simulation::SimulationRunReport::from_status(
+                            Some(suite_run_id),
+                            Some(suite),
+                            step.name.clone(),
+                            &stopped,
+                            false,
+                            reason.clone(),
+                        ));
                         let _ = out_tx.send(format!(
-                            "  ✓ suite step {}/{} completed: {} ticks={} elapsed={}s",
-                            step_index, total_steps, step.name, stopped.counters.ticks, stopped.elapsed_secs
+                            "  ✓ suite step {}/{} completed: {} ticks={} elapsed={}s workload_events={}",
+                            step_index,
+                            total_steps,
+                            step.name,
+                            stopped.counters.ticks,
+                            stopped.elapsed_secs,
+                            stopped.counters.workload_events()
                         ));
                     }
                     completed_steps += 1;
@@ -432,6 +475,31 @@ fn spawn_simulation_suite_runner(
             }
         }
 
+        let report = crate::simulation::SimulationSuiteReport::new(
+            suite_run_id,
+            suite,
+            suite_started_at_ms,
+            cli_now_ms(),
+            total_steps,
+            completed_steps,
+            aborted,
+            abort_reason.clone(),
+            step_reports,
+        );
+        state.publish_runtime_event(crate::event_bus::MpEvent::Custom {
+            kind: "simulation.suite_report".to_string(),
+            payload: serde_json::json!({
+                "suite_run_id": suite_run_id.to_string(),
+                "suite": suite.as_str(),
+                "completed_steps": completed_steps,
+                "total_steps": total_steps,
+                "aborted": aborted,
+                "reason": abort_reason,
+                "workload_events": report.workload_events,
+                "events_per_sec": report.workload_events_per_sec,
+                "totals": report.totals.clone(),
+            }),
+        });
         state.publish_runtime_event(crate::event_bus::MpEvent::Custom {
             kind: "simulation.suite_completed".to_string(),
             payload: serde_json::json!({
@@ -440,19 +508,25 @@ fn spawn_simulation_suite_runner(
                 "completed_steps": completed_steps,
                 "total_steps": total_steps,
                 "aborted": aborted,
+                "workload_events": report.workload_events,
+                "events_per_sec": report.workload_events_per_sec,
             }),
         });
+        state.simulation.record_suite_report(report.clone()).await;
         let _ = state
             .broadcast_system_message("Runtime v2 Simulation suite 已结束。")
             .await;
         let _ = out_tx.send(format!(
-            "  {} simulation suite finished: suite={} completed={}/{} aborted={}",
+            "  {} simulation suite finished: suite={} completed={}/{} aborted={} workload_events={} eps={:.2}",
             if aborted { "!" } else { "✓" },
             suite.as_str(),
             completed_steps,
             total_steps,
-            aborted
+            aborted,
+            report.workload_events,
+            report.workload_events_per_sec
         ));
+        let _ = out_tx.send("  ▸ 查看报告：simulation report".to_string());
     });
 }
 
@@ -1054,6 +1128,7 @@ impl CliHandler {
                 self.out(format!("  {} 用法：simulation run baseline scenario=chat_storm", c::dim("▸")));
             }
             "suite" | "suites" | "batch" | "batch-run" => self.simulation_suite(&args[1..]).await,
+            "report" | "reports" | "summary" | "summaries" => self.simulation_report(&args[1..]).await,
             "seed" => {
                 if args.len() < 2 {
                     self.out(format!("  {} {} seed <u64>", c::yellow("?"), c::bold("simulation")));
@@ -1087,9 +1162,88 @@ impl CliHandler {
             }
             _ => {
                 self.out(format!("  {} 未知 simulation 子命令: {}", c::red("✗"), c::yellow(sub)));
-                self.out(format!("  {} 可用: simulation status | run <preset> | suite <name> | scenarios | tick [n] | inspect [limit] | persist | stop | seed <u64> | cleanup | sample", c::dim("▸")));
+                self.out(format!("  {} 可用: simulation status | run <preset> | suite <name> | report | scenarios | tick [n] | inspect [limit] | persist | stop | seed <u64> | cleanup | sample", c::dim("▸")));
             }
         }
+    }
+
+    async fn simulation_report(&self, args: &[&str]) {
+        let sub = args.first().copied().unwrap_or("latest");
+        match sub {
+            "latest" | "last" | "" => {
+                match self.state.simulation.latest_suite_report().await {
+                    Some(report) => self.print_suite_report(&report),
+                    None => self.out(format!("  {} 暂无 simulation suite report；先执行 simulation suite smoke", c::yellow("?"))),
+                }
+            }
+            "list" | "ls" => {
+                let limit = args.get(1).and_then(|value| value.parse::<usize>().ok()).unwrap_or(8);
+                let reports = self.state.simulation.suite_reports(limit).await;
+                if reports.is_empty() {
+                    self.out(format!("  {} 暂无 simulation suite report", c::yellow("?")));
+                    return;
+                }
+                self.out(format!("  {} 最近 {} 份 Simulation suite report", c::green("◆"), reports.len()));
+                for report in reports {
+                    self.out(format!(
+                        "  {} suite={} suite_run_id={} completed={}/{} aborted={} workload_events={} eps={:.2}",
+                        c::dim("│"),
+                        report.suite.as_str(),
+                        report.suite_run_id,
+                        report.completed_steps,
+                        report.total_steps,
+                        report.aborted,
+                        report.workload_events,
+                        report.workload_events_per_sec
+                    ));
+                }
+            }
+            "clear" | "clean" => {
+                let count = self.state.simulation.clear_suite_reports().await;
+                self.out(format!("  {} 已清理 {} 份 simulation suite report", c::green("✓"), count));
+            }
+            other => {
+                self.out(format!("  {} 未知 simulation report 子命令: {}", c::red("✗"), c::yellow(other)));
+                self.out(format!("  {} 可用: simulation report | simulation report list [limit] | simulation report clear", c::dim("▸")));
+            }
+        }
+    }
+
+    fn print_suite_report(&self, report: &crate::simulation::SimulationSuiteReport) {
+        self.out(format!(
+            "  {} Simulation suite report: suite={} suite_run_id={}",
+            c::green("◆"),
+            report.suite.as_str(),
+            report.suite_run_id
+        ));
+        self.out(format!(
+            "  {} completed={}/{} aborted={} elapsed={}s workload_events={} eps={:.2} reason={}",
+            c::dim("│"),
+            report.completed_steps,
+            report.total_steps,
+            report.aborted,
+            report.total_elapsed_secs,
+            report.workload_events,
+            report.workload_events_per_sec,
+            report.reason
+        ));
+        self.out(workload_line(&format!("  {} totals", c::dim("│")), &report.totals));
+        for (idx, step) in report.steps.iter().enumerate() {
+            self.out(format!(
+                "  {} {:>2}. {:<22} scenario={} run_id={} elapsed={}s aborted={} eps={:.2} reason={}",
+                c::dim("│"),
+                idx + 1,
+                step.step_name,
+                step.scenario.as_str(),
+                step.run_id.map(|id| id.to_string()).unwrap_or_else(|| "none".to_string()),
+                step.elapsed_secs,
+                step.aborted,
+                step.workload_events_per_sec,
+                step.reason
+            ));
+            self.out(workload_line("      └", &step.counters));
+        }
+        self.out(format!("  {} reports 只记录最近 32 份；simulation report list 可查看历史摘要", c::dim("▸")));
     }
 
     async fn simulation_suite(&self, args: &[&str]) {

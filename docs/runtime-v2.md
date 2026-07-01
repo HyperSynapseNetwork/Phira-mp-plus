@@ -262,3 +262,27 @@ Step 11 fixes a real production data-path issue and records the Actor-model dest
 - Web management API remains out of scope; the project keeps CLI/TUI/in-game admin/WIT as write-capable control surfaces.
 
 This is the first Step that intentionally fixes a production gameplay data problem while still avoiding a risky Room state-machine ownership migration.
+
+## Step 12 implementation status
+
+Step 12 adds a persistent in-memory report layer for Simulation suites:
+
+- `simulation suite <name>` now records a `SimulationSuiteReport` when the suite finishes or aborts.
+- Reports keep per-step counters for ticks, chat messages, ready events, touch batches, judge batches and round results.
+- Reports also compute total workload events and workload events per second, so suite runs can be compared without manually reading raw EventBus traces.
+- `simulation report` prints the latest suite report.
+- `simulation report list [limit]` lists recent suite summaries.
+- `simulation report clear` clears the bounded report history.
+- The report history is intentionally in-memory and bounded to the most recent 32 suite reports. It is for operator feedback and regression comparison, not long-term analytics storage.
+- Suite completion also publishes a `simulation.suite_report` Runtime v2 event so the EventBus/PersistenceWorker simulation path can observe the same summary.
+
+Useful examples:
+
+```text
+simulation suite smoke
+simulation report
+simulation report list 8
+simulation report clear
+```
+
+This step improves the usability of the Simulation runner without changing production Room/Session ownership. It also keeps Web management API out of scope: reports are exposed through CLI/TUI-style command surfaces, not through privileged Web write endpoints.
