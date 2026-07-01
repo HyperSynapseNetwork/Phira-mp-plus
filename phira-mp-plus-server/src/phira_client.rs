@@ -20,6 +20,7 @@ use tokio::time;
 use tracing::warn;
 
 pub const PHIRA_RETRY_NOTICE: &str = "Phira服务器太烂了，我们正在重试以保证你的流畅体验";
+pub const PHIRA_LEGACY_502_MARKER: &str = "认证失败 502错误";
 pub const PHIRA_LEGACY_502_TEXT: &str = "认证失败 502错误 Phira服务器太烂了，我们正在重试以保证你的流畅体验 /拜谢";
 
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
@@ -152,6 +153,7 @@ pub struct PhiraCircuitBreakerStats {
     pub opened: u64,
     pub rejected: u64,
     pub open_until_ms: u64,
+    pub remaining_open_ms: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -213,9 +215,16 @@ impl PhiraCircuitBreaker {
         if !self.policy.enabled {
             return;
         }
-        let failures = self.consecutive_failures.fetch_add(1, Ordering::Relaxed) + 1;
+        let now = now_ms();
+        let open_until = self.open_until_ms.load(Ordering::Relaxed);
+        let half_open_probe_failed = open_until > 0 && open_until <= now;
+        let failures = if half_open_probe_failed {
+            self.policy.failure_threshold
+        } else {
+            self.consecutive_failures.fetch_add(1, Ordering::Relaxed) + 1
+        };
         if failures >= self.policy.failure_threshold {
-            let until = now_ms().saturating_add(self.policy.open_duration.as_millis() as u64);
+            let until = now.saturating_add(self.policy.open_duration.as_millis() as u64);
             self.open_until_ms.store(until, Ordering::Relaxed);
             self.consecutive_failures.store(0, Ordering::Relaxed);
             self.opened.fetch_add(1, Ordering::Relaxed);
@@ -225,10 +234,13 @@ impl PhiraCircuitBreaker {
     fn stats(&self) -> PhiraCircuitBreakerStats {
         let now = now_ms();
         let open_until = self.open_until_ms.load(Ordering::Relaxed);
+        let remaining_open_ms = open_until.saturating_sub(now);
         let state = if !self.policy.enabled {
             "disabled"
         } else if open_until > now {
             "open"
+        } else if open_until > 0 {
+            "half_open"
         } else if self.consecutive_failures.load(Ordering::Relaxed) > 0 {
             "closed_with_failures"
         } else {
@@ -243,6 +255,7 @@ impl PhiraCircuitBreaker {
             opened: self.opened.load(Ordering::Relaxed),
             rejected: self.rejected.load(Ordering::Relaxed),
             open_until_ms: open_until,
+            remaining_open_ms,
         }
     }
 }
@@ -261,6 +274,12 @@ pub struct PhiraHttpStats {
     pub retry_attempts: u64,
     pub failures: u64,
     pub retry_notices: u64,
+    pub circuit_open_rejections: u64,
+    pub transport_errors: u64,
+    pub status_errors: u64,
+    pub retryable_status_failures: u64,
+    pub non_retryable_status_failures: u64,
+    pub decode_errors: u64,
     pub last_error: Option<String>,
     pub policy: PhiraHttpPolicySnapshot,
     pub circuit_breaker: PhiraCircuitBreakerStats,
@@ -273,7 +292,22 @@ struct PhiraHttpCounters {
     retry_attempts: AtomicU64,
     failures: AtomicU64,
     retry_notices: AtomicU64,
+    circuit_open_rejections: AtomicU64,
+    transport_errors: AtomicU64,
+    status_errors: AtomicU64,
+    retryable_status_failures: AtomicU64,
+    non_retryable_status_failures: AtomicU64,
+    decode_errors: AtomicU64,
     last_error: RwLock<Option<String>>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PhiraHttpFailureKind {
+    CircuitOpen,
+    Transport,
+    RetryableStatus,
+    NonRetryableStatus,
+    Decode,
 }
 
 pub enum PhiraRetryNoticeTarget<'a> {
@@ -310,6 +344,12 @@ impl PhiraRetryClient {
             retry_attempts: self.counters.retry_attempts.load(Ordering::Relaxed),
             failures: self.counters.failures.load(Ordering::Relaxed),
             retry_notices: self.counters.retry_notices.load(Ordering::Relaxed),
+            circuit_open_rejections: self.counters.circuit_open_rejections.load(Ordering::Relaxed),
+            transport_errors: self.counters.transport_errors.load(Ordering::Relaxed),
+            status_errors: self.counters.status_errors.load(Ordering::Relaxed),
+            retryable_status_failures: self.counters.retryable_status_failures.load(Ordering::Relaxed),
+            non_retryable_status_failures: self.counters.non_retryable_status_failures.load(Ordering::Relaxed),
+            decode_errors: self.counters.decode_errors.load(Ordering::Relaxed),
             last_error: self.counters.last_error.read().ok().and_then(|value| value.clone()),
             policy: self.policy.snapshot(),
             circuit_breaker: self.circuit_breaker.stats(),
@@ -330,7 +370,7 @@ impl PhiraRetryClient {
         self.counters.requests.fetch_add(1, Ordering::Relaxed);
         if !self.circuit_breaker.allow_request() {
             let msg = "Phira API circuit breaker is open".to_string();
-            self.record_failure(msg.clone());
+            self.record_failure_kind(PhiraHttpFailureKind::CircuitOpen, msg.clone());
             bail!(msg);
         }
 
@@ -350,9 +390,18 @@ impl PhiraRetryClient {
                 Ok(response) => {
                     let status = response.status();
                     if status.is_success() {
-                        self.counters.successes.fetch_add(1, Ordering::Relaxed);
-                        self.circuit_breaker.record_success();
-                        return response.json::<T>().await.map_err(Into::into);
+                        match response.json::<T>().await {
+                            Ok(value) => {
+                                self.counters.successes.fetch_add(1, Ordering::Relaxed);
+                                self.circuit_breaker.record_success();
+                                return Ok(value);
+                            }
+                            Err(err) => {
+                                self.circuit_breaker.record_failure();
+                                self.record_failure_kind(PhiraHttpFailureKind::Decode, err.to_string());
+                                return Err(err.into());
+                            }
+                        }
                     }
                     let body = response.text().await.unwrap_or_default();
                     let retryable = phira_status_retryable(status, &body);
@@ -362,9 +411,21 @@ impl PhiraRetryClient {
                         time::sleep(self.policy.backoff_delay(attempt)).await;
                         continue;
                     }
-                    self.circuit_breaker.record_failure();
-                    self.record_failure(format!("Phira API request failed: {status} {body}"));
-                    if status == reqwest::StatusCode::BAD_GATEWAY || body.contains("认证失败 502错误") {
+                    if retryable {
+                        self.circuit_breaker.record_failure();
+                        self.record_failure_kind(
+                            PhiraHttpFailureKind::RetryableStatus,
+                            format!("Phira API request failed: {status} {body}"),
+                        );
+                    } else {
+                        // Client-side/non-retryable statuses are real failures for the caller,
+                        // but they should not open the upstream circuit breaker.
+                        self.record_failure_kind(
+                            PhiraHttpFailureKind::NonRetryableStatus,
+                            format!("Phira API request failed: {status} {body}"),
+                        );
+                    }
+                    if status == reqwest::StatusCode::BAD_GATEWAY || body.contains(PHIRA_LEGACY_502_MARKER) {
                         bail!(PHIRA_LEGACY_502_TEXT);
                     }
                     bail!("Phira API request failed: {status} {body}");
@@ -376,14 +437,17 @@ impl PhiraRetryClient {
                 }
                 Err(err) => {
                     self.circuit_breaker.record_failure();
-                    self.record_failure(err.to_string());
+                    self.record_failure_kind(PhiraHttpFailureKind::Transport, err.to_string());
                     return Err(err.into());
                 }
             }
         }
 
         self.circuit_breaker.record_failure();
-        self.record_failure("Phira API request failed after retries".to_string());
+        self.record_failure_kind(
+            PhiraHttpFailureKind::RetryableStatus,
+            "Phira API request failed after retries".to_string(),
+        );
         bail!("Phira API request failed after retries")
     }
 
@@ -406,8 +470,27 @@ impl PhiraRetryClient {
         }
     }
 
-    fn record_failure(&self, error: String) {
+    fn record_failure_kind(&self, kind: PhiraHttpFailureKind, error: String) {
         self.counters.failures.fetch_add(1, Ordering::Relaxed);
+        match kind {
+            PhiraHttpFailureKind::CircuitOpen => {
+                self.counters.circuit_open_rejections.fetch_add(1, Ordering::Relaxed);
+            }
+            PhiraHttpFailureKind::Transport => {
+                self.counters.transport_errors.fetch_add(1, Ordering::Relaxed);
+            }
+            PhiraHttpFailureKind::RetryableStatus => {
+                self.counters.status_errors.fetch_add(1, Ordering::Relaxed);
+                self.counters.retryable_status_failures.fetch_add(1, Ordering::Relaxed);
+            }
+            PhiraHttpFailureKind::NonRetryableStatus => {
+                self.counters.status_errors.fetch_add(1, Ordering::Relaxed);
+                self.counters.non_retryable_status_failures.fetch_add(1, Ordering::Relaxed);
+            }
+            PhiraHttpFailureKind::Decode => {
+                self.counters.decode_errors.fetch_add(1, Ordering::Relaxed);
+            }
+        }
         if let Ok(mut last) = self.counters.last_error.write() {
             *last = Some(error);
         }
@@ -418,6 +501,7 @@ fn phira_status_retryable(status: reqwest::StatusCode, body: &str) -> bool {
     status == reqwest::StatusCode::BAD_GATEWAY
         || status == reqwest::StatusCode::TOO_MANY_REQUESTS
         || status.is_server_error()
+        || body.contains(PHIRA_LEGACY_502_MARKER)
         || body.contains(PHIRA_LEGACY_502_TEXT)
 }
 
@@ -425,5 +509,70 @@ fn phira_error_retryable(err: &reqwest::Error) -> bool {
     err.is_timeout()
         || err.is_connect()
         || err.status().is_some_and(|status| phira_status_retryable(status, ""))
+        || err.to_string().contains(PHIRA_LEGACY_502_MARKER)
         || err.to_string().contains(PHIRA_LEGACY_502_TEXT)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn legacy_502_marker_is_retryable_without_full_notice_text() {
+        assert!(phira_status_retryable(
+            reqwest::StatusCode::BAD_GATEWAY,
+            PHIRA_LEGACY_502_MARKER
+        ));
+        assert!(phira_status_retryable(
+            reqwest::StatusCode::OK,
+            "认证失败 502错误"
+        ));
+    }
+
+    #[test]
+    fn client_side_status_is_not_retryable() {
+        assert!(!phira_status_retryable(reqwest::StatusCode::BAD_REQUEST, "bad request"));
+        assert!(!phira_status_retryable(reqwest::StatusCode::UNAUTHORIZED, "unauthorized"));
+    }
+
+    #[test]
+    fn circuit_breaker_reopens_after_half_open_probe_failure() {
+        let breaker = PhiraCircuitBreaker::new(PhiraCircuitBreakerPolicy {
+            enabled: true,
+            failure_threshold: 2,
+            open_duration: Duration::from_millis(1),
+        });
+        breaker.record_failure();
+        assert_eq!(breaker.stats().state, "closed_with_failures");
+        breaker.record_failure();
+        assert_eq!(breaker.stats().state, "open");
+
+        std::thread::sleep(Duration::from_millis(2));
+        assert_eq!(breaker.stats().state, "half_open");
+        breaker.record_failure();
+        assert_eq!(breaker.stats().state, "open");
+    }
+
+    #[test]
+    fn policy_config_clamps_extreme_values() {
+        let policy = PhiraHttpPolicyConfig {
+            timeout_ms: Some(1),
+            max_retries: Some(usize::MAX),
+            base_backoff_ms: Some(1),
+            max_backoff_ms: Some(1),
+            circuit_breaker: PhiraCircuitBreakerConfig {
+                enabled: Some(true),
+                failure_threshold: Some(1),
+                open_duration_ms: Some(1),
+            },
+        }
+        .into_policy();
+
+        assert_eq!(policy.timeout, Duration::from_millis(500));
+        assert_eq!(policy.max_retries, 10);
+        assert_eq!(policy.base_backoff, Duration::from_millis(50));
+        assert_eq!(policy.max_backoff, Duration::from_millis(50));
+        assert_eq!(policy.circuit_breaker.failure_threshold, 2);
+        assert_eq!(policy.circuit_breaker.open_duration, Duration::from_millis(1_000));
+    }
 }

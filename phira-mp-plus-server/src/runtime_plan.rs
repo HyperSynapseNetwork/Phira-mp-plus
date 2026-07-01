@@ -69,7 +69,7 @@ impl RuntimePlan {
                     title: "Unified Phira HTTP RetryClient",
                     status: "active",
                     priority: "P0",
-                    next_step: "PhiraRetryClient now owns timeout/retry/backoff/circuit-breaker policy; next step is endpoint-level health and metadata worker routing.",
+                    next_step: "PhiraRetryClient now owns timeout/retry/backoff/circuit-breaker policy, failure classification and half-open probe behavior; next step is endpoint-level health and metadata worker routing.",
                 },
                 RuntimeObjective {
                     key: "persistence-worker",
@@ -98,6 +98,13 @@ impl RuntimePlan {
                     status: "active",
                     priority: "P1",
                     next_step: "Add contract tests around plugin ABI, command registry, telemetry cutover, room gateway and session handlers before further cutover.",
+                },
+                RuntimeObjective {
+                    key: "technical-debt-triage",
+                    title: "Source debt-comment backlog discipline",
+                    status: "active",
+                    priority: "P1",
+                    next_step: "Current source audit found no inline debt markers in phira-mp-plus-server/src; future debt markers must be converted into RuntimePlan objectives, tests or tracked issues instead of being left as drifting comments.",
                 },
                 RuntimeObjective {
                     key: "tui-v2",
