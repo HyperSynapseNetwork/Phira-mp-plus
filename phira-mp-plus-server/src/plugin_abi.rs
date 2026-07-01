@@ -55,6 +55,24 @@ pub fn plugin_abi_plan() -> PluginAbiPlan {
     }
 }
 
+/// WIT ABI v2 metadata — references the WIT file at `wit/phira-plugin.wit`.
+pub mod wit {
+    /// Path to the WIT definition file (relative to workspace root).
+    pub const WIT_FILE: &str = "wit/phira-plugin.wit";
+
+    /// The WIT world name defined in the WIT file.
+    pub const WIT_WORLD: &str = "phira-plugin-v2";
+
+    /// ABI version string for identification.
+    pub const WIT_VERSION: &str = "abi-wit-v2";
+
+    /// Current migration phase.
+    /// - 0: WIT files defined, JSON bridge still active
+    /// - 1: Host WIT bindings generated, dual-ABI support
+    /// - 2: Guest SDK updated, WIT-only mode
+    pub const MIGRATION_PHASE: u8 = 0;
+}
+
 /// Encode a host event for the current JSON-memory WASM plugin ABI.
 ///
 /// This is intentionally kept as a typed match instead of free-form `json!`

@@ -1,0 +1,140 @@
+// Phira-mp+ Plugin ABI v2 — WIT / Component Model
+//
+// This is the typed replacement for the current JSON-memory bridge (abi-json-v1).
+// Target: abi-wit-v2
+//
+// Migration:
+//   1. Define WIT interfaces matching the current JSON ABI (this file)
+//   2. Generate host bindings with wasmtime::component::bindgen!
+//   3. Implement host side (wasm_host.rs → typed WIT imports)
+//   4. Update guest SDK (phira-mp-plus-sdk) to use WIT exports
+//   5. Dual-support both ABIs during transition
+//   6. Remove JSON bridge after all plugins migrate
+
+/// Core data types shared between host and guest.
+interface phira-types {
+    /// Touch event point from gameplay.
+    record touch-event-point {
+        time: f32,
+        finger: u32,
+        x: f32,
+        y: f32,
+    }
+
+    /// Judge event item from gameplay.
+    record judge-event-item {
+        time: f32,
+        line-id: u32,
+        note-id: u32,
+        judgement: string,
+    }
+
+    /// Plugin metadata returned by get-info.
+    record plugin-info {
+        name: string,
+        version: string,
+        author: string,
+        description: string,
+    }
+
+    /// Result of an HTTP request made by the plugin.
+    record http-response {
+        status: u16,
+        headers: list<tuple<string, string>>,
+        body: list<u8>,
+    }
+
+    /// Player record data for GameEnd event.
+    record game-end-record {
+        user-id: u32,
+        user-name: string,
+        score: u32,
+        accuracy: float32,
+        perfect: u32,
+        good: u32,
+        bad: u32,
+        miss: u32,
+        max-combo: u32,
+        full-combo: bool,
+    }
+
+    /// A generic JSON value. Used for plugin API arguments/results
+    /// until the WIT interface is fully specialized.
+    variant json-value {
+        null,
+        bool(bool),
+        integer(s64),
+        float(float64),
+        string(string),
+        array(list<json-value>),
+        object(list<tuple<string, json-value>>),
+    }
+
+    /// Host API result: either a JSON value or an error string.
+    variant api-result {
+        ok(json-value),
+        error(string),
+    }
+}
+
+/// Host functions available to WASM plugins.
+interface phira-host {
+    use phira-types.{touch-event-point, judge-event-item, plugin-info, http-response, json-value, api-result, game-end-record}
+
+    /// Log a message from the plugin.
+    log: func(level: string, message: string)
+
+    /// Generate a UUID v4 string.
+    generate-uuid: func() -> string
+
+    /// Get current timestamp in milliseconds.
+    current-time-ms: func() -> u64
+
+    /// Call a server API method. Matches the host's ServerStateQuery interface.
+    api-call: func(method: string, args: list<json-value>) -> api-result
+
+    /// Send a chat message as system (user-id 0) or as a specific user.
+    send-chat: func(user-id: u32, message: string)
+
+    /// Make an outbound HTTP request (sandboxed by WasmRuntimeConfig).
+    http-request: func(url: string, method: string, headers: list<tuple<string, string>>, body: list<u8>) -> result<http-response, string>
+}
+
+/// Events the host sends to plugins.
+interface phira-events {
+    use phira-types.{touch-event-point, judge-event-item, game-end-record}
+
+    /// All event types the host can dispatch to plugins.
+    variant plugin-event {
+        user-connect(user-id: u32, user-name: string, user-ip: string),
+        user-disconnect(user-id: u32, user-name: string),
+        room-create(user-id: u32, room-id: string),
+        room-join(user-id: u32, room-id: string, is-monitor: bool),
+        room-leave(user-id: u32, room-id: string),
+        room-modify(user-id: u32, room-id: string, data: string),
+        game-start(user-id: u32, room-id: string),
+        game-end(user-id: u32, room-id: string, record: game-end-record),
+        player-touches(user-id: u32, room-id: string, data: list<touch-event-point>),
+        player-judges(user-id: u32, room-id: string, data: list<judge-event-item>),
+        round-complete(room-id: string, chart-id: u32, chart-name: string),
+    }
+}
+
+/// The plugin world — what a WASM plugin component must export
+/// and what the host provides.
+world phira-plugin-v2 {
+    import phira-host;
+    import phira-events;
+
+    export init: func() -> result<_, string>;
+    export get-info: func() -> plugin-info;
+    export cleanup: func();
+
+    /// Called when the host dispatches an event to this plugin.
+    /// Returns ok(true) if the plugin handled the event.
+    export on-event: func(event: plugin-event) -> result<bool, string>;
+
+    /// Called when something invokes a plugin-exposed API method.
+    /// Returns the JSON result or error.
+    export on-api: func(method: string, args: list<json-value>) -> api-result;
+}
