@@ -213,7 +213,7 @@ impl CliHandler {
 
     fn print_benchmark_modes(&self) {
         self.out(format!("  {} Benchmark modes", c::green("◆")));
-        self.out(format!("  {} simulation  默认压测路径：不访问 Phira，不需要真实账号，使用 shadow world/suite/report", c::dim("│")));
+        self.out(format!("  {} simulation  默认压测路径：不访问 Phira，不需要真实账号，suite/report 输出统一 BenchmarkReport", c::dim("│")));
         self.out(format!("  {} hybrid      显式 Phira probe：authenticate/chart_lookup/record_lookup/upload_record 独立开关，默认全关，输出统一 BenchmarkReport", c::dim("│")));
         self.out(format!("  {} real        当前 benchmark 命令：真实 TCP + 真实认证 + 真实 Phira token，输出统一 BenchmarkReport", c::dim("│")));
         self.out(format!("  {} examples", c::cyan("▸")));

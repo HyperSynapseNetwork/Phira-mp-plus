@@ -348,7 +348,11 @@ pub(super) fn spawn_simulation_suite_runner(
             report.workload_events,
             report.workload_events_per_sec
         ));
-        let _ = out_tx.send("  ▸ 查看报告：simulation report".to_string());
+        let benchmark_report = crate::benchmark_report::BenchmarkReport::from_simulation_suite(&report);
+        for line in benchmark_report.render_text().lines() {
+            let _ = out_tx.send(line.to_string());
+        }
+        let _ = out_tx.send("  ▸ 查看完整 suite 明细：simulation report".to_string());
     });
 }
 

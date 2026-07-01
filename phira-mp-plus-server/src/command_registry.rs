@@ -494,7 +494,7 @@ pub fn runtime_v2_registry() -> CommandRegistry {
         CommandSpec::new(
             "simulation report",
             "simulation",
-            "查看最近一次 Simulation suite 汇总报告，包含每个 step 的 ticks/chat/ready/touch/judge/round 统计。",
+            "查看最近一次 Simulation suite 汇总报告，并输出统一 BenchmarkReport [simulation] 摘要。",
             "simulation report [latest|list|clear]",
         )
         .example("simulation report")

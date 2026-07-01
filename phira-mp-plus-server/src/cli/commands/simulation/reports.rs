@@ -23,7 +23,7 @@ impl CliHandler {
                 self.out(format!("  {} 最近 {} 份 Simulation suite report", c::green("◆"), reports.len()));
                 for report in reports {
                     self.out(format!(
-                        "  {} {} suite={} completed={}/{} aborted={} workload_events={} eps={:.2}",
+                        "  {} {} suite={} completed={}/{} aborted={} workload_events={} eps={:.2} benchmark_mode=simulation",
                         c::dim("│"),
                         report.suite_run_id,
                         report.suite.as_str(),
@@ -65,6 +65,11 @@ impl CliHandler {
                 ));
                 self.out(workload_line("      └", &step.counters));
             }
+        }
+        self.out(format!("  {} unified benchmark view", c::cyan("▸")));
+        let benchmark_report = crate::benchmark_report::BenchmarkReport::from_simulation_suite(report);
+        for line in benchmark_report.render_text().lines() {
+            self.out(line.to_string());
         }
     }
 

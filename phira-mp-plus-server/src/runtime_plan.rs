@@ -41,14 +41,14 @@ impl RuntimePlan {
                     title: "Simulation default benchmark path",
                     status: "active",
                     priority: "P0",
-                    next_step: "Add batch reports, scenario tuning, cleanup hardening and real load validation.",
+                    next_step: "Simulation suite reports now adapt into the shared BenchmarkReport contract; next step is cleanup hardening, event emission and persisted report snapshots.",
                 },
                 RuntimeObjective {
                     key: "benchmark-modes",
                     title: "Benchmark modes: simulation / hybrid / real",
                     status: "active",
                     priority: "P0",
-                    next_step: "Hybrid switches are parsed and routed through PhiraRetryClient with all Phira probes disabled by default; real and hybrid now emit a shared BenchmarkReport text contract, next step is routing simulation suite reports into the same shape.",
+                    next_step: "Simulation, hybrid and real now share BenchmarkReport output; next step is wiring benchmark.completed EventBus diagnostics and readonly status snapshots.",
                 },
                 RuntimeObjective {
                     key: "actor-model",

@@ -1671,8 +1671,8 @@ impl PlusServerState {
         if tokens.is_empty() {
             o!("  ✗ 未配置 Phira 压测账号");
             o!("  │  请先执行: benchmark-bind <token1[,token2...]>");
-            o!("  │  或直接修改 server_config.yml: benchmark_phira_tokens: ["..."]");
-            o!("  │  也可以写入 {BENCH_AUTH_FILE}: {{"tokens":["..."]}}");
+            o!(r#"  │  或直接修改 server_config.yml: benchmark_phira_tokens: ["..."]"#);
+            o!(r#"  │  也可以写入 {BENCH_AUTH_FILE}: {{"tokens":["..."]}}"#);
             let mut report = BenchmarkReport::new(BenchmarkMode::Real, "real TCP compatibility benchmark", duration_secs)
                 .with_target_rooms(target_rooms);
             report.add_failure_sample("config", "no benchmark Phira tokens configured");
