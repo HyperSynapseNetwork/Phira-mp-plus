@@ -54,7 +54,6 @@ WASM 插件通过 JSON 字符串与宿主通信：
 | `room.create_empty` | `{ room_id, endpoint? }` | `{"ok": true, "room_id": string}` | 创建无人持久空房间，endpoint 为空时使用全局 Phira API |
 | `room.set_persistent_empty` | `{ room_id, persistent }` | `{"ok": true, "persistent_empty": bool}` | 设置房间无人时是否保留 |
 | `room.kick` | `{ room_id, target_id }` | `{"ok": true}` | 从房间踢出用户 |
-| `room.transfer_host` | `{ room_id, target_id }` | `{"ok": true}` | 转移房主；`target_id:-1` 表示系统 `?` 房主 |
 | `room.set_host` / `room.clear_host` | `{ room_id, target_id? }` | `{"ok": true}` | 设置房主；`target_id:null` 或 `?` 表示系统 `?` 房主 |
 | `room.set_lock` | `{ room_id, locked }` | `{"ok": true}` | 锁定/解锁房间 |
 | `room.force_move` | `{ room_id, target_id, monitor }` | `{"ok": true}` | 强制迁移用户到房间 |

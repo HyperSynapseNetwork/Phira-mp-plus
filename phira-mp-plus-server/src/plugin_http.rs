@@ -1,8 +1,7 @@
-//! HTTP extension routes, SSE streams, and the live WebSocket bridge.
+//! HTTP extension routes and the canonical Runtime v2 SSE stream.
 
 mod router;
 mod sse;
-mod websocket;
 
 use crate::server::PlusServerState;
 use axum::{
@@ -30,17 +29,14 @@ use router::DynamicRouter;
 pub struct PluginHttpServer {
     router: Arc<RwLock<DynamicRouter>>,
     events: Arc<SseHub>,
-    ws_live_tx: broadcast::Sender<Vec<u8>>,
     port: u16,
 }
 
 impl PluginHttpServer {
     pub fn new(port: u16, events: Arc<SseHub>) -> Self {
-        let (ws_live_tx, _) = broadcast::channel(256);
         Self {
             router: Arc::new(RwLock::new(DynamicRouter::default())),
             events,
-            ws_live_tx,
             port,
         }
     }
@@ -49,13 +45,6 @@ impl PluginHttpServer {
         self.events.general_sender()
     }
 
-    pub fn room_sse_sender(&self) -> broadcast::Sender<SseEvent> {
-        self.events.room_sender()
-    }
-
-    pub fn ws_live_sender(&self) -> broadcast::Sender<Vec<u8>> {
-        self.ws_live_tx.clone()
-    }
 
     pub async fn register_route(&self, path: &str, handler: HttpHandler) {
         self.router.write().await.add(path.to_string(), handler);
@@ -81,17 +70,13 @@ impl PluginHttpServer {
         self.events.publish(SseEvent::new(event_type, data));
     }
 
-    pub async fn start(&self, server: Arc<PlusServerState>) {
+    pub async fn start(&self, _server: Arc<PlusServerState>) {
         let state = Arc::new(HttpAppState {
             router: Arc::clone(&self.router),
             events: Arc::clone(&self.events),
-            ws_live_tx: self.ws_live_tx.clone(),
-            server,
         });
         let app = Router::new()
             .route("/api/events", get(general_sse_handler))
-            .route("/rooms/listen", get(room_sse_handler))
-            .route("/ws/live", get(websocket::handler))
             .route("/{*path}", any(dynamic_handler))
             .layer(CorsLayer::permissive())
             .with_state(state);
@@ -122,8 +107,6 @@ impl api::HttpHandleInner for HttpHandleBridge {
 pub(super) struct HttpAppState {
     router: Arc<RwLock<DynamicRouter>>,
     events: Arc<SseHub>,
-    ws_live_tx: broadcast::Sender<Vec<u8>>,
-    server: Arc<PlusServerState>,
 }
 
 async fn general_sse_handler(State(state): State<Arc<HttpAppState>>) -> Response {
@@ -131,15 +114,6 @@ async fn general_sse_handler(State(state): State<Arc<HttpAppState>>) -> Response
         sse::general_stream(state.events.subscribe_general()),
         Duration::from_secs(15),
     )
-}
-
-async fn room_sse_handler(State(state): State<Arc<HttpAppState>>) -> Response {
-    let stream = sse::room_stream(
-        Arc::clone(&state.server),
-        state.events.subscribe_rooms(),
-    )
-    .await;
-    sse_response(stream, Duration::from_secs(10))
 }
 
 fn sse_response(stream: sse::EventStream, interval: Duration) -> Response {

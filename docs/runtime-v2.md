@@ -123,7 +123,7 @@ Step 5 validated the Worker queue and backpressure behavior without changing per
 
 Step 6 adds the first concrete simulation-only persistence sink while still keeping production data safe:
 
-- The `rt` top-level alias was removed from `runtime` because it conflicted with the existing `room-transfer` alias and produced an unreachable-pattern warning.
+- Runtime v2 no longer keeps old top-level aliases; use canonical namespaces such as `room host` and `runtime status`.
 - `simulation persist` / `simulation snapshot` publishes the current shadow-world snapshot as a `simulation.snapshot` Runtime v2 event.
 - `PersistenceWorker` now requests PostgreSQL writes only for events marked as simulation data.
 - Simulation diagnostics are written to the dedicated `mp_sim_events` table when PostgreSQL is enabled and initialized.
@@ -385,8 +385,8 @@ telemetry before moving higher-risk state-machine transitions.
 Step 17 moves the remaining higher-risk admin start/cancel room commands behind
 `RoomCommandGateway`'s per-room mailbox registry:
 
-- `room start <room_id>` / legacy `room-start` now crosses the per-room mailbox.
-- `room cancel <room_id>` / legacy `room-cancel` now crosses the per-room mailbox.
+- `room start <room_id>` now crosses the per-room mailbox.
+- `room cancel <room_id>` now crosses the per-room mailbox.
 - `Room::begin_admin_start` still owns the actual protocol behavior; the gateway
   only serializes the command with other per-room admin writes.
 - `cancel_start` no longer sends `CancelGame` while holding the room-state write
@@ -789,22 +789,39 @@ The command system now has an explicit command surface policy:
   recommended day-to-day command surface.
 - `advanced` commands remain supported but are hidden from the default overview;
   use `help all` or `help group <group> all` when operating Runtime v2 internals.
-- `legacy` commands remain executable for backward compatibility, but they are
-  not promoted in default help or Tab completion.  Use `help legacy` to see the
-  mapping to the recommended namespace.
+Compatibility command spellings are no longer retained.  The project is still a
+test branch, so Runtime v2 now favors canonical namespaces over compatibility
+layers.
 
 This is intentionally not a new Web management API and not another pile of
 `runtime xxx` tools.  The goal is to keep CLI/TUI/in-game-admin commands usable
 while Runtime v2 continues to grow.  Future command additions should first answer:
 
-1. Is this a primary day-to-day operation, an advanced diagnostic, or a legacy
-   compatibility spelling?
+1. Is this a primary day-to-day operation or an advanced diagnostic?
 2. Can this be configuration-driven instead of a new command?
 3. Does the command belong under an existing namespace such as `room`, `plugin`,
    `simulation`, `benchmark`, or `runtime`?
-4. If it is a temporary migration command, what is the replacement or removal
-   plan?
+4. If it is a temporary migration command, what is the removal plan?
 
-The execution layer still supports old commands such as `plug-enable`, but the
-recommended path is now `plugin enable`.  This keeps existing operators unbroken
-while preventing old aliases from making the visible command surface larger.
+Step 31 removes old command spellings instead of keeping a hidden compatibility
+layer.  Examples: `plug-enable`, `room-start`, `room-transfer`, `bench`, `sim`,
+`bc`, and one-letter shortcuts are gone. Use the canonical namespaces such as
+`plugin enable`, `room start`, `room host`, `benchmark`, `simulation`, and
+`broadcast all|room|user`.
+
+## Step 31 - Canonical command surface
+
+The project is still a test branch, so Runtime v2 no longer carries a CLI
+compatibility layer.  Step 31 removes old aliases and one-off top-level room
+commands instead of hiding them as legacy commands.
+
+Canonical examples:
+
+- `plugin list`, `plugin enable`, `plugin disable`, `plugin reload`
+- `room start`, `room cancel`, `room host`, `room close`, `room kick`
+- `benchmark`, `benchmark-bind`, `benchmark-cleanup`
+- `simulation run`, `simulation suite`, `simulation report`
+- `broadcast all`, `broadcast room`, `broadcast user`
+
+This keeps the command system small enough to continue building Runtime v2
+without turning CLI compatibility into a permanent maintenance burden.

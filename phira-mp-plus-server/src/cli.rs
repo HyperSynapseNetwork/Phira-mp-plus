@@ -621,49 +621,33 @@ impl CliHandler {
             }
 
             match command {
-                "exit" | "quit" | "q" => {
+                "exit" => {
                     self.out(format!("  {} 正在关闭服务器...", c::yellow("⟳")));
                     *self.running.write().await = false;
                     self.state.shutdown.notify_one();
                     self.out(format!("  {} 已发送关闭信号", c::green("✓")));
                     break;
                 }
-                "help" | "h" | "?" => self.print_help(&args).await,
-                "plugins" | "pl" => self.list_plugins().await,
-                "plug-enable" | "pe" => {
-                    if args.is_empty() {
-                        self.out(format!("  {} {} <插件名>", c::yellow("?"), c::bold("plug-enable")));
-                    } else {
-                        self.enable_plugin(args[0]).await;
-                    }
-                }
-                "plug-disable" | "pd" => {
-                    if args.is_empty() {
-                        self.out(format!("  {} {} <插件名>", c::yellow("?"), c::bold("plug-disable")));
-                    } else {
-                        self.disable_plugin(args[0]).await;
-                    }
-                }
-                "plug-reload" | "pr" => self.reload_plugins().await,
+                "help" => self.print_help(&args).await,
                 "plugin" => {
                     let sub = args.first().copied().unwrap_or("");
                     match sub {
-                        "list" | "ls" | "" => self.list_plugins().await,
-                        "enable" | "on" => {
+                        "list" | "" => self.list_plugins().await,
+                        "enable" => {
                             if args.len() < 2 {
                                 self.out(format!("  {} {} plugin enable <插件名>", c::yellow("?"), c::bold("用法")));
                             } else {
                                 self.enable_plugin(args[1]).await;
                             }
                         }
-                        "disable" | "off" => {
+                        "disable" => {
                             if args.len() < 2 {
                                 self.out(format!("  {} {} plugin disable <插件名>", c::yellow("?"), c::bold("用法")));
                             } else {
                                 self.disable_plugin(args[1]).await;
                             }
                         }
-                        "reload" | "r" => self.reload_plugins().await,
+                        "reload" => self.reload_plugins().await,
                         "info" => {
                             if args.len() < 2 {
                                 self.out(format!("  {} {} plugin info <插件ID或名称>", c::yellow("?"), c::bold("用法")));
@@ -684,33 +668,33 @@ impl CliHandler {
                         }
                     }
                 }
-                "users" | "u" => self.list_users().await,
-                "rooms" | "r" => self.list_rooms().await,
+                "users" => self.list_users().await,
+                "rooms" => self.list_rooms().await,
                 "room" => {
                     let sub = args.first().copied().unwrap_or("");
                     match sub {
-                        "list" | "ls" | "" => self.list_rooms().await,
-                        "create" | "create-empty" | "empty" => {
+                        "list" | "" => self.list_rooms().await,
+                        "create-empty" => {
                             if args.len() < 2 { self.out(format!("  {} {} room create-empty <房间ID> [phira_api_endpoint]", c::yellow("?"), c::bold("用法"))); }
                             else { self.room_create_empty(args[1], args.get(2).copied()).await; }
                         }
-                        "info" | "i" => {
+                        "info" => {
                             if args.len() < 2 { self.out(format!("  {} {} room info <房间ID>", c::yellow("?"), c::bold("用法"))); }
                             else { self.room_info(args[1]).await; }
                         }
-                        "start" | "s" => {
+                        "start" => {
                             if args.len() < 2 { self.out(format!("  {} {} room start <房间ID>", c::yellow("?"), c::bold("用法"))); }
                             else { self.room_start(args[1]).await; }
                         }
-                        "cancel" | "c" => {
+                        "cancel" => {
                             if args.len() < 2 { self.out(format!("  {} {} room cancel <房间ID>", c::yellow("?"), c::bold("用法"))); }
                             else { self.room_cancel(args[1]).await; }
                         }
-                        "kick" | "k" => {
+                        "kick" => {
                             if args.len() < 3 { self.out(format!("  {} {} room kick <房间ID> <用户ID>", c::yellow("?"), c::bold("用法"))); }
                             else { self.kick_from_room(args[1], args[2]).await; }
                         }
-                        "transfer" | "t" | "host" | "set-host" => {
+                        "host" => {
                             if args.len() < 3 { self.out(format!("  {} {} room host <房间ID> <用户ID|?>", c::yellow("?"), c::bold("用法"))); }
                             else {
                                 let target = match parse_room_host_target(args[2]) {
@@ -720,7 +704,7 @@ impl CliHandler {
                                 self.room_set_host(args[1], target).await;
                             }
                         }
-                        "force-move" | "move" | "fm" => {
+                        "force-move" => {
                             if args.len() < 3 { self.out(format!("  {} {} room force-move <房间ID> <用户ID> [monitor]", c::yellow("?"), c::bold("用法"))); }
                             else { let uid: i32 = match args[2].parse() { Ok(id) => id, Err(_) => { self.out(format!("  {} 无效的用户ID", c::red("✗"))); return; } };
                                 let monitor = args.get(3).map(|v| parse_cli_bool(v)).unwrap_or(false);
@@ -734,7 +718,7 @@ impl CliHandler {
                             if args.len() < 2 { self.out(format!("  {} {} room unhide <房间ID>", c::yellow("?"), c::bold("用法"))); }
                             else { self.room_hide(args[1], false).await; }
                         }
-                        "close" | "cl" => {
+                        "close" => {
                             if args.len() < 2 { self.out(format!("  {} {} room close <房间ID>", c::yellow("?"), c::bold("用法"))); }
                             else { self.close_room(args[1]).await; }
                         }
@@ -742,7 +726,7 @@ impl CliHandler {
                             if args.len() < 4 { self.out(format!("  {} {} room set <房间ID> <字段> <值>", c::yellow("?"), c::bold("用法"))); }
                             else { self.room_set(args[1], args[2], &args[3..].join(" ")).await; }
                         }
-                        "history" | "h" => {
+                        "history" => {
                             if args.len() < 2 { self.out(format!("  {} {} room history <房间ID>", c::yellow("?"), c::bold("用法"))); }
                             else { self.room_history(args[1]).await; }
                         }
@@ -754,7 +738,7 @@ impl CliHandler {
                             if args.len() < 2 { self.out(format!("  {} {} room round <轮次UUID>", c::yellow("?"), c::bold("用法"))); }
                             else { self.room_round_info(args[1]).await; }
                         }
-                        "ban" | "b" => {
+                        "ban" => {
                             if args.len() < 3 { self.out(format!("  {} {} room ban <房间ID> <用户ID>", c::yellow("?"), c::bold("用法"))); }
                             else { let uid: i32 = match args[2].parse() { Ok(id) => id, Err(_) => { self.out(format!("  {} 无效的用户ID", c::red("✗"))); return; } };
                                 match self.state.ban_manager.room_ban_user(args[1], uid).await {
@@ -762,7 +746,7 @@ impl CliHandler {
                                     Err(e) => self.out(format!("  {} {}", c::red("✗"), e)),
                                 }}
                         }
-                        "unban" | "ub" => {
+                        "unban" => {
                             if args.len() < 3 { self.out(format!("  {} {} room unban <房间ID> <用户ID>", c::yellow("?"), c::bold("用法"))); }
                             else { let uid: i32 = match args[2].parse() { Ok(id) => id, Err(_) => { self.out(format!("  {} 无效的用户ID", c::red("✗"))); return; } };
                                 match self.state.ban_manager.room_unban_user(args[1], uid).await {
@@ -770,11 +754,11 @@ impl CliHandler {
                                     Err(e) => self.out(format!("  {} {}", c::red("✗"), e)),
                                 }}
                         }
-                        "banlist" | "bl" => {
+                        "banlist" => {
                             if args.len() < 2 { self.out(format!("  {} {} room banlist <房间ID>", c::yellow("?"), c::bold("用法"))); }
                             else { self.room_ban_list(args[1]).await; }
                         }
-                        "uuid" | "id" => {
+                        "uuid" => {
                             if args.len() < 2 { self.out(format!("  {} {} room uuid <房间ID>", c::yellow("?"), c::bold("用法"))); }
                             else { self.room_show_uuid(args[1]).await; }
                         }
@@ -784,17 +768,15 @@ impl CliHandler {
                         }
                     }
                 }
-                "kick" | "k" => {
-                    if args.len() >= 2 {
-                        self.kick_from_room(args[0], args[1]).await;
-                    } else if args.len() == 1 {
+                "kick" => {
+                    if args.len() == 1 {
                         self.kick_user(args[0]).await;
                     } else {
-                        self.out(format!("  {} {} <房间ID> <用户ID>  从房间踢出用户", c::yellow("?"), c::bold("kick")));
-                        self.out(format!("  {} {} <用户ID>          从服务器踢出用户", c::dim("│"), c::bold("kick")));
+                        self.out(format!("  {} {} <用户ID>", c::yellow("?"), c::bold("kick")));
+                        self.out(format!("  {} 房间踢人请使用: room kick <房间ID> <用户ID>", c::dim("▸")));
                     }
                 }
-                "broadcast" | "bc" => {
+                "broadcast" => {
                     if args.is_empty() {
                         self.out(format!("  {} {} all <消息>          广播给所有用户", c::yellow("?"), c::bold("broadcast")));
                         self.out(format!("  {} {} room <房间ID> <消息>  广播给指定房间", c::dim("▸"), c::bold("broadcast")));
@@ -803,17 +785,17 @@ impl CliHandler {
                         let scope = args[0];
                         let rest: Vec<&str> = args[1..].iter().copied().collect();
                         match scope {
-                            "all" | "a" => {
+                            "all" => {
                                 self.broadcast_all(&rest.join(" ")).await;
                             }
-                            "room" | "r" => {
+                            "room" => {
                                 if rest.len() < 2 {
                                     self.out(format!("  {} {} room <房间ID> <消息>", c::yellow("?"), c::bold("broadcast")));
                                 } else {
                                     self.broadcast_room(rest[0], &rest[1..].join(" ")).await;
                                 }
                             }
-                            "user" | "u" => {
+                            "user" => {
                                 if rest.len() < 2 {
                                     self.out(format!("  {} {} user <用户ID> <消息>", c::yellow("?"), c::bold("broadcast")));
                                 } else {
@@ -822,25 +804,24 @@ impl CliHandler {
                                 }
                             }
                             _ => {
-                                // 兼容旧语法：直接广播
-                                let msg = args.join(" ");
-                                self.broadcast_all(&msg).await;
+                                self.out(format!("  {} 未知 broadcast 范围: {}", c::red("✗"), c::yellow(scope)));
+                                self.out(format!("  {} 可用: broadcast all|room|user", c::dim("▸")));
                             }
                         }
                     }
                 }
-                "status" | "st" => self.status().await,
-                "benchmark" | "bench" => self.start_benchmark(&args).await,
-                "simulation" | "sim" => self.simulation_command(&args).await,
+                "status" => self.status().await,
+                "benchmark" => self.start_benchmark(&args).await,
+                "simulation" => self.simulation_command(&args).await,
                 "runtime" => self.runtime_command(&args).await,
-                "benchmark-bind" | "bench-bind" => self.bind_benchmark(&args).await,
-                "benchmark-cleanup" | "bench-cleanup" => {
+                "benchmark-bind" => self.bind_benchmark(&args).await,
+                "benchmark-cleanup" => {
                     self.state.cleanup_benchmark_sync();
                     self.out(format!("  {} 已清理 bench-* 压测房间", c::green("✓")));
                 }
-                "admin-id" | "admin-ids" | "admins" => self.admin_ids(&args).await,
-                "ext-list" | "el" => self.list_extensions().await,
-                "ext-get" | "eg" => {
+                "admin-id" => self.admin_ids(&args).await,
+                "ext-list" => self.list_extensions().await,
+                "ext-get" => {
                     if args.len() < 2 {
                         self.out(format!("  {} {} <用户ID|房间ID> <key>", c::yellow("?"), c::bold("ext-get")));
                     } else {
@@ -862,135 +843,7 @@ impl CliHandler {
                         self.unban_user(args[0]).await;
                     }
                 }
-                "banlist" | "bl" => self.ban_list().await,
-                "room-ban" | "rb" => {
-                    if args.len() < 2 {
-                        self.out(format!("  {} {} <房间ID> <用户ID>", c::yellow("?"), c::bold("room-ban")));
-                    } else {
-                        let uid: i32 = match args[1].parse() {
-                            Ok(id) => id,
-                            Err(_) => { self.out(format!("  {} 无效的用户ID", c::red("✗"))); return; }
-                        };
-                        match self.state.ban_manager.room_ban_user(args[0], uid).await {
-                            Ok(_) => self.out(format!("  {} 用户 {} 已加入房间 {} 的黑名单", c::green("✓"), uid, args[0])),
-                            Err(e) => self.out(format!("  {} {}", c::red("✗"), e)),
-                        }
-                    }
-                }
-                "room-unban" | "ru" => {
-                    if args.len() < 2 {
-                        self.out(format!("  {} {} <房间ID> <用户ID>", c::yellow("?"), c::bold("room-unban")));
-                    } else {
-                        let uid: i32 = match args[1].parse() {
-                            Ok(id) => id,
-                            Err(_) => { self.out(format!("  {} 无效的用户ID", c::red("✗"))); return; }
-                        };
-                        match self.state.ban_manager.room_unban_user(args[0], uid).await {
-                            Ok(_) => self.out(format!("  {} 用户 {} 已移出房间 {} 的黑名单", c::green("✓"), uid, args[0])),
-                            Err(e) => self.out(format!("  {} {}", c::red("✗"), e)),
-                        }
-                    }
-                }
-                "room-banlist" | "rbl" => {
-                    if args.is_empty() {
-                        self.out(format!("  {} {} <房间ID>", c::yellow("?"), c::bold("room-banlist")));
-                    } else {
-                        self.room_ban_list(args[0]).await;
-                    }
-                }
-                "close-room" | "cr" => {
-                    if args.is_empty() {
-                        self.out(format!("  {} {} <房间ID>", c::yellow("?"), c::bold("close-room")));
-                    } else {
-                        self.close_room(args[0]).await;
-                    }
-                }
-                "room-start" | "rs" => {
-                    if args.is_empty() {
-                        self.out(format!("  {} {} <房间ID>", c::yellow("?"), c::bold("room-start")));
-                    } else {
-                        self.room_start(args[0]).await;
-                    }
-                }
-                "room-cancel" | "rc" => {
-                    if args.is_empty() {
-                        self.out(format!("  {} {} <房间ID>", c::yellow("?"), c::bold("room-cancel")));
-                    } else {
-                        self.room_cancel(args[0]).await;
-                    }
-                }
-                "room-info" | "ri" => {
-                    if args.is_empty() {
-                        self.out(format!("  {} {} <房间ID>", c::yellow("?"), c::bold("room-info")));
-                    } else {
-                        self.room_info(args[0]).await;
-                    }
-                }
-                "room-transfer" | "room-host" | "room-set-host" | "rt" => {
-                    if args.len() < 2 {
-                        self.out(format!("  {} {} <房间ID> <用户ID|?>", c::yellow("?"), c::bold("room-host")));
-                    } else {
-                        let target = match parse_room_host_target(args[1]) {
-                            Ok(target) => target,
-                            Err(_) => { self.out(format!("  {} 无效的房主目标：请使用用户ID或 ?", c::red("✗"))); return; }
-                        };
-                        self.room_set_host(args[0], target).await;
-                    }
-                }
-                "room-create-empty" | "room-create" | "rce" => {
-                    if args.is_empty() {
-                        self.out(format!("  {} {} <房间ID> [phira_api_endpoint]", c::yellow("?"), c::bold("room-create-empty")));
-                    } else {
-                        self.room_create_empty(args[0], args.get(1).copied()).await;
-                    }
-                }
-                "room-move" | "rmv" => {
-                    if args.len() < 2 {
-                        self.out(format!("  {} {} <房间ID> <用户ID> [monitor]", c::yellow("?"), c::bold("room-move")));
-                    } else {
-                        let uid: i32 = match args[1].parse() {
-                            Ok(id) => id,
-                            Err(_) => { self.out(format!("  {} 无效的用户ID", c::red("✗"))); return; }
-                        };
-                        let monitor = args.get(2).map(|v| parse_cli_bool(v)).unwrap_or(false);
-                        self.room_force_move(args[0], uid, monitor).await;
-                    }
-                }
-                "room-hide" => {
-                    if args.is_empty() {
-                        self.out(format!("  {} {} <房间ID> [true|false]", c::yellow("?"), c::bold("room-hide")));
-                    } else {
-                        self.room_hide(args[0], args.get(1).map(|v| parse_cli_bool(v)).unwrap_or(true)).await;
-                    }
-                }
-                "room-unhide" => {
-                    if args.is_empty() {
-                        self.out(format!("  {} {} <房间ID>", c::yellow("?"), c::bold("room-unhide")));
-                    } else {
-                        self.room_hide(args[0], false).await;
-                    }
-                }
-                "room-set" => {
-                    if args.len() < 3 {
-                        self.out(format!("  {} {} <房间ID> <字段> <值>", c::yellow("?"), c::bold("room-set")));
-                        self.out(format!("  {} 字段: lock | cycle | hidden | persistent | chart-id | phira_api_endpoint",
-                            c::dim("▸")));
-                    } else {
-                        self.room_set(args[0], args[1], &args[2..].join(" ")).await;
-                    }
-                }
-                "room-history" | "rh" => {
-                    if args.is_empty() {
-                        self.out(format!("  {} {} <房间ID>", c::yellow("?"), c::bold("room-history")));
-                    } else {
-                        self.room_history(args[0]).await;
-                    }
-                }
-                "user-rooms" | "ur" => {
-                    if args.is_empty() { self.out(format!("  {} user-rooms <用户ID>", c::yellow("?"))); }
-                    else if let Ok(uid) = args[0].parse() { self.user_room_history(uid).await; }
-                    else { self.out(format!("  {} 无效的用户ID", c::red("✗"))); }
-                }
+                "banlist" => self.ban_list().await,
                 _ => {
                     // 尝试插件命令
                     if !self.try_plugin_command(command, &args).await {
@@ -1117,8 +970,8 @@ impl CliHandler {
     async fn simulation_command(&self, args: &[&str]) {
         let sub = args.first().copied().unwrap_or("status");
         match sub {
-            "status" | "st" | "" => self.print_simulation_status().await,
-            "run" | "start" => self.simulation_run(&args[1..]).await,
+            "status" | "" => self.print_simulation_status().await,
+            "run" => self.simulation_run(&args[1..]).await,
             "stop" => {
                 let before = self.state.simulation.status().await;
                 let status = self.state.simulation.stop("stopped by admin command").await;
@@ -1131,7 +984,7 @@ impl CliHandler {
                 self.broadcast_all("性能测试已结束。Real rooms/users were not modified by the Runtime v2 skeleton.").await;
                 self.out(format!("  {} {}", c::green("✓"), status.note));
             }
-            "tick" | "advance" => {
+            "tick" => {
                 let count = args.get(1).and_then(|value| value.parse::<u64>().ok()).unwrap_or(1);
                 match self.state.simulation.advance_ticks_with_events(count).await {
                     Ok((status, events)) => {
@@ -1147,19 +1000,19 @@ impl CliHandler {
                     Err(err) => self.out(format!("  {} {}", c::red("✗"), err)),
                 }
             }
-            "inspect" | "world" | "rooms" | "users" => {
+            "inspect" => {
                 let limit = args.get(1).and_then(|value| value.parse::<usize>().ok()).unwrap_or(10);
                 self.print_simulation_world(limit).await;
             }
-            "scenarios" | "profiles" | "scenario" | "profile" => {
+            "scenarios" => {
                 self.out(format!("  {} Simulation scenarios", c::green("◆")));
                 for scenario in crate::simulation::SimulationScenario::all() {
                     self.out(format!("  {} {:<18} {}", c::dim("│"), scenario.as_str(), scenario.description()));
                 }
                 self.out(format!("  {} 用法：simulation run baseline scenario=chat_storm", c::dim("▸")));
             }
-            "suite" | "suites" | "batch" | "batch-run" => self.simulation_suite(&args[1..]).await,
-            "report" | "reports" | "summary" | "summaries" => self.simulation_report(&args[1..]).await,
+            "suite" => self.simulation_suite(&args[1..]).await,
+            "report" => self.simulation_report(&args[1..]).await,
             "seed" => {
                 if args.len() < 2 {
                     self.out(format!("  {} {} seed <u64>", c::yellow("?"), c::bold("simulation")));
@@ -1173,11 +1026,11 @@ impl CliHandler {
                     Err(_) => self.out(format!("  {} 无效 seed，必须是 u64", c::red("✗"))),
                 }
             }
-            "cleanup" | "clean" => {
+            "cleanup" => {
                 let status = self.state.simulation.cleanup().await;
                 self.out(format!("  {} {}", c::green("✓"), status.note));
             }
-            "persist" | "snapshot" => self.simulation_persist().await,
+            "persist" => self.simulation_persist().await,
             "sample" => {
                 let status = self.state.simulation.status().await;
                 let touches = crate::simulation::SimulationManager::sample_touches(status.seed);
@@ -1201,13 +1054,13 @@ impl CliHandler {
     async fn simulation_report(&self, args: &[&str]) {
         let sub = args.first().copied().unwrap_or("latest");
         match sub {
-            "latest" | "last" | "" => {
+            "latest" | "" => {
                 match self.state.simulation.latest_suite_report().await {
                     Some(report) => self.print_suite_report(&report),
                     None => self.out(format!("  {} 暂无 simulation suite report；先执行 simulation suite smoke", c::yellow("?"))),
                 }
             }
-            "list" | "ls" => {
+            "list" => {
                 let limit = args.get(1).and_then(|value| value.parse::<usize>().ok()).unwrap_or(8);
                 let reports = self.state.simulation.suite_reports(limit).await;
                 if reports.is_empty() {
@@ -1229,7 +1082,7 @@ impl CliHandler {
                     ));
                 }
             }
-            "clear" | "clean" => {
+            "clear" => {
                 let count = self.state.simulation.clear_suite_reports().await;
                 self.out(format!("  {} 已清理 {} 份 simulation suite report", c::green("✓"), count));
             }
@@ -1279,7 +1132,7 @@ impl CliHandler {
 
     async fn simulation_suite(&self, args: &[&str]) {
         let first = args.first().copied().unwrap_or("list");
-        if matches!(first, "list" | "ls" | "show" | "help" | "") {
+        if matches!(first, "list" | "") {
             self.print_simulation_suites();
             return;
         }
@@ -1487,7 +1340,7 @@ impl CliHandler {
     async fn runtime_command(&self, args: &[&str]) {
         let sub = args.first().copied().unwrap_or("status");
         match sub {
-            "status" | "st" | "" => {
+            "status" | "" => {
                 let sim = self.state.simulation.status().await;
                 let persistence = self.state.persistence_worker.stats().await;
                 self.out(format!("  {} Runtime v2 skeleton", c::green("◆")));
@@ -1509,7 +1362,7 @@ impl CliHandler {
                 self.out(format!("  {} web management API: {}", c::dim("│"), actors.web_management_api));
                 self.out(format!("  {} 现有 Room/Session/DB 主逻辑仍未完全迁移；Actor 模型是最终架构，Web 管理 API 不做", c::dim("▸")));
             }
-            "roadmap" | "plan" | "goals" | "todo" => {
+            "roadmap" => {
                 let plan = self.state.runtime_plan.snapshot();
                 self.out(format!("  {} Runtime v2 master workboard", c::green("◆")));
                 self.out(format!("  {} final architecture: {}", c::dim("│"), plan.final_architecture));
@@ -1527,7 +1380,7 @@ impl CliHandler {
                     self.out(format!("      {} next: {}", c::dim("▸"), item.next_step));
                 }
             }
-            "phira" | "phira-http" | "http" => {
+            "phira" => {
                 let stats = self.state.phira_client.stats();
                 self.out(format!("  {} Phira HTTP RetryClient", c::green("◆")));
                 self.out(format!("  {} requests:       {}", c::dim("│"), stats.requests));
@@ -1545,13 +1398,13 @@ impl CliHandler {
                     stats.circuit_breaker.failure_threshold, stats.circuit_breaker.open_duration_ms));
                 self.out(format!("  {} Phira HTTP 策略来自 server_config.yml 的 runtime_v2.phira_http；Simulation 默认不访问 Phira", c::dim("▸")));
             }
-            "commands" | "cmds" => {
+            "commands" => {
                 self.out(format!("  {} Command Registry", c::green("◆")));
                 self.out(format!("  {} groups: {}", c::dim("│"), self.state.command_registry.groups().join(", ")));
                 self.out(format!("  {} specs:  {}", c::dim("│"), self.state.command_registry.iter().count()));
                 self.out(format!("  {} roots:  {}", c::dim("│"), self.state.command_registry.root_commands().join(", ")));
             }
-            "events" | "event" => {
+            "events" => {
                 let stats = self.state.event_bus.stats(12);
                 self.out(format!("  {} EventBus", c::green("◆")));
                 self.out(format!("  {} subscribers:      {}", c::dim("│"), stats.receiver_count));
@@ -1573,7 +1426,7 @@ impl CliHandler {
                 }
                 self.out(format!("  {} 当前只作为 Runtime v2 新功能事件脊柱，未替换旧插件/房间调用", c::dim("▸")));
             }
-            "rooms" | "room" | "room-gateway" | "room-actor" => {
+            "rooms" => {
                 let stats = self.state.room_commands.stats();
                 self.out(format!("  {} RoomCommandGateway", c::green("◆")));
                 self.out(format!("  {} phase:     {}", c::dim("│"), stats.phase));
@@ -1601,7 +1454,7 @@ impl CliHandler {
                 self.out(format!("  {} note:      {}", c::dim("│"), stats.note));
                 self.out(format!("  {} set_lock/set_cycle/set_host/close/kick/start/cancel 已穿过 per-room mailbox registry", c::dim("▸")));
             }
-            "actors" | "actor" | "actor-model" => {
+            "actors" => {
                 let stats = self.state.actor_runtime.stats().await;
                 self.out(format!("  {} Runtime v2 Actor Model Blueprint", c::green("◆")));
                 self.out(format!("  {} phase:              {}", c::dim("│"), stats.phase));
@@ -1623,7 +1476,7 @@ impl CliHandler {
                 self.out(format!("  {} 迁移节奏：先镜像事件，再迁移读路径，再迁移写路径，最后删旧直连调用", c::dim("▸")));
             }
 
-            "cutover" | "telemetry-mode" | "telemetry-cutover" => {
+            "cutover" => {
                 if let Some(raw_mode) = args.get(1) {
                     match crate::telemetry_batcher::TelemetryCutoverMode::parse(raw_mode) {
                         Some(mode) => {
@@ -1652,7 +1505,7 @@ impl CliHandler {
                     self.out("    runtime cutover legacy_only".to_string());
                 }
             }
-            "schema" | "storage" | "telemetry" => {
+            "schema" => {
                 self.out(format!("  {} Runtime v2 persistence schema", c::green("◆")));
                 self.out(format!("  {} telemetry schema version: 2", c::dim("│")));
                 self.out(format!("  {} batch table: mp_runtime_telemetry_batches", c::dim("│")));
@@ -1671,7 +1524,7 @@ impl CliHandler {
                 self.out("    simulation: mp_sim_events + Runtime v2 simulation telemetry path".to_string());
                 self.out(format!("  {} 项目仍处测试阶段，schema 和持久化路径可继续自由演进；runtime cutover <mode> 可切换", c::dim("▸")));
             }
-            "persistence" | "persist" | "db" => {
+            "persistence" => {
                 let stats = self.state.persistence_worker.stats().await;
                 self.out(format!("  {} Persistence Worker", c::green("◆")));
                 self.out(format!("  {} capacity:  {}", c::dim("│"), stats.capacity));
@@ -1741,20 +1594,14 @@ impl CliHandler {
                     }
                     return;
                 }
-                ["legacy"] | ["deprecated"] => {
-                    for line in self.state.command_registry.format_legacy().lines() {
-                        self.out(format!("  {line}"));
-                    }
-                    return;
-                }
                 ["group", group] => {
-                    for line in self.state.command_registry.format_group(group, false, false).lines() {
+                    for line in self.state.command_registry.format_group(group, false).lines() {
                         self.out(format!("  {line}"));
                     }
                     return;
                 }
                 ["group", group, "all"] | ["group", group, "full"] => {
-                    for line in self.state.command_registry.format_group(group, true, true).lines() {
+                    for line in self.state.command_registry.format_group(group, true).lines() {
                         self.out(format!("  {line}"));
                     }
                     return;
@@ -1803,7 +1650,7 @@ impl CliHandler {
             }
         }
         self.out(String::new());
-        self.out(format!("  {} help <命令> 查看统一详情；help all / help legacy / help group <分组> 可展开；Tab 补全默认隐藏 legacy", c::dim("▸")));
+        self.out(format!("  {} help <命令> 查看统一详情；help all / help groups / help group <分组> 可展开", c::dim("▸")));
     }
 
     async fn list_plugins(&self) {
@@ -2262,35 +2109,35 @@ impl CliHandler {
             None => { self.out(format!("  {} 未找到房间 {}", c::red("✗"), room_id)); return; }
         };
         match field {
-            "lock" | "locked" => {
+            "lock" => {
                 let v = value == "true" || value == "1" || value == "锁定";
                 match self.state.room_commands.set_lock(&self.state, room_id, v).await {
                     Ok(_) => self.out(format!("  {} 房间 {} 已{}锁定", c::green("✓"), room_id, if v { "" } else { "解除" })),
                     Err(e) => self.out(format!("  {} {}", c::red("✗"), e)),
                 }
             }
-            "cycle" | "cycling" => {
+            "cycle" => {
                 let v = value == "true" || value == "1" || value == "轮换";
                 match self.state.room_commands.set_cycle(&self.state, room_id, v).await {
                     Ok(_) => self.out(format!("  {} 房间 {} 已{}轮换", c::green("✓"), room_id, if v { "开启" } else { "关闭" })),
                     Err(e) => self.out(format!("  {} {}", c::red("✗"), e)),
                 }
             }
-            "hidden" | "hide" => {
+            "hidden" => {
                 let v = parse_cli_bool(value);
                 match self.state.set_room_hidden(room_id, v).await {
                     Ok(_) => self.out(format!("  {} 房间 {} 已{}隐藏", c::green("✓"), room_id, if v { "设为" } else { "取消" })),
                     Err(e) => self.out(format!("  {} {}", c::red("✗"), e)),
                 }
             }
-            "persistent" | "persistent-empty" | "preserve-empty" | "keep-empty" => {
+            "persistent" => {
                 let v = parse_cli_bool(value);
                 match self.state.set_room_persistent_empty(room_id, v).await {
                     Ok(_) => self.out(format!("  {} 房间 {} 已{}无人保留", c::green("✓"), room_id, if v { "开启" } else { "关闭" })),
                     Err(e) => self.out(format!("  {} {}", c::red("✗"), e)),
                 }
             }
-            "phira_api_endpoint" | "phira-api-endpoint" | "api-endpoint" | "endpoint" => {
+            "phira_api_endpoint" => {
                 match crate::server::parse_room_endpoint_value(value) {
                     Ok(endpoint) => match self.state.set_room_phira_api_endpoint(room_id, endpoint).await {
                         Ok(res) => {
@@ -2307,14 +2154,14 @@ impl CliHandler {
                     Err(e) => self.out(format!("  {} {}", c::red("✗"), e)),
                 }
             }
-            "host" | "host-id" | "host_id" => {
+            "host" => {
                 let target = match parse_room_host_target(value) {
                     Ok(target) => target,
                     Err(_) => { self.out(format!("  {} 无效的房主目标：请使用用户ID或 ?", c::red("✗"))); return; }
                 };
                 self.room_set_host(room_id, target).await;
             }
-            "chart-id" | "chart" => {
+            "chart-id" => {
                 if !matches!(
                     *room.state.read().await,
                     crate::room::InternalRoomState::SelectChart
@@ -2540,7 +2387,7 @@ impl CliHandler {
     async fn admin_ids(&self, args: &[&str]) {
         let sub = args.first().copied().unwrap_or("list");
         match sub {
-            "list" | "ls" | "" => {
+            "list" | "" => {
                 let mut ids: Vec<i32> = self.state.admin_ids.read().await.iter().copied().collect();
                 ids.sort_unstable();
                 if ids.is_empty() {
@@ -2549,13 +2396,13 @@ impl CliHandler {
                     self.out(format!("  {} 管理员 Phira ID: {}", c::green("◆"), ids.iter().map(ToString::to_string).collect::<Vec<_>>().join(", ")));
                 }
             }
-            "add" | "+" => {
+            "add" => {
                 if args.len() < 2 { self.out(format!("  {} admin-id add <PhiraID>", c::yellow("?"))); return; }
                 let Ok(id) = args[1].parse::<i32>() else { self.out(format!("  {} 无效 Phira ID", c::red("✗"))); return; };
                 self.state.add_admin_id(id).await;
                 self.out(format!("  {} 已添加管理员 {}", c::green("✓"), id));
             }
-            "remove" | "rm" | "del" | "-" => {
+            "remove" => {
                 if args.len() < 2 { self.out(format!("  {} admin-id remove <PhiraID>", c::yellow("?"))); return; }
                 let Ok(id) = args[1].parse::<i32>() else { self.out(format!("  {} 无效 Phira ID", c::red("✗"))); return; };
                 self.state.remove_admin_id(id).await;

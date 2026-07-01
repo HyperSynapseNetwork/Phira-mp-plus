@@ -263,8 +263,8 @@ Commands now routed through the per-room mailbox registry:
 - `room host <id> <user|?>` / host transfer
 - `room close <id>`
 - `room kick <id> <user_id>` / `room.kick`
-- `room start <id>` / `room-start`
-- `room cancel <id>` / `room-cancel`
+- `room start <id>`
+- `room cancel <id>`
 
 The cancel path was also tightened so it no longer awaits client sends while
 holding the room-state write lock.  It performs the state transition in the

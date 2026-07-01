@@ -838,7 +838,7 @@ pub struct ServerStats {
 }
 
 impl PlusServerState {
-    /// Publish a Runtime v2 event without changing the legacy side-effect path.
+    /// Publish a Runtime v2 event without changing the current side-effect path.
     ///
     /// Step 4 uses this as an observation-only mirror: plugins, room monitor,
     /// SSE and PostgreSQL direct writes continue to run exactly as before.
@@ -1866,10 +1866,6 @@ async fn bench_leave_room(stream: &mut tokio::net::TcpStream) -> Result<(), Stri
 }
 
 /// 从房间踢出用户。
-///
-/// Runtime v2 Step 13 routes this legacy StateQuery entry through the same
-/// RoomCommandGateway used by CLI/admin commands.  This removes one duplicate
-/// room-write implementation before the real mailbox-backed RoomActor exists.
 async fn run_room_kick(state: &PlusServerState, room_id: &str, target_id: i32) -> Result<Value, String> {
     state.room_commands.kick_user(state, room_id, target_id).await
 }
@@ -1879,14 +1875,6 @@ async fn run_room_set_host(state: &PlusServerState, room_id: &str, target_id: Op
     state.room_commands.set_host(state, room_id, target_id).await
 }
 
-/// 转移房主。负数目标兼容旧 WIT/API 调用，表示系统 `?` 房主。
-async fn run_room_transfer(state: &PlusServerState, room_id: &str, target_id: i32) -> Result<Value, String> {
-    if target_id < 0 {
-        state.room_commands.set_host(state, room_id, None).await
-    } else {
-        state.room_commands.set_host(state, room_id, Some(target_id)).await
-    }
-}
 
 /// 设置房间锁定状态。
 async fn run_room_set_lock(state: &PlusServerState, room_id: &str, locked: bool) -> Result<Value, String> {
@@ -2252,19 +2240,6 @@ fn server_state_query_inner(state: &Arc<PlusServerState>, method: &str, args: &[
             });
             rx.recv_timeout(std::time::Duration::from_secs(5))
                 .unwrap_or(Err("room.kick timeout".to_string()))
-        }
-        "room.transfer_host" => {
-            let room_id = args.get(0).and_then(|v| v.as_str()).unwrap_or("").to_string();
-            let target_id = args.get(1).and_then(|v| v.as_i64()).unwrap_or(0) as i32;
-            if room_id.is_empty() { return Err("missing room_id".to_string()); }
-            let (tx, rx) = std::sync::mpsc::channel();
-            let s = Arc::clone(state);
-            tokio::spawn(async move {
-                let result = run_room_transfer(&s, &room_id, target_id).await;
-                let _ = tx.send(result);
-            });
-            rx.recv_timeout(std::time::Duration::from_secs(5))
-                .unwrap_or(Err("room.transfer_host timeout".to_string()))
         }
         "room.set_host" => {
             let room_id = args.get(0).and_then(|v| v.as_str()).unwrap_or("").to_string();
