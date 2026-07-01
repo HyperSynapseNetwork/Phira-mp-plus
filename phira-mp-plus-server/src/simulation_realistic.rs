@@ -17,6 +17,7 @@ use crate::server::PlusServerState;
 use crate::session::User;
 use crate::simulation::{SimulationConfig, SimulationCounters};
 use phira_mp_common::RoomId;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use tracing::info;
@@ -131,6 +132,107 @@ impl RealisticSimulationRunner {
     /// Seconds elapsed since start.
     pub fn elapsed_secs(&self) -> u64 {
         self.started_at.elapsed().as_secs()
+    }
+
+    /// Advance one tick of simulation activity.
+    ///
+    /// Simulates: chat messages, ready toggles, gameplay cycles (SelectChart
+    /// → start → touches/judges → results → back to SelectChart).
+    /// Uses deterministic data from `SimulationManager::sample_*` so same
+    /// seed produces the same activity pattern.
+    pub async fn tick(&self, state: &Arc<PlusServerState>, seed: u64) -> SimulationCounters {
+        use crate::room::InternalRoomState;
+        use phira_mp_common::Message;
+
+        let mut counters = SimulationCounters::default();
+        let mut counts_by_room: Vec<(usize, usize)> = Vec::new();
+        for room in &self.rooms {
+            let user_ids_here = {
+                let users = room.users().await;
+                users.iter().map(|u| u.id).collect::<Vec<_>>()
+            };
+            if user_ids_here.is_empty() {
+                continue;
+            }
+
+            // 1. Chat: pick a random user and simulate a message
+            let chatter = user_ids_here[0];
+            room.send_as(
+                &state.users.read().await.get(&chatter).map(Arc::clone).unwrap(),
+                format!("sim chat from user {chatter}"),
+            )
+            .await;
+            counters.chat_messages += 1;
+
+            // 2. Room lifecycle: cycle through states deterministically
+            let room_state = { (*room.state.read().await).clone() };
+            match room_state {
+                InternalRoomState::SelectChart => {
+                    // Select a chart and start playing
+                    let chart_id = 10_000_000 + ((seed as usize + counters.ticks as usize) % 10_000) as i32;
+                    *room.chart.write().await = Some(crate::server::Chart {
+                        id: chart_id,
+                        name: format!("sim-chart-{chart_id}"),
+                    });
+                    room.send(Message::GameStart { user: 0 }).await;
+                    *room.state.write().await = InternalRoomState::WaitForReady {
+                        started: user_ids_here.iter().copied().collect(),
+                        admin_started: false,
+                    };
+                    counters.ready_events += user_ids_here.len() as u64;
+                }
+                InternalRoomState::WaitForReady { .. } => {
+                    // Transition to playing
+                    *room.state.write().await = InternalRoomState::Playing {
+                        results: HashMap::new(),
+                        aborted: HashSet::new(),
+                    };
+                    room.send(Message::StartPlaying).await;
+                }
+                InternalRoomState::Playing { .. } => {
+                    // Simulate touches and judges
+                    let touches = crate::simulation::SimulationManager::sample_touches(seed.wrapping_add(counters.ticks));
+                    let judges = crate::simulation::SimulationManager::sample_judges(seed.wrapping_add(counters.ticks + 1));
+                    counters.touch_batches += touches.len() as u64;
+                    counters.judge_batches += judges.len() as u64;
+
+                    // Simulate results for all users
+                    let records: HashMap<i32, crate::server::Record> = user_ids_here.iter().map(|uid| {
+                        (*uid, crate::server::Record {
+                            id: 0,
+                            player: *uid,
+                            score: 1_000_000 - ((seed as i32 + uid + counters.ticks as i32) % 50_000),
+                            perfect: 950,
+                            good: 30,
+                            bad: 10,
+                            miss: 10,
+                            max_combo: 800,
+                            accuracy: 0.95 + ((seed as f32 * 0.01) % 0.05),
+                            full_combo: counters.ticks % 3 == 0,
+                            std: 0.0,
+                            std_score: 0.0,
+                        })
+                    }).collect();
+
+                    *room.state.write().await = InternalRoomState::Playing {
+                        results: records,
+                        aborted: HashSet::new(),
+                    };
+                    counters.round_results += 1;
+
+                    // Cycle back to SelectChart
+                    room.send(Message::GameEnd).await;
+                    *room.state.write().await = InternalRoomState::SelectChart;
+                }
+            }
+            counts_by_room.push((user_ids_here.len(), 1));
+        }
+        counters.ticks += 1;
+        {
+            let mut c = self.counters.write().await;
+            c.add_assign(&counters);
+        }
+        counters
     }
 
     /// Remove all virtual rooms and users from `state`.

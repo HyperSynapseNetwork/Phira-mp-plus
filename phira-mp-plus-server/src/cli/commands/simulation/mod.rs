@@ -104,9 +104,34 @@ impl CliHandler {
             }
             match crate::simulation_realistic::RealisticSimulationRunner::start(&self.state, config).await {
                 Ok(runner) => {
+                    let rooms = runner.rooms.len();
+                    let users = runner.user_ids.len();
                     self.out(format!("  {} Realistic simulation 已启动: run_id={}", c::green("✓"), runner.run_id));
                     self.out(format!("  {} rooms={} users={} duration_secs={} (创建了真实 Room/User 对象)",
-                        c::dim("│"), runner.rooms.len(), runner.user_ids.len(), runner.config.duration_secs));
+                        c::dim("│"), rooms, users, runner.config.duration_secs));
+                    self.out(format!("  {} 正在每 {}ms tick 模拟玩家行为...", c::dim("▸"), runner.config.tick_interval_ms));
+
+                    // Spawn background tick task
+                    let state = Arc::clone(&self.state);
+                    let out_tx = self.out_tx.clone();
+                    let mut runner = runner;  // take ownership
+                    tokio::spawn(async move {
+                        let tick_interval = std::time::Duration::from_millis(runner.config.tick_interval_ms.max(100));
+                        let duration = std::time::Duration::from_secs(runner.config.duration_secs);
+                        let start = tokio::time::Instant::now();
+                        let mut ticks: u64 = 0;
+                        loop {
+                            tokio::time::sleep(tick_interval).await;
+                            if start.elapsed() >= duration { break; }
+                            let counters = runner.tick(&state, runner.config.seed.wrapping_add(ticks)).await;
+                            ticks += 1;
+                            let _ = out_tx.send(format!("  simulation realistic tick={ticks} chat={} ready={} touch={} judge={} round={}",
+                                counters.chat_messages, counters.ready_events,
+                                counters.touch_batches, counters.judge_batches, counters.round_results));
+                        }
+                        runner.cleanup(&state).await;
+                        let _ = out_tx.send(format!("  {} Realistic simulation 已完成 (ticks={ticks})", c::green("✓")));
+                    });
                 }
                 Err(err) => self.out(format!("  {} {}", c::red("✗"), err)),
             }

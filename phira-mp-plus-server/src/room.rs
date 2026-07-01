@@ -20,7 +20,7 @@ use std::{
 use tokio::sync::RwLock;
 use tracing::{debug, info, warn};
 
-#[derive(Default, Debug)]
+#[derive(Default, Debug, Clone)]
 pub enum InternalRoomState {
     #[default]
     SelectChart,

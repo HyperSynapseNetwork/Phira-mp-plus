@@ -64,6 +64,7 @@ pub struct CommandSpec {
     pub usage: String,
     pub args: Vec<CommandArgSpec>,
     pub examples: Vec<String>,
+    pub aliases: Vec<String>,
     pub audience: CommandAudience,
     /// Optional handler for executing this command via the registry.
     pub handler: Option<CommandHandler>,
@@ -83,6 +84,7 @@ impl CommandSpec {
             usage: usage.into(),
             args: Vec::new(),
             examples: Vec::new(),
+            aliases: Vec::new(),
             audience: CommandAudience::Primary,
             handler: None,
         }
@@ -106,6 +108,11 @@ impl CommandSpec {
 
     pub fn handler(mut self, handler: CommandHandler) -> Self {
         self.handler = Some(handler);
+        self
+    }
+
+    pub fn alias(mut self, alias: impl Into<String>) -> Self {
+        self.aliases.push(alias.into());
         self
     }
 
@@ -289,6 +296,14 @@ impl CommandRegistry {
             }
         }
 
+        if !spec.aliases.is_empty() {
+            lines.push(String::new());
+            lines.push("ALIASES".to_string());
+            for alias in &spec.aliases {
+                lines.push(format!("    {alias}"));
+            }
+        }
+
         if !spec.examples.is_empty() {
             lines.push(String::new());
             lines.push("EXAMPLES".to_string());
@@ -453,12 +468,15 @@ pub fn runtime_v2_registry() -> CommandRegistry {
             .example("help room list")
             .example("help group rooms")
             .example("help all")
-            .example("help groups"),
+            .example("help groups")
+            .alias("h"),
     );
     register(
         &mut registry,
         CommandSpec::new("exit", "core", "关闭服务器。", "exit")
-            .example("exit"),
+            .example("exit")
+            .alias("quit")
+            .alias("q"),
     );
     register(
         &mut registry,
@@ -603,7 +621,8 @@ pub fn runtime_v2_registry() -> CommandRegistry {
 
     register(
         &mut registry,
-        CommandSpec::new("rooms", "rooms", "查看活跃房间。", "rooms"),
+        CommandSpec::new("rooms", "rooms", "查看活跃房间。", "rooms")
+            .alias("room list"),
     );
     for spec in [
         CommandSpec::new("room list", "rooms", "查看活跃房间。", "room list"),
