@@ -69,7 +69,7 @@ impl RuntimePlan {
                     title: "Unified Phira HTTP RetryClient",
                     status: "active",
                     priority: "P0",
-                    next_step: "Route all authenticate/chart/record/metadata calls through PhiraRetryClient; add circuit breaker later.",
+                    next_step: "PhiraRetryClient now owns timeout/retry/backoff/circuit-breaker policy; next step is endpoint-level health and metadata worker routing.",
                 },
                 RuntimeObjective {
                     key: "persistence-worker",

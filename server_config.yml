@@ -70,6 +70,15 @@ persistence_retention_days: 30
 #     queue_capacity: 8192
 #     max_items_per_batch: 256
 #     flush_interval_ms: 1000
+#   phira_http:
+#     timeout_ms: 5000
+#     max_retries: 3
+#     base_backoff_ms: 200
+#     max_backoff_ms: 3000
+#     circuit_breaker:
+#       enabled: true
+#       failure_threshold: 8
+#       open_duration_ms: 20000
 
 # ---- 功能开关 ----
 

@@ -155,9 +155,20 @@ runtime_v2:
     queue_capacity: 8192
     max_items_per_batch: 256
     flush_interval_ms: 1000
+  phira_http:
+    timeout_ms: 5000
+    max_retries: 3
+    base_backoff_ms: 200
+    max_backoff_ms: 3000
+    circuit_breaker:
+      enabled: true
+      failure_threshold: 8
+      open_duration_ms: 20000
 ```
 
 `dual_write` 适合对比旧表和 Runtime v2 表；确认 Runtime v2 遥测表读写稳定后，可以在测试环境改成 `worker_only`。`fallback_only` 适合验证 Worker 队列异常时是否能回退旧直写路径。
+
+`phira_http` 控制统一 Phira RetryClient。默认策略会在连续失败达到阈值后短暂打开熔断器，避免 Phira 官方服务 502/超时期间继续把认证、选谱、成绩查询压在业务热路径上。Simulation 默认不访问 Phira；real/hybrid benchmark 必须显式走这套 client。
 
 插件/WIT/host API 可读取：
 

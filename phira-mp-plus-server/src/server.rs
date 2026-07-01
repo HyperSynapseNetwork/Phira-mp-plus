@@ -189,6 +189,9 @@ pub struct RuntimeV2Config {
     /// Startup cutover mode for production Touch/Judge persistence.
     #[serde(default)]
     pub telemetry_cutover_mode: crate::telemetry_batcher::TelemetryCutoverMode,
+    /// Unified Phira HTTP retry/timeout/circuit-breaker policy.
+    #[serde(default)]
+    pub phira_http: crate::phira_client::PhiraHttpPolicyConfig,
 }
 
 impl Default for RuntimeV2Config {
@@ -197,6 +200,7 @@ impl Default for RuntimeV2Config {
             persistence_queue_capacity: default_runtime_persistence_queue_capacity(),
             telemetry_batcher: crate::telemetry_batcher::TelemetryBatcherPolicy::default(),
             telemetry_cutover_mode: crate::telemetry_batcher::TelemetryCutoverMode::default(),
+            phira_http: crate::phira_client::PhiraHttpPolicyConfig::default(),
         }
     }
 }
@@ -523,7 +527,7 @@ impl PlusServer {
         let actor_runtime = Arc::new(crate::actor_runtime::ActorRuntime::new_blueprint());
         let room_commands = Arc::new(crate::room_actor::RoomCommandGateway::new());
         let phira_client = Arc::new(crate::phira_client::PhiraRetryClient::new(
-            crate::phira_client::PhiraHttpPolicy::default(),
+            runtime_v2.phira_http.clone().into_policy(),
         )?);
         let runtime_plan = Arc::new(crate::runtime_plan::RuntimePlan::master_plan());
         let events = Arc::new(SseHub::new());

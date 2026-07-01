@@ -443,7 +443,7 @@ patches.  Runtime v2 is not only the Room Actor migration; the master goals are:
 - Simulation as the default benchmark path, with hybrid and real modes explicit;
 - Actor-model migration for Room, Session, Persistence, Simulation, Plugin and CLI;
 - Touches/Judges persistence even when no active monitor is connected;
-- a unified Phira HTTP client with timeout, retry, backoff and future circuit breaker;
+- a unified Phira HTTP client with timeout, retry, backoff and circuit breaker;
 - Persistence Worker ownership of database writes, first by dual-write and then by
   replacing direct writes after validation;
 - EventBus as the runtime spine for observability and low-coupling fanout;
@@ -469,8 +469,13 @@ modes:
 runtime phira
 ```
 
-The client still does not implement a full circuit breaker; that remains planned
-until real retry/failure metrics are available under Actions and server tests.
+Step 27 turns that client into a config-driven policy surface under
+`runtime_v2.phira_http` and adds a lightweight circuit breaker.  After a
+configurable number of consecutive retryable failures, the breaker opens for a
+short period and rejects new Phira HTTP work immediately.  This keeps fragile
+Phira upstream failures from accumulating inside Session/Room hot paths.  The
+breaker is visible through `runtime phira` and `/api/runtime`, but is configured
+through `server_config.yml` rather than another new management command.
 
 ## Step 20 implementation status
 
@@ -689,3 +694,43 @@ Implementation notes:
   adding another management command.
 - Existing `runtime cutover` remains for quick testing, but future work should
   avoid adding one-off commands unless they are truly needed.
+
+## Step 27: Config-driven Phira HTTP policy and circuit breaker
+
+Step 27 continues the calmer post-Step-26 rhythm: no new management command is
+added.  The existing `runtime phira` diagnostic output is reused, while the
+actual policy moves into `server_config.yml`:
+
+```yaml
+runtime_v2:
+  phira_http:
+    timeout_ms: 5000
+    max_retries: 3
+    base_backoff_ms: 200
+    max_backoff_ms: 3000
+    circuit_breaker:
+      enabled: true
+      failure_threshold: 8
+      open_duration_ms: 20000
+```
+
+The unified `PhiraRetryClient` now owns timeout, retry, backoff and a lightweight
+circuit breaker.  When the upstream Phira service repeatedly returns retryable
+failures such as 502, 5xx, 429, timeout or connect errors, the breaker opens for
+a short configured window and rejects new Phira HTTP work immediately.  This is
+intended to prevent authentication, chart lookup and record lookup from piling
+up inside Session/Room hot paths while the official Phira service is unhealthy.
+
+The breaker is intentionally simple for this stage:
+
+- consecutive final request failures increase the breaker counter;
+- a successful request closes the breaker and clears the failure counter;
+- once the threshold is reached, requests are rejected until the open window
+  expires;
+- retry notices still use the existing client chat message during actual retry
+  attempts;
+- Simulation remains offline by default and does not call Phira.
+
+This is not the final Phira subsystem.  Later work can add endpoint-level health,
+metadata-worker queues and hybrid benchmark controls, but the hot path now has a
+single place to enforce upstream-failure policy.
