@@ -23,7 +23,7 @@ use tokio::sync::{mpsc, RwLock};
 use tracing::{debug, trace, warn};
 
 const MAX_TELEMETRY_TRACE: usize = 64;
-const TELEMETRY_SCHEMA_VERSION: i32 = 2;
+pub const TELEMETRY_SCHEMA_VERSION: i32 = 2;
 static TELEMETRY_BATCH_SEQ: AtomicU64 = AtomicU64::new(1);
 
 // ── Cutover mode & decision ──────────────────────────────────────────
@@ -223,6 +223,11 @@ pub struct TelemetryBatcherStats {
     pub db_dispatch_avg_ms: u64,
     pub db_dispatch_max_ms: u64,
     pub db_dispatch_last_ms: u64,
+    pub db_ack_samples: u64,
+    pub db_ack_total_ms: u64,
+    pub db_ack_avg_ms: u64,
+    pub db_ack_max_ms: u64,
+    pub db_ack_last_ms: u64,
     pub schema_version: i32,
     pub last_batch_uuid: Option<String>,
     pub touch_items: u64,
@@ -261,6 +266,11 @@ impl TelemetryBatcherStats {
             db_dispatch_avg_ms: 0,
             db_dispatch_max_ms: 0,
             db_dispatch_last_ms: 0,
+            db_ack_samples: 0,
+            db_ack_total_ms: 0,
+            db_ack_avg_ms: 0,
+            db_ack_max_ms: 0,
+            db_ack_last_ms: 0,
             schema_version: TELEMETRY_SCHEMA_VERSION,
             last_batch_uuid: None,
             touch_items: 0,
