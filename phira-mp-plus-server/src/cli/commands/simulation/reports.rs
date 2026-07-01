@@ -47,7 +47,8 @@ impl CliHandler {
         self.out(format!("  {} suite_run_id: {}", c::dim("│"), report.suite_run_id));
         self.out(format!("  {} suite:        {}", c::dim("│"), report.suite.as_str()));
         self.out(format!("  {} completed:    {}/{} aborted={}", c::dim("│"), report.completed_steps, report.total_steps, report.aborted));
-        self.out(format!("  {} duration_ms:  {}", c::dim("│"), report.duration_ms));
+        let duration_ms = report.finished_at_ms.saturating_sub(report.started_at_ms).max(0);
+        self.out(format!("  {} duration_ms:  {}", c::dim("│"), duration_ms));
         self.out(format!("  {} workload:     {} events / {:.2} eps", c::dim("│"), report.workload_events, report.workload_events_per_sec));
         self.out(format!("  {} reason:       {}", c::dim("│"), report.reason));
         self.out(workload_line(&format!("  {} totals", c::dim("│")), &report.totals));
