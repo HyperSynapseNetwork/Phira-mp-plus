@@ -62,7 +62,7 @@ impl RuntimePlan {
                     title: "Touches/Judges persistence without active monitor",
                     status: "active",
                     priority: "P0",
-                    next_step: "Production Touch/Judge now dual-writes through the legacy direct path and Runtime v2 TelemetryBatcher guarded batch-write table; next step is comparing outputs before cutover.",
+                    next_step: "Production Touch/Judge now dual-writes through the legacy direct path and Runtime v2 telemetry batch/item schema; next step is adding an explicit dual_write/worker_only/fallback_only cutover switch.",
                 },
                 RuntimeObjective {
                     key: "phira-http",
@@ -76,7 +76,7 @@ impl RuntimePlan {
                     title: "Persistence Worker ownership",
                     status: "active",
                     priority: "P1",
-                    next_step: "Low-frequency production events dual-write through PersistenceWorker; high-frequency telemetry now uses guarded batch-write mode while legacy direct writes remain for comparison.",
+                    next_step: "Low-frequency production events dual-write through PersistenceWorker; high-frequency telemetry now writes Runtime v2 batch headers and raw item rows while legacy direct writes remain for comparison.",
                 },
                 RuntimeObjective {
                     key: "eventbus",

@@ -539,3 +539,41 @@ The next step should compare `mp_round_touch_batches` / `mp_round_judge_batches`
 with `mp_runtime_telemetry_batches` under simulation and real clients.  Once the
 worker path is verified, a later step can remove the direct hot-path write or
 turn it into fallback-only mode.
+
+## Step 23 implementation status
+
+Step 23 makes the Runtime v2 telemetry persistence structure more complete.
+Because Phira-mp-plus is still in test stage, this step intentionally treats the
+Runtime v2 schema as evolvable instead of freezing a temporary dual-write table.
+
+New in this step:
+
+- `mp_runtime_telemetry_batches` is upgraded from a flat batch table to a richer
+  batch-header table with `batch_uuid`, `run_id`, `scope`, `pipeline`, `source`,
+  `dual_write`, `schema_version` and `flush_reason` columns.
+- `mp_runtime_telemetry_items` stores raw per-item Touch/Judge payload rows
+  exploded from the batch payload `data` array.  This gives later analysis and
+  replay tools a normalized item stream without having to repeatedly parse whole
+  batch JSON payloads.
+- `mp_runtime_persistence_meta` records the current Runtime v2 persistence schema
+  manifest.
+- `mp_runtime_retention_policies` records test-stage retention policy defaults
+  for production telemetry, simulation data and runtime events.  Cleanup is still
+  not automatically enforced; the table exists so the policy is explicit before a
+  later cleanup worker is introduced.
+- `TelemetryBatcherStats` now reports schema version, last batch uuid and raw
+  item rows written.
+- `runtime schema` / `runtime storage` / `runtime telemetry` explains the current
+  Runtime v2 persistence layout from the CLI.
+
+Current production Touch/Judge mode is still dual-write:
+
+```text
+legacy direct RoundStore/db.rs path
++ Runtime v2 TelemetryBatcher -> mp_runtime_telemetry_batches/items
+```
+
+The next persistence step can introduce an explicit cutover switch such as
+`dual_write`, `worker_only` or `fallback_only`.  Since the project is still in
+active testing, schema and data files may continue to change aggressively as long
+as the commands and migration notes stay clear.

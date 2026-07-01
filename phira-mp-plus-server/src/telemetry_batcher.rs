@@ -5,15 +5,18 @@
 //! Step 22 enables guarded batch-write mode by default for the test-stage
 //! project: production Touch/Judge events are accepted, batched, flushed, and
 //! dual-written into Runtime v2 telemetry tables while the direct legacy path
-//! remains available for compatibility comparison.
+//! remains available for compatibility comparison. Step 23 writes schema-v2
+//! batch headers plus normalized raw item rows for later replay and analysis.
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::{collections::VecDeque, sync::Arc, time::Duration};
+use std::{collections::VecDeque, sync::{atomic::{AtomicU64, Ordering}, Arc}, time::{Duration, SystemTime, UNIX_EPOCH}};
 use tokio::sync::{mpsc, RwLock};
 use tracing::{debug, trace, warn};
 
 const MAX_TELEMETRY_TRACE: usize = 64;
+const TELEMETRY_SCHEMA_VERSION: i32 = 2;
+static TELEMETRY_BATCH_SEQ: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TelemetryBatcherPolicy {
@@ -50,7 +53,10 @@ pub struct TelemetryBatcherStats {
     pub flushed_items: u64,
     pub write_batches: u64,
     pub write_items: u64,
+    pub write_item_rows: u64,
     pub write_errors: u64,
+    pub schema_version: i32,
+    pub last_batch_uuid: Option<String>,
     pub touch_items: u64,
     pub judge_items: u64,
     pub pending: usize,
@@ -80,7 +86,10 @@ impl TelemetryBatcherStats {
             flushed_items: 0,
             write_batches: 0,
             write_items: 0,
+            write_item_rows: 0,
             write_errors: 0,
+            schema_version: TELEMETRY_SCHEMA_VERSION,
+            last_batch_uuid: None,
             touch_items: 0,
             judge_items: 0,
             pending: 0,
@@ -98,6 +107,7 @@ pub struct TelemetryTraceEntry {
     pub room_id: Option<String>,
     pub user_id: i32,
     pub item_count: usize,
+    pub batch_uuid: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -158,14 +168,14 @@ impl TelemetryBatcher {
             Ok(()) => {
                 let mut stats = self.stats.write().await;
                 stats.queued += 1;
-                push_trace(&mut stats, "queued", kind, room_id, user_id, item_count);
+                push_trace(&mut stats, "queued", kind, room_id, user_id, item_count, None);
                 Ok(())
             }
             Err(mpsc::error::TrySendError::Full(item)) => {
                 let mut stats = self.stats.write().await;
                 stats.dropped += 1;
                 stats.last_error = Some("telemetry batcher queue is full".to_string());
-                push_trace(&mut stats, "dropped", kind, room_id, user_id, item_count);
+                push_trace(&mut stats, "dropped", kind, room_id, user_id, item_count, None);
                 warn!(kind = %item.kind.as_str(), user_id = item.user_id, "telemetry batcher queue is full; item dropped");
                 Err(item)
             }
@@ -173,7 +183,7 @@ impl TelemetryBatcher {
                 let mut stats = self.stats.write().await;
                 stats.dropped += 1;
                 stats.last_error = Some("telemetry batcher queue is closed".to_string());
-                push_trace(&mut stats, "dropped", kind, room_id, user_id, item_count);
+                push_trace(&mut stats, "dropped", kind, room_id, user_id, item_count, None);
                 warn!(kind = %item.kind.as_str(), user_id = item.user_id, "telemetry batcher queue is closed; item dropped");
                 Err(item)
             }
@@ -240,6 +250,7 @@ async fn record_accepted(stats: &Arc<RwLock<TelemetryBatcherStats>>, item: &Tele
         item.room_id.clone(),
         item.user_id,
         item.item_count,
+        None,
     );
 }
 
@@ -265,10 +276,11 @@ async fn flush_pending(
         flushed.push(item);
     }
     let first = flushed.first().cloned();
+    let batch_uuid = next_batch_uuid();
     let write_result = if policy.dry_run {
-        Ok(false)
+        Ok((false, 0usize))
     } else {
-        write_runtime_telemetry_batch(&flushed, reason).map(|_| true)
+        write_runtime_telemetry_batch(&batch_uuid, &flushed, reason).map(|item_rows| (true, item_rows))
     };
 
     let mut stats = stats.write().await;
@@ -276,12 +288,17 @@ async fn flush_pending(
     stats.flushed_items += telemetry_points as u64;
     stats.pending = 0;
     let action = match write_result {
-        Ok(true) => {
+        Ok((true, item_rows)) => {
             stats.write_batches += 1;
             stats.write_items += telemetry_points as u64;
+            stats.write_item_rows += item_rows as u64;
+            stats.last_batch_uuid = Some(batch_uuid.clone());
             "db_flush"
         }
-        Ok(false) => "dry_flush",
+        Ok((false, _)) => {
+            stats.last_batch_uuid = Some(batch_uuid.clone());
+            "dry_flush"
+        },
         Err(err) => {
             stats.write_errors += 1;
             stats.last_error = Some(err);
@@ -296,6 +313,7 @@ async fn flush_pending(
             item.room_id,
             item.user_id,
             telemetry_points,
+            Some(batch_uuid.clone()),
         );
     }
 
@@ -303,7 +321,7 @@ async fn flush_pending(
 }
 
 
-fn write_runtime_telemetry_batch(items: &[TelemetryItem], reason: &str) -> Result<(), String> {
+fn write_runtime_telemetry_batch(batch_uuid: &str, items: &[TelemetryItem], reason: &str) -> Result<usize, String> {
     let Some(db) = crate::internal_hooks::DB.get() else {
         return Err("database manager is not initialized".to_string());
     };
@@ -318,6 +336,10 @@ fn write_runtime_telemetry_batch(items: &[TelemetryItem], reason: &str) -> Resul
                     .or_insert_with(|| serde_json::json!(true));
                 obj.entry("runtime_v2_stage".to_string())
                     .or_insert_with(|| serde_json::json!("guarded_batch_write"));
+                obj.entry("runtime_v2_schema_version".to_string())
+                    .or_insert_with(|| serde_json::json!(TELEMETRY_SCHEMA_VERSION));
+                obj.entry("batch_uuid".to_string())
+                    .or_insert_with(|| serde_json::json!(batch_uuid));
                 obj.entry("flush_reason".to_string())
                     .or_insert_with(|| serde_json::json!(reason));
                 obj.entry("kind".to_string())
@@ -336,6 +358,14 @@ fn write_runtime_telemetry_batch(items: &[TelemetryItem], reason: &str) -> Resul
                 }
             }
             crate::db::RuntimeTelemetryBatchRecord {
+                batch_uuid: batch_uuid.to_string(),
+                run_id: extract_run_id(&payload),
+                scope: "production".to_string(),
+                pipeline: "runtime_v2.telemetry_batcher".to_string(),
+                source: "telemetry_batcher".to_string(),
+                flush_reason: reason.to_string(),
+                schema_version: TELEMETRY_SCHEMA_VERSION,
+                dual_write: true,
                 kind: item.kind.as_str().to_string(),
                 room_id: item.room_id.clone(),
                 round_uuid: item.round_id.clone(),
@@ -345,8 +375,9 @@ fn write_runtime_telemetry_batch(items: &[TelemetryItem], reason: &str) -> Resul
             }
         })
         .collect();
+    let item_rows = records.iter().map(|record| raw_item_count(&record.payload)).sum();
     if db.record_runtime_telemetry_batches_sync(records) {
-        Ok(())
+        Ok(item_rows)
     } else {
         Err("database is not active; telemetry batch was not written".to_string())
     }
@@ -359,6 +390,7 @@ fn push_trace(
     room_id: Option<String>,
     user_id: i32,
     item_count: usize,
+    batch_uuid: Option<String>,
 ) {
     let seq = stats.queued + stats.accepted + stats.dropped + stats.flushed_batches;
     if stats.recent.len() >= MAX_TELEMETRY_TRACE {
@@ -371,5 +403,40 @@ fn push_trace(
         room_id,
         user_id,
         item_count,
+        batch_uuid,
     });
+}
+
+
+fn next_batch_uuid() -> String {
+    let now_ms = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis())
+        .unwrap_or(0);
+    let seq = TELEMETRY_BATCH_SEQ.fetch_add(1, Ordering::Relaxed);
+    format!("rtv2-tel-{now_ms}-{seq}")
+}
+
+fn extract_run_id(payload: &Value) -> Option<String> {
+    payload
+        .get("run_id")
+        .or_else(|| payload.get("simulation_run_id"))
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+        .map(ToString::to_string)
+}
+
+fn raw_item_count(payload: &Value) -> usize {
+    payload
+        .get("data")
+        .and_then(Value::as_array)
+        .map(|items| items.len())
+        .unwrap_or_else(|| {
+            payload
+                .get("count")
+                .and_then(Value::as_u64)
+                .and_then(|value| usize::try_from(value).ok())
+                .unwrap_or(1)
+        })
+        .max(1)
 }

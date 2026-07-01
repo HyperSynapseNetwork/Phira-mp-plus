@@ -1617,6 +1617,21 @@ impl CliHandler {
                 }
                 self.out(format!("  {} 迁移节奏：先镜像事件，再迁移读路径，再迁移写路径，最后删旧直连调用", c::dim("▸")));
             }
+            "schema" | "storage" | "telemetry" => {
+                self.out(format!("  {} Runtime v2 persistence schema", c::green("◆")));
+                self.out(format!("  {} telemetry schema version: 2", c::dim("│")));
+                self.out(format!("  {} batch table: mp_runtime_telemetry_batches", c::dim("│")));
+                self.out(format!("  {} item table:  mp_runtime_telemetry_items", c::dim("│")));
+                self.out(format!("  {} meta table:  mp_runtime_persistence_meta", c::dim("│")));
+                self.out(format!("  {} policy table: mp_runtime_retention_policies", c::dim("│")));
+                self.out(format!("  {} important columns", c::cyan("▸")));
+                self.out("    batch_uuid, run_id, scope, pipeline, source, dual_write, schema_version, flush_reason".to_string());
+                self.out("    round_uuid, room_id, player_id, item_count, payload, created_at".to_string());
+                self.out(format!("  {} mode", c::cyan("▸")));
+                self.out("    production Touch/Judge: legacy direct write + Runtime v2 guarded batch-write".to_string());
+                self.out("    simulation: mp_sim_events + Runtime v2 simulation telemetry path".to_string());
+                self.out(format!("  {} 项目仍处测试阶段，schema 可继续自由演进；下一步可做 worker_only/fallback_only cutover switch", c::dim("▸")));
+            }
             "persistence" | "persist" | "db" => {
                 let stats = self.state.persistence_worker.stats().await;
                 self.out(format!("  {} Persistence Worker", c::green("◆")));
@@ -1637,10 +1652,14 @@ impl CliHandler {
                     stats.telemetry.enabled, stats.telemetry.dry_run, stats.telemetry.queued,
                     stats.telemetry.accepted, stats.telemetry.dropped, stats.telemetry.pending,
                     stats.telemetry.flushed_batches, stats.telemetry.flushed_items));
-                self.out(format!("    db_write_batches={} db_write_items={} db_write_errors={}",
-                    stats.telemetry.write_batches, stats.telemetry.write_items, stats.telemetry.write_errors));
-                self.out(format!("    touch_items={} judge_items={} max_batch={} interval={}ms",
-                    stats.telemetry.touch_items, stats.telemetry.judge_items,
+                self.out(format!("    db_write_batches={} db_write_items={} item_rows={} db_write_errors={}",
+                    stats.telemetry.write_batches, stats.telemetry.write_items,
+                    stats.telemetry.write_item_rows, stats.telemetry.write_errors));
+                self.out(format!("    schema_v={} last_batch={} touch_items={} judge_items={}",
+                    stats.telemetry.schema_version,
+                    stats.telemetry.last_batch_uuid.clone().unwrap_or_else(|| "-".to_string()),
+                    stats.telemetry.touch_items, stats.telemetry.judge_items));
+                self.out(format!("    max_batch={} interval={}ms storage=mp_runtime_telemetry_batches + mp_runtime_telemetry_items",
                     stats.telemetry.max_items_per_batch, stats.telemetry.flush_interval_ms));
                 self.out(format!("    telemetry_last_err={}", stats.telemetry.last_error.clone().unwrap_or_else(|| "-".to_string())));
                 self.out(format!("  {} last_err:  {}", c::dim("│"), stats.last_error.clone().unwrap_or_else(|| "-".to_string())));
@@ -1658,10 +1677,11 @@ impl CliHandler {
                 }
                 self.out(format!("  {} 低频生产事件已 EventBus → Worker → mp_events 双写；现有 db.rs 直接写入路径仍保持不变", c::dim("▸")));
                 self.out(format!("  {} 生产 Touch/Judge 现为直写路径 + Runtime v2 TelemetryBatcher guarded batch-write 双写；EventBus 只保留计数观测", c::dim("▸")));
+                self.out(format!("  {} Step 23 schema: batch header 表 + raw item 表 + persistence meta/retention policy，测试阶段可继续自由演进", c::dim("▸")));
             }
             _ => {
                 self.out(format!("  {} 未知 runtime 子命令: {}", c::red("✗"), c::yellow(sub)));
-                self.out(format!("  {} 可用: runtime status | roadmap | phira | commands | events | persistence | actors | rooms", c::dim("▸")));
+                self.out(format!("  {} 可用: runtime status | roadmap | phira | commands | events | persistence | schema | actors | rooms", c::dim("▸")));
             }
         }
     }

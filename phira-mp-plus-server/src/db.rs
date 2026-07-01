@@ -23,6 +23,14 @@ pub struct PlaytimeRow {
 
 #[derive(Debug, Clone)]
 pub struct RuntimeTelemetryBatchRecord {
+    pub batch_uuid: String,
+    pub run_id: Option<String>,
+    pub scope: String,
+    pub pipeline: String,
+    pub source: String,
+    pub flush_reason: String,
+    pub schema_version: i32,
+    pub dual_write: bool,
     pub kind: String,
     pub room_id: Option<String>,
     pub round_uuid: Option<String>,
@@ -51,6 +59,45 @@ fn now_ms() -> i64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as i64)
         .unwrap_or(0)
+}
+
+
+fn with_telemetry_storage_meta(mut payload: Value, record: &RuntimeTelemetryBatchRecord, written_at: i64) -> Value {
+    if let Some(obj) = payload.as_object_mut() {
+        obj.entry("runtime_v2_schema_version".to_string())
+            .or_insert_with(|| serde_json::json!(record.schema_version));
+        obj.entry("runtime_v2_storage".to_string())
+            .or_insert_with(|| serde_json::json!("mp_runtime_telemetry_batches"));
+        obj.entry("runtime_v2_item_table".to_string())
+            .or_insert_with(|| serde_json::json!("mp_runtime_telemetry_items"));
+        obj.entry("batch_uuid".to_string())
+            .or_insert_with(|| serde_json::json!(record.batch_uuid.clone()));
+        obj.entry("scope".to_string())
+            .or_insert_with(|| serde_json::json!(record.scope.clone()));
+        obj.entry("pipeline".to_string())
+            .or_insert_with(|| serde_json::json!(record.pipeline.clone()));
+        obj.entry("source".to_string())
+            .or_insert_with(|| serde_json::json!(record.source.clone()));
+        obj.entry("flush_reason".to_string())
+            .or_insert_with(|| serde_json::json!(record.flush_reason.clone()));
+        obj.entry("dual_write".to_string())
+            .or_insert_with(|| serde_json::json!(record.dual_write));
+        obj.entry("written_at".to_string())
+            .or_insert_with(|| serde_json::json!(written_at));
+        if let Some(run_id) = &record.run_id {
+            obj.entry("run_id".to_string())
+                .or_insert_with(|| serde_json::json!(run_id));
+        }
+    }
+    payload
+}
+
+fn telemetry_item_rows(payload: &Value) -> Vec<Value> {
+    payload
+        .get("data")
+        .and_then(Value::as_array)
+        .map(|items| items.clone())
+        .unwrap_or_else(|| vec![payload.clone()])
 }
 
 impl DbManager {
@@ -167,20 +214,50 @@ impl DbManager {
             tokio::spawn(async move {
                 let now = now_ms();
                 for record in records {
+                    let batch_uuid = record.batch_uuid.clone();
+                    let payload = with_telemetry_storage_meta(record.payload.clone(), &record, now);
                     let _ = sqlx::query(
                         "INSERT INTO mp_runtime_telemetry_batches
-                           (kind, room_id, round_uuid, player_id, item_count, payload, created_at, source, dual_write)
-                         VALUES ($1, $2, $3, $4, $5, $6, $7, 'telemetry_batcher', TRUE)"
+                           (batch_uuid, run_id, scope, pipeline, kind, room_id, round_uuid, player_id, item_count,
+                            payload, created_at, source, dual_write, schema_version, flush_reason)
+                         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)"
                     )
+                    .bind(&record.batch_uuid)
+                    .bind(record.run_id.as_deref())
+                    .bind(&record.scope)
+                    .bind(&record.pipeline)
                     .bind(&record.kind)
                     .bind(record.room_id.as_deref())
                     .bind(record.round_uuid.as_deref())
                     .bind(record.player_id)
                     .bind(record.item_count)
-                    .bind(record.payload)
+                    .bind(&payload)
                     .bind(now)
+                    .bind(&record.source)
+                    .bind(record.dual_write)
+                    .bind(record.schema_version)
+                    .bind(&record.flush_reason)
                     .execute(&pool)
                     .await;
+
+                    for (ordinal, raw_item) in telemetry_item_rows(&payload).into_iter().enumerate() {
+                        let _ = sqlx::query(
+                            "INSERT INTO mp_runtime_telemetry_items
+                               (batch_uuid, ordinal, kind, room_id, round_uuid, player_id, payload, created_at, schema_version)
+                             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)"
+                        )
+                        .bind(&batch_uuid)
+                        .bind(i32::try_from(ordinal).unwrap_or(i32::MAX))
+                        .bind(&record.kind)
+                        .bind(record.room_id.as_deref())
+                        .bind(record.round_uuid.as_deref())
+                        .bind(record.player_id)
+                        .bind(raw_item)
+                        .bind(now)
+                        .bind(record.schema_version)
+                        .execute(&pool)
+                        .await;
+                    }
                 }
             });
             return true;
@@ -1005,6 +1082,10 @@ async fn init_tables(pool: &sqlx::PgPool) -> Result<()> {
     sqlx::query(
         "CREATE TABLE IF NOT EXISTS mp_runtime_telemetry_batches (
             sequence BIGINT PRIMARY KEY DEFAULT nextval('mp_persist_sequence'),
+            batch_uuid TEXT NOT NULL,
+            run_id TEXT,
+            scope TEXT NOT NULL DEFAULT 'production',
+            pipeline TEXT NOT NULL DEFAULT 'runtime_v2.telemetry_batcher',
             kind TEXT NOT NULL,
             room_id TEXT,
             round_uuid TEXT,
@@ -1013,7 +1094,47 @@ async fn init_tables(pool: &sqlx::PgPool) -> Result<()> {
             payload JSONB NOT NULL,
             created_at BIGINT NOT NULL,
             source TEXT NOT NULL DEFAULT 'telemetry_batcher',
-            dual_write BOOLEAN NOT NULL DEFAULT TRUE
+            dual_write BOOLEAN NOT NULL DEFAULT TRUE,
+            schema_version INTEGER NOT NULL DEFAULT 2,
+            flush_reason TEXT NOT NULL DEFAULT 'unknown'
+        )"
+    )
+    .execute(pool)
+    .await?;
+
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS mp_runtime_telemetry_items (
+            sequence BIGINT PRIMARY KEY DEFAULT nextval('mp_persist_sequence'),
+            batch_uuid TEXT NOT NULL,
+            ordinal INTEGER NOT NULL,
+            kind TEXT NOT NULL,
+            room_id TEXT,
+            round_uuid TEXT,
+            player_id INTEGER NOT NULL,
+            payload JSONB NOT NULL,
+            created_at BIGINT NOT NULL,
+            schema_version INTEGER NOT NULL DEFAULT 2
+        )"
+    )
+    .execute(pool)
+    .await?;
+
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS mp_runtime_persistence_meta (
+            key TEXT PRIMARY KEY,
+            value JSONB NOT NULL,
+            updated_at BIGINT NOT NULL
+        )"
+    )
+    .execute(pool)
+    .await?;
+
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS mp_runtime_retention_policies (
+            scope TEXT PRIMARY KEY,
+            retain_seconds BIGINT NOT NULL,
+            cleanup_enabled BOOLEAN NOT NULL DEFAULT FALSE,
+            updated_at BIGINT NOT NULL
         )"
     )
     .execute(pool)
@@ -1041,6 +1162,52 @@ async fn init_tables(pool: &sqlx::PgPool) -> Result<()> {
     .execute(pool)
     .await?;
 
+    for alter in [
+        "ALTER TABLE mp_runtime_telemetry_batches ADD COLUMN IF NOT EXISTS batch_uuid TEXT",
+        "ALTER TABLE mp_runtime_telemetry_batches ADD COLUMN IF NOT EXISTS run_id TEXT",
+        "ALTER TABLE mp_runtime_telemetry_batches ADD COLUMN IF NOT EXISTS scope TEXT NOT NULL DEFAULT 'production'",
+        "ALTER TABLE mp_runtime_telemetry_batches ADD COLUMN IF NOT EXISTS pipeline TEXT NOT NULL DEFAULT 'runtime_v2.telemetry_batcher'",
+        "ALTER TABLE mp_runtime_telemetry_batches ADD COLUMN IF NOT EXISTS schema_version INTEGER NOT NULL DEFAULT 2",
+        "ALTER TABLE mp_runtime_telemetry_batches ADD COLUMN IF NOT EXISTS flush_reason TEXT NOT NULL DEFAULT 'unknown'",
+    ] {
+        sqlx::query(alter).execute(pool).await?;
+    }
+
+    let now = now_ms();
+    sqlx::query(
+        "INSERT INTO mp_runtime_persistence_meta (key, value, updated_at)
+         VALUES ('schema.runtime_telemetry', $1, $2)
+         ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = EXCLUDED.updated_at"
+    )
+    .bind(serde_json::json!({
+        "schema_version": 2,
+        "batch_table": "mp_runtime_telemetry_batches",
+        "item_table": "mp_runtime_telemetry_items",
+        "mode": "guarded_dual_write",
+        "notes": "Runtime v2 telemetry schema normalizes batch headers and raw telemetry items. Project is still in test stage; schema may change freely."
+    }))
+    .bind(now)
+    .execute(pool)
+    .await?;
+
+    for (scope, seconds, cleanup_enabled) in [
+        ("production.telemetry", 30 * 24 * 3600_i64, false),
+        ("simulation", 7 * 24 * 3600_i64, true),
+        ("runtime.events", 30 * 24 * 3600_i64, false),
+    ] {
+        sqlx::query(
+            "INSERT INTO mp_runtime_retention_policies (scope, retain_seconds, cleanup_enabled, updated_at)
+             VALUES ($1, $2, $3, $4)
+             ON CONFLICT (scope) DO NOTHING"
+        )
+        .bind(scope)
+        .bind(seconds)
+        .bind(cleanup_enabled)
+        .bind(now)
+        .execute(pool)
+        .await?;
+    }
+
     for index in [
         "CREATE INDEX IF NOT EXISTS idx_mp_events_created ON mp_events(created_at)",
         "CREATE INDEX IF NOT EXISTS idx_mp_events_kind ON mp_events(kind)",
@@ -1052,10 +1219,16 @@ async fn init_tables(pool: &sqlx::PgPool) -> Result<()> {
         "CREATE INDEX IF NOT EXISTS idx_mp_judge_batches_round_player_seq ON mp_round_judge_batches(round_uuid, player_id, sequence)",
         "CREATE INDEX IF NOT EXISTS idx_mp_judge_batches_created ON mp_round_judge_batches(created_at)",
         "CREATE INDEX IF NOT EXISTS idx_mp_user_room_history_user ON mp_user_room_history(user_id)",
+        "CREATE INDEX IF NOT EXISTS idx_mp_runtime_telemetry_batch_uuid ON mp_runtime_telemetry_batches(batch_uuid)",
         "CREATE INDEX IF NOT EXISTS idx_mp_runtime_telemetry_created ON mp_runtime_telemetry_batches(created_at)",
         "CREATE INDEX IF NOT EXISTS idx_mp_runtime_telemetry_kind ON mp_runtime_telemetry_batches(kind)",
+        "CREATE INDEX IF NOT EXISTS idx_mp_runtime_telemetry_scope_created ON mp_runtime_telemetry_batches(scope, created_at)",
+        "CREATE INDEX IF NOT EXISTS idx_mp_runtime_telemetry_run ON mp_runtime_telemetry_batches(run_id)",
         "CREATE INDEX IF NOT EXISTS idx_mp_runtime_telemetry_round_player ON mp_runtime_telemetry_batches(round_uuid, player_id, sequence)",
         "CREATE INDEX IF NOT EXISTS idx_mp_runtime_telemetry_room ON mp_runtime_telemetry_batches(room_id)",
+        "CREATE INDEX IF NOT EXISTS idx_mp_runtime_telemetry_items_batch ON mp_runtime_telemetry_items(batch_uuid, ordinal)",
+        "CREATE INDEX IF NOT EXISTS idx_mp_runtime_telemetry_items_round_player ON mp_runtime_telemetry_items(round_uuid, player_id, sequence)",
+        "CREATE INDEX IF NOT EXISTS idx_mp_runtime_telemetry_items_kind_created ON mp_runtime_telemetry_items(kind, created_at)",
         "CREATE INDEX IF NOT EXISTS idx_mp_sim_events_run ON mp_sim_events(run_id)",
         "CREATE INDEX IF NOT EXISTS idx_mp_sim_events_kind ON mp_sim_events(kind)",
         "CREATE INDEX IF NOT EXISTS idx_mp_sim_events_created ON mp_sim_events(created_at)",
