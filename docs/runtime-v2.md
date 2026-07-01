@@ -834,3 +834,22 @@ Runtime v2 明确新增两条 P1 主线：
 - `test-coverage`：当前单元测试/集成测试不足。后续 Runtime v2 cutover 前必须补齐 plugin ABI contract tests、command registry tests、telemetry cutover tests、room gateway tests 和 session handler tests。
 
 开发节奏调整：先快速完成 `session.rs / cli.rs / wasm_host.rs` 的边界分离，再回到主线 cutover。不要把 JSON ABI、临时命令、测试缺口继续散落在大文件里。
+
+### Step 35: CLI dispatch split
+
+Step 35 keeps the faster development rhythm without lowering quality: it moves
+only the top-level command routing table out of `cli.rs` into
+`cli/dispatch.rs`.  No command semantics are changed in this step.
+
+The purpose is to stop `cli.rs` from combining console lifecycle, line
+continuation, help rendering, and every command route in the same file.  The new
+boundary is intentionally narrow:
+
+- `cli.rs` owns console lifecycle, input continuation, output helpers, and the
+  concrete command implementation methods that already existed.
+- `cli/dispatch.rs` owns the canonical top-level command dispatch table.
+
+This is a fast structural split, not a compatibility pass and not a new command
+surface.  Follow-up work can split `cli/dispatch.rs` further into
+`room/plugin/runtime/simulation/benchmark` modules, but only after the first
+boundary compiles cleanly in Actions.
