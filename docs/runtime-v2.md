@@ -734,3 +734,26 @@ The breaker is intentionally simple for this stage:
 This is not the final Phira subsystem.  Later work can add endpoint-level health,
 metadata-worker queues and hybrid benchmark controls, but the hot path now has a
 single place to enforce upstream-failure policy.
+
+## Step 28: Session hot-path module split
+
+Step 28 keeps the quieter development rhythm from Steps 26-27: no new runtime
+management command is added.  Instead it starts reducing `session.rs` pressure by
+moving two high-churn responsibilities into focused modules:
+
+- `session_auth.rs` owns remote `/me` authentication helpers, ban rejection text
+  normalization and delayed auth failure delivery.
+- `session_telemetry.rs` owns Touch/Judge hot-path handling, including Runtime v2
+  telemetry cutover, legacy fallback, EventBus publishing, plugin dispatch and
+  monitor broadcast.
+
+This is intentionally behavior-preserving.  Touches/Judges are still persisted
+without requiring an active monitor, and the current cutover modes
+`legacy_only`, `dual_write`, `worker_only` and `fallback_only` are preserved.  The
+point of this step is to stop the Session module from absorbing more unrelated
+Runtime v2 logic before deeper Session Actor work begins.
+
+Future Session decomposition should follow the same pattern: extract cohesive
+hot-path responsibilities behind small internal modules first, then route the
+remaining command handling through actor-shaped boundaries once behavior is easy
+to test and compare.

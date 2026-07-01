@@ -2,15 +2,15 @@
 
 use crate::l10n::{Language, LANGUAGE};
 use crate::phira_client::PhiraRetryNoticeTarget;
+use crate::session_auth::{authenticate_remote_with_notice, ban_rejection_message, send_auth_rejection, AuthUserInfo};
 use crate::plugin::PluginEvent;
 use crate::server::PlusServerState;
 use crate::tl;
 use anyhow::{anyhow, bail, Result};
 use phira_mp_common::{
     ClientCommand, JoinRoomResponse, Message, PartialRoomData, RoomEvent, ServerCommand, Stream,
-    StreamSender, UserInfo,
+    UserInfo,
 };
-use serde::Deserialize;
 use std::{
     sync::{
         atomic::{AtomicBool, AtomicU32, Ordering},
@@ -28,10 +28,6 @@ use tracing::{debug, debug_span, error, info, trace, warn, Instrument};
 use uuid::Uuid;
 
 const HEARTBEAT_DISCONNECT_TIMEOUT: Duration = Duration::from_secs(600);
-const AUTH_FAILURE_RESPONSE_DELAY: Duration = Duration::from_millis(50);
-const AUTH_FAILURE_FLUSH_TIMEOUT: Duration = Duration::from_secs(1);
-const MAX_CLIENT_BAN_REASON_CHARS: usize = 160;
-
 fn decode_admin_room_command(input: &str) -> String {
     // Phira's room-name input box may not allow spaces. For the in-game admin
     // shortcut, the leading `_` is the command prefix and underscores after it
@@ -53,65 +49,6 @@ fn decode_admin_room_command(input: &str) -> String {
         }
     }
     out.trim().to_string()
-}
-
-#[derive(Debug, Deserialize)]
-struct AuthUserInfo {
-    id: i32,
-    name: String,
-    language: String,
-}
-
-async fn authenticate_remote_with_notice(
-    server: &PlusServerState,
-    token: &str,
-    target: PhiraRetryNoticeTarget<'_>,
-) -> Result<AuthUserInfo> {
-    if token.len() > 128 {
-        bail!("invalid token");
-    }
-    server
-        .phira_client
-        .get_json(&server.config.phira_api_endpoint, None, "/me", Some(token), target)
-        .await
-}
-
-fn ban_rejection_message(language: &str, reason: &str) -> String {
-    let language = language.parse::<Language>().unwrap_or_default();
-    let mut reason = reason.split_whitespace().collect::<Vec<_>>().join(" ");
-
-    if reason.is_empty() || reason == "你的账号已被封禁" {
-        reason = crate::l10n::try_translate(&language.0, "auth-banned-default-reason");
-    }
-
-    if reason.chars().count() > MAX_CLIENT_BAN_REASON_CHARS {
-        reason = reason
-            .chars()
-            .take(MAX_CLIENT_BAN_REASON_CHARS.saturating_sub(1))
-            .collect::<String>();
-        reason.push('…');
-    }
-
-    let mut args = fluent::FluentArgs::new();
-    args.set("reason", reason);
-    crate::l10n::try_translate_with_args(&language.0, "auth-banned", args)
-        .chars()
-        .filter(|ch| !matches!(ch, '\u{2068}' | '\u{2069}'))
-        .collect()
-}
-
-async fn send_auth_rejection(send_tx: &StreamSender<ServerCommand>, message: String) {
-    time::sleep(AUTH_FAILURE_RESPONSE_DELAY).await;
-    match time::timeout(
-        AUTH_FAILURE_FLUSH_TIMEOUT,
-        send_tx.send_and_flush(ServerCommand::Authenticate(Err(message))),
-    )
-    .await
-    {
-        Ok(Ok(())) => {}
-        Ok(Err(err)) => warn!("failed to deliver authentication rejection: {err:?}"),
-        Err(_) => warn!("timed out while delivering authentication rejection"),
-    }
 }
 
 pub struct User {
@@ -916,183 +853,12 @@ async fn process(user: Arc<User>, category: SessionCategory, cmd: ClientCommand)
         }
         ClientCommand::Touches { frames } => {
             get_room!(~ room);
-            let frame_count = frames.len();
-            let has_active_monitors = room.has_active_monitors().await;
-            debug!(
-                "received {} touch frames from {} (active_monitors={})",
-                frame_count, user.id, has_active_monitors
-            );
-            if let Some(frame) = frames.last() {
-                user.game_time.store(frame.time.to_bits(), Ordering::SeqCst);
-            }
-            let touch_data: Vec<crate::plugin::TouchEventPoint> = frames
-                .iter()
-                .flat_map(|frame| {
-                    frame.points.iter().map(|(finger, pos)| {
-                        crate::plugin::TouchEventPoint {
-                            time: frame.time,
-                            finger: *finger,
-                            x: pos.x(),
-                            y: pos.y(),
-                        }
-                    })
-                })
-                .collect();
-            if !touch_data.is_empty() {
-                // Touches are gameplay telemetry, not monitor-only data.  Persist
-                // them whenever a round is active so unattended real games do not
-                // silently lose touch batches.
-                room.store_player_touches(user.id, &touch_data).await;
-                let round_id = room.current_round_id.read().await.as_ref().map(|rid| rid.to_string());
-                if let Some(rid) = round_id.as_ref() {
-                    let telemetry_mode = user.server.persistence_worker.telemetry_cutover_mode().await;
-                    let mut runtime_enqueue_ok = false;
-                    if telemetry_mode.should_enqueue_worker() {
-                        let payload = serde_json::json!({
-                            "runtime_v2_source": "session_direct",
-                            "runtime_v2_stage": "telemetry_cutover",
-                            "telemetry_cutover_mode": telemetry_mode.as_str(),
-                            "room_id": room.id.to_string(),
-                            "round_id": rid,
-                            "user_id": user.id,
-                            "count": touch_data.len(),
-                            "data": &touch_data,
-                        });
-                        runtime_enqueue_ok = user.server.persistence_worker.enqueue(crate::persistence_worker::PersistenceEvent::TouchBatch {
-                            round_id: rid.to_string(),
-                            user_id: user.id,
-                            payload,
-                            simulation: false,
-                        }).await.is_ok();
-                    }
-                    let should_write_legacy = telemetry_mode.should_write_legacy()
-                        || (telemetry_mode.fallback_to_legacy_on_enqueue_failure() && !runtime_enqueue_ok);
-                    if should_write_legacy {
-                        if let Some(rs) = &room.round_store {
-                            rs.append_touches(rid, user.id, &touch_data).await;
-                        }
-                    } else {
-                        trace!(room = %room.id, user_id = user.id, mode = telemetry_mode.as_str(), "touch legacy direct write skipped by telemetry cutover mode");
-                    }
-                } else {
-                    debug!(room = %room.id, user_id = user.id, "touch data received without current round; cached only");
-                }
-            }
-            user.server.publish_runtime_event(crate::event_bus::MpEvent::TouchesReceived {
-                room_id: room.id.clone(),
-                user_id: user.id,
-                count: frame_count,
-            });
-            let pm = Arc::clone(&user.server.plugin_manager);
-            let room_id = room.id.to_string();
-            let touch_data_for_event = touch_data.clone();
-            let uid = user.id;
-            tokio::spawn(async move {
-                pm.trigger(&PluginEvent::PlayerTouches {
-                    user_id: uid,
-                    room_id,
-                    data: touch_data_for_event,
-                }).await;
-            });
-            if has_active_monitors {
-                let monitor_room = Arc::clone(&room);
-                tokio::spawn(async move {
-                    monitor_room.broadcast_monitors(ServerCommand::Touches {
-                        player: user.id,
-                        frames,
-                    })
-                    .await;
-                });
-            } else {
-                trace!(room = %room.id, user_id = user.id, "touch data persisted without active monitor broadcast");
-            }
+            crate::session_telemetry::handle_touches(Arc::clone(&user), room, frames).await;
             None
         }
         ClientCommand::Judges { judges } => {
             get_room!(~ room);
-            let judge_count = judges.len();
-            let has_active_monitors = room.has_active_monitors().await;
-            debug!(
-                "received {} judge events from {} (active_monitors={})",
-                judge_count, user.id, has_active_monitors
-            );
-            let judge_data: Vec<crate::plugin::JudgeEventItem> = judges
-                .iter()
-                .map(|j| crate::plugin::JudgeEventItem {
-                    time: j.time,
-                    line_id: j.line_id,
-                    note_id: j.note_id,
-                    judgement: format!("{:?}", j.judgement),
-                })
-                .collect();
-            if !judge_data.is_empty() {
-                // Judges are gameplay telemetry, not monitor-only data.  Persist
-                // them whenever a round is active so unattended real games do not
-                // silently lose judge batches.
-                room.store_player_judges(user.id, &judge_data).await;
-                let round_id = room.current_round_id.read().await.as_ref().map(|rid| rid.to_string());
-                if let Some(rid) = round_id.as_ref() {
-                    let telemetry_mode = user.server.persistence_worker.telemetry_cutover_mode().await;
-                    let mut runtime_enqueue_ok = false;
-                    if telemetry_mode.should_enqueue_worker() {
-                        let payload = serde_json::json!({
-                            "runtime_v2_source": "session_direct",
-                            "runtime_v2_stage": "telemetry_cutover",
-                            "telemetry_cutover_mode": telemetry_mode.as_str(),
-                            "room_id": room.id.to_string(),
-                            "round_id": rid,
-                            "user_id": user.id,
-                            "count": judge_data.len(),
-                            "data": &judge_data,
-                        });
-                        runtime_enqueue_ok = user.server.persistence_worker.enqueue(crate::persistence_worker::PersistenceEvent::JudgeBatch {
-                            round_id: rid.to_string(),
-                            user_id: user.id,
-                            payload,
-                            simulation: false,
-                        }).await.is_ok();
-                    }
-                    let should_write_legacy = telemetry_mode.should_write_legacy()
-                        || (telemetry_mode.fallback_to_legacy_on_enqueue_failure() && !runtime_enqueue_ok);
-                    if should_write_legacy {
-                        if let Some(rs) = &room.round_store {
-                            rs.append_judges(rid, user.id, &judge_data).await;
-                        }
-                    } else {
-                        trace!(room = %room.id, user_id = user.id, mode = telemetry_mode.as_str(), "judge legacy direct write skipped by telemetry cutover mode");
-                    }
-                } else {
-                    debug!(room = %room.id, user_id = user.id, "judge data received without current round; cached only");
-                }
-            }
-            user.server.publish_runtime_event(crate::event_bus::MpEvent::JudgesReceived {
-                room_id: room.id.clone(),
-                user_id: user.id,
-                count: judge_count,
-            });
-            let pm = Arc::clone(&user.server.plugin_manager);
-            let room_id = room.id.to_string();
-            let judge_data_for_event = judge_data.clone();
-            let uid = user.id;
-            tokio::spawn(async move {
-                pm.trigger(&PluginEvent::PlayerJudges {
-                    user_id: uid,
-                    room_id,
-                    data: judge_data_for_event,
-                }).await;
-            });
-            if has_active_monitors {
-                let monitor_room = Arc::clone(&room);
-                tokio::spawn(async move {
-                    monitor_room.broadcast_monitors(ServerCommand::Judges {
-                        player: user.id,
-                        judges,
-                    })
-                    .await;
-                });
-            } else {
-                trace!(room = %room.id, user_id = user.id, "judge data persisted without active monitor broadcast");
-            }
+            crate::session_telemetry::handle_judges(Arc::clone(&user), room, judges).await;
             None
         }
         ClientCommand::CreateRoom { id } => {

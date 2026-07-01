@@ -27,6 +27,8 @@ pub mod runtime_plan;
 pub mod telemetry_batcher;
 pub mod server;
 pub mod session;
+mod session_auth;
+mod session_telemetry;
 pub mod terminal;
 #[cfg(feature = "plugin-system")]
 pub mod wasm_host;
