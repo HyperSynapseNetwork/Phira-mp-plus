@@ -373,6 +373,11 @@ pub fn runtime_v2_registry() -> CommandRegistry {
         CommandSpec::new("runtime commands", "runtime-v2", "查看 Command Registry 统计。", "runtime commands"),
         CommandSpec::new("runtime events", "runtime-v2", "查看 EventBus 发布统计与最近事件。", "runtime events"),
         CommandSpec::new("runtime persistence", "runtime-v2", "查看 Persistence Worker、低频双写和 Touch/Judge TelemetryBatcher 统计。", "runtime persistence"),
+        CommandSpec::new("runtime cutover", "runtime-v2", "查看或切换 Touch/Judge 持久化 cutover 模式。", "runtime cutover [legacy_only|dual_write|worker_only|fallback_only]")
+            .aliases(["runtime telemetry-mode", "runtime telemetry-cutover"])
+            .arg(CommandArgSpec::optional("mode", "legacy_only、dual_write、worker_only 或 fallback_only"))
+            .example("runtime cutover")
+            .example("runtime cutover worker_only"),
         CommandSpec::new("runtime schema", "runtime-v2", "查看 Runtime v2 持久化 schema、telemetry batch/item 表和 retention policy 说明。", "runtime schema")
             .aliases(["runtime storage", "runtime telemetry"]),
         CommandSpec::new("runtime rooms", "runtime-v2", "查看 RoomCommandGateway / RoomActor mailbox 迁移状态、命令审计与耗时。", "runtime rooms"),

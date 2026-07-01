@@ -1499,6 +1499,7 @@ impl CliHandler {
                 let room_commands = self.state.room_commands.stats();
                 self.out(format!("  {} simulation running: {}", c::dim("│"), sim.running));
                 self.out(format!("  {} persistence queue:  queued={} processed={} dropped={}", c::dim("│"), persistence.queued, persistence.processed, persistence.dropped));
+                self.out(format!("  {} telemetry cutover:  {}", c::dim("│"), persistence.telemetry_cutover_mode));
                 let phira = self.state.phira_client.stats();
                 let plan = self.state.runtime_plan.snapshot();
                 self.out(format!("  {} room command gw:    routed={} ok={} failed={} mailbox={}", c::dim("│"), room_commands.routed, room_commands.succeeded, room_commands.failed, room_commands.mailbox_enabled));
@@ -1617,6 +1618,36 @@ impl CliHandler {
                 }
                 self.out(format!("  {} 迁移节奏：先镜像事件，再迁移读路径，再迁移写路径，最后删旧直连调用", c::dim("▸")));
             }
+
+            "cutover" | "telemetry-mode" | "telemetry-cutover" => {
+                if let Some(raw_mode) = args.get(1) {
+                    match crate::telemetry_batcher::TelemetryCutoverMode::parse(raw_mode) {
+                        Some(mode) => {
+                            let mode = self.state.persistence_worker.set_telemetry_cutover_mode(mode).await;
+                            self.out(format!("  {} telemetry cutover mode set to {}", c::green("✓"), c::bold(mode.as_str())));
+                            self.out(format!("  {} {}", c::dim("▸"), mode.description()));
+                        }
+                        None => {
+                            self.out(format!("  {} unknown telemetry cutover mode: {}", c::red("✗"), c::yellow(raw_mode)));
+                            self.out("  available: legacy_only | dual_write | worker_only | fallback_only".to_string());
+                        }
+                    }
+                } else {
+                    let stats = self.state.persistence_worker.stats().await;
+                    self.out(format!("  {} Telemetry cutover", c::green("◆")));
+                    self.out(format!("  {} current: {}", c::dim("│"), c::bold(&stats.telemetry_cutover_mode)));
+                    self.out(format!("  {} changes: {}", c::dim("│"), stats.telemetry_cutover_changes));
+                    self.out(format!("  {} modes", c::cyan("▸")));
+                    for mode in crate::telemetry_batcher::TelemetryCutoverMode::variants() {
+                        let marker = if mode.as_str() == stats.telemetry_cutover_mode { "*" } else { " " };
+                        self.out(format!("    {} {:<14} {}", marker, mode.as_str(), mode.description()));
+                    }
+                    self.out(format!("  {} examples", c::cyan("▸")));
+                    self.out("    runtime cutover dual_write".to_string());
+                    self.out("    runtime cutover worker_only".to_string());
+                    self.out("    runtime cutover legacy_only".to_string());
+                }
+            }
             "schema" | "storage" | "telemetry" => {
                 self.out(format!("  {} Runtime v2 persistence schema", c::green("◆")));
                 self.out(format!("  {} telemetry schema version: 2", c::dim("│")));
@@ -1628,9 +1659,11 @@ impl CliHandler {
                 self.out("    batch_uuid, run_id, scope, pipeline, source, dual_write, schema_version, flush_reason".to_string());
                 self.out("    round_uuid, room_id, player_id, item_count, payload, created_at".to_string());
                 self.out(format!("  {} mode", c::cyan("▸")));
-                self.out("    production Touch/Judge: legacy direct write + Runtime v2 guarded batch-write".to_string());
+                let stats = self.state.persistence_worker.stats().await;
+                self.out(format!("    production Touch/Judge cutover: {}", stats.telemetry_cutover_mode));
+                self.out("    modes: legacy_only | dual_write | worker_only | fallback_only".to_string());
                 self.out("    simulation: mp_sim_events + Runtime v2 simulation telemetry path".to_string());
-                self.out(format!("  {} 项目仍处测试阶段，schema 可继续自由演进；下一步可做 worker_only/fallback_only cutover switch", c::dim("▸")));
+                self.out(format!("  {} 项目仍处测试阶段，schema 和持久化路径可继续自由演进；runtime cutover <mode> 可切换", c::dim("▸")));
             }
             "persistence" | "persist" | "db" => {
                 let stats = self.state.persistence_worker.stats().await;
@@ -1647,9 +1680,10 @@ impl CliHandler {
                 self.out(format!("  {} prod_db_req:{}", c::dim("│"), stats.production_persist_requests));
                 self.out(format!("  {} prod_skip: {}", c::dim("│"), stats.production_persist_skipped));
                 self.out(format!("  {} telemetry_staged: {}", c::dim("│"), stats.production_telemetry_staged));
+                self.out(format!("  {} telemetry_mode:   {} (changes={})", c::dim("│"), stats.telemetry_cutover_mode, stats.telemetry_cutover_changes));
                 self.out(format!("  {} telemetry batcher", c::cyan("▸")));
-                self.out(format!("    enabled={} dry_run={} queued={} accepted={} dropped={} pending={} flushes={} flushed_items={}",
-                    stats.telemetry.enabled, stats.telemetry.dry_run, stats.telemetry.queued,
+                self.out(format!("    enabled={} dry_run={} cutover={} queued={} accepted={} dropped={} pending={} flushes={} flushed_items={}",
+                    stats.telemetry.enabled, stats.telemetry.dry_run, stats.telemetry.cutover_mode, stats.telemetry.queued,
                     stats.telemetry.accepted, stats.telemetry.dropped, stats.telemetry.pending,
                     stats.telemetry.flushed_batches, stats.telemetry.flushed_items));
                 self.out(format!("    db_write_batches={} db_write_items={} item_rows={} db_write_errors={}",
@@ -1676,12 +1710,12 @@ impl CliHandler {
                     }
                 }
                 self.out(format!("  {} 低频生产事件已 EventBus → Worker → mp_events 双写；现有 db.rs 直接写入路径仍保持不变", c::dim("▸")));
-                self.out(format!("  {} 生产 Touch/Judge 现为直写路径 + Runtime v2 TelemetryBatcher guarded batch-write 双写；EventBus 只保留计数观测", c::dim("▸")));
+                self.out(format!("  {} 生产 Touch/Judge cutover={}；EventBus 只保留计数观测，完整 payload 走 Session → Worker", c::dim("▸"), stats.telemetry_cutover_mode));
                 self.out(format!("  {} Step 23 schema: batch header 表 + raw item 表 + persistence meta/retention policy，测试阶段可继续自由演进", c::dim("▸")));
             }
             _ => {
                 self.out(format!("  {} 未知 runtime 子命令: {}", c::red("✗"), c::yellow(sub)));
-                self.out(format!("  {} 可用: runtime status | roadmap | phira | commands | events | persistence | schema | actors | rooms", c::dim("▸")));
+                self.out(format!("  {} 可用: runtime status | roadmap | phira | commands | events | persistence | schema | cutover | actors | rooms", c::dim("▸")));
             }
         }
     }

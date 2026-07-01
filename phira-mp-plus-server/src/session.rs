@@ -945,24 +945,35 @@ async fn process(user: Arc<User>, category: SessionCategory, cmd: ClientCommand)
                 room.store_player_touches(user.id, &touch_data).await;
                 let round_id = room.current_round_id.read().await.as_ref().map(|rid| rid.to_string());
                 if let Some(rid) = round_id.as_ref() {
-                    if let Some(rs) = &room.round_store {
-                        rs.append_touches(rid, user.id, &touch_data).await;
+                    let telemetry_mode = user.server.persistence_worker.telemetry_cutover_mode().await;
+                    let mut runtime_enqueue_ok = false;
+                    if telemetry_mode.should_enqueue_worker() {
+                        let payload = serde_json::json!({
+                            "runtime_v2_source": "session_direct",
+                            "runtime_v2_stage": "telemetry_cutover",
+                            "telemetry_cutover_mode": telemetry_mode.as_str(),
+                            "room_id": room.id.to_string(),
+                            "round_id": rid,
+                            "user_id": user.id,
+                            "count": touch_data.len(),
+                            "data": &touch_data,
+                        });
+                        runtime_enqueue_ok = user.server.persistence_worker.enqueue(crate::persistence_worker::PersistenceEvent::TouchBatch {
+                            round_id: rid.to_string(),
+                            user_id: user.id,
+                            payload,
+                            simulation: false,
+                        }).await.is_ok();
                     }
-                    let payload = serde_json::json!({
-                        "runtime_v2_source": "session_direct",
-                        "runtime_v2_stage": "telemetry_batcher_guarded_write",
-                        "room_id": room.id.to_string(),
-                        "round_id": rid,
-                        "user_id": user.id,
-                        "count": touch_data.len(),
-                        "data": &touch_data,
-                    });
-                    let _ = user.server.persistence_worker.enqueue(crate::persistence_worker::PersistenceEvent::TouchBatch {
-                        round_id: rid.to_string(),
-                        user_id: user.id,
-                        payload,
-                        simulation: false,
-                    }).await;
+                    let should_write_legacy = telemetry_mode.should_write_legacy()
+                        || (telemetry_mode.fallback_to_legacy_on_enqueue_failure() && !runtime_enqueue_ok);
+                    if should_write_legacy {
+                        if let Some(rs) = &room.round_store {
+                            rs.append_touches(rid, user.id, &touch_data).await;
+                        }
+                    } else {
+                        trace!(room = %room.id, user_id = user.id, mode = telemetry_mode.as_str(), "touch legacy direct write skipped by telemetry cutover mode");
+                    }
                 } else {
                     debug!(room = %room.id, user_id = user.id, "touch data received without current round; cached only");
                 }
@@ -1021,24 +1032,35 @@ async fn process(user: Arc<User>, category: SessionCategory, cmd: ClientCommand)
                 room.store_player_judges(user.id, &judge_data).await;
                 let round_id = room.current_round_id.read().await.as_ref().map(|rid| rid.to_string());
                 if let Some(rid) = round_id.as_ref() {
-                    if let Some(rs) = &room.round_store {
-                        rs.append_judges(rid, user.id, &judge_data).await;
+                    let telemetry_mode = user.server.persistence_worker.telemetry_cutover_mode().await;
+                    let mut runtime_enqueue_ok = false;
+                    if telemetry_mode.should_enqueue_worker() {
+                        let payload = serde_json::json!({
+                            "runtime_v2_source": "session_direct",
+                            "runtime_v2_stage": "telemetry_cutover",
+                            "telemetry_cutover_mode": telemetry_mode.as_str(),
+                            "room_id": room.id.to_string(),
+                            "round_id": rid,
+                            "user_id": user.id,
+                            "count": judge_data.len(),
+                            "data": &judge_data,
+                        });
+                        runtime_enqueue_ok = user.server.persistence_worker.enqueue(crate::persistence_worker::PersistenceEvent::JudgeBatch {
+                            round_id: rid.to_string(),
+                            user_id: user.id,
+                            payload,
+                            simulation: false,
+                        }).await.is_ok();
                     }
-                    let payload = serde_json::json!({
-                        "runtime_v2_source": "session_direct",
-                        "runtime_v2_stage": "telemetry_batcher_guarded_write",
-                        "room_id": room.id.to_string(),
-                        "round_id": rid,
-                        "user_id": user.id,
-                        "count": judge_data.len(),
-                        "data": &judge_data,
-                    });
-                    let _ = user.server.persistence_worker.enqueue(crate::persistence_worker::PersistenceEvent::JudgeBatch {
-                        round_id: rid.to_string(),
-                        user_id: user.id,
-                        payload,
-                        simulation: false,
-                    }).await;
+                    let should_write_legacy = telemetry_mode.should_write_legacy()
+                        || (telemetry_mode.fallback_to_legacy_on_enqueue_failure() && !runtime_enqueue_ok);
+                    if should_write_legacy {
+                        if let Some(rs) = &room.round_store {
+                            rs.append_judges(rid, user.id, &judge_data).await;
+                        }
+                    } else {
+                        trace!(room = %room.id, user_id = user.id, mode = telemetry_mode.as_str(), "judge legacy direct write skipped by telemetry cutover mode");
+                    }
                 } else {
                     debug!(room = %room.id, user_id = user.id, "judge data received without current round; cached only");
                 }

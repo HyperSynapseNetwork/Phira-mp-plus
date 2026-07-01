@@ -204,6 +204,28 @@ impl DbManager {
     }
 
 
+
+    pub fn record_runtime_persistence_meta_sync(&self, key: &str, value: Value) {
+        #[cfg(feature = "postgres")]
+        if let Self::Pg(pool) = self {
+            let pool = pool.clone();
+            let key = key.to_string();
+            tokio::spawn(async move {
+                let now = now_ms();
+                let _ = sqlx::query(
+                    "INSERT INTO mp_runtime_persistence_meta (key, value, updated_at)
+                     VALUES ($1, $2, $3)
+                     ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = EXCLUDED.updated_at"
+                )
+                .bind(&key)
+                .bind(value)
+                .bind(now)
+                .execute(&pool)
+                .await;
+            });
+        }
+    }
+
     pub fn record_runtime_telemetry_batches_sync(&self, records: Vec<RuntimeTelemetryBatchRecord>) -> bool {
         if records.is_empty() {
             return true;
@@ -1183,8 +1205,24 @@ async fn init_tables(pool: &sqlx::PgPool) -> Result<()> {
         "schema_version": 2,
         "batch_table": "mp_runtime_telemetry_batches",
         "item_table": "mp_runtime_telemetry_items",
-        "mode": "guarded_dual_write",
+        "mode": "dual_write",
+        "available_modes": ["legacy_only", "dual_write", "worker_only", "fallback_only"],
         "notes": "Runtime v2 telemetry schema normalizes batch headers and raw telemetry items. Project is still in test stage; schema may change freely."
+    }))
+    .bind(now)
+    .execute(pool)
+    .await?;
+
+    sqlx::query(
+        "INSERT INTO mp_runtime_persistence_meta (key, value, updated_at)
+         VALUES ('telemetry.cutover_mode', $1, $2)
+         ON CONFLICT (key) DO NOTHING"
+    )
+    .bind(serde_json::json!({
+        "mode": "dual_write",
+        "description": "legacy direct write plus Runtime v2 telemetry batch-write",
+        "available_modes": ["legacy_only", "dual_write", "worker_only", "fallback_only"],
+        "updated_by": "runtime_v2.bootstrap"
     }))
     .bind(now)
     .execute(pool)

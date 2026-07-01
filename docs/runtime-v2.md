@@ -577,3 +577,45 @@ The next persistence step can introduce an explicit cutover switch such as
 `dual_write`, `worker_only` or `fallback_only`.  Since the project is still in
 active testing, schema and data files may continue to change aggressively as long
 as the commands and migration notes stay clear.
+
+## Step 24 implementation status
+
+Step 24 adds an explicit production Touch/Judge persistence cutover switch.  The
+project is still in test stage, so the switch is intentionally operational rather
+than hidden behind a compatibility promise.
+
+Available modes:
+
+```text
+legacy_only    only the legacy RoundStore/db.rs path writes Touch/Judge data
+dual_write     legacy direct write + Runtime v2 TelemetryBatcher batch-write
+worker_only    Runtime v2 TelemetryBatcher batch-write only
+fallback_only  Runtime v2 enqueue first; legacy direct write only if enqueue fails immediately
+```
+
+New in this step:
+
+- `TelemetryCutoverMode` centralizes the mode names, parsing and behavior rules.
+- `PersistenceWorker` stores the current mode and exposes `runtime cutover` /
+  `runtime telemetry-mode` CLI controls.
+- `session.rs` now decides whether to call the legacy `RoundStore` append path,
+  enqueue the Runtime v2 worker path, or both based on the current cutover mode.
+- `mp_runtime_persistence_meta` is updated whenever the mode changes so the
+  active persistence behavior is visible from the database.
+- `runtime persistence`, `runtime schema` and `runtime status` now show the
+  active cutover mode.
+- Step 24 also fixes two Step 23 mechanical issues: the duplicated `payload` token
+  in `raw_item_count()` and a duplicated runtime persistence match trace.
+
+Recommended test order:
+
+```text
+runtime cutover legacy_only   # verify old path still works
+runtime cutover dual_write    # compare old tables with Runtime v2 batch/item tables
+runtime cutover worker_only   # verify the Session hot path can skip legacy direct writes
+runtime cutover fallback_only # verify enqueue failure fallback semantics
+```
+
+Because this branch is not production yet, database schema and persistence
+behavior can continue to evolve.  The important invariant is that the active mode
+must always be visible through CLI diagnostics and database meta rows.

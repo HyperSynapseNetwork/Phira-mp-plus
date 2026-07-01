@@ -15,7 +15,7 @@ use std::{collections::BTreeMap, sync::Arc};
 use tokio::sync::{broadcast, mpsc, RwLock};
 use tracing::{debug, trace, warn};
 
-use crate::telemetry_batcher::{TelemetryBatcher, TelemetryBatcherPolicy, TelemetryBatcherStats, TelemetryItem, TelemetryKind};
+use crate::telemetry_batcher::{TelemetryBatcher, TelemetryBatcherPolicy, TelemetryBatcherStats, TelemetryCutoverMode, TelemetryItem, TelemetryKind};
 
 const MAX_PERSISTENCE_TRACE: usize = 128;
 
@@ -94,6 +94,8 @@ pub struct PersistenceStats {
     pub production_persist_requests: u64,
     pub production_persist_skipped: u64,
     pub production_telemetry_staged: u64,
+    pub telemetry_cutover_mode: String,
+    pub telemetry_cutover_changes: u64,
     pub by_kind: BTreeMap<String, u64>,
     pub recent: Vec<PersistenceTraceEntry>,
     pub telemetry: TelemetryBatcherStats,
@@ -105,16 +107,20 @@ pub struct PersistenceWorker {
     tx: mpsc::Sender<PersistenceEvent>,
     stats: Arc<RwLock<PersistenceStats>>,
     telemetry_batcher: Arc<TelemetryBatcher>,
+    telemetry_cutover_mode: Arc<RwLock<TelemetryCutoverMode>>,
 }
 
 impl PersistenceWorker {
     pub fn spawn(queue_capacity: usize) -> Arc<Self> {
         let capacity = queue_capacity.max(16);
         let (tx, mut rx) = mpsc::channel::<PersistenceEvent>(capacity);
-        let telemetry_batcher = TelemetryBatcher::spawn(TelemetryBatcherPolicy::default());
+        let telemetry_policy = TelemetryBatcherPolicy::default();
+        let telemetry_batcher = TelemetryBatcher::spawn(telemetry_policy.clone());
+        let telemetry_cutover_mode = Arc::new(RwLock::new(TelemetryCutoverMode::default()));
         let stats = Arc::new(RwLock::new(PersistenceStats {
             capacity,
-            telemetry: TelemetryBatcherStats::from_policy(&TelemetryBatcherPolicy::default()),
+            telemetry_cutover_mode: TelemetryCutoverMode::default().as_str().to_string(),
+            telemetry: TelemetryBatcherStats::from_policy(&telemetry_policy),
             ..PersistenceStats::default()
         }));
         let worker_stats = Arc::clone(&stats);
@@ -151,7 +157,7 @@ impl PersistenceWorker {
             }
         });
 
-        Arc::new(Self { tx, stats, telemetry_batcher })
+        Arc::new(Self { tx, stats, telemetry_batcher, telemetry_cutover_mode })
     }
 
     pub async fn enqueue(&self, event: PersistenceEvent) -> Result<(), PersistenceEvent> {
@@ -194,7 +200,43 @@ impl PersistenceWorker {
         let mut stats = self.stats.read().await.clone();
         stats.pending = stats.queued.saturating_sub(stats.processed);
         stats.telemetry = self.telemetry_batcher.stats().await;
+        let mode = *self.telemetry_cutover_mode.read().await;
+        stats.telemetry_cutover_mode = mode.as_str().to_string();
+        stats.telemetry.cutover_mode = mode.as_str().to_string();
         stats
+    }
+
+    pub async fn telemetry_cutover_mode(&self) -> TelemetryCutoverMode {
+        *self.telemetry_cutover_mode.read().await
+    }
+
+    pub async fn set_telemetry_cutover_mode(&self, mode: TelemetryCutoverMode) -> TelemetryCutoverMode {
+        {
+            let mut current = self.telemetry_cutover_mode.write().await;
+            *current = mode;
+        }
+        let mut stats = self.stats.write().await;
+        stats.telemetry_cutover_mode = mode.as_str().to_string();
+        stats.telemetry_cutover_changes += 1;
+        stats.telemetry.cutover_mode = mode.as_str().to_string();
+        stats.last_error = None;
+        if let Some(db) = crate::internal_hooks::DB.get() {
+            db.record_runtime_persistence_meta_sync("telemetry.cutover_mode", json!({
+                "mode": mode.as_str(),
+                "description": mode.description(),
+                "available_modes": TelemetryCutoverMode::variants().iter().map(|mode| mode.as_str()).collect::<Vec<_>>(),
+                "updated_by": "runtime_v2.persistence_worker"
+            }));
+        }
+        mode
+    }
+
+    pub async fn telemetry_should_write_legacy(&self) -> bool {
+        self.telemetry_cutover_mode().await.should_write_legacy()
+    }
+
+    pub async fn telemetry_should_enqueue_worker(&self) -> bool {
+        self.telemetry_cutover_mode().await.should_enqueue_worker()
     }
 
     async fn record_mirrored_from_event_bus(&self) {

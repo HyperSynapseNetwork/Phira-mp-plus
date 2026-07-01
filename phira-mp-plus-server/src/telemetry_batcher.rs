@@ -7,6 +7,9 @@
 //! dual-written into Runtime v2 telemetry tables while the direct legacy path
 //! remains available for compatibility comparison. Step 23 writes schema-v2
 //! batch headers plus normalized raw item rows for later replay and analysis.
+//! Step 24 adds an explicit legacy_only/dual_write/worker_only/fallback_only
+//! cutover switch so the test-stage server can safely move production telemetry
+//! away from direct Session hot-path writes.
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -17,6 +20,71 @@ use tracing::{debug, trace, warn};
 const MAX_TELEMETRY_TRACE: usize = 64;
 const TELEMETRY_SCHEMA_VERSION: i32 = 2;
 static TELEMETRY_BATCH_SEQ: AtomicU64 = AtomicU64::new(1);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TelemetryCutoverMode {
+    /// Only the legacy RoundStore/db.rs path writes production Touch/Judge data.
+    LegacyOnly,
+    /// Write through both legacy direct path and Runtime v2 batcher. Safe default during comparison.
+    DualWrite,
+    /// Only Runtime v2 TelemetryBatcher writes production Touch/Judge data.
+    WorkerOnly,
+    /// Try Runtime v2 first; if enqueue fails immediately, fall back to legacy direct write.
+    FallbackOnly,
+}
+
+impl Default for TelemetryCutoverMode {
+    fn default() -> Self {
+        Self::DualWrite
+    }
+}
+
+impl TelemetryCutoverMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::LegacyOnly => "legacy_only",
+            Self::DualWrite => "dual_write",
+            Self::WorkerOnly => "worker_only",
+            Self::FallbackOnly => "fallback_only",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "legacy" | "legacy_only" | "legacy-only" => Some(Self::LegacyOnly),
+            "dual" | "dual_write" | "dual-write" | "both" => Some(Self::DualWrite),
+            "worker" | "worker_only" | "worker-only" | "runtime" | "runtime_v2" => Some(Self::WorkerOnly),
+            "fallback" | "fallback_only" | "fallback-only" => Some(Self::FallbackOnly),
+            _ => None,
+        }
+    }
+
+    pub fn should_write_legacy(self) -> bool {
+        matches!(self, Self::LegacyOnly | Self::DualWrite)
+    }
+
+    pub fn should_enqueue_worker(self) -> bool {
+        matches!(self, Self::DualWrite | Self::WorkerOnly | Self::FallbackOnly)
+    }
+
+    pub fn fallback_to_legacy_on_enqueue_failure(self) -> bool {
+        matches!(self, Self::FallbackOnly)
+    }
+
+    pub fn description(self) -> &'static str {
+        match self {
+            Self::LegacyOnly => "legacy RoundStore/db.rs only; Runtime v2 batcher is bypassed",
+            Self::DualWrite => "legacy direct write plus Runtime v2 telemetry batch-write",
+            Self::WorkerOnly => "Runtime v2 telemetry batch-write only; legacy direct write is bypassed",
+            Self::FallbackOnly => "Runtime v2 enqueue first; legacy direct write only on immediate enqueue failure",
+        }
+    }
+
+    pub fn variants() -> &'static [TelemetryCutoverMode] {
+        &[Self::LegacyOnly, Self::DualWrite, Self::WorkerOnly, Self::FallbackOnly]
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TelemetryBatcherPolicy {
@@ -43,6 +111,7 @@ impl Default for TelemetryBatcherPolicy {
 pub struct TelemetryBatcherStats {
     pub enabled: bool,
     pub dry_run: bool,
+    pub cutover_mode: String,
     pub queue_capacity: usize,
     pub max_items_per_batch: usize,
     pub flush_interval_ms: u64,
@@ -76,6 +145,7 @@ impl TelemetryBatcherStats {
         Self {
             enabled: policy.enabled,
             dry_run: policy.dry_run,
+            cutover_mode: TelemetryCutoverMode::default().as_str().to_string(),
             queue_capacity: policy.queue_capacity,
             max_items_per_batch: policy.max_items_per_batch,
             flush_interval_ms: policy.flush_interval_ms,
