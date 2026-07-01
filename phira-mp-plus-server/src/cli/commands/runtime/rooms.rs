@@ -25,8 +25,8 @@ impl CliHandler {
                 let status = if item.ok { c::green("ok") } else { c::red("err") };
                 let err = item.error.as_deref().unwrap_or("");
                 self.out(format!(
-                    "    #{:<4} {:<9} room={} {:>6}us {} {}",
-                    item.command_id, item.action, item.room_id, item.latency_us, status, err
+                    "    #{:<4} {:<9} room={} {:>6}us {:<16} {} {}",
+                    item.command_id, item.action, item.room_id, item.latency_us, item.delivery, status, err
                 ));
             }
         }

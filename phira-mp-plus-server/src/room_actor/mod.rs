@@ -11,6 +11,10 @@
 //! 4. replace the remaining inline implementation with per-room actors;
 //! 5. remove the old direct calls from `cli.rs`, `server.rs`, and `session.rs`.
 
+mod result;
+
+pub use self::result::{RoomCommandDelivery, RoomCommandResult};
+
 use crate::event_bus::MpEvent;
 use crate::plugin::PluginEvent;
 use crate::server::PlusServerState;
@@ -58,6 +62,7 @@ pub struct RoomCommandAuditEntry {
     pub ok: bool,
     pub latency_us: u64,
     pub error: Option<String>,
+    pub delivery: String,
 }
 
 const MAX_ROOM_COMMAND_AUDIT: usize = 128;
@@ -88,39 +93,39 @@ enum RoomActorCommand {
     SetLock {
         room_id: String,
         locked: bool,
-        reply: oneshot::Sender<Result<Value, String>>,
+        reply: oneshot::Sender<RoomCommandResult>,
     },
     SetCycle {
         room_id: String,
         cycle: bool,
-        reply: oneshot::Sender<Result<Value, String>>,
+        reply: oneshot::Sender<RoomCommandResult>,
     },
     SetHost {
         room_id: String,
         target_id: Option<i32>,
-        reply: oneshot::Sender<Result<Value, String>>,
+        reply: oneshot::Sender<RoomCommandResult>,
     },
     CloseRoom {
         room_id: String,
-        reply: oneshot::Sender<Result<Value, String>>,
+        reply: oneshot::Sender<RoomCommandResult>,
     },
     KickUser {
         room_id: String,
         target_id: i32,
-        reply: oneshot::Sender<Result<Value, String>>,
+        reply: oneshot::Sender<RoomCommandResult>,
     },
     StartRoom {
         room_id: String,
-        reply: oneshot::Sender<Result<Value, String>>,
+        reply: oneshot::Sender<RoomCommandResult>,
     },
     CancelStart {
         room_id: String,
-        reply: oneshot::Sender<Result<Value, String>>,
+        reply: oneshot::Sender<RoomCommandResult>,
     },
 }
 
 impl RoomActorCommand {
-    fn reply_with(self, result: Result<Value, String>) {
+    fn reply_with(self, result: RoomCommandResult) {
         match self {
             Self::SetLock { reply, .. }
             | Self::SetCycle { reply, .. }
@@ -191,7 +196,7 @@ impl RoomCommandGateway {
             while let Some(command) = rx.recv().await {
                 let Some(state) = state.upgrade() else {
                     gateway.mailbox_closed.fetch_add(1, Ordering::Relaxed);
-                    let result = Err("server state dropped before room command could run".to_string());
+                    let result = RoomCommandResult::mailbox_error("server state dropped before room command could run");
                     gateway.observe_mailbox_result(&result);
                     command.reply_with(result);
                     continue;
@@ -256,7 +261,7 @@ impl RoomCommandGateway {
             while let Some(command) = rx.recv().await {
                 let Some(state) = weak_state.upgrade() else {
                     gateway.mailbox_closed.fetch_add(1, Ordering::Relaxed);
-                    let result = Err("server state dropped before room command could run".to_string());
+                    let result = RoomCommandResult::mailbox_error("server state dropped before room command could run");
                     gateway.observe_mailbox_result(&result);
                     command.reply_with(result);
                     continue;
@@ -281,23 +286,29 @@ impl RoomCommandGateway {
     ) -> bool {
         let mut stop_after = matches!(&command, RoomActorCommand::CloseRoom { .. });
         let result = match &command {
-            RoomActorCommand::SetLock { room_id, locked, .. } => {
-                self.set_lock_inline(state, room_id, *locked).await
-            }
-            RoomActorCommand::SetCycle { room_id, cycle, .. } => {
-                self.set_cycle_inline(state, room_id, *cycle).await
-            }
-            RoomActorCommand::SetHost { room_id, target_id, .. } => {
-                self.set_host_inline(state, room_id, *target_id).await
-            }
-            RoomActorCommand::CloseRoom { room_id, .. } => {
-                self.close_room_inline(state, room_id).await
-            }
+            RoomActorCommand::SetLock { room_id, locked, .. } => RoomCommandResult::from_legacy(
+                self.set_lock_inline(state, room_id, *locked).await,
+                RoomCommandDelivery::PerRoomMailbox,
+            ),
+            RoomActorCommand::SetCycle { room_id, cycle, .. } => RoomCommandResult::from_legacy(
+                self.set_cycle_inline(state, room_id, *cycle).await,
+                RoomCommandDelivery::PerRoomMailbox,
+            ),
+            RoomActorCommand::SetHost { room_id, target_id, .. } => RoomCommandResult::from_legacy(
+                self.set_host_inline(state, room_id, *target_id).await,
+                RoomCommandDelivery::PerRoomMailbox,
+            ),
+            RoomActorCommand::CloseRoom { room_id, .. } => RoomCommandResult::from_legacy(
+                self.close_room_inline(state, room_id).await,
+                RoomCommandDelivery::PerRoomMailbox,
+            ),
             RoomActorCommand::KickUser { room_id, target_id, .. } => {
-                let result = self.kick_user_inline(state, room_id, *target_id).await;
+                let result = RoomCommandResult::from_legacy(
+                    self.kick_user_inline(state, room_id, *target_id).await,
+                    RoomCommandDelivery::PerRoomMailbox,
+                );
                 if result
-                    .as_ref()
-                    .ok()
+                    .payload()
                     .and_then(|value| value.get("room_dropped"))
                     .and_then(Value::as_bool)
                     .unwrap_or(false)
@@ -306,26 +317,25 @@ impl RoomCommandGateway {
                 }
                 result
             }
-            RoomActorCommand::StartRoom { room_id, .. } => {
-                self.start_room_inline(state, room_id).await
-            }
-            RoomActorCommand::CancelStart { room_id, .. } => {
-                self.cancel_start_inline(state, room_id).await
-            }
+            RoomActorCommand::StartRoom { room_id, .. } => RoomCommandResult::from_legacy(
+                self.start_room_inline(state, room_id).await,
+                RoomCommandDelivery::PerRoomMailbox,
+            ),
+            RoomActorCommand::CancelStart { room_id, .. } => RoomCommandResult::from_legacy(
+                self.cancel_start_inline(state, room_id).await,
+                RoomCommandDelivery::PerRoomMailbox,
+            ),
         };
         self.observe_mailbox_result(&result);
         command.reply_with(result);
         stop_after
     }
 
-    fn observe_mailbox_result<T>(&self, result: &Result<T, String>) {
-        match result {
-            Ok(_) => {
-                self.mailbox_completed.fetch_add(1, Ordering::Relaxed);
-            }
-            Err(_) => {
-                self.mailbox_failed.fetch_add(1, Ordering::Relaxed);
-            }
+    fn observe_mailbox_result(&self, result: &RoomCommandResult) {
+        if result.is_ok() {
+            self.mailbox_completed.fetch_add(1, Ordering::Relaxed);
+        } else {
+            self.mailbox_failed.fetch_add(1, Ordering::Relaxed);
         }
     }
 
@@ -334,9 +344,9 @@ impl RoomCommandGateway {
         room_id: &str,
         build: Build,
         inline: Inline,
-    ) -> Result<Value, String>
+    ) -> RoomCommandResult
     where
-        Build: FnOnce(oneshot::Sender<Result<Value, String>>) -> RoomActorCommand,
+        Build: FnOnce(oneshot::Sender<RoomCommandResult>) -> RoomActorCommand,
         Inline: FnOnce() -> Fut,
         Fut: Future<Output = Result<Value, String>>,
     {
@@ -349,18 +359,18 @@ impl RoomCommandGateway {
                     Err(_) => {
                         self.mailbox_closed.fetch_add(1, Ordering::Relaxed);
                         self.mailbox_fallback.fetch_add(1, Ordering::Relaxed);
-                        inline().await
+                        RoomCommandResult::from_legacy(inline().await, RoomCommandDelivery::FallbackInline)
                     }
                 },
                 Err(_) => {
                     self.mailbox_closed.fetch_add(1, Ordering::Relaxed);
                     self.mailbox_fallback.fetch_add(1, Ordering::Relaxed);
-                    inline().await
+                    RoomCommandResult::from_legacy(inline().await, RoomCommandDelivery::FallbackInline)
                 }
             }
         } else {
             self.mailbox_fallback.fetch_add(1, Ordering::Relaxed);
-            inline().await
+            RoomCommandResult::from_legacy(inline().await, RoomCommandDelivery::FallbackInline)
         }
     }
 
@@ -375,9 +385,9 @@ impl RoomCommandGateway {
         room_id: &str,
         build: Build,
         inline: Inline,
-    ) -> Result<Value, String>
+    ) -> RoomCommandResult
     where
-        Build: FnOnce(oneshot::Sender<Result<Value, String>>) -> RoomActorCommand,
+        Build: FnOnce(oneshot::Sender<RoomCommandResult>) -> RoomActorCommand,
         Inline: FnOnce() -> Fut,
         Fut: Future<Output = Result<Value, String>>,
     {
@@ -390,18 +400,18 @@ impl RoomCommandGateway {
                     Err(_) => {
                         self.mailbox_closed.fetch_add(1, Ordering::Relaxed);
                         self.mailbox_failed.fetch_add(1, Ordering::Relaxed);
-                        Err("room command mailbox reply lost after enqueue; refused inline retry for non-idempotent command".to_string())
+                        RoomCommandResult::mailbox_error("room command mailbox reply lost after enqueue; refused inline retry for non-idempotent command")
                     }
                 },
                 Err(_) => {
                     self.mailbox_closed.fetch_add(1, Ordering::Relaxed);
                     self.mailbox_fallback.fetch_add(1, Ordering::Relaxed);
-                    inline().await
+                    RoomCommandResult::from_legacy(inline().await, RoomCommandDelivery::FallbackInline)
                 }
             }
         } else {
             self.mailbox_fallback.fetch_add(1, Ordering::Relaxed);
-            inline().await
+            RoomCommandResult::from_legacy(inline().await, RoomCommandDelivery::FallbackInline)
         }
     }
 
@@ -431,7 +441,7 @@ impl RoomCommandGateway {
             mailbox_registry_miss: self.mailbox_registry_miss.load(Ordering::Relaxed),
             recent_commands,
             phase: if mailbox_enabled { "per_room_mailbox_partial" } else { "inline_facade" }.to_string(),
-            note: "set_lock/set_cycle/set_host/close/kick/start/cancel now cross a per-room mailbox registry; start/cancel keep audited WaitForReady handling".to_string(),
+            note: "set_lock/set_cycle/set_host/close/kick/start/cancel now cross a per-room mailbox registry with typed RoomCommandResult audit metadata".to_string(),
         }
     }
 
@@ -441,8 +451,8 @@ impl RoomCommandGateway {
         action: &str,
         room_id: &str,
         started: Instant,
-        result: Result<Value, String>,
-    ) -> Result<Value, String> {
+        result: RoomCommandResult,
+    ) -> RoomCommandResult {
         self.routed.fetch_add(1, Ordering::Relaxed);
         let ok = result.is_ok();
         if ok {
@@ -457,7 +467,7 @@ impl RoomCommandGateway {
         self.observe_max_latency(latency_us);
 
         let command_id = self.command_seq.fetch_add(1, Ordering::Relaxed) + 1;
-        let error = result.as_ref().err().cloned();
+        let error = result.error_message();
         let audit = RoomCommandAuditEntry {
             command_id,
             room_id: room_id.to_string(),
@@ -465,6 +475,7 @@ impl RoomCommandGateway {
             ok,
             latency_us,
             error,
+            delivery: result.delivery().as_str().to_string(),
         };
         self.push_audit(audit.clone());
         state.event_bus.publish(MpEvent::Custom {
@@ -476,6 +487,7 @@ impl RoomCommandGateway {
                 "ok": audit.ok,
                 "latency_us": audit.latency_us,
                 "error": audit.error,
+                "delivery": audit.delivery,
             }),
         });
         result
@@ -541,7 +553,7 @@ impl RoomCommandGateway {
                 || self.kick_user_inline(state, room_id, target_id),
             )
             .await;
-        self.finish_command(state, "kick", room_id, started, result)
+        self.finish_command(state, "kick", room_id, started, result).into_legacy()
     }
 
     async fn kick_user_inline(
@@ -607,7 +619,7 @@ impl RoomCommandGateway {
                 || self.close_room_inline(state, room_id),
             )
             .await;
-        self.finish_command(state, "close", room_id, started, result)
+        self.finish_command(state, "close", room_id, started, result).into_legacy()
     }
 
     async fn close_room_inline(&self, state: &PlusServerState, room_id: &str) -> Result<Value, String> {
@@ -660,7 +672,7 @@ impl RoomCommandGateway {
                 || self.start_room_inline(state, room_id),
             )
             .await;
-        self.finish_command(state, "start", room_id, started, result)
+        self.finish_command(state, "start", room_id, started, result).into_legacy()
     }
 
     async fn start_room_inline(&self, state: &PlusServerState, room_id: &str) -> Result<Value, String> {
@@ -699,7 +711,7 @@ impl RoomCommandGateway {
                 || self.cancel_start_inline(state, room_id),
             )
             .await;
-        self.finish_command(state, "cancel", room_id, started, result)
+        self.finish_command(state, "cancel", room_id, started, result).into_legacy()
     }
 
     async fn cancel_start_inline(&self, state: &PlusServerState, room_id: &str) -> Result<Value, String> {
@@ -745,7 +757,7 @@ impl RoomCommandGateway {
                 || self.set_host_inline(state, room_id, target_id),
             )
             .await;
-        self.finish_command(state, "set_host", room_id, started, result)
+        self.finish_command(state, "set_host", room_id, started, result).into_legacy()
     }
 
     async fn set_host_inline(
@@ -814,7 +826,7 @@ impl RoomCommandGateway {
                 || self.set_lock_inline(state, room_id, locked),
             )
             .await;
-        self.finish_command(state, "set_lock", room_id, started, result)
+        self.finish_command(state, "set_lock", room_id, started, result).into_legacy()
     }
 
     async fn set_lock_inline(
@@ -860,7 +872,7 @@ impl RoomCommandGateway {
                 || self.set_cycle_inline(state, room_id, cycle),
             )
             .await;
-        self.finish_command(state, "set_cycle", room_id, started, result)
+        self.finish_command(state, "set_cycle", room_id, started, result).into_legacy()
     }
 
     async fn set_cycle_inline(
