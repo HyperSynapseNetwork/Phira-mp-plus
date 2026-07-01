@@ -18,6 +18,7 @@ impl CliHandler {
         self.out(format!("  {} prod_db_req:{}", c::dim("│"), stats.production_persist_requests));
         self.out(format!("  {} prod_skip: {}", c::dim("│"), stats.production_persist_skipped));
         self.out(format!("  {} telemetry_staged: {}", c::dim("│"), stats.production_telemetry_staged));
+        self.out(format!("  {} telemetry_failed: {}", c::dim("│"), stats.production_telemetry_stage_failed));
         self.out(format!("  {} telemetry_mode:   {} (changes={})", c::dim("│"), stats.telemetry_cutover_mode, stats.telemetry_cutover_changes));
         self.out(format!("  {} telemetry batcher", c::cyan("▸")));
         self.out(format!(

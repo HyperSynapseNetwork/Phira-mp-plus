@@ -139,8 +139,9 @@ async fn persist_touches(
     let round_id = room.current_round_id.read().await.as_ref().map(|rid| rid.to_string());
     if let Some(rid) = round_id.as_ref() {
         let telemetry_mode = user.server.persistence_worker.telemetry_cutover_mode().await;
+        let cutover = telemetry_mode.cutover_decision();
         let mut runtime_enqueue_ok = false;
-        if telemetry_mode.should_enqueue_worker() {
+        if cutover.enqueue_worker {
             let payload = serde_json::json!({
                 "runtime_v2_source": "session_direct",
                 "runtime_v2_stage": "telemetry_cutover",
@@ -163,9 +164,7 @@ async fn persist_touches(
                 .await
                 .is_ok();
         }
-        let should_write_direct = telemetry_mode.should_write_direct()
-            || (telemetry_mode.fallback_to_direct_on_enqueue_failure() && !runtime_enqueue_ok);
-        if should_write_direct {
+        if cutover.should_write_direct_after_worker_enqueue(runtime_enqueue_ok) {
             if let Some(rs) = &room.round_store {
                 rs.append_touches(rid, user.id, touch_data).await;
             }
@@ -189,8 +188,9 @@ async fn persist_judges(
     let round_id = room.current_round_id.read().await.as_ref().map(|rid| rid.to_string());
     if let Some(rid) = round_id.as_ref() {
         let telemetry_mode = user.server.persistence_worker.telemetry_cutover_mode().await;
+        let cutover = telemetry_mode.cutover_decision();
         let mut runtime_enqueue_ok = false;
-        if telemetry_mode.should_enqueue_worker() {
+        if cutover.enqueue_worker {
             let payload = serde_json::json!({
                 "runtime_v2_source": "session_direct",
                 "runtime_v2_stage": "telemetry_cutover",
@@ -213,9 +213,7 @@ async fn persist_judges(
                 .await
                 .is_ok();
         }
-        let should_write_direct = telemetry_mode.should_write_direct()
-            || (telemetry_mode.fallback_to_direct_on_enqueue_failure() && !runtime_enqueue_ok);
-        if should_write_direct {
+        if cutover.should_write_direct_after_worker_enqueue(runtime_enqueue_ok) {
             if let Some(rs) = &room.round_store {
                 rs.append_judges(rid, user.id, judge_data).await;
             }

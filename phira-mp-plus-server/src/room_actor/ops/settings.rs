@@ -29,7 +29,7 @@ impl RoomCommandGateway {
         self.finish_command(state, RoomCommandKind::SetHost.action(), room_id, started, result).into_legacy()
     }
 
-    pub(super) async fn set_host_inline(
+    pub(in crate::room_actor) async fn set_host_inline(
         &self,
         state: &PlusServerState,
         room_id: &str,
@@ -98,7 +98,7 @@ impl RoomCommandGateway {
         self.finish_command(state, RoomCommandKind::SetLock.action(), room_id, started, result).into_legacy()
     }
 
-    pub(super) async fn set_lock_inline(
+    pub(in crate::room_actor) async fn set_lock_inline(
         &self,
         state: &PlusServerState,
         room_id: &str,
@@ -144,7 +144,7 @@ impl RoomCommandGateway {
         self.finish_command(state, RoomCommandKind::SetCycle.action(), room_id, started, result).into_legacy()
     }
 
-    pub(super) async fn set_cycle_inline(
+    pub(in crate::room_actor) async fn set_cycle_inline(
         &self,
         state: &PlusServerState,
         room_id: &str,

@@ -28,7 +28,7 @@ impl RoomCommandGateway {
         self.finish_command(state, RoomCommandKind::StartRoom.action(), room_id, started, result).into_legacy()
     }
 
-    pub(super) async fn start_room_inline(&self, state: &PlusServerState, room_id: &str) -> Result<Value, String> {
+    pub(in crate::room_actor) async fn start_room_inline(&self, state: &PlusServerState, room_id: &str) -> Result<Value, String> {
         let (_rid, room) = self.find_room(state, room_id).await?;
         room.begin_admin_start().await.map_err(|e| e.to_string())?;
         if let Some(pm) = &room.plugin_manager {
@@ -67,7 +67,7 @@ impl RoomCommandGateway {
         self.finish_command(state, RoomCommandKind::CancelStart.action(), room_id, started, result).into_legacy()
     }
 
-    pub(super) async fn cancel_start_inline(&self, state: &PlusServerState, room_id: &str) -> Result<Value, String> {
+    pub(in crate::room_actor) async fn cancel_start_inline(&self, state: &PlusServerState, room_id: &str) -> Result<Value, String> {
         let (_rid, room) = self.find_room(state, room_id).await?;
         let canceled = {
             let mut room_state = room.state.write().await;

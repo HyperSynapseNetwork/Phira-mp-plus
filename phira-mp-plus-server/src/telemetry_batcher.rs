@@ -34,6 +34,50 @@ pub enum TelemetryCutoverMode {
     FallbackOnly,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TelemetryCutoverDecision {
+    pub mode: TelemetryCutoverMode,
+    pub enqueue_worker: bool,
+    pub write_direct_before_worker_result: bool,
+    pub fallback_to_direct_on_enqueue_failure: bool,
+}
+
+impl TelemetryCutoverDecision {
+    pub fn from_mode(mode: TelemetryCutoverMode) -> Self {
+        match mode {
+            TelemetryCutoverMode::DirectOnly => Self {
+                mode,
+                enqueue_worker: false,
+                write_direct_before_worker_result: true,
+                fallback_to_direct_on_enqueue_failure: false,
+            },
+            TelemetryCutoverMode::DualWrite => Self {
+                mode,
+                enqueue_worker: true,
+                write_direct_before_worker_result: true,
+                fallback_to_direct_on_enqueue_failure: false,
+            },
+            TelemetryCutoverMode::WorkerOnly => Self {
+                mode,
+                enqueue_worker: true,
+                write_direct_before_worker_result: false,
+                fallback_to_direct_on_enqueue_failure: false,
+            },
+            TelemetryCutoverMode::FallbackOnly => Self {
+                mode,
+                enqueue_worker: true,
+                write_direct_before_worker_result: false,
+                fallback_to_direct_on_enqueue_failure: true,
+            },
+        }
+    }
+
+    pub fn should_write_direct_after_worker_enqueue(self, worker_enqueue_ok: bool) -> bool {
+        self.write_direct_before_worker_result
+            || (self.fallback_to_direct_on_enqueue_failure && !worker_enqueue_ok)
+    }
+}
+
 impl Default for TelemetryCutoverMode {
     fn default() -> Self {
         Self::DualWrite
@@ -61,15 +105,19 @@ impl TelemetryCutoverMode {
     }
 
     pub fn should_write_direct(self) -> bool {
-        matches!(self, Self::DirectOnly | Self::DualWrite)
+        self.cutover_decision().write_direct_before_worker_result
     }
 
     pub fn should_enqueue_worker(self) -> bool {
-        matches!(self, Self::DualWrite | Self::WorkerOnly | Self::FallbackOnly)
+        self.cutover_decision().enqueue_worker
     }
 
     pub fn fallback_to_direct_on_enqueue_failure(self) -> bool {
-        matches!(self, Self::FallbackOnly)
+        self.cutover_decision().fallback_to_direct_on_enqueue_failure
+    }
+
+    pub fn cutover_decision(self) -> TelemetryCutoverDecision {
+        TelemetryCutoverDecision::from_mode(self)
     }
 
     pub fn description(self) -> &'static str {
@@ -519,4 +567,45 @@ fn raw_item_count(payload: &Value) -> usize {
                 .unwrap_or(1)
         })
         .max(1)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cutover_decisions_match_mode_contract() {
+        let direct = TelemetryCutoverMode::DirectOnly.cutover_decision();
+        assert!(!direct.enqueue_worker);
+        assert!(direct.should_write_direct_after_worker_enqueue(false));
+        assert!(direct.should_write_direct_after_worker_enqueue(true));
+
+        let dual = TelemetryCutoverMode::DualWrite.cutover_decision();
+        assert!(dual.enqueue_worker);
+        assert!(dual.should_write_direct_after_worker_enqueue(false));
+        assert!(dual.should_write_direct_after_worker_enqueue(true));
+
+        let worker = TelemetryCutoverMode::WorkerOnly.cutover_decision();
+        assert!(worker.enqueue_worker);
+        assert!(!worker.should_write_direct_after_worker_enqueue(false));
+        assert!(!worker.should_write_direct_after_worker_enqueue(true));
+
+        let fallback = TelemetryCutoverMode::FallbackOnly.cutover_decision();
+        assert!(fallback.enqueue_worker);
+        assert!(fallback.should_write_direct_after_worker_enqueue(false));
+        assert!(!fallback.should_write_direct_after_worker_enqueue(true));
+    }
+
+    #[test]
+    fn legacy_cutover_helpers_delegate_to_decision_contract() {
+        for &mode in TelemetryCutoverMode::variants() {
+            let decision = mode.cutover_decision();
+            assert_eq!(mode.should_enqueue_worker(), decision.enqueue_worker);
+            assert_eq!(mode.should_write_direct(), decision.write_direct_before_worker_result);
+            assert_eq!(
+                mode.fallback_to_direct_on_enqueue_failure(),
+                decision.fallback_to_direct_on_enqueue_failure
+            );
+        }
+    }
 }

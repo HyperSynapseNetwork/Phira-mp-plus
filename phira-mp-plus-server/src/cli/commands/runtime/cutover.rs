@@ -10,6 +10,14 @@ impl CliHandler {
                     let mode = self.state.persistence_worker.set_telemetry_cutover_mode(mode).await;
                     self.out(format!("  {} telemetry cutover mode set to {}", c::green("✓"), c::bold(mode.as_str())));
                     self.out(format!("  {} {}", c::dim("▸"), mode.description()));
+                    let decision = mode.cutover_decision();
+                    self.out(format!(
+                        "  {} decision: enqueue_worker={} direct_before_result={} fallback_on_enqueue_failure={}",
+                        c::dim("▸"),
+                        decision.enqueue_worker,
+                        decision.write_direct_before_worker_result,
+                        decision.fallback_to_direct_on_enqueue_failure
+                    ));
                 }
                 None => {
                     self.out(format!("  {} unknown telemetry cutover mode: {}", c::red("✗"), c::yellow(raw_mode)));
@@ -24,7 +32,16 @@ impl CliHandler {
             self.out(format!("  {} modes", c::cyan("▸")));
             for mode in crate::telemetry_batcher::TelemetryCutoverMode::variants() {
                 let marker = if mode.as_str() == stats.telemetry_cutover_mode { "*" } else { " " };
-                self.out(format!("    {} {:<14} {}", marker, mode.as_str(), mode.description()));
+                let decision = mode.cutover_decision();
+                self.out(format!(
+                    "    {} {:<14} {} [worker={} direct={} fallback={}]",
+                    marker,
+                    mode.as_str(),
+                    mode.description(),
+                    decision.enqueue_worker,
+                    decision.write_direct_before_worker_result,
+                    decision.fallback_to_direct_on_enqueue_failure
+                ));
             }
             self.out(format!("  {} examples", c::cyan("▸")));
             self.out("    runtime cutover dual_write".to_string());

@@ -94,6 +94,7 @@ pub struct PersistenceStats {
     pub production_persist_requests: u64,
     pub production_persist_skipped: u64,
     pub production_telemetry_staged: u64,
+    pub production_telemetry_stage_failed: u64,
     pub telemetry_cutover_mode: String,
     pub telemetry_cutover_changes: u64,
     pub by_kind: BTreeMap<String, u64>,
@@ -145,12 +146,24 @@ impl PersistenceWorker {
                 let summary = event.summary();
                 if persist_simulation_event_if_needed(&event) {
                     record_simulation_persist_request(&worker_stats).await;
-                } else if stage_production_telemetry_if_needed(&event, &worker_telemetry).await {
-                    record_production_telemetry_staged(&worker_stats).await;
-                } else if persist_production_event_if_needed(&event) {
-                    record_production_persist_request(&worker_stats).await;
-                } else if !event.is_simulation() && !matches!(&event, PersistenceEvent::Flush | PersistenceEvent::Shutdown) {
-                    record_production_persist_skipped(&worker_stats).await;
+                } else {
+                    match stage_production_telemetry_if_needed(&event, &worker_telemetry).await {
+                        ProductionTelemetryStage::Staged => {
+                            record_production_telemetry_staged(&worker_stats).await;
+                        }
+                        ProductionTelemetryStage::Failed(error) => {
+                            record_production_telemetry_stage_failed(&worker_stats, error).await;
+                        }
+                        ProductionTelemetryStage::NotTelemetry => {
+                            if persist_production_event_if_needed(&event) {
+                                record_production_persist_request(&worker_stats).await;
+                            } else if !event.is_simulation()
+                                && !matches!(&event, PersistenceEvent::Flush | PersistenceEvent::Shutdown)
+                            {
+                                record_production_persist_skipped(&worker_stats).await;
+                            }
+                        }
+                    }
                 }
                 match event {
                     PersistenceEvent::Shutdown => {
@@ -225,10 +238,17 @@ impl PersistenceWorker {
 
     pub async fn record_runtime_config_snapshot(&self) {
         let stats = self.stats().await;
+        let mode = self.telemetry_cutover_mode().await;
+        let decision = mode.cutover_decision();
         if let Some(db) = crate::internal_hooks::DB.get() {
             db.record_runtime_persistence_meta_sync("runtime_v2.persistence_policy", json!({
                 "queue_capacity": stats.capacity,
                 "telemetry_cutover_mode": stats.telemetry_cutover_mode,
+                "telemetry_cutover_decision": {
+                    "enqueue_worker": decision.enqueue_worker,
+                    "write_direct_before_worker_result": decision.write_direct_before_worker_result,
+                    "fallback_to_direct_on_enqueue_failure": decision.fallback_to_direct_on_enqueue_failure
+                },
                 "telemetry": {
                     "enabled": stats.telemetry.enabled,
                     "dry_run": stats.telemetry.dry_run,
@@ -253,9 +273,15 @@ impl PersistenceWorker {
         stats.telemetry.cutover_mode = mode.as_str().to_string();
         stats.last_error = None;
         if let Some(db) = crate::internal_hooks::DB.get() {
+            let decision = mode.cutover_decision();
             db.record_runtime_persistence_meta_sync("telemetry.cutover_mode", json!({
                 "mode": mode.as_str(),
                 "description": mode.description(),
+                "decision": {
+                    "enqueue_worker": decision.enqueue_worker,
+                    "write_direct_before_worker_result": decision.write_direct_before_worker_result,
+                    "fallback_to_direct_on_enqueue_failure": decision.fallback_to_direct_on_enqueue_failure
+                },
                 "available_modes": TelemetryCutoverMode::variants().iter().map(|mode| mode.as_str()).collect::<Vec<_>>(),
                 "updated_by": "runtime_v2.persistence_worker"
             }));
@@ -513,12 +539,19 @@ fn persist_simulation_event_if_needed(event: &PersistenceEvent) -> bool {
 }
 
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ProductionTelemetryStage {
+    NotTelemetry,
+    Staged,
+    Failed(String),
+}
+
 async fn stage_production_telemetry_if_needed(
     event: &PersistenceEvent,
     batcher: &Arc<TelemetryBatcher>,
-) -> bool {
+) -> ProductionTelemetryStage {
     if event.is_simulation() {
-        return false;
+        return ProductionTelemetryStage::NotTelemetry;
     }
 
     let item = match event {
@@ -542,11 +575,17 @@ async fn stage_production_telemetry_if_needed(
     };
 
     let Some(item) = item else {
-        return false;
+        return ProductionTelemetryStage::NotTelemetry;
     };
 
-    let _ = batcher.enqueue(item).await;
-    true
+    let kind = item.kind.as_str().to_string();
+    let user_id = item.user_id;
+    match batcher.enqueue(item).await {
+        Ok(()) => ProductionTelemetryStage::Staged,
+        Err(_) => ProductionTelemetryStage::Failed(format!(
+            "telemetry batcher rejected {kind} batch for user_id={user_id}"
+        )),
+    }
 }
 
 fn persist_production_event_if_needed(event: &PersistenceEvent) -> bool {
@@ -643,6 +682,15 @@ async fn record_production_persist_skipped(stats: &Arc<RwLock<PersistenceStats>>
 
 async fn record_production_telemetry_staged(stats: &Arc<RwLock<PersistenceStats>>) {
     stats.write().await.production_telemetry_staged += 1;
+}
+
+async fn record_production_telemetry_stage_failed(
+    stats: &Arc<RwLock<PersistenceStats>>,
+    error: String,
+) {
+    let mut stats = stats.write().await;
+    stats.production_telemetry_stage_failed += 1;
+    stats.last_error = Some(error);
 }
 
 async fn record_queued(

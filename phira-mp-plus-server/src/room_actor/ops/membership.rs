@@ -29,7 +29,7 @@ impl RoomCommandGateway {
         self.finish_command(state, RoomCommandKind::KickUser.action(), room_id, started, result).into_legacy()
     }
 
-    pub(super) async fn kick_user_inline(
+    pub(in crate::room_actor) async fn kick_user_inline(
         &self,
         state: &PlusServerState,
         room_id: &str,
@@ -95,7 +95,7 @@ impl RoomCommandGateway {
         self.finish_command(state, RoomCommandKind::CloseRoom.action(), room_id, started, result).into_legacy()
     }
 
-    pub(super) async fn close_room_inline(&self, state: &PlusServerState, room_id: &str) -> Result<Value, String> {
+    pub(in crate::room_actor) async fn close_room_inline(&self, state: &PlusServerState, room_id: &str) -> Result<Value, String> {
         let (rid, room) = self.find_room(state, room_id).await?;
         let room_id_str = room.id.to_string();
         room.send(Message::Chat {
