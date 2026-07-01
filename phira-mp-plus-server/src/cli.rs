@@ -2296,23 +2296,6 @@ impl CliHandler {
         self.out(format!("  ✗ 未找到轮次 {round_uuid}"));
     }
 
-    /// 查询用户访问过的所有房间
-    async fn user_room_history(&self, uid: i32) {
-        let history = self.state.user_room_history.read().await;
-        let entries = history.get(&uid).cloned().unwrap_or_default();
-        if entries.is_empty() {
-            self.out(format!("  · 用户 {uid} 没有房间访问记录"));
-            return;
-        }
-        self.out(format!("  ◆ 用户 {uid} 访问过的房间 ({})", entries.len()));
-        for (room_id, room_uuid, ts) in &entries {
-            let t = chrono::DateTime::from_timestamp_millis(*ts)
-                .map(|t| t.format("%m-%d %H:%M").to_string())
-                .unwrap_or_else(|| ts.to_string());
-            self.out(format!("  │ {}  {t}  uuid:{room_uuid}", c::bold(room_id)));
-        }
-    }
-
     /// 广播给所有用户
     async fn broadcast_all(&self, message: &str) {
         let users = {

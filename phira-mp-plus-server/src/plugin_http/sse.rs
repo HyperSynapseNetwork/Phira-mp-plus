@@ -1,6 +1,6 @@
 use axum::response::sse::Event;
 use futures::{stream, Stream, StreamExt};
-use phira_mp_common::RoomEvent;
+use phira_mp_common::{RoomData, RoomEvent, StrippedRoomState};
 use serde_json::json;
 use std::convert::Infallible;
 use std::pin::Pin;
@@ -100,8 +100,16 @@ mod tests {
         let mut general = hub.subscribe_general();
 
         hub.publish_room_event(RoomEvent::CreateRoom {
-            room: RoomId::from("test".to_string()),
-            data: serde_json::json!({"users": []}),
+            room: RoomId::try_from("test".to_string()).unwrap(),
+            data: RoomData {
+                host: 0,
+                users: Vec::new(),
+                lock: false,
+                cycle: false,
+                chart: None,
+                state: StrippedRoomState::SelectingChart,
+                rounds: Vec::new(),
+            },
         });
 
         assert_eq!(general.recv().await.unwrap().event_type, "create_room");
