@@ -78,10 +78,7 @@ pub(crate) fn parse_room_endpoint_value(value: &str) -> Result<Option<String>, S
     }
 }
 
-/// 测试用 sim 用户 ID 起点（避免与真实用户冲突）
-const TEST_USER_ID_BASE: i32 = 1_000_000_000;
-
-/// 自旋获取 tokio RwLock 读锁（同步上下文使用）
+/// 自旋获取 tokio RwLock 读锁（同步上下文使用，如 Web API 的 try_read 路径）
 macro_rules! read_lock {
     ($lock:expr) => {{
         loop {
@@ -93,30 +90,6 @@ macro_rules! read_lock {
     }};
 }
 pub type IdMap<V> = SafeMap<Uuid, V>;
-
-/// 自旋获取 tokio RwLock 读锁（同步上下文，如压测）
-macro_rules! sync_read {
-    ($lock:expr) => {{
-        loop {
-            match $lock.try_read() {
-                Ok(guard) => break guard,
-                Err(_) => std::thread::yield_now(),
-            }
-        }
-    }};
-}
-
-/// 自旋获取 tokio RwLock 写锁（同步上下文，如压测）
-macro_rules! sync_write {
-    ($lock:expr) => {{
-        loop {
-            match $lock.try_write() {
-                Ok(guard) => break guard,
-                Err(_) => std::thread::yield_now(),
-            }
-        }
-    }};
-}
 
 /// Phira-mp+ 增强配置（支持 YAML 文件、环境变量、CLI 参数三层覆盖）
 #[derive(Debug, Clone, Deserialize)]
@@ -1380,159 +1353,6 @@ impl PlusServerState {
         self.admin_id_list().await
     }
 
-    /// 运行压测（同步版 — 在 ServerStateQuery 线程中调用，无 tokio）
-    pub fn run_benchmark_sync(self: &Arc<Self>, duration_secs: u64, target_rooms: usize) -> String {
-        use std::time::Instant;
-        let started_at = Instant::now();
-        let mut out = String::new();
-        macro_rules! o { ($($t:tt)*) => { out.push_str(&format!($($t)*)); out.push('\n'); } }
-
-        info!(target_rooms, duration_secs, "benchmark started");
-
-        o!("  ◆ Phira-mp+ 服务端压测");
-        o!("  │ 目标房间: {target_rooms}  测试时长: {duration_secs}s");
-        o!("  │");
-        o!("  ├─ [阶段1] 创建房间");
-        let t0 = Instant::now();
-        let mut created = 0usize;
-        for i in 0..target_rooms {
-            let rid_str = format!("bench-{i}");
-            let rid: phira_mp_common::RoomId = match rid_str.to_string().try_into() {
-                Ok(r) => r,
-                Err(_) => continue,
-            };
-            let test_uid = TEST_USER_ID_BASE + i as i32;
-            let test_user = Arc::new(super::session::User::new(
-                test_uid, format!("bench#{i}"),
-                crate::l10n::Language::default(),
-                Arc::clone(self),
-                None,
-            ));
-            sync_write!(self.users).insert(test_uid, Arc::clone(&test_user));
-
-            let room = Arc::new(crate::room::Room::new(
-                rid.clone(), Arc::downgrade(&test_user),
-                Some(Arc::clone(&self.plugin_manager)),
-                Arc::downgrade(self),
-                self.config.max_users_per_room.unwrap_or(8), None,
-            ));
-            let mut rooms = sync_write!(self.rooms);
-            if let std::collections::hash_map::Entry::Vacant(e) = rooms.entry(rid) {
-                e.insert(room);
-                created += 1;
-            }
-            drop(rooms);
-
-            if created > 0 && created % 50 == 0 {
-                let e = t0.elapsed().as_secs_f64();
-                if e > 0.0 { o!("  │  已创建 {created} 间 ({:.0} 间/秒)", created as f64 / e); }
-            }
-        }
-        let phase1 = t0.elapsed();
-        let create_rate = if phase1.as_secs_f64() > 0.0 { created as f64 / phase1.as_secs_f64() } else { 0.0 };
-        o!("  │ ✓ 创建 {created} 间, 耗时 {:.1}s ({:.0} 间/秒)", phase1.as_secs_f64(), create_rate);
-
-        info!("benchmark phase: room creation complete");
-        o!("  │");
-        o!("  ├─ [阶段2] 填充用户 (每房间+4人)");
-        info!("benchmark phase: filling users");
-        let t0 = Instant::now();
-        let mut joined = 0usize;
-        let rooms_snapshot: Vec<Arc<crate::room::Room>> = sync_read!(self.rooms).values().map(Arc::clone).collect();
-        for room in rooms_snapshot.iter().take(created) {
-            for _ in 0..4 {
-                let test_uid = TEST_USER_ID_BASE + 1_000_000 + joined as i32;
-                let test_user = Arc::new(super::session::User::new(
-                    test_uid, format!("player#{joined}"),
-                    crate::l10n::Language::default(), Arc::clone(self), None,
-                ));
-                sync_write!(self.users).insert(test_uid, Arc::clone(&test_user));
-                // add_user 是 async — 用 try_block 绕过
-                let weak = Arc::downgrade(&test_user);
-                let mut uguard = sync_write!(room.users);
-                uguard.retain(|it| it.strong_count() > 0);
-                if uguard.len() < room.max_users_count() { uguard.push(weak); }
-                joined += 1;
-            }
-        }
-        let phase2 = t0.elapsed();
-        o!("  │ ✓ 加入 {joined} 人, 耗时 {:.1}s ({:.0} 人/秒)", phase2.as_secs_f64(), joined as f64 / phase2.as_secs_f64().max(0.001));
-
-        info!("benchmark phase: pressure loop");
-        o!("  │");
-        o!("  ├─ [阶段3] 压力保持 {duration_secs}s");
-        let t0 = Instant::now();
-        let mut query_latencies: Vec<f64> = Vec::new();
-        let mut op_count = 0u64;
-
-        while t0.elapsed().as_secs() < duration_secs {
-            let mut batch_ops = 0u64;
-            let mut batch_lat = 0.0f64;
-            for _ in 0..50 {
-                let q = Instant::now();
-                let _ = sync_read!(self.rooms).len();
-                batch_lat += q.elapsed().as_secs_f64() * 1_000_000.0;
-                batch_ops += 1;
-            }
-            for _ in 0..50 {
-                let q = Instant::now();
-                let _ = sync_read!(self.users).len();
-                batch_lat += q.elapsed().as_secs_f64() * 1_000_000.0;
-                batch_ops += 1;
-            }
-            query_latencies.push(batch_lat / batch_ops as f64);
-            op_count += batch_ops;
-
-            let elapsed = t0.elapsed().as_secs_f64();
-            if elapsed > 0.0 && op_count % 1000 == 0 {
-                o!("  │  运行 {elapsed:.0}s | 操作 {op_count} | {:.0} ops/s", batch_ops as f64 / (batch_lat / 1_000_000.0).max(0.001));
-            }
-        }
-        let _phase3 = t0.elapsed();
-        let avg_lat = if !query_latencies.is_empty() {
-            query_latencies.iter().sum::<f64>() / query_latencies.len() as f64
-        } else { 0.0 };
-        let mut p99 = avg_lat;
-        if query_latencies.len() > 10 {
-            let mut s = query_latencies.clone();
-            s.sort_unstable_by(|a, b| a.partial_cmp(b).unwrap());
-            p99 = s[(s.len() as f64 * 0.99) as usize];
-        }
-        o!("  │ ✓ 操作 {op_count} 次 | avg={avg_lat:.0}µs p99={p99:.0}µs");
-
-        o!("  │");
-        o!("  ├─ [阶段4] 清理测试数据");
-        info!("benchmark phase: cleanup");
-        let t4 = Instant::now();
-        sync_write!(self.rooms).retain(|rid, _| !rid.to_string().starts_with("bench-"));
-        sync_write!(self.users).retain(|id, _| *id < TEST_USER_ID_BASE || *id >= TEST_USER_ID_BASE + 10_000_000);
-        o!("  │ ✓ 清理完成 ({:.1}s)", t4.elapsed().as_secs_f64());
-
-        let total = started_at.elapsed();
-        o!("  │");
-        o!("  └─ 压测完成 ({:.1}s)", total.as_secs_f64());
-        o!("");
-        o!("  ◆ 报告");
-        o!("  │  房间创建: {create_rate:.0} 间/秒 ({created} 间)");
-        o!("  │  用户加入: {:.0} 人/秒 ({joined} 人)", joined as f64 / phase2.as_secs_f64().max(0.001));
-        o!("  │  查询延迟: avg={avg_lat:.0}µs  p99={p99:.0}µs");
-        o!("  │  稳定运行: {duration_secs}s 操作 {op_count} 次");
-
-        let max_rooms = (1000.0 / avg_lat.max(1.0) * 100.0) as usize;
-        let rec_users = if avg_lat < 10.0 { 8 } else if avg_lat < 50.0 { 6 } else { 4 };
-        o!("  │");
-        o!("  ├─ 推荐");
-        o!("  │  · 最大稳定房间: ~{max_rooms}  每房间上限: {rec_users}  同时游玩: ~{}", max_rooms * rec_users);
-        o!("  │  · 调整 server_config.yml 后重启对比");
-        out
-    }
-
-    /// 清理压测残留数据（同步版）
-    pub fn cleanup_benchmark_sync(&self) {
-        sync_write!(self.rooms).retain(|rid, _| !rid.to_string().starts_with("bench-"));
-        sync_write!(self.users).retain(|id, _| *id < TEST_USER_ID_BASE || *id >= TEST_USER_ID_BASE + 10_000_000);
-    }
-
     /// 绑定真实 Phira 账号 token 作为网络压测客户端。
     pub async fn bind_benchmark_tokens(&self, raw_tokens: Vec<String>) -> Result<usize, String> {
         let tokens = sanitize_benchmark_tokens(raw_tokens);
@@ -2471,8 +2291,12 @@ fn server_state_query_inner(state: &Arc<PlusServerState>, method: &str, args: &[
                 .unwrap_or(Err("test.bind_phira_tokens timeout".to_string()))
         }
         "test.cleanup" => {
-            state.cleanup_benchmark_sync();
-            Ok(serde_json::json!({"ok": true}))
+            let s = Arc::clone(state);
+            tokio::spawn(async move {
+                s.rooms.write().await.retain(|rid, _| !rid.to_string().starts_with("bench-"));
+                s.users.write().await.retain(|id, _| *id >= 1 || *id < 0);
+            });
+            Ok(serde_json::json!({"ok": true, "note": "benchmark rooms removed via async path"}))
         }
         "room.uuid" => {
             let room_id = args.get(0).and_then(|v| v.as_str()).unwrap_or("").to_string();

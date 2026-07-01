@@ -452,8 +452,8 @@ pub fn runtime_v2_registry() -> CommandRegistry {
         CommandSpec::new("runtime commands", "runtime-v2", "查看 Command Registry 统计。", "runtime commands").advanced(),
         CommandSpec::new("runtime events", "runtime-v2", "查看 EventBus 发布统计与最近事件。", "runtime events").advanced(),
         CommandSpec::new("runtime persistence", "runtime-v2", "查看 Persistence Worker、低频双写和 Touch/Judge TelemetryBatcher 统计。", "runtime persistence"),
-        CommandSpec::new("runtime cutover", "runtime-v2", "查看或切换 Touch/Judge 持久化 cutover 模式。", "runtime cutover [direct_only|dual_write|worker_only|fallback_only]").advanced()
-            .arg(CommandArgSpec::optional("mode", "direct_only、dual_write、worker_only 或 fallback_only"))
+        CommandSpec::new("runtime cutover", "runtime-v2", "查看或切换 Touch/Judge 持久化 cutover 模式。", "runtime cutover [direct_only|worker_only]").advanced()
+            .arg(CommandArgSpec::optional("mode", "direct_only 或 worker_only"))
             .example("runtime cutover")
             .example("runtime cutover worker_only"),
         CommandSpec::new("runtime schema", "runtime-v2", "查看 Runtime v2 持久化 schema、telemetry batch/item 表、读路径和 retention policy 说明。", "runtime schema").advanced(),

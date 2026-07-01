@@ -29,17 +29,17 @@ static TELEMETRY_BATCH_SEQ: AtomicU64 = AtomicU64::new(1);
 // ── Cutover mode & decision ──────────────────────────────────────────
 
 /// Cutover mode controlling how production Touch/Judge telemetry is persisted.
+///
+/// Simplified to two modes: DirectOnly (legacy) and WorkerOnly (target).
+/// DualWrite and FallbackOnly have been removed — they were development-stage
+/// comparison modes that added hot-path complexity. WorkerOnly is the target.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TelemetryCutoverMode {
     /// Only the direct RoundStore/db.rs path writes production Touch/Judge data.
     DirectOnly,
-    /// Write through both direct path and Runtime v2 batcher. Safe default during comparison.
-    DualWrite,
     /// Only Runtime v2 TelemetryBatcher writes production Touch/Judge data.
     WorkerOnly,
-    /// Try Runtime v2 first; if enqueue fails immediately, fall back to direct write.
-    FallbackOnly,
 }
 
 /// Structured decision derived from a [`TelemetryCutoverMode`].
@@ -48,7 +48,6 @@ pub struct TelemetryCutoverDecision {
     pub mode: TelemetryCutoverMode,
     pub enqueue_worker: bool,
     pub write_direct_before_worker_result: bool,
-    pub fallback_to_direct_on_enqueue_failure: bool,
 }
 
 impl TelemetryCutoverDecision {
@@ -58,38 +57,23 @@ impl TelemetryCutoverDecision {
                 mode,
                 enqueue_worker: false,
                 write_direct_before_worker_result: true,
-                fallback_to_direct_on_enqueue_failure: false,
-            },
-            TelemetryCutoverMode::DualWrite => Self {
-                mode,
-                enqueue_worker: true,
-                write_direct_before_worker_result: true,
-                fallback_to_direct_on_enqueue_failure: false,
             },
             TelemetryCutoverMode::WorkerOnly => Self {
                 mode,
                 enqueue_worker: true,
                 write_direct_before_worker_result: false,
-                fallback_to_direct_on_enqueue_failure: false,
-            },
-            TelemetryCutoverMode::FallbackOnly => Self {
-                mode,
-                enqueue_worker: true,
-                write_direct_before_worker_result: false,
-                fallback_to_direct_on_enqueue_failure: true,
             },
         }
     }
 
-    pub fn should_write_direct_after_worker_enqueue(self, worker_enqueue_ok: bool) -> bool {
+    pub fn should_write_direct_after_worker_enqueue(self, _worker_enqueue_ok: bool) -> bool {
         self.write_direct_before_worker_result
-            || (self.fallback_to_direct_on_enqueue_failure && !worker_enqueue_ok)
     }
 }
 
 impl Default for TelemetryCutoverMode {
     fn default() -> Self {
-        Self::DualWrite
+        Self::WorkerOnly
     }
 }
 
@@ -97,20 +81,16 @@ impl TelemetryCutoverMode {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::DirectOnly => "direct_only",
-            Self::DualWrite => "dual_write",
             Self::WorkerOnly => "worker_only",
-            Self::FallbackOnly => "fallback_only",
         }
     }
 
     pub fn parse(value: &str) -> Option<Self> {
         match value.trim().to_ascii_lowercase().as_str() {
             "direct" | "direct_only" | "direct-only" => Some(Self::DirectOnly),
-            "dual" | "dual_write" | "dual-write" | "both" => Some(Self::DualWrite),
             "worker" | "worker_only" | "worker-only" | "runtime" | "runtime_v2" => {
                 Some(Self::WorkerOnly)
             }
-            "fallback" | "fallback_only" | "fallback-only" => Some(Self::FallbackOnly),
             _ => None,
         }
     }
@@ -123,10 +103,6 @@ impl TelemetryCutoverMode {
         self.cutover_decision().enqueue_worker
     }
 
-    pub fn fallback_to_direct_on_enqueue_failure(self) -> bool {
-        self.cutover_decision().fallback_to_direct_on_enqueue_failure
-    }
-
     pub fn cutover_decision(self) -> TelemetryCutoverDecision {
         TelemetryCutoverDecision::from_mode(self)
     }
@@ -136,23 +112,14 @@ impl TelemetryCutoverMode {
             Self::DirectOnly => {
                 "direct RoundStore/db.rs only; Runtime v2 batcher is bypassed"
             }
-            Self::DualWrite => "direct write plus Runtime v2 telemetry batch-write",
             Self::WorkerOnly => {
                 "Runtime v2 telemetry batch-write only; direct write is bypassed"
-            }
-            Self::FallbackOnly => {
-                "Runtime v2 enqueue first; direct write only on immediate enqueue failure"
             }
         }
     }
 
     pub fn variants() -> &'static [TelemetryCutoverMode] {
-        &[
-            Self::DirectOnly,
-            Self::DualWrite,
-            Self::WorkerOnly,
-            Self::FallbackOnly,
-        ]
+        &[Self::DirectOnly, Self::WorkerOnly]
     }
 }
 
@@ -691,20 +658,10 @@ mod tests {
         assert!(direct.should_write_direct_after_worker_enqueue(false));
         assert!(direct.should_write_direct_after_worker_enqueue(true));
 
-        let dual = TelemetryCutoverMode::DualWrite.cutover_decision();
-        assert!(dual.enqueue_worker);
-        assert!(dual.should_write_direct_after_worker_enqueue(false));
-        assert!(dual.should_write_direct_after_worker_enqueue(true));
-
         let worker = TelemetryCutoverMode::WorkerOnly.cutover_decision();
         assert!(worker.enqueue_worker);
         assert!(!worker.should_write_direct_after_worker_enqueue(false));
         assert!(!worker.should_write_direct_after_worker_enqueue(true));
-
-        let fallback = TelemetryCutoverMode::FallbackOnly.cutover_decision();
-        assert!(fallback.enqueue_worker);
-        assert!(fallback.should_write_direct_after_worker_enqueue(false));
-        assert!(!fallback.should_write_direct_after_worker_enqueue(true));
     }
 
     #[test]
@@ -715,10 +672,6 @@ mod tests {
             assert_eq!(
                 mode.should_write_direct(),
                 decision.write_direct_before_worker_result
-            );
-            assert_eq!(
-                mode.fallback_to_direct_on_enqueue_failure(),
-                decision.fallback_to_direct_on_enqueue_failure
             );
         }
     }

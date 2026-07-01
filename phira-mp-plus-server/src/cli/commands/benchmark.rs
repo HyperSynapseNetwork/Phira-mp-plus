@@ -10,7 +10,7 @@ impl CliHandler {
     }
 
     pub(in crate::cli) async fn dispatch_benchmark_cleanup_command(&self) {
-        self.state.cleanup_benchmark_sync();
+        self.state.rooms.write().await.retain(|rid, _| !rid.to_string().starts_with("bench-"));
         self.out(format!("  {} 已清理 bench-* 压测房间", c::green("✓")));
     }
 

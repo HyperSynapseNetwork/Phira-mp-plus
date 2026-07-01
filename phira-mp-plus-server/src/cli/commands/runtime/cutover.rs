@@ -12,16 +12,15 @@ impl CliHandler {
                     self.out(format!("  {} {}", c::dim("▸"), mode.description()));
                     let decision = mode.cutover_decision();
                     self.out(format!(
-                        "  {} decision: enqueue_worker={} direct_before_result={} fallback_on_enqueue_failure={}",
+                        "  {} decision: enqueue_worker={} direct_before_result={}",
                         c::dim("▸"),
                         decision.enqueue_worker,
                         decision.write_direct_before_worker_result,
-                        decision.fallback_to_direct_on_enqueue_failure
                     ));
                 }
                 None => {
                     self.out(format!("  {} unknown telemetry cutover mode: {}", c::red("✗"), c::yellow(raw_mode)));
-                    self.out("  available: direct_only | dual_write | worker_only | fallback_only".to_string());
+                    self.out("  available: direct_only | worker_only".to_string());
                 }
             }
         } else {
@@ -34,17 +33,15 @@ impl CliHandler {
                 let marker = if mode.as_str() == stats.telemetry_cutover_mode { "*" } else { " " };
                 let decision = mode.cutover_decision();
                 self.out(format!(
-                    "    {} {:<14} {} [worker={} direct={} fallback={}]",
+                    "    {} {:<14} {} [worker={} direct={}]",
                     marker,
                     mode.as_str(),
                     mode.description(),
                     decision.enqueue_worker,
                     decision.write_direct_before_worker_result,
-                    decision.fallback_to_direct_on_enqueue_failure
                 ));
             }
             self.out(format!("  {} examples", c::cyan("▸")));
-            self.out("    runtime cutover dual_write".to_string());
             self.out("    runtime cutover worker_only".to_string());
             self.out("    runtime cutover direct_only".to_string());
         }

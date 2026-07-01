@@ -862,21 +862,19 @@ impl CliHandler {
                     Err(_) => { self.out(format!("  {} 无效的谱面ID", c::red("✗"))); return; }
                 };
                 let endpoint = room.effective_phira_api_endpoint(&self.state).await;
-                let chart = match reqwest::get(format!(
-                    "{}/chart/{cid}",
-                    endpoint.trim_end_matches('/')
-                ))
-                .await
-                {
-                    Ok(resp) => match resp.error_for_status() {
-                        Ok(resp) => resp.json::<crate::server::Chart>().await.ok(),
-                        Err(_) => None,
+                let chart = match self.state.phira_client.get_json::<crate::server::Chart>(
+                    &self.state.config.phira_api_endpoint,
+                    Some(endpoint.as_str()),
+                    &format!("/chart/{cid}"),
+                    None,
+                    crate::phira_client::PhiraRetryNoticeTarget::Silent,
+                ).await {
+                    Ok(chart) => chart,
+                    Err(_) => crate::server::Chart {
+                        id: cid,
+                        name: format!("chart_{cid}"),
                     },
-                    Err(_) => None,
-                }.unwrap_or(crate::server::Chart {
-                    id: cid,
-                    name: format!("chart_{cid}"),
-                });
+                };
                 room.send(phira_mp_common::Message::SelectChart {
                     user: 0,
                     name: chart.name.clone(),

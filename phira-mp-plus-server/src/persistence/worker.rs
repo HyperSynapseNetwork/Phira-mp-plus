@@ -241,7 +241,6 @@ impl PersistenceWorker {
                 "telemetry_cutover_decision": {
                     "enqueue_worker": decision.enqueue_worker,
                     "write_direct_before_worker_result": decision.write_direct_before_worker_result,
-                    "fallback_to_direct_on_enqueue_failure": decision.fallback_to_direct_on_enqueue_failure
                 },
                 "telemetry": {
                     "enabled": stats.telemetry.enabled,
@@ -280,7 +279,6 @@ impl PersistenceWorker {
                 "decision": {
                     "enqueue_worker": decision.enqueue_worker,
                     "write_direct_before_worker_result": decision.write_direct_before_worker_result,
-                    "fallback_to_direct_on_enqueue_failure": decision.fallback_to_direct_on_enqueue_failure
                 },
                 "available_modes": TelemetryCutoverMode::variants().iter().map(|mode| mode.as_str()).collect::<Vec<_>>(),
                 "updated_by": "runtime_v2.persistence_worker"
