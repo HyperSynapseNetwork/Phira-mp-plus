@@ -301,9 +301,10 @@ impl DbManager {
             return true;
         }
         #[cfg(feature = "postgres")]
-        if matches!(self, Self::Pg(_)) {
-            let db = self.clone();
+        if let Self::Pg(pool) = self {
+            let pool = pool.clone();
             tokio::spawn(async move {
+                let db = DbManager::Pg(pool);
                 let _ = db.record_runtime_telemetry_batches(records).await;
             });
             return true;
@@ -354,9 +355,10 @@ impl DbManager {
 
     pub fn record_runtime_benchmark_report_sync(&self, record: crate::persistence::BenchmarkReportPersistenceRecord) -> bool {
         #[cfg(feature = "postgres")]
-        if matches!(self, Self::Pg(_)) {
-            let db = self.clone();
+        if let Self::Pg(pool) = self {
+            let pool = pool.clone();
             tokio::spawn(async move {
+                let db = DbManager::Pg(pool);
                 let _ = db.record_runtime_benchmark_report(record).await;
             });
             return true;
@@ -508,10 +510,11 @@ impl DbManager {
 
     pub fn record_sim_event_sync(&self, run_id: Option<String>, kind: &str, payload: Value) {
         #[cfg(feature = "postgres")]
-        if matches!(self, Self::Pg(_)) {
-            let db = self.clone();
+        if let Self::Pg(pool) = self {
+            let pool = pool.clone();
             let kind = kind.to_string();
             tokio::spawn(async move {
+                let db = DbManager::Pg(pool);
                 let _ = db.record_sim_event(run_id, &kind, payload).await;
             });
         }
@@ -541,10 +544,11 @@ impl DbManager {
 
     pub fn record_room_event_sync(&self, kind: &str, room_id: Option<String>, user_id: Option<i32>, payload: Value) {
         #[cfg(feature = "postgres")]
-        if matches!(self, Self::Pg(_)) {
-            let db = self.clone();
+        if let Self::Pg(pool) = self {
+            let pool = pool.clone();
             let kind = kind.to_string();
             tokio::spawn(async move {
+                let db = DbManager::Pg(pool);
                 let _ = db.record_room_event(&kind, room_id, user_id, payload).await;
             });
         }
