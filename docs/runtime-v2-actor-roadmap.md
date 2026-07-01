@@ -182,3 +182,40 @@ Next cut:
    mailbox after `set_lock/set_cycle` pass Actions and manual room tests.
 2. Split the gateway worker into per-room mailboxes.
 3. Only after that, move selected state-machine transitions out of `room.rs`.
+
+## Step 15 update: per-room mailbox registry
+
+Step 15 moves the gateway from a single mailbox-backed command path toward real
+per-room actor ownership.  The gateway still delegates to the current `Room`
+implementation internally, but selected writes are serialized by `room_id` before
+running.
+
+Commands now routed through the per-room mailbox registry:
+
+- `room set <id> lock <bool>`
+- `room set <id> cycle <bool>`
+- `room host <id> <user|?>` / host transfer
+- `room close <id>`
+
+Still inline inside the gateway:
+
+- `kick`
+- `start`
+- `cancel`
+
+Operational counters added or expanded:
+
+- active per-room mailbox count
+- mailbox created count
+- registry hit/miss count
+- enqueue/complete/fallback/closed counters
+
+Next cut:
+
+1. Move `kick` into the per-room mailbox path after close/host tests pass.
+2. Move `start` and `cancel` only after auditing `WaitForReady` state locking and
+   send-before/after-lock behavior.
+3. Add command latency and command-id tracing to the gateway before moving more
+   state-machine transitions.
+4. Start extracting actual room-owned state into actor-local ownership only after
+   the mailbox path has stable counters and test coverage.

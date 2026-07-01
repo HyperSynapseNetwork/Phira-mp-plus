@@ -326,3 +326,31 @@ write path:
 This step is the first production-facing actor-shaped write path. It is designed
 specifically to reduce future growth in `server.rs`, `cli.rs` and `room.rs`
 without rewriting the whole room lifecycle in one patch.
+
+## Step 15 implementation status
+
+Step 15 expands the Room Actor migration from a single mailbox-backed path into
+an explicit per-room mailbox registry:
+
+- `RoomCommandGateway` keeps mailbox senders keyed by `room_id`.
+- `room set <id> lock <bool>` and `room set <id> cycle <bool>` continue through
+  the mailbox path, but now use the per-room registry.
+- `room host <id> <user|?>` / host transfer now crosses the same per-room
+  mailbox boundary.
+- `room close <id>` now crosses the same per-room mailbox boundary and removes
+  the mailbox after close completes.
+- The old inline implementations remain as fallback paths if mailbox setup,
+  send, or reply fails.
+- `runtime rooms`, `runtime actors`, and `/api/runtime` expose active room
+  mailbox count, created mailbox count, registry hits, registry misses and the
+  existing enqueue/complete/fallback counters.
+
+Still intentionally not done:
+
+- `kick`, `start`, and `cancel` remain inline gateway calls.
+- Room state ownership still lives inside the existing `Room` type.
+- There is still no privileged Web management API.
+
+This step is the first real movement from a gateway-wide worker toward true
+per-room actors while keeping the current protocol and room state machine
+compatible.

@@ -388,7 +388,7 @@ pub struct PlusServerState {
     pub persistence_worker: Arc<crate::persistence_worker::PersistenceWorker>,
     /// Runtime v2 Actor 模型迁移蓝图。当前是诊断/路线层，不替换真实协议热路径。
     pub actor_runtime: Arc<crate::actor_runtime::ActorRuntime>,
-    /// Runtime v2 Room command gateway. Step 13 routes admin/StateQuery room writes through this facade before a mailbox-backed RoomActor owns them.
+    /// Runtime v2 Room command gateway. Admin/StateQuery room writes route through this facade while the gateway gradually moves commands into per-room mailboxes.
     pub room_commands: Arc<crate::room_actor::RoomCommandGateway>,
     /// 压测用 Phira token 列表（来自配置或 benchmark-bind 命令）。
     pub bench_tokens: RwLock<Vec<String>>,
@@ -525,7 +525,7 @@ impl PlusServer {
             .mark_status(
                 "room-actor",
                 crate::actor_runtime::ActorBoundaryStatus::WriteRouted,
-                "set_lock/set_cycle now cross a mailbox-backed gateway path; remaining room writes still use the inline gateway facade",
+                "set_lock/set_cycle/set_host/close now cross a per-room mailbox registry; kick/start/cancel still use the inline gateway facade",
             )
             .await;
         let bench_state = Arc::clone(&state);

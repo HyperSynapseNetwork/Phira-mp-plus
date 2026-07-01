@@ -1508,11 +1508,13 @@ impl CliHandler {
                 self.out(format!("  {} routed:    {}", c::dim("│"), stats.routed));
                 self.out(format!("  {} succeeded: {}", c::dim("│"), stats.succeeded));
                 self.out(format!("  {} failed:    {}", c::dim("│"), stats.failed));
-                self.out(format!("  {} mailbox:   enabled={} enqueued={} completed={} failed={} fallback={} closed={}",
-                    c::dim("│"), stats.mailbox_enabled, stats.mailbox_enqueued, stats.mailbox_completed,
-                    stats.mailbox_failed, stats.mailbox_fallback, stats.mailbox_closed));
+                self.out(format!("  {} mailbox:   enabled={} active_rooms={} created={} enqueued={} completed={} failed={} fallback={} closed={}",
+                    c::dim("│"), stats.mailbox_enabled, stats.room_mailboxes, stats.mailbox_created,
+                    stats.mailbox_enqueued, stats.mailbox_completed, stats.mailbox_failed,
+                    stats.mailbox_fallback, stats.mailbox_closed));
+                self.out(format!("  {} registry:  hit={} miss={}", c::dim("│"), stats.mailbox_registry_hit, stats.mailbox_registry_miss));
                 self.out(format!("  {} note:      {}", c::dim("│"), stats.note));
-                self.out(format!("  {} set_lock/set_cycle 已先穿过 mailbox-backed gateway；其余房间写命令仍走 inline facade", c::dim("▸")));
+                self.out(format!("  {} set_lock/set_cycle/set_host/close 已穿过 per-room mailbox registry；kick/start/cancel 仍走 inline facade", c::dim("▸")));
             }
             "actors" | "actor" | "actor-model" => {
                 let stats = self.state.actor_runtime.stats().await;
