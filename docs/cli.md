@@ -196,3 +196,28 @@ room set <房间ID> persistent false
 RUST_LOG=info phira-mp-plus-server
 RUST_LOG=debug phira-mp-plus-server
 ```
+
+## Command surface policy
+
+The Runtime v2 command registry separates command metadata into three surfaces:
+
+- `primary`: shown by default in `help` and intended for normal operation.
+- `advanced`: available for diagnostics and migration work, hidden from default
+  help to avoid command bloat.
+- `legacy`: backward-compatible spellings that remain executable but are not
+  promoted in default help or Tab completion.
+
+Useful help entry points:
+
+```text
+help                 # recommended primary commands
+help all             # full registry, including advanced and legacy commands
+help groups          # list command groups
+help group rooms     # recommended commands in one group
+help group rooms all # full group view
+help legacy          # old command spellings and replacements
+```
+
+New commands should prefer existing namespaces and configuration-driven behavior
+instead of adding more top-level commands.  Web management APIs remain out of
+scope; CLI/TUI/in-game admin commands are still the management surfaces.

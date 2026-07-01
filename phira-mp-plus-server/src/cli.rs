@@ -1728,6 +1728,40 @@ impl CliHandler {
 
     async fn print_help(&self, args: &[&str]) {
         if !args.is_empty() {
+            match args {
+                ["all"] => {
+                    for line in self.state.command_registry.format_overview_all().lines() {
+                        self.out(format!("  {line}"));
+                    }
+                    return;
+                }
+                ["groups"] | ["group"] => {
+                    for line in self.state.command_registry.format_groups().lines() {
+                        self.out(format!("  {line}"));
+                    }
+                    return;
+                }
+                ["legacy"] | ["deprecated"] => {
+                    for line in self.state.command_registry.format_legacy().lines() {
+                        self.out(format!("  {line}"));
+                    }
+                    return;
+                }
+                ["group", group] => {
+                    for line in self.state.command_registry.format_group(group, false, false).lines() {
+                        self.out(format!("  {line}"));
+                    }
+                    return;
+                }
+                ["group", group, "all"] | ["group", group, "full"] => {
+                    for line in self.state.command_registry.format_group(group, true, true).lines() {
+                        self.out(format!("  {line}"));
+                    }
+                    return;
+                }
+                _ => {}
+            }
+
             let query = args.join(" ");
             if let Some(help) = self.state.command_registry.format_help(&query) {
                 for line in help.lines() {
@@ -1769,7 +1803,7 @@ impl CliHandler {
             }
         }
         self.out(String::new());
-        self.out(format!("  {} help <命令> 查看统一详情；Tab 补全来自 Command Registry", c::dim("▸")));
+        self.out(format!("  {} help <命令> 查看统一详情；help all / help legacy / help group <分组> 可展开；Tab 补全默认隐藏 legacy", c::dim("▸")));
     }
 
     async fn list_plugins(&self) {

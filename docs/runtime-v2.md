@@ -779,3 +779,32 @@ Room state machine, and it does not move Session ownership to an actor yet.  The
 purpose is to make the next Session Actor pass safer: `session.rs` can remain the
 socket/authentication dispatcher, while room command semantics live behind a
 single internal module boundary.
+
+## Step 30 - Command surface policy
+
+Step 30 stops treating every new operational detail as a first-class command.
+The command system now has an explicit command surface policy:
+
+- `primary` commands are shown in the default `help` overview and should be the
+  recommended day-to-day command surface.
+- `advanced` commands remain supported but are hidden from the default overview;
+  use `help all` or `help group <group> all` when operating Runtime v2 internals.
+- `legacy` commands remain executable for backward compatibility, but they are
+  not promoted in default help or Tab completion.  Use `help legacy` to see the
+  mapping to the recommended namespace.
+
+This is intentionally not a new Web management API and not another pile of
+`runtime xxx` tools.  The goal is to keep CLI/TUI/in-game-admin commands usable
+while Runtime v2 continues to grow.  Future command additions should first answer:
+
+1. Is this a primary day-to-day operation, an advanced diagnostic, or a legacy
+   compatibility spelling?
+2. Can this be configuration-driven instead of a new command?
+3. Does the command belong under an existing namespace such as `room`, `plugin`,
+   `simulation`, `benchmark`, or `runtime`?
+4. If it is a temporary migration command, what is the replacement or removal
+   plan?
+
+The execution layer still supports old commands such as `plug-enable`, but the
+recommended path is now `plugin enable`.  This keeps existing operators unbroken
+while preventing old aliases from making the visible command surface larger.
