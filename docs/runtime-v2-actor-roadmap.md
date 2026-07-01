@@ -307,3 +307,15 @@ Next cut:
    not become the next large file.
 3. Start moving selected room-owned state into actor-local structs once typed
    commands and command results are in place.
+
+## Step 19 note: Actor is the final architecture, not the only active track
+
+Step 19 records the broader Runtime v2 workboard in code so the project does not
+lose the original target list while RoomCommandGateway evolves toward a real
+Room Actor.  Actor migration remains the final architecture direction, but the
+server also needs Phira HTTP hardening, persistence worker ownership,
+Simulation/Benchmark mode separation, TUI observability, EventBus fanout and
+Touch/Judge batching.
+
+The policy remains unchanged: do not implement a privileged Web management API.
+Web routes may expose read-only diagnostics only.

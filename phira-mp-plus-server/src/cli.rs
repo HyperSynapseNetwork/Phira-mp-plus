@@ -1004,12 +1004,31 @@ impl CliHandler {
     }
 
     async fn start_benchmark(&self, args: &[&str]) {
-        let duration: u64 = args
+        if matches!(args.first().copied(), Some("modes") | Some("mode") | Some("help")) {
+            self.print_benchmark_modes();
+            return;
+        }
+        if matches!(args.first().copied(), Some("hybrid"))
+            || (matches!(args.first().copied(), Some("run")) && matches!(args.get(1).copied(), Some("hybrid")))
+        {
+            self.out(format!("  {} benchmark hybrid 尚未启用", c::yellow("!")));
+            self.out(format!("  {} 计划：authenticate/chart_lookup/record_lookup/upload_record 独立开关，默认全部关闭", c::dim("▸")));
+            self.out(format!("  {} 当前请使用 simulation 作为默认压测，或 benchmark run real 做真实兼容性测试", c::dim("▸")));
+            return;
+        }
+        let numeric_args: &[&str] = if matches!(args.first().copied(), Some("run")) && matches!(args.get(1).copied(), Some("real")) {
+            &args[2..]
+        } else if matches!(args.first().copied(), Some("real")) {
+            &args[1..]
+        } else {
+            args
+        };
+        let duration: u64 = numeric_args
             .first()
             .and_then(|value| value.parse().ok())
             .filter(|value| (5..=300).contains(value))
             .unwrap_or(30);
-        let rooms: usize = args
+        let rooms: usize = numeric_args
             .get(1)
             .and_then(|value| value.parse().ok())
             .unwrap_or(100)
@@ -1062,6 +1081,18 @@ impl CliHandler {
                 }
             }
         });
+    }
+
+    fn print_benchmark_modes(&self) {
+        self.out(format!("  {} Benchmark modes", c::green("◆")));
+        self.out(format!("  {} simulation  默认压测路径：不访问 Phira，不需要真实账号，使用 shadow world/suite/report", c::dim("│")));
+        self.out(format!("  {} hybrid      计划中：可按开关访问 authenticate/chart/record/upload，不作为默认", c::dim("│")));
+        self.out(format!("  {} real        当前 benchmark 命令：真实 TCP + 真实认证 + 真实 Phira token", c::dim("│")));
+        self.out(format!("  {} examples", c::cyan("▸")));
+        self.out("    simulation suite smoke".to_string());
+        self.out("    simulation run medium scenario=touch_judge_burst duration=30".to_string());
+        self.out("    benchmark run real 30 100".to_string());
+        self.out("    benchmark modes".to_string());
     }
 
     async fn bind_benchmark(&self, args: &[&str]) {
@@ -1468,10 +1499,46 @@ impl CliHandler {
                 let room_commands = self.state.room_commands.stats();
                 self.out(format!("  {} simulation running: {}", c::dim("│"), sim.running));
                 self.out(format!("  {} persistence queue:  queued={} processed={} dropped={}", c::dim("│"), persistence.queued, persistence.processed, persistence.dropped));
+                let phira = self.state.phira_client.stats();
+                let plan = self.state.runtime_plan.snapshot();
                 self.out(format!("  {} room command gw:    routed={} ok={} failed={} mailbox={}", c::dim("│"), room_commands.routed, room_commands.succeeded, room_commands.failed, room_commands.mailbox_enabled));
+                self.out(format!("  {} phira http:         requests={} retry={} failures={}", c::dim("│"), phira.requests, phira.retry_attempts, phira.failures));
+                self.out(format!("  {} runtime plan:       total={} active={} planned={} blocked={}", c::dim("│"), plan.total, plan.active, plan.planned, plan.blocked));
                 self.out(format!("  {} actor blueprint:    {} boundaries", c::dim("│"), actors.boundaries.len()));
                 self.out(format!("  {} web management API: {}", c::dim("│"), actors.web_management_api));
-                self.out(format!("  {} 现有 Room/Session/DB 主逻辑仍未迁移到 Runtime v2；Actor 模型是最终迁移目标", c::dim("▸")));
+                self.out(format!("  {} 现有 Room/Session/DB 主逻辑仍未完全迁移；Actor 模型是最终架构，Web 管理 API 不做", c::dim("▸")));
+            }
+            "roadmap" | "plan" | "goals" | "todo" => {
+                let plan = self.state.runtime_plan.snapshot();
+                self.out(format!("  {} Runtime v2 master workboard", c::green("◆")));
+                self.out(format!("  {} final architecture: {}", c::dim("│"), plan.final_architecture));
+                self.out(format!("  {} web management API: disabled by policy", c::dim("│")));
+                self.out(format!("  {} total={} active={} planned={} blocked={} done={}", c::dim("│"), plan.total, plan.active, plan.planned, plan.blocked, plan.done));
+                self.out(format!("  {} objectives", c::cyan("▸")));
+                for item in plan.objectives {
+                    let status = match item.status {
+                        "active" => c::green(item.status),
+                        "planned" => c::yellow(item.status),
+                        "blocked" => c::red(item.status),
+                        _ => c::dim(item.status),
+                    };
+                    self.out(format!("    [{:<7}] {:<2} {:<24} {}", status, item.priority, item.key, item.title));
+                    self.out(format!("      {} next: {}", c::dim("▸"), item.next_step));
+                }
+            }
+            "phira" | "phira-http" | "http" => {
+                let stats = self.state.phira_client.stats();
+                self.out(format!("  {} Phira HTTP RetryClient", c::green("◆")));
+                self.out(format!("  {} requests:       {}", c::dim("│"), stats.requests));
+                self.out(format!("  {} successes:      {}", c::dim("│"), stats.successes));
+                self.out(format!("  {} retry_attempts: {}", c::dim("│"), stats.retry_attempts));
+                self.out(format!("  {} retry_notices:  {}", c::dim("│"), stats.retry_notices));
+                self.out(format!("  {} failures:       {}", c::dim("│"), stats.failures));
+                self.out(format!("  {} last_error:     {}", c::dim("│"), stats.last_error.unwrap_or_else(|| "-".to_string())));
+                self.out(format!("  {} policy: timeout={}ms retries={} backoff={}..{}ms breaker={}",
+                    c::dim("│"), stats.policy.timeout_ms, stats.policy.max_retries,
+                    stats.policy.base_backoff_ms, stats.policy.max_backoff_ms, stats.policy.circuit_breaker));
+                self.out(format!("  {} Simulation 默认不访问 Phira；hybrid/real benchmark 后续必须走这个统一 client", c::dim("▸")));
             }
             "commands" | "cmds" => {
                 self.out(format!("  {} Command Registry", c::green("◆")));
@@ -1579,7 +1646,7 @@ impl CliHandler {
             }
             _ => {
                 self.out(format!("  {} 未知 runtime 子命令: {}", c::red("✗"), c::yellow(sub)));
-                self.out(format!("  {} 可用: runtime status | commands | events | persistence | actors", c::dim("▸")));
+                self.out(format!("  {} 可用: runtime status | roadmap | phira | commands | events | persistence | actors | rooms", c::dim("▸")));
             }
         }
     }

@@ -365,6 +365,11 @@ pub fn runtime_v2_registry() -> CommandRegistry {
 
     for spec in [
         CommandSpec::new("runtime status", "runtime-v2", "查看 Runtime v2 骨架状态。", "runtime status"),
+        CommandSpec::new("runtime roadmap", "runtime-v2", "查看 Runtime v2 总目标工作板，防止长期目标在迭代中丢失。", "runtime roadmap")
+            .alias("runtime plan")
+            .alias("runtime goals")
+            .alias("runtime todo"),
+        CommandSpec::new("runtime phira", "runtime-v2", "查看统一 Phira HTTP RetryClient 统计和策略。", "runtime phira"),
         CommandSpec::new("runtime commands", "runtime-v2", "查看 Command Registry 统计。", "runtime commands"),
         CommandSpec::new("runtime events", "runtime-v2", "查看 EventBus 发布统计与最近事件。", "runtime events"),
         CommandSpec::new("runtime persistence", "runtime-v2", "查看 Persistence Worker 队列统计。", "runtime persistence"),
@@ -436,7 +441,22 @@ pub fn runtime_v2_registry() -> CommandRegistry {
         .alias("bench")
         .arg(CommandArgSpec::optional("seconds", "压测时长，默认 30，范围 5..300"))
         .arg(CommandArgSpec::optional("rooms", "目标房间数，默认 100，最大 5000"))
-        .example("benchmark 30 100"),
+        .example("benchmark 30 100")
+        .example("benchmark run real 30 100"),
+    );
+    register(
+        &mut registry,
+        CommandSpec::new("benchmark modes", "diagnostics", "查看 simulation / hybrid / real 三种压测模式边界。", "benchmark modes")
+            .example("benchmark modes"),
+    );
+    register(
+        &mut registry,
+        CommandSpec::new("benchmark run real", "diagnostics", "显式运行真实 TCP + 真实 Phira token 兼容性测试。", "benchmark run real [seconds] [rooms]")
+            .example("benchmark run real 30 100"),
+    );
+    register(
+        &mut registry,
+        CommandSpec::new("benchmark run hybrid", "diagnostics", "Hybrid 压测模式占位；未来按开关访问部分 Phira API，默认关闭。", "benchmark run hybrid"),
     );
     register(
         &mut registry,

@@ -390,6 +390,10 @@ pub struct PlusServerState {
     pub actor_runtime: Arc<crate::actor_runtime::ActorRuntime>,
     /// Runtime v2 Room command gateway. Admin/StateQuery room writes route through this facade while the gateway gradually moves commands into per-room mailboxes.
     pub room_commands: Arc<crate::room_actor::RoomCommandGateway>,
+    /// Runtime v2 Phira HTTP client. Authentication/chart/record paths should converge here before hybrid/real benchmark expansion.
+    pub phira_client: Arc<crate::phira_client::PhiraRetryClient>,
+    /// Runtime v2 master workboard. Keeps the original long-term targets visible in CLI/TUI/API diagnostics.
+    pub runtime_plan: Arc<crate::runtime_plan::RuntimePlan>,
     /// 压测用 Phira token 列表（来自配置或 benchmark-bind 命令）。
     pub bench_tokens: RwLock<Vec<String>>,
     /// 管理员 Phira ID 集合。可由配置、PostgreSQL 设置、CLI/WIT 动态修改。
@@ -483,6 +487,10 @@ impl PlusServer {
         );
         let actor_runtime = Arc::new(crate::actor_runtime::ActorRuntime::new_blueprint());
         let room_commands = Arc::new(crate::room_actor::RoomCommandGateway::new());
+        let phira_client = Arc::new(crate::phira_client::PhiraRetryClient::new(
+            crate::phira_client::PhiraHttpPolicy::default(),
+        )?);
+        let runtime_plan = Arc::new(crate::runtime_plan::RuntimePlan::master_plan());
         let events = Arc::new(SseHub::new());
         let state = Arc::new(PlusServerState {
             config,
@@ -510,6 +518,8 @@ impl PlusServer {
             persistence_worker,
             actor_runtime,
             room_commands,
+            phira_client,
+            runtime_plan,
             bench_tokens: RwLock::new(bench_tokens),
             admin_ids: RwLock::new(admin_ids),
             room_monitor_key: generate_secret_key("room_monitor", 64).unwrap_or_default(),
@@ -1921,6 +1931,8 @@ fn server_state_query_inner(state: &Arc<PlusServerState>, method: &str, args: &[
                 let events = s.event_bus.stats(16);
                 let commands = s.command_registry.iter().count();
                 let room_commands = s.room_commands.stats();
+                let phira_http = s.phira_client.stats();
+                let plan = s.runtime_plan.snapshot();
                 let _ = tx.send(Ok(serde_json::json!({
                     "runtime_v2": true,
                     "note": "Runtime v2 is partially installed; real Room/Session runtime is still the current production path.",
@@ -1929,6 +1941,8 @@ fn server_state_query_inner(state: &Arc<PlusServerState>, method: &str, args: &[
                     "simulation": simulation,
                     "persistence_worker": persistence,
                     "room_command_gateway": room_commands,
+                    "phira_http": phira_http,
+                    "plan": plan,
                 })));
             });
             rx.recv_timeout(std::time::Duration::from_millis(2000))

@@ -434,3 +434,40 @@ This step matters because the Actor migration now has a maintainable place to
 grow.  Future cuts should add typed command/result modules and eventually move
 room-owned state out of `room.rs` without turning `room_actor` into another
 monolith.
+
+## Step 19 implementation status
+
+Step 19 intentionally broadens the work again after several Room Actor-focused
+patches.  Runtime v2 is not only the Room Actor migration; the master goals are:
+
+- Simulation as the default benchmark path, with hybrid and real modes explicit;
+- Actor-model migration for Room, Session, Persistence, Simulation, Plugin and CLI;
+- Touches/Judges persistence even when no active monitor is connected;
+- a unified Phira HTTP client with timeout, retry, backoff and future circuit breaker;
+- Persistence Worker ownership of database writes, first by dual-write and then by
+  replacing direct writes after validation;
+- EventBus as the runtime spine for observability and low-coupling fanout;
+- TUI v2 panels based on stable runtime signals;
+- no privileged Web management API.
+
+This step adds `runtime_plan.rs`, a code-level workboard used by CLI and
+`/api/runtime`.  This is deliberately not only documentation: long-running
+maintenance work can query the current roadmap from the running server with:
+
+```text
+runtime roadmap
+runtime status
+```
+
+Step 19 also introduces `phira_client.rs`, the first unified Phira HTTP
+RetryClient.  Authentication, chart lookup and record lookup in `session.rs` now
+route through this client.  It keeps the existing retry notice behavior while
+centralizing timeout/backoff/retry statistics for future hybrid/real benchmark
+modes:
+
+```text
+runtime phira
+```
+
+The client still does not implement a full circuit breaker; that remains planned
+until real retry/failure metrics are available under Actions and server tests.
