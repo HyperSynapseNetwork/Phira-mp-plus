@@ -818,6 +818,11 @@ impl PlusServer {
             server_state_query_inner(&benchmark_report_state, "benchmark.reports", &[])
                 .map_err(|e| (500u16, e))
         }));
+        let benchmark_history_state = Arc::clone(&state_for_webapi2);
+        http_for_webapi.register_route_sync("/api/benchmark/reports/history", Arc::new(move |_, _| {
+            server_state_query_inner(&benchmark_history_state, "benchmark.history", &[])
+                .map_err(|e| (500u16, e))
+        }));
         // GET /api/players/all — 所有连接过服务器的玩家
         http_for_webapi.register_route_sync("/api/players/all", Arc::new(move |_, _| {
             let players: Vec<i32> = crate::internal_hooks::all_players()
@@ -2251,6 +2256,15 @@ fn runtime_state_query_timeout() -> std::time::Duration {
     crate::runtime_diagnostics::RUNTIME_STATE_QUERY_TIMEOUT
 }
 
+fn parse_benchmark_mode_arg(value: &str) -> Option<BenchmarkMode> {
+    match value {
+        "simulation" | "sim" => Some(BenchmarkMode::Simulation),
+        "hybrid" => Some(BenchmarkMode::Hybrid),
+        "real" => Some(BenchmarkMode::Real),
+        _ => None,
+    }
+}
+
 fn server_state_query_inner(state: &Arc<PlusServerState>, method: &str, args: &[Value]) -> Result<Value, String> {
     match method {
         "runtime.status" => {
@@ -2332,6 +2346,28 @@ fn server_state_query_inner(state: &Arc<PlusServerState>, method: &str, args: &[
             } else {
                 Err("benchmark.latest requires mode: simulation|hybrid|real".to_string())
             }
+        },
+        "benchmark.history" => {
+            let mode = args.get(0).and_then(|v| v.as_str()).and_then(parse_benchmark_mode_arg);
+            let limit = args
+                .get(1)
+                .and_then(|v| v.as_u64())
+                .map(|value| value as usize)
+                .unwrap_or(crate::runtime_diagnostics::BENCHMARK_REPORT_RECENT_DEFAULT);
+            let (tx, rx) = std::sync::mpsc::channel::<Result<Value, String>>();
+            tokio::spawn(async move {
+                let rows = if let Some(db) = crate::internal_hooks::DB.get() {
+                    db.runtime_benchmark_report_history(crate::persistence::BenchmarkReportHistoryQuery::new(mode, limit)).await
+                } else {
+                    Vec::new()
+                };
+                let _ = tx.send(Ok(serde_json::json!({
+                    "rows": rows,
+                    "source": "mp_runtime_benchmark_reports",
+                })));
+            });
+            rx.recv_timeout(runtime_state_query_timeout())
+                .unwrap_or(Err("benchmark.history timeout".to_string()))
         },
         "player.touches" => {
             let uid = args.get(0).and_then(|v| v.as_i64()).unwrap_or(0) as i32;
@@ -2798,7 +2834,7 @@ fn server_state_query_inner(state: &Arc<PlusServerState>, method: &str, args: &[
             let kind = args.get(2).and_then(|v| v.as_str()).map(str::to_string);
             let room_id = args.get(3).and_then(|v| v.as_str()).map(str::to_string);
             let user_id = args.get(4).and_then(|v| v.as_i64()).and_then(|v| i32::try_from(v).ok());
-            let (tx, rx) = std::sync::mpsc::channel();
+            let (tx, rx) = std::sync::mpsc::channel::<Result<Value, String>>();
             tokio::spawn(async move {
                 let rows = if let Some(db) = crate::internal_hooks::DB.get() {
                     db.query_events(since, limit, kind.as_deref(), room_id.as_deref(), user_id).await
@@ -2812,7 +2848,7 @@ fn server_state_query_inner(state: &Arc<PlusServerState>, method: &str, args: &[
         "persist.rooms" => {
             let since = args.get(0).and_then(|v| v.as_i64()).unwrap_or(0);
             let limit = args.get(1).and_then(|v| v.as_i64()).unwrap_or(100).clamp(1, 1000);
-            let (tx, rx) = std::sync::mpsc::channel();
+            let (tx, rx) = std::sync::mpsc::channel::<Result<Value, String>>();
             tokio::spawn(async move {
                 let rows = if let Some(db) = crate::internal_hooks::DB.get() {
                     db.query_room_snapshots(since, limit).await
@@ -2829,7 +2865,7 @@ fn server_state_query_inner(state: &Arc<PlusServerState>, method: &str, args: &[
             let limit = args.get(1).and_then(|v| v.as_i64()).unwrap_or(100).clamp(1, 1000);
             let round_uuid = args.get(2).and_then(|v| v.as_str()).filter(|v| !v.is_empty()).map(str::to_string);
             let player_id = args.get(3).and_then(|v| v.as_i64()).and_then(|v| i32::try_from(v).ok());
-            let (tx, rx) = std::sync::mpsc::channel();
+            let (tx, rx) = std::sync::mpsc::channel::<Result<Value, String>>();
             tokio::spawn(async move {
                 let rows = if let Some(db) = crate::internal_hooks::DB.get() {
                     db.query_touch_batches(since, limit, round_uuid.as_deref(), player_id).await
@@ -2845,7 +2881,7 @@ fn server_state_query_inner(state: &Arc<PlusServerState>, method: &str, args: &[
             let limit = args.get(1).and_then(|v| v.as_i64()).unwrap_or(100).clamp(1, 1000);
             let round_uuid = args.get(2).and_then(|v| v.as_str()).filter(|v| !v.is_empty()).map(str::to_string);
             let player_id = args.get(3).and_then(|v| v.as_i64()).and_then(|v| i32::try_from(v).ok());
-            let (tx, rx) = std::sync::mpsc::channel();
+            let (tx, rx) = std::sync::mpsc::channel::<Result<Value, String>>();
             tokio::spawn(async move {
                 let rows = if let Some(db) = crate::internal_hooks::DB.get() {
                     db.query_judge_batches(since, limit, round_uuid.as_deref(), player_id).await
@@ -2871,7 +2907,7 @@ fn server_state_query_inner(state: &Arc<PlusServerState>, method: &str, args: &[
         }
         "persist.top_playtime" => {
             let limit = args.get(0).and_then(|v| v.as_i64()).unwrap_or(10).clamp(1, 100);
-            let (tx, rx) = std::sync::mpsc::channel();
+            let (tx, rx) = std::sync::mpsc::channel::<Result<Value, String>>();
             tokio::spawn(async move {
                 let rows = if let Some(db) = crate::internal_hooks::DB.get() { db.top_playtime(limit).await } else { Vec::new() };
                 let total = rows.len();

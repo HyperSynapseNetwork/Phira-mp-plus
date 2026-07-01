@@ -41,14 +41,14 @@ impl RuntimePlan {
                     title: "Simulation default benchmark path",
                     status: "active",
                     priority: "P0",
-                    next_step: "Simulation suite reports adapt into BenchmarkReport, publish benchmark.completed and update readonly report snapshots; next step is cleanup hardening plus persisted report history.",
+                    next_step: "Simulation suite reports adapt into BenchmarkReport, publish benchmark.completed and update readonly report snapshots; next step is cleanup hardening now that persisted report history infrastructure exists.",
                 },
                 RuntimeObjective {
                     key: "benchmark-modes",
                     title: "Benchmark modes: simulation / hybrid / real",
                     status: "active",
                     priority: "P0",
-                    next_step: "Simulation, hybrid and real share BenchmarkReport output, emit benchmark.completed and populate readonly CLI/Web snapshots; next step is persisted report history after diagnostics-cache cleanup is stable.",
+                    next_step: "Simulation, hybrid and real share BenchmarkReport output, emit benchmark.completed, populate readonly CLI/Web snapshots and mirror report history into PostgreSQL.",
                 },
                 RuntimeObjective {
                     key: "low-overhead-diagnostics",
@@ -83,14 +83,14 @@ impl RuntimePlan {
                     title: "Persistence Worker ownership",
                     status: "active",
                     priority: "P1",
-                    next_step: "Low-frequency production events dual-write through PersistenceWorker; high-frequency telemetry now has an explicit cutover switch before final worker ownership.",
+                    next_step: "PersistenceWorker now owns typed envelopes for low-frequency EventBus mirrors, telemetry staging and BenchmarkReport history; next step is queue/backpressure diagnostics and worker-only telemetry dry-run.",
                 },
                 RuntimeObjective {
                     key: "eventbus",
                     title: "EventBus as runtime spine",
                     status: "active",
                     priority: "P1",
-                    next_step: "benchmark.completed is typed and mirrored into an in-memory BenchmarkReportStore for CLI/Web readonly diagnostics; next persist report snapshots and wire TUI panels.",
+                    next_step: "benchmark.completed is typed, cached as low-overhead BenchmarkReport digests and mirrored through PersistenceWorker into mp_runtime_benchmark_reports for CLI/Web readonly history.",
                 },
                 RuntimeObjective {
                     key: "plugin-abi-v2",

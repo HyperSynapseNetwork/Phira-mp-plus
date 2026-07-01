@@ -10,6 +10,7 @@ impl CliHandler {
         self.out(format!("  {} queued:    {}", c::dim("│"), stats.queued));
         self.out(format!("  {} processed: {}", c::dim("│"), stats.processed));
         self.out(format!("  {} pending:   {}", c::dim("│"), stats.pending));
+        self.out(format!("  {} health:    {}", c::dim("│"), stats.queue_health));
         self.out(format!("  {} dropped:   {}", c::dim("│"), stats.dropped));
         self.out(format!("  {} mirrored:  {}", c::dim("│"), stats.mirrored_from_event_bus));
         self.out(format!("  {} skipped:   {}", c::dim("│"), stats.skipped_event_bus_events));
@@ -19,6 +20,7 @@ impl CliHandler {
         self.out(format!("  {} prod_skip: {}", c::dim("│"), stats.production_persist_skipped));
         self.out(format!("  {} telemetry_staged: {}", c::dim("│"), stats.production_telemetry_staged));
         self.out(format!("  {} telemetry_failed: {}", c::dim("│"), stats.production_telemetry_stage_failed));
+        self.out(format!("  {} benchmark_reports: queued={} skipped_no_db={}", c::dim("│"), stats.benchmark_report_persist_requests, stats.benchmark_report_persist_skipped));
         self.out(format!("  {} telemetry_mode:   {} (changes={})", c::dim("│"), stats.telemetry_cutover_mode, stats.telemetry_cutover_changes));
         self.out(format!("  {} telemetry batcher", c::cyan("▸")));
         self.out(format!(
@@ -59,6 +61,7 @@ impl CliHandler {
         self.out(format!("  {} 低频生产事件已 EventBus → Worker → mp_events 双写；现有 db.rs 直接写入路径仍保持不变", c::dim("▸")));
         self.out(format!("  {} 生产 Touch/Judge cutover={}；EventBus 只保留计数观测，完整 payload 走 Session → Worker", c::dim("▸"), stats.telemetry_cutover_mode));
         self.out(format!("  {} Touch/Judge 持久化不依赖 active monitor；active monitor 只控制实时 monitor 广播", c::dim("▸")));
-        self.out(format!("  {} Step 23 schema: batch header 表 + raw item 表 + persistence meta/retention policy，测试阶段可继续自由演进", c::dim("▸")));
+        self.out(format!("  {} BenchmarkReport 已通过 benchmark.completed → PersistenceWorker → mp_runtime_benchmark_reports 镜像，供 CLI/Web 只读历史查询", c::dim("▸")));
+        self.out(format!("  {} Step 53 schema: telemetry batch/item + benchmark report history + persistence meta/retention policy，测试阶段可继续自由演进", c::dim("▸")));
     }
 }

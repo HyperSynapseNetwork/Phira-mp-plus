@@ -20,7 +20,7 @@ impl CliHandler {
             return;
         }
         if matches!(args.first().copied(), Some("report") | Some("reports") | Some("latest") | Some("history")) {
-            self.print_benchmark_reports(args);
+            self.print_benchmark_reports(args).await;
             return;
         }
         if matches!(args.first().copied(), Some("hybrid"))
@@ -230,7 +230,7 @@ impl CliHandler {
     }
 
 
-    fn print_benchmark_reports(&self, args: &[&str]) {
+    async fn print_benchmark_reports(&self, args: &[&str]) {
         let sub = args.first().copied().unwrap_or("report");
         let rest = if matches!(sub, "report" | "reports" | "latest" | "history") {
             &args[1..]
@@ -244,6 +244,36 @@ impl CliHandler {
             .unwrap_or(crate::runtime_diagnostics::BENCHMARK_REPORT_RECENT_DEFAULT);
 
         self.out(format!("  {} Benchmark reports", c::green("◆")));
+        if matches!(sub, "history") {
+            let rows = if let Some(db) = crate::internal_hooks::DB.get() {
+                db.runtime_benchmark_report_history(crate::persistence::BenchmarkReportHistoryQuery::new(mode, limit)).await
+            } else {
+                Vec::new()
+            };
+            self.out(format!(
+                "  {} persisted history rows={} source=mp_runtime_benchmark_reports",
+                c::dim("│"),
+                rows.len(),
+            ));
+            if rows.is_empty() {
+                self.out(format!("  {} 暂无已持久化 benchmark report；先运行 benchmark/simulation，或检查 database_url", c::yellow("?")));
+            } else {
+                for row in rows {
+                    self.out(format!(
+                        "    #{:<4} {:<10} created_at={} duration={}s failed={} probes_failed={} title={}",
+                        row.sequence,
+                        row.mode.as_str(),
+                        row.created_at,
+                        row.duration_secs,
+                        row.failed_operations.unwrap_or(0),
+                        row.probes_failed,
+                        row.title,
+                    ));
+                }
+            }
+            self.out(format!("  {} examples: benchmark history | benchmark history real | benchmark history hybrid 20", c::dim("▸")));
+            return;
+        }
         if let Some(mode) = mode {
             match self.state.benchmark_reports.latest(mode) {
                 Some(entry) => {

@@ -289,6 +289,111 @@ impl DbManager {
         false
     }
 
+
+    pub fn record_runtime_benchmark_report_sync(&self, record: crate::persistence::BenchmarkReportPersistenceRecord) -> bool {
+        #[cfg(not(feature = "postgres"))]
+        let _ = &record;
+        #[cfg(feature = "postgres")]
+        if let Self::Pg(pool) = self {
+            let pool = pool.clone();
+            tokio::spawn(async move {
+                let now = now_ms();
+                let payload = record.payload();
+                let _ = sqlx::query(
+                    "INSERT INTO mp_runtime_benchmark_reports
+                       (mode, title, duration_secs, is_simulation, operations, failed_operations,
+                        probes_attempted, probes_succeeded, probes_failed, probes_blocked, probes_skipped,
+                        failure_samples, notes, report, created_at, source, schema_version)
+                     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)"
+                )
+                .bind(record.mode.as_str())
+                .bind(&record.title)
+                .bind(i64::try_from(record.duration_secs).unwrap_or(i64::MAX))
+                .bind(record.is_simulation)
+                .bind(record.operations.and_then(|value| i64::try_from(value).ok()))
+                .bind(record.failed_operations.and_then(|value| i64::try_from(value).ok()))
+                .bind(i64::try_from(record.probes_attempted).unwrap_or(i64::MAX))
+                .bind(i64::try_from(record.probes_succeeded).unwrap_or(i64::MAX))
+                .bind(i64::try_from(record.probes_failed).unwrap_or(i64::MAX))
+                .bind(i64::try_from(record.probes_blocked).unwrap_or(i64::MAX))
+                .bind(i64::try_from(record.probes_skipped).unwrap_or(i64::MAX))
+                .bind(i32::try_from(record.failure_samples).unwrap_or(i32::MAX))
+                .bind(i32::try_from(record.notes).unwrap_or(i32::MAX))
+                .bind(payload)
+                .bind(now)
+                .bind(&record.source)
+                .bind(record.schema_version)
+                .execute(&pool)
+                .await;
+            });
+            return true;
+        }
+        false
+    }
+
+    pub async fn runtime_benchmark_report_history(
+        &self,
+        query: crate::persistence::BenchmarkReportHistoryQuery,
+    ) -> Vec<crate::persistence::BenchmarkReportHistoryRow> {
+        #[cfg(not(feature = "postgres"))]
+        let _ = &query;
+        #[cfg(feature = "postgres")]
+        if let Self::Pg(pool) = self {
+            let limit = i64::try_from(query.limit).unwrap_or(200).clamp(1, 200);
+            let rows = if let Some(mode) = query.mode {
+                sqlx::query(
+                    "SELECT sequence, mode, title, duration_secs, is_simulation, operations, failed_operations,
+                            probes_failed, probes_blocked, report::text AS report, created_at, source, schema_version
+                     FROM mp_runtime_benchmark_reports
+                     WHERE mode = $1
+                     ORDER BY sequence DESC
+                     LIMIT $2"
+                )
+                .bind(mode.as_str())
+                .bind(limit)
+                .fetch_all(pool)
+                .await
+                .unwrap_or_default()
+            } else {
+                sqlx::query(
+                    "SELECT sequence, mode, title, duration_secs, is_simulation, operations, failed_operations,
+                            probes_failed, probes_blocked, report::text AS report, created_at, source, schema_version
+                     FROM mp_runtime_benchmark_reports
+                     ORDER BY sequence DESC
+                     LIMIT $1"
+                )
+                .bind(limit)
+                .fetch_all(pool)
+                .await
+                .unwrap_or_default()
+            };
+            return rows
+                .into_iter()
+                .filter_map(|row| {
+                    let raw_mode = row.try_get::<String, _>("mode").ok()?;
+                    let mode = benchmark_mode_from_str(&raw_mode)?;
+                    let raw_report = row.try_get::<String, _>("report").unwrap_or_else(|_| "{}".to_string());
+                    Some(crate::persistence::BenchmarkReportHistoryRow {
+                        sequence: row.try_get::<i64, _>("sequence").unwrap_or_default(),
+                        mode,
+                        title: row.try_get::<String, _>("title").unwrap_or_default(),
+                        duration_secs: row.try_get::<i64, _>("duration_secs").unwrap_or_default(),
+                        is_simulation: row.try_get::<bool, _>("is_simulation").unwrap_or(false),
+                        operations: row.try_get::<Option<i64>, _>("operations").ok().flatten(),
+                        failed_operations: row.try_get::<Option<i64>, _>("failed_operations").ok().flatten(),
+                        probes_failed: row.try_get::<i64, _>("probes_failed").unwrap_or_default(),
+                        probes_blocked: row.try_get::<i64, _>("probes_blocked").unwrap_or_default(),
+                        created_at: row.try_get::<i64, _>("created_at").unwrap_or_default(),
+                        source: row.try_get::<String, _>("source").unwrap_or_default(),
+                        schema_version: row.try_get::<i32, _>("schema_version").unwrap_or_default(),
+                        report: serde_json::from_str(&raw_report).unwrap_or_else(|_| serde_json::json!({})),
+                    })
+                })
+                .collect();
+        }
+        Vec::new()
+    }
+
     pub fn record_user_seen_sync(&self, user_id: i32, name: &str, language: &str, ip: Option<String>) {
         #[cfg(feature = "postgres")]
         if let Self::Pg(pool) = self {
@@ -1075,6 +1180,15 @@ async fn record_room_snapshot_pg(pool: &sqlx::PgPool, room_id: &str, room_uuid: 
 }
 
 /// 创建数据库表
+fn benchmark_mode_from_str(value: &str) -> Option<crate::benchmark_report::BenchmarkMode> {
+    match value {
+        "simulation" | "sim" => Some(crate::benchmark_report::BenchmarkMode::Simulation),
+        "hybrid" => Some(crate::benchmark_report::BenchmarkMode::Hybrid),
+        "real" => Some(crate::benchmark_report::BenchmarkMode::Real),
+        _ => None,
+    }
+}
+
 #[cfg(feature = "postgres")]
 async fn init_tables(pool: &sqlx::PgPool) -> Result<()> {
     sqlx::query("CREATE SEQUENCE IF NOT EXISTS mp_persist_sequence").execute(pool).await?;
@@ -1301,6 +1415,31 @@ async fn init_tables(pool: &sqlx::PgPool) -> Result<()> {
     .await?;
 
     sqlx::query(
+        "CREATE TABLE IF NOT EXISTS mp_runtime_benchmark_reports (
+            sequence BIGINT PRIMARY KEY DEFAULT nextval('mp_persist_sequence'),
+            mode TEXT NOT NULL,
+            title TEXT NOT NULL,
+            duration_secs BIGINT NOT NULL,
+            is_simulation BOOLEAN NOT NULL DEFAULT FALSE,
+            operations BIGINT,
+            failed_operations BIGINT,
+            probes_attempted BIGINT NOT NULL DEFAULT 0,
+            probes_succeeded BIGINT NOT NULL DEFAULT 0,
+            probes_failed BIGINT NOT NULL DEFAULT 0,
+            probes_blocked BIGINT NOT NULL DEFAULT 0,
+            probes_skipped BIGINT NOT NULL DEFAULT 0,
+            failure_samples INTEGER NOT NULL DEFAULT 0,
+            notes INTEGER NOT NULL DEFAULT 0,
+            report JSONB NOT NULL,
+            created_at BIGINT NOT NULL,
+            source TEXT NOT NULL DEFAULT 'persistence_worker',
+            schema_version INTEGER NOT NULL DEFAULT 1
+        )"
+    )
+    .execute(pool)
+    .await?;
+
+    sqlx::query(
         "CREATE TABLE IF NOT EXISTS mp_sim_events (
             sequence BIGINT PRIMARY KEY DEFAULT nextval('mp_persist_sequence'),
             run_id TEXT,
@@ -1366,6 +1505,22 @@ async fn init_tables(pool: &sqlx::PgPool) -> Result<()> {
     .execute(pool)
     .await?;
 
+    sqlx::query(
+        "INSERT INTO mp_runtime_persistence_meta (key, value, updated_at)
+         VALUES ($1, $2, $3)
+         ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = EXCLUDED.updated_at"
+    )
+    .bind(crate::persistence::schema::RUNTIME_BENCHMARK_REPORTS_META_KEY)
+    .bind(serde_json::json!({
+        "schema_version": crate::persistence::schema::RUNTIME_BENCHMARK_REPORTS_SCHEMA_VERSION,
+        "table": crate::persistence::schema::RUNTIME_BENCHMARK_REPORTS_TABLE,
+        "source": "benchmark.completed EventBus mirror",
+        "notes": "Runtime v2 benchmark reports are append-only JSON snapshots for readonly diagnostics and historical comparison. Project is still in test stage; schema may change freely."
+    }))
+    .bind(now)
+    .execute(pool)
+    .await?;
+
     for (scope, seconds, cleanup_enabled) in [
         ("production.telemetry", 30 * 24 * 3600_i64, false),
         ("simulation", 7 * 24 * 3600_i64, true),
@@ -1405,6 +1560,9 @@ async fn init_tables(pool: &sqlx::PgPool) -> Result<()> {
         "CREATE INDEX IF NOT EXISTS idx_mp_runtime_telemetry_items_batch ON mp_runtime_telemetry_items(batch_uuid, ordinal)",
         "CREATE INDEX IF NOT EXISTS idx_mp_runtime_telemetry_items_round_player ON mp_runtime_telemetry_items(round_uuid, player_id, sequence)",
         "CREATE INDEX IF NOT EXISTS idx_mp_runtime_telemetry_items_kind_created ON mp_runtime_telemetry_items(kind, created_at)",
+        "CREATE INDEX IF NOT EXISTS idx_mp_runtime_benchmark_reports_mode_created ON mp_runtime_benchmark_reports(mode, created_at)",
+        "CREATE INDEX IF NOT EXISTS idx_mp_runtime_benchmark_reports_created ON mp_runtime_benchmark_reports(created_at)",
+        "CREATE INDEX IF NOT EXISTS idx_mp_runtime_benchmark_reports_sim ON mp_runtime_benchmark_reports(is_simulation, created_at)",
         "CREATE INDEX IF NOT EXISTS idx_mp_sim_events_run ON mp_sim_events(run_id)",
         "CREATE INDEX IF NOT EXISTS idx_mp_sim_events_kind ON mp_sim_events(kind)",
         "CREATE INDEX IF NOT EXISTS idx_mp_sim_events_created ON mp_sim_events(created_at)",

@@ -11,6 +11,7 @@ pub mod cli;
 pub mod cli_tui;
 pub mod command_registry;
 pub mod event_bus;
+pub mod persistence;
 pub mod persistence_worker;
 pub mod phira_client;
 pub mod simulation;

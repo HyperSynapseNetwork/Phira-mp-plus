@@ -16,6 +16,7 @@ use tokio::sync::{broadcast, mpsc, RwLock};
 use tracing::{debug, trace, warn};
 
 use crate::telemetry_batcher::{TelemetryBatcher, TelemetryBatcherPolicy, TelemetryBatcherStats, TelemetryCutoverMode, TelemetryItem, TelemetryKind};
+use crate::benchmark_report::BenchmarkMode;
 
 const MAX_PERSISTENCE_TRACE: usize = 128;
 
@@ -25,6 +26,7 @@ pub enum PersistenceEvent {
     ServerEvent { kind: String, payload: Value, simulation: bool },
     TouchBatch { round_id: String, user_id: i32, payload: Value, simulation: bool },
     JudgeBatch { round_id: String, user_id: i32, payload: Value, simulation: bool },
+    BenchmarkReport { report: crate::benchmark_report::BenchmarkReport },
     Flush,
     Shutdown,
 }
@@ -36,6 +38,7 @@ impl PersistenceEvent {
             Self::ServerEvent { kind, .. } => kind.clone(),
             Self::TouchBatch { .. } => "touch_batch".to_string(),
             Self::JudgeBatch { .. } => "judge_batch".to_string(),
+            Self::BenchmarkReport { .. } => "benchmark.completed".to_string(),
             Self::Flush => "flush".to_string(),
             Self::Shutdown => "shutdown".to_string(),
         }
@@ -47,6 +50,7 @@ impl PersistenceEvent {
             | Self::ServerEvent { simulation, .. }
             | Self::TouchBatch { simulation, .. }
             | Self::JudgeBatch { simulation, .. } => *simulation,
+            Self::BenchmarkReport { report } => report.mode == BenchmarkMode::Simulation,
             Self::Flush | Self::Shutdown => false,
         }
     }
@@ -65,6 +69,12 @@ impl PersistenceEvent {
             Self::JudgeBatch { round_id, user_id, simulation, .. } => {
                 format!("round_id={round_id} user_id={user_id} simulation={simulation}")
             }
+            Self::BenchmarkReport { report } => format!(
+                "mode={} title={} failed_operations={}",
+                report.mode.as_str(),
+                report.title.as_str(),
+                report.failed_operations.unwrap_or(0),
+            ),
             Self::Flush => "flush".to_string(),
             Self::Shutdown => "shutdown".to_string(),
         }
@@ -87,6 +97,7 @@ pub struct PersistenceStats {
     pub processed: u64,
     pub dropped: u64,
     pub pending: u64,
+    pub queue_health: String,
     pub mirrored_from_event_bus: u64,
     pub skipped_event_bus_events: u64,
     pub bridge_lagged: u64,
@@ -95,6 +106,8 @@ pub struct PersistenceStats {
     pub production_persist_skipped: u64,
     pub production_telemetry_staged: u64,
     pub production_telemetry_stage_failed: u64,
+    pub benchmark_report_persist_requests: u64,
+    pub benchmark_report_persist_skipped: u64,
     pub telemetry_cutover_mode: String,
     pub telemetry_cutover_changes: u64,
     pub by_kind: BTreeMap<String, u64>,
@@ -144,23 +157,33 @@ impl PersistenceWorker {
                 let kind = event.kind();
                 let simulation = event.is_simulation();
                 let summary = event.summary();
-                if persist_simulation_event_if_needed(&event) {
-                    record_simulation_persist_request(&worker_stats).await;
-                } else {
-                    match stage_production_telemetry_if_needed(&event, &worker_telemetry).await {
-                        ProductionTelemetryStage::Staged => {
-                            record_production_telemetry_staged(&worker_stats).await;
-                        }
-                        ProductionTelemetryStage::Failed(error) => {
-                            record_production_telemetry_stage_failed(&worker_stats, error).await;
-                        }
-                        ProductionTelemetryStage::NotTelemetry => {
-                            if persist_production_event_if_needed(&event) {
-                                record_production_persist_request(&worker_stats).await;
-                            } else if !event.is_simulation()
-                                && !matches!(&event, PersistenceEvent::Flush | PersistenceEvent::Shutdown)
-                            {
-                                record_production_persist_skipped(&worker_stats).await;
+                match persist_benchmark_report_if_needed(&event) {
+                    BenchmarkReportStage::Queued => {
+                        record_benchmark_report_persist_request(&worker_stats).await;
+                    }
+                    BenchmarkReportStage::SkippedNoDatabase => {
+                        record_benchmark_report_persist_skipped(&worker_stats).await;
+                    }
+                    BenchmarkReportStage::NotBenchmark => {
+                        if persist_simulation_event_if_needed(&event) {
+                            record_simulation_persist_request(&worker_stats).await;
+                        } else {
+                            match stage_production_telemetry_if_needed(&event, &worker_telemetry).await {
+                                ProductionTelemetryStage::Staged => {
+                                    record_production_telemetry_staged(&worker_stats).await;
+                                }
+                                ProductionTelemetryStage::Failed(error) => {
+                                    record_production_telemetry_stage_failed(&worker_stats, error).await;
+                                }
+                                ProductionTelemetryStage::NotTelemetry => {
+                                    if persist_production_event_if_needed(&event) {
+                                        record_production_persist_request(&worker_stats).await;
+                                    } else if !event.is_simulation()
+                                        && !matches!(&event, PersistenceEvent::Flush | PersistenceEvent::Shutdown)
+                                    {
+                                        record_production_persist_skipped(&worker_stats).await;
+                                    }
+                                }
                             }
                         }
                     }
@@ -224,6 +247,13 @@ impl PersistenceWorker {
     pub async fn stats(&self) -> PersistenceStats {
         let mut stats = self.stats.read().await.clone();
         stats.pending = stats.queued.saturating_sub(stats.processed);
+        stats.queue_health = crate::persistence::PersistenceQueueHealth::from_counts(
+            stats.pending,
+            stats.capacity,
+            stats.dropped,
+        )
+        .as_str()
+        .to_string();
         stats.telemetry = self.telemetry_batcher.stats().await;
         let mode = *self.telemetry_cutover_mode.read().await;
         stats.telemetry_cutover_mode = mode.as_str().to_string();
@@ -443,11 +473,9 @@ fn mirror_event_bus_event(event: &crate::event_bus::MpEvent) -> Option<Persisten
         ),
         // Avoid recursive noise once the worker later publishes successful writes.
         MpEvent::PersistenceWritten { .. } => None,
-        MpEvent::BenchmarkCompleted { report } => server_event(
-            event.kind(),
-            serde_json::to_value(report).unwrap_or_else(|err| json!({"serialize_error": err.to_string()})),
-            report.mode == crate::benchmark_report::BenchmarkMode::Simulation,
-        ),
+        MpEvent::BenchmarkCompleted { report } => Some(PersistenceEvent::BenchmarkReport {
+            report: report.clone(),
+        }),
         MpEvent::Custom { kind, payload } if kind.starts_with("simulation.") => {
             simulation_custom_event(kind, payload)
         }
@@ -539,7 +567,7 @@ fn persist_simulation_event_if_needed(event: &PersistenceEvent) -> bool {
             db.record_sim_event_sync(extract_run_id(&payload), "simulation.judge_batch", payload);
             true
         }
-        PersistenceEvent::Flush | PersistenceEvent::Shutdown => false,
+        PersistenceEvent::BenchmarkReport { .. } | PersistenceEvent::Flush | PersistenceEvent::Shutdown => false,
     }
 }
 
@@ -628,7 +656,32 @@ fn persist_production_event_if_needed(event: &PersistenceEvent) -> bool {
         // Production Touch/Judge batches are handled by `stage_production_telemetry_if_needed`.
         // They are intentionally not written as generic low-frequency `mp_events`.
         PersistenceEvent::TouchBatch { .. } | PersistenceEvent::JudgeBatch { .. } => false,
-        PersistenceEvent::Flush | PersistenceEvent::Shutdown => false,
+        PersistenceEvent::BenchmarkReport { .. } | PersistenceEvent::Flush | PersistenceEvent::Shutdown => false,
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum BenchmarkReportStage {
+    NotBenchmark,
+    Queued,
+    SkippedNoDatabase,
+}
+
+fn persist_benchmark_report_if_needed(event: &PersistenceEvent) -> BenchmarkReportStage {
+    let PersistenceEvent::BenchmarkReport { report } = event else {
+        return BenchmarkReportStage::NotBenchmark;
+    };
+    let Some(db) = crate::internal_hooks::DB.get() else {
+        return BenchmarkReportStage::SkippedNoDatabase;
+    };
+    let record = crate::persistence::BenchmarkReportPersistenceRecord::from_report(
+        report,
+        "benchmark.completed.event_bus",
+    );
+    if db.record_runtime_benchmark_report_sync(record) {
+        BenchmarkReportStage::Queued
+    } else {
+        BenchmarkReportStage::SkippedNoDatabase
     }
 }
 
@@ -687,6 +740,14 @@ async fn record_production_persist_skipped(stats: &Arc<RwLock<PersistenceStats>>
 
 async fn record_production_telemetry_staged(stats: &Arc<RwLock<PersistenceStats>>) {
     stats.write().await.production_telemetry_staged += 1;
+}
+
+async fn record_benchmark_report_persist_request(stats: &Arc<RwLock<PersistenceStats>>) {
+    stats.write().await.benchmark_report_persist_requests += 1;
+}
+
+async fn record_benchmark_report_persist_skipped(stats: &Arc<RwLock<PersistenceStats>>) {
+    stats.write().await.benchmark_report_persist_skipped += 1;
 }
 
 async fn record_production_telemetry_stage_failed(
@@ -752,4 +813,30 @@ fn push_trace(
         simulation,
         summary,
     });
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn benchmark_completed_mirrors_as_typed_report() {
+        let report = crate::benchmark_report::BenchmarkReport::new(
+            crate::benchmark_report::BenchmarkMode::Hybrid,
+            "hybrid",
+            1,
+        );
+        let event = crate::event_bus::MpEvent::BenchmarkCompleted { report };
+        let Some(PersistenceEvent::BenchmarkReport { report }) = mirror_event_bus_event(&event) else {
+            panic!("benchmark.completed should mirror as typed PersistenceEvent::BenchmarkReport");
+        };
+        assert_eq!(report.mode, crate::benchmark_report::BenchmarkMode::Hybrid);
+    }
+
+    #[test]
+    fn benchmark_report_stage_is_noop_for_non_benchmark() {
+        let event = PersistenceEvent::Flush;
+        assert_eq!(persist_benchmark_report_if_needed(&event), BenchmarkReportStage::NotBenchmark);
+    }
 }
