@@ -8,7 +8,7 @@ use crate::server::PlusServerState;
 use crate::tl;
 use anyhow::{anyhow, bail, Result};
 use phira_mp_common::{
-    ClientCommand, Message, RoomEvent, ServerCommand, Stream, UserInfo,
+    ClientCommand, RoomEvent, ServerCommand, Stream, UserInfo,
 };
 use std::{
     sync::{

@@ -4,10 +4,10 @@
 //! from direct hot-path writes and into an actor/worker based pipeline.
 //! Step 22 enables guarded batch-write mode by default for the test-stage
 //! project: production Touch/Judge events are accepted, batched, flushed, and
-//! dual-written into Runtime v2 telemetry tables while the direct legacy path
-//! remains available for compatibility comparison. Step 23 writes schema-v2
+//! dual-written into Runtime v2 telemetry tables while the direct RoundStore/db.rs path
+//! remains available for test-stage comparison. Step 23 writes schema-v2
 //! batch headers plus normalized raw item rows for later replay and analysis.
-//! Step 24 adds an explicit legacy_only/dual_write/worker_only/fallback_only
+//! Step 24 adds an explicit direct_only/dual_write/worker_only/fallback_only
 //! cutover switch so the test-stage server can safely move production telemetry
 //! away from direct Session hot-path writes.
 
@@ -24,13 +24,13 @@ static TELEMETRY_BATCH_SEQ: AtomicU64 = AtomicU64::new(1);
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TelemetryCutoverMode {
-    /// Only the legacy RoundStore/db.rs path writes production Touch/Judge data.
-    LegacyOnly,
-    /// Write through both legacy direct path and Runtime v2 batcher. Safe default during comparison.
+    /// Only the direct RoundStore/db.rs path writes production Touch/Judge data.
+    DirectOnly,
+    /// Write through both direct path and Runtime v2 batcher. Safe default during comparison.
     DualWrite,
     /// Only Runtime v2 TelemetryBatcher writes production Touch/Judge data.
     WorkerOnly,
-    /// Try Runtime v2 first; if enqueue fails immediately, fall back to legacy direct write.
+    /// Try Runtime v2 first; if enqueue fails immediately, fall back to direct write.
     FallbackOnly,
 }
 
@@ -43,7 +43,7 @@ impl Default for TelemetryCutoverMode {
 impl TelemetryCutoverMode {
     pub fn as_str(self) -> &'static str {
         match self {
-            Self::LegacyOnly => "legacy_only",
+            Self::DirectOnly => "direct_only",
             Self::DualWrite => "dual_write",
             Self::WorkerOnly => "worker_only",
             Self::FallbackOnly => "fallback_only",
@@ -52,7 +52,7 @@ impl TelemetryCutoverMode {
 
     pub fn parse(value: &str) -> Option<Self> {
         match value.trim().to_ascii_lowercase().as_str() {
-            "legacy" | "legacy_only" | "legacy-only" => Some(Self::LegacyOnly),
+            "direct" | "direct_only" | "direct-only" => Some(Self::DirectOnly),
             "dual" | "dual_write" | "dual-write" | "both" => Some(Self::DualWrite),
             "worker" | "worker_only" | "worker-only" | "runtime" | "runtime_v2" => Some(Self::WorkerOnly),
             "fallback" | "fallback_only" | "fallback-only" => Some(Self::FallbackOnly),
@@ -60,29 +60,29 @@ impl TelemetryCutoverMode {
         }
     }
 
-    pub fn should_write_legacy(self) -> bool {
-        matches!(self, Self::LegacyOnly | Self::DualWrite)
+    pub fn should_write_direct(self) -> bool {
+        matches!(self, Self::DirectOnly | Self::DualWrite)
     }
 
     pub fn should_enqueue_worker(self) -> bool {
         matches!(self, Self::DualWrite | Self::WorkerOnly | Self::FallbackOnly)
     }
 
-    pub fn fallback_to_legacy_on_enqueue_failure(self) -> bool {
+    pub fn fallback_to_direct_on_enqueue_failure(self) -> bool {
         matches!(self, Self::FallbackOnly)
     }
 
     pub fn description(self) -> &'static str {
         match self {
-            Self::LegacyOnly => "legacy RoundStore/db.rs only; Runtime v2 batcher is bypassed",
-            Self::DualWrite => "legacy direct write plus Runtime v2 telemetry batch-write",
-            Self::WorkerOnly => "Runtime v2 telemetry batch-write only; legacy direct write is bypassed",
-            Self::FallbackOnly => "Runtime v2 enqueue first; legacy direct write only on immediate enqueue failure",
+            Self::DirectOnly => "direct RoundStore/db.rs only; Runtime v2 batcher is bypassed",
+            Self::DualWrite => "direct write plus Runtime v2 telemetry batch-write",
+            Self::WorkerOnly => "Runtime v2 telemetry batch-write only; direct write is bypassed",
+            Self::FallbackOnly => "Runtime v2 enqueue first; direct write only on immediate enqueue failure",
         }
     }
 
     pub fn variants() -> &'static [TelemetryCutoverMode] {
-        &[Self::LegacyOnly, Self::DualWrite, Self::WorkerOnly, Self::FallbackOnly]
+        &[Self::DirectOnly, Self::DualWrite, Self::WorkerOnly, Self::FallbackOnly]
     }
 }
 

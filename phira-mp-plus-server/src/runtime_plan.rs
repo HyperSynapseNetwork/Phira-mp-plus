@@ -62,7 +62,7 @@ impl RuntimePlan {
                     title: "Touches/Judges persistence without active monitor",
                     status: "active",
                     priority: "P0",
-                    next_step: "Production Touch/Judge now has explicit legacy_only/dual_write/worker_only/fallback_only cutover modes backed by Runtime v2 telemetry batch/item schema.",
+                    next_step: "Production Touch/Judge now has explicit direct_only/dual_write/worker_only/fallback_only cutover modes backed by Runtime v2 telemetry batch/item schema.",
                 },
                 RuntimeObjective {
                     key: "phira-http",

@@ -7,7 +7,7 @@
 //! Step 5 wires a low-risk EventBus mirror into this worker. Step 20 starts
 //! dual-writing low-frequency production events into `mp_events` while keeping
 //! existing `db.rs` direct writes as the source of truth. High-frequency
-//! production Touch/Judge batches now enter the guarded TelemetryBatcher batch-write path while the direct legacy path remains available for comparison. Step 23 enriches that path with a Runtime v2 batch/item telemetry schema so future replay, analysis and cutover can use structured data rather than ad-hoc JSON-only rows.
+//! production Touch/Judge batches now enter the guarded TelemetryBatcher batch-write path while the direct RoundStore/db.rs path remains available for comparison. Step 23 enriches that path with a Runtime v2 batch/item telemetry schema so future replay, analysis and cutover can use structured data rather than ad-hoc JSON-only rows.
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -263,8 +263,8 @@ impl PersistenceWorker {
         mode
     }
 
-    pub async fn telemetry_should_write_legacy(&self) -> bool {
-        self.telemetry_cutover_mode().await.should_write_legacy()
+    pub async fn telemetry_should_write_direct(&self) -> bool {
+        self.telemetry_cutover_mode().await.should_write_direct()
     }
 
     pub async fn telemetry_should_enqueue_worker(&self) -> bool {

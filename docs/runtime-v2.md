@@ -103,7 +103,7 @@ Step 4 starts connecting the production runtime to `EventBus` as an observation-
 - Normal disconnect/kick paths publish `user.disconnected`.
 - Chat, ready/cancel-ready, touches, judges, game start and round completion now have EventBus signals.
 - `EventBus` diagnostics include per-kind counters in addition to the recent trace.
-- Legacy behavior remains unchanged: plugin callbacks, SSE room monitor events, room state transitions and current PostgreSQL direct writes still run on the old path.
+- Legacy behavior remains unchanged: plugin callbacks, SSE room monitor events, room state transitions and current PostgreSQL direct writes still run on the direct path.
 
 This is intentionally not a state-machine migration. The goal is to make real production events visible to Runtime v2 before any ownership is moved away from the existing Room/Session code.
 
@@ -534,7 +534,7 @@ New in this step:
   directly into `PersistenceWorker`.  EventBus `touches.received` /
   `judges.received` remain count-only observability events and are no longer
   persisted by the worker mirror to avoid duplicate count-only rows.
-- The legacy direct `RoundStore` / `db.rs` path still writes the production
+- The direct `RoundStore` / `db.rs` path still writes the production
   touch/judge data.  Runtime v2 writes a second copy into the dedicated
   batch-write table so test runs can compare both paths before cutover.
 - `runtime persistence` now reports `db_write_batches`, `db_write_items` and
@@ -574,7 +574,7 @@ New in this step:
 Current production Touch/Judge mode is still dual-write:
 
 ```text
-legacy direct RoundStore/db.rs path
+direct RoundStore/db.rs path
 + Runtime v2 TelemetryBatcher -> mp_runtime_telemetry_batches/items
 ```
 
@@ -592,10 +592,10 @@ than hidden behind a compatibility promise.
 Available modes:
 
 ```text
-legacy_only    only the legacy RoundStore/db.rs path writes Touch/Judge data
-dual_write     legacy direct write + Runtime v2 TelemetryBatcher batch-write
+direct_only    only the direct RoundStore/db.rs path writes Touch/Judge data
+dual_write     direct write + Runtime v2 TelemetryBatcher batch-write
 worker_only    Runtime v2 TelemetryBatcher batch-write only
-fallback_only  Runtime v2 enqueue first; legacy direct write only if enqueue fails immediately
+fallback_only  Runtime v2 enqueue first; direct write only if enqueue fails immediately
 ```
 
 New in this step:
@@ -603,7 +603,7 @@ New in this step:
 - `TelemetryCutoverMode` centralizes the mode names, parsing and behavior rules.
 - `PersistenceWorker` stores the current mode and exposes `runtime cutover` /
   `runtime telemetry-mode` CLI controls.
-- `session.rs` now decides whether to call the legacy `RoundStore` append path,
+- `session.rs` now decides whether to call the direct `RoundStore` append path,
   enqueue the Runtime v2 worker path, or both based on the current cutover mode.
 - `mp_runtime_persistence_meta` is updated whenever the mode changes so the
   active persistence behavior is visible from the database.
@@ -615,9 +615,9 @@ New in this step:
 Recommended test order:
 
 ```text
-runtime cutover legacy_only   # verify old path still works
-runtime cutover dual_write    # compare old tables with Runtime v2 batch/item tables
-runtime cutover worker_only   # verify the Session hot path can skip legacy direct writes
+runtime cutover direct_only   # verify direct RoundStore/db.rs path
+runtime cutover dual_write    # compare direct tables with Runtime v2 batch/item tables
+runtime cutover worker_only   # verify the Session hot path can skip direct writes
 runtime cutover fallback_only # verify enqueue failure fallback semantics
 ```
 
@@ -631,12 +631,12 @@ must always be visible through CLI diagnostics and database meta rows.
 Step 24 made `worker_only` possible for production Touch/Judge writes.  Step 25
 makes that mode usable by adding the corresponding read path:
 
-- `DbManager::read_round_player_data()` now reads legacy `mp_round_player_data`
-  first and falls back to normalized `mp_runtime_telemetry_items` when legacy
+- `DbManager::read_round_player_data()` now reads direct `mp_round_player_data`
+  first and falls back to normalized `mp_runtime_telemetry_items` when direct
   data is absent.  This keeps existing `round.data` / WIT / plugin read callers
   working after `runtime cutover worker_only`.
-- `persist.touches` and `persist.judges` keep their legacy batch query shape but
-  fall back to `mp_runtime_telemetry_batches` when legacy batch rows are absent.
+- `persist.touches` and `persist.judges` keep their direct batch query shape but
+  fall back to `mp_runtime_telemetry_batches` when direct batch rows are absent.
 - Runtime v2 batch rows include `runtime_v2_read_path=true` in the returned JSON
   so callers can distinguish the new storage path during testing.
 - This step also fixes two mechanical schema-v2 patch hazards in `db.rs`: a
@@ -656,7 +656,7 @@ runtime persistence
 
 Because the project is still in test stage, this read path intentionally favors
 clarity and debuggability over backward-compatible schema minimalism.  The next
-step can cut over more consumers from legacy batch tables to the normalized item
+step can cut over more consumers from direct batch tables to the normalized item
 stream once the worker-only path is verified.
 
 
@@ -744,12 +744,12 @@ moving two high-churn responsibilities into focused modules:
 - `session_auth.rs` owns remote `/me` authentication helpers, ban rejection text
   normalization and delayed auth failure delivery.
 - `session_telemetry.rs` owns Touch/Judge hot-path handling, including Runtime v2
-  telemetry cutover, legacy fallback, EventBus publishing, plugin dispatch and
+  telemetry cutover, direct fallback, EventBus publishing, plugin dispatch and
   monitor broadcast.
 
 This is intentionally behavior-preserving.  Touches/Judges are still persisted
 without requiring an active monitor, and the current cutover modes
-`legacy_only`, `dual_write`, `worker_only` and `fallback_only` are preserved.  The
+`direct_only`, `dual_write`, `worker_only` and `fallback_only` are preserved.  The
 point of this step is to stop the Session module from absorbing more unrelated
 Runtime v2 logic before deeper Session Actor work begins.
 
@@ -813,7 +813,7 @@ layer.  Examples: `plug-enable`, `room-start`, `room-transfer`, `bench`, `sim`,
 
 The project is still a test branch, so Runtime v2 no longer carries a CLI
 compatibility layer.  Step 31 removes old aliases and one-off top-level room
-commands instead of hiding them as legacy commands.
+commands instead of hiding them as compat commands.
 
 Canonical examples:
 

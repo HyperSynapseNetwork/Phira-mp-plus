@@ -1486,7 +1486,7 @@ impl CliHandler {
                         }
                         None => {
                             self.out(format!("  {} unknown telemetry cutover mode: {}", c::red("✗"), c::yellow(raw_mode)));
-                            self.out("  available: legacy_only | dual_write | worker_only | fallback_only".to_string());
+                            self.out("  available: direct_only | dual_write | worker_only | fallback_only".to_string());
                         }
                     }
                 } else {
@@ -1502,7 +1502,7 @@ impl CliHandler {
                     self.out(format!("  {} examples", c::cyan("▸")));
                     self.out("    runtime cutover dual_write".to_string());
                     self.out("    runtime cutover worker_only".to_string());
-                    self.out("    runtime cutover legacy_only".to_string());
+                    self.out("    runtime cutover direct_only".to_string());
                 }
             }
             "schema" => {
@@ -1518,9 +1518,9 @@ impl CliHandler {
                 self.out(format!("  {} mode", c::cyan("▸")));
                 let stats = self.state.persistence_worker.stats().await;
                 self.out(format!("    production Touch/Judge cutover: {}", stats.telemetry_cutover_mode));
-                self.out("    modes: legacy_only | dual_write | worker_only | fallback_only".to_string());
-                self.out("    read path: legacy mp_round_player_data first, Runtime v2 item table fallback".to_string());
-                self.out("    persist.touches / persist.judges also fall back to Runtime v2 batch table when legacy batches are absent".to_string());
+                self.out("    modes: direct_only | dual_write | worker_only | fallback_only".to_string());
+                self.out("    read path: direct mp_round_player_data first, Runtime v2 item table fallback".to_string());
+                self.out("    persist.touches / persist.judges also fall back to Runtime v2 batch table when direct batches are absent".to_string());
                 self.out("    simulation: mp_sim_events + Runtime v2 simulation telemetry path".to_string());
                 self.out(format!("  {} 项目仍处测试阶段，schema 和持久化路径可继续自由演进；runtime cutover <mode> 可切换", c::dim("▸")));
             }

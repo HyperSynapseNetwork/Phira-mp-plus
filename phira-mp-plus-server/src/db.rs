@@ -1,8 +1,8 @@
 //! Unified PostgreSQL persistence for Phira-mp+.
 //!
 //! PostgreSQL is the single structured persistence backend. When `database_url`
-//! is not configured the manager becomes `None` and callers keep their legacy
-//! in-memory/file fallback so old deployments still boot. Every mutable entity
+//! is not configured the manager becomes `None` and callers keep their direct
+//! in-memory/file fallback so test deployments still boot. Every mutable entity
 //! written here has either `created_at`/`updated_at` or an append-only `sequence`
 //! so plugins and dashboards can reconstruct modification time and order.
 
@@ -692,7 +692,7 @@ impl DbManager {
     pub async fn read_round_player_data(&self, round_uuid: &str, player_id: i32) -> Option<crate::round_store::RoundPlayerData> {
         #[cfg(feature = "postgres")]
         if let Self::Pg(pool) = self {
-            let legacy_row = sqlx::query(
+            let direct_row = sqlx::query(
                 "SELECT touches::text AS touches, judges::text AS judges
                  FROM mp_round_player_data WHERE round_uuid = $1 AND player_id = $2"
             )
@@ -705,14 +705,14 @@ impl DbManager {
 
             let mut touches = Vec::new();
             let mut judges = Vec::new();
-            if let Some(row) = legacy_row {
+            if let Some(row) = direct_row {
                 let touches_raw = row.try_get::<String, _>("touches").unwrap_or_else(|_| "[]".to_string());
                 let judges_raw = row.try_get::<String, _>("judges").unwrap_or_else(|_| "[]".to_string());
                 touches = serde_json::from_str(&touches_raw).unwrap_or_default();
                 judges = serde_json::from_str(&judges_raw).unwrap_or_default();
             }
 
-            // Runtime v2 worker_only/fallback_only modes may skip the legacy
+            // Runtime v2 worker_only/fallback_only modes may skip the direct
             // mp_round_player_data row entirely.  Read normalized raw items as
             // a fallback so existing RoundStore/WIT/plugin read paths keep
             // working after telemetry cutover.
@@ -817,9 +817,9 @@ impl DbManager {
     pub async fn query_touch_batches(&self, since_sequence: i64, limit: i64, round_uuid: Option<&str>, player_id: Option<i32>) -> Vec<Value> {
         #[cfg(feature = "postgres")]
         if let Self::Pg(pool) = self {
-            let legacy = query_telemetry_batches(pool, "mp_round_touch_batches", since_sequence, limit, round_uuid, player_id).await;
-            if !legacy.is_empty() {
-                return legacy;
+            let direct_batches = query_telemetry_batches(pool, "mp_round_touch_batches", since_sequence, limit, round_uuid, player_id).await;
+            if !direct_batches.is_empty() {
+                return direct_batches;
             }
             return query_runtime_telemetry_batches(pool, "touch", since_sequence, limit, round_uuid, player_id).await;
         }
@@ -829,9 +829,9 @@ impl DbManager {
     pub async fn query_judge_batches(&self, since_sequence: i64, limit: i64, round_uuid: Option<&str>, player_id: Option<i32>) -> Vec<Value> {
         #[cfg(feature = "postgres")]
         if let Self::Pg(pool) = self {
-            let legacy = query_telemetry_batches(pool, "mp_round_judge_batches", since_sequence, limit, round_uuid, player_id).await;
-            if !legacy.is_empty() {
-                return legacy;
+            let direct_batches = query_telemetry_batches(pool, "mp_round_judge_batches", since_sequence, limit, round_uuid, player_id).await;
+            if !direct_batches.is_empty() {
+                return direct_batches;
             }
             return query_runtime_telemetry_batches(pool, "judge", since_sequence, limit, round_uuid, player_id).await;
         }
@@ -1344,7 +1344,7 @@ async fn init_tables(pool: &sqlx::PgPool) -> Result<()> {
         "batch_table": "mp_runtime_telemetry_batches",
         "item_table": "mp_runtime_telemetry_items",
         "mode": "dual_write",
-        "available_modes": ["legacy_only", "dual_write", "worker_only", "fallback_only"],
+        "available_modes": ["direct_only", "dual_write", "worker_only", "fallback_only"],
         "notes": "Runtime v2 telemetry schema normalizes batch headers and raw telemetry items. Project is still in test stage; schema may change freely."
     }))
     .bind(now)
@@ -1358,8 +1358,8 @@ async fn init_tables(pool: &sqlx::PgPool) -> Result<()> {
     )
     .bind(serde_json::json!({
         "mode": "dual_write",
-        "description": "legacy direct write plus Runtime v2 telemetry batch-write",
-        "available_modes": ["legacy_only", "dual_write", "worker_only", "fallback_only"],
+        "description": "direct write plus Runtime v2 telemetry batch-write",
+        "available_modes": ["direct_only", "dual_write", "worker_only", "fallback_only"],
         "updated_by": "runtime_v2.bootstrap"
     }))
     .bind(now)

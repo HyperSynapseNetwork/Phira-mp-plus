@@ -163,14 +163,14 @@ async fn persist_touches(
                 .await
                 .is_ok();
         }
-        let should_write_legacy = telemetry_mode.should_write_legacy()
-            || (telemetry_mode.fallback_to_legacy_on_enqueue_failure() && !runtime_enqueue_ok);
-        if should_write_legacy {
+        let should_write_direct = telemetry_mode.should_write_direct()
+            || (telemetry_mode.fallback_to_direct_on_enqueue_failure() && !runtime_enqueue_ok);
+        if should_write_direct {
             if let Some(rs) = &room.round_store {
                 rs.append_touches(rid, user.id, touch_data).await;
             }
         } else {
-            trace!(room = %room.id, user_id = user.id, mode = telemetry_mode.as_str(), "touch legacy direct write skipped by telemetry cutover mode");
+            trace!(room = %room.id, user_id = user.id, mode = telemetry_mode.as_str(), "touch direct write skipped by telemetry cutover mode");
         }
     } else {
         debug!(room = %room.id, user_id = user.id, "touch data received without current round; cached only");
@@ -213,14 +213,14 @@ async fn persist_judges(
                 .await
                 .is_ok();
         }
-        let should_write_legacy = telemetry_mode.should_write_legacy()
-            || (telemetry_mode.fallback_to_legacy_on_enqueue_failure() && !runtime_enqueue_ok);
-        if should_write_legacy {
+        let should_write_direct = telemetry_mode.should_write_direct()
+            || (telemetry_mode.fallback_to_direct_on_enqueue_failure() && !runtime_enqueue_ok);
+        if should_write_direct {
             if let Some(rs) = &room.round_store {
                 rs.append_judges(rid, user.id, judge_data).await;
             }
         } else {
-            trace!(room = %room.id, user_id = user.id, mode = telemetry_mode.as_str(), "judge legacy direct write skipped by telemetry cutover mode");
+            trace!(room = %room.id, user_id = user.id, mode = telemetry_mode.as_str(), "judge direct write skipped by telemetry cutover mode");
         }
     } else {
         debug!(room = %room.id, user_id = user.id, "judge data received without current round; cached only");

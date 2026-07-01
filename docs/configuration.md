@@ -148,7 +148,7 @@ Runtime v2 的内部策略优先放在配置文件中，避免继续新增过多
 ```yaml
 runtime_v2:
   persistence_queue_capacity: 4096
-  telemetry_cutover_mode: dual_write   # legacy_only / dual_write / worker_only / fallback_only
+  telemetry_cutover_mode: dual_write   # direct_only / dual_write / worker_only / fallback_only
   telemetry_batcher:
     enabled: true
     dry_run: false
