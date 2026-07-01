@@ -80,7 +80,8 @@ Near-term cut:
 
 - keep mirroring RoomEvent into EventBus
 - add simulation regression coverage before moving write ownership
-- move one low-risk field update behind a room command facade
+- route admin/StateQuery room writes through `RoomCommandGateway` first
+- replace the inline gateway implementation with per-room mailbox actors after counters and suite reports are stable
 
 ### Persistence actor
 
@@ -145,10 +146,10 @@ Near-term cut:
 - keep aliases stable
 - keep help and completion generated from the same registry
 
-## Near-term priority after Step 11
+## Near-term priority after Step 13
 
-1. Suite report / summary output.
-2. PersistenceWorker production low-frequency dual-write path.
-3. Touch/Judge production batching policy in the worker.
-4. Room command facade for one low-risk metadata update.
-5. Session command handler extraction.
+1. PersistenceWorker production low-frequency dual-write path.
+2. Touch/Judge production batching policy in the worker.
+3. Replace `RoomCommandGateway` inline methods with a mailbox-backed per-room actor for one low-risk command.
+4. Session command handler extraction.
+5. Plugin dispatch isolation so slow plugins cannot block Room/Session hot paths.

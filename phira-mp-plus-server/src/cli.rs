@@ -1465,8 +1465,10 @@ impl CliHandler {
                 self.out(format!("  {} event subscribers:  {}", c::dim("│"), event_stats.receiver_count));
                 self.out(format!("  {} events published:   {}", c::dim("│"), event_stats.published));
                 let actors = self.state.actor_runtime.stats().await;
+                let room_commands = self.state.room_commands.stats();
                 self.out(format!("  {} simulation running: {}", c::dim("│"), sim.running));
                 self.out(format!("  {} persistence queue:  queued={} processed={} dropped={}", c::dim("│"), persistence.queued, persistence.processed, persistence.dropped));
+                self.out(format!("  {} room command gw:    routed={} ok={} failed={}", c::dim("│"), room_commands.routed, room_commands.succeeded, room_commands.failed));
                 self.out(format!("  {} actor blueprint:    {} boundaries", c::dim("│"), actors.boundaries.len()));
                 self.out(format!("  {} web management API: {}", c::dim("│"), actors.web_management_api));
                 self.out(format!("  {} 现有 Room/Session/DB 主逻辑仍未迁移到 Runtime v2；Actor 模型是最终迁移目标", c::dim("▸")));
@@ -1499,12 +1501,24 @@ impl CliHandler {
                 }
                 self.out(format!("  {} 当前只作为 Runtime v2 新功能事件脊柱，未替换旧插件/房间调用", c::dim("▸")));
             }
+            "rooms" | "room" | "room-gateway" | "room-actor" => {
+                let stats = self.state.room_commands.stats();
+                self.out(format!("  {} RoomCommandGateway", c::green("◆")));
+                self.out(format!("  {} phase:     {}", c::dim("│"), stats.phase));
+                self.out(format!("  {} routed:    {}", c::dim("│"), stats.routed));
+                self.out(format!("  {} succeeded: {}", c::dim("│"), stats.succeeded));
+                self.out(format!("  {} failed:    {}", c::dim("│"), stats.failed));
+                self.out(format!("  {} note:      {}", c::dim("│"), stats.note));
+                self.out(format!("  {} 当前 CLI/admin/StateQuery 的部分房间写命令已统一走该 Gateway；下一步才替换为 per-room mailbox actor", c::dim("▸")));
+            }
             "actors" | "actor" | "actor-model" => {
                 let stats = self.state.actor_runtime.stats().await;
                 self.out(format!("  {} Runtime v2 Actor Model Blueprint", c::green("◆")));
                 self.out(format!("  {} phase:              {}", c::dim("│"), stats.phase));
                 self.out(format!("  {} web management API: {}", c::dim("│"), stats.web_management_api));
                 self.out(format!("  {} rule:               {}", c::dim("│"), stats.rule));
+                let room_commands = self.state.room_commands.stats();
+                self.out(format!("  {} room gateway:       phase={} routed={} ok={} failed={}", c::dim("│"), room_commands.phase, room_commands.routed, room_commands.succeeded, room_commands.failed));
                 self.out(format!("  {} boundaries", c::cyan("▸")));
                 for boundary in stats.boundaries {
                     self.out(format!(
@@ -1818,60 +1832,16 @@ impl CliHandler {
             }
         };
 
-        let room = {
-            let rooms = self.state.rooms.read().await;
-            let rid: phira_mp_common::RoomId = match room_id.to_string().try_into() {
-                Ok(id) => id,
-                Err(_) => {
-                    self.out(format!("  {} 无效的房间ID", c::red("✗")));
-                    return;
+        match self.state.room_commands.kick_user(&self.state, room_id, target).await {
+            Ok(value) => {
+                let name = value.get("user_name").and_then(|v| v.as_str()).unwrap_or("");
+                if name.is_empty() {
+                    self.out(format!("  {} 用户 {} 已从房间 {} 踢出", c::green("✓"), target, room_id));
+                } else {
+                    self.out(format!("  {} 用户 {} ({}) 已从房间 {} 踢出", c::green("✓"), name, target, room_id));
                 }
-            };
-            rooms.get(&rid).map(Arc::clone)
-        };
-
-        if let Some(room) = room {
-            let user_to_kick = {
-                let users_in_room = room.users().await;
-                let monitors_in_room = room.monitors().await;
-                users_in_room.into_iter()
-                    .chain(monitors_in_room.into_iter())
-                    .find(|u| u.id == target)
-            };
-
-            if let Some(user) = user_to_kick {
-                room.send(phira_mp_common::Message::Chat {
-                    user: 0,
-                    content: format!("用户 {} 已被管理员踢出房间", user.name),
-                }).await;
-
-                let was_monitor = user.monitor.load(std::sync::atomic::Ordering::SeqCst);
-                let should_drop = room.on_user_leave(&user).await;
-                if should_drop {
-                    self.state.rooms.write().await.remove(&room.id);
-                }
-                if !was_monitor {
-                    self.state
-                        .publish_room_event(phira_mp_common::RoomEvent::LeaveRoom {
-                            room: room.id.clone(),
-                            user: target,
-                        })
-                        .await;
-                }
-
-                info!(user = target, room = room_id, "kicked from room by admin");
-                self.state.plugin_manager
-                    .trigger(&PluginEvent::RoomModify {
-                        user_id: target,
-                        room_id: room_id.to_string(),
-                        data: r#"{"action":"kicked"}"#.to_string(),
-                    }).await;
-                self.out(format!("  {} 用户 {} 已从房间 {} 踢出", c::green("✓"), target, room_id));
-            } else {
-                self.out(format!("  {} 在房间 {} 中未找到用户 {}", c::yellow("!"), room_id, target));
             }
-        } else {
-            self.out(format!("  {} 未找到房间 {}", c::red("✗"), room_id));
+            Err(e) => self.out(format!("  {} {}", c::red("✗"), e)),
         }
     }
 
@@ -1940,46 +1910,9 @@ impl CliHandler {
     }
 
     async fn close_room(&self, room_id: &str) {
-        let rid: phira_mp_common::RoomId = match room_id.to_string().try_into() {
-            Ok(id) => id,
-            Err(_) => {
-                self.out(format!("  {} 无效的房间ID", c::red("✗")));
-                return;
-            }
-        };
-
-        let room_opt = {
-            let rooms = self.state.rooms.read().await;
-            rooms.get(&rid).map(Arc::clone)
-        };
-
-        if let Some(room) = room_opt {
-            let room_id_str = room.id.to_string();
-
-            room.send(phira_mp_common::Message::Chat {
-                user: 0,
-                content: "房间已被管理员关闭".to_string(),
-            }).await;
-
-            for user in room.users().await {
-                *user.room.write().await = None;
-            }
-            for user in room.monitors().await {
-                *user.room.write().await = None;
-            }
-
-            self.state.rooms.write().await.remove(&rid);
-            info!(room = room_id_str, "room closed by admin");
-            self.state.plugin_manager
-                .trigger(&PluginEvent::RoomModify {
-                    user_id: 0,
-                    room_id: room_id_str,
-                    data: r#"{"action":"closed"}"#.to_string(),
-                }).await;
-
-            self.out(format!("  {} 房间 {} 已解散", c::green("✓"), c::bold(room_id)));
-        } else {
-            self.out(format!("  {} 未找到房间 {}", c::red("✗"), room_id));
+        match self.state.room_commands.close_room(&self.state, room_id).await {
+            Ok(_) => self.out(format!("  {} 房间 {} 已解散", c::green("✓"), c::bold(room_id))),
+            Err(e) => self.out(format!("  {} {}", c::red("✗"), e)),
         }
     }
 
@@ -2054,83 +1987,41 @@ impl CliHandler {
 
     /// 由管理员发起游戏，等待所有客户端完成谱面加载后再开始。
     async fn room_start(&self, room_id: &str) {
-        let room = match self.find_room(room_id).await {
-            Some(r) => r,
-            None => { self.out(format!("  {} 未找到房间 {}", c::red("✗"), room_id)); return; }
-        };
-        if let Err(err) = room.begin_admin_start().await {
-            self.out(format!("  {} 无法开始游戏: {}", c::red("✗"), err));
-            return;
+        match self.state.room_commands.start_room(&self.state, room_id).await {
+            Ok(_) => self.out(format!(
+                "  {} 已发起游戏，正在等待玩家和监控端加载谱面",
+                c::green("✓")
+            )),
+            Err(e) => self.out(format!("  {} 无法开始游戏: {}", c::red("✗"), e)),
         }
-        if let Some(pm) = &room.plugin_manager {
-            pm.trigger(&PluginEvent::GameStart {
-                user_id: 0, room_id: room_id.to_string(),
-            }).await;
-        }
-        self.out(format!(
-            "  {} 已发起游戏，正在等待玩家和监控端加载谱面",
-            c::green("✓")
-        ));
     }
 
     /// 取消准备状态（管理员操作）
     async fn room_cancel(&self, room_id: &str) {
-        let room = match self.find_room(room_id).await {
-            Some(r) => r,
-            None => { self.out(format!("  {} 未找到房间 {}", c::red("✗"), room_id)); return; }
-        };
-        let canceled = {
-            let mut state = room.state.write().await;
-            if matches!(&*state, crate::room::InternalRoomState::WaitForReady { .. }) {
-                room.send(phira_mp_common::Message::CancelGame { user: 0 }).await;
-                *state = crate::room::InternalRoomState::SelectChart;
-                true
-            } else {
-                false
+        match self.state.room_commands.cancel_start(&self.state, room_id).await {
+            Ok(value) => {
+                if value.get("canceled").and_then(|v| v.as_bool()).unwrap_or(false) {
+                    self.out(format!("  {} 已取消准备状态", c::green("✓")));
+                } else {
+                    self.out(format!("  {} 当前状态不需要取消", c::yellow("!")));
+                }
             }
-        };
-        if canceled {
-            room.finish_admin_start().await;
-            room.on_state_change().await;
-            self.out(format!("  {} 已取消准备状态", c::green("✓")));
-        } else {
-            self.out(format!("  {} 当前状态不需要取消", c::yellow("!")));
+            Err(e) => self.out(format!("  {} {}", c::red("✗"), e)),
         }
     }
 
     async fn room_set_host(&self, room_id: &str, target: Option<i32>) {
-        let room = match self.find_room(room_id).await {
-            Some(r) => r,
-            None => { self.out(format!("  {} 未找到房间 {}", c::red("✗"), room_id)); return; }
-        };
-        match target {
-            Some(user_id) => {
-                let mut user_name = format!("{}", user_id);
-                for u in room.users().await {
-                    if u.id == user_id {
-                        user_name = room.display_name(&u).await;
-                        break;
-                    }
-                }
-                room.send(phira_mp_common::Message::Chat {
-                    user: 0,
-                    content: format!("房主已转移给 {}", user_name),
-                }).await;
-                match room.set_host(Some(user_id), true).await {
-                    Ok(_) => self.out(format!("  {} 房主已设为用户 {} ({})", c::green("✓"), user_name, user_id)),
-                    Err(e) => self.out(format!("  {} {}", c::red("✗"), e)),
+        match self.state.room_commands.set_host(&self.state, room_id, target).await {
+            Ok(value) => {
+                if value.get("host_is_system").and_then(|v| v.as_bool()).unwrap_or(false) {
+                    self.out(format!("  {} 房主已设为系统 ?", c::green("✓")));
+                } else {
+                    let host = value.get("host").and_then(|v| v.as_i64()).unwrap_or_default();
+                    let name = value.get("host_name").and_then(|v| v.as_str()).unwrap_or("");
+                    self.out(format!("  {} 房主已设为用户 {} ({})", c::green("✓"), name, host));
                 }
             }
-            None => {
-                room.send(phira_mp_common::Message::Chat {
-                    user: 0,
-                    content: "房主已设为系统 ?".to_string(),
-                }).await;
-                match room.set_host(None, true).await {
-                    Ok(_) => self.out(format!("  {} 房主已设为系统 ?", c::green("✓"))),
-                    Err(e) => self.out(format!("  {} {}", c::red("✗"), e)),
-                }
-            }
+            Err(e) => self.out(format!("  {} {}", c::red("✗"), e)),
         }
     }
 
@@ -2172,7 +2063,6 @@ impl CliHandler {
     }
 
     async fn room_set(&self, room_id: &str, field: &str, value: &str) {
-        use std::sync::atomic::Ordering;
         let room = match self.find_room(room_id).await {
             Some(r) => r,
             None => { self.out(format!("  {} 未找到房间 {}", c::red("✗"), room_id)); return; }
@@ -2180,37 +2070,17 @@ impl CliHandler {
         match field {
             "lock" | "locked" => {
                 let v = value == "true" || value == "1" || value == "锁定";
-                room.locked.store(v, Ordering::SeqCst);
-                room.send(phira_mp_common::Message::LockRoom { lock: v }).await;
-                room.publish_update(phira_mp_common::PartialRoomData {
-                    lock: Some(v),
-                    ..Default::default()
-                })
-                .await;
-                self.state.plugin_manager
-                    .trigger(&PluginEvent::RoomModify {
-                        user_id: 0,
-                        room_id: room_id.to_string(),
-                        data: format!(r#"{{"action":"lock","value":{v}}}"#),
-                    }).await;
-                self.out(format!("  {} 房间 {} 已{}锁定", c::green("✓"), room_id, if v { "" } else { "解除" }));
+                match self.state.room_commands.set_lock(&self.state, room_id, v).await {
+                    Ok(_) => self.out(format!("  {} 房间 {} 已{}锁定", c::green("✓"), room_id, if v { "" } else { "解除" })),
+                    Err(e) => self.out(format!("  {} {}", c::red("✗"), e)),
+                }
             }
             "cycle" | "cycling" => {
                 let v = value == "true" || value == "1" || value == "轮换";
-                room.cycle.store(v, Ordering::SeqCst);
-                room.send(phira_mp_common::Message::CycleRoom { cycle: v }).await;
-                room.publish_update(phira_mp_common::PartialRoomData {
-                    cycle: Some(v),
-                    ..Default::default()
-                })
-                .await;
-                self.state.plugin_manager
-                    .trigger(&PluginEvent::RoomModify {
-                        user_id: 0,
-                        room_id: room_id.to_string(),
-                        data: format!(r#"{{"action":"cycle","value":{v}}}"#),
-                    }).await;
-                self.out(format!("  {} 房间 {} 已{}轮换", c::green("✓"), room_id, if v { "开启" } else { "关闭" }));
+                match self.state.room_commands.set_cycle(&self.state, room_id, v).await {
+                    Ok(_) => self.out(format!("  {} 房间 {} 已{}轮换", c::green("✓"), room_id, if v { "开启" } else { "关闭" })),
+                    Err(e) => self.out(format!("  {} {}", c::red("✗"), e)),
+                }
             }
             "hidden" | "hide" => {
                 let v = parse_cli_bool(value);

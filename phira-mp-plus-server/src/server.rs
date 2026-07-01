@@ -388,6 +388,8 @@ pub struct PlusServerState {
     pub persistence_worker: Arc<crate::persistence_worker::PersistenceWorker>,
     /// Runtime v2 Actor 模型迁移蓝图。当前是诊断/路线层，不替换真实协议热路径。
     pub actor_runtime: Arc<crate::actor_runtime::ActorRuntime>,
+    /// Runtime v2 Room command gateway. Step 13 routes admin/StateQuery room writes through this facade before a mailbox-backed RoomActor owns them.
+    pub room_commands: Arc<crate::room_actor::RoomCommandGateway>,
     /// 压测用 Phira token 列表（来自配置或 benchmark-bind 命令）。
     pub bench_tokens: RwLock<Vec<String>>,
     /// 管理员 Phira ID 集合。可由配置、PostgreSQL 设置、CLI/WIT 动态修改。
@@ -480,6 +482,14 @@ impl PlusServer {
             Arc::clone(&persistence_worker),
         );
         let actor_runtime = Arc::new(crate::actor_runtime::ActorRuntime::new_blueprint());
+        let room_commands = Arc::new(crate::room_actor::RoomCommandGateway::new());
+        actor_runtime
+            .mark_status(
+                "room-actor",
+                crate::actor_runtime::ActorBoundaryStatus::WriteRouted,
+                "admin/StateQuery room writes route through RoomCommandGateway; next step is mailbox-backed per-room actors",
+            )
+            .await;
 
         let events = Arc::new(SseHub::new());
         let state = Arc::new(PlusServerState {
@@ -507,6 +517,7 @@ impl PlusServer {
             simulation,
             persistence_worker,
             actor_runtime,
+            room_commands,
             bench_tokens: RwLock::new(bench_tokens),
             admin_ids: RwLock::new(admin_ids),
             room_monitor_key: generate_secret_key("room_monitor", 64).unwrap_or_default(),
@@ -1802,112 +1813,37 @@ async fn bench_leave_room(stream: &mut tokio::net::TcpStream) -> Result<(), Stri
     }).await.map_err(|_| "leave timeout".to_string())?
 }
 
-/// 从房间踢出用户
+/// 从房间踢出用户。
+///
+/// Runtime v2 Step 13 routes this legacy StateQuery entry through the same
+/// RoomCommandGateway used by CLI/admin commands.  This removes one duplicate
+/// room-write implementation before the real mailbox-backed RoomActor exists.
 async fn run_room_kick(state: &PlusServerState, room_id: &str, target_id: i32) -> Result<Value, String> {
-    use phira_mp_common::RoomId;
-    let rid: RoomId = room_id.to_string().try_into().map_err(|_| "invalid room_id".to_string())?;
-    let room = state.rooms.read().await.get(&rid).map(Arc::clone)
-        .ok_or("room not found")?;
-    let users = room.users().await;
-    let monitors = room.monitors().await;
-    let user = users.into_iter().chain(monitors).find(|u| u.id == target_id)
-        .ok_or("user not in room")?;
-    room.send(phira_mp_common::Message::Chat {
-        user: 0, content: format!("用户 {} 已被管理员踢出房间", user.name),
-    }).await;
-    let was_monitor = user.monitor.load(Ordering::SeqCst);
-    let should_drop = room.on_user_leave(&user).await;
-    if should_drop {
-        state.rooms.write().await.remove(&rid);
-    }
-    if !was_monitor {
-        state
-            .publish_room_event(RoomEvent::LeaveRoom {
-                room: rid.clone(),
-                user: target_id,
-            })
-            .await;
-    }
-    state.plugin_manager.trigger(&PluginEvent::RoomModify {
-        user_id: target_id, room_id: room_id.to_string(),
-        data: r#"{"action":"kicked"}"#.to_string(),
-    }).await;
-    Ok(serde_json::json!({"ok": true}))
+    state.room_commands.kick_user(state, room_id, target_id).await
 }
 
 /// 设置房主；target_id=None 表示系统 `?` 房主。
 async fn run_room_set_host(state: &PlusServerState, room_id: &str, target_id: Option<i32>) -> Result<Value, String> {
-    use phira_mp_common::RoomId;
-    let rid: RoomId = room_id.to_string().try_into().map_err(|_| "invalid room_id".to_string())?;
-    let room = state.rooms.read().await.get(&rid).map(Arc::clone)
-        .ok_or("room not found")?;
-    match target_id {
-        Some(target_id) => {
-            room.send(phira_mp_common::Message::Chat {
-                user: 0, content: format!("房主已转移给用户 {}", target_id),
-            }).await;
-            room.set_host(Some(target_id), true).await.map_err(|e| e.to_string())?;
-            Ok(serde_json::json!({"ok": true, "host": target_id, "host_is_system": false}))
-        }
-        None => {
-            room.send(phira_mp_common::Message::Chat {
-                user: 0, content: "房主已设为系统 ?".to_string(),
-            }).await;
-            room.set_host(None, true).await.map_err(|e| e.to_string())?;
-            Ok(serde_json::json!({"ok": true, "host": -1, "host_is_system": true}))
-        }
-    }
+    state.room_commands.set_host(state, room_id, target_id).await
 }
 
-/// 转移房主
+/// 转移房主。负数目标兼容旧 WIT/API 调用，表示系统 `?` 房主。
 async fn run_room_transfer(state: &PlusServerState, room_id: &str, target_id: i32) -> Result<Value, String> {
     if target_id < 0 {
-        run_room_set_host(state, room_id, None).await
+        state.room_commands.set_host(state, room_id, None).await
     } else {
-        run_room_set_host(state, room_id, Some(target_id)).await
+        state.room_commands.set_host(state, room_id, Some(target_id)).await
     }
 }
 
-/// 设置房间锁定状态
+/// 设置房间锁定状态。
 async fn run_room_set_lock(state: &PlusServerState, room_id: &str, locked: bool) -> Result<Value, String> {
-    use phira_mp_common::RoomId;
-    let rid: RoomId = room_id.to_string().try_into().map_err(|_| "invalid room_id".to_string())?;
-    let room = state.rooms.read().await.get(&rid).map(Arc::clone)
-        .ok_or("room not found")?;
-    room.locked.store(locked, Ordering::SeqCst);
-    room.send(phira_mp_common::Message::LockRoom { lock: locked }).await;
-    room.publish_update(phira_mp_common::PartialRoomData {
-        lock: Some(locked),
-        ..Default::default()
-    })
-    .await;
-    Ok(serde_json::json!({"ok": true, "locked": locked}))
+    state.room_commands.set_lock(state, room_id, locked).await
 }
 
-/// 关闭/解散房间
+/// 关闭/解散房间。
 async fn run_room_close(state: &PlusServerState, room_id: &str) -> Result<Value, String> {
-    use phira_mp_common::RoomId;
-    let rid: RoomId = room_id.to_string().try_into().map_err(|_| "invalid room_id".to_string())?;
-    let room = state.rooms.read().await.get(&rid).map(Arc::clone)
-        .ok_or("room not found")?;
-    room.send(phira_mp_common::Message::Chat {
-        user: 0, content: "房间已被管理员关闭".to_string(),
-    }).await;
-    let users = room.users().await;
-    for user in &users {
-        *user.room.write().await = None;
-        state
-            .publish_room_event(RoomEvent::LeaveRoom {
-                room: rid.clone(),
-                user: user.id,
-            })
-            .await;
-    }
-    for monitor in room.monitors().await {
-        *monitor.room.write().await = None;
-    }
-    state.rooms.write().await.remove(&rid);
-    Ok(serde_json::json!({"ok": true}))
+    state.room_commands.close_room(state, room_id).await
 }
 
 /// 将用户踢出服务器
@@ -1981,6 +1917,7 @@ fn server_state_query_inner(state: &Arc<PlusServerState>, method: &str, args: &[
                 let persistence = s.persistence_worker.stats().await;
                 let events = s.event_bus.stats(16);
                 let commands = s.command_registry.iter().count();
+                let room_commands = s.room_commands.stats();
                 let _ = tx.send(Ok(serde_json::json!({
                     "runtime_v2": true,
                     "note": "Runtime v2 is partially installed; real Room/Session runtime is still the current production path.",
@@ -1988,6 +1925,7 @@ fn server_state_query_inner(state: &Arc<PlusServerState>, method: &str, args: &[
                     "event_bus": events,
                     "simulation": simulation,
                     "persistence_worker": persistence,
+                    "room_command_gateway": room_commands,
                 })));
             });
             rx.recv_timeout(std::time::Duration::from_millis(2000))

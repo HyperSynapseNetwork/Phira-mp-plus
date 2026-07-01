@@ -286,3 +286,25 @@ simulation report clear
 ```
 
 This step improves the usability of the Simulation runner without changing production Room/Session ownership. It also keeps Web management API out of scope: reports are exposed through CLI/TUI-style command surfaces, not through privileged Web write endpoints.
+
+## Step 13 implementation status
+
+Step 13 starts the first production-facing Actor migration seam by adding a
+`RoomCommandGateway`:
+
+- CLI/admin room write commands for kick, close, start, cancel, host transfer,
+  lock and cycle now route through one gateway.
+- Legacy `server_state_query` room write methods for kick, host transfer, lock
+  and close call the same gateway instead of carrying duplicate implementations
+  in `server.rs`.
+- The gateway is still an inline facade; it does not own room state and it does
+  not replace the existing `Room` state machine yet.
+- `runtime rooms` shows gateway counters and the current phase.
+- `/api/runtime` includes `room_command_gateway` read-only diagnostics.
+- At startup, the Actor blueprint marks `room-actor` as `write_routed` because a
+  first set of admin/StateQuery write paths now pass through an actor-shaped
+  boundary.
+
+This step is intentionally more than documentation: it removes duplicate room
+write logic from the large command surfaces and creates the seam that a future
+per-room mailbox actor can implement without changing CLI/WIT/admin semantics.

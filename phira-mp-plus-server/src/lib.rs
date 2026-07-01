@@ -20,6 +20,7 @@ pub mod plugin;
 pub mod plugin_http;
 pub mod rate_limiter;
 pub mod room;
+pub mod room_actor;
 pub mod round_store;
 pub mod server;
 pub mod session;
