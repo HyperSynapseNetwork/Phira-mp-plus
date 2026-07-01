@@ -224,46 +224,59 @@ impl CliHandler {
         self.out(String::new());
 
         let mut pending_line: Option<String> = None;
-        while let Some(line) = cmd_rx.recv().await {
-            // 如果未运行（exit 后），直接退出
-            if !*self.running.read().await {
-                break;
-            }
+        let mut status_interval = tokio::time::interval(std::time::Duration::from_secs(5));
+        loop {
+            tokio::select! {
+                line = cmd_rx.recv() => {
+                    let Some(line) = line else { break; };
+                    // 如果未运行（exit 后），直接退出
+                    if !*self.running.read().await { break; }
 
-            let line = match collect_cli_continuation(&mut pending_line, line) {
-                Ok(Some(line)) => line,
-                Ok(None) => {
-                    if pending_line.is_some() {
-                        self.out(format!("  {} 已暂存续行；下一条命令需以 -- 开头", c::dim("▸")));
+                    let line = match collect_cli_continuation(&mut pending_line, line) {
+                        Ok(Some(line)) => line,
+                        Ok(None) => {
+                            if pending_line.is_some() {
+                                self.out(format!("  {} 已暂存续行；下一条命令需以 -- 开头", c::dim("▸")));
+                            }
+                            continue;
+                        }
+                        Err(err) => {
+                            self.out(format!("  {} {err}", c::red("✗")));
+                            continue;
+                        }
+                    };
+                    if line.is_empty() { continue; }
+
+                    let mut parts = line.split_whitespace();
+                    let command = parts.next().unwrap_or("");
+                    let args: Vec<&str> = parts.collect();
+
+                    if !command.is_empty() {
+                        self.state.event_bus.publish(crate::event_bus::MpEvent::AdminCommandExecuted {
+                            user_id: None,
+                            command: redact_cli_command_for_event(&line),
+                        });
                     }
-                    continue;
+
+                    if !self.dispatch_command(command, &args).await { break; }
                 }
-                Err(err) => {
-                    self.out(format!("  {} {err}", c::red("✗")));
-                    continue;
+                _ = status_interval.tick() => {
+                    self.broadcast_status().await;
                 }
-            };
-            if line.is_empty() {
-                continue;
-            }
-
-            let mut parts = line.split_whitespace();
-            let command = parts.next().unwrap_or("");
-            let args: Vec<&str> = parts.collect();
-
-            if !command.is_empty() {
-                self.state.event_bus.publish(crate::event_bus::MpEvent::AdminCommandExecuted {
-                    user_id: None,
-                    command: redact_cli_command_for_event(&line),
-                });
-            }
-
-            if !self.dispatch_command(command, &args).await {
-                break;
             }
         }
 
         info!("CLI session ended");
+    }
+
+    async fn broadcast_status(&self) {
+        let rooms = self.state.rooms.read().await.len();
+        let users = self.state.users.read().await.values().filter(|u| u.id > 0).count();
+        let sessions = self.state.sessions.read().await.len();
+        let plugins = self.state.plugin_manager.list_plugins().await.len();
+        let sim = self.state.simulation.status().await;
+        let sim_status = if sim.running { format!("运行{}u/{}r", sim.virtual_users, sim.virtual_rooms) } else { "停止".into() };
+        self.out(format!("📊 rooms={rooms} users={users} sessions={sessions} plugins={plugins} sim={sim_status}"));
     }
 
 

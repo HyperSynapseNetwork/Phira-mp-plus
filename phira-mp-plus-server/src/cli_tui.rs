@@ -643,14 +643,15 @@ impl TuiApp {
             input_inner.y,
         ));
 
-        let status = if self.scroll_from_bottom == 0 {
-            format!("  {} 行  Tab补全  ↑↓历史  PgUp/PgDn滚动  Ctrl+C退出", visual_rows.len())
+        let scroll_info = if self.scroll_from_bottom == 0 {
+            format!("{}行", visual_rows.len())
         } else {
-            format!(
-                "  距底部 {} 行  Shift+↓/PgDn返回底部  Ctrl+L清屏  Esc清空输入",
-                self.scroll_from_bottom
-            )
+            format!("↑{}", self.scroll_from_bottom)
         };
+        let status = format!(
+            " {}  |  Tab补全  ↑↓历史  PgUp/PgDn  ^C退出",
+            scroll_info,
+        );
         frame.render_widget(Clear, chunks[3]);
         frame.render_widget(
             Paragraph::new(Span::styled(status, self.muted_style())),
