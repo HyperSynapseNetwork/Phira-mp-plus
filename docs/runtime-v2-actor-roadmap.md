@@ -279,3 +279,31 @@ Next cut:
    ad-hoc JSON values through the actor boundary.
 3. Start moving selected room-owned state into an actor-owned struct after the
    mailbox route remains stable under real and simulation suite tests.
+
+## Step 18 update: split RoomCommandGateway module
+
+Step 18 prevents the new Actor seam from becoming a replacement monolith.
+The previous `phira-mp-plus-server/src/room_actor.rs` file is now split into a
+module directory:
+
+```text
+room_actor/
+  mod.rs
+  command.rs
+  gateway.rs
+  stats.rs
+```
+
+No runtime behavior is intentionally changed in this cut.  The same admin room
+write commands still flow through `RoomCommandGateway` and the same per-room
+mailbox registry.  This is a maintenance move that creates room for the next
+real Actor steps.
+
+Next cut:
+
+1. Replace ad-hoc `serde_json::Value` room command results with typed
+   `RoomCommandResult` values.
+2. Split compatibility inline handlers by command family so `gateway.rs` does
+   not become the next large file.
+3. Start moving selected room-owned state into actor-local structs once typed
+   commands and command results are in place.

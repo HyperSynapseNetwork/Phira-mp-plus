@@ -404,3 +404,33 @@ Still intentionally not done:
 The next migration step should split the gateway handlers into smaller
 actor-owned command modules and start moving state ownership out of `room.rs`
 only after the mailbox path stays stable under suite/real tests.
+
+## Step 18 implementation status
+
+Step 18 is intentionally a structural refactor rather than a behavior change.
+After Steps 13-17, `room_actor.rs` had started to become the next large file,
+which would defeat the Runtime v2 goal of removing feature piles from
+`server.rs`, `session.rs`, `cli.rs`, and `room.rs`.
+
+The old single file has been split into a module directory:
+
+```text
+phira-mp-plus-server/src/room_actor/
+  mod.rs       public module boundary and migration notes
+  command.rs   mailbox command envelope and reply handling
+  gateway.rs   RoomCommandGateway routing and compatibility handlers
+  stats.rs     diagnostics and recent command audit data
+```
+
+Runtime behavior is intentionally unchanged:
+
+- the same room write commands still route through `RoomCommandGateway`;
+- the same per-room mailbox registry remains in place;
+- the same inline compatibility handlers and fallback behavior remain;
+- the existing `Room` type still owns the real room state machine;
+- there is still no privileged Web management API.
+
+This step matters because the Actor migration now has a maintainable place to
+grow.  Future cuts should add typed command/result modules and eventually move
+room-owned state out of `room.rs` without turning `room_actor` into another
+monolith.

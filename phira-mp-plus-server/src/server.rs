@@ -525,7 +525,7 @@ impl PlusServer {
             .mark_status(
                 "room-actor",
                 crate::actor_runtime::ActorBoundaryStatus::WriteRouted,
-                "set_lock/set_cycle/set_host/close/kick/start/cancel now cross a per-room mailbox registry with audited WaitForReady handling",
+                "set_lock/set_cycle/set_host/close/kick/start/cancel cross a per-room mailbox registry; gateway internals are now split for typed command migration",
             )
             .await;
         let bench_state = Arc::clone(&state);
