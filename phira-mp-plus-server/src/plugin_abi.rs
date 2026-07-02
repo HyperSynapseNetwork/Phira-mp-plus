@@ -5,9 +5,13 @@
 //! so the rest of the host no longer treats ad-hoc JSON strings as the plugin ABI.
 //! The target state is a typed WIT/component-model ABI; until then this module
 //! is the only place where the JSON transport should be encoded/decoded.
+//!
+//! # ABI versions
+//! - `abi-json-v1`: Current JSON bridge (temporary)
+//! - `abi-wit-v2`: Target typed WIT/component ABI
 
 use phira_mp_plus_server_api::PluginEvent;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub enum PluginAbiTransport {
@@ -198,6 +202,43 @@ pub fn decode_plugin_api_result_json(bytes: &[u8]) -> Result<serde_json::Value, 
     serde_json::from_slice(bytes).map_err(|e| format!("invalid plugin API JSON: {e}"))
 }
 
+/// Typed DTO for a plugin API call.
+///
+/// This is the typed boundary for the JSON bridge.  New host code should prefer
+/// constructing this over raw `Vec<serde_json::Value>` when calling plugins.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PluginApiCall {
+    pub method: String,
+    pub args: Vec<serde_json::Value>,
+}
+
+impl PluginApiCall {
+    pub fn new(method: impl Into<String>, args: Vec<serde_json::Value>) -> Self {
+        Self {
+            method: method.into(),
+            args,
+        }
+    }
+}
+
+/// Convert a typed API call to the JSON bridge wire format.
+pub fn encode_typed_api_call(call: &PluginApiCall) -> Result<Vec<u8>, String> {
+    let args = std::iter::once(serde_json::Value::String(call.method.clone()))
+        .chain(call.args.iter().cloned())
+        .collect::<Vec<_>>();
+    serde_json::to_vec(&args).map_err(|e| format!("encode plugin API call: {e}"))
+}
+
+/// Supported ABI versions for querying.
+pub fn supported_abi_versions() -> Vec<&'static str> {
+    vec!["abi-json-v1", "abi-wit-v2-planned"]
+}
+
+/// Returns true if the given ABI version string is supported.
+pub fn is_abi_version_supported(version: &str) -> bool {
+    matches!(version, "abi-json-v1")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -241,5 +282,34 @@ mod tests {
         let result = decode_plugin_api_result_json(br#"{"ok":true}"#).unwrap();
         assert_eq!(result["ok"], true);
         assert!(decode_plugin_api_result_json(b"not json").is_err());
+    }
+
+    #[test]
+    fn typed_api_call_encodes_to_wire_format() {
+        let call = PluginApiCall::new(
+            "admin.get_info",
+            vec![serde_json::json!({"user_id": 42})],
+        );
+        let bytes = encode_typed_api_call(&call).unwrap();
+        let decoded: Vec<serde_json::Value> = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(decoded.len(), 2);
+        assert_eq!(decoded[0], "admin.get_info");
+        assert_eq!(decoded[1]["user_id"], 42);
+    }
+
+    #[test]
+    fn abi_version_supported_checks_work() {
+        assert!(is_abi_version_supported("abi-json-v1"));
+        assert!(!is_abi_version_supported("abi-wit-v2"));
+        assert!(!is_abi_version_supported(""));
+        assert!(!is_abi_version_supported("unknown-version"));
+    }
+
+    #[test]
+    fn supported_abi_versions_includes_planned() {
+        let versions = supported_abi_versions();
+        assert!(versions.contains(&"abi-json-v1"));
+        assert!(versions.contains(&"abi-wit-v2-planned"));
+        assert_eq!(versions.len(), 2);
     }
 }

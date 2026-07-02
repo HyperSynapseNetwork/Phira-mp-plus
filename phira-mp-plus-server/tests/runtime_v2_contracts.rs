@@ -14,7 +14,10 @@ fn runtime_plan_tracks_all_required_objectives() {
     assert!(keys.contains(&"actor-model"), "must track actor-model");
     assert!(keys.contains(&"plugin-abi-v2"), "must track plugin-abi-v2");
     assert!(keys.contains(&"test-coverage"), "must track test-coverage");
-    assert!(keys.contains(&"persistence-worker"), "must track persistence-worker");
+    assert!(
+        keys.contains(&"persistence-worker"),
+        "must track persistence-worker"
+    );
     assert!(keys.contains(&"phira-http"), "must track phira-http");
     assert!(keys.contains(&"tui-v2"), "must track tui-v2");
 
@@ -23,7 +26,10 @@ fn runtime_plan_tracks_all_required_objectives() {
     assert_eq!(snapshot.final_architecture, "actor_model");
 
     // Sanity checks
-    assert!(snapshot.total >= 10, "plan should have at least 10 objectives");
+    assert!(
+        snapshot.total >= 10,
+        "plan should have at least 10 objectives"
+    );
     assert!(snapshot.active > 0, "plan should have active objectives");
 }
 

@@ -267,7 +267,6 @@ impl CliHandler {
     }
 }
 
-
 impl CliHandler {
     pub(in crate::cli) async fn kick_from_room(&self, room_id: &str, target_id: &str) {
         let target: i32 = match target_id.parse() {
@@ -971,5 +970,4 @@ impl CliHandler {
             list
         ));
     }
-
 }
