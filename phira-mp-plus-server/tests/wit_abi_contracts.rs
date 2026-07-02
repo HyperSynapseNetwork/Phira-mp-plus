@@ -5,21 +5,34 @@
 //! (canonical + legacy) don't silently diverge.
 
 use phira_mp_plus_server::plugin_abi;
+use std::path::PathBuf;
 
-const CANONICAL_WIT: &str = "wit/phira-plugin.wit";
-const LEGACY_WIT: &str = "phira-mp-plus-server/wit/phira/mpplus.wit";
+/// Get absolute path to workspace root (two levels up from crate manifest dir,
+/// since the test binary runs at the crate level: phira-mp-plus-server/ -> ../)
+fn workspace_root() -> PathBuf {
+    let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    manifest.parent().expect("server crate should have a parent").to_path_buf()
+}
+
+fn canonical_wit() -> PathBuf {
+    workspace_root().join("wit/phira-plugin.wit")
+}
+
+fn legacy_wit() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("wit/phira/mpplus.wit")
+}
 
 #[test]
 fn canonical_wit_file_exists() {
-    let path = std::path::Path::new(CANONICAL_WIT);
-    assert!(path.exists(), "canonical WIT file not found at {CANONICAL_WIT}");
+    let path = canonical_wit();
+    assert!(path.exists(), "canonical WIT file not found at {}", path.display());
 }
 
 #[test]
 fn plugin_abi_wit_file_refers_to_existing_file() {
-    let wit_path = plugin_abi::wit::WIT_FILE;
-    let path = std::path::Path::new(wit_path);
-    assert!(path.exists(), "plugin_abi.rs references {wit_path} but file doesn't exist");
+    let wit_rel = plugin_abi::wit::WIT_FILE;
+    let path = workspace_root().join(wit_rel);
+    assert!(path.exists(), "plugin_abi.rs references {wit_rel} but file doesn't exist at {}", path.display());
 }
 
 #[test]
@@ -30,7 +43,7 @@ fn plugin_abi_wit_world_is_correct() {
 
 #[test]
 fn canonical_wit_contains_key_interfaces() {
-    let content = std::fs::read_to_string(CANONICAL_WIT).expect("canonical WIT should be readable");
+    let content = std::fs::read_to_string(canonical_wit()).expect("canonical WIT should be readable");
     assert!(content.contains("touch-event-point"), "WIT should define touch-event-point");
     assert!(content.contains("judge-event-item"), "WIT should define judge-event-item");
     assert!(content.contains("plugin-info"), "WIT should define plugin-info");
@@ -41,7 +54,7 @@ fn canonical_wit_contains_key_interfaces() {
 
 #[test]
 fn legacy_wit_marked_deprecated() {
-    let content = std::fs::read_to_string(LEGACY_WIT).expect("legacy WIT should be readable");
+    let content = std::fs::read_to_string(legacy_wit()).expect("legacy WIT should be readable");
     assert!(content.contains("DEPRECATED"), "legacy WIT must be marked DEPRECATED");
     assert!(content.contains("wit/phira-plugin.wit"), "legacy WIT must reference canonical path");
 }
