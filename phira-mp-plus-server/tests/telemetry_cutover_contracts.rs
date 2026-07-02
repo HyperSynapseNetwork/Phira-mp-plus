@@ -54,7 +54,7 @@ fn worker_only_should_not_write_direct() {
 fn cutover_decision_contract() {
     for mode in TelemetryCutoverMode::variants() {
         let decision = mode.cutover_decision();
-        assert_eq!(decision.mode, mode);
+        assert_eq!(decision.mode, *mode);
         assert_eq!(decision.enqueue_worker, mode.should_enqueue_worker());
     }
 }
