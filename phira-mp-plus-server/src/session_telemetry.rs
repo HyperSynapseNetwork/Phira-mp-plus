@@ -166,7 +166,7 @@ async fn persist_touches(
                 "count": touch_data.len(),
                 "data": touch_data,
             });
-            let _ = user
+            let enqueued = user
                 .server
                 .persistence_worker
                 .enqueue(crate::persistence_worker::PersistenceEvent::TouchBatch {
@@ -176,6 +176,12 @@ async fn persist_touches(
                     simulation: false,
                 })
                 .await;
+            if enqueued.is_err() {
+                warn!(room = %room.id, user = user.id, "touch enqueue failed, falling back to direct write");
+                if let Some(rs) = &room.round_store {
+                    rs.append_touches(rid, user.id, touch_data).await;
+                }
+            }
         } else {
             // DirectOnly: write through legacy RoundStore path
             if let Some(rs) = &room.round_store {
@@ -207,7 +213,7 @@ async fn persist_judges(
                 "count": judge_data.len(),
                 "data": judge_data,
             });
-            let _ = user
+            let enqueued = user
                 .server
                 .persistence_worker
                 .enqueue(crate::persistence_worker::PersistenceEvent::JudgeBatch {
@@ -217,6 +223,12 @@ async fn persist_judges(
                     simulation: false,
                 })
                 .await;
+            if enqueued.is_err() {
+                warn!(room = %room.id, user = user.id, "judge enqueue failed, falling back to direct write");
+                if let Some(rs) = &room.round_store {
+                    rs.append_judges(rid, user.id, judge_data).await;
+                }
+            }
         } else {
             if let Some(rs) = &room.round_store {
                 rs.append_judges(rid, user.id, judge_data).await;

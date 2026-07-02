@@ -124,6 +124,7 @@ impl CommandSpec {
 #[derive(Clone, Default)]
 pub struct CommandRegistry {
     commands: BTreeMap<String, CommandSpec>,
+    aliases: BTreeMap<String, String>,  // alias → canonical name
     roots: BTreeSet<String>,
     children: BTreeMap<String, BTreeSet<String>>,
 }
@@ -142,6 +143,16 @@ impl CommandRegistry {
             return Err(format!("duplicated command name: {name}"));
         }
 
+        // Index aliases, checking for conflicts
+        for alias in &spec.aliases {
+            let normalized_alias = normalize_command_name(alias);
+            // Allow alias that shadows an existing command name: the command
+            // name takes priority in get() since we check commands first.
+            if self.aliases.contains_key(&normalized_alias) {
+                return Err(format!("duplicated alias: '{alias}'"));
+            }
+            self.aliases.insert(normalized_alias, name.clone());
+        }
 
         self.index_command_path(&name);
 
@@ -153,7 +164,12 @@ impl CommandRegistry {
 
     pub fn get(&self, name_or_alias: &str) -> Option<&CommandSpec> {
         let normalized = normalize_command_name(name_or_alias);
-        self.commands.get(normalized.as_str())
+        // Try direct command lookup first
+        if let Some(spec) = self.commands.get(&normalized) {
+            return Some(spec);
+        }
+        // Fall back to alias resolution
+        self.aliases.get(&normalized).and_then(|canonical| self.commands.get(canonical))
     }
 
     pub fn iter(&self) -> impl Iterator<Item = &CommandSpec> {
@@ -426,8 +442,7 @@ impl CommandRegistry {
     /// Returns `Some(output_lines)` if a registered handler was found and executed,
     /// or `None` if no handler is registered (caller should fall back to old dispatch).
     pub fn execute(&self, state: &PlusServerState, command: &str, args: &[&str]) -> Option<Vec<String>> {
-        let name = normalize_command_name(command);
-        self.commands.get(&name).and_then(|spec| {
+        self.get(command).and_then(|spec| {
             spec.handler.as_ref().map(|handler| handler(state, args))
         })
     }

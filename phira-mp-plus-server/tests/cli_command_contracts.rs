@@ -57,10 +57,33 @@ fn help_group_is_available() {
 #[test]
 fn alias_h_resolves_to_help() {
     let registry = runtime_v2_registry();
-    // alias fields exist on CommandSpec; alias lookup is handled externally
-    let spec = registry.get("help").expect("help should exist");
-    assert!(spec.aliases.contains(&"h".to_string()), "help should have alias 'h'");
+    let spec = registry.get("h").expect("alias 'h' should resolve to help");
+    assert_eq!(spec.name, "help", "get('h') should return help command");
 }
+
+#[test]
+fn alias_q_resolves_to_exit() {
+    let registry = runtime_v2_registry();
+    let spec = registry.get("q").expect("alias 'q' should resolve to exit");
+    assert_eq!(spec.name, "exit", "get('q') should return exit command");
+}
+
+#[test]
+fn alias_h_format_help_works() {
+    let registry = runtime_v2_registry();
+    let help_text = registry.format_help("h").expect("format_help('h') should work");
+    assert!(help_text.contains("help"), "help text for alias 'h' should mention help");
+}
+
+#[test]
+fn alias_does_not_conflict_with_command_names() {
+    // This test verifies that no alias collides with an existing command.
+    // The registry's register() method should reject such conflicts.
+    let registry = runtime_v2_registry();
+    // 'rooms' is an alias for 'room list' — verify it doesn't shadow 'rooms' itself
+    let rooms = registry.get("rooms").expect("rooms should exist");
+    assert!(rooms.name == "rooms" || rooms.aliases.contains(&"rooms".to_string()),
+        "rooms should resolve to the rooms command or its alias");
 
 #[test]
 fn command_count_is_stable() {

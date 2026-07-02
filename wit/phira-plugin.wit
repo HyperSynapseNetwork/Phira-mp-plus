@@ -120,11 +120,185 @@ interface phira-events {
     }
 }
 
+/// User and room data query APIs available to plugins.
+interface phira-query {
+    use phira-types.{json-value, api-result}
+
+    /// Get user basic info (id, name, language, monitor status).
+    get-user: func(user-id: u32) -> api-result;
+
+    /// Get user's extra extension data by key.
+    get-user-extra: func(user-id: u32, key: string) -> api-result;
+
+    /// Set user's extra extension data.
+    set-user-extra: func(user-id: u32, key: string, value: string) -> api-result;
+
+    /// Get room basic info (id, host, players, state, endpoint).
+    get-room: func(room-id: string) -> api-result;
+
+    /// Get room's extra extension data by key.
+    get-room-extra: func(room-id: string, key: string) -> api-result;
+
+    /// List all active room IDs.
+    list-rooms: func() -> api-result;
+
+    /// List online user IDs.
+    list-online-users: func() -> api-result;
+
+    /// Check if a user is currently online.
+    is-user-online: func(user-id: u32) -> bool;
+}
+
+/// Room management operations.
+interface phira-room-mgmt {
+    use phira-types.{api-result}
+
+    /// Create an empty persistent room with optional endpoint override.
+    create-empty-room: func(room-id: string, endpoint: option<string>) -> api-result;
+
+    /// Kick a user from a room.
+    kick-from-room: func(room-id: string, target-id: u32) -> api-result;
+
+    /// Transfer host to another user in the room.
+    transfer-host: func(room-id: string, target-id: u32) -> api-result;
+
+    /// Set room host (none = system ? host).
+    set-host: func(room-id: string, target-id: option<u32>) -> api-result;
+
+    /// Lock or unlock a room.
+    set-room-lock: func(room-id: string, locked: bool) -> api-result;
+
+    /// Hide or unhide a room (hidden rooms excluded from Web API).
+    set-room-hidden: func(room-id: string, hidden: bool) -> api-result;
+
+    /// Close / disband a room.
+    close-room: func(room-id: string) -> api-result;
+
+    /// Set room-level phira_api_endpoint override.
+    set-room-phira-api-endpoint: func(room-id: string, endpoint: option<string>) -> api-result;
+}
+
+/// User management and moderation.
+interface phira-user-mgmt {
+    use phira-types.{api-result}
+
+    /// Kick a user from the server.
+    kick-user: func(user-id: u32, reason: string) -> api-result;
+
+    /// Ban a user.
+    ban-user: func(user-id: u32, reason: string) -> api-result;
+
+    /// Unban a user.
+    unban-user: func(user-id: u32) -> api-result;
+
+    /// List banned users.
+    get-ban-list: func() -> api-result;
+
+    /// Check if a user is banned.
+    is-banned: func(user-id: u32) -> api-result<bool, string>;
+}
+
+/// Messaging — send messages and broadcast.
+interface phira-messaging {
+    use phira-types.{api-result}
+
+    /// Send a direct message to a specific user.
+    send-to-user: func(user-id: u32, message: string) -> api-result;
+
+    /// Broadcast a message to all users in a room.
+    send-to-room: func(room-id: string, message: string) -> api-result;
+
+    /// Broadcast a message to all connected users.
+    send-to-all: func(message: string) -> api-result;
+}
+
+/// Persistence read API — incremental event/snapshot queries.
+interface phira-persistence {
+    use phira-types.{api-result}
+
+    /// Query sequential events since a sequence number.
+    query-events: func(since-sequence: u64, limit: u32, kind: option<string>, room-id: option<string>, user-id: option<u32>) -> api-result;
+
+    /// Query room snapshots since a sequence number.
+    query-room-snapshots: func(since-sequence: u64, limit: u32) -> api-result;
+
+    /// Query touch batches.
+    query-touches: func(since-sequence: u64, limit: u32, round-uuid: option<string>, player-id: option<u32>) -> api-result;
+
+    /// Query judge batches.
+    query-judges: func(since-sequence: u64, limit: u32, round-uuid: option<string>, player-id: option<u32>) -> api-result;
+
+    /// Get playtime for a user.
+    get-playtime: func(user-id: u32) -> api-result;
+
+    /// Get top playtime ranking.
+    top-playtime: func(limit: u32) -> api-result;
+}
+
+/// Admin Phira ID configuration.
+interface phira-admin {
+    use phira-types.{api-result}
+
+    /// List admin Phira IDs.
+    list-admin-ids: func() -> api-result;
+
+    /// Check if a user is an admin.
+    is-admin: func(user-id: u32) -> bool;
+
+    /// Add an admin Phira ID.
+    add-admin-id: func(user-id: u32) -> api-result;
+
+    /// Remove an admin Phira ID.
+    remove-admin-id: func(user-id: u32) -> api-result;
+
+    /// Set the full admin ID list.
+    set-admin-ids: func(ids: list<u32>) -> api-result;
+}
+
+/// Simulation management.
+interface phira-simulation {
+    use phira-types.{api-result}
+
+    /// Get current simulation status.
+    status: func() -> api-result;
+
+    /// Start a simulation run.
+    run: func(preset: string, users: option<u32>, rooms: option<u32>, duration: option<u32>) -> api-result;
+
+    /// Stop the current simulation run.
+    stop: func() -> api-result;
+
+    /// Clean up all simulation data.
+    cleanup: func() -> api-result;
+}
+
+/// Runtime diagnostics.
+interface phira-runtime {
+    use phira-types.{api-result}
+
+    /// Get runtime v2 status summary (event bus, worker, registry).
+    status: func() -> api-result;
+
+    /// Get EventBus stats.
+    events: func(limit: option<u32>) -> api-result;
+
+    /// Get registered command stats.
+    commands: func() -> api-result;
+}
+
 /// The plugin world — what a WASM plugin component must export
 /// and what the host provides.
 world phira-plugin-v2 {
     import phira-host;
     import phira-events;
+    import phira-query;
+    import phira-room-mgmt;
+    import phira-user-mgmt;
+    import phira-messaging;
+    import phira-persistence;
+    import phira-admin;
+    import phira-simulation;
+    import phira-runtime;
 
     export init: func() -> result<_, string>;
     export get-info: func() -> plugin-info;
