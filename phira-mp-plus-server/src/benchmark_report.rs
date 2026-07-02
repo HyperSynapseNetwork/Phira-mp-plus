@@ -115,7 +115,8 @@ impl BenchmarkReport {
 
     pub fn add_failure_sample(&mut self, stage: impl Into<String>, message: impl Into<String>) {
         if self.failure_samples.len() < 8 {
-            self.failure_samples.push(BenchmarkFailureSample::new(stage, message));
+            self.failure_samples
+                .push(BenchmarkFailureSample::new(stage, message));
         }
     }
 
@@ -144,7 +145,8 @@ impl BenchmarkReport {
         if report.completed_steps > 0 {
             benchmark.probes.attempted = report.total_steps as u64;
             benchmark.probes.succeeded = report.completed_steps as u64;
-            benchmark.probes.failed = report.total_steps.saturating_sub(report.completed_steps) as u64;
+            benchmark.probes.failed =
+                report.total_steps.saturating_sub(report.completed_steps) as u64;
         } else if report.total_steps > 0 {
             benchmark.probes.attempted = report.total_steps as u64;
             benchmark.probes.failed = report.total_steps as u64;
@@ -173,7 +175,8 @@ impl BenchmarkReport {
             report.totals.judge_batches,
             report.totals.round_results,
         ));
-        benchmark.add_note("simulation reports use shadow-world data and do not require Phira access");
+        benchmark
+            .add_note("simulation reports use shadow-world data and do not require Phira access");
         benchmark
     }
 
@@ -326,7 +329,9 @@ mod tests {
         assert_eq!(report.operations, Some(counters.workload_events()));
         assert_eq!(report.failed_operations, Some(0));
         assert_eq!(report.probes.succeeded, 1);
-        assert!(report.render_text().contains("Benchmark report [simulation]"));
+        assert!(report
+            .render_text()
+            .contains("Benchmark report [simulation]"));
     }
 
     #[test]

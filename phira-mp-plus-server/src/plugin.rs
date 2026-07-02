@@ -36,13 +36,27 @@ pub struct WasmRuntimeConfig {
     pub max_event_concurrency: usize,
 }
 
-const fn default_wasm_memory_mb() -> usize { 64 }
-const fn default_wasm_fuel() -> u64 { 10_000_000 }
-const fn default_wasm_stack_bytes() -> usize { 2 * 1024 * 1024 }
-const fn default_wasm_http_timeout() -> u64 { 10 }
-const fn default_wasm_http_response_bytes() -> usize { 2 * 1024 * 1024 }
-const fn default_wasm_file_bytes() -> usize { 4 * 1024 * 1024 }
-const fn default_wasm_event_concurrency() -> usize { 8 }
+const fn default_wasm_memory_mb() -> usize {
+    64
+}
+const fn default_wasm_fuel() -> u64 {
+    10_000_000
+}
+const fn default_wasm_stack_bytes() -> usize {
+    2 * 1024 * 1024
+}
+const fn default_wasm_http_timeout() -> u64 {
+    10
+}
+const fn default_wasm_http_response_bytes() -> usize {
+    2 * 1024 * 1024
+}
+const fn default_wasm_file_bytes() -> usize {
+    4 * 1024 * 1024
+}
+const fn default_wasm_event_concurrency() -> usize {
+    8
+}
 
 impl Default for WasmRuntimeConfig {
     fn default() -> Self {
@@ -126,8 +140,12 @@ pub mod wasm {
     }
 
     impl PluginHost for WasmPlugin {
-        fn meta(&self) -> &PluginMeta { &self.meta }
-        fn meta_mut(&mut self) -> &mut PluginMeta { &mut self.meta }
+        fn meta(&self) -> &PluginMeta {
+            &self.meta
+        }
+        fn meta_mut(&mut self) -> &mut PluginMeta {
+            &mut self.meta
+        }
 
         fn init(&mut self) -> Result<(), String> {
             let bytes = std::fs::read(&self.meta.path)
@@ -323,7 +341,8 @@ impl PluginManager {
                 description: format!("WASM plugin from {}", path.display()),
             };
             let mut plugin: Box<dyn PluginHost> = Box::new(wasm::WasmPlugin::new(
-                path.to_str().ok_or_else(|| "plugin path is not UTF-8".to_string())?,
+                path.to_str()
+                    .ok_or_else(|| "plugin path is not UTF-8".to_string())?,
                 info,
                 Arc::clone(&self.wasm_services),
                 self.runtime.clone(),
@@ -343,7 +362,10 @@ impl PluginManager {
                 .map(|item| item.info.name)
                 .collect();
             if existing.contains(&meta.info.name) {
-                return Err(format!("duplicate plugin display name '{}'", meta.info.name));
+                return Err(format!(
+                    "duplicate plugin display name '{}'",
+                    meta.info.name
+                ));
             }
 
             let slot = Arc::new(Mutex::new(plugin));
@@ -405,7 +427,12 @@ impl PluginManager {
             .await
             .clone()
             .into_iter()
-            .map(|slot| slot.lock().unwrap_or_else(|e| e.into_inner()).meta().clone())
+            .map(|slot| {
+                slot.lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .meta()
+                    .clone()
+            })
             .collect()
     }
 

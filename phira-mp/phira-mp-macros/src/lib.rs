@@ -1,8 +1,8 @@
 use proc_macro2::{Ident, Span, TokenStream};
 use quote::quote;
 use syn::{
-    Data, DataEnum, DataStruct, DeriveInput, Fields, GenericArgument, PathArguments, Type, Variant,
-    parse_macro_input,
+    parse_macro_input, Data, DataEnum, DataStruct, DeriveInput, Fields, GenericArgument,
+    PathArguments, Type, Variant,
 };
 
 #[proc_macro_derive(BinaryData)]

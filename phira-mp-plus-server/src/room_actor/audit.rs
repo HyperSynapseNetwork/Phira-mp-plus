@@ -56,7 +56,8 @@ impl RoomCommandGateway {
 
         let latency_us = started.elapsed().as_micros().min(u128::from(u64::MAX)) as u64;
         self.audited.fetch_add(1, Ordering::Relaxed);
-        self.latency_total_us.fetch_add(latency_us, Ordering::Relaxed);
+        self.latency_total_us
+            .fetch_add(latency_us, Ordering::Relaxed);
         self.observe_max_latency(latency_us);
 
         let command_id = self.command_seq.fetch_add(1, Ordering::Relaxed) + 1;
@@ -108,5 +109,5 @@ impl RoomCommandGateway {
             }
             recent.push_back(audit);
         }
-}
+    }
 }

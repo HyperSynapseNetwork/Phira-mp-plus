@@ -65,9 +65,21 @@ mod tests {
 
     #[test]
     fn queue_health_is_derived_from_observation_not_a_throttle() {
-        assert_eq!(PersistenceQueueHealth::from_counts(0, 100, 0), PersistenceQueueHealth::Idle);
-        assert_eq!(PersistenceQueueHealth::from_counts(10, 100, 0), PersistenceQueueHealth::Healthy);
-        assert_eq!(PersistenceQueueHealth::from_counts(75, 100, 0), PersistenceQueueHealth::Backlogged);
-        assert_eq!(PersistenceQueueHealth::from_counts(1, 100, 1), PersistenceQueueHealth::Dropping);
+        assert_eq!(
+            PersistenceQueueHealth::from_counts(0, 100, 0),
+            PersistenceQueueHealth::Idle
+        );
+        assert_eq!(
+            PersistenceQueueHealth::from_counts(10, 100, 0),
+            PersistenceQueueHealth::Healthy
+        );
+        assert_eq!(
+            PersistenceQueueHealth::from_counts(75, 100, 0),
+            PersistenceQueueHealth::Backlogged
+        );
+        assert_eq!(
+            PersistenceQueueHealth::from_counts(1, 100, 1),
+            PersistenceQueueHealth::Dropping
+        );
     }
 }

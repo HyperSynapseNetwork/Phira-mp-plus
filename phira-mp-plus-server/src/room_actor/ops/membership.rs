@@ -1,6 +1,9 @@
 //! Membership and lifecycle room command operations.
 
-use super::super::{command::{RoomActorCommand, RoomCommandKind}, RoomCommandGateway};
+use super::super::{
+    command::{RoomActorCommand, RoomCommandKind},
+    RoomCommandGateway,
+};
 use crate::{plugin::PluginEvent, server::PlusServerState};
 use phira_mp_common::{Message, RoomEvent};
 use serde_json::Value;
@@ -26,7 +29,14 @@ impl RoomCommandGateway {
                 || self.kick_user_inline(state, room_id, target_id),
             )
             .await;
-        self.finish_command(state, RoomCommandKind::KickUser.action(), room_id, started, result).into_legacy()
+        self.finish_command(
+            state,
+            RoomCommandKind::KickUser.action(),
+            room_id,
+            started,
+            result,
+        )
+        .into_legacy()
     }
 
     pub(in crate::room_actor) async fn kick_user_inline(
@@ -80,7 +90,11 @@ impl RoomCommandGateway {
     }
 
     /// Close and remove a room.
-    pub async fn close_room(&self, state: &PlusServerState, room_id: &str) -> Result<Value, String> {
+    pub async fn close_room(
+        &self,
+        state: &PlusServerState,
+        room_id: &str,
+    ) -> Result<Value, String> {
         let started = Instant::now();
         let result = self
             .room_mailbox_or_inline(
@@ -92,10 +106,21 @@ impl RoomCommandGateway {
                 || self.close_room_inline(state, room_id),
             )
             .await;
-        self.finish_command(state, RoomCommandKind::CloseRoom.action(), room_id, started, result).into_legacy()
+        self.finish_command(
+            state,
+            RoomCommandKind::CloseRoom.action(),
+            room_id,
+            started,
+            result,
+        )
+        .into_legacy()
     }
 
-    pub(in crate::room_actor) async fn close_room_inline(&self, state: &PlusServerState, room_id: &str) -> Result<Value, String> {
+    pub(in crate::room_actor) async fn close_room_inline(
+        &self,
+        state: &PlusServerState,
+        room_id: &str,
+    ) -> Result<Value, String> {
         let (rid, room) = self.find_room(state, room_id).await?;
         let room_id_str = room.id.to_string();
         room.send(Message::Chat {

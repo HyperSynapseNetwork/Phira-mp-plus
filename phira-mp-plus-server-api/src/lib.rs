@@ -12,13 +12,37 @@ use std::sync::Arc;
 /// 插件事件
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum PluginEvent {
-    UserConnect { user_id: i32, user_name: String, user_ip: String },
-    UserDisconnect { user_id: i32, user_name: String },
-    RoomCreate { user_id: i32, room_id: String },
-    RoomJoin { user_id: i32, room_id: String, is_monitor: bool },
-    RoomLeave { user_id: i32, room_id: String },
-    RoomModify { user_id: i32, room_id: String, data: String },
-    GameStart { user_id: i32, room_id: String },
+    UserConnect {
+        user_id: i32,
+        user_name: String,
+        user_ip: String,
+    },
+    UserDisconnect {
+        user_id: i32,
+        user_name: String,
+    },
+    RoomCreate {
+        user_id: i32,
+        room_id: String,
+    },
+    RoomJoin {
+        user_id: i32,
+        room_id: String,
+        is_monitor: bool,
+    },
+    RoomLeave {
+        user_id: i32,
+        room_id: String,
+    },
+    RoomModify {
+        user_id: i32,
+        room_id: String,
+        data: String,
+    },
+    GameStart {
+        user_id: i32,
+        room_id: String,
+    },
     GameEnd {
         user_id: i32,
         user_name: String,
@@ -32,10 +56,22 @@ pub enum PluginEvent {
         max_combo: i32,
         full_combo: bool,
     },
-    PlayerTouches { user_id: i32, room_id: String, data: Vec<TouchEventPoint> },
-    PlayerJudges { user_id: i32, room_id: String, data: Vec<JudgeEventItem> },
+    PlayerTouches {
+        user_id: i32,
+        room_id: String,
+        data: Vec<TouchEventPoint>,
+    },
+    PlayerJudges {
+        user_id: i32,
+        room_id: String,
+        data: Vec<JudgeEventItem>,
+    },
     /// 一轮游戏完成（所有玩家均已提交成绩）
-    RoundComplete { room_id: String, chart_id: i32, chart_name: String },
+    RoundComplete {
+        room_id: String,
+        chart_id: i32,
+        chart_name: String,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -67,7 +103,11 @@ pub struct PluginInfo {
 // ── HTTP 路由注册 ──
 
 /// HTTP 处理器：接收 (请求体JSON, 路径参数) → 返回 JSON 或错误
-pub type HttpHandler = Arc<dyn Fn(Option<serde_json::Value>, Vec<String>) -> Result<serde_json::Value, (u16, String)> + Send + Sync>;
+pub type HttpHandler = Arc<
+    dyn Fn(Option<serde_json::Value>, Vec<String>) -> Result<serde_json::Value, (u16, String)>
+        + Send
+        + Sync,
+>;
 
 /// HttpHandle 内部 trait（用于类型擦除）
 pub trait HttpHandleInner: Send + Sync {
@@ -82,7 +122,9 @@ pub struct HttpHandle {
 
 impl HttpHandle {
     pub fn new(inner: impl HttpHandleInner + 'static) -> Self {
-        Self { inner: Arc::new(inner) }
+        Self {
+            inner: Arc::new(inner),
+        }
     }
 
     pub fn register_route(&self, path: &str, handler: HttpHandler) {
@@ -107,7 +149,9 @@ impl ServerStateQuery {
     pub fn new(
         inner: impl Fn(&str, &[Value]) -> Result<Value, String> + Send + Sync + 'static,
     ) -> Self {
-        Self { inner: Arc::new(inner) }
+        Self {
+            inner: Arc::new(inner),
+        }
     }
 
     /// 调用查询。method: "rooms.list" / "rooms.info" / "rooms.by_user"
@@ -126,5 +170,3 @@ impl ServerStateQuery {
         rx.recv().unwrap_or(Err("query timeout".to_string()))
     }
 }
-
-

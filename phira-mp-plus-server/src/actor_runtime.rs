@@ -73,12 +73,18 @@ impl ActorRuntime {
         ActorRuntimeStats {
             phase: "blueprint".to_string(),
             web_management_api: "out_of_scope".to_string(),
-            rule: "mirror first; then route reads; then route writes; delete old direct calls last".to_string(),
+            rule: "mirror first; then route reads; then route writes; delete old direct calls last"
+                .to_string(),
             boundaries,
         }
     }
 
-    pub async fn mark_status(&self, name: &str, status: ActorBoundaryStatus, next_step: impl Into<String>) {
+    pub async fn mark_status(
+        &self,
+        name: &str,
+        status: ActorBoundaryStatus,
+        next_step: impl Into<String>,
+    ) {
         let mut boundaries = self.boundaries.write().await;
         if let Some(boundary) = boundaries.get_mut(name) {
             boundary.status = status;

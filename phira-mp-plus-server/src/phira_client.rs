@@ -21,7 +21,8 @@ use tracing::warn;
 
 pub const PHIRA_RETRY_NOTICE: &str = "Phira服务器太烂了，我们正在重试以保证你的流畅体验";
 pub const PHIRA_LEGACY_502_MARKER: &str = "认证失败 502错误";
-pub const PHIRA_LEGACY_502_TEXT: &str = "认证失败 502错误 Phira服务器太烂了，我们正在重试以保证你的流畅体验 /拜谢";
+pub const PHIRA_LEGACY_502_TEXT: &str =
+    "认证失败 502错误 Phira服务器太烂了，我们正在重试以保证你的流畅体验 /拜谢";
 
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct PhiraHttpPolicyConfig {
@@ -45,10 +46,19 @@ pub struct PhiraHttpPolicyConfig {
 impl PhiraHttpPolicyConfig {
     pub fn into_policy(self) -> PhiraHttpPolicy {
         let defaults = PhiraHttpPolicy::default();
-        let timeout_ms = self.timeout_ms.unwrap_or(defaults.timeout.as_millis() as u64).clamp(500, 60_000);
+        let timeout_ms = self
+            .timeout_ms
+            .unwrap_or(defaults.timeout.as_millis() as u64)
+            .clamp(500, 60_000);
         let max_retries = self.max_retries.unwrap_or(defaults.max_retries).min(10);
-        let base_ms = self.base_backoff_ms.unwrap_or(defaults.base_backoff.as_millis() as u64).clamp(50, 30_000);
-        let max_ms = self.max_backoff_ms.unwrap_or(defaults.max_backoff.as_millis() as u64).clamp(base_ms, 120_000);
+        let base_ms = self
+            .base_backoff_ms
+            .unwrap_or(defaults.base_backoff.as_millis() as u64)
+            .clamp(50, 30_000);
+        let max_ms = self
+            .max_backoff_ms
+            .unwrap_or(defaults.max_backoff.as_millis() as u64)
+            .clamp(base_ms, 120_000);
         PhiraHttpPolicy {
             timeout: Duration::from_millis(timeout_ms),
             max_retries,
@@ -74,7 +84,10 @@ impl PhiraCircuitBreakerConfig {
         let defaults = PhiraCircuitBreakerPolicy::default();
         PhiraCircuitBreakerPolicy {
             enabled: self.enabled.unwrap_or(defaults.enabled),
-            failure_threshold: self.failure_threshold.unwrap_or(defaults.failure_threshold).clamp(2, 100),
+            failure_threshold: self
+                .failure_threshold
+                .unwrap_or(defaults.failure_threshold)
+                .clamp(2, 100),
             open_duration: Duration::from_millis(
                 self.open_duration_ms
                     .unwrap_or(defaults.open_duration.as_millis() as u64)
@@ -329,9 +342,7 @@ pub struct PhiraRetryClient {
 
 impl PhiraRetryClient {
     pub fn new(policy: PhiraHttpPolicy) -> Result<Self> {
-        let client = reqwest::Client::builder()
-            .timeout(policy.timeout)
-            .build()?;
+        let client = reqwest::Client::builder().timeout(policy.timeout).build()?;
         let circuit_breaker = PhiraCircuitBreaker::new(policy.circuit_breaker.clone());
         Ok(Self {
             client,
@@ -348,13 +359,27 @@ impl PhiraRetryClient {
             retry_attempts: self.counters.retry_attempts.load(Ordering::Relaxed),
             failures: self.counters.failures.load(Ordering::Relaxed),
             retry_notices: self.counters.retry_notices.load(Ordering::Relaxed),
-            circuit_open_rejections: self.counters.circuit_open_rejections.load(Ordering::Relaxed),
+            circuit_open_rejections: self
+                .counters
+                .circuit_open_rejections
+                .load(Ordering::Relaxed),
             transport_errors: self.counters.transport_errors.load(Ordering::Relaxed),
             status_errors: self.counters.status_errors.load(Ordering::Relaxed),
-            retryable_status_failures: self.counters.retryable_status_failures.load(Ordering::Relaxed),
-            non_retryable_status_failures: self.counters.non_retryable_status_failures.load(Ordering::Relaxed),
+            retryable_status_failures: self
+                .counters
+                .retryable_status_failures
+                .load(Ordering::Relaxed),
+            non_retryable_status_failures: self
+                .counters
+                .non_retryable_status_failures
+                .load(Ordering::Relaxed),
             decode_errors: self.counters.decode_errors.load(Ordering::Relaxed),
-            last_error: self.counters.last_error.read().ok().and_then(|value| value.clone()),
+            last_error: self
+                .counters
+                .last_error
+                .read()
+                .ok()
+                .and_then(|value| value.clone()),
             policy: self.policy.snapshot(),
             circuit_breaker: self.circuit_breaker.stats(),
         }
@@ -381,7 +406,11 @@ impl PhiraRetryClient {
         let endpoint = endpoint_override
             .unwrap_or(default_endpoint)
             .trim_end_matches('/');
-        let path = if path.starts_with('/') { path.to_string() } else { format!("/{path}") };
+        let path = if path.starts_with('/') {
+            path.to_string()
+        } else {
+            format!("/{path}")
+        };
         let url = format!("{endpoint}{path}");
 
         for attempt in 0..=self.policy.max_retries {
@@ -402,7 +431,10 @@ impl PhiraRetryClient {
                             }
                             Err(err) => {
                                 self.circuit_breaker.record_failure();
-                                self.record_failure_kind(PhiraHttpFailureKind::Decode, err.to_string());
+                                self.record_failure_kind(
+                                    PhiraHttpFailureKind::Decode,
+                                    err.to_string(),
+                                );
                                 return Err(err.into());
                             }
                         }
@@ -429,7 +461,9 @@ impl PhiraRetryClient {
                             format!("Phira API request failed: {status} {body}"),
                         );
                     }
-                    if status == reqwest::StatusCode::BAD_GATEWAY || body.contains(PHIRA_LEGACY_502_MARKER) {
+                    if status == reqwest::StatusCode::BAD_GATEWAY
+                        || body.contains(PHIRA_LEGACY_502_MARKER)
+                    {
                         bail!(PHIRA_LEGACY_502_TEXT);
                     }
                     bail!("Phira API request failed: {status} {body}");
@@ -479,18 +513,26 @@ impl PhiraRetryClient {
         self.counters.failures.fetch_add(1, Ordering::Relaxed);
         match kind {
             PhiraHttpFailureKind::CircuitOpen => {
-                self.counters.circuit_open_rejections.fetch_add(1, Ordering::Relaxed);
+                self.counters
+                    .circuit_open_rejections
+                    .fetch_add(1, Ordering::Relaxed);
             }
             PhiraHttpFailureKind::Transport => {
-                self.counters.transport_errors.fetch_add(1, Ordering::Relaxed);
+                self.counters
+                    .transport_errors
+                    .fetch_add(1, Ordering::Relaxed);
             }
             PhiraHttpFailureKind::RetryableStatus => {
                 self.counters.status_errors.fetch_add(1, Ordering::Relaxed);
-                self.counters.retryable_status_failures.fetch_add(1, Ordering::Relaxed);
+                self.counters
+                    .retryable_status_failures
+                    .fetch_add(1, Ordering::Relaxed);
             }
             PhiraHttpFailureKind::NonRetryableStatus => {
                 self.counters.status_errors.fetch_add(1, Ordering::Relaxed);
-                self.counters.non_retryable_status_failures.fetch_add(1, Ordering::Relaxed);
+                self.counters
+                    .non_retryable_status_failures
+                    .fetch_add(1, Ordering::Relaxed);
             }
             PhiraHttpFailureKind::Decode => {
                 self.counters.decode_errors.fetch_add(1, Ordering::Relaxed);
@@ -513,7 +555,9 @@ fn phira_status_retryable(status: reqwest::StatusCode, body: &str) -> bool {
 fn phira_error_retryable(err: &reqwest::Error) -> bool {
     err.is_timeout()
         || err.is_connect()
-        || err.status().is_some_and(|status| phira_status_retryable(status, ""))
+        || err
+            .status()
+            .is_some_and(|status| phira_status_retryable(status, ""))
         || err.to_string().contains(PHIRA_LEGACY_502_MARKER)
         || err.to_string().contains(PHIRA_LEGACY_502_TEXT)
 }
@@ -536,8 +580,14 @@ mod tests {
 
     #[test]
     fn client_side_status_is_not_retryable() {
-        assert!(!phira_status_retryable(reqwest::StatusCode::BAD_REQUEST, "bad request"));
-        assert!(!phira_status_retryable(reqwest::StatusCode::UNAUTHORIZED, "unauthorized"));
+        assert!(!phira_status_retryable(
+            reqwest::StatusCode::BAD_REQUEST,
+            "bad request"
+        ));
+        assert!(!phira_status_retryable(
+            reqwest::StatusCode::UNAUTHORIZED,
+            "unauthorized"
+        ));
     }
 
     #[test]
@@ -578,6 +628,9 @@ mod tests {
         assert_eq!(policy.base_backoff, Duration::from_millis(50));
         assert_eq!(policy.max_backoff, Duration::from_millis(50));
         assert_eq!(policy.circuit_breaker.failure_threshold, 2);
-        assert_eq!(policy.circuit_breaker.open_duration, Duration::from_millis(1_000));
+        assert_eq!(
+            policy.circuit_breaker.open_duration,
+            Duration::from_millis(1_000)
+        );
     }
 }

@@ -63,7 +63,7 @@ persistence_retention_days: 30
 # 开发阶段推荐 direct_only；生产稳定后建议 worker_preferred。
 # runtime_v2:
 #   persistence_queue_capacity: 4096
-#   telemetry_cutover_mode: direct_only  # direct_only (safe) | worker_preferred (opt-in, fallback/)
+#   telemetry_cutover_mode: direct_only  # direct_only (safe) | worker_preferred (direct + mirror)
 #   telemetry_batcher:
 #     enabled: true
 #     dry_run: false

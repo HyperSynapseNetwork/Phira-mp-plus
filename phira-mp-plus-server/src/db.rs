@@ -64,8 +64,11 @@ fn now_ms() -> i64 {
         .unwrap_or(0)
 }
 
-
-fn with_telemetry_storage_meta(mut payload: Value, record: &RuntimeTelemetryBatchRecord, written_at: i64) -> Value {
+fn with_telemetry_storage_meta(
+    mut payload: Value,
+    record: &RuntimeTelemetryBatchRecord,
+    written_at: i64,
+) -> Value {
     if let Some(obj) = payload.as_object_mut() {
         obj.entry("runtime_v2_schema_version".to_string())
             .or_insert_with(|| serde_json::json!(record.schema_version));
@@ -126,18 +129,25 @@ impl DbManager {
                             {
                                 tracing::info!("数据库不存在，尝试自动创建...");
                                 let pieces = url.rsplitn(2, '/').collect::<Vec<_>>();
-                                let base = pieces.get(1).copied().unwrap_or("postgres://postgres:postgres@localhost:5432");
+                                let base = pieces
+                                    .get(1)
+                                    .copied()
+                                    .unwrap_or("postgres://postgres:postgres@localhost:5432");
                                 let admin_url = format!("{base}/postgres");
                                 if let Ok(admin_pool) = sqlx::PgPool::connect(&admin_url).await {
-                                    let db_name = pieces.first().copied().unwrap_or("phira_mp_plus");
+                                    let db_name =
+                                        pieces.first().copied().unwrap_or("phira_mp_plus");
                                     let safe_name = db_name.replace('"', "");
-                                    let _ = sqlx::query(&format!("CREATE DATABASE \"{}\"", safe_name))
-                                        .execute(&admin_pool)
-                                        .await;
+                                    let _ =
+                                        sqlx::query(&format!("CREATE DATABASE \"{}\"", safe_name))
+                                            .execute(&admin_pool)
+                                            .await;
                                     admin_pool.close().await;
                                     if let Ok(new_pool) = sqlx::PgPool::connect(url).await {
                                         if let Err(e) = init_tables(&new_pool).await {
-                                            tracing::warn!("数据库建表失败: {e:?}，禁用 PostgreSQL 持久化");
+                                            tracing::warn!(
+                                                "数据库建表失败: {e:?}，禁用 PostgreSQL 持久化"
+                                            );
                                             return Self::None;
                                         }
                                         tracing::info!("PostgreSQL 已连接（自动建库）");
@@ -175,13 +185,20 @@ impl DbManager {
                 let now = now_secs();
                 let _ = sqlx::query(
                     "INSERT INTO playtime (user_id, total_secs, session_start) VALUES ($1, 0, $2)
-                     ON CONFLICT (user_id) DO UPDATE SET session_start = $2"
+                     ON CONFLICT (user_id) DO UPDATE SET session_start = $2",
                 )
                 .bind(user_id)
                 .bind(now)
                 .execute(&pool)
                 .await;
-                let _ = append_event_pg(&pool, "user.online", None, Some(user_id), serde_json::json!({"user_id": user_id})).await;
+                let _ = append_event_pg(
+                    &pool,
+                    "user.online",
+                    None,
+                    Some(user_id),
+                    serde_json::json!({"user_id": user_id}),
+                )
+                .await;
             });
         }
     }
@@ -201,12 +218,17 @@ impl DbManager {
                 .bind(user_id)
                 .execute(&pool)
                 .await;
-                let _ = append_event_pg(&pool, "user.offline", None, Some(user_id), serde_json::json!({"user_id": user_id})).await;
+                let _ = append_event_pg(
+                    &pool,
+                    "user.offline",
+                    None,
+                    Some(user_id),
+                    serde_json::json!({"user_id": user_id}),
+                )
+                .await;
             });
         }
     }
-
-
 
     pub fn record_runtime_persistence_meta_sync(&self, key: &str, value: Value) {
         #[cfg(feature = "postgres")]
@@ -229,7 +251,10 @@ impl DbManager {
         }
     }
 
-    pub async fn record_runtime_telemetry_batches(&self, records: Vec<RuntimeTelemetryBatchRecord>) -> bool {
+    pub async fn record_runtime_telemetry_batches(
+        &self,
+        records: Vec<RuntimeTelemetryBatchRecord>,
+    ) -> bool {
         if records.is_empty() {
             return true;
         }
@@ -297,7 +322,10 @@ impl DbManager {
         false
     }
 
-    pub fn record_runtime_telemetry_batches_sync(&self, records: Vec<RuntimeTelemetryBatchRecord>) -> bool {
+    pub fn record_runtime_telemetry_batches_sync(
+        &self,
+        records: Vec<RuntimeTelemetryBatchRecord>,
+    ) -> bool {
         if records.is_empty() {
             return true;
         }
@@ -315,8 +343,10 @@ impl DbManager {
         false
     }
 
-
-    pub async fn record_runtime_benchmark_report(&self, record: crate::persistence::BenchmarkReportPersistenceRecord) -> bool {
+    pub async fn record_runtime_benchmark_report(
+        &self,
+        record: crate::persistence::BenchmarkReportPersistenceRecord,
+    ) -> bool {
         #[cfg(feature = "postgres")]
         if let Self::Pg(pool) = self {
             let now = now_ms();
@@ -354,7 +384,10 @@ impl DbManager {
         false
     }
 
-    pub fn record_runtime_benchmark_report_sync(&self, record: crate::persistence::BenchmarkReportPersistenceRecord) -> bool {
+    pub fn record_runtime_benchmark_report_sync(
+        &self,
+        record: crate::persistence::BenchmarkReportPersistenceRecord,
+    ) -> bool {
         #[cfg(feature = "postgres")]
         if let Self::Pg(pool) = self {
             let pool = pool.clone();
@@ -410,7 +443,9 @@ impl DbManager {
                 .filter_map(|row| {
                     let raw_mode = row.try_get::<String, _>("mode").ok()?;
                     let mode = benchmark_mode_from_str(&raw_mode)?;
-                    let raw_report = row.try_get::<String, _>("report").unwrap_or_else(|_| "{}".to_string());
+                    let raw_report = row
+                        .try_get::<String, _>("report")
+                        .unwrap_or_else(|_| "{}".to_string());
                     Some(crate::persistence::BenchmarkReportHistoryRow {
                         sequence: row.try_get::<i64, _>("sequence").unwrap_or_default(),
                         mode,
@@ -418,13 +453,17 @@ impl DbManager {
                         duration_secs: row.try_get::<i64, _>("duration_secs").unwrap_or_default(),
                         is_simulation: row.try_get::<bool, _>("is_simulation").unwrap_or(false),
                         operations: row.try_get::<Option<i64>, _>("operations").ok().flatten(),
-                        failed_operations: row.try_get::<Option<i64>, _>("failed_operations").ok().flatten(),
+                        failed_operations: row
+                            .try_get::<Option<i64>, _>("failed_operations")
+                            .ok()
+                            .flatten(),
                         probes_failed: row.try_get::<i64, _>("probes_failed").unwrap_or_default(),
                         probes_blocked: row.try_get::<i64, _>("probes_blocked").unwrap_or_default(),
                         created_at: row.try_get::<i64, _>("created_at").unwrap_or_default(),
                         source: row.try_get::<String, _>("source").unwrap_or_default(),
                         schema_version: row.try_get::<i32, _>("schema_version").unwrap_or_default(),
-                        report: serde_json::from_str(&raw_report).unwrap_or_else(|_| serde_json::json!({})),
+                        report: serde_json::from_str(&raw_report)
+                            .unwrap_or_else(|_| serde_json::json!({})),
                     })
                 })
                 .collect();
@@ -432,7 +471,13 @@ impl DbManager {
         Vec::new()
     }
 
-    pub fn record_user_seen_sync(&self, user_id: i32, name: &str, language: &str, ip: Option<String>) {
+    pub fn record_user_seen_sync(
+        &self,
+        user_id: i32,
+        name: &str,
+        language: &str,
+        ip: Option<String>,
+    ) {
         #[cfg(feature = "postgres")]
         if let Self::Pg(pool) = self {
             let pool = pool.clone();
@@ -456,12 +501,19 @@ impl DbManager {
                 .bind(now)
                 .execute(&pool)
                 .await;
-                let _ = append_event_pg(&pool, "user.connect", None, Some(user_id), serde_json::json!({
-                    "user_id": user_id,
-                    "name": name,
-                    "language": language,
-                    "ip": ip,
-                })).await;
+                let _ = append_event_pg(
+                    &pool,
+                    "user.connect",
+                    None,
+                    Some(user_id),
+                    serde_json::json!({
+                        "user_id": user_id,
+                        "name": name,
+                        "language": language,
+                        "ip": ip,
+                    }),
+                )
+                .await;
             });
         }
     }
@@ -480,21 +532,33 @@ impl DbManager {
                 .bind(now)
                 .execute(&pool)
                 .await;
-                let _ = append_event_pg(&pool, "user.disconnect", None, Some(user_id), serde_json::json!({
-                    "user_id": user_id,
-                    "name": name,
-                })).await;
+                let _ = append_event_pg(
+                    &pool,
+                    "user.disconnect",
+                    None,
+                    Some(user_id),
+                    serde_json::json!({
+                        "user_id": user_id,
+                        "name": name,
+                    }),
+                )
+                .await;
             });
         }
     }
 
-    pub async fn record_sim_event(&self, run_id: Option<String>, kind: &str, payload: Value) -> bool {
+    pub async fn record_sim_event(
+        &self,
+        run_id: Option<String>,
+        kind: &str,
+        payload: Value,
+    ) -> bool {
         #[cfg(feature = "postgres")]
         if let Self::Pg(pool) = self {
             let now = now_ms();
             return sqlx::query(
                 "INSERT INTO mp_sim_events (run_id, kind, payload, created_at)
-                 VALUES ($1, $2, $3, $4)"
+                 VALUES ($1, $2, $3, $4)",
             )
             .bind(run_id.as_deref())
             .bind(kind)
@@ -533,17 +597,31 @@ impl DbManager {
         }
     }
 
-    pub async fn record_room_event(&self, kind: &str, room_id: Option<String>, user_id: Option<i32>, payload: Value) -> bool {
+    pub async fn record_room_event(
+        &self,
+        kind: &str,
+        room_id: Option<String>,
+        user_id: Option<i32>,
+        payload: Value,
+    ) -> bool {
         #[cfg(feature = "postgres")]
         if let Self::Pg(pool) = self {
-            return append_event_pg(pool, kind, room_id.as_deref(), user_id, payload).await.is_ok();
+            return append_event_pg(pool, kind, room_id.as_deref(), user_id, payload)
+                .await
+                .is_ok();
         }
         #[cfg(not(feature = "postgres"))]
         let _ = (kind, room_id, user_id, payload);
         false
     }
 
-    pub fn record_room_event_sync(&self, kind: &str, room_id: Option<String>, user_id: Option<i32>, payload: Value) {
+    pub fn record_room_event_sync(
+        &self,
+        kind: &str,
+        room_id: Option<String>,
+        user_id: Option<i32>,
+        payload: Value,
+    ) {
         #[cfg(feature = "postgres")]
         if let Self::Pg(pool) = self {
             let pool = pool.clone();
@@ -557,7 +635,13 @@ impl DbManager {
         let _ = (kind, room_id, user_id, payload);
     }
 
-    pub fn record_user_room_history_sync(&self, user_id: i32, room_id: String, room_uuid: String, joined_at: i64) {
+    pub fn record_user_room_history_sync(
+        &self,
+        user_id: i32,
+        room_id: String,
+        room_uuid: String,
+        joined_at: i64,
+    ) {
         #[cfg(feature = "postgres")]
         if let Self::Pg(pool) = self {
             let pool = pool.clone();
@@ -581,12 +665,19 @@ impl DbManager {
                 .bind(joined_at)
                 .execute(&pool)
                 .await;
-                let _ = append_event_pg(&pool, "room.join", Some(&room_id), Some(user_id), serde_json::json!({
-                    "user_id": user_id,
-                    "room_id": room_id,
-                    "room_uuid": room_uuid,
-                    "joined_at": joined_at,
-                })).await;
+                let _ = append_event_pg(
+                    &pool,
+                    "room.join",
+                    Some(&room_id),
+                    Some(user_id),
+                    serde_json::json!({
+                        "user_id": user_id,
+                        "room_id": room_id,
+                        "room_uuid": room_uuid,
+                        "joined_at": joined_at,
+                    }),
+                )
+                .await;
             });
         }
     }
@@ -594,14 +685,18 @@ impl DbManager {
     pub async fn get_playtime(&self, user_id: i32) -> Option<PlaytimeRow> {
         #[cfg(feature = "postgres")]
         if let Self::Pg(pool) = self {
-            let row = sqlx::query("SELECT total_secs, session_start FROM playtime WHERE user_id = $1")
-                .bind(user_id)
-                .fetch_optional(pool)
-                .await
-                .ok()??;
+            let row =
+                sqlx::query("SELECT total_secs, session_start FROM playtime WHERE user_id = $1")
+                    .bind(user_id)
+                    .fetch_optional(pool)
+                    .await
+                    .ok()??;
             return Some(PlaytimeRow {
                 total_secs: row.try_get::<i64, _>("total_secs").unwrap_or(0),
-                session_start: row.try_get::<Option<i64>, _>("session_start").ok().flatten(),
+                session_start: row
+                    .try_get::<Option<i64>, _>("session_start")
+                    .ok()
+                    .flatten(),
             });
         }
         None
@@ -622,11 +717,16 @@ impl DbManager {
             .fetch_all(pool)
             .await
             .unwrap_or_default();
-            return rows.into_iter().map(|row| serde_json::json!({
-                "user_id": row.try_get::<i32, _>("user_id").unwrap_or_default(),
-                "name": row.try_get::<String, _>("name").unwrap_or_default(),
-                "total_secs": row.try_get::<i64, _>("secs").unwrap_or_default(),
-            })).collect();
+            return rows
+                .into_iter()
+                .map(|row| {
+                    serde_json::json!({
+                        "user_id": row.try_get::<i32, _>("user_id").unwrap_or_default(),
+                        "name": row.try_get::<String, _>("name").unwrap_or_default(),
+                        "total_secs": row.try_get::<i64, _>("secs").unwrap_or_default(),
+                    })
+                })
+                .collect();
         }
         Vec::new()
     }
@@ -652,10 +752,12 @@ impl DbManager {
     pub async fn get_admin_ids(&self) -> Option<Vec<i32>> {
         #[cfg(feature = "postgres")]
         if let Self::Pg(pool) = self {
-            let row = sqlx::query("SELECT value::text AS value FROM mp_settings WHERE key = 'admin_phira_ids'")
-                .fetch_optional(pool)
-                .await
-                .ok()??;
+            let row = sqlx::query(
+                "SELECT value::text AS value FROM mp_settings WHERE key = 'admin_phira_ids'",
+            )
+            .fetch_optional(pool)
+            .await
+            .ok()??;
             let raw = row.try_get::<String, _>("value").ok()?;
             return serde_json::from_str(&raw).ok();
         }
@@ -690,7 +792,14 @@ impl DbManager {
             .bind(now)
             .execute(pool)
             .await;
-            let _ = append_event_pg(pool, "round.open", Some(&meta.room_id), None, serde_json::to_value(meta).unwrap_or_default()).await;
+            let _ = append_event_pg(
+                pool,
+                "round.open",
+                Some(&meta.room_id),
+                None,
+                serde_json::to_value(meta).unwrap_or_default(),
+            )
+            .await;
         }
     }
 
@@ -706,28 +815,60 @@ impl DbManager {
             .bind(now)
             .execute(pool)
             .await;
-            let _ = append_event_pg(pool, "round.close", None, None, serde_json::json!({"round_uuid": round_uuid, "finished_at": now})).await;
+            let _ = append_event_pg(
+                pool,
+                "round.close",
+                None,
+                None,
+                serde_json::json!({"round_uuid": round_uuid, "finished_at": now}),
+            )
+            .await;
         }
     }
 
-    pub async fn append_touches(&self, round_uuid: &str, player_id: i32, data: &[crate::plugin::TouchEventPoint]) {
-        if data.is_empty() { return; }
+    pub async fn append_touches(
+        &self,
+        round_uuid: &str,
+        player_id: i32,
+        data: &[crate::plugin::TouchEventPoint],
+    ) {
+        if data.is_empty() {
+            return;
+        }
         let value = serde_json::to_value(data).unwrap_or(Value::Array(Vec::new()));
-        self.append_player_array(round_uuid, player_id, "touches", value.clone()).await;
-        self.append_touch_batch(round_uuid, player_id, data, value).await;
+        self.append_player_array(round_uuid, player_id, "touches", value.clone())
+            .await;
+        self.append_touch_batch(round_uuid, player_id, data, value)
+            .await;
     }
 
-    pub async fn append_judges(&self, round_uuid: &str, player_id: i32, data: &[crate::plugin::JudgeEventItem]) {
-        if data.is_empty() { return; }
+    pub async fn append_judges(
+        &self,
+        round_uuid: &str,
+        player_id: i32,
+        data: &[crate::plugin::JudgeEventItem],
+    ) {
+        if data.is_empty() {
+            return;
+        }
         let value = serde_json::to_value(data).unwrap_or(Value::Array(Vec::new()));
-        self.append_player_array(round_uuid, player_id, "judges", value.clone()).await;
-        self.append_judge_batch(round_uuid, player_id, data, value).await;
+        self.append_player_array(round_uuid, player_id, "judges", value.clone())
+            .await;
+        self.append_judge_batch(round_uuid, player_id, data, value)
+            .await;
     }
 
-    async fn append_touch_batch(&self, round_uuid: &str, player_id: i32, data: &[crate::plugin::TouchEventPoint], payload: Value) {
+    async fn append_touch_batch(
+        &self,
+        round_uuid: &str,
+        player_id: i32,
+        data: &[crate::plugin::TouchEventPoint],
+        payload: Value,
+    ) {
         #[cfg(feature = "postgres")]
         if let Self::Pg(pool) = self {
-            let (first_game_time, last_game_time) = telemetry_time_range(data.iter().map(|p| p.time as f64));
+            let (first_game_time, last_game_time) =
+                telemetry_time_range(data.iter().map(|p| p.time as f64));
             let now = now_ms();
             let count = i32::try_from(data.len()).unwrap_or(i32::MAX);
             let payload = payload.to_string();
@@ -748,10 +889,17 @@ impl DbManager {
         }
     }
 
-    async fn append_judge_batch(&self, round_uuid: &str, player_id: i32, data: &[crate::plugin::JudgeEventItem], payload: Value) {
+    async fn append_judge_batch(
+        &self,
+        round_uuid: &str,
+        player_id: i32,
+        data: &[crate::plugin::JudgeEventItem],
+        payload: Value,
+    ) {
         #[cfg(feature = "postgres")]
         if let Self::Pg(pool) = self {
-            let (first_game_time, last_game_time) = telemetry_time_range(data.iter().map(|p| p.time as f64));
+            let (first_game_time, last_game_time) =
+                telemetry_time_range(data.iter().map(|p| p.time as f64));
             let now = now_ms();
             let count = i32::try_from(data.len()).unwrap_or(i32::MAX);
             let payload = payload.to_string();
@@ -772,7 +920,13 @@ impl DbManager {
         }
     }
 
-    async fn append_player_array(&self, round_uuid: &str, player_id: i32, column: &str, data: Value) {
+    async fn append_player_array(
+        &self,
+        round_uuid: &str,
+        player_id: i32,
+        column: &str,
+        data: Value,
+    ) {
         #[cfg(feature = "postgres")]
         if let Self::Pg(pool) = self {
             if !data.as_array().is_some_and(|arr| !arr.is_empty()) {
@@ -804,7 +958,12 @@ impl DbManager {
         }
     }
 
-    pub async fn record_round_result(&self, round_uuid: &str, room_id: &str, result: &crate::room::PlayResult) {
+    pub async fn record_round_result(
+        &self,
+        round_uuid: &str,
+        room_id: &str,
+        result: &crate::room::PlayResult,
+    ) {
         #[cfg(feature = "postgres")]
         if let Self::Pg(pool) = self {
             let payload = serde_json::to_string(result).unwrap_or_else(|_| "{}".to_string());
@@ -828,7 +987,14 @@ impl DbManager {
             .bind(now)
             .execute(pool)
             .await;
-            let _ = append_event_pg(pool, "round.result", Some(room_id), Some(result.user_id), serde_json::to_value(result).unwrap_or_default()).await;
+            let _ = append_event_pg(
+                pool,
+                "round.result",
+                Some(room_id),
+                Some(result.user_id),
+                serde_json::to_value(result).unwrap_or_default(),
+            )
+            .await;
         }
     }
 
@@ -843,28 +1009,37 @@ impl DbManager {
             .fetch_all(pool)
             .await
             .unwrap_or_default();
-            return rows.into_iter().filter_map(|row| {
-                let players_raw = row.try_get::<String, _>("players").unwrap_or_else(|_| "[]".to_string());
-                Some(crate::round_store::RoundMeta {
-                    round_uuid: row.try_get::<String, _>("round_uuid").ok()?,
-                    room_id: row.try_get::<String, _>("room_id").ok()?,
-                    chart_id: row.try_get::<i32, _>("chart_id").ok()?,
-                    chart_name: row.try_get::<String, _>("chart_name").ok()?,
-                    players: serde_json::from_str(&players_raw).unwrap_or_default(),
-                    started_at: row.try_get::<i64, _>("started_at").ok()?,
-                    finished_at: row.try_get::<Option<i64>, _>("finished_at").ok().flatten(),
+            return rows
+                .into_iter()
+                .filter_map(|row| {
+                    let players_raw = row
+                        .try_get::<String, _>("players")
+                        .unwrap_or_else(|_| "[]".to_string());
+                    Some(crate::round_store::RoundMeta {
+                        round_uuid: row.try_get::<String, _>("round_uuid").ok()?,
+                        room_id: row.try_get::<String, _>("room_id").ok()?,
+                        chart_id: row.try_get::<i32, _>("chart_id").ok()?,
+                        chart_name: row.try_get::<String, _>("chart_name").ok()?,
+                        players: serde_json::from_str(&players_raw).unwrap_or_default(),
+                        started_at: row.try_get::<i64, _>("started_at").ok()?,
+                        finished_at: row.try_get::<Option<i64>, _>("finished_at").ok().flatten(),
+                    })
                 })
-            }).collect();
+                .collect();
         }
         Vec::new()
     }
 
-    pub async fn read_round_player_data(&self, round_uuid: &str, player_id: i32) -> Option<crate::round_store::RoundPlayerData> {
+    pub async fn read_round_player_data(
+        &self,
+        round_uuid: &str,
+        player_id: i32,
+    ) -> Option<crate::round_store::RoundPlayerData> {
         #[cfg(feature = "postgres")]
         if let Self::Pg(pool) = self {
             let direct_row = sqlx::query(
                 "SELECT touches::text AS touches, judges::text AS judges
-                 FROM mp_round_player_data WHERE round_uuid = $1 AND player_id = $2"
+                 FROM mp_round_player_data WHERE round_uuid = $1 AND player_id = $2",
             )
             .bind(round_uuid)
             .bind(player_id)
@@ -876,8 +1051,12 @@ impl DbManager {
             let mut touches = Vec::new();
             let mut judges = Vec::new();
             if let Some(row) = direct_row {
-                let touches_raw = row.try_get::<String, _>("touches").unwrap_or_else(|_| "[]".to_string());
-                let judges_raw = row.try_get::<String, _>("judges").unwrap_or_else(|_| "[]".to_string());
+                let touches_raw = row
+                    .try_get::<String, _>("touches")
+                    .unwrap_or_else(|_| "[]".to_string());
+                let judges_raw = row
+                    .try_get::<String, _>("judges")
+                    .unwrap_or_else(|_| "[]".to_string());
                 touches = serde_json::from_str(&touches_raw).unwrap_or_default();
                 judges = serde_json::from_str(&judges_raw).unwrap_or_default();
             }
@@ -888,19 +1067,13 @@ impl DbManager {
             // working after telemetry cutover.
             if touches.is_empty() {
                 touches = query_runtime_telemetry_items::<crate::plugin::TouchEventPoint>(
-                    pool,
-                    "touch",
-                    round_uuid,
-                    player_id,
+                    pool, "touch", round_uuid, player_id,
                 )
                 .await;
             }
             if judges.is_empty() {
                 judges = query_runtime_telemetry_items::<crate::plugin::JudgeEventItem>(
-                    pool,
-                    "judge",
-                    round_uuid,
-                    player_id,
+                    pool, "judge", round_uuid, player_id,
                 )
                 .await;
             }
@@ -918,7 +1091,14 @@ impl DbManager {
         None
     }
 
-    pub async fn query_events(&self, since_sequence: i64, limit: i64, kind: Option<&str>, room_id: Option<&str>, user_id: Option<i32>) -> Vec<Value> {
+    pub async fn query_events(
+        &self,
+        since_sequence: i64,
+        limit: i64,
+        kind: Option<&str>,
+        room_id: Option<&str>,
+        user_id: Option<i32>,
+    ) -> Vec<Value> {
         #[cfg(feature = "postgres")]
         if let Self::Pg(pool) = self {
             let rows = sqlx::query(
@@ -928,7 +1108,7 @@ impl DbManager {
                    AND ($2::text IS NULL OR kind = $2)
                    AND ($3::text IS NULL OR room_id = $3)
                    AND ($4::int IS NULL OR user_id = $4)
-                 ORDER BY sequence ASC LIMIT $5"
+                 ORDER BY sequence ASC LIMIT $5",
             )
             .bind(since_sequence)
             .bind(kind)
@@ -938,19 +1118,24 @@ impl DbManager {
             .fetch_all(pool)
             .await
             .unwrap_or_default();
-            return rows.into_iter().map(|row| {
-                let payload = row.try_get::<String, _>("payload").ok()
-                    .and_then(|s| serde_json::from_str::<Value>(&s).ok())
-                    .unwrap_or(Value::Null);
-                serde_json::json!({
-                    "sequence": row.try_get::<i64, _>("sequence").unwrap_or_default(),
-                    "kind": row.try_get::<String, _>("kind").unwrap_or_default(),
-                    "room_id": row.try_get::<Option<String>, _>("room_id").ok().flatten(),
-                    "user_id": row.try_get::<Option<i32>, _>("user_id").ok().flatten(),
-                    "payload": payload,
-                    "created_at": row.try_get::<i64, _>("created_at").unwrap_or_default(),
+            return rows
+                .into_iter()
+                .map(|row| {
+                    let payload = row
+                        .try_get::<String, _>("payload")
+                        .ok()
+                        .and_then(|s| serde_json::from_str::<Value>(&s).ok())
+                        .unwrap_or(Value::Null);
+                    serde_json::json!({
+                        "sequence": row.try_get::<i64, _>("sequence").unwrap_or_default(),
+                        "kind": row.try_get::<String, _>("kind").unwrap_or_default(),
+                        "room_id": row.try_get::<Option<String>, _>("room_id").ok().flatten(),
+                        "user_id": row.try_get::<Option<i32>, _>("user_id").ok().flatten(),
+                        "payload": payload,
+                        "created_at": row.try_get::<i64, _>("created_at").unwrap_or_default(),
+                    })
                 })
-            }).collect();
+                .collect();
         }
         Vec::new()
     }
@@ -967,43 +1152,92 @@ impl DbManager {
             .fetch_all(pool)
             .await
             .unwrap_or_default();
-            return rows.into_iter().map(|row| {
-                let payload = row.try_get::<String, _>("payload").ok()
-                    .and_then(|s| serde_json::from_str::<Value>(&s).ok())
-                    .unwrap_or(Value::Null);
-                serde_json::json!({
-                    "room_id": row.try_get::<String, _>("room_id").unwrap_or_default(),
-                    "room_uuid": row.try_get::<String, _>("room_uuid").unwrap_or_default(),
-                    "payload": payload,
-                    "created_at": row.try_get::<i64, _>("created_at").unwrap_or_default(),
-                    "updated_at": row.try_get::<i64, _>("updated_at").unwrap_or_default(),
-                    "sequence": row.try_get::<i64, _>("sequence").unwrap_or_default(),
+            return rows
+                .into_iter()
+                .map(|row| {
+                    let payload = row
+                        .try_get::<String, _>("payload")
+                        .ok()
+                        .and_then(|s| serde_json::from_str::<Value>(&s).ok())
+                        .unwrap_or(Value::Null);
+                    serde_json::json!({
+                        "room_id": row.try_get::<String, _>("room_id").unwrap_or_default(),
+                        "room_uuid": row.try_get::<String, _>("room_uuid").unwrap_or_default(),
+                        "payload": payload,
+                        "created_at": row.try_get::<i64, _>("created_at").unwrap_or_default(),
+                        "updated_at": row.try_get::<i64, _>("updated_at").unwrap_or_default(),
+                        "sequence": row.try_get::<i64, _>("sequence").unwrap_or_default(),
+                    })
                 })
-            }).collect();
+                .collect();
         }
         Vec::new()
     }
 
-    pub async fn query_touch_batches(&self, since_sequence: i64, limit: i64, round_uuid: Option<&str>, player_id: Option<i32>) -> Vec<Value> {
+    pub async fn query_touch_batches(
+        &self,
+        since_sequence: i64,
+        limit: i64,
+        round_uuid: Option<&str>,
+        player_id: Option<i32>,
+    ) -> Vec<Value> {
         #[cfg(feature = "postgres")]
         if let Self::Pg(pool) = self {
-            let direct_batches = query_telemetry_batches(pool, "mp_round_touch_batches", since_sequence, limit, round_uuid, player_id).await;
+            let direct_batches = query_telemetry_batches(
+                pool,
+                "mp_round_touch_batches",
+                since_sequence,
+                limit,
+                round_uuid,
+                player_id,
+            )
+            .await;
             if !direct_batches.is_empty() {
                 return direct_batches;
             }
-            return query_runtime_telemetry_batches(pool, "touch", since_sequence, limit, round_uuid, player_id).await;
+            return query_runtime_telemetry_batches(
+                pool,
+                "touch",
+                since_sequence,
+                limit,
+                round_uuid,
+                player_id,
+            )
+            .await;
         }
         Vec::new()
     }
 
-    pub async fn query_judge_batches(&self, since_sequence: i64, limit: i64, round_uuid: Option<&str>, player_id: Option<i32>) -> Vec<Value> {
+    pub async fn query_judge_batches(
+        &self,
+        since_sequence: i64,
+        limit: i64,
+        round_uuid: Option<&str>,
+        player_id: Option<i32>,
+    ) -> Vec<Value> {
         #[cfg(feature = "postgres")]
         if let Self::Pg(pool) = self {
-            let direct_batches = query_telemetry_batches(pool, "mp_round_judge_batches", since_sequence, limit, round_uuid, player_id).await;
+            let direct_batches = query_telemetry_batches(
+                pool,
+                "mp_round_judge_batches",
+                since_sequence,
+                limit,
+                round_uuid,
+                player_id,
+            )
+            .await;
             if !direct_batches.is_empty() {
                 return direct_batches;
             }
-            return query_runtime_telemetry_batches(pool, "judge", since_sequence, limit, round_uuid, player_id).await;
+            return query_runtime_telemetry_batches(
+                pool,
+                "judge",
+                since_sequence,
+                limit,
+                round_uuid,
+                player_id,
+            )
+            .await;
         }
         Vec::new()
     }
@@ -1023,7 +1257,8 @@ impl DbManager {
             }
 
             if touch_judge_retention_days > 0 {
-                let cutoff = now_ms().saturating_sub(touch_judge_retention_days as i64 * 86_400_000);
+                let cutoff =
+                    now_ms().saturating_sub(touch_judge_retention_days as i64 * 86_400_000);
                 for sql in [
                     "DELETE FROM mp_round_player_data WHERE updated_at < $1",
                     "DELETE FROM mp_round_touch_batches WHERE created_at < $1",
@@ -1091,21 +1326,25 @@ async fn query_telemetry_batches(
         .fetch_all(pool)
         .await
         .unwrap_or_default();
-    rows.into_iter().map(|row| {
-        let payload = row.try_get::<String, _>("payload").ok()
-            .and_then(|s| serde_json::from_str::<Value>(&s).ok())
-            .unwrap_or(Value::Array(Vec::new()));
-        serde_json::json!({
-            "sequence": row.try_get::<i64, _>("sequence").unwrap_or_default(),
-            "round_uuid": row.try_get::<String, _>("round_uuid").unwrap_or_default(),
-            "player_id": row.try_get::<i32, _>("player_id").unwrap_or_default(),
-            "count": row.try_get::<i32, _>("count").unwrap_or_default(),
-            "first_game_time": row.try_get::<Option<f64>, _>("first_game_time").ok().flatten(),
-            "last_game_time": row.try_get::<Option<f64>, _>("last_game_time").ok().flatten(),
-            "data": payload,
-            "created_at": row.try_get::<i64, _>("created_at").unwrap_or_default(),
+    rows.into_iter()
+        .map(|row| {
+            let payload = row
+                .try_get::<String, _>("payload")
+                .ok()
+                .and_then(|s| serde_json::from_str::<Value>(&s).ok())
+                .unwrap_or(Value::Array(Vec::new()));
+            serde_json::json!({
+                "sequence": row.try_get::<i64, _>("sequence").unwrap_or_default(),
+                "round_uuid": row.try_get::<String, _>("round_uuid").unwrap_or_default(),
+                "player_id": row.try_get::<i32, _>("player_id").unwrap_or_default(),
+                "count": row.try_get::<i32, _>("count").unwrap_or_default(),
+                "first_game_time": row.try_get::<Option<f64>, _>("first_game_time").ok().flatten(),
+                "last_game_time": row.try_get::<Option<f64>, _>("last_game_time").ok().flatten(),
+                "data": payload,
+                "created_at": row.try_get::<i64, _>("created_at").unwrap_or_default(),
+            })
         })
-    }).collect()
+        .collect()
 }
 
 #[cfg(feature = "postgres")]
@@ -1122,7 +1361,7 @@ where
         "SELECT payload::text AS payload
          FROM mp_runtime_telemetry_items
          WHERE kind = $1 AND round_uuid = $2 AND player_id = $3
-         ORDER BY sequence ASC"
+         ORDER BY sequence ASC",
     )
     .bind(kind)
     .bind(round_uuid)
@@ -1202,11 +1441,17 @@ async fn query_runtime_telemetry_batches(
 }
 
 #[cfg(feature = "postgres")]
-async fn append_event_pg(pool: &sqlx::PgPool, kind: &str, room_id: Option<&str>, user_id: Option<i32>, payload: Value) -> Result<()> {
+async fn append_event_pg(
+    pool: &sqlx::PgPool,
+    kind: &str,
+    room_id: Option<&str>,
+    user_id: Option<i32>,
+    payload: Value,
+) -> Result<()> {
     let payload = payload.to_string();
     sqlx::query(
         "INSERT INTO mp_events (kind, room_id, user_id, payload, created_at)
-         VALUES ($1, $2, $3, $4::jsonb, $5)"
+         VALUES ($1, $2, $3, $4::jsonb, $5)",
     )
     .bind(kind)
     .bind(room_id)
@@ -1219,7 +1464,12 @@ async fn append_event_pg(pool: &sqlx::PgPool, kind: &str, room_id: Option<&str>,
 }
 
 #[cfg(feature = "postgres")]
-async fn record_room_snapshot_pg(pool: &sqlx::PgPool, room_id: &str, room_uuid: &str, payload: Value) -> Result<()> {
+async fn record_room_snapshot_pg(
+    pool: &sqlx::PgPool,
+    room_id: &str,
+    room_uuid: &str,
+    payload: Value,
+) -> Result<()> {
     let payload = payload.to_string();
     let now = now_ms();
     sqlx::query(
@@ -1237,10 +1487,17 @@ async fn record_room_snapshot_pg(pool: &sqlx::PgPool, room_id: &str, room_uuid: 
     .bind(now)
     .execute(pool)
     .await?;
-    append_event_pg(pool, "room.snapshot", Some(room_id), None, serde_json::json!({
-        "room_id": room_id,
-        "room_uuid": room_uuid,
-    })).await?;
+    append_event_pg(
+        pool,
+        "room.snapshot",
+        Some(room_id),
+        None,
+        serde_json::json!({
+            "room_id": room_id,
+            "room_uuid": room_uuid,
+        }),
+    )
+    .await?;
     Ok(())
 }
 
@@ -1256,14 +1513,16 @@ fn benchmark_mode_from_str(value: &str) -> Option<crate::benchmark_report::Bench
 
 #[cfg(feature = "postgres")]
 async fn init_tables(pool: &sqlx::PgPool) -> Result<()> {
-    sqlx::query("CREATE SEQUENCE IF NOT EXISTS mp_persist_sequence").execute(pool).await?;
+    sqlx::query("CREATE SEQUENCE IF NOT EXISTS mp_persist_sequence")
+        .execute(pool)
+        .await?;
 
     sqlx::query(
         "CREATE TABLE IF NOT EXISTS playtime (
             user_id INTEGER PRIMARY KEY,
             total_secs BIGINT NOT NULL DEFAULT 0,
             session_start BIGINT
-        )"
+        )",
     )
     .execute(pool)
     .await?;
@@ -1275,7 +1534,7 @@ async fn init_tables(pool: &sqlx::PgPool) -> Result<()> {
             room_id TEXT NOT NULL,
             room_uuid TEXT NOT NULL,
             joined_at BIGINT NOT NULL
-        )"
+        )",
     )
     .execute(pool)
     .await?;
@@ -1290,7 +1549,7 @@ async fn init_tables(pool: &sqlx::PgPool) -> Result<()> {
             last_connected_at BIGINT,
             last_disconnected_at BIGINT,
             updated_at BIGINT NOT NULL
-        )"
+        )",
     )
     .execute(pool)
     .await?;
@@ -1303,7 +1562,7 @@ async fn init_tables(pool: &sqlx::PgPool) -> Result<()> {
             created_at BIGINT NOT NULL,
             updated_at BIGINT NOT NULL,
             sequence BIGINT NOT NULL DEFAULT nextval('mp_persist_sequence')
-        )"
+        )",
     )
     .execute(pool)
     .await?;
@@ -1316,15 +1575,16 @@ async fn init_tables(pool: &sqlx::PgPool) -> Result<()> {
             user_id INTEGER,
             payload JSONB NOT NULL,
             created_at BIGINT NOT NULL
-        )"
+        )",
     )
     .execute(pool)
     .await?;
     // 兼容早期补丁中以 BIGSERIAL 创建的 mp_events：改回全局 sequence，统一跨表顺序。
-    let _ = sqlx::query("ALTER TABLE mp_events ALTER COLUMN sequence SET DEFAULT nextval('mp_persist_sequence')")
-        .execute(pool)
-        .await;
-
+    let _ = sqlx::query(
+        "ALTER TABLE mp_events ALTER COLUMN sequence SET DEFAULT nextval('mp_persist_sequence')",
+    )
+    .execute(pool)
+    .await;
 
     sqlx::query(
         "CREATE TABLE IF NOT EXISTS mp_user_room_history (
@@ -1334,7 +1594,7 @@ async fn init_tables(pool: &sqlx::PgPool) -> Result<()> {
             room_uuid TEXT NOT NULL,
             joined_at BIGINT NOT NULL,
             created_at BIGINT NOT NULL
-        )"
+        )",
     )
     .execute(pool)
     .await?;
@@ -1351,7 +1611,7 @@ async fn init_tables(pool: &sqlx::PgPool) -> Result<()> {
             created_at BIGINT NOT NULL,
             updated_at BIGINT NOT NULL,
             sequence BIGINT NOT NULL DEFAULT nextval('mp_persist_sequence')
-        )"
+        )",
     )
     .execute(pool)
     .await?;
@@ -1366,7 +1626,7 @@ async fn init_tables(pool: &sqlx::PgPool) -> Result<()> {
             last_game_time DOUBLE PRECISION,
             payload JSONB NOT NULL,
             created_at BIGINT NOT NULL
-        )"
+        )",
     )
     .execute(pool)
     .await?;
@@ -1381,7 +1641,7 @@ async fn init_tables(pool: &sqlx::PgPool) -> Result<()> {
             last_game_time DOUBLE PRECISION,
             payload JSONB NOT NULL,
             created_at BIGINT NOT NULL
-        )"
+        )",
     )
     .execute(pool)
     .await?;
@@ -1395,7 +1655,7 @@ async fn init_tables(pool: &sqlx::PgPool) -> Result<()> {
             created_at BIGINT NOT NULL,
             updated_at BIGINT NOT NULL,
             PRIMARY KEY (round_uuid, player_id)
-        )"
+        )",
     )
     .execute(pool)
     .await?;
@@ -1412,11 +1672,10 @@ async fn init_tables(pool: &sqlx::PgPool) -> Result<()> {
             updated_at BIGINT NOT NULL,
             sequence BIGINT NOT NULL DEFAULT nextval('mp_persist_sequence'),
             PRIMARY KEY (round_uuid, user_id)
-        )"
+        )",
     )
     .execute(pool)
     .await?;
-
 
     sqlx::query(
         "CREATE TABLE IF NOT EXISTS mp_runtime_telemetry_batches (
@@ -1436,7 +1695,7 @@ async fn init_tables(pool: &sqlx::PgPool) -> Result<()> {
             dual_write BOOLEAN NOT NULL DEFAULT TRUE,
             schema_version INTEGER NOT NULL DEFAULT 2,
             flush_reason TEXT NOT NULL DEFAULT 'unknown'
-        )"
+        )",
     )
     .execute(pool)
     .await?;
@@ -1453,7 +1712,7 @@ async fn init_tables(pool: &sqlx::PgPool) -> Result<()> {
             payload JSONB NOT NULL,
             created_at BIGINT NOT NULL,
             schema_version INTEGER NOT NULL DEFAULT 2
-        )"
+        )",
     )
     .execute(pool)
     .await?;
@@ -1463,7 +1722,7 @@ async fn init_tables(pool: &sqlx::PgPool) -> Result<()> {
             key TEXT PRIMARY KEY,
             value JSONB NOT NULL,
             updated_at BIGINT NOT NULL
-        )"
+        )",
     )
     .execute(pool)
     .await?;
@@ -1474,7 +1733,7 @@ async fn init_tables(pool: &sqlx::PgPool) -> Result<()> {
             retain_seconds BIGINT NOT NULL,
             cleanup_enabled BOOLEAN NOT NULL DEFAULT FALSE,
             updated_at BIGINT NOT NULL
-        )"
+        )",
     )
     .execute(pool)
     .await?;
@@ -1499,7 +1758,7 @@ async fn init_tables(pool: &sqlx::PgPool) -> Result<()> {
             created_at BIGINT NOT NULL,
             source TEXT NOT NULL DEFAULT 'persistence_worker',
             schema_version INTEGER NOT NULL DEFAULT 1
-        )"
+        )",
     )
     .execute(pool)
     .await?;
@@ -1511,7 +1770,7 @@ async fn init_tables(pool: &sqlx::PgPool) -> Result<()> {
             kind TEXT NOT NULL,
             payload JSONB NOT NULL,
             created_at BIGINT NOT NULL
-        )"
+        )",
     )
     .execute(pool)
     .await?;
@@ -1521,7 +1780,7 @@ async fn init_tables(pool: &sqlx::PgPool) -> Result<()> {
             key TEXT PRIMARY KEY,
             value JSONB NOT NULL,
             updated_at BIGINT NOT NULL
-        )"
+        )",
     )
     .execute(pool)
     .await?;
@@ -1547,9 +1806,9 @@ async fn init_tables(pool: &sqlx::PgPool) -> Result<()> {
         "schema_version": 2,
         "batch_table": "mp_runtime_telemetry_batches",
         "item_table": "mp_runtime_telemetry_items",
-        "mode": "dual_write",
-        "available_modes": ["direct_only", "dual_write", "worker_only", "fallback_only"],
-        "notes": "Runtime v2 telemetry schema normalizes batch headers and raw telemetry items. Project is still in test stage; schema may change freely."
+        "mode": "direct_only",
+        "available_modes": ["direct_only", "worker_preferred"],
+        "notes": "Runtime v2 telemetry schema normalizes batch headers and raw telemetry items. Modes simplified: dual_write, fallback_only, worker_only have been removed (legacy dev-stage modes)."
     }))
     .bind(now)
     .execute(pool)
@@ -1561,9 +1820,9 @@ async fn init_tables(pool: &sqlx::PgPool) -> Result<()> {
          ON CONFLICT (key) DO NOTHING"
     )
     .bind(serde_json::json!({
-        "mode": "dual_write",
-        "description": "direct write plus Runtime v2 telemetry batch-write",
-        "available_modes": ["direct_only", "dual_write", "worker_only", "fallback_only"],
+        "mode": "direct_only",
+        "description": "direct RoundStore/db.rs only (safe default). WorkerPreferred = direct + worker mirror.",
+        "available_modes": ["direct_only", "worker_preferred"],
         "updated_by": "runtime_v2.bootstrap"
     }))
     .bind(now)

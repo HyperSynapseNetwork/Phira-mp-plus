@@ -33,12 +33,18 @@ pub fn spawn_event_bus_mirror(
     });
 }
 
-pub(crate) fn mirror_event_bus_event(event: &crate::event_bus::MpEvent) -> Option<PersistenceEvent> {
+pub(crate) fn mirror_event_bus_event(
+    event: &crate::event_bus::MpEvent,
+) -> Option<PersistenceEvent> {
     use crate::event_bus::MpEvent;
 
     match event {
-        MpEvent::UserConnected { user_id, .. } => server_event(event.kind(), json!({ "user_id": user_id }), false),
-        MpEvent::UserDisconnected { user_id } => server_event(event.kind(), json!({ "user_id": user_id }), false),
+        MpEvent::UserConnected { user_id, .. } => {
+            server_event(event.kind(), json!({ "user_id": user_id }), false)
+        }
+        MpEvent::UserDisconnected { user_id } => {
+            server_event(event.kind(), json!({ "user_id": user_id }), false)
+        }
         MpEvent::RoomCreated { room_id, room_uuid } => Some(PersistenceEvent::RoomSnapshot {
             room_id: room_id.to_string(),
             payload: json!({
@@ -93,7 +99,11 @@ pub(crate) fn mirror_event_bus_event(event: &crate::event_bus::MpEvent) -> Optio
             json!({ "room_id": room_id.to_string(), "round_id": round_id }),
             false,
         ),
-        MpEvent::PlayerReadyChanged { room_id, user_id, ready } => server_event(
+        MpEvent::PlayerReadyChanged {
+            room_id,
+            user_id,
+            ready,
+        } => server_event(
             event.kind(),
             json!({ "room_id": room_id.to_string(), "user_id": user_id, "ready": ready }),
             false,
@@ -115,20 +125,24 @@ pub(crate) fn mirror_event_bus_event(event: &crate::event_bus::MpEvent) -> Optio
             json!({ "user_id": user_id, "command": command }),
             false,
         ),
-        MpEvent::SimulationStarted { run_id } => server_event(
-            event.kind(),
-            json!({ "run_id": run_id.to_string() }),
-            true,
-        ),
+        MpEvent::SimulationStarted { run_id } => {
+            server_event(event.kind(), json!({ "run_id": run_id.to_string() }), true)
+        }
         MpEvent::SimulationStopped { run_id, reason } => server_event(
             event.kind(),
             json!({ "run_id": run_id.to_string(), "reason": reason }),
             true,
         ),
         MpEvent::PersistenceWritten { .. } => None,
-        MpEvent::BenchmarkCompleted { report } => Some(PersistenceEvent::BenchmarkReport { report: report.clone() }),
-        MpEvent::Custom { kind, payload } if kind.starts_with("simulation.") => simulation_custom_event(kind, payload),
-        MpEvent::Custom { kind, payload } if kind == "room.command" || kind.starts_with("room.command.") => {
+        MpEvent::BenchmarkCompleted { report } => Some(PersistenceEvent::BenchmarkReport {
+            report: report.clone(),
+        }),
+        MpEvent::Custom { kind, payload } if kind.starts_with("simulation.") => {
+            simulation_custom_event(kind, payload)
+        }
+        MpEvent::Custom { kind, payload }
+            if kind == "room.command" || kind.starts_with("room.command.") =>
+        {
             server_event(kind, payload.clone(), false)
         }
         MpEvent::Custom { .. } => None,
@@ -189,7 +203,8 @@ mod tests {
             1,
         );
         let event = crate::event_bus::MpEvent::BenchmarkCompleted { report };
-        let Some(PersistenceEvent::BenchmarkReport { report }) = mirror_event_bus_event(&event) else {
+        let Some(PersistenceEvent::BenchmarkReport { report }) = mirror_event_bus_event(&event)
+        else {
             panic!("benchmark.completed should mirror as typed PersistenceEvent::BenchmarkReport");
         };
         assert_eq!(report.mode, crate::benchmark_report::BenchmarkMode::Hybrid);

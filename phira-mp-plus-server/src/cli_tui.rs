@@ -5,9 +5,8 @@ use crate::terminal::{sanitize_paste, strip_ansi, EraseKeyGuard, TuiCapabilities
 use crossterm::{
     cursor::{Hide, MoveTo, Show},
     event::{
-        self, DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste,
-        EnableMouseCapture, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers,
-        MouseEventKind,
+        self, DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
+        Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseEventKind,
     },
     execute,
     style::{Attribute, ResetColor, SetAttribute},
@@ -24,12 +23,12 @@ use ratatui::{
     widgets::{Block, Borders, Clear, Paragraph},
     Frame, Terminal,
 };
+use std::collections::HashMap;
 use std::io::{self, Write};
 use std::time::Duration;
 use tokio::sync::mpsc;
 use tokio::sync::mpsc::error::TryRecvError;
 use unicode_width::UnicodeWidthChar;
-use std::collections::HashMap;
 
 const MAX_LOGICAL_LINES: usize = 10_000;
 const RETAIN_LOGICAL_LINES: usize = 8_000;
@@ -181,7 +180,11 @@ struct TuiApp {
 }
 
 fn completion_prefix(before_cursor: &str) -> &str {
-    if before_cursor.chars().last().is_some_and(char::is_whitespace) {
+    if before_cursor
+        .chars()
+        .last()
+        .is_some_and(char::is_whitespace)
+    {
         ""
     } else {
         before_cursor.split_whitespace().last().unwrap_or("")
@@ -352,9 +355,7 @@ impl TuiApp {
             KeyCode::Char('n') if ctrl => self.history_next(),
             // GNU screen commonly translates Backspace into Ctrl+H.
             KeyCode::Char('h') if ctrl => self.backspace(),
-            KeyCode::Backspace | KeyCode::Char('\x08') | KeyCode::Char('\x7f') => {
-                self.backspace()
-            }
+            KeyCode::Backspace | KeyCode::Char('\x08') | KeyCode::Char('\x7f') => self.backspace(),
             KeyCode::Delete if key.modifiers.contains(KeyModifiers::ALT) => self.delete_next_word(),
             KeyCode::Delete => self.delete_forward(),
             KeyCode::Tab => self.complete_input(),
@@ -489,11 +490,7 @@ impl TuiApp {
     }
 
     fn complete_input(&mut self) {
-        let before_cursor = self
-            .input
-            .chars()
-            .take(self.cursor_pos)
-            .collect::<String>();
+        let before_cursor = self.input.chars().take(self.cursor_pos).collect::<String>();
         let trimmed_start = before_cursor.trim_start();
         let prefix = completion_prefix(trimmed_start);
         let registry = runtime_v2_registry();
@@ -615,18 +612,9 @@ impl TuiApp {
         let stats = parse_stats(&self.cached_stats);
 
         // Left panel: Rooms
-        let room_count = stats
-            .get("rooms")
-            .map(|s| s.as_str())
-            .unwrap_or("?");
-        let session_count = stats
-            .get("sessions")
-            .map(|s| s.as_str())
-            .unwrap_or("?");
-        let sim_state = stats
-            .get("sim")
-            .map(|s| s.as_str())
-            .unwrap_or("?");
+        let room_count = stats.get("rooms").map(|s| s.as_str()).unwrap_or("?");
+        let session_count = stats.get("sessions").map(|s| s.as_str()).unwrap_or("?");
+        let sim_state = stats.get("sim").map(|s| s.as_str()).unwrap_or("?");
         let left_lines = vec![
             format!("rooms:     {}", room_count),
             format!("sessions:  {}", session_count),
@@ -646,14 +634,8 @@ impl TuiApp {
         frame.render_widget(Paragraph::new(left_content), left_inner);
 
         // Right panel: Users
-        let user_count = stats
-            .get("users")
-            .map(|s| s.as_str())
-            .unwrap_or("?");
-        let plugin_count = stats
-            .get("plugins")
-            .map(|s| s.as_str())
-            .unwrap_or("?");
+        let user_count = stats.get("users").map(|s| s.as_str()).unwrap_or("?");
+        let plugin_count = stats.get("plugins").map(|s| s.as_str()).unwrap_or("?");
         let right_lines = vec![
             format!("users:    {}", user_count),
             format!("plugins:  {}", plugin_count),
@@ -708,8 +690,8 @@ impl TuiApp {
         if self.scroll_from_bottom > 0 && output_height > 0 && output_inner.width > 0 {
             let max_offset = max_start.max(1);
             let from_top = max_start.saturating_sub(self.scroll_from_bottom);
-            let y = output_inner.y
-                + ((from_top * output_height.saturating_sub(1)) / max_offset) as u16;
+            let y =
+                output_inner.y + ((from_top * output_height.saturating_sub(1)) / max_offset) as u16;
             frame.render_widget(
                 Paragraph::new(Span::styled("┃", self.accent_style())),
                 Rect::new(
@@ -754,10 +736,7 @@ impl TuiApp {
         } else {
             format!("↑{}", self.scroll_from_bottom)
         };
-        let status = format!(
-            " {}  |  Tab补全  ↑↓历史  PgUp/PgDn  ^C退出",
-            scroll_info,
-        );
+        let status = format!(" {}  |  Tab补全  ↑↓历史  PgUp/PgDn  ^C退出", scroll_info,);
         frame.render_widget(Clear, chunks[4]);
         frame.render_widget(
             Paragraph::new(Span::styled(status, self.muted_style())),
@@ -820,9 +799,15 @@ impl TuiApp {
         ));
 
         let status = if self.scroll_from_bottom == 0 {
-            format!("{} lines | Tab complete | Up/Down history | PgUp/PgDn scroll | Ctrl+C exit", visual_rows.len())
+            format!(
+                "{} lines | Tab complete | Up/Down history | PgUp/PgDn scroll | Ctrl+C exit",
+                visual_rows.len()
+            )
         } else {
-            format!("{} lines from bottom | PgDn returns | Ctrl+L clear | Esc clears input", self.scroll_from_bottom)
+            format!(
+                "{} lines from bottom | PgDn returns | Ctrl+L clear | Esc clears input",
+                self.scroll_from_bottom
+            )
         };
         frame.render_widget(Paragraph::new(pad_cells(&status, width)), chunks[5]);
     }
@@ -940,9 +925,8 @@ fn input_window(input: &str, cursor_pos: usize, max_width: usize) -> (String, us
         .map(|ch| UnicodeWidthChar::width(*ch).unwrap_or(0))
         .sum::<usize>();
     while cursor_width >= max_width && start < cursor {
-        cursor_width = cursor_width.saturating_sub(
-            UnicodeWidthChar::width(chars[start]).unwrap_or(0),
-        );
+        cursor_width =
+            cursor_width.saturating_sub(UnicodeWidthChar::width(chars[start]).unwrap_or(0));
         start += 1;
     }
 
@@ -958,7 +942,6 @@ fn input_window(input: &str, cursor_pos: usize, max_width: usize) -> (String, us
     }
     (visible, cursor_width)
 }
-
 
 fn sanitize_output(input: &str) -> String {
     strip_ansi(input)
@@ -1030,7 +1013,9 @@ pub fn run_stdin_cli_with_logs(
                 continue;
             }
             Ok(_) => {
-                let command = normalize_line_input(&strip_ansi(&line_buf)).trim().to_string();
+                let command = normalize_line_input(&strip_ansi(&line_buf))
+                    .trim()
+                    .to_string();
                 if command.is_empty() {
                     continue;
                 }

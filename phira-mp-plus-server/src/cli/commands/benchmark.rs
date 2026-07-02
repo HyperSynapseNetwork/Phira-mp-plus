@@ -10,21 +10,32 @@ impl CliHandler {
     }
 
     pub(in crate::cli) async fn dispatch_benchmark_cleanup_command(&self) {
-        self.state.rooms.write().await.retain(|rid, _| !rid.to_string().starts_with("bench-"));
+        self.state
+            .rooms
+            .write()
+            .await
+            .retain(|rid, _| !rid.to_string().starts_with("bench-"));
         self.out(format!("  {} 已清理 bench-* 压测房间", c::green("✓")));
     }
 
     async fn start_benchmark(&self, args: &[&str]) {
-        if matches!(args.first().copied(), Some("modes") | Some("mode") | Some("help")) {
+        if matches!(
+            args.first().copied(),
+            Some("modes") | Some("mode") | Some("help")
+        ) {
             self.print_benchmark_modes();
             return;
         }
-        if matches!(args.first().copied(), Some("report") | Some("reports") | Some("latest") | Some("history")) {
+        if matches!(
+            args.first().copied(),
+            Some("report") | Some("reports") | Some("latest") | Some("history")
+        ) {
             self.print_benchmark_reports(args).await;
             return;
         }
         if matches!(args.first().copied(), Some("hybrid"))
-            || (matches!(args.first().copied(), Some("run")) && matches!(args.get(1).copied(), Some("hybrid")))
+            || (matches!(args.first().copied(), Some("run"))
+                && matches!(args.get(1).copied(), Some("hybrid")))
         {
             let hybrid_args: &[&str] = if matches!(args.first().copied(), Some("run")) {
                 &args[2..]
@@ -34,7 +45,9 @@ impl CliHandler {
             self.start_hybrid_benchmark(hybrid_args).await;
             return;
         }
-        let numeric_args: &[&str] = if matches!(args.first().copied(), Some("run")) && matches!(args.get(1).copied(), Some("real")) {
+        let numeric_args: &[&str] = if matches!(args.first().copied(), Some("run"))
+            && matches!(args.get(1).copied(), Some("real"))
+        {
             &args[2..]
         } else if matches!(args.first().copied(), Some("real")) {
             &args[1..]
@@ -53,7 +66,12 @@ impl CliHandler {
             .clamp(1, 5000);
 
         let (tx, rx) = std::sync::mpsc::channel();
-        if self.state.bench_tx.send(crate::server::BenchRequest::real(duration, rooms, tx)).is_err() {
+        if self
+            .state
+            .bench_tx
+            .send(crate::server::BenchRequest::real(duration, rooms, tx))
+            .is_err()
+        {
             self.out(format!("  {} benchmark channel closed", c::red("✗")));
             return;
         }
@@ -83,7 +101,10 @@ impl CliHandler {
 
             match result {
                 Ok(Ok(output)) => {
-                    let _ = out_tx.send(format!("  ◆ benchmark 完成（{} 秒 / {} 房间）", duration, rooms));
+                    let _ = out_tx.send(format!(
+                        "  ◆ benchmark 完成（{} 秒 / {} 房间）",
+                        duration, rooms
+                    ));
                     for line in output.lines() {
                         let _ = out_tx.send(line.to_string());
                     }
@@ -107,7 +128,10 @@ impl CliHandler {
             Err(err) => {
                 self.out(format!("  {} {}", c::red("✗"), err));
                 self.out(format!("  {} 示例: benchmark run hybrid authenticate=true chart_lookup=1 record_lookup=1", c::dim("▸")));
-                self.out(format!("  {} 默认不访问 Phira：benchmark run hybrid", c::dim("▸")));
+                self.out(format!(
+                    "  {} 默认不访问 Phira：benchmark run hybrid",
+                    c::dim("▸")
+                ));
                 return;
             }
         };
@@ -115,18 +139,36 @@ impl CliHandler {
         let timeout_secs = config.timeout_secs();
         let switches = config.enabled_switches();
         let (tx, rx) = std::sync::mpsc::channel();
-        if self.state.bench_tx.send(crate::server::BenchRequest::hybrid(config, tx)).is_err() {
+        if self
+            .state
+            .bench_tx
+            .send(crate::server::BenchRequest::hybrid(config, tx))
+            .is_err()
+        {
             self.out(format!("  {} benchmark channel closed", c::red("✗")));
             return;
         }
 
-        self.out(format!("  {} 已提交 hybrid benchmark probe（后台运行）", c::green("✓")));
+        self.out(format!(
+            "  {} 已提交 hybrid benchmark probe（后台运行）",
+            c::green("✓")
+        ));
         if switches.is_empty() {
-            self.out(format!("  {} 当前未启用任何 Phira 开关；这是 dry-run，不会访问 Phira", c::dim("▸")));
+            self.out(format!(
+                "  {} 当前未启用任何 Phira 开关；这是 dry-run，不会访问 Phira",
+                c::dim("▸")
+            ));
         } else {
-            self.out(format!("  {} 显式 Phira 开关: {}", c::dim("▸"), switches.join(", ")));
+            self.out(format!(
+                "  {} 显式 Phira 开关: {}",
+                c::dim("▸"),
+                switches.join(", ")
+            ));
         }
-        self.out(format!("  {} Simulation 仍是默认压测路径；hybrid 会输出统一 BenchmarkReport 摘要", c::dim("▸")));
+        self.out(format!(
+            "  {} Simulation 仍是默认压测路径；hybrid 会输出统一 BenchmarkReport 摘要",
+            c::dim("▸")
+        ));
 
         let out_tx = self.out_tx.clone();
         tokio::spawn(async move {
@@ -143,7 +185,10 @@ impl CliHandler {
                     }
                 }
                 Ok(Err(_)) => {
-                    let _ = out_tx.send(format!("  ✗ benchmark hybrid 超时或被取消（等待 {} 秒后仍无结果）", timeout_secs));
+                    let _ = out_tx.send(format!(
+                        "  ✗ benchmark hybrid 超时或被取消（等待 {} 秒后仍无结果）",
+                        timeout_secs
+                    ));
                 }
                 Err(err) => {
                     let _ = out_tx.send(format!("  ✗ benchmark hybrid 等待任务失败: {err}"));
@@ -152,7 +197,9 @@ impl CliHandler {
         });
     }
 
-    fn parse_hybrid_benchmark_config(args: &[&str]) -> Result<crate::server::HybridBenchmarkConfig, String> {
+    fn parse_hybrid_benchmark_config(
+        args: &[&str],
+    ) -> Result<crate::server::HybridBenchmarkConfig, String> {
         let mut config = crate::server::HybridBenchmarkConfig::default();
         let mut idx = 0usize;
         if let Some(first) = args.first() {
@@ -178,13 +225,17 @@ impl CliHandler {
                 continue;
             }
             let Some((raw_key, raw_value)) = token.split_once('=') else {
-                return Err(format!("invalid hybrid option: {token}; use key=value switches"));
+                return Err(format!(
+                    "invalid hybrid option: {token}; use key=value switches"
+                ));
             };
             let key = raw_key.trim().to_ascii_lowercase().replace('-', "_");
             let value = raw_value.trim();
             match key.as_str() {
                 "duration" | "duration_secs" | "seconds" => {
-                    config.duration_secs = value.parse::<u64>().map_err(|_| format!("invalid hybrid duration: {value}"))?;
+                    config.duration_secs = value
+                        .parse::<u64>()
+                        .map_err(|_| format!("invalid hybrid duration: {value}"))?;
                 }
                 "authenticate" | "auth" => {
                     config.authenticate = parse_benchmark_bool(value)?;
@@ -224,11 +275,12 @@ impl CliHandler {
         self.out("    simulation suite smoke".to_string());
         self.out("    simulation run medium scenario=touch_judge_burst duration=30".to_string());
         self.out("    benchmark run hybrid".to_string());
-        self.out("    benchmark run hybrid authenticate=true chart_lookup=1 record_lookup=1".to_string());
+        self.out(
+            "    benchmark run hybrid authenticate=true chart_lookup=1 record_lookup=1".to_string(),
+        );
         self.out("    benchmark run real 30 100".to_string());
         self.out("    benchmark modes".to_string());
     }
-
 
     async fn print_benchmark_reports(&self, args: &[&str]) {
         let sub = args.first().copied().unwrap_or("report");
@@ -246,7 +298,10 @@ impl CliHandler {
         self.out(format!("  {} Benchmark reports", c::green("◆")));
         if matches!(sub, "history") {
             let rows = if let Some(db) = crate::internal_hooks::DB.get() {
-                db.runtime_benchmark_report_history(crate::persistence::BenchmarkReportHistoryQuery::new(mode, limit)).await
+                db.runtime_benchmark_report_history(
+                    crate::persistence::BenchmarkReportHistoryQuery::new(mode, limit),
+                )
+                .await
             } else {
                 Vec::new()
             };
@@ -288,7 +343,11 @@ impl CliHandler {
                         self.out(line.to_string());
                     }
                 }
-                None => self.out(format!("  {} no {} benchmark report yet", c::yellow("?"), mode.as_str())),
+                None => self.out(format!(
+                    "  {} no {} benchmark report yet",
+                    c::yellow("?"),
+                    mode.as_str()
+                )),
             }
             return;
         }
@@ -335,13 +394,26 @@ impl CliHandler {
 
     async fn bind_benchmark(&self, args: &[&str]) {
         if args.is_empty() {
-            self.out(format!("  {} {} <token1[,token2...]> 或多个 token 参数", c::yellow("?"), c::bold("benchmark-bind")));
-            self.out(format!("  {} 也可以直接修改 server_config.yml: benchmark_phira_tokens: [\"...\"]", c::dim("▸")));
-            self.out(format!("  {} 不要把真实 Phira token 提交到 Git；优先使用本地配置或环境变量", c::dim("▸")));
+            self.out(format!(
+                "  {} {} <token1[,token2...]> 或多个 token 参数",
+                c::yellow("?"),
+                c::bold("benchmark-bind")
+            ));
+            self.out(format!(
+                "  {} 也可以直接修改 server_config.yml: benchmark_phira_tokens: [\"...\"]",
+                c::dim("▸")
+            ));
+            self.out(format!(
+                "  {} 不要把真实 Phira token 提交到 Git；优先使用本地配置或环境变量",
+                c::dim("▸")
+            ));
             return;
         }
 
-        let raw = args.iter().map(|value| (*value).to_string()).collect::<Vec<_>>();
+        let raw = args
+            .iter()
+            .map(|value| (*value).to_string())
+            .collect::<Vec<_>>();
         match self.state.bind_benchmark_tokens(raw).await {
             Ok(count) => self.out(format!(
                 "  {} 已绑定 {} 个压测账号，保存到 data/benchmark-auth.json",
@@ -351,7 +423,6 @@ impl CliHandler {
             Err(err) => self.out(format!("  {} {}", c::red("✗"), err)),
         }
     }
-
 }
 
 fn parse_benchmark_bool(value: &str) -> Result<bool, String> {
@@ -372,9 +443,13 @@ fn parse_optional_probe_id(name: &str, value: &str) -> Result<Option<i32>, Strin
         return Ok(None);
     }
     if value.eq_ignore_ascii_case("true") || value.eq_ignore_ascii_case("on") {
-        return Err(format!("{name}=true is ambiguous; use {name}=<positive_id>"));
+        return Err(format!(
+            "{name}=true is ambiguous; use {name}=<positive_id>"
+        ));
     }
-    let id = value.parse::<i32>().map_err(|_| format!("invalid {name} id: {value}"))?;
+    let id = value
+        .parse::<i32>()
+        .map_err(|_| format!("invalid {name} id: {value}"))?;
     if id <= 0 {
         return Err(format!("{name} id must be positive"));
     }
@@ -399,7 +474,8 @@ mod tests {
             "authenticate=true",
             "chart_lookup=123",
             "record_lookup=456",
-        ]).unwrap();
+        ])
+        .unwrap();
         assert_eq!(config.duration_secs, 15);
         assert!(config.authenticate);
         assert_eq!(config.chart_lookup, Some(123));

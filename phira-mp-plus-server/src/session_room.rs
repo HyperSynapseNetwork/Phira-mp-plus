@@ -8,8 +8,13 @@ use crate::plugin::PluginEvent;
 use crate::session::{SessionCategory, User};
 use crate::tl;
 use anyhow::{anyhow, bail, Result};
-use phira_mp_common::{JoinRoomResponse, Message, PartialRoomData, RoomEvent, RoomId, ServerCommand};
-use std::{collections::HashMap, sync::{atomic::Ordering, Arc}};
+use phira_mp_common::{
+    JoinRoomResponse, Message, PartialRoomData, RoomEvent, RoomId, ServerCommand,
+};
+use std::{
+    collections::HashMap,
+    sync::{atomic::Ordering, Arc},
+};
 use tracing::{debug, debug_span, info, trace, Instrument};
 
 pub fn decode_admin_room_command(input: &str) -> String {
@@ -46,7 +51,10 @@ async fn current_room(user: &Arc<User>) -> Result<Arc<crate::room::Room>> {
 
 async fn current_room_in_select_chart(user: &Arc<User>) -> Result<Arc<crate::room::Room>> {
     let room = current_room(user).await?;
-    if !matches!(&*room.state.read().await, crate::room::InternalRoomState::SelectChart) {
+    if !matches!(
+        &*room.state.read().await,
+        crate::room::InternalRoomState::SelectChart
+    ) {
         bail!("{}", tl!("invalid-state"));
     }
     Ok(room)
@@ -65,14 +73,16 @@ pub async fn create_room(user: Arc<User>, id: RoomId) -> Result<()> {
                         user.try_send(ServerCommand::Message(Message::Chat {
                             user: 0,
                             content: "[CLI] 已暂存续行；下一条命令需以 -- 开头".to_string(),
-                        })).await;
+                        }))
+                        .await;
                         bail!("admin CLI command pending");
                     }
                     Err(err) => {
                         user.try_send(ServerCommand::Message(Message::Chat {
                             user: 0,
                             content: format!("[CLI] {err}"),
-                        })).await;
+                        }))
+                        .await;
                         bail!("admin CLI continuation error");
                     }
                 }
@@ -81,19 +91,23 @@ pub async fn create_room(user: Arc<User>, id: RoomId) -> Result<()> {
                 user.try_send(ServerCommand::Message(Message::Chat {
                     user: 0,
                     content: "[CLI] 空命令".to_string(),
-                })).await;
+                }))
+                .await;
                 bail!("empty admin command");
             }
-            let lines = crate::cli::execute_cli_once(Arc::clone(&user.server), command.clone()).await;
+            let lines =
+                crate::cli::execute_cli_once(Arc::clone(&user.server), command.clone()).await;
             user.try_send(ServerCommand::Message(Message::Chat {
                 user: 0,
                 content: format!("[CLI] > {command}"),
-            })).await;
+            }))
+            .await;
             for line in lines {
                 user.try_send(ServerCommand::Message(Message::Chat {
                     user: 0,
                     content: format!("[CLI] {line}"),
-                })).await;
+                }))
+                .await;
             }
             bail!("admin CLI command executed");
         }
@@ -137,7 +151,10 @@ pub async fn create_room(user: Arc<User>, id: RoomId) -> Result<()> {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as i64)
         .unwrap_or(0);
-    user.server.user_room_history.write().await
+    user.server
+        .user_room_history
+        .write()
+        .await
         .entry(user.id)
         .or_default()
         .push((id.to_string(), room_uuid.to_string(), now));
@@ -148,7 +165,8 @@ pub async fn create_room(user: Arc<User>, id: RoomId) -> Result<()> {
     info!(user = user.id, room = id.to_string(), room_uuid = %room_uuid, "user create room");
     info!("房间 '{}' 唯一标识: {}", id, room_uuid);
 
-    user.server.plugin_manager
+    user.server
+        .plugin_manager
         .trigger(&PluginEvent::RoomCreate {
             user_id: user.id,
             room_id: id.to_string(),
@@ -158,7 +176,12 @@ pub async fn create_room(user: Arc<User>, id: RoomId) -> Result<()> {
     Ok(())
 }
 
-pub async fn join_room(user: Arc<User>, category: SessionCategory, id: RoomId, monitor: bool) -> Result<JoinRoomResponse> {
+pub async fn join_room(
+    user: Arc<User>,
+    category: SessionCategory,
+    id: RoomId,
+    monitor: bool,
+) -> Result<JoinRoomResponse> {
     let mut room_guard = user.room.write().await;
     if room_guard.is_some() {
         bail!("{}", tl!("already-in-room"));
@@ -170,7 +193,10 @@ pub async fn join_room(user: Arc<User>, category: SessionCategory, id: RoomId, m
     if room.locked.load(Ordering::SeqCst) {
         bail!("{}", tl!("join-room-locked"));
     }
-    if !matches!(*room.state.read().await, crate::room::InternalRoomState::SelectChart) {
+    if !matches!(
+        *room.state.read().await,
+        crate::room::InternalRoomState::SelectChart
+    ) {
         bail!("{}", tl!("join-game-ongoing"));
     }
     // GameMonitor 会话（user.id < 0）可以旁观任意房间
@@ -190,13 +216,18 @@ pub async fn join_room(user: Arc<User>, category: SessionCategory, id: RoomId, m
     if monitor && !room.live.fetch_or(true, Ordering::SeqCst) {
         info!(room = id.to_string(), "room goes live");
     }
-    user.server.assign_room_host_if_missing(&room, &user, monitor, false).await;
+    user.server
+        .assign_room_host_if_missing(&room, &user, monitor, false)
+        .await;
     *room_guard = Some(Arc::clone(&room));
     let joined_at = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as i64)
         .unwrap_or(0);
-    user.server.user_room_history.write().await
+    user.server
+        .user_room_history
+        .write()
+        .await
         .entry(user.id)
         .or_default()
         .push((id.to_string(), room.uuid.to_string(), joined_at));
@@ -276,7 +307,8 @@ pub async fn leave_room(user: Arc<User>, category: SessionCategory) -> Result<()
     }
 
     if category == SessionCategory::Normal {
-        user.server.plugin_manager
+        user.server
+            .plugin_manager
             .trigger(&PluginEvent::RoomLeave {
                 user_id: user.id,
                 room_id: room_id.to_string(),
@@ -290,7 +322,12 @@ pub async fn leave_room(user: Arc<User>, category: SessionCategory) -> Result<()
 pub async fn lock_room(user: Arc<User>, lock: bool) -> Result<()> {
     let room = current_room(&user).await?;
     room.check_host(&user).await?;
-    info!(user = user.id, room = room.id.to_string(), lock, "lock room");
+    info!(
+        user = user.id,
+        room = room.id.to_string(),
+        lock,
+        "lock room"
+    );
     room.locked.store(lock, Ordering::SeqCst);
     room.send(Message::LockRoom { lock }).await;
     room.publish_update(PartialRoomData {
@@ -299,7 +336,8 @@ pub async fn lock_room(user: Arc<User>, lock: bool) -> Result<()> {
     })
     .await;
 
-    user.server.plugin_manager
+    user.server
+        .plugin_manager
         .trigger(&PluginEvent::RoomModify {
             user_id: user.id,
             room_id: room.id.to_string(),
@@ -313,7 +351,12 @@ pub async fn lock_room(user: Arc<User>, lock: bool) -> Result<()> {
 pub async fn cycle_room(user: Arc<User>, cycle: bool) -> Result<()> {
     let room = current_room(&user).await?;
     room.check_host(&user).await?;
-    info!(user = user.id, room = room.id.to_string(), cycle, "cycle room");
+    info!(
+        user = user.id,
+        room = room.id.to_string(),
+        cycle,
+        "cycle room"
+    );
     room.cycle.store(cycle, Ordering::SeqCst);
     room.send(Message::CycleRoom { cycle }).await;
     room.publish_update(PartialRoomData {
@@ -322,7 +365,8 @@ pub async fn cycle_room(user: Arc<User>, cycle: bool) -> Result<()> {
     })
     .await;
 
-    user.server.plugin_manager
+    user.server
+        .plugin_manager
         .trigger(&PluginEvent::RoomModify {
             user_id: user.id,
             room_id: room.id.to_string(),
@@ -336,17 +380,26 @@ pub async fn cycle_room(user: Arc<User>, cycle: bool) -> Result<()> {
 pub async fn select_chart(user: Arc<User>, id: i32) -> Result<()> {
     let room = current_room_in_select_chart(&user).await?;
     room.check_host(&user).await?;
-    let span = debug_span!("select chart", user = user.id, room = room.id.to_string(), chart = id);
+    let span = debug_span!(
+        "select chart",
+        user = user.id,
+        room = room.id.to_string(),
+        chart = id
+    );
     async move {
         trace!("fetch");
         let endpoint = room.effective_phira_api_endpoint(&user.server).await;
-        let res: crate::server::Chart = user.server.phira_client.get_json(
-            &user.server.config.phira_api_endpoint,
-            Some(endpoint.as_str()),
-            &format!("/chart/{id}"),
-            None,
-            PhiraRetryNoticeTarget::User(user.as_ref()),
-        ).await?;
+        let res: crate::server::Chart = user
+            .server
+            .phira_client
+            .get_json(
+                &user.server.config.phira_api_endpoint,
+                Some(endpoint.as_str()),
+                &format!("/chart/{id}"),
+                None,
+                PhiraRetryNoticeTarget::User(user.as_ref()),
+            )
+            .await?;
         debug!("chart is {res:?}");
         room.send(Message::SelectChart {
             user: user.id,
@@ -387,7 +440,8 @@ pub async fn request_start(user: Arc<User>) -> Result<()> {
     room.on_state_change().await;
     room.check_all_ready().await;
 
-    user.server.plugin_manager
+    user.server
+        .plugin_manager
         .trigger(&PluginEvent::GameStart {
             user_id: user.id,
             room_id: room.id.to_string(),
@@ -405,11 +459,12 @@ pub async fn ready(user: Arc<User>) -> Result<()> {
             bail!("{}", tl!("already-ready"));
         }
         room.send(Message::Ready { user: user.id }).await;
-        user.server.publish_runtime_event(crate::event_bus::MpEvent::PlayerReadyChanged {
-            room_id: room.id.clone(),
-            user_id: user.id,
-            ready: true,
-        });
+        user.server
+            .publish_runtime_event(crate::event_bus::MpEvent::PlayerReadyChanged {
+                room_id: room.id.clone(),
+                user_id: user.id,
+                ready: true,
+            });
         drop(guard);
         room.check_all_ready().await;
     }
@@ -432,11 +487,12 @@ pub async fn cancel_ready(user: Arc<User>) -> Result<()> {
         } else {
             room.send(Message::CancelReady { user: user.id }).await;
         }
-        user.server.publish_runtime_event(crate::event_bus::MpEvent::PlayerReadyChanged {
-            room_id: room.id.clone(),
-            user_id: user.id,
-            ready: false,
-        });
+        user.server
+            .publish_runtime_event(crate::event_bus::MpEvent::PlayerReadyChanged {
+                room_id: room.id.clone(),
+                user_id: user.id,
+                ready: false,
+            });
     }
     Ok(())
 }
@@ -444,17 +500,25 @@ pub async fn cancel_ready(user: Arc<User>) -> Result<()> {
 pub async fn played(user: Arc<User>, id: i32) -> Result<()> {
     let room = current_room(&user).await?;
     let endpoint = room.effective_phira_api_endpoint(&user.server).await;
-    let res: crate::server::Record = user.server.phira_client.get_json(
-        &user.server.config.phira_api_endpoint,
-        Some(endpoint.as_str()),
-        &format!("/record/{id}"),
-        None,
-        PhiraRetryNoticeTarget::User(user.as_ref()),
-    ).await?;
+    let res: crate::server::Record = user
+        .server
+        .phira_client
+        .get_json(
+            &user.server.config.phira_api_endpoint,
+            Some(endpoint.as_str()),
+            &format!("/record/{id}"),
+            None,
+            PhiraRetryNoticeTarget::User(user.as_ref()),
+        )
+        .await?;
     if res.player != user.id {
         bail!("{}", tl!("invalid-record"));
     }
-    debug!(room = room.id.to_string(), user = user.id, "user played: {res:?}");
+    debug!(
+        room = room.id.to_string(),
+        user = user.id,
+        "user played: {res:?}"
+    );
     room.send(Message::Played {
         user: user.id,
         score: res.score,
@@ -481,7 +545,8 @@ pub async fn played(user: Arc<User>, id: i32) -> Result<()> {
         drop(guard);
         room.check_all_ready().await;
 
-        user.server.plugin_manager
+        user.server
+            .plugin_manager
             .trigger(&PluginEvent::GameEnd {
                 user_id: user.id,
                 user_name: user.name.clone(),

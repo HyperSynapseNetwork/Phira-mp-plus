@@ -52,11 +52,9 @@ impl SseHub {
         self.general.clone()
     }
 
-
     pub fn subscribe_general(&self) -> broadcast::Receiver<SseEvent> {
         self.general.subscribe()
     }
-
 
     pub fn publish(&self, event: SseEvent) {
         let _ = self.general.send(event);
@@ -80,11 +78,9 @@ fn updates(rx: broadcast::Receiver<SseEvent>) -> impl Stream<Item = Result<Event
     BroadcastStream::new(rx).filter_map(|message| async move {
         match message {
             Ok(event) => Some(Ok(event.into_axum())),
-            Err(BroadcastStreamRecvError::Lagged(skipped)) => Some(Ok(
-                Event::default()
-                    .event("stream_lagged")
-                    .data(json!({"skipped": skipped}).to_string()),
-            )),
+            Err(BroadcastStreamRecvError::Lagged(skipped)) => Some(Ok(Event::default()
+                .event("stream_lagged")
+                .data(json!({"skipped": skipped}).to_string()))),
         }
     })
 }

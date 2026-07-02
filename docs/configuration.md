@@ -148,7 +148,7 @@ Runtime v2 的内部策略优先放在配置文件中，避免继续新增过多
 ```yaml
 runtime_v2:
   persistence_queue_capacity: 4096
-  telemetry_cutover_mode: worker_preferred   # direct_only / worker_preferred
+  telemetry_cutover_mode: direct_only   # direct_only / worker_preferred
   telemetry_batcher:
     enabled: true
     dry_run: false
@@ -166,7 +166,7 @@ runtime_v2:
       open_duration_ms: 20000
 ```
 
-`worker_preferred` 只通过 Runtime v2 TelemetryBatcher 写入（默认）。`direct_only` 回退到旧 RoundStore/JSONL 直写路径。
+`direct_only` 只通过 RoundStore/db.rs 直写（安全默认）。`worker_preferred` 直接写入 + 异步 Runtime v2 worker 镜像（生产推荐）。
 
 `phira_http` 控制统一 Phira RetryClient。默认策略会在连续失败达到阈值后短暂打开熔断器，避免 Phira 官方服务 502/超时期间继续把认证、选谱、成绩查询压在业务热路径上。Simulation 默认不访问 Phira；real/hybrid benchmark 必须显式走这套 client。
 

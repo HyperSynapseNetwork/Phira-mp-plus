@@ -32,7 +32,11 @@ impl PersistenceLatencyStats {
         self.total_ms = self.total_ms.saturating_add(elapsed_ms);
         self.last_ms = elapsed_ms;
         self.max_ms = self.max_ms.max(elapsed_ms);
-        self.avg_ms = if self.samples == 0 { 0 } else { self.total_ms / self.samples };
+        self.avg_ms = if self.samples == 0 {
+            0
+        } else {
+            self.total_ms / self.samples
+        };
     }
 }
 
@@ -63,10 +67,10 @@ pub struct TelemetryCutoverStats {
     pub direct_skipped_batches: u64,
     pub direct_written_items: u64,
     pub fallback_direct_batches: u64,
-    pub worker_preferred_dry_run_success_batches: u64,
-    pub worker_preferred_dry_run_failed_batches: u64,
+    pub worker_only_dry_run_success_batches: u64,
+    pub worker_only_dry_run_failed_batches: u64,
     pub worker_enqueue_success_ratio_percent: u8,
-    pub worker_preferred_dry_run_success_ratio_percent: u8,
+    pub worker_only_dry_run_success_ratio_percent: u8,
     pub readiness: String,
     pub worker_enqueue_latency: PersistenceLatencyStats,
     pub direct_write_latency: PersistenceLatencyStats,
@@ -75,13 +79,18 @@ pub struct TelemetryCutoverStats {
 impl TelemetryCutoverStats {
     pub fn record(&mut self, observation: &TelemetryCutoverObservation) {
         self.observed_batches += 1;
-        self.observed_items = self.observed_items.saturating_add(observation.item_count as u64);
+        self.observed_items = self
+            .observed_items
+            .saturating_add(observation.item_count as u64);
         if observation.worker_attempted {
             self.worker_attempted_batches += 1;
-            self.worker_enqueue_latency.record(observation.worker_enqueue_ms);
+            self.worker_enqueue_latency
+                .record(observation.worker_enqueue_ms);
             if observation.worker_enqueued {
                 self.worker_enqueued_batches += 1;
-                self.worker_enqueued_items = self.worker_enqueued_items.saturating_add(observation.item_count as u64);
+                self.worker_enqueued_items = self
+                    .worker_enqueued_items
+                    .saturating_add(observation.item_count as u64);
             } else {
                 self.worker_failed_batches += 1;
             }
@@ -90,7 +99,9 @@ impl TelemetryCutoverStats {
             self.direct_attempted_batches += 1;
             if observation.direct_written {
                 self.direct_written_batches += 1;
-                self.direct_written_items = self.direct_written_items.saturating_add(observation.item_count as u64);
+                self.direct_written_items = self
+                    .direct_written_items
+                    .saturating_add(observation.item_count as u64);
                 if let Some(elapsed_ms) = observation.direct_write_ms {
                     self.direct_write_latency.record(elapsed_ms);
                 }
@@ -103,33 +114,34 @@ impl TelemetryCutoverStats {
         if observation.fallback_direct {
             self.fallback_direct_batches += 1;
         }
-        if observation.mode == "worker_preferred" && observation.worker_attempted && observation.direct_attempted {
+        // Workers in WorkerPreferred mode both attempt worker and write direct;
+        // count those observations toward the dry-run readiness signal.
+        if observation.mode == "worker_preferred"
+            && observation.worker_attempted
+            && observation.direct_attempted
+        {
             if observation.worker_enqueued {
-                self.worker_preferred_dry_run_success_batches += 1;
+                self.worker_only_dry_run_success_batches += 1;
             } else {
-                self.worker_preferred_dry_run_failed_batches += 1;
+                self.worker_only_dry_run_failed_batches += 1;
             }
         }
         self.refresh_derived();
     }
 
     pub fn refresh_derived(&mut self) {
-        self.worker_enqueue_success_ratio_percent = percent(
-            self.worker_enqueued_batches,
-            self.worker_attempted_batches,
-        );
+        self.worker_enqueue_success_ratio_percent =
+            percent(self.worker_enqueued_batches, self.worker_attempted_batches);
         let dry_total = self
-            .worker_preferred_dry_run_success_batches
-            .saturating_add(self.worker_preferred_dry_run_failed_batches);
-        self.worker_preferred_dry_run_success_ratio_percent = percent(
-            self.worker_preferred_dry_run_success_batches,
-            dry_total,
-        );
+            .worker_only_dry_run_success_batches
+            .saturating_add(self.worker_only_dry_run_failed_batches);
+        self.worker_only_dry_run_success_ratio_percent =
+            percent(self.worker_only_dry_run_success_batches, dry_total);
         self.readiness = if dry_total == 0 {
-            "insufficient_dual_write_samples".to_string()
-        } else if self.worker_preferred_dry_run_failed_batches == 0 {
-            "enqueue_path_ready_for_worker_only_trial".to_string()
-        } else if self.worker_preferred_dry_run_success_ratio_percent >= 99 {
+            "insufficient_worker_preferred_samples".to_string()
+        } else if self.worker_only_dry_run_failed_batches == 0 {
+            "enqueue_path_ready_for_worker_preferred".to_string()
+        } else if self.worker_only_dry_run_success_ratio_percent >= 99 {
             "nearly_ready_but_investigate_enqueue_failures".to_string()
         } else {
             "not_ready_worker_enqueue_failures_present".to_string()
@@ -186,8 +198,13 @@ impl PersistenceStats {
         self.backpressure_advice = match health {
             PersistenceQueueHealth::Idle => "idle; no persistence backlog".to_string(),
             PersistenceQueueHealth::Healthy => "healthy; keep observing worker latency".to_string(),
-            PersistenceQueueHealth::Backlogged => "backlogged; inspect DB dispatch latency before increasing queue capacity".to_string(),
-            PersistenceQueueHealth::Dropping => "dropping; fix downstream persistence pressure before adding features".to_string(),
+            PersistenceQueueHealth::Backlogged => {
+                "backlogged; inspect DB dispatch latency before increasing queue capacity"
+                    .to_string()
+            }
+            PersistenceQueueHealth::Dropping => {
+                "dropping; fix downstream persistence pressure before adding features".to_string()
+            }
         };
         self.telemetry_cutover.refresh_derived();
     }
@@ -277,7 +294,10 @@ pub async fn record_db_dispatch_failure(
         .entry(pipeline.as_str().to_string())
         .or_default()
         .record(elapsed_ms);
-    *stats.db_dispatch_failures.entry(pipeline.as_str().to_string()).or_insert(0) += 1;
+    *stats
+        .db_dispatch_failures
+        .entry(pipeline.as_str().to_string())
+        .or_insert(0) += 1;
     stats.last_error = Some(error);
 }
 
@@ -370,7 +390,7 @@ mod tests {
     }
 
     #[test]
-    fn telemetry_cutover_observation_tracking() {
+    fn telemetry_cutover_readiness_uses_worker_preferred_enqueue_observations() {
         let mut cutover = TelemetryCutoverStats::default();
         cutover.record(&TelemetryCutoverObservation {
             kind: "touch".to_string(),
@@ -385,8 +405,8 @@ mod tests {
             fallback_direct: false,
         });
         assert_eq!(cutover.worker_enqueue_success_ratio_percent, 100);
-        assert_eq!(cutover.worker_preferred_dry_run_success_ratio_percent, 100);
-        assert_eq!(cutover.readiness, "enqueue_path_ready_for_worker_only_trial");
+        assert_eq!(cutover.worker_only_dry_run_success_ratio_percent, 100);
+        assert_eq!(cutover.readiness, "enqueue_path_ready_for_worker_preferred");
         assert_eq!(cutover.worker_enqueue_latency.last_ms, 2);
         assert_eq!(cutover.direct_write_latency.last_ms, 7);
     }

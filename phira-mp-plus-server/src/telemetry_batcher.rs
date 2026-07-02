@@ -5,13 +5,7 @@
 //! keeping the old monolithic batcher file alive.
 
 pub use crate::telemetry::{
-    TelemetryBatcher,
-    TelemetryBatcherPolicy,
-    TelemetryBatcherStats,
-    TelemetryCutoverDecision,
-    TelemetryCutoverMode,
-    TelemetryItem,
-    TelemetryKind,
-    TelemetryTraceEntry,
+    TelemetryBatcher, TelemetryBatcherPolicy, TelemetryBatcherStats, TelemetryCutoverDecision,
+    TelemetryCutoverMode, TelemetryItem, TelemetryKind, TelemetryTraceEntry,
     TELEMETRY_SCHEMA_VERSION,
 };

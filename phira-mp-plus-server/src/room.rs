@@ -301,7 +301,10 @@ impl Room {
         *self.phira_api_endpoint.write().await = endpoint;
     }
 
-    pub async fn effective_phira_api_endpoint(&self, server: &crate::server::PlusServerState) -> String {
+    pub async fn effective_phira_api_endpoint(
+        &self,
+        server: &crate::server::PlusServerState,
+    ) -> String {
         self.phira_api_endpoint
             .read()
             .await
@@ -310,7 +313,10 @@ impl Room {
     }
 
     pub(crate) fn phira_api_endpoint_override_sync(&self) -> Option<String> {
-        self.phira_api_endpoint.try_read().ok().and_then(|guard| guard.clone())
+        self.phira_api_endpoint
+            .try_read()
+            .ok()
+            .and_then(|guard| guard.clone())
     }
 
     pub(crate) fn effective_phira_api_endpoint_sync(&self, fallback: &str) -> String {
@@ -429,28 +435,38 @@ impl Room {
 
     /// 存储玩家的触控帧数据（供 WASM 插件 host API 查询）
     pub async fn store_player_touches(&self, user_id: i32, data: &[TouchEventPoint]) {
-        if data.is_empty() { return; }
+        if data.is_empty() {
+            return;
+        }
         let mut guard = self.player_data.write().await;
         guard.entry(user_id).or_default().push_touches(data);
     }
 
     /// 存储玩家的判定事件数据（供 WASM 插件 host API 查询）
     pub async fn store_player_judges(&self, user_id: i32, data: &[JudgeEventItem]) {
-        if data.is_empty() { return; }
+        if data.is_empty() {
+            return;
+        }
         let mut guard = self.player_data.write().await;
         guard.entry(user_id).or_default().push_judges(data);
     }
 
     /// 获取玩家的触控数据（WASM host API 用）
     pub async fn get_player_touches(&self, user_id: i32) -> Vec<TouchEventPoint> {
-        self.player_data.read().await.get(&user_id)
+        self.player_data
+            .read()
+            .await
+            .get(&user_id)
             .map(|d| d.touches.clone())
             .unwrap_or_default()
     }
 
     /// 获取玩家的判定数据（WASM host API 用）
     pub async fn get_player_judges(&self, user_id: i32) -> Vec<JudgeEventItem> {
-        self.player_data.read().await.get(&user_id)
+        self.player_data
+            .read()
+            .await
+            .get(&user_id)
             .map(|d| d.judges.clone())
             .unwrap_or_default()
     }
@@ -478,11 +494,13 @@ impl Room {
         let target_ptr = user.as_ptr() as usize;
         {
             let mut players = self.users.write().await;
-            players.retain(|entry| entry.strong_count() > 0 && entry.as_ptr() as usize != target_ptr);
+            players
+                .retain(|entry| entry.strong_count() > 0 && entry.as_ptr() as usize != target_ptr);
         }
         {
             let mut monitors = self.monitors.write().await;
-            monitors.retain(|entry| entry.strong_count() > 0 && entry.as_ptr() as usize != target_ptr);
+            monitors
+                .retain(|entry| entry.strong_count() > 0 && entry.as_ptr() as usize != target_ptr);
         }
         if monitor {
             self.monitors.write().await.push(user);
@@ -654,12 +672,7 @@ impl Room {
 
     pub async fn broadcast(&self, cmd: ServerCommand) {
         debug!("broadcast {cmd:?}");
-        for session in self
-            .users()
-            .await
-            .into_iter()
-            .chain(self.monitors().await)
-        {
+        for session in self.users().await.into_iter().chain(self.monitors().await) {
             session.try_send(cmd.clone()).await;
         }
     }
@@ -700,14 +713,18 @@ impl Room {
         }
 
         *user.room.write().await = None;
-        (if is_monitor { &self.monitors } else { &self.users })
-            .write()
-            .await
-            .retain(|entry| {
-                entry
-                    .upgrade()
-                    .is_some_and(|current| !std::ptr::eq(Arc::as_ptr(&current), user))
-            });
+        (if is_monitor {
+            &self.monitors
+        } else {
+            &self.users
+        })
+        .write()
+        .await
+        .retain(|entry| {
+            entry
+                .upgrade()
+                .is_some_and(|current| !std::ptr::eq(Arc::as_ptr(&current), user))
+        });
 
         if is_monitor {
             self.has_active_monitors().await;
@@ -753,12 +770,21 @@ impl Room {
     }
 
     async fn save_round_history(&self) -> Option<RoundData> {
-        let round_id = self.current_round_id.read().await.unwrap_or(uuid::Uuid::nil());
+        let round_id = self
+            .current_round_id
+            .read()
+            .await
+            .unwrap_or(uuid::Uuid::nil());
         let (chart_id, chart_name, results, aborted) = {
             let guard = self.state.read().await;
             match guard.deref() {
                 InternalRoomState::Playing { results, aborted } => {
-                    let cid = self.chart.read().await.as_ref().map(|c| (c.id, c.name.clone()));
+                    let cid = self
+                        .chart
+                        .read()
+                        .await
+                        .as_ref()
+                        .map(|c| (c.id, c.name.clone()));
                     let (cid, cn) = match cid {
                         Some((id, name)) => (id, name),
                         None => return None,
@@ -781,7 +807,10 @@ impl Room {
         for (uid, rec) in &results {
             play_results.push(PlayResult {
                 user_id: *uid,
-                user_name: users_map.get(uid).cloned().unwrap_or_else(|| format!("{}", uid)),
+                user_name: users_map
+                    .get(uid)
+                    .cloned()
+                    .unwrap_or_else(|| format!("{}", uid)),
                 score: rec.score,
                 accuracy: rec.accuracy,
                 perfect: rec.perfect,
@@ -798,7 +827,10 @@ impl Room {
             if !results.contains_key(uid) {
                 play_results.push(PlayResult {
                     user_id: *uid,
-                    user_name: users_map.get(uid).cloned().unwrap_or_else(|| format!("{}", uid)),
+                    user_name: users_map
+                        .get(uid)
+                        .cloned()
+                        .unwrap_or_else(|| format!("{}", uid)),
                     score: 0,
                     accuracy: 0.0,
                     perfect: 0,
@@ -822,7 +854,8 @@ impl Room {
 
         if let Some(db) = crate::internal_hooks::DB.get() {
             for result in &round.results {
-                db.record_round_result(&round.round_id.to_string(), &self.id.to_string(), result).await;
+                db.record_round_result(&round.round_id.to_string(), &self.id.to_string(), result)
+                    .await;
             }
         }
         let event = protocol_round(&round);
@@ -868,7 +901,10 @@ impl Room {
                     // 打开轮次数据存储
                     let rid = round_id.to_string();
                     let chart_info = self.chart.read().await;
-                    let (cid, cn) = chart_info.as_ref().map(|c| (c.id, c.name.clone())).unwrap_or((0, "?".into()));
+                    let (cid, cn) = chart_info
+                        .as_ref()
+                        .map(|c| (c.id, c.name.clone()))
+                        .unwrap_or((0, "?".into()));
                     drop(chart_info);
                     let players: Vec<i32> = self.users().await.into_iter().map(|u| u.id).collect();
                     if let Some(rs) = &self.round_store {
@@ -900,9 +936,7 @@ impl Room {
                     drop(guard);
                     let rid = *self.current_round_id.read().await;
                     let completed_round = self.save_round_history().await;
-                    if let (Some(server), Some(round)) =
-                        (self.server.upgrade(), completed_round)
-                    {
+                    if let (Some(server), Some(round)) = (self.server.upgrade(), completed_round) {
                         server
                             .publish_room_event(RoomEvent::NewRound {
                                 room: self.id.clone(),
@@ -922,12 +956,16 @@ impl Room {
                     // 触发 RoundComplete 事件
                     if let Some(pm) = &self.plugin_manager {
                         let chart = self.chart.read().await;
-                        let (cid, cn) = chart.as_ref().map(|c| (c.id, c.name.clone())).unwrap_or((0, "?".into()));
+                        let (cid, cn) = chart
+                            .as_ref()
+                            .map(|c| (c.id, c.name.clone()))
+                            .unwrap_or((0, "?".into()));
                         pm.trigger(&PluginEvent::RoundComplete {
                             room_id: self.id.to_string(),
                             chart_id: cid,
                             chart_name: cn,
-                        }).await;
+                        })
+                        .await;
                     }
 
                     // 发送结算排行
@@ -936,14 +974,27 @@ impl Room {
                         if let Some(last) = history.last() {
                             let mut sorted = last.results.clone();
                             sorted.sort_by(|a, b| b.score.cmp(&a.score));
-                            let mut lines: Vec<String> = vec![format!("▸ {chart} 排行", chart = last.chart_name)];
+                            let mut lines: Vec<String> =
+                                vec![format!("▸ {chart} 排行", chart = last.chart_name)];
                             for (i, r) in sorted.iter().enumerate() {
                                 let status = if r.aborted { " 放弃" } else { "" };
                                 let fc = if r.full_combo { " FC" } else { "" };
-                                lines.push(format!("#{} {} | {}分 | {:.1}%{}{}", i + 1, r.user_name, r.score, r.accuracy * 100.0, fc, status));
+                                lines.push(format!(
+                                    "#{} {} | {}分 | {:.1}%{}{}",
+                                    i + 1,
+                                    r.user_name,
+                                    r.score,
+                                    r.accuracy * 100.0,
+                                    fc,
+                                    status
+                                ));
                             }
                             for line in &lines {
-                                self.send(Message::Chat { user: 0, content: line.clone() }).await;
+                                self.send(Message::Chat {
+                                    user: 0,
+                                    content: line.clone(),
+                                })
+                                .await;
                             }
                         }
                     }

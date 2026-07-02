@@ -5,9 +5,9 @@
 //! batch-size threshold, and writes via the synchronous DB ack path.
 //!
 //! The cutover switch (`TelemetryCutoverMode`) controls whether items go
-//! through the batcher only, the direct path only, dual-write, or
-//! fallback-on-enqueue-failure, so the server can safely migrate
-//! production telemetry away from hot-path writes.
+//! through the batcher mirror, or direct-path only, so the server can
+//! observe Runtime v2 batch performance without risking data loss: the
+//! direct path remains the authoritative source of truth.
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -30,15 +30,18 @@ static TELEMETRY_BATCH_SEQ: AtomicU64 = AtomicU64::new(1);
 
 /// Cutover mode controlling how production Touch/Judge telemetry is persisted.
 ///
-/// Simplified to two modes: DirectOnly (legacy) and WorkerPreferred (target).
-/// DualWrite and FallbackOnly have been removed — they were development-stage
-/// comparison modes that added hot-path complexity. WorkerPreferred is the target.
+/// Two modes: [`DirectOnly`] (safe default) and [`WorkerPreferred`] (direct
+/// source + worker mirror). DualWrite and FallbackOnly have been removed —
+/// they were development-stage comparison modes that added hot-path complexity.
+/// WorkerPreferred gives runtime v2 async batch visibility while keeping the
+/// direct RoundStore/db.rs path as the authoritative production fact source.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TelemetryCutoverMode {
     /// Only the direct RoundStore/db.rs path writes production Touch/Judge data.
     DirectOnly,
-    /// Only Runtime v2 TelemetryBatcher writes production Touch/Judge data.
+    /// Direct RoundStore/db.rs (authoritative) + best-effort Runtime v2 worker
+    /// enqueue as async mirror / batch observation.
     WorkerPreferred,
 }
 
@@ -61,7 +64,7 @@ impl TelemetryCutoverDecision {
             TelemetryCutoverMode::WorkerPreferred => Self {
                 mode,
                 enqueue_worker: true,
-                write_direct_before_worker_result: false,
+                write_direct_before_worker_result: true,
             },
         }
     }
@@ -90,9 +93,8 @@ impl TelemetryCutoverMode {
     pub fn parse(value: &str) -> Option<Self> {
         match value.trim().to_ascii_lowercase().as_str() {
             "direct" | "direct_only" | "direct-only" => Some(Self::DirectOnly),
-            "worker" | "worker_preferred" | "worker-only" | "runtime" | "runtime_v2" => {
-                Some(Self::WorkerPreferred)
-            }
+            "worker_preferred" | "worker" | "worker_only" | "worker-only" | "runtime"
+            | "runtime_v2" => Some(Self::WorkerPreferred),
             _ => None,
         }
     }
@@ -111,11 +113,9 @@ impl TelemetryCutoverMode {
 
     pub fn description(self) -> &'static str {
         match self {
-            Self::DirectOnly => {
-                "direct RoundStore/db.rs only; Runtime v2 batcher is bypassed"
-            }
+            Self::DirectOnly => "direct RoundStore/db.rs only; Runtime v2 batcher is bypassed",
             Self::WorkerPreferred => {
-                "Runtime v2 worker mirror + direct write for safety data written to both paths"
+                "Runtime v2 telemetry batch-write mirror + direct write for safety"
             }
         }
     }
@@ -313,8 +313,9 @@ impl TelemetryBatcher {
             ..policy
         };
         let (tx, rx) = mpsc::channel::<TelemetryItem>(capacity);
-        let stats =
-            Arc::new(RwLock::new(TelemetryBatcherStats::from_policy(&worker_policy)));
+        let stats = Arc::new(RwLock::new(TelemetryBatcherStats::from_policy(
+            &worker_policy,
+        )));
         let worker_stats = Arc::clone(&stats);
 
         tokio::spawn(async move {
@@ -336,14 +337,18 @@ impl TelemetryBatcher {
             Ok(()) => {
                 let mut stats = self.stats.write().await;
                 stats.queued += 1;
-                push_trace(&mut stats, "queued", kind, room_id, user_id, item_count, None);
+                push_trace(
+                    &mut stats, "queued", kind, room_id, user_id, item_count, None,
+                );
                 Ok(())
             }
             Err(mpsc::error::TrySendError::Full(item)) => {
                 let mut stats = self.stats.write().await;
                 stats.dropped += 1;
                 stats.last_error = Some("telemetry batcher queue is full".to_string());
-                push_trace(&mut stats, "dropped", kind, room_id, user_id, item_count, None);
+                push_trace(
+                    &mut stats, "dropped", kind, room_id, user_id, item_count, None,
+                );
                 warn!(
                     kind = %item.kind.as_str(),
                     user_id = item.user_id,
@@ -355,7 +360,9 @@ impl TelemetryBatcher {
                 let mut stats = self.stats.write().await;
                 stats.dropped += 1;
                 stats.last_error = Some("telemetry batcher queue is closed".to_string());
-                push_trace(&mut stats, "dropped", kind, room_id, user_id, item_count, None);
+                push_trace(
+                    &mut stats, "dropped", kind, room_id, user_id, item_count, None,
+                );
                 warn!(
                     kind = %item.kind.as_str(),
                     user_id = item.user_id,
@@ -662,8 +669,8 @@ mod tests {
 
         let worker = TelemetryCutoverMode::WorkerPreferred.cutover_decision();
         assert!(worker.enqueue_worker);
-        assert!(!worker.should_write_direct_after_worker_enqueue(false));
-        assert!(!worker.should_write_direct_after_worker_enqueue(true));
+        assert!(worker.should_write_direct_after_worker_enqueue(false));
+        assert!(worker.should_write_direct_after_worker_enqueue(true));
     }
 
     #[test]

@@ -19,7 +19,9 @@ impl RoomCommandHandler {
         let gateway = ctx.gateway;
         let state = ctx.state;
         match command {
-            RoomActorCommand::SetLock { room_id, locked, .. } => RoomCommandResult::from_legacy(
+            RoomActorCommand::SetLock {
+                room_id, locked, ..
+            } => RoomCommandResult::from_legacy(
                 gateway.set_lock_inline(state, room_id, *locked).await,
                 RoomCommandDelivery::PerRoomMailbox,
             ),
@@ -27,7 +29,9 @@ impl RoomCommandHandler {
                 gateway.set_cycle_inline(state, room_id, *cycle).await,
                 RoomCommandDelivery::PerRoomMailbox,
             ),
-            RoomActorCommand::SetHost { room_id, target_id, .. } => RoomCommandResult::from_legacy(
+            RoomActorCommand::SetHost {
+                room_id, target_id, ..
+            } => RoomCommandResult::from_legacy(
                 gateway.set_host_inline(state, room_id, *target_id).await,
                 RoomCommandDelivery::PerRoomMailbox,
             ),
@@ -35,7 +39,9 @@ impl RoomCommandHandler {
                 gateway.close_room_inline(state, room_id).await,
                 RoomCommandDelivery::PerRoomMailbox,
             ),
-            RoomActorCommand::KickUser { room_id, target_id, .. } => RoomCommandResult::from_legacy(
+            RoomActorCommand::KickUser {
+                room_id, target_id, ..
+            } => RoomCommandResult::from_legacy(
                 gateway.kick_user_inline(state, room_id, *target_id).await,
                 RoomCommandDelivery::PerRoomMailbox,
             ),
@@ -88,7 +94,9 @@ mod tests {
             RoomCommandDelivery::PerRoomMailbox,
         );
 
-        assert!(RoomCommandHandler::should_stop_room_mailbox(&command, &result));
+        assert!(RoomCommandHandler::should_stop_room_mailbox(
+            &command, &result
+        ));
     }
 
     #[test]
@@ -102,7 +110,10 @@ mod tests {
             Ok(serde_json::json!({"ok": true, "room_dropped": false})),
             RoomCommandDelivery::PerRoomMailbox,
         );
-        assert!(!RoomCommandHandler::should_stop_room_mailbox(&keep_command, &keep_result));
+        assert!(!RoomCommandHandler::should_stop_room_mailbox(
+            &keep_command,
+            &keep_result
+        ));
 
         let drop_command = RoomActorCommand::KickUser {
             room_id: "room-a".to_string(),
@@ -113,7 +124,10 @@ mod tests {
             Ok(serde_json::json!({"ok": true, "room_dropped": true})),
             RoomCommandDelivery::PerRoomMailbox,
         );
-        assert!(RoomCommandHandler::should_stop_room_mailbox(&drop_command, &drop_result));
+        assert!(RoomCommandHandler::should_stop_room_mailbox(
+            &drop_command,
+            &drop_result
+        ));
     }
 
     #[test]
@@ -127,6 +141,8 @@ mod tests {
             RoomCommandDelivery::PerRoomMailbox,
         );
 
-        assert!(!RoomCommandHandler::should_stop_room_mailbox(&command, &result));
+        assert!(!RoomCommandHandler::should_stop_room_mailbox(
+            &command, &result
+        ));
     }
 }

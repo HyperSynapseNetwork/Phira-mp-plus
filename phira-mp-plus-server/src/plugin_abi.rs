@@ -80,7 +80,11 @@ pub mod wit {
 /// function becomes the ABI review point.
 pub fn encode_plugin_event_json(event: &PluginEvent) -> String {
     match event {
-        PluginEvent::UserConnect { user_id, user_name, user_ip } => serde_json::json!({
+        PluginEvent::UserConnect {
+            user_id,
+            user_name,
+            user_ip,
+        } => serde_json::json!({
             "type": "user_connect",
             "user_id": user_id,
             "user_name": user_name,
@@ -96,7 +100,11 @@ pub fn encode_plugin_event_json(event: &PluginEvent) -> String {
             "user_id": user_id,
             "room_id": room_id,
         }),
-        PluginEvent::RoomJoin { user_id, room_id, is_monitor } => serde_json::json!({
+        PluginEvent::RoomJoin {
+            user_id,
+            room_id,
+            is_monitor,
+        } => serde_json::json!({
             "type": "room_join",
             "user_id": user_id,
             "room_id": room_id,
@@ -107,7 +115,11 @@ pub fn encode_plugin_event_json(event: &PluginEvent) -> String {
             "user_id": user_id,
             "room_id": room_id,
         }),
-        PluginEvent::RoomModify { user_id, room_id, data } => serde_json::json!({
+        PluginEvent::RoomModify {
+            user_id,
+            room_id,
+            data,
+        } => serde_json::json!({
             "type": "room_modify",
             "user_id": user_id,
             "room_id": room_id,
@@ -144,19 +156,31 @@ pub fn encode_plugin_event_json(event: &PluginEvent) -> String {
             "max_combo": max_combo,
             "full_combo": full_combo,
         }),
-        PluginEvent::PlayerTouches { user_id, room_id, data } => serde_json::json!({
+        PluginEvent::PlayerTouches {
+            user_id,
+            room_id,
+            data,
+        } => serde_json::json!({
             "type": "player_touches",
             "user_id": user_id,
             "room_id": room_id,
             "data": data,
         }),
-        PluginEvent::PlayerJudges { user_id, room_id, data } => serde_json::json!({
+        PluginEvent::PlayerJudges {
+            user_id,
+            room_id,
+            data,
+        } => serde_json::json!({
             "type": "player_judges",
             "user_id": user_id,
             "room_id": room_id,
             "data": data,
         }),
-        PluginEvent::RoundComplete { room_id, chart_id, chart_name } => serde_json::json!({
+        PluginEvent::RoundComplete {
+            room_id,
+            chart_id,
+            chart_name,
+        } => serde_json::json!({
             "type": "round_complete",
             "room_id": room_id,
             "chart_id": chart_id,
@@ -184,7 +208,10 @@ mod tests {
         assert_eq!(plan.current_transport, PluginAbiTransport::JsonMemoryV1);
         assert_eq!(plan.target_transport, PluginAbiTransport::WitTypedV2);
         assert!(plan.risks.iter().any(|risk| risk.contains("schema drift")));
-        assert!(plan.next_steps.iter().any(|step| step.contains("contract tests")));
+        assert!(plan
+            .next_steps
+            .iter()
+            .any(|step| step.contains("contract tests")));
     }
 
     #[test]
@@ -203,7 +230,10 @@ mod tests {
 
     #[test]
     fn api_args_and_result_json_round_trip() {
-        let args = vec![serde_json::json!({"room_id":"room-a"}), serde_json::json!(7)];
+        let args = vec![
+            serde_json::json!({"room_id":"room-a"}),
+            serde_json::json!(7),
+        ];
         let bytes = encode_plugin_api_args_json(&args).unwrap();
         let decoded: Vec<serde_json::Value> = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(decoded, args);

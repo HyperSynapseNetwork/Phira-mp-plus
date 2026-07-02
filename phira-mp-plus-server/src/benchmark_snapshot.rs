@@ -174,9 +174,18 @@ impl BenchmarkReportStore {
 
     pub fn latest(&self, mode: BenchmarkMode) -> Option<BenchmarkReportEntry> {
         self.inner.read().ok().and_then(|inner| match mode {
-            BenchmarkMode::Simulation => inner.latest_simulation.as_ref().map(StoredBenchmarkReport::to_entry),
-            BenchmarkMode::Hybrid => inner.latest_hybrid.as_ref().map(StoredBenchmarkReport::to_entry),
-            BenchmarkMode::Real => inner.latest_real.as_ref().map(StoredBenchmarkReport::to_entry),
+            BenchmarkMode::Simulation => inner
+                .latest_simulation
+                .as_ref()
+                .map(StoredBenchmarkReport::to_entry),
+            BenchmarkMode::Hybrid => inner
+                .latest_hybrid
+                .as_ref()
+                .map(StoredBenchmarkReport::to_entry),
+            BenchmarkMode::Real => inner
+                .latest_real
+                .as_ref()
+                .map(StoredBenchmarkReport::to_entry),
         })
     }
 
@@ -286,13 +295,19 @@ mod tests {
         let latest = store.latest(BenchmarkMode::Simulation).unwrap();
         assert_eq!(latest.report.title, "sim-2");
         assert_eq!(latest.report.notes.len(), 1);
-        assert_eq!(store.latest(BenchmarkMode::Hybrid).unwrap().report.title, "hybrid-1");
+        assert_eq!(
+            store.latest(BenchmarkMode::Hybrid).unwrap().report.title,
+            "hybrid-1"
+        );
         assert!(store.latest(BenchmarkMode::Real).is_none());
     }
 
     #[test]
     fn history_window_is_sanitized() {
         assert_eq!(sanitize_history(0), MIN_BENCHMARK_REPORT_HISTORY);
-        assert_eq!(sanitize_history(MAX_BENCHMARK_REPORT_HISTORY + 1), MAX_BENCHMARK_REPORT_HISTORY);
+        assert_eq!(
+            sanitize_history(MAX_BENCHMARK_REPORT_HISTORY + 1),
+            MAX_BENCHMARK_REPORT_HISTORY
+        );
     }
 }

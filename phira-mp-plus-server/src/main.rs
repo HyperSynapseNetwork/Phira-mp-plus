@@ -39,12 +39,7 @@ struct Args {
     #[arg(long = "no-cli", help = "Disable the administrative console")]
     no_cli: bool,
 
-    #[arg(
-        short,
-        long,
-        default_value = "phira-mp-plus",
-        help = "Log file prefix"
-    )]
+    #[arg(short, long, default_value = "phira-mp-plus", help = "Log file prefix")]
     log_file: String,
 
     #[arg(
@@ -119,12 +114,9 @@ async fn main() -> Result<()> {
             }
             Some(std::thread::spawn(move || match mode {
                 ConsoleMode::Tui(capabilities) => {
-                    if let Err(err) = phira_mp_plus_server::cli_tui::run_tui(
-                        cmd_tx,
-                        out_rx,
-                        log_rx,
-                        capabilities,
-                    ) {
+                    if let Err(err) =
+                        phira_mp_plus_server::cli_tui::run_tui(cmd_tx, out_rx, log_rx, capabilities)
+                    {
                         eprintln!("TUI error: {err}");
                     }
                 }
@@ -185,7 +177,9 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-fn optional_channel<T>(enabled: bool) -> (
+fn optional_channel<T>(
+    enabled: bool,
+) -> (
     Option<mpsc::UnboundedSender<T>>,
     Option<mpsc::UnboundedReceiver<T>>,
 ) {
@@ -222,6 +216,9 @@ fn load_config(path: &str) -> (PlusConfig, ConfigLoad) {
 
     match PlusConfig::from_yaml(path) {
         Ok(config) => (config, ConfigLoad::Loaded),
-        Err(error) => (PlusConfig::default(), ConfigLoad::Invalid(error.to_string())),
+        Err(error) => (
+            PlusConfig::default(),
+            ConfigLoad::Invalid(error.to_string()),
+        ),
     }
 }

@@ -67,19 +67,15 @@ impl<'a> fmt::MakeWriter<'a> for StdoutWriter {
     }
 }
 
-pub fn init(
-    file_name: &str,
-    tui_tx: Option<mpsc::UnboundedSender<String>>,
-) -> Result<WorkerGuard> {
+pub fn init(file_name: &str, tui_tx: Option<mpsc::UnboundedSender<String>>) -> Result<WorkerGuard> {
     let log_dir = Path::new("log");
     if log_dir.exists() && !log_dir.is_dir() {
         anyhow::bail!("'log' exists and is not a directory");
     }
     std::fs::create_dir_all(log_dir)?;
 
-    let (file_writer, guard) = tracing_appender::non_blocking(
-        tracing_appender::rolling::hourly(log_dir, file_name),
-    );
+    let (file_writer, guard) =
+        tracing_appender::non_blocking(tracing_appender::rolling::hourly(log_dir, file_name));
     let filter = EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| EnvFilter::new("info"))
         .add_directive("hyper=info".parse()?)

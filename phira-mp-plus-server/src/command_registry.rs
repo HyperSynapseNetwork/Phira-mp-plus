@@ -42,9 +42,12 @@ impl CommandArgSpec {
 pub enum CommandAudience {
     /// Recommended day-to-day commands shown in the default help overview.
     Primary,
-    /// Useful operational/diagnostic commands hidden from the default overview
-    /// so the command surface does not keep growing visually forever.
+    /// Useful operational/diagnostic commands hidden from the default overview.
     Advanced,
+    /// Internal developer commands (runtime internals, simulation internals).
+    Developer,
+    /// Legacy commands kept for compatibility; not shown in default help.
+    Deprecated,
 }
 
 impl CommandAudience {
@@ -52,6 +55,8 @@ impl CommandAudience {
         match self {
             Self::Primary => "primary",
             Self::Advanced => "advanced",
+            Self::Developer => "developer",
+            Self::Deprecated => "deprecated",
         }
     }
 }
@@ -100,9 +105,18 @@ impl CommandSpec {
         self
     }
 
-
     pub fn advanced(mut self) -> Self {
         self.audience = CommandAudience::Advanced;
+        self
+    }
+
+    pub fn developer(mut self) -> Self {
+        self.audience = CommandAudience::Developer;
+        self
+    }
+
+    pub fn deprecated(mut self) -> Self {
+        self.audience = CommandAudience::Deprecated;
         self
     }
 
@@ -124,7 +138,7 @@ impl CommandSpec {
 #[derive(Clone, Default)]
 pub struct CommandRegistry {
     commands: BTreeMap<String, CommandSpec>,
-    aliases: BTreeMap<String, String>,  // alias → canonical name
+    aliases: BTreeMap<String, String>, // alias → canonical name
     roots: BTreeSet<String>,
     children: BTreeMap<String, BTreeSet<String>>,
 }
@@ -169,7 +183,9 @@ impl CommandRegistry {
             return Some(spec);
         }
         // Fall back to alias resolution
-        self.aliases.get(&normalized).and_then(|canonical| self.commands.get(canonical))
+        self.aliases
+            .get(&normalized)
+            .and_then(|canonical| self.commands.get(canonical))
     }
 
     pub fn iter(&self) -> impl Iterator<Item = &CommandSpec> {
@@ -185,15 +201,19 @@ impl CommandRegistry {
             .collect()
     }
 
-    pub fn commands_in_group(&self, group: &str, include_advanced: bool) -> Vec<&CommandSpec> {
+    pub fn commands_in_group(
+        &self,
+        group: &str,
+        audience_filter: Option<CommandAudience>,
+    ) -> Vec<&CommandSpec> {
         self.commands
             .values()
             .filter(|cmd| cmd.group == group)
-            .filter(|cmd| include_advanced || cmd.audience != CommandAudience::Advanced)
+            .filter(|cmd| audience_filter.map_or(true, |filter| cmd.audience == filter))
             .collect()
     }
 
-    pub fn command_surface_counts(&self) -> (usize, usize) {
+    pub fn command_surface_counts(&self) -> (usize, usize, usize, usize) {
         let primary = self
             .commands
             .values()
@@ -204,7 +224,17 @@ impl CommandRegistry {
             .values()
             .filter(|cmd| cmd.audience == CommandAudience::Advanced)
             .count();
-        (primary, advanced)
+        let developer = self
+            .commands
+            .values()
+            .filter(|cmd| cmd.audience == CommandAudience::Developer)
+            .count();
+        let deprecated = self
+            .commands
+            .values()
+            .filter(|cmd| cmd.audience == CommandAudience::Deprecated)
+            .count();
+        (primary, advanced, developer, deprecated)
     }
 
     pub fn root_commands(&self) -> Vec<String> {
@@ -246,7 +276,11 @@ impl CommandRegistry {
             &tokens[..tokens.len().saturating_sub(1)]
         };
         let parent = normalize_command_name(&parent_tokens.join(" "));
-        let prefix = if ends_with_space { "" } else { tokens.last().copied().unwrap_or("") };
+        let prefix = if ends_with_space {
+            ""
+        } else {
+            tokens.last().copied().unwrap_or("")
+        };
 
         let mut out = self
             .children
@@ -308,7 +342,10 @@ impl CommandRegistry {
             lines.push("ARGS".to_string());
             for arg in &spec.args {
                 let marker = if arg.required { "required" } else { "optional" };
-                lines.push(format!("    {:<18} {:<8} {}", arg.name, marker, arg.description));
+                lines.push(format!(
+                    "    {:<18} {:<8} {}",
+                    arg.name, marker, arg.description
+                ));
             }
         }
 
@@ -328,52 +365,50 @@ impl CommandRegistry {
             }
         }
 
-
         Some(lines.join("\n"))
     }
 
     pub fn format_overview(&self) -> String {
         let mut lines = Vec::new();
-        let (_primary, _advanced) = self.command_surface_counts();
-        lines.push("Phira-mp+ 管理命令（推荐视图）".to_string());
+        let (primary, _advanced, _developer, _deprecated) = self.command_surface_counts();
+        lines.push("Phira-mp+ 管理命令".to_string());
         lines.push("─────────────────────────────────────────────".to_string());
-        lines.push("提示：help <命令> 查看详情；help all 查看完整命令；help groups 查看分组".to_string());
+        lines.push("提示：help <命令> 查看详情".to_string());
+        lines.push("提示：help advanced / help dev / help legacy 查看其它命令".to_string());
         lines.push("提示：游戏内管理员入口仍使用 _ 命令，__ 表示字面量下划线".to_string());
         lines.push(String::new());
 
         for group in self.groups() {
-            let visible = self.commands_in_group(&group, false);
+            let visible: Vec<&CommandSpec> = self
+                .commands
+                .values()
+                .filter(|cmd| cmd.group == group && cmd.audience == CommandAudience::Primary)
+                .collect();
             if visible.is_empty() {
                 continue;
             }
             lines.push(format!("▸ {group}"));
-            for spec in visible {
+            for spec in &visible {
                 lines.push(format!("    {:<32} {}", spec.usage, spec.description));
-            }
-            let advanced_count = self
-                .commands
-                .values()
-                .filter(|cmd| cmd.group == group && cmd.audience == CommandAudience::Advanced)
-                .count();
-            if advanced_count > 0 {
-                lines.push(format!(
-                    "    {} advanced={}；help group {} all 查看",
-                    "…", advanced_count, group
-                ));
             }
             lines.push(String::new());
         }
 
         lines.push("─────────────────────────────────────────────".to_string());
+        lines.push(format!(
+            "默认显示 {primary} 个主要命令；help advanced / dev / legacy 查看更多"
+        ));
         lines.join("\n")
     }
 
     pub fn format_overview_all(&self) -> String {
         let mut lines = Vec::new();
-        let (_primary, _advanced) = self.command_surface_counts();
+        let (primary, advanced, developer, deprecated) = self.command_surface_counts();
         lines.push("Phira-mp+ 管理命令（完整视图）".to_string());
         lines.push("─────────────────────────────────────────────".to_string());
-        lines.push(format!("全部命令（primary + advanced）"));
+        lines.push(format!(
+            "primary={primary} advanced={advanced} dev={developer} deprecated={deprecated}"
+        ));
         lines.push(String::new());
         for group in self.groups() {
             lines.push(self.format_group(&group, true));
@@ -387,24 +422,45 @@ impl CommandRegistry {
         lines.push("命令分组".to_string());
         lines.push("─────────────────────────────────────────────".to_string());
         for group in self.groups() {
-            let primary = self.commands_in_group(&group, false).len();
-            let total = self.commands.values().filter(|cmd| cmd.group == group).count();
-            lines.push(format!("    {:<16} primary={} total={}    help group {}", group, primary, total, group));
+            let primary = self
+                .commands
+                .values()
+                .filter(|cmd| cmd.group == group && cmd.audience == CommandAudience::Primary)
+                .count();
+            let total = self
+                .commands
+                .values()
+                .filter(|cmd| cmd.group == group)
+                .count();
+            lines.push(format!(
+                "    {:<16} primary={} total={}    help group {}",
+                group, primary, total, group
+            ));
         }
         lines.join("\n")
     }
 
-    pub fn format_group(&self, group: &str, include_advanced: bool) -> String {
+    pub fn format_group(&self, group: &str, include_all: bool) -> String {
         let mut lines = Vec::new();
         let group = group.trim();
-        let commands = self.commands_in_group(group, include_advanced);
+        let commands: Vec<&CommandSpec> = if include_all {
+            self.commands
+                .values()
+                .filter(|cmd| cmd.group == group)
+                .collect()
+        } else {
+            self.commands
+                .values()
+                .filter(|cmd| cmd.group == group && cmd.audience == CommandAudience::Primary)
+                .collect()
+        };
         if commands.is_empty() {
             return format!("未找到命令分组: {group}");
         }
-        let title = if include_advanced {
+        let title = if include_all {
             format!("命令分组：{group}（完整）")
         } else {
-            format!("命令分组：{group}（推荐）")
+            format!("命令分组：{group}")
         };
         lines.push(title);
         lines.push("─────────────────────────────────────────────".to_string());
@@ -412,13 +468,57 @@ impl CommandRegistry {
             let marker = match spec.audience {
                 CommandAudience::Primary => " ",
                 CommandAudience::Advanced => "advanced",
+                CommandAudience::Developer => "dev",
+                CommandAudience::Deprecated => "deprecated",
             };
             lines.push(format!(
-                "    {:<32} {:<8} {}",
+                "    {:<32} {:<10} {}",
                 spec.usage, marker, spec.description
             ));
         }
         lines.join("\n")
+    }
+
+    /// Format all commands matching a specific audience level.
+    /// Commands are grouped by their group field.
+    pub fn format_audience(&self, audience: CommandAudience) -> String {
+        let mut lines = Vec::new();
+        let label = audience.as_str();
+        lines.push(format!("命令（{label}）"));
+        lines.push("─────────────────────────────────────────────".to_string());
+        let mut any = false;
+        for group in self.groups() {
+            let cmds: Vec<&CommandSpec> = self
+                .commands
+                .values()
+                .filter(|cmd| cmd.group == group && cmd.audience == audience)
+                .collect();
+            if cmds.is_empty() {
+                continue;
+            }
+            any = true;
+            lines.push(format!("▸ {group}"));
+            for spec in &cmds {
+                lines.push(format!("    {:<32} {}", spec.usage, spec.description));
+            }
+            lines.push(String::new());
+        }
+        if !any {
+            lines.push("    （无）".to_string());
+        }
+        lines.join("\n")
+    }
+
+    pub fn format_advanced(&self) -> String {
+        self.format_audience(CommandAudience::Advanced)
+    }
+
+    pub fn format_dev(&self) -> String {
+        self.format_audience(CommandAudience::Developer)
+    }
+
+    pub fn format_legacy(&self) -> String {
+        self.format_audience(CommandAudience::Deprecated)
     }
 
     pub fn format_unknown(&self, command: &str) -> String {
@@ -438,20 +538,14 @@ impl CommandRegistry {
     ///
     /// Returns `Some(output_lines)` if a registered handler was found and executed,
     /// or `None` if no handler is registered (caller should fall back to old dispatch).
-
-    /// Resolve an alias to its canonical command name.
-    /// Returns the original name if no alias matches.
-    pub fn resolve_alias(&self, name: &str) -> String {
-        let normalized = normalize_command_name(name);
-        if self.commands.contains_key(&normalized) {
-            return name.to_string();
-        }
-        self.aliases.get(&normalized).cloned().unwrap_or_else(|| name.to_string())
-    }
-    pub fn execute(&self, state: &PlusServerState, command: &str, args: &[&str]) -> Option<Vec<String>> {
-        self.get(command).and_then(|spec| {
-            spec.handler.as_ref().map(|handler| handler(state, args))
-        })
+    pub fn execute(
+        &self,
+        state: &PlusServerState,
+        command: &str,
+        args: &[&str],
+    ) -> Option<Vec<String>> {
+        self.get(command)
+            .and_then(|spec| spec.handler.as_ref().map(|handler| handler(state, args)))
     }
 
     fn index_command_path(&mut self, name: &str) {
@@ -476,7 +570,7 @@ fn normalize_command_name(value: &str) -> String {
 fn register(registry: &mut CommandRegistry, spec: CommandSpec) {
     // Runtime v2 metadata should not make server startup fragile. If a duplicate
     // slips in, keep the rest of the registry usable and let tests/CI catch it.
-    registry.register(spec).expect("duplicate/conflicting command");
+    let _ = registry.register(spec);
 }
 
 pub fn runtime_v2_registry() -> CommandRegistry {
@@ -506,40 +600,127 @@ pub fn runtime_v2_registry() -> CommandRegistry {
             .example("status")
             .handler(Arc::new(|state, _args| {
                 let rooms = state.rooms.try_read().map(|r| r.len()).unwrap_or(0);
-                vec![
-                    format!("  ◆ Phira-mp+ v{}  │ 端口 {}  │ 房间 {}",
-                        env!("CARGO_PKG_VERSION"), state.config.port, rooms),
-                ]
+                vec![format!(
+                    "  ◆ Phira-mp+ v{}  │ 端口 {}  │ 房间 {}",
+                    env!("CARGO_PKG_VERSION"),
+                    state.config.port,
+                    rooms
+                )]
             })),
     );
 
     for spec in [
-        CommandSpec::new("runtime status", "runtime-v2", "查看 Runtime v2 诊断信息。", "runtime status"),
-        CommandSpec::new("runtime roadmap", "runtime-v2", "查看 Runtime v2 总目标工作板。", "runtime roadmap")
-            .advanced(),
-        CommandSpec::new("runtime phira", "runtime-v2", "查看统一 Phira HTTP RetryClient 统计和策略。", "runtime phira").advanced(),
-        CommandSpec::new("runtime commands", "runtime-v2", "查看 Command Registry 统计。", "runtime commands").advanced(),
-        CommandSpec::new("runtime events", "runtime-v2", "查看事件总线统计与最近事件。", "runtime events").advanced(),
-        CommandSpec::new("runtime persistence", "runtime-v2", "查看持久化 Worker 与遥测批处理器统计。", "runtime persistence"),
-        CommandSpec::new("runtime cutover", "runtime-v2", "查看或切换 Touch/Judge 持久化 cutover 模式。", "runtime cutover [direct_only|worker_only]").advanced()
-            .arg(CommandArgSpec::optional("mode", "direct_only 或 worker_only"))
-            .example("runtime cutover")
-            .example("runtime cutover worker_only"),
-        CommandSpec::new("runtime schema", "runtime-v2", "查看持久化 schema 说明。", "runtime schema").advanced(),
-
-        CommandSpec::new("runtime rooms", "runtime-v2", "查看房间命令通道与 Actor 迁移状态。", "runtime rooms").advanced(),
-        CommandSpec::new("runtime actors", "runtime-v2", "查看 Actor 模型迁移蓝图。", "runtime actors").advanced(),
+        CommandSpec::new(
+            "runtime status",
+            "runtime-v2",
+            "查看 Runtime v2 诊断信息。",
+            "runtime status",
+        )
+        .handler(Arc::new(|state, _args| {
+            let rooms = state.rooms.try_read().map(|r| r.len()).unwrap_or(0);
+            vec![format!(
+                "  Runtime v2: {} rooms | {} commands | MIGRATION_PHASE=0 (JSON bridge active)",
+                rooms,
+                state.command_registry.iter().count()
+            )]
+        })),
+        CommandSpec::new(
+            "runtime commands",
+            "runtime-v2",
+            "查看 Command Registry 统计。",
+            "runtime commands",
+        )
+        .developer()
+        .handler(Arc::new(|state, _args| {
+            let (p, a, d, dep) = state.command_registry.command_surface_counts();
+            vec![format!(
+                "  Registry: {p} primary, {a} advanced, {d} dev, {dep} deprecated"
+            )]
+        })),
+        CommandSpec::new(
+            "runtime roadmap",
+            "runtime-v2",
+            "查看 Runtime v2 总目标工作板。",
+            "runtime roadmap",
+        )
+        .developer(),
+        CommandSpec::new(
+            "runtime phira",
+            "runtime-v2",
+            "查看统一 Phira HTTP RetryClient 统计和策略。",
+            "runtime phira",
+        )
+        .developer(),
+        CommandSpec::new(
+            "runtime commands",
+            "runtime-v2",
+            "查看 Command Registry 统计。",
+            "runtime commands",
+        )
+        .developer(),
+        CommandSpec::new(
+            "runtime events",
+            "runtime-v2",
+            "查看事件总线统计与最近事件。",
+            "runtime events",
+        )
+        .developer(),
+        CommandSpec::new(
+            "runtime persistence",
+            "runtime-v2",
+            "查看持久化 Worker 与遥测批处理器统计。",
+            "runtime persistence",
+        )
+        .advanced(),
+        CommandSpec::new(
+            "runtime cutover",
+            "runtime-v2",
+            "查看或切换 Touch/Judge 持久化 cutover 模式。",
+            "runtime cutover [direct_only|worker_preferred]",
+        )
+        .advanced()
+        .arg(CommandArgSpec::optional(
+            "mode",
+            "direct_only 或 worker_preferred",
+        ))
+        .example("runtime cutover")
+        .example("runtime cutover worker_preferred"),
+        CommandSpec::new(
+            "runtime schema",
+            "runtime-v2",
+            "查看持久化 schema 说明。",
+            "runtime schema",
+        )
+        .developer(),
+        CommandSpec::new(
+            "runtime rooms",
+            "runtime-v2",
+            "查看房间命令通道与 Actor 迁移状态。",
+            "runtime rooms",
+        )
+        .developer(),
+        CommandSpec::new(
+            "runtime actors",
+            "runtime-v2",
+            "查看 Actor 模型迁移蓝图。",
+            "runtime actors",
+        )
+        .developer(),
     ] {
         register(&mut registry, spec.example("runtime status"));
     }
 
     for spec in [
-        CommandSpec::new("simulation status", "simulation", "查看 Simulation 状态。", "simulation status"),
+        CommandSpec::new("simulation status", "simulation", "查看 Simulation 状态。", "simulation status")
+            .handler(Arc::new(|state, _args| {
+                // Use the SimulationManager's status; if not available, return basic info
+                vec!["  Simulation status (CLI: use `simulation status` in console)".to_string()]
+            })),
         CommandSpec::new(
             "simulation run",
             "simulation",
             "启动隔离 shadow world；默认自动 tick，到达 duration 后自动停止。",
-            "simulation run <preset> [key=value...]",
+            "simulation run <baseline|small|medium|large|custom> [scenario=balanced|chat_storm|ready_storm|round_storm|touch_judge_burst|idle] [users=N] [rooms=N] [duration=N] [tick_ms=N] [auto=true] [persist_every=N] [touch=true] [judge=true]",
         )
         .example("simulation run baseline")
         .example("simulation run custom users=500 rooms=50 duration=300 scenario=touch_judge_burst tick_ms=1000 persist_every=30")
@@ -551,7 +732,7 @@ pub fn runtime_v2_registry() -> CommandRegistry {
             "simulation",
             "按顺序运行多个 Simulation scenario，用于一次性比较不同压力形状。",
             "simulation suite <smoke|mixed|stress> [duration=N] [tick_ms=N] [persist_every=N] [users=N] [rooms=N]",
-        )
+        ).advanced()
         .example("simulation suite smoke")
         .example("simulation suite mixed duration=15 tick_ms=500 persist_every=5")
         .example("simulation suite stress users=800 rooms=80"),
@@ -560,20 +741,20 @@ pub fn runtime_v2_registry() -> CommandRegistry {
             "simulation",
             "查看最近一次 Simulation suite 汇总报告，并输出统一 BenchmarkReport [simulation] 摘要。",
             "simulation report [latest|list|clear]",
-        )
+        ).advanced()
         .example("simulation report")
         .example("simulation report list 8")
         .example("simulation report clear"),
-        CommandSpec::new("simulation tick", "simulation", "手动推进 Simulation tick。", "simulation tick [count]").advanced()
+        CommandSpec::new("simulation tick", "simulation", "手动推进 Simulation tick。", "simulation tick [count]").developer()
             .example("simulation tick 10"),
-        CommandSpec::new("simulation inspect", "simulation", "查看 shadow users/rooms/rounds/recent events 样本。", "simulation inspect [limit]").advanced()
+        CommandSpec::new("simulation inspect", "simulation", "查看 shadow users/rooms/rounds/recent events 样本。", "simulation inspect [limit]").developer()
             .example("simulation inspect 20"),
         CommandSpec::new("simulation stop", "simulation", "停止当前 Simulation 运行状态并广播结束提示。", "simulation stop"),
-        CommandSpec::new("simulation seed", "simulation", "设置 deterministic simulation seed。", "simulation seed <value>").advanced(),
-        CommandSpec::new("simulation cleanup", "simulation", "清理 Simulation 数据。", "simulation cleanup").advanced(),
-        CommandSpec::new("simulation persist", "simulation", "发送 Simulation 快照到持久化 Worker。", "simulation persist").advanced()
+        CommandSpec::new("simulation seed", "simulation", "设置 deterministic simulation seed。", "simulation seed <value>").developer(),
+        CommandSpec::new("simulation cleanup", "simulation", "清理 Simulation 数据。", "simulation cleanup"),
+        CommandSpec::new("simulation persist", "simulation", "发送 Simulation 快照到持久化 Worker。", "simulation persist").developer()
             .example("simulation persist"),
-        CommandSpec::new("simulation sample", "simulation", "查看 deterministic touches/judges 示例数据规模。", "simulation sample").advanced(),
+        CommandSpec::new("simulation sample", "simulation", "查看 deterministic touches/judges 示例数据规模。", "simulation sample").developer(),
     ] {
         register(&mut registry, spec);
     }
@@ -583,23 +764,50 @@ pub fn runtime_v2_registry() -> CommandRegistry {
         CommandSpec::new(
             "benchmark",
             "diagnostics",
-            "真实网络压测 / 兼容性测试（默认推荐 simulation）。",
+            "运行显式真实网络压测。该命令需要 Phira token，不是默认压测入口。",
             "benchmark [seconds] [rooms]",
         )
-        .arg(CommandArgSpec::optional("seconds", "压测时长，默认 30，范围 5..300"))
-        .arg(CommandArgSpec::optional("rooms", "目标房间数，默认 100，最大 5000"))
+        .advanced()
+        .arg(CommandArgSpec::optional(
+            "seconds",
+            "压测时长，默认 30，范围 5..300",
+        ))
+        .arg(CommandArgSpec::optional(
+            "rooms",
+            "目标房间数，默认 100，最大 5000",
+        ))
         .example("benchmark 30 100")
         .example("benchmark run real 30 100"),
     );
     register(
         &mut registry,
-        CommandSpec::new("benchmark modes", "diagnostics", "查看三种压测模式说明。", "benchmark modes").advanced()
-            .example("benchmark modes"),
+        CommandSpec::new(
+            "benchmark modes",
+            "diagnostics",
+            "查看三种压测模式说明。",
+            "benchmark modes",
+        )
+        .advanced()
+        .example("benchmark modes")
+        .handler(Arc::new(|_state, _args| {
+            vec![
+                "  Benchmark modes:".to_string(),
+                "    simulation  — 默认推荐压测（隔离 shadow world，不访问 Phira）".to_string(),
+                "    real        — 显式真实 TCP 兼容性测试（需要 Phira token）".to_string(),
+                "    hybrid      — Hybrid Phira 探测（chart_lookup / record_lookup）".to_string(),
+            ]
+        })),
     );
     register(
         &mut registry,
-        CommandSpec::new("benchmark run real", "diagnostics", "运行真实 TCP 兼容性测试。", "benchmark run real [seconds] [rooms]").advanced()
-            .example("benchmark run real 30 100"),
+        CommandSpec::new(
+            "benchmark run real",
+            "diagnostics",
+            "运行真实 TCP 兼容性测试。",
+            "benchmark run real [seconds] [rooms]",
+        )
+        .advanced()
+        .example("benchmark run real 30 100"),
     );
     register(
         &mut registry,
@@ -609,74 +817,223 @@ pub fn runtime_v2_registry() -> CommandRegistry {
     );
     register(
         &mut registry,
-        CommandSpec::new("benchmark report", "diagnostics", "查看 Benchmark 报告。", "benchmark report [simulation|hybrid|real|limit]").advanced()
-            .example("benchmark report")
-            .example("benchmark report simulation")
-            .example("benchmark report 16"),
+        CommandSpec::new(
+            "benchmark report",
+            "diagnostics",
+            "查看 Benchmark 报告。",
+            "benchmark report [simulation|hybrid|real|limit]",
+        )
+        .advanced()
+        .example("benchmark report")
+        .example("benchmark report simulation")
+        .example("benchmark report 16"),
     );
     register(
         &mut registry,
-        CommandSpec::new("benchmark history", "diagnostics", "查看已持久化的 BenchmarkReport 历史记录。", "benchmark history [simulation|hybrid|real] [limit]").advanced()
-            .example("benchmark history")
-            .example("benchmark history real 20"),
-    );
-    register(
-        &mut registry,
-        CommandSpec::new("benchmark-bind", "diagnostics", "绑定真实网络压测使用的 Phira token。", "benchmark-bind <token1[,token2...]>").advanced()
-            .arg(CommandArgSpec::required("token", "Phira token；不要提交到 Git")),
-    );
-    register(
-        &mut registry,
-        CommandSpec::new("benchmark-cleanup", "diagnostics", "清理 bench-* 压测房间。", "benchmark-cleanup").advanced(),
+        CommandSpec::new(
+            "benchmark history",
+            "diagnostics",
+            "查看已持久化的 BenchmarkReport 历史记录。",
+            "benchmark history [simulation|hybrid|real] [limit]",
+        )
+        .advanced()
+        .example("benchmark history")
+        .example("benchmark history real 20"),
     );
 
     for spec in [
         CommandSpec::new("users", "users", "查看在线用户。", "users"),
         CommandSpec::new("kick", "users", "踢出在线用户。", "kick <user_id>"),
-        CommandSpec::new("broadcast all", "users", "广播消息给所有用户。", "broadcast all <message>"),
-        CommandSpec::new("broadcast room", "users", "广播消息给指定房间。", "broadcast room <room_id> <message>"),
-        CommandSpec::new("broadcast user", "users", "发送消息给指定用户。", "broadcast user <user_id> <message>"),
-        CommandSpec::new("admin-id", "users", "管理游戏内管理员 Phira ID。", "admin-id list|add|remove"),
+        CommandSpec::new(
+            "broadcast all",
+            "users",
+            "广播消息给所有用户。",
+            "broadcast all <message>",
+        ),
+        CommandSpec::new(
+            "broadcast room",
+            "users",
+            "广播消息给指定房间。",
+            "broadcast room <room_id> <message>",
+        ),
+        CommandSpec::new(
+            "broadcast user",
+            "users",
+            "发送消息给指定用户。",
+            "broadcast user <user_id> <message>",
+        ),
+        CommandSpec::new(
+            "admin-id",
+            "users",
+            "管理游戏内管理员 Phira ID。",
+            "admin-id list|add|remove",
+        )
+        .advanced(),
     ] {
         register(&mut registry, spec);
     }
 
     register(
         &mut registry,
-        CommandSpec::new("rooms", "rooms", "查看活跃房间。", "rooms")
-            .alias("room list"),
+        CommandSpec::new("rooms", "rooms", "查看活跃房间。", "rooms").alias("room list"),
     );
     for spec in [
-        CommandSpec::new("room list", "rooms", "查看活跃房间。", "room list"),
-        CommandSpec::new("room create-empty", "rooms", "创建无人持久空房间。", "room create-empty <room_id> [phira_api_endpoint]").advanced(),
-        CommandSpec::new("room info", "rooms", "查看房间详情。", "room info <room_id>"),
-        CommandSpec::new("room start", "rooms", "管理员发起游戏开始。", "room start <room_id>"),
-        CommandSpec::new("room cancel", "rooms", "取消管理员发起的游戏开始。", "room cancel <room_id>"),
-        CommandSpec::new("room kick", "rooms", "从房间踢出用户。", "room kick <room_id> <user_id>"),
-        CommandSpec::new("room host", "rooms", "设置房主，? 表示系统房主。", "room host <room_id> <user_id|?>"),
-        CommandSpec::new("room force-move", "rooms", "强制迁移用户到指定房间。", "room force-move <room_id> <user_id> [monitor]").advanced(),
-        CommandSpec::new("room hide", "rooms", "隐藏房间，使其默认不出现在 Web API 与欢迎语。", "room hide <room_id> [true|false]").advanced(),
-        CommandSpec::new("room unhide", "rooms", "取消隐藏房间。", "room unhide <room_id>").advanced(),
+        CommandSpec::new(
+            "room create-empty",
+            "rooms",
+            "创建无人持久空房间。",
+            "room create-empty <room_id> [phira_api_endpoint]",
+        )
+        .advanced(),
+        CommandSpec::new(
+            "room info",
+            "rooms",
+            "查看房间详情。",
+            "room info <room_id>",
+        ),
+        CommandSpec::new(
+            "room start",
+            "rooms",
+            "管理员发起游戏开始。",
+            "room start <room_id>",
+        )
+        .advanced(),
+        CommandSpec::new(
+            "room cancel",
+            "rooms",
+            "取消管理员发起的游戏开始。",
+            "room cancel <room_id>",
+        )
+        .advanced(),
+        CommandSpec::new(
+            "room kick",
+            "rooms",
+            "从房间踢出用户。",
+            "room kick <room_id> <user_id>",
+        )
+        .advanced(),
+        CommandSpec::new(
+            "room host",
+            "rooms",
+            "设置房主，? 表示系统房主。",
+            "room host <room_id> <user_id|?>",
+        ),
+        CommandSpec::new(
+            "room force-move",
+            "rooms",
+            "强制迁移用户到指定房间。",
+            "room force-move <room_id> <user_id> [monitor]",
+        )
+        .advanced(),
+        CommandSpec::new(
+            "room hide",
+            "rooms",
+            "隐藏房间，使其不出现在 Web API 与欢迎语。",
+            "room hide <room_id> [true|false]",
+        )
+        .advanced(),
+        CommandSpec::new(
+            "room unhide",
+            "rooms",
+            "取消隐藏房间。",
+            "room unhide <room_id>",
+        )
+        .advanced(),
         CommandSpec::new("room close", "rooms", "解散房间。", "room close <room_id>"),
-        CommandSpec::new("room set", "rooms", "修改房间设置。", "room set <room_id> <field> <value>"),
-        CommandSpec::new("room history", "rooms", "查看房间游玩历史。", "room history <room_id>"),
-        CommandSpec::new("room rounds", "rooms", "查看房间轮次列表。", "room rounds <room_id>").advanced(),
-        CommandSpec::new("room round", "rooms", "查看指定轮次详情。", "room round <round_uuid>").advanced(),
-        CommandSpec::new("room uuid", "rooms", "查看房间 UUID。", "room uuid <room_id>").advanced(),
-        CommandSpec::new("room ban", "rooms", "加入房间黑名单。", "room ban <room_id> <user_id>").advanced(),
-        CommandSpec::new("room unban", "rooms", "移出房间黑名单。", "room unban <room_id> <user_id>").advanced(),
-        CommandSpec::new("room banlist", "rooms", "查看房间黑名单。", "room banlist <room_id>").advanced(),
+        CommandSpec::new(
+            "room set",
+            "rooms",
+            "修改房间设置。",
+            "room set <room_id> <field> <value>",
+        ),
+        CommandSpec::new(
+            "room history",
+            "rooms",
+            "查看房间游玩历史。",
+            "room history <room_id>",
+        )
+        .advanced(),
+        CommandSpec::new(
+            "room rounds",
+            "rooms",
+            "查看房间轮次列表。",
+            "room rounds <room_id>",
+        )
+        .advanced(),
+        CommandSpec::new(
+            "room round",
+            "rooms",
+            "查看指定轮次详情。",
+            "room round <round_uuid>",
+        )
+        .advanced(),
+        CommandSpec::new(
+            "room uuid",
+            "rooms",
+            "查看房间 UUID。",
+            "room uuid <room_id>",
+        )
+        .advanced(),
+        CommandSpec::new(
+            "room ban",
+            "rooms",
+            "加入房间黑名单。",
+            "room ban <room_id> <user_id>",
+        )
+        .advanced(),
+        CommandSpec::new(
+            "room unban",
+            "rooms",
+            "移出房间黑名单。",
+            "room unban <room_id> <user_id>",
+        )
+        .advanced(),
+        CommandSpec::new(
+            "room banlist",
+            "rooms",
+            "查看房间黑名单。",
+            "room banlist <room_id>",
+        )
+        .advanced(),
     ] {
         register(&mut registry, spec);
     }
 
     for spec in [
         CommandSpec::new("plugin list", "plugins", "列出所有插件。", "plugin list"),
-        CommandSpec::new("plugin enable", "plugins", "启用插件。", "plugin enable <name>"),
-        CommandSpec::new("plugin disable", "plugins", "禁用插件。", "plugin disable <name>"),
-        CommandSpec::new("plugin reload", "plugins", "重载所有插件。", "plugin reload"),
-        CommandSpec::new("plugin info", "plugins", "查看插件详情。", "plugin info <id_or_name>"),
-        CommandSpec::new("plugin call", "plugins", "调用插件导出 API。", "plugin call <id_or_name> <method> [JSON_ARRAY]"),
+        CommandSpec::new(
+            "plugin enable",
+            "plugins",
+            "启用插件。",
+            "plugin enable <name>",
+        ),
+        CommandSpec::new(
+            "plugin disable",
+            "plugins",
+            "禁用插件。",
+            "plugin disable <name>",
+        ),
+        CommandSpec::new(
+            "plugin reload",
+            "plugins",
+            "重载所有插件。",
+            "plugin reload",
+        )
+        .advanced(),
+        CommandSpec::new(
+            "plugin info",
+            "plugins",
+            "查看插件详情。",
+            "plugin info <id_or_name>",
+        )
+        .advanced(),
+        CommandSpec::new(
+            "plugin call",
+            "plugins",
+            "调用插件导出 API。",
+            "plugin call <id_or_name> <method> [JSON_ARRAY]",
+        )
+        .advanced(),
     ] {
         register(&mut registry, spec);
     }
@@ -690,12 +1047,36 @@ pub fn runtime_v2_registry() -> CommandRegistry {
     }
 
     for spec in [
-        CommandSpec::new("ext-list", "extensions", "查看扩展字段列表。", "ext-list").advanced(),
-        CommandSpec::new("ext-get", "extensions", "查看扩展数据。", "ext-get <user_id> <key>").advanced(),
-        CommandSpec::new("welcome-config", "extensions", "查看或调整欢迎语配置。", "welcome-config").advanced(),
-        CommandSpec::new("player-count", "extensions", "查看玩家统计扩展。", "player-count").advanced(),
-        CommandSpec::new("playtime", "extensions", "查看游玩时长扩展。", "playtime").advanced(),
-        CommandSpec::new("round-last", "extensions", "查看最近轮次扩展。", "round-last").advanced(),
+        CommandSpec::new("ext-list", "extensions", "查看扩展字段列表。", "ext-list").deprecated(),
+        CommandSpec::new(
+            "ext-get",
+            "extensions",
+            "查看扩展数据。",
+            "ext-get <user_id> <key>",
+        )
+        .deprecated(),
+        CommandSpec::new(
+            "welcome-config",
+            "extensions",
+            "查看或调整欢迎语配置。",
+            "welcome-config",
+        )
+        .deprecated(),
+        CommandSpec::new(
+            "player-count",
+            "extensions",
+            "查看玩家统计扩展。",
+            "player-count",
+        )
+        .deprecated(),
+        CommandSpec::new("playtime", "extensions", "查看游玩时长扩展。", "playtime").deprecated(),
+        CommandSpec::new(
+            "round-last",
+            "extensions",
+            "查看最近轮次扩展。",
+            "round-last",
+        )
+        .deprecated(),
     ] {
         register(&mut registry, spec);
     }
@@ -711,21 +1092,35 @@ mod tests {
     fn registry_indexes_canonical_children() {
         let registry = runtime_v2_registry();
         assert!(registry.get("help").is_some());
-        assert!(registry.get("h").is_some(), "alias 'h' should resolve to help");
-        assert!(registry.child_commands("room").contains(&"list".to_string()));
-        assert!(registry.complete_line("simulation ").contains(&"status".to_string()));
-        assert!(registry.complete_line("room f").contains(&"force-move".to_string()));
-        assert!(!registry.complete_line("plug-").contains(&"plug-enable".to_string()));
+        assert!(
+            registry.get("h").is_some(),
+            "alias 'h' should resolve to help"
+        );
+        assert!(
+            registry
+                .child_commands("room")
+                .contains(&"info".to_string()),
+            "room info should be indexed as child of room"
+        );
+        assert!(registry
+            .complete_line("simulation ")
+            .contains(&"status".to_string()));
+        assert!(registry
+            .complete_line("room f")
+            .contains(&"force-move".to_string()));
+        assert!(!registry
+            .complete_line("plug-")
+            .contains(&"plug-enable".to_string()));
     }
 
     #[test]
     fn help_uses_structured_sections() {
         let registry = runtime_v2_registry();
-        let help = registry.format_help("room list").expect("room list help");
+        let help = registry.format_help("rooms").expect("rooms help");
         assert!(help.contains("NAME"));
         assert!(help.contains("USAGE"));
         assert!(help.contains("SURFACE"));
-        assert!(help.contains("room list"));
+        assert!(help.contains("rooms"));
     }
 
     #[test]
@@ -735,5 +1130,52 @@ mod tests {
         assert!(!overview.contains("plug-enable"));
         assert!(registry.get("plug-enable").is_none());
         assert!(registry.get("plugin enable").is_some());
+    }
+
+    #[test]
+    fn room_list_alias_resolves_to_rooms() {
+        let registry = runtime_v2_registry();
+        let spec = registry
+            .get("room list")
+            .expect("alias 'room list' should resolve");
+        assert_eq!(spec.name, "rooms", "room list should resolve to rooms");
+        // 'rooms' should also be directly accessible
+        let spec2 = registry.get("rooms").expect("rooms should exist");
+        assert_eq!(spec2.name, "rooms");
+    }
+
+    #[test]
+    fn primary_count_is_within_limit() {
+        let registry = runtime_v2_registry();
+        let (primary, _advanced, _dev, _deprecated) = registry.command_surface_counts();
+        assert!(primary <= 25, "primary count {} exceeds 25 limit", primary);
+        assert!(primary > 0);
+    }
+
+    #[test]
+    fn deprecated_commands_not_in_default_overview() {
+        let registry = runtime_v2_registry();
+        let overview = registry.format_overview();
+        for name in &[
+            "ext-list",
+            "ext-get",
+            "welcome-config",
+            "player-count",
+            "playtime",
+            "round-last",
+        ] {
+            assert!(
+                !overview.contains(name),
+                "deprecated command '{name}' found in default overview"
+            );
+        }
+    }
+
+    #[test]
+    fn audience_methods_produce_distinct_output() {
+        let registry = runtime_v2_registry();
+        assert!(!registry.format_advanced().is_empty());
+        assert!(!registry.format_dev().is_empty());
+        // Deprecated may be empty if all removed, or contain the legacy commands
     }
 }

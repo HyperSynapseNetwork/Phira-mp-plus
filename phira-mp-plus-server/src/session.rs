@@ -3,13 +3,13 @@
 use crate::l10n::{Language, LANGUAGE};
 use crate::phira_client::PhiraRetryNoticeTarget;
 use crate::plugin::PluginEvent;
-use crate::session_auth::{authenticate_remote_with_notice, ban_rejection_message, send_auth_rejection, AuthUserInfo};
 use crate::server::PlusServerState;
+use crate::session_auth::{
+    authenticate_remote_with_notice, ban_rejection_message, send_auth_rejection, AuthUserInfo,
+};
 use crate::tl;
 use anyhow::{anyhow, bail, Result};
-use phira_mp_common::{
-    ClientCommand, RoomEvent, ServerCommand, Stream, UserInfo,
-};
+use phira_mp_common::{ClientCommand, RoomEvent, ServerCommand, Stream, UserInfo};
 use std::{
     sync::{
         atomic::{AtomicBool, AtomicU32, Ordering},
@@ -45,7 +45,13 @@ pub struct User {
 }
 
 impl User {
-    pub fn new(id: i32, name: String, lang: Language, server: Arc<PlusServerState>, auth_token: Option<String>) -> Self {
+    pub fn new(
+        id: i32,
+        name: String,
+        lang: Language,
+        server: Arc<PlusServerState>,
+        auth_token: Option<String>,
+    ) -> Self {
         Self {
             id,
             name,
@@ -90,7 +96,10 @@ impl User {
     }
 
     pub fn auth_token_sync(&self) -> Option<String> {
-        self.auth_token.try_read().ok().and_then(|token| token.clone())
+        self.auth_token
+            .try_read()
+            .ok()
+            .and_then(|token| token.clone())
     }
 
     pub async fn try_send(&self, cmd: ServerCommand) {
@@ -160,13 +169,17 @@ impl User {
                         })
                         .await;
                 }
-                self.server.plugin_manager.trigger(&PluginEvent::UserDisconnect {
-                    user_id: self.id,
-                    user_name: self.name.clone(),
-                }).await;
-                self.server.publish_runtime_event(crate::event_bus::MpEvent::UserDisconnected {
-                    user_id: self.id,
-                });
+                self.server
+                    .plugin_manager
+                    .trigger(&PluginEvent::UserDisconnect {
+                        user_id: self.id,
+                        user_name: self.name.clone(),
+                    })
+                    .await;
+                self.server
+                    .publish_runtime_event(crate::event_bus::MpEvent::UserDisconnected {
+                        user_id: self.id,
+                    });
                 if let Some(db) = crate::internal_hooks::DB.get() {
                     db.record_user_disconnect_sync(self.id, &self.name);
                 }
@@ -174,13 +187,17 @@ impl User {
                 return;
             }
         }
-        self.server.plugin_manager.trigger(&PluginEvent::UserDisconnect {
-            user_id: self.id,
-            user_name: self.name.clone(),
-        }).await;
-        self.server.publish_runtime_event(crate::event_bus::MpEvent::UserDisconnected {
-            user_id: self.id,
-        });
+        self.server
+            .plugin_manager
+            .trigger(&PluginEvent::UserDisconnect {
+                user_id: self.id,
+                user_name: self.name.clone(),
+            })
+            .await;
+        self.server
+            .publish_runtime_event(crate::event_bus::MpEvent::UserDisconnected {
+                user_id: self.id,
+            });
         if let Some(db) = crate::internal_hooks::DB.get() {
             db.record_user_disconnect_sync(self.id, &self.name);
         }
@@ -211,7 +228,8 @@ impl User {
                             self_.server.rooms.write().await.remove(&room_id);
                         }
                         if !was_monitor {
-                            self_.server
+                            self_
+                                .server
                                 .publish_room_event(RoomEvent::LeaveRoom {
                                     room: room_id,
                                     user: self_.id,
@@ -318,9 +336,11 @@ impl Session {
                                         }
                                         debug!("session {id}: authenticating");
                                         // 计算 token 哈希作为缓存键（使用 SHA-256）
-                                        use sha2::{Sha256, Digest};
+                                        use sha2::{Digest, Sha256};
                                         let token_hash = u64::from_le_bytes(
-                                            Sha256::digest(token.as_bytes())[..8].try_into().unwrap()
+                                            Sha256::digest(token.as_bytes())[..8]
+                                                .try_into()
+                                                .unwrap(),
                                         );
 
                                         let user_info = {
@@ -329,9 +349,17 @@ impl Session {
                                         };
                                         let user_info = if let Some(entry) = user_info {
                                             // 封禁检查（拒绝前不走 API，毫秒级响应）
-                                            if let Some(reason) = server.ban_manager.ban_reason(entry.user_id).await {
-                                                warn!("banned user {}({}) tried to connect (cache)", entry.name, entry.user_id);
-                                                bail!("{}", ban_rejection_message(&entry.language, &reason));
+                                            if let Some(reason) =
+                                                server.ban_manager.ban_reason(entry.user_id).await
+                                            {
+                                                warn!(
+                                                    "banned user {}({}) tried to connect (cache)",
+                                                    entry.name, entry.user_id
+                                                );
+                                                bail!(
+                                                    "{}",
+                                                    ban_rejection_message(&entry.language, &reason)
+                                                );
                                             }
                                             debug!("cache hit for user {}", entry.user_id);
                                             AuthUserInfo {
@@ -341,27 +369,47 @@ impl Session {
                                             }
                                         } else {
                                             // 缓存未命中，请求 API；遇到 “认证失败 502错误”/502/5xx 时重试并提示该客户端。
-                                            match server.phira_client.get_json::<AuthUserInfo>(
-                                                &server.config.phira_api_endpoint,
-                                                None,
-                                                "/me",
-                                                Some(&token),
-                                                PhiraRetryNoticeTarget::Stream(retry_send_tx.as_ref()),
-                                            ).await {
+                                            match server
+                                                .phira_client
+                                                .get_json::<AuthUserInfo>(
+                                                    &server.config.phira_api_endpoint,
+                                                    None,
+                                                    "/me",
+                                                    Some(&token),
+                                                    PhiraRetryNoticeTarget::Stream(
+                                                        retry_send_tx.as_ref(),
+                                                    ),
+                                                )
+                                                .await
+                                            {
                                                 Ok(info) => {
                                                     // API 成功，更新缓存并持久化
-                                                    server.extensions.update_auth_cache(
-                                                        token_hash,
-                                                        crate::extensions::AuthCacheEntry {
-                                                            user_id: info.id,
-                                                            name: info.name.clone(),
-                                                            language: info.language.clone(),
-                                                        },
-                                                    ).await;
+                                                    server
+                                                        .extensions
+                                                        .update_auth_cache(
+                                                            token_hash,
+                                                            crate::extensions::AuthCacheEntry {
+                                                                user_id: info.id,
+                                                                name: info.name.clone(),
+                                                                language: info.language.clone(),
+                                                            },
+                                                        )
+                                                        .await;
                                                     // 封禁检查
-                                                    if let Some(reason) = server.ban_manager.ban_reason(info.id).await {
-                                                        warn!("banned user {}({}) tried to connect", info.name, info.id);
-                                                        bail!("{}", ban_rejection_message(&info.language, &reason));
+                                                    if let Some(reason) =
+                                                        server.ban_manager.ban_reason(info.id).await
+                                                    {
+                                                        warn!(
+                                                            "banned user {}({}) tried to connect",
+                                                            info.name, info.id
+                                                        );
+                                                        bail!(
+                                                            "{}",
+                                                            ban_rejection_message(
+                                                                &info.language,
+                                                                &reason
+                                                            )
+                                                        );
                                                     }
                                                     info
                                                 }
@@ -372,7 +420,12 @@ impl Session {
                                         };
 
                                         if let Some(db) = crate::internal_hooks::DB.get() {
-                                            db.record_user_seen_sync(user_info.id, &user_info.name, &user_info.language, Some(addr.ip().to_string()));
+                                            db.record_user_seen_sync(
+                                                user_info.id,
+                                                &user_info.name,
+                                                &user_info.language,
+                                                Some(addr.ip().to_string()),
+                                            );
                                         }
 
                                         let mut users_guard = server.users.write().await;
@@ -389,15 +442,22 @@ impl Session {
                                                 .await;
                                             user.set_auth_token(Some(token.to_string())).await;
                                             // 重连也需要触发 UserConnect（欢迎语等依赖此事件）
-                                            let user_ip = this.get().map(|s| s.ip.clone()).unwrap_or_default();
-                                            server.plugin_manager
+                                            let user_ip = this
+                                                .get()
+                                                .map(|s| s.ip.clone())
+                                                .unwrap_or_default();
+                                            server
+                                                .plugin_manager
                                                 .trigger(&PluginEvent::UserConnect {
                                                     user_id: user_info.id,
                                                     user_name: user_info.name.clone(),
                                                     user_ip,
                                                 })
                                                 .await;
-                                            let user_ip = this.get().map(|s| s.ip.clone()).unwrap_or_default();
+                                            let user_ip = this
+                                                .get()
+                                                .map(|s| s.ip.clone())
+                                                .unwrap_or_default();
                                             server.publish_runtime_event(
                                                 crate::event_bus::MpEvent::UserConnected {
                                                     user_id: user_info.id,
@@ -408,7 +468,8 @@ impl Session {
                                             );
                                             let online = {
                                                 let rooms = server.rooms.read().await;
-                                                let mut in_room: std::collections::HashSet<i32> = std::collections::HashSet::new();
+                                                let mut in_room: std::collections::HashSet<i32> =
+                                                    std::collections::HashSet::new();
                                                 for (_id, room) in rooms.iter() {
                                                     for u in room.users().await {
                                                         in_room.insert(u.id);
@@ -417,14 +478,23 @@ impl Session {
                                                 in_room.len()
                                             };
                                             drop(users_guard);
-                                            crate::internal_hooks::track_player(user_info.id, &user_info.name);
+                                            crate::internal_hooks::track_player(
+                                                user_info.id,
+                                                &user_info.name,
+                                            );
                                             crate::internal_hooks::playtime_connect(user_info.id);
-                                            crate::internal_hooks::send_welcome(user_info.id, &user_info.name, online, &server);
+                                            crate::internal_hooks::send_welcome(
+                                                user_info.id,
+                                                &user_info.name,
+                                                online,
+                                                &server,
+                                            );
                                         } else {
                                             let user = Arc::new(User::new(
                                                 user_info.id,
                                                 user_info.name,
-                                                user_info.language
+                                                user_info
+                                                    .language
                                                     .parse()
                                                     .map(Language)
                                                     .unwrap_or_default(),
@@ -442,8 +512,12 @@ impl Session {
                                                 .await;
                                             users_guard.insert(user_info.id, Arc::clone(&user));
 
-                                            let user_ip = this.get().map(|s| s.ip.clone()).unwrap_or_default();
-                                            server.plugin_manager
+                                            let user_ip = this
+                                                .get()
+                                                .map(|s| s.ip.clone())
+                                                .unwrap_or_default();
+                                            server
+                                                .plugin_manager
                                                 .trigger(&PluginEvent::UserConnect {
                                                     user_id: user_info.id,
                                                     user_name: user.name.clone(),
@@ -454,13 +528,17 @@ impl Session {
                                                 crate::event_bus::MpEvent::UserConnected {
                                                     user_id: user_info.id,
                                                     user_name: user.name.clone(),
-                                                    user_ip: this.get().map(|s| s.ip.clone()).unwrap_or_default(),
+                                                    user_ip: this
+                                                        .get()
+                                                        .map(|s| s.ip.clone())
+                                                        .unwrap_or_default(),
                                                     user_language: user.lang.0.to_string(),
                                                 },
                                             );
                                             let online = {
                                                 let rooms = server.rooms.read().await;
-                                                let mut in_room: std::collections::HashSet<i32> = std::collections::HashSet::new();
+                                                let mut in_room: std::collections::HashSet<i32> =
+                                                    std::collections::HashSet::new();
                                                 for (_id, room) in rooms.iter() {
                                                     for u in room.users().await {
                                                         in_room.insert(u.id);
@@ -469,9 +547,17 @@ impl Session {
                                                 in_room.len()
                                             };
                                             drop(users_guard);
-                                            crate::internal_hooks::track_player(user_info.id, &user.name);
+                                            crate::internal_hooks::track_player(
+                                                user_info.id,
+                                                &user.name,
+                                            );
                                             crate::internal_hooks::playtime_connect(user_info.id);
-                                            crate::internal_hooks::send_welcome(user_info.id, &user.name, online, &server);
+                                            crate::internal_hooks::send_welcome(
+                                                user_info.id,
+                                                &user.name,
+                                                online,
+                                                &server,
+                                            );
                                         }
                                         Ok(())
                                     }
@@ -503,7 +589,10 @@ impl Session {
                                     let _session = this.get().map(|s| Arc::clone(s));
                                     tokio::spawn(async move {
                                         if let Some(mon) = server.get_room_monitor().await {
-                                            mon.stream.send(ServerCommand::UserVisit(uid)).await.ok();
+                                            mon.stream
+                                                .send(ServerCommand::UserVisit(uid))
+                                                .await
+                                                .ok();
                                         }
                                     });
                                     waiting_for_authenticate.store(false, Ordering::SeqCst);
@@ -511,7 +600,13 @@ impl Session {
                                 return;
                             } else if let ClientCommand::ConsoleAuthenticate { token } = &cmd {
                                 let Some(tx) = tx else { return };
-                                match authenticate_remote_with_notice(&server, token, PhiraRetryNoticeTarget::Stream(send_tx.as_ref())).await {
+                                match authenticate_remote_with_notice(
+                                    &server,
+                                    token,
+                                    PhiraRetryNoticeTarget::Stream(send_tx.as_ref()),
+                                )
+                                .await
+                                {
                                     Ok(info) => {
                                         let user = Arc::new(User::new(
                                             info.id,
@@ -527,7 +622,10 @@ impl Session {
                                         this_inited.notified().await;
                                         user.set_session(Arc::downgrade(this.get().unwrap())).await;
                                         let _ = send_tx
-                                            .send(ServerCommand::Authenticate(Ok((user.to_info(), None))))
+                                            .send(ServerCommand::Authenticate(Ok((
+                                                user.to_info(),
+                                                None,
+                                            ))))
                                             .await;
                                         waiting_for_authenticate.store(false, Ordering::SeqCst);
                                     }
@@ -545,7 +643,14 @@ impl Session {
                                 return;
                             } else if let ClientCommand::RoomMonitorAuthenticate { key } = &cmd {
                                 let Some(tx) = tx else { return };
-                                if server.room_monitor.read().await.as_ref().and_then(|w| w.upgrade()).is_some() {
+                                if server
+                                    .room_monitor
+                                    .read()
+                                    .await
+                                    .as_ref()
+                                    .and_then(|w| w.upgrade())
+                                    .is_some()
+                                {
                                     send_auth_rejection(
                                         &send_tx,
                                         "more than one room monitor".into(),
@@ -563,22 +668,39 @@ impl Session {
                                     return;
                                 }
                                 info!("new room monitor connected");
-                                let user = Arc::new(User::new(-1, "$server_room_monitor".into(), Language::default(), Arc::clone(&server), None));
+                                let user = Arc::new(User::new(
+                                    -1,
+                                    "$server_room_monitor".into(),
+                                    Language::default(),
+                                    Arc::clone(&server),
+                                    None,
+                                ));
                                 let _ = tx.send(AuthenticationOutcome::Accepted(
                                     Arc::clone(&user),
                                     SessionCategory::RoomMonitor,
                                 ));
                                 this_inited.notified().await;
                                 user.set_session(Arc::downgrade(this.get().unwrap())).await;
-                                *server.room_monitor.write().await = Some(Arc::downgrade(this.get().unwrap()));
-                                let _ = send_tx.send(ServerCommand::Authenticate(Ok((user.to_info(), None)))).await;
+                                *server.room_monitor.write().await =
+                                    Some(Arc::downgrade(this.get().unwrap()));
+                                let _ = send_tx
+                                    .send(ServerCommand::Authenticate(Ok((user.to_info(), None))))
+                                    .await;
                                 waiting_for_authenticate.store(false, Ordering::SeqCst);
                                 return;
                             } else if let ClientCommand::GameMonitorAuthenticate { token } = &cmd {
                                 let Some(tx) = tx else { return };
-                                match authenticate_remote_with_notice(&server, token, PhiraRetryNoticeTarget::Stream(send_tx.as_ref())).await {
+                                match authenticate_remote_with_notice(
+                                    &server,
+                                    token,
+                                    PhiraRetryNoticeTarget::Stream(send_tx.as_ref()),
+                                )
+                                .await
+                                {
                                     Ok(info) => {
-                                        let Some(monitor_id) = info.id.checked_neg().filter(|id| *id < 0) else {
+                                        let Some(monitor_id) =
+                                            info.id.checked_neg().filter(|id| *id < 0)
+                                        else {
                                             send_auth_rejection(
                                                 &send_tx,
                                                 "invalid monitor identity".into(),
@@ -601,12 +723,22 @@ impl Session {
                                         ));
                                         this_inited.notified().await;
                                         user.set_session(Arc::downgrade(this.get().unwrap())).await;
-                                        server.users.write().await.insert(monitor_id, Arc::clone(&user));
                                         server
-                                            .set_game_monitor(monitor_id, Arc::downgrade(this.get().unwrap()))
+                                            .users
+                                            .write()
+                                            .await
+                                            .insert(monitor_id, Arc::clone(&user));
+                                        server
+                                            .set_game_monitor(
+                                                monitor_id,
+                                                Arc::downgrade(this.get().unwrap()),
+                                            )
                                             .await;
                                         let _ = send_tx
-                                            .send(ServerCommand::Authenticate(Ok((user.to_info(), None))))
+                                            .send(ServerCommand::Authenticate(Ok((
+                                                user.to_info(),
+                                                None,
+                                            ))))
                                             .await;
                                         waiting_for_authenticate.store(false, Ordering::SeqCst);
                                     }
@@ -631,16 +763,19 @@ impl Session {
 
                         // 命令速率限制
                         let session_ref = this.get().map(|s| Arc::clone(s));
-                        let needs_limiting = matches!(&cmd,
+                        let needs_limiting = matches!(
+                            &cmd,
                             ClientCommand::Chat { .. }
-                            | ClientCommand::CreateRoom { .. }
-                            | ClientCommand::JoinRoom { .. }
-                            | ClientCommand::SelectChart { .. }
+                                | ClientCommand::CreateRoom { .. }
+                                | ClientCommand::JoinRoom { .. }
+                                | ClientCommand::SelectChart { .. }
                         );
                         if needs_limiting {
                             if let Some(session) = session_ref {
                                 let category = match &cmd {
-                                    ClientCommand::Chat { .. } => crate::rate_limiter::CommandCategory::Chat,
+                                    ClientCommand::Chat { .. } => {
+                                        crate::rate_limiter::CommandCategory::Chat
+                                    }
                                     _ => crate::rate_limiter::CommandCategory::RoomOp,
                                 };
                                 if !session.cmd_limiter.check(category).await {
@@ -735,7 +870,11 @@ impl Drop for Session {
     }
 }
 
-async fn process(user: Arc<User>, category: SessionCategory, cmd: ClientCommand) -> Option<ServerCommand> {
+async fn process(
+    user: Arc<User>,
+    category: SessionCategory,
+    cmd: ClientCommand,
+) -> Option<ServerCommand> {
     #[inline]
     fn err_to_str<T>(result: Result<T>) -> Result<T, String> {
         result.map_err(|it| it.to_string())
@@ -803,32 +942,43 @@ async fn process(user: Arc<User>, category: SessionCategory, cmd: ClientCommand)
         ),
     };
     if !permitted {
-        warn!(user = user.id, ?category, ?cmd, "command rejected for session category");
+        warn!(
+            user = user.id,
+            ?category,
+            ?cmd,
+            "command rejected for session category"
+        );
         return None;
     }
 
     match cmd {
         ClientCommand::Ping => unreachable!(),
-        ClientCommand::Authenticate { .. } => Some(ServerCommand::Authenticate(Err(
-            tl!("repeated-authenticate"),
-        ))),
+        ClientCommand::Authenticate { .. } => Some(ServerCommand::Authenticate(Err(tl!(
+            "repeated-authenticate"
+        )))),
         ClientCommand::Chat { message } => {
             let res: Result<()> = async move {
                 get_room!(room);
                 let content = message.into_inner();
                 if let Some(db) = crate::internal_hooks::DB.get() {
-                    db.record_room_event_sync("chat.message", Some(room.id.to_string()), Some(user.id), serde_json::json!({
-                        "room_id": room.id.to_string(),
-                        "user_id": user.id,
-                        "user_name": user.name.clone(),
-                        "message": content.clone(),
-                    }));
+                    db.record_room_event_sync(
+                        "chat.message",
+                        Some(room.id.to_string()),
+                        Some(user.id),
+                        serde_json::json!({
+                            "room_id": room.id.to_string(),
+                            "user_id": user.id,
+                            "user_name": user.name.clone(),
+                            "message": content.clone(),
+                        }),
+                    );
                 }
                 room.send_as(&user, content).await;
-                user.server.publish_runtime_event(crate::event_bus::MpEvent::ChatMessage {
-                    room_id: Some(room.id.clone()),
-                    user_id: user.id,
-                });
+                user.server
+                    .publish_runtime_event(crate::event_bus::MpEvent::ChatMessage {
+                        room_id: Some(room.id.clone()),
+                        user_id: user.id,
+                    });
                 Ok(())
             }
             .await;
@@ -849,7 +999,8 @@ async fn process(user: Arc<User>, category: SessionCategory, cmd: ClientCommand)
             Some(ServerCommand::CreateRoom(err_to_str(res)))
         }
         ClientCommand::JoinRoom { id, monitor } => {
-            let res = crate::session_room::join_room(Arc::clone(&user), category, id, monitor).await;
+            let res =
+                crate::session_room::join_room(Arc::clone(&user), category, id, monitor).await;
             Some(ServerCommand::JoinRoom(err_to_str(res)))
         }
         ClientCommand::LeaveRoom => {
@@ -888,12 +1039,16 @@ async fn process(user: Arc<User>, category: SessionCategory, cmd: ClientCommand)
             let res = crate::session_room::abort(Arc::clone(&user)).await;
             Some(ServerCommand::Abort(err_to_str(res)))
         }
-        ClientCommand::QueryRoomInfo => match crate::session_room::query_room_info(Arc::clone(&user)).await {
-            Ok(cmd) => Some(cmd),
-            Err(_) => None,
-        },
-        ClientCommand::RoomMonitorAuthenticate { .. } | ClientCommand::GameMonitorAuthenticate { .. } | ClientCommand::ConsoleAuthenticate { .. } => {
-            Some(ServerCommand::Authenticate(Err("already authenticated".into())))
+        ClientCommand::QueryRoomInfo => {
+            match crate::session_room::query_room_info(Arc::clone(&user)).await {
+                Ok(cmd) => Some(cmd),
+                Err(_) => None,
+            }
         }
+        ClientCommand::RoomMonitorAuthenticate { .. }
+        | ClientCommand::GameMonitorAuthenticate { .. }
+        | ClientCommand::ConsoleAuthenticate { .. } => Some(ServerCommand::Authenticate(Err(
+            "already authenticated".into(),
+        ))),
     }
 }

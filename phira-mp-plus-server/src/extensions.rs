@@ -91,12 +91,7 @@ impl ExtensionDataStore {
     }
 
     /// 设置用户扩展数据
-    pub fn set_user_extra(
-        &mut self,
-        user_id: i32,
-        key: &str,
-        value: String,
-    ) -> Result<(), String> {
+    pub fn set_user_extra(&mut self, user_id: i32, key: &str, value: String) -> Result<(), String> {
         if !self.fields.contains_key(key) {
             return Err(format!("field '{}' is not registered", key));
         }
@@ -196,7 +191,8 @@ impl ExtensionManager {
         let data = self.store.read().await;
         let value = serde_json::to_value(&*data).map_err(|e| format!("serialize: {}", e))?;
         if let Some(ref path) = self.persist_path {
-            let json = serde_json::to_string_pretty(&value).map_err(|e| format!("serialize: {}", e))?;
+            let json =
+                serde_json::to_string_pretty(&value).map_err(|e| format!("serialize: {}", e))?;
             std::fs::write(path, json).map_err(|e| format!("write: {}", e))?;
         }
         if let Some(db) = crate::internal_hooks::DB.get() {
@@ -214,18 +210,25 @@ impl ExtensionManager {
         registered_by: &str,
         description: &str,
     ) -> Result<(), String> {
-        let result = self.store
-            .write()
-            .await
-            .register_user_field(key, default_value, registered_by, description);
+        let result = self.store.write().await.register_user_field(
+            key,
+            default_value,
+            registered_by,
+            description,
+        );
         if result.is_ok() {
             if let Some(db) = crate::internal_hooks::DB.get() {
-                db.record_room_event_sync("extensions.user_field.register", None, None, serde_json::json!({
-                    "key": key,
-                    "default_value": default_value,
-                    "registered_by": registered_by,
-                    "description": description,
-                }));
+                db.record_room_event_sync(
+                    "extensions.user_field.register",
+                    None,
+                    None,
+                    serde_json::json!({
+                        "key": key,
+                        "default_value": default_value,
+                        "registered_by": registered_by,
+                        "description": description,
+                    }),
+                );
             }
         }
         result
@@ -238,18 +241,25 @@ impl ExtensionManager {
         registered_by: &str,
         description: &str,
     ) -> Result<(), String> {
-        let result = self.store
-            .write()
-            .await
-            .register_room_field(key, default_value, registered_by, description);
+        let result = self.store.write().await.register_room_field(
+            key,
+            default_value,
+            registered_by,
+            description,
+        );
         if result.is_ok() {
             if let Some(db) = crate::internal_hooks::DB.get() {
-                db.record_room_event_sync("extensions.room_field.register", None, None, serde_json::json!({
-                    "key": key,
-                    "default_value": default_value,
-                    "registered_by": registered_by,
-                    "description": description,
-                }));
+                db.record_room_event_sync(
+                    "extensions.room_field.register",
+                    None,
+                    None,
+                    serde_json::json!({
+                        "key": key,
+                        "default_value": default_value,
+                        "registered_by": registered_by,
+                        "description": description,
+                    }),
+                );
             }
         }
         result
@@ -270,17 +280,23 @@ impl ExtensionManager {
         value: String,
     ) -> Result<(), String> {
         let key_owned = key.to_string();
-        let result = self.store
+        let result = self
+            .store
             .write()
             .await
             .set_user_extra(user_id, key, value.clone());
         if result.is_ok() {
             if let Some(db) = crate::internal_hooks::DB.get() {
-                db.record_room_event_sync("extensions.user.set", None, Some(user_id), serde_json::json!({
-                    "user_id": user_id,
-                    "key": key_owned,
-                    "value": value,
-                }));
+                db.record_room_event_sync(
+                    "extensions.user.set",
+                    None,
+                    Some(user_id),
+                    serde_json::json!({
+                        "user_id": user_id,
+                        "key": key_owned,
+                        "value": value,
+                    }),
+                );
             }
         }
         result
@@ -302,17 +318,23 @@ impl ExtensionManager {
     ) -> Result<(), String> {
         let room_owned = room_id.to_string();
         let key_owned = key.to_string();
-        let result = self.store
+        let result = self
+            .store
             .write()
             .await
             .set_room_extra(room_id, key, value.clone());
         if result.is_ok() {
             if let Some(db) = crate::internal_hooks::DB.get() {
-                db.record_room_event_sync("extensions.room.set", Some(room_owned.clone()), None, serde_json::json!({
-                    "room_id": room_owned,
-                    "key": key_owned,
-                    "value": value,
-                }));
+                db.record_room_event_sync(
+                    "extensions.room.set",
+                    Some(room_owned.clone()),
+                    None,
+                    serde_json::json!({
+                        "room_id": room_owned,
+                        "key": key_owned,
+                        "value": value,
+                    }),
+                );
             }
         }
         result
@@ -338,6 +360,10 @@ impl ExtensionManager {
 
     /// 更新认证缓存（不会立即写盘 — 由外部定期 persist）
     pub async fn update_auth_cache(&self, token_hash: u64, entry: AuthCacheEntry) {
-        self.store.write().await.auth_cache.insert(token_hash, entry);
+        self.store
+            .write()
+            .await
+            .auth_cache
+            .insert(token_hash, entry);
     }
 }

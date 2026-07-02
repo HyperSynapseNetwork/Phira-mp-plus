@@ -22,9 +22,9 @@ use tokio::sync::{broadcast, RwLock};
 use tower_http::cors::CorsLayer;
 use tracing::{error, info};
 
+use router::DynamicRouter;
 pub use router::HttpHandler;
 pub use sse::{SseEvent, SseHub};
-use router::DynamicRouter;
 
 pub struct PluginHttpServer {
     router: Arc<RwLock<DynamicRouter>>,
@@ -44,7 +44,6 @@ impl PluginHttpServer {
     pub fn sse_sender(&self) -> broadcast::Sender<SseEvent> {
         self.events.general_sender()
     }
-
 
     pub async fn register_route(&self, path: &str, handler: HttpHandler) {
         self.router.write().await.add(path.to_string(), handler);

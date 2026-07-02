@@ -24,29 +24,99 @@ const DEFAULT_MAX_EVENT_TRACE: usize = crate::runtime_diagnostics::EVENT_TRACE_W
 #[derive(Debug, Clone)]
 pub enum MpEvent {
     /// A normal game client authenticated or reconnected. Monitor/console sessions are excluded.
-    UserConnected { user_id: i32, user_name: String, user_ip: String, user_language: String },
-    UserDisconnected { user_id: i32 },
-    RoomCreated { room_id: RoomId, room_uuid: Uuid },
-    RoomJoined { room_id: RoomId, user_id: i32 },
-    RoomLeft { room_id: RoomId, user_id: i32 },
-    RoomUpdated { room_id: RoomId },
-    RoomLocked { room_id: RoomId, locked: bool },
-    RoomCycled { room_id: RoomId, cycle: bool },
-    RoomStateChanged { room_id: RoomId, state: String },
-    HostChanged { room_id: RoomId, host: Option<i32> },
-    ChartSelected { room_id: RoomId, chart_id: i32 },
-    GameStarted { room_id: RoomId, round_id: String },
-    PlayerReadyChanged { room_id: RoomId, user_id: i32, ready: bool },
-    TouchesReceived { room_id: RoomId, user_id: i32, count: usize },
-    JudgesReceived { room_id: RoomId, user_id: i32, count: usize },
-    RoundCompleted { room_id: RoomId, round_id: String },
-    ChatMessage { room_id: Option<RoomId>, user_id: i32 },
-    AdminCommandExecuted { user_id: Option<i32>, command: String },
-    SimulationStarted { run_id: Uuid },
-    SimulationStopped { run_id: Uuid, reason: String },
-    PersistenceWritten { table: String, rows: usize },
-    BenchmarkCompleted { report: crate::benchmark_report::BenchmarkReport },
-    Custom { kind: String, payload: Value },
+    UserConnected {
+        user_id: i32,
+        user_name: String,
+        user_ip: String,
+        user_language: String,
+    },
+    UserDisconnected {
+        user_id: i32,
+    },
+    RoomCreated {
+        room_id: RoomId,
+        room_uuid: Uuid,
+    },
+    RoomJoined {
+        room_id: RoomId,
+        user_id: i32,
+    },
+    RoomLeft {
+        room_id: RoomId,
+        user_id: i32,
+    },
+    RoomUpdated {
+        room_id: RoomId,
+    },
+    RoomLocked {
+        room_id: RoomId,
+        locked: bool,
+    },
+    RoomCycled {
+        room_id: RoomId,
+        cycle: bool,
+    },
+    RoomStateChanged {
+        room_id: RoomId,
+        state: String,
+    },
+    HostChanged {
+        room_id: RoomId,
+        host: Option<i32>,
+    },
+    ChartSelected {
+        room_id: RoomId,
+        chart_id: i32,
+    },
+    GameStarted {
+        room_id: RoomId,
+        round_id: String,
+    },
+    PlayerReadyChanged {
+        room_id: RoomId,
+        user_id: i32,
+        ready: bool,
+    },
+    TouchesReceived {
+        room_id: RoomId,
+        user_id: i32,
+        count: usize,
+    },
+    JudgesReceived {
+        room_id: RoomId,
+        user_id: i32,
+        count: usize,
+    },
+    RoundCompleted {
+        room_id: RoomId,
+        round_id: String,
+    },
+    ChatMessage {
+        room_id: Option<RoomId>,
+        user_id: i32,
+    },
+    AdminCommandExecuted {
+        user_id: Option<i32>,
+        command: String,
+    },
+    SimulationStarted {
+        run_id: Uuid,
+    },
+    SimulationStopped {
+        run_id: Uuid,
+        reason: String,
+    },
+    PersistenceWritten {
+        table: String,
+        rows: usize,
+    },
+    BenchmarkCompleted {
+        report: crate::benchmark_report::BenchmarkReport,
+    },
+    Custom {
+        kind: String,
+        payload: Value,
+    },
 }
 
 impl MpEvent {
@@ -80,9 +150,13 @@ impl MpEvent {
 
     pub fn summary(&self) -> String {
         match self {
-            Self::UserConnected { user_id, user_name, .. } => format!("user_id={user_id} user_name={user_name}"),
+            Self::UserConnected {
+                user_id, user_name, ..
+            } => format!("user_id={user_id} user_name={user_name}"),
             Self::UserDisconnected { user_id } => format!("user_id={user_id}"),
-            Self::RoomCreated { room_id, room_uuid } => format!("room_id={room_id} uuid={room_uuid}"),
+            Self::RoomCreated { room_id, room_uuid } => {
+                format!("room_id={room_id} uuid={room_uuid}")
+            }
             Self::RoomJoined { room_id, user_id } => format!("room_id={room_id} user_id={user_id}"),
             Self::RoomLeft { room_id, user_id } => format!("room_id={room_id} user_id={user_id}"),
             Self::RoomUpdated { room_id } => format!("room_id={room_id}"),
@@ -90,16 +164,40 @@ impl MpEvent {
             Self::RoomCycled { room_id, cycle } => format!("room_id={room_id} cycle={cycle}"),
             Self::RoomStateChanged { room_id, state } => format!("room_id={room_id} state={state}"),
             Self::HostChanged { room_id, host } => format!("room_id={room_id} host={host:?}"),
-            Self::ChartSelected { room_id, chart_id } => format!("room_id={room_id} chart_id={chart_id}"),
-            Self::GameStarted { room_id, round_id } => format!("room_id={room_id} round_id={round_id}"),
-            Self::PlayerReadyChanged { room_id, user_id, ready } => format!("room_id={room_id} user_id={user_id} ready={ready}"),
-            Self::TouchesReceived { room_id, user_id, count } => format!("room_id={room_id} user_id={user_id} count={count}"),
-            Self::JudgesReceived { room_id, user_id, count } => format!("room_id={room_id} user_id={user_id} count={count}"),
-            Self::RoundCompleted { room_id, round_id } => format!("room_id={room_id} round_id={round_id}"),
-            Self::ChatMessage { room_id, user_id } => format!("room_id={room_id:?} user_id={user_id}"),
-            Self::AdminCommandExecuted { user_id, command } => format!("user_id={user_id:?} command={command}"),
+            Self::ChartSelected { room_id, chart_id } => {
+                format!("room_id={room_id} chart_id={chart_id}")
+            }
+            Self::GameStarted { room_id, round_id } => {
+                format!("room_id={room_id} round_id={round_id}")
+            }
+            Self::PlayerReadyChanged {
+                room_id,
+                user_id,
+                ready,
+            } => format!("room_id={room_id} user_id={user_id} ready={ready}"),
+            Self::TouchesReceived {
+                room_id,
+                user_id,
+                count,
+            } => format!("room_id={room_id} user_id={user_id} count={count}"),
+            Self::JudgesReceived {
+                room_id,
+                user_id,
+                count,
+            } => format!("room_id={room_id} user_id={user_id} count={count}"),
+            Self::RoundCompleted { room_id, round_id } => {
+                format!("room_id={room_id} round_id={round_id}")
+            }
+            Self::ChatMessage { room_id, user_id } => {
+                format!("room_id={room_id:?} user_id={user_id}")
+            }
+            Self::AdminCommandExecuted { user_id, command } => {
+                format!("user_id={user_id:?} command={command}")
+            }
             Self::SimulationStarted { run_id } => format!("run_id={run_id}"),
-            Self::SimulationStopped { run_id, reason } => format!("run_id={run_id} reason={reason}"),
+            Self::SimulationStopped { run_id, reason } => {
+                format!("run_id={run_id} reason={reason}")
+            }
             Self::PersistenceWritten { table, rows } => format!("table={table} rows={rows}"),
             Self::BenchmarkCompleted { report } => format!(
                 "mode={} title={} failed_operations={} probes_failed={} probes_blocked={}",
@@ -188,14 +286,18 @@ impl EventBus {
         let delivered = match self.tx.send(event) {
             Ok(delivered) => delivered,
             Err(_) => {
-                self.counters.lagged_or_closed.fetch_add(1, Ordering::Relaxed);
+                self.counters
+                    .lagged_or_closed
+                    .fetch_add(1, Ordering::Relaxed);
                 0
             }
         };
         if delivered == 0 {
             self.counters.no_subscriber.fetch_add(1, Ordering::Relaxed);
         }
-        self.counters.delivered_total.fetch_add(delivered as u64, Ordering::Relaxed);
+        self.counters
+            .delivered_total
+            .fetch_add(delivered as u64, Ordering::Relaxed);
         self.push_trace(EventTraceEntry {
             seq,
             at_ms: now_ms(),
@@ -270,7 +372,6 @@ fn now_ms() -> i64 {
         .unwrap_or(0)
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -298,9 +399,18 @@ mod tests {
     #[test]
     fn event_bus_trace_window_keeps_recent_observability_entries() {
         let bus = EventBus::new_with_trace(16, 2);
-        bus.publish(MpEvent::Custom { kind: "a".to_string(), payload: serde_json::json!({}) });
-        bus.publish(MpEvent::Custom { kind: "b".to_string(), payload: serde_json::json!({}) });
-        bus.publish(MpEvent::Custom { kind: "c".to_string(), payload: serde_json::json!({}) });
+        bus.publish(MpEvent::Custom {
+            kind: "a".to_string(),
+            payload: serde_json::json!({}),
+        });
+        bus.publish(MpEvent::Custom {
+            kind: "b".to_string(),
+            payload: serde_json::json!({}),
+        });
+        bus.publish(MpEvent::Custom {
+            kind: "c".to_string(),
+            payload: serde_json::json!({}),
+        });
         let stats = bus.stats(16);
         assert_eq!(stats.channel_capacity, 16);
         assert_eq!(stats.trace_capacity, 2);

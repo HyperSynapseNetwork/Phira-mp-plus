@@ -19,9 +19,18 @@ pub enum ProductionTelemetryStage {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PersistenceWriteStage {
     NotApplicable,
-    SkippedNoDatabase { pipeline: PersistencePipeline },
-    Acknowledged { pipeline: PersistencePipeline, elapsed_ms: u64 },
-    Failed { pipeline: PersistencePipeline, elapsed_ms: u64, error: String },
+    SkippedNoDatabase {
+        pipeline: PersistencePipeline,
+    },
+    Acknowledged {
+        pipeline: PersistencePipeline,
+        elapsed_ms: u64,
+    },
+    Failed {
+        pipeline: PersistencePipeline,
+        elapsed_ms: u64,
+        error: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -41,43 +50,75 @@ pub async fn persist_simulation_event_if_needed(event: &PersistenceEvent) -> Per
         return PersistenceWriteStage::NotApplicable;
     }
     let Some(db) = crate::internal_hooks::DB.get() else {
-        return PersistenceWriteStage::SkippedNoDatabase { pipeline: PersistencePipeline::Simulation };
+        return PersistenceWriteStage::SkippedNoDatabase {
+            pipeline: PersistencePipeline::Simulation,
+        };
     };
 
     let started = Instant::now();
     let result = match event {
         PersistenceEvent::ServerEvent { kind, payload, .. } => {
-            db.record_sim_event(extract_run_id(payload), kind, payload.clone()).await
+            db.record_sim_event(extract_run_id(payload), kind, payload.clone())
+                .await
         }
-        PersistenceEvent::RoomSnapshot { room_id, payload, .. } => {
+        PersistenceEvent::RoomSnapshot {
+            room_id, payload, ..
+        } => {
             let mut payload = payload.clone();
             if let Some(obj) = payload.as_object_mut() {
-                obj.entry("room_id".to_string()).or_insert_with(|| serde_json::json!(room_id));
+                obj.entry("room_id".to_string())
+                    .or_insert_with(|| serde_json::json!(room_id));
             }
-            db.record_sim_event(extract_run_id(&payload), "simulation.room_snapshot", payload).await
+            db.record_sim_event(
+                extract_run_id(&payload),
+                "simulation.room_snapshot",
+                payload,
+            )
+            .await
         }
-        PersistenceEvent::TouchBatch { round_id, user_id, payload, .. } => {
+        PersistenceEvent::TouchBatch {
+            round_id,
+            user_id,
+            payload,
+            ..
+        } => {
             let mut payload = payload.clone();
             if let Some(obj) = payload.as_object_mut() {
-                obj.entry("round_id".to_string()).or_insert_with(|| serde_json::json!(round_id));
-                obj.entry("user_id".to_string()).or_insert_with(|| serde_json::json!(user_id));
+                obj.entry("round_id".to_string())
+                    .or_insert_with(|| serde_json::json!(round_id));
+                obj.entry("user_id".to_string())
+                    .or_insert_with(|| serde_json::json!(user_id));
             }
-            db.record_sim_event(extract_run_id(&payload), "simulation.touch_batch", payload).await
+            db.record_sim_event(extract_run_id(&payload), "simulation.touch_batch", payload)
+                .await
         }
-        PersistenceEvent::JudgeBatch { round_id, user_id, payload, .. } => {
+        PersistenceEvent::JudgeBatch {
+            round_id,
+            user_id,
+            payload,
+            ..
+        } => {
             let mut payload = payload.clone();
             if let Some(obj) = payload.as_object_mut() {
-                obj.entry("round_id".to_string()).or_insert_with(|| serde_json::json!(round_id));
-                obj.entry("user_id".to_string()).or_insert_with(|| serde_json::json!(user_id));
+                obj.entry("round_id".to_string())
+                    .or_insert_with(|| serde_json::json!(round_id));
+                obj.entry("user_id".to_string())
+                    .or_insert_with(|| serde_json::json!(user_id));
             }
-            db.record_sim_event(extract_run_id(&payload), "simulation.judge_batch", payload).await
+            db.record_sim_event(extract_run_id(&payload), "simulation.judge_batch", payload)
+                .await
         }
-        PersistenceEvent::BenchmarkReport { .. } | PersistenceEvent::Flush | PersistenceEvent::Shutdown => {
+        PersistenceEvent::BenchmarkReport { .. }
+        | PersistenceEvent::Flush
+        | PersistenceEvent::Shutdown => {
             return PersistenceWriteStage::NotApplicable;
         }
     };
     if result {
-        PersistenceWriteStage::Acknowledged { pipeline: PersistencePipeline::Simulation, elapsed_ms: elapsed_ms(started) }
+        PersistenceWriteStage::Acknowledged {
+            pipeline: PersistencePipeline::Simulation,
+            elapsed_ms: elapsed_ms(started),
+        }
     } else {
         PersistenceWriteStage::Failed {
             pipeline: PersistencePipeline::Simulation,
@@ -96,7 +137,12 @@ pub async fn stage_production_telemetry_if_needed(
     }
 
     let item = match event {
-        PersistenceEvent::TouchBatch { round_id, user_id, payload, .. } => Some(TelemetryItem {
+        PersistenceEvent::TouchBatch {
+            round_id,
+            user_id,
+            payload,
+            ..
+        } => Some(TelemetryItem {
             kind: TelemetryKind::Touch,
             room_id: extract_room_id(payload),
             round_id: Some(round_id.clone()),
@@ -104,7 +150,12 @@ pub async fn stage_production_telemetry_if_needed(
             item_count: extract_item_count(payload),
             payload: payload.clone(),
         }),
-        PersistenceEvent::JudgeBatch { round_id, user_id, payload, .. } => Some(TelemetryItem {
+        PersistenceEvent::JudgeBatch {
+            round_id,
+            user_id,
+            payload,
+            ..
+        } => Some(TelemetryItem {
             kind: TelemetryKind::Judge,
             room_id: extract_room_id(payload),
             round_id: Some(round_id.clone()),
@@ -134,7 +185,9 @@ pub async fn persist_production_event_if_needed(event: &PersistenceEvent) -> Per
         return PersistenceWriteStage::NotApplicable;
     }
     let Some(db) = crate::internal_hooks::DB.get() else {
-        return PersistenceWriteStage::SkippedNoDatabase { pipeline: PersistencePipeline::EventMirror };
+        return PersistenceWriteStage::SkippedNoDatabase {
+            pipeline: PersistencePipeline::EventMirror,
+        };
     };
 
     let started = Instant::now();
@@ -149,10 +202,13 @@ pub async fn persist_production_event_if_needed(event: &PersistenceEvent) -> Per
             )
             .await
         }
-        PersistenceEvent::RoomSnapshot { room_id, payload, .. } => {
+        PersistenceEvent::RoomSnapshot {
+            room_id, payload, ..
+        } => {
             let mut payload = with_runtime_v2_persistence_meta(payload.clone());
             if let Some(obj) = payload.as_object_mut() {
-                obj.entry("room_id".to_string()).or_insert_with(|| serde_json::json!(room_id));
+                obj.entry("room_id".to_string())
+                    .or_insert_with(|| serde_json::json!(room_id));
             }
             db.record_room_event(
                 "runtime.room_snapshot",
@@ -165,12 +221,17 @@ pub async fn persist_production_event_if_needed(event: &PersistenceEvent) -> Per
         PersistenceEvent::TouchBatch { .. } | PersistenceEvent::JudgeBatch { .. } => {
             return PersistenceWriteStage::NotApplicable;
         }
-        PersistenceEvent::BenchmarkReport { .. } | PersistenceEvent::Flush | PersistenceEvent::Shutdown => {
+        PersistenceEvent::BenchmarkReport { .. }
+        | PersistenceEvent::Flush
+        | PersistenceEvent::Shutdown => {
             return PersistenceWriteStage::NotApplicable;
         }
     };
     if result {
-        PersistenceWriteStage::Acknowledged { pipeline: PersistencePipeline::EventMirror, elapsed_ms: elapsed_ms(started) }
+        PersistenceWriteStage::Acknowledged {
+            pipeline: PersistencePipeline::EventMirror,
+            elapsed_ms: elapsed_ms(started),
+        }
     } else {
         PersistenceWriteStage::Failed {
             pipeline: PersistencePipeline::EventMirror,
@@ -193,7 +254,9 @@ pub async fn persist_benchmark_report_if_needed(event: &PersistenceEvent) -> Ben
         "benchmark.completed.event_bus",
     );
     if db.record_runtime_benchmark_report(record).await {
-        BenchmarkReportStage::Acknowledged { elapsed_ms: elapsed_ms(started) }
+        BenchmarkReportStage::Acknowledged {
+            elapsed_ms: elapsed_ms(started),
+        }
     } else {
         BenchmarkReportStage::Failed {
             elapsed_ms: elapsed_ms(started),

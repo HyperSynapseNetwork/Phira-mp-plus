@@ -121,8 +121,14 @@ mod tests {
     #[test]
     fn delivery_names_are_stable_contract() {
         assert_eq!(RoomCommandDelivery::Inline.as_str(), "inline");
-        assert_eq!(RoomCommandDelivery::PerRoomMailbox.as_str(), "per_room_mailbox");
-        assert_eq!(RoomCommandDelivery::FallbackInline.as_str(), "fallback_inline");
+        assert_eq!(
+            RoomCommandDelivery::PerRoomMailbox.as_str(),
+            "per_room_mailbox"
+        );
+        assert_eq!(
+            RoomCommandDelivery::FallbackInline.as_str(),
+            "fallback_inline"
+        );
         assert_eq!(RoomCommandDelivery::MailboxError.as_str(), "mailbox_error");
     }
 
@@ -135,5 +141,4 @@ mod tests {
         assert_eq!(result.error_message().as_deref(), Some("reply lost"));
         assert_eq!(result.into_legacy().unwrap_err(), "reply lost");
     }
-
 }

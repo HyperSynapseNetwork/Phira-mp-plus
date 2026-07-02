@@ -1,6 +1,9 @@
 //! Room setting command operations.
 
-use super::super::{command::{RoomActorCommand, RoomCommandKind}, RoomCommandGateway};
+use super::super::{
+    command::{RoomActorCommand, RoomCommandKind},
+    RoomCommandGateway,
+};
 use crate::{plugin::PluginEvent, server::PlusServerState};
 use phira_mp_common::{Message, PartialRoomData};
 use serde_json::Value;
@@ -26,7 +29,14 @@ impl RoomCommandGateway {
                 || self.set_host_inline(state, room_id, target_id),
             )
             .await;
-        self.finish_command(state, RoomCommandKind::SetHost.action(), room_id, started, result).into_legacy()
+        self.finish_command(
+            state,
+            RoomCommandKind::SetHost.action(),
+            room_id,
+            started,
+            result,
+        )
+        .into_legacy()
     }
 
     pub(in crate::room_actor) async fn set_host_inline(
@@ -50,7 +60,9 @@ impl RoomCommandGateway {
                     content: format!("房主已转移给 {}", user_name),
                 })
                 .await;
-                room.set_host(Some(user_id), true).await.map_err(|e| e.to_string())?;
+                room.set_host(Some(user_id), true)
+                    .await
+                    .map_err(|e| e.to_string())?;
                 Ok(serde_json::json!({
                     "ok": true,
                     "room_id": room_id,
@@ -95,7 +107,14 @@ impl RoomCommandGateway {
                 || self.set_lock_inline(state, room_id, locked),
             )
             .await;
-        self.finish_command(state, RoomCommandKind::SetLock.action(), room_id, started, result).into_legacy()
+        self.finish_command(
+            state,
+            RoomCommandKind::SetLock.action(),
+            room_id,
+            started,
+            result,
+        )
+        .into_legacy()
     }
 
     pub(in crate::room_actor) async fn set_lock_inline(
@@ -141,7 +160,14 @@ impl RoomCommandGateway {
                 || self.set_cycle_inline(state, room_id, cycle),
             )
             .await;
-        self.finish_command(state, RoomCommandKind::SetCycle.action(), room_id, started, result).into_legacy()
+        self.finish_command(
+            state,
+            RoomCommandKind::SetCycle.action(),
+            room_id,
+            started,
+            result,
+        )
+        .into_legacy()
     }
 
     pub(in crate::room_actor) async fn set_cycle_inline(

@@ -54,9 +54,8 @@ impl SimulationScenario {
             "chat" | "chat_storm" | "chatstorm" => Some(Self::ChatStorm),
             "ready" | "ready_storm" | "readystorm" => Some(Self::ReadyStorm),
             "round" | "rounds" | "round_storm" | "roundstorm" => Some(Self::RoundStorm),
-            "touch" | "judge" | "touch_judge" | "touch_judge_burst" | "touchjudgeburst" | "burst" => {
-                Some(Self::TouchJudgeBurst)
-            }
+            "touch" | "judge" | "touch_judge" | "touch_judge_burst" | "touchjudgeburst"
+            | "burst" => Some(Self::TouchJudgeBurst),
             "idle" | "noop" | "quiet" => Some(Self::Idle),
             _ => None,
         }
@@ -102,7 +101,6 @@ impl Default for SimulationScenario {
     }
 }
 
-
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum SimulationSuite {
@@ -133,7 +131,9 @@ impl SimulationSuite {
         match self {
             Self::Smoke => "short sanity suite: balanced + idle, useful for CI smoke checks",
             Self::Mixed => "balanced scenario sweep: chat, ready, round, touch/judge",
-            Self::Stress => "heavier scenario sweep for sustained EventBus/PersistenceWorker pressure",
+            Self::Stress => {
+                "heavier scenario sweep for sustained EventBus/PersistenceWorker pressure"
+            }
         }
     }
 
@@ -144,19 +144,91 @@ impl SimulationSuite {
     pub fn plan(self, seed: u64) -> Vec<SimulationSuiteStep> {
         let mut steps = match self {
             Self::Smoke => vec![
-                suite_step("smoke-balanced", SimulationPreset::Baseline, SimulationScenario::Balanced, seed, 10, 500, 5),
-                suite_step("smoke-idle", SimulationPreset::Baseline, SimulationScenario::Idle, seed.wrapping_add(1), 5, 500, 0),
+                suite_step(
+                    "smoke-balanced",
+                    SimulationPreset::Baseline,
+                    SimulationScenario::Balanced,
+                    seed,
+                    10,
+                    500,
+                    5,
+                ),
+                suite_step(
+                    "smoke-idle",
+                    SimulationPreset::Baseline,
+                    SimulationScenario::Idle,
+                    seed.wrapping_add(1),
+                    5,
+                    500,
+                    0,
+                ),
             ],
             Self::Mixed => vec![
-                suite_step("mixed-chat", SimulationPreset::Small, SimulationScenario::ChatStorm, seed, 20, 500, 10),
-                suite_step("mixed-ready", SimulationPreset::Small, SimulationScenario::ReadyStorm, seed.wrapping_add(1), 20, 500, 10),
-                suite_step("mixed-round", SimulationPreset::Small, SimulationScenario::RoundStorm, seed.wrapping_add(2), 20, 500, 10),
-                suite_step("mixed-touch-judge", SimulationPreset::Small, SimulationScenario::TouchJudgeBurst, seed.wrapping_add(3), 20, 500, 10),
+                suite_step(
+                    "mixed-chat",
+                    SimulationPreset::Small,
+                    SimulationScenario::ChatStorm,
+                    seed,
+                    20,
+                    500,
+                    10,
+                ),
+                suite_step(
+                    "mixed-ready",
+                    SimulationPreset::Small,
+                    SimulationScenario::ReadyStorm,
+                    seed.wrapping_add(1),
+                    20,
+                    500,
+                    10,
+                ),
+                suite_step(
+                    "mixed-round",
+                    SimulationPreset::Small,
+                    SimulationScenario::RoundStorm,
+                    seed.wrapping_add(2),
+                    20,
+                    500,
+                    10,
+                ),
+                suite_step(
+                    "mixed-touch-judge",
+                    SimulationPreset::Small,
+                    SimulationScenario::TouchJudgeBurst,
+                    seed.wrapping_add(3),
+                    20,
+                    500,
+                    10,
+                ),
             ],
             Self::Stress => vec![
-                suite_step("stress-chat", SimulationPreset::Medium, SimulationScenario::ChatStorm, seed, 45, 250, 20),
-                suite_step("stress-touch-judge", SimulationPreset::Medium, SimulationScenario::TouchJudgeBurst, seed.wrapping_add(1), 45, 250, 20),
-                suite_step("stress-round", SimulationPreset::Medium, SimulationScenario::RoundStorm, seed.wrapping_add(2), 45, 250, 20),
+                suite_step(
+                    "stress-chat",
+                    SimulationPreset::Medium,
+                    SimulationScenario::ChatStorm,
+                    seed,
+                    45,
+                    250,
+                    20,
+                ),
+                suite_step(
+                    "stress-touch-judge",
+                    SimulationPreset::Medium,
+                    SimulationScenario::TouchJudgeBurst,
+                    seed.wrapping_add(1),
+                    45,
+                    250,
+                    20,
+                ),
+                suite_step(
+                    "stress-round",
+                    SimulationPreset::Medium,
+                    SimulationScenario::RoundStorm,
+                    seed.wrapping_add(2),
+                    45,
+                    250,
+                    20,
+                ),
             ],
         };
         for step in &mut steps {
@@ -165,7 +237,6 @@ impl SimulationSuite {
         steps
     }
 }
-
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SimulationRunReport {
@@ -388,13 +459,19 @@ impl SimulationConfig {
     pub fn apply_kv(&mut self, key: &str, value: &str) -> Result<(), String> {
         match key.trim().to_ascii_lowercase().as_str() {
             "users" | "user" => {
-                self.users = value.parse::<usize>().map_err(|_| "users must be usize".to_string())?;
+                self.users = value
+                    .parse::<usize>()
+                    .map_err(|_| "users must be usize".to_string())?;
             }
             "rooms" | "room" => {
-                self.rooms = value.parse::<usize>().map_err(|_| "rooms must be usize".to_string())?;
+                self.rooms = value
+                    .parse::<usize>()
+                    .map_err(|_| "rooms must be usize".to_string())?;
             }
             "duration" | "duration_secs" | "seconds" | "secs" => {
-                self.duration_secs = value.parse::<u64>().map_err(|_| "duration must be u64 seconds".to_string())?;
+                self.duration_secs = value
+                    .parse::<u64>()
+                    .map_err(|_| "duration must be u64 seconds".to_string())?;
             }
             "touch" | "touches" => self.touch = parse_bool(value)?,
             "judge" | "judges" => self.judge = parse_bool(value)?,
@@ -408,11 +485,15 @@ impl SimulationConfig {
                     .map_err(|_| "tick_ms must be u64 milliseconds".to_string())?;
             }
             "persist_every" | "persist_every_ticks" | "snapshot_every" => {
-                self.persist_every_ticks = value
-                    .parse::<u64>()
-                    .map_err(|_| "persist_every must be u64 ticks; 0 disables periodic snapshot".to_string())?;
+                self.persist_every_ticks = value.parse::<u64>().map_err(|_| {
+                    "persist_every must be u64 ticks; 0 disables periodic snapshot".to_string()
+                })?;
             }
-            "seed" => self.seed = value.parse::<u64>().map_err(|_| "seed must be u64".to_string())?,
+            "seed" => {
+                self.seed = value
+                    .parse::<u64>()
+                    .map_err(|_| "seed must be u64".to_string())?
+            }
             "scenario" | "profile" | "mode" | "workload" => {
                 self.scenario = SimulationScenario::parse(value)
                     .ok_or_else(|| format!("unknown simulation scenario: {value}"))?;
@@ -434,10 +515,14 @@ impl SimulationConfig {
             return Err("simulation duration must be greater than 0".to_string());
         }
         if self.users > 200_000 {
-            return Err("simulation users is too large for the current safe shadow-world stage".to_string());
+            return Err(
+                "simulation users is too large for the current safe shadow-world stage".to_string(),
+            );
         }
         if self.rooms > 20_000 {
-            return Err("simulation rooms is too large for the current safe shadow-world stage".to_string());
+            return Err(
+                "simulation rooms is too large for the current safe shadow-world stage".to_string(),
+            );
         }
         if !(50..=60_000).contains(&self.tick_interval_ms) {
             return Err("simulation tick_ms must be between 50 and 60000".to_string());
@@ -624,7 +709,9 @@ impl SimulationManager {
                 last_tick_at_ms: None,
                 world: None,
                 suite_reports: VecDeque::with_capacity(MAX_SUITE_REPORTS),
-                note: "Runtime v2 simulation manager is installed; no real rooms/users are modified.".to_string(),
+                note:
+                    "Runtime v2 simulation manager is installed; no real rooms/users are modified."
+                        .to_string(),
             })),
         }
     }
@@ -642,9 +729,15 @@ impl SimulationManager {
         self.seed.store(seed, Ordering::Relaxed);
         let mut state = self.state.write().await;
         state.config.seed = seed;
-        state.note = format!("simulation seed updated to {seed}; deterministic replay uses it for sample data");
+        state.note = format!(
+            "simulation seed updated to {seed}; deterministic replay uses it for sample data"
+        );
         if let Some(world) = &mut state.world {
-            push_event(world, "seed", format!("seed updated to {seed}; running world will use it on next restart"));
+            push_event(
+                world,
+                "seed",
+                format!("seed updated to {seed}; running world will use it on next restart"),
+            );
         }
     }
 
@@ -655,7 +748,11 @@ impl SimulationManager {
         if state.running {
             return Err(format!(
                 "simulation is already running: {}",
-                state.run_id.as_ref().map(|id| id.to_string()).unwrap_or_else(|| "unknown".to_string())
+                state
+                    .run_id
+                    .as_ref()
+                    .map(|id| id.to_string())
+                    .unwrap_or_else(|| "unknown".to_string())
             ));
         }
         let run_id = Uuid::new_v4();
@@ -718,10 +815,10 @@ impl SimulationManager {
         state.started_at_ms = None;
         state.last_tick_at_ms = None;
         state.world = None;
-        state.note = "simulation shadow world cleaned; real rooms/users were not touched".to_string();
+        state.note =
+            "simulation shadow world cleaned; real rooms/users were not touched".to_string();
         self.snapshot(&state)
     }
-
 
     pub async fn advance_ticks(&self, count: u64) -> Result<SimulationStatus, String> {
         self.advance_ticks_with_events(count)
@@ -741,7 +838,11 @@ impl SimulationManager {
         Ok((self.snapshot(&state), events))
     }
 
-    pub async fn advance_ticks_for_run(&self, run_id: Uuid, count: u64) -> Result<SimulationStatus, String> {
+    pub async fn advance_ticks_for_run(
+        &self,
+        run_id: Uuid,
+        count: u64,
+    ) -> Result<SimulationStatus, String> {
         self.advance_ticks_for_run_with_events(run_id, count)
             .await
             .map(|(status, _events)| status)
@@ -760,7 +861,11 @@ impl SimulationManager {
         Ok((self.snapshot(&state), events))
     }
 
-    pub async fn stop_if_run(&self, run_id: Uuid, reason: impl Into<String>) -> Option<SimulationStatus> {
+    pub async fn stop_if_run(
+        &self,
+        run_id: Uuid,
+        reason: impl Into<String>,
+    ) -> Option<SimulationStatus> {
         let mut state = self.state.write().await;
         if !state.running || state.run_id != Some(run_id) {
             return None;
@@ -815,7 +920,13 @@ impl SimulationManager {
     pub async fn suite_reports(&self, limit: usize) -> Vec<SimulationSuiteReport> {
         let state = self.state.read().await;
         let limit = limit.clamp(1, MAX_SUITE_REPORTS);
-        state.suite_reports.iter().rev().take(limit).cloned().collect()
+        state
+            .suite_reports
+            .iter()
+            .rev()
+            .take(limit)
+            .cloned()
+            .collect()
     }
 
     pub async fn latest_suite_report(&self) -> Option<SimulationSuiteReport> {
@@ -844,20 +955,22 @@ impl SimulationManager {
 
     pub fn sample_judges(seed: u64) -> Vec<SampleJudge> {
         let offset = (seed % 23) as u32;
-        ["perfect", "perfect", "good", "perfect", "bad", "perfect", "miss", "perfect"]
-            .into_iter()
-            .enumerate()
-            .map(|(idx, judge)| SampleJudge {
-                time_ms: 700 + offset + idx as u32 * 250,
-                judge: judge.to_string(),
-                score_delta: match judge {
-                    "perfect" => 1_000,
-                    "good" => 650,
-                    "bad" => 150,
-                    _ => 0,
-                },
-            })
-            .collect()
+        [
+            "perfect", "perfect", "good", "perfect", "bad", "perfect", "miss", "perfect",
+        ]
+        .into_iter()
+        .enumerate()
+        .map(|(idx, judge)| SampleJudge {
+            time_ms: 700 + offset + idx as u32 * 250,
+            judge: judge.to_string(),
+            score_delta: match judge {
+                "perfect" => 1_000,
+                "good" => 650,
+                "bad" => 150,
+                _ => 0,
+            },
+        })
+        .collect()
     }
 
     fn snapshot(&self, state: &SimulationState) -> SimulationStatus {
@@ -907,10 +1020,34 @@ fn workload_deltas(config: &SimulationConfig) -> WorkloadDeltas {
     let rooms = config.rooms.max(1) as u64;
     let (chat_base, ready_base, touch_base, judge_base, round_base) = match config.scenario {
         SimulationScenario::Balanced => ((users / 10).max(1), users, rooms, rooms, rooms),
-        SimulationScenario::ChatStorm => ((users / 2).max(1), (users / 10).max(1), (rooms / 4).max(1), (rooms / 4).max(1), (rooms / 5).max(1)),
-        SimulationScenario::ReadyStorm => ((users / 20).max(1), users.saturating_mul(3), 0, 0, (rooms / 10).max(1)),
-        SimulationScenario::RoundStorm => ((users / 20).max(1), users, rooms, rooms, rooms.saturating_mul(3)),
-        SimulationScenario::TouchJudgeBurst => ((users / 50).max(1), (users / 5).max(1), rooms.saturating_mul(5), rooms.saturating_mul(5), rooms),
+        SimulationScenario::ChatStorm => (
+            (users / 2).max(1),
+            (users / 10).max(1),
+            (rooms / 4).max(1),
+            (rooms / 4).max(1),
+            (rooms / 5).max(1),
+        ),
+        SimulationScenario::ReadyStorm => (
+            (users / 20).max(1),
+            users.saturating_mul(3),
+            0,
+            0,
+            (rooms / 10).max(1),
+        ),
+        SimulationScenario::RoundStorm => (
+            (users / 20).max(1),
+            users,
+            rooms,
+            rooms,
+            rooms.saturating_mul(3),
+        ),
+        SimulationScenario::TouchJudgeBurst => (
+            (users / 50).max(1),
+            (users / 5).max(1),
+            rooms.saturating_mul(5),
+            rooms.saturating_mul(5),
+            rooms,
+        ),
         SimulationScenario::Idle => (0, 0, 0, 0, 0),
     };
     WorkloadDeltas {
@@ -946,7 +1083,12 @@ fn advance_state(state: &mut SimulationState, count: u64) -> Vec<SimulationGener
 
         let counters_snapshot = state.counters.clone();
         let world_tick = if let Some(world) = &mut state.world {
-            Some(advance_shadow_world(world, tick, &config, &counters_snapshot))
+            Some(advance_shadow_world(
+                world,
+                tick,
+                &config,
+                &counters_snapshot,
+            ))
         } else {
             None
         };
@@ -1049,7 +1191,12 @@ fn generated_events_for_tick(
     events
 }
 
-fn sim_event(kind: &str, run_id: Option<Uuid>, tick: u64, mut payload: Value) -> SimulationGeneratedEvent {
+fn sim_event(
+    kind: &str,
+    run_id: Option<Uuid>,
+    tick: u64,
+    mut payload: Value,
+) -> SimulationGeneratedEvent {
     if let Some(obj) = payload.as_object_mut() {
         obj.insert("tick".to_string(), json!(tick));
         if let Some(run_id) = run_id {
@@ -1080,7 +1227,12 @@ fn remaining_secs(state: &SimulationState) -> Option<u64> {
     if !state.running {
         return None;
     }
-    Some(state.config.duration_secs.saturating_sub(elapsed_secs(state)))
+    Some(
+        state
+            .config
+            .duration_secs
+            .saturating_sub(elapsed_secs(state)),
+    )
 }
 
 fn now_ms() -> i64 {
@@ -1098,7 +1250,11 @@ fn build_shadow_world(run_id: Uuid, config: &SimulationConfig) -> SimulationWorl
     let mut rooms = Vec::with_capacity(rooms_materialized);
     for idx in 0..users_materialized {
         let id = -1_000_000 - seed_offset - idx as i32;
-        let room_idx = if rooms_materialized > 0 { idx % rooms_materialized } else { 0 };
+        let room_idx = if rooms_materialized > 0 {
+            idx % rooms_materialized
+        } else {
+            0
+        };
         users.push(VirtualUser {
             id,
             name: format!("sim-user-{idx:05}"),
@@ -1138,7 +1294,11 @@ fn build_shadow_world(run_id: Uuid, config: &SimulationConfig) -> SimulationWorl
         events: VecDeque::with_capacity(MAX_EVENT_LOG),
         next_seq: 1,
     };
-    push_event(&mut world, "world", format!("shadow world allocated for run {run_id}"));
+    push_event(
+        &mut world,
+        "world",
+        format!("shadow world allocated for run {run_id}"),
+    );
     world
 }
 
@@ -1170,7 +1330,10 @@ fn advance_shadow_world(
         for (idx, room) in world.rooms.iter_mut().enumerate().take(128) {
             let should_play = (idx as u64 + tick + seed) % 2 == 0;
             room.playing = should_play;
-            room.ready_count = room.member_ids.len().saturating_sub(((idx as u64 + tick) % 2) as usize);
+            room.ready_count = room
+                .member_ids
+                .len()
+                .saturating_sub(((idx as u64 + tick) % 2) as usize);
             if should_play {
                 let round_id = format!("sim-round-{tick:06}-{idx:04}");
                 room.round_id = Some(round_id.clone());
@@ -1297,14 +1460,26 @@ mod tests {
         chat.scenario = SimulationScenario::ChatStorm;
         let mut touch = SimulationPreset::Baseline.defaults(1);
         touch.scenario = SimulationScenario::TouchJudgeBurst;
-        assert!(workload_deltas(&chat).chat_messages > workload_deltas(&SimulationPreset::Baseline.defaults(1)).chat_messages);
-        assert!(workload_deltas(&touch).touch_batches > workload_deltas(&SimulationPreset::Baseline.defaults(1)).touch_batches);
-        assert_eq!(SimulationScenario::parse("ready-storm"), Some(SimulationScenario::ReadyStorm));
+        assert!(
+            workload_deltas(&chat).chat_messages
+                > workload_deltas(&SimulationPreset::Baseline.defaults(1)).chat_messages
+        );
+        assert!(
+            workload_deltas(&touch).touch_batches
+                > workload_deltas(&SimulationPreset::Baseline.defaults(1)).touch_batches
+        );
+        assert_eq!(
+            SimulationScenario::parse("ready-storm"),
+            Some(SimulationScenario::ReadyStorm)
+        );
     }
 
     #[test]
     fn sample_data_is_seeded() {
-        assert_ne!(SimulationManager::sample_touches(1)[0].time_ms, SimulationManager::sample_touches(2)[0].time_ms);
+        assert_ne!(
+            SimulationManager::sample_touches(1)[0].time_ms,
+            SimulationManager::sample_touches(2)[0].time_ms
+        );
         assert_eq!(SimulationManager::sample_judges(114_514).len(), 8);
     }
 
@@ -1316,7 +1491,10 @@ mod tests {
         assert_eq!(smoke[0].config.scenario, SimulationScenario::Balanced);
         assert_eq!(smoke[1].config.scenario, SimulationScenario::Idle);
         assert_eq!(SimulationSuite::parse("touch"), None);
-        assert_eq!(SimulationSuite::parse("stress"), Some(SimulationSuite::Stress));
+        assert_eq!(
+            SimulationSuite::parse("stress"),
+            Some(SimulationSuite::Stress)
+        );
     }
 
     #[test]
@@ -1336,7 +1514,10 @@ mod tests {
     #[tokio::test]
     async fn start_builds_isolated_shadow_world() {
         let manager = SimulationManager::new();
-        let status = manager.start(SimulationPreset::Small.defaults(7)).await.unwrap();
+        let status = manager
+            .start(SimulationPreset::Small.defaults(7))
+            .await
+            .unwrap();
         assert!(status.running);
         assert_eq!(status.virtual_users, 100);
         let world = manager.world_snapshot(5).await.unwrap();

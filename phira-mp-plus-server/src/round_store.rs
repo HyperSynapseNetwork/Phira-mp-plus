@@ -11,7 +11,7 @@
 //!       judges.jsonl    # 每行一个 JudgeEventItem JSON
 //!     _meta.json        # 轮次元数据
 
-use crate::plugin::{TouchEventPoint, JudgeEventItem};
+use crate::plugin::{JudgeEventItem, TouchEventPoint};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -100,11 +100,17 @@ impl RoundStore {
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
         tokio::fs::write(self.meta_path(&meta.round_uuid), json).await?;
 
-        self.active_rounds.write().await.insert(meta.round_uuid.clone(), true);
+        self.active_rounds
+            .write()
+            .await
+            .insert(meta.round_uuid.clone(), true);
         if let Some(db) = crate::internal_hooks::DB.get() {
             db.open_round(meta).await;
         }
-        info!("round store: opened round {} (chart={})", meta.round_uuid, meta.chart_name);
+        info!(
+            "round store: opened round {} (chart={})",
+            meta.round_uuid, meta.chart_name
+        );
         Ok(())
     }
 
@@ -113,15 +119,20 @@ impl RoundStore {
         // 更新元数据中的完成时间
         if let Some(meta) = self.read_meta(round_uuid).await {
             let mut meta = meta;
-            meta.finished_at = Some(std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_millis() as i64)
-                .unwrap_or(0));
+            meta.finished_at = Some(
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_millis() as i64)
+                    .unwrap_or(0),
+            );
             if let Ok(json) = serde_json::to_string_pretty(&meta) {
                 let _ = tokio::fs::write(self.meta_path(round_uuid), json).await;
             }
         }
-        self.active_rounds.write().await.insert(round_uuid.to_string(), false);
+        self.active_rounds
+            .write()
+            .await
+            .insert(round_uuid.to_string(), false);
         if let Some(db) = crate::internal_hooks::DB.get() {
             db.close_round(round_uuid).await;
         }
@@ -131,13 +142,10 @@ impl RoundStore {
     // ── 数据追加 ──
 
     /// 追加触控数据到指定轮次+玩家
-    pub async fn append_touches(
-        &self,
-        round_uuid: &str,
-        player_id: i32,
-        data: &[TouchEventPoint],
-    ) {
-        if data.is_empty() { return; }
+    pub async fn append_touches(&self, round_uuid: &str, player_id: i32, data: &[TouchEventPoint]) {
+        if data.is_empty() {
+            return;
+        }
         let path = self.touches_path(round_uuid, player_id);
         if let Some(parent) = path.parent() {
             let _ = tokio::fs::create_dir_all(parent).await;
@@ -145,10 +153,14 @@ impl RoundStore {
         let mut file = match tokio::fs::OpenOptions::new()
             .create(true)
             .append(true)
-            .open(&path).await
+            .open(&path)
+            .await
         {
             Ok(f) => f,
-            Err(e) => { warn!("round store: append touches error: {e}"); return; }
+            Err(e) => {
+                warn!("round store: append touches error: {e}");
+                return;
+            }
         };
 
         for point in data {
@@ -162,13 +174,10 @@ impl RoundStore {
     }
 
     /// 追加判定数据到指定轮次+玩家
-    pub async fn append_judges(
-        &self,
-        round_uuid: &str,
-        player_id: i32,
-        data: &[JudgeEventItem],
-    ) {
-        if data.is_empty() { return; }
+    pub async fn append_judges(&self, round_uuid: &str, player_id: i32, data: &[JudgeEventItem]) {
+        if data.is_empty() {
+            return;
+        }
         let path = self.judges_path(round_uuid, player_id);
         if let Some(parent) = path.parent() {
             let _ = tokio::fs::create_dir_all(parent).await;
@@ -176,10 +185,14 @@ impl RoundStore {
         let mut file = match tokio::fs::OpenOptions::new()
             .create(true)
             .append(true)
-            .open(&path).await
+            .open(&path)
+            .await
         {
             Ok(f) => f,
-            Err(e) => { warn!("round store: append judges error: {e}"); return; }
+            Err(e) => {
+                warn!("round store: append judges error: {e}");
+                return;
+            }
         };
 
         for item in data {
@@ -279,15 +292,22 @@ impl RoundStore {
             let uuid = entry.file_name().to_string_lossy().to_string();
 
             // 跳过仍在活跃记录的轮次
-            if self.active_rounds.read().await.get(&uuid).copied().unwrap_or(false) {
+            if self
+                .active_rounds
+                .read()
+                .await
+                .get(&uuid)
+                .copied()
+                .unwrap_or(false)
+            {
                 continue;
             }
 
             // 检查 meta 中的完成时间
             if let Some(meta) = self.read_meta(&uuid).await {
                 let finished = meta.finished_at.unwrap_or(meta.started_at);
-                let finished_time = chrono::DateTime::from_timestamp_millis(finished)
-                    .unwrap_or(chrono::Utc::now());
+                let finished_time =
+                    chrono::DateTime::from_timestamp_millis(finished).unwrap_or(chrono::Utc::now());
                 if now.signed_duration_since(finished_time) > max_age {
                     // 删除整个轮次目录
                     if tokio::fs::remove_dir_all(entry.path()).await.is_ok() {
@@ -298,7 +318,10 @@ impl RoundStore {
         }
 
         if removed > 0 {
-            info!("round store: cleaned up {removed} expired round(s) (retention={}d)", self.retention_days);
+            info!(
+                "round store: cleaned up {removed} expired round(s) (retention={}d)",
+                self.retention_days
+            );
         }
     }
 }
@@ -315,7 +338,9 @@ where
 
     while let Ok(Some(line)) = lines.next_line().await {
         let line = line.trim().to_string();
-        if line.is_empty() { continue; }
+        if line.is_empty() {
+            continue;
+        }
         if let Ok(item) = serde_json::from_str::<T>(&line) {
             items.push(item);
         }

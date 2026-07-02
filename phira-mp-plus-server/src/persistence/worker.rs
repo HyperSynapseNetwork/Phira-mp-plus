@@ -2,37 +2,20 @@
 
 use crate::persistence::message::PersistenceEvent;
 use crate::persistence::pipeline::{
-    persist_benchmark_report_if_needed,
-    persist_production_event_if_needed,
-    persist_simulation_event_if_needed,
-    stage_production_telemetry_if_needed,
-    BenchmarkReportStage,
-    PersistenceWriteStage,
-    ProductionTelemetryStage,
+    persist_benchmark_report_if_needed, persist_production_event_if_needed,
+    persist_simulation_event_if_needed, stage_production_telemetry_if_needed, BenchmarkReportStage,
+    PersistenceWriteStage, ProductionTelemetryStage,
 };
 use crate::persistence::stats::{
-    record_benchmark_report_persist_request,
-    record_benchmark_report_persist_skipped,
-    record_db_dispatch_failure,
-    record_db_dispatch_skipped_no_database,
-    record_db_dispatch_success,
-    record_dropped,
-    record_processed,
-    record_production_persist_request,
-    record_production_persist_skipped,
-    record_production_telemetry_stage_failed,
-    record_production_telemetry_staged,
-    record_queued,
-    record_simulation_persist_request,
-    record_telemetry_cutover_observation,
-    PersistenceStats,
-    TelemetryCutoverObservation,
+    record_benchmark_report_persist_request, record_benchmark_report_persist_skipped,
+    record_db_dispatch_failure, record_db_dispatch_skipped_no_database, record_db_dispatch_success,
+    record_dropped, record_processed, record_production_persist_request,
+    record_production_persist_skipped, record_production_telemetry_stage_failed,
+    record_production_telemetry_staged, record_queued, record_simulation_persist_request,
+    record_telemetry_cutover_observation, PersistenceStats, TelemetryCutoverObservation,
 };
 use crate::telemetry_batcher::{
-    TelemetryBatcher,
-    TelemetryBatcherPolicy,
-    TelemetryBatcherStats,
-    TelemetryCutoverMode,
+    TelemetryBatcher, TelemetryBatcherPolicy, TelemetryBatcherStats, TelemetryCutoverMode,
 };
 use serde_json::json;
 use std::sync::Arc;
@@ -87,7 +70,8 @@ impl PersistenceWorker {
                             &worker_stats,
                             crate::persistence::PersistencePipeline::BenchmarkReport,
                             elapsed_ms,
-                        ).await;
+                        )
+                        .await;
                     }
                     BenchmarkReportStage::Failed { elapsed_ms, error } => {
                         record_benchmark_report_persist_skipped(&worker_stats).await;
@@ -96,54 +80,113 @@ impl PersistenceWorker {
                             crate::persistence::PersistencePipeline::BenchmarkReport,
                             elapsed_ms,
                             error,
-                        ).await;
+                        )
+                        .await;
                     }
                     BenchmarkReportStage::SkippedNoDatabase => {
                         record_benchmark_report_persist_skipped(&worker_stats).await;
                         record_db_dispatch_skipped_no_database(
                             &worker_stats,
                             crate::persistence::PersistencePipeline::BenchmarkReport,
-                        ).await;
+                        )
+                        .await;
                     }
                     BenchmarkReportStage::NotBenchmark => {
                         match persist_simulation_event_if_needed(&event).await {
-                            PersistenceWriteStage::Acknowledged { pipeline, elapsed_ms } => {
+                            PersistenceWriteStage::Acknowledged {
+                                pipeline,
+                                elapsed_ms,
+                            } => {
                                 record_simulation_persist_request(&worker_stats).await;
-                                record_db_dispatch_success(&worker_stats, pipeline, elapsed_ms).await;
+                                record_db_dispatch_success(&worker_stats, pipeline, elapsed_ms)
+                                    .await;
                             }
-                            PersistenceWriteStage::Failed { pipeline, elapsed_ms, error } => {
+                            PersistenceWriteStage::Failed {
+                                pipeline,
+                                elapsed_ms,
+                                error,
+                            } => {
                                 record_simulation_persist_request(&worker_stats).await;
-                                record_db_dispatch_failure(&worker_stats, pipeline, elapsed_ms, error).await;
+                                record_db_dispatch_failure(
+                                    &worker_stats,
+                                    pipeline,
+                                    elapsed_ms,
+                                    error,
+                                )
+                                .await;
                             }
                             PersistenceWriteStage::SkippedNoDatabase { pipeline } => {
-                                record_db_dispatch_skipped_no_database(&worker_stats, pipeline).await;
+                                record_db_dispatch_skipped_no_database(&worker_stats, pipeline)
+                                    .await;
                             }
                             PersistenceWriteStage::NotApplicable => {
-                                match stage_production_telemetry_if_needed(&event, &worker_telemetry).await {
+                                match stage_production_telemetry_if_needed(
+                                    &event,
+                                    &worker_telemetry,
+                                )
+                                .await
+                                {
                                     ProductionTelemetryStage::Staged => {
                                         record_production_telemetry_staged(&worker_stats).await;
                                     }
                                     ProductionTelemetryStage::Failed(error) => {
-                                        record_production_telemetry_stage_failed(&worker_stats, error).await;
+                                        record_production_telemetry_stage_failed(
+                                            &worker_stats,
+                                            error,
+                                        )
+                                        .await;
                                     }
                                     ProductionTelemetryStage::NotTelemetry => {
                                         match persist_production_event_if_needed(&event).await {
-                                            PersistenceWriteStage::Acknowledged { pipeline, elapsed_ms } => {
-                                                record_production_persist_request(&worker_stats).await;
-                                                record_db_dispatch_success(&worker_stats, pipeline, elapsed_ms).await;
+                                            PersistenceWriteStage::Acknowledged {
+                                                pipeline,
+                                                elapsed_ms,
+                                            } => {
+                                                record_production_persist_request(&worker_stats)
+                                                    .await;
+                                                record_db_dispatch_success(
+                                                    &worker_stats,
+                                                    pipeline,
+                                                    elapsed_ms,
+                                                )
+                                                .await;
                                             }
-                                            PersistenceWriteStage::Failed { pipeline, elapsed_ms, error } => {
-                                                record_production_persist_request(&worker_stats).await;
-                                                record_db_dispatch_failure(&worker_stats, pipeline, elapsed_ms, error).await;
+                                            PersistenceWriteStage::Failed {
+                                                pipeline,
+                                                elapsed_ms,
+                                                error,
+                                            } => {
+                                                record_production_persist_request(&worker_stats)
+                                                    .await;
+                                                record_db_dispatch_failure(
+                                                    &worker_stats,
+                                                    pipeline,
+                                                    elapsed_ms,
+                                                    error,
+                                                )
+                                                .await;
                                             }
-                                            PersistenceWriteStage::SkippedNoDatabase { pipeline } => {
-                                                record_db_dispatch_skipped_no_database(&worker_stats, pipeline).await;
+                                            PersistenceWriteStage::SkippedNoDatabase {
+                                                pipeline,
+                                            } => {
+                                                record_db_dispatch_skipped_no_database(
+                                                    &worker_stats,
+                                                    pipeline,
+                                                )
+                                                .await;
                                             }
                                             PersistenceWriteStage::NotApplicable => {
                                                 if !event.is_simulation()
-                                                    && !matches!(&event, PersistenceEvent::Flush | PersistenceEvent::Shutdown)
+                                                    && !matches!(
+                                                        &event,
+                                                        PersistenceEvent::Flush
+                                                            | PersistenceEvent::Shutdown
+                                                    )
                                                 {
-                                                    record_production_persist_skipped(&worker_stats).await;
+                                                    record_production_persist_skipped(
+                                                        &worker_stats,
+                                                    )
+                                                    .await;
                                                 }
                                             }
                                         }
@@ -171,7 +214,12 @@ impl PersistenceWorker {
             }
         });
 
-        Arc::new(Self { tx, stats, telemetry_batcher, telemetry_cutover_mode })
+        Arc::new(Self {
+            tx,
+            stats,
+            telemetry_batcher,
+            telemetry_cutover_mode,
+        })
     }
 
     pub async fn enqueue(&self, event: PersistenceEvent) -> Result<(), PersistenceEvent> {
@@ -220,7 +268,10 @@ impl PersistenceWorker {
         stats
     }
 
-    pub async fn record_telemetry_cutover_observation(&self, observation: TelemetryCutoverObservation) {
+    pub async fn record_telemetry_cutover_observation(
+        &self,
+        observation: TelemetryCutoverObservation,
+    ) {
         record_telemetry_cutover_observation(&self.stats, observation).await;
     }
 
@@ -253,7 +304,7 @@ impl PersistenceWorker {
                 "telemetry_cutover_observation": {
                     "observed_batches": stats.telemetry_cutover.observed_batches,
                     "worker_enqueue_success_ratio_percent": stats.telemetry_cutover.worker_enqueue_success_ratio_percent,
-                    "worker_preferred_dry_run_success_ratio_percent": stats.telemetry_cutover.worker_preferred_dry_run_success_ratio_percent,
+                    "worker_only_dry_run_success_ratio_percent": stats.telemetry_cutover.worker_only_dry_run_success_ratio_percent,
                     "readiness": stats.telemetry_cutover.readiness
                 },
                 "source": "server_config.runtime_v2"
@@ -261,7 +312,10 @@ impl PersistenceWorker {
         }
     }
 
-    pub async fn set_telemetry_cutover_mode(&self, mode: TelemetryCutoverMode) -> TelemetryCutoverMode {
+    pub async fn set_telemetry_cutover_mode(
+        &self,
+        mode: TelemetryCutoverMode,
+    ) -> TelemetryCutoverMode {
         {
             let mut current = self.telemetry_cutover_mode.write().await;
             *current = mode;
@@ -306,6 +360,8 @@ impl PersistenceWorker {
     pub(crate) async fn record_bridge_lagged(&self, skipped: u64) {
         let mut stats = self.stats.write().await;
         stats.bridge_lagged += skipped;
-        stats.last_error = Some(format!("persistence event-bus mirror lagged by {skipped} event(s)"));
+        stats.last_error = Some(format!(
+            "persistence event-bus mirror lagged by {skipped} event(s)"
+        ));
     }
 }

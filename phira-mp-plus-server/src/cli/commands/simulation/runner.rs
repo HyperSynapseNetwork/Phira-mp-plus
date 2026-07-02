@@ -70,7 +70,11 @@ pub(super) fn spawn_simulation_runner(
 
         loop {
             tokio::time::sleep(interval).await;
-            let (status, events) = match state.simulation.advance_ticks_for_run_with_events(run_id, 1).await {
+            let (status, events) = match state
+                .simulation
+                .advance_ticks_for_run_with_events(run_id, 1)
+                .await
+            {
                 Ok(result) => result,
                 Err(_) => break,
             };
@@ -81,7 +85,8 @@ pub(super) fn spawn_simulation_runner(
                 && status.counters.ticks > 0
                 && status.counters.ticks % config.persist_every_ticks == 0
             {
-                publish_simulation_snapshot(&state, run_id, &status, "simulation.runner.periodic").await;
+                publish_simulation_snapshot(&state, run_id, &status, "simulation.runner.periodic")
+                    .await;
             }
 
             if status.elapsed_secs >= config.duration_secs {
@@ -99,7 +104,13 @@ pub(super) fn spawn_simulation_runner(
                         run_id, stopped.counters.ticks, stopped.elapsed_secs, reason
                     ));
                     if config.persist_every_ticks > 0 {
-                        publish_simulation_snapshot(&state, run_id, &stopped, "simulation.runner.final").await;
+                        publish_simulation_snapshot(
+                            &state,
+                            run_id,
+                            &stopped,
+                            "simulation.runner.final",
+                        )
+                        .await;
                     }
                 }
                 break;
@@ -146,10 +157,14 @@ pub(super) fn spawn_simulation_suite_runner(
         });
         let _ = out_tx.send(format!(
             "  ◆ simulation suite started: suite={} suite_run_id={} steps={}",
-            suite.as_str(), suite_run_id, total_steps
+            suite.as_str(),
+            suite_run_id,
+            total_steps
         ));
         let _ = state
-            .broadcast_system_message("服务器正在进行 Runtime v2 Simulation suite；期间可能出现短暂卡顿。")
+            .broadcast_system_message(
+                "服务器正在进行 Runtime v2 Simulation suite；期间可能出现短暂卡顿。",
+            )
             .await;
 
         let mut completed_steps = 0usize;
@@ -238,15 +253,25 @@ pub(super) fn spawn_simulation_suite_runner(
                     && status.counters.ticks > 0
                     && status.counters.ticks % step.config.persist_every_ticks == 0
                 {
-                    publish_simulation_snapshot(&state, run_id, &status, "simulation.suite.periodic").await;
+                    publish_simulation_snapshot(
+                        &state,
+                        run_id,
+                        &status,
+                        "simulation.suite.periodic",
+                    )
+                    .await;
                 }
 
                 if status.elapsed_secs >= step.config.duration_secs {
                     let reason = format!(
                         "suite {} step {} duration {}s reached",
-                        suite.as_str(), step.name, step.config.duration_secs
+                        suite.as_str(),
+                        step.name,
+                        step.config.duration_secs
                     );
-                    if let Some(stopped) = state.simulation.stop_if_run(run_id, reason.clone()).await {
+                    if let Some(stopped) =
+                        state.simulation.stop_if_run(run_id, reason.clone()).await
+                    {
                         state.publish_runtime_event(crate::event_bus::MpEvent::SimulationStopped {
                             run_id,
                             reason: reason.clone(),
@@ -267,7 +292,13 @@ pub(super) fn spawn_simulation_suite_runner(
                             }),
                         });
                         if step.config.persist_every_ticks > 0 {
-                            publish_simulation_snapshot(&state, run_id, &stopped, "simulation.suite.final").await;
+                            publish_simulation_snapshot(
+                                &state,
+                                run_id,
+                                &stopped,
+                                "simulation.suite.final",
+                            )
+                            .await;
                         }
                         step_reports.push(crate::simulation::SimulationRunReport::from_status(
                             Some(suite_run_id),
@@ -348,7 +379,8 @@ pub(super) fn spawn_simulation_suite_runner(
             report.workload_events,
             report.workload_events_per_sec
         ));
-        let benchmark_report = crate::benchmark_report::BenchmarkReport::from_simulation_suite(&report);
+        let benchmark_report =
+            crate::benchmark_report::BenchmarkReport::from_simulation_suite(&report);
         state.publish_benchmark_completed(&benchmark_report);
         for line in benchmark_report.render_text().lines() {
             let _ = out_tx.send(line.to_string());

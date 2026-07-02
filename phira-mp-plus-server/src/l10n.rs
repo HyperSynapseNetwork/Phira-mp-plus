@@ -1,5 +1,5 @@
-use fluent::{FluentArgs, FluentResource};
 use fluent::concurrent::FluentBundle;
+use fluent::{FluentArgs, FluentResource};
 use once_cell::sync::Lazy;
 use std::sync::Arc;
 use tokio::task_local;
@@ -74,11 +74,7 @@ pub fn try_translate(lang: &LanguageIdentifier, id: &str) -> String {
     }
 }
 
-pub fn try_translate_with_args(
-    lang: &LanguageIdentifier,
-    id: &str,
-    args: FluentArgs,
-) -> String {
+pub fn try_translate_with_args(lang: &LanguageIdentifier, id: &str, args: FluentArgs) -> String {
     match lang.to_string().as_str() {
         "zh-CN" => translate_bundle_with_args(&ZH_CN_BUNDLE, id, args),
         "zh-TW" => translate_bundle_with_args(&ZH_TW_BUNDLE, id, args),

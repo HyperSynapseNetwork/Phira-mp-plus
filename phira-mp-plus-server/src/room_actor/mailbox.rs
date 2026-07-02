@@ -35,7 +35,9 @@ impl RoomCommandGateway {
             while let Some(command) = rx.recv().await {
                 let Some(state) = state.upgrade() else {
                     gateway.mailbox_closed.fetch_add(1, Ordering::Relaxed);
-                    let result = RoomCommandResult::mailbox_error("server state dropped before room command could run");
+                    let result = RoomCommandResult::mailbox_error(
+                        "server state dropped before room command could run",
+                    );
                     gateway.observe_mailbox_result(&result);
                     command.reply_with(result);
                     continue;
@@ -74,7 +76,10 @@ impl RoomCommandGateway {
             .and_then(|guard| guard.as_ref().and_then(Weak::upgrade))
     }
 
-    pub(super) fn room_mailbox_sender(&self, room_id: &str) -> Option<mpsc::Sender<RoomActorCommand>> {
+    pub(super) fn room_mailbox_sender(
+        &self,
+        room_id: &str,
+    ) -> Option<mpsc::Sender<RoomActorCommand>> {
         if let Ok(mailboxes) = self.room_mailboxes.read() {
             if let Some(tx) = mailboxes.get(room_id).cloned() {
                 self.mailbox_registry_hit.fetch_add(1, Ordering::Relaxed);
@@ -100,7 +105,9 @@ impl RoomCommandGateway {
             while let Some(command) = rx.recv().await {
                 let Some(state) = weak_state.upgrade() else {
                     gateway.mailbox_closed.fetch_add(1, Ordering::Relaxed);
-                    let result = RoomCommandResult::mailbox_error("server state dropped before room command could run");
+                    let result = RoomCommandResult::mailbox_error(
+                        "server state dropped before room command could run",
+                    );
                     gateway.observe_mailbox_result(&result);
                     command.reply_with(result);
                     continue;
@@ -159,13 +166,19 @@ impl RoomCommandGateway {
                     Err(_) => {
                         self.mailbox_closed.fetch_add(1, Ordering::Relaxed);
                         self.mailbox_fallback.fetch_add(1, Ordering::Relaxed);
-                        RoomCommandResult::from_legacy(inline().await, RoomCommandDelivery::FallbackInline)
+                        RoomCommandResult::from_legacy(
+                            inline().await,
+                            RoomCommandDelivery::FallbackInline,
+                        )
                     }
                 },
                 Err(_) => {
                     self.mailbox_closed.fetch_add(1, Ordering::Relaxed);
                     self.mailbox_fallback.fetch_add(1, Ordering::Relaxed);
-                    RoomCommandResult::from_legacy(inline().await, RoomCommandDelivery::FallbackInline)
+                    RoomCommandResult::from_legacy(
+                        inline().await,
+                        RoomCommandDelivery::FallbackInline,
+                    )
                 }
             }
         } else {
@@ -206,7 +219,10 @@ impl RoomCommandGateway {
                 Err(_) => {
                     self.mailbox_closed.fetch_add(1, Ordering::Relaxed);
                     self.mailbox_fallback.fetch_add(1, Ordering::Relaxed);
-                    RoomCommandResult::from_legacy(inline().await, RoomCommandDelivery::FallbackInline)
+                    RoomCommandResult::from_legacy(
+                        inline().await,
+                        RoomCommandDelivery::FallbackInline,
+                    )
                 }
             }
         } else {

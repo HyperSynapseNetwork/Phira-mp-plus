@@ -33,7 +33,13 @@ pub(crate) async fn authenticate_remote_with_notice(
     }
     server
         .phira_client
-        .get_json(&server.config.phira_api_endpoint, None, "/me", Some(token), target)
+        .get_json(
+            &server.config.phira_api_endpoint,
+            None,
+            "/me",
+            Some(token),
+            target,
+        )
         .await
 }
 

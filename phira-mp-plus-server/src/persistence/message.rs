@@ -5,11 +5,31 @@ use serde_json::Value;
 
 #[derive(Debug, Clone)]
 pub enum PersistenceEvent {
-    RoomSnapshot { room_id: String, payload: Value, simulation: bool },
-    ServerEvent { kind: String, payload: Value, simulation: bool },
-    TouchBatch { round_id: String, user_id: i32, payload: Value, simulation: bool },
-    JudgeBatch { round_id: String, user_id: i32, payload: Value, simulation: bool },
-    BenchmarkReport { report: BenchmarkReport },
+    RoomSnapshot {
+        room_id: String,
+        payload: Value,
+        simulation: bool,
+    },
+    ServerEvent {
+        kind: String,
+        payload: Value,
+        simulation: bool,
+    },
+    TouchBatch {
+        round_id: String,
+        user_id: i32,
+        payload: Value,
+        simulation: bool,
+    },
+    JudgeBatch {
+        round_id: String,
+        user_id: i32,
+        payload: Value,
+        simulation: bool,
+    },
+    BenchmarkReport {
+        report: BenchmarkReport,
+    },
     Flush,
     Shutdown,
 }
@@ -40,16 +60,32 @@ impl PersistenceEvent {
 
     pub fn summary(&self) -> String {
         match self {
-            Self::RoomSnapshot { room_id, simulation, .. } => {
+            Self::RoomSnapshot {
+                room_id,
+                simulation,
+                ..
+            } => {
                 format!("room_id={room_id} simulation={simulation}")
             }
-            Self::ServerEvent { kind, simulation, .. } => {
+            Self::ServerEvent {
+                kind, simulation, ..
+            } => {
                 format!("kind={kind} simulation={simulation}")
             }
-            Self::TouchBatch { round_id, user_id, simulation, .. } => {
+            Self::TouchBatch {
+                round_id,
+                user_id,
+                simulation,
+                ..
+            } => {
                 format!("round_id={round_id} user_id={user_id} simulation={simulation}")
             }
-            Self::JudgeBatch { round_id, user_id, simulation, .. } => {
+            Self::JudgeBatch {
+                round_id,
+                user_id,
+                simulation,
+                ..
+            } => {
                 format!("round_id={round_id} user_id={user_id} simulation={simulation}")
             }
             Self::BenchmarkReport { report } => format!(

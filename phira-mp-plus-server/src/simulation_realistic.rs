@@ -159,7 +159,8 @@ impl RealisticSimulationRunner {
             // 1. Chat: pick a user and simulate a message (skip if user gone)
             let chatter = user_ids_here[0];
             if let Some(user) = state.users.read().await.get(&chatter).map(Arc::clone) {
-                room.send_as(&user, format!("sim chat from user {chatter}")).await;
+                room.send_as(&user, format!("sim chat from user {chatter}"))
+                    .await;
                 counters.chat_messages += 1;
             }
 
@@ -168,7 +169,8 @@ impl RealisticSimulationRunner {
             match room_state {
                 InternalRoomState::SelectChart => {
                     // Select a chart and start playing
-                    let chart_id = 10_000_000 + ((seed as usize + counters.ticks as usize) % 10_000) as i32;
+                    let chart_id =
+                        10_000_000 + ((seed as usize + counters.ticks as usize) % 10_000) as i32;
                     *room.chart.write().await = Some(crate::server::Chart {
                         id: chart_id,
                         name: format!("sim-chart-{chart_id}"),
@@ -190,28 +192,39 @@ impl RealisticSimulationRunner {
                 }
                 InternalRoomState::Playing { .. } => {
                     // Simulate touches and judges
-                    let touches = crate::simulation::SimulationManager::sample_touches(seed.wrapping_add(counters.ticks));
-                    let judges = crate::simulation::SimulationManager::sample_judges(seed.wrapping_add(counters.ticks + 1));
+                    let touches = crate::simulation::SimulationManager::sample_touches(
+                        seed.wrapping_add(counters.ticks),
+                    );
+                    let judges = crate::simulation::SimulationManager::sample_judges(
+                        seed.wrapping_add(counters.ticks + 1),
+                    );
                     counters.touch_batches += touches.len() as u64;
                     counters.judge_batches += judges.len() as u64;
 
                     // Simulate results for all users
-                    let records: HashMap<i32, crate::server::Record> = user_ids_here.iter().map(|uid| {
-                        (*uid, crate::server::Record {
-                            id: 0,
-                            player: *uid,
-                            score: 1_000_000 - ((seed as i32 + uid + counters.ticks as i32) % 50_000),
-                            perfect: 950,
-                            good: 30,
-                            bad: 10,
-                            miss: 10,
-                            max_combo: 800,
-                            accuracy: 0.95 + ((seed as f32 * 0.01) % 0.05),
-                            full_combo: counters.ticks % 3 == 0,
-                            std: 0.0,
-                            std_score: 0.0,
+                    let records: HashMap<i32, crate::server::Record> = user_ids_here
+                        .iter()
+                        .map(|uid| {
+                            (
+                                *uid,
+                                crate::server::Record {
+                                    id: 0,
+                                    player: *uid,
+                                    score: 1_000_000
+                                        - ((seed as i32 + uid + counters.ticks as i32) % 50_000),
+                                    perfect: 950,
+                                    good: 30,
+                                    bad: 10,
+                                    miss: 10,
+                                    max_combo: 800,
+                                    accuracy: 0.95 + ((seed as f32 * 0.01) % 0.05),
+                                    full_combo: counters.ticks % 3 == 0,
+                                    std: 0.0,
+                                    std_score: 0.0,
+                                },
+                            )
                         })
-                    }).collect();
+                        .collect();
 
                     *room.state.write().await = InternalRoomState::Playing {
                         results: records,

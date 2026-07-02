@@ -1,6 +1,6 @@
 use std::{collections::HashMap, hash::Hash};
 
-use anyhow::{Result, anyhow};
+use anyhow::{anyhow, Result};
 use byteorder::{ByteOrder, LittleEndian as LE};
 use chrono::{DateTime, TimeZone, Utc};
 use serde_json::{Number, Value};

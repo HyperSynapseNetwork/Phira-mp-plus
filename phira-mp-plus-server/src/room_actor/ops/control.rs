@@ -1,6 +1,9 @@
 //! Game-control room command operations.
 
-use super::super::{command::{RoomActorCommand, RoomCommandKind}, RoomCommandGateway};
+use super::super::{
+    command::{RoomActorCommand, RoomCommandKind},
+    RoomCommandGateway,
+};
 use crate::{plugin::PluginEvent, server::PlusServerState};
 use phira_mp_common::Message;
 use serde_json::Value;
@@ -13,7 +16,11 @@ impl RoomCommandGateway {
     /// serializes this higher-risk state-machine transition with other admin room
     /// writes, while the existing `Room::begin_admin_start` implementation still
     /// owns the protocol behavior.
-    pub async fn start_room(&self, state: &PlusServerState, room_id: &str) -> Result<Value, String> {
+    pub async fn start_room(
+        &self,
+        state: &PlusServerState,
+        room_id: &str,
+    ) -> Result<Value, String> {
         let started = Instant::now();
         let result = self
             .room_mailbox_or_inline_control(
@@ -25,10 +32,21 @@ impl RoomCommandGateway {
                 || self.start_room_inline(state, room_id),
             )
             .await;
-        self.finish_command(state, RoomCommandKind::StartRoom.action(), room_id, started, result).into_legacy()
+        self.finish_command(
+            state,
+            RoomCommandKind::StartRoom.action(),
+            room_id,
+            started,
+            result,
+        )
+        .into_legacy()
     }
 
-    pub(in crate::room_actor) async fn start_room_inline(&self, state: &PlusServerState, room_id: &str) -> Result<Value, String> {
+    pub(in crate::room_actor) async fn start_room_inline(
+        &self,
+        state: &PlusServerState,
+        room_id: &str,
+    ) -> Result<Value, String> {
         let (_rid, room) = self.find_room(state, room_id).await?;
         room.begin_admin_start().await.map_err(|e| e.to_string())?;
         if let Some(pm) = &room.plugin_manager {
@@ -52,7 +70,11 @@ impl RoomCommandGateway {
     /// lock.  Step 17 keeps the external behavior but narrows the critical section:
     /// it flips `WaitForReady -> SelectChart` first, drops the lock, and only then
     /// sends client/control messages and publishes state changes.
-    pub async fn cancel_start(&self, state: &PlusServerState, room_id: &str) -> Result<Value, String> {
+    pub async fn cancel_start(
+        &self,
+        state: &PlusServerState,
+        room_id: &str,
+    ) -> Result<Value, String> {
         let started = Instant::now();
         let result = self
             .room_mailbox_or_inline_control(
@@ -64,14 +86,28 @@ impl RoomCommandGateway {
                 || self.cancel_start_inline(state, room_id),
             )
             .await;
-        self.finish_command(state, RoomCommandKind::CancelStart.action(), room_id, started, result).into_legacy()
+        self.finish_command(
+            state,
+            RoomCommandKind::CancelStart.action(),
+            room_id,
+            started,
+            result,
+        )
+        .into_legacy()
     }
 
-    pub(in crate::room_actor) async fn cancel_start_inline(&self, state: &PlusServerState, room_id: &str) -> Result<Value, String> {
+    pub(in crate::room_actor) async fn cancel_start_inline(
+        &self,
+        state: &PlusServerState,
+        room_id: &str,
+    ) -> Result<Value, String> {
         let (_rid, room) = self.find_room(state, room_id).await?;
         let canceled = {
             let mut room_state = room.state.write().await;
-            if matches!(&*room_state, crate::room::InternalRoomState::WaitForReady { .. }) {
+            if matches!(
+                &*room_state,
+                crate::room::InternalRoomState::WaitForReady { .. }
+            ) {
                 *room_state = crate::room::InternalRoomState::SelectChart;
                 true
             } else {

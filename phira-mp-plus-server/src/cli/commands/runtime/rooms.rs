@@ -16,17 +16,42 @@ impl CliHandler {
             stats.mailbox_enqueued, stats.mailbox_completed, stats.mailbox_failed,
             stats.mailbox_fallback, stats.mailbox_closed
         ));
-        self.out(format!("  {} registry:  hit={} miss={}", c::dim("│"), stats.mailbox_registry_hit, stats.mailbox_registry_miss));
-        let avg_us = if stats.audited > 0 { stats.latency_total_us / stats.audited } else { 0 };
-        self.out(format!("  {} audit:     commands={} avg_us={} max_us={}", c::dim("│"), stats.audited, avg_us, stats.latency_max_us));
+        self.out(format!(
+            "  {} registry:  hit={} miss={}",
+            c::dim("│"),
+            stats.mailbox_registry_hit,
+            stats.mailbox_registry_miss
+        ));
+        let avg_us = if stats.audited > 0 {
+            stats.latency_total_us / stats.audited
+        } else {
+            0
+        };
+        self.out(format!(
+            "  {} audit:     commands={} avg_us={} max_us={}",
+            c::dim("│"),
+            stats.audited,
+            avg_us,
+            stats.latency_max_us
+        ));
         if !stats.recent_commands.is_empty() {
             self.out(format!("  {} recent commands", c::cyan("▸")));
             for item in stats.recent_commands.iter().take(8) {
-                let status = if item.ok { c::green("ok") } else { c::red("err") };
+                let status = if item.ok {
+                    c::green("ok")
+                } else {
+                    c::red("err")
+                };
                 let err = item.error.as_deref().unwrap_or("");
                 self.out(format!(
                     "    #{:<4} {:<9} room={} {:>6}us {:<16} {} {}",
-                    item.command_id, item.action, item.room_id, item.latency_us, item.delivery, status, err
+                    item.command_id,
+                    item.action,
+                    item.room_id,
+                    item.latency_us,
+                    item.delivery,
+                    status,
+                    err
                 ));
             }
         }

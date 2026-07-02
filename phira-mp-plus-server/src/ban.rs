@@ -69,7 +69,9 @@ impl BanManager {
             return None;
         }
         Some(normalize_reason(
-            data.get(BAN_REASON_KEY).map(String::as_str).unwrap_or_default(),
+            data.get(BAN_REASON_KEY)
+                .map(String::as_str)
+                .unwrap_or_default(),
         ))
     }
 
@@ -137,9 +139,7 @@ impl BanManager {
     }
 
     pub async fn is_room_banned(&self, room_id: &str, user_id: i32) -> bool {
-        self.get_room_ban_list_raw(room_id)
-            .await
-            .contains(&user_id)
+        self.get_room_ban_list_raw(room_id).await.contains(&user_id)
     }
 
     pub async fn list_room_bans(&self, room_id: &str) -> Vec<i32> {
@@ -214,10 +214,7 @@ fn normalize_reason(reason: &str) -> String {
         }
         if pending_space
             && !normalized.is_empty()
-            && !normalized
-                .chars()
-                .last()
-                .is_some_and(char::is_whitespace)
+            && !normalized.chars().last().is_some_and(char::is_whitespace)
         {
             normalized.push(' ');
         }

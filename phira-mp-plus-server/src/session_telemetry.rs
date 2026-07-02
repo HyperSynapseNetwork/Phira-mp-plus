@@ -2,14 +2,20 @@
 //!
 //! Touch/Judge processing is intentionally outside `session.rs`: this path is
 //! high-frequency, touches persistence, EventBus, plugins, monitor broadcast,
-//! and Runtime v2 cutover logic. Keeping it isolated makes future worker-only
-//! cutover and actorization safer.
+//! and Runtime v2 cutover logic. Keeping it isolated makes cutover management
+//! and future actorization safer.
+//!
+//! Cutover contract:
+//! - DirectOnly: write direct RoundStore/db.rs only.
+//! - WorkerPreferred: write direct (authoritative) + best-effort enqueue
+//!   to Runtime v2 worker as async mirror / batch observation.
+//!   Worker failure is warned; direct write is always committed first.
 
 use crate::plugin::PluginEvent;
 use crate::room::Room;
 use crate::session::User;
 use phira_mp_common::{JudgeEvent, ServerCommand, TouchFrame};
-use std::{sync::{atomic::Ordering, Arc}};
+use std::sync::{atomic::Ordering, Arc};
 use tracing::{debug, trace, warn};
 
 pub(crate) async fn handle_touches(user: Arc<User>, room: Arc<Room>, frames: Arc<Vec<TouchFrame>>) {
@@ -25,12 +31,15 @@ pub(crate) async fn handle_touches(user: Arc<User>, room: Arc<Room>, frames: Arc
     let touch_data: Vec<crate::plugin::TouchEventPoint> = frames
         .iter()
         .flat_map(|frame| {
-            frame.points.iter().map(|(finger, pos)| crate::plugin::TouchEventPoint {
-                time: frame.time,
-                finger: *finger,
-                x: pos.x(),
-                y: pos.y(),
-            })
+            frame
+                .points
+                .iter()
+                .map(|(finger, pos)| crate::plugin::TouchEventPoint {
+                    time: frame.time,
+                    finger: *finger,
+                    x: pos.x(),
+                    y: pos.y(),
+                })
         })
         .collect();
 
@@ -38,11 +47,12 @@ pub(crate) async fn handle_touches(user: Arc<User>, room: Arc<Room>, frames: Arc
         persist_touches(&user, &room, &touch_data, has_active_monitors).await;
     }
 
-    user.server.publish_runtime_event(crate::event_bus::MpEvent::TouchesReceived {
-        room_id: room.id.clone(),
-        user_id: user.id,
-        count: frame_count,
-    });
+    user.server
+        .publish_runtime_event(crate::event_bus::MpEvent::TouchesReceived {
+            room_id: room.id.clone(),
+            user_id: user.id,
+            count: frame_count,
+        });
 
     let pm = Arc::clone(&user.server.plugin_manager);
     let room_id = room.id.to_string();
@@ -93,11 +103,12 @@ pub(crate) async fn handle_judges(user: Arc<User>, room: Arc<Room>, judges: Arc<
         persist_judges(&user, &room, &judge_data, has_active_monitors).await;
     }
 
-    user.server.publish_runtime_event(crate::event_bus::MpEvent::JudgesReceived {
-        room_id: room.id.clone(),
-        user_id: user.id,
-        count: judge_count,
-    });
+    user.server
+        .publish_runtime_event(crate::event_bus::MpEvent::JudgesReceived {
+            room_id: room.id.clone(),
+            user_id: user.id,
+            count: judge_count,
+        });
 
     let pm = Arc::clone(&user.server.plugin_manager);
     let room_id = room.id.to_string();
@@ -127,7 +138,6 @@ pub(crate) async fn handle_judges(user: Arc<User>, room: Arc<Room>, judges: Arc<
     }
 }
 
-
 fn should_persist_round_telemetry(
     item_count: usize,
     has_current_round: bool,
@@ -142,10 +152,11 @@ fn should_broadcast_monitor_telemetry(has_active_monitors: bool) -> bool {
 
 /// Decide how to persist gameplay telemetry based on cutover mode.
 ///
-/// Modes are simplified to two states (DirectOnly / WorkerOnly). The old
-/// DualWrite and FallbackOnly modes have been removed — DualWrite was the
-/// development comparison mode and FallbackOnly added hot-path observation
-/// overhead. WorkerOnly is the target; DirectOnly is the fallback.
+/// Two modes:
+/// - DirectOnly: writes through the direct RoundStore/db.rs path.
+/// - WorkerPreferred: always writes direct (authoritative) + best-effort
+///   enqueue to the Runtime v2 worker as async mirror / batch observation.
+///   Worker enqueue failure is warned but never blocks data persistence.
 async fn persist_touches(
     user: &Arc<User>,
     room: &Arc<Room>,
@@ -153,12 +164,29 @@ async fn persist_touches(
     has_active_monitors: bool,
 ) {
     room.store_player_touches(user.id, touch_data).await;
-    let round_id = room.current_round_id.read().await.as_ref().map(|rid| rid.to_string());
+    let round_id = room
+        .current_round_id
+        .read()
+        .await
+        .as_ref()
+        .map(|rid| rid.to_string());
     if should_persist_round_telemetry(touch_data.len(), round_id.is_some(), has_active_monitors) {
-        let rid = round_id.as_ref().expect("round id checked by telemetry persistence plan");
-        let use_worker = user.server.persistence_worker.telemetry_should_enqueue_worker().await;
+        let rid = round_id
+            .as_ref()
+            .expect("round id checked by telemetry persistence plan");
+        let should_enqueue = user
+            .server
+            .persistence_worker
+            .telemetry_should_enqueue_worker()
+            .await;
 
-        if use_worker {
+        // Always write direct (authoritative path)
+        if let Some(rs) = &room.round_store {
+            rs.append_touches(rid, user.id, touch_data).await;
+        }
+
+        // If WorkerPreferred, also enqueue to worker as async mirror
+        if should_enqueue {
             let payload = serde_json::json!({
                 "room_id": room.id.to_string(),
                 "round_id": rid,
@@ -177,15 +205,7 @@ async fn persist_touches(
                 })
                 .await;
             if enqueued.is_err() {
-                warn!(room = %room.id, user = user.id, "touch enqueue failed, falling back to direct write");
-                if let Some(rs) = &room.round_store {
-                    rs.append_touches(rid, user.id, touch_data).await;
-                }
-            }
-        } else {
-            // DirectOnly: write through legacy RoundStore path
-            if let Some(rs) = &room.round_store {
-                rs.append_touches(rid, user.id, touch_data).await;
+                warn!(room = %room.id, user = user.id, "touch worker enqueue failed (mirror); direct write already committed");
             }
         }
     } else {
@@ -200,12 +220,29 @@ async fn persist_judges(
     has_active_monitors: bool,
 ) {
     room.store_player_judges(user.id, judge_data).await;
-    let round_id = room.current_round_id.read().await.as_ref().map(|rid| rid.to_string());
+    let round_id = room
+        .current_round_id
+        .read()
+        .await
+        .as_ref()
+        .map(|rid| rid.to_string());
     if should_persist_round_telemetry(judge_data.len(), round_id.is_some(), has_active_monitors) {
-        let rid = round_id.as_ref().expect("round id checked by telemetry persistence plan");
-        let use_worker = user.server.persistence_worker.telemetry_should_enqueue_worker().await;
+        let rid = round_id
+            .as_ref()
+            .expect("round id checked by telemetry persistence plan");
+        let should_enqueue = user
+            .server
+            .persistence_worker
+            .telemetry_should_enqueue_worker()
+            .await;
 
-        if use_worker {
+        // Always write direct (authoritative path)
+        if let Some(rs) = &room.round_store {
+            rs.append_judges(rid, user.id, judge_data).await;
+        }
+
+        // If WorkerPreferred, also enqueue to worker as async mirror
+        if should_enqueue {
             let payload = serde_json::json!({
                 "room_id": room.id.to_string(),
                 "round_id": rid,
@@ -224,21 +261,13 @@ async fn persist_judges(
                 })
                 .await;
             if enqueued.is_err() {
-                warn!(room = %room.id, user = user.id, "judge enqueue failed, falling back to direct write");
-                if let Some(rs) = &room.round_store {
-                    rs.append_judges(rid, user.id, judge_data).await;
-                }
-            }
-        } else {
-            if let Some(rs) = &room.round_store {
-                rs.append_judges(rid, user.id, judge_data).await;
+                warn!(room = %room.id, user = user.id, "judge worker enqueue failed (mirror); direct write already committed");
             }
         }
     } else {
         debug!(room = %room.id, user_id = user.id, "judge data received without current round; cached only");
     }
 }
-
 
 #[cfg(test)]
 mod tests {

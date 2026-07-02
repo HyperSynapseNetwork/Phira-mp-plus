@@ -17,13 +17,13 @@
 use crate::extensions::ExtensionManager;
 use crate::plugin::{CliCommand, PluginEvent, PluginHost, PluginInfo, WasmRuntimeConfig};
 use phira_mp_plus_server_api as api;
-use wasmtime::AsContext;
 use std::collections::{HashMap, HashSet};
 use std::io::Read;
 use std::net::{IpAddr, ToSocketAddrs};
 use std::path::{Component, Path, PathBuf};
 use std::sync::{Arc, Mutex, Weak};
 use tracing::{error, info, warn};
+use wasmtime::AsContext;
 
 const MAX_HOST_INPUT_BYTES: usize = 8 * 1024 * 1024;
 const MAX_HOST_OUTPUT_BYTES: usize = 4 * 1024 * 1024;
@@ -52,7 +52,9 @@ pub struct WasmPluginServices {
 impl WasmPluginServices {
     pub fn new(extensions: Arc<ExtensionManager>, runtime: WasmRuntimeConfig) -> Self {
         let http_client = reqwest::blocking::Client::builder()
-            .timeout(std::time::Duration::from_secs(runtime.http_timeout_secs.max(1)))
+            .timeout(std::time::Duration::from_secs(
+                runtime.http_timeout_secs.max(1),
+            ))
             .redirect(reqwest::redirect::Policy::none())
             .build()
             .unwrap_or_else(|_| reqwest::blocking::Client::new());
@@ -160,17 +162,14 @@ impl WasmPluginInstance {
             .ok_or_else(|| "plugin filename is not valid UTF-8".to_string())?
             .to_string();
         validate_identifier(&plugin_name)?;
-        services.set_capabilities(
-            &plugin_name,
-            load_manifest_capabilities(plugin_path)?,
-        );
+        services.set_capabilities(&plugin_name, load_manifest_capabilities(plugin_path)?);
 
         // Configure deterministic resource ceilings before compiling guest code.
         let mut engine_config = wasmtime::Config::new();
         engine_config.consume_fuel(runtime.fuel_per_call > 0);
         engine_config.max_wasm_stack(runtime.max_stack_bytes.max(64 * 1024));
-        let engine = wasmtime::Engine::new(&engine_config)
-            .map_err(|e| format!("engine creation: {}", e))?;
+        let engine =
+            wasmtime::Engine::new(&engine_config).map_err(|e| format!("engine creation: {}", e))?;
 
         // 创建模块
         let module = wasmtime::Module::new(&engine, wasm_bytes)
@@ -186,12 +185,20 @@ impl WasmPluginInstance {
             .func_wrap(
                 "phira",
                 "host/log",
-                |mut caller: wasmtime::Caller<'_, HostState>, level_ptr: i32, level_len: i32, msg_ptr: i32, msg_len: i32| {
+                |mut caller: wasmtime::Caller<'_, HostState>,
+                 level_ptr: i32,
+                 level_len: i32,
+                 msg_ptr: i32,
+                 msg_len: i32| {
                     let memory = match caller.get_export("memory").and_then(|e| e.into_memory()) {
                         Some(m) => m,
-                        None => { warn!("WASM plugin has no memory export"); return; }
+                        None => {
+                            warn!("WASM plugin has no memory export");
+                            return;
+                        }
                     };
-                    let level = read_str_from_memory(&memory, caller.as_context(), level_ptr, level_len);
+                    let level =
+                        read_str_from_memory(&memory, caller.as_context(), level_ptr, level_len);
                     let msg = read_str_from_memory(&memory, caller.as_context(), msg_ptr, msg_len);
                     match level.as_deref().unwrap_or("info") {
                         "error" => error!("[WASM] {}", msg.unwrap_or_default()),
@@ -227,16 +234,12 @@ impl WasmPluginInstance {
 
         // 注册时间宿主函数
         linker
-            .func_wrap(
-                "phira",
-                "host/time",
-                || -> i64 {
-                    std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .map(|d| d.as_millis() as i64)
-                        .unwrap_or(0)
-                },
-            )
+            .func_wrap("phira", "host/time", || -> i64 {
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_millis() as i64)
+                    .unwrap_or(0)
+            })
             .map_err(|e| format!("link time: {}", e))?;
 
         // 注册通用 API 调用宿主函数：
@@ -247,75 +250,89 @@ impl WasmPluginInstance {
         //   returns: 0 = 成功，数据写入 out；非0 = 错误码
         //   输出格式: 写入内存为 [len:i32][json_bytes]
         linker
-            .func_wrap(
-                "phira",
-                "host/api",
-                {
-                    let svc = Arc::clone(&svc);
-                    let pn = plugin_name.clone();
-                    move |mut caller: wasmtime::Caller<'_, HostState>,
-                          method_ptr: i32, method_len: i32,
-                          args_ptr: i32, args_len: i32,
-                          out_ptr: i32, out_len: i32| -> i32 {
-                        let memory = match caller.get_export("memory").and_then(|e| e.into_memory()) {
-                            Some(m) => m,
-                            None => { warn!("WASM plugin has no memory"); return -1; }
-                        };
-                        let method = match read_str_from_memory(&memory, caller.as_context(), method_ptr, method_len) {
-                            Some(s) => s,
-                            None => return -2,
-                        };
-                        let args_str = read_str_from_memory(&memory, caller.as_context(), args_ptr, args_len)
+            .func_wrap("phira", "host/api", {
+                let svc = Arc::clone(&svc);
+                let pn = plugin_name.clone();
+                move |mut caller: wasmtime::Caller<'_, HostState>,
+                      method_ptr: i32,
+                      method_len: i32,
+                      args_ptr: i32,
+                      args_len: i32,
+                      out_ptr: i32,
+                      out_len: i32|
+                      -> i32 {
+                    let memory = match caller.get_export("memory").and_then(|e| e.into_memory()) {
+                        Some(m) => m,
+                        None => {
+                            warn!("WASM plugin has no memory");
+                            return -1;
+                        }
+                    };
+                    let method = match read_str_from_memory(
+                        &memory,
+                        caller.as_context(),
+                        method_ptr,
+                        method_len,
+                    ) {
+                        Some(s) => s,
+                        None => return -2,
+                    };
+                    let args_str =
+                        read_str_from_memory(&memory, caller.as_context(), args_ptr, args_len)
                             .unwrap_or_default();
 
-                        if out_ptr < 0 || out_len < 4 || out_len as usize > MAX_HOST_OUTPUT_BYTES {
-                            return -3;
-                        }
-                        let result = Self::dispatch_api(&svc, &pn, &method, &args_str);
+                    if out_ptr < 0 || out_len < 4 || out_len as usize > MAX_HOST_OUTPUT_BYTES {
+                        return -3;
+                    }
+                    let result = Self::dispatch_api(&svc, &pn, &method, &args_str);
 
-                        match result {
-                            Ok(json) => {
-                                let bytes = json.as_bytes();
-                                let data_len = bytes.len();
-                                let total_len = data_len + 4;
-                                if total_len as i32 > out_len {
-                                    warn!("WASM api output buffer too small: need {}, have {}", total_len, out_len);
-                                    return -3;
-                                }
-                                let len_prefix = (data_len as i32).to_le_bytes();
-                                if memory.write(&mut caller, out_ptr as usize, &len_prefix).is_err() {
-                                    return -4;
-                                }
-                                let Some(data_ptr) = out_ptr.checked_add(4) else { return -5; };
-                                if memory.write(&mut caller, data_ptr as usize, bytes).is_err() {
-                                    return -5;
-                                }
-                                0
+                    match result {
+                        Ok(json) => {
+                            let bytes = json.as_bytes();
+                            let data_len = bytes.len();
+                            let total_len = data_len + 4;
+                            if total_len as i32 > out_len {
+                                warn!(
+                                    "WASM api output buffer too small: need {}, have {}",
+                                    total_len, out_len
+                                );
+                                return -3;
                             }
-                            Err(e) => {
-                                // 写入错误信息
-                                let err_bytes = e.as_bytes();
-                                let total_len = err_bytes.len() + 4;
-                                if total_len as i32 <= out_len {
-                                    let len_prefix = (err_bytes.len() as i32).to_le_bytes();
-                                    let _ = memory.write(&mut caller, out_ptr as usize, &len_prefix);
-                                    if let Some(data_ptr) = out_ptr.checked_add(4) {
-                                        let _ = memory.write(&mut caller, data_ptr as usize, err_bytes);
-                                    }
-                                }
-                                -1
+                            let len_prefix = (data_len as i32).to_le_bytes();
+                            if memory
+                                .write(&mut caller, out_ptr as usize, &len_prefix)
+                                .is_err()
+                            {
+                                return -4;
                             }
+                            let Some(data_ptr) = out_ptr.checked_add(4) else {
+                                return -5;
+                            };
+                            if memory.write(&mut caller, data_ptr as usize, bytes).is_err() {
+                                return -5;
+                            }
+                            0
+                        }
+                        Err(e) => {
+                            // 写入错误信息
+                            let err_bytes = e.as_bytes();
+                            let total_len = err_bytes.len() + 4;
+                            if total_len as i32 <= out_len {
+                                let len_prefix = (err_bytes.len() as i32).to_le_bytes();
+                                let _ = memory.write(&mut caller, out_ptr as usize, &len_prefix);
+                                if let Some(data_ptr) = out_ptr.checked_add(4) {
+                                    let _ = memory.write(&mut caller, data_ptr as usize, err_bytes);
+                                }
+                            }
+                            -1
                         }
                     }
-                },
-            )
+                }
+            })
             .map_err(|e| format!("link api: {}", e))?;
 
         // Create one limited store per plugin.
-        let memory_limit = runtime
-            .max_memory_mb
-            .max(1)
-            .saturating_mul(1024 * 1024);
+        let memory_limit = runtime.max_memory_mb.max(1).saturating_mul(1024 * 1024);
         let limits = wasmtime::StoreLimitsBuilder::new()
             .memory_size(memory_limit)
             .build();
@@ -619,7 +636,9 @@ impl WasmPluginInstance {
         }
         if let Some(capability) = required_capability(method) {
             if !svc.has_capability(plugin_name, capability) {
-                return Err(format!("capability '{capability}' is required for {method}"));
+                return Err(format!(
+                    "capability '{capability}' is required for {method}"
+                ));
             }
         }
         let value: serde_json::Value = if args.trim().is_empty() {
@@ -628,11 +647,15 @@ impl WasmPluginInstance {
             serde_json::from_str(args).map_err(|e| format!("invalid args: {e}"))?
         };
         let get_str = |name: &str| {
-            value.get(name).and_then(|v| v.as_str())
+            value
+                .get(name)
+                .and_then(|v| v.as_str())
                 .ok_or_else(|| format!("missing {name}"))
         };
         let get_i32 = |name: &str| {
-            value.get(name).and_then(|v| v.as_i64())
+            value
+                .get(name)
+                .and_then(|v| v.as_i64())
                 .and_then(|v| i32::try_from(v).ok())
                 .ok_or_else(|| format!("missing or invalid {name}"))
         };
@@ -640,20 +663,37 @@ impl WasmPluginInstance {
         match method {
             "state.query" => {
                 let query = get_str("method")?;
-                let params = value.get("params").and_then(|v| v.as_array()).cloned().unwrap_or_default();
+                let params = value
+                    .get("params")
+                    .and_then(|v| v.as_array())
+                    .cloned()
+                    .unwrap_or_default();
                 state_call(svc, query, &params)
             }
             "send.to_user" => {
                 let uid = get_i32("user_id")?;
                 let message = get_str("message")?.to_string();
-                let callback = svc.send_chat.read().map_err(|e| format!("lock error: {e}"))?;
+                let callback = svc
+                    .send_chat
+                    .read()
+                    .map_err(|e| format!("lock error: {e}"))?;
                 callback.as_ref().ok_or("send_chat not available")?(uid, message);
                 Ok("ok".to_string())
             }
-            "send.to_room" => state_call(svc, "send_room_chat", &[serde_json::json!(get_str("room_id")?), serde_json::json!(get_str("message")?)]),
+            "send.to_room" => state_call(
+                svc,
+                "send_room_chat",
+                &[
+                    serde_json::json!(get_str("room_id")?),
+                    serde_json::json!(get_str("message")?),
+                ],
+            ),
             "send.to_all" => {
                 let message = get_str("message")?.to_string();
-                let callback = svc.send_chat.read().map_err(|e| format!("lock error: {e}"))?;
+                let callback = svc
+                    .send_chat
+                    .read()
+                    .map_err(|e| format!("lock error: {e}"))?;
                 callback.as_ref().ok_or("send_chat not available")?(0, message);
                 Ok("ok".to_string())
             }
@@ -661,23 +701,36 @@ impl WasmPluginInstance {
                 let uid = get_i32("user_id")?;
                 let key = get_str("key")?;
                 let store = svc.extensions.store();
-                let guard = store.try_read().map_err(|_| "extension store busy".to_string())?;
-                guard.get_user_extra(uid, key).cloned().ok_or_else(|| format!("field '{key}' not found for user {uid}"))
+                let guard = store
+                    .try_read()
+                    .map_err(|_| "extension store busy".to_string())?;
+                guard
+                    .get_user_extra(uid, key)
+                    .cloned()
+                    .ok_or_else(|| format!("field '{key}' not found for user {uid}"))
             }
             "ext.set_user" => {
                 let uid = get_i32("user_id")?;
                 let key = get_str("key")?;
                 let content = get_str("value")?;
                 let store = svc.extensions.store();
-                store.try_write().map_err(|_| "extension store busy".to_string())?
-                    .set_user_extra(uid, key, content.to_string()).map_err(|e| format!("set_user_extra: {e}"))?;
+                store
+                    .try_write()
+                    .map_err(|_| "extension store busy".to_string())?
+                    .set_user_extra(uid, key, content.to_string())
+                    .map_err(|e| format!("set_user_extra: {e}"))?;
                 if let Some(db) = crate::internal_hooks::DB.get() {
-                    db.record_room_event_sync("extensions.user.set", None, Some(uid), serde_json::json!({
-                        "user_id": uid,
-                        "key": key,
-                        "value": content,
-                        "source": "wasm_host",
-                    }));
+                    db.record_room_event_sync(
+                        "extensions.user.set",
+                        None,
+                        Some(uid),
+                        serde_json::json!({
+                            "user_id": uid,
+                            "key": key,
+                            "value": content,
+                            "source": "wasm_host",
+                        }),
+                    );
                 }
                 Ok("ok".to_string())
             }
@@ -685,23 +738,36 @@ impl WasmPluginInstance {
                 let room_id = get_str("room_id")?;
                 let key = get_str("key")?;
                 let store = svc.extensions.store();
-                let guard = store.try_read().map_err(|_| "extension store busy".to_string())?;
-                guard.get_room_extra(room_id, key).cloned().ok_or_else(|| format!("field '{key}' not found for room {room_id}"))
+                let guard = store
+                    .try_read()
+                    .map_err(|_| "extension store busy".to_string())?;
+                guard
+                    .get_room_extra(room_id, key)
+                    .cloned()
+                    .ok_or_else(|| format!("field '{key}' not found for room {room_id}"))
             }
             "ext.set_room" => {
                 let room_id = get_str("room_id")?;
                 let key = get_str("key")?;
                 let content = get_str("value")?;
                 let store = svc.extensions.store();
-                store.try_write().map_err(|_| "extension store busy".to_string())?
-                    .set_room_extra(room_id, key, content.to_string()).map_err(|e| format!("set_room_extra: {e}"))?;
+                store
+                    .try_write()
+                    .map_err(|_| "extension store busy".to_string())?
+                    .set_room_extra(room_id, key, content.to_string())
+                    .map_err(|e| format!("set_room_extra: {e}"))?;
                 if let Some(db) = crate::internal_hooks::DB.get() {
-                    db.record_room_event_sync("extensions.room.set", Some(room_id.to_string()), None, serde_json::json!({
-                        "room_id": room_id,
-                        "key": key,
-                        "value": content,
-                        "source": "wasm_host",
-                    }));
+                    db.record_room_event_sync(
+                        "extensions.room.set",
+                        Some(room_id.to_string()),
+                        None,
+                        serde_json::json!({
+                            "room_id": room_id,
+                            "key": key,
+                            "value": content,
+                            "source": "wasm_host",
+                        }),
+                    );
                 }
                 Ok("ok".to_string())
             }
@@ -709,68 +775,118 @@ impl WasmPluginInstance {
                 let key = get_str("key")?;
                 validate_config_key(key)?;
                 ensure_config_loaded(svc, plugin_name)?;
-                svc.plugin_configs.read().map_err(|e| format!("lock error: {e}"))?
-                    .get(plugin_name).and_then(|cfg| cfg.get(key).cloned())
+                svc.plugin_configs
+                    .read()
+                    .map_err(|e| format!("lock error: {e}"))?
+                    .get(plugin_name)
+                    .and_then(|cfg| cfg.get(key).cloned())
                     .ok_or_else(|| format!("config '{key}' not found"))
             }
             "config.set" => {
                 let key = get_str("key")?;
                 let content = get_str("value")?;
                 validate_config_key(key)?;
-                if content.len() > svc.runtime.max_file_bytes { return Err("config value exceeds plugin limit".to_string()); }
+                if content.len() > svc.runtime.max_file_bytes {
+                    return Err("config value exceeds plugin limit".to_string());
+                }
                 ensure_config_loaded(svc, plugin_name)?;
                 let snapshot = {
-                    let mut configs = svc.plugin_configs.write().map_err(|e| format!("lock error: {e}"))?;
+                    let mut configs = svc
+                        .plugin_configs
+                        .write()
+                        .map_err(|e| format!("lock error: {e}"))?;
                     let config = configs.entry(plugin_name.to_string()).or_default();
                     config.insert(key.to_string(), content.to_string());
                     config.clone()
                 };
                 persist_plugin_config(plugin_name, &snapshot)?;
                 if let Some(db) = crate::internal_hooks::DB.get() {
-                    db.record_room_event_sync("plugin.config.set", None, None, serde_json::json!({
-                        "plugin": plugin_name,
-                        "key": key,
-                        "value": content,
-                    }));
+                    db.record_room_event_sync(
+                        "plugin.config.set",
+                        None,
+                        None,
+                        serde_json::json!({
+                            "plugin": plugin_name,
+                            "key": key,
+                            "value": content,
+                        }),
+                    );
                 }
                 Ok("ok".to_string())
             }
             "http.get" => {
                 let url = get_str("url")?;
                 validate_http_url(url, svc.runtime.allow_private_network)?;
-                let response = svc.http_client.get(url).send().map_err(|e| format!("HTTP GET failed: {e}"))?;
+                let response = svc
+                    .http_client
+                    .get(url)
+                    .send()
+                    .map_err(|e| format!("HTTP GET failed: {e}"))?;
                 read_limited_response(response, svc.runtime.max_http_response_bytes)
             }
             "http.post" => {
                 let url = get_str("url")?;
                 let body = value.get("body").and_then(|v| v.as_str()).unwrap_or("");
-                let content_type = value.get("content_type").and_then(|v| v.as_str()).unwrap_or("application/json");
-                if body.len() > MAX_HOST_INPUT_BYTES { return Err("HTTP request body exceeds host limit".to_string()); }
+                let content_type = value
+                    .get("content_type")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("application/json");
+                if body.len() > MAX_HOST_INPUT_BYTES {
+                    return Err("HTTP request body exceeds host limit".to_string());
+                }
                 validate_http_url(url, svc.runtime.allow_private_network)?;
-                let response = svc.http_client.post(url).header("Content-Type", content_type).body(body.to_string())
-                    .send().map_err(|e| format!("HTTP POST failed: {e}"))?;
+                let response = svc
+                    .http_client
+                    .post(url)
+                    .header("Content-Type", content_type)
+                    .body(body.to_string())
+                    .send()
+                    .map_err(|e| format!("HTTP POST failed: {e}"))?;
                 read_limited_response(response, svc.runtime.max_http_response_bytes)
             }
             "file.read" => {
                 let path = plugin_data_path(plugin_name, get_str("path")?, false)?;
-                let metadata = std::fs::metadata(&path).map_err(|e| format!("file metadata failed: {e}"))?;
-                if metadata.len() > svc.runtime.max_file_bytes as u64 { return Err("file exceeds plugin read limit".to_string()); }
+                let metadata =
+                    std::fs::metadata(&path).map_err(|e| format!("file metadata failed: {e}"))?;
+                if metadata.len() > svc.runtime.max_file_bytes as u64 {
+                    return Err("file exceeds plugin read limit".to_string());
+                }
                 let bytes = std::fs::read(path).map_err(|e| format!("file read failed: {e}"))?;
                 String::from_utf8(bytes).map_err(|e| format!("file is not UTF-8: {e}"))
             }
             "file.write" => {
                 let content = get_str("content")?;
-                if content.len() > svc.runtime.max_file_bytes { return Err("file exceeds plugin write limit".to_string()); }
+                if content.len() > svc.runtime.max_file_bytes {
+                    return Err("file exceeds plugin write limit".to_string());
+                }
                 let path = plugin_data_path(plugin_name, get_str("path")?, true)?;
                 atomic_write(&path, content.as_bytes())?;
                 Ok("ok".to_string())
             }
             "uuid.v4" => Ok(uuid::Uuid::new_v4().to_string()),
-            "time.now" => Ok(std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_secs_f64()).unwrap_or(0.0).to_string()),
-            "player.touches" => state_call(svc, "player.touches", &[serde_json::json!(get_i32("user_id")?)]),
-            "player.judges" => state_call(svc, "player.judges", &[serde_json::json!(get_i32("user_id")?)]),
-            "round.data" => state_call(svc, "round.data", &[serde_json::json!(get_str("round_uuid")?), serde_json::json!(get_i32("player_id")?)]),
+            "time.now" => Ok(std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs_f64())
+                .unwrap_or(0.0)
+                .to_string()),
+            "player.touches" => state_call(
+                svc,
+                "player.touches",
+                &[serde_json::json!(get_i32("user_id")?)],
+            ),
+            "player.judges" => state_call(
+                svc,
+                "player.judges",
+                &[serde_json::json!(get_i32("user_id")?)],
+            ),
+            "round.data" => state_call(
+                svc,
+                "round.data",
+                &[
+                    serde_json::json!(get_str("round_uuid")?),
+                    serde_json::json!(get_i32("player_id")?),
+                ],
+            ),
             "round.list" => state_call(svc, "round.list", &[]),
             "room.create_empty" => {
                 let endpoint = value
@@ -778,9 +894,20 @@ impl WasmPluginInstance {
                     .or_else(|| value.get("phira_api_endpoint"))
                     .cloned()
                     .unwrap_or(serde_json::Value::Null);
-                state_call(svc, "room.create_empty", &[serde_json::json!(get_str("room_id")?), endpoint])
+                state_call(
+                    svc,
+                    "room.create_empty",
+                    &[serde_json::json!(get_str("room_id")?), endpoint],
+                )
             }
-            "room.kick" => state_call(svc, "room.kick", &[serde_json::json!(get_str("room_id")?), serde_json::json!(get_i32("target_id")?)]),
+            "room.kick" => state_call(
+                svc,
+                "room.kick",
+                &[
+                    serde_json::json!(get_str("room_id")?),
+                    serde_json::json!(get_i32("target_id")?),
+                ],
+            ),
             "room.set_host" => {
                 let target = value
                     .get("target_id")
@@ -788,87 +915,285 @@ impl WasmPluginInstance {
                     .or_else(|| value.get("target"))
                     .cloned()
                     .unwrap_or(serde_json::Value::Null);
-                state_call(svc, "room.set_host", &[serde_json::json!(get_str("room_id")?), target])
+                state_call(
+                    svc,
+                    "room.set_host",
+                    &[serde_json::json!(get_str("room_id")?), target],
+                )
             }
-            "room.clear_host" => state_call(svc, "room.set_host", &[serde_json::json!(get_str("room_id")?), serde_json::Value::Null]),
-            "room.set_lock" => state_call(svc, "room.set_lock", &[serde_json::json!(get_str("room_id")?), serde_json::json!(value.get("locked").and_then(|v| v.as_bool()).ok_or("missing locked")?)]),
-            "room.force_move" => state_call(svc, "room.force_move", &[
-                serde_json::json!(get_str("room_id")?),
-                serde_json::json!(get_i32("target_id")?),
-                serde_json::json!(value.get("monitor").and_then(|v| v.as_bool()).unwrap_or(false)),
-            ]),
-            "room.set_hidden" => state_call(svc, "room.set_hidden", &[
-                serde_json::json!(get_str("room_id")?),
-                serde_json::json!(value.get("hidden").and_then(|v| v.as_bool()).ok_or("missing hidden")?),
-            ]),
-            "room.is_hidden" => state_call(svc, "room.is_hidden", &[serde_json::json!(get_str("room_id")?)]),
-            "room.set_persistent_empty" => state_call(svc, "room.set_persistent_empty", &[
-                serde_json::json!(get_str("room_id")?),
-                serde_json::json!(value.get("persistent").or_else(|| value.get("persistent_empty")).and_then(|v| v.as_bool()).ok_or("missing persistent")?),
-            ]),
-            "room.get_phira_api_endpoint" => state_call(svc, "room.get_phira_api_endpoint", &[serde_json::json!(get_str("room_id")?)]),
+            "room.clear_host" => state_call(
+                svc,
+                "room.set_host",
+                &[
+                    serde_json::json!(get_str("room_id")?),
+                    serde_json::Value::Null,
+                ],
+            ),
+            "room.set_lock" => state_call(
+                svc,
+                "room.set_lock",
+                &[
+                    serde_json::json!(get_str("room_id")?),
+                    serde_json::json!(value
+                        .get("locked")
+                        .and_then(|v| v.as_bool())
+                        .ok_or("missing locked")?),
+                ],
+            ),
+            "room.force_move" => state_call(
+                svc,
+                "room.force_move",
+                &[
+                    serde_json::json!(get_str("room_id")?),
+                    serde_json::json!(get_i32("target_id")?),
+                    serde_json::json!(value
+                        .get("monitor")
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(false)),
+                ],
+            ),
+            "room.set_hidden" => state_call(
+                svc,
+                "room.set_hidden",
+                &[
+                    serde_json::json!(get_str("room_id")?),
+                    serde_json::json!(value
+                        .get("hidden")
+                        .and_then(|v| v.as_bool())
+                        .ok_or("missing hidden")?),
+                ],
+            ),
+            "room.is_hidden" => state_call(
+                svc,
+                "room.is_hidden",
+                &[serde_json::json!(get_str("room_id")?)],
+            ),
+            "room.set_persistent_empty" => state_call(
+                svc,
+                "room.set_persistent_empty",
+                &[
+                    serde_json::json!(get_str("room_id")?),
+                    serde_json::json!(value
+                        .get("persistent")
+                        .or_else(|| value.get("persistent_empty"))
+                        .and_then(|v| v.as_bool())
+                        .ok_or("missing persistent")?),
+                ],
+            ),
+            "room.get_phira_api_endpoint" => state_call(
+                svc,
+                "room.get_phira_api_endpoint",
+                &[serde_json::json!(get_str("room_id")?)],
+            ),
             "room.set_phira_api_endpoint" => {
                 let endpoint = value
                     .get("endpoint")
                     .or_else(|| value.get("phira_api_endpoint"))
                     .cloned()
                     .unwrap_or(serde_json::Value::Null);
-                state_call(svc, "room.set_phira_api_endpoint", &[serde_json::json!(get_str("room_id")?), endpoint])
+                state_call(
+                    svc,
+                    "room.set_phira_api_endpoint",
+                    &[serde_json::json!(get_str("room_id")?), endpoint],
+                )
             }
-            "room.clear_phira_api_endpoint" => {
-                state_call(svc, "room.set_phira_api_endpoint", &[serde_json::json!(get_str("room_id")?), serde_json::Value::Null])
+            "room.clear_phira_api_endpoint" => state_call(
+                svc,
+                "room.set_phira_api_endpoint",
+                &[
+                    serde_json::json!(get_str("room_id")?),
+                    serde_json::Value::Null,
+                ],
+            ),
+            "room.close" => {
+                state_call(svc, "room.close", &[serde_json::json!(get_str("room_id")?)])
             }
-            "room.close" => state_call(svc, "room.close", &[serde_json::json!(get_str("room_id")?)]),
             "room.uuid" => state_call(svc, "room.uuid", &[serde_json::json!(get_str("room_id")?)]),
-            "room.history" => state_call(svc, "room.history", &[serde_json::json!(get_str("room_id")?)]),
-            "room.round_info" => state_call(svc, "room.round_info", &[serde_json::json!(get_str("round_uuid")?)]),
-            "room.list_since" => state_call(svc, "room.list_since", &[serde_json::json!(value.get("since_ms").and_then(|v| v.as_i64()).unwrap_or(0))]),
-            "admin.kick_user" => state_call(svc, "admin.kick_user", &[serde_json::json!(get_i32("user_id")?), serde_json::json!(value.get("reason").and_then(|v| v.as_str()).unwrap_or("kicked by admin"))]),
-            "admin.ban_user" => state_call(svc, "admin.ban_user", &[serde_json::json!(get_i32("user_id")?), serde_json::json!(value.get("reason").and_then(|v| v.as_str()).unwrap_or("banned"))]),
-            "admin.unban_user" => state_call(svc, "admin.unban_user", &[serde_json::json!(get_i32("user_id")?)]),
-            "admin.is_banned" => state_call(svc, "admin.is_banned", &[serde_json::json!(get_i32("user_id")?)]),
+            "room.history" => state_call(
+                svc,
+                "room.history",
+                &[serde_json::json!(get_str("room_id")?)],
+            ),
+            "room.round_info" => state_call(
+                svc,
+                "room.round_info",
+                &[serde_json::json!(get_str("round_uuid")?)],
+            ),
+            "room.list_since" => state_call(
+                svc,
+                "room.list_since",
+                &[serde_json::json!(value
+                    .get("since_ms")
+                    .and_then(|v| v.as_i64())
+                    .unwrap_or(0))],
+            ),
+            "admin.kick_user" => state_call(
+                svc,
+                "admin.kick_user",
+                &[
+                    serde_json::json!(get_i32("user_id")?),
+                    serde_json::json!(value
+                        .get("reason")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("kicked by admin")),
+                ],
+            ),
+            "admin.ban_user" => state_call(
+                svc,
+                "admin.ban_user",
+                &[
+                    serde_json::json!(get_i32("user_id")?),
+                    serde_json::json!(value
+                        .get("reason")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("banned")),
+                ],
+            ),
+            "admin.unban_user" => state_call(
+                svc,
+                "admin.unban_user",
+                &[serde_json::json!(get_i32("user_id")?)],
+            ),
+            "admin.is_banned" => state_call(
+                svc,
+                "admin.is_banned",
+                &[serde_json::json!(get_i32("user_id")?)],
+            ),
             "admin.ban_list" => state_call(svc, "admin.ban_list", &[]),
             "admin.list_users" => state_call(svc, "admin.list_users", &[]),
-            "user.room_history" => state_call(svc, "user.room_history", &[serde_json::json!(get_i32("user_id")?)]),
+            "user.room_history" => state_call(
+                svc,
+                "user.room_history",
+                &[serde_json::json!(get_i32("user_id")?)],
+            ),
 
-            "persist.events" => state_call(svc, "persist.events", &[
-                serde_json::json!(value.get("since_sequence").or_else(|| value.get("since")).and_then(|v| v.as_i64()).unwrap_or(0)),
-                serde_json::json!(value.get("limit").and_then(|v| v.as_i64()).unwrap_or(100)),
-                value.get("kind").cloned().unwrap_or(serde_json::Value::Null),
-                value.get("room_id").cloned().unwrap_or(serde_json::Value::Null),
-                value.get("user_id").cloned().unwrap_or(serde_json::Value::Null),
-            ]),
-            "persist.rooms" => state_call(svc, "persist.rooms", &[
-                serde_json::json!(value.get("since_sequence").or_else(|| value.get("since")).and_then(|v| v.as_i64()).unwrap_or(0)),
-                serde_json::json!(value.get("limit").and_then(|v| v.as_i64()).unwrap_or(100)),
-            ]),
-            "persist.touches" => state_call(svc, "persist.touches", &[
-                serde_json::json!(value.get("since_sequence").or_else(|| value.get("since")).and_then(|v| v.as_i64()).unwrap_or(0)),
-                serde_json::json!(value.get("limit").and_then(|v| v.as_i64()).unwrap_or(100)),
-                value.get("round_uuid").cloned().unwrap_or(serde_json::Value::Null),
-                value.get("player_id").or_else(|| value.get("user_id")).cloned().unwrap_or(serde_json::Value::Null),
-            ]),
-            "persist.judges" => state_call(svc, "persist.judges", &[
-                serde_json::json!(value.get("since_sequence").or_else(|| value.get("since")).and_then(|v| v.as_i64()).unwrap_or(0)),
-                serde_json::json!(value.get("limit").and_then(|v| v.as_i64()).unwrap_or(100)),
-                value.get("round_uuid").cloned().unwrap_or(serde_json::Value::Null),
-                value.get("player_id").or_else(|| value.get("user_id")).cloned().unwrap_or(serde_json::Value::Null),
-            ]),
-            "persist.playtime" => state_call(svc, "persist.playtime", &[serde_json::json!(get_i32("user_id")?)]),
-            "persist.top_playtime" => state_call(svc, "persist.top_playtime", &[serde_json::json!(value.get("limit").and_then(|v| v.as_i64()).unwrap_or(10))]),
+            "persist.events" => state_call(
+                svc,
+                "persist.events",
+                &[
+                    serde_json::json!(value
+                        .get("since_sequence")
+                        .or_else(|| value.get("since"))
+                        .and_then(|v| v.as_i64())
+                        .unwrap_or(0)),
+                    serde_json::json!(value.get("limit").and_then(|v| v.as_i64()).unwrap_or(100)),
+                    value
+                        .get("kind")
+                        .cloned()
+                        .unwrap_or(serde_json::Value::Null),
+                    value
+                        .get("room_id")
+                        .cloned()
+                        .unwrap_or(serde_json::Value::Null),
+                    value
+                        .get("user_id")
+                        .cloned()
+                        .unwrap_or(serde_json::Value::Null),
+                ],
+            ),
+            "persist.rooms" => state_call(
+                svc,
+                "persist.rooms",
+                &[
+                    serde_json::json!(value
+                        .get("since_sequence")
+                        .or_else(|| value.get("since"))
+                        .and_then(|v| v.as_i64())
+                        .unwrap_or(0)),
+                    serde_json::json!(value.get("limit").and_then(|v| v.as_i64()).unwrap_or(100)),
+                ],
+            ),
+            "persist.touches" => state_call(
+                svc,
+                "persist.touches",
+                &[
+                    serde_json::json!(value
+                        .get("since_sequence")
+                        .or_else(|| value.get("since"))
+                        .and_then(|v| v.as_i64())
+                        .unwrap_or(0)),
+                    serde_json::json!(value.get("limit").and_then(|v| v.as_i64()).unwrap_or(100)),
+                    value
+                        .get("round_uuid")
+                        .cloned()
+                        .unwrap_or(serde_json::Value::Null),
+                    value
+                        .get("player_id")
+                        .or_else(|| value.get("user_id"))
+                        .cloned()
+                        .unwrap_or(serde_json::Value::Null),
+                ],
+            ),
+            "persist.judges" => state_call(
+                svc,
+                "persist.judges",
+                &[
+                    serde_json::json!(value
+                        .get("since_sequence")
+                        .or_else(|| value.get("since"))
+                        .and_then(|v| v.as_i64())
+                        .unwrap_or(0)),
+                    serde_json::json!(value.get("limit").and_then(|v| v.as_i64()).unwrap_or(100)),
+                    value
+                        .get("round_uuid")
+                        .cloned()
+                        .unwrap_or(serde_json::Value::Null),
+                    value
+                        .get("player_id")
+                        .or_else(|| value.get("user_id"))
+                        .cloned()
+                        .unwrap_or(serde_json::Value::Null),
+                ],
+            ),
+            "persist.playtime" => state_call(
+                svc,
+                "persist.playtime",
+                &[serde_json::json!(get_i32("user_id")?)],
+            ),
+            "persist.top_playtime" => state_call(
+                svc,
+                "persist.top_playtime",
+                &[serde_json::json!(value
+                    .get("limit")
+                    .and_then(|v| v.as_i64())
+                    .unwrap_or(10))],
+            ),
             "admin.ids" => state_call(svc, "admin.ids", &[]),
-            "admin.is_admin" => state_call(svc, "admin.is_admin", &[serde_json::json!(get_i32("user_id")?)]),
-            "admin.add_id" => state_call(svc, "admin.add_id", &[serde_json::json!(get_i32("user_id")?)]),
-            "admin.remove_id" => state_call(svc, "admin.remove_id", &[serde_json::json!(get_i32("user_id")?)]),
+            "admin.is_admin" => state_call(
+                svc,
+                "admin.is_admin",
+                &[serde_json::json!(get_i32("user_id")?)],
+            ),
+            "admin.add_id" => state_call(
+                svc,
+                "admin.add_id",
+                &[serde_json::json!(get_i32("user_id")?)],
+            ),
+            "admin.remove_id" => state_call(
+                svc,
+                "admin.remove_id",
+                &[serde_json::json!(get_i32("user_id")?)],
+            ),
             "admin.set_ids" => {
-                let ids = value.get("ids").or_else(|| value.get("admin_phira_ids")).cloned().unwrap_or(serde_json::Value::Array(Vec::new()));
+                let ids = value
+                    .get("ids")
+                    .or_else(|| value.get("admin_phira_ids"))
+                    .cloned()
+                    .unwrap_or(serde_json::Value::Array(Vec::new()));
                 state_call(svc, "admin.set_ids", &[ids])
-            },
+            }
             "plugin.api_register" => {
                 let api_method = get_str("method")?;
                 validate_identifier(api_method)?;
-                let mut registrations = svc.registered_apis.lock().map_err(|e| format!("lock: {e}"))?;
-                if !registrations.entry(plugin_name.to_string()).or_default().insert(api_method.to_string()) {
+                let mut registrations = svc
+                    .registered_apis
+                    .lock()
+                    .map_err(|e| format!("lock: {e}"))?;
+                if !registrations
+                    .entry(plugin_name.to_string())
+                    .or_default()
+                    .insert(api_method.to_string())
+                {
                     return Err(format!("API '{api_method}' is already registered"));
                 }
                 Ok(format!("registered plugin API: {plugin_name}.{api_method}"))
@@ -876,8 +1201,14 @@ impl WasmPluginInstance {
             "plugin.api_call" => {
                 let target = get_str("plugin")?;
                 let api_method = get_str("method")?;
-                let api_args = value.get("args").and_then(|v| v.as_array()).cloned().unwrap_or_default();
-                if target == plugin_name { return Err("a plugin cannot synchronously call itself".to_string()); }
+                let api_args = value
+                    .get("args")
+                    .and_then(|v| v.as_array())
+                    .cloned()
+                    .unwrap_or_default();
+                if target == plugin_name {
+                    return Err("a plugin cannot synchronously call itself".to_string());
+                }
                 let key = format!("{target}:{api_method}");
                 let native = {
                     let handlers = svc.api_handlers.lock().map_err(|e| format!("lock: {e}"))?;
@@ -886,13 +1217,30 @@ impl WasmPluginInstance {
                 if let Some(handler) = native {
                     return handler(api_method, &api_args).map(|v| v.to_string());
                 }
-                let is_registered = svc.registered_apis.lock().map_err(|e| format!("lock: {e}"))?
-                    .get(target).is_some_and(|methods| methods.contains(api_method));
-                if !is_registered { return Err(format!("plugin '{target}' has no registered API '{api_method}'")); }
-                let runtime = svc.plugin_runtimes.lock().map_err(|e| format!("lock: {e}"))?
-                    .get(target).and_then(Weak::upgrade).ok_or_else(|| format!("plugin '{target}' is unavailable"))?;
-                let mut plugin = runtime.try_lock().map_err(|_| format!("plugin '{target}' is busy"))?;
-                plugin.call_api(api_method, &api_args).map(|v| v.to_string())
+                let is_registered = svc
+                    .registered_apis
+                    .lock()
+                    .map_err(|e| format!("lock: {e}"))?
+                    .get(target)
+                    .is_some_and(|methods| methods.contains(api_method));
+                if !is_registered {
+                    return Err(format!(
+                        "plugin '{target}' has no registered API '{api_method}'"
+                    ));
+                }
+                let runtime = svc
+                    .plugin_runtimes
+                    .lock()
+                    .map_err(|e| format!("lock: {e}"))?
+                    .get(target)
+                    .and_then(Weak::upgrade)
+                    .ok_or_else(|| format!("plugin '{target}' is unavailable"))?;
+                let mut plugin = runtime
+                    .try_lock()
+                    .map_err(|_| format!("plugin '{target}' is busy"))?;
+                plugin
+                    .call_api(api_method, &api_args)
+                    .map(|v| v.to_string())
             }
             _ => Err(format!("unknown API method: {method}")),
         }
@@ -909,45 +1257,85 @@ impl Drop for WasmPluginInstance {
 
 // ── 辅助函数 ──
 
-fn state_call(svc: &WasmPluginServices, method: &str, args: &[serde_json::Value]) -> Result<String, String> {
-    let guard = svc.state_query.read().map_err(|e| format!("lock error: {e}"))?;
-    guard.as_ref().ok_or_else(|| "state query not available".to_string())?
-        .call(method, args).map(|value| value.to_string())
+fn state_call(
+    svc: &WasmPluginServices,
+    method: &str,
+    args: &[serde_json::Value],
+) -> Result<String, String> {
+    let guard = svc
+        .state_query
+        .read()
+        .map_err(|e| format!("lock error: {e}"))?;
+    guard
+        .as_ref()
+        .ok_or_else(|| "state query not available".to_string())?
+        .call(method, args)
+        .map(|value| value.to_string())
 }
 
-fn truncate_string(value: &str, max: usize) -> String { value.chars().take(max).collect() }
+fn truncate_string(value: &str, max: usize) -> String {
+    value.chars().take(max).collect()
+}
 
 fn validate_display_name(value: &str) -> Result<(), String> {
-    if value.trim().is_empty() || value.chars().count() > 128 || value.chars().any(char::is_control) {
+    if value.trim().is_empty() || value.chars().count() > 128 || value.chars().any(char::is_control)
+    {
         return Err("invalid plugin display name".to_string());
     }
     Ok(())
 }
 
 fn validate_identifier(value: &str) -> Result<(), String> {
-    if value.is_empty() || value.len() > 96 || !value.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-' | b'.')) {
+    if value.is_empty()
+        || value.len() > 96
+        || !value
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-' | b'.'))
+    {
         return Err(format!("invalid identifier '{value}'"));
     }
     Ok(())
 }
 
 fn validate_config_key(value: &str) -> Result<(), String> {
-    if value.is_empty() || value.len() > 256 || value.chars().any(char::is_control) { return Err("invalid config key".to_string()); }
+    if value.is_empty() || value.len() > 256 || value.chars().any(char::is_control) {
+        return Err("invalid config key".to_string());
+    }
     Ok(())
 }
 
 fn default_capabilities() -> HashSet<String> {
-    ["state.read", "send", "ext", "config", "file.read", "file.write", "plugin.call", "plugin.register"]
-        .into_iter().map(str::to_string).collect()
+    [
+        "state.read",
+        "send",
+        "ext",
+        "config",
+        "file.read",
+        "file.write",
+        "plugin.call",
+        "plugin.register",
+    ]
+    .into_iter()
+    .map(str::to_string)
+    .collect()
 }
 
 fn load_manifest_capabilities(plugin_path: &str) -> Result<HashSet<String>, String> {
     let manifest = Path::new(plugin_path).with_extension("json");
-    if !manifest.exists() { return Ok(default_capabilities()); }
-    let bytes = std::fs::read(&manifest).map_err(|e| format!("read manifest '{}': {e}", manifest.display()))?;
-    if bytes.len() > 64 * 1024 { return Err("plugin manifest is too large".to_string()); }
-    let value: serde_json::Value = serde_json::from_slice(&bytes).map_err(|e| format!("invalid plugin manifest: {e}"))?;
-    let array = value.get("capabilities").and_then(|v| v.as_array()).ok_or("manifest must contain a capabilities array")?;
+    if !manifest.exists() {
+        return Ok(default_capabilities());
+    }
+    let bytes = std::fs::read(&manifest)
+        .map_err(|e| format!("read manifest '{}': {e}", manifest.display()))?;
+    if bytes.len() > 64 * 1024 {
+        return Err("plugin manifest is too large".to_string());
+    }
+    let value: serde_json::Value =
+        serde_json::from_slice(&bytes).map_err(|e| format!("invalid plugin manifest: {e}"))?;
+    let array = value
+        .get("capabilities")
+        .and_then(|v| v.as_array())
+        .ok_or("manifest must contain a capabilities array")?;
     let mut capabilities = HashSet::new();
     for item in array {
         let capability = item.as_str().ok_or("capability must be a string")?;
@@ -961,29 +1349,68 @@ fn required_capability(method: &str) -> Option<&'static str> {
     match method {
         "uuid.v4" | "time.now" => None,
         value if value.starts_with("admin.") => Some("admin"),
-        "room.create_empty" | "room.kick" | "room.set_host" | "room.clear_host" | "room.set_lock" | "room.force_move" | "room.set_hidden" | "room.set_persistent_empty" | "room.set_phira_api_endpoint" | "room.clear_phira_api_endpoint" | "room.close" => Some("room.manage"),
-        value if value.starts_with("room.") || value.starts_with("player.") || value.starts_with("round.") || value.starts_with("user.") || value.starts_with("persist.") || value == "state.query" => Some("state.read"),
+        "room.create_empty"
+        | "room.kick"
+        | "room.set_host"
+        | "room.clear_host"
+        | "room.set_lock"
+        | "room.force_move"
+        | "room.set_hidden"
+        | "room.set_persistent_empty"
+        | "room.set_phira_api_endpoint"
+        | "room.clear_phira_api_endpoint"
+        | "room.close" => Some("room.manage"),
+        value
+            if value.starts_with("room.")
+                || value.starts_with("player.")
+                || value.starts_with("round.")
+                || value.starts_with("user.")
+                || value.starts_with("persist.")
+                || value == "state.query" =>
+        {
+            Some("state.read")
+        }
         value if value.starts_with("send.") => Some("send"),
         value if value.starts_with("ext.") => Some("ext"),
         value if value.starts_with("config.") => Some("config"),
         value if value.starts_with("http.") => Some("http"),
-        "file.read" => Some("file.read"), "file.write" => Some("file.write"),
-        "plugin.api_call" => Some("plugin.call"), "plugin.api_register" => Some("plugin.register"),
+        "file.read" => Some("file.read"),
+        "file.write" => Some("file.write"),
+        "plugin.api_call" => Some("plugin.call"),
+        "plugin.api_register" => Some("plugin.register"),
         _ => Some("unknown"),
     }
 }
 
-fn config_path(plugin: &str) -> PathBuf { Path::new("data/plugins").join(plugin).join("config.json") }
+fn config_path(plugin: &str) -> PathBuf {
+    Path::new("data/plugins").join(plugin).join("config.json")
+}
 
 fn ensure_config_loaded(svc: &WasmPluginServices, plugin: &str) -> Result<(), String> {
-    if svc.plugin_configs.read().map_err(|e| format!("lock error: {e}"))?.contains_key(plugin) { return Ok(()); }
+    if svc
+        .plugin_configs
+        .read()
+        .map_err(|e| format!("lock error: {e}"))?
+        .contains_key(plugin)
+    {
+        return Ok(());
+    }
     let path = config_path(plugin);
     let config = if path.exists() {
         let bytes = std::fs::read(&path).map_err(|e| format!("read config: {e}"))?;
-        if bytes.len() > svc.runtime.max_file_bytes { return Err("config file exceeds plugin limit".to_string()); }
-        serde_json::from_slice::<HashMap<String, String>>(&bytes).map_err(|e| format!("invalid config file: {e}"))?
-    } else { HashMap::new() };
-    svc.plugin_configs.write().map_err(|e| format!("lock error: {e}"))?.entry(plugin.to_string()).or_insert(config);
+        if bytes.len() > svc.runtime.max_file_bytes {
+            return Err("config file exceeds plugin limit".to_string());
+        }
+        serde_json::from_slice::<HashMap<String, String>>(&bytes)
+            .map_err(|e| format!("invalid config file: {e}"))?
+    } else {
+        HashMap::new()
+    };
+    svc.plugin_configs
+        .write()
+        .map_err(|e| format!("lock error: {e}"))?
+        .entry(plugin.to_string())
+        .or_insert(config);
     Ok(())
 }
 
@@ -996,29 +1423,55 @@ fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), String> {
     let parent = path.parent().ok_or("path has no parent")?;
     std::fs::create_dir_all(parent).map_err(|e| format!("create directory: {e}"))?;
     reject_symlink_components(parent)?;
-    let temp = parent.join(format!(".{}.{}.tmp", path.file_name().and_then(|v| v.to_str()).unwrap_or("data"), uuid::Uuid::new_v4()));
+    let temp = parent.join(format!(
+        ".{}.{}.tmp",
+        path.file_name().and_then(|v| v.to_str()).unwrap_or("data"),
+        uuid::Uuid::new_v4()
+    ));
     std::fs::write(&temp, bytes).map_err(|e| format!("write temporary file: {e}"))?;
-    std::fs::rename(&temp, path).map_err(|e| { let _ = std::fs::remove_file(&temp); format!("replace file: {e}") })
+    std::fs::rename(&temp, path).map_err(|e| {
+        let _ = std::fs::remove_file(&temp);
+        format!("replace file: {e}")
+    })
 }
 
 fn plugin_data_path(plugin: &str, relative: &str, create_parent: bool) -> Result<PathBuf, String> {
     validate_identifier(plugin)?;
     let relative = Path::new(relative);
-    if relative.as_os_str().is_empty() || relative.is_absolute() { return Err("plugin paths must be non-empty and relative".to_string()); }
-    if relative.components().any(|part| !matches!(part, Component::Normal(_))) { return Err("plugin path traversal is not allowed".to_string()); }
+    if relative.as_os_str().is_empty() || relative.is_absolute() {
+        return Err("plugin paths must be non-empty and relative".to_string());
+    }
+    if relative
+        .components()
+        .any(|part| !matches!(part, Component::Normal(_)))
+    {
+        return Err("plugin path traversal is not allowed".to_string());
+    }
     let root = Path::new("data/plugins").join(plugin);
     std::fs::create_dir_all(&root).map_err(|e| format!("create plugin data directory: {e}"))?;
     reject_symlink_components(&root)?;
     let target = root.join(relative);
     if create_parent {
         let parent = target.parent().ok_or("path has no parent")?;
-        std::fs::create_dir_all(parent).map_err(|e| format!("create plugin data directory: {e}"))?;
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("create plugin data directory: {e}"))?;
         reject_symlink_components(parent)?;
-        if target.exists() && std::fs::symlink_metadata(&target).map_err(|e| e.to_string())?.file_type().is_symlink() { return Err("symbolic links are not allowed in plugin storage".to_string()); }
+        if target.exists()
+            && std::fs::symlink_metadata(&target)
+                .map_err(|e| e.to_string())?
+                .file_type()
+                .is_symlink()
+        {
+            return Err("symbolic links are not allowed in plugin storage".to_string());
+        }
     } else {
-        let canonical_root = std::fs::canonicalize(&root).map_err(|e| format!("canonicalize plugin root: {e}"))?;
-        let canonical_target = std::fs::canonicalize(&target).map_err(|e| format!("canonicalize plugin file: {e}"))?;
-        if !canonical_target.starts_with(canonical_root) { return Err("plugin path escaped its data directory".to_string()); }
+        let canonical_root =
+            std::fs::canonicalize(&root).map_err(|e| format!("canonicalize plugin root: {e}"))?;
+        let canonical_target =
+            std::fs::canonicalize(&target).map_err(|e| format!("canonicalize plugin file: {e}"))?;
+        if !canonical_target.starts_with(canonical_root) {
+            return Err("plugin path escaped its data directory".to_string());
+        }
     }
     Ok(target)
 }
@@ -1027,7 +1480,12 @@ fn reject_symlink_components(path: &Path) -> Result<(), String> {
     let mut current = PathBuf::new();
     for component in path.components() {
         current.push(component.as_os_str());
-        if current.exists() && std::fs::symlink_metadata(&current).map_err(|e| format!("inspect path: {e}"))?.file_type().is_symlink() {
+        if current.exists()
+            && std::fs::symlink_metadata(&current)
+                .map_err(|e| format!("inspect path: {e}"))?
+                .file_type()
+                .is_symlink()
+        {
             return Err("symbolic links are not allowed in plugin storage".to_string());
         }
     }
@@ -1036,41 +1494,88 @@ fn reject_symlink_components(path: &Path) -> Result<(), String> {
 
 fn validate_http_url(value: &str, allow_private: bool) -> Result<(), String> {
     let url = reqwest::Url::parse(value).map_err(|e| format!("invalid URL: {e}"))?;
-    if !matches!(url.scheme(), "http" | "https") { return Err("only HTTP(S) URLs are allowed".to_string()); }
-    if !url.username().is_empty() || url.password().is_some() { return Err("URL credentials are not allowed".to_string()); }
+    if !matches!(url.scheme(), "http" | "https") {
+        return Err("only HTTP(S) URLs are allowed".to_string());
+    }
+    if !url.username().is_empty() || url.password().is_some() {
+        return Err("URL credentials are not allowed".to_string());
+    }
     let host = url.host_str().ok_or("URL is missing a host")?;
     if !allow_private {
-        if host.eq_ignore_ascii_case("localhost") { return Err("private network access is disabled".to_string()); }
+        if host.eq_ignore_ascii_case("localhost") {
+            return Err("private network access is disabled".to_string());
+        }
         let port = url.port_or_known_default().ok_or("URL is missing a port")?;
-        let addresses = (host, port).to_socket_addrs().map_err(|e| format!("resolve host: {e}"))?.collect::<Vec<_>>();
-        if addresses.is_empty() || addresses.iter().any(|address| is_private_ip(address.ip())) { return Err("private or unresolved network targets are disabled".to_string()); }
+        let addresses = (host, port)
+            .to_socket_addrs()
+            .map_err(|e| format!("resolve host: {e}"))?
+            .collect::<Vec<_>>();
+        if addresses.is_empty() || addresses.iter().any(|address| is_private_ip(address.ip())) {
+            return Err("private or unresolved network targets are disabled".to_string());
+        }
     }
     Ok(())
 }
 
 fn is_private_ip(ip: IpAddr) -> bool {
     match ip {
-        IpAddr::V4(ip) => ip.is_private() || ip.is_loopback() || ip.is_link_local() || ip.is_broadcast() || ip.is_documentation() || ip.is_unspecified() || ip.is_multicast(),
-        IpAddr::V6(ip) => ip.is_loopback() || ip.is_unspecified() || ip.is_multicast() || ip.is_unique_local() || ip.is_unicast_link_local(),
+        IpAddr::V4(ip) => {
+            ip.is_private()
+                || ip.is_loopback()
+                || ip.is_link_local()
+                || ip.is_broadcast()
+                || ip.is_documentation()
+                || ip.is_unspecified()
+                || ip.is_multicast()
+        }
+        IpAddr::V6(ip) => {
+            ip.is_loopback()
+                || ip.is_unspecified()
+                || ip.is_multicast()
+                || ip.is_unique_local()
+                || ip.is_unicast_link_local()
+        }
     }
 }
 
-fn read_limited_response(mut response: reqwest::blocking::Response, limit: usize) -> Result<String, String> {
-    if !response.status().is_success() { return Err(format!("HTTP request returned {}", response.status())); }
-    if response.content_length().is_some_and(|length| length > limit as u64) { return Err("HTTP response exceeds plugin limit".to_string()); }
+fn read_limited_response(
+    mut response: reqwest::blocking::Response,
+    limit: usize,
+) -> Result<String, String> {
+    if !response.status().is_success() {
+        return Err(format!("HTTP request returned {}", response.status()));
+    }
+    if response
+        .content_length()
+        .is_some_and(|length| length > limit as u64)
+    {
+        return Err("HTTP response exceeds plugin limit".to_string());
+    }
     let mut bytes = Vec::new();
-    response.by_ref().take(limit.saturating_add(1) as u64).read_to_end(&mut bytes).map_err(|e| format!("read HTTP response: {e}"))?;
-    if bytes.len() > limit { return Err("HTTP response exceeds plugin limit".to_string()); }
+    response
+        .by_ref()
+        .take(limit.saturating_add(1) as u64)
+        .read_to_end(&mut bytes)
+        .map_err(|e| format!("read HTTP response: {e}"))?;
+    if bytes.len() > limit {
+        return Err("HTTP response exceeds plugin limit".to_string());
+    }
     String::from_utf8(bytes).map_err(|e| format!("HTTP response is not UTF-8: {e}"))
 }
 
-fn read_str_from_memory(memory: &wasmtime::Memory, ctx: impl wasmtime::AsContext, ptr: i32, len: i32) -> Option<String> {
-    if len <= 0 || ptr < 0 || len as usize > MAX_HOST_INPUT_BYTES { return None; }
+fn read_str_from_memory(
+    memory: &wasmtime::Memory,
+    ctx: impl wasmtime::AsContext,
+    ptr: i32,
+    len: i32,
+) -> Option<String> {
+    if len <= 0 || ptr < 0 || len as usize > MAX_HOST_INPUT_BYTES {
+        return None;
+    }
     let mut bytes = vec![0u8; len as usize];
     memory.read(ctx, ptr as usize, &mut bytes).ok()?;
     String::from_utf8(bytes).ok()
 }
-
 
 #[cfg(test)]
 mod tests {

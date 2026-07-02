@@ -87,7 +87,7 @@ WASM 插件通过 JSON 字符串与宿主通信：
 | `uuid.v4` | `{}` | UUID 字符串 | 生成 UUID |
 | `time.now` | `{}` | Unix 时间戳 | 获取当前时间 |
 
-完整 WIT 定义见 `wit/phira/mpplus.wit`；其中 `persistence` 与 `admin-config` import interface 对应统一 PG 持久化读取和管理员 ID 管理。
+WIT ABI v1 (legacy) 定义见 `wit/phira/mpplus.wit`；v2 规范见 `wit/phira-plugin.wit`。其中 `persistence` 与 `admin-config` import interface 对应统一 PG 持久化读取和管理员 ID 管理。
 
 ### 插件事件
 
@@ -184,7 +184,7 @@ WASM 插件可通过 `config.get` / `config.set` API 读写自己的配置（内
 
 ## WIT 接口定义
 
-完整的 WIT 接口定义见 `wit/phira/mpplus.wit`，包含以下接口：
+完整的 WIT ABI v1 接口定义见 `wit/phira/mpplus.wit`（legacy），v2 见 `wit/phira-plugin.wit`，包含以下接口（v1）：
 
 - `user-events` — 用户事件监听
 - `user-info` — 用户信息查询

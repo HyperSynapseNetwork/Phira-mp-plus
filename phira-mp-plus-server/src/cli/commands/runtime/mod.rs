@@ -35,7 +35,11 @@ impl CliHandler {
             "schema" => self.print_runtime_schema().await,
             "persistence" => self.print_runtime_persistence().await,
             _ => {
-                self.out(format!("  {} 未知 runtime 子命令: {}", c::red("✗"), c::yellow(sub)));
+                self.out(format!(
+                    "  {} 未知 runtime 子命令: {}",
+                    c::red("✗"),
+                    c::yellow(sub)
+                ));
                 self.out(format!("  {} 可用: runtime status | roadmap | phira | commands | events | persistence | schema | cutover | actors | rooms", c::dim("▸")));
             }
         }

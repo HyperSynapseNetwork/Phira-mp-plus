@@ -11,32 +11,63 @@ fn default_help_is_concise() {
     let registry = runtime_v2_registry();
     let overview = registry.format_overview();
     // Default help should not be a wall of text
-    assert!(overview.len() < 4500, "default help too long: {} chars", overview.len());
+    assert!(
+        overview.len() < 4500,
+        "default help too long: {} chars",
+        overview.len()
+    );
 }
 
 #[test]
 fn default_help_shows_primary_count() {
     let registry = runtime_v2_registry();
-    let (primary, advanced) = registry.command_surface_counts();
-    assert!(primary >= 20, "expected at least 20 primary commands, got {primary}");
-    assert!(advanced >= 30, "expected at least 30 advanced commands, got {advanced}");
-    assert!(primary < advanced, "primary ({primary}) should be less than advanced ({advanced})");
+    let (primary, advanced, developer, deprecated) = registry.command_surface_counts();
+    assert!(
+        primary >= 15,
+        "expected at least 15 primary commands, got {primary}"
+    );
+    assert!(primary <= 25, "primary count {primary} exceeds 25 limit");
+    assert!(
+        developer >= 5,
+        "expected at least 5 developer commands, got {developer}"
+    );
+    let total = primary + advanced + developer + deprecated;
+    assert!(
+        total >= 50 && total <= 90,
+        "unexpected total command count: {total}"
+    );
 }
 
 #[test]
 fn help_all_shows_all_commands() {
     let registry = runtime_v2_registry();
     let all = registry.format_overview_all();
-    assert!(all.contains("全部命令"), "help all should show primary count");
-    assert!(all.contains("command"), "help all should show advanced count");
+    assert!(
+        all.contains("primary="),
+        "help all should show primary count"
+    );
+    assert!(
+        all.contains("advanced="),
+        "help all should show advanced count"
+    );
+    assert!(all.contains("dev="), "help all should show dev count");
+    assert!(
+        all.contains("deprecated="),
+        "help all should show deprecated count"
+    );
 }
 
 #[test]
 fn help_command_format_is_unified() {
     let registry = runtime_v2_registry();
-    let help = registry.format_help("status").expect("status command should exist");
+    let help = registry
+        .format_help("status")
+        .expect("status command should exist");
     assert!(help.contains("NAME"), "help should contain NAME section");
-    assert!(help.contains("DESCRIPTION"), "help should contain DESCRIPTION");
+    assert!(
+        help.contains("DESCRIPTION"),
+        "help should contain DESCRIPTION"
+    );
     assert!(help.contains("USAGE"), "help should contain USAGE");
 }
 
@@ -44,14 +75,20 @@ fn help_command_format_is_unified() {
 fn help_unknown_command_shows_suggestion() {
     let registry = runtime_v2_registry();
     let suggestion = registry.format_unknown("notacommand");
-    assert!(suggestion.contains("未知命令"), "should show unknown command message");
+    assert!(
+        suggestion.contains("未知命令"),
+        "should show unknown command message"
+    );
 }
 
 #[test]
 fn help_group_is_available() {
     let registry = runtime_v2_registry();
     let group_help = registry.format_group("rooms", false);
-    assert!(group_help.contains("rooms"), "rooms group help should contain group name");
+    assert!(
+        group_help.contains("rooms"),
+        "rooms group help should contain group name"
+    );
 }
 
 #[test]
@@ -71,8 +108,13 @@ fn alias_q_resolves_to_exit() {
 #[test]
 fn alias_h_format_help_works() {
     let registry = runtime_v2_registry();
-    let help_text = registry.format_help("h").expect("format_help('h') should work");
-    assert!(help_text.contains("help"), "help text for alias 'h' should mention help");
+    let help_text = registry
+        .format_help("h")
+        .expect("format_help('h') should work");
+    assert!(
+        help_text.contains("help"),
+        "help text for alias 'h' should mention help"
+    );
 }
 
 #[test]
@@ -82,8 +124,10 @@ fn alias_does_not_conflict_with_command_names() {
     let registry = runtime_v2_registry();
     // 'rooms' is an alias for 'room list' — verify it doesn't shadow 'rooms' itself
     let rooms = registry.get("rooms").expect("rooms should exist");
-    assert!(rooms.name == "rooms" || rooms.aliases.contains(&"rooms".to_string()),
-        "rooms should resolve to the rooms command or its alias");
+    assert!(
+        rooms.name == "rooms" || rooms.aliases.contains(&"rooms".to_string()),
+        "rooms should resolve to the rooms command or its alias"
+    );
 }
 
 #[test]
@@ -91,7 +135,10 @@ fn command_count_is_stable() {
     let registry = runtime_v2_registry();
     let count = registry.iter().count();
     // If this fails, update the count — this test prevents drift
-    assert!(count >= 60 && count <= 90, "unexpected command count: {count}");
+    assert!(
+        count >= 60 && count <= 90,
+        "unexpected command count: {count}"
+    );
 }
 
 #[test]
@@ -100,16 +147,100 @@ fn internal_commands_not_in_primary() {
     for cmd in registry.iter() {
         if cmd.audience == CommandAudience::Primary {
             // Internal/tool commands should never be primary
-            assert!(!cmd.name.contains("benchmark-bind"),
-                "benchmark-bind should not be primary: {}", cmd.name);
-            assert!(!cmd.name.contains("ext-list"),
-                "ext-list should not be primary: {}", cmd.name);
-            assert!(!cmd.name.contains("ext-get"),
-                "ext-get should not be primary: {}", cmd.name);
-            assert!(!cmd.name.contains("playtime"),
-                "playtime should not be primary: {}", cmd.name);
-            assert!(!cmd.name.contains("round-last"),
-                "round-last should not be primary: {}", cmd.name);
+            assert!(
+                !cmd.name.contains("ext-list"),
+                "ext-list should not be primary: {}",
+                cmd.name
+            );
+            assert!(
+                !cmd.name.contains("ext-get"),
+                "ext-get should not be primary: {}",
+                cmd.name
+            );
+            assert!(
+                !cmd.name.contains("playtime"),
+                "playtime should not be primary: {}",
+                cmd.name
+            );
+            assert!(
+                !cmd.name.contains("round-last"),
+                "round-last should not be primary: {}",
+                cmd.name
+            );
         }
     }
+}
+
+#[test]
+fn deprecated_commands_appear_in_legacy_view() {
+    let registry = runtime_v2_registry();
+    let legacy = registry.format_legacy();
+    for name in &[
+        "ext-list",
+        "ext-get",
+        "welcome-config",
+        "player-count",
+        "playtime",
+        "round-last",
+    ] {
+        assert!(
+            legacy.contains(name),
+            "deprecated command '{name}' should appear in legacy view"
+        );
+    }
+}
+
+#[test]
+fn benchmark_bind_and_cleanup_removed_from_registry() {
+    let registry = runtime_v2_registry();
+    assert!(
+        registry.get("benchmark-bind").is_none(),
+        "benchmark-bind should be removed from registry"
+    );
+    assert!(
+        registry.get("benchmark-cleanup").is_none(),
+        "benchmark-cleanup should be removed from registry"
+    );
+}
+
+#[test]
+fn developer_commands_not_in_default_overview() {
+    let registry = runtime_v2_registry();
+    let overview = registry.format_overview();
+    for name in &[
+        "runtime roadmap",
+        "runtime schema",
+        "runtime actors",
+        "runtime rooms",
+        "simulation tick",
+        "simulation persist",
+        "simulation seed",
+    ] {
+        assert!(
+            !overview.contains(name),
+            "dev command '{name}' leaked into default overview"
+        );
+    }
+    // But should appear in dev view
+    let dev = registry.format_dev();
+    for name in &["runtime roadmap", "runtime schema"] {
+        assert!(
+            dev.contains(name),
+            "dev command '{name}' should appear in dev view"
+        );
+    }
+}
+
+#[test]
+fn help_advanced_shows_benchmark_commands() {
+    let registry = runtime_v2_registry();
+    let adv = registry.format_advanced();
+    assert!(
+        adv.contains("benchmark modes"),
+        "advanced view should show benchmark modes"
+    );
+    assert!(
+        adv.contains("benchmark run real"),
+        "advanced view should show benchmark run real"
+    );
 }

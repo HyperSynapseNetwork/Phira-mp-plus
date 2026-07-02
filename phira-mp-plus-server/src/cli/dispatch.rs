@@ -61,10 +61,15 @@ impl CliHandler {
                 true
             }
             "benchmark-bind" => {
+                self.out(format!("  {} benchmark-bind 已废弃，不再注册为命令。请改用 benchmark run real <token>。", c::yellow("!")));
                 self.dispatch_benchmark_bind_command(args).await;
                 true
             }
             "benchmark-cleanup" => {
+                self.out(format!(
+                    "  {} benchmark-cleanup 已废弃，不再注册为命令。请改用 simulation cleanup。",
+                    c::yellow("!")
+                ));
                 self.dispatch_benchmark_cleanup_command().await;
                 true
             }
@@ -94,7 +99,11 @@ impl CliHandler {
             }
             _ => {
                 // Try CommandRegistry execute first (Runtime v2 unified execution path)
-                if let Some(output) = self.state.command_registry.execute(&self.state, command, args) {
+                if let Some(output) =
+                    self.state
+                        .command_registry
+                        .execute(&self.state, command, args)
+                {
                     for line in output {
                         self.out(line);
                     }

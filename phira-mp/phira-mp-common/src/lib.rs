@@ -21,9 +21,9 @@ where
 
 #[cfg(feature = "stream")]
 mod stream_impl {
-    use crate::{BinaryData, decode_packet, encode_packet};
-    use anyhow::{Error, Result, anyhow, bail};
-    use argon2::{Argon2, PasswordHasher, password_hash::SaltString};
+    use crate::{decode_packet, encode_packet, BinaryData};
+    use anyhow::{anyhow, bail, Error, Result};
+    use argon2::{password_hash::SaltString, Argon2, PasswordHasher};
     use std::{
         future::Future, marker::PhantomData, os::unix::ffi::OsStrExt, sync::Arc, time::Duration,
     };
@@ -153,10 +153,7 @@ mod stream_impl {
                         .await;
 
                         if let Some(flushed) = flushed {
-                            let status = result
-                                .as_ref()
-                                .map(|_| ())
-                                .map_err(|err| err.to_string());
+                            let status = result.as_ref().map(|_| ()).map_err(|err| err.to_string());
                             let _ = flushed.send(status);
                         }
 
