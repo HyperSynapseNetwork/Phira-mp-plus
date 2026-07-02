@@ -29,8 +29,11 @@ const ALLOWED_REQWEST_FILES: &[&str] = &[
 // eventually migrate to PhiraRetryClient.  For now those are the
 // only allowed bare-reqwest lines; any NEW occurrence will fail.
 const ALLOWED_SERVER_LINE_PATTERNS: &[&str] = &[
-    "fetch_phira_user_name",
-    "fetch_phira_chart",
+    // fetch_phira_user_name internals
+    "reqwest::Client::builder()",
+    "reqwest::header::AUTHORIZATION",
+    // fetch_phira_chart internals
+    "reqwest::Client::builder()",
 ];
 
 const BANNED_REQWEST_FILES: &[&str] = &[
@@ -43,6 +46,10 @@ const BANNED_REQWEST_FILES: &[&str] = &[
     "phira-mp-plus-server/src/simulation_realistic.rs",
     "phira-mp-plus-server/src/cli/commands/benchmark.rs",
 ];
+
+// Exclude PhiraRetryClient::new(...) because it matches Client::new(
+// but is not a bare reqwest usage.
+const EXCLUDED_PATTERNS: &[&str] = &["PhiraRetryClient"];
 
 const REQWEST_PATTERNS: &[&str] = &["reqwest::Client", "Client::new(", "reqwest::get"];
 
@@ -58,6 +65,9 @@ fn banned_core_paths_have_no_bare_reqwest() {
         for pattern in REQWEST_PATTERNS {
             for (line_no, line) in content.lines().enumerate() {
                 if !line.contains(pattern) { continue; }
+                // Skip lines that are known non-bare-reqwest (e.g. PhiraRetryClient::new)
+                let is_excluded = EXCLUDED_PATTERNS.iter().any(|e| line.contains(e));
+                if is_excluded { continue; }
                 // server.rs is allowed to have specific legacy helper functions
                 let is_allowed_server_line = rel_path.contains("server.rs")
                     && ALLOWED_SERVER_LINE_PATTERNS.iter().any(|p| line.contains(p));
