@@ -108,7 +108,7 @@ wasm_runtime:
 
 ## 统一 PostgreSQL 持久化
 
-配置 `database_url` 后，服务端会自动创建统一持久化表。旧的 `playtime`、`room_history`、轮次文件存储仍兼容读取/写入，但新的结构化数据统一写入 PostgreSQL。
+配置 `database_url` 后，服务端会自动创建统一持久化表。所有结构化数据统一写入 PostgreSQL。
 
 当前会保存的主要信息：
 
@@ -123,7 +123,7 @@ wasm_runtime:
 Touches/Judges 在 PG 中采用“双层结构”：
 
 - `mp_round_touch_batches` / `mp_round_judge_batches`：追加式明细批次表，是高频遥测的主要持久化结构；每批都有全局 `sequence`、`created_at`、`count`、`first_game_time`、`last_game_time` 和 JSONB 数据，适合外部面板增量同步。
-- `mp_round_player_data`：按 `round_uuid + player_id` 聚合的兼容快照，用于 `round.data` 一次性读回完整 Touches/Judges。
+- `mp_round_player_data`：按 `round_uuid + player_id` 聚合的持久化快照，用于 `round.data` 一次性读回完整 Touches/Judges。
 
 
 保留时间由 `persistence_retention_days` 控制。Touches/Judges 属于高频遥测，可用 `touch_judge_retention_days` 单独设置；未设置时遵循全局保留时间。

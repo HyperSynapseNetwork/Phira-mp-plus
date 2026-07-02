@@ -87,7 +87,7 @@ WASM 插件通过 JSON 字符串与宿主通信：
 | `uuid.v4` | `{}` | UUID 字符串 | 生成 UUID |
 | `time.now` | `{}` | Unix 时间戳 | 获取当前时间 |
 
-WIT ABI v1 (legacy) 定义见 `wit/phira/mpplus.wit`；v2 规范见 `wit/phira-plugin.wit`。其中 `persistence` 与 `admin-config` import interface 对应统一 PG 持久化读取和管理员 ID 管理。
+canonical ABI 定义见 `wit/phira-plugin.wit`（当前使用 JSON bridge 传输）。旧版指针见 `wit/phira/mpplus.wit`。其中 `persistence` 与 `admin-config` import interface 对应统一 PG 持久化读取和管理员 ID 管理。
 
 ### 插件事件
 
@@ -126,7 +126,7 @@ function phira_on_event(event_ptr, event_len) {
 WASM 插件可通过两种方式声明元数据：
 
 1. **导出 `phira_get_info`** — 插件自行将 JSON 元数据写入线性内存
-2. **内存偏移 0** — 在 WASM 模块的偏移 0 处放置长度前缀的 JSON（兼容模式）
+2. **内存偏移 0** — 在 WASM 模块的偏移 0 处放置长度前缀的 JSON（备用模式）
 
 ```json
 {
@@ -184,7 +184,7 @@ WASM 插件可通过 `config.get` / `config.set` API 读写自己的配置（内
 
 ## WIT 接口定义
 
-完整的 WIT ABI v1 接口定义见 `wit/phira/mpplus.wit`（legacy），v2 见 `wit/phira-plugin.wit`，包含以下接口（v1）：
+旧版 WIT 指针见 `wit/phira/mpplus.wit`；canonical ABI 见 `wit/phira-plugin.wit`，包含以下接口：
 
 - `user-events` — 用户事件监听
 - `user-info` — 用户信息查询

@@ -163,7 +163,7 @@ room set <房间ID> persistent false
 - 数据读写：ext.get/set, config.get/set, file.read/write
 - HTTP 请求：http.get/post
 
-具体接口定义见 `wit/phira-plugin.wit`（v2 规范，推荐）；v1 (legacy) 见 `wit/phira/mpplus.wit`。
+具体接口定义见 `wit/phira-plugin.wit`（canonical ABI）；旧版指针见 `wit/phira/mpplus.wit`。
 
 ## 日志文件
 
