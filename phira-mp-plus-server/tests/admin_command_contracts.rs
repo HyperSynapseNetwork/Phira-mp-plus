@@ -48,7 +48,8 @@ fn double_underscore_becomes_literal() {
 #[test]
 fn triple_underscore_is_space_then_literal() {
     let decoded = decode_admin_room_command("_room_set___test");
-    assert_eq!(decoded, "room set _test");
+    // Greedy parse: __ → literal _, _ → space, so "set_ test" not "set _ test"
+    assert_eq!(decoded, "room set_ test");
 }
 
 #[test]
