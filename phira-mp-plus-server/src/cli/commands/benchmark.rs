@@ -15,9 +15,6 @@ impl CliHandler {
         self.start_benchmark(args).await;
     }
 
-    pub(in crate::cli) async fn dispatch_benchmark_bind_command(&self, args: &[&str]) {
-        self.bind_benchmark(args).await;
-    }
 
     pub(in crate::cli) async fn dispatch_benchmark_cleanup_command(&self) {
         self.state

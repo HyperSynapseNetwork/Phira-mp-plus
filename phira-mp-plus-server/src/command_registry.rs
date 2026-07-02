@@ -718,7 +718,7 @@ pub fn runtime_v2_registry() -> CommandRegistry {
 
     for spec in [
         CommandSpec::new("simulation status", "simulation", "查看 Simulation 状态。", "simulation status")
-            .handler(Arc::new(|state, _args| {
+            .handler(Arc::new(|_state, _args| {
                 // Use the SimulationManager's status; if not available, return basic info
                 vec!["  Simulation status (CLI: use `simulation status` in console)".to_string()]
             })),

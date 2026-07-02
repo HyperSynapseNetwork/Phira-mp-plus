@@ -37,17 +37,6 @@ impl CliHandler {
         }
     }
 
-    pub(in crate::cli) async fn dispatch_extension_get_command(&self, args: &[&str]) {
-        if args.len() < 2 {
-            self.out(format!(
-                "  {} {} <用户ID|房间ID> <key>",
-                c::yellow("?"),
-                c::bold("ext-get")
-            ));
-        } else {
-            self.get_extension(args[0], args[1]).await;
-        }
-    }
 
     pub(in crate::cli) async fn dispatch_global_ban_command(&self, args: &[&str]) {
         if args.is_empty() {
