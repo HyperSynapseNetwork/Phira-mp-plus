@@ -337,9 +337,6 @@ impl CommandRegistry {
         let (_primary, _advanced) = self.command_surface_counts();
         lines.push("Phira-mp+ 管理命令（推荐视图）".to_string());
         lines.push("─────────────────────────────────────────────".to_string());
-        lines.push(format!(
-            "提示：help all 查看完整命令；help groups 查看分组"
-        ));
         lines.push("提示：help <命令> 查看详情；help all 查看完整命令；help groups 查看分组".to_string());
         lines.push("提示：游戏内管理员入口仍使用 _ 命令，__ 表示字面量下划线".to_string());
         lines.push(String::new());
