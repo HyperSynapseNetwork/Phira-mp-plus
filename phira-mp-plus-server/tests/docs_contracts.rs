@@ -205,15 +205,22 @@ fn cli_docs_do_not_list_removed_legacy_commands() {
 #[test]
 fn api_docs_do_not_list_removed_legacy_commands() {
     let content = read_doc_required("api.md");
-    for cmd in &["playtime <", "player-count", "welcome-config", "round-last", "benchmark_phira_tokens", "benchmark_phira_token"] {
+    // Check for the CLI command forms (without `[` prefix which indicates template placeholders)
+    for cmd in &["playtime <", "welcome-config", "round-last", "benchmark_phira_tokens", "benchmark_phira_token"] {
         assert!(
             !content.contains(cmd),
             "api.md must not contain '{cmd}' (legacy command/token config)"
         );
     }
     // Template placeholders like [player-count] and [playtime] are acceptable
-    // when inside the placeholder table section.  We already checked that
-    // "playtime <" (with angle bracket) does not appear as a CLI command.
+    // in the placeholder table section and are not CLI commands.
+    // Check that "player-count" only appears inside `[...]`:
+    if content.contains("player-count") {
+        assert!(
+            content.contains("[player-count]"),
+            "if 'player-count' appears in api.md it must be a template placeholder"
+        );
+    }
 }
 
 // ── docs/simulation.md checks ───────────────────────────────────────

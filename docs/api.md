@@ -120,7 +120,7 @@
 | `room force-move <id> <user_id> [monitor]` | 强制迁移用户到房间 |
 | `room hide <id>` / `room unhide <id>` | 设置房间隐藏状态 |
 | `room set <id> <字段> <值>` | 修改房间设置（lock/cycle/hidden 等） |
-| `room history <id>` | 房间游玩历史（替代废弃的 round-last） |
+| `room history <id>` | 房间游玩历史 |
 | `room uuid <id>` | 房间 UUID |
 | `room ban <id> <user_id>` | 拉黑用户 |
 | `room unban <id> <user_id>` | 取消拉黑 |
@@ -148,7 +148,6 @@
 | `[players]` | 同上 |
 | `[time]` | Unix 时间戳 |
 | `[playtime]` | 该用户游玩时间 |
-| `[playtime <id>]` | 指定用户游玩时间 |
 | `[top_playtime]` | 游玩时间排行榜（前10） |
 | `[active_rooms]` | 活跃房间详情 |
 
