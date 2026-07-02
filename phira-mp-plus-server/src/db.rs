@@ -32,6 +32,8 @@ pub struct RuntimeTelemetryBatchRecord {
     pub source: String,
     pub flush_reason: String,
     pub schema_version: i32,
+    /// Historical schema field (runtime_v2_dual_write metadata).
+    /// Not a current telemetry mode — retained for backward-compatible reads.
     pub dual_write: bool,
     pub kind: String,
     pub room_id: Option<String>,
@@ -1692,6 +1694,8 @@ async fn init_tables(pool: &sqlx::PgPool) -> Result<()> {
             payload JSONB NOT NULL,
             created_at BIGINT NOT NULL,
             source TEXT NOT NULL DEFAULT 'telemetry_batcher',
+            -- Historical column, kept for backward-compatible reads.
+            -- Current telemetry modes: direct_only, worker_preferred.
             dual_write BOOLEAN NOT NULL DEFAULT TRUE,
             schema_version INTEGER NOT NULL DEFAULT 2,
             flush_reason TEXT NOT NULL DEFAULT 'unknown'
