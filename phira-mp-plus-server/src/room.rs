@@ -175,9 +175,9 @@ pub struct Room {
     pub created_at: i64,
 }
 
-/// 房间名以前缀 `-`（兼容旧版 `+-`）开头时默认隐藏。
+/// 房间名以前缀 `-` 开头时默认隐藏。
 pub fn room_id_is_hidden(room_id: &str) -> bool {
-    room_id.starts_with('-') || room_id.starts_with("+-")
+    room_id.starts_with('-')
 }
 
 impl Room {

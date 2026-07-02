@@ -13,7 +13,10 @@ use std::path::PathBuf;
 
 fn workspace_root() -> PathBuf {
     let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    manifest.parent().expect("server crate should have a parent").to_path_buf()
+    manifest
+        .parent()
+        .expect("server crate should have a parent")
+        .to_path_buf()
 }
 
 // Files that are ALLOWED to contain bare reqwest (with documented reason).
@@ -59,20 +62,33 @@ fn banned_core_paths_have_no_bare_reqwest() {
     let mut failures = Vec::new();
     for rel_path in BANNED_REQWEST_FILES {
         let full_path = root.join(rel_path);
-        if !full_path.exists() { continue; }
+        if !full_path.exists() {
+            continue;
+        }
         let content = std::fs::read_to_string(&full_path)
             .unwrap_or_else(|e| panic!("cannot read {}: {e}", full_path.display()));
         for pattern in REQWEST_PATTERNS {
             for (line_no, line) in content.lines().enumerate() {
-                if !line.contains(pattern) { continue; }
+                if !line.contains(pattern) {
+                    continue;
+                }
                 // Skip lines that are known non-bare-reqwest (e.g. PhiraRetryClient::new)
                 let is_excluded = EXCLUDED_PATTERNS.iter().any(|e| line.contains(e));
-                if is_excluded { continue; }
+                if is_excluded {
+                    continue;
+                }
                 // server.rs is allowed to have specific legacy helper functions
                 let is_allowed_server_line = rel_path.contains("server.rs")
-                    && ALLOWED_SERVER_LINE_PATTERNS.iter().any(|p| line.contains(p));
+                    && ALLOWED_SERVER_LINE_PATTERNS
+                        .iter()
+                        .any(|p| line.contains(p));
                 if !is_allowed_server_line {
-                    failures.push(format!("  {}:{}: contains '{}'", rel_path, line_no + 1, pattern));
+                    failures.push(format!(
+                        "  {}:{}: contains '{}'",
+                        rel_path,
+                        line_no + 1,
+                        pattern
+                    ));
                 }
             }
         }
@@ -97,11 +113,19 @@ fn default_simulation_config_has_no_token_or_endpoint() {
 
 #[test]
 fn simulation_presets_do_not_require_phira() {
-    for preset in &[SimulationPreset::Baseline, SimulationPreset::Small, SimulationPreset::Medium] {
+    for preset in &[
+        SimulationPreset::Baseline,
+        SimulationPreset::Small,
+        SimulationPreset::Medium,
+    ] {
         let config = preset.defaults(42);
         assert!(config.users > 0, "preset {:?} must have users", preset);
         assert!(config.rooms > 0, "preset {:?} must have rooms", preset);
-        assert!(config.duration_secs > 0, "preset {:?} must have duration", preset);
+        assert!(
+            config.duration_secs > 0,
+            "preset {:?} must have duration",
+            preset
+        );
     }
 }
 
@@ -115,16 +139,25 @@ fn benchmark_report_has_simulation_as_default_mode() {
     use phira_mp_plus_server::benchmark_report::BenchmarkMode;
     let sim = serde_json::from_str::<BenchmarkMode>("\"simulation\"")
         .expect("'simulation' benchmark mode must be parseable");
-    match sim { BenchmarkMode::Simulation => {} _ => panic!("not Simulation"), }
+    match sim {
+        BenchmarkMode::Simulation => {}
+        _ => panic!("not Simulation"),
+    }
 }
 
 #[test]
 fn benchmark_real_and_hybrid_are_explicit_not_default() {
     use phira_mp_plus_server::benchmark_report::BenchmarkMode;
     let real: BenchmarkMode = serde_json::from_str("\"real\"").unwrap();
-    match real { BenchmarkMode::Real => {} _ => panic!("not Real"), }
+    match real {
+        BenchmarkMode::Real => {}
+        _ => panic!("not Real"),
+    }
     let hybrid: BenchmarkMode = serde_json::from_str("\"hybrid\"").unwrap();
-    match hybrid { BenchmarkMode::Hybrid => {} _ => panic!("not Hybrid"), }
+    match hybrid {
+        BenchmarkMode::Hybrid => {}
+        _ => panic!("not Hybrid"),
+    }
 }
 
 #[test]

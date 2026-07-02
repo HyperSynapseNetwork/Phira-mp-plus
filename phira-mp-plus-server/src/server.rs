@@ -142,9 +142,6 @@ pub struct PlusConfig {
     /// 压测使用的 Phira token 列表。可在配置文件中直接填写，或通过 CLI 写入 data/benchmark-auth.json。
     #[serde(default)]
     pub benchmark_phira_tokens: Vec<String>,
-    /// 兼容单账号配置：benchmark_phira_token: "..."。
-    #[serde(default)]
-    pub benchmark_phira_token: Option<String>,
     /// WASM sandbox/resource limits.
     #[serde(default)]
     pub wasm_runtime: WasmRuntimeConfig,
@@ -233,7 +230,6 @@ impl Default for PlusConfig {
             touch_judge_retention_days: None,
             admin_phira_ids: Vec::new(),
             benchmark_phira_tokens: Vec::new(),
-            benchmark_phira_token: None,
             wasm_runtime: WasmRuntimeConfig::default(),
             runtime_v2: RuntimeV2Config::default(),
         }
@@ -447,11 +443,7 @@ where
 }
 
 fn load_benchmark_tokens(config: &PlusConfig) -> Vec<String> {
-    let mut configured = config.benchmark_phira_tokens.clone();
-    if let Some(token) = &config.benchmark_phira_token {
-        configured.push(token.clone());
-    }
-    let configured = sanitize_benchmark_tokens(configured);
+    let configured = sanitize_benchmark_tokens(config.benchmark_phira_tokens.clone());
     if !configured.is_empty() {
         return configured;
     }

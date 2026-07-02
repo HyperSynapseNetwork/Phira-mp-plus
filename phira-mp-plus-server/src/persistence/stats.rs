@@ -67,10 +67,10 @@ pub struct TelemetryCutoverStats {
     pub direct_skipped_batches: u64,
     pub direct_written_items: u64,
     pub fallback_direct_batches: u64,
-    pub worker_only_dry_run_success_batches: u64,
-    pub worker_only_dry_run_failed_batches: u64,
+    pub worker_dry_run_success_batches: u64,
+    pub worker_dry_run_failed_batches: u64,
     pub worker_enqueue_success_ratio_percent: u8,
-    pub worker_only_dry_run_success_ratio_percent: u8,
+    pub worker_dry_run_success_ratio_percent: u8,
     pub readiness: String,
     pub worker_enqueue_latency: PersistenceLatencyStats,
     pub direct_write_latency: PersistenceLatencyStats,
@@ -121,9 +121,9 @@ impl TelemetryCutoverStats {
             && observation.direct_attempted
         {
             if observation.worker_enqueued {
-                self.worker_only_dry_run_success_batches += 1;
+                self.worker_dry_run_success_batches += 1;
             } else {
-                self.worker_only_dry_run_failed_batches += 1;
+                self.worker_dry_run_failed_batches += 1;
             }
         }
         self.refresh_derived();
@@ -133,15 +133,15 @@ impl TelemetryCutoverStats {
         self.worker_enqueue_success_ratio_percent =
             percent(self.worker_enqueued_batches, self.worker_attempted_batches);
         let dry_total = self
-            .worker_only_dry_run_success_batches
-            .saturating_add(self.worker_only_dry_run_failed_batches);
-        self.worker_only_dry_run_success_ratio_percent =
-            percent(self.worker_only_dry_run_success_batches, dry_total);
+            .worker_dry_run_success_batches
+            .saturating_add(self.worker_dry_run_failed_batches);
+        self.worker_dry_run_success_ratio_percent =
+            percent(self.worker_dry_run_success_batches, dry_total);
         self.readiness = if dry_total == 0 {
             "insufficient_worker_preferred_samples".to_string()
-        } else if self.worker_only_dry_run_failed_batches == 0 {
+        } else if self.worker_dry_run_failed_batches == 0 {
             "enqueue_path_ready_for_worker_preferred".to_string()
-        } else if self.worker_only_dry_run_success_ratio_percent >= 99 {
+        } else if self.worker_dry_run_success_ratio_percent >= 99 {
             "nearly_ready_but_investigate_enqueue_failures".to_string()
         } else {
             "not_ready_worker_enqueue_failures_present".to_string()
@@ -405,7 +405,7 @@ mod tests {
             fallback_direct: false,
         });
         assert_eq!(cutover.worker_enqueue_success_ratio_percent, 100);
-        assert_eq!(cutover.worker_only_dry_run_success_ratio_percent, 100);
+        assert_eq!(cutover.worker_dry_run_success_ratio_percent, 100);
         assert_eq!(cutover.readiness, "enqueue_path_ready_for_worker_preferred");
         assert_eq!(cutover.worker_enqueue_latency.last_ms, 2);
         assert_eq!(cutover.direct_write_latency.last_ms, 7);

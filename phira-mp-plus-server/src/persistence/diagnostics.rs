@@ -9,7 +9,7 @@ pub enum PersistencePipeline {
     TelemetryBatcher,
     BenchmarkReport,
     Simulation,
-    DirectCompatibility,
+    DirectWrite,
 }
 
 impl PersistencePipeline {
@@ -19,7 +19,7 @@ impl PersistencePipeline {
             Self::TelemetryBatcher => "telemetry_batcher",
             Self::BenchmarkReport => "benchmark_report",
             Self::Simulation => "simulation",
-            Self::DirectCompatibility => "direct_compatibility",
+            Self::DirectWrite => "direct_write",
         }
     }
 }

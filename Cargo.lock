@@ -2045,7 +2045,6 @@ dependencies = [
  "unicode-width 0.2.2",
  "uuid",
  "wasmtime",
- "wit-parser",
 ]
 
 [[package]]
@@ -3243,6 +3242,7 @@ dependencies = [
  "bytes",
  "libc",
  "mio",
+ "parking_lot",
  "pin-project-lite",
  "signal-hook-registry",
  "socket2",

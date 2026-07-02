@@ -37,7 +37,7 @@ impl BanManager {
             .register_room_field("blacklist", "[]", "mp", "房间黑名单用户ID列表 (JSON)")
             .await;
 
-        self.repair_legacy_reasons().await;
+        self.repair_reasons().await;
         info!("blacklist manager initialized");
     }
 
@@ -154,7 +154,7 @@ impl BanManager {
             .unwrap_or_default()
     }
 
-    async fn repair_legacy_reasons(&self) {
+    async fn repair_reasons(&self) {
         let repaired = {
             let mut store = self.extensions.store().write().await;
             let mut repaired = 0usize;
@@ -179,7 +179,7 @@ impl BanManager {
             if let Err(err) = self.extensions.persist().await {
                 warn!(repaired, %err, "failed to persist repaired ban reasons");
             } else {
-                info!(repaired, "repaired legacy ban reasons");
+                info!(repaired, "repaired ban reasons");
             }
         }
     }

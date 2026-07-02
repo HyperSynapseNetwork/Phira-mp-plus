@@ -304,7 +304,7 @@ impl PersistenceWorker {
                 "telemetry_cutover_observation": {
                     "observed_batches": stats.telemetry_cutover.observed_batches,
                     "worker_enqueue_success_ratio_percent": stats.telemetry_cutover.worker_enqueue_success_ratio_percent,
-                    "worker_only_dry_run_success_ratio_percent": stats.telemetry_cutover.worker_only_dry_run_success_ratio_percent,
+                    "worker_dry_run_success_ratio_percent": stats.telemetry_cutover.worker_dry_run_success_ratio_percent,
                     "readiness": stats.telemetry_cutover.readiness
                 },
                 "source": "server_config.runtime_v2"

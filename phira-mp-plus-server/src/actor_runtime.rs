@@ -100,7 +100,7 @@ fn default_boundaries() -> Vec<ActorBoundary> {
             responsibility: "Own process lifecycle, shutdown, listener startup, and actor supervision instead of accumulating feature glue in server.rs.".to_string(),
             source_files: vec!["server.rs".to_string()],
             status: ActorBoundaryStatus::Planned,
-            next_step: "keep PlusServerState as compatibility facade; introduce actor handles behind it".to_string(),
+            next_step: "introduce actor handles; PlusServerState retains shared state ownership during transition".to_string(),
         },
         ActorBoundary {
             name: "session-actor".to_string(),
@@ -142,7 +142,7 @@ fn default_boundaries() -> Vec<ActorBoundary> {
             responsibility: "Own CLI/TUI/admin-command execution through Command Registry without command logic spreading across cli.rs.".to_string(),
             source_files: vec!["cli.rs".to_string(), "cli_tui.rs".to_string(), "command_registry.rs".to_string()],
             status: ActorBoundaryStatus::Mirrored,
-            next_step: "extract command handlers into registry-backed modules while keeping old aliases stable".to_string(),
+            next_step: "extract command handlers into registry-backed modules with canonical names".to_string(),
         },
     ]
 }

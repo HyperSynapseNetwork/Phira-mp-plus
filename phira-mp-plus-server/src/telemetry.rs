@@ -673,7 +673,7 @@ mod tests {
     }
 
     #[test]
-    fn legacy_cutover_helpers_delegate_to_decision_contract() {
+    fn cutover_helpers_delegate_to_decision_contract() {
         for &mode in TelemetryCutoverMode::variants() {
             let decision = mode.cutover_decision();
             assert_eq!(mode.should_enqueue_worker(), decision.enqueue_worker);

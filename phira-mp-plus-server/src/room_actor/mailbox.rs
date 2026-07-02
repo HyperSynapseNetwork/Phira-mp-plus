@@ -166,7 +166,7 @@ impl RoomCommandGateway {
                     Err(_) => {
                         self.mailbox_closed.fetch_add(1, Ordering::Relaxed);
                         self.mailbox_fallback.fetch_add(1, Ordering::Relaxed);
-                        RoomCommandResult::from_legacy(
+                        RoomCommandResult::from_untyped(
                             inline().await,
                             RoomCommandDelivery::FallbackInline,
                         )
@@ -175,7 +175,7 @@ impl RoomCommandGateway {
                 Err(_) => {
                     self.mailbox_closed.fetch_add(1, Ordering::Relaxed);
                     self.mailbox_fallback.fetch_add(1, Ordering::Relaxed);
-                    RoomCommandResult::from_legacy(
+                    RoomCommandResult::from_untyped(
                         inline().await,
                         RoomCommandDelivery::FallbackInline,
                     )
@@ -183,7 +183,7 @@ impl RoomCommandGateway {
             }
         } else {
             self.mailbox_fallback.fetch_add(1, Ordering::Relaxed);
-            RoomCommandResult::from_legacy(inline().await, RoomCommandDelivery::FallbackInline)
+            RoomCommandResult::from_untyped(inline().await, RoomCommandDelivery::FallbackInline)
         }
     }
 
@@ -219,7 +219,7 @@ impl RoomCommandGateway {
                 Err(_) => {
                     self.mailbox_closed.fetch_add(1, Ordering::Relaxed);
                     self.mailbox_fallback.fetch_add(1, Ordering::Relaxed);
-                    RoomCommandResult::from_legacy(
+                    RoomCommandResult::from_untyped(
                         inline().await,
                         RoomCommandDelivery::FallbackInline,
                     )
@@ -227,7 +227,7 @@ impl RoomCommandGateway {
             }
         } else {
             self.mailbox_fallback.fetch_add(1, Ordering::Relaxed);
-            RoomCommandResult::from_legacy(inline().await, RoomCommandDelivery::FallbackInline)
+            RoomCommandResult::from_untyped(inline().await, RoomCommandDelivery::FallbackInline)
         }
     }
 }

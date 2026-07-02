@@ -45,7 +45,11 @@ fn required_docs_exist() {
         "api.md",
     ] {
         let path = workspace_root().join("docs").join(doc);
-        assert!(path.exists(), "required doc {doc} not found at {}", path.display());
+        assert!(
+            path.exists(),
+            "required doc {doc} not found at {}",
+            path.display()
+        );
         let content = std::fs::read_to_string(&path)
             .unwrap_or_else(|err| panic!("required doc {doc} unreadable: {err}"));
         assert!(!content.is_empty(), "required doc {doc} is empty");
@@ -99,26 +103,41 @@ fn readme_no_benchmark_cleanup() {
 #[test]
 fn readme_no_ext_list_or_ext_get() {
     let content = read_readme();
-    assert!(!content.contains("ext-list"), "README must not contain ext-list");
-    assert!(!content.contains("ext-get"), "README must not contain ext-get");
+    assert!(
+        !content.contains("ext-list"),
+        "README must not contain ext-list"
+    );
+    assert!(
+        !content.contains("ext-get"),
+        "README must not contain ext-get"
+    );
 }
 
 #[test]
 fn readme_no_dual_write() {
     let content = read_readme();
-    assert!(!content.contains("dual_write"), "README must not contain dual_write");
+    assert!(
+        !content.contains("dual_write"),
+        "README must not contain dual_write"
+    );
 }
 
 #[test]
 fn readme_no_fallback_only() {
     let content = read_readme();
-    assert!(!content.contains("fallback_only"), "README must not contain fallback_only");
+    assert!(
+        !content.contains("fallback_only"),
+        "README must not contain fallback_only"
+    );
 }
 
 #[test]
 fn readme_no_worker_only() {
     let content = read_readme();
-    assert!(!content.contains("worker_only"), "README must not contain worker_only");
+    assert!(
+        !content.contains("worker_only"),
+        "README must not contain worker_only"
+    );
 }
 
 // ── server_config.yml checks ────────────────────────────────────────
@@ -162,9 +181,13 @@ fn configuration_no_unsupported_telemetry_modes() {
         !content.contains("fallback_only") || content.contains("legacy"),
         "configuration.md must not recommend fallback_only without legacy marker"
     );
-    let section = content.find("telemetry_cutover_mode")
+    let section = content
+        .find("telemetry_cutover_mode")
         .map(|pos| {
-            let end = content[pos..].find("\n\n").map(|p| pos + p).unwrap_or(content.len());
+            let end = content[pos..]
+                .find("\n\n")
+                .map(|p| pos + p)
+                .unwrap_or(content.len());
             &content[pos..end]
         })
         .unwrap_or("");
@@ -179,10 +202,18 @@ fn configuration_no_unsupported_telemetry_modes() {
 #[test]
 fn configuration_docs_do_not_show_real_benchmark_token_example() {
     let content = read_doc_required("configuration.md");
-    for token in &["benchmark-bind", "benchmark-auth", "benchmark_phira_tokens", "benchmark_phira_token", "your-token", "your-phira-token"] {
+    for token in &[
+        "benchmark-bind",
+        "benchmark-auth",
+        "benchmark_phira_tokens",
+        "benchmark_phira_token",
+        "your-token",
+        "your-phira-token",
+    ] {
         assert!(
             !content.contains(token),
-            "configuration.md must not contain '{}' (real benchmark token)", token
+            "configuration.md must not contain '{}' (real benchmark token)",
+            token
         );
     }
 }
@@ -192,7 +223,15 @@ fn configuration_docs_do_not_show_real_benchmark_token_example() {
 #[test]
 fn cli_docs_do_not_list_removed_legacy_commands() {
     let content = read_doc_required("cli.md");
-    for cmd in &["welcome-config", "player-count", "playtime", "round-last", "ext-list", "ext-get", "benchmark-cleanup"] {
+    for cmd in &[
+        "welcome-config",
+        "player-count",
+        "playtime",
+        "round-last",
+        "ext-list",
+        "ext-get",
+        "benchmark-cleanup",
+    ] {
         assert!(
             !content.contains(cmd),
             "cli.md must not contain '{cmd}' (legacy command)"
@@ -206,7 +245,13 @@ fn cli_docs_do_not_list_removed_legacy_commands() {
 fn api_docs_do_not_list_removed_legacy_commands() {
     let content = read_doc_required("api.md");
     // Check for the CLI command forms (without `[` prefix which indicates template placeholders)
-    for cmd in &["playtime <", "welcome-config", "round-last", "benchmark_phira_tokens", "benchmark_phira_token"] {
+    for cmd in &[
+        "playtime <",
+        "welcome-config",
+        "round-last",
+        "benchmark_phira_tokens",
+        "benchmark_phira_token",
+    ] {
         assert!(
             !content.contains(cmd),
             "api.md must not contain '{cmd}' (legacy command/token config)"
@@ -229,9 +274,7 @@ fn api_docs_do_not_list_removed_legacy_commands() {
 fn simulation_docs_no_phira_access() {
     let content = read_doc_required("simulation.md");
     assert!(
-        content.contains("不访问")
-            || content.contains("不需要 token")
-            || content.contains("无需"),
+        content.contains("不访问") || content.contains("不需要 token") || content.contains("无需"),
         "simulation.md must state no Phira access / no token needed"
     );
 }
@@ -242,9 +285,7 @@ fn simulation_docs_no_phira_access() {
 fn benchmark_real_docs_marked_advanced() {
     let content = read_doc_required("benchmark-real.md");
     assert!(
-        content.contains("advanced")
-            || content.contains("explicit")
-            || content.contains("不推荐"),
+        content.contains("advanced") || content.contains("explicit") || content.contains("不推荐"),
         "benchmark-real.md must be marked as advanced/explicit"
     );
 }
@@ -254,8 +295,14 @@ fn benchmark_real_docs_marked_advanced() {
 #[test]
 fn wit_abi_docs_has_required_fields() {
     let content = read_doc_required("wit-abi.md");
-    assert!(content.contains("abi-json-v1"), "wit-abi.md must mention abi-json-v1");
-    assert!(content.contains("abi-wit-v2"), "wit-abi.md must mention abi-wit-v2");
+    assert!(
+        content.contains("abi-json-v1"),
+        "wit-abi.md must mention abi-json-v1"
+    );
+    assert!(
+        content.contains("abi-wit-v2"),
+        "wit-abi.md must mention abi-wit-v2"
+    );
     assert!(
         content.contains("wit/phira-plugin.wit"),
         "wit-abi.md must mention canonical WIT path"
@@ -274,7 +321,10 @@ fn plugin_dev_prefers_canonical_wit() {
     // Must reference canonical WIT or mark legacy as deprecated
     if content.contains("wit/phira/mpplus.wit") {
         assert!(
-            content.contains("legacy") || content.contains("v1") || content.contains("canonical") || content.contains("phira-plugin.wit"),
+            content.contains("legacy")
+                || content.contains("v1")
+                || content.contains("canonical")
+                || content.contains("phira-plugin.wit"),
             "plugin-dev.md: legacy WIT reference must be marked legacy or paired with canonical"
         );
     }

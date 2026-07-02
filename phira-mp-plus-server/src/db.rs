@@ -1579,7 +1579,7 @@ async fn init_tables(pool: &sqlx::PgPool) -> Result<()> {
     )
     .execute(pool)
     .await?;
-    // 兼容早期补丁中以 BIGSERIAL 创建的 mp_events：改回全局 sequence，统一跨表顺序。
+    // mp_events 表使用全局 sequence 而非 BIGSERIAL 自增。
     let _ = sqlx::query(
         "ALTER TABLE mp_events ALTER COLUMN sequence SET DEFAULT nextval('mp_persist_sequence')",
     )

@@ -79,7 +79,7 @@ impl CliHandler {
             stats.telemetry_cutover.direct_written_batches,
             stats.telemetry_cutover.direct_skipped_batches,
             stats.telemetry_cutover.fallback_direct_batches,
-            stats.telemetry_cutover.worker_only_dry_run_success_ratio_percent
+            stats.telemetry_cutover.worker_dry_run_success_ratio_percent
         ));
         self.out(format!(
             "    enqueue_ms(avg/max/last)={}/{}/{} direct_ms(avg/max/last)={}/{}/{}",

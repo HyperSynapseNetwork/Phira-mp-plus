@@ -534,8 +534,7 @@ pub fn runtime_v2_registry() -> CommandRegistry {
     );
     register(
         &mut registry,
-        CommandSpec::new("exit", "core", "关闭服务器。", "exit")
-            .example("exit"),
+        CommandSpec::new("exit", "core", "关闭服务器。", "exit").example("exit"),
     );
     register(
         &mut registry,
@@ -576,9 +575,7 @@ pub fn runtime_v2_registry() -> CommandRegistry {
         .developer()
         .handler(Arc::new(|state, _args| {
             let (p, a, d) = state.command_registry.command_surface_counts();
-            vec![format!(
-                "  Registry: {p} primary, {a} advanced, {d} dev"
-            )]
+            vec![format!("  Registry: {p} primary, {a} advanced, {d} dev")]
         })),
         CommandSpec::new(
             "runtime roadmap",
@@ -728,7 +725,8 @@ pub fn runtime_v2_registry() -> CommandRegistry {
         .handler(Arc::new(|_state, _args| {
             vec![
                 "  Benchmark modes:".to_string(),
-                "    simulation  — 默认推荐压测（隔离本地，不访问 Phira，不需要 token）".to_string(),
+                "    simulation  — 默认推荐压测（隔离本地，不访问 Phira，不需要 token）"
+                    .to_string(),
                 "    real        — 显式真实 TCP 兼容性测试（需要 Phira token）".to_string(),
                 "    hybrid      — Hybrid Phira 探测（chart_lookup / record_lookup）".to_string(),
             ]

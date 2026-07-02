@@ -20,7 +20,7 @@ pub async fn init_internal_hooks(
     http: &PluginHttpServer,
     pm: &PluginManager,
 ) {
-    // Set the legacy static reference from the state's db_manager
+    // Set the static reference from the state's db_manager
     let _ = DB.set(state.db_manager.clone());
     // Load admin IDs from database if configured
     if let Some(ids) = state.db_manager.get_admin_ids().await {

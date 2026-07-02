@@ -39,7 +39,7 @@ impl RoomCommandGateway {
             started,
             result,
         )
-        .into_legacy()
+        .into_untyped()
     }
 
     pub(in crate::room_actor) async fn start_room_inline(
@@ -93,7 +93,7 @@ impl RoomCommandGateway {
             started,
             result,
         )
-        .into_legacy()
+        .into_untyped()
     }
 
     pub(in crate::room_actor) async fn cancel_start_inline(

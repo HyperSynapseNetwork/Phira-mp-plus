@@ -36,7 +36,7 @@ impl RoomCommandGateway {
             started,
             result,
         )
-        .into_legacy()
+        .into_untyped()
     }
 
     pub(in crate::room_actor) async fn set_host_inline(
@@ -114,7 +114,7 @@ impl RoomCommandGateway {
             started,
             result,
         )
-        .into_legacy()
+        .into_untyped()
     }
 
     pub(in crate::room_actor) async fn set_lock_inline(
@@ -167,7 +167,7 @@ impl RoomCommandGateway {
             started,
             result,
         )
-        .into_legacy()
+        .into_untyped()
     }
 
     pub(in crate::room_actor) async fn set_cycle_inline(

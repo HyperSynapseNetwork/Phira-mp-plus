@@ -200,7 +200,10 @@ fn canonical_namespaces_exist() {
         );
     }
     // benchmark is both a leaf command and a parent namespace
-    assert!(registry.get("benchmark").is_some(), "benchmark should exist");
+    assert!(
+        registry.get("benchmark").is_some(),
+        "benchmark should exist"
+    );
     assert!(
         !registry.child_commands("benchmark").is_empty(),
         "benchmark should have child commands"

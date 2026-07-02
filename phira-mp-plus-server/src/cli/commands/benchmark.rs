@@ -15,7 +15,6 @@ impl CliHandler {
         self.start_benchmark(args).await;
     }
 
-
     pub(in crate::cli) async fn dispatch_benchmark_cleanup_command(&self) {
         self.state
             .rooms

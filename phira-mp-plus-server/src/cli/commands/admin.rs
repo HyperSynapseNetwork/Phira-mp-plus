@@ -37,7 +37,6 @@ impl CliHandler {
         }
     }
 
-
     pub(in crate::cli) async fn dispatch_global_ban_command(&self, args: &[&str]) {
         if args.is_empty() {
             self.out(format!(
