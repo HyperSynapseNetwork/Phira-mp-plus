@@ -72,10 +72,8 @@ server_name: "My Phira Server"
 chat_enabled: true
 cli_enabled: true
 
-# 真实网络压测账号（高级功能，默认不推荐）。
-# Simulation 是默认压测路径，不需要配置此项。
-benchmark_phira_tokens:
-  - "your-phira-token"
+# Real Benchmark 是高级兼容性测试，默认不推荐；Simulation 不需要 token。
+# 如需使用，请看 docs/benchmark-real.md。
 ```
 
 配置加载规则：默认读取 `server_config.yml`，也可通过 `--config <FILE>` 指定；配置文件缺失时使用默认值；命令行参数会覆盖端口、插件目录、监控 ID、扩展数据路径和 CLI 开关等同名设置。完整说明见 [docs/configuration.md](docs/configuration.md)。
@@ -192,12 +190,11 @@ curl -N http://127.0.0.1:12347/rooms/listen
 | 分组 | 命令 | 说明 |
 |------|------|------|
 | 通用 | `help`, `exit`, `status` | 帮助/退出/状态 |
-| 诊断/压测 | `benchmark`, `benchmark-cleanup` | 真实网络压测（默认路径：simulation） |
+| 诊断/压测 | `benchmark`, `benchmark, simulation` | 真实网络压测（默认路径：simulation） |
 | WASM 插件 | `plugin list/enable/disable/info/reload` | 插件管理 |
 | 用户 | `users`, `kick`, `broadcast` | 用户管理和消息 |
 | 房间 | `room list/info/start/cancel/kick/transfer/force-move/hide/set/close/history` | 房间管理子命令 |
 | 黑名单 | `ban`, `unban`, `banlist` | 封禁管理 |
-| 扩展数据 | `ext-list`, `ext-get` | 扩展字段 |
 
 ## WASM 插件开发
 
@@ -222,9 +219,6 @@ WASM 插件通过 `phira:host/api` 和 `phira:host/log` 等导入函数与宿主
 | `monitors` | Vec<i32> | `[2]` | 允许旁观的用户 ID |
 | `phira_api_endpoint` | String | `https://phira.5wyxi.com` | 全局 Phira API 端点；房间可临时覆盖 |
 | `plugins_dir` | String | `plugins` | WASM 插件目录 |
-| `extensions_file` | String | `data/extensions.json` | 扩展数据持久化文件 |
-| `benchmark_phira_tokens` | Vec<String> | `[]` | 真实网络压测使用的 Phira token 列表 |
-| `benchmark_phira_token` | String | — | 单账号压测 token 兼容写法 |
 | `database_url` | String | — | PostgreSQL 统一持久化连接串 |
 | `persistence_retention_days` | u32 | 30 | PG 历史数据保留天数，0 为不清理 |
 | `touch_judge_retention_days` | u32? | 未设置 | Touches/Judges 高频遥测独立保留天数；未设置时遵循 `persistence_retention_days`，0 为不清理 |
@@ -240,7 +234,7 @@ WASM 插件通过 `phira:host/api` 和 `phira:host/log` 等导入函数与宿主
 | `server_name` | String | — | 服务器名称 |
 | `wasm_runtime.*` | object | 见文档 | WASM 插件资源限制 |
 
-真实网络压测（`benchmark run real`）需要 Phira token；token 可在 `server_config.yml` 的 `benchmark_phira_tokens` 中配置。建议使用 Simulation 默认压测，不需要 token。配置 `database_url` 后会启用统一 PostgreSQL 持久化，保存用户、房间、事件、轮次、结算、游玩时间以及 Touches/Judges 高频遥测；遥测会写入独立批次表，`touch_judge_retention_days` 可单独控制保留时间，WIT/host API 可通过 `persist.*` 读取。管理员 ID 可用 `admin-id` 命令或 `admin.*` API 管理，管理员在创建房间名输入 `_命令` 会执行 CLI 并收到聊天形式的输出。隐藏房间通过房间名前缀 `-`、`room hide/unhide` 或 `room.set_hidden` 管理，不是全局配置项。房间也可以用 `room set <房间ID> phira_api_endpoint <url>` 临时覆盖全局 Phira API；服务端按房间获取谱面名、用户名、欢迎语与记录校验时会立即使用该 endpoint，`default`/`clear` 可恢复全局配置。`/me` 登录认证仍使用全局 endpoint。无人持久房间可通过 `room create-empty <ID> [API]` 或 `room.create_empty` 创建，最后一名玩家离开后不会自动删除；首个玩家加入空房间时静默成为房主，`room host <ID> ?` / `room.set_host` 可显式设置系统 `?` 房主。
+真实网络压测（`benchmark run real`）是高级兼容性测试，详见 docs/benchmark-real.md。默认压测推荐使用 Simulation，不需要 token。
 
 ## 许可证
 

@@ -137,11 +137,15 @@
 | `kick <user_id>` | 踢出用户 |
 | `pardon <user_id>` | 解封 |
 
+### 游玩统计
+
 | 命令 | 说明 |
 |------|------|
 | `playtime <user_id>` | 查询用户游玩时间 |
 | `player-count` | 游玩过的玩家总数 |
 | `room history <room_id>` | 查看房间游玩记录（替代废弃的 round-last） |
+
+### 欢迎语
 
 | 命令 | 说明 |
 |------|------|

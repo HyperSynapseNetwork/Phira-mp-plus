@@ -2045,6 +2045,7 @@ dependencies = [
  "unicode-width 0.2.2",
  "uuid",
  "wasmtime",
+ "wit-parser",
 ]
 
 [[package]]

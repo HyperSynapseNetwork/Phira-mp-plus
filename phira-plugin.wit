@@ -65,7 +65,7 @@ interface phira-types {
         flag(bool),
         integer(s64),
         float(float64),
-        text(string),
+        string(string),
         array(list<json-value>),
         object(list<tuple<string, json-value>>),
     }
@@ -79,30 +79,30 @@ interface phira-types {
 
 /// Host functions available to WASM plugins.
 interface phira-host {
-    use phira-types.{touch-event-point, judge-event-item, plugin-info, http-response, json-value, api-result, game-end-record};
+    use phira-types.{touch-event-point, judge-event-item, plugin-info, http-response, json-value, api-result, game-end-record}
 
     /// Log a message from the plugin.
-    log: func(level: string, message: string);
+    log: func(level: string, message: string)
 
     /// Generate a UUID v4 string.
-    generate-uuid: func() -> string;
+    generate-uuid: func() -> string
 
     /// Get current timestamp in milliseconds.
-    current-time-ms: func() -> u64;
+    current-time-ms: func() -> u64
 
     /// Call a server API method. Matches the host's ServerStateQuery interface.
-    api-call: func(method: string, args: list<json-value>) -> api-result;
+    api-call: func(method: string, args: list<json-value>) -> api-result
 
     /// Send a chat message as system (user-id 0) or as a specific user.
-    send-chat: func(user-id: u32, message: string);
+    send-chat: func(user-id: u32, message: string)
 
     /// Make an outbound HTTP request (sandboxed by WasmRuntimeConfig).
-    http-request: func(url: string, method: string, headers: list<tuple<string, string>>, body: list<u8>) -> result<http-response, string>;
+    http-request: func(url: string, method: string, headers: list<tuple<string, string>>, body: list<u8>) -> result<http-response, string>
 }
 
 /// Events the host sends to plugins.
 interface phira-events {
-    use phira-types.{touch-event-point, judge-event-item, game-end-record};
+    use phira-types.{touch-event-point, judge-event-item, game-end-record}
 
     /// All event types the host can dispatch to plugins.
     variant plugin-event {
@@ -122,7 +122,7 @@ interface phira-events {
 
 /// User and room data query APIs available to plugins.
 interface phira-query {
-    use phira-types.{json-value, api-result};
+    use phira-types.{json-value, api-result}
 
     /// Get user basic info (id, name, language, monitor status).
     get-user: func(user-id: u32) -> api-result;
@@ -151,7 +151,7 @@ interface phira-query {
 
 /// Room management operations.
 interface phira-room-mgmt {
-    use phira-types.{api-result};
+    use phira-types.{api-result}
 
     /// Create an empty persistent room with optional endpoint override.
     create-empty-room: func(room-id: string, endpoint: option<string>) -> api-result;
@@ -180,7 +180,7 @@ interface phira-room-mgmt {
 
 /// User management and moderation.
 interface phira-user-mgmt {
-    use phira-types.{api-result};
+    use phira-types.{api-result}
 
     /// Kick a user from the server.
     kick-user: func(user-id: u32, reason: string) -> api-result;
@@ -200,7 +200,7 @@ interface phira-user-mgmt {
 
 /// Messaging — send messages and broadcast.
 interface phira-messaging {
-    use phira-types.{api-result};
+    use phira-types.{api-result}
 
     /// Send a direct message to a specific user.
     send-to-user: func(user-id: u32, message: string) -> api-result;
@@ -214,7 +214,7 @@ interface phira-messaging {
 
 /// Persistence read API — incremental event/snapshot queries.
 interface phira-persistence {
-    use phira-types.{api-result};
+    use phira-types.{api-result}
 
     /// Query sequential events since a sequence number.
     query-events: func(since-sequence: u64, limit: u32, kind: option<string>, room-id: option<string>, user-id: option<u32>) -> api-result;
@@ -237,7 +237,7 @@ interface phira-persistence {
 
 /// Admin Phira ID configuration.
 interface phira-admin {
-    use phira-types.{api-result};
+    use phira-types.{api-result}
 
     /// List admin Phira IDs.
     list-admin-ids: func() -> api-result;
@@ -257,7 +257,7 @@ interface phira-admin {
 
 /// Simulation management.
 interface phira-simulation {
-    use phira-types.{api-result};
+    use phira-types.{api-result}
 
     /// Get current simulation status.
     status: func() -> api-result;
@@ -274,7 +274,7 @@ interface phira-simulation {
 
 /// Runtime diagnostics.
 interface phira-runtime {
-    use phira-types.{api-result};
+    use phira-types.{api-result}
 
     /// Get runtime v2 status summary (event bus, worker, registry).
     status: func() -> api-result;

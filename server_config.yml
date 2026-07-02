@@ -22,20 +22,10 @@ monitors:
 # 单个房间可用 `room set <房间ID> phira_api_endpoint <url>` 临时覆盖，设置后立即生效。
 phira_api_endpoint: "https://phira.5wyxi.com"
 
-# ---- 真实网络压测账号 ----
-
-# benchmark 使用真实 Phira token 通过 TCP 连接本服务端执行压测。
-# 未配置时执行 benchmark 会提示先绑定或修改配置。
-# 推荐多账号写法：一个 token 通常对应一个压测房间。
-# benchmark_phira_tokens:
-#   - "your-phira-token-1"
-#   - "your-phira-token-2"
-
-# 兼容单账号写法。已配置 benchmark_phira_tokens 时通常不需要它。
-# benchmark_phira_token: "your-phira-token"
-
-# 也可在 TUI/CLI 中执行 benchmark-auth <token1[,token2...]> 写入 data/benchmark-auth.json。
-# 如果上面的 YAML token 非空，则优先使用 YAML token。
+# ---- 真实网络压测（高级） ----
+# Real Benchmark 是高级兼容性测试，默认不推荐。
+# Simulation 不需要 token，不访问 Phira。
+# 如需使用 Real Benchmark，请看 docs/benchmark-real.md。
 
 # ---- 插件 / 数据 ----
 

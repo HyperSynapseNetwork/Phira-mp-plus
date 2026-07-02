@@ -295,6 +295,7 @@ RUST_LOG=debug ./phira-mp-plus-server
 | 路径 | 说明 |
 |---|---|
 | `data/extensions.json` | 扩展数据持久化文件，受 `extensions_file` 影响。 |
+| `data/benchmark-auth.json` | 压测 token 文件（高级用法，仅 Real Benchmark 使用）。 |
 | `data/welcome-config.json` | 欢迎语模板与占位符相关配置。 |
 | `data/rounds/` | 轮次 Touches/Judges 数据。 |
 | `data/plugins/<plugin>/` | 插件私有持久化文件目录。 |

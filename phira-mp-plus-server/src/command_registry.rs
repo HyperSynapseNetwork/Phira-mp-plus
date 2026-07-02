@@ -725,7 +725,7 @@ pub fn runtime_v2_registry() -> CommandRegistry {
         CommandSpec::new(
             "simulation run",
             "simulation",
-            "启动隔离 shadow world；默认自动 tick，到达 duration 后自动停止。",
+            "启动隔离本地压测；默认自动 tick，到达 duration 后自动停止。",
             "simulation run <baseline|small|medium|large|custom> [scenario=balanced|chat_storm|ready_storm|round_storm|touch_judge_burst|idle] [users=N] [rooms=N] [duration=N] [tick_ms=N] [auto=true] [persist_every=N] [touch=true] [judge=true]",
         )
         .example("simulation run baseline")
