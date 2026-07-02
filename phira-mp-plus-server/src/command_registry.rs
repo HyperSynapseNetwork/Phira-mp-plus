@@ -704,7 +704,7 @@ mod tests {
     fn registry_indexes_canonical_children() {
         let registry = runtime_v2_registry();
         assert!(registry.get("help").is_some());
-        assert!(registry.get("h").is_none());
+        assert!(registry.get("h").is_some(), "alias 'h' should resolve to help");
         assert!(registry.child_commands("room").contains(&"list".to_string()));
         assert!(registry.complete_line("simulation ").contains(&"status".to_string()));
         assert!(registry.complete_line("room f").contains(&"force-move".to_string()));
