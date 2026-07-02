@@ -633,4 +633,44 @@ mod tests {
             Duration::from_millis(1_000)
         );
     }
+
+    #[test]
+    fn circuit_breaker_recovers_after_half_open_probe_success() {
+        let breaker = PhiraCircuitBreaker::new(PhiraCircuitBreakerPolicy {
+            enabled: true,
+            failure_threshold: 2,
+            open_duration: Duration::from_millis(1),
+        });
+        // Trip breaker
+        breaker.record_failure();
+        breaker.record_failure();
+        assert_eq!(breaker.stats().state, "open");
+
+        // Wait for half-open
+        std::thread::sleep(Duration::from_millis(2));
+        assert_eq!(breaker.stats().state, "half_open");
+
+        // Successful probe resets breaker
+        breaker.record_success();
+        assert_eq!(breaker.stats().state, "closed");
+        assert_eq!(breaker.stats().consecutive_failures, 0);
+    }
+
+    #[test]
+    fn circuit_breaker_probation_accumulates_failures() {
+        let breaker = PhiraCircuitBreaker::new(PhiraCircuitBreakerPolicy {
+            enabled: true,
+            failure_threshold: 3,
+            open_duration: Duration::from_millis(50),
+        });
+        // One failure should not trip
+        breaker.record_failure();
+        assert_eq!(breaker.stats().state, "closed_with_failures");
+        assert!(breaker.allow_request());
+
+        // Reset with success
+        breaker.record_success();
+        assert_eq!(breaker.stats().state, "closed");
+        assert_eq!(breaker.stats().consecutive_failures, 0);
+    }
 }

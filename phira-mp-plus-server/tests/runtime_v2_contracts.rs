@@ -2,7 +2,7 @@ use phira_mp_plus_server::plugin_abi::{plugin_abi_plan, PluginAbiTransport};
 use phira_mp_plus_server::runtime_plan::RuntimePlan;
 
 #[test]
-fn runtime_plan_tracks_plugin_abi_and_test_coverage_goals() {
+fn runtime_plan_tracks_all_required_objectives() {
     let snapshot = RuntimePlan::master_plan().snapshot();
     let keys = snapshot
         .objectives
@@ -10,10 +10,21 @@ fn runtime_plan_tracks_plugin_abi_and_test_coverage_goals() {
         .map(|objective| objective.key)
         .collect::<Vec<_>>();
 
-    assert!(keys.contains(&"plugin-abi-v2"));
-    assert!(keys.contains(&"test-coverage"));
-    assert!(snapshot.no_web_management_api);
+    // Required Runtime v2 objectives (from Phase H spec)
+    assert!(keys.contains(&"actor-model"), "must track actor-model");
+    assert!(keys.contains(&"plugin-abi-v2"), "must track plugin-abi-v2");
+    assert!(keys.contains(&"test-coverage"), "must track test-coverage");
+    assert!(keys.contains(&"persistence-worker"), "must track persistence-worker");
+    assert!(keys.contains(&"phira-http"), "must track phira-http");
+    assert!(keys.contains(&"tui-v2"), "must track tui-v2");
+
+    // Architectural invariants
+    assert!(snapshot.no_web_management_api, "no Web management API");
     assert_eq!(snapshot.final_architecture, "actor_model");
+
+    // Sanity checks
+    assert!(snapshot.total >= 10, "plan should have at least 10 objectives");
+    assert!(snapshot.active > 0, "plan should have active objectives");
 }
 
 #[test]
