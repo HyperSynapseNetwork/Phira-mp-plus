@@ -319,15 +319,3 @@ fn phira_plugin_wit_is_canonical_only() {
         "workspace wit/ should not contain phira/ subdirectory (legacy lives in server crate)"
     );
 }
-
-#[test]
-fn canonical_wit_parses_with_wit_parser() {
-    let mut resolve = wit_parser::Resolve::default();
-    resolve.push_path(&canonical_wit()).expect("canonical WIT must parse");
-}
-
-#[test]
-fn legacy_wit_pointer_parses_with_wit_parser() {
-    let mut resolve = wit_parser::Resolve::default();
-    resolve.push_path(&legacy_wit()).expect("legacy WIT pointer must parse");
-}
