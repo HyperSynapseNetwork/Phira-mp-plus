@@ -507,27 +507,27 @@ pub fn runtime_v2_registry() -> CommandRegistry {
     );
 
     for spec in [
-        CommandSpec::new("runtime status", "runtime-v2", "查看 Runtime v2 骨架状态。", "runtime status"),
-        CommandSpec::new("runtime roadmap", "runtime-v2", "查看 Runtime v2 总目标工作板，防止长期目标在迭代中丢失。", "runtime roadmap")
+        CommandSpec::new("runtime status", "runtime-v2", "查看 Runtime v2 诊断信息。", "runtime status"),
+        CommandSpec::new("runtime roadmap", "runtime-v2", "查看 Runtime v2 总目标工作板。", "runtime roadmap")
             .advanced(),
         CommandSpec::new("runtime phira", "runtime-v2", "查看统一 Phira HTTP RetryClient 统计和策略。", "runtime phira").advanced(),
         CommandSpec::new("runtime commands", "runtime-v2", "查看 Command Registry 统计。", "runtime commands").advanced(),
-        CommandSpec::new("runtime events", "runtime-v2", "查看 EventBus 发布统计与最近事件。", "runtime events").advanced(),
-        CommandSpec::new("runtime persistence", "runtime-v2", "查看 Persistence Worker、低频双写和 Touch/Judge TelemetryBatcher 统计。", "runtime persistence"),
+        CommandSpec::new("runtime events", "runtime-v2", "查看事件总线统计与最近事件。", "runtime events").advanced(),
+        CommandSpec::new("runtime persistence", "runtime-v2", "查看持久化 Worker 与遥测批处理器统计。", "runtime persistence"),
         CommandSpec::new("runtime cutover", "runtime-v2", "查看或切换 Touch/Judge 持久化 cutover 模式。", "runtime cutover [direct_only|worker_only]").advanced()
             .arg(CommandArgSpec::optional("mode", "direct_only 或 worker_only"))
             .example("runtime cutover")
             .example("runtime cutover worker_only"),
-        CommandSpec::new("runtime schema", "runtime-v2", "查看 Runtime v2 持久化 schema、telemetry batch/item 表、读路径和 retention policy 说明。", "runtime schema").advanced(),
+        CommandSpec::new("runtime schema", "runtime-v2", "查看持久化 schema 说明。", "runtime schema").advanced(),
 
-        CommandSpec::new("runtime rooms", "runtime-v2", "查看 RoomCommandGateway / RoomActor mailbox 迁移状态、命令审计与耗时。", "runtime rooms").advanced(),
+        CommandSpec::new("runtime rooms", "runtime-v2", "查看房间命令通道与 Actor 迁移状态。", "runtime rooms").advanced(),
         CommandSpec::new("runtime actors", "runtime-v2", "查看 Actor 模型迁移蓝图。", "runtime actors").advanced(),
     ] {
         register(&mut registry, spec.example("runtime status"));
     }
 
     for spec in [
-        CommandSpec::new("simulation status", "simulation", "查看 Runtime v2 Simulation 状态。", "simulation status"),
+        CommandSpec::new("simulation status", "simulation", "查看 Simulation 状态。", "simulation status"),
         CommandSpec::new(
             "simulation run",
             "simulation",
@@ -557,14 +557,14 @@ pub fn runtime_v2_registry() -> CommandRegistry {
         .example("simulation report")
         .example("simulation report list 8")
         .example("simulation report clear"),
-        CommandSpec::new("simulation tick", "simulation", "手动推进 deterministic shadow world tick，并按 scenario 发布聚合 simulation.chat/ready/touch/judge/round 事件。", "simulation tick [count]").advanced()
+        CommandSpec::new("simulation tick", "simulation", "手动推进 Simulation tick。", "simulation tick [count]").advanced()
             .example("simulation tick 10"),
         CommandSpec::new("simulation inspect", "simulation", "查看 shadow users/rooms/rounds/recent events 样本。", "simulation inspect [limit]").advanced()
             .example("simulation inspect 20"),
         CommandSpec::new("simulation stop", "simulation", "停止当前 Simulation 运行状态并广播结束提示。", "simulation stop"),
         CommandSpec::new("simulation seed", "simulation", "设置 deterministic simulation seed。", "simulation seed <value>").advanced(),
-        CommandSpec::new("simulation cleanup", "simulation", "清理 Runtime v2 Simulation shadow world。", "simulation cleanup").advanced(),
-        CommandSpec::new("simulation persist", "simulation", "将当前 shadow world snapshot 发送到 EventBus / PersistenceWorker 的 simulation 专用路径。", "simulation persist").advanced()
+        CommandSpec::new("simulation cleanup", "simulation", "清理 Simulation 数据。", "simulation cleanup").advanced(),
+        CommandSpec::new("simulation persist", "simulation", "发送 Simulation 快照到持久化 Worker。", "simulation persist").advanced()
             .example("simulation persist"),
         CommandSpec::new("simulation sample", "simulation", "查看 deterministic touches/judges 示例数据规模。", "simulation sample").advanced(),
     ] {
@@ -586,23 +586,23 @@ pub fn runtime_v2_registry() -> CommandRegistry {
     );
     register(
         &mut registry,
-        CommandSpec::new("benchmark modes", "diagnostics", "查看 simulation / hybrid / real 三种压测模式边界。", "benchmark modes").advanced()
+        CommandSpec::new("benchmark modes", "diagnostics", "查看三种压测模式说明。", "benchmark modes").advanced()
             .example("benchmark modes"),
     );
     register(
         &mut registry,
-        CommandSpec::new("benchmark run real", "diagnostics", "显式运行真实 TCP + 真实 Phira token 兼容性测试，并输出统一 BenchmarkReport 摘要。", "benchmark run real [seconds] [rooms]").advanced()
+        CommandSpec::new("benchmark run real", "diagnostics", "运行真实 TCP 兼容性测试。", "benchmark run real [seconds] [rooms]").advanced()
             .example("benchmark run real 30 100"),
     );
     register(
         &mut registry,
-        CommandSpec::new("benchmark run hybrid", "diagnostics", "显式运行 Hybrid Phira probe；authenticate/chart_lookup/record_lookup/upload_record 独立开关，默认全部关闭，并输出统一 BenchmarkReport 摘要。", "benchmark run hybrid [duration] [authenticate=true] [chart_lookup=<id>] [record_lookup=<id>]").advanced()
+        CommandSpec::new("benchmark run hybrid", "diagnostics", "运行 Hybrid Phira 探测。", "benchmark run hybrid [duration] [authenticate=true] [chart_lookup=<id>] [record_lookup=<id>]").advanced()
             .example("benchmark run hybrid")
             .example("benchmark run hybrid authenticate=true chart_lookup=1 record_lookup=1"),
     );
     register(
         &mut registry,
-        CommandSpec::new("benchmark report", "diagnostics", "查看最近 real / hybrid / simulation 统一 BenchmarkReport 只读快照。", "benchmark report [simulation|hybrid|real|limit]").advanced()
+        CommandSpec::new("benchmark report", "diagnostics", "查看 Benchmark 报告。", "benchmark report [simulation|hybrid|real|limit]").advanced()
             .example("benchmark report")
             .example("benchmark report simulation")
             .example("benchmark report 16"),
@@ -643,8 +643,8 @@ pub fn runtime_v2_registry() -> CommandRegistry {
         CommandSpec::new("room list", "rooms", "查看活跃房间。", "room list"),
         CommandSpec::new("room create-empty", "rooms", "创建无人持久空房间。", "room create-empty <room_id> [phira_api_endpoint]").advanced(),
         CommandSpec::new("room info", "rooms", "查看房间详情。", "room info <room_id>"),
-        CommandSpec::new("room start", "rooms", "通过 Runtime v2 RoomCommandGateway 发起房间开始。", "room start <room_id>"),
-        CommandSpec::new("room cancel", "rooms", "通过 Runtime v2 RoomCommandGateway 取消管理员发起的等待准备状态。", "room cancel <room_id>"),
+        CommandSpec::new("room start", "rooms", "管理员发起游戏开始。", "room start <room_id>"),
+        CommandSpec::new("room cancel", "rooms", "取消管理员发起的游戏开始。", "room cancel <room_id>"),
         CommandSpec::new("room kick", "rooms", "从房间踢出用户。", "room kick <room_id> <user_id>"),
         CommandSpec::new("room host", "rooms", "设置房主，? 表示系统房主。", "room host <room_id> <user_id|?>"),
         CommandSpec::new("room force-move", "rooms", "强制迁移用户到指定房间。", "room force-move <room_id> <user_id> [monitor]").advanced(),
@@ -664,7 +664,7 @@ pub fn runtime_v2_registry() -> CommandRegistry {
     }
 
     for spec in [
-        CommandSpec::new("plugin list", "plugins", "列出所有 WASM 插件。", "plugin list"),
+        CommandSpec::new("plugin list", "plugins", "列出所有插件。", "plugin list"),
         CommandSpec::new("plugin enable", "plugins", "启用插件。", "plugin enable <name>"),
         CommandSpec::new("plugin disable", "plugins", "禁用插件。", "plugin disable <name>"),
         CommandSpec::new("plugin reload", "plugins", "重载所有插件。", "plugin reload"),
