@@ -104,7 +104,7 @@ wasm_runtime:
 | `runtime_v2` | `object` | 见下文 | Runtime v2 内部策略。用于配置 PersistenceWorker、TelemetryBatcher 和启动 cutover 模式，避免继续膨胀管理命令。 |
 | `server_name` | `String?` | 未设置 | 服务器展示名称，可用于欢迎语等场景。 |
 | `admin_token` | `String?` | 未设置 | 管理令牌预留/供管理接口或自定义扩展使用。基础公开 API 不需要配置。 |
-| `admin_phira_ids` | `Vec<i32>` | `[]` | 游戏内管理员 Phira ID。管理员可在创建房间弹窗输入 `_+命令` 执行 CLI 命令。 |
+| `admin_phira_ids` | `Vec<i32>` | `[]` | 游戏内管理员 Phira ID。管理员可在创建房间弹窗输入 `_命令` 执行 CLI 命令。 |
 | `benchmark_phira_tokens` | `Vec<String>` | `[]` | 真实网络压测使用的 Phira 账号 token 列表。 |
 | `benchmark_phira_token` | `String?` | 未设置 | 单账号兼容写法，会并入压测 token 列表。 |
 | `wasm_runtime` | `object` | 见下表 | WASM 插件运行时资源限制。 |
@@ -166,7 +166,7 @@ runtime_v2:
       open_duration_ms: 20000
 ```
 
-`worker_only` 只通过 Runtime v2 TelemetryBatcher 写入（默认）。`direct_only` 回退到旧 RoundStore/JSONL 直写路径。DualWrite/FallbackOnly 模式已在简化中移除。
+`worker_only` 只通过 Runtime v2 TelemetryBatcher 写入（默认）。`direct_only` 回退到旧 RoundStore/JSONL 直写路径。
 
 `phira_http` 控制统一 Phira RetryClient。默认策略会在连续失败达到阈值后短暂打开熔断器，避免 Phira 官方服务 502/超时期间继续把认证、选谱、成绩查询压在业务热路径上。Simulation 默认不访问 Phira；real/hybrid benchmark 必须显式走这套 client。
 
@@ -258,7 +258,7 @@ benchmark-bind token1,token2,token3
 压测使用真实 TCP 客户端。token 数量少于目标房间数时，服务端会重复使用已有 token：先离开/断开上一个 `bench-*` 房间，再重连并创建下一个压测房间，因此可以用少量账号反复创建/重建更多房间。并发活跃客户端数量仍受 token 数量限制，结果报告会显示创建/重建数量。
 
 
-## 游戏内管理员与 `_+` 命令入口
+## 游戏内管理员与 `_` 命令入口
 
 管理员 Phira ID 可写在配置文件：
 
@@ -287,7 +287,7 @@ admin.remove_id
 admin.set_ids
 ```
 
-管理员在客户端“创建房间”弹窗输入 `_+<CLI命令>` 时，服务端不会创建房间，而是执行对应 CLI 命令，并将输出通过聊天消息发回该客户端。非管理员输入 `_+...` 会按普通房间名处理。
+管理员在客户端”创建房间”弹窗输入 `_<CLI命令>` 时，服务端不会创建房间，而是执行对应 CLI 命令，并将输出通过聊天消息发回该客户端。非管理员输入 `_...` 会按普通房间名处理。
 
 ## 隐藏房间配置与行为
 

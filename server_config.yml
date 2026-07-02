@@ -59,8 +59,8 @@ persistence_retention_days: 30
 # ---- Runtime v2 内部策略 ----
 
 # Runtime v2 不再继续膨胀管理命令；核心开关尽量放在配置里。
-# telemetry_cutover_mode 可选：direct_only / dual_write / worker_only / fallback_only。
-# 测试阶段推荐 dual_write 对比旧表与 Runtime v2 表；确认稳定后可改 worker_only。
+# telemetry_cutover_mode 可选：direct_only / worker_only。
+# 开发阶段推荐 direct_only；生产稳定后建议 worker_only。
 # runtime_v2:
 #   persistence_queue_capacity: 4096
 #   telemetry_cutover_mode: direct_only  # direct_only (safe) | worker_only (opt-in)
@@ -133,7 +133,7 @@ round_data_retention_days: 7
 # 管理员 API 令牌（预留/供管理接口或自定义扩展使用）
 # admin_token: "your-secret-token"
 
-# 游戏内管理员 Phira ID。管理员在创建房间弹窗输入 _+<CLI命令> 时不会创建房间，
+# 游戏内管理员 Phira ID。管理员在创建房间弹窗输入 _<CLI命令> 时不会创建房间，
 # 而是执行服务端 CLI 命令，并把输出通过聊天消息发回该客户端。
 # 也可通过 CLI admin-id 或 WIT/host admin.* 动态维护。
 admin_phira_ids: []
