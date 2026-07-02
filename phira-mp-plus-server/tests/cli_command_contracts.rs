@@ -84,6 +84,7 @@ fn alias_does_not_conflict_with_command_names() {
     let rooms = registry.get("rooms").expect("rooms should exist");
     assert!(rooms.name == "rooms" || rooms.aliases.contains(&"rooms".to_string()),
         "rooms should resolve to the rooms command or its alias");
+}
 
 #[test]
 fn command_count_is_stable() {
