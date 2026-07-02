@@ -27,8 +27,8 @@ fn default_help_shows_primary_count() {
 fn help_all_shows_all_commands() {
     let registry = runtime_v2_registry();
     let all = registry.format_overview_all();
-    assert!(all.contains("primary="), "help all should show primary count");
-    assert!(all.contains("advanced="), "help all should show advanced count");
+    assert!(all.contains("全部命令"), "help all should show primary count");
+    assert!(all.contains("command"), "help all should show advanced count");
 }
 
 #[test]

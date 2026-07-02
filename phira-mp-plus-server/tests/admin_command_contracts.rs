@@ -1,32 +1,15 @@
-//! Admin `_` command parsing contracts.
-//!
-//! Tests the rules:
-//! - First `_` = admin command entry
-//! - Subsequent single `_` = space
-//! - Double `__` = literal underscore
-//! - `--` continuation concatenation
-//! - Non-admin `_xxx` doesn't execute commands
+use phira_mp_plus_server::session_room::decode_admin_room_command;
+// Admin `_` command parsing contracts.
+//
+// Tests the rules:
+// - First `_` = admin command entry
+// - Subsequent single `_` = space
+// - Double `__` = literal underscore
+// - `--` continuation concatenation
 
 use phira_mp_plus_server::cli::collect_cli_continuation;
 
-fn decode_admin_room_command(input: &str) -> String {
-    let mut out = String::with_capacity(input.len());
-    let mut chars = input.chars().peekable();
-    while let Some(ch) = chars.next() {
-        if ch == '_' {
-            if matches!(chars.peek(), Some('_')) {
-                chars.next();
-                out.push('_');
-            } else {
-                out.push(' ');
-            }
-        } else {
-            out.push(ch);
-        }
-    }
-    out.trim().to_string()
-}
-
+/// Uses production decode_admin_room_command from session_room.rs
 #[test]
 fn admin_id_list_decodes_from_underscore() {
     let decoded = decode_admin_room_command("_admin-id_list");

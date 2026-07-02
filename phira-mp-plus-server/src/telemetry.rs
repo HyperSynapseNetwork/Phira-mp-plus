@@ -30,16 +30,16 @@ static TELEMETRY_BATCH_SEQ: AtomicU64 = AtomicU64::new(1);
 
 /// Cutover mode controlling how production Touch/Judge telemetry is persisted.
 ///
-/// Simplified to two modes: DirectOnly (legacy) and WorkerOnly (target).
+/// Simplified to two modes: DirectOnly (legacy) and WorkerPreferred (target).
 /// DualWrite and FallbackOnly have been removed — they were development-stage
-/// comparison modes that added hot-path complexity. WorkerOnly is the target.
+/// comparison modes that added hot-path complexity. WorkerPreferred is the target.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TelemetryCutoverMode {
     /// Only the direct RoundStore/db.rs path writes production Touch/Judge data.
     DirectOnly,
     /// Only Runtime v2 TelemetryBatcher writes production Touch/Judge data.
-    WorkerOnly,
+    WorkerPreferred,
 }
 
 /// Structured decision derived from a [`TelemetryCutoverMode`].
@@ -58,7 +58,7 @@ impl TelemetryCutoverDecision {
                 enqueue_worker: false,
                 write_direct_before_worker_result: true,
             },
-            TelemetryCutoverMode::WorkerOnly => Self {
+            TelemetryCutoverMode::WorkerPreferred => Self {
                 mode,
                 enqueue_worker: true,
                 write_direct_before_worker_result: false,
@@ -74,7 +74,7 @@ impl TelemetryCutoverDecision {
 impl Default for TelemetryCutoverMode {
     fn default() -> Self {
         // Safety: DirectOnly ensures Touches/Judges never silently drop.
-        // WorkerOnly must be explicitly opted into by the operator.
+        // WorkerPreferred must be explicitly opted into by the operator.
         Self::DirectOnly
     }
 }
@@ -83,15 +83,15 @@ impl TelemetryCutoverMode {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::DirectOnly => "direct_only",
-            Self::WorkerOnly => "worker_only",
+            Self::WorkerPreferred => "worker_preferred",
         }
     }
 
     pub fn parse(value: &str) -> Option<Self> {
         match value.trim().to_ascii_lowercase().as_str() {
             "direct" | "direct_only" | "direct-only" => Some(Self::DirectOnly),
-            "worker" | "worker_only" | "worker-only" | "runtime" | "runtime_v2" => {
-                Some(Self::WorkerOnly)
+            "worker" | "worker_preferred" | "worker-only" | "runtime" | "runtime_v2" => {
+                Some(Self::WorkerPreferred)
             }
             _ => None,
         }
@@ -114,14 +114,14 @@ impl TelemetryCutoverMode {
             Self::DirectOnly => {
                 "direct RoundStore/db.rs only; Runtime v2 batcher is bypassed"
             }
-            Self::WorkerOnly => {
-                "Runtime v2 telemetry batch-write only; direct write is bypassed"
+            Self::WorkerPreferred => {
+                "Runtime v2 telemetry batch-write first; falls back to direct write on enqueue failure"
             }
         }
     }
 
     pub fn variants() -> &'static [TelemetryCutoverMode] {
-        &[Self::DirectOnly, Self::WorkerOnly]
+        &[Self::DirectOnly, Self::WorkerPreferred]
     }
 }
 
@@ -660,7 +660,7 @@ mod tests {
         assert!(direct.should_write_direct_after_worker_enqueue(false));
         assert!(direct.should_write_direct_after_worker_enqueue(true));
 
-        let worker = TelemetryCutoverMode::WorkerOnly.cutover_decision();
+        let worker = TelemetryCutoverMode::WorkerPreferred.cutover_decision();
         assert!(worker.enqueue_worker);
         assert!(!worker.should_write_direct_after_worker_enqueue(false));
         assert!(!worker.should_write_direct_after_worker_enqueue(true));

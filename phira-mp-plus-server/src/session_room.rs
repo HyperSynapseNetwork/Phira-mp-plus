@@ -12,7 +12,7 @@ use phira_mp_common::{JoinRoomResponse, Message, PartialRoomData, RoomEvent, Roo
 use std::{collections::HashMap, sync::{atomic::Ordering, Arc}};
 use tracing::{debug, debug_span, info, trace, Instrument};
 
-fn decode_admin_room_command(input: &str) -> String {
+pub fn decode_admin_room_command(input: &str) -> String {
     // Phira's room-name input box may not allow spaces. For the in-game admin
     // shortcut, the leading `_` is the command prefix and underscores after it
     // are treated as CLI spaces: `_room_list` => `room list`. A doubled

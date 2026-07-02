@@ -334,11 +334,11 @@ impl CommandRegistry {
 
     pub fn format_overview(&self) -> String {
         let mut lines = Vec::new();
-        let (primary, advanced) = self.command_surface_counts();
+        let (_primary, _advanced) = self.command_surface_counts();
         lines.push("Phira-mp+ 管理命令（推荐视图）".to_string());
         lines.push("─────────────────────────────────────────────".to_string());
         lines.push(format!(
-            "命令面：primary={primary} advanced={advanced}；默认只显示 primary"
+            "提示：help all 查看完整命令；help groups 查看分组"
         ));
         lines.push("提示：help <命令> 查看详情；help all 查看完整命令；help groups 查看分组".to_string());
         lines.push("提示：游戏内管理员入口仍使用 _ 命令，__ 表示字面量下划线".to_string());
@@ -373,10 +373,10 @@ impl CommandRegistry {
 
     pub fn format_overview_all(&self) -> String {
         let mut lines = Vec::new();
-        let (primary, advanced) = self.command_surface_counts();
+        let (_primary, _advanced) = self.command_surface_counts();
         lines.push("Phira-mp+ 管理命令（完整视图）".to_string());
         lines.push("─────────────────────────────────────────────".to_string());
-        lines.push(format!("primary={primary} advanced={advanced}"));
+        lines.push(format!("全部命令（primary + advanced）"));
         lines.push(String::new());
         for group in self.groups() {
             lines.push(self.format_group(&group, true));
@@ -441,6 +441,16 @@ impl CommandRegistry {
     ///
     /// Returns `Some(output_lines)` if a registered handler was found and executed,
     /// or `None` if no handler is registered (caller should fall back to old dispatch).
+
+    /// Resolve an alias to its canonical command name.
+    /// Returns the original name if no alias matches.
+    pub fn resolve_alias(&self, name: &str) -> String {
+        let normalized = normalize_command_name(name);
+        if self.commands.contains_key(&normalized) {
+            return name.to_string();
+        }
+        self.aliases.get(&normalized).cloned().unwrap_or_else(|| name.to_string())
+    }
     pub fn execute(&self, state: &PlusServerState, command: &str, args: &[&str]) -> Option<Vec<String>> {
         self.get(command).and_then(|spec| {
             spec.handler.as_ref().map(|handler| handler(state, args))

@@ -1,7 +1,7 @@
 //! Telemetry cutover safety contracts.
 //!
 //! These tests verify that the default telemetry cutover mode is safe
-//! (won't silently drop Touches/Judges), that WorkerOnly requires
+//! (won't silently drop Touches/Judges), that WorkerPreferred requires
 //! explicit opt-in, and that parse/display are consistent.
 
 use phira_mp_plus_server::telemetry::TelemetryCutoverMode;
@@ -14,9 +14,9 @@ fn default_cutover_mode_is_safe() {
 }
 
 #[test]
-fn worker_only_is_not_default() {
-    assert_ne!(TelemetryCutoverMode::default(), TelemetryCutoverMode::WorkerOnly,
-        "WorkerOnly must not be the default");
+fn worker_preferred_is_not_default() {
+    assert_ne!(TelemetryCutoverMode::default(), TelemetryCutoverMode::WorkerPreferred,
+        "WorkerPreferred must not be the default");
 }
 
 #[test]
@@ -44,8 +44,8 @@ fn direct_only_should_write_direct() {
 }
 
 #[test]
-fn worker_only_should_not_write_direct() {
-    let mode = TelemetryCutoverMode::WorkerOnly;
+fn worker_preferred_should_not_write_direct() {
+    let mode = TelemetryCutoverMode::WorkerPreferred;
     assert!(!mode.should_write_direct());
     assert!(mode.should_enqueue_worker());
 }
@@ -64,7 +64,7 @@ fn variants_cover_both_modes() {
     let variants = TelemetryCutoverMode::variants();
     assert_eq!(variants.len(), 2, "should have exactly 2 modes");
     assert!(variants.contains(&TelemetryCutoverMode::DirectOnly));
-    assert!(variants.contains(&TelemetryCutoverMode::WorkerOnly));
+    assert!(variants.contains(&TelemetryCutoverMode::WorkerPreferred));
 }
 
 #[test]
@@ -72,7 +72,7 @@ fn no_dual_write_or_fallback_in_simplified_modes() {
     // These modes were removed in the simplification; ensure they don't exist
     let variants = TelemetryCutoverMode::variants();
     for v in variants {
-        assert!(v.as_str() == "direct_only" || v.as_str() == "worker_only",
+        assert!(v.as_str() == "direct_only" || v.as_str() == "worker_preferred",
             "unexpected mode: {}", v.as_str());
     }
 }

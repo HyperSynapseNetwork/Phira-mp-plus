@@ -484,7 +484,7 @@ Step 20 starts the first production-facing PersistenceWorker dual-write path:
 - Low-frequency production `EventBus` events are still mirrored into `PersistenceWorker`.
 - The worker now writes those low-frequency production events into `mp_events` through the existing `DbManager::record_room_event_sync` helper.
 - Existing `db.rs` direct writes remain active and remain the compatibility source of truth for now.
-- Worker-written production events include `runtime_v2_source = "persistence_worker"` and `runtime_v2_dual_write = true` in the JSON payload so duplicated direct-path writes are easy to identify during testing.
+- Worker-written production events include `runtime_v2_source = "persistence_worker"` and `runtime_v2_worker_preferred = true` in the JSON payload so duplicated direct-path writes are easy to identify during testing.
 - Production Touch/Judge batches are **not** migrated to the worker yet. They were already fixed to persist without active monitors, but their high-frequency write path needs explicit batching/backpressure/flush semantics before worker ownership.
 - `runtime persistence` now reports `prod_db_req` and `prod_skip` counters in addition to simulation persistence counters.
 
@@ -555,7 +555,7 @@ New in this step:
 
 - `mp_runtime_telemetry_batches` is upgraded from a flat batch table to a richer
   batch-header table with `batch_uuid`, `run_id`, `scope`, `pipeline`, `source`,
-  `dual_write`, `schema_version` and `flush_reason` columns.
+  `worker_preferred`, `schema_version` and `flush_reason` columns.
 - `mp_runtime_telemetry_items` stores raw per-item Touch/Judge payload rows
   exploded from the batch payload `data` array.  This gives later analysis and
   replay tools a normalized item stream without having to repeatedly parse whole
@@ -579,7 +579,7 @@ direct RoundStore/db.rs path
 ```
 
 The next persistence step can introduce an explicit cutover switch such as
-`dual_write`, `worker_only` or `fallback_only`.  Since the project is still in
+`worker_preferred`, `worker_preferred` or `fallback_only`.  Since the project is still in
 active testing, schema and data files may continue to change aggressively as long
 as the commands and migration notes stay clear.
 
@@ -593,7 +593,7 @@ Available modes (simplified from 4 to 2 in Phase-0):
 
 ```text
 direct_only    only the direct RoundStore/db.rs path writes Touch/Judge data
-worker_only    Runtime v2 TelemetryBatcher batch-write only
+worker_preferred    Runtime v2 TelemetryBatcher batch-write only
 ```
 
 New in this step:
@@ -614,8 +614,8 @@ Recommended test order:
 
 ```text
 runtime cutover direct_only   # verify direct RoundStore/db.rs path
-runtime cutover dual_write    # compare direct tables with Runtime v2 batch/item tables
-runtime cutover worker_only   # verify the Session hot path can skip direct writes
+runtime cutover worker_preferred    # compare direct tables with Runtime v2 batch/item tables
+runtime cutover worker_preferred   # verify the Session hot path can skip direct writes
 runtime cutover fallback_only # verify enqueue failure fallback semantics
 ```
 
@@ -626,13 +626,13 @@ must always be visible through CLI diagnostics and database meta rows.
 
 ## Step 25: Runtime telemetry read path
 
-Step 24 made `worker_only` possible for production Touch/Judge writes.  Step 25
+Step 24 made `worker_preferred` possible for production Touch/Judge writes.  Step 25
 makes that mode usable by adding the corresponding read path:
 
 - `DbManager::read_round_player_data()` now reads direct `mp_round_player_data`
   first and falls back to normalized `mp_runtime_telemetry_items` when direct
   data is absent.  This keeps existing `round.data` / WIT / plugin read callers
-  working after `runtime cutover worker_only`.
+  working after `runtime cutover worker_preferred`.
 - `persist.touches` and `persist.judges` keep their direct batch query shape but
   fall back to `mp_runtime_telemetry_batches` when direct batch rows are absent.
 - Runtime v2 batch rows include `runtime_v2_read_path=true` in the returned JSON
@@ -644,7 +644,7 @@ makes that mode usable by adding the corresponding read path:
 Recommended worker-only validation:
 
 ```text
-runtime cutover worker_only
+runtime cutover worker_preferred
 # play one real round
 round.data <round_uuid> <player_id>
 persist.touches 0 20 <round_uuid> <player_id>
@@ -667,7 +667,7 @@ configured from `server_config.yml` through the `runtime_v2` block:
 ```yaml
 runtime_v2:
   persistence_queue_capacity: 4096
-  telemetry_cutover_mode: dual_write
+  telemetry_cutover_mode: worker_preferred
   telemetry_batcher:
     enabled: true
     dry_run: false
@@ -747,7 +747,7 @@ moving two high-churn responsibilities into focused modules:
 
 This is intentionally behavior-preserving.  Touches/Judges are still persisted
 without requiring an active monitor, and the current cutover modes
-`direct_only`, `dual_write`, `worker_only` and `fallback_only` are preserved.  The
+`direct_only`, `worker_preferred`, `worker_preferred` and `fallback_only` are preserved.  The
 point of this step is to stop the Session module from absorbing more unrelated
 Runtime v2 logic before deeper Session Actor work begins.
 

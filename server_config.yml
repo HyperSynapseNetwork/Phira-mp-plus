@@ -59,11 +59,11 @@ persistence_retention_days: 30
 # ---- Runtime v2 内部策略 ----
 
 # Runtime v2 不再继续膨胀管理命令；核心开关尽量放在配置里。
-# telemetry_cutover_mode 可选：direct_only / worker_only。
-# 开发阶段推荐 direct_only；生产稳定后建议 worker_only。
+# telemetry_cutover_mode 可选：direct_only / worker_preferred。
+# 开发阶段推荐 direct_only；生产稳定后建议 worker_preferred。
 # runtime_v2:
 #   persistence_queue_capacity: 4096
-#   telemetry_cutover_mode: direct_only  # direct_only (safe) | worker_only (opt-in)
+#   telemetry_cutover_mode: direct_only  # direct_only (safe) | worker_preferred (opt-in, fallback/)
 #   telemetry_batcher:
 #     enabled: true
 #     dry_run: false

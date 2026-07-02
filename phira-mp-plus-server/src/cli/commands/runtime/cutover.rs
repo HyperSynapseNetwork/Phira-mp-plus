@@ -20,7 +20,7 @@ impl CliHandler {
                 }
                 None => {
                     self.out(format!("  {} unknown telemetry cutover mode: {}", c::red("✗"), c::yellow(raw_mode)));
-                    self.out("  available: direct_only | worker_only".to_string());
+                    self.out("  available: direct_only | worker_preferred".to_string());
                 }
             }
         } else {
@@ -42,7 +42,7 @@ impl CliHandler {
                 ));
             }
             self.out(format!("  {} examples", c::cyan("▸")));
-            self.out("    runtime cutover worker_only".to_string());
+            self.out("    runtime cutover worker_preferred".to_string());
             self.out("    runtime cutover direct_only".to_string());
         }
     }
