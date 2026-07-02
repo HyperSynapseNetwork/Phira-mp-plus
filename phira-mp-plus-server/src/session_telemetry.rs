@@ -10,7 +10,7 @@ use crate::room::Room;
 use crate::session::User;
 use phira_mp_common::{JudgeEvent, ServerCommand, TouchFrame};
 use std::{sync::{atomic::Ordering, Arc}};
-use tracing::{debug, trace};
+use tracing::{debug, trace, warn};
 
 pub(crate) async fn handle_touches(user: Arc<User>, room: Arc<Room>, frames: Arc<Vec<TouchFrame>>) {
     let frame_count = frames.len();
