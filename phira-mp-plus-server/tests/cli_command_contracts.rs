@@ -4,7 +4,7 @@
 //! alias behavior, and that deprecated/advanced commands don't leak
 //! into the default help view.
 
-use phira_mp_plus_server::command_registry::runtime_v2_registry;
+use phira_mp_plus_server::command_registry::{runtime_v2_registry, CommandAudience};
 
 #[test]
 fn default_help_is_concise() {
@@ -73,8 +73,8 @@ fn command_count_is_stable() {
 #[test]
 fn deprecated_commands_not_in_primary() {
     let registry = runtime_v2_registry();
-    let primary: Vec<_> = registry.iter().filter(|c| c.audience == registry::CommandAudience::Advanced).collect();
-    for cmd in primary {
-        assert!(!cmd.name.contains("benchmark-bind"), "benchmark-bind should be advanced");
+    let advanced: Vec<_> = registry.iter().filter(|c| c.audience == CommandAudience::Advanced).collect();
+    for cmd in &advanced {
+        assert!(!cmd.name.contains("benchmark-bind"), "benchmark-bind should not appear in advanced list");
     }
 }

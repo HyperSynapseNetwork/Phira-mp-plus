@@ -62,10 +62,10 @@ fn custom_config_apply_kv() {
     assert_eq!(config.rooms, 20);
 }
 
-#[test]
-fn simulation_cleanup_resets_state() {
+#[tokio::test]
+async fn simulation_cleanup_resets_state() {
     // This tests the manager API, not a full run (which needs runtime)
     let manager = SimulationManager::new();
-    let status = manager.status();
+    let status = manager.status().await;
     assert!(!status.running, "fresh simulation should not be running");
 }
