@@ -232,26 +232,19 @@ benchmark_phira_tokens:
 benchmark_phira_token: "token-for-one-account"
 ```
 
-### 方式二：用 CLI 绑定
+### 方式二：用 CLI 写入
 
 ```text
-benchmark-bind token1,token2,token3
+benchmark-auth token1,token2,token3
 ```
 
-该命令会写入 `data/benchmark-auth.json`：
-
-```json
-{
-  "token": null,
-  "tokens": ["token1", "token2", "token3"]
-}
-```
+（注：`benchmark-bind` 已废弃，改用 `benchmark-auth` 或直接写入配置文件。）
 
 ### 读取优先级
 
 1. `server_config.yml` 的 `benchmark_phira_tokens` 和 `benchmark_phira_token`。
 2. 如果配置文件里没有任何压测 token，才读取 `data/benchmark-auth.json`。
-3. 两处都没有 token 时，执行 `benchmark` 会提示先运行 `benchmark-bind` 或修改配置文件。
+3. 两处都没有 token 时，执行 `benchmark` 会提示配置 `benchmark_phira_tokens` 或修改配置文件。
 
 ### 多账号与房间数
 
@@ -339,7 +332,7 @@ RUST_LOG=debug ./phira-mp-plus-server
 | 路径 | 说明 |
 |---|---|
 | `data/extensions.json` | 扩展数据持久化文件，受 `extensions_file` 影响。 |
-| `data/benchmark-auth.json` | `benchmark-bind` 写入的压测 token 文件。配置文件已有 token 时不会读取它。 |
+| `data/benchmark-auth.json` | 压测 token 文件（可通过 `benchmark-auth` 写入）。配置文件已有 token 时不会读取它。 |
 | `data/welcome-config.json` | 欢迎语模板与占位符相关配置。 |
 | `data/rounds/` | 轮次 Touches/Judges 数据。 |
 | `data/plugins/<plugin>/` | 插件私有持久化文件目录。 |

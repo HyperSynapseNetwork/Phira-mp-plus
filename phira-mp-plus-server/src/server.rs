@@ -139,7 +139,7 @@ pub struct PlusConfig {
     /// 拥有游戏内 `_+命令` 入口和管理 WIT/API 的 Phira 用户 ID 列表。
     #[serde(default)]
     pub admin_phira_ids: Vec<i32>,
-    /// 压测使用的 Phira token 列表。可在配置文件中直接填写，或通过 benchmark-bind 命令写入 data/benchmark-auth.json。
+    /// 压测使用的 Phira token 列表。可在配置文件中直接填写，或通过 CLI 写入 data/benchmark-auth.json。
     #[serde(default)]
     pub benchmark_phira_tokens: Vec<String>,
     /// 兼容单账号配置：benchmark_phira_token: "..."。
@@ -569,7 +569,7 @@ pub struct PlusServerState {
     pub phira_client: Arc<crate::phira_client::PhiraRetryClient>,
     /// Runtime v2 master workboard. Keeps the original long-term targets visible in CLI/TUI/API diagnostics.
     pub runtime_plan: Arc<crate::runtime_plan::RuntimePlan>,
-    /// 压测用 Phira token 列表（来自配置或 benchmark-bind 命令）。
+    /// 压测用 Phira token 列表（来自配置或 CLI 命令）。
     pub bench_tokens: RwLock<Vec<String>>,
     /// 管理员 Phira ID 集合。可由配置、PostgreSQL 设置、CLI/WIT 动态修改。
     pub admin_ids: RwLock<HashSet<i32>>,
@@ -1714,7 +1714,7 @@ impl PlusServerState {
                 report.probes.record_skipped();
                 report.add_failure_sample("authenticate", "no benchmark token configured");
                 o!("  │ ✗ skipped: no benchmark token configured");
-                o!("  │   run benchmark-bind <token1[,token2...]> or set benchmark_phira_tokens locally");
+                o!("  │   set benchmark_phira_tokens in server_config.yml or run benchmark-auth <token>");
             }
         }
 
@@ -1821,7 +1821,7 @@ impl PlusServerState {
         o!("  │");
         if tokens.is_empty() {
             o!("  ✗ 未配置 Phira 压测账号");
-            o!("  │  请先执行: benchmark-bind <token1[,token2...]>");
+            o!("  │  请配置 benchmark_phira_tokens 或执行 benchmark-auth <token>");
             o!(r#"  │  或直接修改 server_config.yml: benchmark_phira_tokens: ["..."]"#);
             o!(r#"  │  也可以写入 {BENCH_AUTH_FILE}: {{"tokens":["..."]}}"#);
             let mut report = BenchmarkReport::new(

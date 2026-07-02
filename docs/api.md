@@ -103,9 +103,9 @@
 |------|------|
 | `help` | 显示所有可用命令 |
 | `exit` | 关闭服务器 |
-| `benchmark [dur_s=30] [rooms=100]` | 真实网络压力测试（需先配置/绑定 Phira token） |
-| `benchmark-bind <token1[,token2...]>` | 绑定压测 Phira 账号 token |
-| `benchmark-cleanup` | 清理残留 `bench-*` 房间 |
+| `benchmark <seconds> [rooms]` | 真实网络压力测试（需 Phira token，advanced 级别） |
+| `benchmark modes` | 查看三种压测模式说明 |
+| `benchmark run real <seconds> [rooms]` | 显式真实 TCP 兼容性测试 |
 | `admin-id list/add/remove/set` | 查看或修改游戏内管理员 Phira ID |
 
 ### 房间管理
@@ -243,7 +243,7 @@ monitors:
 # Phira API 地址。认证、查谱面、查成绩会使用它。
 phira_api_endpoint: "https://phira.5wyxi.com"
 
-# 真实网络压测 token；也可用 benchmark-bind 写入 data/benchmark-auth.json。
+# 真实网络压测 token；建议在 server_config.yml 的 benchmark_phira_tokens 中配置。
 benchmark_phira_tokens:
   - "your-phira-token"
 # benchmark_phira_token: "single-token-compatible-form"
@@ -275,7 +275,7 @@ round_data_retention_days: 7
 
 1. `server_config.yml` 的 `benchmark_phira_tokens` / `benchmark_phira_token`；
 2. 如果配置文件未提供 token，读取 `data/benchmark-auth.json`；
-3. 两处都没有时，命令会提示运行 `benchmark-bind <token1[,token2...]>` 或修改配置文件。
+3. 两处都没有时，命令会提示配置 `benchmark_phira_tokens` 或修改配置文件。
 
 当 token 数量少于目标房间数时，benchmark 会重复使用已有 token：离开/断开上一个 `bench-*` 客户端，再重连创建下一个房间，用于反复覆盖创建/重建逻辑。
 

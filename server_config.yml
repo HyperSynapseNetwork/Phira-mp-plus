@@ -34,8 +34,8 @@ phira_api_endpoint: "https://phira.5wyxi.com"
 # 兼容单账号写法。已配置 benchmark_phira_tokens 时通常不需要它。
 # benchmark_phira_token: "your-phira-token"
 
-# 也可在 TUI/CLI 中执行：benchmark-bind <token1[,token2...]>
-# 该命令会写入 data/benchmark-auth.json；如果上面的 YAML token 非空，则优先使用 YAML token。
+# 也可在 TUI/CLI 中执行 benchmark-auth <token1[,token2...]> 写入 data/benchmark-auth.json。
+# 如果上面的 YAML token 非空，则优先使用 YAML token。
 
 # ---- 插件 / 数据 ----
 
