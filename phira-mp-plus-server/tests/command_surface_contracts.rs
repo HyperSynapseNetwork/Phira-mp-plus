@@ -114,32 +114,28 @@ fn help_dev_shows_developer_commands() {
 }
 
 #[test]
-fn help_legacy_shows_deprecated_commands() {
+fn legacy_commands_removed_from_registry() {
     let registry = runtime_v2_registry();
+    // All legacy commands have been removed from the registry
+    for name in &[
+        "ext-list",
+        "ext-get",
+        "playtime",
+        "round-last",
+        "welcome-config",
+        "player-count",
+    ] {
+        assert!(
+            registry.get(name).is_none(),
+            "'{name}' must be removed from registry"
+        );
+    }
+    // Legacy view shows empty placeholder
     let legacy = registry.format_legacy();
     assert!(
-        !legacy.is_empty(),
-        "legacy view should have deprecated commands"
+        legacy.contains("（无）"),
+        "legacy view should be empty after removing deprecated commands"
     );
-    for name in &["ext-list", "ext-get", "playtime", "round-last"] {
-        assert!(
-            legacy.contains(name),
-            "deprecated command '{name}' should appear in legacy view"
-        );
-    }
-}
-
-#[test]
-fn deprecated_commands_have_deprecated_audience() {
-    let registry = runtime_v2_registry();
-    for name in &["ext-list", "ext-get", "playtime", "round-last"] {
-        let spec = registry.get(name).expect("{name} should be in registry");
-        assert_eq!(
-            spec.audience,
-            CommandAudience::Deprecated,
-            "command '{name}' must be deprecated"
-        );
-    }
 }
 
 #[test]

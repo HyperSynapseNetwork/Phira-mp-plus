@@ -156,14 +156,29 @@ impl CommandRegistry {
         if self.commands.contains_key(&name) {
             return Err(format!("duplicated command name: {name}"));
         }
+        // Command name must not shadow an existing alias.
+        if self.aliases.contains_key(&name) {
+            return Err(format!(
+                "command name '{name}' shadows existing alias (already points to '{}')",
+                self.aliases.get(&name).unwrap()
+            ));
+        }
 
-        // Index aliases, checking for conflicts
+        // Index aliases, checking for conflicts.
+        // Alias must not be empty, must not duplicate another alias, and must
+        // not shadow an existing canonical command name.
         for alias in &spec.aliases {
             let normalized_alias = normalize_command_name(alias);
-            // Allow alias that shadows an existing command name: the command
-            // name takes priority in get() since we check commands first.
+            if normalized_alias.is_empty() {
+                return Err("alias cannot be empty".to_string());
+            }
             if self.aliases.contains_key(&normalized_alias) {
                 return Err(format!("duplicated alias: '{alias}'"));
+            }
+            if self.commands.contains_key(&normalized_alias) {
+                return Err(format!(
+                    "alias '{alias}' shadows existing command name '{normalized_alias}'"
+                ));
             }
             self.aliases.insert(normalized_alias, name.clone());
         }
@@ -370,7 +385,6 @@ impl CommandRegistry {
 
     pub fn format_overview(&self) -> String {
         let mut lines = Vec::new();
-        let (primary, _advanced, _developer, _deprecated) = self.command_surface_counts();
         lines.push("Phira-mp+ 管理命令".to_string());
         lines.push("─────────────────────────────────────────────".to_string());
         lines.push("提示：help <命令> 查看详情".to_string());
@@ -395,9 +409,7 @@ impl CommandRegistry {
         }
 
         lines.push("─────────────────────────────────────────────".to_string());
-        lines.push(format!(
-            "默认显示 {primary} 个主要命令；help advanced / dev / legacy 查看更多"
-        ));
+        lines.push("help <命令> 查看详情 • help advanced / dev / legacy 查看更多".to_string());
         lines.join("\n")
     }
 
@@ -568,9 +580,10 @@ fn normalize_command_name(value: &str) -> String {
 }
 
 fn register(registry: &mut CommandRegistry, spec: CommandSpec) {
-    // Runtime v2 metadata should not make server startup fragile. If a duplicate
-    // slips in, keep the rest of the registry usable and let tests/CI catch it.
-    let _ = registry.register(spec);
+    let name = spec.name.clone();
+    registry
+        .register(spec)
+        .unwrap_or_else(|err| panic!("failed to register command `{name}`: {err}"));
 }
 
 pub fn runtime_v2_registry() -> CommandRegistry {
@@ -649,13 +662,6 @@ pub fn runtime_v2_registry() -> CommandRegistry {
             "runtime-v2",
             "查看统一 Phira HTTP RetryClient 统计和策略。",
             "runtime phira",
-        )
-        .developer(),
-        CommandSpec::new(
-            "runtime commands",
-            "runtime-v2",
-            "查看 Command Registry 统计。",
-            "runtime commands",
         )
         .developer(),
         CommandSpec::new(
@@ -1046,41 +1052,6 @@ pub fn runtime_v2_registry() -> CommandRegistry {
         register(&mut registry, spec);
     }
 
-    for spec in [
-        CommandSpec::new("ext-list", "extensions", "查看扩展字段列表。", "ext-list").deprecated(),
-        CommandSpec::new(
-            "ext-get",
-            "extensions",
-            "查看扩展数据。",
-            "ext-get <user_id> <key>",
-        )
-        .deprecated(),
-        CommandSpec::new(
-            "welcome-config",
-            "extensions",
-            "查看或调整欢迎语配置。",
-            "welcome-config",
-        )
-        .deprecated(),
-        CommandSpec::new(
-            "player-count",
-            "extensions",
-            "查看玩家统计扩展。",
-            "player-count",
-        )
-        .deprecated(),
-        CommandSpec::new("playtime", "extensions", "查看游玩时长扩展。", "playtime").deprecated(),
-        CommandSpec::new(
-            "round-last",
-            "extensions",
-            "查看最近轮次扩展。",
-            "round-last",
-        )
-        .deprecated(),
-    ] {
-        register(&mut registry, spec);
-    }
-
     registry
 }
 
@@ -1176,6 +1147,10 @@ mod tests {
         let registry = runtime_v2_registry();
         assert!(!registry.format_advanced().is_empty());
         assert!(!registry.format_dev().is_empty());
-        // Deprecated may be empty if all removed, or contain the legacy commands
+        // All legacy commands removed from registry; legacy view should be empty
+        assert!(
+            registry.format_legacy().contains("（无）"),
+            "legacy view should be empty after removing deprecated commands"
+        );
     }
 }

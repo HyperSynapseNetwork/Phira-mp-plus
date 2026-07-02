@@ -136,7 +136,7 @@ fn command_count_is_stable() {
     let count = registry.iter().count();
     // If this fails, update the count — this test prevents drift
     assert!(
-        count >= 60 && count <= 90,
+        count >= 50 && count <= 65,
         "unexpected command count: {count}"
     );
 }
@@ -172,9 +172,8 @@ fn internal_commands_not_in_primary() {
 }
 
 #[test]
-fn deprecated_commands_appear_in_legacy_view() {
+fn deprecated_commands_removed_from_registry() {
     let registry = runtime_v2_registry();
-    let legacy = registry.format_legacy();
     for name in &[
         "ext-list",
         "ext-get",
@@ -184,10 +183,16 @@ fn deprecated_commands_appear_in_legacy_view() {
         "round-last",
     ] {
         assert!(
-            legacy.contains(name),
-            "deprecated command '{name}' should appear in legacy view"
+            registry.get(name).is_none(),
+            "'{name}' must be removed from registry"
         );
     }
+    // Legacy view shows empty result since all deprecated commands are removed
+    let legacy = registry.format_legacy();
+    assert!(
+        legacy.contains("（无）"),
+        "legacy view should be empty after removing deprecated commands"
+    );
 }
 
 #[test]

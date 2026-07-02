@@ -2,6 +2,16 @@ use super::super::*;
 
 impl CliHandler {
     pub(in crate::cli) async fn dispatch_benchmark_command(&self, args: &[&str]) {
+        if matches!(args.first().copied(), Some("token")) {
+            // benchmark token bind <token...>
+            let token_args = if args.len() > 2 { &args[2..] } else { &[] };
+            self.bind_benchmark(token_args).await;
+            return;
+        }
+        if matches!(args.first().copied(), Some("cleanup")) {
+            self.dispatch_benchmark_cleanup_command().await;
+            return;
+        }
         self.start_benchmark(args).await;
     }
 
@@ -83,7 +93,7 @@ impl CliHandler {
             rooms,
         ));
         self.out(format!(
-            "  {} 未配置账号时会提示执行 benchmark-bind <token1[,token2...]>；运行期间仍可继续输入其它命令",
+            "  {} 未配置账号时会提示配置 benchmark_phira_tokens；运行期间仍可继续输入其它命令",
             c::dim("▸")
         ));
         self.out(format!(
@@ -395,9 +405,8 @@ impl CliHandler {
     async fn bind_benchmark(&self, args: &[&str]) {
         if args.is_empty() {
             self.out(format!(
-                "  {} {} <token1[,token2...]> 或多个 token 参数",
+                "  {} benchmark token bind <token1[,token2...]> 或多个 token 参数",
                 c::yellow("?"),
-                c::bold("benchmark-bind")
             ));
             self.out(format!(
                 "  {} 也可以直接修改 server_config.yml: benchmark_phira_tokens: [\"...\"]",

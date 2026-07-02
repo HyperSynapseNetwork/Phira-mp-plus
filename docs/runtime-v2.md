@@ -1,5 +1,9 @@
 # MP+ Runtime v2
 
+> ⚠️ **Historical specification** — May reference deprecated modes and
+> commands. Current mode: `direct_only` / `worker_preferred`.
+> Current commands documented in README.md, docs/cli.md.
+
 Runtime v2 is a staged refactor plan for Phira-mp+.
 
 This document records the intended direction and the current implementation

@@ -2,6 +2,11 @@
 
 > Generated: 2026-07-02
 > Scope: Full source tree review (157 .rs files, ~75k lines total)
+>
+> ⚠️ **Historical audit snapshot** — This report may reference deprecated
+> commands, modes, or configuration. Current authoritative docs:
+> README.md, docs/cli.md, docs/configuration.md, docs/simulation.md,
+> docs/benchmark-real.md, docs/wit-abi.md.
 
 ---
 

@@ -61,16 +61,21 @@ impl CliHandler {
                 true
             }
             "benchmark-bind" => {
-                self.out(format!("  {} benchmark-bind 已废弃，不再注册为命令。请改用 benchmark run real <token>。", c::yellow("!")));
-                self.dispatch_benchmark_bind_command(args).await;
+                self.out(format!(
+                    "  {} benchmark-bind 已废弃。请使用 benchmark token bind <token>。",
+                    c::yellow("!")
+                ));
                 true
             }
             "benchmark-cleanup" => {
                 self.out(format!(
-                    "  {} benchmark-cleanup 已废弃，不再注册为命令。请改用 simulation cleanup。",
+                    "  {} benchmark-cleanup 已废弃。请使用 simulation cleanup。",
                     c::yellow("!")
                 ));
-                self.dispatch_benchmark_cleanup_command().await;
+                true
+            }
+            "extension" | "extensions" => {
+                self.dispatch_extension_command(args).await;
                 true
             }
             "admin-id" => {
@@ -78,11 +83,17 @@ impl CliHandler {
                 true
             }
             "ext-list" => {
-                self.list_extensions().await;
+                self.out(format!(
+                    "  {} ext-list 已废弃。请使用 extension list。",
+                    c::yellow("!")
+                ));
                 true
             }
             "ext-get" => {
-                self.dispatch_extension_get_command(args).await;
+                self.out(format!(
+                    "  {} ext-get 已废弃。请使用 extension get <target> <key>。",
+                    c::yellow("!")
+                ));
                 true
             }
             "ban" => {

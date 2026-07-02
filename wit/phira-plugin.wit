@@ -195,7 +195,7 @@ interface phira-user-mgmt {
     get-ban-list: func() -> api-result;
 
     /// Check if a user is banned.
-    is-banned: func(user-id: u32) -> api-result<bool, string>;
+    is-banned: func(user-id: u32) -> bool;
 }
 
 /// Messaging — send messages and broadcast.

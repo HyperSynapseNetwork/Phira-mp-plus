@@ -136,7 +136,7 @@ pub struct PlusConfig {
     /// 未设置时遵循 `persistence_retention_days`；设置为 0 表示不自动清理遥测。
     #[serde(default)]
     pub touch_judge_retention_days: Option<u32>,
-    /// 拥有游戏内 `_+命令` 入口和管理 WIT/API 的 Phira 用户 ID 列表。
+    /// 拥有游戏内 `_命令` 入口和管理 WIT/API 的 Phira 用户 ID 列表。
     #[serde(default)]
     pub admin_phira_ids: Vec<i32>,
     /// 压测使用的 Phira token 列表。可在配置文件中直接填写，或通过 CLI 写入 data/benchmark-auth.json。
