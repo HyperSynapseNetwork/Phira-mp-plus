@@ -103,16 +103,17 @@ fn no_dual_write_or_fallback_in_simplified_modes() {
 }
 
 #[test]
-fn worker_preferred_parse_accepts_legacy_names() {
-    // Old config names should still parse to WorkerPreferred for backward compatibility
+fn worker_preferred_parse_rejects_legacy_names() {
+    // Legacy config names are no longer accepted
     assert_eq!(
         TelemetryCutoverMode::parse("worker_only"),
-        Some(TelemetryCutoverMode::WorkerPreferred),
-        "parse('worker_only') should return WorkerPreferred"
+        None,
+        "parse('worker_only') should be rejected"
     );
     assert_eq!(
         TelemetryCutoverMode::parse("worker"),
-        Some(TelemetryCutoverMode::WorkerPreferred)
+        None,
+        "parse('worker') should be rejected"
     );
 }
 

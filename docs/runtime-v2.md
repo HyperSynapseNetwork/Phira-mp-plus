@@ -1,7 +1,6 @@
 # MP+ Runtime v2
 
-> ⚠️ **Historical specification** — May reference deprecated modes and
-> commands. Current mode: `direct_only` / `worker_preferred`.
+> ⚠️ **Historical specification**. Current mode: `direct_only` / `worker_preferred`.
 > Current commands documented in README.md, docs/cli.md.
 
 Runtime v2 is a staged refactor plan for Phira-mp+.
@@ -583,7 +582,7 @@ direct RoundStore/db.rs path
 ```
 
 The next persistence step can introduce an explicit cutover switch such as
-`worker_preferred`, `worker_preferred` or `fallback_only`.  Since the project is still in
+`direct_only` or `worker_preferred`.  Since the project is still in
 active testing, schema and data files may continue to change aggressively as long
 as the commands and migration notes stay clear.
 
@@ -620,7 +619,6 @@ Recommended test order:
 runtime cutover direct_only   # verify direct RoundStore/db.rs path
 runtime cutover worker_preferred    # compare direct tables with Runtime v2 batch/item tables
 runtime cutover worker_preferred   # verify the Session hot path can skip direct writes
-runtime cutover fallback_only # verify enqueue failure fallback semantics
 ```
 
 Because this branch is not production yet, database schema and persistence
@@ -751,7 +749,7 @@ moving two high-churn responsibilities into focused modules:
 
 This is intentionally behavior-preserving.  Touches/Judges are still persisted
 without requiring an active monitor, and the current cutover modes
-`direct_only`, `worker_preferred`, `worker_preferred` and `fallback_only` are preserved.  The
+`direct_only` and `worker_preferred` are preserved.  The
 point of this step is to stop the Session module from absorbing more unrelated
 Runtime v2 logic before deeper Session Actor work begins.
 

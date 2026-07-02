@@ -248,7 +248,7 @@ admin.set_ids
 
 隐藏房间不是全局配置项，而是房间状态：
 
-- 房间名以 `-` 开头时默认隐藏；兼容旧写法 `+-`。
+- 房间名以 `-` 开头时默认隐藏。
 - 可用 `room hide <房间ID>` / `room unhide <房间ID>` 手动切换。
 - 也可用 `room set <房间ID> hidden true|false` 修改。
 - WASM/host API 可用 `room.set_hidden`、`room.is_hidden` 管理。

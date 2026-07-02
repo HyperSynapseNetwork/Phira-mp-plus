@@ -1061,7 +1061,7 @@ impl DbManager {
                 judges = serde_json::from_str(&judges_raw).unwrap_or_default();
             }
 
-            // Runtime v2 worker_only/fallback_only modes may skip the direct
+            // Runtime v2 WorkerPreferred mode may skip the direct
             // mp_round_player_data row entirely.  Read normalized raw items as
             // a fallback so existing RoundStore/WIT/plugin read paths keep
             // working after telemetry cutover.
@@ -1808,7 +1808,7 @@ async fn init_tables(pool: &sqlx::PgPool) -> Result<()> {
         "item_table": "mp_runtime_telemetry_items",
         "mode": "direct_only",
         "available_modes": ["direct_only", "worker_preferred"],
-        "notes": "Runtime v2 telemetry schema normalizes batch headers and raw telemetry items. Modes simplified: dual_write, fallback_only, worker_only have been removed (legacy dev-stage modes)."
+        "notes": "Runtime v2 telemetry schema normalizes batch headers and raw telemetry items. Modes: direct_only, worker_preferred."
     }))
     .bind(now)
     .execute(pool)

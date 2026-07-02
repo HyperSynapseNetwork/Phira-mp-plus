@@ -1,15 +1,15 @@
 //! Command surface contract tests.
 //!
 //! These tests verify the CommandAudience separation, that primary commands
-//! are within the productised limit, and that advanced/dev/deprecated views
-//! work correctly.
+//! are within the productised limit, and that advanced/dev views work
+//! correctly.
 
 use phira_mp_plus_server::command_registry::{runtime_v2_registry, CommandAudience};
 
 #[test]
 fn primary_count_is_within_product_limit() {
     let registry = runtime_v2_registry();
-    let (primary, _advanced, _developer, _deprecated) = registry.command_surface_counts();
+    let (primary, _advanced, _developer) = registry.command_surface_counts();
     assert!(
         primary <= 25,
         "primary count {primary} exceeds 25 product limit"
@@ -45,25 +45,6 @@ fn default_overview_omits_developer_commands() {
         assert!(
             !overview.contains(cmd_name),
             "developer command '{cmd_name}' leaked into default overview"
-        );
-    }
-}
-
-#[test]
-fn default_overview_omits_deprecated_commands() {
-    let registry = runtime_v2_registry();
-    let overview = registry.format_overview();
-    for cmd_name in &[
-        "ext-list",
-        "ext-get",
-        "welcome-config",
-        "player-count",
-        "playtime",
-        "round-last",
-    ] {
-        assert!(
-            !overview.contains(cmd_name),
-            "deprecated command '{cmd_name}' leaked into default overview"
         );
     }
 }
@@ -114,7 +95,7 @@ fn help_dev_shows_developer_commands() {
 }
 
 #[test]
-fn legacy_commands_removed_from_registry() {
+fn deprecated_commands_removed_from_registry() {
     let registry = runtime_v2_registry();
     // All legacy commands have been removed from the registry
     for name in &[
@@ -130,12 +111,6 @@ fn legacy_commands_removed_from_registry() {
             "'{name}' must be removed from registry"
         );
     }
-    // Legacy view shows empty placeholder
-    let legacy = registry.format_legacy();
-    assert!(
-        legacy.contains("（无）"),
-        "legacy view should be empty after removing deprecated commands"
-    );
 }
 
 #[test]

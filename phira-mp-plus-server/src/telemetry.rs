@@ -93,8 +93,7 @@ impl TelemetryCutoverMode {
     pub fn parse(value: &str) -> Option<Self> {
         match value.trim().to_ascii_lowercase().as_str() {
             "direct" | "direct_only" | "direct-only" => Some(Self::DirectOnly),
-            "worker_preferred" | "worker" | "worker_only" | "worker-only" | "runtime"
-            | "runtime_v2" => Some(Self::WorkerPreferred),
+            "worker_preferred" | "worker-preferred" => Some(Self::WorkerPreferred),
             _ => None,
         }
     }

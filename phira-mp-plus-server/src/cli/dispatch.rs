@@ -60,40 +60,12 @@ impl CliHandler {
                 self.dispatch_runtime_command(args).await;
                 true
             }
-            "benchmark-bind" => {
-                self.out(format!(
-                    "  {} benchmark-bind 已废弃。请使用 benchmark token bind <token>。",
-                    c::yellow("!")
-                ));
-                true
-            }
-            "benchmark-cleanup" => {
-                self.out(format!(
-                    "  {} benchmark-cleanup 已废弃。请使用 simulation cleanup。",
-                    c::yellow("!")
-                ));
-                true
-            }
             "extension" | "extensions" => {
                 self.dispatch_extension_command(args).await;
                 true
             }
             "admin-id" => {
                 self.admin_ids(args).await;
-                true
-            }
-            "ext-list" => {
-                self.out(format!(
-                    "  {} ext-list 已废弃。请使用 extension list。",
-                    c::yellow("!")
-                ));
-                true
-            }
-            "ext-get" => {
-                self.out(format!(
-                    "  {} ext-get 已废弃。请使用 extension get <target> <key>。",
-                    c::yellow("!")
-                ));
                 true
             }
             "ban" => {

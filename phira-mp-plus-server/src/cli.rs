@@ -1,6 +1,5 @@
 //! Administrative command parsing and dispatch.
 
-use crate::command_registry::CommandAudience;
 use crate::plugin::PluginEvent;
 use crate::server::PlusServerState;
 use std::sync::Arc;
@@ -72,13 +71,6 @@ fn parse_room_host_target(value: &str) -> Result<Option<i32>, std::num::ParseInt
     } else {
         trimmed.parse::<i32>().map(Some)
     }
-}
-
-fn is_core_registered_command(name: &str) -> bool {
-    matches!(
-        name,
-        "welcome-config" | "player-count" | "playtime" | "round-last"
-    )
 }
 
 const CLIENT_CLI_OUTPUT_LINE_LIMIT: usize = 512;
@@ -359,12 +351,6 @@ impl CliHandler {
                     }
                     return;
                 }
-                ["legacy"] | ["deprecated"] => {
-                    for line in self.state.command_registry.format_legacy().lines() {
-                        self.out(format!("  {line}"));
-                    }
-                    return;
-                }
                 _ => {}
             }
 
@@ -395,32 +381,10 @@ impl CliHandler {
         }
 
         let plugin_cmds = self.state.plugin_manager.list_cli_commands().await;
-        let (core_cmds, wasm_cmds): (Vec<_>, Vec<_>) = plugin_cmds
-            .into_iter()
-            .partition(|cmd| is_core_registered_command(&cmd.name));
-        // Only show non-deprecated plugin extension commands in default help
-        let active_core: Vec<_> = core_cmds
-            .iter()
-            .filter(|cmd| {
-                self.state
-                    .command_registry
-                    .get(&cmd.name)
-                    .map_or(true, |spec| {
-                        !matches!(spec.audience, CommandAudience::Deprecated)
-                    })
-            })
-            .collect();
-        if !active_core.is_empty() {
+        if !plugin_cmds.is_empty() {
             self.out(String::new());
-            self.out(format!("  {} 内置扩展", c::cyan("▸")));
-            for cmd in &active_core {
-                self.out(format!("    {:<22} {}", c::dim(&cmd.name), cmd.description));
-            }
-        }
-        if !wasm_cmds.is_empty() {
-            self.out(String::new());
-            self.out(format!("  {} WASM 插件扩展", c::magenta("▸")));
-            for cmd in &wasm_cmds {
+            self.out(format!("  {} 插件扩展命令", c::cyan("▸")));
+            for cmd in &plugin_cmds {
                 self.out(format!("    {:<22} {}", c::dim(&cmd.name), cmd.description));
             }
         }

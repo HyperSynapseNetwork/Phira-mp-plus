@@ -41,16 +41,17 @@ fn telemetry_cutover_modes_round_trip_via_parse() {
 }
 
 #[test]
-fn worker_preferred_parse_accepts_legacy_names() {
+fn worker_preferred_parse_rejects_legacy_names() {
+    // Legacy compatibility names are no longer accepted
     assert_eq!(
         TelemetryCutoverMode::parse("worker_only"),
-        Some(TelemetryCutoverMode::WorkerPreferred),
-        "parse('worker_only') should yield WorkerPreferred"
+        None,
+        "parse('worker_only') should be rejected"
     );
     assert_eq!(
         TelemetryCutoverMode::parse("worker"),
-        Some(TelemetryCutoverMode::WorkerPreferred),
-        "parse('worker') should yield WorkerPreferred"
+        None,
+        "parse('worker') should be rejected"
     );
 }
 

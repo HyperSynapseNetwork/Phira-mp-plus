@@ -46,8 +46,6 @@ pub enum CommandAudience {
     Advanced,
     /// Internal developer commands (runtime internals, simulation internals).
     Developer,
-    /// Legacy commands kept for compatibility; not shown in default help.
-    Deprecated,
 }
 
 impl CommandAudience {
@@ -56,7 +54,6 @@ impl CommandAudience {
             Self::Primary => "primary",
             Self::Advanced => "advanced",
             Self::Developer => "developer",
-            Self::Deprecated => "deprecated",
         }
     }
 }
@@ -69,7 +66,6 @@ pub struct CommandSpec {
     pub usage: String,
     pub args: Vec<CommandArgSpec>,
     pub examples: Vec<String>,
-    pub aliases: Vec<String>,
     pub audience: CommandAudience,
     /// Optional handler for executing this command via the registry.
     pub handler: Option<CommandHandler>,
@@ -89,7 +85,6 @@ impl CommandSpec {
             usage: usage.into(),
             args: Vec::new(),
             examples: Vec::new(),
-            aliases: Vec::new(),
             audience: CommandAudience::Primary,
             handler: None,
         }
@@ -115,18 +110,8 @@ impl CommandSpec {
         self
     }
 
-    pub fn deprecated(mut self) -> Self {
-        self.audience = CommandAudience::Deprecated;
-        self
-    }
-
     pub fn handler(mut self, handler: CommandHandler) -> Self {
         self.handler = Some(handler);
-        self
-    }
-
-    pub fn alias(mut self, alias: impl Into<String>) -> Self {
-        self.aliases.push(alias.into());
         self
     }
 
@@ -138,7 +123,6 @@ impl CommandSpec {
 #[derive(Clone, Default)]
 pub struct CommandRegistry {
     commands: BTreeMap<String, CommandSpec>,
-    aliases: BTreeMap<String, String>, // alias → canonical name
     roots: BTreeSet<String>,
     children: BTreeMap<String, BTreeSet<String>>,
 }
@@ -156,32 +140,6 @@ impl CommandRegistry {
         if self.commands.contains_key(&name) {
             return Err(format!("duplicated command name: {name}"));
         }
-        // Command name must not shadow an existing alias.
-        if self.aliases.contains_key(&name) {
-            return Err(format!(
-                "command name '{name}' shadows existing alias (already points to '{}')",
-                self.aliases.get(&name).unwrap()
-            ));
-        }
-
-        // Index aliases, checking for conflicts.
-        // Alias must not be empty, must not duplicate another alias, and must
-        // not shadow an existing canonical command name.
-        for alias in &spec.aliases {
-            let normalized_alias = normalize_command_name(alias);
-            if normalized_alias.is_empty() {
-                return Err("alias cannot be empty".to_string());
-            }
-            if self.aliases.contains_key(&normalized_alias) {
-                return Err(format!("duplicated alias: '{alias}'"));
-            }
-            if self.commands.contains_key(&normalized_alias) {
-                return Err(format!(
-                    "alias '{alias}' shadows existing command name '{normalized_alias}'"
-                ));
-            }
-            self.aliases.insert(normalized_alias, name.clone());
-        }
 
         self.index_command_path(&name);
 
@@ -191,16 +149,9 @@ impl CommandRegistry {
         Ok(())
     }
 
-    pub fn get(&self, name_or_alias: &str) -> Option<&CommandSpec> {
-        let normalized = normalize_command_name(name_or_alias);
-        // Try direct command lookup first
-        if let Some(spec) = self.commands.get(&normalized) {
-            return Some(spec);
-        }
-        // Fall back to alias resolution
-        self.aliases
-            .get(&normalized)
-            .and_then(|canonical| self.commands.get(canonical))
+    pub fn get(&self, name: &str) -> Option<&CommandSpec> {
+        let normalized = normalize_command_name(name);
+        self.commands.get(&normalized)
     }
 
     pub fn iter(&self) -> impl Iterator<Item = &CommandSpec> {
@@ -228,7 +179,7 @@ impl CommandRegistry {
             .collect()
     }
 
-    pub fn command_surface_counts(&self) -> (usize, usize, usize, usize) {
+    pub fn command_surface_counts(&self) -> (usize, usize, usize) {
         let primary = self
             .commands
             .values()
@@ -244,12 +195,7 @@ impl CommandRegistry {
             .values()
             .filter(|cmd| cmd.audience == CommandAudience::Developer)
             .count();
-        let deprecated = self
-            .commands
-            .values()
-            .filter(|cmd| cmd.audience == CommandAudience::Deprecated)
-            .count();
-        (primary, advanced, developer, deprecated)
+        (primary, advanced, developer)
     }
 
     pub fn root_commands(&self) -> Vec<String> {
@@ -364,14 +310,6 @@ impl CommandRegistry {
             }
         }
 
-        if !spec.aliases.is_empty() {
-            lines.push(String::new());
-            lines.push("ALIASES".to_string());
-            for alias in &spec.aliases {
-                lines.push(format!("    {alias}"));
-            }
-        }
-
         if !spec.examples.is_empty() {
             lines.push(String::new());
             lines.push("EXAMPLES".to_string());
@@ -388,7 +326,7 @@ impl CommandRegistry {
         lines.push("Phira-mp+ 管理命令".to_string());
         lines.push("─────────────────────────────────────────────".to_string());
         lines.push("提示：help <命令> 查看详情".to_string());
-        lines.push("提示：help advanced / help dev / help legacy 查看其它命令".to_string());
+        lines.push("提示：help advanced / help dev 查看其它命令".to_string());
         lines.push("提示：游戏内管理员入口仍使用 _ 命令，__ 表示字面量下划线".to_string());
         lines.push(String::new());
 
@@ -409,17 +347,17 @@ impl CommandRegistry {
         }
 
         lines.push("─────────────────────────────────────────────".to_string());
-        lines.push("help <命令> 查看详情 • help advanced / dev / legacy 查看更多".to_string());
+        lines.push("help <命令> 查看详情 • help advanced / dev 查看更多".to_string());
         lines.join("\n")
     }
 
     pub fn format_overview_all(&self) -> String {
         let mut lines = Vec::new();
-        let (primary, advanced, developer, deprecated) = self.command_surface_counts();
+        let (primary, advanced, developer) = self.command_surface_counts();
         lines.push("Phira-mp+ 管理命令（完整视图）".to_string());
         lines.push("─────────────────────────────────────────────".to_string());
         lines.push(format!(
-            "primary={primary} advanced={advanced} dev={developer} deprecated={deprecated}"
+            "primary={primary} advanced={advanced} dev={developer}"
         ));
         lines.push(String::new());
         for group in self.groups() {
@@ -481,7 +419,6 @@ impl CommandRegistry {
                 CommandAudience::Primary => " ",
                 CommandAudience::Advanced => "advanced",
                 CommandAudience::Developer => "dev",
-                CommandAudience::Deprecated => "deprecated",
             };
             lines.push(format!(
                 "    {:<32} {:<10} {}",
@@ -527,10 +464,6 @@ impl CommandRegistry {
 
     pub fn format_dev(&self) -> String {
         self.format_audience(CommandAudience::Developer)
-    }
-
-    pub fn format_legacy(&self) -> String {
-        self.format_audience(CommandAudience::Deprecated)
     }
 
     pub fn format_unknown(&self, command: &str) -> String {
@@ -597,15 +530,12 @@ pub fn runtime_v2_registry() -> CommandRegistry {
             .example("help room list")
             .example("help group rooms")
             .example("help all")
-            .example("help groups")
-            .alias("h"),
+            .example("help groups"),
     );
     register(
         &mut registry,
         CommandSpec::new("exit", "core", "关闭服务器。", "exit")
-            .example("exit")
-            .alias("quit")
-            .alias("q"),
+            .example("exit"),
     );
     register(
         &mut registry,
@@ -645,9 +575,9 @@ pub fn runtime_v2_registry() -> CommandRegistry {
         )
         .developer()
         .handler(Arc::new(|state, _args| {
-            let (p, a, d, dep) = state.command_registry.command_surface_counts();
+            let (p, a, d) = state.command_registry.command_surface_counts();
             vec![format!(
-                "  Registry: {p} primary, {a} advanced, {d} dev, {dep} deprecated"
+                "  Registry: {p} primary, {a} advanced, {d} dev"
             )]
         })),
         CommandSpec::new(
@@ -881,7 +811,7 @@ pub fn runtime_v2_registry() -> CommandRegistry {
 
     register(
         &mut registry,
-        CommandSpec::new("rooms", "rooms", "查看活跃房间。", "rooms").alias("room list"),
+        CommandSpec::new("rooms", "rooms", "查看活跃房间。", "rooms"),
     );
     for spec in [
         CommandSpec::new(
@@ -1064,8 +994,8 @@ mod tests {
         let registry = runtime_v2_registry();
         assert!(registry.get("help").is_some());
         assert!(
-            registry.get("h").is_some(),
-            "alias 'h' should resolve to help"
+            registry.get("h").is_none(),
+            "alias 'h' should not exist after removing alias surface"
         );
         assert!(
             registry
@@ -1104,42 +1034,18 @@ mod tests {
     }
 
     #[test]
-    fn room_list_alias_resolves_to_rooms() {
+    fn canonical_rooms_command_exists() {
         let registry = runtime_v2_registry();
-        let spec = registry
-            .get("room list")
-            .expect("alias 'room list' should resolve");
-        assert_eq!(spec.name, "rooms", "room list should resolve to rooms");
-        // 'rooms' should also be directly accessible
-        let spec2 = registry.get("rooms").expect("rooms should exist");
-        assert_eq!(spec2.name, "rooms");
+        let spec = registry.get("rooms").expect("rooms should exist");
+        assert_eq!(spec.name, "rooms");
     }
 
     #[test]
     fn primary_count_is_within_limit() {
         let registry = runtime_v2_registry();
-        let (primary, _advanced, _dev, _deprecated) = registry.command_surface_counts();
+        let (primary, _advanced, _dev) = registry.command_surface_counts();
         assert!(primary <= 25, "primary count {} exceeds 25 limit", primary);
         assert!(primary > 0);
-    }
-
-    #[test]
-    fn deprecated_commands_not_in_default_overview() {
-        let registry = runtime_v2_registry();
-        let overview = registry.format_overview();
-        for name in &[
-            "ext-list",
-            "ext-get",
-            "welcome-config",
-            "player-count",
-            "playtime",
-            "round-last",
-        ] {
-            assert!(
-                !overview.contains(name),
-                "deprecated command '{name}' found in default overview"
-            );
-        }
     }
 
     #[test]
@@ -1147,10 +1053,5 @@ mod tests {
         let registry = runtime_v2_registry();
         assert!(!registry.format_advanced().is_empty());
         assert!(!registry.format_dev().is_empty());
-        // All legacy commands removed from registry; legacy view should be empty
-        assert!(
-            registry.format_legacy().contains("（无）"),
-            "legacy view should be empty after removing deprecated commands"
-        );
     }
 }

@@ -1,10 +1,9 @@
 //! CLI command surface contracts.
 //!
 //! These tests verify the CommandRegistry help output, command counts,
-//! alias behavior, and that deprecated/advanced commands don't leak
-//! into the default help view.
+//! and that canonical commands surface correctly.
 
-use phira_mp_plus_server::command_registry::{runtime_v2_registry, CommandAudience};
+use phira_mp_plus_server::command_registry::runtime_v2_registry;
 
 #[test]
 fn default_help_is_concise() {
@@ -21,7 +20,7 @@ fn default_help_is_concise() {
 #[test]
 fn default_help_shows_primary_count() {
     let registry = runtime_v2_registry();
-    let (primary, advanced, developer, deprecated) = registry.command_surface_counts();
+    let (primary, advanced, developer) = registry.command_surface_counts();
     assert!(
         primary >= 15,
         "expected at least 15 primary commands, got {primary}"
@@ -31,9 +30,9 @@ fn default_help_shows_primary_count() {
         developer >= 5,
         "expected at least 5 developer commands, got {developer}"
     );
-    let total = primary + advanced + developer + deprecated;
+    let total = primary + advanced + developer;
     assert!(
-        total >= 50 && total <= 90,
+        total >= 50 && total <= 85,
         "unexpected total command count: {total}"
     );
 }
@@ -51,10 +50,6 @@ fn help_all_shows_all_commands() {
         "help all should show advanced count"
     );
     assert!(all.contains("dev="), "help all should show dev count");
-    assert!(
-        all.contains("deprecated="),
-        "help all should show deprecated count"
-    );
 }
 
 #[test]
@@ -92,45 +87,6 @@ fn help_group_is_available() {
 }
 
 #[test]
-fn alias_h_resolves_to_help() {
-    let registry = runtime_v2_registry();
-    let spec = registry.get("h").expect("alias 'h' should resolve to help");
-    assert_eq!(spec.name, "help", "get('h') should return help command");
-}
-
-#[test]
-fn alias_q_resolves_to_exit() {
-    let registry = runtime_v2_registry();
-    let spec = registry.get("q").expect("alias 'q' should resolve to exit");
-    assert_eq!(spec.name, "exit", "get('q') should return exit command");
-}
-
-#[test]
-fn alias_h_format_help_works() {
-    let registry = runtime_v2_registry();
-    let help_text = registry
-        .format_help("h")
-        .expect("format_help('h') should work");
-    assert!(
-        help_text.contains("help"),
-        "help text for alias 'h' should mention help"
-    );
-}
-
-#[test]
-fn alias_does_not_conflict_with_command_names() {
-    // This test verifies that no alias collides with an existing command.
-    // The registry's register() method should reject such conflicts.
-    let registry = runtime_v2_registry();
-    // 'rooms' is an alias for 'room list' — verify it doesn't shadow 'rooms' itself
-    let rooms = registry.get("rooms").expect("rooms should exist");
-    assert!(
-        rooms.name == "rooms" || rooms.aliases.contains(&"rooms".to_string()),
-        "rooms should resolve to the rooms command or its alias"
-    );
-}
-
-#[test]
 fn command_count_is_stable() {
     let registry = runtime_v2_registry();
     let count = registry.iter().count();
@@ -139,36 +95,6 @@ fn command_count_is_stable() {
         count >= 50 && count <= 65,
         "unexpected command count: {count}"
     );
-}
-
-#[test]
-fn internal_commands_not_in_primary() {
-    let registry = runtime_v2_registry();
-    for cmd in registry.iter() {
-        if cmd.audience == CommandAudience::Primary {
-            // Internal/tool commands should never be primary
-            assert!(
-                !cmd.name.contains("ext-list"),
-                "ext-list should not be primary: {}",
-                cmd.name
-            );
-            assert!(
-                !cmd.name.contains("ext-get"),
-                "ext-get should not be primary: {}",
-                cmd.name
-            );
-            assert!(
-                !cmd.name.contains("playtime"),
-                "playtime should not be primary: {}",
-                cmd.name
-            );
-            assert!(
-                !cmd.name.contains("round-last"),
-                "round-last should not be primary: {}",
-                cmd.name
-            );
-        }
-    }
 }
 
 #[test]
@@ -187,12 +113,6 @@ fn deprecated_commands_removed_from_registry() {
             "'{name}' must be removed from registry"
         );
     }
-    // Legacy view shows empty result since all deprecated commands are removed
-    let legacy = registry.format_legacy();
-    assert!(
-        legacy.contains("（无）"),
-        "legacy view should be empty after removing deprecated commands"
-    );
 }
 
 #[test]
@@ -248,4 +168,58 @@ fn help_advanced_shows_benchmark_commands() {
         adv.contains("benchmark run real"),
         "advanced view should show benchmark run real"
     );
+}
+
+#[test]
+fn canonical_help_is_primary_command() {
+    let registry = runtime_v2_registry();
+    let spec = registry.get("help").expect("help should exist");
+    assert_eq!(spec.name, "help");
+    assert!(spec.audience == phira_mp_plus_server::command_registry::CommandAudience::Primary);
+}
+
+#[test]
+fn canonical_exit_is_command() {
+    let registry = runtime_v2_registry();
+    let spec = registry.get("exit").expect("exit should exist");
+    assert_eq!(spec.name, "exit");
+}
+
+#[test]
+fn canonical_namespaces_exist() {
+    let registry = runtime_v2_registry();
+    // Namespace-only commands: room, plugin, runtime, simulation
+    for name in &["room", "plugin", "runtime", "simulation"] {
+        assert!(
+            registry.get(name).is_none(),
+            "'{name}' as a direct command should not exist (it's a namespace)"
+        );
+        assert!(
+            !registry.child_commands(name).is_empty(),
+            "namespace '{name}' should have child commands"
+        );
+    }
+    // benchmark is both a leaf command and a parent namespace
+    assert!(registry.get("benchmark").is_some(), "benchmark should exist");
+    assert!(
+        !registry.child_commands("benchmark").is_empty(),
+        "benchmark should have child commands"
+    );
+}
+
+#[test]
+fn registry_has_no_legacy_or_alias_surface() {
+    let registry = runtime_v2_registry();
+    // Aliases should not resolve
+    assert!(registry.get("h").is_none());
+    assert!(registry.get("q").is_none());
+    assert!(registry.get("quit").is_none());
+    assert!(registry.get("room list").is_none());
+    // Legacy commands should not exist
+    assert!(registry.get("benchmark-bind").is_none());
+    assert!(registry.get("benchmark-cleanup").is_none());
+    assert!(registry.get("ext-list").is_none());
+    assert!(registry.get("ext-get").is_none());
+    assert!(registry.get("playtime").is_none());
+    assert!(registry.get("round-last").is_none());
 }
