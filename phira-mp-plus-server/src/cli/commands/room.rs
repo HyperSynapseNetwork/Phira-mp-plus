@@ -268,7 +268,7 @@ impl CliHandler {
 }
 
 impl CliHandler {
-    pub(in crate::cli) async fn kick_from_room(&self, room_id: &str, target_id: &str) {
+    pub(crate) async fn kick_from_room(&self, room_id: &str, target_id: &str) {
         let target: i32 = match target_id.parse() {
             Ok(id) => id,
             Err(_) => {
@@ -309,7 +309,7 @@ impl CliHandler {
         }
     }
 
-    pub(in crate::cli) async fn kick_user(&self, target_id: &str) {
+    pub(crate) async fn kick_user(&self, target_id: &str) {
         let target: i32 = match target_id.parse() {
             Ok(id) => id,
             Err(_) => {
@@ -386,7 +386,7 @@ impl CliHandler {
         }
     }
 
-    pub(in crate::cli) async fn close_room(&self, room_id: &str) {
+    pub(crate) async fn close_room(&self, room_id: &str) {
         match self
             .state
             .room_commands
@@ -403,12 +403,12 @@ impl CliHandler {
     }
 
     /// 从字符串查找房间
-    pub(in crate::cli) async fn find_room(&self, room_id: &str) -> Option<Arc<crate::room::Room>> {
+    pub(crate) async fn find_room(&self, room_id: &str) -> Option<Arc<crate::room::Room>> {
         let rid: phira_mp_common::RoomId = room_id.to_string().try_into().ok()?;
         self.state.rooms.read().await.get(&rid).map(Arc::clone)
     }
 
-    pub(in crate::cli) async fn room_info(&self, room_id: &str) {
+    pub(crate) async fn room_info(&self, room_id: &str) {
         let room = match self.find_room(room_id).await {
             Some(r) => r,
             None => {
@@ -515,7 +515,7 @@ impl CliHandler {
     }
 
     /// 由管理员发起游戏，等待所有客户端完成谱面加载后再开始。
-    pub(in crate::cli) async fn room_start(&self, room_id: &str) {
+    pub(crate) async fn room_start(&self, room_id: &str) {
         match self
             .state
             .room_commands
@@ -531,7 +531,7 @@ impl CliHandler {
     }
 
     /// 取消准备状态（管理员操作）
-    pub(in crate::cli) async fn room_cancel(&self, room_id: &str) {
+    pub(crate) async fn room_cancel(&self, room_id: &str) {
         match self
             .state
             .room_commands
@@ -553,7 +553,7 @@ impl CliHandler {
         }
     }
 
-    pub(in crate::cli) async fn room_set_host(&self, room_id: &str, target: Option<i32>) {
+    pub(crate) async fn room_set_host(&self, room_id: &str, target: Option<i32>) {
         match self
             .state
             .room_commands
@@ -588,7 +588,7 @@ impl CliHandler {
         }
     }
 
-    pub(in crate::cli) async fn room_create_empty(&self, room_id: &str, endpoint: Option<&str>) {
+    pub(crate) async fn room_create_empty(&self, room_id: &str, endpoint: Option<&str>) {
         let endpoint = match endpoint {
             Some(value) => match crate::server::parse_room_endpoint_value(value) {
                 Ok(endpoint) => endpoint,
@@ -616,7 +616,7 @@ impl CliHandler {
         }
     }
 
-    pub(in crate::cli) async fn room_force_move(&self, room_id: &str, user_id: i32, monitor: bool) {
+    pub(crate) async fn room_force_move(&self, room_id: &str, user_id: i32, monitor: bool) {
         match self
             .state
             .force_move_user_to_room(room_id, user_id, monitor)
@@ -633,7 +633,7 @@ impl CliHandler {
         }
     }
 
-    pub(in crate::cli) async fn room_hide(&self, room_id: &str, hidden: bool) {
+    pub(crate) async fn room_hide(&self, room_id: &str, hidden: bool) {
         match self.state.set_room_hidden(room_id, hidden).await {
             Ok(_) => self.out(format!(
                 "  {} 房间 {} 已{}隐藏",
@@ -645,7 +645,7 @@ impl CliHandler {
         }
     }
 
-    pub(in crate::cli) async fn room_set(&self, room_id: &str, field: &str, value: &str) {
+    pub(crate) async fn room_set(&self, room_id: &str, field: &str, value: &str) {
         let room = match self.find_room(room_id).await {
             Some(r) => r,
             None => {
@@ -826,7 +826,7 @@ impl CliHandler {
         }
     }
 
-    pub(in crate::cli) async fn room_history(&self, room_id: &str) {
+    pub(crate) async fn room_history(&self, room_id: &str) {
         let room = match self.find_room(room_id).await {
             Some(r) => r,
             None => {
@@ -883,7 +883,7 @@ impl CliHandler {
     }
 
     /// 显示房间 UUID
-    pub(in crate::cli) async fn room_show_uuid(&self, room_id: &str) {
+    pub(crate) async fn room_show_uuid(&self, room_id: &str) {
         let room = match self.find_room(room_id).await {
             Some(r) => r,
             None => {
@@ -895,7 +895,7 @@ impl CliHandler {
     }
 
     /// 列出房间历史轮次
-    pub(in crate::cli) async fn room_rounds(&self, room_id: &str) {
+    pub(crate) async fn room_rounds(&self, room_id: &str) {
         let room = match self.find_room(room_id).await {
             Some(r) => r,
             None => {
@@ -921,7 +921,7 @@ impl CliHandler {
     }
 
     /// 按轮次 UUID 查询结算详情
-    pub(in crate::cli) async fn room_round_info(&self, round_uuid: &str) {
+    pub(crate) async fn room_round_info(&self, round_uuid: &str) {
         let rooms = self.state.rooms.read().await;
         for room in rooms.values() {
             let history = room.play_history.read().await;
@@ -957,7 +957,7 @@ impl CliHandler {
         self.out(format!("  ✗ 未找到轮次 {round_uuid}"));
     }
 
-    pub(in crate::cli) async fn room_ban_list(&self, room_id: &str) {
+    pub(crate) async fn room_ban_list(&self, room_id: &str) {
         let list = self.state.ban_manager.list_room_bans(room_id).await;
         if list.is_empty() {
             self.out(format!("  {} 房间 {} 的黑名单为空", c::dim("·"), room_id));
@@ -970,4 +970,6 @@ impl CliHandler {
             list
         ));
     }
+
 }
+
