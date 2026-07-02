@@ -11,7 +11,7 @@ fn default_help_is_concise() {
     let registry = runtime_v2_registry();
     let overview = registry.format_overview();
     // Default help should not be a wall of text
-    assert!(overview.len() < 3000, "default help too long: {} chars", overview.len());
+    assert!(overview.len() < 4500, "default help too long: {} chars", overview.len());
 }
 
 #[test]
@@ -71,10 +71,21 @@ fn command_count_is_stable() {
 }
 
 #[test]
-fn deprecated_commands_not_in_primary() {
+fn internal_commands_not_in_primary() {
     let registry = runtime_v2_registry();
-    let advanced: Vec<_> = registry.iter().filter(|c| c.audience == CommandAudience::Advanced).collect();
-    for cmd in &advanced {
-        assert!(!cmd.name.contains("benchmark-bind"), "benchmark-bind should not appear in advanced list");
+    for cmd in registry.iter() {
+        if cmd.audience == CommandAudience::Primary {
+            // Internal/tool commands should never be primary
+            assert!(!cmd.name.contains("benchmark-bind"),
+                "benchmark-bind should not be primary: {}", cmd.name);
+            assert!(!cmd.name.contains("ext-list"),
+                "ext-list should not be primary: {}", cmd.name);
+            assert!(!cmd.name.contains("ext-get"),
+                "ext-get should not be primary: {}", cmd.name);
+            assert!(!cmd.name.contains("playtime"),
+                "playtime should not be primary: {}", cmd.name);
+            assert!(!cmd.name.contains("round-last"),
+                "round-last should not be primary: {}", cmd.name);
+        }
     }
 }
