@@ -115,7 +115,7 @@ impl TelemetryCutoverMode {
                 "direct RoundStore/db.rs only; Runtime v2 batcher is bypassed"
             }
             Self::WorkerPreferred => {
-                "Runtime v2 telemetry batch-write first; falls back to direct write on enqueue failure"
+                "Runtime v2 worker mirror + direct write for safety data written to both paths"
             }
         }
     }
