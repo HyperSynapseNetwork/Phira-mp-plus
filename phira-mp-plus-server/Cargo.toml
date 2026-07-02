@@ -48,4 +48,3 @@ plugin-system = ["dep:wasmtime"]
 postgres = ["dep:sqlx"]
 
 [dev-dependencies]
-wit-parser = { version = "0.224", default-features = false }
