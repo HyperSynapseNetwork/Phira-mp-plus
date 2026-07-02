@@ -156,14 +156,12 @@ impl RealisticSimulationRunner {
                 continue;
             }
 
-            // 1. Chat: pick a random user and simulate a message
+            // 1. Chat: pick a user and simulate a message (skip if user gone)
             let chatter = user_ids_here[0];
-            room.send_as(
-                &state.users.read().await.get(&chatter).map(Arc::clone).unwrap(),
-                format!("sim chat from user {chatter}"),
-            )
-            .await;
-            counters.chat_messages += 1;
+            if let Some(user) = state.users.read().await.get(&chatter).map(Arc::clone) {
+                room.send_as(&user, format!("sim chat from user {chatter}")).await;
+                counters.chat_messages += 1;
+            }
 
             // 2. Room lifecycle: cycle through states deterministically
             let room_state = { (*room.state.read().await).clone() };
