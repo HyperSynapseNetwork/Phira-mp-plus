@@ -6,7 +6,7 @@
 //! be inferred from ad-hoc JSON payloads.
 
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{json, Value};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -24,6 +24,79 @@ impl RoomCommandDelivery {
             Self::PerRoomMailbox => "per_room_mailbox",
             Self::FallbackInline => "fallback_inline",
             Self::MailboxError => "mailbox_error",
+        }
+    }
+}
+
+/// Typed payload for room command results.
+///
+/// New code should prefer these variants over ad-hoc JSON construction.
+/// The `into_json()` method converts to the legacy Value shape for
+/// compatibility with callers that still expect the untyped bridge.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RoomCommandPayload {
+    Empty,
+    LockChanged {
+        room_id: String,
+        locked: bool,
+    },
+    CycleChanged {
+        room_id: String,
+        cycle: bool,
+    },
+    HostChanged {
+        room_id: String,
+        host: Option<i32>,
+        host_name: String,
+        host_is_system: bool,
+    },
+    UserKicked {
+        room_id: String,
+        user_id: i32,
+        user_name: String,
+        room_dropped: bool,
+    },
+    RoomClosed {
+        room_id: String,
+    },
+    RoomStarted {
+        room_id: String,
+    },
+    CancelResult {
+        room_id: String,
+        canceled: bool,
+    },
+}
+
+impl RoomCommandPayload {
+    pub fn into_json(self) -> Value {
+        match self {
+            Self::Empty => json!({"ok": true}),
+            Self::LockChanged { room_id, locked } => json!({
+                "ok": true, "room_id": room_id, "locked": locked,
+            }),
+            Self::CycleChanged { room_id, cycle } => json!({
+                "ok": true, "room_id": room_id, "cycle": cycle,
+            }),
+            Self::HostChanged { room_id, host, host_name, host_is_system } => json!({
+                "ok": true, "room_id": room_id,
+                "host": host, "host_name": host_name,
+                "host_is_system": host_is_system,
+            }),
+            Self::UserKicked { room_id, user_id, user_name, room_dropped } => json!({
+                "ok": true, "room_id": room_id, "user_id": user_id,
+                "user_name": user_name, "room_dropped": room_dropped,
+            }),
+            Self::RoomClosed { room_id } => json!({
+                "ok": true, "room_id": room_id,
+            }),
+            Self::RoomStarted { room_id } => json!({
+                "ok": true, "room_id": room_id,
+            }),
+            Self::CancelResult { room_id, canceled } => json!({
+                "ok": true, "room_id": room_id, "canceled": canceled,
+            }),
         }
     }
 }
@@ -47,6 +120,19 @@ impl RoomCommandResult {
             Ok(payload) => Self::Ok { delivery, payload },
             Err(error) => Self::Err { delivery, error },
         }
+    }
+
+    /// Construct from a typed payload, converting to the JSON bridge shape.
+    pub fn from_payload(payload: RoomCommandPayload, delivery: RoomCommandDelivery) -> Self {
+        Self::Ok {
+            delivery,
+            payload: payload.into_json(),
+        }
+    }
+
+    /// Construct from a typed payload and wrap in Ok.
+    pub fn ok(payload: RoomCommandPayload, delivery: RoomCommandDelivery) -> Self {
+        Self::from_payload(payload, delivery)
     }
 
     pub fn mailbox_error(error: impl Into<String>) -> Self {
@@ -84,6 +170,14 @@ impl RoomCommandResult {
         match self {
             Self::Ok { payload, .. } => Ok(payload),
             Self::Err { error, .. } => Err(error),
+        }
+    }
+
+    /// Extract the JSON payload, if present.
+    pub fn into_payload(self) -> Option<Value> {
+        match self {
+            Self::Ok { payload, .. } => Some(payload),
+            Self::Err { .. } => None,
         }
     }
 }
@@ -140,5 +234,74 @@ mod tests {
         assert_eq!(result.delivery(), RoomCommandDelivery::MailboxError);
         assert_eq!(result.error_message().as_deref(), Some("reply lost"));
         assert_eq!(result.into_untyped().unwrap_err(), "reply lost");
+    }
+
+    #[test]
+    fn typed_payload_empty_converts_to_json() {
+        let payload = RoomCommandPayload::Empty;
+        let json = payload.into_json();
+        assert_eq!(json, serde_json::json!({"ok": true}));
+    }
+
+    #[test]
+    fn typed_payload_lock_changed_converts_to_json() {
+        let payload = RoomCommandPayload::LockChanged {
+            room_id: "room-a".into(),
+            locked: true,
+        };
+        let json = payload.into_json();
+        assert_eq!(json["ok"], true);
+        assert_eq!(json["room_id"], "room-a");
+        assert_eq!(json["locked"], true);
+    }
+
+    #[test]
+    fn typed_payload_host_changed_converts_to_json() {
+        let payload = RoomCommandPayload::HostChanged {
+            room_id: "room-b".into(),
+            host: Some(42),
+            host_name: "player1".into(),
+            host_is_system: false,
+        };
+        let json = payload.into_json();
+        assert_eq!(json["ok"], true);
+        assert_eq!(json["room_id"], "room-b");
+        assert_eq!(json["host"], 42);
+    }
+
+    #[test]
+    fn typed_payload_user_kicked_includes_room_dropped() {
+        let payload = RoomCommandPayload::UserKicked {
+            room_id: "room-c".into(),
+            user_id: 7,
+            user_name: "tester".into(),
+            room_dropped: true,
+        };
+        let json = payload.into_json();
+        assert_eq!(json["room_dropped"], true);
+        assert_eq!(json["user_name"], "tester");
+    }
+
+    #[test]
+    fn from_payload_wraps_in_ok() {
+        let result = RoomCommandResult::from_payload(
+            RoomCommandPayload::Empty,
+            RoomCommandDelivery::PerRoomMailbox,
+        );
+        assert!(result.is_ok());
+        assert_eq!(result.delivery(), RoomCommandDelivery::PerRoomMailbox);
+        let json = result.into_untyped().unwrap();
+        assert_eq!(json["ok"], true);
+    }
+
+    #[test]
+    fn ok_convenience_creates_typed_result() {
+        let result = RoomCommandResult::ok(
+            RoomCommandPayload::RoomClosed { room_id: "room-x".into() },
+            RoomCommandDelivery::Inline,
+        );
+        assert!(result.is_ok());
+        let payload = result.into_payload().unwrap();
+        assert_eq!(payload["room_id"], "room-x");
     }
 }
