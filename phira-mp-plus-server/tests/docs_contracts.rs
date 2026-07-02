@@ -177,27 +177,25 @@ fn configuration_no_unsupported_telemetry_modes() {
 }
 
 #[test]
-fn configuration_no_benchmark_bind_or_auth() {
+fn configuration_docs_do_not_show_real_benchmark_token_example() {
     let content = read_doc_required("configuration.md");
-    assert!(
-        !content.contains("benchmark-bind"),
-        "configuration.md must not contain benchmark-bind"
-    );
-    assert!(
-        !content.contains("benchmark-auth"),
-        "configuration.md must not contain benchmark-auth"
-    );
+    for token in &["benchmark-bind", "benchmark-auth", "benchmark_phira_tokens", "benchmark_phira_token", "your-token", "your-phira-token"] {
+        assert!(
+            !content.contains(token),
+            "configuration.md must not contain '{}' (real benchmark token)", token
+        );
+    }
 }
 
 // ── docs/cli.md checks ──────────────────────────────────────────────
 
 #[test]
-fn cli_docs_no_legacy_commands() {
+fn cli_docs_do_not_list_removed_legacy_commands() {
     let content = read_doc_required("cli.md");
     for cmd in &["welcome-config", "player-count", "playtime", "round-last", "ext-list", "ext-get", "benchmark-cleanup"] {
         assert!(
-            !content.contains(cmd) || content.contains("legacy") || content.contains("migration"),
-            "cli.md must not list '{cmd}' as a current command"
+            !content.contains(cmd),
+            "cli.md must not contain '{cmd}' (legacy command)"
         );
     }
 }
@@ -205,16 +203,17 @@ fn cli_docs_no_legacy_commands() {
 // ── docs/api.md checks ──────────────────────────────────────────────
 
 #[test]
-fn api_docs_no_legacy_commands() {
+fn api_docs_do_not_list_removed_legacy_commands() {
     let content = read_doc_required("api.md");
-    // playtime/player-count/welcome-config are placeholders in welcome template,
-    // but should not be listed as CLI commands
-    if content.contains("playtime <") {
+    for cmd in &["playtime <", "player-count", "welcome-config", "round-last", "benchmark_phira_tokens", "benchmark_phira_token"] {
         assert!(
-            content.contains("legacy") || content.contains("废弃"),
-            "api.md playtime reference must be legacy-marked"
+            !content.contains(cmd),
+            "api.md must not contain '{cmd}' (legacy command/token config)"
         );
     }
+    // Template placeholders like [player-count] and [playtime] are acceptable
+    // when inside the placeholder table section.  We already checked that
+    // "playtime <" (with angle bracket) does not appear as a CLI command.
 }
 
 // ── docs/simulation.md checks ───────────────────────────────────────

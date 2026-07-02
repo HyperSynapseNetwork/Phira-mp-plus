@@ -38,9 +38,8 @@ monitors:
 phira_api_endpoint: "https://phira.5wyxi.com"
 
 # ---- 压测 ----
-# 默认使用 Simulation（隔离 shadow world，不需要 token）。
-# Real Benchmark 是高级兼容性测试，如需使用见 docs/benchmark-real.md。
-# benchmark_phira_tokens: ["your-token"]
+# 默认使用 Simulation（隔离本地压测，不访问 Phira，不需要 token）。
+# Real Benchmark 是高级兼容性测试，详见 docs/benchmark-real.md。
 
 # ---- 插件 / 数据 ----
 plugins_dir: plugins

@@ -135,10 +135,6 @@ room set <房间ID> persistent false
 | `unban <用户ID>` | 解封用户 |
 | `banlist` | 列出封禁列表 |
 
-| 命令 | 说明 |
-|------|------|
-| `ext-list` | 列出所有注册的扩展数据字段 |
-| `ext-get <ID> <key>` | 获取指定用户/房间的扩展数据 |
 
 ## Web API
 

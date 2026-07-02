@@ -19,14 +19,22 @@ fn workspace_root() -> PathBuf {
 // Files that are ALLOWED to contain bare reqwest (with documented reason).
 // - phira_client.rs: unified Phira HTTP client implementation.
 // - wasm_host.rs: plugin sandbox HTTP, not Phira API.
-// - server.rs: contains fetch_phira_user_name / fetch_phira_chart helpers that
-//   should eventually migrate to PhiraRetryClient (refactor task).
 const ALLOWED_REQWEST_FILES: &[&str] = &[
     "phira-mp-plus-server/src/phira_client.rs",
     "phira-mp-plus-server/src/wasm_host.rs",
 ];
 
+// server.rs has legacy `reqwest::Client::builder()` calls in
+// `fetch_phira_user_name` and `fetch_phira_chart` that should
+// eventually migrate to PhiraRetryClient.  For now those are the
+// only allowed bare-reqwest lines; any NEW occurrence will fail.
+const ALLOWED_SERVER_LINE_PATTERNS: &[&str] = &[
+    "fetch_phira_user_name",
+    "fetch_phira_chart",
+];
+
 const BANNED_REQWEST_FILES: &[&str] = &[
+    "phira-mp-plus-server/src/server.rs",
     "phira-mp-plus-server/src/session.rs",
     "phira-mp-plus-server/src/session_auth.rs",
     "phira-mp-plus-server/src/session_room.rs",
@@ -48,8 +56,14 @@ fn banned_core_paths_have_no_bare_reqwest() {
         let content = std::fs::read_to_string(&full_path)
             .unwrap_or_else(|e| panic!("cannot read {}: {e}", full_path.display()));
         for pattern in REQWEST_PATTERNS {
-            if content.contains(pattern) {
-                failures.push(format!("  {}: contains '{}'", rel_path, pattern));
+            for (line_no, line) in content.lines().enumerate() {
+                if !line.contains(pattern) { continue; }
+                // server.rs is allowed to have specific legacy helper functions
+                let is_allowed_server_line = rel_path.contains("server.rs")
+                    && ALLOWED_SERVER_LINE_PATTERNS.iter().any(|p| line.contains(p));
+                if !is_allowed_server_line {
+                    failures.push(format!("  {}:{}: contains '{}'", rel_path, line_no + 1, pattern));
+                }
             }
         }
     }
@@ -57,7 +71,8 @@ fn banned_core_paths_have_no_bare_reqwest() {
         panic!(
             "Core business logic files must not contain bare reqwest:\n{}\n\
              Use PhiraRetryClient (phira_client.rs) instead.\n\
-             (wasm_host.rs and phira_client.rs are the only allowed exceptions.)",
+             (wasm_host.rs and phira_client.rs are the only allowed exceptions.)\n\
+             server.rs allows only fetch_phira_user_name / fetch_phira_chart (TODO: migrate to RetryClient).",
             failures.join("\n")
         );
     }

@@ -162,7 +162,7 @@ Phira-mp-plus/
 │   └── phira-mp-client/         #   TCP 客户端库 (供游戏集成)
 │
 ├── docs/                        # 文档
-│   ├── configuration.md         #   配置文件、压测 token 与运行时参数说明
+│   ├── configuration.md         #   配置文件与运行时参数说明
 │   ├── cli.md                   #   CLI 命令参考
 │   └── plugin-dev.md            #   WASM 插件开发指南 + WIT API 参考
 │

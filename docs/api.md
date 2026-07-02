@@ -137,15 +137,6 @@
 | `kick <user_id>` | 踢出用户 |
 | `pardon <user_id>` | 解封 |
 
-| 命令 | 说明 |
-|------|------|
-| `playtime <user_id>` | 查询用户游玩时间 |
-| `player-count` | 游玩过的玩家总数 |
-| `room history <room_id>` | 查看房间游玩记录（替代废弃的 round-last） |
-
-| 命令 | 说明 |
-|------|------|
-| `welcome-config` | 查看欢迎语配置与占位符 |
 
 ### 占位符（欢迎语模板）
 
@@ -239,10 +230,7 @@ monitors:
 # Phira API 地址。认证、查谱面、查成绩会使用它。
 phira_api_endpoint: "https://phira.5wyxi.com"
 
-# 真实网络压测 token；建议在 server_config.yml 的 benchmark_phira_tokens 中配置。
-benchmark_phira_tokens:
-  - "your-phira-token"
-# benchmark_phira_token: "single-token-compatible-form"
+# Real Benchmark 是高级兼容性测试，默认不推荐；详见 docs/benchmark-real.md。
 
 # WASM 插件目录与扩展数据文件
 plugins_dir: plugins
@@ -267,11 +255,7 @@ round_data_retention_days: 7
 
 ### 压测 token
 
-`benchmark` 会通过真实 TCP 协议连接本服务端并使用 Phira token 完成认证。token 读取顺序：
-
-1. `server_config.yml` 的 `benchmark_phira_tokens` / `benchmark_phira_token`；
-2. 如果配置文件未提供 token，读取 `data/benchmark-auth.json`；
-3. 两处都没有时，命令会提示配置 `benchmark_phira_tokens` 或修改配置文件。
+`benchmark` 是高级兼容性测试，需要显式配置 Phira token。默认压测推荐使用 Simulation（不访问 Phira，不需要 token）。
 
 当 token 数量少于目标房间数时，benchmark 会重复使用已有 token：离开/断开上一个 `bench-*` 客户端，再重连创建下一个房间，用于反复覆盖创建/重建逻辑。
 
