@@ -286,10 +286,7 @@ mod tests {
 
     #[test]
     fn typed_api_call_encodes_to_wire_format() {
-        let call = PluginApiCall::new(
-            "admin.get_info",
-            vec![serde_json::json!({"user_id": 42})],
-        );
+        let call = PluginApiCall::new("admin.get_info", vec![serde_json::json!({"user_id": 42})]);
         let bytes = encode_typed_api_call(&call).unwrap();
         let decoded: Vec<serde_json::Value> = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(decoded.len(), 2);

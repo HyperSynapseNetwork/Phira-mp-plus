@@ -567,7 +567,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn legacy_502_marker_is_retryable_without_full_notice_text() {
+    fn phira_502_marker_is_retryable_without_full_notice_text() {
         assert!(phira_status_retryable(
             reqwest::StatusCode::BAD_GATEWAY,
             PHIRA_LEGACY_502_MARKER

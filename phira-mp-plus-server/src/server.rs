@@ -285,7 +285,7 @@ pub struct PlusConfigCli {
 ///
 /// Simulation remains the default benchmark path and is handled by
 /// [`crate::simulation::SimulationManager`]. This queue is only for explicit
-/// benchmark modes: real network compatibility tests and hybrid Phira probes.
+/// benchmark modes: real network tests and hybrid Phira probes.
 pub struct BenchRequest {
     pub kind: BenchRequestKind,
     pub result_tx: std::sync::mpsc::Sender<String>,

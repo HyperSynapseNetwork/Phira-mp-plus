@@ -93,7 +93,7 @@ impl CliHandler {
             c::dim("▸")
         ));
         self.out(format!(
-            "  {} Runtime v2 默认压测入口将是 simulation；当前 benchmark 仍是显式 real-network 兼容性测试",
+            "  {} Runtime v2 默认压测入口将是 simulation；当前 benchmark 是显式 real-network 协议测试",
             c::dim("▸")
         ));
 

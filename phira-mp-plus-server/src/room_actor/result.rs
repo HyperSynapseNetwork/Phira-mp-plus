@@ -31,8 +31,8 @@ impl RoomCommandDelivery {
 /// Typed payload for room command results.
 ///
 /// New code should prefer these variants over ad-hoc JSON construction.
-/// The `into_json()` method converts to the legacy Value shape for
-/// compatibility with callers that still expect the untyped bridge.
+/// The `into_json()` method converts to a Value for
+/// callers that still expect the untyped JSON bridge.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RoomCommandPayload {
@@ -79,22 +79,12 @@ impl RoomCommandPayload {
             Self::CycleChanged { room_id, cycle } => json!({
                 "ok": true, "room_id": room_id, "cycle": cycle,
             }),
-            Self::HostChanged {
-                room_id,
-                host,
-                host_name,
-                host_is_system,
-            } => json!({
+            Self::HostChanged { room_id, host, host_name, host_is_system } => json!({
                 "ok": true, "room_id": room_id,
                 "host": host, "host_name": host_name,
                 "host_is_system": host_is_system,
             }),
-            Self::UserKicked {
-                room_id,
-                user_id,
-                user_name,
-                room_dropped,
-            } => json!({
+            Self::UserKicked { room_id, user_id, user_name, room_dropped } => json!({
                 "ok": true, "room_id": room_id, "user_id": user_id,
                 "user_name": user_name, "room_dropped": room_dropped,
             }),
@@ -307,9 +297,7 @@ mod tests {
     #[test]
     fn ok_convenience_creates_typed_result() {
         let result = RoomCommandResult::ok(
-            RoomCommandPayload::RoomClosed {
-                room_id: "room-x".into(),
-            },
+            RoomCommandPayload::RoomClosed { room_id: "room-x".into() },
             RoomCommandDelivery::Inline,
         );
         assert!(result.is_ok());

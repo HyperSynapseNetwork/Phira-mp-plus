@@ -105,7 +105,7 @@
 | `exit` | 关闭服务器 |
 | `benchmark <seconds> [rooms]` | 真实网络压力测试（需 Phira token，advanced 级别） |
 | `benchmark modes` | 查看三种压测模式说明 |
-| `benchmark run real <seconds> [rooms]` | 显式真实 TCP 兼容性测试 |
+| `benchmark run real <seconds> [rooms]` | 显式真实 TCP 协议测试 |
 | `admin-id list/add/remove/set` | 查看或修改游戏内管理员 Phira ID |
 
 ### 房间管理

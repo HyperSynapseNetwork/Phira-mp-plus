@@ -727,7 +727,7 @@ pub fn runtime_v2_registry() -> CommandRegistry {
                 "  Benchmark modes:".to_string(),
                 "    simulation  — 默认推荐压测（隔离本地，不访问 Phira，不需要 token）"
                     .to_string(),
-                "    real        — 显式真实 TCP 兼容性测试（需要 Phira token）".to_string(),
+                "    real        — 显式真实 TCP 协议测试（需要 Phira token）".to_string(),
                 "    hybrid      — Hybrid Phira 探测（chart_lookup / record_lookup）".to_string(),
             ]
         })),
@@ -737,7 +737,7 @@ pub fn runtime_v2_registry() -> CommandRegistry {
         CommandSpec::new(
             "benchmark run real",
             "diagnostics",
-            "运行真实 TCP 兼容性测试。",
+            "运行真实 TCP 协议测试。",
             "benchmark run real [seconds] [rooms]",
         )
         .advanced()
