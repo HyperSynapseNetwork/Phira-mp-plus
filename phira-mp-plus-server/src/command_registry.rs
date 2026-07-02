@@ -626,24 +626,24 @@ pub fn runtime_v2_registry() -> CommandRegistry {
     );
     for spec in [
         CommandSpec::new("room list", "rooms", "查看活跃房间。", "room list"),
-        CommandSpec::new("room create-empty", "rooms", "创建无人持久空房间。", "room create-empty <room_id> [phira_api_endpoint]"),
+        CommandSpec::new("room create-empty", "rooms", "创建无人持久空房间。", "room create-empty <room_id> [phira_api_endpoint]").advanced(),
         CommandSpec::new("room info", "rooms", "查看房间详情。", "room info <room_id>"),
         CommandSpec::new("room start", "rooms", "通过 Runtime v2 RoomCommandGateway 发起房间开始。", "room start <room_id>"),
         CommandSpec::new("room cancel", "rooms", "通过 Runtime v2 RoomCommandGateway 取消管理员发起的等待准备状态。", "room cancel <room_id>"),
         CommandSpec::new("room kick", "rooms", "从房间踢出用户。", "room kick <room_id> <user_id>"),
         CommandSpec::new("room host", "rooms", "设置房主，? 表示系统房主。", "room host <room_id> <user_id|?>"),
-        CommandSpec::new("room force-move", "rooms", "强制迁移用户到指定房间。", "room force-move <room_id> <user_id> [monitor]"),
-        CommandSpec::new("room hide", "rooms", "隐藏房间，使其默认不出现在 Web API 与欢迎语。", "room hide <room_id> [true|false]"),
-        CommandSpec::new("room unhide", "rooms", "取消隐藏房间。", "room unhide <room_id>"),
+        CommandSpec::new("room force-move", "rooms", "强制迁移用户到指定房间。", "room force-move <room_id> <user_id> [monitor]"),.advanced()
+        CommandSpec::new("room hide", "rooms", "隐藏房间，使其默认不出现在 Web API 与欢迎语。", "room hide <room_id> [true|false]"),.advanced()
+        CommandSpec::new("room unhide", "rooms", "取消隐藏房间。", "room unhide <room_id>"),.advanced()
         CommandSpec::new("room close", "rooms", "解散房间。", "room close <room_id>"),
         CommandSpec::new("room set", "rooms", "修改房间设置。", "room set <room_id> <field> <value>"),
         CommandSpec::new("room history", "rooms", "查看房间游玩历史。", "room history <room_id>"),
-        CommandSpec::new("room rounds", "rooms", "查看房间轮次列表。", "room rounds <room_id>"),
-        CommandSpec::new("room round", "rooms", "查看指定轮次详情。", "room round <round_uuid>"),
-        CommandSpec::new("room uuid", "rooms", "查看房间 UUID。", "room uuid <room_id>"),
-        CommandSpec::new("room ban", "rooms", "加入房间黑名单。", "room ban <room_id> <user_id>"),
-        CommandSpec::new("room unban", "rooms", "移出房间黑名单。", "room unban <room_id> <user_id>"),
-        CommandSpec::new("room banlist", "rooms", "查看房间黑名单。", "room banlist <room_id>"),
+        CommandSpec::new("room rounds", "rooms", "查看房间轮次列表。", "room rounds <room_id>"),.advanced()
+        CommandSpec::new("room round", "rooms", "查看指定轮次详情。", "room round <round_uuid>"),.advanced()
+        CommandSpec::new("room uuid", "rooms", "查看房间 UUID。", "room uuid <room_id>"),.advanced()
+        CommandSpec::new("room ban", "rooms", "加入房间黑名单。", "room ban <room_id> <user_id>"),.advanced()
+        CommandSpec::new("room unban", "rooms", "移出房间黑名单。", "room unban <room_id> <user_id>"),.advanced()
+        CommandSpec::new("room banlist", "rooms", "查看房间黑名单。", "room banlist <room_id>"),.advanced()
     ] {
         register(&mut registry, spec);
     }

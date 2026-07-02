@@ -1,5 +1,11 @@
-// Phira-mp+ 插件系统 WIT API 定义
-// 本文件定义了 Phira-mp+ 服务器与 WASM 插件之间的接口规范
+// DEPRECATED — Legacy WIT ABI (abi-json-v1 era).
+//
+// The canonical WIT ABI v2 definition lives at `wit/phira-plugin.wit` (workspace root).
+// This file is preserved for reference during migration and will be removed once
+// all host bindings use the new world-based ABI.
+//
+// Migration target: phira-plugin-v2 world in wit/phira-plugin.wit
+// See: plugin_abi.rs → wit module
 
 package phira:mpplus;
 

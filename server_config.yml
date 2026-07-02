@@ -63,7 +63,7 @@ persistence_retention_days: 30
 # 测试阶段推荐 dual_write 对比旧表与 Runtime v2 表；确认稳定后可改 worker_only。
 # runtime_v2:
 #   persistence_queue_capacity: 4096
-#   telemetry_cutover_mode: dual_write
+#   telemetry_cutover_mode: direct_only  # direct_only (safe) | worker_only (opt-in)
 #   telemetry_batcher:
 #     enabled: true
 #     dry_run: false

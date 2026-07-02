@@ -73,7 +73,9 @@ impl TelemetryCutoverDecision {
 
 impl Default for TelemetryCutoverMode {
     fn default() -> Self {
-        Self::WorkerOnly
+        // Safety: DirectOnly ensures Touches/Judges never silently drop.
+        // WorkerOnly must be explicitly opted into by the operator.
+        Self::DirectOnly
     }
 }
 
