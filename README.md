@@ -72,7 +72,8 @@ server_name: "My Phira Server"
 chat_enabled: true
 cli_enabled: true
 
-# 真实网络压测账号。也可以在 TUI/CLI 中执行 benchmark-bind <token1[,token2...]> 生成 data/benchmark-auth.json。
+# 真实网络压测账号（高级功能，默认不推荐）。
+# Simulation 是默认压测路径，不需要配置此项。
 benchmark_phira_tokens:
   - "your-phira-token"
 ```
@@ -227,7 +228,7 @@ WASM 插件通过 `phira:host/api` 和 `phira:host/log` 等导入函数与宿主
 | `database_url` | String | — | PostgreSQL 统一持久化连接串 |
 | `persistence_retention_days` | u32 | 30 | PG 历史数据保留天数，0 为不清理 |
 | `touch_judge_retention_days` | u32? | 未设置 | Touches/Judges 高频遥测独立保留天数；未设置时遵循 `persistence_retention_days`，0 为不清理 |
-| `admin_phira_ids` | Vec<i32> | [] | 游戏内管理员 ID，可使用 `_+命令` 入口 |
+| `admin_phira_ids` | Vec<i32> | [] | 游戏内管理员 ID，可使用 `_命令` 入口 |
 | `chat_enabled` | bool | 示例为 `true` | 聊天功能开关 |
 | `cli_enabled` | bool | `true` | TUI/CLI 控制台开关 |
 | `connection_rate_limit` | u32 | `30` | 连接速率限制（窗口内允许次数） |
