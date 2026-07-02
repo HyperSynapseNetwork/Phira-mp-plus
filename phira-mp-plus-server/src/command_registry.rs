@@ -479,7 +479,7 @@ fn normalize_command_name(value: &str) -> String {
 fn register(registry: &mut CommandRegistry, spec: CommandSpec) {
     // Runtime v2 metadata should not make server startup fragile. If a duplicate
     // slips in, keep the rest of the registry usable and let tests/CI catch it.
-    let _ = registry.register(spec);
+    registry.register(spec).expect("duplicate/conflicting command");
 }
 
 pub fn runtime_v2_registry() -> CommandRegistry {
@@ -542,7 +542,7 @@ pub fn runtime_v2_registry() -> CommandRegistry {
             "simulation run",
             "simulation",
             "启动隔离 shadow world；默认自动 tick，到达 duration 后自动停止。",
-            "simulation run <baseline|small|medium|large|custom> [scenario=balanced|chat_storm|ready_storm|round_storm|touch_judge_burst|idle] [users=N] [rooms=N] [duration=N] [tick_ms=N] [auto=true] [persist_every=N] [touch=true] [judge=true]",
+            "simulation run <preset> [key=value...]",
         )
         .example("simulation run baseline")
         .example("simulation run custom users=500 rooms=50 duration=300 scenario=touch_judge_burst tick_ms=1000 persist_every=30")
@@ -586,7 +586,7 @@ pub fn runtime_v2_registry() -> CommandRegistry {
         CommandSpec::new(
             "benchmark",
             "diagnostics",
-            "运行显式真实网络压测。该命令需要 Phira token，不是 Runtime v2 默认压测入口。",
+            "真实网络压测 / 兼容性测试（默认推荐 simulation）。",
             "benchmark [seconds] [rooms]",
         )
         .arg(CommandArgSpec::optional("seconds", "压测时长，默认 30，范围 5..300"))
