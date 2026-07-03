@@ -1,5 +1,6 @@
 use crate::extensions::{ExtensionDataStore, ExtensionManager};
 use serde::{Deserialize, Serialize};
+use std::net::IpAddr;
 use std::sync::Arc;
 use tracing::{info, warn};
 
@@ -19,6 +20,15 @@ pub struct BanEntry {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RoomBanEntry {
     pub user_id: i32,
+    pub reason: String,
+    pub banned_at: i64,
+}
+
+const IP_BAN_KEY: &str = "ip-ban-list";
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IpBanEntry {
+    pub ip: IpAddr,
     pub reason: String,
     pub banned_at: i64,
 }
@@ -45,9 +55,69 @@ impl BanManager {
             .extensions
             .register_room_field("blacklist", "[]", "mp", "房间黑名单用户ID列表 (JSON)")
             .await;
-
         self.repair_reasons().await;
         info!("blacklist manager initialized");
+    }
+
+    // ── IP Ban ──
+
+    pub async fn ban_ip(&self, ip: IpAddr, reason: &str) -> Result<(), String> {
+        let reason = normalize_reason(reason);
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as i64)
+            .unwrap_or(0);
+        let mut list = self.get_ip_ban_list_raw().await;
+        if list.iter().any(|e| e.ip == ip) {
+            return Err(format!("IP {ip} 已在封禁列表中"));
+        }
+        list.push(IpBanEntry {
+            ip,
+            reason: reason.clone(),
+            banned_at: now,
+        });
+        let json = serde_json::to_string(&list).map_err(|e| format!("serialize ip ban list: {e}"))?;
+        self.extensions
+            .set_global(IP_BAN_KEY, json)
+            .await?;
+        self.extensions.persist().await?;
+        info!(%ip, reason, "IP banned");
+        Ok(())
+    }
+
+    pub async fn unban_ip(&self, ip: IpAddr) -> Result<(), String> {
+        let mut list = self.get_ip_ban_list_raw().await;
+        let before = list.len();
+        list.retain(|e| e.ip != ip);
+        if list.len() == before {
+            return Err(format!("IP {ip} 不在封禁列表中"));
+        }
+        let json = serde_json::to_string(&list).map_err(|e| format!("serialize ip ban list: {e}"))?;
+        self.extensions
+            .set_global(IP_BAN_KEY, json)
+            .await?;
+        self.extensions.persist().await?;
+        info!(%ip, "IP unbanned");
+        Ok(())
+    }
+
+    pub async fn is_ip_banned(&self, ip: &IpAddr) -> bool {
+        self.get_ip_ban_list_raw()
+            .await
+            .iter()
+            .any(|e| &e.ip == ip)
+    }
+
+    pub async fn list_ip_bans(&self) -> Vec<IpBanEntry> {
+        self.get_ip_ban_list_raw().await
+    }
+
+    async fn get_ip_ban_list_raw(&self) -> Vec<IpBanEntry> {
+        self.extensions
+            .get_global(IP_BAN_KEY)
+            .await
+            .and_then(|json| serde_json::from_str(&json).ok())
+            .unwrap_or_default()
     }
 
     pub async fn ban_user(&self, user_id: i32, reason: &str) -> Result<String, String> {

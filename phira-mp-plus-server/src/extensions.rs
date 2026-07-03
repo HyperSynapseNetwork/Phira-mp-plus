@@ -46,6 +46,9 @@ pub struct ExtensionDataStore {
     /// 认证缓存 (token_hash -> 用户信息)，持久化以在重启后恢复
     #[serde(default)]
     pub auth_cache: HashMap<String, AuthCacheEntry>,
+    /// 全局扩展数据（key -> value），用于 IP 封禁等跨用户/跨房间设置
+    #[serde(default)]
+    pub global_data: HashMap<String, String>,
 }
 
 impl ExtensionDataStore {
@@ -145,6 +148,17 @@ impl ExtensionDataStore {
             .filter(|k| k.starts_with("room:"))
             .map(|k| k.trim_start_matches("room:").to_string())
             .collect()
+    }
+
+    /// 获取全局扩展数据
+    pub fn get_global(&self, key: &str) -> Option<&String> {
+        self.global_data.get(key)
+    }
+
+    /// 设置全局扩展数据
+    pub fn set_global(&mut self, key: &str, value: String) -> Result<(), String> {
+        self.global_data.insert(key.to_string(), value);
+        Ok(())
     }
 
     /// 清理用户数据（用户断开时）
@@ -342,6 +356,14 @@ impl ExtensionManager {
             }
         }
         result
+    }
+
+    pub async fn get_global(&self, key: &str) -> Option<String> {
+        self.store.read().await.get_global(key).cloned()
+    }
+
+    pub async fn set_global(&self, key: &str, value: String) -> Result<(), String> {
+        self.store.write().await.set_global(key, value)
     }
 
     pub async fn list_user_fields(&self) -> Vec<String> {
