@@ -377,6 +377,9 @@ interface phira-runtime {
 /// The plugin world — what a WASM plugin component must export
 /// and what the host provides.
 world phira-plugin-v2 {
+    use phira-types.{plugin-info, json-value, api-result};
+    use phira-events.{plugin-event};
+
     import phira-host;
     import phira-events;
     import phira-query;
