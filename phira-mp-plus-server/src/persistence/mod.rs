@@ -11,6 +11,7 @@ pub mod mirror;
 pub mod pipeline;
 pub mod schema;
 pub mod stats;
+pub mod telemetry;
 pub mod worker;
 
 pub use benchmark::{

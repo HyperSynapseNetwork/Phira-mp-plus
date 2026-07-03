@@ -69,7 +69,7 @@ impl RuntimePlan {
                     title: "Touches/Judges persistence without active monitor",
                     status: "active",
                     priority: "P0",
-                    next_step: "Session telemetry path is audited and contract-tested: active monitors only control realtime broadcast, while Touch/Judge persistence still runs for active rounds without monitors; direct write, worker enqueue and worker-only dry-run readiness are now separately observable before changing defaults.",
+                    next_step: "Session telemetry path is audited and contract-tested: active monitors only control realtime broadcast, while Touch/Judge persistence still runs for active rounds without monitors. Telemetry cutover modes: direct_only / worker_preferred (dual_write/fallback_only removed). Next: extract persistence/telemetry.rs from db.rs, add contract tests.",
                 },
                 RuntimeObjective {
                     key: "phira-http",
