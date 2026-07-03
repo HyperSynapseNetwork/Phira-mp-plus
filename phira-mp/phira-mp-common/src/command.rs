@@ -153,6 +153,19 @@ pub enum Judgement {
     HoldGood,
 }
 
+impl Judgement {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Perfect => "Perfect",
+            Self::Good => "Good",
+            Self::Bad => "Bad",
+            Self::Miss => "Miss",
+            Self::HoldPerfect => "HoldPerfect",
+            Self::HoldGood => "HoldGood",
+        }
+    }
+}
+
 #[derive(Debug, Clone, BinaryData)]
 pub struct JudgeEvent {
     pub time: f32,

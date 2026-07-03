@@ -142,66 +142,74 @@ impl RoundStore {
     // ── 数据追加 ──
 
     /// 追加触控数据到指定轮次+玩家
+    ///
+    /// When PostgreSQL is configured, data is written via DB directly and
+    /// file I/O is skipped. When no DB is available, file-based storage
+    /// is used as the persistence fallback.
     pub async fn append_touches(&self, round_uuid: &str, player_id: i32, data: &[TouchEventPoint]) {
         if data.is_empty() {
             return;
         }
-        let path = self.touches_path(round_uuid, player_id);
-        if let Some(parent) = path.parent() {
-            let _ = tokio::fs::create_dir_all(parent).await;
-        }
-        let mut file = match tokio::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&path)
-            .await
-        {
-            Ok(f) => f,
-            Err(e) => {
-                warn!("round store: append touches error: {e}");
-                return;
-            }
-        };
-
-        for point in data {
-            if let Ok(line) = serde_json::to_string(point) {
-                let _ = file.write_all(format!("{line}\n").as_bytes()).await;
-            }
-        }
         if let Some(db) = crate::internal_hooks::DB.get() {
             db.append_touches(round_uuid, player_id, data).await;
+        } else {
+            let path = self.touches_path(round_uuid, player_id);
+            if let Some(parent) = path.parent() {
+                let _ = tokio::fs::create_dir_all(parent).await;
+            }
+            let mut file = match tokio::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&path)
+                .await
+            {
+                Ok(f) => f,
+                Err(e) => {
+                    warn!("round store: append touches error: {e}");
+                    return;
+                }
+            };
+            for point in data {
+                if let Ok(line) = serde_json::to_string(point) {
+                    let _ = file.write_all(format!("{line}\n").as_bytes()).await;
+                }
+            }
         }
     }
 
     /// 追加判定数据到指定轮次+玩家
+    ///
+    /// When PostgreSQL is configured, data is written via DB directly and
+    /// file I/O is skipped. When no DB is available, file-based storage
+    /// is used as the persistence fallback.
     pub async fn append_judges(&self, round_uuid: &str, player_id: i32, data: &[JudgeEventItem]) {
         if data.is_empty() {
             return;
         }
-        let path = self.judges_path(round_uuid, player_id);
-        if let Some(parent) = path.parent() {
-            let _ = tokio::fs::create_dir_all(parent).await;
-        }
-        let mut file = match tokio::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&path)
-            .await
-        {
-            Ok(f) => f,
-            Err(e) => {
-                warn!("round store: append judges error: {e}");
-                return;
-            }
-        };
-
-        for item in data {
-            if let Ok(line) = serde_json::to_string(item) {
-                let _ = file.write_all(format!("{line}\n").as_bytes()).await;
-            }
-        }
         if let Some(db) = crate::internal_hooks::DB.get() {
             db.append_judges(round_uuid, player_id, data).await;
+        } else {
+            let path = self.judges_path(round_uuid, player_id);
+            if let Some(parent) = path.parent() {
+                let _ = tokio::fs::create_dir_all(parent).await;
+            }
+            let mut file = match tokio::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&path)
+                .await
+            {
+                Ok(f) => f,
+                Err(e) => {
+                    warn!("round store: append judges error: {e}");
+                    return;
+                }
+            };
+            for item in data {
+                if let Ok(line) = serde_json::to_string(item) {
+                    let _ = file.write_all(format!("{line}\n").as_bytes()).await;
+                }
+            }
         }
     }
 

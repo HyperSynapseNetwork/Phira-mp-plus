@@ -95,7 +95,7 @@ pub(crate) async fn handle_judges(user: Arc<User>, room: Arc<Room>, judges: Arc<
             time: j.time,
             line_id: j.line_id,
             note_id: j.note_id,
-            judgement: format!("{:?}", j.judgement),
+            judgement: j.judgement.as_str().to_string(),
         })
         .collect();
 
