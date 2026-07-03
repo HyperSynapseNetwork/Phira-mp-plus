@@ -32,6 +32,7 @@ pub mod server;
 pub mod server_query;
 pub mod session;
 mod session_auth;
+pub mod session_dispatch;
 pub mod session_room;
 mod session_telemetry;
 pub mod simulation;
