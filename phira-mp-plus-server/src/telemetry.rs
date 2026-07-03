@@ -537,60 +537,26 @@ fn write_runtime_telemetry_batch(
     let Some(db) = crate::internal_hooks::DB.get() else {
         return Err("database manager is not initialized".to_string());
     };
+    let item_rows: usize = items.iter().map(|i| i.item_count).sum();
     let records: Vec<crate::db::RuntimeTelemetryBatchRecord> = items
         .iter()
-        .map(|item| {
-            let mut payload = item.payload.clone();
-            if let Some(obj) = payload.as_object_mut() {
-                obj.entry("runtime_v2_source".to_string())
-                    .or_insert_with(|| serde_json::json!("telemetry_batcher"));
-                obj.entry("runtime_v2_dual_write".to_string())
-                    .or_insert_with(|| serde_json::json!(true));
-                obj.entry("runtime_v2_stage".to_string())
-                    .or_insert_with(|| serde_json::json!("guarded_batch_write"));
-                obj.entry("runtime_v2_schema_version".to_string())
-                    .or_insert_with(|| serde_json::json!(TELEMETRY_SCHEMA_VERSION));
-                obj.entry("batch_uuid".to_string())
-                    .or_insert_with(|| serde_json::json!(batch_uuid));
-                obj.entry("flush_reason".to_string())
-                    .or_insert_with(|| serde_json::json!(reason));
-                obj.entry("kind".to_string())
-                    .or_insert_with(|| serde_json::json!(item.kind.as_str()));
-                obj.entry("user_id".to_string())
-                    .or_insert_with(|| serde_json::json!(item.user_id));
-                obj.entry("count".to_string())
-                    .or_insert_with(|| serde_json::json!(item.item_count));
-                if let Some(room_id) = &item.room_id {
-                    obj.entry("room_id".to_string())
-                        .or_insert_with(|| serde_json::json!(room_id));
-                }
-                if let Some(round_id) = &item.round_id {
-                    obj.entry("round_id".to_string())
-                        .or_insert_with(|| serde_json::json!(round_id));
-                }
-            }
-            crate::db::RuntimeTelemetryBatchRecord {
-                batch_uuid: batch_uuid.to_string(),
-                run_id: extract_run_id(&payload),
-                scope: "production".to_string(),
-                pipeline: "runtime_v2.telemetry_batcher".to_string(),
-                source: "telemetry_batcher".to_string(),
-                flush_reason: reason.to_string(),
-                schema_version: TELEMETRY_SCHEMA_VERSION,
-                dual_write: true,
-                kind: item.kind.as_str().to_string(),
-                room_id: item.room_id.clone(),
-                round_uuid: item.round_id.clone(),
-                player_id: item.user_id,
-                item_count: i32::try_from(item.item_count).unwrap_or(i32::MAX),
-                payload,
-            }
+        .map(|item| crate::db::RuntimeTelemetryBatchRecord {
+            batch_uuid: batch_uuid.to_string(),
+            run_id: extract_run_id(&item.payload),
+            scope: "production".to_string(),
+            pipeline: "runtime_v2.telemetry_batcher".to_string(),
+            source: "telemetry_batcher".to_string(),
+            flush_reason: reason.to_string(),
+            schema_version: TELEMETRY_SCHEMA_VERSION,
+            dual_write: true,
+            kind: item.kind.as_str().to_string(),
+            room_id: item.room_id.clone(),
+            round_uuid: item.round_id.clone(),
+            player_id: item.user_id,
+            item_count: i32::try_from(item.item_count).unwrap_or(i32::MAX),
+            payload: item.payload.clone(),
         })
         .collect();
-    let item_rows = records
-        .iter()
-        .map(|record| raw_item_count(&record.payload))
-        .sum();
     if db.record_runtime_telemetry_batches_sync(records) {
         Ok(item_rows)
     } else {
@@ -638,21 +604,6 @@ fn extract_run_id(payload: &Value) -> Option<String> {
         .and_then(Value::as_str)
         .filter(|value| !value.is_empty())
         .map(ToString::to_string)
-}
-
-fn raw_item_count(payload: &Value) -> usize {
-    payload
-        .get("data")
-        .and_then(Value::as_array)
-        .map(|items| items.len())
-        .unwrap_or_else(|| {
-            payload
-                .get("count")
-                .and_then(Value::as_u64)
-                .and_then(|value| usize::try_from(value).ok())
-                .unwrap_or(1)
-        })
-        .max(1)
 }
 
 #[cfg(test)]

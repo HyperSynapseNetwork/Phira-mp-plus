@@ -66,48 +66,6 @@ fn now_ms() -> i64 {
         .unwrap_or(0)
 }
 
-fn with_telemetry_storage_meta(
-    mut payload: Value,
-    record: &RuntimeTelemetryBatchRecord,
-    written_at: i64,
-) -> Value {
-    if let Some(obj) = payload.as_object_mut() {
-        obj.entry("runtime_v2_schema_version".to_string())
-            .or_insert_with(|| serde_json::json!(record.schema_version));
-        obj.entry("runtime_v2_storage".to_string())
-            .or_insert_with(|| serde_json::json!("mp_runtime_telemetry_batches"));
-        obj.entry("runtime_v2_item_table".to_string())
-            .or_insert_with(|| serde_json::json!("mp_runtime_telemetry_items"));
-        obj.entry("batch_uuid".to_string())
-            .or_insert_with(|| serde_json::json!(record.batch_uuid.clone()));
-        obj.entry("scope".to_string())
-            .or_insert_with(|| serde_json::json!(record.scope.clone()));
-        obj.entry("pipeline".to_string())
-            .or_insert_with(|| serde_json::json!(record.pipeline.clone()));
-        obj.entry("source".to_string())
-            .or_insert_with(|| serde_json::json!(record.source.clone()));
-        obj.entry("flush_reason".to_string())
-            .or_insert_with(|| serde_json::json!(record.flush_reason.clone()));
-        obj.entry("dual_write".to_string())
-            .or_insert_with(|| serde_json::json!(record.dual_write));
-        obj.entry("written_at".to_string())
-            .or_insert_with(|| serde_json::json!(written_at));
-        if let Some(run_id) = &record.run_id {
-            obj.entry("run_id".to_string())
-                .or_insert_with(|| serde_json::json!(run_id));
-        }
-    }
-    payload
-}
-
-fn telemetry_item_rows(payload: &Value) -> Vec<Value> {
-    payload
-        .get("data")
-        .and_then(Value::as_array)
-        .map(|items| items.clone())
-        .unwrap_or_else(|| vec![payload.clone()])
-}
-
 impl DbManager {
     /// 根据配置初始化数据库连接（自动创建数据库）
     pub async fn new(database_url: Option<&str>) -> Self {
@@ -264,8 +222,13 @@ impl DbManager {
         if let Self::Pg(pool) = self {
             let now = now_ms();
             for record in records {
-                let batch_uuid = record.batch_uuid.clone();
-                let payload = with_telemetry_storage_meta(record.payload.clone(), &record, now);
+                // Use record.payload for item extraction; clone for the batch payload column
+                let items: Vec<Value> = record
+                    .payload
+                    .get("data")
+                    .and_then(Value::as_array)
+                    .map(|a| a.clone())
+                    .unwrap_or_else(|| vec![record.payload.clone()]);
                 if sqlx::query(
                     "INSERT INTO mp_runtime_telemetry_batches
                        (batch_uuid, run_id, scope, pipeline, kind, room_id, round_uuid, player_id, item_count,
@@ -281,7 +244,7 @@ impl DbManager {
                 .bind(record.round_uuid.as_deref())
                 .bind(record.player_id)
                 .bind(record.item_count)
-                .bind(&payload)
+                .bind(&record.payload)
                 .bind(now)
                 .bind(&record.source)
                 .bind(record.dual_write)
@@ -294,13 +257,13 @@ impl DbManager {
                     return false;
                 }
 
-                for (ordinal, raw_item) in telemetry_item_rows(&payload).into_iter().enumerate() {
+                for (ordinal, raw_item) in items.into_iter().enumerate() {
                     if sqlx::query(
                         "INSERT INTO mp_runtime_telemetry_items
                            (batch_uuid, ordinal, kind, room_id, round_uuid, player_id, payload, created_at, schema_version)
                          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)"
                     )
-                    .bind(&batch_uuid)
+                    .bind(&record.batch_uuid)
                     .bind(i32::try_from(ordinal).unwrap_or(i32::MAX))
                     .bind(&record.kind)
                     .bind(record.room_id.as_deref())

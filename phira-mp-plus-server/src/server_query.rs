@@ -3,7 +3,6 @@
 //! Admin ID management functions.
 
 use crate::server::PlusServerState;
-use std::sync::Arc;
 use tracing::warn;
 
 impl PlusServerState {
