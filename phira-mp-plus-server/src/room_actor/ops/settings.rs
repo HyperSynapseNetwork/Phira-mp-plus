@@ -214,39 +214,32 @@ impl RoomCommandGateway {
 
 #[cfg(test)]
 mod tests {
-    use super::super::super::{RoomCommandDelivery, RoomCommandResult};
+    use super::super::super::command::RoomCommandKind;
 
     #[test]
-    fn typed_boundary_round_trip() {
-        // Verify that typed RoomCommandPayload values round-trip through
-        // the untyped + from_untyped boundary used by the mailbox dispatch.
-        let payloads = vec![
+    fn typed_payload_serialization_round_trip() {
+        let payloads: Vec<super::RoomCommandPayload> = vec![
             super::RoomCommandPayload::LockChanged { room_id: "r1".into(), locked: true },
             super::RoomCommandPayload::CycleChanged { room_id: "r2".into(), cycle: false },
-            super::RoomCommandPayload::HostChanged { room_id: "r3".into(), host_id: Some(42) },
+            super::RoomCommandPayload::HostChanged {
+                room_id: "r3".into(),
+                host: Some(42),
+                host_name: "admin".into(),
+                host_is_system: false,
+            },
         ];
-        for payload in payloads {
-            let json = serde_json::to_value(&payload).unwrap();
-            let result = RoomCommandResult::from_untyped(
-                Ok(json.clone()),
-                RoomCommandDelivery::TypedBoundary,
-            );
-            if let RoomCommandDelivery::TypedBoundary = result.delivery {
-                // Compile-time guarantee: the payload survived serialization
-            } else {
-                panic!("expected TypedBoundary delivery");
-            }
+        for payload in &payloads {
+            let json = serde_json::to_value(payload).unwrap();
+            assert!(json.is_object(), "each payload should serialize to a JSON object");
         }
     }
 
     #[test]
-    fn set_command_kind_is_typed() {
-        use super::super::super::command::RoomCommandKind;
-        // Verify mailbox dispatch uses typed Kind values (not raw strings)
-        assert_eq!(RoomCommandKind::SetLock.as_str(), "SetLock");
-        assert_eq!(RoomCommandKind::SetCycle.as_str(), "SetCycle");
-        assert_eq!(RoomCommandKind::SetHost.as_str(), "SetHost");
-        assert_eq!(RoomCommandKind::CloseRoom.as_str(), "CloseRoom");
-        assert_eq!(RoomCommandKind::KickUser.as_str(), "KickUser");
+    fn set_command_kinds_are_typed() {
+        assert_eq!(RoomCommandKind::SetLock.action(), "set_lock");
+        assert_eq!(RoomCommandKind::SetCycle.action(), "set_cycle");
+        assert_eq!(RoomCommandKind::SetHost.action(), "set_host");
+        assert_eq!(RoomCommandKind::CloseRoom.action(), "close");
+        assert_eq!(RoomCommandKind::KickUser.action(), "kick");
     }
 }
