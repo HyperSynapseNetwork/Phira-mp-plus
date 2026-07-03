@@ -14,9 +14,13 @@ use phira_mp_plus_server_api::PluginEvent;
 use serde::{Deserialize, Serialize};
 
 /// Generated WIT/component-model bindings for the phira-plugin-v2 world.
-/// Only available when the `plugin-system` feature is enabled.
+///
+/// The generated module is nested under `wit_abi` so that its `PluginEvent`
+/// type does not conflict with `phira_mp_plus_server_api::PluginEvent`.
 #[cfg(feature = "plugin-system")]
-wasmtime::component::bindgen!("phira-plugin-v2" in "../wit");
+pub(crate) mod wit_abi {
+    wasmtime::component::bindgen!("phira-plugin-v2" in "../wit/phira-plugin.wit");
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub enum PluginAbiTransport {
