@@ -62,21 +62,18 @@ interface phira-types {
 
     /// A generic JSON value. Used for plugin API arguments/results
     /// until the WIT interface is fully specialized.
+    ///
+    /// Array and object payloads are JSON-encoded as strings because
+    /// the WIT parser does not support recursive type definitions.
     variant json-value {
         null,
         flag(bool),
         integer(s64),
         float(f64),
         text(string),
-        array(json-list),
-        object(json-map),
+        array(string),
+        object(string),
     }
-
-    /// Recursive helper for json-value arrays (breaks direct self-reference).
-    type json-list = list<json-value>;
-
-    /// Recursive helper for json-value objects.
-    type json-map = list<tuple<string, json-value>>;
 
     /// Host API result: either a JSON value or an error string.
     variant api-result {
