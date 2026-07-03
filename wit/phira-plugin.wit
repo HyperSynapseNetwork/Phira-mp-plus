@@ -108,17 +108,17 @@ interface phira-events {
 
     /// All event types the host can dispatch to plugins.
     variant plugin-event {
-        user-connect(user-id: u32, user-name: string, user-ip: string),
-        user-disconnect(user-id: u32, user-name: string),
-        room-create(user-id: u32, room-id: string),
-        room-join(user-id: u32, room-id: string, is-monitor: bool),
-        room-leave(user-id: u32, room-id: string),
-        room-modify(user-id: u32, room-id: string, data: string),
-        game-start(user-id: u32, room-id: string),
-        game-end(user-id: u32, room-id: string, record: game-end-record),
-        player-touches(user-id: u32, room-id: string, data: list<touch-event-point>),
-        player-judges(user-id: u32, room-id: string, data: list<judge-event-item>),
-        round-complete(room-id: string, chart-id: u32, chart-name: string),
+        user-connect(string, string, string),
+        user-disconnect(u32, string),
+        room-create(u32, string),
+        room-join(u32, string, bool),
+        room-leave(u32, string),
+        room-modify(u32, string, string),
+        game-start(u32, string),
+        game-end(u32, string, game-end-record),
+        player-touches(u32, string, list<touch-event-point>),
+        player-judges(u32, string, list<judge-event-item>),
+        round-complete(string, u32, string),
     }
 }
 
