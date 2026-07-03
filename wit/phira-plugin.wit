@@ -106,19 +106,80 @@ interface phira-host {
 interface phira-events {
     use phira-types.{touch-event-point, judge-event-item, game-end-record};
 
+    /// Payload for user-connect events.
+    record user-connect-info {
+        user-id: u32,
+        user-name: string,
+        user-ip: string,
+    }
+
+    /// Payload for user-disconnect events.
+    record user-disconnect-info {
+        user-id: u32,
+        user-name: string,
+    }
+
+    /// Payload for room events that carry a user-id and room-id.
+    record room-user-event {
+        user-id: u32,
+        room-id: string,
+    }
+
+    /// Payload for room-modify events.
+    record room-modify-info {
+        user-id: u32,
+        room-id: string,
+        data: string,
+    }
+
+    /// Payload for game-end events.
+    record game-end-info {
+        user-id: u32,
+        room-id: string,
+        record: game-end-record,
+    }
+
+    /// Payload for player-touches events.
+    record player-touches-info {
+        user-id: u32,
+        room-id: string,
+        data: list<touch-event-point>,
+    }
+
+    /// Payload for player-judges events.
+    record player-judges-info {
+        user-id: u32,
+        room-id: string,
+        data: list<judge-event-item>,
+    }
+
+    /// Payload for round-complete events.
+    record round-complete-info {
+        room-id: string,
+        chart-id: u32,
+        chart-name: string,
+    }
+
+    /// Payload for room-join events.
+    record room-join-info {
+        user-id: u32,
+        room-id: string,
+        is-monitor: bool,
+    }
+
     /// All event types the host can dispatch to plugins.
     variant plugin-event {
-        user-connect(string, string, string),
-        user-disconnect(u32, string),
-        room-create(u32, string),
-        room-join(u32, string, bool),
-        room-leave(u32, string),
-        room-modify(u32, string, string),
-        game-start(u32, string),
-        game-end(u32, string, game-end-record),
-        player-touches(u32, string, list<touch-event-point>),
-        player-judges(u32, string, list<judge-event-item>),
-        round-complete(string, u32, string),
+        user-connect(user-connect-info),
+        user-disconnect(user-disconnect-info),
+        room-create(room-user-event),
+        room-join(room-join-info),
+        room-leave(room-user-event),
+        room-modify(room-modify-info),
+        game-start(room-user-event),
+        game-end(game-end-info),
+        player-touches(player-touches-info),
+        player-judges(player-judges-info),
+        round-complete(round-complete-info),
     }
 }
 
