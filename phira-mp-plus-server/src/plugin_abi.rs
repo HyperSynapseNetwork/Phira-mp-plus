@@ -16,11 +16,7 @@ use serde::{Deserialize, Serialize};
 /// Generated WIT/component-model bindings for the phira-plugin-v2 world.
 /// Only available when the `plugin-system` feature is enabled.
 #[cfg(feature = "plugin-system")]
-wasmtime::component::bindgen!({
-    path: "../wit/phira-plugin.wit",
-    world: "phira-plugin-v2",
-    async: true,
-});
+wasmtime::component::bindgen!("phira-plugin-v2" in "../wit");
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub enum PluginAbiTransport {
