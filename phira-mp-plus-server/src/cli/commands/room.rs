@@ -184,7 +184,7 @@ impl CliHandler {
             "ban" => {
                 if args.len() < 3 {
                     self.out(format!(
-                        "  {} {} room ban <房间ID> <用户ID>",
+                        "  {} {} room ban <房间ID> <用户ID> [原因]",
                         c::yellow("?"),
                         c::bold("用法")
                     ));
@@ -196,14 +196,18 @@ impl CliHandler {
                             return;
                         }
                     };
-                    match self.state.ban_manager.room_ban_user(args[1], uid).await {
-                        Ok(_) => self.out(format!(
-                            "  {} 用户 {} 已加入房间 {} 的黑名单",
-                            c::green("✓"),
-                            uid,
-                            args[1]
-                        )),
-                        Err(e) => self.out(format!("  {} {}", c::red("✗"), e)),
+                    let reason = if args.len() > 3 { args[3..].join(" ") } else { String::new() };
+                    let room_uuid = self.find_room(args[1]).await.map(|r| r.uuid.to_string());
+                    match room_uuid {
+                        Some(uuid) => match self.state.ban_manager.room_ban_user(&uuid, uid, &reason).await {
+                            Ok(_) => self.out(format!(
+                                "  {} 用户 {} 已加入房间 {} ({}) 的黑名单{}",
+                                c::green("✓"), uid, args[1], &uuid[..8],
+                                if reason.is_empty() { String::new() } else { format!("，原因：{reason}") }
+                            )),
+                            Err(e) => self.out(format!("  {} {}", c::red("✗"), e)),
+                        },
+                        None => self.out(format!("  {} 未找到房间 {}", c::red("✗"), args[1])),
                     }
                 }
             }
@@ -222,14 +226,16 @@ impl CliHandler {
                             return;
                         }
                     };
-                    match self.state.ban_manager.room_unban_user(args[1], uid).await {
-                        Ok(_) => self.out(format!(
-                            "  {} 用户 {} 已移出房间 {} 的黑名单",
-                            c::green("✓"),
-                            uid,
-                            args[1]
-                        )),
-                        Err(e) => self.out(format!("  {} {}", c::red("✗"), e)),
+                    let room_uuid = self.find_room(args[1]).await.map(|r| r.uuid.to_string());
+                    match room_uuid {
+                        Some(uuid) => match self.state.ban_manager.room_unban_user(&uuid, uid).await {
+                            Ok(_) => self.out(format!(
+                                "  {} 用户 {} 已移出房间 {} 的黑名单",
+                                c::green("✓"), uid, args[1]
+                            )),
+                            Err(e) => self.out(format!("  {} {}", c::red("✗"), e)),
+                        },
+                        None => self.out(format!("  {} 未找到房间 {}", c::red("✗"), args[1])),
                     }
                 }
             }
@@ -241,7 +247,11 @@ impl CliHandler {
                         c::bold("用法")
                     ));
                 } else {
-                    self.room_ban_list(args[1]).await;
+                    let room_uuid = self.find_room(args[1]).await.map(|r| r.uuid.to_string());
+                    match room_uuid {
+                        Some(uuid) => self.room_ban_list(&uuid, args[1]).await,
+                        None => self.out(format!("  {} 未找到房间 {}", c::red("✗"), args[1])),
+                    }
                 }
             }
             "uuid" => {
@@ -957,17 +967,18 @@ impl CliHandler {
         self.out(format!("  ✗ 未找到轮次 {round_uuid}"));
     }
 
-    pub(crate) async fn room_ban_list(&self, room_id: &str) {
-        let list = self.state.ban_manager.list_room_bans(room_id).await;
+    pub(crate) async fn room_ban_list(&self, room_uuid: &str, room_name: &str) {
+        let list = self.state.ban_manager.list_room_bans(room_uuid).await;
         if list.is_empty() {
-            self.out(format!("  {} 房间 {} 的黑名单为空", c::dim("·"), room_id));
+            self.out(format!("  {} 房间 {} 的黑名单为空", c::dim("·"), room_name));
             return;
         }
-        self.out(format!(
-            "  {} 房间 {} 黑名单: {:?}",
-            c::green("◆"),
-            room_id,
-            list
-        ));
+        self.out(format!("  {} 房间 {} 黑名单 ({})", c::green("◆"), room_name, &room_uuid[..8]));
+        for entry in &list {
+            self.out(format!(
+                "  {} 用户 {}  原因: {}",
+                c::dim("│"), entry.user_id, entry.reason
+            ));
+        }
     }
 }

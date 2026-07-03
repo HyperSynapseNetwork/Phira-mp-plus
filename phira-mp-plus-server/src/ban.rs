@@ -1,5 +1,5 @@
 use crate::extensions::{ExtensionDataStore, ExtensionManager};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tracing::{info, warn};
 
@@ -12,6 +12,15 @@ const DEFAULT_BAN_REASON: &str = "违反服务器规则";
 pub struct BanEntry {
     pub user_id: i32,
     pub reason: String,
+}
+
+/// Room ban record — bound to the room's UUID (not its name), so
+/// the ban stays with that specific room instance across its lifecycle.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RoomBanEntry {
+    pub user_id: i32,
+    pub reason: String,
+    pub banned_at: i64,
 }
 
 pub struct BanManager {
@@ -107,48 +116,76 @@ impl BanManager {
         result
     }
 
-    pub async fn room_ban_user(&self, room_id: &str, user_id: i32) -> Result<(), String> {
-        let mut list = self.get_room_ban_list_raw(room_id).await;
-        if list.contains(&user_id) {
-            return Err(format!("用户 {} 已在房间 {} 的黑名单中", user_id, room_id));
+    /// Ban a user from a specific room (by UUID).
+    /// Reason defaults to "违规行为" when empty.
+    pub async fn room_ban_user(
+        &self,
+        room_uuid: &str,
+        user_id: i32,
+        reason: &str,
+    ) -> Result<(), String> {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as i64)
+            .unwrap_or(0);
+        let reason = if reason.is_empty() {
+            "违规行为".to_string()
+        } else {
+            normalize_reason(reason)
+        };
+        let mut list = self.get_room_ban_list_raw(room_uuid).await;
+        let entry = RoomBanEntry {
+            user_id,
+            reason: reason.clone(),
+            banned_at: now,
+        };
+        // Check if already banned
+        if list.iter().any(|e| e.user_id == user_id) {
+            // Update reason
+            if let Some(e) = list.iter_mut().find(|e| e.user_id == user_id) {
+                e.reason = reason;
+                e.banned_at = now;
+            }
+        } else {
+            list.push(entry);
         }
-        list.push(user_id);
-        let json =
-            serde_json::to_string(&list).map_err(|e| format!("serialize blacklist: {}", e))?;
+        let json = serde_json::to_string(&list).map_err(|e| format!("serialize blacklist: {e}"))?;
         self.extensions
-            .set_room_extra(room_id, "blacklist", json)
+            .set_room_extra(room_uuid, "blacklist", json)
             .await?;
         self.extensions.persist().await?;
         Ok(())
     }
 
-    pub async fn room_unban_user(&self, room_id: &str, user_id: i32) -> Result<(), String> {
-        let mut list = self.get_room_ban_list_raw(room_id).await;
+    pub async fn room_unban_user(&self, room_uuid: &str, user_id: i32) -> Result<(), String> {
+        let mut list = self.get_room_ban_list_raw(room_uuid).await;
         let before = list.len();
-        list.retain(|&id| id != user_id);
+        list.retain(|e| e.user_id != user_id);
         if list.len() == before {
-            return Err(format!("用户 {} 不在房间 {} 的黑名单中", user_id, room_id));
+            return Err(format!("用户 {} 不在房间黑名单中", user_id));
         }
-        let json =
-            serde_json::to_string(&list).map_err(|e| format!("serialize blacklist: {}", e))?;
+        let json = serde_json::to_string(&list).map_err(|e| format!("serialize blacklist: {e}"))?;
         self.extensions
-            .set_room_extra(room_id, "blacklist", json)
+            .set_room_extra(room_uuid, "blacklist", json)
             .await?;
         self.extensions.persist().await?;
         Ok(())
     }
 
-    pub async fn is_room_banned(&self, room_id: &str, user_id: i32) -> bool {
-        self.get_room_ban_list_raw(room_id).await.contains(&user_id)
+    pub async fn is_room_banned(&self, room_uuid: &str, user_id: i32) -> bool {
+        self.get_room_ban_list_raw(room_uuid)
+            .await
+            .iter()
+            .any(|e| e.user_id == user_id)
     }
 
-    pub async fn list_room_bans(&self, room_id: &str) -> Vec<i32> {
-        self.get_room_ban_list_raw(room_id).await
+    pub async fn list_room_bans(&self, room_uuid: &str) -> Vec<RoomBanEntry> {
+        self.get_room_ban_list_raw(room_uuid).await
     }
 
-    async fn get_room_ban_list_raw(&self, room_id: &str) -> Vec<i32> {
+    async fn get_room_ban_list_raw(&self, room_uuid: &str) -> Vec<RoomBanEntry> {
         self.extensions
-            .get_room_extra(room_id, "blacklist")
+            .get_room_extra(room_uuid, "blacklist")
             .await
             .and_then(|json| serde_json::from_str(&json).ok())
             .unwrap_or_default()
