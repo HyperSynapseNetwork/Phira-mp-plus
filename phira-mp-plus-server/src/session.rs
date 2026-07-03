@@ -356,10 +356,10 @@ impl Session {
                                                     "banned user {}({}) tried to connect (cache)",
                                                     entry.name, entry.user_id
                                                 );
-                                                bail!(
-                                                    "{}",
-                                                    ban_rejection_message(&entry.language, &reason)
-                                                );
+                                                if let Some(tx) = auth_tx.take() {
+                                                    let _ = tx.send(AuthenticationOutcome::Rejected);
+                                                }
+                                                return Ok(());
                                             }
                                             debug!("cache hit for user {}", entry.user_id);
                                             AuthUserInfo {
