@@ -1235,9 +1235,24 @@ impl WasmPluginInstance {
                     .get(target)
                     .and_then(Weak::upgrade)
                     .ok_or_else(|| format!("plugin '{target}' is unavailable"))?;
-                let mut plugin = runtime
-                    .try_lock()
-                    .map_err(|_| format!("plugin '{target}' is busy"))?;
+                // Retry try_lock in a short spin-loop so a briefly-busy target
+                // does not immediately fail the caller.  Each iteration yields
+                // the OS quantum so another thread holding the lock can advance.
+                let mut plugin = None;
+                for attempt in 0..5 {
+                    if let Ok(guard) = runtime.try_lock() {
+                        plugin = Some(guard);
+                        break;
+                    }
+                    if attempt < 4 {
+                        std::thread::sleep(std::time::Duration::from_millis(5));
+                    }
+                }
+                let mut plugin = plugin.ok_or_else(|| {
+                    format!(
+                        "plugin '{target}' is busy (waited ~20ms for plugin.api_call from '{plugin_name}')"
+                    )
+                })?;
                 plugin
                     .call_api(api_method, &api_args)
                     .map(|v| v.to_string())
