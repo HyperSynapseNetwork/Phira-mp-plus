@@ -5,14 +5,16 @@
 //! room/session/plugin behavior can be migrated gradually instead of rewritten
 //! in one risky patch.
 
+use phira_mp_plus_server_api::PluginEvent;
 use phira_mp_common::RoomId;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{
     collections::{BTreeMap, VecDeque},
+    future::Future,
     sync::{
         atomic::{AtomicU64, Ordering},
-        Mutex,
+        Arc, Mutex,
     },
     time::{SystemTime, UNIX_EPOCH},
 };
@@ -113,6 +115,9 @@ pub enum MpEvent {
     BenchmarkCompleted {
         report: crate::benchmark_report::BenchmarkReport,
     },
+    /// Plugin event dispatched through the bus for unified routing.
+    /// The subscriber calls PluginManager::trigger() on each received event.
+    PluginEventDispatched(Arc<PluginEvent>),
     Custom {
         kind: String,
         payload: Value,
@@ -144,6 +149,19 @@ impl MpEvent {
             Self::SimulationStopped { .. } => "simulation.stopped",
             Self::PersistenceWritten { .. } => "persistence.written",
             Self::BenchmarkCompleted { .. } => "benchmark.completed",
+            Self::PluginEventDispatched(event) => match &**event {
+                PluginEvent::UserConnect { .. } => "plugin.user_connect",
+                PluginEvent::UserDisconnect { .. } => "plugin.user_disconnect",
+                PluginEvent::RoomCreate { .. } => "plugin.room_create",
+                PluginEvent::RoomJoin { .. } => "plugin.room_join",
+                PluginEvent::RoomLeave { .. } => "plugin.room_leave",
+                PluginEvent::RoomModify { .. } => "plugin.room_modify",
+                PluginEvent::GameStart { .. } => "plugin.game_start",
+                PluginEvent::GameEnd { .. } => "plugin.game_end",
+                PluginEvent::PlayerTouches { .. } => "plugin.player_touches",
+                PluginEvent::PlayerJudges { .. } => "plugin.player_judges",
+                PluginEvent::RoundComplete { .. } => "plugin.round_complete",
+            },
             Self::Custom { .. } => "custom",
         }
     }
@@ -207,6 +225,7 @@ impl MpEvent {
                 report.probes.failed,
                 report.probes.blocked,
             ),
+            Self::PluginEventDispatched(event) => format!("plugin.{}", event.kind()),
             Self::Custom { kind, .. } => format!("kind={kind}"),
         }
     }
@@ -310,6 +329,31 @@ impl EventBus {
 
     pub fn subscribe(&self) -> broadcast::Receiver<MpEvent> {
         self.tx.subscribe()
+    }
+
+    /// Spawn a task that receives events and calls `f` for each one.
+    /// The task runs until the receiver is lagged/closed, then exits.
+    /// Returns the `JoinHandle` so the caller can monitor or cancel it.
+    pub fn subscribe_spawn<F, Fut>(&self, name: &'static str, f: F) -> tokio::task::JoinHandle<()>
+    where
+        F: Fn(MpEvent) -> Fut + Send + 'static,
+        Fut: Future<Output = ()> + Send,
+    {
+        let mut rx = self.tx.subscribe();
+        tokio::spawn(async move {
+            loop {
+                match rx.recv().await {
+                    Ok(event) => f(event).await,
+                    Err(broadcast::error::RecvError::Lagged(n)) => {
+                        tracing::warn!("event_bus subscriber '{name}' lagged by {n} events");
+                    }
+                    Err(broadcast::error::RecvError::Closed) => {
+                        tracing::info!("event_bus subscriber '{name}' channel closed");
+                        break;
+                    }
+                }
+            }
+        })
     }
 
     pub fn receiver_count(&self) -> usize {

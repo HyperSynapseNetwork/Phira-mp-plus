@@ -74,6 +74,24 @@ pub enum PluginEvent {
     },
 }
 
+impl PluginEvent {
+    pub fn kind(&self) -> &'static str {
+        match self {
+            Self::UserConnect { .. } => "user_connect",
+            Self::UserDisconnect { .. } => "user_disconnect",
+            Self::RoomCreate { .. } => "room_create",
+            Self::RoomJoin { .. } => "room_join",
+            Self::RoomLeave { .. } => "room_leave",
+            Self::RoomModify { .. } => "room_modify",
+            Self::GameStart { .. } => "game_start",
+            Self::GameEnd { .. } => "game_end",
+            Self::PlayerTouches { .. } => "player_touches",
+            Self::PlayerJudges { .. } => "player_judges",
+            Self::RoundComplete { .. } => "round_complete",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TouchEventPoint {
     pub time: f32,

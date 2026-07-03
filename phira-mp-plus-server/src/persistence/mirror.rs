@@ -146,6 +146,7 @@ pub(crate) fn mirror_event_bus_event(
             server_event(kind, payload.clone(), false)
         }
         MpEvent::Custom { .. } => None,
+        MpEvent::PluginEventDispatched(_) => None,
     }
 }
 

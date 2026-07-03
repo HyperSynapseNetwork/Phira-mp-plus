@@ -734,15 +734,16 @@ fn spawn_event_subscribers(state: &Arc<PlusServerState>) {
                             user_ip,
                             user_language,
                         } => {
-                            // 1. Trigger plugin event
+                            // Plugin dispatch now handled by EventBus plugin subscriber.
                             state_clone
-                                .plugin_manager
-                                .trigger(&PluginEvent::UserConnect {
-                                    user_id: *user_id,
-                                    user_name: user_name.clone(),
-                                    user_ip: user_ip.clone(),
-                                })
-                                .await;
+                                .event_bus
+                                .publish(crate::event_bus::MpEvent::PluginEventDispatched(
+                                    std::sync::Arc::new(PluginEvent::UserConnect {
+                                        user_id: *user_id,
+                                        user_name: user_name.clone(),
+                                        user_ip: user_ip.clone(),
+                                    }),
+                                ));
 
                             // 2. Record in DB if available
                             if let Some(db) = crate::internal_hooks::DB.get() {
