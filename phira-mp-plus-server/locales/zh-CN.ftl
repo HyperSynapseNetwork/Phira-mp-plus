@@ -44,3 +44,4 @@ cli-plugin-reloaded = 所有插件已重新加载（已加载 { $count } 个）
 server-shutting-down = 服务器正在关闭...
 server-started = 服务器已在端口 { $port } 启动（HTTP 端口 { $http_port }）
 server-stats = 用户：{ $users } | 房间：{ $rooms } | 会话：{ $sessions } | 插件：{ $plugins }
+join-room-banned = 你已被此房间封禁

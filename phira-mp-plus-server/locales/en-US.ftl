@@ -44,3 +44,4 @@ cli-plugin-reloaded = All plugins reloaded ({ $count } loaded)
 server-shutting-down = Server is shutting down...
 server-started = Server started on port { $port } (HTTP port { $http_port })
 server-stats = Users: { $users } | Rooms: { $rooms } | Sessions: { $sessions } | Plugins: { $plugins }
+join-room-banned = You are banned from this room

@@ -12,3 +12,4 @@ start-no-chart-selected = 還沒有選擇譜面
 
 auth-banned = 你已被此伺服器封禁。原因：{ $reason }
 auth-banned-default-reason = 違反伺服器規則
+join-room-banned = 你已被此房間封禁
