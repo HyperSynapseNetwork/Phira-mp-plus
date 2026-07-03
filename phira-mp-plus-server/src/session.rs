@@ -396,7 +396,7 @@ impl Session {
                                                         )
                                                         .await;
                                                     // 封禁检查
-                                                    if let Some(reason) =
+                                                    if let Some(_reason) =
                                                         server.ban_manager.ban_reason(info.id).await
                                                     {
                                                         warn!(
@@ -430,7 +430,7 @@ impl Session {
 
                                         let user_ip = this.get().map(|s| s.ip.clone()).unwrap_or_default();
                                         let existing_user = {
-                                            let mut guard = server.users.write().await;
+                                            let guard = server.users.write().await;
                                             guard.get(&user_info.id).map(Arc::clone)
                                         };
                                         if let Some(existing) = existing_user {

@@ -43,7 +43,7 @@ fn playing_tracks_results_and_aborted() {
 #[test]
 fn all_players_must_finish_or_abort_for_completion() {
     let mut results: std::collections::HashMap<i32, i32> = std::collections::HashMap::new();
-    let mut aborted: std::collections::HashSet<i32> = std::collections::HashSet::new();
+    let aborted: std::collections::HashSet<i32> = std::collections::HashSet::new();
     results.insert(1, 100);
     results.insert(2, 95);
     let all_done = [1, 2].iter().all(|id| results.contains_key(id) || aborted.contains(id));
