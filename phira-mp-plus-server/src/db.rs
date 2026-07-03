@@ -800,10 +800,10 @@ impl DbManager {
         if data.is_empty() {
             return;
         }
-        let value = serde_json::to_value(data).unwrap_or(Value::Array(Vec::new()));
-        self.append_player_array(round_uuid, player_id, "touches", value.clone())
+        let payload_json = serde_json::to_string(data).unwrap_or_else(|_| "[]".to_string());
+        self.append_player_array_json(round_uuid, player_id, "touches", &payload_json)
             .await;
-        self.append_touch_batch(round_uuid, player_id, data, value)
+        self.append_touch_batch_str(round_uuid, player_id, data, &payload_json)
             .await;
     }
 
@@ -816,19 +816,19 @@ impl DbManager {
         if data.is_empty() {
             return;
         }
-        let value = serde_json::to_value(data).unwrap_or(Value::Array(Vec::new()));
-        self.append_player_array(round_uuid, player_id, "judges", value.clone())
+        let payload_json = serde_json::to_string(data).unwrap_or_else(|_| "[]".to_string());
+        self.append_player_array_json(round_uuid, player_id, "judges", &payload_json)
             .await;
-        self.append_judge_batch(round_uuid, player_id, data, value)
+        self.append_judge_batch_str(round_uuid, player_id, data, &payload_json)
             .await;
     }
 
-    async fn append_touch_batch(
+    async fn append_touch_batch_str(
         &self,
         round_uuid: &str,
         player_id: i32,
         data: &[crate::plugin::TouchEventPoint],
-        payload: Value,
+        payload_json: &str,
     ) {
         #[cfg(feature = "postgres")]
         if let Self::Pg(pool) = self {
@@ -836,7 +836,6 @@ impl DbManager {
                 telemetry_time_range(data.iter().map(|p| p.time as f64));
             let now = now_ms();
             let count = i32::try_from(data.len()).unwrap_or(i32::MAX);
-            let payload = payload.to_string();
             let _ = sqlx::query(
                 "INSERT INTO mp_round_touch_batches
                    (round_uuid, player_id, count, first_game_time, last_game_time, payload, created_at, sequence)
@@ -847,19 +846,19 @@ impl DbManager {
             .bind(count)
             .bind(first_game_time)
             .bind(last_game_time)
-            .bind(payload)
+            .bind(payload_json)
             .bind(now)
             .execute(pool)
             .await;
         }
     }
 
-    async fn append_judge_batch(
+    async fn append_judge_batch_str(
         &self,
         round_uuid: &str,
         player_id: i32,
         data: &[crate::plugin::JudgeEventItem],
-        payload: Value,
+        payload_json: &str,
     ) {
         #[cfg(feature = "postgres")]
         if let Self::Pg(pool) = self {
@@ -867,7 +866,6 @@ impl DbManager {
                 telemetry_time_range(data.iter().map(|p| p.time as f64));
             let now = now_ms();
             let count = i32::try_from(data.len()).unwrap_or(i32::MAX);
-            let payload = payload.to_string();
             let _ = sqlx::query(
                 "INSERT INTO mp_round_judge_batches
                    (round_uuid, player_id, count, first_game_time, last_game_time, payload, created_at, sequence)
@@ -878,27 +876,26 @@ impl DbManager {
             .bind(count)
             .bind(first_game_time)
             .bind(last_game_time)
-            .bind(payload)
+            .bind(payload_json)
             .bind(now)
             .execute(pool)
             .await;
         }
     }
 
-    async fn append_player_array(
+    async fn append_player_array_json(
         &self,
         round_uuid: &str,
         player_id: i32,
         column: &str,
-        data: Value,
+        payload_json: &str,
     ) {
         #[cfg(feature = "postgres")]
         if let Self::Pg(pool) = self {
-            if !data.as_array().is_some_and(|arr| !arr.is_empty()) {
+            if payload_json == "[]" {
                 return;
             }
             let now = now_ms();
-            let data = data.to_string();
             let sql = match column {
                 "judges" =>
                     "INSERT INTO mp_round_player_data (round_uuid, player_id, touches, judges, created_at, updated_at)
@@ -916,7 +913,7 @@ impl DbManager {
             let _ = sqlx::query(sql)
                 .bind(round_uuid)
                 .bind(player_id)
-                .bind(data)
+                .bind(payload_json)
                 .bind(now)
                 .execute(pool)
                 .await;
