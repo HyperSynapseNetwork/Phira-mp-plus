@@ -78,6 +78,30 @@ jobs:
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
         with:
-          name: phira-mp-plus-server
+          name: phira-mp-plus-server-linux
           path: target/x86_64-unknown-linux-musl/release/phira-mp-plus-server
+          if-no-files-found: error
+
+  build-windows:
+    needs: [check]
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache dependencies
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build release binary (Windows, no postgres/plugin)
+        run: cargo build --release --package phira-mp-plus-server --no-default-features
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: phira-mp-plus-server-windows
+          path: target/release/phira-mp-plus-server.exe
           if-no-files-found: error
