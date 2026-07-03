@@ -5,7 +5,7 @@
 
 use crate::session::{SessionCategory, User};
 use crate::tl;
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, bail, Result};
 use phira_mp_common::{ClientCommand, ServerCommand};
 use std::sync::Arc;
 use tracing::warn;

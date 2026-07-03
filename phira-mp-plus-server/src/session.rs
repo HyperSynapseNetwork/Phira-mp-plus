@@ -489,9 +489,11 @@ impl Session {
                                                 online,
                                                 &server,
                                             );
-                                        } else if server.ban_manager.is_banned(user_info.id).await {
-                                            let _ = auth_tx.take().unwrap().send(AuthenticationOutcome::Rejected);
-                                            return Ok(());
+                                        } else {
+                                            if server.ban_manager.is_banned(user_info.id).await {
+                                                let _ = auth_tx.take().unwrap().send(AuthenticationOutcome::Rejected);
+                                                return Ok(());
+                                            }
                                             let user = Arc::new(User::new(
                                                 user_info.id,
                                                 user_info.name,
