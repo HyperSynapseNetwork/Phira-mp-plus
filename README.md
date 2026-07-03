@@ -213,6 +213,18 @@ Phira-mp-plus/
 │   ├── cli.md                   #   CLI 命令参考
 │   └── plugin-dev.md            #   WASM 插件开发指南 + WIT API 参考
 │
+├── phira-mp-plus-server/tests/     # 集成 & 合约测试 (10 个)
+│   ├── cli_command_contracts.rs     #   CLI 命令面合约
+│   ├── command_surface_contracts.rs #   命令注册表合约
+│   ├── persistence_contracts.rs     #   持久化合约 (telemetry cutover)
+│   ├── telemetry_cutover_contracts.rs # telemetry cutover 合约
+│   ├── docs_contracts.rs            #   文档合约 (禁止推荐旧命令)
+│   ├── phira_http_contracts.rs      #   Phira HTTP 合约
+│   ├── runtime_v2_contracts.rs      #   Runtime v2 架构合约
+│   ├── simulation_contracts.rs      #   Simulation 合约
+│   ├── admin_command_contracts.rs   #   管理员命令解析合约
+│   └── wit_abi_contracts.rs         #   WIT ABI 合约
+
 ├── server_config.yml            # YAML 配置文件 (同级副本, 运行时读取)
 └── LICENSE
 ```
