@@ -11,6 +11,8 @@
 //   5. Dual-support both ABIs during transition
 //   6. Remove JSON bridge after all plugins migrate
 
+package phira:plugin@0.2.0;
+
 /// Core data types shared between host and guest.
 interface phira-types {
     /// Touch event point from gameplay.
