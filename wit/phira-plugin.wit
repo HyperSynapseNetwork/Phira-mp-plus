@@ -68,9 +68,15 @@ interface phira-types {
         integer(s64),
         float(f64),
         text(string),
-        array(list<json-value>),
-        object(list<tuple<string, json-value>>),
+        array(json-list),
+        object(json-map),
     }
+
+    /// Recursive helper for json-value arrays (breaks direct self-reference).
+    type json-list = list<json-value>;
+
+    /// Recursive helper for json-value objects.
+    type json-map = list<tuple<string, json-value>>;
 
     /// Host API result: either a JSON value or an error string.
     variant api-result {
