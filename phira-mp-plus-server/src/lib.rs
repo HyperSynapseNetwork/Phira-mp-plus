@@ -23,6 +23,7 @@ pub mod phira_client;
 pub mod plugin;
 pub mod plugin_abi;
 pub mod plugin_http;
+pub mod proxy_protocol;
 pub mod rate_limiter;
 pub mod room;
 pub mod room_actor;
