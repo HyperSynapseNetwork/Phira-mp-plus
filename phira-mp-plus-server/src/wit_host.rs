@@ -99,3 +99,13 @@ fn from_wit_json(value: &types::JsonValue) -> serde_json::Value {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn uuid_format_is_valid() {
+        let s = uuid::Uuid::new_v4().to_string();
+        assert_eq!(s.len(), 36);
+        assert_eq!(s.chars().filter(|&c| c == '-').count(), 4);
+    }
+}
