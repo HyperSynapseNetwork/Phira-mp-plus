@@ -761,6 +761,21 @@ fn spawn_event_subscribers(state: &Arc<PlusServerState>) {
                             // 3. Track player and playtime
                             crate::internal_hooks::track_player(*user_id, user_name);
                             crate::internal_hooks::playtime_connect(*user_id);
+
+                            // 4. Welcome message
+                            let online = {
+                                let rooms = state_clone.rooms.read().await;
+                                let mut in_room = std::collections::HashSet::new();
+                                for (_, room) in rooms.iter() {
+                                    for u in room.users().await {
+                                        in_room.insert(u.id);
+                                    }
+                                }
+                                in_room.len()
+                            };
+                            crate::internal_hooks::send_welcome(
+                                *user_id, user_name, online, &state_clone,
+                            );
                         }
                         _ => {}
                     }
