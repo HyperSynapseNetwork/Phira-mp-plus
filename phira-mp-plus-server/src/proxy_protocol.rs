@@ -13,6 +13,9 @@
 
 use std::net::IpAddr;
 
+type Request<B> = axum::http::Request<B>;
+type Response<B> = axum::http::Response<B>;
+
 /// Extension key injected into requests that arrived via PROXY protocol.
 ///
 /// Read this from `req.extensions().get::<RealClientIp>()` in handlers
@@ -39,10 +42,9 @@ impl<S> tower::Layer<S> for TrustForwardedForLayer {
 #[derive(Clone)]
 pub struct TrustForwardedFor<S>(S);
 
-impl<S, ReqBody, ResBody> tower::Service<hyper::Request<ReqBody>> for TrustForwardedFor<S>
+impl<S, ReqBody, ResBody> tower::Service<Request<ReqBody>> for TrustForwardedFor<S>
 where
-    S: tower::Service<hyper::Request<ReqBody>, Response = hyper::Response<ResBody>>,
-    S::Error: std::error::Error + Send + Sync + 'static,
+    S: tower::Service<Request<ReqBody>, Response = Response<ResBody>>,
     S::Future: Send + 'static,
     ReqBody: Send + 'static,
     ResBody: Default + Send + 'static,
@@ -55,7 +57,7 @@ where
         tower::Service::poll_ready(&mut self.0, cx)
     }
 
-    fn call(&mut self, mut req: hyper::Request<ReqBody>) -> Self::Future {
+    fn call(&mut self, mut req: Request<ReqBody>) -> Self::Future {
         // Extract the first IP from X-Forwarded-For header.
         if let Some(value) = req.headers().get("x-forwarded-for") {
             if let Ok(header_str) = value.to_str() {
