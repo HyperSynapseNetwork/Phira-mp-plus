@@ -667,6 +667,8 @@ pub struct PlusServerState {
     pub room_commands: Arc<crate::room_actor::RoomCommandGateway>,
     /// Runtime v2 Phira HTTP client. Authentication/chart/record paths should converge here before hybrid/real benchmark expansion.
     pub phira_client: Arc<crate::phira_client::PhiraRetryClient>,
+    /// Unified AdminCommand registry for CLI/TUI/Web.
+    pub admin_commands: crate::admin_command::CommandRegistry,
     /// Runtime v2 master workboard. Keeps the original long-term targets visible in CLI/TUI/API diagnostics.
     pub runtime_plan: Arc<crate::runtime_plan::RuntimePlan>,
     /// 压测用 Phira token 列表（来自配置或 CLI 命令）。
@@ -939,6 +941,11 @@ impl PlusServer {
             room_commands,
             phira_client,
             runtime_plan,
+            admin_commands: {
+                let mut reg = crate::admin_command::CommandRegistry::new();
+                reg.register(Box::new(crate::admin_command::HelpCommand));
+                reg
+            },
             bench_tokens: RwLock::new(bench_tokens),
             admin_ids: RwLock::new(admin_ids),
             room_monitor_key: generate_secret_key("room_monitor", 64).unwrap_or_default(),

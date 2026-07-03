@@ -26,21 +26,6 @@ pub enum CommandCategory {
     System,
 }
 
-impl CommandCategory {
-    pub fn label(&self, lang: &str) -> &'static str {
-        match self {
-            Self::Admin => "管理",
-            Self::Room => "房间",
-            Self::Plugin => "插件",
-            Self::Benchmark => "基准测试",
-            Self::Simulation => "模拟",
-            Self::Broadcast => "广播",
-            Self::Runtime => "运行时",
-            Self::System => "系统",
-        }
-    }
-}
-
 /// Parameter type for command arguments.
 #[derive(Debug, Clone)]
 pub enum ParamType {
@@ -70,81 +55,107 @@ pub struct CommandResult {
 }
 
 /// Unified admin command trait.
-///
-/// All commands (admin, room, benchmark, etc.) implement this.
-/// Dispatchers (CLI, TUI, Web) call `execute` after parsing args.
 pub trait AdminCommand: Send + Sync {
-    /// Primary command name (e.g. `"ban"`, `"room"`, `"benchmark"`).
     fn name(&self) -> &'static str;
-
-    /// Alternative spellings (e.g. `["kick"]` for `"ban"`).
-    fn aliases(&self) -> &[&'static str] {
-        &[]
-    }
-
-    /// One-line help string.
+    fn aliases(&self) -> &[&'static str] { &[] }
     fn help(&self) -> &'static str;
-
-    /// Detailed help (shown for `help <command>`).
-    fn detailed_help(&self) -> &'static str {
-        self.help()
-    }
-
-    /// Category for grouping in `help` output.
+    fn detailed_help(&self) -> &'static str { self.help() }
     fn category(&self) -> CommandCategory;
-
-    /// Parameter definitions for argument parsing and `help` output.
-    fn params(&self) -> &[ParamDef] {
-        &[]
-    }
-
-    /// Execute the command with parsed arguments.
+    fn params(&self) -> &[ParamDef] { &[] }
     fn execute(
         &self,
         args: &[String],
         state: &crate::server::PlusServerState,
-        out: &dyn Fn(&str),
     ) -> Pin<Box<dyn Future<Output = CommandResult> + Send + '_>>;
 }
 
 // ── Registry ──
 
-/// A registry of all admin commands, indexed by name and alias.
 #[derive(Default)]
 pub struct CommandRegistry {
     commands: Vec<Box<dyn AdminCommand>>,
 }
 
 impl CommandRegistry {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    pub fn register(&mut self, cmd: Box<dyn AdminCommand>) {
-        self.commands.push(cmd);
-    }
-
+    pub fn new() -> Self { Self::default() }
+    pub fn register(&mut self, cmd: Box<dyn AdminCommand>) { self.commands.push(cmd); }
     pub fn find(&self, name: &str) -> Option<&dyn AdminCommand> {
-        self.commands
-            .iter()
-            .find(|c| c.name() == name || c.aliases().contains(&name))
-            .map(|c| c.as_ref())
+        self.commands.iter().find(|c| c.name() == name || c.aliases().contains(&name)).map(|c| c.as_ref())
+    }
+    pub fn all(&self) -> &[Box<dyn AdminCommand>] { &self.commands }
+}
+
+// ── Built-in commands ──
+
+pub struct HelpCommand;
+
+impl AdminCommand for HelpCommand {
+    fn name(&self) -> &'static str { "help" }
+    fn aliases(&self) -> &[&'static str] { &["?"] }
+    fn help(&self) -> &'static str { "显示命令帮助" }
+    fn category(&self) -> CommandCategory { CommandCategory::System }
+    fn params(&self) -> &[ParamDef] {
+        &[ParamDef {
+            name: "command",
+            description: "要查看帮助的命令名",
+            param_type: ParamType::String,
+            required: false,
+            default_value: None,
+        }]
     }
 
-    pub fn all(&self) -> &[Box<dyn AdminCommand>] {
-        &self.commands
-    }
-
-    pub fn by_category(&self) -> Vec<(CommandCategory, Vec<&dyn AdminCommand>)> {
-        let mut map: Vec<(CommandCategory, Vec<&dyn AdminCommand>)> = Vec::new();
-        for cmd in &self.commands {
-            let cat = cmd.category();
-            if let Some(entry) = map.iter_mut().find(|(c, _)| *c == cat) {
-                entry.1.push(cmd.as_ref());
+    fn execute(
+        &self,
+        args: &[String],
+        state: &crate::server::PlusServerState,
+    ) -> Pin<Box<dyn Future<Output = CommandResult> + Send + '_>> {
+        let target = args.first().map(|s| s.as_str()).unwrap_or("");
+        Box::pin(async move {
+            let registry = &state.admin_commands;
+            if target.is_empty() {
+                // Show all commands by category
+                let mut msg = String::new();
+                let mut cats: Vec<(CommandCategory, Vec<&dyn AdminCommand>)> = Vec::new();
+                for cmd in registry.all() {
+                    let cat = cmd.category();
+                    if let Some(entry) = cats.iter_mut().find(|(c, _)| *c == cat) {
+                        entry.1.push(cmd.as_ref());
+                    } else {
+                        cats.push((cat, vec![cmd.as_ref()]));
+                    }
+                }
+                for (cat, cmds) in &cats {
+                    msg.push_str(&format!("\n  {}:", cat.label("zh")));
+                    for cmd in cmds {
+                        let alias_str = if cmd.aliases().is_empty() {
+                            String::new()
+                        } else {
+                            format!(" ({})", cmd.aliases().join(", "))
+                        };
+                        msg.push_str(&format!("\n    {:<15}{}{}", cmd.name(), alias_str, cmd.help()));
+                    }
+                }
+                CommandResult { success: true, message: msg, data: None }
             } else {
-                map.push((cat, vec![cmd.as_ref()]));
+                match registry.find(target) {
+                    Some(cmd) => {
+                        let mut msg = format!("{} — {}\n", cmd.name(), cmd.help());
+                        if !cmd.params().is_empty() {
+                            msg.push_str("\n参数:\n");
+                            for p in cmd.params() {
+                                let req = if p.required { " (必填)" } else { "" };
+                                msg.push_str(&format!("  {}{}\n", p.name, req));
+                            }
+                        }
+                        CommandResult { success: true, message: msg, data: None }
+                    }
+                    None => CommandResult {
+                        success: false,
+                        message: format!("未知命令: {target}"),
+                        data: None,
+                    },
+                }
             }
-        }
-        map
+        })
     }
 }
