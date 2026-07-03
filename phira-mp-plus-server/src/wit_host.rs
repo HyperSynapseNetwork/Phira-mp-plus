@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use crate::plugin_abi::wit_abi;
+use crate::plugin_abi::wit_abi as wit;
 use crate::server::PlusServerState;
 
 /// Wraps server state to implement WIT host traits.
@@ -18,9 +18,9 @@ impl WitPluginHost {
 }
 
 // Generated module paths (from bindgen! macro in plugin_abi.rs):
-//   crate::plugin_abi::wit_abi::phira::plugin::phira_host::Host
-use wit_abi::phira::plugin::phira_host as host_iface;
-use wit_abi::phira::plugin::phira_types;
+//   crate::plugin_abi::wit::phira::plugin::phira_host::Host
+use wit::phira::plugin::phira_host as host_iface;
+use wit::phira::plugin::phira_types as types;
 
 impl host_iface::Host for WitPluginHost {
     fn log(&mut self, level: String, message: String) {
@@ -45,10 +45,12 @@ impl host_iface::Host for WitPluginHost {
             .unwrap_or(0)
     }
 
-    fn api_call(&mut self, method: String, args: Vec<phira_types::JsonValue>) -> Result<phira_types::JsonValue, String> {
+    fn api_call(&mut self, method: String, args: Vec<types::JsonValue>) -> types::ApiResult {
         let args_serde: Vec<serde_json::Value> = args.iter().map(from_wit_json).collect();
-        let result = crate::server::server_state_query_for_host(&self.state, &method, &args_serde)?;
-        Ok(to_wit_json(&result))
+        match crate::server::server_state_query_for_host(&self.state, &method, &args_serde) {
+            Ok(value) => types::ApiResult::Ok(to_wit_json(&value)),
+            Err(e) => types::ApiResult::Error(e),
+        }
     }
 
     fn send_chat(&mut self, user_id: u32, message: String) {
@@ -57,19 +59,19 @@ impl host_iface::Host for WitPluginHost {
 
     fn http_request(
         &mut self,
-        url: String,
+        _url: String,
         _method: String,
         _headers: Vec<(String, String)>,
         _body: Vec<u8>,
-    ) -> Result<phira_types::HttpResponse, String> {
-        Err(format!("http_request not yet implemented for WIT host"))
+    ) -> Result<types::HttpResponse, String> {
+        Err("http_request not yet implemented for WIT host".to_string())
     }
 }
 
 // ── JSON conversion ──
 
-fn to_wit_json(value: &serde_json::Value) -> phira_types::JsonValue {
-    use phira_types::JsonValue;
+fn to_wit_json(value: &serde_json::Value) -> types::JsonValue {
+    use types::JsonValue;
     match value {
         serde_json::Value::Null => JsonValue::Null,
         serde_json::Value::Bool(b) => JsonValue::Flag(*b),
@@ -84,8 +86,8 @@ fn to_wit_json(value: &serde_json::Value) -> phira_types::JsonValue {
     }
 }
 
-fn from_wit_json(value: &phira_types::JsonValue) -> serde_json::Value {
-    use phira_types::JsonValue;
+fn from_wit_json(value: &types::JsonValue) -> serde_json::Value {
+    use types::JsonValue;
     match value {
         JsonValue::Null => serde_json::Value::Null,
         JsonValue::Flag(b) => serde_json::Value::Bool(*b),
