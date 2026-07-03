@@ -93,7 +93,8 @@ impl PluginHttpServer {
         };
         info!(%address, "HTTP server started (direct)");
 
-        // PROXY protocol port (optional)
+        // PROXY protocol port — apply TrustForwardedFor middleware so
+        // reverse-proxy-set X-Forwarded-For headers are trusted here.
         if self.proxy_port > 0 && self.proxy_port != self.port {
             let proxy_addr = format!("0.0.0.0:{}", self.proxy_port);
             let proxy_listener = match tokio::net::TcpListener::bind(&proxy_addr).await {
@@ -103,17 +104,17 @@ impl PluginHttpServer {
                     return;
                 }
             };
-            let proxy_app = app.clone();
+            let proxy_app = app.clone()
+                .layer(crate::proxy_protocol::TrustForwardedForLayer);
             tokio::spawn(async move {
-                info!(%proxy_addr, "HTTP server started (PROXY protocol)");
-                if let Err(err) = crate::proxy_protocol::serve_axum(proxy_listener, proxy_app).await
-                {
+                info!(%proxy_addr, "HTTP server started (PROXY protocol, X-Forwarded-For trusted)");
+                if let Err(err) = axum::serve(proxy_listener, proxy_app.into_make_service_with_connect_info::<std::net::SocketAddr>()).await {
                     error!(?err, "PROXY protocol HTTP server stopped");
                 }
             });
         }
 
-        if let Err(err) = axum::serve(listener, app).await {
+        if let Err(err) = axum::serve(listener, app.into_make_service_with_connect_info::<std::net::SocketAddr>()).await {
             error!(?err, "HTTP server stopped unexpectedly");
         }
     }
