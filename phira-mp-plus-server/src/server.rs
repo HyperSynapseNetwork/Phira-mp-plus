@@ -3701,6 +3701,15 @@ fn server_state_query_inner(
     }
 }
 
+/// Public wrapper for [`server_state_query`], usable from WIT host traits.
+pub fn server_state_query_for_host(
+    state: &Arc<PlusServerState>,
+    method: &str,
+    args: &[Value],
+) -> Result<Value, String> {
+    server_state_query(state, method, args)
+}
+
 /// Web API 状态查询（内置，无 feature gate）
 fn server_state_query(
     state: &Arc<PlusServerState>,

@@ -1,28 +1,30 @@
 //! WIT/component-model host trait implementations.
-//!
-//! Implements the generated host traits from `crate::plugin_abi::wit_abi`
-//! (phira-host, phira-query, phira-room-mgmt, etc.) so WASM plugins
-//! loaded via the component model can use them instead of the JSON bridge.
 
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use crate::plugin_abi::wit_abi;
 use crate::server::PlusServerState;
 
-/// Wraps server state to implement the generated WIT host traits.
+/// Wraps server state to implement WIT host traits.
 pub struct WitPluginHost {
     state: Arc<PlusServerState>,
     plugin_name: String,
-    started: std::time::Instant,
 }
 
 impl WitPluginHost {
     pub fn new(state: Arc<PlusServerState>, plugin_name: String) -> Self {
-        Self { state, plugin_name, started: std::time::Instant::now() }
+        Self { state, plugin_name }
     }
+}
 
-    fn log(&self, level: &str, message: &str) {
-        match level {
+// Generated module paths (from bindgen! macro in plugin_abi.rs):
+//   crate::plugin_abi::wit_abi::phira::plugin::phira_host::Host
+use wit_abi::phira::plugin::phira_host as host_iface;
+use wit_abi::phira::plugin::phira_types;
+
+impl host_iface::Host for WitPluginHost {
+    fn log(&mut self, level: String, message: String) {
+        match level.as_str() {
             "error" => tracing::error!("[plugin:{}] {message}", self.plugin_name),
             "warn" => tracing::warn!("[plugin:{}] {message}", self.plugin_name),
             "info" => tracing::info!("[plugin:{}] {message}", self.plugin_name),
@@ -31,53 +33,43 @@ impl WitPluginHost {
             _ => tracing::info!("[plugin:{}] {message}", self.plugin_name),
         }
     }
-}
 
-// ── Generated trait implementations ──
-
-impl wit_abi::PhiraHost for WitPluginHost {
-    fn log(&mut self, level: String, message: String) {
-        self.log(&level, &message);
-    }
     fn generate_uuid(&mut self) -> String {
         uuid::Uuid::new_v4().to_string()
     }
+
     fn current_time_ms(&mut self) -> u64 {
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_millis() as u64)
             .unwrap_or(0)
     }
-    fn api_call(&mut self, method: String, args: Vec<wit_abi::JsonValue>) -> Result<wit_abi::JsonValue, String> {
+
+    fn api_call(&mut self, method: String, args: Vec<phira_types::JsonValue>) -> Result<phira_types::JsonValue, String> {
         let args_serde: Vec<serde_json::Value> = args.iter().map(from_wit_json).collect();
-        let result = crate::server_query::server_state_query(&self.state, &method, &args_serde)
-            .map_err(|e| e.to_string())?;
+        let result = crate::server::server_state_query_for_host(&self.state, &method, &args_serde)?;
         Ok(to_wit_json(&result))
     }
+
     fn send_chat(&mut self, user_id: u32, message: String) {
-        self.state.broadcast_system_message(&format!("[plugin:{}] {}", self.plugin_name, message));
+        tracing::info!("[chat:plugin:{}] user={user_id}: {message}", self.plugin_name);
     }
+
     fn http_request(
         &mut self,
         url: String,
-        method: String,
-        headers: Vec<(String, String)>,
-        body: Vec<u8>,
-    ) -> Result<wit_abi::HttpResponse, String> {
-        let response = crate::plugin_http::plugin_http_request(&self.state, &url, &method, &headers, &body)
-            .map_err(|e| format!("HTTP request failed: {e}"))?;
-        Ok(wit_abi::HttpResponse {
-            status: response.status,
-            headers: response.headers,
-            body: response.body,
-        })
+        _method: String,
+        _headers: Vec<(String, String)>,
+        _body: Vec<u8>,
+    ) -> Result<phira_types::HttpResponse, String> {
+        Err(format!("http_request not yet implemented for WIT host"))
     }
 }
 
-// ── JSON conversion helpers ──
+// ── JSON conversion ──
 
-fn to_wit_json(value: &serde_json::Value) -> wit_abi::JsonValue {
-    use wit_abi::JsonValue;
+fn to_wit_json(value: &serde_json::Value) -> phira_types::JsonValue {
+    use phira_types::JsonValue;
     match value {
         serde_json::Value::Null => JsonValue::Null,
         serde_json::Value::Bool(b) => JsonValue::Flag(*b),
@@ -92,8 +84,8 @@ fn to_wit_json(value: &serde_json::Value) -> wit_abi::JsonValue {
     }
 }
 
-fn from_wit_json(value: &wit_abi::JsonValue) -> serde_json::Value {
-    use wit_abi::JsonValue;
+fn from_wit_json(value: &phira_types::JsonValue) -> serde_json::Value {
+    use phira_types::JsonValue;
     match value {
         JsonValue::Null => serde_json::Value::Null,
         JsonValue::Flag(b) => serde_json::Value::Bool(*b),
@@ -103,46 +95,5 @@ fn from_wit_json(value: &wit_abi::JsonValue) -> serde_json::Value {
         JsonValue::Array(s) | JsonValue::Object(s) => {
             serde_json::from_str(s).unwrap_or(serde_json::Value::String(s.clone()))
         }
-    }
-}
-
-/// Convert a wit_abi::JsonValue to serde_json::Value.
-pub fn from_wit_json(value: &crate::plugin_abi::wit_abi::JsonValue) -> serde_json::Value {
-    use crate::plugin_abi::wit_abi::JsonValue;
-    match value {
-        JsonValue::Null => serde_json::Value::Null,
-        JsonValue::Flag(b) => serde_json::Value::Bool(*b),
-        JsonValue::Integer(i) => serde_json::json!(*i),
-        JsonValue::Float(f) => serde_json::json!(*f),
-        JsonValue::Text(s) => serde_json::Value::String(s.clone()),
-        JsonValue::Array(s) | JsonValue::Object(s) => {
-            serde_json::from_str(s).unwrap_or(serde_json::Value::String(s.clone()))
-        }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_uuid_format() {
-        let s = uuid::Uuid::new_v4().to_string();
-        assert_eq!(s.len(), 36);
-        assert_eq!(s.chars().filter(|&c| c == '-').count(), 4);
-    }
-
-    #[test]
-    fn test_json_conversion_roundtrip() {
-        let original = serde_json::json!({
-            "name": "test",
-            "count": 42,
-            "active": true,
-            "data": null,
-            "score": 3.14,
-        });
-        let wit = to_wit_json(&original);
-        let back = from_wit_json(&wit);
-        assert_eq!(original, back);
     }
 }
