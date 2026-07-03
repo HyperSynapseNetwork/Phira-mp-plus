@@ -621,6 +621,9 @@ pub fn runtime_v2_registry() -> CommandRegistry {
                 Ok(c) => c,
                 Err(e) => return vec![format!("  ✗ 解析配置文件失败: {e}")],
             };
+            if let Err(e) = config.validate() {
+                return vec![format!("  ✗ 配置校验失败: {e}")];
+            }
             let live = crate::server::LiveConfig::from_full(&config);
             *state.live_config.blocking_write() = live;
             vec![

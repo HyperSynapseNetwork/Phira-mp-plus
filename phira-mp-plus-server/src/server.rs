@@ -294,6 +294,49 @@ impl PlusConfig {
         Ok(config)
     }
 
+    /// 启动时校验配置合法性。
+    pub fn validate(&self) -> Result<(), crate::error::AppError> {
+        use crate::error::AppError;
+        // Port range
+        if self.port == 0 || self.port > 65535 {
+            return Err(AppError::ConfigValidation(format!(
+                "端口 {} 超出范围 (1-65535)", self.port
+            )));
+        }
+        if self.http_port == 0 || self.http_port > 65535 {
+            return Err(AppError::ConfigValidation(format!(
+                "HTTP 端口 {} 超出范围 (1-65535)", self.http_port
+            )));
+        }
+        if self.port == self.http_port {
+            return Err(AppError::ConfigValidation(
+                "TCP 端口和 HTTP 端口不能相同".into()
+            ));
+        }
+        // Plugin directory
+        if !std::path::Path::new(&self.plugins_dir).exists() {
+            return Err(AppError::ConfigValidation(format!(
+                "插件目录不存在: {}", self.plugins_dir
+            )));
+        }
+        // Rate limiter
+        if self.connection_rate_limit == 0 {
+            return Err(AppError::ConfigValidation(
+                "connection_rate_limit 必须大于 0".into()
+            ));
+        }
+        if self.connection_rate_window == 0 {
+            return Err(AppError::ConfigValidation(
+                "connection_rate_window 必须大于 0".into()
+            ));
+        }
+        // Retention
+        if self.round_data_retention_days == 0 && self.persistence_retention_days == 0 {
+            // 允许 0 = 不清理，不需要报错
+        }
+        Ok(())
+    }
+
     /// 合并 CLI 参数覆盖（非默认值的 CLI 参数覆盖 YAML 配置）
     pub fn merge_cli(mut self, cli: PlusConfigCli) -> Self {
         if cli.port != 12346 {

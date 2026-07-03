@@ -11,6 +11,7 @@ pub mod cli;
 pub mod cli_tui;
 pub mod command_registry;
 pub mod db;
+pub mod error;
 pub mod event_bus;
 pub mod extensions;
 pub mod internal_hooks;
