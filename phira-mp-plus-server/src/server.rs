@@ -1202,7 +1202,7 @@ impl PlusServer {
 
     /// 触发插件事件
     pub async fn trigger_event(&self, event: &PluginEvent) {
-        self.state.plugin_manager.trigger(event).await;
+        self.state.event_bus.publish(crate::event_bus::MpEvent::PluginEventDispatched(std::sync::Arc::new(event.clone())));
     }
 
     /// 获取服务器统计信息
@@ -1469,12 +1469,12 @@ impl PlusServerState {
             data: crate::room::Room::into_data(&room).await,
         })
         .await;
-        self.plugin_manager
-            .trigger(&PluginEvent::RoomCreate {
+        self.event_bus.publish(crate::event_bus::MpEvent::PluginEventDispatched(
+            std::sync::Arc::new(PluginEvent::RoomCreate {
                 user_id: 0,
                 room_id: rid.to_string(),
-            })
-            .await;
+            }),
+        ));
         Ok(serde_json::json!({
             "ok": true,
             "room_id": rid.to_string(),
@@ -1499,14 +1499,14 @@ impl PlusServerState {
             rooms.get(&rid).map(Arc::clone).ok_or("room not found")?
         };
         room.set_persistent_empty(persistent);
-        self.plugin_manager
-            .trigger(&PluginEvent::RoomModify {
+        self.event_bus.publish(crate::event_bus::MpEvent::PluginEventDispatched(
+            std::sync::Arc::new(PluginEvent::RoomModify {
                 user_id: 0,
                 room_id: rid.to_string(),
                 data: serde_json::json!({"action":"persistent_empty","value": persistent})
                     .to_string(),
-            })
-            .await;
+            }),
+        ));
         Ok(
             serde_json::json!({"ok": true, "room_id": rid.to_string(), "persistent_empty": persistent}),
         )
@@ -2102,12 +2102,12 @@ impl PlusServerState {
                 })
                 .await;
             }
-            self.plugin_manager
-                .trigger(&PluginEvent::RoomLeave {
-                    user_id: target_id,
-                    room_id: old_id_text,
-                })
-                .await;
+            self.event_bus.publish(crate::event_bus::MpEvent::PluginEventDispatched(
+                    std::sync::Arc::new(PluginEvent::RoomLeave {
+                        user_id: target_id,
+                        room_id: old_id_text,
+                    }),
+                ));
         }
 
         user.monitor.store(monitor, Ordering::SeqCst);
@@ -2176,18 +2176,20 @@ impl PlusServerState {
             );
         }
 
-        self.plugin_manager
-            .trigger(&PluginEvent::RoomJoin {
+        self.event_bus.publish(crate::event_bus::MpEvent::PluginEventDispatched(
+            std::sync::Arc::new(PluginEvent::RoomJoin {
                 user_id: target_id,
                 room_id: rid.to_string(),
                 is_monitor: monitor,
-            })
-            .await;
-        self.plugin_manager.trigger(&PluginEvent::RoomModify {
-            user_id: target_id,
-            room_id: rid.to_string(),
-            data: serde_json::json!({"action":"force-move","from": old_room_id.clone(),"monitor": monitor}).to_string(),
-        }).await;
+            }),
+        ));
+        self.event_bus.publish(crate::event_bus::MpEvent::PluginEventDispatched(
+            std::sync::Arc::new(PluginEvent::RoomModify {
+                user_id: target_id,
+                room_id: rid.to_string(),
+                data: serde_json::json!({"action":"force-move","from": old_room_id.clone(),"monitor": monitor}).to_string(),
+            }),
+        ));
 
         target_room
             .send(phira_mp_common::Message::Chat {
@@ -2215,13 +2217,13 @@ impl PlusServerState {
             rooms.get(&rid).map(Arc::clone).ok_or("room not found")?
         };
         room.set_hidden(hidden);
-        self.plugin_manager
-            .trigger(&PluginEvent::RoomModify {
+        self.event_bus.publish(crate::event_bus::MpEvent::PluginEventDispatched(
+            std::sync::Arc::new(PluginEvent::RoomModify {
                 user_id: 0,
                 room_id: rid.to_string(),
                 data: format!(r#"{{"action":"hidden","value":{hidden}}}"#),
-            })
-            .await;
+            }),
+        ));
         Ok(serde_json::json!({"ok": true, "room_id": rid.to_string(), "hidden": hidden}))
     }
 
@@ -2272,8 +2274,8 @@ impl PlusServerState {
         let effective_endpoint = normalized
             .clone()
             .unwrap_or_else(|| self.config.phira_api_endpoint.clone());
-        self.plugin_manager
-            .trigger(&PluginEvent::RoomModify {
+        self.event_bus.publish(crate::event_bus::MpEvent::PluginEventDispatched(
+            std::sync::Arc::new(PluginEvent::RoomModify {
                 user_id: 0,
                 room_id: rid.to_string(),
                 data: serde_json::json!({
@@ -2282,8 +2284,8 @@ impl PlusServerState {
                     "effective": effective_endpoint.clone(),
                 })
                 .to_string(),
-            })
-            .await;
+            }),
+        ));
         Ok(serde_json::json!({
             "ok": true,
             "room_id": rid.to_string(),
@@ -2565,13 +2567,12 @@ async fn run_admin_kick_user(
                     })
                     .await;
             }
-            state
-                .plugin_manager
-                .trigger(&PluginEvent::RoomLeave {
+            state.event_bus.publish(crate::event_bus::MpEvent::PluginEventDispatched(
+                std::sync::Arc::new(PluginEvent::RoomLeave {
                     user_id: target_id,
                     room_id,
-                })
-                .await;
+                }),
+            ));
         }
     }
     {
@@ -2593,13 +2594,12 @@ async fn run_admin_kick_user(
     }
     state.users.write().await.remove(&target_id);
     info!(user = target_id, reason = %reason, "kicked from server by admin");
-    state
-        .plugin_manager
-        .trigger(&PluginEvent::UserDisconnect {
+    state.event_bus.publish(crate::event_bus::MpEvent::PluginEventDispatched(
+        std::sync::Arc::new(PluginEvent::UserDisconnect {
             user_id: target_id,
             user_name: user.name.clone(),
-        })
-        .await;
+        }),
+    ));
     state.publish_runtime_event(crate::event_bus::MpEvent::UserDisconnected { user_id: target_id });
     Ok(serde_json::json!({"ok": true, "reason": reason}))
 }
