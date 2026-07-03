@@ -106,15 +106,15 @@ fn default_boundaries() -> Vec<ActorBoundary> {
             name: "session-actor".to_string(),
             responsibility: "Own one client connection, authentication state, inbound command decoding, and outbound send queue.".to_string(),
             source_files: vec!["session.rs".to_string()],
-            status: ActorBoundaryStatus::Planned,
-            next_step: "extract command side effects behind message handlers; keep protocol behavior unchanged".to_string(),
+            status: ActorBoundaryStatus::Mirrored,
+            next_step: "session_dispatch.rs owns ClientCommand routing; next: extract monitor/permission/lifecycle modules".to_string(),
         },
         ActorBoundary {
             name: "room-actor".to_string(),
             responsibility: "Own one room state machine, membership, host transfer, ready/start/play/result lifecycle, and telemetry fan-in.".to_string(),
             source_files: vec!["room.rs".to_string(), "room_actor/".to_string()],
-            status: ActorBoundaryStatus::Planned,
-            next_step: "RoomCommandGateway now uses typed RoomCommandResult internally; next split mailbox/control/inline implementations into room_actor submodules".to_string(),
+            status: ActorBoundaryStatus::WriteRouted,
+            next_step: "all 7 room commands use typed RoomCommandPayload; mailbox delivers through typed_or_err boundary".to_string(),
         },
         ActorBoundary {
             name: "persistence-actor".to_string(),
@@ -141,8 +141,8 @@ fn default_boundaries() -> Vec<ActorBoundary> {
             name: "cli-actor".to_string(),
             responsibility: "Own CLI/TUI/admin-command execution through Command Registry without command logic spreading across cli.rs.".to_string(),
             source_files: vec!["cli.rs".to_string(), "cli_tui.rs".to_string(), "command_registry.rs".to_string()],
-            status: ActorBoundaryStatus::Mirrored,
-            next_step: "extract command handlers into registry-backed modules with canonical names".to_string(),
+            status: ActorBoundaryStatus::WriteRouted,
+            next_step: "room/broadcast/plugin command implementations moved to command modules; dispatch uses CommandRegistry".to_string(),
         },
     ]
 }

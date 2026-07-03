@@ -52,35 +52,7 @@ pub(crate) async fn process(
             }
         };
     }
-    let permitted = match category {
-        SessionCategory::Normal => !matches!(&cmd, ClientCommand::QueryRoomInfo),
-        SessionCategory::GameMonitor => matches!(
-            &cmd,
-            ClientCommand::JoinRoom { monitor: true, .. }
-                | ClientCommand::LeaveRoom
-                | ClientCommand::Ready
-                | ClientCommand::CancelReady
-                | ClientCommand::Authenticate { .. }
-                | ClientCommand::ConsoleAuthenticate { .. }
-                | ClientCommand::RoomMonitorAuthenticate { .. }
-                | ClientCommand::GameMonitorAuthenticate { .. }
-        ),
-        SessionCategory::RoomMonitor => matches!(
-            &cmd,
-            ClientCommand::QueryRoomInfo
-                | ClientCommand::Authenticate { .. }
-                | ClientCommand::ConsoleAuthenticate { .. }
-                | ClientCommand::RoomMonitorAuthenticate { .. }
-                | ClientCommand::GameMonitorAuthenticate { .. }
-        ),
-        SessionCategory::Console => matches!(
-            &cmd,
-            ClientCommand::Authenticate { .. }
-                | ClientCommand::ConsoleAuthenticate { .. }
-                | ClientCommand::RoomMonitorAuthenticate { .. }
-                | ClientCommand::GameMonitorAuthenticate { .. }
-        ),
-    };
+    let permitted = crate::session_permissions::is_command_permitted(category, &cmd);
     if !permitted {
         warn!(
             user = user.id,
