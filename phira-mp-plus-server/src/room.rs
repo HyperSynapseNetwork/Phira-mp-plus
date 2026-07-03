@@ -980,13 +980,18 @@ impl Room {
                                 let status = if r.aborted { " 放弃" } else { "" };
                                 let fc = if r.full_combo { " FC" } else { "" };
                                 lines.push(format!(
-                                    "#{} {} | {}分 | {:.1}%{}{}",
+                                    "#{}. {:<12} {:>8}分  准确率 {:.2}%  误差 ±{:.2}{}{}",
                                     i + 1,
                                     r.user_name,
                                     r.score,
                                     r.accuracy * 100.0,
+                                    r.std_score,
                                     fc,
                                     status
+                                ));
+                                lines.push(format!(
+                                    "    Perfect:{}  Good:{}  Bad:{}  Miss:{}  MaxCombo:{}",
+                                    r.perfect, r.good, r.bad, r.miss, r.max_combo
                                 ));
                             }
                             for line in &lines {
