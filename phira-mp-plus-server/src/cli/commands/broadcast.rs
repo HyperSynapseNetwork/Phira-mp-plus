@@ -66,7 +66,6 @@ impl CliHandler {
     }
 }
 
-
 impl CliHandler {
     pub(crate) async fn broadcast_all(&self, message: &str) {
         let users = {
@@ -147,5 +146,5 @@ impl CliHandler {
         } else {
             self.out(format!("  {} 未找到用户 {}", c::red("✗"), user_id));
         }
-}
+    }
 }

@@ -43,7 +43,7 @@ impl InternalRoomState {
         }
     }
 
-    fn stripped(&self) -> StrippedRoomState {
+    pub fn stripped(&self) -> StrippedRoomState {
         match self {
             Self::SelectChart => StrippedRoomState::SelectingChart,
             Self::WaitForReady { .. } => StrippedRoomState::WaitingForReady,
@@ -999,6 +999,7 @@ impl Room {
                         }
                     }
                     self.send(Message::GameEnd).await;
+                    *self.current_round_id.write().await = None;
                     *self.state.write().await = InternalRoomState::SelectChart;
                     if self.is_cycle() && !self.is_system_host() {
                         debug!(room = self.id.to_string(), "cycling");

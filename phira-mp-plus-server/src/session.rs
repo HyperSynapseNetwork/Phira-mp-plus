@@ -788,7 +788,11 @@ impl Session {
                         let result = LANGUAGE
                             .scope(
                                 Arc::new(user.lang.clone()),
-                                crate::session_dispatch::process(user, this.get().unwrap().category, cmd),
+                                crate::session_dispatch::process(
+                                    user,
+                                    this.get().unwrap().category,
+                                    cmd,
+                                ),
                             )
                             .await;
                         if let Some(resp) = result {

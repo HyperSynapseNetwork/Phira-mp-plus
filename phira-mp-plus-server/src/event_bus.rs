@@ -5,8 +5,8 @@
 //! room/session/plugin behavior can be migrated gradually instead of rewritten
 //! in one risky patch.
 
-use phira_mp_plus_server_api::PluginEvent;
 use phira_mp_common::RoomId;
+use phira_mp_plus_server_api::PluginEvent;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{

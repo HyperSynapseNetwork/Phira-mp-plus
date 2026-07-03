@@ -300,34 +300,37 @@ impl PlusConfig {
         // Port range
         if self.port == 0 || self.port > 65535 {
             return Err(AppError::ConfigValidation(format!(
-                "端口 {} 超出范围 (1-65535)", self.port
+                "端口 {} 超出范围 (1-65535)",
+                self.port
             )));
         }
         if self.http_port == 0 || self.http_port > 65535 {
             return Err(AppError::ConfigValidation(format!(
-                "HTTP 端口 {} 超出范围 (1-65535)", self.http_port
+                "HTTP 端口 {} 超出范围 (1-65535)",
+                self.http_port
             )));
         }
         if self.port == self.http_port {
             return Err(AppError::ConfigValidation(
-                "TCP 端口和 HTTP 端口不能相同".into()
+                "TCP 端口和 HTTP 端口不能相同".into(),
             ));
         }
         // Plugin directory
         if !std::path::Path::new(&self.plugins_dir).exists() {
             return Err(AppError::ConfigValidation(format!(
-                "插件目录不存在: {}", self.plugins_dir
+                "插件目录不存在: {}",
+                self.plugins_dir
             )));
         }
         // Rate limiter
         if self.connection_rate_limit == 0 {
             return Err(AppError::ConfigValidation(
-                "connection_rate_limit 必须大于 0".into()
+                "connection_rate_limit 必须大于 0".into(),
             ));
         }
         if self.connection_rate_window == 0 {
             return Err(AppError::ConfigValidation(
-                "connection_rate_window 必须大于 0".into()
+                "connection_rate_window 必须大于 0".into(),
             ));
         }
         // Retention
@@ -735,15 +738,15 @@ fn spawn_event_subscribers(state: &Arc<PlusServerState>) {
                             user_language,
                         } => {
                             // Plugin dispatch now handled by EventBus plugin subscriber.
-                            state_clone
-                                .event_bus
-                                .publish(crate::event_bus::MpEvent::PluginEventDispatched(
+                            state_clone.event_bus.publish(
+                                crate::event_bus::MpEvent::PluginEventDispatched(
                                     std::sync::Arc::new(PluginEvent::UserConnect {
                                         user_id: *user_id,
                                         user_name: user_name.clone(),
                                         user_ip: user_ip.clone(),
                                     }),
-                                ));
+                                ),
+                            );
 
                             // 2. Record in DB if available
                             if let Some(db) = crate::internal_hooks::DB.get() {
@@ -1239,7 +1242,11 @@ impl PlusServer {
 
     /// 触发插件事件
     pub async fn trigger_event(&self, event: &PluginEvent) {
-        self.state.event_bus.publish(crate::event_bus::MpEvent::PluginEventDispatched(std::sync::Arc::new(event.clone())));
+        self.state
+            .event_bus
+            .publish(crate::event_bus::MpEvent::PluginEventDispatched(
+                std::sync::Arc::new(event.clone()),
+            ));
     }
 
     /// 获取服务器统计信息
@@ -1506,12 +1513,13 @@ impl PlusServerState {
             data: crate::room::Room::into_data(&room).await,
         })
         .await;
-        self.event_bus.publish(crate::event_bus::MpEvent::PluginEventDispatched(
-            std::sync::Arc::new(PluginEvent::RoomCreate {
-                user_id: 0,
-                room_id: rid.to_string(),
-            }),
-        ));
+        self.event_bus
+            .publish(crate::event_bus::MpEvent::PluginEventDispatched(
+                std::sync::Arc::new(PluginEvent::RoomCreate {
+                    user_id: 0,
+                    room_id: rid.to_string(),
+                }),
+            ));
         Ok(serde_json::json!({
             "ok": true,
             "room_id": rid.to_string(),
@@ -1536,14 +1544,15 @@ impl PlusServerState {
             rooms.get(&rid).map(Arc::clone).ok_or("room not found")?
         };
         room.set_persistent_empty(persistent);
-        self.event_bus.publish(crate::event_bus::MpEvent::PluginEventDispatched(
-            std::sync::Arc::new(PluginEvent::RoomModify {
-                user_id: 0,
-                room_id: rid.to_string(),
-                data: serde_json::json!({"action":"persistent_empty","value": persistent})
-                    .to_string(),
-            }),
-        ));
+        self.event_bus
+            .publish(crate::event_bus::MpEvent::PluginEventDispatched(
+                std::sync::Arc::new(PluginEvent::RoomModify {
+                    user_id: 0,
+                    room_id: rid.to_string(),
+                    data: serde_json::json!({"action":"persistent_empty","value": persistent})
+                        .to_string(),
+                }),
+            ));
         Ok(
             serde_json::json!({"ok": true, "room_id": rid.to_string(), "persistent_empty": persistent}),
         )
@@ -1694,7 +1703,6 @@ impl PlusServerState {
 }
 
 impl PlusServerState {
-
     /// 绑定真实 Phira 账号 token 作为网络压测客户端。
     pub async fn bind_benchmark_tokens(&self, raw_tokens: Vec<String>) -> Result<usize, String> {
         let tokens = sanitize_benchmark_tokens(raw_tokens);
@@ -2139,7 +2147,8 @@ impl PlusServerState {
                 })
                 .await;
             }
-            self.event_bus.publish(crate::event_bus::MpEvent::PluginEventDispatched(
+            self.event_bus
+                .publish(crate::event_bus::MpEvent::PluginEventDispatched(
                     std::sync::Arc::new(PluginEvent::RoomLeave {
                         user_id: target_id,
                         room_id: old_id_text,
@@ -2213,13 +2222,14 @@ impl PlusServerState {
             );
         }
 
-        self.event_bus.publish(crate::event_bus::MpEvent::PluginEventDispatched(
-            std::sync::Arc::new(PluginEvent::RoomJoin {
-                user_id: target_id,
-                room_id: rid.to_string(),
-                is_monitor: monitor,
-            }),
-        ));
+        self.event_bus
+            .publish(crate::event_bus::MpEvent::PluginEventDispatched(
+                std::sync::Arc::new(PluginEvent::RoomJoin {
+                    user_id: target_id,
+                    room_id: rid.to_string(),
+                    is_monitor: monitor,
+                }),
+            ));
         self.event_bus.publish(crate::event_bus::MpEvent::PluginEventDispatched(
             std::sync::Arc::new(PluginEvent::RoomModify {
                 user_id: target_id,
@@ -2254,13 +2264,14 @@ impl PlusServerState {
             rooms.get(&rid).map(Arc::clone).ok_or("room not found")?
         };
         room.set_hidden(hidden);
-        self.event_bus.publish(crate::event_bus::MpEvent::PluginEventDispatched(
-            std::sync::Arc::new(PluginEvent::RoomModify {
-                user_id: 0,
-                room_id: rid.to_string(),
-                data: format!(r#"{{"action":"hidden","value":{hidden}}}"#),
-            }),
-        ));
+        self.event_bus
+            .publish(crate::event_bus::MpEvent::PluginEventDispatched(
+                std::sync::Arc::new(PluginEvent::RoomModify {
+                    user_id: 0,
+                    room_id: rid.to_string(),
+                    data: format!(r#"{{"action":"hidden","value":{hidden}}}"#),
+                }),
+            ));
         Ok(serde_json::json!({"ok": true, "room_id": rid.to_string(), "hidden": hidden}))
     }
 
@@ -2311,18 +2322,19 @@ impl PlusServerState {
         let effective_endpoint = normalized
             .clone()
             .unwrap_or_else(|| self.config.phira_api_endpoint.clone());
-        self.event_bus.publish(crate::event_bus::MpEvent::PluginEventDispatched(
-            std::sync::Arc::new(PluginEvent::RoomModify {
-                user_id: 0,
-                room_id: rid.to_string(),
-                data: serde_json::json!({
-                    "action": "phira_api_endpoint",
-                    "value": normalized.clone(),
-                    "effective": effective_endpoint.clone(),
-                })
-                .to_string(),
-            }),
-        ));
+        self.event_bus
+            .publish(crate::event_bus::MpEvent::PluginEventDispatched(
+                std::sync::Arc::new(PluginEvent::RoomModify {
+                    user_id: 0,
+                    room_id: rid.to_string(),
+                    data: serde_json::json!({
+                        "action": "phira_api_endpoint",
+                        "value": normalized.clone(),
+                        "effective": effective_endpoint.clone(),
+                    })
+                    .to_string(),
+                }),
+            ));
         Ok(serde_json::json!({
             "ok": true,
             "room_id": rid.to_string(),
@@ -2604,12 +2616,14 @@ async fn run_admin_kick_user(
                     })
                     .await;
             }
-            state.event_bus.publish(crate::event_bus::MpEvent::PluginEventDispatched(
-                std::sync::Arc::new(PluginEvent::RoomLeave {
-                    user_id: target_id,
-                    room_id,
-                }),
-            ));
+            state
+                .event_bus
+                .publish(crate::event_bus::MpEvent::PluginEventDispatched(
+                    std::sync::Arc::new(PluginEvent::RoomLeave {
+                        user_id: target_id,
+                        room_id,
+                    }),
+                ));
         }
     }
     {
@@ -2631,12 +2645,14 @@ async fn run_admin_kick_user(
     }
     state.users.write().await.remove(&target_id);
     info!(user = target_id, reason = %reason, "kicked from server by admin");
-    state.event_bus.publish(crate::event_bus::MpEvent::PluginEventDispatched(
-        std::sync::Arc::new(PluginEvent::UserDisconnect {
-            user_id: target_id,
-            user_name: user.name.clone(),
-        }),
-    ));
+    state
+        .event_bus
+        .publish(crate::event_bus::MpEvent::PluginEventDispatched(
+            std::sync::Arc::new(PluginEvent::UserDisconnect {
+                user_id: target_id,
+                user_name: user.name.clone(),
+            }),
+        ));
     state.publish_runtime_event(crate::event_bus::MpEvent::UserDisconnected { user_id: target_id });
     Ok(serde_json::json!({"ok": true, "reason": reason}))
 }

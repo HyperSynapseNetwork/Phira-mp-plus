@@ -628,7 +628,8 @@ pub fn runtime_v2_registry() -> CommandRegistry {
             *state.live_config.blocking_write() = live;
             vec![
                 "  ✓ 配置已重新加载".to_string(),
-                "  ▸ 部分字段 (port/http_port/plugins_dir/database_url) 需要重启服务端才能生效".to_string(),
+                "  ▸ 部分字段 (port/http_port/plugins_dir/database_url) 需要重启服务端才能生效"
+                    .to_string(),
             ]
         })),
         CommandSpec::new(
