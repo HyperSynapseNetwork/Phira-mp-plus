@@ -47,6 +47,12 @@ libc = "0.2"
 [features]
 default = ["plugin-system", "postgres"]
 plugin-system = ["dep:wasmtime"]
+# WIT/component-model bindgen — generates massive code, only enable
+# when actively developing typed plugin ABI.  Not in default features.
+wit-bindgen = ["plugin-system"]
 postgres = ["dep:sqlx"]
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(feature, values("wit-bindgen"))'] }
 
 [dev-dependencies]
