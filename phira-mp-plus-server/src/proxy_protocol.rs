@@ -25,7 +25,6 @@
 
 use std::io::Cursor;
 use std::net::{IpAddr, SocketAddr};
-use tokio::io::AsyncReadExt;
 
 /// Result of parsing a PROXY protocol header.
 #[derive(Debug, Clone)]
@@ -84,16 +83,8 @@ pub async fn accept_proxy_or_direct(
 /// `peek` confirmed the stream starts with "PROXY"; we now read the
 /// full line including the trailing \n (consuming it from the stream).
 async fn parse_v1_from_stream(stream: &tokio::net::TcpStream) -> std::io::Result<ProxyHeader> {
-    // We already know the first 4 bytes are "PROXY".  Read byte-by-byte
-    // until '\n' to capture the full line.
-    //
-    // We use `read` at the raw stream level.  Since `peek` didn't consume,
-    // the first `read` will return "PROXY ...".
     let mut buf = Vec::with_capacity(128);
     let mut tmp = [0u8; 1];
-    // First, read the 4 peeked bytes that we already matched
-    // (they're still in the stream since peek doesn't consume).
-    // Then continue until '\n'.
     loop {
         stream.readable().await?;
         match stream.try_read(&mut tmp) {
@@ -126,18 +117,12 @@ async fn parse_v1_from_stream(stream: &tokio::net::TcpStream) -> std::io::Result
             let src: IpAddr = src_ip.parse().map_err(|e| {
                 std::io::Error::new(std::io::ErrorKind::InvalidData, e)
             })?;
-            let dst: IpAddr = dst_ip.parse().map_err(|e| {
-                std::io::Error::new(std::io::ErrorKind::InvalidData, e)
-            })?;
             let sport: u16 = src_port.parse().map_err(|e| {
-                std::io::Error::new(std::io::ErrorKind::InvalidData, e)
-            })?;
-            let dport: u16 = dst_port.parse().map_err(|e| {
                 std::io::Error::new(std::io::ErrorKind::InvalidData, e)
             })?;
             Ok(ProxyHeader {
                 source: SocketAddr::new(src, sport),
-                destination: SocketAddr::new(dst, dport),
+                destination: SocketAddr::new(dst_ip.parse().unwrap_or(std::net::IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED)), dst_port.parse().unwrap_or(0)),
                 is_v2: false,
             })
         }
@@ -153,27 +138,8 @@ async fn parse_v1_from_stream(stream: &tokio::net::TcpStream) -> std::io::Result
 }
 
 /// Read and parse a PROXY v2 binary header from the stream.
-///
-/// `peek` confirmed the first 4 bytes match the v2 signature; we now
-/// read the remaining 8 signature bytes + header + address data.
 async fn parse_v2_from_stream(stream: &tokio::net::TcpStream) -> std::io::Result<ProxyHeader> {
-    use tokio::io::AsyncReadExt;
-
-    // We need to convert TcpStream to a reader for read_exact.
-    // TcpStream implements AsyncRead, so we can use read_exact via AsyncReadExt.
-    let mut reader = tokio::io::BufReader::new(stream);
-    // But BufReader wraps TcpStream by reference or value?
-    // We need &mut TcpStream to avoid consuming it.
-
-    // Simpler: use read_exact directly on &mut &TcpStream
-    // Actually, &TcpStream implements AsyncRead. Let's use that.
-
-    // Hmm, this is getting complex with the borrowing. Let me take a
-    // different approach: read the remaining signature + full header
-    // using vectorized reads from the TcpStream directly.
-
-    // Read the remaining 8 bytes of the 12-byte signature
-    // (first 4 bytes were already confirmed by peek).
+    // Read remaining 8 signature bytes (first 4 were confirmed by peek).
     let mut sig_remain = [0u8; 8];
     read_exact_from_stream(stream, &mut sig_remain).await?;
 
@@ -201,7 +167,6 @@ async fn parse_v2_from_stream(stream: &tokio::net::TcpStream) -> std::io::Result
 
     let is_local = (version_cmd & 0x0F) == 0x00;
     if is_local {
-        // LOCAL — skip the address data
         let mut skip = vec![0u8; addr_len];
         read_exact_from_stream(stream, &mut skip).await?;
         return Err(std::io::Error::new(std::io::ErrorKind::Other, "PROXY LOCAL"));
@@ -212,11 +177,9 @@ async fn parse_v2_from_stream(stream: &tokio::net::TcpStream) -> std::io::Result
 
     let (src, dst) = match family {
         0x11 => {
-            // IPv4 TCP
             if addr_data.len() < 12 {
                 return Err(std::io::Error::new(
-                    std::io::ErrorKind::InvalidData,
-                    "PROXY v2: truncated IPv4",
+                    std::io::ErrorKind::InvalidData, "PROXY v2: truncated IPv4",
                 ));
             }
             let src_ip = IpAddr::V4(std::net::Ipv4Addr::new(
@@ -227,17 +190,12 @@ async fn parse_v2_from_stream(stream: &tokio::net::TcpStream) -> std::io::Result
             ));
             let src_port = u16::from_be_bytes([addr_data[8], addr_data[9]]);
             let dst_port = u16::from_be_bytes([addr_data[10], addr_data[11]]);
-            (
-                SocketAddr::new(src_ip, src_port),
-                SocketAddr::new(dst_ip, dst_port),
-            )
+            (SocketAddr::new(src_ip, src_port), SocketAddr::new(dst_ip, dst_port))
         }
         0x21 => {
-            // IPv6 TCP
             if addr_data.len() < 36 {
                 return Err(std::io::Error::new(
-                    std::io::ErrorKind::InvalidData,
-                    "PROXY v2: truncated IPv6",
+                    std::io::ErrorKind::InvalidData, "PROXY v2: truncated IPv6",
                 ));
             }
             let mut src_b = [0u8; 16];
@@ -248,10 +206,7 @@ async fn parse_v2_from_stream(stream: &tokio::net::TcpStream) -> std::io::Result
             let dst_ip = IpAddr::V6(std::net::Ipv6Addr::from(dst_b));
             let src_port = u16::from_be_bytes([addr_data[32], addr_data[33]]);
             let dst_port = u16::from_be_bytes([addr_data[34], addr_data[35]]);
-            (
-                SocketAddr::new(src_ip, src_port),
-                SocketAddr::new(dst_ip, dst_port),
-            )
+            (SocketAddr::new(src_ip, src_port), SocketAddr::new(dst_ip, dst_port))
         }
         _ => {
             let mut skip = vec![0u8; addr_len];
@@ -261,33 +216,69 @@ async fn parse_v2_from_stream(stream: &tokio::net::TcpStream) -> std::io::Result
                 format!("PROXY v2: unknown family 0x{family:02x}"),
             ));
         }
-    }?;
+    };
 
-    Ok(ProxyHeader {
-        source: src,
-        destination: dst,
-        is_v2: true,
-    })
+    Ok(ProxyHeader { source: src, destination: dst, is_v2: true })
 }
 
-/// Read exactly `buf.len()` bytes from a TcpStream (blocking-free in async context).
+/// Read exactly `buf.len()` bytes from a TcpStream.
 async fn read_exact_from_stream(stream: &tokio::net::TcpStream, buf: &mut [u8]) -> std::io::Result<()> {
     let mut offset = 0;
     while offset < buf.len() {
         stream.readable().await?;
         match stream.try_read(&mut buf[offset..]) {
-            Ok(0) => {
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::UnexpectedEof,
-                    "proxy protocol: connection closed",
-                ));
-            }
+            Ok(0) => return Err(std::io::Error::new(
+                std::io::ErrorKind::UnexpectedEof, "proxy protocol: connection closed",
+            )),
             Ok(n) => offset += n,
             Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => continue,
             Err(e) => return Err(e),
         }
     }
     Ok(())
+}
+
+/// Serve an axum app with PROXY protocol support.
+///
+/// Accepts TCP connections, detects PROXY headers via `accept_proxy_or_direct`,
+/// and injects [`RealClientIp`] into request extensions before forwarding to axum.
+///
+/// Direct connections (no PROXY header) pass through untouched.
+pub async fn serve_axum(
+    listener: tokio::net::TcpListener,
+    app: axum::Router,
+) -> std::io::Result<()> {
+    loop {
+        let (stream, _peer_addr) = match listener.accept().await {
+            Ok(c) => c,
+            Err(e) => {
+                tracing::error!(?e, "PROXY listener accept failed");
+                continue;
+            }
+        };
+
+        let app = app.clone();
+        tokio::spawn(async move {
+            let (stream, real_ip) = accept_proxy_or_direct(stream).await;
+
+            let svc = hyper::service::service_fn(
+                move |mut req: hyper::Request<hyper::body::Incoming>| {
+                    if let Some(ip) = real_ip {
+                        req.extensions_mut().insert(RealClientIp(ip));
+                    }
+                    let app = app.clone();
+                    async move { app.call(req).await }
+                },
+            );
+
+            if let Err(e) = hyper::server::conn::http1::Builder::new()
+                .serve_connection(stream, svc)
+                .await
+            {
+                tracing::debug!(?e, "PROXY connection error");
+            }
+        });
+    }
 }
 
 /// Extension key injected into requests that arrived via PROXY protocol.

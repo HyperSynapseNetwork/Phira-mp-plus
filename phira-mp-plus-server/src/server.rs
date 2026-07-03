@@ -158,6 +158,10 @@ pub struct PlusConfig {
     pub max_rooms: Option<usize>,
     #[serde(default)]
     pub max_users_per_room: Option<usize>,
+    /// Port for PROXY protocol (v1/v2) connections from reverse proxies.
+    /// Set to 0 (default) to disable.  Typical value: 12344
+    #[serde(default = "default_proxy_protocol_port")]
+    pub proxy_protocol_port: u16,
     #[serde(default = "default_rate_limit")]
     pub connection_rate_limit: u32,
     #[serde(default = "default_rate_window")]
@@ -245,6 +249,9 @@ fn default_rate_window() -> u32 {
 fn default_phira_api() -> String {
     "https://phira.5wyxi.com".to_string()
 }
+fn default_proxy_protocol_port() -> u16 {
+    0
+}
 fn default_retention_days() -> u32 {
     7
 }
@@ -280,6 +287,7 @@ impl Default for PlusConfig {
             benchmark_phira_tokens: Vec::new(),
             wasm_runtime: WasmRuntimeConfig::default(),
             runtime_v2: RuntimeV2Config::default(),
+            proxy_protocol_port: 0,
         }
     }
 }
@@ -360,6 +368,9 @@ impl PlusConfig {
         if cli.no_cli {
             self.cli_enabled = false;
         }
+        if cli.proxy_protocol_port > 0 {
+            self.proxy_protocol_port = cli.proxy_protocol_port;
+        }
         self
     }
 }
@@ -368,6 +379,7 @@ impl PlusConfig {
 pub struct PlusConfigCli {
     pub port: u16,
     pub http_port: u16,
+    pub proxy_protocol_port: u16,
     pub monitors: Vec<i32>,
     pub plugins_dir: String,
     pub extensions_file: Option<String>,
@@ -1033,7 +1045,11 @@ impl PlusServer {
             .set_default_state(state_query_all)
             .await;
 
-        let http_server = Arc::new(PluginHttpServer::new(http_port, Arc::clone(&state.events)));
+        let http_server = Arc::new(PluginHttpServer::new(
+            http_port,
+            config.proxy_protocol_port,
+            Arc::clone(&state.events),
+        ));
         let http_handle = api::HttpHandle::new(crate::plugin_http::HttpHandleBridge(Arc::clone(
             &http_server,
         )));

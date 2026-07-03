@@ -57,6 +57,13 @@ struct Args {
     http_port: u16,
 
     #[arg(
+        long = "proxy-port",
+        default_value_t = 0,
+        help = "PROXY protocol HTTP port (0 = disabled). Set to 12344 for reverse proxy support."
+    )]
+    proxy_protocol_port: u16,
+
+    #[arg(
         short = 'c',
         long = "config",
         default_value = "server_config.yml",
@@ -75,6 +82,7 @@ async fn main() -> Result<()> {
     let mut config = base_config.merge_cli(PlusConfigCli {
         port: args.port,
         http_port: args.http_port,
+        proxy_protocol_port: args.proxy_protocol_port,
         monitors: args.monitors.clone(),
         plugins_dir: args.plugins_dir.clone(),
         extensions_file: Some(args.extensions_file.clone()),

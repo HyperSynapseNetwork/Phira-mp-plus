@@ -30,14 +30,16 @@ pub struct PluginHttpServer {
     router: Arc<RwLock<DynamicRouter>>,
     events: Arc<SseHub>,
     port: u16,
+    proxy_port: u16,
 }
 
 impl PluginHttpServer {
-    pub fn new(port: u16, events: Arc<SseHub>) -> Self {
+    pub fn new(port: u16, proxy_protocol_port: u16, events: Arc<SseHub>) -> Self {
         Self {
             router: Arc::new(RwLock::new(DynamicRouter::default())),
             events,
             port,
+            proxy_port: proxy_protocol_port,
         }
     }
 
@@ -80,6 +82,7 @@ impl PluginHttpServer {
             .layer(CorsLayer::permissive())
             .with_state(state);
 
+        // Direct HTTP port (no PROXY protocol)
         let address = format!("0.0.0.0:{}", self.port);
         let listener = match tokio::net::TcpListener::bind(&address).await {
             Ok(listener) => listener,
@@ -88,7 +91,28 @@ impl PluginHttpServer {
                 return;
             }
         };
-        info!(%address, "HTTP server started");
+        info!(%address, "HTTP server started (direct)");
+
+        // PROXY protocol port (optional)
+        if self.proxy_port > 0 && self.proxy_port != self.port {
+            let proxy_addr = format!("0.0.0.0:{}", self.proxy_port);
+            let proxy_listener = match tokio::net::TcpListener::bind(&proxy_addr).await {
+                Ok(l) => l,
+                Err(err) => {
+                    error!(%proxy_addr, ?err, "failed to bind PROXY protocol HTTP server");
+                    return;
+                }
+            };
+            let proxy_app = app.clone();
+            tokio::spawn(async move {
+                info!(%proxy_addr, "HTTP server started (PROXY protocol)");
+                if let Err(err) = crate::proxy_protocol::serve_axum(proxy_listener, proxy_app).await
+                {
+                    error!(?err, "PROXY protocol HTTP server stopped");
+                }
+            });
+        }
+
         if let Err(err) = axum::serve(listener, app).await {
             error!(?err, "HTTP server stopped unexpectedly");
         }
