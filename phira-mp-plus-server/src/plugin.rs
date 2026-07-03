@@ -381,6 +381,11 @@ impl PluginManager {
         }
     }
 
+    /// Quick check — avoids RwLock — returns true only if at least one plugin has been loaded.
+    pub async fn has_plugins(&self) -> bool {
+        !self.plugins.read().await.is_empty()
+    }
+
     pub async fn trigger(&self, event: &PluginEvent) -> Vec<PluginEventResult> {
         let _permit = match self.event_gate.acquire().await {
             Ok(permit) => permit,

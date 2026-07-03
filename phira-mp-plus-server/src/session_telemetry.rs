@@ -54,18 +54,20 @@ pub(crate) async fn handle_touches(user: Arc<User>, room: Arc<Room>, frames: Arc
             count: frame_count,
         });
 
-    let pm = Arc::clone(&user.server.plugin_manager);
-    let room_id = room.id.to_string();
-    let touch_data_for_event = touch_data.clone();
     let player_id = user.id;
-    tokio::spawn(async move {
-        pm.trigger(&PluginEvent::PlayerTouches {
-            user_id: player_id,
-            room_id,
-            data: touch_data_for_event,
-        })
-        .await;
-    });
+    if user.server.plugin_manager.has_plugins().await {
+        let pm = Arc::clone(&user.server.plugin_manager);
+        let room_id = room.id.to_string();
+        let data_for_event = touch_data.clone();
+        tokio::spawn(async move {
+            pm.trigger(&PluginEvent::PlayerTouches {
+                user_id: player_id,
+                room_id,
+                data: data_for_event,
+            })
+            .await;
+        });
+    }
 
     if should_broadcast_monitor_telemetry(has_active_monitors) {
         let monitor_room = Arc::clone(&room);
@@ -110,18 +112,20 @@ pub(crate) async fn handle_judges(user: Arc<User>, room: Arc<Room>, judges: Arc<
             count: judge_count,
         });
 
-    let pm = Arc::clone(&user.server.plugin_manager);
-    let room_id = room.id.to_string();
-    let judge_data_for_event = judge_data.clone();
     let player_id = user.id;
-    tokio::spawn(async move {
-        pm.trigger(&PluginEvent::PlayerJudges {
-            user_id: player_id,
-            room_id,
-            data: judge_data_for_event,
-        })
-        .await;
-    });
+    if user.server.plugin_manager.has_plugins().await {
+        let pm = Arc::clone(&user.server.plugin_manager);
+        let room_id = room.id.to_string();
+        let data_for_event = judge_data.clone();
+        tokio::spawn(async move {
+            pm.trigger(&PluginEvent::PlayerJudges {
+                user_id: player_id,
+                room_id,
+                data: data_for_event,
+            })
+            .await;
+        });
+    }
 
     if should_broadcast_monitor_telemetry(has_active_monitors) {
         let monitor_room = Arc::clone(&room);
