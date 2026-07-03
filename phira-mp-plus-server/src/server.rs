@@ -790,6 +790,42 @@ fn spawn_event_subscribers(state: &Arc<PlusServerState>) {
     });
 }
 
+/// Subscribe to EventBus PluginEventDispatched events and dispatch to plugins.
+///
+/// This brings plugin dispatch into the EventBus pipeline, so new event sources
+/// only need to publish to the bus instead of calling pm.trigger() directly.
+/// The subscriber checks has_plugins() to avoid unnecessary work when no
+/// plugins are loaded, and spawns a separate task per event so slow plugin
+/// WASM code never blocks the subscriber loop.
+fn spawn_plugin_subscriber(state: &Arc<PlusServerState>) {
+    let mut rx = state.event_bus.subscribe();
+    let pm = Arc::clone(&state.plugin_manager);
+    tokio::spawn(async move {
+        loop {
+            match rx.recv().await {
+                Ok(event) => {
+                    if let crate::event_bus::MpEvent::PluginEventDispatched(plugin_event) = &event {
+                        if !pm.has_plugins().await {
+                            continue;
+                        }
+                        // Spawn independently so slow plugin code doesn't block
+                        // the subscriber from processing subsequent events.
+                        let pm = Arc::clone(&pm);
+                        let ev = Arc::clone(plugin_event);
+                        tokio::spawn(async move {
+                            pm.trigger(&ev).await;
+                        });
+                    }
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
+                    warn!(skipped, "plugin subscriber lagged");
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+            }
+        }
+    });
+}
+
 impl PlusServer {
     /// 创建新的 Phira-mp+ 服务器
     pub async fn new(config: PlusConfig) -> Result<Self> {
@@ -899,6 +935,7 @@ impl PlusServer {
             db_manager,
         });
         spawn_event_subscribers(&state);
+        spawn_plugin_subscriber(&state);
         state.room_commands.start_mailbox(Arc::clone(&state), 1024);
         state
             .actor_runtime

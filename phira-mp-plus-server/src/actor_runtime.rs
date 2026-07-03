@@ -134,8 +134,8 @@ fn default_boundaries() -> Vec<ActorBoundary> {
             name: "plugin-actor".to_string(),
             responsibility: "Own plugin dispatch, capability checks, event fanout, and slow-plugin isolation.".to_string(),
             source_files: vec!["plugin.rs".to_string(), "wasm_host.rs".to_string(), "plugin_http.rs".to_string()],
-            status: ActorBoundaryStatus::Planned,
-            next_step: "route EventBus events into plugin dispatch without blocking Room/Session hot paths".to_string(),
+            status: ActorBoundaryStatus::Mirrored,
+            next_step: "EventBus PluginEventDispatched subscriber dispatches to pm.trigger() / next: typed WIT plugin dispatch".to_string(),
         },
         ActorBoundary {
             name: "cli-actor".to_string(),
