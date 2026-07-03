@@ -14,6 +14,7 @@ use tracing::warn;
 
 const AUTH_FAILURE_RESPONSE_DELAY: Duration = Duration::from_millis(50);
 const AUTH_FAILURE_FLUSH_TIMEOUT: Duration = Duration::from_secs(1);
+#[allow(dead_code)]
 const MAX_CLIENT_BAN_REASON_CHARS: usize = 160;
 
 #[derive(Debug, Deserialize)]
@@ -43,6 +44,7 @@ pub(crate) async fn authenticate_remote_with_notice(
         .await
 }
 
+#[allow(dead_code)]
 pub(crate) fn ban_rejection_message(language: &str, reason: &str) -> String {
     let language = language.parse::<Language>().unwrap_or_default();
     let mut reason = reason.split_whitespace().collect::<Vec<_>>().join(" ");

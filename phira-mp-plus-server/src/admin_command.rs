@@ -4,8 +4,6 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 
-use serde::Serialize;
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CommandCategory {
     Admin, Room, Plugin, Benchmark, Simulation, Broadcast, Runtime, System,
