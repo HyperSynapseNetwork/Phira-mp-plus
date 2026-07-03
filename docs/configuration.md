@@ -39,7 +39,7 @@ phira_api_endpoint: "https://phira.5wyxi.com"
 
 # ---- 压测 ----
 # 默认使用 Simulation（隔离本地压测，不访问 Phira，不需要 token）。
-# Real Benchmark 是高级兼容性测试，详见 docs/benchmark-real.md。
+# Real Benchmark 是显式真实网络测试，详见 docs/benchmark-real.md。
 
 # ---- 插件 / 数据 ----
 plugins_dir: plugins
@@ -209,7 +209,7 @@ room set <房间ID> host ?
 
 ## 压测 token 配置
 
-Real Benchmark 是高级兼容性测试，默认不推荐。默认压测使用 Simulation（隔离 shadow world，不需要 token）。
+Real Benchmark 是显式真实网络测试，默认不推荐。默认压测使用 Simulation（隔离 shadow world，不需要 token）。
 如需使用 Real Benchmark，详见 [benchmark-real.md](benchmark-real.md)。
 
 

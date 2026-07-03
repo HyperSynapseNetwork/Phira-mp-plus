@@ -1,7 +1,7 @@
 # Real Benchmark — 真实网络压测
 
 > ⚠️ **advanced / explicit 模式**
-> Real Benchmark 是真实 TCP 兼容性测试，需要 Phira token，**不推荐对 Phira 官方服务频繁压测**。
+> Real Benchmark 是显式真实 TCP 网络测试，需要 Phira token，**不推荐对 Phira 官方服务频繁压测**。
 > 默认推荐使用 [Simulation](simulation.md) 进行压力测试（不需要 token，隔离运行）。
 
 ## 前提条件
@@ -36,7 +36,7 @@ benchmark run hybrid authenticate=true chart_lookup=1
 | 模式 | 说明 |
 |------|------|
 | `simulation` | **默认推荐**。隔离 shadow world，不需要 token |
-| `real` | 显式真实 TCP 兼容性测试，需要 Phira token |
+| `real` | 显式真实 TCP 网络测试，需要 Phira token |
 | `hybrid` | Hybrid Phira 探测（chart_lookup / record_lookup） |
 
 ## 报告

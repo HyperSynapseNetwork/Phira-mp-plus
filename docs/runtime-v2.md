@@ -1,7 +1,10 @@
 # MP+ Runtime v2
 
-> ⚠️ **Historical specification**. Current mode: `direct_only` / `worker_preferred`.
-> Current commands documented in README.md, docs/cli.md.
+> ⚠️ **Historical specification** — Documents the Runtime v2 refactor plan.
+> Current architecture: actor-model with typed room command gateway, session dispatch extracted,
+> persistence worker with telemetry batcher, plugin JSON ABI bridge.
+> Telemetry modes: `direct_only` / `worker_preferred`.
+> Commands documented in docs/cli.md.
 
 Runtime v2 is a staged refactor plan for Phira-mp+.
 

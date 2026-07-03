@@ -23,7 +23,7 @@ monitors:
 phira_api_endpoint: "https://phira.5wyxi.com"
 
 # ---- 真实网络压测（高级） ----
-# Real Benchmark 是高级兼容性测试，默认不推荐。
+# Real Benchmark 是显式真实网络测试，默认不推荐。
 # Simulation 不需要 token，不访问 Phira。
 # 如需使用 Real Benchmark，请看 docs/benchmark-real.md。
 

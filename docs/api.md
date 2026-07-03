@@ -229,7 +229,7 @@ monitors:
 # Phira API 地址。认证、查谱面、查成绩会使用它。
 phira_api_endpoint: "https://phira.5wyxi.com"
 
-# Real Benchmark 是高级兼容性测试，默认不推荐；详见 docs/benchmark-real.md。
+# Real Benchmark 是显式真实网络测试，默认不推荐；详见 docs/benchmark-real.md。
 
 # WASM 插件目录与扩展数据文件
 plugins_dir: plugins
@@ -254,7 +254,7 @@ round_data_retention_days: 7
 
 ### 压测 token
 
-`benchmark` 是高级兼容性测试，需要显式配置 Phira token。默认压测推荐使用 Simulation（不访问 Phira，不需要 token）。
+`benchmark` 是显式真实网络测试，需要显式配置 Phira token。默认压测推荐使用 Simulation（不访问 Phira，不需要 token）。
 
 当 token 数量少于目标房间数时，benchmark 会重复使用已有 token：离开/断开上一个 `bench-*` 客户端，再重连创建下一个房间，用于反复覆盖创建/重建逻辑。
 
