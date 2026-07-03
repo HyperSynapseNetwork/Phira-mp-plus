@@ -12,6 +12,11 @@ port: 12346
 # HTTP/SSE/WebSocket 服务端口（REST API、监控面板、事件流）
 http_port: 12347
 
+# PROXY protocol 监听端口。启用后 TrustForwardedFor 中间件在此端口生效。
+# 直连端口（port / http_port）不走 PROXY 解析，避免额外开销。
+# 设为 0 禁用。典型值: 12344
+# proxy_protocol_port: 12344
+
 # ---- 认证 / Phira API ----
 
 # 允许旁观的 Phira 用户 ID 列表

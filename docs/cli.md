@@ -12,6 +12,7 @@ phira-mp-plus-server [OPTIONS]
   -l, --log-file <NAME>      日志文件基础名称 [默认: "phira-mp-plus"]
   -m, --monitor <IDS>...     允许旁观的用户 ID（可多次指定，如 `-m 1 -m 2`）
       --http-port <PORT>     HTTP/SSE 服务端口 [默认: 12347]
+      --proxy-port <PORT>   PROXY protocol 端口 [默认: 0=禁用, 典型值 12344]
   -c, --config <FILE>        YAML 配置文件路径 [默认: "server_config.yml"]
   -h, --help                 显示帮助信息
   -V, --version              显示版本号
@@ -134,6 +135,9 @@ room set <房间ID> persistent false
 | `ban <用户ID> [原因]` | 封禁用户 |
 | `unban <用户ID>` | 解封用户 |
 | `banlist` | 列出封禁列表 |
+| `ban ip <地址> [原因]` | IP 封禁 |
+| `unban ip <地址>` | IP 解封 |
+| `banlist ip` | 列出 IP 封禁列表 |
 
 
 ## Web API

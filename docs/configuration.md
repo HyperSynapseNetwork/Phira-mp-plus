@@ -7,7 +7,7 @@
 - 默认读取项目当前工作目录下的 `server_config.yml`。
 - 可用 `--config <FILE>` 指定其他 YAML 配置文件。
 - 配置文件不存在时使用内置默认值；配置文件解析失败时会记录 warning 并回退默认值。
-- 命令行参数会覆盖 YAML 中对应字段：`--port`、`--http-port`、`--monitor`、`--plugins-dir`、`--ext-file`、`--no-cli`。
+- 命令行参数会覆盖 YAML 中对应字段：`--port`、`--http-port`、`--proxy-port`、`--monitor`、`--plugins-dir`、`--ext-file`、`--no-cli`。
 - `RUST_LOG`、`NO_COLOR`、`TERM`、`STY`、`TMUX` 等环境变量只影响日志或终端显示，不会覆盖业务配置项。
 
 ## 最小可用配置
@@ -82,6 +82,7 @@ wasm_runtime:
 |---|---:|---:|---|
 | `port` | `u16` | `12346` | TCP 游戏协议监听端口。Phira 客户端连接这个端口。 |
 | `http_port` | `u16` | `12347` | HTTP API、SSE、WebSocket 监听端口。 |
+| `proxy_protocol_port` | `u16` | `0` | PROXY protocol 监听端口。0=禁用。启用后 TrustForwardedFor 中间件在此端口解析 X-Forwarded-For。直连端口不走此中间件。典型值: 12344 |
 | `monitors` | `Vec<i32>` | `[2]` | 允许用 room monitor 协议旁观的 Phira 用户 ID。 |
 | `phira_api_endpoint` | `String` | `https://phira.5wyxi.com` | 全局 Phira API 地址。认证默认访问它；房间未配置覆盖时，查谱面、查成绩也访问它。 |
 | `plugins_dir` | `String` | `plugins` | WASM 插件目录。服务端启动时会自动创建。 |

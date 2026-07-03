@@ -10,7 +10,7 @@
 
 - **WASM 插件系统** — 基于 wasmtime 动态加载，通过 `phira:host/api` 访问全部服务端能力
 - **TUI 管理控制台** — 基于 `ratatui` + `crossterm` 的终端界面，支持命令输入、日志实时显示
-- **内置功能** — 房间信息 Web API、黑名单管理、轮次数据持久化、速率限制等均集成在核心中
+- **内置功能** — 房间信息 Web API、黑名单管理、IP 封禁、轮次数据持久化、速率限制等均集成在核心中
 
 ## 技术栈
 
@@ -90,6 +90,7 @@ phira-mp-plus-server [OPTIONS]
   -l, --log-file <NAME>      日志文件基础名称 [默认: "phira-mp-plus"]
   -m, --monitor <IDS>...     允许旁观的用户 ID
       --http-port <PORT>     HTTP/SSE 服务端口 [默认: 12347]
+      --proxy-port <PORT>    PROXY protocol 端口 [默认: 0=禁用, 典型值 12344]
   -c, --config <FILE>        YAML 配置文件路径 [默认: "server_config.yml"]
   -h, --help                 显示帮助
   -V, --version              显示版本
@@ -119,79 +120,82 @@ Phira-mp-plus/
 │   │   ├── zh-CN.ftl
 │   │   └── zh-TW.ftl
     │   └── src/
-    │       ├── main.rs                 #   进程入口与生命周期
-    │       ├── lib.rs                  #   模块导出
+    │       ├── main.rs                  #   进程入口与生命周期
+    │       ├── lib.rs                   #   模块导出
     │       │
-    │       ├── cli.rs                  #   CLI 生命周期、输入循环、输出 helper
-    │       ├── cli/dispatch.rs         #   CLI 顶层命令路由
-    │       ├── cli/commands/           #   按功能分组的命令模块
-    │       │   ├── admin.rs            #   admin-id 管理
-    │       │   ├── benchmark.rs        #   benchmark 命令
-    │       │   ├── broadcast.rs        #   broadcast 消息广播
-    │       │   ├── plugin.rs           #   WASM 插件管理
-    │       │   ├── room.rs             #   房间管理子命令
-    │       │   ├── runtime/            #   runtime 诊断子命令
-    │       │   └── simulation/         #   simulation 压测子命令
-    │       ├── cli_tui.rs              #   TUI 终端界面: ratatui + crossterm
+    │       ├── admin_command.rs         #   AdminCommand trait + 注册表
+    │       ├── cli.rs                   #   CLI 生命周期、输入循环、输出 helper
+    │       ├── cli/commands/            #   按功能分组的命令模块
+    │       │   ├── admin.rs             #   admin-id 管理
+    │       │   ├── benchmark.rs         #   benchmark 命令
+    │       │   ├── broadcast.rs         #   broadcast 消息广播
+    │       │   ├── plugin.rs            #   WASM 插件管理
+    │       │   ├── room.rs              #   房间管理子命令
+    │       │   ├── runtime/             #   runtime 诊断子命令
+    │       │   └── simulation/          #   simulation 压测子命令
+    │       ├── cli_tui.rs               #   TUI 终端界面: ratatui + crossterm
     │       │
-    │       ├── server.rs               #   服务器核心: PlusConfig / PlusServerState / PlusServer
-    │       ├── server_query.rs         #   Admin ID 等查询函数
-    │       ├── server_benchmark.rs     #   真实网络压测方法
-    │       ├── command_registry.rs     #   Runtime v2 命令注册表
+    │       ├── server.rs                #   服务器核心: PlusConfig / PlusServerState / PlusServer
+    │       ├── server_query.rs          #   Admin ID 等查询函数
+    │       ├── command_registry.rs      #   Runtime v2 命令注册表
     │       │
-    │       ├── session.rs              #   会话管理: Session / User 模型、生命周期
-    │       ├── session_dispatch.rs     #   ClientCommand 消息分发与权限检查
-    │       ├── session_auth.rs         #   远程 Phira 认证与 Token 验证
-    │       ├── session_room.rs         #   房间协议处理 (加入/离开/选谱/游玩)
-    │       ├── session_telemetry.rs    #   Touch/Judge 高频遥测处理与持久化
+    │       ├── session.rs               #   会话管理: Session / User 模型、生命周期
+    │       ├── session_dispatch.rs      #   ClientCommand 消息分发与权限检查
+    │       ├── session_auth.rs          #   远程 Phira 认证与 Token 验证
+    │       ├── session_room.rs          #   房间协议处理 (加入/离开/选谱/游玩)
+    │       ├── session_telemetry.rs     #   Touch/Judge 高频遥测处理与持久化
     │       │
-    │       ├── room.rs                 #   房间状态机: InternalRoomState / Room
-    │       ├── room_actor/             #   Room Actor: 命令网关、per-room mailbox、typed payload
-    │       │   ├── mod.rs              #   RoomCommandGateway 主结构
-    │       │   ├── command.rs          #   命令与动作定义
-    │       │   ├── context.rs          #   Gateway 上下文
-    │       │   ├── handler.rs          #   命令处理器 (typed_or_err 边界)
-    │       │   ├── mailbox.rs          #   per-room mailbox 路由
-    │       │   ├── audit.rs            #   命令审计
-    │       │   ├── result.rs           #   RoomCommandResult / RoomCommandPayload
-    │       │   └── ops/                #   命令具体实现 (settings/membership/control)
+    │       ├── room.rs                  #   房间状态机: InternalRoomState / Room
+    │       ├── room_actor/              #   Room Actor: 命令网关、per-room mailbox、typed payload
+    │       │   ├── mod.rs               #   RoomCommandGateway 主结构
+    │       │   ├── command.rs           #   命令与动作定义
+    │       │   ├── context.rs           #   Gateway 上下文
+    │       │   ├── handler.rs           #   命令处理器 (typed_or_err 边界)
+    │       │   ├── mailbox.rs           #   per-room mailbox 路由
+    │       │   ├── audit.rs             #   命令审计
+    │       │   ├── result.rs            #   RoomCommandResult / RoomCommandPayload
+    │       │   └── ops/                 #   命令具体实现 (settings/membership/control)
     │       │
-    │       ├── persistence/            #   持久化 Worker 管道
-    │       │   ├── mod.rs              #   模块入口
-    │       │   ├── pipeline.rs         #   事件分类路由
-    │       │   ├── message.rs          #   持久化事件定义
-    │       │   ├── mirror.rs           #   EventBus 镜像
-    │       │   ├── worker.rs           #   PersistenceWorker 主循环
-    │       │   ├── stats.rs            #   持久化统计与 cutover 观察
-    │       │   ├── benchmark.rs        #   Benchmark 报告持久化
-    │       │   ├── diagnostics.rs      #   管道诊断
-    │       │   └── schema.rs           #   Schema 常量
-    │       ├── persistence_worker.rs   #   PersistenceWorker 重导出
-    │       ├── telemetry.rs            #   TelemetryBatcher、cutover 模式、策略
-    │       ├── telemetry_batcher.rs    #   TelemetryBatcher 重导出
-    │       ├── round_store.rs          #   轮次数据存储 (DB 优先, 文件回退)
-    │       ├── internal_hooks.rs       #   内部静态注册 (DB / playtime)
+    │       ├── persistence/             #   持久化 Worker 管道
+    │       │   ├── mod.rs               #   模块入口
+    │       │   ├── benchmark.rs         #   Benchmark 报告持久化
+    │       │   ├── diagnostics.rs       #   管道诊断
+    │       │   ├── events.rs            #   房间事件/快照持久化
+    │       │   ├── message.rs           #   持久化事件定义
+    │       │   ├── mirror.rs            #   EventBus 镜像
+    │       │   ├── pipeline.rs          #   事件分类路由
+    │       │   ├── schema.rs            #   Schema 常量
+    │       │   ├── simulation.rs        #   模拟事件持久化
+    │       │   ├── stats.rs             #   持久化统计与 cutover 观察
+    │       │   ├── telemetry.rs         #   遥测持久化
+    │       │   └── worker.rs            #   PersistenceWorker 主循环
+    │       ├── persistence_worker.rs    #   PersistenceWorker 重导出
+    │       ├── proxy_protocol.rs        #   PROXY protocol v1/v2 解析与 TrustForwardedFor 中间件
+    │       ├── telemetry.rs             #   TelemetryBatcher、cutover 模式、策略
+    │       ├── telemetry_batcher.rs     #   TelemetryBatcher 重导出
+    │       ├── round_store.rs           #   轮次数据存储 (DB 优先, 文件回退)
+    │       ├── internal_hooks.rs        #   内部静态注册 (DB / playtime)
     │       │
-    │       ├── plugin.rs               #   插件管理器: PluginManager / PluginHost trait
-    │       ├── plugin_abi.rs           #   Plugin ABI 边界、typed DTO、version 检查
-    │       ├── plugin_http.rs          #   HTTP 服务装配与动态请求分发
+    │       ├── plugin.rs                #   插件管理器: PluginManager / PluginHost trait
+    │       ├── plugin_abi.rs            #   Plugin ABI 边界、typed DTO、WIT bindgen (wit-bindgen feature)
+    │       ├── plugin_http.rs           #   HTTP 服务装配与动态请求分发
     │       ├── plugin_http/
-    │       │   ├── router.rs           #   动态路由匹配
-    │       │   ├── sse.rs              #   SSE 事件总线、快照与流转换
-    │       │   └── websocket.rs        #   实时 WebSocket 桥接
-    │       ├── wasm_host.rs            #   WASM 运行时: wasmtime、JSON ABI、host/api 桥接
-    │       ├── extensions.rs           #   扩展数据系统: 用户/房间 KV 存储
-    │       ├── ban.rs                  #   黑名单系统: 全局封禁 + 房间黑名单
-    │       ├── phira_client.rs         #   统一 Phira HTTP RetryClient
-    │       ├── rate_limiter.rs         #   速率限制: 滑动窗口 + 令牌桶
-    │       ├── actor_runtime.rs        #   Actor 模型迁移蓝图
-    │       ├── runtime_plan.rs         #   Runtime v2 主工作板
-    │       ├── runtime_diagnostics.rs  #   Runtime 诊断信息查询
-    │       ├── event_bus.rs            #   EventBus 运行时脊椎
-    │       ├── simulation.rs           #   Simulation 管理器
-    │       ├── simulation_realistic.rs #   realistic 场景
-    │       ├── l10n.rs                 #   本地化: Fluent Bundle / tl! 宏
-    │       └── logging.rs              #   tracing 输出与日志轮转
+    │       │   ├── router.rs            #   动态路由匹配
+    │       │   └── sse.rs               #   SSE 事件总线、快照与流转换
+    │       ├── wasm_host.rs             #   WASM 运行时: wasmtime、JSON ABI、host/api 桥接
+    │       ├── wit_host.rs              #   WIT/component-model host trait 实现 (plugin-system feature)
+    │       ├── extensions.rs            #   扩展数据系统: 用户/房间/全局 KV 存储
+    │       ├── ban.rs                   #   黑名单系统: 全局封禁 + 房间黑名单 + IP 封禁
+    │       ├── phira_client.rs          #   统一 Phira HTTP RetryClient
+    │       ├── rate_limiter.rs          #   速率限制: 滑动窗口 + 令牌桶
+    │       ├── actor_runtime.rs         #   Actor 模型迁移蓝图
+    │       ├── runtime_plan.rs          #   Runtime v2 主工作板
+    │       ├── runtime_diagnostics.rs   #   Runtime 诊断信息查询
+    │       ├── event_bus.rs             #   EventBus 运行时脊椎
+    │       ├── simulation.rs            #   Simulation 管理器
+    │       ├── simulation_realistic.rs  #   realistic 场景
+    │       ├── l10n.rs                  #   本地化: Fluent Bundle / tl! 宏
+    │       └── logging.rs              #   tracing 输出、日志轮转、速率限制、敏感数据脱敏
 │
 ├── phira-mp-plus-server-api/    # WASM 插件共享类型 crate
 │   └── src/lib.rs               #   PluginEvent / PluginInfo / HttpHandle
@@ -208,27 +212,39 @@ Phira-mp-plus/
 │   ├── phira-mp-server/         #   原始单机服务端 (reference)
 │   └── phira-mp-client/         #   TCP 客户端库 (供游戏集成)
 │
-├── docs/                        # 文档
-│   ├── configuration.md         #   配置文件与运行时参数说明
-│   ├── cli.md                   #   CLI 命令参考
-│   └── plugin-dev.md            #   WASM 插件开发指南 + WIT API 参考
+├── wit/                         # WIT 定义
+│   └── phira-plugin.wit         #   Plugin ABI v2 WIT / Component Model
 │
-├── phira-mp-plus-server/tests/     # 集成 & 合约测试 (10 个)
-│   ├── cli_command_contracts.rs     #   CLI 命令面合约
-│   ├── command_surface_contracts.rs #   命令注册表合约
-│   ├── persistence_contracts.rs     #   持久化合约 (telemetry cutover)
+├── docs/                        # 文档
+│   ├── api.md                   #   HTTP API 文档
+│   ├── audit-report.md          #   源代码审计报告 (历史快照)
+│   ├── benchmark-real.md        #   Real Benchmark 使用说明
+│   ├── cli.md                   #   CLI 命令参考
+│   ├── configuration.md         #   配置文件与运行时参数说明
+│   ├── migrate-from-hsnphira.md #   从 HSN Phira 迁移指南
+│   ├── plugin-config.md         #   插件配置说明
+│   ├── plugin-dev.md            #   WASM 插件开发指南
+│   ├── runtime-v2.md            #   Runtime v2 规范
+│   ├── runtime-v2-actor-roadmap.md # Actor 迁移路线图
+│   ├── simulation.md            #   Simulation 说明
+│   └── wit-abi.md               #   WIT ABI 说明
+│
+├── phira-mp-plus-server/tests/  # 集成 & 合约测试 (13 个)
+│   ├── admin_command_contracts.rs  #   管理员命令解析合约
+│   ├── cli_command_contracts.rs    #   CLI 命令面合约
+│   ├── command_surface_contracts.rs #  命令注册表合约
+│   ├── docs_contracts.rs           #   文档合约 (禁止推荐旧命令)
+│   ├── persistence_contracts.rs    #   持久化合约 (telemetry cutover)
+│   ├── phira_http_contracts.rs     #   Phira HTTP 合约
+│   ├── room_state_machine_tests.rs #   房间状态机测试
+│   ├── runtime_v2_contracts.rs     #   Runtime v2 架构合约
+│   ├── simulation_contracts.rs     #   Simulation 合约
 │   ├── telemetry_cutover_contracts.rs # telemetry cutover 合约
-│   ├── docs_contracts.rs            #   文档合约 (禁止推荐旧命令)
-│   ├── phira_http_contracts.rs      #   Phira HTTP 合约
-│   ├── runtime_v2_contracts.rs      #   Runtime v2 架构合约
-│   ├── simulation_contracts.rs      #   Simulation 合约
-│   ├── admin_command_contracts.rs   #   管理员命令解析合约
-│   └── wit_abi_contracts.rs         #   WIT ABI 合约
+│   └── wit_abi_contracts.rs        #   WIT ABI 合约
 
 ├── server_config.yml            # YAML 配置文件 (同级副本, 运行时读取)
 └── LICENSE
 ```
-
 
 ## 终端兼容性
 
@@ -249,11 +265,11 @@ curl -N http://127.0.0.1:12347/rooms/listen
 | 分组 | 命令 | 说明 |
 |------|------|------|
 | 通用 | `help`, `exit`, `status` | 帮助/退出/状态 |
-| 诊断/压测 | `benchmark`, `benchmark, simulation` | 真实网络压测（默认路径：simulation） |
+| 诊断/压测 | `benchmark`, `simulation` | 真实网络压测（默认路径：simulation） |
 | WASM 插件 | `plugin list/enable/disable/info/reload` | 插件管理 |
 | 用户 | `users`, `kick`, `broadcast` | 用户管理和消息 |
 | 房间 | `room list/info/start/cancel/kick/transfer/force-move/hide/set/close/history` | 房间管理子命令 |
-| 黑名单 | `ban`, `unban`, `banlist` | 封禁管理 |
+| 黑名单 | `ban`, `unban`, `banlist`, `ban ip`, `unban ip`, `banlist ip` | 封禁管理（用户 + IP） |
 
 ## WASM 插件开发
 
@@ -266,6 +282,7 @@ WASM 插件通过 `phira:host/api` 和 `phira:host/log` 等导入函数与宿主
 | 特性 | 说明 | 默认 |
 |------|------|------|
 | `plugin-system` | WASM 插件支持（wasmtime） | 是 |
+| `postgres` | PostgreSQL 统一持久化 | 是 |
 
 ## 配置参考
 
@@ -275,6 +292,7 @@ WASM 插件通过 `phira:host/api` 和 `phira:host/log` 等导入函数与宿主
 |--------|------|--------|------|
 | `port` | u16 | `12346` | TCP 监听端口 |
 | `http_port` | u16 | `12347` | HTTP/SSE/WebSocket 服务端口 |
+| `proxy_protocol_port` | u16 | `0` | PROXY protocol 端口（0=禁用，典型值 12344） |
 | `monitors` | Vec<i32> | `[2]` | 允许旁观的用户 ID |
 | `phira_api_endpoint` | String | `https://phira.5wyxi.com` | 全局 Phira API 端点；房间可临时覆盖 |
 | `plugins_dir` | String | `plugins` | WASM 插件目录 |
