@@ -25,7 +25,7 @@ mod stream_impl {
     use anyhow::{anyhow, bail, Error, Result};
     use argon2::{password_hash::SaltString, Argon2, PasswordHasher};
     use std::{
-        future::Future, marker::PhantomData, os::unix::ffi::OsStrExt, sync::Arc, time::Duration,
+        future::Future, marker::PhantomData, sync::Arc, time::Duration,
     };
     use tokio::{
         io::{AsyncReadExt, AsyncWriteExt},
@@ -244,9 +244,9 @@ mod stream_impl {
     }
 
     pub fn generate_secret_key(info: &str, len: usize) -> Result<Vec<u8>> {
-        let original = std::env::var_os("HSN_SECRET_KEY").unwrap_or_else(|| {
+        let original = std::env::var("HSN_SECRET_KEY").unwrap_or_else(|_| {
             warn!("HSN_SECRET_KEY is not set, using default value");
-            "some_random_secret_key_for_debugging".into()
+            "some_random_secret_key_for_debugging".to_string()
         });
         let salt = SaltString::encode_b64(b"some$random#salt")
             .map_err(|e| anyhow!("failed to generate salt string: {e}"))?;
@@ -256,7 +256,7 @@ mod stream_impl {
             .hash
             .ok_or_else(|| anyhow!("error calculating hash"))?;
 
-        let h = hkdf::Hkdf::<sha2::Sha256>::new(None, ikm.as_bytes());
+        let h = hkdf::Hkdf::<sha2::Sha256>::new(None, ikm.as_ref());
         let mut okm = vec![0u8; len];
         h.expand(info.as_bytes(), &mut okm)?;
         Ok(okm)
