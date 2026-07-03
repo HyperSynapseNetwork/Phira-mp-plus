@@ -12,7 +12,6 @@
 
 use std::sync::Arc;
 
-use crate::plugin::PluginEvent;
 use crate::server::PlusServerState;
 
 /// Wraps server state to implement the generated WIT host traits.
@@ -20,8 +19,10 @@ use crate::server::PlusServerState;
 /// One instance is created per plugin instance and registered with the
 /// wasmtime `Linker`.
 pub struct WitPluginHost {
+    #[allow(dead_code)]
     state: Arc<PlusServerState>,
     plugin_name: String,
+    #[allow(dead_code)]
     started: std::time::Instant,
 }
 
