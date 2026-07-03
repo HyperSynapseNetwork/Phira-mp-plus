@@ -206,46 +206,41 @@ async fn simulation_lifecycle_start_stop_cleanup() {
         users: 5,
         rooms: 2,
         duration_secs: 10,
+        touch: true,
+        judge: true,
+        chat: true,
+        ready: true,
+        rounds: true,
+        auto_tick: false,
         tick_interval_ms: 500,
-        auto: false,
         seed: 42,
         persist_every_ticks: 0,
     };
 
-    // Verify initial state: idle
+    // Initial state: idle
     let status = manager.status().await;
     assert!(!status.running, "should start idle");
 
-    // Start simulation
-    let run_id = manager.start(config).await.unwrap();
-    let status = manager.status().await;
-    assert!(status.running, "should be running after start");
-    assert_eq!(status.virtual_users, 5, "should have correct virtual user count");
-    assert_eq!(status.virtual_rooms, 2, "should have correct virtual room count");
-    assert!(run_id.to_string().len() == 36, "run_id should be a valid UUID");
+    // Start
+    let start_result = manager.start(config).await.unwrap();
+    assert!(start_result.running, "should be running after start");
+    assert_eq!(start_result.virtual_users, 5, "should have correct virtual user count");
+    assert_eq!(start_result.virtual_rooms, 2, "should have correct virtual room count");
 
-    // Stop simulation
-    let stopped = manager.stop().await;
-    assert!(stopped, "stop should succeed when running");
-
-    // Verify stopped state
-    let status = manager.status().await;
-    assert!(!status.running, "should not be running after stop");
+    // Stop
+    let stopped = manager.stop("test complete").await;
+    assert!(!stopped.running, "should not be running after stop");
 
     // Cleanup
     let cleaned = manager.cleanup().await;
-    assert!(cleaned, "cleanup should succeed");
-    let status = manager.status().await;
-    assert_eq!(status.virtual_users, 0, "cleanup should remove all virtual users");
-    assert_eq!(status.virtual_rooms, 0, "cleanup should remove all virtual rooms");
+    assert!(!cleaned.running, "not running after cleanup");
+    assert_eq!(cleaned.virtual_users, 0, "cleanup should remove all virtual users");
+    assert_eq!(cleaned.virtual_rooms, 0, "cleanup should remove all virtual rooms");
 }
 
 #[tokio::test]
 async fn simulation_cleanup_idempotent() {
     let manager = SimulationManager::new();
-    // Cleanup on idle manager is a no-op (should not error)
-    let result = manager.cleanup().await;
-    assert!(result, "cleanup on idle manager should succeed");
-    let status = manager.status().await;
-    assert!(!status.running, "still idle after cleanup");
+    let cleaned = manager.cleanup().await;
+    assert!(!cleaned.running, "still idle after cleanup");
 }
