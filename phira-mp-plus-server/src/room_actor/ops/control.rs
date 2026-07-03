@@ -2,7 +2,7 @@
 
 use super::super::{
     command::{RoomActorCommand, RoomCommandKind},
-    RoomCommandGateway,
+    RoomCommandGateway, RoomCommandPayload,
 };
 use crate::{plugin::PluginEvent, server::PlusServerState};
 use phira_mp_common::Message;
@@ -29,7 +29,11 @@ impl RoomCommandGateway {
                     room_id: room_id.to_string(),
                     reply,
                 },
-                || self.start_room_inline(state, room_id),
+                || async {
+                    self.start_room_inline(state, room_id)
+                        .await
+                        .map(RoomCommandPayload::into_json)
+                },
             )
             .await;
         self.finish_command(
@@ -46,7 +50,7 @@ impl RoomCommandGateway {
         &self,
         state: &PlusServerState,
         room_id: &str,
-    ) -> Result<Value, String> {
+    ) -> Result<RoomCommandPayload, String> {
         let (_rid, room) = self.find_room(state, room_id).await?;
         room.begin_admin_start().await.map_err(|e| e.to_string())?;
         if let Some(pm) = &room.plugin_manager {
@@ -56,12 +60,9 @@ impl RoomCommandGateway {
             })
             .await;
         }
-        Ok(serde_json::json!({
-            "ok": true,
-            "room_id": room_id,
-            "action": "start",
-            "route": "per_room_mailbox",
-        }))
+        Ok(RoomCommandPayload::RoomStarted {
+            room_id: room_id.to_string(),
+        })
     }
 
     /// Cancel a pending admin-start wait state.
@@ -83,7 +84,11 @@ impl RoomCommandGateway {
                     room_id: room_id.to_string(),
                     reply,
                 },
-                || self.cancel_start_inline(state, room_id),
+                || async {
+                    self.cancel_start_inline(state, room_id)
+                        .await
+                        .map(RoomCommandPayload::into_json)
+                },
             )
             .await;
         self.finish_command(
@@ -100,7 +105,7 @@ impl RoomCommandGateway {
         &self,
         state: &PlusServerState,
         room_id: &str,
-    ) -> Result<Value, String> {
+    ) -> Result<RoomCommandPayload, String> {
         let (_rid, room) = self.find_room(state, room_id).await?;
         let canceled = {
             let mut room_state = room.state.write().await;
@@ -119,11 +124,9 @@ impl RoomCommandGateway {
             room.finish_admin_start().await;
             room.on_state_change().await;
         }
-        Ok(serde_json::json!({
-            "ok": true,
-            "room_id": room_id,
-            "canceled": canceled,
-            "route": "per_room_mailbox",
-        }))
+        Ok(RoomCommandPayload::CancelResult {
+            room_id: room_id.to_string(),
+            canceled,
+        })
     }
 }

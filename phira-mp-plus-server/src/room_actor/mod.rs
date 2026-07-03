@@ -19,7 +19,7 @@ mod mailbox;
 mod ops;
 mod result;
 
-pub use self::result::{RoomCommandDelivery, RoomCommandResult};
+pub use self::result::{RoomCommandDelivery, RoomCommandPayload, RoomCommandResult};
 
 use self::command::RoomActorCommand;
 use crate::server::PlusServerState;

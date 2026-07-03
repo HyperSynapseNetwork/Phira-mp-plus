@@ -45,14 +45,20 @@ impl RoomCommandHandler {
                 gateway.kick_user_inline(state, room_id, *target_id).await,
                 RoomCommandDelivery::PerRoomMailbox,
             ),
-            RoomActorCommand::StartRoom { room_id, .. } => RoomCommandResult::from_untyped(
-                gateway.start_room_inline(state, room_id).await,
-                RoomCommandDelivery::PerRoomMailbox,
-            ),
-            RoomActorCommand::CancelStart { room_id, .. } => RoomCommandResult::from_untyped(
-                gateway.cancel_start_inline(state, room_id).await,
-                RoomCommandDelivery::PerRoomMailbox,
-            ),
+            RoomActorCommand::StartRoom { room_id, .. } => {
+                let result = gateway.start_room_inline(state, room_id).await;
+                match result {
+                    Ok(payload) => RoomCommandResult::from_payload(payload, RoomCommandDelivery::PerRoomMailbox),
+                    Err(error) => RoomCommandResult::Err { delivery: RoomCommandDelivery::PerRoomMailbox, error },
+                }
+            }
+            RoomActorCommand::CancelStart { room_id, .. } => {
+                let result = gateway.cancel_start_inline(state, room_id).await;
+                match result {
+                    Ok(payload) => RoomCommandResult::from_payload(payload, RoomCommandDelivery::PerRoomMailbox),
+                    Err(error) => RoomCommandResult::Err { delivery: RoomCommandDelivery::PerRoomMailbox, error },
+                }
+            }
         }
     }
 
