@@ -13,6 +13,15 @@
 use phira_mp_plus_server_api::PluginEvent;
 use serde::{Deserialize, Serialize};
 
+/// Generated WIT/component-model bindings for the phira-plugin-v2 world.
+/// Only available when the `plugin-system` feature is enabled.
+#[cfg(feature = "plugin-system")]
+wasmtime::component::bindgen!({
+    path: "../wit/phira-plugin.wit",
+    world: "phira-plugin-v2",
+    async: true,
+});
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub enum PluginAbiTransport {
     JsonMemoryV1,
@@ -74,7 +83,7 @@ pub mod wit {
     /// - 0: WIT files defined, JSON bridge still active
     /// - 1: Host WIT bindings generated, dual-ABI support
     /// - 2: Guest SDK updated, WIT-only mode
-    pub const MIGRATION_PHASE: u8 = 0;
+    pub const MIGRATION_PHASE: u8 = 1;
 }
 
 /// Encode a host event for the current JSON-memory WASM plugin ABI.
