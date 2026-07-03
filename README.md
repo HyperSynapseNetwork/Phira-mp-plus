@@ -72,7 +72,7 @@ server_name: "My Phira Server"
 chat_enabled: true
 cli_enabled: true
 
-# Real Benchmark 是高级兼容性测试，默认不推荐；Simulation 不需要 token。
+# Real Benchmark 是显式真实网络测试，默认不推荐；Simulation 不需要 token。
 # 如需使用，请看 docs/benchmark-real.md。
 ```
 
@@ -175,14 +175,6 @@ Phira-mp-plus/
 
 启动时会检测 stdin/stdout、`TERM`、`STY` 与 `TMUX`。GNU Screen、Linux console、`ansi`/`cons25` 等环境使用保守 TUI：禁用备用屏幕、鼠标捕获和 Bracketed Paste，并修正 Ctrl+H Backspace；如果 TUI 初始化失败，会自动降级到逐行兼容控制台。tmux、xterm、WezTerm、iTerm、Kitty 等普通终端继续使用完整 TUI。项目遵循 `NO_COLOR`，逐行输出会再次过滤残留控制序列；非交互环境同样使用逐行控制台。
 
-## SSE 房间事件
-
-`GET /rooms/listen` 建立连接后先发送 `ready`，随后以 `update_room` 补发当前房间快照，再持续推送 `create_room`、`update_room`、`join_room`、`leave_room` 和 `new_round`。可用下列命令直接检查数据流：
-
-```bash
-curl -N http://127.0.0.1:12347/rooms/listen
-```
-
 ## CLI 命令
 
 详细文档见 [docs/cli.md](docs/cli.md)。快速概览：
@@ -190,10 +182,10 @@ curl -N http://127.0.0.1:12347/rooms/listen
 | 分组 | 命令 | 说明 |
 |------|------|------|
 | 通用 | `help`, `exit`, `status` | 帮助/退出/状态 |
-| 诊断/压测 | `benchmark`, `benchmark, simulation` | 真实网络压测（默认路径：simulation） |
+| 诊断/压测 | `benchmark`, `simulation` | 压测（simulation 为默认隔离路径） |
 | WASM 插件 | `plugin list/enable/disable/info/reload` | 插件管理 |
 | 用户 | `users`, `kick`, `broadcast` | 用户管理和消息 |
-| 房间 | `room list/info/start/cancel/kick/transfer/force-move/hide/set/close/history` | 房间管理子命令 |
+| 房间 | `room list/info/start/cancel/kick/host/force-move/hide/set/close/history/ban/unban/banlist` | 房间管理子命令 |
 | 黑名单 | `ban`, `unban`, `banlist` | 封禁管理 |
 
 ## WASM 插件开发
@@ -234,7 +226,7 @@ WASM 插件通过 `phira:host/api` 和 `phira:host/log` 等导入函数与宿主
 | `server_name` | String | — | 服务器名称 |
 | `wasm_runtime.*` | object | 见文档 | WASM 插件资源限制 |
 
-真实网络压测（`benchmark run real`）是高级兼容性测试，详见 docs/benchmark-real.md。默认压测推荐使用 Simulation，不需要 token。
+真实网络压测（`benchmark run real`）是显式真实网络测试，详见 docs/benchmark-real.md。默认压测推荐使用 Simulation，不需要 token。
 
 ## 许可证
 
