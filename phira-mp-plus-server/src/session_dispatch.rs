@@ -69,6 +69,9 @@ pub(crate) async fn process(
             "repeated-authenticate"
         )))),
         ClientCommand::Chat { message } => {
+            if !user.server.config.chat_enabled {
+                return None;
+            }
             let res: Result<()> = async move {
                 get_room!(room);
                 let content = message.into_inner();

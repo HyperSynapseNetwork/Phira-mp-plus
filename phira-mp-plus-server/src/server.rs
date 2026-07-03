@@ -1201,14 +1201,22 @@ impl PlusServer {
         }
 
         let id = Uuid::new_v4();
-        let session =
-            match super::session::Session::new(id, addr, stream, Arc::clone(&self.state)).await {
-                Ok(s) => s,
-                Err(e) => {
-                    warn!("failed to create session for {ip}: {e:?}");
-                    return Ok(());
-                }
-            };
+        let session = match tokio::time::timeout(
+            std::time::Duration::from_secs(15),
+            super::session::Session::new(id, addr, stream, Arc::clone(&self.state)),
+        )
+        .await
+        {
+            Ok(Ok(s)) => s,
+            Ok(Err(e)) => {
+                warn!("failed to create session for {ip}: {e:?}");
+                return Ok(());
+            }
+            Err(_) => {
+                warn!("session creation timed out for {ip}");
+                return Ok(());
+            }
+        };
 
         // 写锁窗口最小化：仅插入 session
         if let Ok(mut guard) = self.state.sessions.try_write() {

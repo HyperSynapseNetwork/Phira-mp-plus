@@ -335,13 +335,9 @@ impl Session {
                                             bail!("invalid token");
                                         }
                                         debug!("session {id}: authenticating");
-                                        // 计算 token 哈希作为缓存键（使用 SHA-256）
+                                        // 计算 token SHA256 哈希作为缓存键
                                         use sha2::{Digest, Sha256};
-                                        let token_hash = u64::from_le_bytes(
-                                            Sha256::digest(token.as_bytes())[..8]
-                                                .try_into()
-                                                .unwrap(),
-                                        );
+                                        let token_hash = format!("{:x}", Sha256::digest(token.as_bytes()));
 
                                         let user_info = {
                                             let ac = server.extensions.get_auth_cache().await;
@@ -384,6 +380,10 @@ impl Session {
                                             {
                                                 Ok(info) => {
                                                     // API 成功，更新缓存并持久化
+                                                    let _cached_at = std::time::SystemTime::now()
+                                                        .duration_since(std::time::UNIX_EPOCH)
+                                                        .map(|d| d.as_millis() as i64)
+                                                        .unwrap_or(0);
                                                     server
                                                         .extensions
                                                         .update_auth_cache(
@@ -392,6 +392,7 @@ impl Session {
                                                                 user_id: info.id,
                                                                 name: info.name.clone(),
                                                                 language: info.language.clone(),
+                                                                cached_at: _cached_at,
                                                             },
                                                         )
                                                         .await;
@@ -428,36 +429,23 @@ impl Session {
                                             );
                                         }
 
-                                        let mut users_guard = server.users.write().await;
-                                        if let Some(user) = users_guard.get(&user_info.id) {
+                                        let user_ip = this.get().map(|s| s.ip.clone()).unwrap_or_default();
+                                        let existing_user = {
+                                            let mut guard = server.users.write().await;
+                                            guard.get(&user_info.id).map(Arc::clone)
+                                        };
+                                        if let Some(existing) = existing_user {
                                             info!("reconnect");
                                             let _ = auth_tx.take().unwrap().send(
                                                 AuthenticationOutcome::Accepted(
-                                                    Arc::clone(user),
+                                                    existing.clone(),
                                                     SessionCategory::Normal,
                                                 ),
                                             );
                                             this_inited.notified().await;
-                                            user.set_session(Arc::downgrade(this.get().unwrap()))
+                                            existing.set_session(Arc::downgrade(this.get().unwrap()))
                                                 .await;
-                                            user.set_auth_token(Some(token.to_string())).await;
-                                            // 重连也需要触发 UserConnect（欢迎语等依赖此事件）
-                                            let user_ip = this
-                                                .get()
-                                                .map(|s| s.ip.clone())
-                                                .unwrap_or_default();
-                                            server
-                                                .plugin_manager
-                                                .trigger(&PluginEvent::UserConnect {
-                                                    user_id: user_info.id,
-                                                    user_name: user_info.name.clone(),
-                                                    user_ip,
-                                                })
-                                                .await;
-                                            let user_ip = this
-                                                .get()
-                                                .map(|s| s.ip.clone())
-                                                .unwrap_or_default();
+                                            existing.set_auth_token(Some(token.to_string())).await;
                                             server.publish_runtime_event(
                                                 crate::event_bus::MpEvent::UserConnected {
                                                     user_id: user_info.id,
@@ -465,29 +453,6 @@ impl Session {
                                                     user_ip: user_ip.clone(),
                                                     user_language: user_info.language.clone(),
                                                 },
-                                            );
-                                            let online = {
-                                                let rooms = server.rooms.read().await;
-                                                let mut in_room: std::collections::HashSet<i32> =
-                                                    std::collections::HashSet::new();
-                                                for (_id, room) in rooms.iter() {
-                                                    for u in room.users().await {
-                                                        in_room.insert(u.id);
-                                                    }
-                                                }
-                                                in_room.len()
-                                            };
-                                            drop(users_guard);
-                                            crate::internal_hooks::track_player(
-                                                user_info.id,
-                                                &user_info.name,
-                                            );
-                                            crate::internal_hooks::playtime_connect(user_info.id);
-                                            crate::internal_hooks::send_welcome(
-                                                user_info.id,
-                                                &user_info.name,
-                                                online,
-                                                &server,
                                             );
                                         } else {
                                             if server.ban_manager.is_banned(user_info.id).await {
@@ -497,11 +462,7 @@ impl Session {
                                             let user = Arc::new(User::new(
                                                 user_info.id,
                                                 user_info.name,
-                                                user_info
-                                                    .language
-                                                    .parse()
-                                                    .map(Language)
-                                                    .unwrap_or_default(),
+                                                user_info.language.parse().map(Language).unwrap_or_default(),
                                                 Arc::clone(&server),
                                                 Some(token.to_string()),
                                             ));
@@ -514,53 +475,17 @@ impl Session {
                                             this_inited.notified().await;
                                             user.set_session(Arc::downgrade(this.get().unwrap()))
                                                 .await;
-                                            users_guard.insert(user_info.id, Arc::clone(&user));
-
-                                            let user_ip = this
-                                                .get()
-                                                .map(|s| s.ip.clone())
-                                                .unwrap_or_default();
-                                            server
-                                                .plugin_manager
-                                                .trigger(&PluginEvent::UserConnect {
-                                                    user_id: user_info.id,
-                                                    user_name: user.name.clone(),
-                                                    user_ip,
-                                                })
-                                                .await;
+                                            {
+                                                let mut guard = server.users.write().await;
+                                                guard.insert(user_info.id, Arc::clone(&user));
+                                            }
                                             server.publish_runtime_event(
                                                 crate::event_bus::MpEvent::UserConnected {
                                                     user_id: user_info.id,
                                                     user_name: user.name.clone(),
-                                                    user_ip: this
-                                                        .get()
-                                                        .map(|s| s.ip.clone())
-                                                        .unwrap_or_default(),
+                                                    user_ip: user_ip.clone(),
                                                     user_language: user.lang.0.to_string(),
                                                 },
-                                            );
-                                            let online = {
-                                                let rooms = server.rooms.read().await;
-                                                let mut in_room: std::collections::HashSet<i32> =
-                                                    std::collections::HashSet::new();
-                                                for (_id, room) in rooms.iter() {
-                                                    for u in room.users().await {
-                                                        in_room.insert(u.id);
-                                                    }
-                                                }
-                                                in_room.len()
-                                            };
-                                            drop(users_guard);
-                                            crate::internal_hooks::track_player(
-                                                user_info.id,
-                                                &user.name,
-                                            );
-                                            crate::internal_hooks::playtime_connect(user_info.id);
-                                            crate::internal_hooks::send_welcome(
-                                                user_info.id,
-                                                &user.name,
-                                                online,
-                                                &server,
                                             );
                                         }
                                         Ok(())

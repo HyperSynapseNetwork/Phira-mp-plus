@@ -22,11 +22,15 @@ pub struct ExtensionField {
 }
 
 /// 认证缓存条目（持久化用）
+/// Auth cache TTL in seconds (30 minutes).
+const AUTH_CACHE_TTL_SECS: u64 = 1800;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AuthCacheEntry {
     pub user_id: i32,
     pub name: String,
     pub language: String,
+    pub cached_at: i64,
 }
 
 /// 扩展数据存储
@@ -41,7 +45,7 @@ pub struct ExtensionDataStore {
     pub room_data: HashMap<String, HashMap<String, String>>,
     /// 认证缓存 (token_hash -> 用户信息)，持久化以在重启后恢复
     #[serde(default)]
-    pub auth_cache: HashMap<u64, AuthCacheEntry>,
+    pub auth_cache: HashMap<String, AuthCacheEntry>,
 }
 
 impl ExtensionDataStore {
@@ -350,16 +354,22 @@ impl ExtensionManager {
 
     // ── 认证缓存持久化 ──
 
-    pub async fn get_auth_cache(&self) -> HashMap<u64, AuthCacheEntry> {
+    pub async fn get_auth_cache(&self) -> HashMap<String, AuthCacheEntry> {
         self.store.read().await.auth_cache.clone()
     }
 
-    pub async fn set_auth_cache(&self, cache: HashMap<u64, AuthCacheEntry>) {
+    pub async fn set_auth_cache(&self, cache: HashMap<String, AuthCacheEntry>) {
         self.store.write().await.auth_cache = cache;
     }
 
     /// 更新认证缓存（不会立即写盘 — 由外部定期 persist）
-    pub async fn update_auth_cache(&self, token_hash: u64, entry: AuthCacheEntry) {
+    /// SHA256 hex hash of auth token, used as cache key.
+    pub fn token_hash(token: &str) -> String {
+        use sha2::{Digest, Sha256};
+        format!("{:x}", Sha256::digest(token.as_bytes()))
+    }
+
+    pub async fn update_auth_cache(&self, token_hash: String, entry: AuthCacheEntry) {
         self.store
             .write()
             .await
