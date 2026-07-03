@@ -2,7 +2,7 @@
 
 use super::super::{
     command::{RoomActorCommand, RoomCommandKind},
-    RoomCommandGateway,
+    RoomCommandGateway, RoomCommandPayload,
 };
 use crate::{plugin::PluginEvent, server::PlusServerState};
 use phira_mp_common::{Message, RoomEvent};
@@ -26,7 +26,11 @@ impl RoomCommandGateway {
                     target_id,
                     reply,
                 },
-                || self.kick_user_inline(state, room_id, target_id),
+                || async {
+                    self.kick_user_inline(state, room_id, target_id)
+                        .await
+                        .map(RoomCommandPayload::into_json)
+                },
             )
             .await;
         self.finish_command(
@@ -44,7 +48,7 @@ impl RoomCommandGateway {
         state: &PlusServerState,
         room_id: &str,
         target_id: i32,
-    ) -> Result<Value, String> {
+    ) -> Result<RoomCommandPayload, String> {
         let (rid, room) = self.find_room(state, room_id).await?;
         let users = room.users().await;
         let monitors = room.monitors().await;
@@ -80,13 +84,12 @@ impl RoomCommandGateway {
                 data: serde_json::json!({"action":"kicked"}).to_string(),
             })
             .await;
-        Ok(serde_json::json!({
-            "ok": true,
-            "room_id": room_id,
-            "user_id": target_id,
-            "user_name": user.name.clone(),
-            "room_dropped": should_drop,
-        }))
+        Ok(RoomCommandPayload::UserKicked {
+            room_id: room_id.to_string(),
+            user_id: target_id,
+            user_name: user.name.clone(),
+            room_dropped: should_drop,
+        })
     }
 
     /// Close and remove a room.
@@ -103,7 +106,11 @@ impl RoomCommandGateway {
                     room_id: room_id.to_string(),
                     reply,
                 },
-                || self.close_room_inline(state, room_id),
+                || async {
+                    self.close_room_inline(state, room_id)
+                        .await
+                        .map(RoomCommandPayload::into_json)
+                },
             )
             .await;
         self.finish_command(
@@ -120,7 +127,7 @@ impl RoomCommandGateway {
         &self,
         state: &PlusServerState,
         room_id: &str,
-    ) -> Result<Value, String> {
+    ) -> Result<RoomCommandPayload, String> {
         let (rid, room) = self.find_room(state, room_id).await?;
         let room_id_str = room.id.to_string();
         room.send(Message::Chat {
@@ -149,6 +156,8 @@ impl RoomCommandGateway {
                 data: serde_json::json!({"action":"closed"}).to_string(),
             })
             .await;
-        Ok(serde_json::json!({"ok": true, "room_id": room_id_str}))
+        Ok(RoomCommandPayload::RoomClosed {
+            room_id: room_id_str,
+        })
     }
 }

@@ -2,7 +2,7 @@
 
 use super::super::{
     command::{RoomActorCommand, RoomCommandKind},
-    RoomCommandGateway,
+    RoomCommandGateway, RoomCommandPayload,
 };
 use crate::{plugin::PluginEvent, server::PlusServerState};
 use phira_mp_common::{Message, PartialRoomData};
@@ -26,7 +26,11 @@ impl RoomCommandGateway {
                     target_id,
                     reply,
                 },
-                || self.set_host_inline(state, room_id, target_id),
+                || async {
+                    self.set_host_inline(state, room_id, target_id)
+                        .await
+                        .map(RoomCommandPayload::into_json)
+                },
             )
             .await;
         self.finish_command(
@@ -44,7 +48,7 @@ impl RoomCommandGateway {
         state: &PlusServerState,
         room_id: &str,
         target_id: Option<i32>,
-    ) -> Result<Value, String> {
+    ) -> Result<RoomCommandPayload, String> {
         let (_rid, room) = self.find_room(state, room_id).await?;
         match target_id {
             Some(user_id) => {
@@ -63,13 +67,12 @@ impl RoomCommandGateway {
                 room.set_host(Some(user_id), true)
                     .await
                     .map_err(|e| e.to_string())?;
-                Ok(serde_json::json!({
-                    "ok": true,
-                    "room_id": room_id,
-                    "host": user_id,
-                    "host_name": user_name,
-                    "host_is_system": false,
-                }))
+                Ok(RoomCommandPayload::HostChanged {
+                    room_id: room_id.to_string(),
+                    host: Some(user_id),
+                    host_name: user_name,
+                    host_is_system: false,
+                })
             }
             None => {
                 room.send(Message::Chat {
@@ -78,13 +81,12 @@ impl RoomCommandGateway {
                 })
                 .await;
                 room.set_host(None, true).await.map_err(|e| e.to_string())?;
-                Ok(serde_json::json!({
-                    "ok": true,
-                    "room_id": room_id,
-                    "host": Value::Null,
-                    "host_name": "?",
-                    "host_is_system": true,
-                }))
+                Ok(RoomCommandPayload::HostChanged {
+                    room_id: room_id.to_string(),
+                    host: None,
+                    host_name: "?".to_string(),
+                    host_is_system: true,
+                })
             }
         }
     }
@@ -104,7 +106,11 @@ impl RoomCommandGateway {
                     locked,
                     reply,
                 },
-                || self.set_lock_inline(state, room_id, locked),
+                || async {
+                    self.set_lock_inline(state, room_id, locked)
+                        .await
+                        .map(RoomCommandPayload::into_json)
+                },
             )
             .await;
         self.finish_command(
@@ -122,7 +128,7 @@ impl RoomCommandGateway {
         state: &PlusServerState,
         room_id: &str,
         locked: bool,
-    ) -> Result<Value, String> {
+    ) -> Result<RoomCommandPayload, String> {
         let (_rid, room) = self.find_room(state, room_id).await?;
         room.locked.store(locked, Ordering::SeqCst);
         room.send(Message::LockRoom { lock: locked }).await;
@@ -139,7 +145,10 @@ impl RoomCommandGateway {
                 data: serde_json::json!({"action":"lock","value":locked}).to_string(),
             })
             .await;
-        Ok(serde_json::json!({"ok": true, "room_id": room_id, "locked": locked}))
+        Ok(RoomCommandPayload::LockChanged {
+            room_id: room_id.to_string(),
+            locked,
+        })
     }
 
     pub async fn set_cycle(
@@ -157,7 +166,11 @@ impl RoomCommandGateway {
                     cycle,
                     reply,
                 },
-                || self.set_cycle_inline(state, room_id, cycle),
+                || async {
+                    self.set_cycle_inline(state, room_id, cycle)
+                        .await
+                        .map(RoomCommandPayload::into_json)
+                },
             )
             .await;
         self.finish_command(
@@ -175,7 +188,7 @@ impl RoomCommandGateway {
         state: &PlusServerState,
         room_id: &str,
         cycle: bool,
-    ) -> Result<Value, String> {
+    ) -> Result<RoomCommandPayload, String> {
         let (_rid, room) = self.find_room(state, room_id).await?;
         room.cycle.store(cycle, Ordering::SeqCst);
         room.send(Message::CycleRoom { cycle }).await;
@@ -192,6 +205,9 @@ impl RoomCommandGateway {
                 data: serde_json::json!({"action":"cycle","value":cycle}).to_string(),
             })
             .await;
-        Ok(serde_json::json!({"ok": true, "room_id": room_id, "cycle": cycle}))
+        Ok(RoomCommandPayload::CycleChanged {
+            room_id: room_id.to_string(),
+            cycle,
+        })
     }
 }
