@@ -298,13 +298,13 @@ impl PlusConfig {
     pub fn validate(&self) -> Result<(), crate::error::AppError> {
         use crate::error::AppError;
         // Port range
-        if self.port == 0 || self.port > 65535 {
+        if self.port == 0 {
             return Err(AppError::ConfigValidation(format!(
                 "端口 {} 超出范围 (1-65535)",
                 self.port
             )));
         }
-        if self.http_port == 0 || self.http_port > 65535 {
+        if self.http_port == 0 {
             return Err(AppError::ConfigValidation(format!(
                 "HTTP 端口 {} 超出范围 (1-65535)",
                 self.http_port

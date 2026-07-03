@@ -5,9 +5,8 @@ use crate::phira_client::PhiraRetryNoticeTarget;
 use crate::plugin::PluginEvent;
 use crate::server::PlusServerState;
 use crate::session_auth::{
-    authenticate_remote_with_notice, ban_rejection_message, send_auth_rejection, AuthUserInfo,
+    authenticate_remote_with_notice, send_auth_rejection, AuthUserInfo,
 };
-use crate::tl;
 use anyhow::{anyhow, bail, Result};
 use phira_mp_common::{ClientCommand, RoomEvent, ServerCommand, Stream, UserInfo};
 use std::{
@@ -345,7 +344,7 @@ impl Session {
                                         };
                                         let user_info = if let Some(entry) = user_info {
                                             // 封禁检查（拒绝前不走 API，毫秒级响应）
-                                            if let Some(reason) =
+                                            if let Some(_reason) =
                                                 server.ban_manager.ban_reason(entry.user_id).await
                                             {
                                                 warn!(
@@ -411,7 +410,7 @@ impl Session {
                                                     }
                                                     info
                                                 }
-                                                Err(err) => {
+                                                Err(_err) => {
                                                     if let Some(tx) = auth_tx.take() {
                                                             let _ = tx.send(AuthenticationOutcome::Rejected);
                                                         }
