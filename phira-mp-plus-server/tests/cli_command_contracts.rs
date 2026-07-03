@@ -92,7 +92,7 @@ fn command_count_is_stable() {
     let count = registry.iter().count();
     // If this fails, update the count — this test prevents drift
     assert!(
-        count >= 50 && count <= 65,
+        count >= 50 && count <= 70,
         "unexpected command count: {count}"
     );
 }

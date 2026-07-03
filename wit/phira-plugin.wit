@@ -255,6 +255,28 @@ interface phira-admin {
     set-admin-ids: func(ids: list<u32>) -> api-result;
 }
 
+/// Plugin configuration (key-value, JSON, per-plugin config.json on disk).
+interface phira-config {
+    use phira-types.{api-result};
+
+    /// Get a configuration value by key path (e.g. "api.timeout").
+    /// Returns null if the key does not exist.
+    get-config: func(key-path: string) -> api-result;
+
+    /// Set a configuration value by key path.
+    /// Persisted to data/plugins/<name>/config.json.
+    set-config: func(key-path: string, value: string) -> api-result;
+
+    /// List all keys at the given prefix.
+    list-config: func(prefix: string) -> api-result;
+
+    /// Reload config.json from disk.
+    reload-config: func() -> api-result;
+
+    /// Poll for config changes since a version counter.
+    poll-config-changes: func(since-version: u64) -> api-result;
+}
+
 /// Simulation management.
 interface phira-simulation {
     use phira-types.{api-result};
@@ -297,6 +319,7 @@ world phira-plugin-v2 {
     import phira-messaging;
     import phira-persistence;
     import phira-admin;
+    import phira-config;
     import phira-simulation;
     import phira-runtime;
 
