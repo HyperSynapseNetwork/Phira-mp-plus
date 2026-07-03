@@ -287,142 +287,7 @@ impl DbManager {
         }
     }
 
-    pub async fn record_sim_event(
-        &self,
-        run_id: Option<String>,
-        kind: &str,
-        payload: Value,
-    ) -> bool {
-        #[cfg(feature = "postgres")]
-        if let Self::Pg(pool) = self {
-            let now = now_ms();
-            return sqlx::query(
-                "INSERT INTO mp_sim_events (run_id, kind, payload, created_at)
-                 VALUES ($1, $2, $3, $4)",
-            )
-            .bind(run_id.as_deref())
-            .bind(kind)
-            .bind(payload)
-            .bind(now)
-            .execute(pool)
-            .await
-            .is_ok();
-        }
-        #[cfg(not(feature = "postgres"))]
-        let _ = (run_id, kind, payload);
-        false
-    }
-
-    pub fn record_sim_event_sync(&self, run_id: Option<String>, kind: &str, payload: Value) {
-        #[cfg(feature = "postgres")]
-        if let Self::Pg(pool) = self {
-            let pool = pool.clone();
-            let kind = kind.to_string();
-            tokio::spawn(async move {
-                let db = DbManager::Pg(pool);
-                let _ = db.record_sim_event(run_id, &kind, payload).await;
-            });
-        }
-        #[cfg(not(feature = "postgres"))]
-        let _ = (run_id, kind, payload);
-    }
-
-    pub fn record_room_snapshot_sync(&self, room_id: String, room_uuid: String, payload: Value) {
-        #[cfg(feature = "postgres")]
-        if let Self::Pg(pool) = self {
-            let pool = pool.clone();
-            tokio::spawn(async move {
-                let _ = record_room_snapshot_pg(&pool, &room_id, &room_uuid, payload).await;
-            });
-        }
-    }
-
-    pub async fn record_room_event(
-        &self,
-        kind: &str,
-        room_id: Option<String>,
-        user_id: Option<i32>,
-        payload: Value,
-    ) -> bool {
-        #[cfg(feature = "postgres")]
-        if let Self::Pg(pool) = self {
-            return append_event_pg(pool, kind, room_id.as_deref(), user_id, payload)
-                .await
-                .is_ok();
-        }
-        #[cfg(not(feature = "postgres"))]
-        let _ = (kind, room_id, user_id, payload);
-        false
-    }
-
-    pub fn record_room_event_sync(
-        &self,
-        kind: &str,
-        room_id: Option<String>,
-        user_id: Option<i32>,
-        payload: Value,
-    ) {
-        #[cfg(feature = "postgres")]
-        if let Self::Pg(pool) = self {
-            let pool = pool.clone();
-            let kind = kind.to_string();
-            tokio::spawn(async move {
-                let db = DbManager::Pg(pool);
-                let _ = db.record_room_event(&kind, room_id, user_id, payload).await;
-            });
-        }
-        #[cfg(not(feature = "postgres"))]
-        let _ = (kind, room_id, user_id, payload);
-    }
-
-    pub fn record_user_room_history_sync(
-        &self,
-        user_id: i32,
-        room_id: String,
-        room_uuid: String,
-        joined_at: i64,
-    ) {
-        #[cfg(feature = "postgres")]
-        if let Self::Pg(pool) = self {
-            let pool = pool.clone();
-            tokio::spawn(async move {
-                let _ = sqlx::query(
-                    "INSERT INTO room_history (user_id, room_id, room_uuid, joined_at) VALUES ($1, $2, $3, $4)"
-                )
-                .bind(user_id)
-                .bind(&room_id)
-                .bind(&room_uuid)
-                .bind(joined_at)
-                .execute(&pool)
-                .await;
-                let _ = sqlx::query(
-                    "INSERT INTO mp_user_room_history (user_id, room_id, room_uuid, joined_at, created_at)
-                     VALUES ($1, $2, $3, $4, $4)"
-                )
-                .bind(user_id)
-                .bind(&room_id)
-                .bind(&room_uuid)
-                .bind(joined_at)
-                .execute(&pool)
-                .await;
-                let _ = append_event_pg(
-                    &pool,
-                    "room.join",
-                    Some(&room_id),
-                    Some(user_id),
-                    serde_json::json!({
-                        "user_id": user_id,
-                        "room_id": room_id,
-                        "room_uuid": room_uuid,
-                        "joined_at": joined_at,
-                    }),
-                )
-                .await;
-            });
-        }
-    }
-
-    pub async fn get_playtime(&self, user_id: i32) -> Option<PlaytimeRow> {
+pub async fn get_playtime(&self, user_id: i32) -> Option<PlaytimeRow> {
         #[cfg(feature = "postgres")]
         if let Self::Pg(pool) = self {
             let row =
@@ -1178,7 +1043,7 @@ async fn query_runtime_telemetry_batches(
 }
 
 #[cfg(feature = "postgres")]
-async fn append_event_pg(
+pub(crate) async fn append_event_pg(
     pool: &sqlx::PgPool,
     kind: &str,
     room_id: Option<&str>,
@@ -1196,44 +1061,6 @@ async fn append_event_pg(
     .bind(payload)
     .bind(now_ms())
     .execute(pool)
-    .await?;
-    Ok(())
-}
-
-#[cfg(feature = "postgres")]
-async fn record_room_snapshot_pg(
-    pool: &sqlx::PgPool,
-    room_id: &str,
-    room_uuid: &str,
-    payload: Value,
-) -> Result<()> {
-    let payload = payload.to_string();
-    let now = now_ms();
-    sqlx::query(
-        "INSERT INTO mp_room_snapshots (room_id, room_uuid, payload, created_at, updated_at, sequence)
-         VALUES ($1, $2, $3::jsonb, $4, $4, nextval('mp_persist_sequence'))
-         ON CONFLICT (room_id) DO UPDATE SET
-           room_uuid = EXCLUDED.room_uuid,
-           payload = EXCLUDED.payload,
-           updated_at = EXCLUDED.updated_at,
-           sequence = EXCLUDED.sequence"
-    )
-    .bind(room_id)
-    .bind(room_uuid)
-    .bind(payload)
-    .bind(now)
-    .execute(pool)
-    .await?;
-    append_event_pg(
-        pool,
-        "room.snapshot",
-        Some(room_id),
-        None,
-        serde_json::json!({
-            "room_id": room_id,
-            "room_uuid": room_uuid,
-        }),
-    )
     .await?;
     Ok(())
 }
