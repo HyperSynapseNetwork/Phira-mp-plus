@@ -403,18 +403,18 @@ impl Session {
                                                             "banned user {}({}) tried to connect",
                                                             info.name, info.id
                                                         );
-                                                        bail!(
-                                                            "{}",
-                                                            ban_rejection_message(
-                                                                &info.language,
-                                                                &reason
-                                                            )
-                                                        );
+                                                        if let Some(tx) = auth_tx.take() {
+                                                            let _ = tx.send(AuthenticationOutcome::Rejected);
+                                                        }
+                                                        return Ok(());
                                                     }
                                                     info
                                                 }
                                                 Err(err) => {
-                                                    bail!("{}", err);
+                                                    if let Some(tx) = auth_tx.take() {
+                                                            let _ = tx.send(AuthenticationOutcome::Rejected);
+                                                        }
+                                                        return Ok(());
                                                 }
                                             }
                                         };
