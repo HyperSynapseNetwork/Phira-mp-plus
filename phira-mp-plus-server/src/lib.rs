@@ -47,6 +47,8 @@ pub use session_room::decode_admin_room_command;
 pub mod terminal;
 #[cfg(feature = "plugin-system")]
 pub mod wasm_host;
+#[cfg(feature = "plugin-system")]
+pub mod wit_host;
 
 pub use l10n::*;
 pub use room::*;
