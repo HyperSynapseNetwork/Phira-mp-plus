@@ -136,7 +136,7 @@ interface phira-events {
     record game-end-info {
         user-id: u32,
         room-id: string,
-        record: game-end-record,
+        game-result: game-end-record,
     }
 
     /// Payload for player-touches events.
