@@ -907,6 +907,8 @@ impl PlusServer {
         )?);
         let runtime_plan = Arc::new(crate::runtime_plan::RuntimePlan::master_plan());
         let events = Arc::new(SseHub::new());
+        // Capture config fields before config is consumed by state
+        let proxy_protocol_port = config.proxy_protocol_port;
         // Initialize database connection early so it's available throughout
         let db_manager = super::db::DbManager::new(config.database_url.as_deref()).await;
         let live_config = Arc::new(RwLock::new(LiveConfig::from_full(&config)));
@@ -1047,7 +1049,7 @@ impl PlusServer {
 
         let http_server = Arc::new(PluginHttpServer::new(
             http_port,
-            config.proxy_protocol_port,
+            proxy_protocol_port,
             Arc::clone(&state.events),
         ));
         let http_handle = api::HttpHandle::new(crate::plugin_http::HttpHandleBridge(Arc::clone(

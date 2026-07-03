@@ -33,7 +33,8 @@ axum = { version = "0.8", default-features = false, features = [
     "tokio", "http1", "json", "macros", "original-uri", "matched-path", "query", "form", "ws",
 ] }
 tokio-stream = { version = "0.1", features = ["sync"] }
-hyper = { version = "1", features = ["server", "http1"] }
+hyper = { version = "1", features = ["server", "http1", "tokio"] }
+tower = { version = "0.4" }
 tower-http = { version = "0.6", features = ["cors"] }
 futures = "0.3"
 

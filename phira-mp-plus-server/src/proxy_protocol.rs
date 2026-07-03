@@ -267,7 +267,10 @@ pub async fn serve_axum(
                         req.extensions_mut().insert(RealClientIp(ip));
                     }
                     let app = app.clone();
-                    async move { app.call(req).await }
+                    async move {
+                        use tower::ServiceExt;
+                        app.oneshot(req).await
+                    }
                 },
             );
 
