@@ -96,8 +96,8 @@ jobs:
       - name: Cache dependencies
         uses: Swatinem/rust-cache@v2
 
-      - name: Build release binary (Windows, no postgres/plugin)
-        run: cargo build --release --package phira-mp-plus-server --no-default-features
+      - name: Build release binary (Windows, full features)
+        run: cargo build --release --package phira-mp-plus-server
 
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
