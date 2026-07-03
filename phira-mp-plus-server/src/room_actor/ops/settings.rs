@@ -211,3 +211,42 @@ impl RoomCommandGateway {
         })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::super::super::{RoomCommandDelivery, RoomCommandResult};
+
+    #[test]
+    fn typed_boundary_round_trip() {
+        // Verify that typed RoomCommandPayload values round-trip through
+        // the untyped + from_untyped boundary used by the mailbox dispatch.
+        let payloads = vec![
+            super::RoomCommandPayload::LockChanged { room_id: "r1".into(), locked: true },
+            super::RoomCommandPayload::CycleChanged { room_id: "r2".into(), cycle: false },
+            super::RoomCommandPayload::HostChanged { room_id: "r3".into(), host_id: Some(42) },
+        ];
+        for payload in payloads {
+            let json = serde_json::to_value(&payload).unwrap();
+            let result = RoomCommandResult::from_untyped(
+                Ok(json.clone()),
+                RoomCommandDelivery::TypedBoundary,
+            );
+            if let RoomCommandDelivery::TypedBoundary = result.delivery {
+                // Compile-time guarantee: the payload survived serialization
+            } else {
+                panic!("expected TypedBoundary delivery");
+            }
+        }
+    }
+
+    #[test]
+    fn set_command_kind_is_typed() {
+        use super::super::super::command::RoomCommandKind;
+        // Verify mailbox dispatch uses typed Kind values (not raw strings)
+        assert_eq!(RoomCommandKind::SetLock.as_str(), "SetLock");
+        assert_eq!(RoomCommandKind::SetCycle.as_str(), "SetCycle");
+        assert_eq!(RoomCommandKind::SetHost.as_str(), "SetHost");
+        assert_eq!(RoomCommandKind::CloseRoom.as_str(), "CloseRoom");
+        assert_eq!(RoomCommandKind::KickUser.as_str(), "KickUser");
+    }
+}

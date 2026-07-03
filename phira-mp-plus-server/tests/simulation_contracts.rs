@@ -196,3 +196,56 @@ fn simulation_generated_events_have_run_id() {
     };
     assert!(true, "SimulationRunReport has run_id field");
 }
+
+#[tokio::test]
+async fn simulation_lifecycle_start_stop_cleanup() {
+    let manager = SimulationManager::new();
+    let config = SimulationConfig {
+        preset: SimulationPreset::Baseline,
+        scenario: SimulationScenario::Balanced,
+        users: 5,
+        rooms: 2,
+        duration_secs: 10,
+        tick_interval_ms: 500,
+        auto: false,
+        seed: 42,
+        persist_every_ticks: 0,
+    };
+
+    // Verify initial state: idle
+    let status = manager.status().await;
+    assert!(!status.running, "should start idle");
+
+    // Start simulation
+    let run_id = manager.start(config).await.unwrap();
+    let status = manager.status().await;
+    assert!(status.running, "should be running after start");
+    assert_eq!(status.virtual_users, 5, "should have correct virtual user count");
+    assert_eq!(status.virtual_rooms, 2, "should have correct virtual room count");
+    assert!(run_id.to_string().len() == 36, "run_id should be a valid UUID");
+
+    // Stop simulation
+    let stopped = manager.stop().await;
+    assert!(stopped, "stop should succeed when running");
+
+    // Verify stopped state
+    let status = manager.status().await;
+    assert!(!status.running, "should not be running after stop");
+
+    // Cleanup
+    let cleaned = manager.cleanup().await;
+    assert!(cleaned, "cleanup should succeed");
+    let status = manager.status().await;
+    assert_eq!(status.virtual_users, 0, "cleanup should remove all virtual users");
+    assert_eq!(status.virtual_rooms, 0, "cleanup should remove all virtual rooms");
+}
+
+#[tokio::test]
+async fn simulation_cleanup_idempotent() {
+    let manager = SimulationManager::new();
+    // Cleanup on idle manager is a no-op (should not error)
+    let result = manager.cleanup().await;
+    assert!(result, "cleanup on idle manager should succeed");
+    let status = manager.status().await;
+    assert!(!status.running, "still idle after cleanup");
+}
