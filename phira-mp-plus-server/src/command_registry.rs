@@ -606,6 +606,29 @@ pub fn runtime_v2_registry() -> CommandRegistry {
         )
         .advanced(),
         CommandSpec::new(
+            "config reload",
+            "runtime-v2",
+            "重新加载 server_config.yml 并热更新运行时配置。",
+            "config reload",
+        )
+        .handler(Arc::new(|state, _args| {
+            let path = std::path::Path::new("server_config.yml");
+            let content = match std::fs::read_to_string(path) {
+                Ok(c) => c,
+                Err(e) => return vec![format!("  ✗ 读取配置文件失败: {e}")],
+            };
+            let config: crate::server::PlusConfig = match serde_yaml::from_str(&content) {
+                Ok(c) => c,
+                Err(e) => return vec![format!("  ✗ 解析配置文件失败: {e}")],
+            };
+            let live = crate::server::LiveConfig::from_full(&config);
+            *state.live_config.blocking_write() = live;
+            vec![
+                "  ✓ 配置已重新加载".to_string(),
+                "  ▸ 部分字段 (port/http_port/plugins_dir/database_url) 需要重启服务端才能生效".to_string(),
+            ]
+        })),
+        CommandSpec::new(
             "runtime cutover",
             "runtime-v2",
             "查看或切换 Touch/Judge 持久化 cutover 模式。",

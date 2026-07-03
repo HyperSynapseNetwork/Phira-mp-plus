@@ -94,6 +94,54 @@ macro_rules! read_lock {
 pub type IdMap<V> = SafeMap<Uuid, V>;
 
 /// Phira-mp+ 增强配置（支持 YAML 文件、环境变量、CLI 参数三层覆盖）
+/// Hot-reloadable runtime configuration subset.
+///
+/// Fields that can be safely changed at runtime without restarting the server.
+/// Updated via the `config reload` CLI command or file watcher.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct LiveConfig {
+    /// Chat feature toggle.
+    #[serde(default)]
+    pub chat_enabled: bool,
+    /// Server display name.
+    #[serde(default)]
+    pub server_name: Option<String>,
+    /// Allowed monitor user IDs.
+    #[serde(default)]
+    pub monitors: Vec<i32>,
+    /// Game admin Phira IDs.
+    #[serde(default)]
+    pub admin_phira_ids: Vec<i32>,
+    /// Benchmark auth tokens.
+    #[serde(default)]
+    pub benchmark_phira_tokens: Vec<String>,
+    /// Connection rate limit (per window).
+    #[serde(default = "default_rate_limit")]
+    pub connection_rate_limit: u32,
+    /// Rate limit window in seconds.
+    #[serde(default = "default_rate_window")]
+    pub connection_rate_window: u32,
+    /// Runtime v2 internal policy.
+    #[serde(default)]
+    pub runtime_v2: RuntimeV2Config,
+}
+
+impl LiveConfig {
+    /// Extract hot-reloadable fields from a full config.
+    pub fn from_full(config: &PlusConfig) -> Self {
+        Self {
+            chat_enabled: config.chat_enabled,
+            server_name: config.server_name.clone(),
+            monitors: config.monitors.clone(),
+            admin_phira_ids: config.admin_phira_ids.clone(),
+            benchmark_phira_tokens: config.benchmark_phira_tokens.clone(),
+            connection_rate_limit: config.connection_rate_limit,
+            connection_rate_window: config.connection_rate_window,
+            runtime_v2: config.runtime_v2.clone(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct PlusConfig {
     pub port: u16,
@@ -527,6 +575,8 @@ async fn fetch_phira_chart(endpoint: &str, chart_id: i32) -> Option<Chart> {
 /// Phira-mp+ 服务器状态
 pub struct PlusServerState {
     pub config: PlusConfig,
+    /// Hot-reloadable runtime config.
+    pub live_config: Arc<RwLock<LiveConfig>>,
     pub sessions: IdMap<Arc<super::session::Session>>,
     pub users: SafeMap<i32, Arc<super::session::User>>,
     pub rooms: SafeMap<RoomId, Arc<super::room::Room>>,
@@ -768,8 +818,10 @@ impl PlusServer {
         let events = Arc::new(SseHub::new());
         // Initialize database connection early so it's available throughout
         let db_manager = super::db::DbManager::new(config.database_url.as_deref()).await;
+        let live_config = Arc::new(RwLock::new(LiveConfig::from_full(&config)));
         let state = Arc::new(PlusServerState {
             config,
+            live_config,
             sessions: IdMap::default(),
             users: SafeMap::default(),
             rooms: SafeMap::default(),
