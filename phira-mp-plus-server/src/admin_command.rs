@@ -26,6 +26,21 @@ pub enum CommandCategory {
     System,
 }
 
+impl CommandCategory {
+    pub fn label(&self) -> &'static str {
+        match self {
+            Self::Admin => "管理",
+            Self::Room => "房间",
+            Self::Plugin => "插件",
+            Self::Benchmark => "基准测试",
+            Self::Simulation => "模拟",
+            Self::Broadcast => "广播",
+            Self::Runtime => "运行时",
+            Self::System => "系统",
+        }
+    }
+}
+
 /// Parameter type for command arguments.
 #[derive(Debug, Clone)]
 pub enum ParamType {
@@ -125,7 +140,7 @@ impl AdminCommand for HelpCommand {
                     }
                 }
                 for (cat, cmds) in &cats {
-                    msg.push_str(&format!("\n  {}:", cat.label("zh")));
+                    msg.push_str(&format!("\n  {}:", cat.label()));
                     for cmd in cmds {
                         let alias_str = if cmd.aliases().is_empty() {
                             String::new()
