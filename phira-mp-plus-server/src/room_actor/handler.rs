@@ -29,39 +29,40 @@ impl RoomCommandHandler {
     ) -> RoomCommandResult {
         let gateway = ctx.gateway;
         let state = ctx.state;
+        let room = ctx.room.clone();
         match command {
             RoomActorCommand::SetLock {
                 room_id, locked, ..
             } => typed_or_err(
-                gateway.set_lock_inline(state, room_id, *locked).await,
+                gateway.set_lock_inline(state, room_id, *locked, room.clone()).await,
                 RoomCommandDelivery::PerRoomMailbox,
             ),
             RoomActorCommand::SetCycle { room_id, cycle, .. } => typed_or_err(
-                gateway.set_cycle_inline(state, room_id, *cycle).await,
+                gateway.set_cycle_inline(state, room_id, *cycle, room.clone()).await,
                 RoomCommandDelivery::PerRoomMailbox,
             ),
             RoomActorCommand::SetHost {
                 room_id, target_id, ..
             } => typed_or_err(
-                gateway.set_host_inline(state, room_id, *target_id).await,
+                gateway.set_host_inline(state, room_id, *target_id, room.clone()).await,
                 RoomCommandDelivery::PerRoomMailbox,
             ),
             RoomActorCommand::CloseRoom { room_id, .. } => typed_or_err(
-                gateway.close_room_inline(state, room_id).await,
+                gateway.close_room_inline(state, room_id, room.clone()).await,
                 RoomCommandDelivery::PerRoomMailbox,
             ),
             RoomActorCommand::KickUser {
                 room_id, target_id, ..
             } => typed_or_err(
-                gateway.kick_user_inline(state, room_id, *target_id).await,
+                gateway.kick_user_inline(state, room_id, *target_id, room.clone()).await,
                 RoomCommandDelivery::PerRoomMailbox,
             ),
             RoomActorCommand::StartRoom { room_id, .. } => typed_or_err(
-                gateway.start_room_inline(state, room_id).await,
+                gateway.start_room_inline(state, room_id, room.clone()).await,
                 RoomCommandDelivery::PerRoomMailbox,
             ),
             RoomActorCommand::CancelStart { room_id, .. } => typed_or_err(
-                gateway.cancel_start_inline(state, room_id).await,
+                gateway.cancel_start_inline(state, room_id, room).await,
                 RoomCommandDelivery::PerRoomMailbox,
             ),
         }

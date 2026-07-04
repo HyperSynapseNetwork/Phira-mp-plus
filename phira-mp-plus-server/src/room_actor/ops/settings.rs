@@ -7,7 +7,8 @@ use super::super::{
 use crate::{plugin::PluginEvent, server::PlusServerState};
 use phira_mp_common::{Message, PartialRoomData};
 use serde_json::Value;
-use std::{sync::atomic::Ordering, time::Instant};
+use std::sync::{atomic::Ordering, Arc};
+use std::time::Instant;
 
 impl RoomCommandGateway {
     /// Set the room host. `None` means the system `?` host.
@@ -48,8 +49,9 @@ impl RoomCommandGateway {
         state: &PlusServerState,
         room_id: &str,
         target_id: Option<i32>,
+        room_override: Option<Arc<crate::room::Room>>,
     ) -> Result<RoomCommandPayload, String> {
-        let (_rid, room) = self.find_room(state, room_id).await?;
+        let (_rid, room) = self.resolve_room(state, room_id, room_override).await?;
         match target_id {
             Some(user_id) => {
                 let mut user_name = user_id.to_string();
@@ -128,8 +130,9 @@ impl RoomCommandGateway {
         state: &PlusServerState,
         room_id: &str,
         locked: bool,
+        room_override: Option<Arc<crate::room::Room>>,
     ) -> Result<RoomCommandPayload, String> {
-        let (_rid, room) = self.find_room(state, room_id).await?;
+        let (_rid, room) = self.resolve_room(state, room_id, room_override).await?;
         room.locked.store(locked, Ordering::SeqCst);
         room.send(Message::LockRoom { lock: locked }).await;
         room.publish_update(PartialRoomData {
@@ -188,8 +191,9 @@ impl RoomCommandGateway {
         state: &PlusServerState,
         room_id: &str,
         cycle: bool,
+        room_override: Option<Arc<crate::room::Room>>,
     ) -> Result<RoomCommandPayload, String> {
-        let (_rid, room) = self.find_room(state, room_id).await?;
+        let (_rid, room) = self.resolve_room(state, room_id, room_override).await?;
         room.cycle.store(cycle, Ordering::SeqCst);
         room.send(Message::CycleRoom { cycle }).await;
         room.publish_update(PartialRoomData {
