@@ -45,10 +45,10 @@ phira-mp-plus-server-api = { path = "../phira-mp-plus-server-api" }
 libc = "0.2"
 
 [features]
-default = ["plugin-system", "postgres"]
+default = ["plugin-system", "postgres", "wit-bindgen"]
 plugin-system = ["dep:wasmtime"]
-# WIT/component-model bindgen — generates massive code, only enable
-# when actively developing typed plugin ABI.  Not in default features.
+# WIT/component-model bindgen.  JSON bridge removed (MIGRATION_PHASE=2),
+# so WIT bindings are now required for plugin support.
 wit-bindgen = ["plugin-system"]
 postgres = ["dep:sqlx"]
 

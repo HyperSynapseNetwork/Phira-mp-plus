@@ -180,7 +180,7 @@ impl WasmPluginInstance {
             let component = wasmtime::component::Component::new(&engine, wasm_bytes)
                 .map_err(|e| format!("component compile error: {}", e))?;
             let mut _linker = wasmtime::component::Linker::<HostState>::new(&engine);
-            return Err("WIT component not yet fully wired — use JSON bridge module for now".to_string());
+            return Err("WIT component loading not yet implemented — compile plugin as JSON bridge module".to_string());
         }
 
         // Fallback: traditional module (JSON bridge ABI)
