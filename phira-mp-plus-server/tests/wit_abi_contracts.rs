@@ -171,9 +171,9 @@ fn wit_host_events_have_minimal_exports() {
     assert!(host.exports.iter().any(|e| e == "http-request"), "phira-host must have http-request");
 
     let events = interfaces.iter().find(|i| i.name == "phira-events").unwrap();
-    assert!(events.exports.iter().any(|e| e == "user-connect"), "phira-events must have user-connect");
-    assert!(events.exports.iter().any(|e| e == "game-end"), "phira-events must have game-end");
-    assert!(events.exports.iter().any(|e| e == "round-complete"), "phira-events must have round-complete");
+    assert!(events.exports.iter().any(|e| e == "user-connect-info"), "phira-events must have user-connect-info");
+    assert!(events.exports.iter().any(|e| e == "game-end-info"), "phira-events must have game-end-info");
+    assert!(events.exports.iter().any(|e| e == "round-complete-info"), "phira-events must have round-complete-info");
 }
 
 /// Generate docs/wit-abi.md content from the WIT file.
