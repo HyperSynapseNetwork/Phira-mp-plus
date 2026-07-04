@@ -946,6 +946,12 @@ impl PlusServer {
                 reg.register(Box::new(crate::admin_command::HelpCommand));
                 reg.register(Box::new(crate::admin_command::ExitCommand));
                 reg.register(Box::new(crate::admin_command::StatusCommand));
+                reg.register(Box::new(crate::admin_command::BanCommand));
+                reg.register(Box::new(crate::admin_command::UnbanCommand));
+                reg.register(Box::new(crate::admin_command::BanlistCommand));
+                reg.register(Box::new(crate::admin_command::BanIpCommand));
+                reg.register(Box::new(crate::admin_command::UnbanIpCommand));
+                reg.register(Box::new(crate::admin_command::BanlistIpCommand));
                 reg
             },
             bench_tokens: RwLock::new(bench_tokens),
