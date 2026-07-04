@@ -227,13 +227,6 @@ Phira-mp-plus/
 │   ├── migrate-from-hsnphira.md #   从 HSN Phira 迁移指南
 │   ├── plugin-config.md         #   插件配置说明
 │   ├── plugin-dev.md            #   WASM 插件开发指南
-│   ├── plugins/                 #   插件开发示例
-│   │   ├── player-tracker.md    #     玩家追踪插件
-│   │   ├── playtime-tracker.md  #     游玩时间统计插件
-│   │   ├── room-info-web-api.md #     房间信息 Web API 插件
-│   │   ├── round-results.md     #     轮次结果插件
-│   │   └── welcome-plugin.md    #     欢迎语插件
-│   ├── runtime-v2.md            #   Runtime v2 规范
 │   ├── runtime-v2-actor-roadmap.md # Actor 迁移路线图
 │   ├── simulation.md            #   Simulation 说明
 │   └── wit-abi.md               #   WIT ABI 说明

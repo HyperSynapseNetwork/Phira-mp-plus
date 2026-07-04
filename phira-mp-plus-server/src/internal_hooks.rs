@@ -1,7 +1,4 @@
-//! 内置功能（原 NativePlugin 系统合并入核心）
-//!
-//! 完整实现：欢迎语（全部占位符）、玩家追踪、游玩统计、结算排行
-
+//! 内置功能（欢迎语、玩家追踪、游玩统计）
 use crate::plugin::PluginManager;
 use crate::plugin_http::PluginHttpServer;
 use crate::server::PlusServerState;
