@@ -112,7 +112,7 @@ fn parse_wit_interfaces(wit_content: &str) -> Vec<WitInterface> {
             // Collect function signatures until closing brace
             while let Some(export_line) = lines.next() {
                 let trimmed = export_line.trim();
-                if trimmed == "}" || trimmed.starts_with("world ") {
+                if trimmed == "}" || trimmed == "};" || trimmed.starts_with("world ") {
                     break;
                 }
                 if trimmed.starts_with("use ") || trimmed.is_empty() || trimmed.starts_with("//") {
@@ -123,13 +123,11 @@ fn parse_wit_interfaces(wit_content: &str) -> Vec<WitInterface> {
                 let export_name = if tokens.len() >= 2 && matches!(tokens[0], "record" | "variant" | "type" | "func") {
                     // For "record foo {", "variant bar {", "func baz(" — extract the name
                     tokens[1].trim_end_matches('(').trim_end_matches('{').trim_end_matches(';').to_string()
-                } else if tokens.len() == 1 && !tokens[0].starts_with("//") {
-                    // Plain identifier line
-                    tokens[0].trim_end_matches(':').trim_end_matches(';').to_string()
                 } else {
-                    continue;
+                    // Name before keyword (e.g. "log: func(...)") or standalone identifier
+                    tokens[0].trim_end_matches(':').trim_end_matches(';').to_string()
                 };
-                if !export_name.is_empty() {
+                if !export_name.is_empty() && !matches!(export_name.as_str(), "}" | "{" | ")" | ";" | "") {
                     exports.push(export_name);
                 }
             }
