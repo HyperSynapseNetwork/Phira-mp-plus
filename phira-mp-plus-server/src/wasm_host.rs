@@ -631,10 +631,6 @@ impl WasmPluginInstance {
     /// - `config.get/set`  → 插件配置读写
     /// - `http.get/post`   → HTTP 请求
     /// - `file.read/write` → 文件读写
-    /// - `uuid.v4`         → 生成 UUID v4
-    /// - `time.now`        → 获取 Unix 时间戳
-    /// ── 插件互调用（WASM 插件注册/调用 API） ──
-    /// - `plugin.api_call`    → 调用其他 WASM 插件的 API
     /// - `plugin.api_register`→ 注册本插件的 API 供其他 WASM 插件调用
 fn dispatch_api(
     _svc: &WasmPluginServices,
