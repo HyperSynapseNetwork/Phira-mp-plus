@@ -591,7 +591,8 @@ impl WasmPluginInstance {
         }
     }
 
-    fn drop(&mut self) {
+    #[allow(unused)]
+    fn drop(    fn drop(fn drop(&mut self) {mut self) {mut self) {
         if self.initialized {
             self.call_cleanup();
         }
