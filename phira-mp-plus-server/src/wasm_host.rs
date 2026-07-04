@@ -171,11 +171,22 @@ impl WasmPluginInstance {
         let engine =
             wasmtime::Engine::new(&engine_config).map_err(|e| format!("engine creation: {}", e))?;
 
-        // 创建模块
+        // Dual-ABI: try component first, fall back to module
+        let is_component = wasm_bytes.starts_with(b"\x00asm")
+            && wasm_bytes.len() > 8
+            && wasm_bytes[8..12] == [0x01, 0x00, 0x00, 0x00];
+
+        if is_component {
+            let component = wasmtime::component::Component::new(&engine, wasm_bytes)
+                .map_err(|e| format!("component compile error: {}", e))?;
+            let mut _linker = wasmtime::component::Linker::<HostState>::new(&engine);
+            return Err("WIT component not yet fully wired — use JSON bridge module for now".to_string());
+        }
+
+        // Fallback: traditional module (JSON bridge ABI)
         let module = wasmtime::Module::new(&engine, wasm_bytes)
             .map_err(|e| format!("module compile error: {}", e))?;
 
-        // 创建链接器并注册宿主函数
         let mut linker: wasmtime::Linker<HostState> = wasmtime::Linker::new(&engine);
 
         let svc = Arc::clone(&services);
