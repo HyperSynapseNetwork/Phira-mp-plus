@@ -10,10 +10,15 @@ impl CliHandler {
     pub(super) async fn dispatch_command(&self, command: &str, args: &[&str]) -> bool {
         match command {
             "exit" => {
-                self.out(format!("  {} 正在关闭服务器...", c::yellow("⟳")));
+                // Delegate to AdminCommand registry (typed, shared across CLI/TUI/Web)
+                if let Some(cmd) = self.state.admin_commands.find("exit") {
+                    let args: Vec<String> = args.iter().map(|s| s.to_string()).collect();
+                    let result = cmd.execute(args, Arc::clone(&self.state)).await;
+                    for line in result.message.lines() {
+                        self.out(format!("  {line}"));
+                    }
+                }
                 *self.running.write().await = false;
-                self.state.shutdown.notify_one();
-                self.out(format!("  {} 已发送关闭信号", c::green("✓")));
                 false
             }
             "help" => {
