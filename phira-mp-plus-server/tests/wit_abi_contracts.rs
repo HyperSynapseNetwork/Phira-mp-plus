@@ -57,8 +57,8 @@ fn plugin_abi_constants_are_locked() {
     );
     assert_eq!(
         plugin_abi::wit::MIGRATION_PHASE,
-        1,
-        "MIGRATION_PHASE 1 = host WIT bindings generated, dual-ABI support"
+        0,
+        "MIGRATION_PHASE 0 = JSON bridge active (enable wit-bindgen for phase 1)"
     );
 }
 
@@ -281,8 +281,8 @@ fn legacy_wit_has_no_full_abi() {
 }
 
 #[test]
-fn current_abi_has_wit_bindings_generated() {
-    assert_eq!(plugin_abi::wit::MIGRATION_PHASE, 1);
+fn current_abi_is_json_not_wit() {
+    assert_eq!(plugin_abi::wit::MIGRATION_PHASE, 0);
     let plan = plugin_abi::plugin_abi_plan();
     assert_eq!(
         plan.current_transport,
