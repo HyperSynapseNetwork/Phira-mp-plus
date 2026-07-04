@@ -157,4 +157,55 @@ mod tests {
             &command, &result
         ));
     }
+
+    #[test]
+    fn cancel_does_not_stop_room_mailbox_contract() {
+        let command = RoomActorCommand::CancelStart {
+            room_id: "room-b".to_string(),
+            reply: dummy_reply(),
+        };
+        let result = RoomCommandResult::from_untyped(
+            Ok(serde_json::json!({"canceled": true})),
+            RoomCommandDelivery::PerRoomMailbox,
+        );
+        assert!(!RoomCommandHandler::should_stop_room_mailbox(
+            &command, &result
+        ));
+    }
+
+    #[test]
+    fn set_lock_does_not_stop_room_mailbox() {
+        let command = RoomActorCommand::SetLock {
+            room_id: "room-c".to_string(), locked: true, reply: dummy_reply(),
+        };
+        let result = RoomCommandResult::from_untyped(
+            Ok(serde_json::json!({"locked": true})),
+            RoomCommandDelivery::PerRoomMailbox,
+        );
+        assert!(!RoomCommandHandler::should_stop_room_mailbox(&command, &result));
+    }
+
+    #[test]
+    fn set_cycle_does_not_stop_room_mailbox() {
+        let command = RoomActorCommand::SetCycle {
+            room_id: "room-d".to_string(), cycle: true, reply: dummy_reply(),
+        };
+        let result = RoomCommandResult::from_untyped(
+            Ok(serde_json::json!({"cycle": true})),
+            RoomCommandDelivery::PerRoomMailbox,
+        );
+        assert!(!RoomCommandHandler::should_stop_room_mailbox(&command, &result));
+    }
+
+    #[test]
+    fn set_host_does_not_stop_room_mailbox() {
+        let command = RoomActorCommand::SetHost {
+            room_id: "room-e".to_string(), target_id: Some(42), reply: dummy_reply(),
+        };
+        let result = RoomCommandResult::from_untyped(
+            Ok(serde_json::json!({"host": 42})),
+            RoomCommandDelivery::PerRoomMailbox,
+        );
+        assert!(!RoomCommandHandler::should_stop_room_mailbox(&command, &result));
+    }
 }
