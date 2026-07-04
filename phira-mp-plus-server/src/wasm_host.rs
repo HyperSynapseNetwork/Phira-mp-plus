@@ -112,6 +112,7 @@ impl WasmPluginServices {
             .insert(plugin.to_string(), caps);
     }
 
+#[allow(dead_code)]
     fn has_capability(&self, plugin: &str, capability: &str) -> bool {
         self.capabilities
             .lock()
@@ -177,7 +178,7 @@ impl WasmPluginInstance {
             && wasm_bytes[8..12] == [0x01, 0x00, 0x00, 0x00];
 
         if is_component {
-            let component = wasmtime::component::Component::new(&engine, wasm_bytes)
+            let _component = wasmtime::component::Component::new(&engine, wasm_bytes)
                 .map_err(|e| format!("component compile error: {}", e))?;
             let mut _linker = wasmtime::component::Linker::<HostState>::new(&engine);
             return Err("WIT component loading not yet implemented — compile plugin as JSON bridge module".to_string());
@@ -609,6 +610,7 @@ fn dispatch_api(
 
 use crate::wasm_host_helpers as helpers;
 
+#[allow(dead_code)]
 fn state_call(
     svc: &WasmPluginServices,
     method: &str,
@@ -625,6 +627,7 @@ fn state_call(
         .map(|value| value.to_string())
 }
 
+#[allow(dead_code)]
 fn ensure_config_loaded(svc: &WasmPluginServices, plugin: &str) -> Result<(), String> {
     if svc
         .plugin_configs
@@ -653,12 +656,14 @@ fn ensure_config_loaded(svc: &WasmPluginServices, plugin: &str) -> Result<(), St
     Ok(())
 }
 
+#[allow(dead_code)]
 fn persist_plugin_config(plugin: &str, config: &HashMap<String, String>) -> Result<(), String> {
     let bytes = serde_json::to_vec_pretty(config).map_err(|e| format!("encode config: {e}"))?;
     helpers::atomic_write(&helpers::config_path(plugin), &bytes)
 }
 
 
+#[allow(dead_code)]
 fn plugin_data_path(plugin: &str, relative: &str, create_parent: bool) -> Result<PathBuf, String> {
     helpers::validate_identifier(plugin)?;
     let relative = Path::new(relative);
@@ -702,6 +707,7 @@ fn plugin_data_path(plugin: &str, relative: &str, create_parent: bool) -> Result
 
 
 
+#[allow(dead_code)]
 fn is_private_ip(ip: IpAddr) -> bool {
     match ip {
         IpAddr::V4(ip) => {
@@ -723,6 +729,7 @@ fn is_private_ip(ip: IpAddr) -> bool {
     }
 }
 
+#[allow(dead_code)]
 fn read_limited_response(
     mut response: reqwest::blocking::Response,
     limit: usize,
@@ -748,6 +755,7 @@ fn read_limited_response(
     String::from_utf8(bytes).map_err(|e| format!("HTTP response is not UTF-8: {e}"))
 }
 
+#[allow(dead_code)]
 fn read_str_from_memory(
     memory: &wasmtime::Memory,
     ctx: impl wasmtime::AsContext,

@@ -80,6 +80,7 @@ mod wit_trait_impls {
         }
     }
 
+#[allow(dead_code)]
     fn to_wit_json(value: &serde_json::Value) -> types::JsonValue {
         use types::JsonValue;
         match value {
@@ -104,6 +105,7 @@ mod wit_trait_impls {
         }
     }
 
+#[allow(dead_code)]
     fn from_wit_json(value: &types::JsonValue) -> serde_json::Value {
         use types::JsonValue;
         match value {

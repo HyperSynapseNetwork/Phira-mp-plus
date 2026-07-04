@@ -52,6 +52,7 @@ pub enum DbManager {
     None,
 }
 
+#[allow(dead_code)]
 pub(crate) fn now_secs() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -180,6 +181,7 @@ impl DbManager {
 
 }
 
+#[allow(dead_code)]
 pub(crate) fn telemetry_time_range<I>(times: I) -> (Option<f64>, Option<f64>)
 where
     I: IntoIterator<Item = f64>,
@@ -194,6 +196,7 @@ where
 }
 
 #[cfg(feature = "postgres")]
+#[allow(dead_code)]
 async fn query_telemetry_batches(
     pool: &sqlx::PgPool,
     table: &str,
@@ -244,6 +247,7 @@ async fn query_telemetry_batches(
 }
 
 #[cfg(feature = "postgres")]
+#[allow(dead_code)]
 async fn query_runtime_telemetry_items<T>(
     pool: &sqlx::PgPool,
     kind: &str,
@@ -276,6 +280,7 @@ where
 }
 
 #[cfg(feature = "postgres")]
+#[allow(dead_code)]
 async fn query_runtime_telemetry_batches(
     pool: &sqlx::PgPool,
     kind: &str,
