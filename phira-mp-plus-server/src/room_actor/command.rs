@@ -80,6 +80,19 @@ impl RoomActorCommand {
         }
     }
 
+    /// Extract the room_id from any command variant.
+    pub(super) fn room_id(&self) -> &str {
+        match self {
+            Self::SetLock { room_id, .. }
+            | Self::SetCycle { room_id, .. }
+            | Self::SetHost { room_id, .. }
+            | Self::CloseRoom { room_id, .. }
+            | Self::KickUser { room_id, .. }
+            | Self::StartRoom { room_id, .. }
+            | Self::CancelStart { room_id, .. } => room_id,
+        }
+    }
+
     pub(super) fn reply_with(self, result: RoomCommandResult) {
         match self {
             Self::SetLock { reply, .. }

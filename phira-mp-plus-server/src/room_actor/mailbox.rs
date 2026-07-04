@@ -112,7 +112,19 @@ impl RoomCommandGateway {
                     command.reply_with(result);
                     continue;
                 };
-                let should_stop = gateway.execute_mailbox_command(&state, command).await;
+                // Look up the room once and pass it through context so
+                // handlers don't need to call find_room() again.
+                let room = state.rooms.read().await.get(&command.room_id()).map(Arc::clone);
+                let should_stop = if let Some(room) = room {
+                    gateway.execute_mailbox_command_with_room(&state, room, command).await
+                } else {
+                    let result = RoomCommandResult::mailbox_error(
+                        "room not found in per-room mailbox",
+                    );
+                    gateway.observe_mailbox_result(&result);
+                    command.reply_with(result);
+                    continue;
+                };
                 if should_stop {
                     break;
                 }
@@ -131,6 +143,22 @@ impl RoomCommandGateway {
         command: RoomActorCommand,
     ) -> bool {
         let ctx = RoomCommandContext::new(self, state);
+        let result = RoomCommandHandler::execute(ctx, &command).await;
+        let should_stop = RoomCommandHandler::should_stop_room_mailbox(&command, &result);
+        self.observe_mailbox_result(&result);
+        command.reply_with(result);
+        should_stop
+    }
+
+    /// Execute a command with a room reference already resolved.
+    /// The context carries the room so handlers can use it directly.
+    pub(super) async fn execute_mailbox_command_with_room(
+        &self,
+        state: &PlusServerState,
+        room: Arc<crate::room::Room>,
+        command: RoomActorCommand,
+    ) -> bool {
+        let ctx = RoomCommandContext::with_room(self, state, room);
         let result = RoomCommandHandler::execute(ctx, &command).await;
         let should_stop = RoomCommandHandler::should_stop_room_mailbox(&command, &result);
         self.observe_mailbox_result(&result);
