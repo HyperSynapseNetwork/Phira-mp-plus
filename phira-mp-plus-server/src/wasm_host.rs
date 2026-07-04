@@ -590,51 +590,6 @@ impl WasmPluginInstance {
         }
     }
 
-    /// 通用 API 分发：处理 WASM 插件的 `phira:host/api` 调用
-    ///
-    /// 支持的 method:
-    /// ── 状态查询 ──
-    /// - `state.query`    → 调用 ServerStateQuery (rooms.list, rooms.by_user, user_name, send_chat, send_room_chat, rooms.by_user)
-    /// - `player.touches` → 查询指定用户的最近触控数据
-    /// - `player.judges`  → 查询指定用户的最近判定数据
-    /// - `round.data`     → 查询指定轮次+玩家的完整 Touches/Judges
-    /// - `round.list`     → 列出所有已记录的轮次
-    /// ── 消息发送 ──
-    /// - `send.to_user`   → 发送聊天消息给指定用户
-    /// - `send.to_room`   → 向房间广播消息
-    /// - `send.to_all`    → 向所有用户广播
-    /// ── 扩展数据 ──
-    /// - `ext.get_user`   → 获取用户扩展数据
-    /// - `ext.set_user`   → 设置用户扩展数据
-    /// - `ext.get_room`   → 获取房间扩展数据
-    /// - `ext.set_room`   → 设置房间扩展数据
-    /// ── 房间管理（room-management） ──
-    /// - `room.create_empty` → 创建无人持久空房间
-    /// - `room.kick`         → 从房间踢出用户
-    /// - `room.set_host`     → 设置房主，target_id 为 null/`?` 表示系统房主
-    /// - `room.set_lock`     → 锁定/解锁房间
-    /// - `room.force_move`   → 强制迁移用户到房间
-    /// - `room.set_hidden`   → 设置房间隐藏状态
-    /// - `room.is_hidden`    → 查询房间隐藏状态
-    /// - `room.set_persistent_empty` → 设置房间无人保留
-    /// - `room.set_phira_api_endpoint` → 设置/清除房间 Phira API 覆盖
-    /// - `room.get_phira_api_endpoint` → 查询房间 Phira API 生效地址
-    /// - `room.close`        → 解散房间
-    /// ── 用户管理（user-management） ──
-    /// - `admin.kick_user`  → 从服务器踢出用户
-    /// - `config.get/set`  → 插件配置读写
-    /// - `http.get/post`   → HTTP 请求
-    /// - `file.read/write` → 文件读写
-    /// - `plugin.api_register`→ 注册本插件的 API 供其他 WASM 插件调用
-    _svc: &WasmPluginServices,
-    _plugin_name: &str,
-    _method: &str,
-    _args: &str,
-) -> Result<String, String> {
-}
-
-impl Drop for WasmPluginInstance {
-    Err("JSON bridge removed — use WIT ABI v2. Migrate plugin to component model.".to_string())
     fn drop(&mut self) {
         if self.initialized {
             self.call_cleanup();
@@ -642,6 +597,14 @@ impl Drop for WasmPluginInstance {
     }
 }
 
+fn dispatch_api(
+    _svc: &WasmPluginServices,
+    _plugin_name: &str,
+    _method: &str,
+    _args: &str,
+) -> Result<String, String> {
+    Err("JSON bridge removed — use WIT ABI v2. Migrate plugin to component model.".to_string())
+}
 // ── 辅助函数 ──
 
 use crate::wasm_host_helpers as helpers;
