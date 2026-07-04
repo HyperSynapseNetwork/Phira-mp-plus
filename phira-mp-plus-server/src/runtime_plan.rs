@@ -62,7 +62,7 @@ impl RuntimePlan {
                     title: "Actor model migration",
                     status: "active",
                     priority: "P0",
-                    next_step: "AdminCommand trait with 10 commands (help/exit/status/ban/unban/banlist/banip/unbanip/banlistip) wired into PlusServerState + CLI dispatch. Room actor: 7 commands through typed mailbox boundary with typed_or_err delivery. 5/7 actor boundaries advanced. Next: migrate more commands to AdminCommand trait, move room state into mailbox worker.",
+                    next_step: "Room actor: 7 commands through typed mailbox boundary with typed_or_err delivery. 5/7 actor boundaries advanced (all at Mirrored/ReadRouted/WriteRouted). command_registry.rs unified. RoomCommandGateway exists but RoomActor does NOT own state yet. Session split into 5 modules but SessionActor does NOT own lifecycle yet. Next: move room state into mailbox worker.",
                 },
                 RuntimeObjective {
                     key: "touch-judge-persistence",
@@ -83,7 +83,7 @@ impl RuntimePlan {
                     title: "Persistence Worker ownership",
                     status: "active",
                     priority: "P1",
-                    next_step: "PersistenceWorker split into message/stats/mirror/pipeline/worker modules. db.rs persistence extracted into persistence/{benchmark,telemetry,simulation,events}.rs. TelemetryBatcher in telemetry.rs + telemetry_batcher.rs facade. Next: move remaining direct db.rs production writes into PersistenceWorker mailbox.",
+                    next_step: "PersistenceWorker split into message/stats/mirror/pipeline/worker modules. db.rs persistence extracted into persistence/{benchmark,telemetry,simulation,events,users,admin,queries}.rs (15 modules). TelemetryBatcher in telemetry.rs + telemetry_batcher.rs facade. db.rs: 1863→1072 lines. Direct async writes still through DbManager spawn pattern; not all writes go through PersistenceWorker.",
                 },
                 RuntimeObjective {
                     key: "eventbus",
@@ -97,7 +97,7 @@ impl RuntimePlan {
                     title: "Typed WASM plugin ABI",
                     status: "active",
                     priority: "P1",
-                    next_step: "plugin_abi.rs split into typed submodule (plan/json/dto). WIT bindgen compiled behind wit-bindgen feature (MIGRATION_PHASE=0 default). WitPluginHost skeleton implements phira_host::Host. wasm_host.rs (1600+ lines) still uses JSON bridge. Next: extract JSON ABI encode/decode from wasm_host.rs into plugin_abi/json.rs, reduce wasm_host.rs.",
+                    next_step: "JSON bridge removed (MIGRATION_PHASE=2). plugin_abi.rs split into typed submodule (plan/json/dto). WIT bindgen behind wit-bindgen feature. WitPluginHost skeleton implements phira_host::Host. wasm_host.rs reduced to ~800 lines. phira-plugin-sdk crate created. JSON vm1 bridge dispatch_api replaced with error stub. Next: wire WIT component loading as the only plugin path, implement remaining phira-* host traits.",
                 },
                 RuntimeObjective {
                     key: "test-coverage",

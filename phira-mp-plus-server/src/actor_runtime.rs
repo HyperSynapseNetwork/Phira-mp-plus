@@ -135,14 +135,14 @@ fn default_boundaries() -> Vec<ActorBoundary> {
             responsibility: "Own plugin dispatch, capability checks, event fanout, and slow-plugin isolation.".to_string(),
             source_files: vec!["plugin.rs".to_string(), "wasm_host.rs".to_string(), "plugin_http.rs".to_string(), "plugin_abi/".to_string(), "wit_host.rs".to_string()],
             status: ActorBoundaryStatus::ReadRouted,
-            next_step: "plugin_abi split into typed submodule (plan/json/dto); WIT bindgen at MIGRATION_PHASE=0; WitPluginHost skeleton; typed DTO for api_call".to_string(),
+            next_step: "JSON bridge removed (MIGRATION_PHASE=2). plugin_abi split (plan/json/dto). WIT bindgen behind wit-bindgen feature. WitPluginHost skeleton. phira-plugin-sdk created. Next: wire WIT component loading as sole plugin path.".to_string(),
         },
         ActorBoundary {
             name: "cli-actor".to_string(),
             responsibility: "Own CLI/TUI/admin-command execution through Command Registry without command logic spreading across cli.rs.".to_string(),
             source_files: vec!["cli.rs".to_string(), "cli_tui.rs".to_string(), "command_registry.rs".to_string()],
             status: ActorBoundaryStatus::WriteRouted,
-            next_step: "AdminCommand trait + HelpCommand + CommandRegistry wired into PlusServerState; next: migrate concrete commands to trait impls".to_string(),
+            next_step: "CLI dispatch uses command_registry.execute() fallback. Commands registered via CommandSpec in runtime_v2_registry(). HelpCommand/ExitCommand/StatusCommand exist. Next: migrate more concrete commands to CommandSpec handlers.".to_string(),
         },
     ]
 }
