@@ -114,8 +114,10 @@ impl RoomCommandGateway {
                 };
                 // Look up the room once and pass it through context so
                 // handlers don't need to call find_room() again.
-                let rid: Result<crate::RoomId, _> = command.room_id().to_string().try_into();
-                let room = rid.ok().and_then(|rid| state.rooms.read().await.get(&rid).map(Arc::clone));
+                let room = {
+                    let rooms = state.rooms.read().await;
+                    rooms.values().find(|r| r.id.to_string() == command.room_id()).map(Arc::clone)
+                };
                 let should_stop = if let Some(room) = room {
                     gateway.execute_mailbox_command_with_room(&state, room, command).await
                 } else {
