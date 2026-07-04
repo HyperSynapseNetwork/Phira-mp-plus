@@ -170,7 +170,7 @@ Phira-mp-plus/
     │       │   ├── telemetry.rs         #   遥测持久化
     │       │   └── worker.rs            #   PersistenceWorker 主循环
     │       ├── persistence_worker.rs    #   PersistenceWorker 重导出
-    │       ├── proxy_protocol.rs        #   PROXY protocol v1/v2 解析与 TrustForwardedFor 中间件
+    │   ├── proxy_protocol.rs        #   PROXY protocol 解析与 TrustForwardedFor 中间件
     │       ├── telemetry.rs             #   TelemetryBatcher、cutover 模式、策略
     │       ├── telemetry_batcher.rs     #   TelemetryBatcher 重导出
     │       ├── round_store.rs           #   轮次数据存储 (DB 优先, 文件回退)
@@ -183,6 +183,7 @@ Phira-mp-plus/
     │       │   ├── router.rs            #   动态路由匹配
     │       │   └── sse.rs               #   SSE 事件总线、快照与流转换
     │       ├── wasm_host.rs             #   WASM 运行时: wasmtime、JSON ABI、host/api 桥接
+    │   ├── wasm_host_helpers.rs    #   WASM host 辅助函数
     │       ├── wit_host.rs              #   WIT/component-model host trait 实现 (plugin-system feature)
     │       ├── extensions.rs            #   扩展数据系统: 用户/房间/全局 KV 存储
     │       ├── ban.rs                   #   黑名单系统: 全局封禁 + 房间黑名单 + IP 封禁
@@ -198,6 +199,7 @@ Phira-mp-plus/
     │       └── logging.rs              #   tracing 输出、日志轮转、速率限制、敏感数据脱敏
 │
 ├── phira-mp-plus-server-api/    # WASM 插件共享类型 crate
+│   ├── phira-plugin-sdk/          #   WASM 插件开发 SDK
 │   └── src/lib.rs               #   PluginEvent / PluginInfo / HttpHandle
 │                                #   ServerStateQuery / PluginApiHandler
 │
