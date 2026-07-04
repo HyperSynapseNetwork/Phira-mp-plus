@@ -118,13 +118,18 @@ fn parse_wit_interfaces(wit_content: &str) -> Vec<WitInterface> {
                 if trimmed.starts_with("use ") || trimmed.is_empty() || trimmed.starts_with("//") {
                     continue;
                 }
-                // Extract function/record/variant names
-                let export_name = trimmed
-                    .split(|c: char| c == '(' || c == ':' || c == ' ')
-                    .next()
-                    .unwrap_or("")
-                    .to_string();
-                if !export_name.is_empty() && !export_name.contains('{') {
+                // Extract function/record/variant names (second token after keyword)
+                let tokens: Vec<&str> = trimmed.split_whitespace().collect();
+                let export_name = if tokens.len() >= 2 && matches!(tokens[0], "record" | "variant" | "type" | "func") {
+                    // For "record foo {", "variant bar {", "func baz(" — extract the name
+                    tokens[1].trim_end_matches('(').trim_end_matches('{').trim_end_matches(';').to_string()
+                } else if tokens.len() == 1 && !tokens[0].starts_with("//") {
+                    // Plain identifier line
+                    tokens[0].trim_end_matches(':').trim_end_matches(';').to_string()
+                } else {
+                    continue;
+                };
+                if !export_name.is_empty() {
                     exports.push(export_name);
                 }
             }
