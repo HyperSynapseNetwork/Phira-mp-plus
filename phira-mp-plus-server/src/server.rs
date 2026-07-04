@@ -3497,7 +3497,7 @@ fn server_state_query_inner(
             let (tx, rx) = std::sync::mpsc::channel::<Result<Value, String>>();
             tokio::spawn(async move {
                 let rows = if let Some(db) = crate::internal_hooks::DB.get() {
-                    db.query_events(since, limit, kind.as_deref(), room_id.as_deref(), user_id)
+                    db.query_events(since, limit, kind.clone(), room_id.clone(), user_id)
                         .await
                 } else {
                     Vec::new()
@@ -3548,7 +3548,7 @@ fn server_state_query_inner(
             let (tx, rx) = std::sync::mpsc::channel::<Result<Value, String>>();
             tokio::spawn(async move {
                 let rows = if let Some(db) = crate::internal_hooks::DB.get() {
-                    db.query_touch_batches(since, limit, round_uuid.as_deref(), player_id)
+                    db.query_touch_batches(since, limit, round_uuid.clone(), player_id)
                         .await
                 } else {
                     Vec::new()
@@ -3578,7 +3578,7 @@ fn server_state_query_inner(
             let (tx, rx) = std::sync::mpsc::channel::<Result<Value, String>>();
             tokio::spawn(async move {
                 let rows = if let Some(db) = crate::internal_hooks::DB.get() {
-                    db.query_judge_batches(since, limit, round_uuid.as_deref(), player_id)
+                    db.query_judge_batches(since, limit, round_uuid.clone(), player_id)
                         .await
                 } else {
                     Vec::new()
