@@ -82,6 +82,47 @@
 }
 ```
 
+#### `GET /api/players/all`
+获取所有连接过服务器的玩家 ID 列表。
+
+**响应：** `200 OK`
+```json
+{
+  "total": 42,
+  "players": [16, 17, 18, 19]
+}
+```
+
+### 运行时诊断
+
+#### `GET /api/runtime`
+返回 Runtime v2 运行时诊断信息（EventBus 统计、PersistenceWorker 状态、Actor 边界）。
+
+#### `GET /api/simulation`
+返回 Simulation 状态（运行中/空闲、虚拟用户数、虚拟房间数）。
+
+#### `GET /api/simulation/world`
+返回 Simulation shadow world 快照（最近 N 个事件）。
+
+### Benchmark 报告
+
+#### `GET /api/benchmark/reports`
+返回各模式的 Benchmark 最新报告摘要。
+
+#### `GET /api/benchmark/reports/history`
+返回已持久化的 Benchmark 报告历史列表。
+
+**参数：**（可选路径参数）
+- `<mode>` — 过滤模式：`simulation` / `hybrid` / `real`。示例：`/api/benchmark/reports/history/real`
+
+**响应：** `200 OK` JSON
+```json
+{
+  "rows": [ ... ],
+  "source": "mp_runtime_benchmark_reports"
+}
+```
+
 ### SSE 事件
 
 #### `GET /api/events`
