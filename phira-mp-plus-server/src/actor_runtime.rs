@@ -140,7 +140,7 @@ fn default_boundaries() -> Vec<ActorBoundary> {
         ActorBoundary {
             name: "cli-actor".to_string(),
             responsibility: "Own CLI/TUI/admin-command execution through Command Registry without command logic spreading across cli.rs.".to_string(),
-            source_files: vec!["cli.rs".to_string(), "cli_tui.rs".to_string(), "admin_command.rs".to_string()],
+            source_files: vec!["cli.rs".to_string(), "cli_tui.rs".to_string(), "command_registry.rs".to_string()],
             status: ActorBoundaryStatus::WriteRouted,
             next_step: "AdminCommand trait + HelpCommand + CommandRegistry wired into PlusServerState; next: migrate concrete commands to trait impls".to_string(),
         },
