@@ -4,7 +4,6 @@
 //! mp_round_judge_batches, mp_round_player_data, mp_round_results.
 
 use crate::db::DbManager;
-use serde_json::Value;
 #[cfg(feature = "postgres")]
 use sqlx::Row;
 
@@ -119,26 +118,25 @@ impl DbManager {
         Vec::new()
     }
 
-    pub async fn read_round_player_data(&self, round_uuid: &str, player_id: i32) -> Option<Value> {
+    pub async fn read_round_player_data(&self, round_uuid: &str, player_id: i32) -> Option<crate::round_store::RoundPlayerData> {
         #[cfg(feature = "postgres")]
         if let Self::Pg(pool) = self {
-            let row = sqlx::query(
-                "SELECT touches::text AS touches, judges::text AS judges, score, max_combo
+            if let Ok(Some(row)) = sqlx::query(
+                "SELECT touches::text AS touches, judges::text AS judges
                  FROM mp_round_player_data WHERE round_uuid = $1 AND player_id = $2"
-            ).bind(round_uuid).bind(player_id)
-            .fetch_optional(pool).await.ok()??;
-            return Some(serde_json::json!({
-                "round_uuid": round_uuid,
-                "player_id": player_id,
-                "touches": row.try_get::<String, _>("touches").ok()
-                    .and_then(|s| serde_json::from_str(&s).ok())
-                    .unwrap_or(Value::Array(Vec::new())),
-                "judges": row.try_get::<String, _>("judges").ok()
-                    .and_then(|s| serde_json::from_str(&s).ok())
-                    .unwrap_or(Value::Array(Vec::new())),
-                "score": row.try_get::<i64, _>("score").unwrap_or(0),
-                "max_combo": row.try_get::<i64, _>("max_combo").unwrap_or(0),
-            }));
+            ).bind(round_uuid).bind(player_id).fetch_optional(pool).await {
+                if let (Ok(touches), Ok(judges)) = (
+                    row.try_get::<String, _>("touches"),
+                    row.try_get::<String, _>("judges"),
+                ) {
+                    return Some(crate::round_store::RoundPlayerData {
+                        round_uuid: round_uuid.to_string(),
+                        player_id,
+                        touches: serde_json::from_str(&touches).unwrap_or_default(),
+                        judges: serde_json::from_str(&judges).unwrap_or_default(),
+                    });
+                }
+            }
         }
         None
     }
