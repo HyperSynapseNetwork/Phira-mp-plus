@@ -81,8 +81,15 @@ impl CliHandler {
                 true
             }
             _ => {
-                // Try CommandRegistry execute first (Runtime v2 unified execution path)
-                if let Some(output) =
+                // Try AdminCommand registry first (typed, shared across CLI/TUI/Web)
+                if let Some(cmd) = self.state.admin_commands.find(command) {
+                    let args: Vec<String> = args.iter().map(|s| s.to_string()).collect();
+                    let result = cmd.execute(args, Arc::clone(&self.state)).await;
+                    for line in result.message.lines() {
+                        self.out(format!("  {}", line));
+                    }
+                // Fall back to Runtime v2 CommandRegistry (legacy commands)
+                } else if let Some(output) =
                     self.state
                         .command_registry
                         .execute(&self.state, command, args)
