@@ -129,7 +129,7 @@ fn parse_wit_interfaces(wit_content: &str) -> Vec<WitInterface> {
                 }
             }
             interfaces.push(WitInterface {
-                name,
+                name: name.to_string(),
                 comment: std::mem::take(&mut current_comment),
                 exports,
             });
