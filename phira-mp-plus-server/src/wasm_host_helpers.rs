@@ -160,4 +160,3 @@ pub fn validate_http_url(value: &str, allow_private: bool) -> Result<(), String>
     Ok(())
 }
 
-/// Map a method name to its required capability.
