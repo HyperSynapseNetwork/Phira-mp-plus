@@ -177,6 +177,7 @@ impl RoomCommandGateway {
         }
     }
 
+    #[allow(dead_code)]
     pub(super) async fn room_mailbox_or_inline<Build, Inline, Fut>(
         &self,
         room_id: &str,
@@ -263,6 +264,7 @@ impl RoomCommandGateway {
     /// lost, we deliberately return an error instead of falling back to inline
     /// execution.  This avoids duplicate `start`/`cancel` effects when the mailbox
     /// worker may already have executed the command but failed before replying.
+    #[allow(dead_code)]
     pub(super) async fn room_mailbox_or_inline_control<Build, Inline, Fut>(
         &self,
         room_id: &str,
