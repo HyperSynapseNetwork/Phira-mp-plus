@@ -123,7 +123,46 @@ mod tests {
         assert_eq!(BenchmarkReportHistoryQuery::new(None, 0).limit, 1);
         assert_eq!(BenchmarkReportHistoryQuery::new(None, 999).limit, 200);
     }
+
+    /// Verify that the SQL column names used in INSERT match the column
+    /// names in CREATE TABLE (db.rs line 1313: `report JSONB NOT NULL`).
+    /// If this test fails after a refactor, check that INSERT uses `report`
+    /// not `payload`, and SELECT uses `report::text AS report`.
+    #[test]
+    fn insert_uses_report_column_not_payload() {
+        let insert_sql = super::INSERT_BENCHMARK_REPORT;
+        assert!(
+            insert_sql.contains("report,"),
+            "INSERT must use `report` column, not `payload`. Current SQL: {insert_sql}"
+        );
+        assert!(
+            !insert_sql.contains("payload,"),
+            "INSERT must NOT use `payload` column. Current SQL: {insert_sql}"
+        );
+    }
+
+    #[test]
+    fn select_uses_report_column() {
+        let history_sql = super::SELECT_BENCHMARK_HISTORY;
+        assert!(
+            history_sql.contains("report::text AS report"),
+            "SELECT must use `report::text AS report`. Current SQL: {history_sql}"
+        );
+    }
 }
+
+/// SQL constants exposed for unit test verification of column names.
+#[cfg(test)]
+pub(crate) const INSERT_BENCHMARK_REPORT: &str = "INSERT INTO mp_runtime_benchmark_reports
+                   (mode, title, duration_secs, is_simulation, operations, failed_operations,
+                    probes_attempted, probes_succeeded, probes_failed, probes_blocked, probes_skipped,
+                    failure_samples, notes, source, schema_version, report, created_at, sequence)
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16::jsonb, $17, nextval('mp_persist_sequence'))";
+
+#[cfg(test)]
+pub(crate) const SELECT_BENCHMARK_HISTORY: &str = "SELECT sequence, mode, title, duration_secs, is_simulation, operations, failed_operations,
+                            probes_failed, probes_blocked, report::text AS report, created_at, source, schema_version
+                     FROM mp_runtime_benchmark_reports";
 
 use crate::db::DbManager;
 
