@@ -136,38 +136,6 @@ impl DbManager {
         false
     }
 
-    pub async fn set_admin_ids(&self, ids: &[i32]) -> std::result::Result<(), String> {
-        #[cfg(feature = "postgres")]
-        if let Self::Pg(pool) = self {
-            let value = serde_json::to_string(ids).map_err(|e| e.to_string())?;
-            let now = now_ms();
-            sqlx::query(
-                "INSERT INTO mp_settings (key, value, updated_at) VALUES ('admin_phira_ids', $1::jsonb, $2)
-                 ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = EXCLUDED.updated_at"
-            )
-            .bind(value)
-            .bind(now)
-            .execute(pool)
-            .await
-            .map_err(|e| e.to_string())?;
-        }
-        Ok(())
-    }
-
-    pub async fn get_admin_ids(&self) -> Option<Vec<i32>> {
-        #[cfg(feature = "postgres")]
-        if let Self::Pg(pool) = self {
-            let row = sqlx::query(
-                "SELECT value::text AS value FROM mp_settings WHERE key = 'admin_phira_ids'",
-            )
-            .fetch_optional(pool)
-            .await
-            .ok()??;
-            let raw = row.try_get::<String, _>("value").ok()?;
-            return serde_json::from_str(&raw).ok();
-        }
-        None
-    }
 
     pub async fn open_round(&self, meta: &crate::round_store::RoundMeta) {
         #[cfg(feature = "postgres")]

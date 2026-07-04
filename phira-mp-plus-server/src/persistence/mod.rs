@@ -4,6 +4,7 @@
 //! mirror adapters, worker runtime and schema contracts. Keeping these pieces
 //! split prevents the persistence subsystem from becoming another large bucket.
 
+pub mod admin;
 pub mod benchmark;
 pub mod diagnostics;
 pub mod events;
