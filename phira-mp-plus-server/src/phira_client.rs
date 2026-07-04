@@ -8,6 +8,7 @@
 
 use anyhow::{bail, Result};
 use phira_mp_common::{Message, ServerCommand, StreamSender};
+use std::collections::HashMap;
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use std::{
     sync::{
@@ -296,6 +297,50 @@ pub struct PhiraHttpStats {
     pub last_error: Option<String>,
     pub policy: PhiraHttpPolicySnapshot,
     pub circuit_breaker: PhiraCircuitBreakerStats,
+    /// Per-endpoint breakdown for observability.
+    pub endpoints: Vec<PhiraEndpointStats>,
+}
+
+/// Per-endpoint health statistics.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct PhiraEndpointStats {
+    pub endpoint: String,
+    pub requests: u64,
+    pub successes: u64,
+    pub failures: u64,
+    pub last_status: Option<u16>,
+}
+
+impl PhiraHttpCounters {
+    fn record_endpoint_success(&self, path: &str, status: u16) {
+        if let Ok(mut ec) = self.endpoint_counters.write() {
+            let e = ec.entry(path.to_string()).or_default();
+            e.requests += 1;
+            e.successes += 1;
+            e.last_status = Some(status);
+        }
+    }
+    fn record_endpoint_failure(&self, path: &str, status: Option<u16>) {
+        if let Ok(mut ec) = self.endpoint_counters.write() {
+            let e = ec.entry(path.to_string()).or_default();
+            e.requests += 1;
+            e.failures += 1;
+            e.last_status = status;
+        }
+    }
+    fn endpoint_stats(&self) -> Vec<PhiraEndpointStats> {
+        self.endpoint_counters.read().ok().map(|ec| {
+            let mut v: Vec<PhiraEndpointStats> = ec.iter().map(|(path, c)| PhiraEndpointStats {
+                endpoint: path.clone(),
+                requests: c.requests,
+                successes: c.successes,
+                failures: c.failures,
+                last_status: c.last_status,
+            }).collect();
+            v.sort_by(|a, b| b.requests.cmp(&a.requests));
+            v
+        }).unwrap_or_default()
+    }
 }
 
 #[derive(Debug, Default)]
@@ -312,6 +357,16 @@ struct PhiraHttpCounters {
     non_retryable_status_failures: AtomicU64,
     decode_errors: AtomicU64,
     last_error: RwLock<Option<String>>,
+    /// Per-endpoint counters keyed by URL path.
+    endpoint_counters: RwLock<HashMap<String, EndpointCounters>>,
+}
+
+#[derive(Debug, Clone, Default, serde::Serialize)]
+struct EndpointCounters {
+    requests: u64,
+    successes: u64,
+    failures: u64,
+    last_status: Option<u16>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -382,6 +437,7 @@ impl PhiraRetryClient {
                 .and_then(|value| value.clone()),
             policy: self.policy.snapshot(),
             circuit_breaker: self.circuit_breaker.stats(),
+            endpoints: self.counters.endpoint_stats(),
         }
     }
 
@@ -412,6 +468,7 @@ impl PhiraRetryClient {
             format!("/{path}")
         };
         let url = format!("{endpoint}{path}");
+        let endpoint_key = path.clone();
 
         for attempt in 0..=self.policy.max_retries {
             let mut request = self.client.get(&url);
@@ -423,6 +480,7 @@ impl PhiraRetryClient {
                 Ok(response) => {
                     let status = response.status();
                     if status.is_success() {
+                        self.counters.record_endpoint_success(&endpoint_key, status.as_u16());
                         match response.json::<T>().await {
                             Ok(value) => {
                                 self.counters.successes.fetch_add(1, Ordering::Relaxed);
