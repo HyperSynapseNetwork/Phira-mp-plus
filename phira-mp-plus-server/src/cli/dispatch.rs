@@ -10,15 +10,10 @@ impl CliHandler {
     pub(super) async fn dispatch_command(&self, command: &str, args: &[&str]) -> bool {
         match command {
             "exit" => {
-                // Delegate to AdminCommand registry (typed, shared across CLI/TUI/Web)
-                if let Some(cmd) = self.state.admin_commands.find("exit") {
-                    let args: Vec<String> = args.iter().map(|s| s.to_string()).collect();
-                    let result = cmd.execute(args, Arc::clone(&self.state)).await;
-                    for line in result.message.lines() {
-                        self.out(format!("  {line}"));
-                    }
-                }
+                self.out(format!("  {} 正在关闭服务器...", c::yellow("⟳")));
                 *self.running.write().await = false;
+                self.state.shutdown.notify_one();
+                self.out(format!("  {} 已发送关闭信号", c::green("✓")));
                 false
             }
             "help" => {
@@ -86,15 +81,8 @@ impl CliHandler {
                 true
             }
             _ => {
-                // Try AdminCommand registry first (typed, shared across CLI/TUI/Web)
-                if let Some(cmd) = self.state.admin_commands.find(command) {
-                    let args: Vec<String> = args.iter().map(|s| s.to_string()).collect();
-                    let result = cmd.execute(args, Arc::clone(&self.state)).await;
-                    for line in result.message.lines() {
-                        self.out(format!("  {}", line));
-                    }
-                // Fall back to Runtime v2 CommandRegistry (legacy commands)
-                } else if let Some(output) =
+                // Try Runtime v2 CommandRegistry (unified execution path)
+                if let Some(output) =
                     self.state
                         .command_registry
                         .execute(&self.state, command, args)
