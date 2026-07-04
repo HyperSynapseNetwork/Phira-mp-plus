@@ -469,7 +469,6 @@ impl DbManager {
                     .await;
             }
         }
-    }
 
     /// Remove expired data based on retention policy.
     pub async fn cleanup_expired(&self, retention_days: u32, touch_judge_retention_days: u32) {
