@@ -1,0 +1,10 @@
+[package]
+name = "phira-plugin-sdk"
+version.workspace = true
+edition.workspace = true
+description = "Phira-mp+ WASM plugin development SDK"
+license.workspace = true
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
