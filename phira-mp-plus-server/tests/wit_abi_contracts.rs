@@ -109,22 +109,29 @@ fn parse_wit_interfaces(wit_content: &str) -> Vec<WitInterface> {
                 .trim_end_matches('{')
                 .trim();
             let mut exports = Vec::new();
-            // Collect function signatures until closing brace
+            let mut brace_depth = 0;
+            // Collect function signatures until matching closing brace
             while let Some(export_line) = lines.next() {
                 let trimmed = export_line.trim();
-                if trimmed == "}" || trimmed == "};" || trimmed.starts_with("world ") {
+                if trimmed.starts_with("world ") { break; }
+                // Track brace depth to handle nested records/variants
+                for ch in trimmed.chars() {
+                    if ch == '{' { brace_depth += 1; }
+                    if ch == '}' { brace_depth -= 1; }
+                }
+                if brace_depth < 0 {
+                    // This } closes the interface itself
                     break;
                 }
                 if trimmed.starts_with("use ") || trimmed.is_empty() || trimmed.starts_with("//") {
                     continue;
                 }
-                // Extract function/record/variant names (second token after keyword)
+                // Extract function/record/variant names
                 let tokens: Vec<&str> = trimmed.split_whitespace().collect();
+                if tokens.is_empty() { continue; }
                 let export_name = if tokens.len() >= 2 && matches!(tokens[0], "record" | "variant" | "type" | "func") {
-                    // For "record foo {", "variant bar {", "func baz(" — extract the name
                     tokens[1].trim_end_matches('(').trim_end_matches('{').trim_end_matches(';').to_string()
                 } else {
-                    // Name before keyword (e.g. "log: func(...)") or standalone identifier
                     tokens[0].trim_end_matches(':').trim_end_matches(';').to_string()
                 };
                 if !export_name.is_empty() && !matches!(export_name.as_str(), "}" | "{" | ")" | ";" | "") {
