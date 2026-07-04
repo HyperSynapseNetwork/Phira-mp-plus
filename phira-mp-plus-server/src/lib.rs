@@ -47,6 +47,8 @@ pub mod terminal;
 #[cfg(feature = "plugin-system")]
 pub mod wasm_host;
 #[cfg(feature = "plugin-system")]
+pub mod wasm_host_helpers;
+#[cfg(feature = "plugin-system")]
 pub mod wit_host;
 
 pub use l10n::*;

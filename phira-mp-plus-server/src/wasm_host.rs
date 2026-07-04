@@ -19,7 +19,7 @@ use crate::plugin::{CliCommand, PluginEvent, PluginHost, PluginInfo, WasmRuntime
 use phira_mp_plus_server_api as api;
 use std::collections::{HashMap, HashSet};
 use std::io::Read;
-use std::net::{IpAddr, ToSocketAddrs};
+use std::net::IpAddr;
 use std::path::{Component, Path, PathBuf};
 use std::sync::{Arc, Mutex, Weak};
 use tracing::{error, info, warn};
@@ -161,8 +161,8 @@ impl WasmPluginInstance {
             .and_then(|s| s.to_str())
             .ok_or_else(|| "plugin filename is not valid UTF-8".to_string())?
             .to_string();
-        validate_identifier(&plugin_name)?;
-        services.set_capabilities(&plugin_name, load_manifest_capabilities(plugin_path)?);
+        helpers::validate_identifier(&plugin_name)?;
+        services.set_capabilities(&plugin_name, helpers::load_manifest_capabilities(plugin_path)?);
 
         // Configure deterministic resource ceilings before compiling guest code.
         let mut engine_config = wasmtime::Config::new();
@@ -434,18 +434,18 @@ impl WasmPluginInstance {
         }
         if let Ok(info) = serde_json::from_slice::<serde_json::Value>(&buf) {
             if let Some(name) = info.get("name").and_then(|v| v.as_str()) {
-                if validate_display_name(name).is_ok() {
+                if helpers::validate_display_name(name).is_ok() {
                     self.info.name = name.to_string();
                 }
             }
             if let Some(version) = info.get("version").and_then(|v| v.as_str()) {
-                self.info.version = truncate_string(version, 128);
+                self.info.version = helpers::truncate_string(version, 128);
             }
             if let Some(author) = info.get("author").and_then(|v| v.as_str()) {
-                self.info.author = truncate_string(author, 256);
+                self.info.author = helpers::truncate_string(author, 256);
             }
             if let Some(description) = info.get("description").and_then(|v| v.as_str()) {
-                self.info.description = truncate_string(description, 2048);
+                self.info.description = helpers::truncate_string(description, 2048);
             }
         }
         if called_get_info {
@@ -634,7 +634,7 @@ impl WasmPluginInstance {
         if args.len() > MAX_HOST_INPUT_BYTES {
             return Err("API arguments exceed host limit".to_string());
         }
-        if let Some(capability) = required_capability(method) {
+        if let Some(capability) = helpers::required_capability(method) {
             if !svc.has_capability(plugin_name, capability) {
                 return Err(format!(
                     "capability '{capability}' is required for {method}"
@@ -773,7 +773,7 @@ impl WasmPluginInstance {
             }
             "config.get" => {
                 let key = get_str("key")?;
-                validate_config_key(key)?;
+                helpers::validate_config_key(key)?;
                 ensure_config_loaded(svc, plugin_name)?;
                 svc.plugin_configs
                     .read()
@@ -785,7 +785,7 @@ impl WasmPluginInstance {
             "config.set" => {
                 let key = get_str("key")?;
                 let content = get_str("value")?;
-                validate_config_key(key)?;
+                helpers::validate_config_key(key)?;
                 if content.len() > svc.runtime.max_file_bytes {
                     return Err("config value exceeds plugin limit".to_string());
                 }
@@ -816,7 +816,7 @@ impl WasmPluginInstance {
             }
             "http.get" => {
                 let url = get_str("url")?;
-                validate_http_url(url, svc.runtime.allow_private_network)?;
+                helpers::validate_http_url(url, svc.runtime.allow_private_network)?;
                 let response = svc
                     .http_client
                     .get(url)
@@ -834,7 +834,7 @@ impl WasmPluginInstance {
                 if body.len() > MAX_HOST_INPUT_BYTES {
                     return Err("HTTP request body exceeds host limit".to_string());
                 }
-                validate_http_url(url, svc.runtime.allow_private_network)?;
+                helpers::validate_http_url(url, svc.runtime.allow_private_network)?;
                 let response = svc
                     .http_client
                     .post(url)
@@ -860,7 +860,7 @@ impl WasmPluginInstance {
                     return Err("file exceeds plugin write limit".to_string());
                 }
                 let path = plugin_data_path(plugin_name, get_str("path")?, true)?;
-                atomic_write(&path, content.as_bytes())?;
+                helpers::atomic_write(&path, content.as_bytes())?;
                 Ok("ok".to_string())
             }
             "uuid.v4" => Ok(uuid::Uuid::new_v4().to_string()),
@@ -1184,7 +1184,7 @@ impl WasmPluginInstance {
             }
             "plugin.api_register" => {
                 let api_method = get_str("method")?;
-                validate_identifier(api_method)?;
+                helpers::validate_identifier(api_method)?;
                 let mut registrations = svc
                     .registered_apis
                     .lock()
@@ -1272,6 +1272,8 @@ impl Drop for WasmPluginInstance {
 
 // ── 辅助函数 ──
 
+use crate::wasm_host_helpers as helpers;
+
 fn state_call(
     svc: &WasmPluginServices,
     method: &str,
@@ -1288,119 +1290,6 @@ fn state_call(
         .map(|value| value.to_string())
 }
 
-fn truncate_string(value: &str, max: usize) -> String {
-    value.chars().take(max).collect()
-}
-
-fn validate_display_name(value: &str) -> Result<(), String> {
-    if value.trim().is_empty() || value.chars().count() > 128 || value.chars().any(char::is_control)
-    {
-        return Err("invalid plugin display name".to_string());
-    }
-    Ok(())
-}
-
-fn validate_identifier(value: &str) -> Result<(), String> {
-    if value.is_empty()
-        || value.len() > 96
-        || !value
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-' | b'.'))
-    {
-        return Err(format!("invalid identifier '{value}'"));
-    }
-    Ok(())
-}
-
-fn validate_config_key(value: &str) -> Result<(), String> {
-    if value.is_empty() || value.len() > 256 || value.chars().any(char::is_control) {
-        return Err("invalid config key".to_string());
-    }
-    Ok(())
-}
-
-fn default_capabilities() -> HashSet<String> {
-    [
-        "state.read",
-        "send",
-        "ext",
-        "config",
-        "file.read",
-        "file.write",
-        "plugin.call",
-        "plugin.register",
-    ]
-    .into_iter()
-    .map(str::to_string)
-    .collect()
-}
-
-fn load_manifest_capabilities(plugin_path: &str) -> Result<HashSet<String>, String> {
-    let manifest = Path::new(plugin_path).with_extension("json");
-    if !manifest.exists() {
-        return Ok(default_capabilities());
-    }
-    let bytes = std::fs::read(&manifest)
-        .map_err(|e| format!("read manifest '{}': {e}", manifest.display()))?;
-    if bytes.len() > 64 * 1024 {
-        return Err("plugin manifest is too large".to_string());
-    }
-    let value: serde_json::Value =
-        serde_json::from_slice(&bytes).map_err(|e| format!("invalid plugin manifest: {e}"))?;
-    let array = value
-        .get("capabilities")
-        .and_then(|v| v.as_array())
-        .ok_or("manifest must contain a capabilities array")?;
-    let mut capabilities = HashSet::new();
-    for item in array {
-        let capability = item.as_str().ok_or("capability must be a string")?;
-        validate_identifier(capability)?;
-        capabilities.insert(capability.to_string());
-    }
-    Ok(capabilities)
-}
-
-fn required_capability(method: &str) -> Option<&'static str> {
-    match method {
-        "uuid.v4" | "time.now" => None,
-        value if value.starts_with("admin.") => Some("admin"),
-        "room.create_empty"
-        | "room.kick"
-        | "room.set_host"
-        | "room.clear_host"
-        | "room.set_lock"
-        | "room.force_move"
-        | "room.set_hidden"
-        | "room.set_persistent_empty"
-        | "room.set_phira_api_endpoint"
-        | "room.clear_phira_api_endpoint"
-        | "room.close" => Some("room.manage"),
-        value
-            if value.starts_with("room.")
-                || value.starts_with("player.")
-                || value.starts_with("round.")
-                || value.starts_with("user.")
-                || value.starts_with("persist.")
-                || value == "state.query" =>
-        {
-            Some("state.read")
-        }
-        value if value.starts_with("send.") => Some("send"),
-        value if value.starts_with("ext.") => Some("ext"),
-        value if value.starts_with("config.") => Some("config"),
-        value if value.starts_with("http.") => Some("http"),
-        "file.read" => Some("file.read"),
-        "file.write" => Some("file.write"),
-        "plugin.api_call" => Some("plugin.call"),
-        "plugin.api_register" => Some("plugin.register"),
-        _ => Some("unknown"),
-    }
-}
-
-fn config_path(plugin: &str) -> PathBuf {
-    Path::new("data/plugins").join(plugin).join("config.json")
-}
-
 fn ensure_config_loaded(svc: &WasmPluginServices, plugin: &str) -> Result<(), String> {
     if svc
         .plugin_configs
@@ -1410,7 +1299,7 @@ fn ensure_config_loaded(svc: &WasmPluginServices, plugin: &str) -> Result<(), St
     {
         return Ok(());
     }
-    let path = config_path(plugin);
+    let path = helpers::config_path(plugin);
     let config = if path.exists() {
         let bytes = std::fs::read(&path).map_err(|e| format!("read config: {e}"))?;
         if bytes.len() > svc.runtime.max_file_bytes {
@@ -1431,27 +1320,12 @@ fn ensure_config_loaded(svc: &WasmPluginServices, plugin: &str) -> Result<(), St
 
 fn persist_plugin_config(plugin: &str, config: &HashMap<String, String>) -> Result<(), String> {
     let bytes = serde_json::to_vec_pretty(config).map_err(|e| format!("encode config: {e}"))?;
-    atomic_write(&config_path(plugin), &bytes)
+    helpers::atomic_write(&helpers::config_path(plugin), &bytes)
 }
 
-fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), String> {
-    let parent = path.parent().ok_or("path has no parent")?;
-    std::fs::create_dir_all(parent).map_err(|e| format!("create directory: {e}"))?;
-    reject_symlink_components(parent)?;
-    let temp = parent.join(format!(
-        ".{}.{}.tmp",
-        path.file_name().and_then(|v| v.to_str()).unwrap_or("data"),
-        uuid::Uuid::new_v4()
-    ));
-    std::fs::write(&temp, bytes).map_err(|e| format!("write temporary file: {e}"))?;
-    std::fs::rename(&temp, path).map_err(|e| {
-        let _ = std::fs::remove_file(&temp);
-        format!("replace file: {e}")
-    })
-}
 
 fn plugin_data_path(plugin: &str, relative: &str, create_parent: bool) -> Result<PathBuf, String> {
-    validate_identifier(plugin)?;
+    helpers::validate_identifier(plugin)?;
     let relative = Path::new(relative);
     if relative.as_os_str().is_empty() || relative.is_absolute() {
         return Err("plugin paths must be non-empty and relative".to_string());
@@ -1464,13 +1338,13 @@ fn plugin_data_path(plugin: &str, relative: &str, create_parent: bool) -> Result
     }
     let root = Path::new("data/plugins").join(plugin);
     std::fs::create_dir_all(&root).map_err(|e| format!("create plugin data directory: {e}"))?;
-    reject_symlink_components(&root)?;
+    helpers::reject_symlink_components(&root)?;
     let target = root.join(relative);
     if create_parent {
         let parent = target.parent().ok_or("path has no parent")?;
         std::fs::create_dir_all(parent)
             .map_err(|e| format!("create plugin data directory: {e}"))?;
-        reject_symlink_components(parent)?;
+        helpers::reject_symlink_components(parent)?;
         if target.exists()
             && std::fs::symlink_metadata(&target)
                 .map_err(|e| e.to_string())?
@@ -1491,46 +1365,7 @@ fn plugin_data_path(plugin: &str, relative: &str, create_parent: bool) -> Result
     Ok(target)
 }
 
-fn reject_symlink_components(path: &Path) -> Result<(), String> {
-    let mut current = PathBuf::new();
-    for component in path.components() {
-        current.push(component.as_os_str());
-        if current.exists()
-            && std::fs::symlink_metadata(&current)
-                .map_err(|e| format!("inspect path: {e}"))?
-                .file_type()
-                .is_symlink()
-        {
-            return Err("symbolic links are not allowed in plugin storage".to_string());
-        }
-    }
-    Ok(())
-}
 
-fn validate_http_url(value: &str, allow_private: bool) -> Result<(), String> {
-    let url = reqwest::Url::parse(value).map_err(|e| format!("invalid URL: {e}"))?;
-    if !matches!(url.scheme(), "http" | "https") {
-        return Err("only HTTP(S) URLs are allowed".to_string());
-    }
-    if !url.username().is_empty() || url.password().is_some() {
-        return Err("URL credentials are not allowed".to_string());
-    }
-    let host = url.host_str().ok_or("URL is missing a host")?;
-    if !allow_private {
-        if host.eq_ignore_ascii_case("localhost") {
-            return Err("private network access is disabled".to_string());
-        }
-        let port = url.port_or_known_default().ok_or("URL is missing a port")?;
-        let addresses = (host, port)
-            .to_socket_addrs()
-            .map_err(|e| format!("resolve host: {e}"))?
-            .collect::<Vec<_>>();
-        if addresses.is_empty() || addresses.iter().any(|address| is_private_ip(address.ip())) {
-            return Err("private or unresolved network targets are disabled".to_string());
-        }
-    }
-    Ok(())
-}
 
 fn is_private_ip(ip: IpAddr) -> bool {
     match ip {
@@ -1598,14 +1433,14 @@ mod tests {
 
     #[test]
     fn identifiers_are_restricted() {
-        assert!(validate_identifier("plugin.api-v1").is_ok());
-        assert!(validate_identifier("../escape").is_err());
-        assert!(validate_identifier("has space").is_err());
+        assert!(helpers::validate_identifier("plugin.api-v1").is_ok());
+        assert!(helpers::validate_identifier("../escape").is_err());
+        assert!(helpers::validate_identifier("has space").is_err());
     }
 
     #[test]
     fn default_capabilities_are_not_privileged() {
-        let caps = default_capabilities();
+        let caps = helpers::default_capabilities();
         assert!(caps.contains("state.read"));
         assert!(!caps.contains("admin"));
         assert!(!caps.contains("room.manage"));
