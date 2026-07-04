@@ -8,12 +8,31 @@ use serde_json::Value;
 #[cfg(feature = "postgres")]
 use sqlx::Row;
 
+fn telemetry_time_range<I>(times: I) -> (Option<f64>, Option<f64>)
+where I: IntoIterator<Item = f64>,
+{
+    let mut first = None;
+    let mut last = None;
+    for time in times {
+        first = Some(first.map_or(time, |v: f64| v.min(time)));
+        last = Some(last.map_or(time, |v: f64| v.max(time)));
+    }
+    (first, last)
+}
+
+fn now_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
+}
+
 impl DbManager {
     pub async fn open_round(&self, meta: &crate::round_store::RoundMeta) {
         #[cfg(feature = "postgres")]
         if let Self::Pg(pool) = self {
             let players = serde_json::to_string(&meta.players).unwrap_or_else(|_| "[]".to_string());
-            let now = crate::db::now_ms();
+            let now = now_ms();
             let _ = sqlx::query(
                 "INSERT INTO mp_rounds (round_uuid, room_id, chart_id, chart_name, players, started_at, finished_at, created_at, updated_at, sequence)
                  VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $8, nextval('mp_persist_sequence'))
@@ -35,7 +54,7 @@ impl DbManager {
     pub async fn close_round(&self, round_uuid: &str) {
         #[cfg(feature = "postgres")]
         if let Self::Pg(pool) = self {
-            let now = crate::db::now_ms();
+            let now = now_ms();
             let _ = sqlx::query(
                 "UPDATE mp_rounds SET finished_at = COALESCE(finished_at, $2), updated_at = $2, sequence = nextval('mp_persist_sequence')
                  WHERE round_uuid = $1"
@@ -62,7 +81,7 @@ impl DbManager {
     pub async fn record_round_result(&self, round_uuid: &str, player_id: i32, score: i64, combo: i64) -> bool {
         #[cfg(feature = "postgres")]
         if let Self::Pg(pool) = self {
-            let now = crate::db::now_ms();
+            let now = now_ms();
             return sqlx::query(
                 "INSERT INTO mp_round_results (round_uuid, player_id, score, max_combo, created_at, updated_at, sequence)
                  VALUES ($1, $2, $3, $4, $5, $5, nextval('mp_persist_sequence'))
@@ -124,5 +143,78 @@ impl DbManager {
             }));
         }
         None
+    }
+
+    // ── helpers ──
+
+    pub(crate) async fn append_touch_batch_str(
+        &self,
+        round_uuid: &str,
+        player_id: i32,
+        data: &[crate::plugin::TouchEventPoint],
+        payload_json: &str,
+    ) {
+        #[cfg(feature = "postgres")]
+        if let Self::Pg(pool) = self {
+            let (first_game_time, last_game_time) =
+                telemetry_time_range(data.iter().map(|p| p.time as f64));
+            let now = now_ms();
+            let count = i32::try_from(data.len()).unwrap_or(i32::MAX);
+            let _ = sqlx::query(
+                "INSERT INTO mp_round_touch_batches
+                   (round_uuid, player_id, count, first_game_time, last_game_time, payload, created_at, sequence)
+                 VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, nextval('mp_persist_sequence'))"
+            )
+            .bind(round_uuid).bind(player_id).bind(count)
+            .bind(first_game_time).bind(last_game_time)
+            .bind(payload_json).bind(now)
+            .execute(pool).await;
+        }
+    }
+
+    pub(crate) async fn append_judge_batch_str(
+        &self,
+        round_uuid: &str,
+        player_id: i32,
+        data: &[crate::plugin::JudgeEventItem],
+        payload_json: &str,
+    ) {
+        #[cfg(feature = "postgres")]
+        if let Self::Pg(pool) = self {
+            let (first_game_time, last_game_time) =
+                telemetry_time_range(data.iter().map(|p| p.time as f64));
+            let now = now_ms();
+            let count = i32::try_from(data.len()).unwrap_or(i32::MAX);
+            let _ = sqlx::query(
+                "INSERT INTO mp_round_judge_batches
+                   (round_uuid, player_id, count, first_game_time, last_game_time, payload, created_at, sequence)
+                 VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, nextval('mp_persist_sequence'))"
+            )
+            .bind(round_uuid).bind(player_id).bind(count)
+            .bind(first_game_time).bind(last_game_time)
+            .bind(payload_json).bind(now)
+            .execute(pool).await;
+        }
+    }
+
+    pub(crate) async fn append_player_array_json(
+        &self,
+        round_uuid: &str,
+        player_id: i32,
+        field: &str,
+        payload_json: &str,
+    ) {
+        #[cfg(feature = "postgres")]
+        if let Self::Pg(pool) = self {
+            let now = now_ms();
+            let _ = sqlx::query(&format!(
+                "INSERT INTO mp_round_player_data (round_uuid, player_id, {field}, created_at, updated_at, sequence)
+                 VALUES ($1, $2, $3::jsonb, $4, $4, nextval('mp_persist_sequence'))
+                 ON CONFLICT (round_uuid, player_id) DO UPDATE SET
+                   {field} = mp_round_player_data.{field} || $3::jsonb, updated_at = $4"
+            ))
+            .bind(round_uuid).bind(player_id).bind(payload_json).bind(now)
+            .execute(pool).await;
+        }
     }
 }
