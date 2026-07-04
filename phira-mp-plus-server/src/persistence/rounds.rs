@@ -99,7 +99,7 @@ impl DbManager {
             let limit = limit.clamp(1, 200);
             let rows = sqlx::query(
                 "SELECT round_uuid, room_id, chart_id, chart_name, players::text AS players,
-                        started_at, finished_at, created_at, updated_at
+                        started_at, finished_at
                  FROM mp_rounds ORDER BY sequence DESC LIMIT $1"
             ).bind(limit).fetch_all(pool).await.unwrap_or_default();
             return rows.iter().filter_map(|row| {
@@ -113,8 +113,6 @@ impl DbManager {
                     players,
                     started_at: row.try_get::<i64, _>("started_at").unwrap_or(0),
                     finished_at: row.try_get::<i64, _>("finished_at").ok(),
-                    created_at: row.try_get::<i64, _>("created_at").unwrap_or(0),
-                    updated_at: row.try_get::<i64, _>("updated_at").unwrap_or(0),
                 })
             }).collect();
         }

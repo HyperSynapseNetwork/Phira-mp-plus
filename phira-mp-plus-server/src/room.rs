@@ -854,8 +854,13 @@ impl Room {
 
         if let Some(db) = crate::internal_hooks::DB.get() {
             for result in &round.results {
-                db.record_round_result(&round.round_id.to_string(), &self.id.to_string(), result)
-                    .await;
+                db.record_round_result(
+                    &round.round_id.to_string(),
+                    result.user_id,
+                    result.score as i64,
+                    result.max_combo as i64,
+                )
+                .await;
             }
         }
         let event = protocol_round(&round);
