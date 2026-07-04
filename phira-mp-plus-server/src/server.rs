@@ -1122,10 +1122,31 @@ impl PlusServer {
             }),
         );
         let benchmark_history_state = Arc::clone(&state_for_webapi2);
+        let bhs2 = Arc::clone(&state_for_webapi2);
         http_for_webapi.register_route_sync(
             "/api/benchmark/reports/history",
-            Arc::new(move |_, _| {
-                server_state_query_inner(&benchmark_history_state, "benchmark.history", &[])
+            Arc::new(move |_, params| {
+                let mode = params
+                    .get(0)
+                    .map(|v| serde_json::Value::String(v.clone()));
+                let limit = params
+                    .get(1)
+                    .and_then(|v| v.parse::<u64>().ok())
+                    .map(|v| serde_json::json!(v));
+                let args: Vec<Value> = mode.into_iter().chain(limit.into_iter()).collect();
+                server_state_query_inner(&benchmark_history_state, "benchmark.history", &args)
+                    .map_err(|e| (500u16, e))
+            }),
+        );
+        http_for_webapi.register_route_sync(
+            "/api/benchmark/reports/history/<mode>",
+            Arc::new(move |_, params| {
+                let mode = params.get(0).cloned();
+                let args: Vec<Value> = mode
+                    .map(|m| serde_json::json!(m))
+                    .into_iter()
+                    .collect();
+                server_state_query_inner(&bhs2, "benchmark.history", &args)
                     .map_err(|e| (500u16, e))
             }),
         );
