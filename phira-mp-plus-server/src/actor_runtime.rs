@@ -114,7 +114,7 @@ fn default_boundaries() -> Vec<ActorBoundary> {
             responsibility: "Own one room state machine, membership, host transfer, ready/start/play/result lifecycle, and telemetry fan-in.".to_string(),
             source_files: vec!["room.rs".to_string(), "room_actor/".to_string()],
             status: ActorBoundaryStatus::WriteRouted,
-            next_step: "RoomCommandContext now carries room reference in per-room mailbox. Next: make ops modules use context.room instead of find_room() — removing the final inline fallback dependency.".to_string(),
+            next_step: "set_lock/set_cycle/set_host/kick/close: mailbox_only (no inline fallback). start/cancel: mailbox_or_inline_control. 17 contract tests. Next: migrate start/cancel to mailbox_only, then remove inline methods.".to_string(),
         },
         ActorBoundary {
             name: "persistence-actor".to_string(),
