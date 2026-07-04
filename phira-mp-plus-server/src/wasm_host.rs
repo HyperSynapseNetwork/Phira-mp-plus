@@ -622,26 +622,19 @@ impl WasmPluginInstance {
     /// - `room.close`        → 解散房间
     /// ── 用户管理（user-management） ──
     /// - `admin.kick_user`  → 从服务器踢出用户
-    /// - `admin.ban_user`   → 封禁用户
-    /// - `admin.unban_user` → 解封用户
-    /// - `admin.is_banned`  → 检查用户是否被封禁
-    /// - `admin.ban_list`   → 获取封禁列表
-    /// - `admin.list_users` → 列出所有在线用户
-    /// ── 工具 ──
     /// - `config.get/set`  → 插件配置读写
     /// - `http.get/post`   → HTTP 请求
     /// - `file.read/write` → 文件读写
     /// - `plugin.api_register`→ 注册本插件的 API 供其他 WASM 插件调用
-fn dispatch_api(
     _svc: &WasmPluginServices,
     _plugin_name: &str,
     _method: &str,
     _args: &str,
 ) -> Result<String, String> {
-    Err("JSON bridge removed — use WIT ABI v2 (abi-wit-v2). Migrate plugin to component model.".to_string())
 }
 
 impl Drop for WasmPluginInstance {
+    Err("JSON bridge removed — use WIT ABI v2. Migrate plugin to component model.".to_string())
     fn drop(&mut self) {
         if self.initialized {
             self.call_cleanup();
