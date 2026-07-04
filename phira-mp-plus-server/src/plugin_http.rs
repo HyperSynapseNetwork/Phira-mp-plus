@@ -104,17 +104,28 @@ impl PluginHttpServer {
                     return;
                 }
             };
-            let proxy_app = app.clone()
+            let proxy_app = app
+                .clone()
                 .layer(crate::proxy_protocol::TrustForwardedForLayer);
             tokio::spawn(async move {
                 info!(%proxy_addr, "HTTP server started (PROXY protocol, X-Forwarded-For trusted)");
-                if let Err(err) = axum::serve(proxy_listener, proxy_app.into_make_service_with_connect_info::<std::net::SocketAddr>()).await {
+                if let Err(err) = axum::serve(
+                    proxy_listener,
+                    proxy_app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+                )
+                .await
+                {
                     error!(?err, "PROXY protocol HTTP server stopped");
                 }
             });
         }
 
-        if let Err(err) = axum::serve(listener, app.into_make_service_with_connect_info::<std::net::SocketAddr>()).await {
+        if let Err(err) = axum::serve(
+            listener,
+            app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+        )
+        .await
+        {
             error!(?err, "HTTP server stopped unexpectedly");
         }
     }

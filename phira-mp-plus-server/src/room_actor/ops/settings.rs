@@ -219,8 +219,14 @@ mod tests {
     #[test]
     fn typed_payload_serialization_round_trip() {
         let payloads: Vec<super::RoomCommandPayload> = vec![
-            super::RoomCommandPayload::LockChanged { room_id: "r1".into(), locked: true },
-            super::RoomCommandPayload::CycleChanged { room_id: "r2".into(), cycle: false },
+            super::RoomCommandPayload::LockChanged {
+                room_id: "r1".into(),
+                locked: true,
+            },
+            super::RoomCommandPayload::CycleChanged {
+                room_id: "r2".into(),
+                cycle: false,
+            },
             super::RoomCommandPayload::HostChanged {
                 room_id: "r3".into(),
                 host: Some(42),
@@ -230,7 +236,10 @@ mod tests {
         ];
         for payload in &payloads {
             let json = serde_json::to_value(payload).unwrap();
-            assert!(json.is_object(), "each payload should serialize to a JSON object");
+            assert!(
+                json.is_object(),
+                "each payload should serialize to a JSON object"
+            );
         }
     }
 

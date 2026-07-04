@@ -786,7 +786,10 @@ fn spawn_event_subscribers(state: &Arc<PlusServerState>) {
                                 in_room.len()
                             };
                             crate::internal_hooks::send_welcome(
-                                *user_id, user_name, online, &state_clone,
+                                *user_id,
+                                user_name,
+                                online,
+                                &state_clone,
                             );
                         }
                         _ => {}

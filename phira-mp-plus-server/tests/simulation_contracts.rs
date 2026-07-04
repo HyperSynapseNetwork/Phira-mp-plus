@@ -224,8 +224,14 @@ async fn simulation_lifecycle_start_stop_cleanup() {
     // Start
     let start_result = manager.start(config).await.unwrap();
     assert!(start_result.running, "should be running after start");
-    assert_eq!(start_result.virtual_users, 5, "should have correct virtual user count");
-    assert_eq!(start_result.virtual_rooms, 2, "should have correct virtual room count");
+    assert_eq!(
+        start_result.virtual_users, 5,
+        "should have correct virtual user count"
+    );
+    assert_eq!(
+        start_result.virtual_rooms, 2,
+        "should have correct virtual room count"
+    );
 
     // Stop
     let stopped = manager.stop("test complete").await;
@@ -234,8 +240,14 @@ async fn simulation_lifecycle_start_stop_cleanup() {
     // Cleanup
     let cleaned = manager.cleanup().await;
     assert!(!cleaned.running, "not running after cleanup");
-    assert_eq!(cleaned.virtual_users, 0, "cleanup should remove all virtual users");
-    assert_eq!(cleaned.virtual_rooms, 0, "cleanup should remove all virtual rooms");
+    assert_eq!(
+        cleaned.virtual_users, 0,
+        "cleanup should remove all virtual users"
+    );
+    assert_eq!(
+        cleaned.virtual_rooms, 0,
+        "cleanup should remove all virtual rooms"
+    );
 }
 
 #[tokio::test]

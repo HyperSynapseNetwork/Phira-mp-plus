@@ -194,7 +194,12 @@ pub async fn join_room(
         bail!("{}", tl!("join-room-locked"));
     }
     // 检查房间黑名单（按 UUID 绑定，不按房间名）
-    if user.server.ban_manager.is_room_banned(&room.uuid.to_string(), user.id).await {
+    if user
+        .server
+        .ban_manager
+        .is_room_banned(&room.uuid.to_string(), user.id)
+        .await
+    {
         bail!("{}", tl!("join-room-banned"));
     }
     if !matches!(

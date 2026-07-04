@@ -125,9 +125,7 @@ mod tests {
     }
 }
 
-
 use crate::db::DbManager;
-
 
 impl DbManager {
     pub async fn record_runtime_benchmark_report(
@@ -145,7 +143,7 @@ impl DbManager {
                 "INSERT INTO mp_runtime_benchmark_reports
                    (mode, title, duration_secs, is_simulation, operations, failed_operations,
                     probes_attempted, probes_succeeded, probes_failed, probes_blocked, probes_skipped,
-                    failure_samples, notes, source, schema_version, payload, created_at, sequence)
+                    failure_samples, notes, source, schema_version, report, created_at, sequence)
                  VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16::jsonb, $17, nextval('mp_persist_sequence'))",
             )
             .bind(record.mode.as_str())
@@ -167,7 +165,7 @@ impl DbManager {
             .bind(now)
             .execute(pool)
             .await
-            .is_ok()
+            .is_ok();
         }
         #[cfg(not(feature = "postgres"))]
         let _ = record;
@@ -205,7 +203,7 @@ impl DbManager {
             let rows = if let Some(mode) = query.mode {
                 sqlx::query(
                     "SELECT sequence, mode, title, duration_secs, is_simulation, operations, failed_operations,
-                            probes_failed, probes_blocked, payload::text AS report, created_at, source, schema_version
+                            probes_failed, probes_blocked, report::text AS report, created_at, source, schema_version
                      FROM mp_runtime_benchmark_reports
                      WHERE mode = $1
                      ORDER BY sequence DESC
@@ -219,7 +217,7 @@ impl DbManager {
             } else {
                 sqlx::query(
                     "SELECT sequence, mode, title, duration_secs, is_simulation, operations, failed_operations,
-                            probes_failed, probes_blocked, payload::text AS report, created_at, source, schema_version
+                            probes_failed, probes_blocked, report::text AS report, created_at, source, schema_version
                      FROM mp_runtime_benchmark_reports
                      ORDER BY sequence DESC
                      LIMIT $1"

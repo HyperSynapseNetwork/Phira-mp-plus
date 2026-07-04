@@ -287,7 +287,7 @@ impl DbManager {
         }
     }
 
-pub async fn get_playtime(&self, user_id: i32) -> Option<PlaytimeRow> {
+    pub async fn get_playtime(&self, user_id: i32) -> Option<PlaytimeRow> {
         #[cfg(feature = "postgres")]
         if let Self::Pg(pool) = self {
             let row =

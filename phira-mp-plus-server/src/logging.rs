@@ -184,7 +184,9 @@ pub fn redact_sensitive(message: &str) -> String {
             let end = pos + lookup.len();
             // Find the end of the value (next space, quote, &, or end of string).
             let value_end = result[end..]
-                .find(|c: char| c == ' ' || c == '"' || c == '&' || c == '\'' || c == ']' || c == ')')
+                .find(|c: char| {
+                    c == ' ' || c == '"' || c == '&' || c == '\'' || c == ']' || c == ')'
+                })
                 .map(|i| end + i)
                 .unwrap_or(result.len());
             result.replace_range(pos..value_end, replacement);

@@ -24,9 +24,7 @@ mod stream_impl {
     use crate::{decode_packet, encode_packet, BinaryData};
     use anyhow::{anyhow, bail, Error, Result};
     use argon2::{password_hash::SaltString, Argon2, PasswordHasher};
-    use std::{
-        future::Future, marker::PhantomData, sync::Arc, time::Duration,
-    };
+    use std::{future::Future, marker::PhantomData, sync::Arc, time::Duration};
     use tokio::{
         io::{AsyncReadExt, AsyncWriteExt},
         net::TcpStream,

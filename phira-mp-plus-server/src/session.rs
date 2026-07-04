@@ -4,9 +4,7 @@ use crate::l10n::{Language, LANGUAGE};
 use crate::phira_client::PhiraRetryNoticeTarget;
 use crate::plugin::PluginEvent;
 use crate::server::PlusServerState;
-use crate::session_auth::{
-    authenticate_remote_with_notice, send_auth_rejection, AuthUserInfo,
-};
+use crate::session_auth::{authenticate_remote_with_notice, send_auth_rejection, AuthUserInfo};
 use anyhow::{anyhow, bail, Result};
 use phira_mp_common::{ClientCommand, RoomEvent, ServerCommand, Stream, UserInfo};
 use std::{
@@ -336,7 +334,8 @@ impl Session {
                                         debug!("session {id}: authenticating");
                                         // 计算 token SHA256 哈希作为缓存键
                                         use sha2::{Digest, Sha256};
-                                        let token_hash = format!("{:x}", Sha256::digest(token.as_bytes()));
+                                        let token_hash =
+                                            format!("{:x}", Sha256::digest(token.as_bytes()));
 
                                         let user_info = {
                                             let ac = server.extensions.get_auth_cache().await;
@@ -352,7 +351,8 @@ impl Session {
                                                     entry.name, entry.user_id
                                                 );
                                                 if let Some(tx) = auth_tx.take() {
-                                                    let _ = tx.send(AuthenticationOutcome::Rejected);
+                                                    let _ =
+                                                        tx.send(AuthenticationOutcome::Rejected);
                                                 }
                                                 return Ok(());
                                             }
@@ -404,7 +404,9 @@ impl Session {
                                                             info.name, info.id
                                                         );
                                                         if let Some(tx) = auth_tx.take() {
-                                                            let _ = tx.send(AuthenticationOutcome::Rejected);
+                                                            let _ = tx.send(
+                                                                AuthenticationOutcome::Rejected,
+                                                            );
                                                         }
                                                         return Ok(());
                                                     }
@@ -412,9 +414,10 @@ impl Session {
                                                 }
                                                 Err(_err) => {
                                                     if let Some(tx) = auth_tx.take() {
-                                                            let _ = tx.send(AuthenticationOutcome::Rejected);
-                                                        }
-                                                        return Ok(());
+                                                        let _ = tx
+                                                            .send(AuthenticationOutcome::Rejected);
+                                                    }
+                                                    return Ok(());
                                                 }
                                             }
                                         };
@@ -428,7 +431,8 @@ impl Session {
                                             );
                                         }
 
-                                        let user_ip = this.get().map(|s| s.ip.clone()).unwrap_or_default();
+                                        let user_ip =
+                                            this.get().map(|s| s.ip.clone()).unwrap_or_default();
                                         let existing_user = {
                                             let guard = server.users.write().await;
                                             guard.get(&user_info.id).map(Arc::clone)
@@ -442,7 +446,8 @@ impl Session {
                                                 ),
                                             );
                                             this_inited.notified().await;
-                                            existing.set_session(Arc::downgrade(this.get().unwrap()))
+                                            existing
+                                                .set_session(Arc::downgrade(this.get().unwrap()))
                                                 .await;
                                             existing.set_auth_token(Some(token.to_string())).await;
                                             server.publish_runtime_event(
@@ -455,13 +460,20 @@ impl Session {
                                             );
                                         } else {
                                             if server.ban_manager.is_banned(user_info.id).await {
-                                                let _ = auth_tx.take().unwrap().send(AuthenticationOutcome::Rejected);
+                                                let _ = auth_tx
+                                                    .take()
+                                                    .unwrap()
+                                                    .send(AuthenticationOutcome::Rejected);
                                                 return Ok(());
                                             }
                                             let user = Arc::new(User::new(
                                                 user_info.id,
                                                 user_info.name,
-                                                user_info.language.parse().map(Language).unwrap_or_default(),
+                                                user_info
+                                                    .language
+                                                    .parse()
+                                                    .map(Language)
+                                                    .unwrap_or_default(),
                                                 Arc::clone(&server),
                                                 Some(token.to_string()),
                                             ));

@@ -46,9 +46,13 @@ fn all_players_must_finish_or_abort_for_completion() {
     let aborted: std::collections::HashSet<i32> = std::collections::HashSet::new();
     results.insert(1, 100);
     results.insert(2, 95);
-    let all_done = [1, 2].iter().all(|id| results.contains_key(id) || aborted.contains(id));
+    let all_done = [1, 2]
+        .iter()
+        .all(|id| results.contains_key(id) || aborted.contains(id));
     assert!(all_done, "user 1 and 2 finished");
-    let all_done = [1, 2, 3].iter().all(|id| results.contains_key(id) || aborted.contains(id));
+    let all_done = [1, 2, 3]
+        .iter()
+        .all(|id| results.contains_key(id) || aborted.contains(id));
     assert!(!all_done, "user 3 not finished yet");
 }
 
@@ -63,4 +67,3 @@ fn round_completion_clears_current_round_id_contract() {
     let _select = InternalRoomState::SelectChart;
     // This is a contract test: if room.rs changes the state machine, update this
 }
-

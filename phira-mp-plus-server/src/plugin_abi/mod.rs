@@ -10,9 +10,9 @@
 //! - `abi-json-v1`: Current JSON bridge (temporary)
 //! - `abi-wit-v2`: Target typed WIT/component ABI
 
-mod plan;
-mod json;
 mod dto;
+mod json;
+mod plan;
 
 /// Generated WIT/component-model bindings for the phira-plugin-v2 world.
 /// Only available when the `wit-bindgen` feature is enabled (not in defaults).
@@ -21,10 +21,12 @@ pub(crate) mod wit_abi {
     wasmtime::component::bindgen!("phira-plugin-v2" in "../wit/phira-plugin.wit");
 }
 
+pub use dto::{encode_typed_api_call, PluginApiCall};
+pub use json::{
+    decode_plugin_api_result_json, encode_plugin_api_args_json, encode_plugin_event_json,
+};
+pub use plan::wit;
 pub use plan::{
     is_abi_version_supported, plugin_abi_plan, supported_abi_versions, PluginAbiPlan,
     PluginAbiTransport,
 };
-pub use plan::wit as wit;
-pub use json::{decode_plugin_api_result_json, encode_plugin_api_args_json, encode_plugin_event_json};
-pub use dto::{encode_typed_api_call, PluginApiCall};

@@ -76,10 +76,9 @@ impl BanManager {
             reason: reason.clone(),
             banned_at: now,
         });
-        let json = serde_json::to_string(&list).map_err(|e| format!("serialize ip ban list: {e}"))?;
-        self.extensions
-            .set_global(IP_BAN_KEY, json)
-            .await?;
+        let json =
+            serde_json::to_string(&list).map_err(|e| format!("serialize ip ban list: {e}"))?;
+        self.extensions.set_global(IP_BAN_KEY, json).await?;
         self.extensions.persist().await?;
         info!(%ip, reason, "IP banned");
         Ok(())
@@ -92,20 +91,16 @@ impl BanManager {
         if list.len() == before {
             return Err(format!("IP {ip} 不在封禁列表中"));
         }
-        let json = serde_json::to_string(&list).map_err(|e| format!("serialize ip ban list: {e}"))?;
-        self.extensions
-            .set_global(IP_BAN_KEY, json)
-            .await?;
+        let json =
+            serde_json::to_string(&list).map_err(|e| format!("serialize ip ban list: {e}"))?;
+        self.extensions.set_global(IP_BAN_KEY, json).await?;
         self.extensions.persist().await?;
         info!(%ip, "IP unbanned");
         Ok(())
     }
 
     pub async fn is_ip_banned(&self, ip: &IpAddr) -> bool {
-        self.get_ip_ban_list_raw()
-            .await
-            .iter()
-            .any(|e| &e.ip == ip)
+        self.get_ip_ban_list_raw().await.iter().any(|e| &e.ip == ip)
     }
 
     pub async fn list_ip_bans(&self) -> Vec<IpBanEntry> {

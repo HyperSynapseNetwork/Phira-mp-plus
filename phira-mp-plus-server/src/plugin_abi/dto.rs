@@ -14,7 +14,10 @@ pub struct PluginApiCall {
 
 impl PluginApiCall {
     pub fn new(method: impl Into<String>, args: Vec<serde_json::Value>) -> Self {
-        Self { method: method.into(), args }
+        Self {
+            method: method.into(),
+            args,
+        }
     }
 }
 

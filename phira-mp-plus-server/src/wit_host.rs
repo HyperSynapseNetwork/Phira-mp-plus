@@ -3,8 +3,8 @@
 //! The core `WitPluginHost` skeleton is available with `plugin-system`.
 //! The generated trait impls (PhiraHost, etc.) require `wit-bindgen`.
 
-use std::sync::Arc;
 use crate::server::PlusServerState;
+use std::sync::Arc;
 
 /// Wraps server state to implement WIT host traits.
 pub struct WitPluginHost {
@@ -18,14 +18,16 @@ impl WitPluginHost {
         Self { state, plugin_name }
     }
 
-    pub fn name(&self) -> &str { &self.plugin_name }
+    pub fn name(&self) -> &str {
+        &self.plugin_name
+    }
 }
 
 // Generated trait implementations — only with wit-bindgen feature.
 #[cfg(feature = "wit-bindgen")]
 mod wit_trait_impls {
-    use crate::plugin_abi::wit_abi as wit;
     use super::WitPluginHost;
+    use crate::plugin_abi::wit_abi as wit;
     use wit::phira::plugin::phira_host as host_iface;
     use wit::phira::plugin::phira_types as types;
 
@@ -61,12 +63,18 @@ mod wit_trait_impls {
         }
 
         fn send_chat(&mut self, user_id: u32, message: String) {
-            tracing::info!("[chat:plugin:{}] user={user_id}: {message}", self.plugin_name);
+            tracing::info!(
+                "[chat:plugin:{}] user={user_id}: {message}",
+                self.plugin_name
+            );
         }
 
         fn http_request(
-            &mut self, _url: String, _method: String,
-            _headers: Vec<(String, String)>, _body: Vec<u8>,
+            &mut self,
+            _url: String,
+            _method: String,
+            _headers: Vec<(String, String)>,
+            _body: Vec<u8>,
         ) -> Result<types::HttpResponse, String> {
             Err("http_request not yet implemented for WIT host".to_string())
         }
@@ -78,13 +86,21 @@ mod wit_trait_impls {
             serde_json::Value::Null => JsonValue::Null,
             serde_json::Value::Bool(b) => JsonValue::Flag(*b),
             serde_json::Value::Number(n) => {
-                if let Some(i) = n.as_i64() { JsonValue::Integer(i) }
-                else if let Some(f) = n.as_f64() { JsonValue::Float(f) }
-                else { JsonValue::Text(n.to_string()) }
+                if let Some(i) = n.as_i64() {
+                    JsonValue::Integer(i)
+                } else if let Some(f) = n.as_f64() {
+                    JsonValue::Float(f)
+                } else {
+                    JsonValue::Text(n.to_string())
+                }
             }
             serde_json::Value::String(s) => JsonValue::Text(s.clone()),
-            serde_json::Value::Array(arr) => JsonValue::Array(serde_json::to_string(arr).unwrap_or_default()),
-            serde_json::Value::Object(obj) => JsonValue::Object(serde_json::to_string(obj).unwrap_or_default()),
+            serde_json::Value::Array(arr) => {
+                JsonValue::Array(serde_json::to_string(arr).unwrap_or_default())
+            }
+            serde_json::Value::Object(obj) => {
+                JsonValue::Object(serde_json::to_string(obj).unwrap_or_default())
+            }
         }
     }
 

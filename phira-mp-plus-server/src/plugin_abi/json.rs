@@ -59,7 +59,9 @@ mod tests {
     #[test]
     fn event_encoder_preserves_stable_event_type() {
         let encoded = encode_plugin_event_json(&PluginEvent::RoomJoin {
-            user_id: 42, room_id: "room-a".to_string(), is_monitor: false,
+            user_id: 42,
+            room_id: "room-a".to_string(),
+            is_monitor: false,
         });
         let value: serde_json::Value = serde_json::from_str(&encoded).unwrap();
         assert_eq!(value["type"], "room_join");
@@ -68,7 +70,10 @@ mod tests {
 
     #[test]
     fn api_args_and_result_json_round_trip() {
-        let args = vec![serde_json::json!({"room_id":"room-a"}), serde_json::json!(7)];
+        let args = vec![
+            serde_json::json!({"room_id":"room-a"}),
+            serde_json::json!(7),
+        ];
         let bytes = encode_plugin_api_args_json(&args).unwrap();
         let decoded: Vec<serde_json::Value> = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(decoded, args);

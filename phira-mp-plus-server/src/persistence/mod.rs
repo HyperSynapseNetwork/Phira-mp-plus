@@ -6,10 +6,10 @@
 
 pub mod benchmark;
 pub mod diagnostics;
+pub mod events;
 pub mod message;
 pub mod mirror;
 pub mod pipeline;
-pub mod events;
 pub mod schema;
 pub mod simulation;
 pub mod stats;
