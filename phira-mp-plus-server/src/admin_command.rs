@@ -131,3 +131,45 @@ impl AdminCommand for HelpCommand {
         })
     }
 }
+
+// ── Exit ──
+
+pub struct ExitCommand;
+
+impl AdminCommand for ExitCommand {
+    fn name(&self) -> &'static str { "exit" }
+    fn help(&self) -> &'static str { "关闭服务器" }
+    fn category(&self) -> CommandCategory { CommandCategory::System }
+    fn execute(
+        &self,
+        _args: Vec<String>,
+        state: Arc<crate::server::PlusServerState>,
+    ) -> Pin<Box<dyn Future<Output = CommandResult> + Send>> {
+        Box::pin(async move {
+            state.shutdown.notify_one();
+            CommandResult { success: true, message: "正在关闭服务器...".to_string(), data: None }
+        })
+    }
+}
+
+// ── Status ──
+
+pub struct StatusCommand;
+
+impl AdminCommand for StatusCommand {
+    fn name(&self) -> &'static str { "status" }
+    fn help(&self) -> &'static str { "显示服务器状态" }
+    fn category(&self) -> CommandCategory { CommandCategory::System }
+    fn execute(
+        &self,
+        _args: Vec<String>,
+        state: Arc<crate::server::PlusServerState>,
+    ) -> Pin<Box<dyn Future<Output = CommandResult> + Send>> {
+        Box::pin(async move {
+            let users_online = state.users.read().await.len();
+            let rooms_active = state.rooms.read().await.len();
+            let msg = format!("用户在线: {users_online} | 活跃房间: {rooms_active}");
+            CommandResult { success: true, message: msg, data: None }
+        })
+    }
+}

@@ -944,6 +944,8 @@ impl PlusServer {
             admin_commands: {
                 let mut reg = crate::admin_command::CommandRegistry::new();
                 reg.register(Box::new(crate::admin_command::HelpCommand));
+                reg.register(Box::new(crate::admin_command::ExitCommand));
+                reg.register(Box::new(crate::admin_command::StatusCommand));
                 reg
             },
             bench_tokens: RwLock::new(bench_tokens),
