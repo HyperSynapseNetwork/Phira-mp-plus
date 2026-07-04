@@ -17,7 +17,6 @@ impl RoomCommandGateway {
         &self,
         state: &PlusServerState,
         room_id: &str,
-        room_override: Option<Arc<crate::room::Room>>,
         target_id: i32,
     ) -> Result<Value, String> {
         let started = Instant::now();
@@ -50,7 +49,6 @@ impl RoomCommandGateway {
         &self,
         state: &PlusServerState,
         room_id: &str,
-        room_override: Option<Arc<crate::room::Room>>,
         room_override: Option<Arc<crate::room::Room>>,
         target_id: i32,
     ) -> Result<RoomCommandPayload, String> {
@@ -102,7 +100,6 @@ impl RoomCommandGateway {
         &self,
         state: &PlusServerState,
         room_id: &str,
-        room_override: Option<Arc<crate::room::Room>>,
     ) -> Result<Value, String> {
         let started = Instant::now();
         let result = self
@@ -133,7 +130,6 @@ impl RoomCommandGateway {
         &self,
         state: &PlusServerState,
         room_id: &str,
-        room_override: Option<Arc<crate::room::Room>>,
         room_override: Option<Arc<crate::room::Room>>,
     ) -> Result<RoomCommandPayload, String> {
         let (rid, room) = self.resolve_room(state, room_id, room_override).await?;
