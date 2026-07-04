@@ -34,8 +34,8 @@ fn plugin_abi_constants_are_locked() {
     assert_eq!(plugin_abi::wit::WIT_FILE, "wit/phira-plugin.wit");
     assert_eq!(plugin_abi::wit::WIT_WORLD, "phira-plugin-v2");
     assert_eq!(plugin_abi::wit::WIT_VERSION, "abi-wit-v2");
-    assert_eq!(plugin_abi::wit::MIGRATION_PHASE, 0,
-        "MIGRATION_PHASE 0 = JSON bridge active (enable wit-bindgen for phase 1)");
+    assert_eq!(plugin_abi::wit::MIGRATION_PHASE, 2,
+        "MIGRATION_PHASE 2 = JSON bridge removed (enable wit-bindgen for phase 1)");
 }
 
 #[test]
@@ -204,7 +204,7 @@ fn generate_wit_docs() -> String {
     md.push_str("| **运行时 ABI** | `abi-json-v1` (JSON 内存桥) |\n");
     md.push_str("| **目标 ABI** | `abi-wit-v2` (WIT / Component Model) |\n");
     md.push_str("| **规范 WIT** | `wit/phira-plugin.wit` |\n");
-    md.push_str("| **MIGRATION_PHASE** | `0` (JSON 桥活跃; 启用 `wit-bindgen` feature 进入 phase 1) |\n");
+    md.push_str("| **MIGRATION_PHASE** | `2` (JSON 桥已移除; 启用 `wit-bindgen` feature 编译 WIT host traits) |\n");
     md.push_str(&format!("| **接口数量** | `{}` |\n\n", interfaces.len()));
 
     md.push_str("## 规范 WIT 接口\n\n");
