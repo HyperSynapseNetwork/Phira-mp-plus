@@ -8,19 +8,18 @@ use serde_json::Value;
 use sqlx::Row;
 
 impl DbManager {
-    /// Query sequential events from mp_events.
     pub async fn query_events(
         &self,
         since_sequence: i64,
         limit: i64,
-        kind: Option<kind: Option<String>str>,
-        room_id: Option<room_id: Option<String>str>,
+        kind: Option<String>,
+        room_id: Option<String>,
         user_id: Option<i32>,
     ) -> Vec<Value> {
         #[cfg(feature = "postgres")]
         if let Self::Pg(pool) = self {
             let limit = limit.clamp(1, 500);
-            let rows = if let Some(kind) = &kind {
+            let rows = if let Some(ref kind) = kind {
                 let mut q = String::from(
                     "SELECT sequence, kind, room_id, user_id, payload::text AS payload, created_at
                      FROM mp_events WHERE kind = $1 AND sequence > $2 ORDER BY sequence ASC LIMIT $3"
@@ -61,7 +60,6 @@ impl DbManager {
         Vec::new()
     }
 
-    /// Query room snapshots since a sequence number.
     pub async fn query_room_snapshots(&self, since_sequence: i64, limit: i64) -> Vec<Value> {
         #[cfg(feature = "postgres")]
         if let Self::Pg(pool) = self {
@@ -91,12 +89,11 @@ impl DbManager {
         Vec::new()
     }
 
-    /// Query touch batches since a sequence number.
     pub async fn query_touch_batches(
         &self,
         since_sequence: i64,
         limit: i64,
-        round_uuid: Option<round_uuid: Option<String>str>,
+        round_uuid: Option<String>,
         player_id: Option<i32>,
     ) -> Vec<Value> {
         #[cfg(feature = "postgres")]
@@ -135,12 +132,11 @@ impl DbManager {
         Vec::new()
     }
 
-    /// Query judge batches since a sequence number.
     pub async fn query_judge_batches(
         &self,
         since_sequence: i64,
         limit: i64,
-        round_uuid: Option<round_uuid: Option<String>str>,
+        round_uuid: Option<String>,
         player_id: Option<i32>,
     ) -> Vec<Value> {
         #[cfg(feature = "postgres")]
