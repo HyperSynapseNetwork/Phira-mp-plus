@@ -1,6 +1,6 @@
 [workspace.package]
 license-file = "LICENSE"
-edition = "2024"
+edition = "2021"
 
 [workspace]
 members = [

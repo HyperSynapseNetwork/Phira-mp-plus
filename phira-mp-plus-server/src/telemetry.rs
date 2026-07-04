@@ -30,7 +30,7 @@ static TELEMETRY_BATCH_SEQ: AtomicU64 = AtomicU64::new(1);
 
 /// Cutover mode controlling how production Touch/Judge telemetry is persisted.
 ///
-/// Two modes: [`DirectOnly`] (safe default) and [`WorkerPreferred`] (direct
+/// Two modes: `DirectOnly` (safe default) and `WorkerPreferred` (direct
 /// source + worker mirror). DualWrite and FallbackOnly have been removed —
 /// they were development-stage comparison modes that added hot-path complexity.
 /// WorkerPreferred gives runtime v2 async batch visibility while keeping the

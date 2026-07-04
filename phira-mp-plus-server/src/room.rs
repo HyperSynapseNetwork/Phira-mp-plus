@@ -240,36 +240,36 @@ impl Room {
             round_store,
         );
         room.users = Vec::new().into();
-        room.persistent_empty.store(true, Ordering::SeqCst);
+        room.persistent_empty.store(true, Ordering::Relaxed);
         room
     }
 
     pub fn is_live(&self) -> bool {
-        self.live.load(Ordering::SeqCst)
+        self.live.load(Ordering::Relaxed)
     }
 
     pub fn is_locked(&self) -> bool {
-        self.locked.load(Ordering::SeqCst)
+        self.locked.load(Ordering::Relaxed)
     }
 
     pub fn is_cycle(&self) -> bool {
-        self.cycle.load(Ordering::SeqCst)
+        self.cycle.load(Ordering::Relaxed)
     }
 
     pub fn is_hidden(&self) -> bool {
-        self.hidden.load(Ordering::SeqCst)
+        self.hidden.load(Ordering::Relaxed)
     }
 
     pub fn set_hidden(&self, hidden: bool) {
-        self.hidden.store(hidden, Ordering::SeqCst);
+        self.hidden.store(hidden, Ordering::Relaxed);
     }
 
     pub fn is_persistent_empty(&self) -> bool {
-        self.persistent_empty.load(Ordering::SeqCst)
+        self.persistent_empty.load(Ordering::Relaxed)
     }
 
     pub fn set_persistent_empty(&self, persistent: bool) {
-        self.persistent_empty.store(persistent, Ordering::SeqCst);
+        self.persistent_empty.store(persistent, Ordering::Relaxed);
     }
 
     pub async fn set_display_name(&self, user_id: i32, name: String) {
@@ -332,7 +332,7 @@ impl Room {
     }
 
     pub fn is_system_host(&self) -> bool {
-        self.system_host.load(Ordering::SeqCst)
+        self.system_host.load(Ordering::Relaxed)
     }
 
     pub async fn has_host(&self) -> bool {
@@ -403,8 +403,8 @@ impl Room {
         phira_mp_common::RoomData {
             host,
             users,
-            lock: room.locked.load(Ordering::SeqCst),
-            cycle: room.cycle.load(Ordering::SeqCst),
+            lock: room.locked.load(Ordering::Relaxed),
+            cycle: room.cycle.load(Ordering::Relaxed),
             chart,
             state,
             rounds,
@@ -530,7 +530,7 @@ impl Room {
 
     pub async fn has_active_monitors(&self) -> bool {
         let active = !self.monitors().await.is_empty();
-        self.live.store(active, Ordering::SeqCst);
+        self.live.store(active, Ordering::Relaxed);
         active
     }
 
@@ -542,7 +542,7 @@ impl Room {
     }
 
     pub fn admin_start_pending(&self) -> bool {
-        self.admin_start_pending.load(Ordering::SeqCst)
+        self.admin_start_pending.load(Ordering::Relaxed)
     }
 
     /// Start a round from the administrative console without bypassing client loading.
@@ -598,7 +598,7 @@ impl Room {
         .await;
 
         if result.is_err() {
-            self.admin_start_pending.store(false, Ordering::SeqCst);
+            self.admin_start_pending.store(false, Ordering::Relaxed);
         }
         result
     }
@@ -637,7 +637,7 @@ impl Room {
                         self.send(Message::NewHost { user: new_host_id }).await;
                     }
                 }
-                self.system_host.store(false, Ordering::SeqCst);
+                self.system_host.store(false, Ordering::Relaxed);
                 *self.host.write().await = Arc::downgrade(&user);
                 user.try_send(ServerCommand::ChangeHost(true)).await;
                 self.publish_update(PartialRoomData {
@@ -650,7 +650,7 @@ impl Room {
                 if let Some(old_host) = old_host {
                     old_host.try_send(ServerCommand::ChangeHost(false)).await;
                 }
-                self.system_host.store(true, Ordering::SeqCst);
+                self.system_host.store(true, Ordering::Relaxed);
                 *self.host.write().await = Weak::<super::session::User>::new();
                 if announce {
                     self.send(Message::NewHost { user: -1 }).await;
@@ -701,7 +701,7 @@ impl Room {
     /// Return: should the room be dropped
     #[must_use]
     pub async fn on_user_leave(&self, user: &super::session::User) -> bool {
-        let is_monitor = user.monitor.load(Ordering::SeqCst);
+        let is_monitor = user.monitor.load(Ordering::Relaxed);
         let leave = ServerCommand::Message(Message::LeaveRoom {
             user: user.id,
             name: user.name.clone(),
@@ -746,9 +746,13 @@ impl Room {
 
         if self.check_host(user).await.is_ok() {
             info!("host disconnected!");
-            let user = users.choose(&mut rand::rng()).unwrap();
+            let Some(new_host) = users.choose(&mut rand::rng()) else {
+                warn!("cannot reassign host: no users available");
+                return false;
+            };
+            let user = new_host;
             debug!("selected {} as host", user.id);
-            self.system_host.store(false, Ordering::SeqCst);
+            self.system_host.store(false, Ordering::Relaxed);
             *self.host.write().await = Arc::downgrade(user);
             self.send(Message::NewHost { user: user.id }).await;
             user.try_send(ServerCommand::ChangeHost(true)).await;
@@ -765,7 +769,7 @@ impl Room {
     pub async fn reset_game_time(&self) {
         for user in self.users().await {
             user.game_time
-                .store(f32::NEG_INFINITY.to_bits(), Ordering::SeqCst);
+                .store(f32::NEG_INFINITY.to_bits(), Ordering::Relaxed);
         }
     }
 
@@ -1028,7 +1032,7 @@ impl Room {
                             }
                         };
                         if let Some(new_host) = new_host {
-                            self.system_host.store(false, Ordering::SeqCst);
+                            self.system_host.store(false, Ordering::Relaxed);
                             *self.host.write().await = Arc::downgrade(&new_host);
                             self.send(Message::NewHost { user: new_host.id }).await;
                             if let Some(old) = host.upgrade() {

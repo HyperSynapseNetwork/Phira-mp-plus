@@ -177,6 +177,8 @@ impl RoomCommandGateway {
         }
     }
 
+    /// Runtime v2 mailbox routing: prefer per-room mailbox, fall back to inline.
+    /// Dead code until the command migration activates this path.
     #[allow(dead_code)]
     pub(super) async fn room_mailbox_or_inline<Build, Inline, Fut>(
         &self,

@@ -1059,6 +1059,8 @@ impl PlusServer {
             &http_server,
         )));
         state.plugin_manager.set_http_handle(http_handle).await;
+        // 设置 WIT 组件模型所需的服务端状态引用
+        state.plugin_manager.set_server_state(Arc::clone(&state)).await;
 
         // 加载插件
         let plugin_count = state.plugin_manager.load_plugins().await.unwrap_or(0);
@@ -3718,7 +3720,7 @@ fn server_state_query_inner(
     }
 }
 
-/// Public wrapper for [`server_state_query`], usable from WIT host traits.
+/// Public wrapper for `server_state_query`, usable from WIT host traits.
 pub fn server_state_query_for_host(
     state: &Arc<PlusServerState>,
     method: &str,

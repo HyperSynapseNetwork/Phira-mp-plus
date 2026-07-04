@@ -7,12 +7,15 @@
 //! so plugins and dashboards can reconstruct modification time and order.
 
 use anyhow::Result;
-#[cfg(feature = "postgres")]
-use serde::de::DeserializeOwned;
 use serde_json::Value;
 
-#[cfg(feature = "postgres")]
-use sqlx::Row;
+/// Unix 毫秒时间戳。
+pub(crate) fn now_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
+}
 
 /// 游玩时间记录
 #[derive(Debug, Clone)]
@@ -50,21 +53,6 @@ pub enum DbManager {
     Pg(sqlx::PgPool),
     /// 未配置数据库（调用方保留旧回退行为）
     None,
-}
-
-#[allow(dead_code)]
-pub(crate) fn now_secs() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs() as i64)
-        .unwrap_or(0)
-}
-
-pub(crate) fn now_ms() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or(0)
 }
 
 impl DbManager {
@@ -181,166 +169,6 @@ impl DbManager {
 
 }
 
-#[allow(dead_code)]
-pub(crate) fn telemetry_time_range<I>(times: I) -> (Option<f64>, Option<f64>)
-where
-    I: IntoIterator<Item = f64>,
-{
-    let mut first = None;
-    let mut last = None;
-    for time in times {
-        first = Some(first.map_or(time, |v: f64| v.min(time)));
-        last = Some(last.map_or(time, |v: f64| v.max(time)));
-    }
-    (first, last)
-}
-
-#[cfg(feature = "postgres")]
-#[allow(dead_code)]
-async fn query_telemetry_batches(
-    pool: &sqlx::PgPool,
-    table: &str,
-    since_sequence: i64,
-    limit: i64,
-    round_uuid: Option<&str>,
-    player_id: Option<i32>,
-) -> Vec<Value> {
-    let table = match table {
-        "mp_round_judge_batches" => "mp_round_judge_batches",
-        _ => "mp_round_touch_batches",
-    };
-    let sql = format!(
-        "SELECT sequence, round_uuid, player_id, count, first_game_time, last_game_time, payload::text AS payload, created_at
-         FROM {table}
-         WHERE sequence > $1
-           AND ($2::text IS NULL OR round_uuid = $2)
-           AND ($3::int IS NULL OR player_id = $3)
-         ORDER BY sequence ASC LIMIT $4"
-    );
-    let rows = sqlx::query(&sql)
-        .bind(since_sequence)
-        .bind(round_uuid)
-        .bind(player_id)
-        .bind(limit)
-        .fetch_all(pool)
-        .await
-        .unwrap_or_default();
-    rows.into_iter()
-        .map(|row| {
-            let payload = row
-                .try_get::<String, _>("payload")
-                .ok()
-                .and_then(|s| serde_json::from_str::<Value>(&s).ok())
-                .unwrap_or(Value::Array(Vec::new()));
-            serde_json::json!({
-                "sequence": row.try_get::<i64, _>("sequence").unwrap_or_default(),
-                "round_uuid": row.try_get::<String, _>("round_uuid").unwrap_or_default(),
-                "player_id": row.try_get::<i32, _>("player_id").unwrap_or_default(),
-                "count": row.try_get::<i32, _>("count").unwrap_or_default(),
-                "first_game_time": row.try_get::<Option<f64>, _>("first_game_time").ok().flatten(),
-                "last_game_time": row.try_get::<Option<f64>, _>("last_game_time").ok().flatten(),
-                "data": payload,
-                "created_at": row.try_get::<i64, _>("created_at").unwrap_or_default(),
-            })
-        })
-        .collect()
-}
-
-#[cfg(feature = "postgres")]
-#[allow(dead_code)]
-async fn query_runtime_telemetry_items<T>(
-    pool: &sqlx::PgPool,
-    kind: &str,
-    round_uuid: &str,
-    player_id: i32,
-) -> Vec<T>
-where
-    T: DeserializeOwned,
-{
-    let rows = sqlx::query(
-        "SELECT payload::text AS payload
-         FROM mp_runtime_telemetry_items
-         WHERE kind = $1 AND round_uuid = $2 AND player_id = $3
-         ORDER BY sequence ASC",
-    )
-    .bind(kind)
-    .bind(round_uuid)
-    .bind(player_id)
-    .fetch_all(pool)
-    .await
-    .unwrap_or_default();
-
-    rows.into_iter()
-        .filter_map(|row| {
-            row.try_get::<String, _>("payload")
-                .ok()
-                .and_then(|raw| serde_json::from_str::<T>(&raw).ok())
-        })
-        .collect()
-}
-
-#[cfg(feature = "postgres")]
-#[allow(dead_code)]
-async fn query_runtime_telemetry_batches(
-    pool: &sqlx::PgPool,
-    kind: &str,
-    since_sequence: i64,
-    limit: i64,
-    round_uuid: Option<&str>,
-    player_id: Option<i32>,
-) -> Vec<Value> {
-    let kind = match kind {
-        "judge" => "judge",
-        _ => "touch",
-    };
-    let rows = sqlx::query(
-        "SELECT sequence, batch_uuid, run_id, scope, pipeline, kind, room_id, round_uuid, player_id,
-                item_count, payload::text AS payload, created_at, source, dual_write, schema_version, flush_reason
-         FROM mp_runtime_telemetry_batches
-         WHERE kind = $1
-           AND sequence > $2
-           AND ($3::text IS NULL OR round_uuid = $3)
-           AND ($4::int IS NULL OR player_id = $4)
-         ORDER BY sequence ASC LIMIT $5"
-    )
-    .bind(kind)
-    .bind(since_sequence)
-    .bind(round_uuid)
-    .bind(player_id)
-    .bind(limit)
-    .fetch_all(pool)
-    .await
-    .unwrap_or_default();
-
-    rows.into_iter().map(|row| {
-        let payload = row.try_get::<String, _>("payload").ok()
-            .and_then(|s| serde_json::from_str::<Value>(&s).ok())
-            .unwrap_or(Value::Null);
-        let data = payload.get("data").cloned().unwrap_or_else(|| payload.clone());
-        serde_json::json!({
-            "sequence": row.try_get::<i64, _>("sequence").unwrap_or_default(),
-            "batch_uuid": row.try_get::<String, _>("batch_uuid").unwrap_or_default(),
-            "run_id": row.try_get::<Option<String>, _>("run_id").ok().flatten(),
-            "scope": row.try_get::<String, _>("scope").unwrap_or_else(|_| "production".to_string()),
-            "pipeline": row.try_get::<String, _>("pipeline").unwrap_or_default(),
-            "kind": row.try_get::<String, _>("kind").unwrap_or_default(),
-            "room_id": row.try_get::<Option<String>, _>("room_id").ok().flatten(),
-            "round_uuid": row.try_get::<Option<String>, _>("round_uuid").ok().flatten().unwrap_or_default(),
-            "player_id": row.try_get::<i32, _>("player_id").unwrap_or_default(),
-            "count": row.try_get::<i32, _>("item_count").unwrap_or_default(),
-            "item_count": row.try_get::<i32, _>("item_count").unwrap_or_default(),
-            "data": data,
-            "payload": payload,
-            "created_at": row.try_get::<i64, _>("created_at").unwrap_or_default(),
-            "source": row.try_get::<String, _>("source").unwrap_or_default(),
-            "dual_write": row.try_get::<bool, _>("dual_write").unwrap_or_default(),
-            "schema_version": row.try_get::<i32, _>("schema_version").unwrap_or_default(),
-            "flush_reason": row.try_get::<String, _>("flush_reason").unwrap_or_default(),
-            "runtime_v2_read_path": true,
-        })
-    }).collect()
-}
-
 #[cfg(feature = "postgres")]
 pub(crate) async fn append_event_pg(
     pool: &sqlx::PgPool,
@@ -358,7 +186,12 @@ pub(crate) async fn append_event_pg(
     .bind(room_id)
     .bind(user_id)
     .bind(payload)
-    .bind(now_ms())
+    .bind(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as i64)
+            .unwrap_or(0),
+    )
     .execute(pool)
     .await?;
     Ok(())

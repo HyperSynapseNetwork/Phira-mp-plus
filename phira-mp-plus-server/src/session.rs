@@ -23,6 +23,18 @@ use tokio::{
 use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 
+/// Constant-time byte slice comparison to resist timing side-channel attacks.
+fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut diff: u8 = 0;
+    for (x, y) in a.iter().zip(b.iter()) {
+        diff |= x ^ y;
+    }
+    diff == 0
+}
+
 const HEARTBEAT_DISCONNECT_TIMEOUT: Duration = Duration::from_secs(600);
 pub struct User {
     pub id: i32,
@@ -71,7 +83,7 @@ impl User {
         UserInfo {
             id: self.id,
             name: self.name.clone(),
-            monitor: self.monitor.load(Ordering::SeqCst),
+            monitor: self.monitor.load(Ordering::Relaxed),
         }
     }
 
@@ -154,7 +166,7 @@ impl User {
                 }
                 drop(guard);
                 let room_id = room.id.clone();
-                let was_monitor = self.monitor.load(Ordering::SeqCst);
+                let was_monitor = self.monitor.load(Ordering::Relaxed);
                 if room.on_user_leave(&self).await {
                     self.server.rooms.write().await.remove(&room_id);
                 }
@@ -220,7 +232,7 @@ impl User {
                             }
                         }
                         let room_id = room.id.clone();
-                        let was_monitor = self_.monitor.load(Ordering::SeqCst);
+                        let was_monitor = self_.monitor.load(Ordering::Relaxed);
                         if room.on_user_leave(&self_).await {
                             self_.server.rooms.write().await.remove(&room_id);
                         }
@@ -600,7 +612,7 @@ impl Session {
                                     panicked.store(true, Ordering::SeqCst);
                                     return;
                                 }
-                                if server.room_monitor_key.as_slice() != key.as_slice() {
+                                if !constant_time_eq(server.room_monitor_key.as_slice(), key.as_slice()) {
                                     send_auth_rejection(&send_tx, "secret key mismatch".into())
                                         .await;
                                     let _ = tx.send(AuthenticationOutcome::Rejected);

@@ -21,11 +21,6 @@ pub struct ExtensionField {
     pub description: String,
 }
 
-/// 认证缓存条目（持久化用）
-/// Auth cache TTL in seconds (30 minutes).
-#[allow(dead_code)]
-const AUTH_CACHE_TTL_SECS: u64 = 1800;
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AuthCacheEntry {
     pub user_id: i32,

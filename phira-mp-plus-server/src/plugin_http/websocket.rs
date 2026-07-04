@@ -1,3 +1,10 @@
+//! WebSocket live event stream (work-in-progress).
+//!
+//! TODO: This module is a draft and is NOT yet integrated into the router.
+//! - `HttpAppState` is missing the `ws_live_tx` broadcast channel
+//! - Once added and wired into the router, this provides live event streaming
+//!   over WebSocket as an alternative to SSE.
+
 use super::HttpAppState;
 use axum::{
     body::Bytes,
@@ -14,17 +21,18 @@ pub async fn handler(
 }
 
 async fn run(mut socket: WebSocket, state: Arc<HttpAppState>) {
-    let mut events = state.ws_live_tx.subscribe();
+    // FIXME: Add ws_live_tx broadcast channel to HttpAppState
+    // let mut events = state.ws_live_tx.subscribe();
     loop {
         tokio::select! {
-            event = events.recv() => match event {
-                Ok(data) => {
-                    if socket.send(Message::Binary(Bytes::from(data))).await.is_err() {
-                        break;
-                    }
-                }
-                Err(_) => break,
-            },
+            // event = events.recv() => match event {
+            //     Ok(data) => {
+            //         if socket.send(Message::Binary(Bytes::from(data))).await.is_err() {
+            //             break;
+            //         }
+            //     }
+            //     Err(_) => break,
+            // },
             message = socket.recv() => match message {
                 Some(Ok(Message::Ping(data))) => {
                     if socket.send(Message::Pong(data)).await.is_err() {

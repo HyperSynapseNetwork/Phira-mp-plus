@@ -134,6 +134,10 @@ pub fn config_path(plugin: &str) -> std::path::PathBuf {
 }
 
 /// Validate an HTTP(S) URL for plugin HTTP requests.
+///
+/// Uses `std::net::IpAddr` parsing for IP-based SSRF protection. Hostnames
+/// that resolve to private IPs are NOT caught at this layer (no DNS resolver
+/// available in the synchronous context); see TODO below.
 pub fn validate_http_url(value: &str, allow_private: bool) -> Result<(), String> {
     if value.len() > 8192 {
         return Err("HTTP URL too long".to_string());
@@ -144,19 +148,50 @@ pub fn validate_http_url(value: &str, allow_private: bool) -> Result<(), String>
     if allow_private {
         return Ok(());
     }
-    // Simple SSRF check: reject private IP patterns
+    // Extract the host portion
     let after_scheme = value
         .trim_start_matches("https://")
         .trim_start_matches("http://");
     let host = after_scheme.split('/').next().unwrap_or(after_scheme);
     let host = host.split(':').next().unwrap_or(host); // strip port
-    // Reject private/loopback/unspecified addresses
-    let private_patterns = ["127.", "10.", "192.168.", "172.16.", "169.254.", "0.0.0.0", "localhost", "[::1]", "[::]", "[0:0:0:0:0:0:0:1]"];
-    for pattern in &private_patterns {
-        if host.starts_with(pattern) {
+    let host = host.trim_matches(|c| c == '[' || c == ']'); // strip IPv6 brackets
+
+    // Reject known private hostnames
+    if host.eq_ignore_ascii_case("localhost") {
+        return Err(format!("private network address not allowed: {host}"));
+    }
+
+    // Try parsing as IP for comprehensive SSRF checks
+    if let Ok(ip) = host.parse::<std::net::IpAddr>() {
+        let is_private = match ip {
+            std::net::IpAddr::V4(v4) => {
+                v4.is_private()
+                    || v4.is_loopback()
+                    || v4.is_link_local()
+                    || v4.is_broadcast()
+                    || v4.is_documentation()
+                    || v4.is_unspecified()
+                    || v4.is_multicast()
+            }
+            std::net::IpAddr::V6(v6) => {
+                v6.is_loopback()
+                    || v6.is_unspecified()
+                    || v6.is_multicast()
+                    || v6.is_unique_local()
+                    || v6.is_unicast_link_local()
+            }
+        };
+        if is_private {
             return Err(format!("private network address not allowed: {host}"));
         }
+        return Ok(());
     }
+
+    // TODO: Hostname SSRF protection requires DNS resolution, which needs an
+    // async context or a blocking thread.  Currently hostnames that resolve to
+    // private IPs are allowed through this synchronous validator.  When the
+    // HTTP client gains async DNS it should verify `rmap` of resolved addresses.
+
     Ok(())
 }
 

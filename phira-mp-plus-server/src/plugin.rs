@@ -116,6 +116,8 @@ pub mod wasm {
         services: Arc<wasm_host::WasmPluginServices>,
         runtime: WasmRuntimeConfig,
         instance: Option<wasm_host::WasmPluginInstance>,
+        #[cfg(feature = "wit-bindgen")]
+        component_instance: Option<wasm_host::WitPluginComponent>,
     }
 
     impl WasmPlugin {
@@ -135,8 +137,55 @@ pub mod wasm {
                 services,
                 runtime,
                 instance: None,
+                #[cfg(feature = "wit-bindgen")]
+                component_instance: None,
             }
         }
+    }
+
+    impl WasmPlugin {
+        /// Initialize as a JSON bridge module.
+        fn init_module(&mut self, bytes: &[u8]) -> Result<(), String> {
+            let mut instance = wasm_host::WasmPluginInstance::new(
+                bytes,
+                &self.meta.path,
+                Arc::clone(&self.services),
+                self.runtime.clone(),
+            )?;
+            self.meta.info = instance.info.clone();
+            instance.call_init()?;
+            self.instance = Some(instance);
+            self.meta.state = PluginState::Enabled;
+            info!("WASM plugin '{}' loaded (module)", self.meta.info.name);
+            Ok(())
+        }
+
+        /// Initialize as a WIT component (only when wit-bindgen feature is enabled).
+        #[cfg(feature = "wit-bindgen")]
+        fn init_component(&mut self, bytes: &[u8]) -> Result<(), String> {
+            let plugin_name = std::path::Path::new(&self.meta.path)
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("unknown")
+                .to_string();
+            let mut component = wasm_host::WitPluginComponent::new(
+                bytes,
+                plugin_name,
+                Arc::clone(&self.services),
+                self.runtime.clone(),
+            )?;
+            self.meta.info = component.info.clone();
+            component.call_init()?;
+            self.component_instance = Some(component);
+            self.meta.state = PluginState::Enabled;
+            info!("WIT component '{}' loaded", self.meta.info.name);
+            Ok(())
+        }
+    }
+
+    #[cfg(feature = "wit-bindgen")]
+    fn component_bytes_are_component(bytes: &[u8]) -> bool {
+        bytes.starts_with(b"\x00asm") && bytes.len() > 8 && bytes[8..12] == [0x01, 0x00, 0x00, 0x00]
     }
 
     impl PluginHost for WasmPlugin {
@@ -150,25 +199,24 @@ pub mod wasm {
         fn init(&mut self) -> Result<(), String> {
             let bytes = std::fs::read(&self.meta.path)
                 .map_err(|e| format!("read WASM '{}': {e}", self.meta.path))?;
-            let mut instance = wasm_host::WasmPluginInstance::new(
-                &bytes,
-                &self.meta.path,
-                Arc::clone(&self.services),
-                self.runtime.clone(),
-            )?;
-            self.meta.info = instance.info.clone();
-            instance.call_init()?;
-            self.instance = Some(instance);
-            self.meta.state = PluginState::Enabled;
-            info!("WASM plugin '{}' loaded", self.meta.info.name);
-            Ok(())
+            #[cfg(feature = "wit-bindgen")]
+            if component_bytes_are_component(&bytes) {
+                return self.init_component(&bytes);
+            }
+            self.init_module(&bytes)
         }
 
         fn cleanup(&mut self) {
             if let Some(instance) = self.instance.as_mut() {
                 instance.call_cleanup();
             }
+            #[cfg(feature = "wit-bindgen")]
+            if let Some(component) = self.component_instance.as_mut() {
+                component.call_cleanup();
+            }
             self.instance = None;
+            #[cfg(feature = "wit-bindgen")]
+            { self.component_instance = None; }
             self.meta.state = PluginState::Disabled;
         }
 
@@ -176,16 +224,26 @@ pub mod wasm {
             if !self.meta.enabled {
                 return Ok(Vec::new());
             }
-            let instance = self
-                .instance
-                .as_mut()
-                .ok_or_else(|| "plugin is not initialized".to_string())?;
-            let code = instance.call_on_event(event)?;
-            if code < 0 {
-                Err(format!("guest returned event error {code}"))
-            } else {
-                Ok(Vec::new())
+            // Module path (JSON bridge)
+            if let Some(instance) = self.instance.as_mut() {
+                let code = instance.call_on_event(event)?;
+                if code < 0 {
+                    return Err(format!("guest returned event error {code}"));
+                }
+                return Ok(Vec::new());
             }
+            // Component path (WIT, requires wit-bindgen)
+            #[cfg(feature = "wit-bindgen")]
+            if let Some(component) = self.component_instance.as_mut() {
+                let code = component.call_on_event(event)?;
+                if code < 0 {
+                    return Err(format!("component returned event error {code}"));
+                }
+                return Ok(Vec::new());
+            }
+            #[cfg(not(feature = "wit-bindgen"))]
+            let _ = event;
+            Err("plugin is not initialized".to_string())
         }
 
         fn call_api(
@@ -196,10 +254,14 @@ pub mod wasm {
             if !self.meta.enabled {
                 return Err("plugin is disabled".to_string());
             }
-            self.instance
-                .as_mut()
-                .ok_or_else(|| "plugin is not initialized".to_string())?
-                .call_api(method, args)
+            if let Some(instance) = self.instance.as_mut() {
+                return instance.call_api(method, args);
+            }
+            #[cfg(feature = "wit-bindgen")]
+            if let Some(component) = self.component_instance.as_mut() {
+                return component.call_api(method, args);
+            }
+            Err("plugin is not initialized".to_string())
         }
     }
 }
@@ -281,6 +343,13 @@ impl PluginManager {
                 .unwrap_or_else(|e| e.into_inner()) = Some(handle.clone());
         }
         *self.http_handle.write().await = Some(handle);
+    }
+
+    /// Set the server state reference on WASM services (for WIT host impls).
+    pub async fn set_server_state(&self, state: std::sync::Arc<crate::server::PlusServerState>) {
+        #[cfg(feature = "plugin-system")]
+        self.wasm_services.set_server_state(&state);
+        let _ = state; // keep for non-plugin builds
     }
 
     pub async fn register_plugin_api(&self, name: &str, handler: api::PluginApiHandler) {

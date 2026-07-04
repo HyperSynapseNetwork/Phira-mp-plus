@@ -18,9 +18,7 @@ use crate::extensions::ExtensionManager;
 use crate::plugin::{CliCommand, PluginEvent, PluginHost, PluginInfo, WasmRuntimeConfig};
 use phira_mp_plus_server_api as api;
 use std::collections::{HashMap, HashSet};
-use std::io::Read;
-use std::net::IpAddr;
-use std::path::{Component, Path, PathBuf};
+use std::path::Path;
 use std::sync::{Arc, Mutex, Weak};
 use tracing::{error, info, warn};
 use wasmtime::AsContext;
@@ -47,6 +45,9 @@ pub struct WasmPluginServices {
     capabilities: Mutex<HashMap<String, HashSet<String>>>,
     registered_apis: Mutex<HashMap<String, HashSet<String>>>,
     plugin_runtimes: Mutex<HashMap<String, Weak<Mutex<Box<dyn PluginHost>>>>>,
+    /// Server state reference for WIT component model host implementations.
+    /// Set after server initialization via `set_server_state()`.
+    pub server_state: std::sync::RwLock<Option<std::sync::Weak<crate::server::PlusServerState>>>,
 }
 
 impl WasmPluginServices {
@@ -71,6 +72,14 @@ impl WasmPluginServices {
             capabilities: Mutex::new(HashMap::new()),
             registered_apis: Mutex::new(HashMap::new()),
             plugin_runtimes: Mutex::new(HashMap::new()),
+            server_state: std::sync::RwLock::new(None),
+        }
+    }
+
+    /// Set the server state reference (called after server initialization).
+    pub fn set_server_state(&self, state: &Arc<crate::server::PlusServerState>) {
+        if let Ok(mut guard) = self.server_state.write() {
+            *guard = Some(Arc::downgrade(state));
         }
     }
 
@@ -112,18 +121,124 @@ impl WasmPluginServices {
             .insert(plugin.to_string(), caps);
     }
 
-#[allow(dead_code)]
-    fn has_capability(&self, plugin: &str, capability: &str) -> bool {
-        self.capabilities
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .get(plugin)
-            .is_some_and(|caps| caps.contains("*") || caps.contains(capability))
-    }
 }
 
 struct HostState {
     limits: wasmtime::StoreLimits,
+}
+
+/// Store data for WIT component model plugin instances.
+/// Wraps the WIT host trait implementations alongside resource limits.
+struct WitHostState {
+    host: crate::wit_host::WitPluginHost,
+    #[allow(dead_code)]
+    limits: wasmtime::StoreLimits,
+}
+
+#[cfg(feature = "wit-bindgen")]
+mod wit_host_state_impls {
+    use super::WitHostState;
+    use crate::plugin_abi::wit_abi as wit;
+    use wit::phira::plugin::*;
+
+    // ── phira-types (data-only, no methods) ──
+    impl phira_types::Host for WitHostState {}
+
+    // ── phira-events (data-only, no methods) ──
+    impl phira_events::Host for WitHostState {}
+
+    // ── phira-host ──
+    impl phira_host::Host for WitHostState {
+        fn log(&mut self, level: String, message: String) { self.host.log(level, message) }
+        fn generate_uuid(&mut self) -> String { self.host.generate_uuid() }
+        fn current_time_ms(&mut self) -> u64 { self.host.current_time_ms() }
+        fn api_call(&mut self, method: String, args: Vec<phira_types::JsonValue>) -> phira_types::ApiResult { self.host.api_call(method, args) }
+        fn send_chat(&mut self, user_id: u32, message: String) { self.host.send_chat(user_id, message) }
+        fn http_request(&mut self, url: String, method: String, headers: Vec<(String, String)>, body: Vec<u8>) -> Result<phira_types::HttpResponse, String> { self.host.http_request(url, method, headers, body) }
+    }
+
+    // ── phira-query ──
+    impl phira_query::Host for WitHostState {
+        fn get_user(&mut self, user_id: u32) -> phira_types::ApiResult { self.host.get_user(user_id) }
+        fn get_user_extra(&mut self, user_id: u32, key: String) -> phira_types::ApiResult { self.host.get_user_extra(user_id, key) }
+        fn set_user_extra(&mut self, user_id: u32, key: String, value: String) -> phira_types::ApiResult { self.host.set_user_extra(user_id, key, value) }
+        fn get_room(&mut self, room_id: String) -> phira_types::ApiResult { self.host.get_room(room_id) }
+        fn get_room_extra(&mut self, room_id: String, key: String) -> phira_types::ApiResult { self.host.get_room_extra(room_id, key) }
+        fn list_rooms(&mut self) -> phira_types::ApiResult { self.host.list_rooms() }
+        fn list_online_users(&mut self) -> phira_types::ApiResult { self.host.list_online_users() }
+        fn is_user_online(&mut self, user_id: u32) -> bool { self.host.is_user_online(user_id) }
+    }
+
+    // ── phira-room-mgmt ──
+    impl phira_room_mgmt::Host for WitHostState {
+        fn create_empty_room(&mut self, room_id: String, endpoint: Option<String>) -> phira_types::ApiResult { self.host.create_empty_room(room_id, endpoint) }
+        fn kick_from_room(&mut self, room_id: String, target_id: u32) -> phira_types::ApiResult { self.host.kick_from_room(room_id, target_id) }
+        fn transfer_host(&mut self, room_id: String, target_id: u32) -> phira_types::ApiResult { self.host.transfer_host(room_id, target_id) }
+        fn set_host(&mut self, room_id: String, target_id: Option<u32>) -> phira_types::ApiResult { self.host.set_host(room_id, target_id) }
+        fn set_room_lock(&mut self, room_id: String, locked: bool) -> phira_types::ApiResult { self.host.set_room_lock(room_id, locked) }
+        fn set_room_hidden(&mut self, room_id: String, hidden: bool) -> phira_types::ApiResult { self.host.set_room_hidden(room_id, hidden) }
+        fn close_room(&mut self, room_id: String) -> phira_types::ApiResult { self.host.close_room(room_id) }
+        fn set_room_phira_api_endpoint(&mut self, room_id: String, endpoint: Option<String>) -> phira_types::ApiResult { self.host.set_room_phira_api_endpoint(room_id, endpoint) }
+    }
+
+    // ── phira-user-mgmt ──
+    impl phira_user_mgmt::Host for WitHostState {
+        fn kick_user(&mut self, user_id: u32, reason: String) -> phira_types::ApiResult { self.host.kick_user(user_id, reason) }
+        fn ban_user(&mut self, user_id: u32, reason: String) -> phira_types::ApiResult { self.host.ban_user(user_id, reason) }
+        fn unban_user(&mut self, user_id: u32) -> phira_types::ApiResult { self.host.unban_user(user_id) }
+        fn get_ban_list(&mut self) -> phira_types::ApiResult { self.host.get_ban_list() }
+        fn is_banned(&mut self, user_id: u32) -> bool { self.host.is_banned(user_id) }
+    }
+
+    // ── phira-messaging ──
+    impl phira_messaging::Host for WitHostState {
+        fn send_to_user(&mut self, user_id: u32, message: String) -> phira_types::ApiResult { self.host.send_to_user(user_id, message) }
+        fn send_to_room(&mut self, room_id: String, message: String) -> phira_types::ApiResult { self.host.send_to_room(room_id, message) }
+        fn send_to_all(&mut self, message: String) -> phira_types::ApiResult { self.host.send_to_all(message) }
+    }
+
+    // ── phira-persistence ──
+    impl phira_persistence::Host for WitHostState {
+        fn query_events(&mut self, since: u64, limit: u32, kind: Option<String>, room: Option<String>, user: Option<u32>) -> phira_types::ApiResult { self.host.query_events(since, limit, kind, room, user) }
+        fn query_room_snapshots(&mut self, since: u64, limit: u32) -> phira_types::ApiResult { self.host.query_room_snapshots(since, limit) }
+        fn query_touches(&mut self, since: u64, limit: u32, round: Option<String>, player: Option<u32>) -> phira_types::ApiResult { self.host.query_touches(since, limit, round, player) }
+        fn query_judges(&mut self, since: u64, limit: u32, round: Option<String>, player: Option<u32>) -> phira_types::ApiResult { self.host.query_judges(since, limit, round, player) }
+        fn get_playtime(&mut self, user_id: u32) -> phira_types::ApiResult { self.host.get_playtime(user_id) }
+        fn top_playtime(&mut self, limit: u32) -> phira_types::ApiResult { self.host.top_playtime(limit) }
+    }
+
+    // ── phira-admin ──
+    impl phira_admin::Host for WitHostState {
+        fn list_admin_ids(&mut self) -> phira_types::ApiResult { self.host.list_admin_ids() }
+        fn is_admin(&mut self, user_id: u32) -> bool { self.host.is_admin(user_id) }
+        fn add_admin_id(&mut self, user_id: u32) -> phira_types::ApiResult { self.host.add_admin_id(user_id) }
+        fn remove_admin_id(&mut self, user_id: u32) -> phira_types::ApiResult { self.host.remove_admin_id(user_id) }
+        fn set_admin_ids(&mut self, ids: Vec<u32>) -> phira_types::ApiResult { self.host.set_admin_ids(ids) }
+    }
+
+    // ── phira-config ──
+    impl phira_config::Host for WitHostState {
+        fn get_config(&mut self, key: String) -> phira_types::ApiResult { self.host.get_config(key) }
+        fn set_config(&mut self, key: String, value: String) -> phira_types::ApiResult { self.host.set_config(key, value) }
+        fn list_config(&mut self, prefix: String) -> phira_types::ApiResult { self.host.list_config(prefix) }
+        fn reload_config(&mut self) -> phira_types::ApiResult { self.host.reload_config() }
+        fn poll_config_changes(&mut self, since: u64) -> phira_types::ApiResult { self.host.poll_config_changes(since) }
+    }
+
+    // ── phira-simulation ──
+    impl phira_simulation::Host for WitHostState {
+        fn status(&mut self) -> phira_types::ApiResult { self.host.status() }
+        fn run(&mut self, preset: String, users: Option<u32>, rooms: Option<u32>, duration: Option<u32>) -> phira_types::ApiResult { self.host.run(preset, users, rooms, duration) }
+        fn stop(&mut self) -> phira_types::ApiResult { self.host.stop() }
+        fn cleanup(&mut self) -> phira_types::ApiResult { self.host.cleanup() }
+    }
+
+    // ── phira-runtime ──
+    impl phira_runtime::Host for WitHostState {
+        fn status(&mut self) -> phira_types::ApiResult { self.host.status() }
+        fn events(&mut self, limit: Option<u32>) -> phira_types::ApiResult { self.host.events(limit) }
+        fn commands(&mut self) -> phira_types::ApiResult { self.host.commands() }
+    }
 }
 
 // ── WASM 插件实例 ──
@@ -178,11 +293,10 @@ impl WasmPluginInstance {
             && wasm_bytes[8..12] == [0x01, 0x00, 0x00, 0x00];
 
         if is_component {
-            let _component = wasmtime::component::Component::new(&engine, wasm_bytes)
-                .map_err(|e| format!("component compile error: {}", e))?;
-            let mut _linker = wasmtime::component::Linker::<HostState>::new(&engine);
-            return Err("WIT component loading not yet implemented — compile plugin as JSON bridge module".to_string());
+            return Self::new_component(engine, wasm_bytes, plugin_name, services, runtime);
         }
+
+        // Fallback: traditional module (JSON bridge ABI)
 
         // Fallback: traditional module (JSON bridge ABI)
         let module = wasmtime::Module::new(&engine, wasm_bytes)
@@ -591,7 +705,177 @@ impl WasmPluginInstance {
         }
     }
 
-    #[allow(unused)]
+    /// Load a WIT component via the component model.
+    #[cfg(feature = "wit-bindgen")]
+    fn new_component(
+        engine: wasmtime::Engine,
+        wasm_bytes: &[u8],
+        plugin_name: String,
+        services: Arc<WasmPluginServices>,
+        runtime: WasmRuntimeConfig,
+    ) -> Result<Self, String> {
+        use crate::plugin_abi::wit_abi;
+        let component = wasmtime::component::Component::new(&engine, wasm_bytes)
+            .map_err(|e| format!("component compile: {e}"))?;
+        let mut linker = wasmtime::component::Linker::<WitHostState>::new(&engine);
+        wit_abi::PhiraPluginV2::add_to_linker(&mut linker, |state| state)
+            .map_err(|e| format!("linker setup: {e}"))?;
+        let state_ref = services
+            .server_state
+            .read()
+            .unwrap_or_else(|e| e.into_inner());
+        let host = state_ref
+            .as_ref()
+            .and_then(|w| w.upgrade())
+            .map(|s| crate::wit_host::WitPluginHost::new(s, plugin_name.clone()))
+            .ok_or_else(|| "server state not available — set via PluginManager::set_server_state".to_string())?;
+        let store_limits = {
+            let mut builder = wasmtime::StoreLimitsBuilder::new();
+            if runtime.max_memory_mb > 0 {
+                builder = builder.memory_size(runtime.max_memory_mb as usize * 1024 * 1024);
+            }
+            builder.build()
+        };
+        if runtime.max_stack_bytes > 0 {
+            // Stack limit is set at engine config level already.
+        }
+        let host_state = WitHostState { host, limits: store_limits };
+        let mut store = wasmtime::Store::new(&engine, host_state);
+        let _instance = futures::executor::block_on(
+            linker.instantiate_async(&mut store, &component),
+        )
+        .map_err(|e| format!("instantiate component: {e}"))?;
+        Err(format!(
+            "WIT component '{plugin_name}' compiled. TODO: wrap component exports in PluginHost impl."
+        ))
+    }
+
+    #[cfg(not(feature = "wit-bindgen"))]
+    fn new_component(
+        _engine: wasmtime::Engine,
+        _wasm_bytes: &[u8],
+        plugin_name: String,
+        _services: Arc<WasmPluginServices>,
+        _runtime: WasmRuntimeConfig,
+    ) -> Result<Self, String> {
+        Err(format!(
+            "WIT component model requires the wit-bindgen feature. \
+             Enable it in Cargo.toml to load component '{}'.",
+            plugin_name
+        ))
+    }
+}
+
+/// WIT component model plugin instance.
+/// Wraps a compiled component and its store, providing the same lifecycle
+/// API as WasmPluginInstance but through the component model.
+#[cfg(feature = "wit-bindgen")]
+pub struct WitPluginComponent {
+    store: wasmtime::Store<WitHostState>,
+    component: crate::plugin_abi::wit_abi::PhiraPluginV2,
+    pub info: PluginInfo,
+    pub plugin_name: String,
+    pub initialized: bool,
+}
+
+#[cfg(feature = "wit-bindgen")]
+impl WitPluginComponent {
+    pub fn new(
+        wasm_bytes: &[u8],
+        plugin_name: String,
+        services: Arc<WasmPluginServices>,
+        runtime: WasmRuntimeConfig,
+    ) -> Result<Self, String> {
+        use crate::plugin_abi::wit_abi;
+        let mut engine_config = wasmtime::Config::new();
+        engine_config.consume_fuel(runtime.fuel_per_call > 0);
+        engine_config.max_wasm_stack(runtime.max_stack_bytes.max(64 * 1024));
+        let engine = wasmtime::Engine::new(&engine_config)
+            .map_err(|e| format!("engine creation: {e}"))?;
+        let component = wasmtime::component::Component::new(&engine, wasm_bytes)
+            .map_err(|e| format!("component compile: {e}"))?;
+        let mut linker = wasmtime::component::Linker::<WitHostState>::new(&engine);
+        wit_abi::PhiraPluginV2::add_to_linker(&mut linker, |state| state)
+            .map_err(|e| format!("linker setup: {e}"))?;
+        let state_ref = services
+            .server_state
+            .read()
+            .unwrap_or_else(|e| e.into_inner());
+        let host = state_ref
+            .as_ref()
+            .and_then(|w| w.upgrade())
+            .map(|s| crate::wit_host::WitPluginHost::new(s, plugin_name.clone()))
+            .ok_or_else(|| "server state not available".to_string())?;
+        let store_limits = {
+            let mut builder = wasmtime::StoreLimitsBuilder::new();
+            if runtime.max_memory_mb > 0 {
+                builder = builder.memory_size(runtime.max_memory_mb as usize * 1024 * 1024);
+            }
+            builder.build()
+        };
+        let host_state = WitHostState { host, limits: store_limits };
+        let mut store = wasmtime::Store::new(&engine, host_state);
+        let _instance: wasmtime::component::Instance = futures::executor::block_on(
+            linker.instantiate_async(&mut store, &component),
+        )
+        .map_err(|e| format!("instantiate component: {e}"))?;
+        // TODO: get PhiraPluginV2 handle from instance.  The generated bindings
+        // provide a new() or from_handle() constructor.  Until then, component
+        // lifecycle methods are stubs.
+        let component_handle = crate::plugin_abi::wit_abi::PhiraPluginV2::new(&mut store, &_instance)
+            .map_err(|e| format!("get component handle: {e}"))?;
+        let info = PluginInfo {
+            name: plugin_name.clone(),
+            version: "0.1.0".to_string(),
+            author: "unknown".to_string(),
+            description: "WIT component plugin".to_string(),
+        };
+        Ok(Self {
+            store,
+            component: component_handle,
+            info,
+            plugin_name,
+            initialized: false,
+        })
+    }
+
+    pub fn call_init(&mut self) -> Result<(), String> {
+        let result = self.component.call_init(&mut self.store)
+            .map_err(|e| format!("component init: {e}"))?;
+        result.map_err(|e| format!("component init returned error: {e}"))?;
+        self.initialized = true;
+        Ok(())
+    }
+
+    pub fn call_cleanup(&mut self) {
+        if !self.initialized {
+            return;
+        }
+        let _ = self.component.call_cleanup(&mut self.store);
+        self.initialized = false;
+    }
+
+    pub fn call_on_event(&mut self, _event: &PluginEvent) -> Result<i32, String> {
+        // TODO: convert PluginEvent to WIT plugin-event and call component.on_event.
+        // For now, return success without dispatching.
+        let _ = &self.component;
+        Ok(0)
+    }
+
+    pub fn call_api(&mut self, _method: &str, _args: &[serde_json::Value]) -> Result<serde_json::Value, String> {
+        // TODO: call component.on_api with method and args.
+        Err("component call_api not yet wired".to_string())
+    }
+}
+
+#[cfg(feature = "wit-bindgen")]
+impl Drop for WitPluginComponent {
+    fn drop(&mut self) {
+        self.call_cleanup();
+    }
+}
+
+impl Drop for WasmPluginInstance {
     fn drop(&mut self) {
         if self.initialized {
             self.call_cleanup();
@@ -599,164 +883,24 @@ impl WasmPluginInstance {
     }
 }
 
+/// JSON bridge ABI has been removed in favour of the WIT component model.
+/// See `wit_host.rs` for WIT host trait implementations.
 fn dispatch_api(
     _svc: &WasmPluginServices,
-    _plugin_name: &str,
-    _method: &str,
+    plugin_name: &str,
+    method: &str,
     _args: &str,
 ) -> Result<String, String> {
-    Err("JSON bridge removed — use WIT ABI v2. Migrate plugin to component model.".to_string())
+    Err(format!(
+        "JSON bridge ABI removed — WIT component model required. \
+         Plugin '{plugin_name}' called '{method}'. Recompile plugin for the \
+         phira-plugin-v2 WIT world. See wit/phira-plugin.wit."
+    ))
 }
 // ── 辅助函数 ──
 
 use crate::wasm_host_helpers as helpers;
 
-#[allow(dead_code)]
-fn state_call(
-    svc: &WasmPluginServices,
-    method: &str,
-    args: &[serde_json::Value],
-) -> Result<String, String> {
-    let guard = svc
-        .state_query
-        .read()
-        .map_err(|e| format!("lock error: {e}"))?;
-    guard
-        .as_ref()
-        .ok_or_else(|| "state query not available".to_string())?
-        .call(method, args)
-        .map(|value| value.to_string())
-}
-
-#[allow(dead_code)]
-fn ensure_config_loaded(svc: &WasmPluginServices, plugin: &str) -> Result<(), String> {
-    if svc
-        .plugin_configs
-        .read()
-        .map_err(|e| format!("lock error: {e}"))?
-        .contains_key(plugin)
-    {
-        return Ok(());
-    }
-    let path = helpers::config_path(plugin);
-    let config = if path.exists() {
-        let bytes = std::fs::read(&path).map_err(|e| format!("read config: {e}"))?;
-        if bytes.len() > svc.runtime.max_file_bytes {
-            return Err("config file exceeds plugin limit".to_string());
-        }
-        serde_json::from_slice::<HashMap<String, String>>(&bytes)
-            .map_err(|e| format!("invalid config file: {e}"))?
-    } else {
-        HashMap::new()
-    };
-    svc.plugin_configs
-        .write()
-        .map_err(|e| format!("lock error: {e}"))?
-        .entry(plugin.to_string())
-        .or_insert(config);
-    Ok(())
-}
-
-#[allow(dead_code)]
-fn persist_plugin_config(plugin: &str, config: &HashMap<String, String>) -> Result<(), String> {
-    let bytes = serde_json::to_vec_pretty(config).map_err(|e| format!("encode config: {e}"))?;
-    helpers::atomic_write(&helpers::config_path(plugin), &bytes)
-}
-
-
-#[allow(dead_code)]
-fn plugin_data_path(plugin: &str, relative: &str, create_parent: bool) -> Result<PathBuf, String> {
-    helpers::validate_identifier(plugin)?;
-    let relative = Path::new(relative);
-    if relative.as_os_str().is_empty() || relative.is_absolute() {
-        return Err("plugin paths must be non-empty and relative".to_string());
-    }
-    if relative
-        .components()
-        .any(|part| !matches!(part, Component::Normal(_)))
-    {
-        return Err("plugin path traversal is not allowed".to_string());
-    }
-    let root = Path::new("data/plugins").join(plugin);
-    std::fs::create_dir_all(&root).map_err(|e| format!("create plugin data directory: {e}"))?;
-    helpers::reject_symlink_components(&root)?;
-    let target = root.join(relative);
-    if create_parent {
-        let parent = target.parent().ok_or("path has no parent")?;
-        std::fs::create_dir_all(parent)
-            .map_err(|e| format!("create plugin data directory: {e}"))?;
-        helpers::reject_symlink_components(parent)?;
-        if target.exists()
-            && std::fs::symlink_metadata(&target)
-                .map_err(|e| e.to_string())?
-                .file_type()
-                .is_symlink()
-        {
-            return Err("symbolic links are not allowed in plugin storage".to_string());
-        }
-    } else {
-        let canonical_root =
-            std::fs::canonicalize(&root).map_err(|e| format!("canonicalize plugin root: {e}"))?;
-        let canonical_target =
-            std::fs::canonicalize(&target).map_err(|e| format!("canonicalize plugin file: {e}"))?;
-        if !canonical_target.starts_with(canonical_root) {
-            return Err("plugin path escaped its data directory".to_string());
-        }
-    }
-    Ok(target)
-}
-
-
-
-#[allow(dead_code)]
-fn is_private_ip(ip: IpAddr) -> bool {
-    match ip {
-        IpAddr::V4(ip) => {
-            ip.is_private()
-                || ip.is_loopback()
-                || ip.is_link_local()
-                || ip.is_broadcast()
-                || ip.is_documentation()
-                || ip.is_unspecified()
-                || ip.is_multicast()
-        }
-        IpAddr::V6(ip) => {
-            ip.is_loopback()
-                || ip.is_unspecified()
-                || ip.is_multicast()
-                || ip.is_unique_local()
-                || ip.is_unicast_link_local()
-        }
-    }
-}
-
-#[allow(dead_code)]
-fn read_limited_response(
-    mut response: reqwest::blocking::Response,
-    limit: usize,
-) -> Result<String, String> {
-    if !response.status().is_success() {
-        return Err(format!("HTTP request returned {}", response.status()));
-    }
-    if response
-        .content_length()
-        .is_some_and(|length| length > limit as u64)
-    {
-        return Err("HTTP response exceeds plugin limit".to_string());
-    }
-    let mut bytes = Vec::new();
-    response
-        .by_ref()
-        .take(limit.saturating_add(1) as u64)
-        .read_to_end(&mut bytes)
-        .map_err(|e| format!("read HTTP response: {e}"))?;
-    if bytes.len() > limit {
-        return Err("HTTP response exceeds plugin limit".to_string());
-    }
-    String::from_utf8(bytes).map_err(|e| format!("HTTP response is not UTF-8: {e}"))
-}
-
-#[allow(dead_code)]
 fn read_str_from_memory(
     memory: &wasmtime::Memory,
     ctx: impl wasmtime::AsContext,
@@ -789,19 +933,5 @@ mod tests {
         assert!(!caps.contains("admin"));
         assert!(!caps.contains("room.manage"));
         assert!(!caps.contains("http"));
-    }
-
-    #[test]
-    fn private_networks_are_detected() {
-        assert!(is_private_ip("127.0.0.1".parse().unwrap()));
-        assert!(is_private_ip("10.0.0.1".parse().unwrap()));
-        assert!(is_private_ip("::1".parse().unwrap()));
-        assert!(!is_private_ip("8.8.8.8".parse().unwrap()));
-    }
-
-    #[test]
-    fn plugin_paths_reject_traversal_before_io() {
-        assert!(plugin_data_path("test-plugin", "../secret", false).is_err());
-        assert!(plugin_data_path("test-plugin", "/absolute", false).is_err());
     }
 }

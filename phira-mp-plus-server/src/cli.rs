@@ -407,7 +407,7 @@ impl CliHandler {
                 c::dim("  ────────────────────────────────────────────")
             ));
             for user in users.values().filter(|user| user.id > 0) {
-                let monitor = if user.monitor.load(std::sync::atomic::Ordering::SeqCst) {
+                let monitor = if user.monitor.load(std::sync::atomic::Ordering::Relaxed) {
                     c::yellow(" [观]")
                 } else {
                     String::new()
@@ -481,12 +481,12 @@ impl CliHandler {
                 crate::room::InternalRoomState::WaitForReady { .. } => "WaitForReady",
                 crate::room::InternalRoomState::Playing { .. } => "Playing",
             };
-            let locked = if room.locked.load(std::sync::atomic::Ordering::SeqCst) {
+            let locked = if room.locked.load(std::sync::atomic::Ordering::Relaxed) {
                 c::yellow("锁定")
             } else {
                 c::dim("未锁定")
             };
-            let cycling = if room.cycle.load(std::sync::atomic::Ordering::SeqCst) {
+            let cycling = if room.cycle.load(std::sync::atomic::Ordering::Relaxed) {
                 c::cyan("轮换")
             } else {
                 c::dim("不轮换")

@@ -14,7 +14,6 @@ use tracing::warn;
 
 const AUTH_FAILURE_RESPONSE_DELAY: Duration = Duration::from_millis(50);
 const AUTH_FAILURE_FLUSH_TIMEOUT: Duration = Duration::from_secs(1);
-#[allow(dead_code)]
 const MAX_CLIENT_BAN_REASON_CHARS: usize = 160;
 
 #[derive(Debug, Deserialize)]

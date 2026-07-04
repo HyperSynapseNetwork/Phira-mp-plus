@@ -44,6 +44,9 @@ phira-mp-plus-server-api = { path = "../phira-mp-plus-server-api" }
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 
+[target.'cfg(target_os = "linux")'.dependencies]
+tikv-jemallocator = "0.6"
+
 [features]
 default = ["plugin-system", "postgres", "wit-bindgen"]
 plugin-system = ["dep:wasmtime"]
