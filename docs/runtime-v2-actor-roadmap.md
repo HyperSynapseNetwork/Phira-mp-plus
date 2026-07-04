@@ -1,321 +1,45 @@
-# Runtime v2 Actor Roadmap
+# Runtime v2 Actor 迁移路线图
 
-This roadmap is the long-term target for preventing more code from piling into
-`server.rs`, `session.rs`, `room.rs` and `cli.rs`.
+本路线图是防止代码继续堆积到 `server.rs`、`session.rs`、`room.rs` 和 `cli.rs` 的长期目标。
 
-The project is still allowed to ship useful patches before the actor migration is
-complete.  The rule is not "stop feature work until actors exist".  The rule is
-"new cross-cutting features should move toward actor boundaries instead of adding
-more direct calls between large files".
+项目在 Actor 迁移完成之前仍然允许发布有用的补丁。规则不是"在 Actor 存在之前停止功能开发"，而是"新的跨功能工作应朝着 Actor 边界移动，而不是在大文件之间添加更多直接调用"。
 
-## Explicit non-goal
+## 明确非目标
 
-Do **not** implement a privileged Web management API for Runtime v2.
+**不要**为 Runtime v2 实现特权 Web 管理 API。
 
-Allowed Web/API work:
+允许的 Web/API 工作:
+- 只读诊断
+- 已有的公开房间/状态 API
+- 不修改服务器状态的可观测端点
 
-- read-only diagnostics
-- public room/status APIs that already exist
-- observability endpoints that do not mutate server state
-
-Write-capable control surfaces should remain:
-
+写能力的控制面应保持:
 - CLI
 - TUI
-- in-game admin `_` command
-- WIT/plugin APIs with explicit capabilities
+- 游戏内管理员 `_` 命令
+- WIT/插件 API（带显式 capability）
 
-## Migration rule
+## 迁移规则
 
-Every actor migration should follow this order:
+每个 Actor 迁移应按此顺序进行:
 
-1. Mirror existing events without changing behavior.
-2. Add read-side diagnostics and tests.
-3. Route read paths through the actor/facade.
-4. Route one write path through the actor/facade.
-5. Keep dual-write or compatibility shim while testing.
-6. Remove the old direct call only after simulation suites and Actions pass.
+1. **Mirror** — EventBus 镜像现有事件，不改变原有路径
+2. **Route reads** — 将读取路径从直接调用改为通过 Actor 边界
+3. **Route writes** — 将写入路径改为通过 Actor 边界（保留旧路径作为 fallback）
+4. **Own** — Actor 拥有状态所有权，删除旧直接调用
 
-## Target actor boundaries
+## 当前边界状态
 
-### Server supervisor
+见 `src/actor_runtime.rs` 中的 `default_boundaries()` 函数获取最新状态。CLI 命令 `runtime actors` 也可查看运行时状态。
 
-Owns process lifecycle, listener startup, shutdown, task supervision and global
-runtime handles.
+## Actor 边界
 
-Current source pressure:
-
-- `server.rs`
-
-Near-term cut:
-
-- keep `PlusServerState` as compatibility facade
-- move new runtime handles behind actor-owned services
-
-### Session actor
-
-Owns one client connection, authentication state, inbound command decoding and
-outbound send queue.
-
-Current source pressure:
-
-- `session.rs`
-
-Near-term cut:
-
-- extract command side effects into message handlers
-- ensure Touches/Judges are persisted independent of monitor presence
-- avoid business logic waiting on Phira HTTP directly
-
-### Room actor
-
-Owns one room state machine: membership, host transfer, ready/start/play/result,
-room metadata and telemetry fan-in.
-
-Current source pressure:
-
-- `room.rs`
-
-Near-term cut:
-
-- keep mirroring RoomEvent into EventBus
-- add simulation regression coverage before moving write ownership
-- route admin/StateQuery room writes through `RoomCommandGateway` first
-- replace the inline gateway implementation with per-room mailbox actors after counters and suite reports are stable
-
-### Persistence actor
-
-Owns database batching, backpressure, retry, simulation isolation, flush on
-shutdown and high-frequency Touch/Judge persistence.
-
-Current source pressure:
-
-- `db.rs`
-- `round_store.rs`
-- `persistence_worker.rs`
-
-Near-term cut:
-
-- migrate low-frequency production events from direct writes into worker
-- then migrate production Touch/Judge batches using bounded batching
-- keep `mp_sim_*` or simulation flags isolated from real data
-
-### Simulation actor
-
-Owns shadow users, shadow rooms, deterministic replay, suites and synthetic
-workload generation.
-
-Current source pressure:
-
-- `simulation.rs`
-
-Near-term cut:
-
-- add suite report summaries
-- add deterministic regression snapshots
-- use simulation to test actor migration before real Room writes move
-
-### Plugin actor
-
-Owns plugin dispatch, capability checks, slow-plugin isolation and event fanout.
-
-Current source pressure:
-
-- `plugin.rs`
-- `wasm_host.rs`
-- `plugin_http.rs`
-
-Near-term cut:
-
-- route EventBus events to plugin dispatcher
-- prevent slow plugin callbacks from blocking Room/Session hot paths
-
-### CLI actor
-
-Owns CLI/TUI/in-game admin command execution through Command Registry.
-
-Current source pressure:
-
-- `cli.rs`
-- `cli_tui.rs`
-- `command_registry.rs`
-
-Near-term cut:
-
-- move command handlers into registry-backed modules
-- keep aliases stable
-- keep help and completion generated from the same registry
-
-## Near-term priority after Step 13
-
-1. PersistenceWorker production low-frequency dual-write path.
-2. Touch/Judge production batching policy in the worker.
-3. Replace `RoomCommandGateway` inline methods with a mailbox-backed per-room actor for one low-risk command.
-4. Session command handler extraction.
-5. Plugin dispatch isolation so slow plugins cannot block Room/Session hot paths.
-
-## Step 14 update: first mailbox-backed room command path
-
-Step 14 starts turning `RoomCommandGateway` from an inline facade into an
-actor-shaped command boundary.
-
-Implemented now:
-
-- `room set <id> lock <bool>` / `room.set_lock` still use the same public gateway
-  method, but the actual write crosses a bounded mailbox first.
-- `room set <id> cycle <bool>` uses the same mailbox path.
-- The mailbox worker falls back to the inline path if the queue is unavailable,
-  so this migration step does not brick admin commands during early testing.
-- `runtime rooms` reports mailbox counters: enabled, enqueued, completed,
-  failed, fallback and closed.
-
-Still intentionally not done:
-
-- no per-room mailbox ownership yet;
-- no full `Room` state-machine rewrite;
-- no Web management API;
-- no migration of start/cancel/host/kick/close into mailbox yet.
-
-Next cut:
-
-1. Move one more command family, probably host transfer or close, through the
-   mailbox after `set_lock/set_cycle` pass Actions and manual room tests.
-2. Split the gateway worker into per-room mailboxes.
-3. Only after that, move selected state-machine transitions out of `room.rs`.
-
-## Step 15 update: per-room mailbox registry
-
-Step 15 moves the gateway from a single mailbox-backed command path toward real
-per-room actor ownership.  The gateway still delegates to the current `Room`
-implementation internally, but selected writes are serialized by `room_id` before
-running.
-
-Commands now routed through the per-room mailbox registry:
-
-- `room set <id> lock <bool>`
-- `room set <id> cycle <bool>`
-- `room host <id> <user|?>` / host transfer
-- `room close <id>`
-
-Still inline inside the gateway:
-
-- `kick`
-- `start`
-- `cancel`
-
-Operational counters added or expanded:
-
-- active per-room mailbox count
-- mailbox created count
-- registry hit/miss count
-- enqueue/complete/fallback/closed counters
-
-Next cut:
-
-1. Move `kick` into the per-room mailbox path after close/host tests pass.
-2. Move `start` and `cancel` only after auditing `WaitForReady` state locking and
-   send-before/after-lock behavior.
-3. Add command latency and command-id tracing to the gateway before moving more
-   state-machine transitions.
-4. Start extracting actual room-owned state into actor-local ownership only after
-   the mailbox path has stable counters and test coverage.
-
-## Step 16 update: kick mailbox path and command audit
-
-Step 16 adds the next real command family to the per-room mailbox registry and
-adds command-level observability.
-
-Commands now routed through the per-room mailbox registry:
-
-- `room set <id> lock <bool>`
-- `room set <id> cycle <bool>`
-- `room host <id> <user|?>` / host transfer
-- `room close <id>`
-- `room kick <id> <user_id>` / `room.kick`
-
-Command audit telemetry now records:
-
-- monotonically increasing command id;
-- room id;
-- action;
-- success/failure;
-- latency in microseconds;
-- recent error message when a command fails.
-
-Next cut:
-
-1. Audit `start` and `cancel` carefully before moving them into the mailbox,
-   because they touch `WaitForReady` state and send game-control messages.
-2. Add tests around the gateway fallback behavior.
-3. Begin moving selected room-owned state into actor-local ownership once the
-   command boundary has stable failure and latency metrics.
-
-## Step 17 update: start/cancel mailbox path
-
-Step 17 completes the first admin room-write sweep through the per-room mailbox
-registry by moving the higher-risk start/cancel operations behind the same
-command boundary.
-
-Commands now routed through the per-room mailbox registry:
-
-- `room set <id> lock <bool>`
-- `room set <id> cycle <bool>`
-- `room host <id> <user|?>` / host transfer
-- `room close <id>`
-- `room kick <id> <user_id>` / `room.kick`
-- `room start <id>`
-- `room cancel <id>`
-
-The cancel path was also tightened so it no longer awaits client sends while
-holding the room-state write lock.  It performs the state transition in the
-critical section, releases the lock, then sends `CancelGame` and publishes the
-state update.
-
-Next cut:
-
-1. Extract `RoomCommandGateway` handlers into smaller command modules so
-   `room_actor.rs` does not become the next large file.
-2. Introduce typed `RoomCommand`/`RoomCommandResult` enums instead of passing
-   ad-hoc JSON values through the actor boundary.
-3. Start moving selected room-owned state into an actor-owned struct after the
-   mailbox route remains stable under real and simulation suite tests.
-
-## Step 18 update: split RoomCommandGateway module
-
-Step 18 prevents the new Actor seam from becoming a replacement monolith.
-The previous `phira-mp-plus-server/src/room_actor.rs` file is now split into a
-module directory:
-
-```text
-room_actor/
-  mod.rs
-  command.rs
-  gateway.rs
-  stats.rs
-```
-
-No runtime behavior is intentionally changed in this cut.  The same admin room
-write commands still flow through `RoomCommandGateway` and the same per-room
-mailbox registry.  This is a maintenance move that creates room for the next
-real Actor steps.
-
-Next cut:
-
-1. Replace ad-hoc `serde_json::Value` room command results with typed
-   `RoomCommandResult` values.
-2. Split compatibility inline handlers by command family so `gateway.rs` does
-   not become the next large file.
-3. Start moving selected room-owned state into actor-local structs once typed
-   commands and command results are in place.
-
-## Step 19 note: Actor is the final architecture, not the only active track
-
-Step 19 records the broader Runtime v2 workboard in code so the project does not
-lose the original target list while RoomCommandGateway evolves toward a real
-Room Actor.  Actor migration remains the final architecture direction, but the
-server also needs Phira HTTP hardening, persistence worker ownership,
-Simulation/Benchmark mode separation, TUI observability, EventBus fanout and
-Touch/Judge batching.
-
-The policy remains unchanged: do not implement a privileged Web management API.
-Web routes may expose read-only diagnostics only.
+| 边界 | 职责 | 状态 |
+|------|------|------|
+| server-supervisor | 进程生命周期、关闭、监听器启动 | Mirrored |
+| session-actor | 客户端连接、认证、命令解码、发送队列 | Mirrored |
+| room-actor | 房间状态机、成员管理、游戏生命周期 | WriteRouted |
+| persistence-actor | 数据库批处理、背压、重试、关闭刷新 | ReadRouted |
+| simulation-actor | Shadow world、场景套件、确定性回放 | ReadRouted |
+| plugin-actor | 插件调度、capability 检查、事件分发 | ReadRouted |
+| cli-actor | CLI/TUI/管理员命令执行 | WriteRouted |

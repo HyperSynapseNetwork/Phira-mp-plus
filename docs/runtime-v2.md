@@ -1,12 +1,12 @@
 # MP+ Runtime v2
 
-> ⚠️ **Historical specification** — Documents the Runtime v2 refactor plan.
-> Current architecture: actor-model with typed room command gateway, session dispatch extracted,
-> persistence worker with telemetry batcher, plugin JSON ABI bridge.
-> Telemetry modes: `direct_only` / `worker_preferred`.
-> Commands documented in docs/cli.md.
+> ⚠️ **历史规范** — 记录 Runtime v2 重构计划。
+> 当前架构: actor-model + typed room command gateway + session dispatch 抽取;
+> persistence worker + telemetry batcher + plugin JSON ABI bridge。
+> Telemetry 模式: `direct_only` / `worker_preferred`。
+> 命令参考: docs/cli.md。
 
-Runtime v2 is a staged refactor plan for Phira-mp+.
+Runtime v2 是 Phira-mp+ 的分阶段重构计划。
 
 This document records the intended direction and the current implementation
 state so future patches do not mix old patch baselines with new architecture
