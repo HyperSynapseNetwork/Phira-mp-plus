@@ -53,9 +53,10 @@ pub mod wit {
     pub const WIT_FILE: &str = "wit/phira-plugin.wit";
     pub const WIT_WORLD: &str = "phira-plugin-v2";
     pub const WIT_VERSION: &str = "abi-wit-v2";
-    /// 0 = WIT files defined, JSON bridge still active.
-    /// 1 = Host WIT bindings generated (enable `wit-bindgen` feature).
-    pub const MIGRATION_PHASE: u8 = 0;
+    /// 0 = JSON bridge active.
+    /// 1 = Host WIT bindings generated.
+    /// 2 = JSON bridge removed, WIT ABI only (current).
+    pub const MIGRATION_PHASE: u8 = 2;
 }
 
 pub fn supported_abi_versions() -> Vec<&'static str> {
