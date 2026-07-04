@@ -105,32 +105,6 @@ pub fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), String> {
     Ok(())
 }
 
-/// Validate an HTTP(S) URL for plugin HTTP requests.
-pub fn validate_http_url(value: &str, allow_private: bool) -> Result<(), String> {
-    use std::net::{IpAddr, ToSocketAddrs};
-    if value.len() > 8192 {
-        return Err("HTTP URL too long".to_string());
-    }
-    let url = url::Url::parse(value).map_err(|e| format!("invalid URL: {e}"))?;
-    if !matches!(url.scheme(), "http" | "https") {
-        return Err("only http/https URLs are allowed".to_string());
-    }
-    if allow_private {
-        return Ok(());
-    }
-    // Reject private IPs to reduce SSRF risk
-    if let Some(host) = url.host_str() {
-        if let Ok(addr) = host.to_socket_addrs() {
-            for addr in addr {
-                if addr.ip().is_private() || addr.ip().is_loopback() || addr.ip().is_unspecified() {
-                    return Err(format!("private network address not allowed: {host}"));
-                }
-            }
-        }
-    }
-    Ok(())
-}
-
 /// Map a method name to its required capability.
 pub fn required_capability(method: &str) -> Option<&'static str> {
     match method {
@@ -158,3 +132,32 @@ pub fn required_capability(method: &str) -> Option<&'static str> {
 pub fn config_path(plugin: &str) -> std::path::PathBuf {
     Path::new("data/plugins").join(plugin).join("config.json")
 }
+
+/// Validate an HTTP(S) URL for plugin HTTP requests.
+pub fn validate_http_url(value: &str, allow_private: bool) -> Result<(), String> {
+    if value.len() > 8192 {
+        return Err("HTTP URL too long".to_string());
+    }
+    if !value.starts_with("http://") && !value.starts_with("https://") {
+        return Err("only http/https URLs are allowed".to_string());
+    }
+    if allow_private {
+        return Ok(());
+    }
+    // Simple SSRF check: reject private IP patterns
+    let after_scheme = value
+        .trim_start_matches("https://")
+        .trim_start_matches("http://");
+    let host = after_scheme.split('/').next().unwrap_or(after_scheme);
+    let host = host.split(':').next().unwrap_or(host); // strip port
+    // Reject private/loopback/unspecified addresses
+    let private_patterns = ["127.", "10.", "192.168.", "172.16.", "169.254.", "0.0.0.0", "localhost", "[::1]", "[::]", "[0:0:0:0:0:0:0:1]"];
+    for pattern in &private_patterns {
+        if host.starts_with(pattern) {
+            return Err(format!("private network address not allowed: {host}"));
+        }
+    }
+    Ok(())
+}
+
+/// Map a method name to its required capability.
