@@ -62,7 +62,7 @@ impl RuntimePlan {
                     title: "Actor model migration",
                     status: "active",
                     priority: "P0",
-                    next_step: "Expand typed command/result/handler boundaries, but keep shipping practical runtime tracks in parallel: simulation, persistence, plugin ABI, Phira HTTP, low-overhead diagnostics and observability.",
+                    next_step: "AdminCommand trait with 10 commands (help/exit/status/ban/unban/banlist/banip/unbanip/banlistip) wired into PlusServerState + CLI dispatch. Room actor: 7 commands through typed mailbox boundary with typed_or_err delivery. 5/7 actor boundaries advanced. Next: migrate more commands to AdminCommand trait, move room state into mailbox worker.",
                 },
                 RuntimeObjective {
                     key: "touch-judge-persistence",
