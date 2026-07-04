@@ -295,7 +295,7 @@ impl WasmPluginInstance {
                     if out_ptr < 0 || out_len < 4 || out_len as usize > MAX_HOST_OUTPUT_BYTES {
                         return -3;
                     }
-                    let result = Self::dispatch_api(&svc, &pn, &method, &args_str);
+                    let result = dispatch_api(&svc, &pn, &method, &args_str);
 
                     match result {
                         Ok(json) => {
