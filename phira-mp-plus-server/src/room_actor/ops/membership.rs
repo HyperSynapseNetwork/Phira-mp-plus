@@ -29,7 +29,7 @@ impl RoomCommandGateway {
                     reply,
                 },
                 || async {
-                    self.kick_user_inline(state, room_id, target_id)
+                    self.kick_user_inline(state, room_id, target_id, None)
                         .await
                         .map(RoomCommandPayload::into_json)
                 },
@@ -111,7 +111,7 @@ impl RoomCommandGateway {
                     reply,
                 },
                 || async {
-                    self.close_room_inline(state, room_id)
+                    self.close_room_inline(state, room_id, None)
                         .await
                         .map(RoomCommandPayload::into_json)
                 },

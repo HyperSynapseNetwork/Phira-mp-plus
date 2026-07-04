@@ -32,7 +32,7 @@ impl RoomCommandGateway {
                     reply,
                 },
                 || async {
-                    self.start_room_inline(state, room_id)
+                    self.start_room_inline(state, room_id, None)
                         .await
                         .map(RoomCommandPayload::into_json)
                 },
@@ -89,7 +89,7 @@ impl RoomCommandGateway {
                     reply,
                 },
                 || async {
-                    self.cancel_start_inline(state, room_id)
+                    self.cancel_start_inline(state, room_id, None)
                         .await
                         .map(RoomCommandPayload::into_json)
                 },

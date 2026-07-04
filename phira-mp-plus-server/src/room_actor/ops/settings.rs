@@ -28,7 +28,7 @@ impl RoomCommandGateway {
                     reply,
                 },
                 || async {
-                    self.set_host_inline(state, room_id, target_id)
+                    self.set_host_inline(state, room_id, target_id, None)
                         .await
                         .map(RoomCommandPayload::into_json)
                 },
@@ -109,7 +109,7 @@ impl RoomCommandGateway {
                     reply,
                 },
                 || async {
-                    self.set_lock_inline(state, room_id, locked)
+                    self.set_lock_inline(state, room_id, locked, None)
                         .await
                         .map(RoomCommandPayload::into_json)
                 },
@@ -170,7 +170,7 @@ impl RoomCommandGateway {
                     reply,
                 },
                 || async {
-                    self.set_cycle_inline(state, room_id, cycle)
+                    self.set_cycle_inline(state, room_id, cycle, None)
                         .await
                         .map(RoomCommandPayload::into_json)
                 },
