@@ -1,50 +1,51 @@
 # WIT ABI 规范
 
+> **自动生成**: 本文档由 `wit/phira-plugin.wit` 驱动，接口列表由 `tests/wit_abi_contracts.rs`
+> 中的 `generate_wit_docs()` 生成。不要手动编辑接口列表。
+>
+> 验证命令: `cargo test --test wit_abi_contracts`
+
 ## 当前状态
 
 | 属性 | 值 |
 |------|-----|
 | **运行时 ABI** | `abi-json-v1` (JSON 内存桥) |
 | **目标 ABI** | `abi-wit-v2` (WIT / Component Model) |
-| **规范 WIT** | `wit/phira-plugin.wit` (工作区根目录) |
-| **MIGRATION_PHASE** | `0` (默认, JSON 桥活跃; 启用 `wit-bindgen` feature 进入 phase 1) |
-| **Host bindings** | `wasmtime::component::bindgen!` 已生成, 在 `wit-bindgen` feature 后 |
-| **Host traits** | `WitPluginHost` 骨架实现 `phira_host::Host` (在 `wit-bindgen` 后) |
-| **Plugin ABI 模块** | 拆分为 `plugin_abi/{mod,plan,json,dto}.rs` 含 typed DTO |
+| **规范 WIT** | `wit/phira-plugin.wit` |
+| **MIGRATION_PHASE** | `0` (JSON 桥活跃; 启用 `wit-bindgen` feature 进入 phase 1) |
+| **Host bindings** | `wasmtime::component::bindgen!` 已生成 (`wit-bindgen` feature) |
+| **Host traits** | `WitPluginHost` 骨架实现 `phira_host::Host` (`wit-bindgen` feature) |
+| **Plugin ABI 模块** | `plugin_abi/{mod,plan,json,dto}.rs` 含 typed DTO |
+| **接口数量** | 12 |
 
-> ⚠️ 默认构建使用 `abi-json-v1`。添加 `--features wit-bindgen` 可编译 WIT 组件模型绑定和 typed host trait 实现。
+> ⚠️ 默认构建使用 `abi-json-v1`。添加 `--features wit-bindgen` 编译 WIT 绑定。
 
 ## 规范 WIT 接口
 
-规范 WIT 文件 (`wit/phira-plugin.wit`) 定义了以下接口:
+WIT 文件定义了以下接口与 world `phira-plugin-v2`:
 
-- `phira-types` — 核心数据类型 (touch/judge 事件、插件信息、HTTP 响应、JSON 值)
-- `phira-host` — 宿主提供给插件的功能 (日志、UUID、时间、API 调用、聊天、HTTP)
-- `phira-events` — 插件事件类型 (连接/断开、房间生命周期、游戏事件)
-- `phira-query` — 用户和房间数据查询
-- `phira-room-mgmt` — 房间管理操作
-- `phira-user-mgmt` — 用户管理 (踢出、封禁等)
-- `phira-messaging` — 消息广播
-- `phira-persistence` — 事件/快照查询
-- `phira-admin` — 管理员 ID 管理
-- `phira-config` — 插件配置 (键值、JSON、每个插件 config.json)
-- `phira-simulation` — Simulation 控制
-- `phira-runtime` — 运行时诊断
+| 接口 | 说明 | 关键导出 |
+|------|------|---------|
+| `phira-types` | 核心数据类型 | touch-event-point, judge-event-item, plugin-info, json-value, api-result |
+| `phira-host` | 宿主功能 | log, generate-uuid, current-time-ms, api-call, send-chat, http-request |
+| `phira-events` | 插件事件 | user-connect-info, game-end-info, round-complete-info, player-touches-info |
+| `phira-query` | 数据查询 | get-user, get-room, list-rooms, is-user-online |
+| `phira-room-mgmt` | 房间管理 | create-empty-room, kick, transfer-host, set-host, set-room-lock, close-room |
+| `phira-user-mgmt` | 用户管理 | kick-user, ban-user, unban-user, get-ban-list |
+| `phira-messaging` | 消息广播 | send-to-user, send-to-room, send-to-all |
+| `phira-persistence` | 持久化查询 | query-events, query-room-snapshots, get-playtime, top-playtime |
+| `phira-admin` | 管理员管理 | list-admin-ids, is-admin, add-admin-id, set-admin-ids |
+| `phira-config` | 插件配置 | get-config, set-config, list-config, reload-config |
+| `phira-simulation` | Simulation 控制 | status, run, stop, cleanup |
+| `phira-runtime` | 运行时诊断 | status, events, commands |
 
-World: `phira-plugin-v2`
+World: `phira-plugin-v2` — 导入上述所有接口，导出 `init`, `get-info`, `cleanup`, `on-event`, `on-api`。
 
 ## 迁移计划
 
-1. ✅ WIT 接口定义完成，匹配当前 JSON ABI
-2. ✅ Host bindings 已生成 (`wasmtime::component::bindgen!`, 在 `wit-bindgen` feature 后)
-3. ✅ Host trait 骨架 (`WitPluginHost` 在 `wit_host.rs`, 在 `wit-bindgen` 后)
-4. ❌ 更新 Guest SDK (`phira-mp-plus-sdk`) 使用 WIT exports
+1. ✅ WIT 接口定义完成
+2. ✅ Host bindings 已生成 (`wit-bindgen` feature)
+3. ✅ Host trait 骨架已实现 (`wit_host.rs`)
+4. ❌ Guest SDK (`phira-plugin-sdk`) 使用 WIT exports
 5. ❌ 双 ABI 支持过渡期
 6. ❌ 移除 JSON 桥
-
-## 相关文件
-
-- WIT 定义: `wit/phira-plugin.wit`
-- Host bindings: `plugin_abi/mod.rs` → `wit_abi` 模块 (在 `wit-bindgen` 后)
-- Host trait 实现: `wit_host.rs` (在 `wit-bindgen` 后)
-- JSON 桥: `plugin_abi/json.rs` (默认路径)
