@@ -1,4 +1,5 @@
 //! Game-control room command operations.
+use std::sync::Arc;
 
 use super::super::{
     command::{RoomActorCommand, RoomCommandKind},
@@ -20,6 +21,7 @@ impl RoomCommandGateway {
         &self,
         state: &PlusServerState,
         room_id: &str,
+        room_override: Option<Arc<crate::room::Room>>,
     ) -> Result<Value, String> {
         let started = Instant::now();
         let result = self
@@ -50,8 +52,9 @@ impl RoomCommandGateway {
         &self,
         state: &PlusServerState,
         room_id: &str,
+        room_override: Option<Arc<crate::room::Room>>,
     ) -> Result<RoomCommandPayload, String> {
-        let (_rid, room) = self.find_room(state, room_id).await?;
+        let (_rid, room) = self.resolve_room(state, room_id, room_override).await?;
         room.begin_admin_start().await.map_err(|e| e.to_string())?;
         if let Some(pm) = &room.plugin_manager {
             pm.trigger(&PluginEvent::GameStart {
@@ -75,6 +78,7 @@ impl RoomCommandGateway {
         &self,
         state: &PlusServerState,
         room_id: &str,
+        room_override: Option<Arc<crate::room::Room>>,
     ) -> Result<Value, String> {
         let started = Instant::now();
         let result = self
@@ -105,8 +109,9 @@ impl RoomCommandGateway {
         &self,
         state: &PlusServerState,
         room_id: &str,
+        room_override: Option<Arc<crate::room::Room>>,
     ) -> Result<RoomCommandPayload, String> {
-        let (_rid, room) = self.find_room(state, room_id).await?;
+        let (_rid, room) = self.resolve_room(state, room_id, room_override).await?;
         let canceled = {
             let mut room_state = room.state.write().await;
             if matches!(

@@ -1,4 +1,5 @@
 //! Membership and lifecycle room command operations.
+use std::sync::Arc;
 
 use super::super::{
     command::{RoomActorCommand, RoomCommandKind},
@@ -15,6 +16,7 @@ impl RoomCommandGateway {
         &self,
         state: &PlusServerState,
         room_id: &str,
+        room_override: Option<Arc<crate::room::Room>>,
         target_id: i32,
     ) -> Result<Value, String> {
         let started = Instant::now();
@@ -47,9 +49,10 @@ impl RoomCommandGateway {
         &self,
         state: &PlusServerState,
         room_id: &str,
+        room_override: Option<Arc<crate::room::Room>>,
         target_id: i32,
     ) -> Result<RoomCommandPayload, String> {
-        let (rid, room) = self.find_room(state, room_id).await?;
+        let (rid, room) = self.resolve_room(state, room_id, room_override).await?;
         let users = room.users().await;
         let monitors = room.monitors().await;
         let user = users
@@ -97,6 +100,7 @@ impl RoomCommandGateway {
         &self,
         state: &PlusServerState,
         room_id: &str,
+        room_override: Option<Arc<crate::room::Room>>,
     ) -> Result<Value, String> {
         let started = Instant::now();
         let result = self
@@ -127,8 +131,9 @@ impl RoomCommandGateway {
         &self,
         state: &PlusServerState,
         room_id: &str,
+        room_override: Option<Arc<crate::room::Room>>,
     ) -> Result<RoomCommandPayload, String> {
-        let (rid, room) = self.find_room(state, room_id).await?;
+        let (rid, room) = self.resolve_room(state, room_id, room_override).await?;
         let room_id_str = room.id.to_string();
         room.send(Message::Chat {
             user: 0,
