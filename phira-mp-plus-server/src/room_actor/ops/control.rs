@@ -1,6 +1,7 @@
 //! Game-control room command operations.
-use std::sync::Arc;
 
+
+use std::sync::Arc;
 use super::super::{
     command::{RoomActorCommand, RoomCommandKind},
     RoomCommandGateway, RoomCommandPayload,
@@ -52,6 +53,7 @@ impl RoomCommandGateway {
         &self,
         state: &PlusServerState,
         room_id: &str,
+        room_override: Option<Arc<crate::room::Room>>,
         room_override: Option<Arc<crate::room::Room>>,
     ) -> Result<RoomCommandPayload, String> {
         let (_rid, room) = self.resolve_room(state, room_id, room_override).await?;
@@ -109,6 +111,7 @@ impl RoomCommandGateway {
         &self,
         state: &PlusServerState,
         room_id: &str,
+        room_override: Option<Arc<crate::room::Room>>,
         room_override: Option<Arc<crate::room::Room>>,
     ) -> Result<RoomCommandPayload, String> {
         let (_rid, room) = self.resolve_room(state, room_id, room_override).await?;
