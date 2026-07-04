@@ -13,8 +13,8 @@ impl DbManager {
         &self,
         since_sequence: i64,
         limit: i64,
-        kind: Option<String>,
-        room_id: Option<String>,
+        kind: Option<kind: Option<String>str>,
+        room_id: Option<room_id: Option<String>str>,
         user_id: Option<i32>,
     ) -> Vec<Value> {
         #[cfg(feature = "postgres")]
@@ -96,7 +96,7 @@ impl DbManager {
         &self,
         since_sequence: i64,
         limit: i64,
-        round_uuid: Option<String>,
+        round_uuid: Option<round_uuid: Option<String>str>,
         player_id: Option<i32>,
     ) -> Vec<Value> {
         #[cfg(feature = "postgres")]
@@ -140,7 +140,7 @@ impl DbManager {
         &self,
         since_sequence: i64,
         limit: i64,
-        round_uuid: Option<String>,
+        round_uuid: Option<round_uuid: Option<String>str>,
         player_id: Option<i32>,
     ) -> Vec<Value> {
         #[cfg(feature = "postgres")]
