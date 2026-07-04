@@ -195,7 +195,7 @@ fn generate_wit_docs() -> String {
     md.push_str("| **目标 ABI** | `abi-wit-v2` (WIT / Component Model) |\n");
     md.push_str("| **规范 WIT** | `wit/phira-plugin.wit` |\n");
     md.push_str("| **MIGRATION_PHASE** | `0` (JSON 桥活跃; 启用 `wit-bindgen` feature 进入 phase 1) |\n");
-    md.push_str("| **接口数量** | `{}` |\n\n", interfaces.len());
+    md.push_str(&format!("| **接口数量** | `{}` |\n\n", interfaces.len()));
 
     md.push_str("## 规范 WIT 接口\n\n");
     md.push_str("WIT 文件定义了以下接口与 world `phira-plugin-v2`:\n\n");
