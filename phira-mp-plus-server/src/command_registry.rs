@@ -551,26 +551,6 @@ pub fn runtime_v2_registry() -> CommandRegistry {
             })),
     );
 
-    register(
-        &mut registry,
-        CommandSpec::new("ban", "admin", "封禁用户。", "ban <用户ID> [原因]")
-            .arg(CommandArgSpec::required("用户ID", "要封禁的用户 ID"))
-            .arg(CommandArgSpec::optional("原因", "封禁原因"))
-            .example("ban 12345")
-            .example("ban 12345 恶意刷屏"),
-    );
-    register(
-        &mut registry,
-        CommandSpec::new("unban", "admin", "解封用户。", "unban <用户ID>")
-            .arg(CommandArgSpec::required("用户ID", "要解封的用户 ID"))
-            .example("unban 12345"),
-    );
-    register(
-        &mut registry,
-        CommandSpec::new("banlist", "admin", "列出封禁列表。", "banlist")
-            .example("banlist"),
-    );
-
     for spec in [
         CommandSpec::new(
             "runtime status",
