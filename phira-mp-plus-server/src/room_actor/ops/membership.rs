@@ -49,8 +49,8 @@ impl RoomCommandGateway {
         &self,
         state: &PlusServerState,
         room_id: &str,
-        room_override: Option<Arc<crate::room::Room>>,
         target_id: i32,
+        room_override: Option<Arc<crate::room::Room>>,
     ) -> Result<RoomCommandPayload, String> {
         let (rid, room) = self.resolve_room(state, room_id, room_override).await?;
         let users = room.users().await;
