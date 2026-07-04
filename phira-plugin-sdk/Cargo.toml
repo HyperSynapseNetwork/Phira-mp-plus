@@ -1,10 +1,10 @@
 [package]
 name = "phira-plugin-sdk"
-version.workspace = true
-edition.workspace = true
+version = "0.2.0"
+edition = "2021"
 description = "Phira-mp+ WASM plugin development SDK"
-license.workspace = true
+license = "AGPL-3.0"
 
 [dependencies]
-serde = { workspace = true }
-serde_json = { workspace = true }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
