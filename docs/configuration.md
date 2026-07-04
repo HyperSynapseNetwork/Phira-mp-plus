@@ -54,7 +54,7 @@ cli_enabled: true
 
 # ---- 容量与限速 ----
 # max_rooms: 100
-# max_users_per_room: 8
+# max_users_per_room: 100
 connection_rate_limit: 30
 connection_rate_window: 10
 round_data_retention_days: 7
@@ -90,7 +90,7 @@ wasm_runtime:
 | `cli_enabled` | `bool` | `true` | 是否启用交互式 TUI/CLI 管理控制台。`--no-cli` 会覆盖为 false。 |
 | `chat_enabled` | `bool` | `false`（示例建议 `true`） | 是否允许聊天。未写入配置时采用结构体默认值；建议在配置中显式写出。 |
 | `max_rooms` | `usize?` | 不限制 | 最大房间数。达到上限后会拒绝继续创建房间。 |
-| `max_users_per_room` | `usize?` | `8` | 每个房间最大玩家数。 |
+| `max_users_per_room` | `usize?` | `100` | 每个房间最大玩家数。 |
 | `connection_rate_limit` | `u32` | `30` | 每个统计窗口内允许的连接次数。 |
 | `connection_rate_window` | `u32` | `10` | 连接限速窗口，单位秒。 |
 | `round_data_retention_days` | `u32` | `7` | Touches/Judges 轮次文件保留天数，`0` 表示不清理轮次文件。 |
@@ -288,7 +288,7 @@ RUST_LOG=debug ./phira-mp-plus-server
 | `wasm_runtime.max_http_response_bytes` | `usize` | `2097152` | 插件 HTTP 响应最大读取字节数。 |
 | `wasm_runtime.max_file_bytes` | `usize` | `4194304` | 插件文件读写最大字节数。 |
 | `wasm_runtime.allow_private_network` | `bool` | `false` | 是否允许插件访问私有网段地址；默认关闭以降低 SSRF 风险。 |
-| `wasm_runtime.max_event_concurrency` | `usize` | `8` | 插件事件处理最大并发数。 |
+| `wasm_runtime.max_event_concurrency` | `usize` | `100` | 插件事件处理最大并发数。 |
 
 ## 数据文件路径
 

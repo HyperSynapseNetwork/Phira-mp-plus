@@ -1535,7 +1535,7 @@ impl PlusServerState {
             Some(value) => Some(normalize_phira_api_endpoint(&value)?),
             None => None,
         };
-        let max_users = self.config.max_users_per_room.unwrap_or(8);
+        let max_users = self.config.max_users_per_room.unwrap_or(100);
         let room = Arc::new(crate::room::Room::new_empty(
             rid.clone(),
             Some(Arc::clone(&self.plugin_manager)),

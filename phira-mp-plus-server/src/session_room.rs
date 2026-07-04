@@ -119,7 +119,7 @@ pub async fn create_room(user: Arc<User>, id: RoomId) -> Result<()> {
     }
 
     let mut map_guard = user.server.rooms.write().await;
-    let max_users = user.server.config.max_users_per_room.unwrap_or(8);
+    let max_users = user.server.config.max_users_per_room.unwrap_or(100);
     let room = Arc::new(crate::room::Room::new(
         id.clone(),
         Arc::downgrade(&user),
