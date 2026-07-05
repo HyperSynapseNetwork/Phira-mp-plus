@@ -34,10 +34,10 @@ fn runtime_plan_tracks_all_required_objectives() {
 }
 
 #[test]
-fn plugin_abi_plan_names_json_bridge_and_wit_target() {
+fn plugin_abi_plan_names_wit_only() {
     let plan = plugin_abi_plan();
-    assert_eq!(plan.current_transport, PluginAbiTransport::JsonMemoryV1);
+    assert_eq!(plan.current_transport, PluginAbiTransport::WitTypedV2);
     assert_eq!(plan.target_transport, PluginAbiTransport::WitTypedV2);
-    assert_eq!(plan.current_transport.as_str(), "json_memory_v1");
+    assert_eq!(plan.current_transport.as_str(), "wit_typed_v2");
     assert_eq!(plan.target_transport.as_str(), "wit_typed_v2");
 }
