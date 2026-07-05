@@ -1,210 +1,143 @@
 # Phira-mp+ 插件开发文档
 
-Phira-mp+ 支持 **WASM 插件** — 编译为 WebAssembly 后通过 wasmtime 动态加载。
+Phira-mp+ 支持 **WASM 插件** — 编译为 WebAssembly 组件后通过 wasmtime 组件模型动态加载。
 
-> 内置插件系统（NativePlugin trait）已合并入服务器核心代码，不再支持独立原生插件注册。
-> 外部扩展请使用 WASM 插件。
+> 旧版 JSON 内存桥 ABI（abi-json-v1）已移除。所有插件必须使用 WIT 组件模型（abi-wit-v2）。
+> 插件 SDK crate: `phira-plugin-sdk`
 
-## WASM 插件
+## WASM 组件插件
 
-WASM 插件通过 wasmtime 运行时动态加载，部署在 `plugins/` 目录下（可通过 `-d` 参数自定义）。
+WASM 插件通过 wasmtime 组件模型加载，部署在 `plugins/` 目录下（可通过 `-d` 参数自定义）。
 
-### JSON ABI
+### WIT ABI v2
 
-WASM 插件通过 JSON 字符串与宿主通信：
+插件使用 WIT（WebAssembly Interface Types）定义宿主与插件之间的接口。WIT 文件位于 [`wit/phira-plugin.wit`](../wit/phira-plugin.wit)。
 
-**导出函数：**
+**World:** `phira-plugin-v2`
+
+#### 插件导出（插件需实现）
+
+| 导出函数 | 签名 | 说明 |
+|---------|------|------|
+| `init` | `func() -> result<_, string>` | 初始化插件，返回 ok 或 error |
+| `get-info` | `func() -> plugin-info` | 返回插件元数据（名称、版本、作者、描述） |
+| `cleanup` | `func()` | 插件卸载时清理 |
+| `on-event` | `func(event: plugin-event) -> result<bool, string>` | 处理事件，返回 true=已处理 |
+| `on-api` | `func(method: string, args: list<json-value>) -> api-result` | API 调用入口 |
+
+#### 宿主导入（宿主提供，共 12 个接口）
+
+**phira-host** — 基础宿主功能
 
 | 函数 | 签名 | 说明 |
 |------|------|------|
-| `phira_init` | `() -> i32` | 初始化插件，返回 0 表示成功 |
-| `phira_get_info` | `() -> ()` | 填写插件元数据到内存偏移 0 |
-| `phira_cleanup` | `() -> ()` | 插件卸载时清理 |
-| `phira_on_event` | `(ptr: i32, len: i32) -> i32` | 事件处理，返回 0=已处理 1=未处理 |
-| `phira_alloc` | `(size: i32) -> i32` | 分配线性内存，返回指针 |
-| `phira_dealloc` | `(ptr: i32, size: i32)` | 释放内存 |
+| `log` | `func(level: string, message: string)` | 记录日志（级别: error/warn/info/debug/trace） |
+| `generate-uuid` | `func() -> string` | 生成 UUID v4 |
+| `current-time-ms` | `func() -> u64` | 获取 Unix 毫秒时间戳 |
+| `api-call` | `func(method: string, args: list<json-value>) -> api-result` | 通用 API 查询（rooms.* / runtime.* / simulation.* 等） |
+| `send-chat` | `func(user-id: u32, message: string)` | 发送聊天消息 |
+| `http-request` | `func(url, method, headers, body) -> result<http-response, string>` | 发起 HTTP 请求（受 WASM 沙箱限制） |
 
-**导入函数（宿主提供）：**
+**phira-query** — 数据查询
 
 | 函数 | 说明 |
 |------|------|
-| `phira:host/log(level_ptr, level_len, msg_ptr, msg_len)` | 记录日志 |
-| `phira:host/uuid(out_ptr, out_len)` | 生成 UUID v4 |
-| `phira:host/time() -> i64` | 获取 Unix 时间戳（毫秒） |
-| `phira:host/api(method_ptr, method_len, args_ptr, args_len, out_ptr, out_len) -> i32` | 通用 API 桥接 |
+| `get-user(user-id) -> api-result` | 查询用户信息 |
+| `get-room(room-id) -> api-result` | 查询房间信息 |
+| `list-rooms() -> api-result` | 列出活跃房间 |
+| `list-online-users() -> api-result` | 列出在线用户 |
+| `is-user-online(user-id) -> bool` | 用户是否在线 |
+| `get-user-extra / set-user-extra` | 扩展数据读写 |
+| `get-room-extra` | 房间扩展数据读取 |
 
-### 通用 API (`phira:host/api`)
+**phira-room-mgmt** — 房间管理
 
-所有方法通过 JSON 参数调用，返回 JSON 结果。返回码：0=成功，非0=错误。
+| 函数 | 说明 |
+|------|------|
+| `create-empty-room(room-id, endpoint?) -> api-result` | 创建空房间 |
+| `kick-from-room(room-id, target-id) -> api-result` | 踢出房间 |
+| `transfer-host(room-id, target-id) -> api-result` | 转让房主 |
+| `set-host(room-id, target-id?) -> api-result` | 设置房主 |
+| `set-room-lock / set-room-hidden / close-room` | 房间设置 |
 
-| 方法 | 参数 | 返回 | 说明 |
-|------|------|------|------|
-| `state.query` | `{ method, params }` | 查询结果 | 统一状态查询入口 |
-| `player.touches` | `{ user_id }` | 最近触控数据 | 查询用户最近触控帧 |
-| `player.judges` | `{ user_id }` | 最近判定数据 | 查询用户最近判定事件 |
-| `round.data` | `{ round_uuid, player_id }` | 完整 Touches/Judges | 轮次数据查询 |
-| `round.list` | `{}` | 轮次列表 | 所有已记录轮次 |
-| `send.to_user` | `{ user_id, message }` | `"ok"` | 发送消息给指定用户 |
-| `send.to_room` | `{ room_id, message }` | `"ok"` | 向房间广播消息 |
-| `send.to_all` | `{ message }` | `"ok"` | 向所有用户广播 |
-| `ext.get_user` | `{ user_id, key }` | 字段值 | 获取用户扩展数据 |
-| `ext.set_user` | `{ user_id, key, value }` | `"ok"` | 设置用户扩展数据 |
-| `ext.get_room` | `{ room_id, key }` | 字段值 | 获取房间扩展数据 |
-| `ext.set_room` | `{ room_id, key, value }` | `"ok"` | 设置房间扩展数据 |
-| `room.create_empty` | `{ room_id, endpoint? }` | `{"ok": true, "room_id": string}` | 创建无人持久空房间，endpoint 为空时使用全局 Phira API |
-| `room.set_persistent_empty` | `{ room_id, persistent }` | `{"ok": true, "persistent_empty": bool}` | 设置房间无人时是否保留 |
-| `room.kick` | `{ room_id, target_id }` | `{"ok": true}` | 从房间踢出用户 |
-| `room.set_host` / `room.clear_host` | `{ room_id, target_id? }` | `{"ok": true}` | 设置房主；`target_id:null` 或 `?` 表示系统 `?` 房主 |
-| `room.set_lock` | `{ room_id, locked }` | `{"ok": true}` | 锁定/解锁房间 |
-| `room.force_move` | `{ room_id, target_id, monitor }` | `{"ok": true}` | 强制迁移用户到房间 |
-| `room.set_hidden` | `{ room_id, hidden }` | `{"ok": true, "hidden": bool}` | 设置隐藏状态 |
-| `room.is_hidden` | `{ room_id }` | `{"hidden": bool}` | 查询隐藏状态 |
-| `room.set_phira_api_endpoint` | `{ room_id, endpoint }` | `{"ok": true, "phira_api_endpoint": string}` | 设置房间独立 Phira API，传 `null`/`default` 清除 |
-| `room.get_phira_api_endpoint` | `{ room_id }` | `{"phira_api_endpoint": string, "using_room_override": bool}` | 查询当前生效 Phira API |
-| `room.clear_phira_api_endpoint` | `{ room_id }` | `{"ok": true}` | 清除房间覆盖，恢复全局配置 |
-| `room.close` | `{ room_id }` | `{"ok": true}` | 解散房间 |
-| `admin.kick_user` | `{ user_id, reason }` | `{"ok": true}` | 从服务器踢出用户 |
-| `admin.ban_user` | `{ user_id, reason }` | `{"ok": true, "reason": string}` | 封禁用户，返回规范化后的原因 |
-| `admin.unban_user` | `{ user_id }` | `{"ok": true}` | 解封用户 |
-| `admin.is_banned` | `{ user_id }` | `{"banned": bool, "reason": string?}` | 检查封禁状态及原因 |
-| `admin.ban_list` | `{}` | 封禁列表 | 获取所有封禁 |
-| `admin.list_users` | `{}` | 用户列表 | 列出所有在线用户 |
-| `persist.events` | `{ since_sequence?, limit?, kind?, room_id?, user_id? }` | 事件数组 | 读取统一 PG 持久化事件 |
-| `persist.rooms` | `{ since_sequence?, limit? }` | 房间快照数组 | 读取统一 PG 房间快照 |
-| `persist.playtime` | `{ user_id }` | 游玩时间 | 读取统一 PG 游玩时间 |
-| `persist.top_playtime` | `{ limit? }` | 排行数组 | 读取游玩时间排行 |
-| `persist.touches` | `{ since_sequence?, limit?, round_uuid?, player_id? }` | 批次数组 | 从 PostgreSQL 读取 Touches 追加批次 |
-| `persist.judges` | `{ since_sequence?, limit?, round_uuid?, player_id? }` | 批次数组 | 从 PostgreSQL 读取 Judges 追加批次 |
-| `admin.ids` / `admin.is_admin` / `admin.add_id` / `admin.remove_id` / `admin.set_ids` | 见 `docs/api.md` | 管理员 ID | 读取或维护游戏内管理员 |
-| `plugin.api_call` | `{ plugin, method, args }` | 调用结果 | 调用其他插件注册的 API |
-| `plugin.api_register` | `{ method }` | 注册确认 | 注册本插件 API 供其他插件调用 |
-| `config.get` | `{ key }` | 配置值 | 获取插件配置 |
-| `config.set` | `{ key, value }` | `"ok"` | 设置插件配置 |
-| `http.get` | `{ url }` | 响应正文 | HTTP GET 请求 |
-| `http.post` | `{ url, body, content_type }` | 响应正文 | HTTP POST 请求 |
-| `file.read` | `{ path }` | 文件内容 | 读取插件数据文件 |
-| `file.write` | `{ path, content }` | `"ok"` | 写入插件数据文件 |
-| `uuid.v4` | `{}` | UUID 字符串 | 生成 UUID |
-| `time.now` | `{}` | Unix 时间戳 | 获取当前时间 |
+**phira-user-mgmt** — 用户管理
 
-canonical ABI 定义见 `wit/phira-plugin.wit`（当前使用 JSON bridge 传输）。旧版指针见 `wit/phira/mpplus.wit`。其中 `persistence` 与 `admin-config` import interface 对应统一 PG 持久化读取和管理员 ID 管理。
+| 函数 | 说明 |
+|------|------|
+| `kick-user(user-id, reason) -> api-result` | 踢出用户 |
+| `ban-user / unban-user` | 封禁/解封 |
+| `get-ban-list -> api-result` | 封禁列表 |
+| `is-banned(user-id) -> bool` | 是否被封禁 |
 
-### 插件事件
+**phira-messaging** — 消息发送
 
-WASM 插件通过 `phira_on_event` 接收事件，事件以 JSON 格式传入。type 字段标识事件类型：
+| 函数 | 说明 |
+|------|------|
+| `send-to-user(user-id, message) -> api-result` | 私信 |
+| `send-to-room(room-id, message) -> api-result` | 房间广播 |
+| `send-to-all(message) -> api-result` | 全服广播 |
 
-| type | 数据字段 | 触发时机 |
-|------|---------|---------|
-| `user_connect` | user_id, user_name, user_ip | 用户认证通过后 |
-| `user_disconnect` | user_id, user_name | 用户断开连接 |
-| `room_create` | user_id, room_id | 创建房间 |
-| `room_join` | user_id, room_id, is_monitor | 加入房间 |
-| `room_leave` | user_id, room_id | 离开房间 |
-| `room_modify` | user_id, room_id, data | 修改房间设置 |
-| `game_start` | user_id, room_id | 游戏开始 |
-| `game_end` | user_id, user_name, room_id, score, accuracy, perfect, good, bad, miss, max_combo, full_combo | 玩家提交成绩 |
-| `player_touches` | user_id, room_id, data | 玩家触控事件 |
-| `player_judges` | user_id, room_id, data | 玩家判定事件 |
-| `round_complete` | room_id, chart_id, chart_name | 一轮游戏完成 |
+**phira-persistence** — 持久化查询
 
-示例 — 监听用户连接事件：
+| 函数 | 说明 |
+|------|------|
+| `query-events(since, limit, kind?, room-id?, user-id?) -> api-result` | 增量事件查询 |
+| `query-room-snapshots(since, limit) -> api-result` | 房间快照 |
+| `query-touches / query-judges` | 触控/判定数据 |
+| `get-playtime / top-playtime` | 游玩时间 |
 
-```javascript
-// 在 phira_on_event 中：
-function phira_on_event(event_ptr, event_len) {
-  let json = memory_to_string(event_ptr, event_len);
-  let event = JSON.parse(json);
-  if (event.type === 'user_connect') {
-    console.log(`User ${event.user_name}(${event.user_id}) connected from ${event.user_ip}`);
-  }
-  return 0; // 0 = handled
-}
+**phira-admin** — 管理员管理
+
+| 函数 | 说明 |
+|------|------|
+| `list-admin-ids -> api-result` | 管理员列表 |
+| `is-admin(user-id) -> bool` | 是否管理员 |
+| `add-admin-id / remove-admin-id / set-admin-ids` | 管理操作 |
+
+**phira-config** — 插件配置
+
+| 函数 | 说明 |
+|------|------|
+| `get-config / set-config / list-config` | 配置读写 |
+| `reload-config` | 重新加载 config.json |
+| `poll-config-changes` | 轮询配置变更 |
+
+**phira-simulation** — 模拟器
+
+| 函数 | 说明 |
+|------|------|
+| `status -> api-result` | 当前状态 |
+| `run(preset, users?, rooms?, duration?) -> api-result` | 启动模拟 |
+| `stop / cleanup` | 停止/清理 |
+
+**phira-runtime** — 运行时诊断
+
+| 函数 | 说明 |
+|------|------|
+| `status -> api-result` | 运行时状态 |
+| `events(limit?) -> api-result` | 事件总线统计 |
+| `commands -> api-result` | 命令注册表统计 |
+
+### 完整 API 参考
+
+WIT 接口完整定义见 [`wit/phira-plugin.wit`](../wit/phira-plugin.wit)。
+
+### 插件 SDK
+
+`phira-plugin-sdk` crate 提供 Rust 插件的开发支持：
+
+```toml
+[dependencies]
+phira-plugin-sdk = { path = "../phira-plugin-sdk" }
 ```
 
-### 插件元数据
+SDK 提供 WIT bindgen 生成宏和类型定义，编译后自动生成符合 `phira-plugin-v2` world 的 WASM 组件。
 
-WASM 插件可通过两种方式声明元数据：
+### 插件生命周期
 
-1. **导出 `phira_get_info`** — 插件自行将 JSON 元数据写入线性内存
-2. **内存偏移 0** — 在 WASM 模块的偏移 0 处放置长度前缀的 JSON（备用模式）
-
-```json
-{
-  "name": "my-plugin",
-  "version": "0.1.0",
-  "author": "me",
-  "description": "My WASM plugin"
-}
-```
-
-## 插件间 API 调用
-
-WASM 插件可以通过 `plugin.api_call` 调用其他插件注册的 API：
-
-```javascript
-// 调用 playtime-tracker 插件的 count 方法
-let result = api.call('plugin.api_call', {
-  plugin: 'player-tracker',
-  method: 'count',
-  args: []
-});
-// result = {"count": 42}
-```
-
-通过 `plugin.api_register` 注册自己的 API：
-
-```javascript
-api.call('plugin.api_register', {
-  method: 'my_custom_api'
-});
-```
-
-> 注意：完整双向 WASM 回调目前为 stub，注册后可被调用但返回固定响应。
-> 原生 Rust 注册的 API（通过 PluginManager::register_plugin_api）可被 WASM 插件正常调用。
-
-## 实时数据流
-
-Touches/Judges 数据通过 `player_touches` 和 `player_judges` 事件推送到 WASM 插件的 `phira_on_event` 处理器，无需主动轮询。配置 PostgreSQL 后，服务端同时写入 `mp_round_touch_batches` / `mp_round_judge_batches` 追加批次表；插件可用 `persist.touches` / `persist.judges` 按全局 `sequence` 增量读取，保留期由 `touch_judge_retention_days` 控制，未设置时遵循 `persistence_retention_days`。
-
-## 构建 WASM 插件
-
-WASM 插件需编译为目标 `wasm32-unknown-unknown`：
-
-```bash
-rustup target add wasm32-unknown-unknown
-cargo build --target wasm32-unknown-unknown --release
-```
-
-生成的 `.wasm` 文件放在服务器的 `plugins/` 目录下，下次启动或执行 `plugin reload` 时加载。
-
-## 服务端配置
-
-WASM 插件可通过 `config.get` / `config.set` API 读写自己的配置（内存中，重启消失）。
-持久化配置建议使用 `file.read` / `file.write` 操作 `data/plugins/<plugin_name>/` 目录。
-
-## WIT 接口定义
-
-旧版 WIT 指针见 `wit/phira/mpplus.wit`；canonical ABI 见 `wit/phira-plugin.wit`，包含以下接口：
-
-- `user-events` — 用户事件监听
-- `user-info` — 用户信息查询
-- `room-info` — 房间信息查询
-- `messaging` — 消息发送
-- `room-management` — 房间管理
-- `user-management` — 用户管理
-- `utilities` — 工具函数
-- `database` — 数据库接口（预留）
-- `plugin-config` — 插件配置
-- `plugin` — 插件主入口
-- `cli` — CLI 命令接口
-
-## Runtime v2 插件 ABI 方向
-
-当前 WASM 插件仍使用 `abi-json-v1`：宿主把事件和 API 参数编码成 JSON 字符串，写入 guest memory，再由插件侧解析。这不是 Runtime v2 的最终 ABI，因为它有几个问题：
-
-- host 与 guest 的字段 schema 不一致时，编译期发现不了；
-- Touch/Judge 这类大 payload 需要重复 JSON 编解码；
-- ABI 版本、字段变更、必填字段缺失都缺少统一 contract test；
-- 项目已经有 WIT/WASM Host API 方向，但 JSON 字符串仍是实际传输层。
-
-Step 34 起，所有 JSON ABI 编解码应集中在 `plugin_abi.rs`。后续应先补齐 contract tests，再把 guest-facing ABI 迁移到 typed WIT/component-model 接口。
+1. 服务器启动时扫描 `plugins/` 目录下的 `.wasm` 文件
+2. WASM 组件编译并实例化
+3. `init()` 被调用 → 返回 ok 表示初始化成功
+4. 运行期间事件通过 `on-event()` 分发
+5. 插件之间可通过 `on-api()` 互相调用
+6. 服务器关闭 / 插件重载时调用 `cleanup()`

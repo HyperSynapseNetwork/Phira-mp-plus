@@ -26,183 +26,145 @@ phira-mp-plus-server [OPTIONS]
 
 TUI 快捷键：`Tab` 补全、`Ctrl+A/E` 跳到行首/行尾、`Ctrl+B/F` 左右移动、`Alt+←/→` 按词移动、`Ctrl+W` 删除前一个词、`Alt+Delete` 删除后一个词、`Ctrl+K` 删除到行尾、`Ctrl+L` 清屏、`PgUp/PgDn` 或 `Shift+↑/↓` 滚动日志。
 
-### 命令列表
+---
 
-#### 通用命令
+## 命令列表
 
-| 命令 | 说明 |
+### 通用
+
+| 命令 | 参数 | 级别 | 说明 |
+|------|------|------|------|
+| `help [command\|all\|advanced\|dev]` | 可选：命令名 | Primary | 显示帮助信息 |
+| `exit` | 无 | Primary | 关闭服务器 |
+| `status` | 无 | Primary | 显示服务器状态（版本、端口、在线数、插件数） |
+| `config reload` | 无 | Primary | 热重载 `server_config.yml` |
+
+### 房间
+
+| 命令 | 参数 | 级别 | 说明 |
+|------|------|------|------|
+| `rooms` | 无 | Primary | 查看活跃房间列表 |
+| `room info <room_id>` | 房间名 | Primary | 查看房间详情 |
+| `room host <room_id> <user_id\|?>` | 房间名, 用户ID/`?` | Primary | 设置房主（`?` = 系统房主） |
+| `room close <room_id>` | 房间名 | Primary | 解散房间 |
+| `room set <room_id> <field> <value>` | 房间名, 字段, 值 | Primary | 修改房间设置（lock/cycle/hidden/persistent/host/chart-id/phira_api_endpoint） |
+| `room create-empty <room_id> [endpoint]` | 房间名, 可选 API endpoint | Advanced | 创建持久空房间 |
+| `room start <room_id>` | 房间名 | Advanced | 管理员开始游戏 |
+| `room cancel <room_id>` | 房间名 | Advanced | 取消开始游戏 |
+| `room kick <room_id> <user_id>` | 房间名, 用户ID | Advanced | 踢出房间 |
+| `room hide <room_id> [bool]` | 房间名, 可选布尔值 | Advanced | 隐藏房间（不在 Web API / 欢迎语中显示） |
+| `room unhide <room_id>` | 房间名 | Advanced | 取消隐藏 |
+| `room force-move <room_id> <user_id> [monitor]` | 房间名, 用户ID, 可选monitor | Advanced | 强制迁移用户到指定房间 |
+| `room history <room_id>` | 房间名 | Advanced | 查看房间游玩历史 |
+| `room rounds <room_id>` | 房间名 | Advanced | 查看房间轮次列表 |
+| `room round <round_uuid>` | 轮次 UUID | Advanced | 查看轮次详情 |
+| `room uuid <room_id>` | 房间名 | Advanced | 查看房间 UUID |
+| `room ban <room_id> <user_id> [reason]` | 房间名, 用户ID, 可选原因 | Advanced | 房间封禁用户 |
+| `room unban <room_id> <user_id>` | 房间名, 用户ID | Advanced | 取消房间封禁 |
+| `room banlist <room_id>` | 房间名 | Advanced | 查看房间封禁列表 |
+
+### 用户
+
+| 命令 | 参数 | 级别 | 说明 |
+|------|------|------|------|
+| `users` | 无 | Primary | 查看在线用户列表 |
+| `kick <user_id>` | 用户ID | Primary | 踢出用户 |
+| `ban <user_id> [reason]` | 用户ID, 可选原因 | Primary | 全局封禁用户 |
+| `unban <user_id>` | 用户ID | Primary | 取消封禁 |
+| `banlist` | 无 | Primary | 查看封禁列表 |
+
+### 广播
+
+| 命令 | 参数 | 级别 | 说明 |
+|------|------|------|------|
+| `broadcast all <message>` | 消息文本 | Primary | 广播给所有用户 |
+| `broadcast room <room_id> <message>` | 房间名, 消息 | Primary | 广播到指定房间 |
+| `broadcast user <user_id> <message>` | 用户ID, 消息 | Primary | 私信指定用户 |
+
+### 管理员 ID
+
+| 命令 | 参数 | 级别 | 说明 |
+|------|------|------|------|
+| `admin-id list` | 无 | Advanced | 查看管理员 ID 列表 |
+| `admin-id add <PhiraID>` | Phira ID | Advanced | 添加管理员 |
+| `admin-id remove <PhiraID>` | Phira ID | Advanced | 移除管理员 |
+| `admin-id set <PhiraID...>` | 一个或多个 Phira ID | Advanced | 替换整个管理员列表 |
+
+### 插件
+
+| 命令 | 参数 | 级别 | 说明 |
+|------|------|------|------|
+| `plugin list` | 无 | Primary | 列出所有已加载插件 |
+| `plugin enable <name>` | 插件名 | Primary | 启用插件 |
+| `plugin disable <name>` | 插件名 | Primary | 禁用插件 |
+| `plugin reload` | 无 | Advanced | 重新加载所有插件 |
+| `plugin info <id_or_name>` | 插件 ID 或名 | Advanced | 查看插件详情 |
+| `plugin call <name> <method> [args]` | 插件名, 方法, 可选 JSON 参数 | Advanced | 调用插件 API |
+
+### 基准测试
+
+| 命令 | 参数 | 级别 | 说明 |
+|------|------|------|------|
+| `benchmark [seconds] [rooms]` | 可选：秒, 房间数 | Advanced | 运行真实 TCP 网络压测（需 Phira token） |
+| `benchmark modes` | 无 | Advanced | 查看三种压测模式说明 |
+| `benchmark run real [seconds] [rooms]` | 可选：秒, 房间数 | Advanced | 显式真实 TCP 协议测试 |
+| `benchmark run hybrid [key=value...]` | 可选参数 | Advanced | 运行混合 Phira 探测（chart/record 查询） |
+| `benchmark report [mode\|limit]` | 可选：模式或数量 | Advanced | 查看最新 Benchmark 报告 |
+| `benchmark history [mode] [limit]` | 可选：模式, 数量 | Advanced | 查看持久化的 Benchmark 历史 |
+| `benchmark token bind <tokens...>` | Phira token | Developer | 绑定压测用 token |
+| `benchmark cleanup` | 无 | Developer | 清理所有 `bench-*` 房间 |
+
+默认推荐使用 `simulation` 进行压力测试（隔离本地，不访问 Phira，不需要 token）。Real Benchmark 详见 [benchmark-real.md](benchmark-real.md)。
+
+### 模拟器
+
+| 命令 | 参数 | 级别 | 说明 |
+|------|------|------|------|
+| `simulation status` | 无 | Primary | 查看模拟器状态 |
+| `simulation run <preset> [key=value...]` | preset + 可选覆盖 | Primary | 启动隔离本地压测（支持 auto_tick） |
+| `simulation stop` | 无 | Primary | 停止模拟 |
+| `simulation cleanup` | 无 | Primary | 清理模拟数据 |
+| `simulation scenarios` | 无 | Advanced | 查看可用场景列表 |
+| `simulation suite <name> [key=value...]` | suite 名 + 可选覆盖 | Advanced | 运行场景序列 |
+| `simulation report [list\|clear]` | 可选子命令 | Advanced | 查看模拟报告 |
+| `simulation tick [count]` | 可选：步数 | Developer | 手动推进模拟 |
+| `simulation inspect [limit]` | 可选：条数限制 | Developer | 查看影子世界数据 |
+| `simulation seed <u64>` | 种子值 | Developer | 设置确定性随机种子 |
+| `simulation persist` | 无 | Developer | 发送快照到持久化 Worker |
+| `simulation sample` | 无 | Developer | 查看样本数据 |
+
+预置场景：`baseline`（默认）、`small`、`medium`、`large`、`custom`。
+
+### Runtime v2 诊断
+
+| 命令 | 参数 | 级别 | 说明 |
+|------|------|------|------|
+| `runtime status` | 无 | Primary | Runtime v2 诊断总览 |
+| `runtime cutover [direct_only\|worker_preferred]` | 可选：切换模式 | Advanced | 查看/切换遥测持久化 Cutover 模式 |
+| `runtime persistence` | 无 | Advanced | 持久化 Worker 和批处理器统计 |
+| `runtime roadmap` | 无 | Developer | Runtime v2 路线图 |
+| `runtime phira` | 无 | Developer | Phira HTTP RetryClient 统计 |
+| `runtime commands` | 无 | Developer | 命令注册表统计 |
+| `runtime events` | 无 | Developer | 事件总线统计 |
+| `runtime schema` | 无 | Developer | 持久化 Schema 信息 |
+| `runtime rooms` | 无 | Developer | 房间 Actor 迁移状态 |
+| `runtime actors` | 无 | Developer | Actor 模型迁移蓝图 |
+
+### 扩展字段（已废弃）
+
+| 命令 | 参数 | 说明 |
+|------|------|------|
+| `extension list` | 无 | 查看已注册扩展字段 |
+| `extension get <target> <key>` | 目标 ID, Key | 获取扩展数据 |
+
+这些命令仅用于兼容性查看，扩展数据管理已迁移到数据库持久化。
+
+---
+
+## 命令级别说明
+
+| 级别 | 说明 |
 |------|------|
-| `help` | 显示帮助信息 |
-| `exit` | 关闭服务器 |
-| `status` | 显示服务器状态 |
-
-#### 诊断 / 压测
-
-| 命令 | 说明 |
-|------|------|
-| `benchmark [秒=30] [房间=100]` | 运行显式真实 TCP 网络压测（需 Phira token，advanced 级别） |
-| `benchmark modes` | 查看三种压测模式说明 |
-| `benchmark run real [秒] [房间]` | 显式真实 TCP 协议测试 |
-| `benchmark report` | 查看 Benchmark 报告 |
-| `benchmark history` | 查看已持久化的 BenchmarkReport 历史记录 |
-
-这些是 advanced 级别命令。默认推荐使用 `simulation` 进行压力测试（隔离本地，不访问 Phira，不需要 token）。Real Benchmark 是显式真实网络测试，详见 docs/benchmark-real.md。
-
-
-### 游戏内 `_` 管理入口
-
-`admin_phira_ids` 中的管理员可以在客户端”创建房间”弹窗输入 `_<CLI命令>`。服务端不会创建房间，而是执行 CLI 命令，并把输出通过聊天消息发回该客户端。非管理员输入 `_...` 会正常创建同名房间。
-
-
-#### 插件管理（WASM）
-
-| 命令 | 说明 |
-|------|------|
-| `plugin list` | 列出所有已加载的 WASM 插件 |
-| `plugin enable <名>` | 启用指定插件 |
-| `plugin disable <名>` | 禁用指定插件 |
-| `plugin info <名>` | 显示插件详细信息 |
-| `plugin reload` | 重载所有 WASM 插件 |
-
-#### 用户管理
-
-| 命令 | 说明 |
-|------|------|
-| `users` | 列出在线用户 |
-| `kick <用户ID>` | 从服务器踢出用户 |
-| `broadcast <作用域> <消息>` | 广播消息；作用域必须显式写明 |
-
-##### broadcast 作用域
-
-```
-broadcast all <消息>             广播给所有用户
-broadcast room <房间ID> <消息>    广播给指定房间
-broadcast user <用户ID> <消息>    发送给指定用户
-```
-
-#### 房间管理（room 子命令）
-
-| 命令 | 说明 |
-|------|------|
-| `rooms` / `room list` | 列出活跃房间 |
-| `room info <房间ID>` | 房间详情（状态、房主、谱面、Phira API、无人保留、历史） |
-| `room create-empty <房间ID> [phira_api_endpoint]` | 创建无人持久空房间；首个普通玩家加入后静默成为房主，不再弹出 `? 成为房主` |
-| `room start <房间ID>` | 由服务端发起游戏；等待所有玩家和监控端完成谱面加载后开始 |
-| `room cancel <房间ID>` | 取消准备状态 |
-| `room kick <房间ID> <用户ID>` | 从房间踢出用户 |
-| `room host <房间ID> <用户ID|?>` | 设置房主；`?` 表示系统房主 |
-| `room force-move <房间ID> <用户ID> [monitor]` | 强制迁移在线用户到指定房间 |
-| `room hide <房间ID>` | 隐藏房间 |
-| `room unhide <房间ID>` | 取消隐藏房间 |
-| `room set <房间ID> <字段> <值>` | 修改房间设置（lock/cycle/hidden/persistent/host/chart-id/phira_api_endpoint） |
-| `room close <房间ID>` | 解散房间 |
-| `room history <房间ID>` | 查看游玩记录 |
-| `room ban <房间ID> <用户ID>` | 房间加入黑名单 |
-| `room unban <房间ID> <用户ID>` | 房间移出黑名单 |
-| `room banlist <房间ID>` | 房间黑名单列表 |
-
-> 服务端选谱后会同步完整房间状态。`room start` 不再跳过客户端的下载与准备阶段，避免客户端在本地尚无谱面时直接进入游玩。
-
-##### 房间独立 Phira API endpoint
-
-每个房间可以临时覆盖全局 `phira_api_endpoint`，设置后立即生效，不需要重启服务器，也不需要重建房间。
-
-```bash
-room set <房间ID> phira_api_endpoint https://phira.example.com
-room set <房间ID> phira_api_endpoint default   # 清除覆盖，恢复全局配置
-room info <房间ID>                             # 查看当前生效 endpoint
-```
-
-覆盖后，服务端能确定房间上下文的 Phira API 访问都会使用房间 endpoint，例如房间命令查谱、服务端记录校验、终端/欢迎语/Web API 展示中的谱面名和用户名刷新。MP 协议无法可靠改写客户端本机对 Phira 的请求行为，因此不要把这个功能当成客户端 API 代理。用户登录认证 `/me` 仍使用全局 `server_config.yml` 的 `phira_api_endpoint`。
-
-无人持久房间：
-
-```bash
-room create-empty <房间ID>
-room create-empty <房间ID> https://phira.example.com
-room set <房间ID> persistent true
-room set <房间ID> persistent false
-```
-
-`persistent=true` 时房间即使没有玩家也不会因无人自动清除；没有房主的空房间会在首个普通玩家加入时静默把该玩家设为房主。用 `room host <房间ID> ?` 或 `room set <房间ID> host ?` 可显式设置系统 `?` 房主，此状态不会被后续加入者自动接管。
-
-旧式顶层房间命令已经移除；测试阶段统一使用 `room <subcommand>` 命名空间，避免命令面继续膨胀。
-
-#### 黑名单管理
-
-| 命令 | 说明 |
-|------|------|
-| `ban <用户ID> [原因]` | 封禁用户 |
-| `unban <用户ID>` | 解封用户 |
-| `banlist` | 列出封禁列表 |
-| `ban ip <地址> [原因]` | IP 封禁 |
-| `unban ip <地址>` | IP 解封 |
-| `banlist ip` | 列出 IP 封禁列表 |
-
-
-## Web API
-
-中央 HTTP/SSE 服务器监听配置的 `--http-port`（默认 12347）。
-
-| 端点 | 说明 |
-|------|------|
-| `GET /api/rooms` | 房间列表（含详情） |
-| `GET /api/rooms/{name}` | 指定房间信息 |
-| `GET /api/user_name/{id}` | 用户名称查询 |
-| `GET /api/players/count` | 在线玩家数 |
-| `GET /api/events` | 统一 SSE 端点 |
-
-详细 API 文档见 [api.md](api.md)。
-
-## WASM 插件系统
-
-服务器支持通过 wasmtime 加载 `.wasm` 插件。插件需放置在 `plugins/` 目录（可通过 `-d` 自定义）。
-插件通过 `phira:host/api` 导入函数访问服务器全部能力：
-
-- 状态查询：rooms.list, player.touches, round.data 等
-- 消息发送：send.to_user, send.to_room, send.to_all
-- 房间管理：room.kick, room.set_host, room.clear_host, room.set_lock, room.force_move, room.set_hidden, room.is_hidden, room.close
-- 用户管理：admin.kick_user, admin.ban_user, admin.unban_user, admin.is_banned
-- 插件互调用：plugin.api_call, plugin.api_register
-- 数据读写：ext.get/set, config.get/set, file.read/write
-- HTTP 请求：http.get/post
-
-具体接口定义见 `wit/phira-plugin.wit`（canonical ABI）；旧版指针见 `wit/phira/mpplus.wit`。
-
-## 日志文件
-
-日志文件存储在 `log/` 目录下，按小时轮转。
-
-日志级别通过 `RUST_LOG` 环境变量控制：
-
-```bash
-RUST_LOG=info phira-mp-plus-server
-RUST_LOG=debug phira-mp-plus-server
-```
-
-## Command surface policy
-
-The Runtime v2 command registry separates command metadata into three surfaces:
-
-- `primary`: shown by default in `help` and intended for normal operation.
-- `advanced`: available for diagnostics and migration work, hidden from default
-  help to avoid command bloat.
-- `developer`: internal diagnostics and runtime internals.
-
-No legacy, deprecated, or alias surface exists. Help uses canonical names only.
-
-Useful help entry points:
-
-```text
-help                 # recommended primary commands
-help advanced        # advanced diagnostics commands
-help dev             # developer commands
-help all             # full registry
-help groups          # list command groups
-help group rooms     # recommended commands in one group
-help group rooms all # full group view
-```
-
-New commands should prefer existing namespaces and configuration-driven behavior
-instead of adding more top-level commands. Web management APIs remain out of
-scope; CLI/TUI/in-game admin commands are the sole management surfaces.
+| Primary | 基础管理命令，`help` 默认显示 |
+| Advanced | 高级操作，需 `help advanced` 查看 |
+| Developer | 开发诊断，需 `help dev` 查看 |

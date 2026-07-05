@@ -8,9 +8,11 @@
 
 ### 核心特性
 
-- **WASM 插件系统** — 基于 wasmtime 动态加载，通过 `phira:host/api` 访问全部服务端能力
+- **WASM 插件系统** — 基于 wasmtime 组件模型（WIT ABI v2），12 个宿主接口覆盖查询/管理/持久化/模拟等全部能力
 - **TUI 管理控制台** — 基于 `ratatui` + `crossterm` 的终端界面，支持命令输入、日志实时显示
-- **内置功能** — 房间信息 Web API、黑名单管理、IP 封禁、轮次数据持久化、速率限制等均集成在核心中
+- **Runtime v2 架构** — 事件总线 + 持久化 Worker + Actor 模型房间命令网关，渐进式迁移旧路径
+- **内置功能** — 房间信息 Web API、SSE 实时事件流、黑名单管理、IP 封禁、轮次数据持久化、速率限制等
+- **jemalloc 分配器** — Linux 下使用 jemalloc 替代 musl malloc，主动归还空闲内存，避免 RSS 虚高
 
 ## 技术栈
 
