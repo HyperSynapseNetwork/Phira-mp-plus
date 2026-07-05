@@ -201,10 +201,10 @@ fn generate_wit_docs() -> String {
     md.push_str("## 当前状态\n\n");
     md.push_str("| 属性 | 值 |\n");
     md.push_str("|------|-----|\n");
-    md.push_str("| **运行时 ABI** | `abi-json-v1` (JSON 内存桥) |\n");
-    md.push_str("| **目标 ABI** | `abi-wit-v2` (WIT / Component Model) |\n");
+    md.push_str("| **运行时 ABI** | `abi-wit-v2` (WIT / Component Model) |\n");
+    md.push_str("| **目标 ABI** | `abi-wit-v2` |\n");
     md.push_str("| **规范 WIT** | `wit/phira-plugin.wit` |\n");
-    md.push_str("| **MIGRATION_PHASE** | `2` (JSON 桥已移除; 启用 `wit-bindgen` feature 编译 WIT host traits) |\n");
+    md.push_str("| **MIGRATION_PHASE** | `2` (JSON 桥已移除, WIT-only) |\n");
     md.push_str(&format!("| **接口数量** | `{}` |\n\n", interfaces.len()));
 
     md.push_str("## 规范 WIT 接口\n\n");
@@ -249,10 +249,9 @@ fn wit_docs_can_be_generated() {
 }
 
 #[test]
-fn current_abi_is_json_not_wit() {
+fn current_abi_is_wit() {
     let plan = plugin_abi::plugin_abi_plan();
-    assert_eq!(plan.current_transport, plugin_abi::PluginAbiTransport::JsonMemoryV1);
+    assert_eq!(plan.current_transport, plugin_abi::PluginAbiTransport::WitTypedV2);
     assert_eq!(plan.target_transport, plugin_abi::PluginAbiTransport::WitTypedV2);
-    assert!(plan.risks.iter().any(|risk| risk.contains("schema drift")));
-    assert!(plan.next_steps.iter().any(|step| step.contains("contract tests")));
+    assert!(plan.risks.iter().any(|risk| risk.contains("call_on_event") || risk.contains("stubs")));
 }

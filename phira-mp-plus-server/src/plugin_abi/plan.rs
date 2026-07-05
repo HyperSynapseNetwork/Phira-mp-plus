@@ -29,15 +29,14 @@ pub struct PluginAbiPlan {
 
 pub fn plugin_abi_plan() -> PluginAbiPlan {
     PluginAbiPlan {
-        current_transport: PluginAbiTransport::JsonMemoryV1,
+        current_transport: PluginAbiTransport::WitTypedV2,
         target_transport: PluginAbiTransport::WitTypedV2,
-        current_version: "abi-json-v1",
+        current_version: "abi-wit-v2",
         target_version: "abi-wit-v2",
         risks: vec![
-            "JSON string transport hides schema drift until runtime",
-            "host and guest can disagree on field names without compiler errors",
-            "large Touch/Judge payloads pay repeated JSON encode/decode cost",
-            "WIT definitions exist in the project direction but are not yet the authoritative plugin ABI",
+            "WIT call_on_event / call_api still stubs — plugin lifecycle incomplete",
+            "Component model adapters increase binary size ~14MB",
+            "All .wasm plugins must be compiled as WIT components, not modules",
         ],
         next_steps: vec![
             "centralize every JSON ABI encode/decode call in plugin_abi.rs",

@@ -296,12 +296,12 @@ fn benchmark_real_docs_marked_advanced() {
 fn wit_abi_docs_has_required_fields() {
     let content = read_doc_required("wit-abi.md");
     assert!(
-        content.contains("abi-json-v1"),
-        "wit-abi.md must mention abi-json-v1"
-    );
-    assert!(
         content.contains("abi-wit-v2"),
         "wit-abi.md must mention abi-wit-v2"
+    );
+    assert!(
+        !content.contains("abi-json-v1"),
+        "wit-abi.md should not mention abi-json-v1 (JSON bridge removed)"
     );
     assert!(
         content.contains("wit/phira-plugin.wit"),
