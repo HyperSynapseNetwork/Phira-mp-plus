@@ -59,11 +59,11 @@ pub mod wit {
 }
 
 pub fn supported_abi_versions() -> Vec<&'static str> {
-    vec!["abi-json-v1", "abi-wit-v2-planned"]
+    vec!["abi-wit-v2"]
 }
 
 pub fn is_abi_version_supported(version: &str) -> bool {
-    matches!(version, "abi-json-v1")
+    matches!(version, "abi-wit-v2")
 }
 
 #[cfg(test)]
@@ -71,25 +71,25 @@ mod tests {
     use super::*;
 
     #[test]
-    fn abi_plan_tracks_json_bridge_as_current() {
+    fn abi_plan_tracks_wit_as_current() {
         let plan = plugin_abi_plan();
-        assert_eq!(plan.current_transport, PluginAbiTransport::JsonMemoryV1);
+        assert_eq!(plan.current_transport, PluginAbiTransport::WitTypedV2);
         assert_eq!(plan.target_transport, PluginAbiTransport::WitTypedV2);
-        assert!(plan.risks.iter().any(|r| r.contains("schema drift")));
+        assert!(plan.risks.iter().any(|r| r.contains("call_on_event")));
     }
 
     #[test]
     fn abi_version_supported_checks_work() {
-        assert!(is_abi_version_supported("abi-json-v1"));
-        assert!(!is_abi_version_supported("abi-wit-v2"));
+        assert!(!is_abi_version_supported("abi-json-v1"));
+        assert!(is_abi_version_supported("abi-wit-v2"));
         assert!(!is_abi_version_supported(""));
     }
 
     #[test]
-    fn supported_abi_versions_includes_planned() {
+    fn supported_abi_versions_includes_wit() {
         let versions = supported_abi_versions();
-        assert!(versions.contains(&"abi-json-v1"));
-        assert!(versions.contains(&"abi-wit-v2-planned"));
-        assert_eq!(versions.len(), 2);
+        assert!(!versions.contains(&"abi-json-v1"));
+        assert!(versions.contains(&"abi-wit-v2"));
+        assert_eq!(versions.len(), 1);
     }
 }
