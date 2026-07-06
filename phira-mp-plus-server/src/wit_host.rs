@@ -296,26 +296,26 @@ mod wit_trait_impls {
     // ── phira-admin ──
     impl wit::phira::plugin::phira_admin::Host for WitPluginHost {
         fn list_admin_ids(&mut self) -> types::ApiResult {
-            let ids = futures::executor::block_on(self.state.admin_ids.read());
+            let ids = self.state.admin_ids.blocking_read();
             let list: Vec<u32> = ids.iter().copied().map(|id| id as u32).collect();
             types::ApiResult::Ok(json_to_wit_json(&serde_json::json!(list)))
         }
         fn is_admin(&mut self, user_id: u32) -> bool {
-            let ids = futures::executor::block_on(self.state.admin_ids.read());
+            let ids = self.state.admin_ids.blocking_read();
             ids.contains(&(user_id as i32))
         }
         fn add_admin_id(&mut self, user_id: u32) -> types::ApiResult {
-            let mut ids = futures::executor::block_on(self.state.admin_ids.write());
+            let mut ids = self.state.admin_ids.blocking_write();
             ids.insert(user_id as i32);
             types::ApiResult::Ok(types::JsonValue::Null)
         }
         fn remove_admin_id(&mut self, user_id: u32) -> types::ApiResult {
-            let mut ids = futures::executor::block_on(self.state.admin_ids.write());
+            let mut ids = self.state.admin_ids.blocking_write();
             ids.remove(&(user_id as i32));
             types::ApiResult::Ok(types::JsonValue::Null)
         }
         fn set_admin_ids(&mut self, ids: Vec<u32>) -> types::ApiResult {
-            let mut current = futures::executor::block_on(self.state.admin_ids.write());
+            let mut current = self.state.admin_ids.blocking_write();
             current.clear();
             for id in ids {
                 current.insert(id as i32);
