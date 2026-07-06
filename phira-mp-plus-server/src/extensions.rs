@@ -200,10 +200,8 @@ impl ExtensionManager {
     }
 
     /// Attach a PersistenceWorker for mirrored production writes.
-    pub fn set_persistence_worker(&self, worker: &Arc<PersistenceWorker>) {
-        if let Ok(mut w) = self.persistence_worker.write() {
-            *w = Some(Arc::downgrade(worker));
-        }
+    pub async fn set_persistence_worker(&self, worker: &Arc<PersistenceWorker>) {
+        *self.persistence_worker.write().await = Some(Arc::downgrade(worker));
     }
 
     /// 获取底层存储的引用
