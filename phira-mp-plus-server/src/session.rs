@@ -454,7 +454,7 @@ impl Session {
                                         };
 
                                         // Primary: PersistenceWorker
-                                        let seen_ok = self.server.persistence_worker.enqueue(
+                                        let seen_ok = server.persistence_worker.enqueue(
                                             crate::persistence::message::PersistenceEvent::UserSeen {
                                                 user_id: user_info.id,
                                                 user_name: user_info.name.clone(),

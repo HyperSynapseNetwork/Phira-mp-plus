@@ -260,7 +260,7 @@ pub async fn persist_production_event_if_needed(event: &PersistenceEvent) -> Per
             };
         }
         PersistenceEvent::UserSeen { user_id, user_name, language, ip } => {
-            db.record_user_seen_sync(*user_id, user_name, language, ip);
+            db.record_user_seen_sync(*user_id, user_name, language, Some(ip.clone()));
             return PersistenceWriteStage::Acknowledged {
                 pipeline: PersistencePipeline::EventMirror,
                 elapsed_ms: started.elapsed().as_millis() as u64,
