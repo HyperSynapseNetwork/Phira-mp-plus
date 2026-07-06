@@ -83,7 +83,7 @@ impl RuntimePlan {
                     title: "Persistence Worker ownership",
                     status: "active",
                     priority: "P1",
-                    next_step: "PersistenceWorker split into message/stats/mirror/pipeline/worker modules. db.rs persistence extracted into 15 modules. First production write (user_room_history) migrated through worker with DB fallback. 6 remaining bypass paths documented with audit contract test. Next: migrate extensions.rs room_event_sync or session.rs disconnect/seen.",
+                    next_step: "PersistenceWorker split into message/stats/mirror/pipeline/worker modules. db.rs persistence extracted into 15 modules. 3 production writes migrated: user_room_history, user_online, user_offline — all with worker primary + DB fallback. 4 remaining bypass paths (extensions, session disconnect/seen, round_store). Next: migrate extensions.rs room_event_sync or session.rs disconnect/seen.",
                 },
                 RuntimeObjective {
                     key: "eventbus",

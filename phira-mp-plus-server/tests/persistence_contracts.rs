@@ -174,8 +174,8 @@ fn simulation_scope_in_persistence_payload() {
 //
 // | # | File | Function | Data written | Frequency |
 // |---|------|----------|-------------|-----------|
-// | 1 | internal_hooks.rs | set_online_sync | user online status | per-connect |
-// | 2 | internal_hooks.rs | set_offline_sync | user offline status | per-disconnect |
+// | 1 | internal_hooks.rs | set_online_sync | user online status | per-connect | ✅ migrated to PersistenceWorker |
+// | 2 | internal_hooks.rs | set_offline_sync | user offline status | per-disconnect | ✅ migrated to PersistenceWorker |
 // | 3 | extensions.rs | record_room_event_sync | extension snapshots | per-ext-change |
 // | 4 | session.rs | record_user_disconnect_sync | disconnect events | per-disconnect |
 // | 5 | session.rs | record_user_seen_sync | user seen timestamp | per-command |
@@ -250,7 +250,6 @@ fn user_room_history_event_kind() {
 #[test]
 fn user_room_history_enum_constructs() {
     use phira_mp_plus_server::persistence::message::PersistenceEvent;
-    // Verify the enum variant compiles and debug-formats
     let event = PersistenceEvent::UserRoomHistory {
         user_id: 1,
         room_id: "r".into(),
@@ -258,4 +257,22 @@ fn user_room_history_enum_constructs() {
         joined_at: 0,
     };
     assert!(format!("{event:?}").contains("UserRoomHistory"), "debug format mentions variant");
+}
+
+#[test]
+fn user_online_event_kind() {
+    use phira_mp_plus_server::persistence::message::PersistenceEvent;
+    let event = PersistenceEvent::UserOnline { user_id: 42 };
+    assert_eq!(event.kind(), "user_online");
+    assert!(!event.is_simulation());
+    assert!(event.summary().contains("user_id=42"));
+}
+
+#[test]
+fn user_offline_event_kind() {
+    use phira_mp_plus_server::persistence::message::PersistenceEvent;
+    let event = PersistenceEvent::UserOffline { user_id: 99 };
+    assert_eq!(event.kind(), "user_offline");
+    assert!(!event.is_simulation());
+    assert!(event.summary().contains("user_id=99"));
 }
