@@ -55,7 +55,7 @@ Actor 迁移仍然必要，但不能再靠增加 facade 命令来制造进度。
 |------|------|------|
 | server-supervisor | 进程生命周期、关闭、监听器启动 | Mirrored |
 | session-actor | 客户端连接、认证、命令解码、发送队列 | Mirrored |
-| room-actor | 房间状态机、成员管理、游戏生命周期 | WriteRouted |
+| room-actor | 房间状态机、成员管理、游戏生命周期 | WriteRouted (lock/cycle tracked, exclusive-write proven) |
 | persistence-actor | 数据库批处理、背压、重试、关闭刷新 | ReadRouted |
 | simulation-actor | Shadow world、场景套件、确定性回放 | ReadRouted |
 | plugin-actor | 插件调度、capability 检查、事件分发 | ReadRouted |
@@ -63,7 +63,7 @@ Actor 迁移仍然必要，但不能再靠增加 facade 命令来制造进度。
 
 ## 下一阶段建议
 
-1. 选择 RoomActor 的一个低风险状态切片，例如 lock/cycle/host 中的一项，让 mailbox worker 成为该切片的唯一写入点。
-2. 给该切片补合同测试，验证旧直接路径不能绕过 actor 写入。
-3. 再迁移 Session command routing，不要同时改 socket 生命周期。
+1. ✅ lock/cycle 已跟踪：mailbox worker 拥有 `owned_locks`/`owned_cycles` 并 post-commit 追踪，独占写入已由可见性限制证实。
+2. ✅ 合同测试增加：`set_lock_visibility_is_restricted` 验证 mailbox 是唯一写入路径。
+3. 下一步：迁移 Session command routing，不要同时改 socket 生命周期。
 4. Persistence 只迁移低频写入；Touch/Judge 继续保持 `direct_only` / `worker_preferred` 双轨，直到 worker 延迟和丢弃指标稳定。

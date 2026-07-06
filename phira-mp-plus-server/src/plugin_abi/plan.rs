@@ -36,13 +36,13 @@ pub fn plugin_abi_plan() -> PluginAbiPlan {
         risks: vec![
             "Component model adapters increase binary size ~14MB",
             "All .wasm plugins must be compiled as WIT components, not modules",
-            "WIT lifecycle dispatch and several host APIs still have explicit stubs",
-            "Write-capable WIT host methods still need explicit capability enforcement",
+            "Persistence host API methods return capability errors — no real DB query path",
+            "PluginEvent→WIT event conversion and capability enforcement lack integration tests",
             "SDK documentation and runtime diagnostics must not describe JSON ABI as current",
         ],
         next_steps: vec![
-            "contract tests for WIT lifecycle dispatch, event conversion and every implemented host API",
-            "contract tests for capability enforcement on WIT room/admin/config/simulation writes",
+            "add integration tests for WIT lifecycle dispatch, event conversion and every host API method",
+            "add capability enforcement integration tests for WIT room/admin/config/simulation writes",
             "update phira-plugin-sdk examples so WIT/component model is the only current ABI path",
         ],
     }

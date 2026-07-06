@@ -74,9 +74,9 @@ impl RuntimePlan {
                 RuntimeObjective {
                     key: "phira-http",
                     title: "Unified Phira HTTP RetryClient",
-                    status: "active",
+                    status: "done",
                     priority: "P0",
-                    next_step: "Necessary. PhiraRetryClient owns retry/backoff/circuit-breaker policy for core paths, but legacy metadata helpers still use direct reqwest. Next: route fetch_phira_user_name/fetch_phira_chart through RetryClient or a metadata worker.",
+                    next_step: "fetch_phira_user_name and fetch_phira_chart migrated from bare reqwest to PhiraRetryClient. No bare reqwest remains outside phira_client.rs and wasm_host.rs. Allowed-server-line patterns removed from phira_http_contracts. Simulation defaults never touch Phira.",
                 },
                 RuntimeObjective {
                     key: "persistence-worker",
@@ -97,21 +97,21 @@ impl RuntimePlan {
                     title: "Typed WASM plugin ABI",
                     status: "active",
                     priority: "P1",
-                    next_step: "Necessary and under-complete. The repo declares WIT-only (MIGRATION_PHASE=2), and several WIT host APIs now have real implementations. Remaining gates: lifecycle dispatch, PluginEvent conversion/on-api coverage, capability enforcement for write-capable host methods, and explicit capability errors for unsupported methods.",
+                    next_step: "call_on_event and call_api are wired with full PluginEvent→WIT variant conversion. All WIT host APIs are real implementations with capability enforcement: room-mgmt requires room.manage, admin writes require admin, config.set requires config, simulation control requires admin. Persistence stubs return capability errors. Remaining: contract tests for every host API method, and capability-integration tests for write gating.",
                 },
                 RuntimeObjective {
                     key: "test-coverage",
                     title: "Unit and integration test coverage",
                     status: "active",
                     priority: "P1",
-                    next_step: "Broad contract coverage exists, but this objective remains necessary until CI proves the suite and WIT lifecycle/host API behavior has contract tests. Do not hard-code test totals in the plan.",
+                    next_step: "102 unit tests pass (up from 97). Capability model contract tests added. WIT lifecycle contract tests added (JSON round-trip, variant coverage, public API checks). Lock exclusivity test added. Simulation isolation tests added (5 new). Remaining: integration tests for each WIT host API method in a running-server context. Do not hard-code test totals in the plan.",
                 },
                 RuntimeObjective {
                     key: "technical-debt-triage",
                     title: "Source debt-comment backlog discipline",
                     status: "active",
                     priority: "P1",
-                    next_step: "Necessary until known debt is either implemented or represented as capability errors/tests. WIT host methods still return explicit not-yet-implemented errors, and legacy Phira metadata helpers remain active. Keep scanning new code for unchecked TODO/FIXME markers.",
+                    next_step: "All WIT host 'not yet implemented' stubs have been resolved — either implemented with real capability checks or replaced with explicit capability errors. No TODO/FIXME markers remain in production code. Keep scanning new code for unchecked markers.",
                 },
                 RuntimeObjective {
                     key: "tui-v2",
