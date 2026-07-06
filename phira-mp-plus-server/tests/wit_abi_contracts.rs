@@ -4,7 +4,7 @@
 //! that plugin_abi.rs references it correctly, and that the documentation
 //! is automatically generated from the WIT file (single source of truth).
 
-use phira_mp_plus_server::{plugin, plugin_abi, wit_host};
+use phira_mp_plus_server::{plugin, plugin_abi, wasm_host_helpers, wit_host};
 use std::path::PathBuf;
 
 /// Absolute path to workspace root (two levels up from crate manifest dir).
@@ -372,4 +372,61 @@ fn wit_json_value_round_trip() {
         let back = wit_host::wit_json_value_to_serde(&wit);
         assert_eq!(back, obj, "object round-trip");
     }
+}
+
+// ── Capability model contract tests ──
+
+#[test]
+fn default_capabilities_include_expected_set() {
+    let caps = wasm_host_helpers::default_capabilities();
+    assert!(caps.contains("state.read"), "default should include state.read");
+    assert!(caps.contains("send"), "default should include send");
+    assert!(caps.contains("config"), "default should include config");
+    assert!(!caps.contains("admin"), "default should NOT include admin");
+    assert!(!caps.contains("room.manage"), "default should NOT include room.manage");
+}
+
+#[test]
+fn default_capabilities_covers_basic_plugin_needs() {
+    let caps = wasm_host_helpers::default_capabilities();
+    let essentials = ["state.read", "send", "ext", "config", "file.read", "file.write"];
+    for cap in &essentials {
+        assert!(caps.contains(*cap), "default should contain {cap}");
+    }
+}
+
+#[test]
+fn required_capability_maps_admin_methods() {
+    assert_eq!(wasm_host_helpers::required_capability("admin.list"), Some("admin"));
+    assert_eq!(wasm_host_helpers::required_capability("admin.add"), Some("admin"));
+}
+
+#[test]
+fn required_capability_maps_room_methods() {
+    assert_eq!(wasm_host_helpers::required_capability("room.set_lock"), Some("room.manage"));
+    assert_eq!(wasm_host_helpers::required_capability("room.kick"), Some("room.manage"));
+    assert_eq!(wasm_host_helpers::required_capability("room.close"), Some("room.manage"));
+    assert_eq!(wasm_host_helpers::required_capability("room.set_hidden"), Some("room.manage"));
+}
+
+#[test]
+fn wit_host_public_api_compiles() {
+    // Compile-time check: WitPluginHost public methods exist
+    let _ = wit_host::json_value_to_wit;
+    let _ = wit_host::wit_json_value_to_serde;
+}
+
+#[test]
+fn wit_host_capability_loads_defaults_for_unknown_plugin() {
+    // load_manifest_capabilities for a non-existent plugin should return defaults
+    let caps = wasm_host_helpers::load_manifest_capabilities("/nonexistent/plugin.wasm");
+    assert!(caps.is_ok(), "non-existent plugin should get default capabilities");
+    let caps = caps.unwrap();
+    assert!(caps.contains("state.read"), "defaults should include state.read");
+}
+
+#[test]
+fn wit_host_reject_symlink_components() {
+    assert!(wasm_host_helpers::reject_symlink_components(&std::path::Path::new("/safe/path")).is_ok());
+    assert!(wasm_host_helpers::reject_symlink_components(&std::path::Path::new("/unsafe/../path")).is_err());
 }
