@@ -192,11 +192,7 @@ pub fn validate_http_url(value: &str, allow_private: bool) -> Result<(), String>
     let host_for_dns = host.to_string();
     let (tx, rx) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
-        let _ = tx.send(std::net::ToSocketAddrs::lookup_host(
-            // Append a dummy port — ToSocketAddrs requires a port, but we
-            // only care about the IP addresses returned.
-            (host_for_dns.as_str(), 0),
-        ));
+        let _ = tx.send((host_for_dns, 0u16).lookup_host());
     });
     let resolved = rx
         .recv_timeout(std::time::Duration::from_secs(5))
