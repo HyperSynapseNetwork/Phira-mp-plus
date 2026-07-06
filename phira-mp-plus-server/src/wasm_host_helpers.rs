@@ -136,8 +136,8 @@ pub fn config_path(plugin: &str) -> std::path::PathBuf {
 /// Validate an HTTP(S) URL for plugin HTTP requests.
 ///
 /// Uses `std::net::IpAddr` parsing for IP-based SSRF protection. Hostnames
-/// that resolve to private IPs are NOT caught at this layer (no DNS resolver
-/// available in the synchronous context); see TODO below.
+/// are resolved via the system DNS resolver (blocking, with 5-second timeout)
+/// and each resolved address is checked against private/reserved ranges.
 pub fn validate_http_url(value: &str, allow_private: bool) -> Result<(), String> {
     if value.len() > 8192 {
         return Err("HTTP URL too long".to_string());
@@ -187,10 +187,48 @@ pub fn validate_http_url(value: &str, allow_private: bool) -> Result<(), String>
         return Ok(());
     }
 
-    // TODO: Hostname SSRF protection requires DNS resolution, which needs an
-    // async context or a blocking thread.  Currently hostnames that resolve to
-    // private IPs are allowed through this synchronous validator.  When the
-    // HTTP client gains async DNS it should verify `rmap` of resolved addresses.
+    // Resolve hostname via DNS and check each address.
+    // Uses a blocking thread with timeout to avoid hanging the caller.
+    let host_for_dns = host.to_string();
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = tx.send(std::net::ToSocketAddrs::lookup_host(
+            // Append a dummy port — ToSocketAddrs requires a port, but we
+            // only care about the IP addresses returned.
+            (host_for_dns.as_str(), 0),
+        ));
+    });
+    let resolved = rx
+        .recv_timeout(std::time::Duration::from_secs(5))
+        .map_err(|_| format!("DNS resolution timed out for {host}"))?
+        .map_err(|e| format!("DNS resolution failed for {host}: {e}"))?;
+    let addresses: Vec<std::net::SocketAddr> = resolved.collect();
+    for addr in &addresses {
+        let ip = addr.ip();
+        let is_private = match ip {
+            std::net::IpAddr::V4(v4) => {
+                v4.is_private()
+                    || v4.is_loopback()
+                    || v4.is_link_local()
+                    || v4.is_broadcast()
+                    || v4.is_documentation()
+                    || v4.is_unspecified()
+                    || v4.is_multicast()
+            }
+            std::net::IpAddr::V6(v6) => {
+                v6.is_loopback()
+                    || v6.is_unspecified()
+                    || v6.is_multicast()
+                    || v6.is_unique_local()
+                    || v6.is_unicast_link_local()
+            }
+        };
+        if is_private {
+            return Err(format!(
+                "hostname '{host}' resolves to private network address: {ip}"
+            ));
+        }
+    }
 
     Ok(())
 }
