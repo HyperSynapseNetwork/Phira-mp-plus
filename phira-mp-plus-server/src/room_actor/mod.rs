@@ -126,3 +126,24 @@ impl RoomCommandGateway {
         self.owned_locks.read().ok().and_then(|map| map.get(room_id).copied())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn owned_lock_returns_none_for_unknown_room() {
+        let gateway = RoomCommandGateway::new();
+        assert_eq!(gateway.room_lock_owned("nonexistent"), None);
+    }
+
+    #[test]
+    fn owned_lock_updates_after_set_lock() {
+        let gateway = RoomCommandGateway::new();
+        // Write directly to simulate what the mailbox worker does
+        if let Ok(mut locks) = gateway.owned_locks.write() {
+            locks.insert("room-1".to_string(), true);
+        }
+        assert_eq!(gateway.room_lock_owned("room-1"), Some(true));
+    }
+}
