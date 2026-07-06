@@ -83,7 +83,7 @@ impl RuntimePlan {
                     title: "Persistence Worker ownership",
                     status: "active",
                     priority: "P1",
-                    next_step: "PersistenceWorker split into message/stats/mirror/pipeline/worker modules. db.rs persistence extracted into persistence/{benchmark,telemetry,simulation,events,users,admin,queries}.rs (15 modules). TelemetryBatcher in telemetry.rs + telemetry_batcher.rs facade. db.rs: 1863→1072 lines. Direct async writes still through DbManager spawn pattern; not all writes go through PersistenceWorker.",
+                    next_step: "PersistenceWorker split into message/stats/mirror/pipeline/worker modules. db.rs persistence extracted into 15 modules. First production write (user_room_history) migrated through worker with DB fallback. 6 remaining bypass paths documented with audit contract test. Next: migrate extensions.rs room_event_sync or session.rs disconnect/seen.",
                 },
                 RuntimeObjective {
                     key: "eventbus",
