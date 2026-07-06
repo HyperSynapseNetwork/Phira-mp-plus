@@ -180,7 +180,7 @@ fn simulation_scope_in_persistence_payload() {
 // | 4 | session.rs | record_user_disconnect_sync | disconnect events | per-disconnect |
 // | 5 | session.rs | record_user_seen_sync | user seen timestamp | per-command |
 // | 6 | round_store.rs | open_round/close_round/append_touches/append_judges/... | round data | per-round |
-// | 7 | server.rs | record_user_room_history_sync | room join history | per-join |
+// | 7 | server.rs | record_user_room_history_sync | room join history | per-join | ✅ migrated to PersistenceWorker |
 //
 // Telemetry/Benchmark/Simulation events route through PersistenceWorker
 // via PersistenceEvent enum and the typed pipeline.
@@ -229,4 +229,33 @@ fn persistence_worker_simulation_isolation() {
         payload: serde_json::json!({}),
         simulation: false,
     };
+}
+
+#[test]
+fn user_room_history_event_kind() {
+    use phira_mp_plus_server::persistence::message::PersistenceEvent;
+    let event = PersistenceEvent::UserRoomHistory {
+        user_id: 42,
+        room_id: "room-a".into(),
+        room_uuid: "uuid".into(),
+        joined_at: 1000,
+    };
+    assert_eq!(event.kind(), "user_room_history");
+    assert!(!event.is_simulation(), "room history is not simulation");
+    let summary = event.summary();
+    assert!(summary.contains("user_id=42"), "summary contains user_id");
+    assert!(summary.contains("room_id=room-a"), "summary contains room_id");
+}
+
+#[test]
+fn user_room_history_enum_constructs() {
+    use phira_mp_plus_server::persistence::message::PersistenceEvent;
+    // Verify the enum variant compiles and debug-formats
+    let event = PersistenceEvent::UserRoomHistory {
+        user_id: 1,
+        room_id: "r".into(),
+        room_uuid: "u".into(),
+        joined_at: 0,
+    };
+    assert!(format!("{event:?}").contains("UserRoomHistory"), "debug format mentions variant");
 }
