@@ -120,20 +120,29 @@ impl CommandSpec {
     }
 }
 
-#[derive(Clone, Default)]
 /// Argument completer: given the full command path and current partial token,
 /// return possible completions.  The registry has no server state, so the
 /// installer (server.rs) provides context-aware completers at startup.
 pub type ArgCompleter = Arc<dyn Fn(&[String], &str) -> Vec<String> + Send + Sync>;
 
+#[derive(Clone)]
 pub struct CommandRegistry {
     commands: BTreeMap<String, CommandSpec>,
     roots: BTreeSet<String>,
     children: BTreeMap<String, BTreeSet<String>>,
     /// Per-command argument completers, keyed by normalised command name.
     arg_completers: std::sync::RwLock<BTreeMap<String, ArgCompleter>>,
-    /// Weak reference to server state for dynamic completions (room IDs etc.).
-    pub(crate) server_state: std::sync::RwLock<Option<std::sync::Weak<crate::server::PlusServerState>>>,
+}
+
+impl Default for CommandRegistry {
+    fn default() -> Self {
+        Self {
+            commands: BTreeMap::new(),
+            roots: BTreeSet::new(),
+            children: BTreeMap::new(),
+            arg_completers: std::sync::RwLock::new(BTreeMap::new()),
+        }
+    }
 }
 
 impl CommandRegistry {
@@ -148,17 +157,10 @@ impl CommandRegistry {
         }
     }
 
-    /// Set server state reference (called after state is created in server.rs).
-    pub fn set_server_state(&self, state: &Arc<crate::server::PlusServerState>) {
-        if let Ok(mut guard) = self.server_state.write() {
-            *guard = Some(Arc::downgrade(state));
-        }
-    }
-
     /// Get completions for the argument after a known leaf command.
     fn complete_arg(&self, cmd_name: &str, prefix: &str) -> Option<Vec<String>> {
         let guard = self.arg_completers.read().ok()?;
-        let completer = guard.get(normalize_command_name(cmd_name))?;
+        let completer = guard.get(&normalize_command_name(cmd_name))?;
         let cmds: Vec<String> = cmd_name.split_whitespace().map(|s| s.to_string()).collect();
         Some(completer(&cmds, prefix))
     }
@@ -323,25 +325,25 @@ impl CommandRegistry {
     pub fn init_completers(&self) {
         // Benchmark mode completer: benchmark run <real|hybrid>
         self.set_arg_completer("benchmark run", Arc::new(|_cmd, prefix| {
-            ["real", "hybrid"].iter()
+            vec!["real", "hybrid"].into_iter()
                 .filter(|m| m.starts_with(prefix))
-                .cloned()
+                .map(|s| s.to_string())
                 .collect()
         }));
 
         // Simulation preset completer: simulation run <preset>
         self.set_arg_completer("simulation run", Arc::new(|_cmd, prefix| {
-            ["baseline", "small", "medium", "large", "custom"].iter()
+            vec!["baseline", "small", "medium", "large", "custom"].into_iter()
                 .filter(|p| p.starts_with(prefix))
-                .cloned()
+                .map(|s| s.to_string())
                 .collect()
         }));
 
         // Simulation suite completer: simulation suite <name>
         self.set_arg_completer("simulation suite", Arc::new(|_cmd, prefix| {
-            ["smoke", "mixed", "stress"].iter()
+            vec!["smoke", "mixed", "stress"].into_iter()
                 .filter(|s| s.starts_with(prefix))
-                .cloned()
+                .map(|s| s.to_string())
                 .collect()
         }));
 
