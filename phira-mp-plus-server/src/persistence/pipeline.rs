@@ -108,7 +108,8 @@ pub async fn persist_simulation_event_if_needed(event: &PersistenceEvent) -> Per
             db.record_sim_event(extract_run_id(&payload), "simulation.judge_batch", payload)
                 .await
         }
-        PersistenceEvent::BenchmarkReport { .. }
+        PersistenceEvent::UserRoomHistory { .. }
+        | PersistenceEvent::BenchmarkReport { .. }
         | PersistenceEvent::Flush
         | PersistenceEvent::Shutdown => {
             return PersistenceWriteStage::NotApplicable;
