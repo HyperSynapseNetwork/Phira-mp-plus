@@ -1,5 +1,7 @@
 # Phira-mp +
 
+>本项目使用AI开发，正处于快速迭代期，不建议在生产环境使用
+
 [![License](https://img.shields.io/badge/License-AGPLv3-blue.svg)](LICENSE)
 
 ## 简介
