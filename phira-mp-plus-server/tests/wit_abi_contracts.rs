@@ -258,7 +258,7 @@ fn current_abi_is_wit() {
         "risks should include known deployment constraints"
     );
     assert!(
-        !plan.risks.iter().any(|risk| risk.contains("stubs")),
-        "WIT lifecycle stubs risk should be removed after implementation"
+        plan.risks.iter().any(|risk| risk.contains("stubs")),
+        "WIT lifecycle and host API stubs must stay visible until implemented"
     );
 }

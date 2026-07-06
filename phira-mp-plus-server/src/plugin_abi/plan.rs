@@ -36,6 +36,7 @@ pub fn plugin_abi_plan() -> PluginAbiPlan {
         risks: vec![
             "Component model adapters increase binary size ~14MB",
             "All .wasm plugins must be compiled as WIT components, not modules",
+            "WIT lifecycle dispatch and several host APIs still have explicit stubs",
             "SDK documentation and runtime diagnostics must not describe JSON ABI as current",
         ],
         next_steps: vec![
@@ -79,8 +80,8 @@ mod tests {
             "risks should include known deployment constraints"
         );
         assert!(
-            !plan.risks.iter().any(|r| r.contains("stubs")),
-            "WIT lifecycle stubs risk should be removed after implementation"
+            plan.risks.iter().any(|r| r.contains("stubs")),
+            "WIT lifecycle and host API stubs must stay visible until implemented"
         );
     }
 
