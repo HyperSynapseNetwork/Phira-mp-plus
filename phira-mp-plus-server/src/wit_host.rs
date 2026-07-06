@@ -335,8 +335,63 @@ mod wit_trait_impls {
 
     // ── phira-user-mgmt ──
     impl wit::phira::plugin::phira_user_mgmt::Host for WitPluginHost {
-        fn kick_user(&mut self, _user_id: u32, _reason: String) -> types::ApiResult {
-            types::ApiResult::Error("kick_user not yet implemented — use server CLI or TUI".to_string())
+        fn kick_user(&mut self, user_id: u32, reason: String) -> types::ApiResult {
+            if let Err(e) = self.require_cap_str("admin", "kick_user") {
+                return types::ApiResult::Error(e);
+            }
+            // Server-level kick: remove from room + notify + delete session.
+            use phira_mp_common::{Message, RoomEvent};
+            use crate::event_bus::MpEvent;
+            use crate::plugin::PluginEvent;
+            let state = std::sync::Arc::clone(&self.state);
+            let result = futures::executor::block_on(async {
+                let uid = user_id as i32;
+                let user = state.users.read().await.get(&uid).map(std::sync::Arc::clone)
+                    .ok_or("user not found".to_string())?;
+                // Remove from room if present
+                if let Some(room) = user.room.read().await.as_ref().map(std::sync::Arc::clone) {
+                    let room_id = room.id.to_string();
+                    let room_key = room.id.clone();
+                    let was_monitor = user.monitor.load(std::sync::atomic::Ordering::SeqCst);
+                    if room.on_user_leave(&user).await {
+                        state.rooms.write().await.remove(&room_key);
+                    }
+                    if !was_monitor {
+                        state.publish_room_event(RoomEvent::LeaveRoom {
+                            room: room_key,
+                            user: uid,
+                        }).await;
+                    }
+                    state.event_bus.publish(MpEvent::PluginEventDispatched(
+                        std::sync::Arc::new(PluginEvent::RoomLeave {
+                            user_id: uid,
+                            room_id,
+                        }),
+                    ));
+                }
+                // Notify user's session
+                let sessions = state.sessions.read().await;
+                for session in sessions.values() {
+                    if session.user.id == uid {
+                        let _ = session.stream.send(
+                            phira_mp_common::ServerCommand::Message(
+                                Message::Chat {
+                                    user: 0,
+                                    content: format!("你已被管理员踢出: {reason}"),
+                                },
+                            )
+                        ).await;
+                        break;
+                    }
+                }
+                drop(sessions);
+                state.users.write().await.remove(&uid);
+                Ok(serde_json::json!({"kicked": true, "user_id": user_id}))
+            });
+            match result {
+                Ok(v) => types::ApiResult::Ok(json_to_wit_json(&v)),
+                Err(e) => types::ApiResult::Error(e),
+            }
         }
         fn ban_user(&mut self, user_id: u32, reason: String) -> types::ApiResult {
             let state = std::sync::Arc::clone(&self.state);
