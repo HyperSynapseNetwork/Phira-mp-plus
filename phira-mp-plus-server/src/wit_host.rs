@@ -296,19 +296,31 @@ mod wit_trait_impls {
     // ── phira-admin ──
     impl wit::phira::plugin::phira_admin::Host for WitPluginHost {
         fn list_admin_ids(&mut self) -> types::ApiResult {
-            query_api_result(&self.state, "admin.list", &[])
+            let ids = futures::executor::block_on(self.state.admin_ids.read());
+            let list: Vec<u32> = ids.iter().copied().map(|id| id as u32).collect();
+            types::ApiResult::Ok(json_to_wit_json(&serde_json::json!(list)))
         }
-        fn is_admin(&mut self, _user_id: u32) -> bool {
-            matches!(query_api_result(&self.state, "admin.list", &[]), types::ApiResult::Ok(_))
+        fn is_admin(&mut self, user_id: u32) -> bool {
+            let ids = futures::executor::block_on(self.state.admin_ids.read());
+            ids.contains(&(user_id as i32))
         }
         fn add_admin_id(&mut self, user_id: u32) -> types::ApiResult {
-            query_api_result(&self.state, "admin.add", &[serde_json::json!(user_id)])
+            let mut ids = futures::executor::block_on(self.state.admin_ids.write());
+            ids.insert(user_id as i32);
+            types::ApiResult::Ok(types::JsonValue::Null)
         }
         fn remove_admin_id(&mut self, user_id: u32) -> types::ApiResult {
-            query_api_result(&self.state, "admin.remove", &[serde_json::json!(user_id)])
+            let mut ids = futures::executor::block_on(self.state.admin_ids.write());
+            ids.remove(&(user_id as i32));
+            types::ApiResult::Ok(types::JsonValue::Null)
         }
         fn set_admin_ids(&mut self, ids: Vec<u32>) -> types::ApiResult {
-            query_api_result(&self.state, "admin.set", &[serde_json::json!(ids)])
+            let mut current = futures::executor::block_on(self.state.admin_ids.write());
+            current.clear();
+            for id in ids {
+                current.insert(id as i32);
+            }
+            types::ApiResult::Ok(types::JsonValue::Null)
         }
     }
 
@@ -334,29 +346,53 @@ mod wit_trait_impls {
     // ── phira-simulation ──
     impl wit::phira::plugin::phira_simulation::Host for WitPluginHost {
         fn status(&mut self) -> types::ApiResult {
-            query_api_result(&self.state, "simulation.status", &[])
+            let status = futures::executor::block_on(self.state.simulation.status());
+            let json = serde_json::to_value(&status).unwrap_or_default();
+            types::ApiResult::Ok(json_to_wit_json(&json))
         }
-        fn run(&mut self, _preset: String, _users: Option<u32>, _rooms: Option<u32>, _duration: Option<u32>) -> types::ApiResult {
-            types::ApiResult::Error("simulation.run not yet implemented".to_string())
+        fn run(&mut self, preset: String, users: Option<u32>, rooms: Option<u32>, duration: Option<u32>) -> types::ApiResult {
+            let mut config = crate::simulation::SimulationConfig::default();
+            if let Some(p) = crate::simulation::SimulationPreset::parse(&preset) {
+                config = p.defaults(self.state.simulation.seed_hint());
+            }
+            if let Some(u) = users { config.users = u as usize; }
+            if let Some(r) = rooms { config.rooms = r as usize; }
+            if let Some(d) = duration { config.duration_secs = d as u64; }
+            match futures::executor::block_on(self.state.simulation.start(config)) {
+                Ok(status) => {
+                    let json = serde_json::to_value(&status).unwrap_or_default();
+                    types::ApiResult::Ok(json_to_wit_json(&json))
+                }
+                Err(e) => types::ApiResult::Error(e),
+            }
         }
         fn stop(&mut self) -> types::ApiResult {
-            types::ApiResult::Error("simulation.stop not yet implemented".to_string())
+            let status = futures::executor::block_on(self.state.simulation.stop("stopped via plugin API"));
+            let json = serde_json::to_value(&status).unwrap_or_default();
+            types::ApiResult::Ok(json_to_wit_json(&json))
         }
         fn cleanup(&mut self) -> types::ApiResult {
-            types::ApiResult::Error("simulation.cleanup not yet implemented".to_string())
+            let status = futures::executor::block_on(self.state.simulation.cleanup());
+            let json = serde_json::to_value(&status).unwrap_or_default();
+            types::ApiResult::Ok(json_to_wit_json(&json))
         }
     }
 
     // ── phira-runtime ──
     impl wit::phira::plugin::phira_runtime::Host for WitPluginHost {
         fn status(&mut self) -> types::ApiResult {
-            query_api_result(&self.state, "runtime.status", &[])
+            let snapshot = self.state.runtime_plan.snapshot();
+            let json = serde_json::to_value(&snapshot).unwrap_or_default();
+            types::ApiResult::Ok(json_to_wit_json(&json))
         }
         fn events(&mut self, _limit: Option<u32>) -> types::ApiResult {
-            query_api_result(&self.state, "runtime.events", &[])
+            let stats = self.state.event_bus.stats(50);
+            let json = serde_json::to_value(&stats).unwrap_or_default();
+            types::ApiResult::Ok(json_to_wit_json(&json))
         }
         fn commands(&mut self) -> types::ApiResult {
-            query_api_result(&self.state, "runtime.commands", &[])
+            let names: Vec<&str> = self.state.command_registry.iter().map(|s| s.name.as_str()).collect();
+            types::ApiResult::Ok(json_to_wit_json(&serde_json::json!(names)))
         }
     }
 
