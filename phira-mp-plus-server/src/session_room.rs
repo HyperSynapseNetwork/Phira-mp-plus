@@ -152,15 +152,8 @@ pub async fn create_room(user: Arc<User>, id: RoomId) -> Result<()> {
         .map(|d| d.as_millis() as i64)
         .unwrap_or(0);
     user.server
-        .user_room_history
-        .write()
-        .await
-        .entry(user.id)
-        .or_default()
-        .push((id.to_string(), room_uuid.to_string(), now));
-    if let Some(db) = crate::internal_hooks::DB.get() {
-        db.record_user_room_history_sync(user.id, id.to_string(), room_uuid.to_string(), now);
-    }
+        .record_user_room_history(user.id, id.to_string(), room_uuid.to_string(), now)
+        .await;
 
     info!(user = user.id, room = id.to_string(), room_uuid = %room_uuid, "user create room");
     info!("房间 '{}' 唯一标识: {}", id, room_uuid);
@@ -264,15 +257,8 @@ pub async fn join_room(
         .map(|d| d.as_millis() as i64)
         .unwrap_or(0);
     user.server
-        .user_room_history
-        .write()
-        .await
-        .entry(user.id)
-        .or_default()
-        .push((id.to_string(), room.uuid.to_string(), joined_at));
-    if let Some(db) = crate::internal_hooks::DB.get() {
-        db.record_user_room_history_sync(user.id, id.to_string(), room.uuid.to_string(), joined_at);
-    }
+        .record_user_room_history(user.id, id.to_string(), room.uuid.to_string(), joined_at)
+        .await;
     drop(room_guard);
 
     user.server.refresh_room_display_metadata_background(&room);

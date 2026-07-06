@@ -72,14 +72,20 @@ impl CliHandler {
             .clamp(1, 5000);
 
         let (tx, rx) = std::sync::mpsc::channel();
-        if self
+        match self
             .state
             .bench_tx
-            .send(crate::server::BenchRequest::real(duration, rooms, tx))
-            .is_err()
+            .try_send(crate::server::BenchRequest::real(duration, rooms, tx))
         {
-            self.out(format!("  {} benchmark channel closed", c::red("✗")));
-            return;
+            Ok(()) => {}
+            Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
+                self.out(format!("  {} benchmark 已在运行或队列已满", c::red("✗")));
+                return;
+            }
+            Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
+                self.out(format!("  {} benchmark channel closed", c::red("✗")));
+                return;
+            }
         }
 
         self.out(format!(
@@ -145,14 +151,20 @@ impl CliHandler {
         let timeout_secs = config.timeout_secs();
         let switches = config.enabled_switches();
         let (tx, rx) = std::sync::mpsc::channel();
-        if self
+        match self
             .state
             .bench_tx
-            .send(crate::server::BenchRequest::hybrid(config, tx))
-            .is_err()
+            .try_send(crate::server::BenchRequest::hybrid(config, tx))
         {
-            self.out(format!("  {} benchmark channel closed", c::red("✗")));
-            return;
+            Ok(()) => {}
+            Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
+                self.out(format!("  {} benchmark 已在运行或队列已满", c::red("✗")));
+                return;
+            }
+            Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
+                self.out(format!("  {} benchmark channel closed", c::red("✗")));
+                return;
+            }
         }
 
         self.out(format!(

@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::sync::{Arc, Mutex};
-use tokio::sync::{RwLock, Semaphore};
+use tokio::sync::{OwnedSemaphorePermit, RwLock, Semaphore};
 use tracing::{info, warn};
 
 pub use api::{HttpHandle, JudgeEventItem, PluginEvent, PluginInfo, TouchEventPoint};
@@ -456,12 +456,35 @@ impl PluginManager {
     }
 
     pub async fn trigger(&self, event: &PluginEvent) -> Vec<PluginEventResult> {
-        let _permit = match self.event_gate.acquire().await {
+        let permit = match Arc::clone(&self.event_gate).acquire_owned().await {
             Ok(permit) => permit,
             Err(_) => return Vec::new(),
         };
+        self.trigger_with_permit(event.clone(), permit).await
+    }
+
+    /// Dispatch a plugin event only when a concurrency slot is immediately available.
+    ///
+    /// High-frequency telemetry paths use this to avoid building an unbounded backlog of
+    /// Tokio tasks while plugin WASM calls are already saturated.
+    pub fn try_spawn_trigger(self: &Arc<Self>, event: PluginEvent) -> bool {
+        let permit = match Arc::clone(&self.event_gate).try_acquire_owned() {
+            Ok(permit) => permit,
+            Err(_) => return false,
+        };
+        let manager = Arc::clone(self);
+        tokio::spawn(async move {
+            manager.trigger_with_permit(event, permit).await;
+        });
+        true
+    }
+
+    async fn trigger_with_permit(
+        &self,
+        event: PluginEvent,
+        _permit: OwnedSemaphorePermit,
+    ) -> Vec<PluginEventResult> {
         let slots = self.plugins.read().await.clone();
-        let event = event.clone();
         match tokio::task::spawn_blocking(move || {
             let mut results = Vec::new();
             for slot in slots {

@@ -18,10 +18,15 @@ use std::{
 };
 use tokio::{
     net::TcpListener,
-    sync::{mpsc, Notify, RwLock},
+    sync::{mpsc, Notify, RwLock, Semaphore},
 };
 use tracing::{info, trace, warn};
 use uuid::Uuid;
+
+const USER_ROOM_HISTORY_LIMIT: usize = 64;
+const BENCHMARK_QUEUE_CAPACITY: usize = 1;
+const ROOM_METADATA_REFRESH_CONCURRENCY: usize = 8;
+const CONNECTION_LIMITER_CLEANUP_SECS: u64 = 60;
 
 /// Chart information from the Phira API
 #[derive(Debug, Deserialize, Clone)]
@@ -650,7 +655,9 @@ pub struct PlusServerState {
     /// 用户房间访问历史: user_id → (room_id, room_uuid, join_timestamp_ms)
     pub user_room_history: SafeMap<i32, Vec<(String, String, i64)>>,
     /// 压测请求发送端（背景 tokio 任务消费）
-    pub bench_tx: tokio::sync::mpsc::UnboundedSender<BenchRequest>,
+    pub bench_tx: tokio::sync::mpsc::Sender<BenchRequest>,
+    /// 房间展示元数据后台刷新并发闸门。
+    pub room_metadata_refresh_gate: Arc<Semaphore>,
     /// Runtime v2 命令元数据注册表。Step 1 仅用于 help/补全/未来统一入口，不改变现有执行逻辑。
     pub command_registry: Arc<crate::command_registry::CommandRegistry>,
     /// Runtime v2 事件总线。当前记录新增 Runtime v2 事件和诊断统计，旧路径仍逐步迁移。
@@ -809,8 +816,8 @@ fn spawn_event_subscribers(state: &Arc<PlusServerState>) {
 /// This brings plugin dispatch into the EventBus pipeline, so new event sources
 /// only need to publish to the bus instead of calling pm.trigger() directly.
 /// The subscriber checks has_plugins() to avoid unnecessary work when no
-/// plugins are loaded, and spawns a separate task per event so slow plugin
-/// WASM code never blocks the subscriber loop.
+/// plugins are loaded, and only spawns plugin work after a concurrency slot is
+/// available so telemetry bursts cannot build an unbounded task backlog.
 fn spawn_plugin_subscriber(state: &Arc<PlusServerState>) {
     let mut rx = state.event_bus.subscribe();
     let pm = Arc::clone(&state.plugin_manager);
@@ -822,13 +829,12 @@ fn spawn_plugin_subscriber(state: &Arc<PlusServerState>) {
                         if !pm.has_plugins().await {
                             continue;
                         }
-                        // Spawn independently so slow plugin code doesn't block
-                        // the subscriber from processing subsequent events.
-                        let pm = Arc::clone(&pm);
-                        let ev = Arc::clone(plugin_event);
-                        tokio::spawn(async move {
-                            pm.trigger(&ev).await;
-                        });
+                        if !pm.try_spawn_trigger((**plugin_event).clone()) {
+                            trace!(
+                                kind = plugin_event.kind(),
+                                "dropping plugin event because plugin event concurrency is saturated"
+                            );
+                        }
                     }
                 }
                 Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
@@ -881,7 +887,8 @@ impl PlusServer {
                 }
             }
         }
-        let (bench_tx, bench_rx) = tokio::sync::mpsc::unbounded_channel::<BenchRequest>();
+        let (bench_tx, bench_rx) =
+            tokio::sync::mpsc::channel::<BenchRequest>(BENCHMARK_QUEUE_CAPACITY);
 
         let runtime_v2 = config.runtime_v2.clone();
         let command_registry = Arc::new(crate::command_registry::runtime_v2_registry());
@@ -933,6 +940,9 @@ impl PlusServer {
             round_store: Arc::new(super::round_store::RoundStore::new("data", retention_days)),
             user_room_history: SafeMap::default(),
             bench_tx: bench_tx.clone(),
+            room_metadata_refresh_gate: Arc::new(Semaphore::new(
+                ROOM_METADATA_REFRESH_CONCURRENCY,
+            )),
             command_registry,
             event_bus,
             benchmark_reports,
@@ -1204,6 +1214,17 @@ impl PlusServer {
                 if let Err(e) = persist_state.extensions.persist().await {
                     warn!("auth cache persist: {e}");
                 }
+            }
+        });
+
+        let limiter_cleanup_state = Arc::clone(&state);
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(std::time::Duration::from_secs(
+                    CONNECTION_LIMITER_CLEANUP_SECS,
+                ))
+                .await;
+                limiter_cleanup_state.connection_limiter.cleanup().await;
             }
         });
 
@@ -1740,9 +1761,20 @@ impl PlusServerState {
     /// 等到 reqwest 超时。加入房间、强制迁移、设置 endpoint 等协议关键路径不能等待它，
     /// 否则客户端会先看到 timeout，随后重连才发现服务端其实已经把用户放进房间。
     pub fn refresh_room_display_metadata_background(&self, room: &Arc<crate::room::Room>) {
+        let permit = match Arc::clone(&self.room_metadata_refresh_gate).try_acquire_owned() {
+            Ok(permit) => permit,
+            Err(_) => {
+                trace!(
+                    room = room.id.to_string(),
+                    "skipping room metadata refresh because refresh concurrency is saturated"
+                );
+                return;
+            }
+        };
         let room = Arc::clone(room);
         let fallback_endpoint = self.config.phira_api_endpoint.clone();
         tokio::spawn(async move {
+            let _permit = permit;
             let endpoint = room
                 .phira_api_endpoint_override()
                 .await
@@ -1753,6 +1785,27 @@ impl PlusServerState {
 }
 
 impl PlusServerState {
+    pub(crate) async fn record_user_room_history(
+        &self,
+        user_id: i32,
+        room_id: String,
+        room_uuid: String,
+        joined_at: i64,
+    ) {
+        {
+            let mut history = self.user_room_history.write().await;
+            let entries = history.entry(user_id).or_default();
+            entries.push((room_id.clone(), room_uuid.clone(), joined_at));
+            if entries.len() > USER_ROOM_HISTORY_LIMIT {
+                let remove = entries.len() - USER_ROOM_HISTORY_LIMIT;
+                entries.drain(0..remove);
+            }
+        }
+        if let Some(db) = crate::internal_hooks::DB.get() {
+            db.record_user_room_history_sync(user_id, room_id, room_uuid, joined_at);
+        }
+    }
+
     /// 绑定真实 Phira 账号 token 作为网络压测客户端。
     pub async fn bind_benchmark_tokens(&self, raw_tokens: Vec<String>) -> Result<usize, String> {
         let tokens = sanitize_benchmark_tokens(raw_tokens);
@@ -2257,20 +2310,13 @@ impl PlusServerState {
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_millis() as i64)
             .unwrap_or(0);
-        self.user_room_history
-            .write()
-            .await
-            .entry(target_id)
-            .or_default()
-            .push((rid.to_string(), target_room.uuid.to_string(), now));
-        if let Some(db) = crate::internal_hooks::DB.get() {
-            db.record_user_room_history_sync(
-                target_id,
-                rid.to_string(),
-                target_room.uuid.to_string(),
-                now,
-            );
-        }
+        self.record_user_room_history(
+            target_id,
+            rid.to_string(),
+            target_room.uuid.to_string(),
+            now,
+        )
+        .await;
 
         self.event_bus
             .publish(crate::event_bus::MpEvent::PluginEventDispatched(
@@ -2933,12 +2979,17 @@ fn server_state_query_inner(
 
             // 通过 mpsc 通道发送请求给背景 tokio 任务，阻塞等待结果
             let (tx, rx) = std::sync::mpsc::channel();
-            if state
+            match state
                 .bench_tx
-                .send(BenchRequest::real(duration, rooms, tx))
-                .is_err()
+                .try_send(BenchRequest::real(duration, rooms, tx))
             {
-                return Err("benchmark channel closed".to_string());
+                Ok(()) => {}
+                Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
+                    return Err("benchmark already running or queued".to_string());
+                }
+                Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
+                    return Err("benchmark channel closed".to_string());
+                }
             }
             match rx.recv_timeout(std::time::Duration::from_secs(duration + 120)) {
                 Ok(result) => Ok(serde_json::json!({"output": result})),

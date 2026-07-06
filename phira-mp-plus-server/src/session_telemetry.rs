@@ -58,15 +58,16 @@ pub(crate) async fn handle_touches(user: Arc<User>, room: Arc<Room>, frames: Arc
     if user.server.plugin_manager.has_plugins().await {
         let pm = Arc::clone(&user.server.plugin_manager);
         let room_id = room.id.to_string();
-        let data_for_event = touch_data.clone();
-        tokio::spawn(async move {
-            pm.trigger(&PluginEvent::PlayerTouches {
+        if !pm.try_spawn_trigger(PluginEvent::PlayerTouches {
+            user_id: player_id,
+            room_id,
+            data: touch_data,
+        }) {
+            trace!(
                 user_id: player_id,
-                room_id,
-                data: data_for_event,
-            })
-            .await;
-        });
+                "dropping plugin touch event because plugin event concurrency is saturated"
+            );
+        }
     }
 
     if should_broadcast_monitor_telemetry(has_active_monitors) {
@@ -116,15 +117,16 @@ pub(crate) async fn handle_judges(user: Arc<User>, room: Arc<Room>, judges: Arc<
     if user.server.plugin_manager.has_plugins().await {
         let pm = Arc::clone(&user.server.plugin_manager);
         let room_id = room.id.to_string();
-        let data_for_event = judge_data.clone();
-        tokio::spawn(async move {
-            pm.trigger(&PluginEvent::PlayerJudges {
+        if !pm.try_spawn_trigger(PluginEvent::PlayerJudges {
+            user_id: player_id,
+            room_id,
+            data: judge_data,
+        }) {
+            trace!(
                 user_id: player_id,
-                room_id,
-                data: data_for_event,
-            })
-            .await;
-        });
+                "dropping plugin judge event because plugin event concurrency is saturated"
+            );
+        }
     }
 
     if should_broadcast_monitor_telemetry(has_active_monitors) {

@@ -20,6 +20,8 @@ use std::{
 use tokio::sync::RwLock;
 use tracing::{debug, info, warn};
 
+const MAX_ROOM_PLAY_HISTORY: usize = 100;
+
 #[derive(Default, Debug, Clone)]
 pub enum InternalRoomState {
     #[default]
@@ -299,6 +301,25 @@ impl Room {
 
     pub async fn set_phira_api_endpoint_override(&self, endpoint: Option<String>) {
         *self.phira_api_endpoint.write().await = endpoint;
+    }
+
+    async fn clear_user_live_cache_if_absent(&self, user_id: i32) {
+        let still_present = self
+            .users()
+            .await
+            .into_iter()
+            .chain(self.monitors().await)
+            .any(|current| current.id == user_id);
+        if still_present {
+            return;
+        }
+        self.display_names.write().await.remove(&user_id);
+        self.player_data.write().await.remove(&user_id);
+    }
+
+    async fn clear_empty_room_live_caches(&self) {
+        self.display_names.write().await.clear();
+        self.player_data.write().await.clear();
     }
 
     pub async fn effective_phira_api_endpoint(
@@ -725,6 +746,7 @@ impl Room {
                 .upgrade()
                 .is_some_and(|current| !std::ptr::eq(Arc::as_ptr(&current), user))
         });
+        self.clear_user_live_cache_if_absent(user.id).await;
 
         if is_monitor {
             self.has_active_monitors().await;
@@ -735,6 +757,7 @@ impl Room {
         if users.is_empty() {
             if self.is_persistent_empty() {
                 info!("room users all disconnected, preserving persistent empty room");
+                self.clear_empty_room_live_caches().await;
                 if !self.is_system_host() {
                     *self.host.write().await = Weak::<super::session::User>::new();
                 }
@@ -868,11 +891,19 @@ impl Room {
             }
         }
         let event = protocol_round(&round);
-        self.play_history.write().await.push(round);
+        let total_rounds = {
+            let mut history = self.play_history.write().await;
+            history.push(round);
+            if history.len() > MAX_ROOM_PLAY_HISTORY {
+                let remove = history.len() - MAX_ROOM_PLAY_HISTORY;
+                history.drain(0..remove);
+            }
+            history.len()
+        };
         info!(
             room = self.id.to_string(),
             "saved play round history (total {})",
-            self.play_history.read().await.len()
+            total_rounds
         );
         Some(event)
     }

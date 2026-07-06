@@ -12,6 +12,9 @@ use tracing::info;
 /// 全局数据库管理器（保留静态用于未迁移的模块）
 pub static DB: OnceLock<super::db::DbManager> = OnceLock::new();
 
+const PLAYER_TRACKER_MAX_ENTRIES: usize = 50_000;
+const PLAYTIME_CACHE_MAX_ENTRIES: usize = 50_000;
+
 pub async fn init_internal_hooks(
     state: &PlusServerState,
     http: &PluginHttpServer,
@@ -320,23 +323,28 @@ async fn init_welcome(_state: &PlusServerState, pm: &PluginManager) {
 static PLAYERS: once_cell::sync::Lazy<Mutex<HashMap<i32, String>>> =
     once_cell::sync::Lazy::new(|| Mutex::new(HashMap::new()));
 
-/// 所有连接过服务器的玩家总数
+/// 内存玩家追踪缓存数量（达到上限后会裁剪旧条目）
 pub fn player_count() -> usize {
     PLAYERS.lock().unwrap().len()
 }
 
-/// 获取所有连接过服务器的玩家 (id → name)
+/// 获取内存玩家追踪缓存 (id → name)
 pub fn all_players() -> Vec<(i32, String)> {
     let guard = PLAYERS.lock().unwrap();
     guard.iter().map(|(&id, name)| (id, name.clone())).collect()
 }
 
 pub fn track_player(user_id: i32, user_name: &str) {
-    PLAYERS
-        .lock()
-        .unwrap()
+    let mut players = PLAYERS.lock().unwrap();
+    players
         .entry(user_id)
         .or_insert_with(|| user_name.to_string());
+    while players.len() > PLAYER_TRACKER_MAX_ENTRIES {
+        let Some(remove_id) = players.keys().copied().find(|id| *id != user_id) else {
+            break;
+        };
+        players.remove(&remove_id);
+    }
 }
 
 async fn init_player_tracker(
@@ -385,12 +393,9 @@ pub fn playtime_connect(user_id: i32) {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0);
-    PLAYTIME_DATA
-        .lock()
-        .unwrap()
-        .entry(user_id)
-        .or_default()
-        .session_start = Some(now);
+    let mut data = PLAYTIME_DATA.lock().unwrap();
+    data.entry(user_id).or_default().session_start = Some(now);
+    prune_playtime_cache(&mut data, user_id);
 }
 
 pub fn playtime_disconnect(user_id: i32) {
@@ -403,12 +408,33 @@ pub fn playtime_disconnect(user_id: i32) {
         .map(|d| d.as_secs())
         .unwrap_or(0);
     let mut data = PLAYTIME_DATA.lock().unwrap();
+    let mut changed = false;
     if let Some(entry) = data.get_mut(&user_id) {
         if let Some(start) = entry.session_start {
             entry.total_secs += now.saturating_sub(start);
             entry.session_start = None;
-            save_json("data/playtime-tracker.json", &*data);
+            changed = true;
         }
+    }
+    if changed {
+        save_json("data/playtime-tracker.json", &*data);
+    }
+    prune_playtime_cache(&mut data, user_id);
+}
+
+fn prune_playtime_cache(data: &mut HashMap<i32, PlaytimeEntry>, keep_user_id: i32) {
+    if !DB.get().is_some_and(|db| db.is_active()) {
+        return;
+    }
+    while data.len() > PLAYTIME_CACHE_MAX_ENTRIES {
+        let Some(remove_id) = data
+            .iter()
+            .find(|(id, entry)| **id != keep_user_id && entry.session_start.is_none())
+            .map(|(id, _)| *id)
+        else {
+            break;
+        };
+        data.remove(&remove_id);
     }
 }
 
