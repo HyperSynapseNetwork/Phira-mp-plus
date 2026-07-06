@@ -203,17 +203,17 @@ pub async fn join_room(
         bail!("{}", tl!("join-room-banned"));
     }
     let mut late_join = false;
+    let mut need_abort = false;
     {
         let state = room.state.read().await;
         match &*state {
             crate::room::InternalRoomState::SelectChart => {}
             crate::room::InternalRoomState::Playing { .. } => {
-                // 进行中的游戏：第一次警告，第二次确认后放行
                 let mut pending = user.join_pending_game.write().await;
                 if pending.as_ref().map(|s| s.as_str()) == Some(id.to_string().as_str()) {
-                    // 用户已确认，放行（不重置房间，后续返回伪造的 SelectChart 状态）
                     pending.take();
                     late_join = true;
+                    need_abort = true;
                 } else {
                     *pending = Some(id.to_string());
                     let _ = user
@@ -228,6 +228,12 @@ pub async fn join_room(
             _ => {
                 bail!("{}", tl!("join-game-ongoing"));
             }
+        }
+    }
+    // 标记中途加入者为本轮已中止（免于结算等待），下一轮重置
+    if need_abort {
+        if let crate::room::InternalRoomState::Playing { aborted, .. } = &mut *room.state.write().await {
+            aborted.insert(user.id);
         }
     }
     // GameMonitor 会话（user.id < 0）可以旁观任意房间

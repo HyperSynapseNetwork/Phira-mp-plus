@@ -46,4 +46,4 @@ server-started = Server started on port { $port } (HTTP port { $http_port })
 server-stats = Users: { $users } | Rooms: { $rooms } | Sessions: { $sessions } | Plugins: { $plugins }
 join-room-banned = You are banned from this room
 
-join-game-ongoing-warning = This room is in-game. Confirm again to join. You cannot leave during gameplay.
+join-game-ongoing-warning = This room is in-game. Confirm again to join.
