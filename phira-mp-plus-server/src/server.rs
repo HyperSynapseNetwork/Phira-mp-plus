@@ -742,6 +742,12 @@ fn spawn_event_subscribers(state: &Arc<PlusServerState>) {
                             // 3. Track player and playtime
                             crate::internal_hooks::track_player(*user_id, user_name);
                             crate::internal_hooks::playtime_connect(*user_id);
+                            // Mirror to PersistenceWorker
+                            let _ = state_clone.persistence_worker.enqueue(
+                                crate::persistence::message::PersistenceEvent::UserOnline {
+                                    user_id: *user_id,
+                                }
+                            ).await;
 
                             // 4. Welcome message
                             let online = {

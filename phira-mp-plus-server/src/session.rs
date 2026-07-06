@@ -196,6 +196,12 @@ impl User {
                     db.record_user_disconnect_sync(self.id, &self.name);
                 }
                 crate::internal_hooks::playtime_disconnect(self.id);
+                // Mirror to PersistenceWorker
+                let _ = self.server.persistence_worker.enqueue(
+                    crate::persistence::message::PersistenceEvent::UserOffline {
+                        user_id: self.id,
+                    }
+                ).await;
                 return;
             }
         }

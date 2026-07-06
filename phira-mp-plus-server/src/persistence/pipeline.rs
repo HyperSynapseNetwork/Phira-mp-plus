@@ -108,7 +108,9 @@ pub async fn persist_simulation_event_if_needed(event: &PersistenceEvent) -> Per
             db.record_sim_event(extract_run_id(&payload), "simulation.judge_batch", payload)
                 .await
         }
-        PersistenceEvent::UserRoomHistory { .. }
+        PersistenceEvent::UserOnline { .. }
+        | PersistenceEvent::UserOffline { .. }
+        | PersistenceEvent::UserRoomHistory { .. }
         | PersistenceEvent::BenchmarkReport { .. }
         | PersistenceEvent::Flush
         | PersistenceEvent::Shutdown => {
@@ -229,6 +231,20 @@ pub async fn persist_production_event_if_needed(event: &PersistenceEvent) -> Per
             joined_at,
         } => {
             db.record_user_room_history_sync(*user_id, room_id.clone(), room_uuid.clone(), *joined_at);
+            return PersistenceWriteStage::Acknowledged {
+                pipeline: PersistencePipeline::EventMirror,
+                elapsed_ms: started.elapsed().as_millis() as u64,
+            };
+        }
+        PersistenceEvent::UserOnline { user_id } => {
+            db.set_online_sync(*user_id);
+            return PersistenceWriteStage::Acknowledged {
+                pipeline: PersistencePipeline::EventMirror,
+                elapsed_ms: started.elapsed().as_millis() as u64,
+            };
+        }
+        PersistenceEvent::UserOffline { user_id } => {
+            db.set_offline_sync(*user_id);
             return PersistenceWriteStage::Acknowledged {
                 pipeline: PersistencePipeline::EventMirror,
                 elapsed_ms: started.elapsed().as_millis() as u64,

@@ -38,6 +38,14 @@ pub enum PersistenceEvent {
         room_uuid: String,
         joined_at: i64,
     },
+    /// User online status (per-connect). Low-frequency production write.
+    UserOnline {
+        user_id: i32,
+    },
+    /// User offline status (per-disconnect). Low-frequency production write.
+    UserOffline {
+        user_id: i32,
+    },
     Flush,
     Shutdown,
 }
@@ -51,6 +59,8 @@ impl PersistenceEvent {
             Self::JudgeBatch { .. } => "judge_batch".to_string(),
             Self::BenchmarkReport { .. } => "benchmark.completed".to_string(),
             Self::UserRoomHistory { .. } => "user_room_history".to_string(),
+            Self::UserOnline { .. } => "user_online".to_string(),
+            Self::UserOffline { .. } => "user_offline".to_string(),
             Self::Flush => "flush".to_string(),
             Self::Shutdown => "shutdown".to_string(),
         }
@@ -63,7 +73,7 @@ impl PersistenceEvent {
             | Self::TouchBatch { simulation, .. }
             | Self::JudgeBatch { simulation, .. } => *simulation,
             Self::BenchmarkReport { report } => report.mode == BenchmarkMode::Simulation,
-            Self::UserRoomHistory { .. } | Self::Flush | Self::Shutdown => false,
+            Self::UserRoomHistory { .. } | Self::UserOnline { .. } | Self::UserOffline { .. } | Self::Flush | Self::Shutdown => false,
         }
     }
 
@@ -106,6 +116,8 @@ impl PersistenceEvent {
             Self::UserRoomHistory { user_id, room_id, .. } => {
                 format!("user_id={user_id} room_id={room_id}")
             }
+            Self::UserOnline { user_id } => format!("user_id={user_id}"),
+            Self::UserOffline { user_id } => format!("user_id={user_id}"),
             Self::Flush => "flush".to_string(),
             Self::Shutdown => "shutdown".to_string(),
         }
