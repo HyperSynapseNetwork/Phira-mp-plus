@@ -130,6 +130,7 @@ impl RoomCommandGateway {
                         }
                     }
                     result
+                } else {
                     let result = RoomCommandResult::mailbox_error(
                         "room not found in per-room mailbox",
                     );
