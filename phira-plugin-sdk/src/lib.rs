@@ -3,30 +3,31 @@
 //! This crate provides types and helpers for developing WASM plugins
 //! for Phira-mp+.
 //!
-//! # JSON ABI (legacy)
-//! The old JSON-memory ABI is retained here only as a legacy reference. Current
-//! server-side planning targets WIT/component-model plugins.
+//! # WIT ABI (current)
+//! All new plugins MUST use the typed WIT/component-model ABI. The server has
+//! removed the JSON-memory bridge and requires WIT components.
 //!
 //! ```ignore
-//! use phira_plugin_sdk::prelude::*;
-//! phira_plugin_sdk::plugin_entry!(init, get_info, cleanup, on_event, on_api);
+//! phira_plugin_sdk::wit_bindgen!("phira-plugin-v2");
 //!
-//! fn init() -> i32 { 0 }
-//! fn get_info() {
-//!     let info = PluginInfo { name: "my-plugin", version: "0.1", author: "me", description: "" };
-//!     // write info to memory offset 0
+//! struct MyPlugin;
+//! impl PhiraPluginV2 for MyPlugin {
+//!     fn init(&mut self) -> Result<(), String> { Ok(()) }
+//!     fn get_info(&mut self) -> phira_plugin_sdk::PluginInfo {
+//!         phira_plugin_sdk::PluginInfo { name: "my-plugin", .. }
+//!     }
+//!     fn cleanup(&mut self) {}
+//!     fn on_event(&mut self, _event: phira_plugin_sdk::PluginEvent) -> Result<bool, String> { Ok(false) }
+//!     fn on_api(&mut self, _method: String, _args: Vec<phira_plugin_sdk::JsonValue>) -> phira_plugin_sdk::ApiResult {
+//!         phira_plugin_sdk::ApiResult::Ok(phira_plugin_sdk::JsonValue::Null)
+//!     }
 //! }
-//! # fn cleanup() {}
-//! # fn on_event(_ptr: i32, _len: i32) -> i32 { 0 }
-//! # fn on_api(_ptr: i32, _len: i32) -> i32 { 0 }
 //! ```
 //!
-//! # WIT ABI (current target)
-//! New plugins should use typed WIT-generated bindings:
-//!
-//! ```ignore
-//! phira_plugin_sdk::wit_bindgen!(world = "phira-plugin-v2");
-//! ```
+//! # JSON ABI (legacy — server no longer accepts)
+//! The old JSON-memory bridge has been removed from the server. This SDK retains
+//! the `plugin_entry!` macro only as a read-only reference for migration. Do NOT
+//! use it for new plugins.
 
 pub mod prelude;
 
