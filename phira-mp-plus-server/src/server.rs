@@ -597,44 +597,6 @@ struct RemotePhiraUserInfo {
     name: String,
 }
 
-async fn fetch_phira_user_name(endpoint: &str, token: &str) -> Option<(i32, String)> {
-    let endpoint = endpoint.trim_end_matches('/');
-    let url = format!("{endpoint}/me");
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(3))
-        .build()
-        .ok()?;
-    let response = client
-        .get(url)
-        .header(reqwest::header::AUTHORIZATION, format!("Bearer {token}"))
-        .send()
-        .await
-        .ok()?
-        .error_for_status()
-        .ok()?;
-    let info = response.json::<RemotePhiraUserInfo>().await.ok()?;
-    Some((info.id, info.name))
-}
-
-async fn fetch_phira_chart(endpoint: &str, chart_id: i32) -> Option<Chart> {
-    let endpoint = endpoint.trim_end_matches('/');
-    let url = format!("{endpoint}/chart/{chart_id}");
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(3))
-        .build()
-        .ok()?;
-    client
-        .get(url)
-        .send()
-        .await
-        .ok()?
-        .error_for_status()
-        .ok()?
-        .json::<Chart>()
-        .await
-        .ok()
-}
-
 /// Phira-mp+ 服务器状态
 pub struct PlusServerState {
     pub config: PlusConfig,
@@ -1722,6 +1684,7 @@ impl PlusServerState {
     async fn refresh_room_display_metadata_with_endpoint(
         room: &Arc<crate::room::Room>,
         endpoint: String,
+        phira_client: Arc<crate::phira_client::PhiraRetryClient>,
     ) {
         let people = room
             .users()
@@ -1732,8 +1695,17 @@ impl PlusServerState {
         for user in people {
             let mut display = user.name.clone();
             if let Some(token) = user.auth_token().await {
-                if let Some((remote_id, remote_name)) =
-                    fetch_phira_user_name(&endpoint, &token).await
+                if let Some((remote_id, remote_name)) = phira_client
+                    .get_json::<RemotePhiraUserInfo>(
+                        &endpoint,
+                        None,
+                        "/me",
+                        Some(&token),
+                        crate::phira_client::PhiraRetryNoticeTarget::Silent,
+                    )
+                    .await
+                    .ok()
+                    .map(|info| (info.id, info.name))
                 {
                     if remote_id == user.id || user.id < 0 {
                         display = remote_name;
@@ -1744,7 +1716,17 @@ impl PlusServerState {
         }
         let chart_id = room.chart.read().await.as_ref().map(|chart| chart.id);
         if let Some(chart_id) = chart_id {
-            if let Some(chart) = fetch_phira_chart(&endpoint, chart_id).await {
+            if let Some(chart) = phira_client
+                .get_json::<Chart>(
+                    &endpoint,
+                    None,
+                    &format!("/chart/{chart_id}"),
+                    None,
+                    crate::phira_client::PhiraRetryNoticeTarget::Silent,
+                )
+                .await
+                .ok()
+            {
                 *room.chart.write().await = Some(chart);
                 room.publish_update(phira_mp_common::PartialRoomData {
                     chart: Some(chart_id),
@@ -1773,13 +1755,17 @@ impl PlusServerState {
         };
         let room = Arc::clone(room);
         let fallback_endpoint = self.config.phira_api_endpoint.clone();
+        let phira_client = Arc::clone(&self.phira_client);
         tokio::spawn(async move {
             let _permit = permit;
             let endpoint = room
                 .phira_api_endpoint_override()
                 .await
                 .unwrap_or(fallback_endpoint);
-            PlusServerState::refresh_room_display_metadata_with_endpoint(&room, endpoint).await;
+            PlusServerState::refresh_room_display_metadata_with_endpoint(
+                &room, endpoint, phira_client,
+            )
+            .await;
         });
     }
 }
