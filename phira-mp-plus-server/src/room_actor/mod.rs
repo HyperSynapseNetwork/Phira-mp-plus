@@ -125,3 +125,4 @@ impl RoomCommandGateway {
     pub fn room_lock_owned(&self, room_id: &str) -> Option<bool> {
         self.owned_locks.read().ok().and_then(|map| map.get(room_id).copied())
     }
+}
