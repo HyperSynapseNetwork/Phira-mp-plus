@@ -111,7 +111,7 @@ impl RuntimePlan {
                     title: "Source debt-comment backlog discipline",
                     status: "active",
                     priority: "P1",
-                    next_step: "Necessary because TODO/FIXME markers still exist around WIT component lifecycle, plugin websocket draft, SSRF DNS checks and legacy Phira helpers. Convert each marker into an objective/test or remove it.",
+                    next_step: "Previous TODO markers around WIT lifecycle, WebSocket draft, SSRF DNS and legacy Phira helpers have been converted to working code. Keep this objective for future debt comments; scan new code for unchecked TODO/FIXME markers.",
                 },
                 RuntimeObjective {
                     key: "tui-v2",
