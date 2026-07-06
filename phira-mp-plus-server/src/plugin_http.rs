@@ -2,6 +2,7 @@
 
 mod router;
 mod sse;
+mod websocket;
 
 use crate::server::PlusServerState;
 use axum::{
@@ -78,6 +79,7 @@ impl PluginHttpServer {
         });
         let app = Router::new()
             .route("/api/events", get(general_sse_handler))
+            .route("/api/ws", get(websocket::handler))
             .route("/{*path}", any(dynamic_handler))
             .layer(CorsLayer::permissive())
             .with_state(state);

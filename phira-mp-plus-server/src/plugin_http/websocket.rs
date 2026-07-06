@@ -1,17 +1,16 @@
-//! WebSocket live event stream (work-in-progress).
+//! WebSocket live event stream.
 //!
-//! TODO: This module is a draft and is NOT yet integrated into the router.
-//! - `HttpAppState` is missing the `ws_live_tx` broadcast channel
-//! - Once added and wired into the router, this provides live event streaming
-//!   over WebSocket as an alternative to SSE.
+//! Provides a WebSocket endpoint at `/api/ws` that streams the same live events
+//! as the SSE endpoint (`/api/events`), but over a binary WebSocket connection.
+//! Messages are serialized SseEvent JSON bytes.
 
 use super::HttpAppState;
 use axum::{
-    body::Bytes,
-    extract::{ws::{Message, WebSocket, WebSocketUpgrade}, State},
+    extract::ws::{Message, WebSocket, WebSocketUpgrade},
     response::IntoResponse,
 };
 use std::sync::Arc;
+use tokio::sync::broadcast;
 
 pub async fn handler(
     ws: WebSocketUpgrade,
@@ -21,18 +20,21 @@ pub async fn handler(
 }
 
 async fn run(mut socket: WebSocket, state: Arc<HttpAppState>) {
-    // FIXME: Add ws_live_tx broadcast channel to HttpAppState
-    // let mut events = state.ws_live_tx.subscribe();
+    let mut events = state.events.general_sender().subscribe();
     loop {
         tokio::select! {
-            // event = events.recv() => match event {
-            //     Ok(data) => {
-            //         if socket.send(Message::Binary(Bytes::from(data))).await.is_err() {
-            //             break;
-            //         }
-            //     }
-            //     Err(_) => break,
-            // },
+            event = events.recv() => match event {
+                Ok(data) => {
+                    let payload = serde_json::to_vec(&data).unwrap_or_default();
+                    if socket.send(Message::Binary(payload.into())).await.is_err() {
+                        break;
+                    }
+                }
+                Err(broadcast::error::RecvError::Lagged(n)) => {
+                    tracing::warn!("WebSocket client lagged behind by {n} events");
+                }
+                Err(broadcast::error::RecvError::Closed) => break,
+            },
             message = socket.recv() => match message {
                 Some(Ok(Message::Ping(data))) => {
                     if socket.send(Message::Pong(data)).await.is_err() {

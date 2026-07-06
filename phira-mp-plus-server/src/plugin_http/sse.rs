@@ -1,6 +1,7 @@
 use axum::response::sse::Event;
 use futures::{stream, Stream, StreamExt};
 use phira_mp_common::RoomEvent;
+use serde::Serialize;
 use serde_json::json;
 use std::convert::Infallible;
 use std::pin::Pin;
@@ -12,7 +13,7 @@ const CHANNEL_CAPACITY: usize = 1024;
 
 pub type EventStream = Pin<Box<dyn Stream<Item = Result<Event, Infallible>> + Send>>;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct SseEvent {
     pub event_type: String,
     pub data: String,
