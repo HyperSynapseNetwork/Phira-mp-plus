@@ -189,16 +189,20 @@ pub fn validate_http_url(value: &str, allow_private: bool) -> Result<(), String>
 
     // Resolve hostname via DNS and check each address.
     // Uses a blocking thread with timeout to avoid hanging the caller.
+    use std::net::ToSocketAddrs;
     let host_for_dns = host.to_string();
     let (tx, rx) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
-        let _ = tx.send((host_for_dns, 0u16).lookup_host());
+        let _ = tx.send(
+            (host_for_dns.as_str(), 0u16)
+                .to_socket_addrs()
+                .map(|iter| iter.collect::<Vec<std::net::SocketAddr>>()),
+        );
     });
-    let resolved = rx
+    let addresses: Vec<std::net::SocketAddr> = rx
         .recv_timeout(std::time::Duration::from_secs(5))
         .map_err(|_| format!("DNS resolution timed out for {host}"))?
         .map_err(|e| format!("DNS resolution failed for {host}: {e}"))?;
-    let addresses: Vec<std::net::SocketAddr> = resolved.collect();
     for addr in &addresses {
         let ip = addr.ip();
         let is_private = match ip {
