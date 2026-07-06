@@ -304,15 +304,15 @@ impl ExtensionManager {
         let sent = self
             .persistence_worker
             .read()
-            .ok()
-            .and_then(|w| w.clone())
+            .await
+            .as_ref()
             .and_then(|w| w.upgrade())
             .is_some_and(|worker| {
                 futures::executor::block_on(worker.enqueue(worker_event)).is_ok()
             });
         if !sent {
             if let Some(db) = crate::internal_hooks::DB.get() {
-                db.record_room_event_sync(kind, _room_id.as_deref(), user_id, payload);
+                db.record_room_event_sync(kind, _room_id, user_id, payload);
             }
         }
     }
