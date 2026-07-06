@@ -125,13 +125,25 @@ impl CommandSpec {
 /// installer (server.rs) provides context-aware completers at startup.
 pub type ArgCompleter = Arc<dyn Fn(&[String], &str) -> Vec<String> + Send + Sync>;
 
-#[derive(Clone)]
 pub struct CommandRegistry {
     commands: BTreeMap<String, CommandSpec>,
     roots: BTreeSet<String>,
     children: BTreeMap<String, BTreeSet<String>>,
     /// Per-command argument completers, keyed by normalised command name.
     arg_completers: std::sync::RwLock<BTreeMap<String, ArgCompleter>>,
+}
+
+impl Clone for CommandRegistry {
+    fn clone(&self) -> Self {
+        Self {
+            commands: self.commands.clone(),
+            roots: self.roots.clone(),
+            children: self.children.clone(),
+            arg_completers: std::sync::RwLock::new(
+                self.arg_completers.read().map(|g| g.clone()).unwrap_or_default()
+            ),
+        }
+    }
 }
 
 impl Default for CommandRegistry {
