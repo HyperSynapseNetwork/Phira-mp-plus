@@ -176,7 +176,7 @@ fn simulation_scope_in_persistence_payload() {
 // |---|------|----------|-------------|-----------|
 // | 1 | internal_hooks.rs | set_online_sync | user online status | per-connect | ✅ migrated to PersistenceWorker |
 // | 2 | internal_hooks.rs | set_offline_sync | user offline status | per-disconnect | ✅ migrated to PersistenceWorker |
-// | 3 | extensions.rs | record_room_event_sync | extension snapshots | per-ext-change |
+// | 3 | extensions.rs | record_room_event_sync | extension snapshots | per-ext-change | ✅ migrated to PersistenceWorker |
 // | 4 | session.rs | record_user_disconnect_sync | disconnect events | per-disconnect | ✅ migrated to PersistenceWorker |
 // | 5 | session.rs | record_user_seen_sync | user seen timestamp | per-command | ✅ migrated to PersistenceWorker |
 // | 6 | round_store.rs | open_round/close_round/append_touches/append_judges/... | round data | per-round |
