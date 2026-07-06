@@ -25,6 +25,49 @@ impl WitPluginHost {
 // ══════════════════════════════════════════════════════════════════════
 // Generated trait implementations — only with wit-bindgen feature.
 // ══════════════════════════════════════════════════════════════════════
+
+/// Convert a serde_json::Value to a WIT JsonValue. Only available with wit-bindgen.
+#[cfg(feature = "wit-bindgen")]
+pub fn json_value_to_wit(value: &serde_json::Value) -> crate::plugin_abi::wit_abi::phira::plugin::phira_types::JsonValue {
+    use crate::plugin_abi::wit_abi::phira::plugin::phira_types::JsonValue;
+    match value {
+        serde_json::Value::Null => JsonValue::Null,
+        serde_json::Value::Bool(b) => JsonValue::Flag(*b),
+        serde_json::Value::Number(n) => {
+            if let Some(i) = n.as_i64() {
+                JsonValue::Integer(i)
+            } else if let Some(f) = n.as_f64() {
+                JsonValue::Float(f)
+            } else {
+                JsonValue::Text(n.to_string())
+            }
+        }
+        serde_json::Value::String(s) => JsonValue::Text(s.clone()),
+        serde_json::Value::Array(arr) => {
+            JsonValue::Array(serde_json::to_string(arr).unwrap_or_default())
+        }
+        serde_json::Value::Object(obj) => {
+            JsonValue::Object(serde_json::to_string(obj).unwrap_or_default())
+        }
+    }
+}
+
+/// Convert a WIT JsonValue back to serde_json::Value. Only available with wit-bindgen.
+#[cfg(feature = "wit-bindgen")]
+pub fn wit_json_value_to_serde(value: &crate::plugin_abi::wit_abi::phira::plugin::phira_types::JsonValue) -> serde_json::Value {
+    use crate::plugin_abi::wit_abi::phira::plugin::phira_types::JsonValue;
+    match value {
+        JsonValue::Null => serde_json::Value::Null,
+        JsonValue::Flag(b) => serde_json::Value::Bool(*b),
+        JsonValue::Integer(i) => serde_json::json!(*i),
+        JsonValue::Float(f) => serde_json::json!(*f),
+        JsonValue::Text(s) => serde_json::Value::String(s.clone()),
+        JsonValue::Array(s) | JsonValue::Object(s) => {
+            serde_json::from_str(s).unwrap_or(serde_json::Value::String(s.clone()))
+        }
+    }
+}
+
 #[cfg(feature = "wit-bindgen")]
 mod wit_trait_impls {
     use super::WitPluginHost;

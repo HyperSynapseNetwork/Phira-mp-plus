@@ -855,16 +855,123 @@ impl WitPluginComponent {
         self.initialized = false;
     }
 
-    pub fn call_on_event(&mut self, _event: &PluginEvent) -> Result<i32, String> {
-        // TODO: convert PluginEvent to WIT plugin-event and call component.on_event.
-        // For now, return success without dispatching.
-        let _ = &self.component;
-        Ok(0)
+    pub fn call_on_event(&mut self, event: &PluginEvent) -> Result<i32, String> {
+        use crate::plugin_abi::wit_abi::phira::plugin::phira_events as wit_events;
+        let wit_event = match event {
+            PluginEvent::UserConnect { user_id, user_name, user_ip } => {
+                wit_events::PluginEvent::UserConnect(wit_events::UserConnectInfo {
+                    user_id: *user_id as u32,
+                    user_name: user_name.clone(),
+                    user_ip: user_ip.clone(),
+                })
+            }
+            PluginEvent::UserDisconnect { user_id, user_name } => {
+                wit_events::PluginEvent::UserDisconnect(wit_events::UserDisconnectInfo {
+                    user_id: *user_id as u32,
+                    user_name: user_name.clone(),
+                })
+            }
+            PluginEvent::RoomCreate { user_id, room_id } => {
+                wit_events::PluginEvent::RoomCreate(wit_events::RoomUserEvent {
+                    user_id: *user_id as u32,
+                    room_id: room_id.clone(),
+                })
+            }
+            PluginEvent::RoomJoin { user_id, room_id, is_monitor } => {
+                wit_events::PluginEvent::RoomJoin(wit_events::RoomJoinInfo {
+                    user_id: *user_id as u32,
+                    room_id: room_id.clone(),
+                    is_monitor: *is_monitor,
+                })
+            }
+            PluginEvent::RoomLeave { user_id, room_id } => {
+                wit_events::PluginEvent::RoomLeave(wit_events::RoomUserEvent {
+                    user_id: *user_id as u32,
+                    room_id: room_id.clone(),
+                })
+            }
+            PluginEvent::RoomModify { user_id, room_id, data } => {
+                wit_events::PluginEvent::RoomModify(wit_events::RoomModifyInfo {
+                    user_id: *user_id as u32,
+                    room_id: room_id.clone(),
+                    data: data.clone(),
+                })
+            }
+            PluginEvent::GameStart { user_id, room_id } => {
+                wit_events::PluginEvent::GameStart(wit_events::RoomUserEvent {
+                    user_id: *user_id as u32,
+                    room_id: room_id.clone(),
+                })
+            }
+            PluginEvent::GameEnd { user_id, user_name, room_id, score, accuracy, perfect, good, bad, miss, max_combo, full_combo } => {
+                wit_events::PluginEvent::GameEnd(wit_events::GameEndInfo {
+                    user_id: *user_id as u32,
+                    room_id: room_id.clone(),
+                    game_result: wit_events::GameEndRecord {
+                        user_id: *user_id as u32,
+                        user_name: user_name.clone(),
+                        score: *score as u32,
+                        accuracy: *accuracy,
+                        perfect: *perfect as u32,
+                        good: *good as u32,
+                        bad: *bad as u32,
+                        miss: *miss as u32,
+                        max_combo: *max_combo as u32,
+                        full_combo: *full_combo,
+                    },
+                })
+            }
+            PluginEvent::PlayerTouches { user_id, room_id, data } => {
+                let wit_points: Vec<wit_events::TouchEventPoint> = data.iter().map(|p| wit_events::TouchEventPoint {
+                    time: p.time,
+                    finger: p.finger as u32,
+                    x: p.x,
+                    y: p.y,
+                }).collect();
+                wit_events::PluginEvent::PlayerTouches(wit_events::PlayerTouchesInfo {
+                    user_id: *user_id as u32,
+                    room_id: room_id.clone(),
+                    data: wit_points,
+                })
+            }
+            PluginEvent::PlayerJudges { user_id, room_id, data } => {
+                let wit_items: Vec<wit_events::JudgeEventItem> = data.iter().map(|j| wit_events::JudgeEventItem {
+                    time: j.time,
+                    line_id: j.line_id,
+                    note_id: j.note_id,
+                    judgement: j.judgement.clone(),
+                }).collect();
+                wit_events::PluginEvent::PlayerJudges(wit_events::PlayerJudgesInfo {
+                    user_id: *user_id as u32,
+                    room_id: room_id.clone(),
+                    data: wit_items,
+                })
+            }
+            PluginEvent::RoundComplete { room_id, chart_id, chart_name } => {
+                wit_events::PluginEvent::RoundComplete(wit_events::RoundCompleteInfo {
+                    room_id: room_id.clone(),
+                    chart_id: *chart_id as u32,
+                    chart_name: chart_name.clone(),
+                })
+            }
+        };
+        let result = self.component.call_on_event(&mut self.store, &wit_event)
+            .map_err(|e| format!("component on_event: {e}"))?;
+        match result {
+            Ok(handled) => Ok(if handled { 1 } else { 0 }),
+            Err(e) => Err(format!("component on_event returned error: {e}")),
+        }
     }
 
-    pub fn call_api(&mut self, _method: &str, _args: &[serde_json::Value]) -> Result<serde_json::Value, String> {
-        // TODO: call component.on_api with method and args.
-        Err("component call_api not yet wired".to_string())
+    pub fn call_api(&mut self, method: &str, args: &[serde_json::Value]) -> Result<serde_json::Value, String> {
+        use crate::plugin_abi::wit_abi::phira::plugin::phira_types as types;
+        let wit_args: Vec<types::JsonValue> = args.iter().map(|v| super::wit_host::json_value_to_wit(v)).collect();
+        let result = self.component.call_on_api(&mut self.store, method, &wit_args)
+            .map_err(|e| format!("component on_api: {e}"))?;
+        match result {
+            types::ApiResult::Ok(value) => Ok(super::wit_host::wit_json_value_to_serde(&value)),
+            types::ApiResult::Error(e) => Err(e),
+        }
     }
 }
 
