@@ -7,6 +7,7 @@
 use super::HttpAppState;
 use axum::{
     extract::ws::{Message, WebSocket, WebSocketUpgrade},
+    extract::State,
     response::IntoResponse,
 };
 use std::sync::Arc;
