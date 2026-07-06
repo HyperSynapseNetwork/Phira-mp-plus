@@ -256,3 +256,128 @@ async fn simulation_cleanup_idempotent() {
     let cleaned = manager.cleanup().await;
     assert!(!cleaned.running, "still idle after cleanup");
 }
+
+#[tokio::test]
+async fn simulation_cleanup_mid_run_resets_all_state() {
+    let manager = SimulationManager::new();
+    let config = SimulationConfig {
+        preset: SimulationPreset::Baseline,
+        scenario: SimulationScenario::Balanced,
+        users: 5,
+        rooms: 2,
+        duration_secs: 60,
+        touch: true,
+        judge: true,
+        chat: false,
+        ready: false,
+        rounds: false,
+        auto_tick: false,
+        tick_interval_ms: 1000,
+        seed: 42,
+        persist_every_ticks: 0,
+    };
+
+    let started = manager.start(config).await.unwrap();
+    assert!(started.running, "should be running after start");
+
+    // Cleanup while running — must reset everything
+    let cleaned = manager.cleanup().await;
+    assert!(!cleaned.running, "not running after cleanup");
+    assert_eq!(cleaned.virtual_users, 0, "no virtual users after cleanup");
+    assert_eq!(cleaned.virtual_rooms, 0, "no virtual rooms after cleanup");
+    assert_eq!(cleaned.counters.touch_batches, 0, "touch_batches reset");
+    assert_eq!(cleaned.counters.judge_batches, 0, "judge_batches reset");
+    assert_eq!(cleaned.counters.chat_messages, 0, "chat count reset");
+    assert!(cleaned.run_id.is_none(), "run_id cleared");
+    assert!(cleaned.started_at_ms.is_none(), "started_at cleared");
+
+    // After cleanup, can start again fresh
+    let config2 = SimulationConfig {
+        preset: SimulationPreset::Small,
+        users: 3,
+        rooms: 1,
+        duration_secs: 10,
+        seed: 100,
+        ..SimulationConfig::default()
+    };
+    let restarted = manager.start(config2).await.unwrap();
+    assert!(restarted.running, "can start after cleanup");
+    assert_eq!(
+        restarted.virtual_users, 3,
+        "fresh run has correct users"
+    );
+    assert_eq!(
+        restarted.virtual_rooms, 1,
+        "fresh run has correct rooms"
+    );
+}
+
+#[tokio::test]
+async fn simulation_multiple_stop_cleanup_cycles() {
+    let manager = SimulationManager::new();
+
+    for cycle in 0..3 {
+        let config = SimulationConfig {
+            preset: SimulationPreset::Baseline,
+            users: 5,
+            rooms: 2,
+            duration_secs: 10,
+            seed: 42 + cycle as u64,
+            ..SimulationConfig::default()
+        };
+
+        let started = manager.start(config).await.unwrap();
+        assert!(started.running, "cycle {cycle}: should start");
+
+        let stopped = manager.stop(format!("cycle {cycle} complete")).await;
+        assert!(!stopped.running, "cycle {cycle}: should stop");
+
+        let cleaned = manager.cleanup().await;
+        assert!(!cleaned.running, "cycle {cycle}: idle after cleanup");
+        assert_eq!(cleaned.virtual_users, 0, "cycle {cycle}: no users");
+        assert_eq!(cleaned.virtual_rooms, 0, "cycle {cycle}: no rooms");
+    }
+}
+
+#[tokio::test]
+async fn simulation_cleanup_no_side_effects_on_real_state() {
+    // SimulationManager holds no reference to real server state.
+    // This test verifies the compile-time isolation property:
+    // - SimulationManager does not have access to PlusServerState
+    // - Its cleanup only resets its own internal fields
+    // Test by constructing and destroying independent managers
+    let manager1 = SimulationManager::new();
+    let manager2 = SimulationManager::new();
+
+    let config1 = SimulationConfig {
+        preset: SimulationPreset::Small,
+        users: 10,
+        rooms: 3,
+        duration_secs: 30,
+        seed: 1,
+        ..SimulationConfig::default()
+    };
+    let config2 = SimulationConfig {
+        preset: SimulationPreset::Medium,
+        users: 50,
+        rooms: 10,
+        duration_secs: 60,
+        seed: 2,
+        ..SimulationConfig::default()
+    };
+
+    let s1 = manager1.start(config1).await.unwrap();
+    let s2 = manager2.start(config2).await.unwrap();
+    assert!(s1.running && s2.running, "both managers running");
+
+    // Clean up manager1 only
+    manager1.cleanup().await;
+    let s1_after = manager1.status().await;
+    assert!(!s1_after.running, "manager1 cleaned");
+    assert_eq!(s1_after.virtual_users, 0);
+
+    // manager2 must be unaffected
+    let s2_after = manager2.status().await;
+    assert!(s2_after.running, "manager2 still running after manager1 cleanup");
+    assert_eq!(s2_after.virtual_users, 50, "manager2 users unchanged");
+}
