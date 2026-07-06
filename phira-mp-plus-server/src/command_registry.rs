@@ -121,15 +121,46 @@ impl CommandSpec {
 }
 
 #[derive(Clone, Default)]
+/// Argument completer: given the full command path and current partial token,
+/// return possible completions.  The registry has no server state, so the
+/// installer (server.rs) provides context-aware completers at startup.
+pub type ArgCompleter = Arc<dyn Fn(&[String], &str) -> Vec<String> + Send + Sync>;
+
 pub struct CommandRegistry {
     commands: BTreeMap<String, CommandSpec>,
     roots: BTreeSet<String>,
     children: BTreeMap<String, BTreeSet<String>>,
+    /// Per-command argument completers, keyed by normalised command name.
+    arg_completers: std::sync::RwLock<BTreeMap<String, ArgCompleter>>,
+    /// Weak reference to server state for dynamic completions (room IDs etc.).
+    pub(crate) server_state: std::sync::RwLock<Option<std::sync::Weak<crate::server::PlusServerState>>>,
 }
 
 impl CommandRegistry {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Register an argument completer for a fully-qualified command name.
+    pub fn set_arg_completer(&self, cmd_name: &str, completer: ArgCompleter) {
+        if let Ok(mut guard) = self.arg_completers.write() {
+            guard.insert(normalize_command_name(cmd_name), completer);
+        }
+    }
+
+    /// Set server state reference (called after state is created in server.rs).
+    pub fn set_server_state(&self, state: &Arc<crate::server::PlusServerState>) {
+        if let Ok(mut guard) = self.server_state.write() {
+            *guard = Some(Arc::downgrade(state));
+        }
+    }
+
+    /// Get completions for the argument after a known leaf command.
+    fn complete_arg(&self, cmd_name: &str, prefix: &str) -> Option<Vec<String>> {
+        let guard = self.arg_completers.read().ok()?;
+        let completer = guard.get(normalize_command_name(cmd_name))?;
+        let cmds: Vec<String> = cmd_name.split_whitespace().map(|s| s.to_string()).collect();
+        Some(completer(&cmds, prefix))
     }
 
     pub fn register(&mut self, spec: CommandSpec) -> Result<(), String> {
@@ -243,18 +274,29 @@ impl CommandRegistry {
             tokens.last().copied().unwrap_or("")
         };
 
-        let mut out = self
-            .children
-            .get(&parent)
-            .into_iter()
-            .flat_map(|children| children.iter())
-            .filter(|child| child.starts_with(prefix))
-            .cloned()
-            .collect::<Vec<_>>();
+        let mut out: Vec<String> = Vec::new();
 
-        // Fallback: if the exact parent has no children, try completing any
-        // canonical full command whose final token starts with the current
-        // prefix and the preceding tokens match.
+        // Level 2+: complete subcommands of the parent namespace.
+        if !parent.is_empty() {
+            if let Some(children) = self.children.get(&parent) {
+                out = children
+                    .iter()
+                    .filter(|child| child.starts_with(prefix))
+                    .cloned()
+                    .collect();
+            }
+        }
+
+        // If parent IS a known leaf command (not a namespace), try arg completion.
+        if out.is_empty() && self.commands.contains_key(&parent) {
+            if let Some(arg_matches) = self.complete_arg(&parent, prefix) {
+                out = arg_matches;
+                // fall through to the fallback if arg completer returned nothing
+            }
+        }
+
+        // Fallback: try to match the current token as a subcommand of any
+        // canonical command path.
         if out.is_empty() {
             let parent_prefix = if parent.is_empty() {
                 String::new()
@@ -273,6 +315,60 @@ impl CommandRegistry {
         }
 
         out
+    }
+
+    /// Install argument completers. Called from `runtime_v2_registry()`.
+    /// Dynamic completers (room IDs, user IDs) reference server state via
+    /// `Weak` and are only active while the server is running.
+    pub fn init_completers(&self) {
+        // Benchmark mode completer: benchmark run <real|hybrid>
+        self.set_arg_completer("benchmark run", Arc::new(|_cmd, prefix| {
+            ["real", "hybrid"].iter()
+                .filter(|m| m.starts_with(prefix))
+                .cloned()
+                .collect()
+        }));
+
+        // Simulation preset completer: simulation run <preset>
+        self.set_arg_completer("simulation run", Arc::new(|_cmd, prefix| {
+            ["baseline", "small", "medium", "large", "custom"].iter()
+                .filter(|p| p.starts_with(prefix))
+                .cloned()
+                .collect()
+        }));
+
+        // Simulation suite completer: simulation suite <name>
+        self.set_arg_completer("simulation suite", Arc::new(|_cmd, prefix| {
+            ["smoke", "mixed", "stress"].iter()
+                .filter(|s| s.starts_with(prefix))
+                .cloned()
+                .collect()
+        }));
+
+    }
+
+    /// Install a room-ID completer after PlusServerState is available.
+    /// Called from server.rs after state creation.
+    pub fn install_room_completer(&self, state: &Arc<crate::server::PlusServerState>) {
+        let weak = Arc::downgrade(state);
+        let completer: ArgCompleter = Arc::new(move |_cmd: &[String], prefix: &str| -> Vec<String> {
+            let Some(state) = weak.upgrade() else { return vec![] };
+            let Ok(rooms) = state.rooms.try_read() else { return vec![] };
+            let mut out: Vec<String> = rooms.keys()
+                .filter(|id| id.to_string().starts_with(prefix))
+                .map(|id| id.to_string())
+                .collect();
+            out.sort();
+            out
+        });
+        for cmd in &[
+            "room info", "room banlist", "room rounds", "room history",
+            "room uuid", "room start", "room cancel", "room hide", "room unhide",
+            "room close", "room kick", "room host", "room force-move",
+            "room set", "room ban", "room unban",
+        ] {
+            self.set_arg_completer(cmd, Arc::clone(&completer));
+        }
     }
 
     pub fn complete_root(&self, prefix: &str) -> Vec<String> {
@@ -1007,6 +1103,7 @@ pub fn runtime_v2_registry() -> CommandRegistry {
         register(&mut registry, spec);
     }
 
+    registry.init_completers();
     registry
 }
 

@@ -1061,6 +1061,8 @@ impl PlusServer {
         state.plugin_manager.set_http_handle(http_handle).await;
         // 设置 WIT 组件模型所需的服务端状态引用
         state.plugin_manager.set_server_state(Arc::clone(&state)).await;
+        // 设置命令注册表的 Room ID 补全引用
+        state.command_registry.install_room_completer(&state);
 
         // 加载插件
         let plugin_count = state.plugin_manager.load_plugins().await.unwrap_or(0);
