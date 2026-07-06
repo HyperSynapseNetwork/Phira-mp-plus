@@ -118,15 +118,20 @@ impl RoomCommandGateway {
                     let rooms = state.rooms.read().await;
                     rooms.values().find(|r| r.id.to_string() == command.room_id()).map(Arc::clone)
                 };
-                // Track lock state after command execution
-                let is_set_lock = matches!(command, RoomActorCommand::SetLock { .. });
+                // Track owned state after command execution
                 let cmd_room_id = command.room_id().to_string();
                 let should_stop = if let Some(room) = room {
                     let result = gateway.execute_mailbox_command_with_room(&state, room.clone(), command).await;
-                    if is_set_lock {
+                    // Mirror lock state
+                    if matches!(command, RoomActorCommand::SetLock { .. }) {
                         if let Ok(mut locks) = gateway.owned_locks.write() {
-                            let new_lock = room.locked.load(Ordering::SeqCst);
-                            locks.insert(cmd_room_id, new_lock);
+                            locks.insert(cmd_room_id.clone(), room.locked.load(Ordering::SeqCst));
+                        }
+                    }
+                    // Mirror cycle state
+                    if matches!(command, RoomActorCommand::SetCycle { .. }) {
+                        if let Ok(mut cycles) = gateway.owned_cycles.write() {
+                            cycles.insert(cmd_room_id, room.cycle.load(Ordering::SeqCst));
                         }
                     }
                     result

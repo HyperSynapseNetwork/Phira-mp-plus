@@ -78,6 +78,8 @@ pub struct RoomCommandGateway {
     /// Owned lock state per room. Each entry tracks what the mailbox worker
     /// believes the lock state is. Populated by SetLock in the mailbox path.
     owned_locks: StdRwLock<HashMap<String, bool>>,
+    /// Owned cycle state per room. Populated by SetCycle in the mailbox path.
+    owned_cycles: StdRwLock<HashMap<String, bool>>,
     mailbox_enqueued: AtomicU64,
     mailbox_completed: AtomicU64,
     mailbox_failed: AtomicU64,
@@ -104,6 +106,7 @@ impl RoomCommandGateway {
             mailbox_tx: StdRwLock::new(None),
             room_mailboxes: StdRwLock::new(HashMap::new()),
             owned_locks: StdRwLock::new(HashMap::new()),
+            owned_cycles: StdRwLock::new(HashMap::new()),
             mailbox_enqueued: AtomicU64::new(0),
             mailbox_completed: AtomicU64::new(0),
             mailbox_failed: AtomicU64::new(0),
@@ -125,6 +128,12 @@ impl RoomCommandGateway {
     pub fn room_lock_owned(&self, room_id: &str) -> Option<bool> {
         self.owned_locks.read().ok().and_then(|map| map.get(room_id).copied())
     }
+
+    /// Check the owned cycle state for a room. Returns None if the room
+    /// has not been tracked yet (falls back to Room.cycle).
+    pub fn room_cycle_owned(&self, room_id: &str) -> Option<bool> {
+        self.owned_cycles.read().ok().and_then(|map| map.get(room_id).copied())
+    }
 }
 
 #[cfg(test)]
@@ -140,10 +149,24 @@ mod tests {
     #[test]
     fn owned_lock_updates_after_set_lock() {
         let gateway = RoomCommandGateway::new();
-        // Write directly to simulate what the mailbox worker does
         if let Ok(mut locks) = gateway.owned_locks.write() {
             locks.insert("room-1".to_string(), true);
         }
         assert_eq!(gateway.room_lock_owned("room-1"), Some(true));
+    }
+
+    #[test]
+    fn owned_cycle_returns_none_for_unknown_room() {
+        let gateway = RoomCommandGateway::new();
+        assert_eq!(gateway.room_cycle_owned("nonexistent"), None);
+    }
+
+    #[test]
+    fn owned_cycle_updates_after_set_cycle() {
+        let gateway = RoomCommandGateway::new();
+        if let Ok(mut cycles) = gateway.owned_cycles.write() {
+            cycles.insert("room-2".to_string(), true);
+        }
+        assert_eq!(gateway.room_cycle_owned("room-2"), Some(true));
     }
 }
