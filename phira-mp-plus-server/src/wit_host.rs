@@ -185,26 +185,56 @@ mod wit_trait_impls {
         fn create_empty_room(&mut self, _room_id: String, _endpoint: Option<String>) -> types::ApiResult {
             types::ApiResult::Error("create_empty_room not yet implemented — async write needs block_on".to_string())
         }
-        fn kick_from_room(&mut self, _room_id: String, _target_id: u32) -> types::ApiResult {
-            types::ApiResult::Error("kick_from_room not yet implemented".to_string())
+        fn kick_from_room(&mut self, room_id: String, target_id: u32) -> types::ApiResult {
+            let state = std::sync::Arc::clone(&self.state);
+            match futures::executor::block_on(
+                state.room_commands.kick_user(&state, &room_id, target_id as i32)
+            ) {
+                Ok(v) => types::ApiResult::Ok(json_to_wit_json(&v)),
+                Err(e) => types::ApiResult::Error(e),
+            }
         }
-        fn transfer_host(&mut self, _room_id: String, _target_id: u32) -> types::ApiResult {
-            types::ApiResult::Error("transfer_host not yet implemented".to_string())
+        fn transfer_host(&mut self, room_id: String, target_id: u32) -> types::ApiResult {
+            let state = std::sync::Arc::clone(&self.state);
+            match futures::executor::block_on(
+                state.room_commands.set_host(&state, &room_id, Some(target_id as i32))
+            ) {
+                Ok(v) => types::ApiResult::Ok(json_to_wit_json(&v)),
+                Err(e) => types::ApiResult::Error(e),
+            }
         }
-        fn set_host(&mut self, _room_id: String, _target_id: Option<u32>) -> types::ApiResult {
-            types::ApiResult::Error("set_host not yet implemented".to_string())
+        fn set_host(&mut self, room_id: String, target_id: Option<u32>) -> types::ApiResult {
+            let state = std::sync::Arc::clone(&self.state);
+            match futures::executor::block_on(
+                state.room_commands.set_host(&state, &room_id, target_id.map(|id| id as i32))
+            ) {
+                Ok(v) => types::ApiResult::Ok(json_to_wit_json(&v)),
+                Err(e) => types::ApiResult::Error(e),
+            }
         }
-        fn set_room_lock(&mut self, _room_id: String, _locked: bool) -> types::ApiResult {
-            types::ApiResult::Error("set_room_lock not yet implemented".to_string())
+        fn set_room_lock(&mut self, room_id: String, locked: bool) -> types::ApiResult {
+            let state = std::sync::Arc::clone(&self.state);
+            match futures::executor::block_on(
+                state.room_commands.set_lock(&state, &room_id, locked)
+            ) {
+                Ok(v) => types::ApiResult::Ok(json_to_wit_json(&v)),
+                Err(e) => types::ApiResult::Error(e),
+            }
         }
         fn set_room_hidden(&mut self, _room_id: String, _hidden: bool) -> types::ApiResult {
-            types::ApiResult::Error("set_room_hidden not yet implemented".to_string())
+            types::ApiResult::Error("set_room_hidden not yet implemented — no mailbox command for hidden".to_string())
         }
-        fn close_room(&mut self, _room_id: String) -> types::ApiResult {
-            types::ApiResult::Error("close_room not yet implemented".to_string())
+        fn close_room(&mut self, room_id: String) -> types::ApiResult {
+            let state = std::sync::Arc::clone(&self.state);
+            match futures::executor::block_on(
+                state.room_commands.close_room(&state, &room_id)
+            ) {
+                Ok(v) => types::ApiResult::Ok(json_to_wit_json(&v)),
+                Err(e) => types::ApiResult::Error(e),
+            }
         }
         fn set_room_phira_api_endpoint(&mut self, _room_id: String, _endpoint: Option<String>) -> types::ApiResult {
-            types::ApiResult::Error("set_room_phira_api_endpoint not yet implemented".to_string())
+            types::ApiResult::Error("set_room_phira_api_endpoint not yet implemented — no mailbox command".to_string())
         }
     }
 
