@@ -82,12 +82,12 @@ mod tests {
             "risks should include known deployment constraints"
         );
         assert!(
-            plan.risks.iter().any(|r| r.contains("stubs")),
-            "WIT lifecycle and host API stubs must stay visible until implemented"
+            !plan.risks.iter().any(|r| r.contains("stubs")),
+            "WIT lifecycle stubs risk must be removed after implementation"
         );
         assert!(
             plan.risks.iter().any(|r| r.contains("capability")),
-            "write-capable WIT host methods must track capability enforcement risk"
+            "plan must track remaining capability risks (persistence/DB query)"
         );
     }
 
