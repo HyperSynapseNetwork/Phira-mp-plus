@@ -229,10 +229,10 @@ pub async fn persist_production_event_if_needed(event: &PersistenceEvent) -> Per
             joined_at,
         } => {
             db.record_user_room_history_sync(*user_id, room_id.clone(), room_uuid.clone(), *joined_at);
-            PersistenceWriteStage::Acknowledged {
+            return PersistenceWriteStage::Acknowledged {
                 pipeline: PersistencePipeline::EventMirror,
                 elapsed_ms: started.elapsed().as_millis() as u64,
-            }
+            };
         }
         PersistenceEvent::BenchmarkReport { .. }
         | PersistenceEvent::Flush
