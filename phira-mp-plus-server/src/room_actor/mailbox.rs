@@ -118,9 +118,18 @@ impl RoomCommandGateway {
                     let rooms = state.rooms.read().await;
                     rooms.values().find(|r| r.id.to_string() == command.room_id()).map(Arc::clone)
                 };
+                // Track lock state after command execution
+                let is_set_lock = matches!(command, RoomActorCommand::SetLock { .. });
+                let cmd_room_id = command.room_id().to_string();
                 let should_stop = if let Some(room) = room {
-                    gateway.execute_mailbox_command_with_room(&state, room, command).await
-                } else {
+                    let result = gateway.execute_mailbox_command_with_room(&state, room.clone(), command).await;
+                    if is_set_lock {
+                        if let Ok(mut locks) = gateway.owned_locks.write() {
+                            let new_lock = room.locked.load(Ordering::SeqCst);
+                            locks.insert(cmd_room_id, new_lock);
+                        }
+                    }
+                    result
                     let result = RoomCommandResult::mailbox_error(
                         "room not found in per-room mailbox",
                     );

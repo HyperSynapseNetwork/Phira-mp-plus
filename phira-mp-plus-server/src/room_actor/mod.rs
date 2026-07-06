@@ -75,6 +75,9 @@ pub struct RoomCommandGateway {
     state_ref: StdRwLock<Option<Weak<PlusServerState>>>,
     mailbox_tx: StdRwLock<Option<mpsc::Sender<RoomActorCommand>>>,
     room_mailboxes: StdRwLock<HashMap<String, mpsc::Sender<RoomActorCommand>>>,
+    /// Owned lock state per room. Each entry tracks what the mailbox worker
+    /// believes the lock state is. Populated by SetLock in the mailbox path.
+    owned_locks: StdRwLock<HashMap<String, bool>>,
     mailbox_enqueued: AtomicU64,
     mailbox_completed: AtomicU64,
     mailbox_failed: AtomicU64,
@@ -100,6 +103,7 @@ impl RoomCommandGateway {
             state_ref: StdRwLock::new(None),
             mailbox_tx: StdRwLock::new(None),
             room_mailboxes: StdRwLock::new(HashMap::new()),
+            owned_locks: StdRwLock::new(HashMap::new()),
             mailbox_enqueued: AtomicU64::new(0),
             mailbox_completed: AtomicU64::new(0),
             mailbox_failed: AtomicU64::new(0),
@@ -115,4 +119,9 @@ impl RoomCommandGateway {
             recent_commands: StdRwLock::new(VecDeque::with_capacity(MAX_ROOM_COMMAND_AUDIT)),
         }
     }
-}
+
+    /// Check the owned lock state for a room. Returns None if the room
+    /// has not been tracked yet (falls back to Room.locked).
+    pub fn room_lock_owned(&self, room_id: &str) -> Option<bool> {
+        self.owned_locks.read().ok().and_then(|map| map.get(room_id).copied())
+    }
