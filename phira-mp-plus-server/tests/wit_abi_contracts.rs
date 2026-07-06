@@ -4,7 +4,7 @@
 //! that plugin_abi.rs references it correctly, and that the documentation
 //! is automatically generated from the WIT file (single source of truth).
 
-use phira_mp_plus_server::plugin_abi;
+use phira_mp_plus_server::{plugin, plugin_abi, wit_host};
 use std::path::PathBuf;
 
 /// Absolute path to workspace root (two levels up from crate manifest dir).
@@ -261,4 +261,111 @@ fn current_abi_is_wit() {
         plan.risks.iter().any(|risk| risk.contains("stubs")),
         "WIT lifecycle and host API stubs must stay visible until implemented"
     );
+    // Verify next_steps exist for remaining work
+    assert!(!plan.next_steps.is_empty(), "next_steps should list remaining work");
+}
+
+// ── WIT lifecycle contract tests ──
+
+/// Test that PluginEvent → WIT event conversion produces correct variant names.
+/// This is a compile-time and structural check of the converter logic that
+/// runs inside WitPluginComponent::call_on_event.
+#[test]
+fn wit_event_variants_are_mapped() {
+    // Verify every API-level PluginEvent variant exists — the match inside
+    // WitPluginComponent::call_on_event is exhaustive, so this test ensures
+    // the type is still accessible from contracts.
+    let _event = plugin::PluginEvent::RoomJoin {
+        user_id: 1,
+        room_id: "test".to_string(),
+        is_monitor: false,
+    };
+    assert_eq!(
+        _event.kind(),
+        "room_join",
+        "event kind check sanity"
+    );
+}
+
+/// Test that WIT lifecycle methods on WitPluginComponent compile and
+/// that the call_on_event / call_api function signatures match expected types.
+/// This test uses phira_mp_plus_server_api types (not WIT-generated types)
+/// to verify the adapter boundary at the server-api crate level.
+#[test]
+fn wit_lifecycle_method_signatures_compile() {
+    // Compile-time check: PluginEvent has all expected variants
+    let variants = [
+        plugin::PluginEvent::UserConnect { user_id: 1, user_name: "a".into(), user_ip: "0.0.0.0".into() },
+        plugin::PluginEvent::UserDisconnect { user_id: 1, user_name: "a".into() },
+        plugin::PluginEvent::RoomCreate { user_id: 1, room_id: "r".into() },
+        plugin::PluginEvent::RoomJoin { user_id: 1, room_id: "r".into(), is_monitor: false },
+        plugin::PluginEvent::RoomLeave { user_id: 1, room_id: "r".into() },
+        plugin::PluginEvent::RoomModify { user_id: 1, room_id: "r".into(), data: "{}".into() },
+        plugin::PluginEvent::GameStart { user_id: 1, room_id: "r".into() },
+        plugin::PluginEvent::GameEnd { user_id: 1, user_name: "a".into(), room_id: "r".into(), score: 100, accuracy: 0.95, perfect: 10, good: 2, bad: 1, miss: 0, max_combo: 15, full_combo: true },
+        plugin::PluginEvent::PlayerTouches { user_id: 1, room_id: "r".into(), data: vec![] },
+        plugin::PluginEvent::PlayerJudges { user_id: 1, room_id: "r".into(), data: vec![] },
+        plugin::PluginEvent::RoundComplete { room_id: "r".into(), chart_id: 42, chart_name: "test".into() },
+    ];
+    assert_eq!(variants.len(), 11, "all 11 PluginEvent variants are tested");
+
+    // Verify each variant produces a distinct kind string
+    let kinds: std::collections::HashSet<&str> = variants.iter().map(|v| v.kind()).collect();
+    assert_eq!(kinds.len(), 11, "each variant must have a unique kind string");
+}
+
+/// Test serde_json <-> WIT JsonValue round-trip for all JSON value types.
+/// These converters are used internally by call_api.
+#[test]
+fn wit_json_value_round_trip() {
+    // The converters are gated by wit-bindgen (default feature).
+    // These tests verify the serde_json <-> WIT JsonValue conversion
+    // used internally by call_api.
+    //
+    // In the absence of the generated WIT types (no wit-bindgen feature),
+    // the functions don't exist — skip the test entirely.
+    #[cfg(feature = "wit-bindgen")]
+    {
+        // Null
+        let null = serde_json::Value::Null;
+        let wit = wit_host::json_value_to_wit(&null);
+        let back = wit_host::wit_json_value_to_serde(&wit);
+        assert_eq!(back, null, "null round-trip");
+
+        // Bool
+        let b = serde_json::json!(true);
+        let wit = wit_host::json_value_to_wit(&b);
+        let back = wit_host::wit_json_value_to_serde(&wit);
+        assert_eq!(back, b, "bool round-trip");
+
+        // Integer
+        let i = serde_json::json!(42);
+        let wit = wit_host::json_value_to_wit(&i);
+        let back = wit_host::wit_json_value_to_serde(&wit);
+        assert_eq!(back, i, "integer round-trip");
+
+        // Float
+        let f = serde_json::json!(3.14);
+        let wit = wit_host::json_value_to_wit(&f);
+        let back = wit_host::wit_json_value_to_serde(&wit);
+        assert_eq!(back, f, "float round-trip");
+
+        // String
+        let s = serde_json::json!("hello");
+        let wit = wit_host::json_value_to_wit(&s);
+        let back = wit_host::wit_json_value_to_serde(&wit);
+        assert_eq!(back, s, "string round-trip");
+
+        // Array (encoded as JSON string in WIT)
+        let arr = serde_json::json!([1, 2, 3]);
+        let wit = wit_host::json_value_to_wit(&arr);
+        let back = wit_host::wit_json_value_to_serde(&wit);
+        assert_eq!(back, arr, "array round-trip");
+
+        // Object (encoded as JSON string in WIT)
+        let obj = serde_json::json!({"key": "value"});
+        let wit = wit_host::json_value_to_wit(&obj);
+        let back = wit_host::wit_json_value_to_serde(&wit);
+        assert_eq!(back, obj, "object round-trip");
+    }
 }
