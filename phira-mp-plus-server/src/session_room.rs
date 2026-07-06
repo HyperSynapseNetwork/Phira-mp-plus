@@ -209,11 +209,11 @@ pub async fn join_room(
             crate::room::InternalRoomState::Playing { .. } => {
                 // 进行中的游戏：第一次请求发警告，第二次直接加入
                 let mut pending = user.join_pending_game.write().await;
-                if pending.as_ref().map(|s| s.as_str()) == Some(room_id) {
+                if pending.as_ref().map(|s| s.as_str()) == Some(id.to_string().as_str()) {
                     // 用户已确认，放行
                     pending.take();
                 } else {
-                    *pending = Some(room_id.to_string());
+                    *pending = Some(id.to_string());
                     let _ = user
                         .try_send(ServerCommand::Message(Message::Chat {
                             user: 0,
