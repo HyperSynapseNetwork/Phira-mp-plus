@@ -64,7 +64,7 @@ pub(crate) async fn handle_touches(user: Arc<User>, room: Arc<Room>, frames: Arc
             data: touch_data,
         }) {
             trace!(
-                user_id: player_id,
+                user_id = player_id,
                 "dropping plugin touch event because plugin event concurrency is saturated"
             );
         }
@@ -123,7 +123,7 @@ pub(crate) async fn handle_judges(user: Arc<User>, room: Arc<Room>, judges: Arc<
             data: judge_data,
         }) {
             trace!(
-                user_id: player_id,
+                user_id = player_id,
                 "dropping plugin judge event because plugin event concurrency is saturated"
             );
         }
