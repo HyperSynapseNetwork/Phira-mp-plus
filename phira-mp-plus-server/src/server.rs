@@ -1678,7 +1678,12 @@ impl PlusServerState {
     /// 刷新房间内展示用用户名与谱面名。只影响服务端 TUI/Web/欢迎语/历史展示；不改客户端本机 Phira API。
     pub async fn refresh_room_display_metadata(&self, room: &Arc<crate::room::Room>) {
         let endpoint = room.effective_phira_api_endpoint(self).await;
-        Self::refresh_room_display_metadata_with_endpoint(room, endpoint).await;
+        Self::refresh_room_display_metadata_with_endpoint(
+            room,
+            endpoint,
+            Arc::clone(&self.phira_client),
+        )
+        .await;
     }
 
     async fn refresh_room_display_metadata_with_endpoint(
