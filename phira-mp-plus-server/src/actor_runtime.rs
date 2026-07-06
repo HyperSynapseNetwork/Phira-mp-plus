@@ -114,7 +114,7 @@ fn default_boundaries() -> Vec<ActorBoundary> {
             responsibility: "Own one room state machine, membership, host transfer, ready/start/play/result lifecycle, and telemetry fan-in.".to_string(),
             source_files: vec!["room.rs".to_string(), "room_actor/".to_string()],
             status: ActorBoundaryStatus::WriteRouted,
-            next_step: "set_lock/set_cycle/set_host/kick/close: mailbox_only (no inline fallback). start/cancel: mailbox_or_inline_control. 17 contract tests. Next: migrate start/cancel to mailbox_only, then remove inline methods.".to_string(),
+            next_step: "All 7 room commands cross typed mailbox boundaries with mailbox_only delivery. This is still not Owned: inline methods remain inside the worker handler. Next: move a small room state slice into the mailbox worker and stop expanding the facade.".to_string(),
         },
         ActorBoundary {
             name: "persistence-actor".to_string(),
@@ -135,14 +135,14 @@ fn default_boundaries() -> Vec<ActorBoundary> {
             responsibility: "Own plugin dispatch, capability checks, event fanout, and slow-plugin isolation.".to_string(),
             source_files: vec!["plugin.rs".to_string(), "wasm_host.rs".to_string(), "plugin_http.rs".to_string(), "plugin_abi/".to_string(), "wit_host.rs".to_string()],
             status: ActorBoundaryStatus::ReadRouted,
-            next_step: "JSON bridge removed (MIGRATION_PHASE=2). plugin_abi split (plan/json/dto). WIT bindgen behind wit-bindgen feature. WitPluginHost skeleton. phira-plugin-sdk created. Next: wire WIT component loading as sole plugin path.".to_string(),
+            next_step: "JSON bridge is no longer the target ABI, but WIT lifecycle/on-event/on-api and many host traits are still incomplete. Next: make WIT component dispatch real before moving plugin ownership further.".to_string(),
         },
         ActorBoundary {
             name: "cli-actor".to_string(),
             responsibility: "Own CLI/TUI/admin-command execution through Command Registry without command logic spreading across cli.rs.".to_string(),
             source_files: vec!["cli.rs".to_string(), "cli_tui.rs".to_string(), "command_registry.rs".to_string()],
             status: ActorBoundaryStatus::WriteRouted,
-            next_step: "CLI dispatch uses command_registry.execute() fallback. Commands registered via CommandSpec in runtime_v2_registry(). HelpCommand/ExitCommand/StatusCommand exist. Next: migrate more concrete commands to CommandSpec handlers.".to_string(),
+            next_step: "Top-level dispatch and command-family routing are split. Concrete command bodies still live on CliHandler. Next: move implementation bodies only when it removes real coupling; do not add more command-surface-only steps.".to_string(),
         },
     ]
 }

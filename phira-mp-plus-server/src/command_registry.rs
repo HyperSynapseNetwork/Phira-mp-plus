@@ -671,9 +671,10 @@ pub fn runtime_v2_registry() -> CommandRegistry {
         .handler(Arc::new(|state, _args| {
             let rooms = state.rooms.try_read().map(|r| r.len()).unwrap_or(0);
             vec![format!(
-                "  Runtime v2: {} rooms | {} commands | MIGRATION_PHASE=0 (JSON bridge active)",
+                "  Runtime v2: {} rooms | {} commands | MIGRATION_PHASE={} (WIT-only skeleton)",
                 rooms,
-                state.command_registry.iter().count()
+                state.command_registry.iter().count(),
+                crate::plugin_abi::wit::MIGRATION_PHASE
             )]
         })),
         CommandSpec::new(

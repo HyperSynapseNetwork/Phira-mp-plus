@@ -1,8 +1,8 @@
 # MP+ Runtime v2
 
 > ⚠️ **历史规范** — 记录 Runtime v2 重构计划。
-> 当前架构: actor-model + typed room command gateway + session dispatch 抽取;
-> persistence worker + telemetry batcher + plugin JSON ABI bridge。
+> 当前架构: actor-model blueprint + typed room command gateway + session dispatch 抽取;
+> persistence worker + telemetry batcher + WIT-only plugin ABI skeleton。
 > Telemetry 模式: `direct_only` / `worker_preferred`。
 > 命令参考: docs/cli.md。
 
@@ -16,7 +16,7 @@ work.
 
 Runtime v2 has **not** replaced the existing runtime yet.
 
-The first Runtime v2 patch only introduces low-risk skeletons:
+The early Runtime v2 patches introduced low-risk skeletons:
 
 - `command_registry.rs`
 - `simulation.rs`
@@ -24,6 +24,46 @@ The first Runtime v2 patch only introduces low-risk skeletons:
 - `persistence_worker.rs`
 
 The existing room/session/CLI/database paths remain the source of truth.
+
+## Plan necessity audit
+
+The current plan is still useful, but not every historical step should keep
+driving new work. Treat the old step log as history and use the active
+objectives in `runtime_plan.rs` as the current workboard.
+
+Keep as active work:
+
+- `actor-model`: necessary, because `server.rs`, `room.rs`, `session.rs` and
+  `cli.rs` are still large and Room/Session actors do not own state yet.
+- `plugin-abi-v2`: necessary, because the repository now declares WIT-only ABI
+  while lifecycle dispatch, `on-event`, `on-api` and many host APIs are still
+  incomplete.
+- `persistence-worker`: necessary, because telemetry and benchmark mirrors exist
+  but many production writes still bypass the worker.
+- `phira-http`: necessary, because `PhiraRetryClient` exists but legacy Phira
+  metadata helper paths still use direct `reqwest`.
+- `low-overhead-diagnostics`: necessary, but only as an architectural guardrail:
+  bounded queues, retained digests and cleanup tasks should remain mandatory for
+  every new diagnostic surface.
+
+Keep as completed guardrails:
+
+- `eventbus`: complete enough for the current stage. Future work should use it,
+  not reopen a broad EventBus redesign.
+- `touch-judge-persistence`: complete enough for `direct_only` and
+  `worker_preferred`; do not add a worker-only mode until worker parity is
+  measured under load.
+- `web-management-api`: keep blocked. This is a negative plan item that prevents
+  accidental privileged Web write APIs.
+
+Defer or merge:
+
+- `tui-v2`: defer until Actor/Persistence signals stabilize. A new TUI before
+  ownership changes settle would become another compatibility burden.
+- More command-surface-only steps: merge into `cli-actor` work. Do not keep
+  adding small CLI split steps unless they remove real coupling.
+- Number-only milestone growth: stop adding historical steps without updating
+  `runtime_plan.rs`, `actor_runtime.rs` and contract tests in the same patch.
 
 ## Rules
 
@@ -829,6 +869,18 @@ Canonical examples:
 This keeps the command system small enough to continue building Runtime v2
 without turning CLI compatibility into a permanent maintenance burden.
 
+## Step 32 - skipped
+
+No standalone Step 32 is retained. The work originally planned around command
+surface cleanup was folded into Step 30 and Step 31.
+
+## Step 33 - skipped
+
+No standalone Step 33 is retained. The next meaningful change was the explicit
+Plugin ABI / test-coverage workstream recorded in Step 34. Keep these skipped
+markers so future audits do not mistake the numbering gap for missing
+implementation.
+
 ### Step 34：Plugin ABI / 测试目标纳入 Runtime v2 主线
 
 Runtime v2 明确新增两条 P1 主线：
@@ -873,3 +925,33 @@ was split out of `cli.rs`.  Concrete command implementation methods still remain
 on `CliHandler` for now; this is intentional so the first family split stays
 low-risk.  Future steps can move the implementation bodies themselves into the
 same command-family modules after Actions validates this dispatch-only split.
+
+### Step 37: Plan consolidation gate
+
+Step 37 is not a feature step. It is a gate for deciding which plans remain
+necessary before Runtime v2 adds more surface area.
+
+Required cleanup before the next feature step:
+
+- Runtime status output must report the same ABI phase as
+  `plugin_abi::wit::MIGRATION_PHASE`.
+- `runtime_plan.rs`, `actor_runtime.rs`, `docs/runtime-v2.md`,
+  `docs/runtime-v2-actor-roadmap.md` and `docs/wit-abi.md` must describe the
+  same current state.
+- All source TODO/FIXME markers must either be removed or represented as active
+  objectives/tests.
+- The `phira-plugin-sdk` documentation must no longer describe JSON ABI as the
+  current plugin ABI.
+- Step numbers above this point should only be added when the patch changes a
+  real ownership boundary, ABI capability, persistence cutover or test gate.
+
+Current recommended order:
+
+1. Fix plan/status drift.
+2. Finish WIT component lifecycle dispatch (`init`, `cleanup`, `on-event`,
+   `on-api`) and add contract tests around it.
+3. Move the next Room state slice into the mailbox worker instead of adding
+   more RoomCommandGateway facade methods.
+4. Move legacy Phira metadata helpers behind `PhiraRetryClient` or a dedicated
+   metadata worker.
+5. Only then revisit TUI v2 panels.

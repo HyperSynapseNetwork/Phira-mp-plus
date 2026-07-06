@@ -32,6 +32,23 @@
 
 见 `src/actor_runtime.rs` 中的 `default_boundaries()` 函数获取最新状态。CLI 命令 `runtime actors` 也可查看运行时状态。
 
+## 必要性审计
+
+Actor 迁移仍然必要，但不能再靠增加 facade 命令来制造进度。当前最有价值的工作是把已经路由的边界推进到状态所有权，而不是继续扩大命令数量。
+
+优先推进:
+
+- **room-actor**：必要。7 个房间命令已经经过 typed mailbox，但 Room 状态仍由旧 `Room` 方法实际修改。下一步应迁移一小块状态所有权，而不是继续添加 gateway facade。
+- **session-actor**：必要。Session 已拆成多个模块，但连接生命周期、认证、命令解码和发送队列仍没有 actor 所有权。
+- **persistence-actor**：必要。Worker、pipeline、telemetry batcher 已存在，但仍有多条生产写入绕过 worker。
+- **plugin-actor**：必要，但必须先完成 WIT lifecycle 和 host API，再谈 actor ownership。
+
+暂缓推进:
+
+- **cli-actor**：路由拆分已经足够。除非能减少真实耦合，否则不要继续做只搬文件的 CLI 步骤。
+- **simulation-actor**：当前作为 shadow-world load/test harness 足够。不要在 Room/Session ownership 之前扩大仿真功能。
+- **server-supervisor**：保持 mirrored。等 Room/Session/Persistence 边界稳定后再处理进程生命周期所有权。
+
 ## Actor 边界
 
 | 边界 | 职责 | 状态 |
@@ -43,3 +60,10 @@
 | simulation-actor | Shadow world、场景套件、确定性回放 | ReadRouted |
 | plugin-actor | 插件调度、capability 检查、事件分发 | ReadRouted |
 | cli-actor | CLI/TUI/管理员命令执行 | WriteRouted |
+
+## 下一阶段建议
+
+1. 选择 RoomActor 的一个低风险状态切片，例如 lock/cycle/host 中的一项，让 mailbox worker 成为该切片的唯一写入点。
+2. 给该切片补合同测试，验证旧直接路径不能绕过 actor 写入。
+3. 再迁移 Session command routing，不要同时改 socket 生命周期。
+4. Persistence 只迁移低频写入；Touch/Judge 继续保持 `direct_only` / `worker_preferred` 双轨，直到 worker 延迟和丢弃指标稳定。

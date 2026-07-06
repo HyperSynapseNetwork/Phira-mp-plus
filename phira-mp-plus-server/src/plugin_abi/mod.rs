@@ -1,14 +1,12 @@
 //! Plugin ABI boundary.
 //!
-//! The current WASM guest ABI still moves event/API payloads through JSON bytes
-//! in guest memory. Runtime v2 centralises that JSON bridge in one small module
-//! so the rest of the host no longer treats ad-hoc JSON strings as the plugin ABI.
-//! The target state is a typed WIT/component-model ABI; until then this module
-//! is the only place where the JSON transport should be encoded/decoded.
+//! Runtime v2 now treats WIT/component-model ABI v2 as the current target.
+//! The JSON helpers remain only as internal compatibility and contract-test
+//! utilities while WIT lifecycle dispatch is completed.
 //!
 //! # ABI versions
-//! - `abi-json-v1`: Current JSON bridge (temporary)
-//! - `abi-wit-v2`: Target typed WIT/component ABI
+//! - `abi-json-v1`: Legacy JSON-memory bridge
+//! - `abi-wit-v2`: Current typed WIT/component ABI target
 
 mod dto;
 mod json;

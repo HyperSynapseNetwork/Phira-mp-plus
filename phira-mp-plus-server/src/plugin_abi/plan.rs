@@ -37,12 +37,14 @@ pub fn plugin_abi_plan() -> PluginAbiPlan {
             "WIT call_on_event / call_api still stubs — plugin lifecycle incomplete",
             "Component model adapters increase binary size ~14MB",
             "All .wasm plugins must be compiled as WIT components, not modules",
+            "SDK documentation and runtime diagnostics must not describe JSON ABI as current",
         ],
         next_steps: vec![
-            "centralize every JSON ABI encode/decode call in plugin_abi.rs",
-            "add contract tests for every host event and host API method exposed to plugins",
-            "write abi-wit-v2 WIT definitions before changing guest-facing behavior",
-            "switch WASM host exports from JSON-memory bridge to typed WIT/component bindings after tests cover v1 parity",
+            "wire WIT component init/cleanup/on-event/on-api through the PluginHost implementation",
+            "convert every PluginEvent variant into the typed WIT event DTOs",
+            "replace not-yet-implemented host methods with real server_state_query or explicit capability errors",
+            "add contract tests for WIT lifecycle dispatch, event conversion and every implemented host API",
+            "update phira-plugin-sdk examples so WIT/component model is the only current ABI path",
         ],
     }
 }
@@ -52,9 +54,10 @@ pub mod wit {
     pub const WIT_FILE: &str = "wit/phira-plugin.wit";
     pub const WIT_WORLD: &str = "phira-plugin-v2";
     pub const WIT_VERSION: &str = "abi-wit-v2";
-    /// 0 = JSON bridge active.
+    /// Historical migration phases:
+    /// 0 = legacy JSON-memory bridge was active.
     /// 1 = Host WIT bindings generated.
-    /// 2 = JSON bridge removed, WIT ABI only (current).
+    /// 2 = JSON bridge removed as the target ABI, WIT-only skeleton current.
     pub const MIGRATION_PHASE: u8 = 2;
 }
 

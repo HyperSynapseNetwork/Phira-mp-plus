@@ -3,8 +3,9 @@
 //! This crate provides types and helpers for developing WASM plugins
 //! for Phira-mp+.
 //!
-//! # JSON ABI (current)
-//! Plugins communicate with the host via JSON strings through guest memory.
+//! # JSON ABI (legacy)
+//! The old JSON-memory ABI is retained here only as a legacy reference. Current
+//! server-side planning targets WIT/component-model plugins.
 //!
 //! ```ignore
 //! use phira_plugin_sdk::prelude::*;
@@ -20,8 +21,8 @@
 //! # fn on_api(_ptr: i32, _len: i32) -> i32 { 0 }
 //! ```
 //!
-//! # WIT ABI (phase 2)
-//! Once the server is in dual-ABI mode, plugins can use typed WIT-generated bindings:
+//! # WIT ABI (current target)
+//! New plugins should use typed WIT-generated bindings:
 //!
 //! ```ignore
 //! phira_plugin_sdk::wit_bindgen!(world = "phira-plugin-v2");
