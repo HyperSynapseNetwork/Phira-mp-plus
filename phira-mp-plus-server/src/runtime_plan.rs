@@ -97,7 +97,7 @@ impl RuntimePlan {
                     title: "Typed WASM plugin ABI",
                     status: "active",
                     priority: "P1",
-                    next_step: "Necessary and under-complete. The repo declares WIT-only (MIGRATION_PHASE=2), but component lifecycle dispatch, PluginEvent conversion, on-api and many host traits are still stubs. Next: make WIT lifecycle real before claiming plugin ABI completion.",
+                    next_step: "Necessary and under-complete. The repo declares WIT-only (MIGRATION_PHASE=2), and several WIT host APIs now have real implementations. Remaining gates: lifecycle dispatch, PluginEvent conversion/on-api coverage, capability enforcement for write-capable host methods, and explicit capability errors for unsupported methods.",
                 },
                 RuntimeObjective {
                     key: "test-coverage",

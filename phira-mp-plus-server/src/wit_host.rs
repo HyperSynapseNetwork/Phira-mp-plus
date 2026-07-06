@@ -138,7 +138,7 @@ mod wit_trait_impls {
             crate::wasm_host_helpers::validate_http_url(&url, false)?;
 
             let timeout_secs = self.state.config.wasm_runtime.http_timeout_secs.max(5);
-            let max_body = self.state.config.wasm_runtime.max_http_response_bytes.max(1024 * 1024);
+            let max_body = self.state.config.wasm_runtime.max_http_response_bytes.max(1);
 
             let client = reqwest::blocking::Client::builder()
                 .timeout(std::time::Duration::from_secs(timeout_secs))

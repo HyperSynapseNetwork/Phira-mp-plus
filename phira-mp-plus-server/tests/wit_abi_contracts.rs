@@ -261,6 +261,10 @@ fn current_abi_is_wit() {
         plan.risks.iter().any(|risk| risk.contains("stubs")),
         "WIT lifecycle and host API stubs must stay visible until implemented"
     );
+    assert!(
+        plan.risks.iter().any(|risk| risk.contains("capability")),
+        "write-capable WIT host methods must track capability enforcement risk"
+    );
     // Verify next_steps exist for remaining work
     assert!(!plan.next_steps.is_empty(), "next_steps should list remaining work");
 }

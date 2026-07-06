@@ -1,6 +1,6 @@
 # WASM 插件配置规范
 
-> 状态：设计草案。`wit/phira-plugin.wit` 已声明 `phira-config` 接口，但当前 host 实现仍返回 `not yet implemented`；CLI 也尚未提供 `plugin config` 子命令。本文用于约束后续实现，不应作为当前可执行操作手册。
+> 状态：部分落地。`wit/phira-plugin.wit` 已声明 `phira-config` 接口，WIT host 已提供基于 `data/plugins/<plugin-name>/config.json` 的 `get/set/list/reload/poll` 基础实现；CLI 仍未提供 `plugin config` 子命令，schema 校验、统一热重载和 capability enforcement 仍是后续工作。
 
 ## 问题
 
@@ -31,7 +31,7 @@ data/plugins/<plugin-name>/
 
 ### 2. WIT ABI 扩展
 
-`wit/phira-plugin.wit` 已声明 `phira-config` interface。当前它是 ABI 占位接口，host 函数尚未落地：
+`wit/phira-plugin.wit` 已声明 `phira-config` interface。当前 WIT host 已提供文件型基础实现：
 
 ```wit
 /// Plugin configuration interface.
@@ -57,6 +57,13 @@ interface phira-config {
     poll-config-changes: func(since-version: u64) -> api-result;
 }
 ```
+
+当前限制：
+
+- `get-config` / `set-config` / `list-config` 直接读写 `config.json`。
+- `reload-config` 当前只验证磁盘 JSON 是否可读可解析，不会刷新独立的长期内存缓存。
+- `poll-config-changes` 当前返回配置文件修改时间作为版本指示，不返回具体变更 key。
+- WIT 写能力仍需接入显式 capability 检查。
 
 ### 3. CLI 管理命令
 
@@ -111,10 +118,11 @@ pub struct LiveConfig {
 |------|------|--------|
 | 1 | 新增 `docs/plugin-config.md`（本文档） | P0 |
 | 2 | 定义 `phira-config` WIT interface | 已完成 |
-| 3 | 服务端实现 `get-config` / `set-config` host 函数 | P1 |
+| 3 | 服务端实现 `get-config` / `set-config` / `list-config` / `reload-config` / `poll-config-changes` host 函数 | 已部分完成 |
 | 4 | 新增 `plugin config` CLI 命令 | P1 |
-| 5 | 配置变更事件（`poll-config-changes`） | P2 |
+| 5 | 配置变更事件（具体 changed keys，而不仅是文件 mtime） | P2 |
 | 6 | JSON Schema 校验（`schema.json`） | P2 |
+| 7 | WIT config 写接口 capability enforcement | P0 |
 
 ### 7. 与现有系统的关系
 
