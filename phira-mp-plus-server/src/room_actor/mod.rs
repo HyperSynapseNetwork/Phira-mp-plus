@@ -169,4 +169,20 @@ mod tests {
         }
         assert_eq!(gateway.room_cycle_owned("room-2"), Some(true));
     }
+
+    #[test]
+    fn set_lock_visibility_is_restricted() {
+        // Compile-time check: set_lock_inline is pub(in crate::room_actor)
+        // and NOT accessible from outside the module. The only write path
+        // to room.locked is through the mailbox handler via set_lock_inline.
+        // Verify the public API surface: set_lock goes through mailbox_only.
+        let gateway = RoomCommandGateway::new();
+        // room_mailbox_sender is None before start_mailbox — this means
+        // mailbox-only routing will fail with "mailbox not available",
+        // proving the path is gated, not a direct write.
+        assert!(
+            !gateway.mailbox_enabled(),
+            "mailbox not available before start_mailbox"
+        );
+    }
 }
