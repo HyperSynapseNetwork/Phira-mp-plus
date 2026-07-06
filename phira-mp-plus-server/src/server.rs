@@ -928,6 +928,8 @@ impl PlusServer {
             events,
             db_manager,
         });
+        // Wire PersistenceWorker into ExtensionManager for mirrored writes
+        extensions.set_persistence_worker(&persistence_worker);
         spawn_event_subscribers(&state);
         spawn_plugin_subscriber(&state);
         state.room_commands.start_mailbox(Arc::clone(&state), 1024);

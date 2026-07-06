@@ -3,9 +3,10 @@
 //! 允许插件注册额外的用户数据和房间数据字段。
 //! 其他插件和CLI命令可以通过此系统查询这些扩展数据。
 
+use crate::persistence_worker::PersistenceWorker;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, Weak};
 use tokio::sync::RwLock;
 
 /// 扩展字段注册信息
@@ -172,6 +173,8 @@ impl ExtensionDataStore {
 pub struct ExtensionManager {
     store: Arc<RwLock<ExtensionDataStore>>,
     persist_path: Option<String>,
+    /// Optional reference to PersistenceWorker for mirrored writes.
+    persistence_worker: RwLock<Option<Weak<PersistenceWorker>>>,
 }
 
 impl ExtensionManager {
@@ -188,11 +191,19 @@ impl ExtensionManager {
         Self {
             store: Arc::new(RwLock::new(store)),
             persist_path,
+            persistence_worker: RwLock::new(None),
         }
     }
 
     pub fn new_in_memory() -> Self {
         Self::new(None)
+    }
+
+    /// Attach a PersistenceWorker for mirrored production writes.
+    pub fn set_persistence_worker(&self, worker: &Arc<PersistenceWorker>) {
+        if let Ok(mut w) = self.persistence_worker.write() {
+            *w = Some(Arc::downgrade(worker));
+        }
     }
 
     /// 获取底层存储的引用
@@ -209,9 +220,7 @@ impl ExtensionManager {
                 serde_json::to_string_pretty(&value).map_err(|e| format!("serialize: {}", e))?;
             std::fs::write(path, json).map_err(|e| format!("write: {}", e))?;
         }
-        if let Some(db) = crate::internal_hooks::DB.get() {
-            db.record_room_event_sync("extensions.snapshot", None, None, value);
-        }
+        self.enqueue_or_write_direct("extensions.snapshot", value, None, None).await;
         Ok(())
     }
 
@@ -231,19 +240,17 @@ impl ExtensionManager {
             description,
         );
         if result.is_ok() {
-            if let Some(db) = crate::internal_hooks::DB.get() {
-                db.record_room_event_sync(
-                    "extensions.user_field.register",
-                    None,
-                    None,
-                    serde_json::json!({
-                        "key": key,
-                        "default_value": default_value,
-                        "registered_by": registered_by,
-                        "description": description,
-                    }),
-                );
-            }
+            self.enqueue_or_write_direct(
+                "extensions.user_field.register",
+                serde_json::json!({
+                    "key": key,
+                    "default_value": default_value,
+                    "registered_by": registered_by,
+                    "description": description,
+                }),
+                None,
+                None,
+            ).await;
         }
         result
     }
@@ -262,21 +269,52 @@ impl ExtensionManager {
             description,
         );
         if result.is_ok() {
-            if let Some(db) = crate::internal_hooks::DB.get() {
-                db.record_room_event_sync(
-                    "extensions.room_field.register",
-                    None,
-                    None,
-                    serde_json::json!({
-                        "key": key,
-                        "default_value": default_value,
-                        "registered_by": registered_by,
-                        "description": description,
-                    }),
-                );
-            }
+            self.enqueue_or_write_direct(
+                "extensions.room_field.register",
+                serde_json::json!({
+                    "key": key,
+                    "default_value": default_value,
+                    "registered_by": registered_by,
+                    "description": description,
+                }),
+                None,
+                None,
+            ).await;
         }
         result
+    }
+
+    /// Enqueue a persistence event via worker, falling back to direct DB write.
+    /// `user_id` and `room_id` are passed separately for the DB fallback and
+    /// included in the payload for pipeline extraction.
+    async fn enqueue_or_write_direct(&self, kind: &str, mut payload: serde_json::Value, user_id: Option<i32>, _room_id: Option<String>) {
+        // Include user_id in payload for pipeline extraction if not already set
+        if let Some(uid) = user_id {
+            if payload.get("user_id").is_none() {
+                if let Some(obj) = payload.as_object_mut() {
+                    obj.insert("user_id".to_string(), serde_json::json!(uid));
+                }
+            }
+        }
+        let worker_event = crate::persistence::message::PersistenceEvent::ServerEvent {
+            kind: kind.to_string(),
+            payload: payload.clone(),
+            simulation: false,
+        };
+        let sent = self
+            .persistence_worker
+            .read()
+            .ok()
+            .and_then(|w| w.clone())
+            .and_then(|w| w.upgrade())
+            .is_some_and(|worker| {
+                futures::executor::block_on(worker.enqueue(worker_event)).is_ok()
+            });
+        if !sent {
+            if let Some(db) = crate::internal_hooks::DB.get() {
+                db.record_room_event_sync(kind, _room_id.as_deref(), user_id, payload);
+            }
+        }
     }
 
     pub async fn get_user_extra(&self, user_id: i32, key: &str) -> Option<String> {
@@ -300,18 +338,16 @@ impl ExtensionManager {
             .await
             .set_user_extra(user_id, key, value.clone());
         if result.is_ok() {
-            if let Some(db) = crate::internal_hooks::DB.get() {
-                db.record_room_event_sync(
-                    "extensions.user.set",
-                    None,
-                    Some(user_id),
-                    serde_json::json!({
-                        "user_id": user_id,
-                        "key": key_owned,
-                        "value": value,
-                    }),
-                );
-            }
+            self.enqueue_or_write_direct(
+                "extensions.user.set",
+                serde_json::json!({
+                    "user_id": user_id,
+                    "key": key_owned,
+                    "value": value,
+                }),
+                Some(user_id),
+                None,
+            ).await;
         }
         result
     }
@@ -339,16 +375,16 @@ impl ExtensionManager {
             .set_room_extra(room_id, key, value.clone());
         if result.is_ok() {
             if let Some(db) = crate::internal_hooks::DB.get() {
-                db.record_room_event_sync(
+                self.enqueue_or_write_direct(
                     "extensions.room.set",
-                    Some(room_owned.clone()),
-                    None,
                     serde_json::json!({
-                        "room_id": room_owned,
+                        "room_id": room_owned.clone(),
                         "key": key_owned,
                         "value": value,
                     }),
-                );
+                    None,
+                    Some(room_owned),
+                ).await;
             }
         }
         result
