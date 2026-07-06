@@ -202,11 +202,31 @@ pub async fn join_room(
     {
         bail!("{}", tl!("join-room-banned"));
     }
-    if !matches!(
-        *room.state.read().await,
-        crate::room::InternalRoomState::SelectChart
-    ) {
-        bail!("{}", tl!("join-game-ongoing"));
+    {
+        let state = room.state.read().await;
+        match &*state {
+            crate::room::InternalRoomState::SelectChart => {}
+            crate::room::InternalRoomState::Playing { .. } => {
+                // 进行中的游戏：第一次请求发警告，第二次直接加入
+                let mut pending = user.join_pending_game.write().await;
+                if pending.as_ref().map(|s| s.as_str()) == Some(room_id) {
+                    // 用户已确认，放行
+                    pending.take();
+                } else {
+                    *pending = Some(room_id.to_string());
+                    let _ = user
+                        .try_send(ServerCommand::Message(Message::Chat {
+                            user: 0,
+                            content: tl!("join-game-ongoing-warning"),
+                        }))
+                        .await;
+                    bail!("{}", tl!("join-game-ongoing"));
+                }
+            }
+            _ => {
+                bail!("{}", tl!("join-game-ongoing"));
+            }
+        }
     }
     // GameMonitor 会话（user.id < 0）可以旁观任意房间
     if monitor && !user.can_monitor() && user.id > 0 {
@@ -229,6 +249,8 @@ pub async fn join_room(
         .assign_room_host_if_missing(&room, &user, monitor, false)
         .await;
     *room_guard = Some(Arc::clone(&room));
+    // 清除进行中游戏加入确认标记
+    user.join_pending_game.write().await.take();
     let joined_at = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as i64)
@@ -295,6 +317,7 @@ pub async fn join_room(
 }
 
 pub async fn leave_room(user: Arc<User>, category: SessionCategory) -> Result<()> {
+    user.join_pending_game.write().await.take();
     let room = current_room(&user).await?;
     let room_id = room.id.clone();
     info!(

@@ -45,3 +45,5 @@ server-shutting-down = 服务器正在关闭...
 server-started = 服务器已在端口 { $port } 启动（HTTP 端口 { $http_port }）
 server-stats = 用户：{ $users } | 房间：{ $rooms } | 会话：{ $sessions } | 插件：{ $plugins }
 join-room-banned = 你已被此房间封禁
+
+join-game-ongoing-warning = 该房间游戏进行中，请再次确认以加入。游戏进行时你无法退出房间

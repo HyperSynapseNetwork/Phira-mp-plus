@@ -51,6 +51,8 @@ pub struct User {
 
     pub dangle_mark: Mutex<Option<Arc<()>>>,
     pub admin_cli_pending: Mutex<Option<String>>,
+    /// 用户确认加入进行中游戏的房间 ID（第一次请求时设置，第二次直接加入）。
+    pub join_pending_game: RwLock<Option<String>>,
 }
 
 impl User {
@@ -76,6 +78,7 @@ impl User {
 
             dangle_mark: Mutex::default(),
             admin_cli_pending: Mutex::default(),
+            join_pending_game: RwLock::default(),
         }
     }
 
