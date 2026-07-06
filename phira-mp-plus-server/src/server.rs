@@ -1792,8 +1792,19 @@ impl PlusServerState {
                 entries.drain(0..remove);
             }
         }
-        if let Some(db) = crate::internal_hooks::DB.get() {
-            db.record_user_room_history_sync(user_id, room_id, room_uuid, joined_at);
+        // Primary: route through PersistenceWorker
+        let worker_event = crate::persistence::message::PersistenceEvent::UserRoomHistory {
+            user_id,
+            room_id: room_id.clone(),
+            room_uuid: room_uuid.clone(),
+            joined_at,
+        };
+        let worker_ok = self.persistence_worker.enqueue(worker_event).await.is_ok();
+        // Fallback: direct DB write if worker queue is full or unavailable
+        if !worker_ok {
+            if let Some(db) = crate::internal_hooks::DB.get() {
+                db.record_user_room_history_sync(user_id, room_id, room_uuid, joined_at);
+            }
         }
     }
 

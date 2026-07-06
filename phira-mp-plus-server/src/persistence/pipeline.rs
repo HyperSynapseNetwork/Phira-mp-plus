@@ -221,6 +221,20 @@ pub async fn persist_production_event_if_needed(event: &PersistenceEvent) -> Per
         PersistenceEvent::TouchBatch { .. } | PersistenceEvent::JudgeBatch { .. } => {
             return PersistenceWriteStage::NotApplicable;
         }
+        PersistenceEvent::UserRoomHistory {
+            user_id,
+            room_id,
+            room_uuid,
+            joined_at,
+        } => {
+            db.record_user_room_history_sync(*user_id, room_id.clone(), room_uuid.clone(), *joined_at);
+            PersistenceWriteStage::Acknowledged {
+                pipeline: PersistencePipeline::EventMirror,
+                result: PersistenceStageResult::Ok,
+                latency: started.elapsed(),
+                description: "user_room_history".to_string(),
+            }
+        }
         PersistenceEvent::BenchmarkReport { .. }
         | PersistenceEvent::Flush
         | PersistenceEvent::Shutdown => {

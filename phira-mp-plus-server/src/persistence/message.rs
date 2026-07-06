@@ -30,6 +30,14 @@ pub enum PersistenceEvent {
     BenchmarkReport {
         report: BenchmarkReport,
     },
+    /// User room history entry (per-join). Low-frequency production write.
+    /// Migrated from server.rs direct db call as first PersistenceWorker path.
+    UserRoomHistory {
+        user_id: i32,
+        room_id: String,
+        room_uuid: String,
+        joined_at: i64,
+    },
     Flush,
     Shutdown,
 }
@@ -42,6 +50,7 @@ impl PersistenceEvent {
             Self::TouchBatch { .. } => "touch_batch".to_string(),
             Self::JudgeBatch { .. } => "judge_batch".to_string(),
             Self::BenchmarkReport { .. } => "benchmark.completed".to_string(),
+            Self::UserRoomHistory { .. } => "user_room_history".to_string(),
             Self::Flush => "flush".to_string(),
             Self::Shutdown => "shutdown".to_string(),
         }
@@ -54,7 +63,7 @@ impl PersistenceEvent {
             | Self::TouchBatch { simulation, .. }
             | Self::JudgeBatch { simulation, .. } => *simulation,
             Self::BenchmarkReport { report } => report.mode == BenchmarkMode::Simulation,
-            Self::Flush | Self::Shutdown => false,
+            Self::UserRoomHistory { .. } | Self::Flush | Self::Shutdown => false,
         }
     }
 
@@ -94,6 +103,9 @@ impl PersistenceEvent {
                 report.title.as_str(),
                 report.failed_operations.unwrap_or(0),
             ),
+            Self::UserRoomHistory { user_id, room_id, .. } => {
+                format!("user_id={user_id} room_id={room_id}")
+            }
             Self::Flush => "flush".to_string(),
             Self::Shutdown => "shutdown".to_string(),
         }
