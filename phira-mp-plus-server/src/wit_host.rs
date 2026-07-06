@@ -143,17 +143,29 @@ mod wit_trait_impls {
         fn get_user(&mut self, user_id: u32) -> types::ApiResult {
             query_api_result(&self.state, "user_name", &[serde_json::json!(user_id as i32)])
         }
-        fn get_user_extra(&mut self, _user_id: u32, key: String) -> types::ApiResult {
-            types::ApiResult::Error(format!("get_user_extra({key}) not yet implemented"))
+        fn get_user_extra(&mut self, user_id: u32, key: String) -> types::ApiResult {
+            let state = std::sync::Arc::clone(&self.state);
+            match futures::executor::block_on(state.extensions.get_user_extra(user_id as i32, &key)) {
+                Some(value) => types::ApiResult::Ok(types::JsonValue::Text(value)),
+                None => types::ApiResult::Ok(types::JsonValue::Null),
+            }
         }
-        fn set_user_extra(&mut self, _user_id: u32, key: String, _value: String) -> types::ApiResult {
-            types::ApiResult::Error(format!("set_user_extra({key}) not yet implemented"))
+        fn set_user_extra(&mut self, user_id: u32, key: String, value: String) -> types::ApiResult {
+            let state = std::sync::Arc::clone(&self.state);
+            match futures::executor::block_on(state.extensions.set_user_extra(user_id as i32, &key, value)) {
+                Ok(()) => types::ApiResult::Ok(types::JsonValue::Null),
+                Err(e) => types::ApiResult::Error(e),
+            }
         }
         fn get_room(&mut self, room_id: String) -> types::ApiResult {
             query_api_result(&self.state, "rooms.by_name", &[serde_json::json!(room_id)])
         }
-        fn get_room_extra(&mut self, _room_id: String, key: String) -> types::ApiResult {
-            types::ApiResult::Error(format!("get_room_extra({key}) not yet implemented"))
+        fn get_room_extra(&mut self, room_id: String, key: String) -> types::ApiResult {
+            let state = std::sync::Arc::clone(&self.state);
+            match futures::executor::block_on(state.extensions.get_room_extra(&room_id, &key)) {
+                Some(value) => types::ApiResult::Ok(types::JsonValue::Text(value)),
+                None => types::ApiResult::Ok(types::JsonValue::Null),
+            }
         }
         fn list_rooms(&mut self) -> types::ApiResult {
             query_api_result(&self.state, "rooms.list", &[])
@@ -161,8 +173,10 @@ mod wit_trait_impls {
         fn list_online_users(&mut self) -> types::ApiResult {
             query_api_result(&self.state, "rooms.list", &[])
         }
-        fn is_user_online(&mut self, _user_id: u32) -> bool {
-            matches!(query_api_result(&self.state, "rooms.list", &[]), types::ApiResult::Ok(_))
+        fn is_user_online(&mut self, user_id: u32) -> bool {
+            // Check if the user has an active session by looking up their name.
+            // If the user exists and has a session, they are online.
+            matches!(query_api_result(&self.state, "user_name", &[serde_json::json!(user_id as i32)]), types::ApiResult::Ok(_))
         }
     }
 
