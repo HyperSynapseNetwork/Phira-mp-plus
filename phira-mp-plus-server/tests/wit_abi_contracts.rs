@@ -253,5 +253,12 @@ fn current_abi_is_wit() {
     let plan = plugin_abi::plugin_abi_plan();
     assert_eq!(plan.current_transport, plugin_abi::PluginAbiTransport::WitTypedV2);
     assert_eq!(plan.target_transport, plugin_abi::PluginAbiTransport::WitTypedV2);
-    assert!(plan.risks.iter().any(|risk| risk.contains("call_on_event") || risk.contains("stubs")));
+    assert!(
+        plan.risks.iter().any(|risk| risk.contains("binary size")),
+        "risks should include known deployment constraints"
+    );
+    assert!(
+        !plan.risks.iter().any(|risk| risk.contains("stubs")),
+        "WIT lifecycle stubs risk should be removed after implementation"
+    );
 }
