@@ -34,16 +34,12 @@ pub fn plugin_abi_plan() -> PluginAbiPlan {
         current_version: "abi-wit-v2",
         target_version: "abi-wit-v2",
         risks: vec![
-            "WIT call_on_event / call_api still stubs — plugin lifecycle incomplete",
             "Component model adapters increase binary size ~14MB",
             "All .wasm plugins must be compiled as WIT components, not modules",
             "SDK documentation and runtime diagnostics must not describe JSON ABI as current",
         ],
         next_steps: vec![
-            "wire WIT component init/cleanup/on-event/on-api through the PluginHost implementation",
-            "convert every PluginEvent variant into the typed WIT event DTOs",
-            "replace not-yet-implemented host methods with real server_state_query or explicit capability errors",
-            "add contract tests for WIT lifecycle dispatch, event conversion and every implemented host API",
+            "contract tests for WIT lifecycle dispatch, event conversion and every implemented host API",
             "update phira-plugin-sdk examples so WIT/component model is the only current ABI path",
         ],
     }
@@ -78,7 +74,14 @@ mod tests {
         let plan = plugin_abi_plan();
         assert_eq!(plan.current_transport, PluginAbiTransport::WitTypedV2);
         assert_eq!(plan.target_transport, PluginAbiTransport::WitTypedV2);
-        assert!(plan.risks.iter().any(|r| r.contains("call_on_event")));
+        assert!(
+            plan.risks.iter().any(|r| r.contains("binary size")),
+            "risks should include known deployment constraints"
+        );
+        assert!(
+            !plan.risks.iter().any(|r| r.contains("stubs")),
+            "WIT lifecycle stubs risk should be removed after implementation"
+        );
     }
 
     #[test]

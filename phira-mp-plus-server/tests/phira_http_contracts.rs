@@ -28,17 +28,10 @@ const ALLOWED_REQWEST_FILES: &[&str] = &[
     "phira-mp-plus-server/src/wasm_host.rs",
 ];
 
-// server.rs has legacy `reqwest::Client::builder()` calls in
-// `fetch_phira_user_name` and `fetch_phira_chart` that should
-// eventually migrate to PhiraRetryClient.  For now those are the
-// only allowed bare-reqwest lines; any NEW occurrence will fail.
-const ALLOWED_SERVER_LINE_PATTERNS: &[&str] = &[
-    // fetch_phira_user_name internals
-    "reqwest::Client::builder()",
-    "reqwest::header::AUTHORIZATION",
-    // fetch_phira_chart internals
-    "reqwest::Client::builder()",
-];
+// server.rs has migrated all Phira API calls to PhiraRetryClient.
+// No bare-reqwest lines are allowed. Add new patterns here only if
+// a read-only `reqwest::Url::parse(...)` check is needed.
+const ALLOWED_SERVER_LINE_PATTERNS: &[&str] = &[];
 
 const BANNED_REQWEST_FILES: &[&str] = &[
     "phira-mp-plus-server/src/server.rs",
@@ -99,7 +92,7 @@ fn banned_core_paths_have_no_bare_reqwest() {
             "Core business logic files must not contain bare reqwest:\n{}\n\
              Use PhiraRetryClient (phira_client.rs) instead.\n\
              (wasm_host.rs and phira_client.rs are the only allowed exceptions.)\n\
-             server.rs allows only fetch_phira_user_name / fetch_phira_chart (TODO: migrate to RetryClient).",
+             server.rs: all Phira API calls now go through PhiraRetryClient.",
             failures.join("\n")
         );
     }
