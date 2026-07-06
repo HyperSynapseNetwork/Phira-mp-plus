@@ -1,7 +1,7 @@
 //! Mailbox-backed routing for room commands.
 
 use super::{
-    command::RoomActorCommand, context::RoomCommandContext, handler::RoomCommandHandler,
+    command::{RoomActorCommand, RoomCommandKind}, context::RoomCommandContext, handler::RoomCommandHandler,
     RoomCommandDelivery, RoomCommandGateway, RoomCommandResult,
 };
 use crate::server::PlusServerState;
@@ -120,16 +120,19 @@ impl RoomCommandGateway {
                 };
                 // Track owned state after command execution
                 let cmd_room_id = command.room_id().to_string();
+                let cmd_kind = command.kind();
+                let is_set_lock = matches!(cmd_kind, RoomCommandKind::SetLock);
+                let is_set_cycle = matches!(cmd_kind, RoomCommandKind::SetCycle);
                 let should_stop = if let Some(room) = room {
                     let result = gateway.execute_mailbox_command_with_room(&state, room.clone(), command).await;
-                    // Mirror lock state
-                    if matches!(command, RoomActorCommand::SetLock { .. }) {
+                    // Mirror lock state after SetLock
+                    if is_set_lock {
                         if let Ok(mut locks) = gateway.owned_locks.write() {
                             locks.insert(cmd_room_id.clone(), room.locked.load(Ordering::SeqCst));
                         }
                     }
-                    // Mirror cycle state
-                    if matches!(command, RoomActorCommand::SetCycle { .. }) {
+                    // Mirror cycle state after SetCycle
+                    if is_set_cycle {
                         if let Ok(mut cycles) = gateway.owned_cycles.write() {
                             cycles.insert(cmd_room_id, room.cycle.load(Ordering::SeqCst));
                         }
