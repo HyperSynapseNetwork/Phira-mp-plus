@@ -49,6 +49,38 @@ impl WitPluginHost {
     }
 }
 
+#[cfg(test)]
+mod capability_tests {
+    use crate::wasm_host_helpers;
+
+    #[test]
+    fn required_cap_maps_admin_methods() {
+        assert_eq!(wasm_host_helpers::required_capability("admin.list"), Some("admin"));
+        assert_eq!(wasm_host_helpers::required_capability("admin.add"), Some("admin"));
+    }
+
+    #[test]
+    fn required_cap_maps_room_methods() {
+        assert_eq!(wasm_host_helpers::required_capability("room.set_lock"), Some("room.manage"));
+        assert_eq!(wasm_host_helpers::required_capability("room.kick"), Some("room.manage"));
+    }
+
+    #[test]
+    fn required_cap_returns_none_for_unguarded_methods() {
+        assert_eq!(wasm_host_helpers::required_capability("uuid.v4"), None);
+        assert_eq!(wasm_host_helpers::required_capability("time.now"), None);
+    }
+
+    #[test]
+    fn default_capabilities_dont_include_privileged() {
+        let caps = wasm_host_helpers::default_capabilities();
+        assert!(!caps.contains("admin"), "default must not include admin");
+        assert!(!caps.contains("room.manage"), "default must not include room.manage");
+        assert!(caps.contains("state.read"), "default must include state.read");
+        assert!(caps.contains("config"), "default must include config");
+    }
+}
+
 // ══════════════════════════════════════════════════════════════════════
 // Generated trait implementations — only with wit-bindgen feature.
 // ══════════════════════════════════════════════════════════════════════
