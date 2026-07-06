@@ -129,12 +129,59 @@ mod wit_trait_impls {
 
         fn http_request(
             &mut self,
-            _url: String,
-            _method: String,
-            _headers: Vec<(String, String)>,
-            _body: Vec<u8>,
+            url: String,
+            method: String,
+            headers: Vec<(String, String)>,
+            body: Vec<u8>,
         ) -> Result<types::HttpResponse, String> {
-            Err("http_request not yet implemented for WIT host".to_string())
+            // SSRF validation — default to not allowing private networks
+            crate::wasm_host_helpers::validate_http_url(&url, false)?;
+
+            let timeout_secs = self.state.config.wasm_runtime.http_timeout_secs.max(5);
+            let max_body = self.state.config.wasm_runtime.max_http_response_bytes.max(1024 * 1024);
+
+            let client = reqwest::blocking::Client::builder()
+                .timeout(std::time::Duration::from_secs(timeout_secs))
+                .redirect(reqwest::redirect::Policy::limited(5))
+                .build()
+                .map_err(|e| format!("create HTTP client: {e}"))?;
+
+            let req = match method.to_uppercase().as_str() {
+                "GET" => client.get(&url),
+                "POST" => client.post(&url),
+                "PUT" => client.put(&url),
+                "DELETE" => client.delete(&url),
+                "PATCH" => client.patch(&url),
+                "HEAD" => client.head(&url),
+                other => return Err(format!("unsupported HTTP method: {other}")),
+            };
+
+            let req = headers.into_iter().fold(req, |r, (k, v)| r.header(&k, &v));
+            let req = if !body.is_empty() { req.body(body) } else { req };
+
+            let response = req
+                .send()
+                .map_err(|e| format!("HTTP request failed: {e}"))?;
+
+            let status = response.status().as_u16();
+            let resp_headers: Vec<(String, String)> = response
+                .headers()
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_str().unwrap_or("").to_string()))
+                .collect();
+
+            let resp_body: Vec<u8> = response
+                .bytes()
+                .map_err(|e| format!("read response body: {e}"))?
+                .into_iter()
+                .take(max_body)
+                .collect();
+
+            Ok(types::HttpResponse {
+                status,
+                headers: resp_headers,
+                body: resp_body,
+            })
         }
     }
 
