@@ -231,9 +231,7 @@ pub async fn persist_production_event_if_needed(event: &PersistenceEvent) -> Per
             db.record_user_room_history_sync(*user_id, room_id.clone(), room_uuid.clone(), *joined_at);
             PersistenceWriteStage::Acknowledged {
                 pipeline: PersistencePipeline::EventMirror,
-                result: PersistenceStageResult::Ok,
-                latency: started.elapsed(),
-                description: "user_room_history".to_string(),
+                elapsed_ms: started.elapsed().as_millis() as u64,
             }
         }
         PersistenceEvent::BenchmarkReport { .. }
