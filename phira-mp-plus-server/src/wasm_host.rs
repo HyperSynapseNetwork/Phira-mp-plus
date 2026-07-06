@@ -746,7 +746,8 @@ impl WasmPluginInstance {
         )
         .map_err(|e| format!("instantiate component: {e}"))?;
         Err(format!(
-            "WIT component '{plugin_name}' compiled. TODO: wrap component exports in PluginHost impl."
+            "WIT component '{plugin_name}' compiled but WasmPluginInstance does not host components. \
+             Use WitPluginComponent (plugin-abi-v2) instead."
         ))
     }
 
@@ -819,9 +820,7 @@ impl WitPluginComponent {
             linker.instantiate_async(&mut store, &component),
         )
         .map_err(|e| format!("instantiate component: {e}"))?;
-        // TODO: get PhiraPluginV2 handle from instance.  The generated bindings
-        // provide a new() or from_handle() constructor.  Until then, component
-        // lifecycle methods are stubs.
+        // Get PhiraPluginV2 handle from the instantiated component.
         let component_handle = crate::plugin_abi::wit_abi::PhiraPluginV2::new(&mut store, &_instance)
             .map_err(|e| format!("get component handle: {e}"))?;
         let info = PluginInfo {
