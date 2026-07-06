@@ -192,11 +192,21 @@ impl User {
                     .publish_runtime_event(crate::event_bus::MpEvent::UserDisconnected {
                         user_id: self.id,
                     });
-                if let Some(db) = crate::internal_hooks::DB.get() {
-                    db.record_user_disconnect_sync(self.id, &self.name);
-                }
                 crate::internal_hooks::playtime_disconnect(self.id);
-                // Mirror to PersistenceWorker
+                // Primary: PersistenceWorker
+                let worker_ok = self.server.persistence_worker.enqueue(
+                    crate::persistence::message::PersistenceEvent::UserDisconnect {
+                        user_id: self.id,
+                        user_name: self.name.clone(),
+                    }
+                ).await.is_ok();
+                // Fallback: direct DB write
+                if !worker_ok {
+                    if let Some(db) = crate::internal_hooks::DB.get() {
+                        db.record_user_disconnect_sync(self.id, &self.name);
+                    }
+                }
+                // Also mirror offline status to worker
                 let _ = self.server.persistence_worker.enqueue(
                     crate::persistence::message::PersistenceEvent::UserOffline {
                         user_id: self.id,
@@ -443,13 +453,25 @@ impl Session {
                                             }
                                         };
 
-                                        if let Some(db) = crate::internal_hooks::DB.get() {
-                                            db.record_user_seen_sync(
-                                                user_info.id,
-                                                &user_info.name,
-                                                &user_info.language,
-                                                Some(addr.ip().to_string()),
-                                            );
+                                        // Primary: PersistenceWorker
+                                        let seen_ok = self.server.persistence_worker.enqueue(
+                                            crate::persistence::message::PersistenceEvent::UserSeen {
+                                                user_id: user_info.id,
+                                                user_name: user_info.name.clone(),
+                                                language: user_info.language.clone(),
+                                                ip: addr.ip().to_string(),
+                                            }
+                                        ).await.is_ok();
+                                        // Fallback: direct DB write
+                                        if !seen_ok {
+                                            if let Some(db) = crate::internal_hooks::DB.get() {
+                                                db.record_user_seen_sync(
+                                                    user_info.id,
+                                                    &user_info.name,
+                                                    &user_info.language,
+                                                    Some(addr.ip().to_string()),
+                                                );
+                                            }
                                         }
 
                                         let user_ip =

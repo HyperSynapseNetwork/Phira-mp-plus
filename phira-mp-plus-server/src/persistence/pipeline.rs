@@ -110,6 +110,8 @@ pub async fn persist_simulation_event_if_needed(event: &PersistenceEvent) -> Per
         }
         PersistenceEvent::UserOnline { .. }
         | PersistenceEvent::UserOffline { .. }
+        | PersistenceEvent::UserDisconnect { .. }
+        | PersistenceEvent::UserSeen { .. }
         | PersistenceEvent::UserRoomHistory { .. }
         | PersistenceEvent::BenchmarkReport { .. }
         | PersistenceEvent::Flush
@@ -245,6 +247,20 @@ pub async fn persist_production_event_if_needed(event: &PersistenceEvent) -> Per
         }
         PersistenceEvent::UserOffline { user_id } => {
             db.set_offline_sync(*user_id);
+            return PersistenceWriteStage::Acknowledged {
+                pipeline: PersistencePipeline::EventMirror,
+                elapsed_ms: started.elapsed().as_millis() as u64,
+            };
+        }
+        PersistenceEvent::UserDisconnect { user_id, user_name } => {
+            db.record_user_disconnect_sync(*user_id, user_name);
+            return PersistenceWriteStage::Acknowledged {
+                pipeline: PersistencePipeline::EventMirror,
+                elapsed_ms: started.elapsed().as_millis() as u64,
+            };
+        }
+        PersistenceEvent::UserSeen { user_id, user_name, language, ip } => {
+            db.record_user_seen_sync(*user_id, user_name, language, ip);
             return PersistenceWriteStage::Acknowledged {
                 pipeline: PersistencePipeline::EventMirror,
                 elapsed_ms: started.elapsed().as_millis() as u64,

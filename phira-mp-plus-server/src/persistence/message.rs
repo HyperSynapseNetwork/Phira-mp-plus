@@ -46,6 +46,18 @@ pub enum PersistenceEvent {
     UserOffline {
         user_id: i32,
     },
+    /// User disconnect event (per-disconnect). Low-frequency production write.
+    UserDisconnect {
+        user_id: i32,
+        user_name: String,
+    },
+    /// User seen timestamp (per-command). Higher-frequency production write.
+    UserSeen {
+        user_id: i32,
+        user_name: String,
+        language: String,
+        ip: String,
+    },
     Flush,
     Shutdown,
 }
@@ -61,6 +73,8 @@ impl PersistenceEvent {
             Self::UserRoomHistory { .. } => "user_room_history".to_string(),
             Self::UserOnline { .. } => "user_online".to_string(),
             Self::UserOffline { .. } => "user_offline".to_string(),
+            Self::UserDisconnect { .. } => "user_disconnect".to_string(),
+            Self::UserSeen { .. } => "user_seen".to_string(),
             Self::Flush => "flush".to_string(),
             Self::Shutdown => "shutdown".to_string(),
         }
@@ -73,7 +87,7 @@ impl PersistenceEvent {
             | Self::TouchBatch { simulation, .. }
             | Self::JudgeBatch { simulation, .. } => *simulation,
             Self::BenchmarkReport { report } => report.mode == BenchmarkMode::Simulation,
-            Self::UserRoomHistory { .. } | Self::UserOnline { .. } | Self::UserOffline { .. } | Self::Flush | Self::Shutdown => false,
+            Self::UserRoomHistory { .. } | Self::UserOnline { .. } | Self::UserOffline { .. } | Self::UserDisconnect { .. } | Self::UserSeen { .. } | Self::Flush | Self::Shutdown => false,
         }
     }
 
@@ -118,6 +132,8 @@ impl PersistenceEvent {
             }
             Self::UserOnline { user_id } => format!("user_id={user_id}"),
             Self::UserOffline { user_id } => format!("user_id={user_id}"),
+            Self::UserDisconnect { user_id, .. } => format!("user_id={user_id}"),
+            Self::UserSeen { user_id, user_name, .. } => format!("user_id={user_id} user_name={user_name}"),
             Self::Flush => "flush".to_string(),
             Self::Shutdown => "shutdown".to_string(),
         }
