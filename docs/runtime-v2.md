@@ -2,7 +2,7 @@
 
 > ⚠️ **历史规范** — 记录 Runtime v2 重构计划。
 > 当前架构: actor-model blueprint + typed room command gateway + session dispatch 抽取;
-> persistence worker + telemetry batcher + WIT-only plugin ABI skeleton。
+> persistence worker + telemetry batcher + WIT-only plugin ABI (lifecycle wired, all host APIs implemented with capability enforcement)。
 > Telemetry 模式: `direct_only` / `worker_preferred`。
 > 命令参考: docs/cli.md。
 
@@ -35,16 +35,17 @@ Keep as active work:
 
 - `actor-model`: necessary, because `server.rs`, `room.rs`, `session.rs` and
   `cli.rs` are still large and Room/Session actors do not own state yet.
-- `plugin-abi-v2`: necessary, because the repository now declares WIT-only ABI
-  while lifecycle dispatch, `on-event`, `on-api` and many host APIs are still
-  incomplete.
-- `persistence-worker`: necessary, because telemetry and benchmark mirrors exist
-  but many production writes still bypass the worker.
-- `phira-http`: necessary, because `PhiraRetryClient` exists but legacy Phira
-  metadata helper paths still use direct `reqwest`.
+  lock/cycle tracking proved mailbox exclusive-write can work.
+- `plugin-abi-v2`: necessary. WIT lifecycle and all host APIs are implemented
+  with capability enforcement. Remaining: integration tests and SDK updates.
+- `persistence-worker`: necessary, because 7 direct DB write paths still bypass
+  the worker (online/offline/disconnect/seen/round_data/ext/room_history).
 - `low-overhead-diagnostics`: necessary, but only as an architectural guardrail:
   bounded queues, retained digests and cleanup tasks should remain mandatory for
   every new diagnostic surface.
+- `test-coverage`: ongoing. 102 unit tests (up from 97). WIT capability model
+  tests, persistence audit tests, simulation isolation tests, and lock
+  exclusivity tests added.
 
 Keep as completed guardrails:
 
@@ -55,6 +56,8 @@ Keep as completed guardrails:
   measured under load.
 - `web-management-api`: keep blocked. This is a negative plan item that prevents
   accidental privileged Web write APIs.
+- `phira-http`: complete. `fetch_phira_user_name` and `fetch_phira_chart`
+  migrated to PhiraRetryClient. No bare reqwest outside phira_client/wasm_host.
 
 Defer or merge:
 
@@ -881,14 +884,35 @@ Plugin ABI / test-coverage workstream recorded in Step 34. Keep these skipped
 markers so future audits do not mistake the numbering gap for missing
 implementation.
 
-### Step 34：Plugin ABI / 测试目标纳入 Runtime v2 主线
+### Step 34：Plugin ABI v2 完成主机 API / 测试目标收敛
 
-Runtime v2 明确新增两条 P1 主线：
+Plugin ABI v2 已完成从骨架到完整实现的过渡，当前状态：
 
-- `plugin-abi-v2`：当前主线已切换到 WIT/component-model typed ABI。后续重点不再是继续扩大旧桥接层，而是补齐 WIT 事件参数转换、`on-api` 导出调用、插件 SDK exports 与覆盖每个 host API 的 contract tests。
-- `test-coverage`：当前单元测试/集成测试不足。后续 Runtime v2 cutover 前必须补齐 plugin ABI contract tests、command registry tests、telemetry cutover tests、room gateway tests 和 session handler tests。
+- ✅ **WIT lifecycle 已接线**：`call_init` / `call_cleanup` / `call_on_event` / `call_api` 均完整实现。`PluginEvent` → WIT typed event 的 11 个 variant 转换已完成。
+- ✅ **Host API 已完整覆盖**：全部 12 个 WIT interface 的方法均有真实实现或明确 capability error。再无 `not yet implemented` 遗留。
+- ✅ **Capability enforcement**：room-mgmt 写需 `room.manage`，admin 写需 `admin`，config 写需 `config`，simulation 控制需 `admin`。持久化查询返回 `persist.read` capability error。
+- ✅ **http_request**：沙箱化 HTTP 客户端，集成 `validate_http_url` SSRF 保护、超时、重定向限制。
+- ❌ **集成测试**：每个 host API 方法缺 running-server 上下文测试。
+- ❌ **phira-plugin-sdk 示例**：需更新使 WIT/component model 成为唯一当前 ABI 路径。
 
-开发节奏调整：先快速完成 `session.rs / cli.rs / wasm_host.rs` 的边界分离，再回到主线 cutover。不要把 ABI 风险、临时命令、测试缺口继续散落在大文件里。
+### Step 35: CLI dispatch split
+
+Step 35 keeps the faster development rhythm without lowering quality: it moves
+only the top-level command routing table out of `cli.rs` into
+`cli/dispatch.rs`.  No command semantics are changed in this step.
+
+The purpose is to stop `cli.rs` from combining console lifecycle, line
+continuation, help rendering, and every command route in the same file.  The new
+boundary is intentionally narrow:
+
+- `cli.rs` owns console lifecycle, input continuation, output helpers, and the
+  concrete command implementation methods that already existed.
+- `cli/dispatch.rs` owns the canonical top-level command dispatch table.
+
+This is a fast structural split, not a compatibility pass and not a new command
+surface.  Follow-up work can split `cli/dispatch.rs` further into
+`room/plugin/runtime/simulation/benchmark` modules, but only after the first
+boundary compiles cleanly in Actions.
 
 ### Step 35: CLI dispatch split
 
