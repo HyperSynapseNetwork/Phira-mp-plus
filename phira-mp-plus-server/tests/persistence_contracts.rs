@@ -3,7 +3,6 @@
 //! These tests verify that telemetry cutover modes, WorkerPreferred semantics,
 //! and persistence payload helpers are documented and consistent.
 
-use phira_mp_plus_server::persistence::message::PersistenceEvent;
 use phira_mp_plus_server::telemetry::TelemetryCutoverMode;
 
 #[test]
@@ -204,7 +203,7 @@ async fn persistence_worker_spawns_with_default_mode() {
     let worker = phira_mp_plus_server::persistence_worker::PersistenceWorker::spawn(64);
     let stats = worker.stats().await;
     assert_eq!(
-        stats.cutover_mode,
+        stats.telemetry.cutover_mode,
         TelemetryCutoverMode::default().as_str(),
         "worker should default to DirectOnly"
     );
