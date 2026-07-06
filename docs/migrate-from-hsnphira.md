@@ -132,12 +132,12 @@ CREATE TABLE room_history (
 ## 相关命令
 
 ```bash
-# 查看游玩时间
-playtime <user_id>
-
 # 查看房间历史
 room history <room_id>
 
-# 查看欢迎语配置（含占位符列表）
-welcome-config
+# 查看扩展字段
+extension list
+extension get <target> <key>
 ```
+
+游玩时间、欢迎语等历史插件能力已迁移到持久化与插件/API 层；当前 CLI 不再提供旧版顶层查看命令。

@@ -37,36 +37,9 @@
 | `[top_playtime]` | 游玩时间前 10 名排行 | playtime-tracker API |
 | `[active_rooms]` | 活跃房间列表及详情 | 服务端状态查询 |
 
-## CLI 命令
+## CLI 状态
 
-### `welcome-config`
-
-查看当前欢迎语配置和可用占位符。
-
-```
-welcome-config
-  ◆ 欢迎语配置
-  │ 配置文件: data/welcome-config.json
-  │ 消息数量: 6
-  │ [0] 欢迎 [user_name] 来到 HSN Phira-mp+！当前在线 [player-count] 人...
-  │ [1] 您在本服务器上游玩了[playtime]
-  │ [2] --------------------------------------------------
-  │ [3] 游玩时间排行榜：[top_playtime]
-  │ [4] --------------------------------------------------
-  │ [5] 活跃房间：[active_rooms]
-  │ 显示时间: true
-  │ 时间格式: %Y-%m-%d %H:%M
-
-  ■ 可用占位符:
-  │ [user_id]           用户 Phira ID
-  │ [user_name]         用户名
-  │ [user_ip]           用户 IP 地址
-  │ [player-count]      当前在线玩家数
-  │ [players]           当前在线玩家数
-  │ [playtime]          该用户的游玩时间
-  │ [top_playtime]      游玩时间前 10 名排行
-  │ [active_rooms]      活跃房间列表及详情
-```
+当前主线不再注册该插件的旧顶层 CLI 配置命令。请直接编辑 `data/welcome-config.json`，或在后续插件配置接口完成后迁移到标准插件配置机制。
 
 ## 消息发送
 

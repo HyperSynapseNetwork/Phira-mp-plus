@@ -822,7 +822,7 @@ Canonical examples:
 
 - `plugin list`, `plugin enable`, `plugin disable`, `plugin reload`
 - `room start`, `room cancel`, `room host`, `room close`, `room kick`
-- `benchmark`, `benchmark-bind`, `benchmark-cleanup`
+- `benchmark`, `benchmark modes`, `benchmark run real`, `benchmark run hybrid`
 - `simulation run`, `simulation suite`, `simulation report`
 - `broadcast all`, `broadcast room`, `broadcast user`
 
@@ -833,10 +833,10 @@ without turning CLI compatibility into a permanent maintenance burden.
 
 Runtime v2 明确新增两条 P1 主线：
 
-- `plugin-abi-v2`：当前 WASM 插件 ABI 仍是 JSON 字符串穿过 guest memory 的 `abi-json-v1`。这会隐藏 schema drift、字段名漂移和 Touch/Judge 大 payload 的重复 JSON 编解码成本。Step 34 先把 JSON ABI 编解码集中到 `plugin_abi.rs`，后续目标是以 WIT/component-model typed ABI 替换它。
+- `plugin-abi-v2`：当前主线已切换到 WIT/component-model typed ABI。后续重点不再是继续扩大旧桥接层，而是补齐 WIT 事件参数转换、`on-api` 导出调用、插件 SDK exports 与覆盖每个 host API 的 contract tests。
 - `test-coverage`：当前单元测试/集成测试不足。后续 Runtime v2 cutover 前必须补齐 plugin ABI contract tests、command registry tests、telemetry cutover tests、room gateway tests 和 session handler tests。
 
-开发节奏调整：先快速完成 `session.rs / cli.rs / wasm_host.rs` 的边界分离，再回到主线 cutover。不要把 JSON ABI、临时命令、测试缺口继续散落在大文件里。
+开发节奏调整：先快速完成 `session.rs / cli.rs / wasm_host.rs` 的边界分离，再回到主线 cutover。不要把 ABI 风险、临时命令、测试缺口继续散落在大文件里。
 
 ### Step 35: CLI dispatch split
 

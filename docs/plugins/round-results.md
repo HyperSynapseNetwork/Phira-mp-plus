@@ -6,24 +6,9 @@
 
 自有内存存储，记录每轮结算结果。
 
-## CLI 命令
+## CLI 状态
 
-### `round-last <room_id>`
-
-查看房间最近一轮结算详情。
-
-```
-round-last 111
-  结算: 看我超级搭路 (id=123)
-  ■ 得分排行
-     #1 FireflyF09  998000  ACC:99.80%
-     #2 Player2     895000  ACC:89.50%
-  ■ ACC 排行
-     #1 FireflyF09  ACC:99.80% FC
-     #2 Player2     ACC:89.50%
-  ■ 最高分: FireflyF09 (998000)  ACC:99.80%
-  ■ 最高ACC: FireflyF09 (99.80%)
-```
+当前主线不再注册该插件的旧顶层 CLI 命令。房间轮次信息请使用 `room rounds <room_id>`、`room round <round_uuid>` 或 Web API 查询。
 
 ## Web API
 

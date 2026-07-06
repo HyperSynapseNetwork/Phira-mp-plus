@@ -1,5 +1,7 @@
 # WASM 插件配置规范
 
+> 状态：设计草案。`wit/phira-plugin.wit` 已声明 `phira-config` 接口，但当前 host 实现仍返回 `not yet implemented`；CLI 也尚未提供 `plugin config` 子命令。本文用于约束后续实现，不应作为当前可执行操作手册。
+
 ## 问题
 
 当前配置散落在：
@@ -7,7 +9,7 @@
 | 配置源 | 文件 | 管理方式 | 热重载 |
 |--------|------|----------|--------|
 | 服务端核心 | `server_config.yml` | CLI `config reload` | ✅ |
-| 扩展 KV 存储 | `data/extensions.json` | `ext.get/set` | ✅ |
+| 扩展 KV 存储 | `data/extensions.json` | CLI `extension list/get`；写入由内部逻辑或插件 API 完成 | ✅ |
 | 插件自有配置 | 无标准位置 | 各自为政 | ❌ |
 
 WASM 插件缺乏标准方式来声明、读取和热更新配置。
@@ -29,7 +31,7 @@ data/plugins/<plugin-name>/
 
 ### 2. WIT ABI 扩展
 
-在 `wit/phira-plugin.wit` 中新增 `phira-config` interface：
+`wit/phira-plugin.wit` 已声明 `phira-config` interface。当前它是 ABI 占位接口，host 函数尚未落地：
 
 ```wit
 /// Plugin configuration interface.
@@ -58,7 +60,7 @@ interface phira-config {
 
 ### 3. CLI 管理命令
 
-在 CLI 中新增 `plugin config` 子命令家族：
+后续可在 CLI 中新增 `plugin config` 子命令家族：
 
 ```
 plugin config list <plugin-name>          # 列出插件配置项
@@ -69,7 +71,7 @@ plugin config reload <plugin-name>        # 从磁盘重载配置
 
 ### 4. 热重载集成
 
-`LiveConfig` 结构扩展插件配置支持：
+后续实现时可扩展 `LiveConfig` 结构，加入插件配置支持：
 
 ```rust
 pub struct LiveConfig {
@@ -79,7 +81,7 @@ pub struct LiveConfig {
 }
 ```
 
-`config reload` 命令自动重载所有插件的 `config.json`。
+目标行为：`config reload` 命令自动重载所有插件的 `config.json`。当前 `config reload` 只热重载 `server_config.yml` 中可安全更新的服务端字段。
 
 ### 5. 文件格式示例
 
@@ -108,7 +110,7 @@ pub struct LiveConfig {
 | 步骤 | 内容 | 优先级 |
 |------|------|--------|
 | 1 | 新增 `docs/plugin-config.md`（本文档） | P0 |
-| 2 | 定义 `phira-config` WIT interface | P0 |
+| 2 | 定义 `phira-config` WIT interface | 已完成 |
 | 3 | 服务端实现 `get-config` / `set-config` host 函数 | P1 |
 | 4 | 新增 `plugin config` CLI 命令 | P1 |
 | 5 | 配置变更事件（`poll-config-changes`） | P2 |
