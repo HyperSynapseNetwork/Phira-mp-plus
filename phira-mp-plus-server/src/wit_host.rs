@@ -288,18 +288,32 @@ mod wit_trait_impls {
     // ── phira-user-mgmt ──
     impl wit::phira::plugin::phira_user_mgmt::Host for WitPluginHost {
         fn kick_user(&mut self, _user_id: u32, _reason: String) -> types::ApiResult {
-            types::ApiResult::Error("kick_user not yet implemented".to_string())
+            types::ApiResult::Error("kick_user not yet implemented — use server CLI or TUI".to_string())
         }
-        fn ban_user(&mut self, _user_id: u32, _reason: String) -> types::ApiResult {
-            types::ApiResult::Error("ban_user not yet implemented".to_string())
+        fn ban_user(&mut self, user_id: u32, reason: String) -> types::ApiResult {
+            let state = std::sync::Arc::clone(&self.state);
+            match futures::executor::block_on(state.ban_manager.ban_user(user_id as i32, &reason)) {
+                Ok(_) => types::ApiResult::Ok(types::JsonValue::Null),
+                Err(e) => types::ApiResult::Error(e),
+            }
         }
-        fn unban_user(&mut self, _user_id: u32) -> types::ApiResult {
-            types::ApiResult::Error("unban_user not yet implemented".to_string())
+        fn unban_user(&mut self, user_id: u32) -> types::ApiResult {
+            let state = std::sync::Arc::clone(&self.state);
+            match futures::executor::block_on(state.ban_manager.unban_user(user_id as i32)) {
+                Ok(_) => types::ApiResult::Ok(types::JsonValue::Null),
+                Err(e) => types::ApiResult::Error(e),
+            }
         }
         fn get_ban_list(&mut self) -> types::ApiResult {
-            types::ApiResult::Error("get_ban_list not yet implemented".to_string())
+            let state = std::sync::Arc::clone(&self.state);
+            let bans = futures::executor::block_on(state.ban_manager.list_banned());
+            let json = serde_json::to_value(&bans).unwrap_or_default();
+            types::ApiResult::Ok(json_to_wit_json(&json))
         }
-        fn is_banned(&mut self, _user_id: u32) -> bool { false }
+        fn is_banned(&mut self, user_id: u32) -> bool {
+            let state = std::sync::Arc::clone(&self.state);
+            futures::executor::block_on(state.ban_manager.is_banned(user_id as i32))
+        }
     }
 
     // ── phira-messaging ──
@@ -373,20 +387,125 @@ mod wit_trait_impls {
 
     // ── phira-config ──
     impl wit::phira::plugin::phira_config::Host for WitPluginHost {
-        fn get_config(&mut self, _key: String) -> types::ApiResult {
-            types::ApiResult::Error("get_config not yet implemented".to_string())
+        fn get_config(&mut self, key: String) -> types::ApiResult {
+            let path = crate::wasm_host_helpers::config_path(&self.plugin_name);
+            let content = match std::fs::read_to_string(&path) {
+                Ok(c) => c,
+                Err(_) => return types::ApiResult::Ok(types::JsonValue::Null),
+            };
+            let root: serde_json::Value = match serde_json::from_str(&content) {
+                Ok(v) => v,
+                Err(e) => return types::ApiResult::Error(format!("parse config: {e}")),
+            };
+            // Navigate dot-separated key path (e.g. "api.timeout")
+            let value = key.split('.').fold(Some(&root), |acc, part| {
+                acc.and_then(|v| v.get(part))
+            });
+            match value {
+                Some(v) => types::ApiResult::Ok(json_to_wit_json(v)),
+                None => types::ApiResult::Ok(types::JsonValue::Null),
+            }
         }
-        fn set_config(&mut self, _key: String, _value: String) -> types::ApiResult {
-            types::ApiResult::Error("set_config not yet implemented".to_string())
+        fn set_config(&mut self, key: String, value: String) -> types::ApiResult {
+            let path = crate::wasm_host_helpers::config_path(&self.plugin_name);
+            let mut root: serde_json::Value = std::fs::read_to_string(&path)
+                .ok()
+                .and_then(|c| serde_json::from_str(&c).ok())
+                .unwrap_or(serde_json::Value::Object(serde_json::Map::new()));
+            let parsed: serde_json::Value = match serde_json::from_str(&value) {
+                Ok(v) => v,
+                Err(_) => serde_json::Value::String(value),
+            };
+            // Navigate to the parent object and set the key
+            let keys: Vec<&str> = key.split('.').collect();
+            if keys.is_empty() {
+                return types::ApiResult::Error("empty key".to_string());
+            }
+            if keys.len() == 1 {
+                if let serde_json::Value::Object(ref mut map) = root {
+                    map.insert(keys[0].to_string(), parsed);
+                }
+            } else {
+                let mut current = &mut root;
+                for &part in keys.iter().take(keys.len() - 1) {
+                    current = match current.get_mut(part) {
+                        Some(v @ serde_json::Value::Object(_)) => v,
+                        Some(_) => return types::ApiResult::Error(format!("key '{part}' is not an object")),
+                        None => return types::ApiResult::Error(format!("key '{part}' not found")),
+                    };
+                }
+                if let serde_json::Value::Object(ref mut map) = current {
+                    map.insert(keys[keys.len() - 1].to_string(), parsed);
+                }
+            }
+            // Ensure parent dir exists
+            if let Some(parent) = path.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            match std::fs::write(&path, serde_json::to_string_pretty(&root).unwrap_or_default()) {
+                Ok(()) => types::ApiResult::Ok(types::JsonValue::Null),
+                Err(e) => types::ApiResult::Error(format!("write config: {e}")),
+            }
         }
-        fn list_config(&mut self, _prefix: String) -> types::ApiResult {
-            types::ApiResult::Error("list_config not yet implemented".to_string())
+        fn list_config(&mut self, prefix: String) -> types::ApiResult {
+            let path = crate::wasm_host_helpers::config_path(&self.plugin_name);
+            let content = match std::fs::read_to_string(&path) {
+                Ok(c) => c,
+                Err(_) => return types::ApiResult::Ok(types::JsonValue::Array("[]".to_string())),
+            };
+            let root: serde_json::Value = match serde_json::from_str(&content) {
+                Ok(v) => v,
+                Err(e) => return types::ApiResult::Error(format!("parse config: {e}")),
+            };
+            // Collect keys that start with the given prefix
+            fn collect_keys(value: &serde_json::Value, prefix: &str, current: &str) -> Vec<String> {
+                match value {
+                    serde_json::Value::Object(map) => {
+                        let mut keys = Vec::new();
+                        for (k, v) in map {
+                            let path = if current.is_empty() { k.clone() } else { format!("{current}.{k}") };
+                            if path.starts_with(prefix) {
+                                keys.push(path.clone());
+                            }
+                            keys.extend(collect_keys(v, prefix, &path));
+                        }
+                        keys
+                    }
+                    _ => Vec::new(),
+                }
+            }
+            let keys: Vec<String> = collect_keys(&root, &prefix, "")
+                .into_iter()
+                .filter(|k| k.starts_with(&prefix))
+                .collect();
+            types::ApiResult::Ok(json_to_wit_json(&serde_json::json!(keys)))
         }
         fn reload_config(&mut self) -> types::ApiResult {
-            types::ApiResult::Error("reload_config not yet implemented".to_string())
+            let path = crate::wasm_host_helpers::config_path(&self.plugin_name);
+            match std::fs::read_to_string(&path) {
+                Ok(content) => match serde_json::from_str::<serde_json::Value>(&content) {
+                    Ok(_) => types::ApiResult::Ok(types::JsonValue::Null),
+                    Err(e) => types::ApiResult::Error(format!("reload config parse: {e}")),
+                },
+                Err(e) => types::ApiResult::Error(format!("reload config read: {e}")),
+            }
         }
         fn poll_config_changes(&mut self, _since: u64) -> types::ApiResult {
-            types::ApiResult::Error("poll_config_changes not yet implemented".to_string())
+            // Simple implementation: check if the config file exists and return its
+            // modification time as a version indicator.
+            let path = crate::wasm_host_helpers::config_path(&self.plugin_name);
+            match std::fs::metadata(&path) {
+                Ok(meta) => {
+                    let version = meta
+                        .modified()
+                        .ok()
+                        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                        .map(|d| d.as_millis() as u64)
+                        .unwrap_or(0);
+                    types::ApiResult::Ok(types::JsonValue::Integer(version as i64))
+                }
+                Err(_) => types::ApiResult::Ok(types::JsonValue::Null),
+            }
         }
     }
 
