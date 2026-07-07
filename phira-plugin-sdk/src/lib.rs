@@ -24,7 +24,7 @@
 //! Requires `wit-bindgen` in Cargo.toml:
 //! ```toml
 //! [dependencies]
-//! wit-bindgen = "0.30"
+//! wit-bindgen = "0.58"
 //! ```
 
 /// Generate WIT bindings for a plugin.
