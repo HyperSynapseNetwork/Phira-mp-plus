@@ -372,18 +372,16 @@ impl ExtensionManager {
             .await
             .set_room_extra(room_id, key, value.clone());
         if result.is_ok() {
-            if let Some(db) = crate::internal_hooks::DB.get() {
-                self.enqueue_or_write_direct(
-                    "extensions.room.set",
-                    serde_json::json!({
-                        "room_id": room_owned.clone(),
-                        "key": key_owned,
-                        "value": value,
-                    }),
-                    None,
-                    Some(room_owned),
-                ).await;
-            }
+            self.enqueue_or_write_direct(
+                "extensions.room.set",
+                serde_json::json!({
+                    "room_id": room_owned.clone(),
+                    "key": key_owned,
+                    "value": value,
+                }),
+                None,
+                Some(room_owned),
+            ).await;
         }
         result
     }
