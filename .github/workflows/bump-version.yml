@@ -11,6 +11,9 @@ on:
           - major  # → A+1.0.0
         default: "minor"
 
+permissions:
+  contents: write
+
 jobs:
   bump:
     runs-on: ubuntu-latest
