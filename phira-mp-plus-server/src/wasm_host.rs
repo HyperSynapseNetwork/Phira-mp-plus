@@ -143,7 +143,7 @@ impl WitPluginComponent {
         let component = wasmtime::component::Component::new(&engine, wasm_bytes)
             .map_err(|e| format!("component compile: {e}"))?;
         let mut linker = wasmtime::component::Linker::<WitHostState>::new(&engine);
-        wit_abi::PhiraPluginV2::add_to_linker(&mut linker, |state| state)
+        wit_abi::PhiraPluginV2::add_to_linker(&mut linker, |state| &mut state.host)
             .map_err(|e| format!("linker setup: {e}"))?;
         let state_ref = services
             .server_state
