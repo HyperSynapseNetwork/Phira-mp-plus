@@ -41,8 +41,9 @@ jobs:
             PATCH=$(git rev-list --count HEAD)
           fi
 
-          echo "version=$VERSION" >> $GITHUB_OUTPUT
-          echo "tag=$LATEST_TAG" >> $GITHUB_OUTPUT
+          FULL_VERSION="${MAJOR}.${MINOR}.${PATCH}"
+          echo "version=$FULL_VERSION" >> $GITHUB_OUTPUT
+          echo "tag=v$FULL_VERSION" >> $GITHUB_OUTPUT
           echo "major=$MAJOR" >> $GITHUB_OUTPUT
           echo "minor=$MINOR" >> $GITHUB_OUTPUT
           echo "patch=$PATCH" >> $GITHUB_OUTPUT
