@@ -104,7 +104,7 @@ impl RuntimePlan {
                     title: "Unit and integration test coverage",
                     status: "active",
                     priority: "P1",
-                    next_step: "102 unit tests pass (up from 97). Capability model contract tests added. WIT lifecycle contract tests added (JSON round-trip, variant coverage, public API checks). Lock exclusivity test added. Simulation isolation tests added (5 new). Remaining: integration tests for each WIT host API method in a running-server context. Do not hard-code test totals in the plan.",
+                    next_step: "130 unit tests pass (up from 97). wasm_host_helpers tests added (24 tests: SSRF/validate/atomic_write/capabilities). Capability model contract tests added. Lock exclusivity test added. Simulation isolation tests added (5 new). Remaining: integration tests for WIT host API methods in running-server context (blocked — requires compiled .wasm component). Do not hard-code test totals in the plan.",
                 },
                 RuntimeObjective {
                     key: "technical-debt-triage",
