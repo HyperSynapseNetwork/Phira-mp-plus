@@ -140,8 +140,10 @@ impl RoomCommandGateway {
                     }
                     // Mirror host state after SetHost
                     if is_set_host {
+                        let host_weak = room.host.read().await.clone();
+                        let host_id = host_weak.upgrade().map(|u| u.id);
                         if let Ok(mut hosts) = gateway.owned_hosts.write() {
-                            hosts.insert(cmd_room_id, room.host_id().await);
+                            hosts.insert(cmd_room_id, host_id);
                         }
                     }
                     result
