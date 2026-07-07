@@ -775,4 +775,24 @@ mod tests {
         assert_eq!(breaker.stats().state, "closed");
         assert_eq!(breaker.stats().consecutive_failures, 0);
     }
+
+    #[test]
+    fn fetch_user_by_token_method_signature_compiles() {
+        let _ = PhiraRetryClient::fetch_user_by_token;
+    }
+
+    #[test]
+    fn fetch_chart_by_id_method_signature_compiles() {
+        let _ = PhiraRetryClient::fetch_chart_by_id;
+    }
+
+    #[test]
+    fn policy_config_clamps_extreme_values() {
+        let mut cfg = PhiraHttpPolicyConfig::default();
+        cfg.timeout_ms = 0;
+        cfg.max_retries = 99;
+        let policy = cfg.into_policy();
+        assert_eq!(policy.timeout.as_millis(), 5000, "timeout clamped to min 5000ms");
+        assert_eq!(policy.max_retries, 10, "retries clamped to max 10");
+    }
 }
