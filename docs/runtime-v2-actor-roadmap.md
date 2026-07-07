@@ -55,7 +55,7 @@ Actor 迁移仍然必要，但不能再靠增加 facade 命令来制造进度。
 |------|------|------|
 | server-supervisor | 进程生命周期、关闭、监听器启动 | Mirrored |
 | session-actor | 客户端连接、认证、命令解码、发送队列 | Mirrored |
-| room-actor | 房间状态机、成员管理、游戏生命周期 | WriteRouted (lock/cycle tracked, exclusive-write proven) |
+| room-actor | 房间状态机、成员管理、游戏生命周期 | WriteRouted (lock/cycle/host tracked and effectively Owned; close/kick/start/cancel still WriteRouted) |
 | persistence-actor | 数据库批处理、背压、重试、关闭刷新 | ReadRouted |
 | simulation-actor | Shadow world、场景套件、确定性回放 | ReadRouted |
 | plugin-actor | 插件调度、capability 检查、事件分发 | ReadRouted |
