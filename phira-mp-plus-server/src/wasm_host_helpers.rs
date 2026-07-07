@@ -233,3 +233,150 @@ pub fn validate_http_url(value: &str, allow_private: bool) -> Result<(), String>
     Ok(())
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn truncate_string_shortens_correctly() {
+        assert_eq!(truncate_string("hello", 10), "hello");
+        assert_eq!(truncate_string("hello world", 5), "hello");
+        assert_eq!(truncate_string("你好世界", 2), "你好");
+    }
+
+    #[test]
+    fn validate_display_name_rejects_empty() {
+        assert!(validate_display_name("").is_err());
+        assert!(validate_display_name("   ").is_err());
+    }
+
+    #[test]
+    fn validate_display_name_rejects_control_chars() {
+        assert!(validate_display_name("test\x00name").is_err());
+    }
+
+    #[test]
+    fn validate_display_name_accepts_valid() {
+        assert!(validate_display_name("My Plugin v1.0").is_ok());
+    }
+
+    #[test]
+    fn validate_identifier_rejects_invalid() {
+        assert!(validate_identifier("").is_err());
+        assert!(validate_identifier("hello world").is_err());
+    }
+
+    #[test]
+    fn validate_identifier_accepts_valid() {
+        assert!(validate_identifier("my-plugin").is_ok());
+        assert!(validate_identifier("abc123").is_ok());
+    }
+
+    #[test]
+    fn validate_config_key_rejects_empty_or_long() {
+        assert!(validate_config_key("").is_err());
+        assert!(validate_config_key(&"a".repeat(257)).is_err());
+    }
+
+    #[test]
+    fn validate_config_key_rejects_control_chars() {
+        assert!(validate_config_key("key\x00name").is_err());
+    }
+
+    #[test]
+    fn validate_config_key_accepts_valid() {
+        assert!(validate_config_key("api.timeout").is_ok());
+    }
+
+    #[test]
+    fn reject_symlink_components_works() {
+        assert!(reject_symlink_components(Path::new("/safe/path")).is_ok());
+        assert!(reject_symlink_components(Path::new("/unsafe/../path")).is_err());
+    }
+
+    #[test]
+    fn config_path_returns_expected() {
+        let p = config_path("test-plugin");
+        assert!(p.ends_with("config.json"));
+        assert!(p.to_string_lossy().contains("test-plugin"));
+    }
+
+    #[test]
+    fn validate_http_url_rejects_long_url() {
+        let long = "http://".to_string() + &"a".repeat(8192);
+        assert!(validate_http_url(&long, false).is_err());
+    }
+
+    #[test]
+    fn validate_http_url_rejects_non_http() {
+        assert!(validate_http_url("ftp://example.com", false).is_err());
+    }
+
+    #[test]
+    fn validate_http_url_allow_private_skips_all_checks() {
+        assert!(validate_http_url("http://localhost", true).is_ok());
+        assert!(validate_http_url("http://192.168.1.1", true).is_ok());
+    }
+
+    #[test]
+    fn validate_http_url_rejects_private_ip() {
+        assert!(validate_http_url("http://127.0.0.1", false).is_err());
+        assert!(validate_http_url("http://10.0.0.1", false).is_err());
+        assert!(validate_http_url("http://192.168.1.1", false).is_err());
+    }
+
+    #[test]
+    fn validate_http_url_rejects_localhost() {
+        assert!(validate_http_url("http://localhost", false).is_err());
+    }
+
+    #[test]
+    fn validate_http_url_rejects_documentation_ip() {
+        assert!(validate_http_url("http://192.0.2.1", false).is_err());
+    }
+
+    #[test]
+    fn validate_http_url_accepts_public_ip() {
+        assert!(validate_http_url("http://8.8.8.8", false).is_ok());
+        assert!(validate_http_url("http://1.1.1.1", false).is_ok());
+    }
+
+    #[test]
+    fn validate_http_url_accepts_public_hostname() {
+        assert!(validate_http_url("http://example.com", false).is_ok());
+        assert!(validate_http_url("https://github.com", false).is_ok());
+    }
+
+    #[test]
+    fn validate_http_url_with_port_strips_correctly() {
+        assert!(validate_http_url("http://127.0.0.1:8080/path", false).is_err());
+        assert!(validate_http_url("http://example.com:8080/path", false).is_ok());
+    }
+
+    #[test]
+    fn validate_http_url_with_ipv6() {
+        assert!(validate_http_url("http://[::1]/path", false).is_err());
+    }
+
+    #[test]
+    fn required_capability_maps_correctly() {
+        assert_eq!(required_capability("uuid.v4"), None);
+        assert_eq!(required_capability("admin.list"), Some("admin"));
+        assert_eq!(required_capability("room.set_lock"), Some("room.manage"));
+    }
+
+    #[test]
+    fn atomic_write_creates_file() {
+        let dir = std::env::temp_dir().join(format!("atomic_test_{}", std::process::id()));
+        let path = dir.join("test.txt");
+        assert!(atomic_write(&path, b"hello world").is_ok());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "hello world");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn atomic_write_rejects_symlink_traversal() {
+        assert!(atomic_write(Path::new("/../tmp/evil.txt"), b"data").is_err());
+    }
+}
+
