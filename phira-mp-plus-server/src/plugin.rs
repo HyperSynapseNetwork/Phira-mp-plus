@@ -270,7 +270,7 @@ impl PluginManager {
                 .lock()
                 .unwrap_or_else(|e| e.into_inner()) = Some(query.clone());
         }
-        *self.default_state.lock().await = Some(query);
+        *self.default_state.write().await = Some(query);
     }
 
     pub async fn set_send_chat(&self, callback: Arc<dyn Fn(i32, String) + Send + Sync>) {
@@ -282,7 +282,7 @@ impl PluginManager {
                 .lock()
                 .unwrap_or_else(|e| e.into_inner()) = Some(Arc::clone(&callback));
         }
-        *self.send_chat.lock().await = Some(callback);
+        *self.send_chat.write().await = Some(callback);
     }
 
     pub fn http_handle(&self) -> Option<api::HttpHandle> {
@@ -298,7 +298,7 @@ impl PluginManager {
                 .lock()
                 .unwrap_or_else(|e| e.into_inner()) = Some(handle.clone());
         }
-        *self.http_handle.lock().await = Some(handle);
+        *self.http_handle.write().await = Some(handle);
     }
 
     /// Set the server state reference on WASM services (for WIT host impls).
@@ -395,8 +395,8 @@ impl PluginManager {
 
             let slot = Arc::new(Mutex::new(plugin));
             self.wasm_services
-                .register_plugin_runtime(stable_id, Arc::downgrade(&slot));
-            self.plugins.lock().await.push(slot);
+                .register_plugin_runtime(stable_id);
+            self.plugins.write().await.push(slot);
             Ok(meta)
         }
         #[cfg(not(feature = "plugin-system"))]
@@ -548,7 +548,7 @@ impl PluginManager {
             std::path::Path::new(&meta.path).parent().map(|p| p.to_path_buf())
         };
         // Remove from plugin list (triggers cleanup via Drop)
-        let mut slots = self.plugins.lock().await;
+        let mut slots = self.plugins.write().await;
         slots.retain(|slot| {
             let plugin = slot.lock().unwrap_or_else(|e| e.into_inner());
             !plugin_matches(plugin.meta(), id)
@@ -571,7 +571,7 @@ impl PluginManager {
 
     pub async fn cleanup_all(&self) {
         let slots = {
-            let mut guard = self.plugins.lock().await;
+            let mut guard = self.plugins.write().await;
             std::mem::take(&mut *guard)
         };
         if let Err(err) = tokio::task::spawn_blocking(move || {
