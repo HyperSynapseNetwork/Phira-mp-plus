@@ -24,11 +24,9 @@ impl WitPluginHost {
         &self.plugin_name
     }
 
-    /// Load capabilities from the plugin's manifest, falling back to defaults.
-    fn load_capabilities(plugin_name: &str) -> HashSet<String> {
-        let path = format!("data/plugins/{plugin_name}/plugin.wasm");
-        crate::wasm_host_helpers::load_manifest_capabilities(&path)
-            .unwrap_or_else(|_| crate::wasm_host_helpers::default_capabilities())
+    /// Load default capabilities. Manifest files are no longer required.
+    fn load_capabilities(_plugin_name: &str) -> HashSet<String> {
+        crate::wasm_host_helpers::default_capabilities()
     }
 
     /// Check if this plugin has a specific capability.

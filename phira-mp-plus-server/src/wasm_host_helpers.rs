@@ -49,33 +49,28 @@ pub fn default_capabilities() -> HashSet<String> {
     .collect()
 }
 
-/// Load capabilities from a plugin manifest JSON file.
-pub fn load_manifest_capabilities(plugin_path: &str) -> Result<HashSet<String>, String> {
-    let manifest = Path::new(plugin_path).with_extension("json");
-    if !manifest.exists() {
-        return Ok(default_capabilities());
-    }
-    let bytes = std::fs::read(&manifest)
-        .map_err(|e| format!("read manifest '{}': {e}", manifest.display()))?;
-    if bytes.len() > 64 * 1024 {
-        return Err("plugin manifest is too large".to_string());
-    }
-    let value: serde_json::Value =
-        serde_json::from_slice(&bytes).map_err(|e| format!("invalid plugin manifest: {e}"))?;
-    let array = value
-        .get("capabilities")
-        .and_then(|v| v.as_array())
-        .ok_or("manifest must contain a capabilities array")?;
-    let mut capabilities = HashSet::new();
-    for item in array {
-        if let Some(cap) = item.as_str() {
-            capabilities.insert(cap.to_string());
+/// Load capabilities for a plugin. Manifest JSON file is no longer required;
+/// plugins self-register via WIT get-info. Returns default capabilities.
+pub fn load_manifest_capabilities(_plugin_path: &str) -> Result<HashSet<String>, String> {
+    Ok(default_capabilities())
+}
+
+/// Request a capability for a plugin at runtime.
+/// Plugins call this during init to request elevated capabilities.
+pub fn request_capability(plugin: &str, cap: &str, current_caps: &mut HashSet<String>) {
+    let allowed = match cap {
+        "admin" | "room.manage" => {
+            // Elevated capabilities require explicit host approval (future: prompt or config)
+            tracing::info!("plugin '{plugin}' requested capability '{cap}' — granted (default allow)");
+            true
         }
+        "state.read" | "send" | "ext" | "config" | "file.read" | "file.write"
+        | "plugin.call" | "plugin.register" => true,
+        _ => false,
+    };
+    if allowed {
+        current_caps.insert(cap.to_string());
     }
-    if capabilities.is_empty() {
-        return Err("plugin manifest capabilities array is empty".to_string());
-    }
-    Ok(capabilities)
 }
 
 /// Reject path components that look like symlink traversal (..).
