@@ -80,6 +80,8 @@ pub struct RoomCommandGateway {
     owned_locks: StdRwLock<HashMap<String, bool>>,
     /// Owned cycle state per room. Populated by SetCycle in the mailbox path.
     owned_cycles: StdRwLock<HashMap<String, bool>>,
+    /// Owned host state per room. Populated by SetHost in the mailbox path.
+    owned_hosts: StdRwLock<HashMap<String, Option<i32>>>,
     mailbox_enqueued: AtomicU64,
     mailbox_completed: AtomicU64,
     mailbox_failed: AtomicU64,
@@ -107,6 +109,7 @@ impl RoomCommandGateway {
             room_mailboxes: StdRwLock::new(HashMap::new()),
             owned_locks: StdRwLock::new(HashMap::new()),
             owned_cycles: StdRwLock::new(HashMap::new()),
+            owned_hosts: StdRwLock::new(HashMap::new()),
             mailbox_enqueued: AtomicU64::new(0),
             mailbox_completed: AtomicU64::new(0),
             mailbox_failed: AtomicU64::new(0),
@@ -133,6 +136,12 @@ impl RoomCommandGateway {
     /// has not been tracked yet (falls back to Room.cycle).
     pub fn room_cycle_owned(&self, room_id: &str) -> Option<bool> {
         self.owned_cycles.read().ok().and_then(|map| map.get(room_id).copied())
+    }
+
+    /// Check the owned host state for a room. Returns None if the room
+    /// has not been tracked yet (falls back to Room.host lookup).
+    pub fn room_host_owned(&self, room_id: &str) -> Option<Option<i32>> {
+        self.owned_hosts.read().ok().and_then(|map| map.get(room_id).copied())
     }
 }
 
@@ -168,6 +177,30 @@ mod tests {
             cycles.insert("room-2".to_string(), true);
         }
         assert_eq!(gateway.room_cycle_owned("room-2"), Some(true));
+    }
+
+    #[test]
+    fn owned_host_returns_none_for_unknown_room() {
+        let gateway = RoomCommandGateway::new();
+        assert_eq!(gateway.room_host_owned("nonexistent"), None);
+    }
+
+    #[test]
+    fn owned_host_updates_after_set_host() {
+        let gateway = RoomCommandGateway::new();
+        if let Ok(mut hosts) = gateway.owned_hosts.write() {
+            hosts.insert("room-3".to_string(), Some(42));
+        }
+        assert_eq!(gateway.room_host_owned("room-3"), Some(Some(42)));
+    }
+
+    #[test]
+    fn owned_host_can_be_none_for_system_host() {
+        let gateway = RoomCommandGateway::new();
+        if let Ok(mut hosts) = gateway.owned_hosts.write() {
+            hosts.insert("room-4".to_string(), None);
+        }
+        assert_eq!(gateway.room_host_owned("room-4"), Some(None));
     }
 
     #[test]

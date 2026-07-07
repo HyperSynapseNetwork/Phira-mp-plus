@@ -114,7 +114,7 @@ fn default_boundaries() -> Vec<ActorBoundary> {
             responsibility: "Own one room state machine, membership, host transfer, ready/start/play/result lifecycle, and telemetry fan-in.".to_string(),
             source_files: vec!["room.rs".to_string(), "room_actor/".to_string()],
             status: ActorBoundaryStatus::WriteRouted,
-            next_step: "Lock/cycle effectively Owned: set_lock_inline/set_cycle_inline pub(in crate::room_actor), only reachable via mailbox handler. Owned tracking (owned_locks/owned_cycles) mirrors post-commit. Remaining state (host/close/kick/start/cancel) still WriteRouted. Next: host state slice into mailbox.".to_string(),
+            next_step: "Lock/cycle/host effectively Owned: set_lock_inline/set_cycle_inline/set_host_inline pub(in crate::room_actor), only reachable via mailbox handler. Owned tracking (owned_locks/owned_cycles/owned_hosts) mirrors post-commit. Close/kick/start/cancel still WriteRouted (one-shot operations, no persistent state to track). Next: move close/kick mapping to Owned.".to_string(),
         },
         ActorBoundary {
             name: "persistence-actor".to_string(),

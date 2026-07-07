@@ -62,7 +62,7 @@ impl RuntimePlan {
                     title: "Actor model migration",
                     status: "active",
                     priority: "P0",
-                    next_step: "Lock/cycle effectively Owned: set_lock_inline/set_cycle_inline are pub(in crate::room_actor), only reachable via mailbox handler. Owned tracking (owned_locks/owned_cycles) mirrors post-commit. 7 room commands route through typed mailbox. Remaining: host/close/kick/start/cancel still WriteRouted. SessionActor still Mirrored. Next incremental step: host state slice into mailbox.",
+                    next_step: "Lock/cycle/host effectively Owned: set_lock_inline/set_cycle_inline/set_host_inline all pub(in crate::room_actor), only reachable via mailbox handler. Owned tracking (owned_locks/owned_cycles/owned_hosts) mirrors post-commit. Close/kick/start/cancel still WriteRouted (one-shot operations, no persistent state to track). SessionActor still Mirrored. No active facade expansion.",
                 },
                 RuntimeObjective {
                     key: "touch-judge-persistence",

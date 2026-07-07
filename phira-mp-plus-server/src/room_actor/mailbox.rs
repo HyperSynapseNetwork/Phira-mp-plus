@@ -123,6 +123,7 @@ impl RoomCommandGateway {
                 let cmd_kind = command.kind();
                 let is_set_lock = matches!(cmd_kind, RoomCommandKind::SetLock);
                 let is_set_cycle = matches!(cmd_kind, RoomCommandKind::SetCycle);
+                let is_set_host = matches!(cmd_kind, RoomCommandKind::SetHost);
                 let should_stop = if let Some(room) = room {
                     let result = gateway.execute_mailbox_command_with_room(&state, room.clone(), command).await;
                     // Mirror lock state after SetLock
@@ -134,7 +135,13 @@ impl RoomCommandGateway {
                     // Mirror cycle state after SetCycle
                     if is_set_cycle {
                         if let Ok(mut cycles) = gateway.owned_cycles.write() {
-                            cycles.insert(cmd_room_id, room.cycle.load(Ordering::SeqCst));
+                            cycles.insert(cmd_room_id.clone(), room.cycle.load(Ordering::SeqCst));
+                        }
+                    }
+                    // Mirror host state after SetHost
+                    if is_set_host {
+                        if let Ok(mut hosts) = gateway.owned_hosts.write() {
+                            hosts.insert(cmd_room_id, room.host_id().await);
                         }
                     }
                     result
