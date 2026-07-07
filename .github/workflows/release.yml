@@ -51,6 +51,28 @@ jobs:
           echo "minor=$MINOR" >> $GITHUB_OUTPUT
           echo "patch=$PATCH" >> $GITHUB_OUTPUT
 
+      - name: 安装跨平台工具
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq mingw-w64
+
+      - name: 添加 Windows 目标
+        run: rustup target add x86_64-pc-windows-gnu
+
+      - name: 构建 Linux 可执行文件
+        run: |
+          cargo build --release
+          mkdir -p /tmp/release-files
+          cp target/release/phira-mp-plus-server /tmp/release-files/phira-mp-plus-server-linux-x86_64
+          strip /tmp/release-files/phira-mp-plus-server-linux-x86_64
+          echo "Linux binary: $(ls -lh /tmp/release-files/phira-mp-plus-server-linux-x86_64 | awk '{print $5}')"
+
+      - name: 构建 Windows 可执行文件
+        run: |
+          cargo build --release --target x86_64-pc-windows-gnu
+          cp target/x86_64-pc-windows-gnu/release/phira-mp-plus-server.exe /tmp/release-files/phira-mp-plus-server-windows-x86_64.exe
+          echo "Windows binary: $(ls -lh /tmp/release-files/phira-mp-plus-server-windows-x86_64.exe | awk '{print $5}')"
+
       - name: 打包 SDK
         run: |
           mkdir -p /tmp/sdk-release/phira-plugin-sdk
@@ -58,8 +80,8 @@ jobs:
           cp phira-plugin-sdk/Cargo.toml /tmp/sdk-release/phira-plugin-sdk/
           cp -r wit /tmp/sdk-release/wit
           cd /tmp/sdk-release
-          tar czf phira-plugin-sdk.tar.gz phira-plugin-sdk wit
-          echo "SDK tarball: $(ls -lh phira-plugin-sdk.tar.gz | awk '{print $5}')"
+          tar czf /tmp/release-files/phira-plugin-sdk.tar.gz phira-plugin-sdk wit
+          echo "SDK tarball: $(ls -lh /tmp/release-files/phira-plugin-sdk.tar.gz | awk '{print $5}')"
 
       - name: 创建 Release
         uses: softprops/action-gh-release@v2
@@ -74,12 +96,22 @@ jobs:
             ${{ github.event.inputs.description && '### 说明' || '' }}
             ${{ github.event.inputs.description }}
 
-            ### SDK 下载
+            ### 下载
+
+            | 文件 | 平台 |
+            |------|------|
+            | `phira-mp-plus-server-linux-x86_64` | Linux x86_64 |
+            | `phira-mp-plus-server-windows-x86_64.exe` | Windows x86_64 |
+            | `phira-plugin-sdk.tar.gz` | 插件 SDK + WIT |
+
+            ### SDK 使用
             ```bash
             wget ${{ github.server_url }}/${{ github.repository }}/releases/download/${{ steps.version.outputs.tag }}/phira-plugin-sdk.tar.gz
             tar xzf phira-plugin-sdk.tar.gz
             ```
           files: |
-            /tmp/sdk-release/phira-plugin-sdk.tar.gz
+            /tmp/release-files/phira-mp-plus-server-linux-x86_64
+            /tmp/release-files/phira-mp-plus-server-windows-x86_64.exe
+            /tmp/release-files/phira-plugin-sdk.tar.gz
           draft: false
           prerelease: false
