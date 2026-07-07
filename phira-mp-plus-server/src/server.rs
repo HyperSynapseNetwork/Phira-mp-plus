@@ -3635,6 +3635,34 @@ fn server_state_query_inner(
             rx.recv_timeout(std::time::Duration::from_secs(5))
                 .unwrap_or(Err("admin.set_ids timeout".to_string()))
         }
+        "rooms.history" => {
+            let room_id = args.get(0).and_then(|v| v.as_str()).unwrap_or("");
+            let rid: phira_mp_common::RoomId = room_id.to_string().try_into().map_err(|_| "invalid room name")?;
+            let rooms = read_lock!(state.rooms);
+            let room = rooms.get(&rid).ok_or("room not found")?;
+            let hist = read_lock!(room.play_history);
+            serde_json::to_value(&*hist).map_err(|e| e.to_string())
+        }
+        "chart.rank" => {
+            let chart_id = args.get(0).and_then(|v| v.as_i64()).unwrap_or(0) as i32;
+            // For now, return empty rank data (requires Phira API)
+            Ok(serde_json::json!({"chart_id": chart_id, "ranks": []}))
+        }
+        "chart.chart_rank" => {
+            let chart_id = args.get(0).and_then(|v| v.as_str()).unwrap_or("0");
+            Ok(serde_json::json!({"chart_id": chart_id, "ranks": []}))
+        }
+        "chart.hot_rank" => {
+            let time_range = args.get(0).and_then(|v| v.as_str()).unwrap_or("all");
+            Ok(serde_json::json!({"time_range": time_range, "charts": []}))
+        }
+        "user.rank" => {
+            let time_range = args.get(0).and_then(|v| v.as_str()).unwrap_or("all");
+            Ok(serde_json::json!({"time_range": time_range, "users": []}))
+        }
+        "playtime.leaderboard" => {
+            Ok(serde_json::json!({"leaderboard": []}))
+        }
         _ => {
             // webapi feature 下的扩展查询
             server_state_query(state, method, args)
@@ -3649,6 +3677,55 @@ pub fn server_state_query_for_host(
     args: &[Value],
 ) -> Result<Value, String> {
     server_state_query(state, method, args)
+}
+
+/// HTTP 路由查询（用于 WASM 插件注册的动态路由）。
+/// 将 HTTP 路径映射到 server_state_query 方法。
+pub fn server_state_query_inner_http(
+    state: &Arc<PlusServerState>,
+    path: &str,
+    args: &[Value],
+) -> Result<Value, String> {
+    match path {
+        "/newapi/rooms/info" => {
+            server_state_query_inner(state, "rooms.list", &[])
+        }
+        "/newapi/rooms/history" => {
+            let room_id = args.get(0).and_then(|v| v.as_str()).unwrap_or("");
+            server_state_query_inner(state, "rooms.history", &[serde_json::json!(room_id)])
+        }
+        "/newapi/rooms/listen" => {
+            // SSE/WS — room events (stub for now)
+            Ok(serde_json::json!({"status": "not_implemented"}))
+        }
+        "/api/rooms/info/:name" => {
+            let name = args.get(0).cloned().unwrap_or_default();
+            server_state_query_inner(state, "rooms.by_name", &[name])
+        }
+        "/chart/:id/rank" => {
+            let chart_id = args.get(0).and_then(|v| v.as_str()).unwrap_or("0");
+            server_state_query_inner(state, "chart.rank", &[serde_json::json!(chart_id)])
+        }
+        "/topchart/chart_rank/:chart_id" => {
+            let chart_id = args.get(0).cloned().unwrap_or_default();
+            server_state_query_inner(state, "chart.chart_rank", &[chart_id])
+        }
+        "/topchart/hot_rank/:timeRange" => {
+            let range = args.get(0).cloned().unwrap_or_default();
+            server_state_query_inner(state, "chart.hot_rank", &[range])
+        }
+        "/user_rank/:timeRange" => {
+            let range = args.get(0).cloned().unwrap_or_default();
+            server_state_query_inner(state, "user.rank", &[range])
+        }
+        "/rankapi/playtime_leaderboard" => {
+            server_state_query_inner(state, "playtime.leaderboard", &[])
+        }
+        "/config/version.json" => {
+            Ok(serde_json::json!({"version": "0.1.0", "build_time": "auto"}))
+        }
+        _ => Err(format!("unknown HTTP route: {path}")),
+    }
 }
 
 /// Web API 状态查询（内置，无 feature gate）
@@ -4076,22 +4153,13 @@ fn server_state_query(
             let h = state.plugin_manager.http_handle();
             match h {
                 Some(handle) => {
-                    let path_owned = path.to_string();
                     let state_clone = Arc::clone(state);
-                    handle.register_route(path, Arc::new(move |body, params| {
-                        // Route handler: forward to plugin via ServerStateQuery
-                        // Use the plugin's registered handler identified by path
-                        let method = body
-                            .as_ref()
-                            .and_then(|v| v.get("method").and_then(|m| m.as_str()))
-                            .unwrap_or("get");
+                    handle.register_route(path, Arc::new(move |_body, params| {
                         let args: Vec<Value> = params.iter().map(|p| serde_json::json!(p)).collect();
-                        let result = server_state_query_inner(
-                            &state_clone,
-                            &format!("http.route.{}", path_owned),
-                            &args,
+                        let r = server_state_query_inner_http(
+                            &state_clone, path, &args,
                         );
-                        result.map_err(|e| (500u16, e))
+                        r.map_err(|e| (500u16, e))
                     }));
                     Ok(serde_json::json!({"registered": true, "path": path}))
                 }
