@@ -1869,7 +1869,7 @@ impl PlusServerState {
                     .phira_client
                     .fetch_user_by_token(
                         &self.config.phira_api_endpoint,
-                        endpoint_override.map(|s| s.as_str()),
+                        endpoint_override,
                         token,
                     )
                     .await
