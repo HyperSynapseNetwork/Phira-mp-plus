@@ -1042,124 +1042,6 @@ impl PlusServer {
         let plugin_count = state.plugin_manager.load_plugins().await.unwrap_or(0);
         info!("loaded {} plugin(s)", plugin_count);
 
-        let state_for_webapi = Arc::clone(&state);
-        let webapi_state_query = api::ServerStateQuery::new(move |method: &str, args: &[Value]| {
-            server_state_query(&state_for_webapi, method, args)
-        });
-        let http_for_webapi = Arc::clone(&http_server);
-        let state_for_webapi2 = Arc::clone(&state);
-        let sq = webapi_state_query.clone();
-        let sq_rooms = sq.clone();
-        let state_rooms = Arc::clone(&state_for_webapi2);
-        http_for_webapi.register_route_sync(
-            "/api/rooms",
-            Arc::new(move |_, _| {
-                let rooms = sq_rooms.call("rooms.list", &[]).map_err(|e| (500u16, e))?;
-                let online_count = state_rooms.users.try_read().map(|g| g.len()).unwrap_or(0);
-                Ok(serde_json::json!({
-                    "rooms": rooms,
-                    "player_count": online_count,
-                    "total_players": crate::internal_hooks::player_count(),
-                }))
-            }),
-        );
-        let runtime_state = Arc::clone(&state_for_webapi2);
-        http_for_webapi.register_route_sync(
-            "/api/runtime",
-            Arc::new(move |_, _| {
-                server_state_query_inner(&runtime_state, "runtime.status", &[])
-                    .map_err(|e| (500u16, e))
-            }),
-        );
-        let simulation_state = Arc::clone(&state_for_webapi2);
-        http_for_webapi.register_route_sync(
-            "/api/simulation",
-            Arc::new(move |_, _| {
-                server_state_query_inner(&simulation_state, "simulation.status", &[])
-                    .map_err(|e| (500u16, e))
-            }),
-        );
-        let simulation_world_state = Arc::clone(&state_for_webapi2);
-        http_for_webapi.register_route_sync(
-            "/api/simulation/world",
-            Arc::new(move |_, _| {
-                server_state_query_inner(
-                    &simulation_world_state,
-                    "simulation.world",
-                    &[serde_json::json!(20)],
-                )
-                .map_err(|e| (500u16, e))
-            }),
-        );
-        let benchmark_report_state = Arc::clone(&state_for_webapi2);
-        http_for_webapi.register_route_sync(
-            "/api/benchmark/reports",
-            Arc::new(move |_, _| {
-                server_state_query_inner(&benchmark_report_state, "benchmark.reports", &[])
-                    .map_err(|e| (500u16, e))
-            }),
-        );
-        let benchmark_history_state = Arc::clone(&state_for_webapi2);
-        let bhs2 = Arc::clone(&state_for_webapi2);
-        http_for_webapi.register_route_sync(
-            "/api/benchmark/reports/history",
-            Arc::new(move |_, params| {
-                let mode = params
-                    .get(0)
-                    .map(|v| serde_json::Value::String(v.clone()));
-                let limit = params
-                    .get(1)
-                    .and_then(|v| v.parse::<u64>().ok())
-                    .map(|v| serde_json::json!(v));
-                let args: Vec<Value> = mode.into_iter().chain(limit.into_iter()).collect();
-                server_state_query_inner(&benchmark_history_state, "benchmark.history", &args)
-                    .map_err(|e| (500u16, e))
-            }),
-        );
-        http_for_webapi.register_route_sync(
-            "/api/benchmark/reports/history/<mode>",
-            Arc::new(move |_, params| {
-                let mode = params.get(0).cloned();
-                let args: Vec<Value> = mode
-                    .map(|m| serde_json::json!(m))
-                    .into_iter()
-                    .collect();
-                server_state_query_inner(&bhs2, "benchmark.history", &args)
-                    .map_err(|e| (500u16, e))
-            }),
-        );
-        // GET /api/players/all — 所有连接过服务器的玩家
-        http_for_webapi.register_route_sync(
-            "/api/players/all",
-            Arc::new(move |_, _| {
-                let players: Vec<i32> = crate::internal_hooks::all_players()
-                    .into_iter()
-                    .map(|(id, _)| id)
-                    .collect();
-                Ok(serde_json::json!({"total": players.len(), "players": players}))
-            }),
-        );
-        let s2 = Arc::clone(&state_for_webapi2);
-        http_for_webapi.register_route_sync(
-            "/api/rooms/<name>",
-            Arc::new(move |_, params| {
-                let name = params.first().cloned().unwrap_or_default();
-                server_state_query_inner(&s2, "rooms.by_name", &[serde_json::json!(name)])
-                    .map_err(|e| (500u16, e))
-            }),
-        );
-        let sq = webapi_state_query.clone();
-        http_for_webapi.register_route_sync(
-            "/api/user_name/<id>",
-            Arc::new(move |_, params| {
-                let uid: i32 = params.first().and_then(|p| p.parse().ok()).unwrap_or(0);
-                sq.call("user_name", &[serde_json::json!(uid)])
-                    .map_err(|e| (500u16, e))
-            }),
-        );
-        // 内置 benchmark/benchmark-bind 已由 CLI 核心直接处理；
-        // test.* WIT/host API 仍保留给插件和自动化调用。
-
         // 初始化内置功能（欢迎语/追踪/排行等）
         crate::internal_hooks::init_internal_hooks(&state, &http_server, &state.plugin_manager)
             .await;
@@ -4188,6 +4070,33 @@ fn server_state_query(
             let name = room.id.to_string();
             let ss = build_snapshot(state, &name, room);
             serde_json::to_value(ss).map_err(|e| e.to_string())
+        }
+        "http.register_route" => {
+            let path = args.get(0).and_then(|v| v.as_str()).ok_or("missing path arg")?;
+            let h = state.plugin_manager.http_handle();
+            match h {
+                Some(handle) => {
+                    let path_owned = path.to_string();
+                    let state_clone = Arc::clone(state);
+                    handle.register_route(path, Arc::new(move |body, params| {
+                        // Route handler: forward to plugin via ServerStateQuery
+                        // Use the plugin's registered handler identified by path
+                        let method = body
+                            .as_ref()
+                            .and_then(|v| v.get("method").and_then(|m| m.as_str()))
+                            .unwrap_or("get");
+                        let args: Vec<Value> = params.iter().map(|p| serde_json::json!(p)).collect();
+                        let result = server_state_query_inner(
+                            &state_clone,
+                            &format!("http.route.{}", path_owned),
+                            &args,
+                        );
+                        result.map_err(|e| (500u16, e))
+                    }));
+                    Ok(serde_json::json!({"registered": true, "path": path}))
+                }
+                None => Err("HTTP server not available".to_string()),
+            }
         }
         _ => Err(format!("unknown query method: {method}")),
     }

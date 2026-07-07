@@ -333,6 +333,10 @@ impl PluginManager {
         *self.send_chat.write().await = Some(callback);
     }
 
+    pub fn http_handle(&self) -> Option<api::HttpHandle> {
+        self.http_handle.try_read().ok().and_then(|g| g.clone())
+    }
+
     pub async fn set_http_handle(&self, handle: api::HttpHandle) {
         #[cfg(feature = "plugin-system")]
         {
