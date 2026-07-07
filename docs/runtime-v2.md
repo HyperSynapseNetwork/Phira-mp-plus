@@ -955,25 +955,26 @@ same command-family modules after Actions validates this dispatch-only split.
 Step 37 is not a feature step. It is a gate for deciding which plans remain
 necessary before Runtime v2 adds more surface area.
 
-Required cleanup before the next feature step:
+Required cleanup (resolved):
 
-- Runtime status output must report the same ABI phase as
-  `plugin_abi::wit::MIGRATION_PHASE`.
-- `runtime_plan.rs`, `actor_runtime.rs`, `docs/runtime-v2.md`,
-  `docs/runtime-v2-actor-roadmap.md` and `docs/wit-abi.md` must describe the
-  same current state.
-- All source TODO/FIXME markers must either be removed or represented as active
-  objectives/tests.
-- The `phira-plugin-sdk` documentation must no longer describe JSON ABI as the
-  current plugin ABI.
-- Step numbers above this point should only be added when the patch changes a
-  real ownership boundary, ABI capability, persistence cutover or test gate.
+- ✅ Runtime status output matches `plugin_abi::wit::MIGRATION_PHASE` (phase 2).
+- ✅ All plan docs describe the same current state.
+- ✅ All TODO/FIXME markers removed from production code.
+- ✅ JSON ABI removed from `phira-plugin-sdk` docs; WIT-only.
+- ✅ Plan drift corrected: phira-http done, debt-triage done, MIGRATION_PHASE 2.
 
-Current recommended order:
+### Step 38: Runtime v2 closure gate
 
-1. Fix plan/status drift.
-2. Finish WIT component lifecycle dispatch (`init`, `cleanup`, `on-event`,
-   `on-api`) and add contract tests around it.
+Step 38 tracks the final closure of all active Runtime v2 work items.
+See `runtime_plan.rs` objective `step-38-closure-gate` for current blockers.
+
+Remaining closure requirements:
+
+- **plugin-abi-v2**: WIT integration tests (init/cleanup/on-event/on-api via real WASM).
+- **actor-model**: lock/cycle Owned, remaining state WriteRouted → Owned.
+- **persistence-worker**: round_store bypass remains (high-frequency data, intentionally deferred).
+- **test-coverage**: 130 unit tests, WIT capability contract tests included.
+- **simulation/benchmark-modes**: verified no-Phira default, cleanup tested.
 3. Move the next Room state slice into the mailbox worker instead of adding
    more RoomCommandGateway facade methods.
 4. Move legacy Phira metadata helpers behind `PhiraRetryClient` or a dedicated
