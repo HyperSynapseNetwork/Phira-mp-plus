@@ -4108,11 +4108,12 @@ fn server_state_query(
                 Some(handle) => {
                     let state = Arc::clone(state);
                     let path_captured = path.clone();
+                    let plugin_captured = plugin.clone();
                     handle.register_route(&path, Arc::new(move |_body, params| {
                         let args: Vec<Value> = params.iter().map(|p| serde_json::json!(p)).collect();
                         let pm = &state.plugin_manager;
                         match futures::executor::block_on(
-                            pm.call_plugin_api(&plugin, &path_captured, args)
+                            pm.call_plugin_api(&plugin_captured, &path_captured, args)
                         ) {
                             Ok(v) => Ok(v),
                             Err(e) => Err((500u16, e)),
