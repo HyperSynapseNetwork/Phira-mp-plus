@@ -787,7 +787,7 @@ mod tests {
     }
 
     #[test]
-    fn policy_config_clamps_extreme_values() {
+    fn default_policy_has_safe_timeout_and_retries() {
         let cfg = PhiraHttpPolicyConfig::default();
         let policy = cfg.into_policy();
         assert!(policy.timeout.as_millis() >= 5000, "default timeout >= 5s");
