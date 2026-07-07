@@ -4,11 +4,11 @@ on:
   workflow_dispatch:
     inputs:
       bump:
-        description: 版本号升级
+        description: 升级类型 | major=A+1 | minor=B+1（默认）
         type: choice
         options:
-          - minor  # B+1（默认）
-          - major  # A+1, B=0
+          - minor  # → A.B+1.0
+          - major  # → A+1.0.0
         default: "minor"
 
 jobs:
