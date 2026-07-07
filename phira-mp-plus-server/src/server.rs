@@ -3679,55 +3679,6 @@ pub fn server_state_query_for_host(
     server_state_query(state, method, args)
 }
 
-/// HTTP 路由查询（用于 WASM 插件注册的动态路由）。
-/// 将 HTTP 路径映射到 server_state_query 方法。
-pub fn server_state_query_inner_http(
-    state: &Arc<PlusServerState>,
-    path: &str,
-    args: &[Value],
-) -> Result<Value, String> {
-    match path {
-        "/newapi/rooms/info" => {
-            server_state_query_inner(state, "rooms.list", &[])
-        }
-        "/newapi/rooms/history" => {
-            let room_id = args.get(0).and_then(|v| v.as_str()).unwrap_or("");
-            server_state_query_inner(state, "rooms.history", &[serde_json::json!(room_id)])
-        }
-        "/newapi/rooms/listen" => {
-            // SSE/WS — room events (stub for now)
-            Ok(serde_json::json!({"status": "not_implemented"}))
-        }
-        "/api/rooms/info/:name" => {
-            let name = args.get(0).cloned().unwrap_or_default();
-            server_state_query_inner(state, "rooms.by_name", &[name])
-        }
-        "/chart/:id/rank" => {
-            let chart_id = args.get(0).and_then(|v| v.as_str()).unwrap_or("0");
-            server_state_query_inner(state, "chart.rank", &[serde_json::json!(chart_id)])
-        }
-        "/topchart/chart_rank/:chart_id" => {
-            let chart_id = args.get(0).cloned().unwrap_or_default();
-            server_state_query_inner(state, "chart.chart_rank", &[chart_id])
-        }
-        "/topchart/hot_rank/:timeRange" => {
-            let range = args.get(0).cloned().unwrap_or_default();
-            server_state_query_inner(state, "chart.hot_rank", &[range])
-        }
-        "/user_rank/:timeRange" => {
-            let range = args.get(0).cloned().unwrap_or_default();
-            server_state_query_inner(state, "user.rank", &[range])
-        }
-        "/rankapi/playtime_leaderboard" => {
-            server_state_query_inner(state, "playtime.leaderboard", &[])
-        }
-        "/config/version.json" => {
-            Ok(serde_json::json!({"version": "0.1.0", "build_time": "auto"}))
-        }
-        _ => Err(format!("unknown HTTP route: {path}")),
-    }
-}
-
 /// Web API 状态查询（内置，无 feature gate）
 fn server_state_query(
     state: &Arc<PlusServerState>,
@@ -4149,20 +4100,25 @@ fn server_state_query(
             serde_json::to_value(ss).map_err(|e| e.to_string())
         }
         "http.register_route" => {
-            let path = args.get(0).and_then(|v| v.as_str()).ok_or("missing path arg")?.to_string();
+            let obj = args.get(0).ok_or("missing args")?;
+            let path = obj.get("path").and_then(|v| v.as_str()).ok_or("missing path")?.to_string();
+            let plugin = obj.get("plugin").and_then(|v| v.as_str()).ok_or("missing plugin")?.to_string();
             let h = state.plugin_manager.http_handle();
             match h {
                 Some(handle) => {
-                    let state_clone = Arc::clone(state);
-                    let path_clone = path.clone();
+                    let state = Arc::clone(state);
+                    let path_captured = path.clone();
                     handle.register_route(&path, Arc::new(move |_body, params| {
                         let args: Vec<Value> = params.iter().map(|p| serde_json::json!(p)).collect();
-                        let r = server_state_query_inner_http(
-                            &state_clone, &path_clone, &args,
-                        );
-                        r.map_err(|e| (500u16, e))
+                        let pm = &state.plugin_manager;
+                        match futures::executor::block_on(
+                            pm.call_plugin_api(&plugin, &path_captured, args)
+                        ) {
+                            Ok(v) => Ok(v),
+                            Err(e) => Err((500u16, e)),
+                        }
                     }));
-                    Ok(serde_json::json!({"registered": true, "path": path}))
+                    Ok(serde_json::json!({"registered": true, "path": path, "plugin": plugin}))
                 }
                 None => Err("HTTP server not available".to_string()),
             }

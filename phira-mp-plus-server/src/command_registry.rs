@@ -1086,6 +1086,13 @@ pub fn runtime_v2_registry() -> CommandRegistry {
             "plugin disable <name>",
         ),
         CommandSpec::new(
+            "plugin remove",
+            "plugins",
+            "删除插件：卸载并删除插件文件和数据。",
+            "plugin remove <name>",
+        )
+        .advanced(),
+        CommandSpec::new(
             "plugin reload",
             "plugins",
             "重载所有插件。",

@@ -27,6 +27,17 @@ impl CliHandler {
                     self.disable_plugin(args[1]).await;
                 }
             }
+            "remove" | "uninstall" => {
+                if args.len() < 2 {
+                    self.out(format!(
+                        "  {} {} plugin remove <插件名>",
+                        c::yellow("?"),
+                        c::bold("用法")
+                    ));
+                } else {
+                    self.remove_plugin(args[1]).await;
+                }
+            }
             "reload" => self.reload_plugins().await,
             "info" => {
                 if args.len() < 2 {
@@ -114,6 +125,13 @@ impl CliHandler {
     pub(crate) async fn disable_plugin(&self, name: &str) {
         match self.state.plugin_manager.disable_plugin(name).await {
             Ok(_) => self.out(format!("  {} 插件 {} 已禁用", c::green("✓"), c::bold(name))),
+            Err(e) => self.out(format!("  {} {}", c::red("✗"), e)),
+        }
+    }
+
+    pub(crate) async fn remove_plugin(&self, name: &str) {
+        match self.state.plugin_manager.remove_plugin(name).await {
+            Ok(_) => self.out(format!("  {} 插件 {} 已删除（文件及数据已清理）", c::green("✓"), c::bold(name))),
             Err(e) => self.out(format!("  {} {}", c::red("✗"), e)),
         }
     }

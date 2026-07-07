@@ -583,6 +583,35 @@ impl PluginManager {
         Err(format!("plugin '{id}' not found"))
     }
 
+    /// Remove a plugin: disable, delete its data directory, and remove from registry.
+    pub async fn remove_plugin(&self, id: &str) -> Result<(), String> {
+        let plugin_dir = {
+            let slots = self.plugins.read().await;
+            let slot = slots.iter().find(|slot| {
+                let plugin = slot.lock().unwrap_or_else(|e| e.into_inner());
+                plugin_matches(plugin.meta(), id)
+            }).ok_or_else(|| format!("plugin '{id}' not found"))?;
+            let plugin = slot.lock().unwrap_or_else(|e| e.into_inner());
+            let meta = plugin.meta();
+            std::path::Path::new(&meta.path).parent().map(|p| p.to_path_buf())
+        };
+        // Remove from plugin list (triggers cleanup via Drop)
+        let mut slots = self.plugins.write().await;
+        slots.retain(|slot| {
+            let plugin = slot.lock().unwrap_or_else(|e| e.into_inner());
+            !plugin_matches(plugin.meta(), id)
+        });
+        // Delete plugin data directory
+        if let Some(dir) = plugin_dir {
+            if dir.exists() {
+                tokio::task::spawn_blocking(move || {
+                    let _ = std::fs::remove_dir_all(&dir);
+                }).await.ok();
+            }
+        }
+        Ok(())
+    }
+
     pub async fn reload_plugins(&self) -> Result<usize, String> {
         self.cleanup_all().await;
         self.load_plugins().await
