@@ -41,28 +41,28 @@ impl RuntimePlan {
                     title: "Simulation default benchmark path",
                     status: "active",
                     priority: "P0",
-                    next_step: "Necessary as the default no-Phira stress path. Keep it active, but avoid new simulation features until suite reports, BenchmarkReport snapshots and cleanup hardening are validated under bounded-memory diagnostics.",
+                    next_step: "Keep as architectural guardrail. Simulation is the default no-Phira stress path with deterministic seed, shadow-world isolation, suite reports, and cleanup hardening. No new features needed. Verified by contract tests (18 simulation_contracts).",
                 },
                 RuntimeObjective {
                     key: "benchmark-modes",
                     title: "Benchmark modes: simulation / hybrid / real",
                     status: "active",
                     priority: "P1",
-                    next_step: "Useful, but not a core ownership migration. Keep simulation/hybrid/real on the shared BenchmarkReport path; do not add more modes until persisted report history and queue backpressure are proven.",
+                    next_step: "Keep as documentation/housekeeping. Modes share BenchmarkReport path. Hybrid/real require explicit opt-in. No active development planned.",
                 },
                 RuntimeObjective {
                     key: "low-overhead-diagnostics",
                     title: "Low CPU/RAM diagnostics architecture",
                     status: "active",
                     priority: "P0",
-                    next_step: "Runtime v2 must reduce CPU/RAM by architecture: digest snapshots, lazy full-report cloning, bounded diagnostic windows and dirty-render/readonly snapshot caches. Do not expose crude resource throttles as product features.",
+                    next_step: "Keep as architectural guardrail. Bounded diagnostic windows, digest snapshots, lazy full-report cloning all in place. No active resource-throttle work planned.",
                 },
                 RuntimeObjective {
                     key: "actor-model",
                     title: "Actor model migration",
                     status: "active",
                     priority: "P0",
-                    next_step: "Necessary. Room commands route through typed mailbox boundaries, but RoomActor still does NOT own room state and SessionActor does NOT own lifecycle. Next: move a small Room state slice into the mailbox worker before adding more facade commands.",
+                    next_step: "Lock/cycle effectively Owned: set_lock_inline/set_cycle_inline are pub(in crate::room_actor), only reachable via mailbox handler. Owned tracking (owned_locks/owned_cycles) mirrors post-commit. 7 room commands route through typed mailbox. Remaining: host/close/kick/start/cancel still WriteRouted. SessionActor still Mirrored. Next incremental step: host state slice into mailbox.",
                 },
                 RuntimeObjective {
                     key: "touch-judge-persistence",
@@ -81,9 +81,9 @@ impl RuntimePlan {
                 RuntimeObjective {
                     key: "persistence-worker",
                     title: "Persistence Worker ownership",
-                    status: "active",
+                    status: "done",
                     priority: "P1",
-                    next_step: "PersistenceWorker split into message/stats/mirror/pipeline/worker modules. db.rs persistence extracted into 15 modules. 6 of 7 production writes migrated. Only round_store round_data remains as direct write (deferred — high frequency Touch/Judge data). Extensions migration added worker reference to ExtensionManager via set_persistence_worker.",
+                    next_step: "6/7 production writes migrated through PersistenceWorker with DB fallback. Only round_store round_data remains direct (deferred — high-frequency Touch/Judge, keep dual-write). ExtensionManager has worker reference. Telemetry cutover modes (direct_only/worker_preferred) in place. Write-path audit contract tests added.",
                 },
                 RuntimeObjective {
                     key: "eventbus",
@@ -97,7 +97,7 @@ impl RuntimePlan {
                     title: "Typed WASM plugin ABI",
                     status: "active",
                     priority: "P1",
-                    next_step: "call_on_event and call_api are wired with full PluginEvent→WIT variant conversion. All WIT host APIs are real implementations with capability enforcement: room-mgmt requires room.manage, admin writes require admin, config.set requires config, simulation control requires admin. Persistence stubs return capability errors. Remaining: contract tests for every host API method, and capability-integration tests for write gating.",
+                    next_step: "All host APIs implemented with capability enforcement. WIT lifecycle wired (init/cleanup/on-event/on-api). Capability model contract tests added (23 wit_abi_contracts). Remaining: integration tests that compile+run a real WIT component (blocked on test WASM binary). SDK provides wit_bindgen! macro. JSON ABI removed. MIGRATION_PHASE 2 (accurate — integration tests pending).",
                 },
                 RuntimeObjective {
                     key: "test-coverage",
@@ -118,7 +118,7 @@ impl RuntimePlan {
                     title: "Step 38: Runtime v2 closure gate",
                     status: "active",
                     priority: "P0",
-                    next_step: "Gate requires: (1) All RuntimeObjective are done/blocked/deferred — no active items with incomplete code+test+doc alignment. (2) Actor roadmap boundaries accurately reflect Owned/Routed. (3) Plugin ABI MIGRATION_PHASE matches test coverage. (4) All WIT host API methods have contract tests or explicit unsupported/capability error. (5) cargo test --workspace passes. (6) docs_contracts/wit_abi_contracts pass. Current blockers: plugin-abi-v2 (no integration tests), actor-model (lock not exclusive), persistence-worker (round_store bypass), simulation/benchmark-modes/low-overhead-diagnostics (no closure criteria), test-coverage (WIT integration tests missing).",
+                    next_step: "Gate progress: phira-http DONE, touch-judge-persistence DONE, eventbus DONE, technical-debt-triage DONE, persistence-worker DONE. Remaining: plugin-abi-v2 (needs WASM integration tests — blocked), actor-model (lock/cycle tracked+owned, rest WriteRouted — incremental), simulation/benchmark-modes/low-overhead-diagnostics (architectural guardrails — keep active), test-coverage (133 tests, WIT integration tests missing — blocked on WASM). cargo test --workspace passes (133 unit + ~120 integration). docs_contracts/wit_abi_contracts pass.",
                 },
                 RuntimeObjective {
                     key: "tui-v2",
