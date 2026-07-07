@@ -41,7 +41,7 @@
 macro_rules! wit_bindgen {
     ($world:expr) => {
         wit_bindgen::generate!({
-            path: "../../wit/phira-plugin.wit",
+            path: "../wit/phira-plugin.wit",
             world: $world,
         });
     };
