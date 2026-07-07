@@ -8,8 +8,8 @@
 
 use anyhow::{bail, Result};
 use phira_mp_common::{Message, ServerCommand, StreamSender};
-use std::collections::HashMap;
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
+use std::collections::HashMap;
 use std::{
     sync::{
         atomic::{AtomicU64, Ordering},
@@ -547,6 +547,48 @@ impl PhiraRetryClient {
             "Phira API request failed after retries".to_string(),
         );
         bail!("Phira API request failed after retries")
+    }
+
+    /// Fetch Phira user name/id by bearer token.
+    /// Returns `(user_id, user_name)` on success.
+    pub async fn fetch_user_by_token(
+        &self,
+        default_endpoint: &str,
+        endpoint_override: Option<&str>,
+        bearer: &str,
+    ) -> Option<(i32, String)> {
+        #[derive(Deserialize)]
+        struct PhiraUserInfo {
+            id: i32,
+            name: String,
+        }
+        self.get_json::<PhiraUserInfo>(
+            default_endpoint,
+            endpoint_override,
+            "/me",
+            Some(bearer),
+            PhiraRetryNoticeTarget::Silent,
+        )
+        .await
+        .ok()
+        .map(|info| (info.id, info.name))
+    }
+
+    /// Fetch chart name by chart ID.
+    pub async fn fetch_chart_by_id(
+        &self,
+        endpoint: &str,
+        chart_id: i32,
+    ) -> Option<crate::server::Chart> {
+        self.get_json::<crate::server::Chart>(
+            endpoint,
+            None,
+            &format!("/chart/{chart_id}"),
+            None,
+            PhiraRetryNoticeTarget::Silent,
+        )
+        .await
+        .ok()
     }
 
     async fn send_retry_notice(&self, target: &PhiraRetryNoticeTarget<'_>) {

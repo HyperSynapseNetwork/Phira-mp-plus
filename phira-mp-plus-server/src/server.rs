@@ -591,12 +591,6 @@ fn save_benchmark_tokens(tokens: &[String]) -> Result<(), String> {
     std::fs::write(BENCH_AUTH_FILE, payload).map_err(|e| format!("write {BENCH_AUTH_FILE}: {e}"))
 }
 
-#[derive(Debug, Deserialize)]
-struct RemotePhiraUserInfo {
-    id: i32,
-    name: String,
-}
-
 /// Phira-mp+ 服务器状态
 pub struct PlusServerState {
     pub config: PlusConfig,
@@ -1709,16 +1703,8 @@ impl PlusServerState {
             let mut display = user.name.clone();
             if let Some(token) = user.auth_token().await {
                 if let Some((remote_id, remote_name)) = phira_client
-                    .get_json::<RemotePhiraUserInfo>(
-                        &endpoint,
-                        None,
-                        "/me",
-                        Some(&token),
-                        crate::phira_client::PhiraRetryNoticeTarget::Silent,
-                    )
+                    .fetch_user_by_token(&endpoint, None, &token)
                     .await
-                    .ok()
-                    .map(|info| (info.id, info.name))
                 {
                     if remote_id == user.id || user.id < 0 {
                         display = remote_name;
@@ -1730,15 +1716,8 @@ impl PlusServerState {
         let chart_id = room.chart.read().await.as_ref().map(|chart| chart.id);
         if let Some(chart_id) = chart_id {
             if let Some(chart) = phira_client
-                .get_json::<Chart>(
-                    &endpoint,
-                    None,
-                    &format!("/chart/{chart_id}"),
-                    None,
-                    crate::phira_client::PhiraRetryNoticeTarget::Silent,
-                )
+                .fetch_chart_by_id(&endpoint, chart_id)
                 .await
-                .ok()
             {
                 *room.chart.write().await = Some(chart);
                 room.publish_update(phira_mp_common::PartialRoomData {
@@ -1888,25 +1867,23 @@ impl PlusServerState {
             if let Some(token) = tokens.first() {
                 match self
                     .phira_client
-                    .get_json::<RemotePhiraUserInfo>(
+                    .fetch_user_by_token(
                         &self.config.phira_api_endpoint,
-                        endpoint_override,
-                        "/me",
-                        Some(token),
-                        crate::phira_client::PhiraRetryNoticeTarget::Silent,
+                        endpoint_override.map(|s| s.as_str()),
+                        token,
                     )
                     .await
                 {
-                    Ok(user) => {
+                    Some((user_id, user_name)) => {
                         ok += 1;
                         report.probes.record_success();
-                        o!("  │ ✓ authenticated as {} ({})", user.name, user.id);
+                        o!("  │ ✓ authenticated as {} ({})", user_name, user_id);
                     }
-                    Err(err) => {
+                    None => {
                         failed += 1;
                         report.probes.record_failure();
-                        report.add_failure_sample("authenticate", err.to_string());
-                        o!("  │ ✗ authenticate failed: {err}");
+                        report.add_failure_sample("authenticate", "fetch_user_by_token returned None".to_string());
+                        o!("  │ ✗ authenticate failed: returned None");
                     }
                 }
             } else {
