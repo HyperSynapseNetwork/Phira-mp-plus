@@ -29,27 +29,49 @@ pub struct WasmPluginServices {
     pub api_handlers: Arc<Mutex<HashMap<String, api::PluginApiHandler>>>,
     pub cli_commands: Arc<Mutex<HashMap<String, CliCommand>>>,
     pub http_handle: Mutex<Option<api::HttpHandle>>,
+    pub state_query: Mutex<Option<api::ServerStateQuery>>,
+    pub send_chat: Mutex<Option<Arc<dyn Fn(i32, String) + Send + Sync>>>,
 }
 
 impl WasmPluginServices {
     pub fn new(
         extensions: Arc<ExtensionManager>,
-        api_handlers: Arc<Mutex<HashMap<String, api::PluginApiHandler>>>,
-        cli_commands: Arc<Mutex<HashMap<String, CliCommand>>>,
+        runtime: crate::plugin::WasmRuntimeConfig,
     ) -> Self {
         Self {
             capabilities: Mutex::new(HashMap::new()),
             extensions,
             server_state: Mutex::new(None),
-            api_handlers,
-            cli_commands,
+            api_handlers: Arc::new(Mutex::new(HashMap::new())),
+            cli_commands: Arc::new(Mutex::new(HashMap::new())),
             http_handle: Mutex::new(None),
+            state_query: Mutex::new(None),
+            send_chat: Mutex::new(None),
         }
     }
 
     pub fn set_capabilities(&self, plugin: &str, caps: Vec<String>) {
         if let Ok(mut map) = self.capabilities.lock() {
             map.insert(plugin.to_string(), caps);
+        }
+    }
+
+    pub fn clear_dynamic_registrations(&self) {
+        if let Ok(mut cmds) = self.cli_commands.lock() {
+            cmds.clear();
+        }
+        if let Ok(mut api) = self.api_handlers.lock() {
+            api.clear();
+        }
+    }
+
+    pub fn register_plugin_runtime(&self, _name: &str) {
+        // Runtime diagnostics automatically available via WIT host.
+    }
+
+    pub fn set_server_state(&self, state: &Weak<crate::server::PlusServerState>) {
+        if let Ok(mut s) = self.server_state.lock() {
+            *s = Some(state.clone());
         }
     }
 }
