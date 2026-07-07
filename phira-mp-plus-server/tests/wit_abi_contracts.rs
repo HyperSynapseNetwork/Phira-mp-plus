@@ -407,6 +407,31 @@ fn required_capability_maps_room_methods() {
     assert_eq!(wasm_host_helpers::required_capability("room.kick"), Some("room.manage"));
     assert_eq!(wasm_host_helpers::required_capability("room.close"), Some("room.manage"));
     assert_eq!(wasm_host_helpers::required_capability("room.set_hidden"), Some("room.manage"));
+    assert_eq!(wasm_host_helpers::required_capability("room.create_empty"), Some("room.manage"));
+    assert_eq!(wasm_host_helpers::required_capability("room.force_move"), Some("room.manage"));
+    assert_eq!(wasm_host_helpers::required_capability("room.set_host"), Some("room.manage"));
+    assert_eq!(wasm_host_helpers::required_capability("room.clear_host"), Some("room.manage"));
+    assert_eq!(wasm_host_helpers::required_capability("room.set_persistent_empty"), Some("room.manage"));
+    assert_eq!(wasm_host_helpers::required_capability("room.set_phira_api_endpoint"), Some("room.manage"));
+}
+
+#[test]
+fn required_capability_maps_config_methods() {
+    assert_eq!(wasm_host_helpers::required_capability("config.get"), Some("config"));
+    assert_eq!(wasm_host_helpers::required_capability("config.set"), Some("config"));
+}
+
+#[test]
+fn required_capability_maps_state_read() {
+    assert_eq!(wasm_host_helpers::required_capability("state.query"), Some("state.read"));
+    assert_eq!(wasm_host_helpers::required_capability("room.info"), Some("state.read"));
+    assert_eq!(wasm_host_helpers::required_capability("user.info"), Some("state.read"));
+    assert_eq!(wasm_host_helpers::required_capability("persist.query"), Some("state.read"));
+}
+
+#[test]
+fn required_capability_returns_unknown_for_unrecognized() {
+    assert_eq!(wasm_host_helpers::required_capability("nonexistent.method"), Some("unknown"));
 }
 
 #[test]
