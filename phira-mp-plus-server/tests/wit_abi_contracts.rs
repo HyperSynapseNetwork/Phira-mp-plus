@@ -34,8 +34,8 @@ fn plugin_abi_constants_are_locked() {
     assert_eq!(plugin_abi::wit::WIT_FILE, "wit/phira-plugin.wit");
     assert_eq!(plugin_abi::wit::WIT_WORLD, "phira-plugin-v2");
     assert_eq!(plugin_abi::wit::WIT_VERSION, "abi-wit-v2");
-    assert_eq!(plugin_abi::wit::MIGRATION_PHASE, 2,
-        "MIGRATION_PHASE 2 = WIT-only skeleton, lifecycle wired, host APIs implemented, missing integration tests and SDK example");
+    assert_eq!(plugin_abi::wit::MIGRATION_PHASE, 3,
+        "MIGRATION_PHASE 3 = JSON bridge removed, WIT lifecycle wired, all host APIs implemented, missing integration tests");
 }
 
 #[test]

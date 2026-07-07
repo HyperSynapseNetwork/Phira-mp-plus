@@ -115,8 +115,6 @@ pub mod wasm {
         meta: PluginMeta,
         services: Arc<wasm_host::WasmPluginServices>,
         runtime: WasmRuntimeConfig,
-        instance: Option<wasm_host::WasmPluginInstance>,
-        #[cfg(feature = "wit-bindgen")]
         component_instance: Option<wasm_host::WitPluginComponent>,
     }
 
@@ -136,32 +134,13 @@ pub mod wasm {
                 },
                 services,
                 runtime,
-                instance: None,
-                #[cfg(feature = "wit-bindgen")]
                 component_instance: None,
             }
         }
     }
 
     impl WasmPlugin {
-        /// Initialize as a JSON bridge module.
-        fn init_module(&mut self, bytes: &[u8]) -> Result<(), String> {
-            let mut instance = wasm_host::WasmPluginInstance::new(
-                bytes,
-                &self.meta.path,
-                Arc::clone(&self.services),
-                self.runtime.clone(),
-            )?;
-            self.meta.info = instance.info.clone();
-            instance.call_init()?;
-            self.instance = Some(instance);
-            self.meta.state = PluginState::Enabled;
-            info!("WASM plugin '{}' loaded (module)", self.meta.info.name);
-            Ok(())
-        }
-
-        /// Initialize as a WIT component (only when wit-bindgen feature is enabled).
-        #[cfg(feature = "wit-bindgen")]
+        /// Initialize as a WIT component. JSON bridge (init_module) has been removed.
         fn init_component(&mut self, bytes: &[u8]) -> Result<(), String> {
             let plugin_name = std::path::Path::new(&self.meta.path)
                 .file_stem()
@@ -183,11 +162,6 @@ pub mod wasm {
         }
     }
 
-    #[cfg(feature = "wit-bindgen")]
-    fn component_bytes_are_component(bytes: &[u8]) -> bool {
-        bytes.starts_with(b"\x00asm") && bytes.len() > 8 && bytes[8..12] == [0x01, 0x00, 0x00, 0x00]
-    }
-
     impl PluginHost for WasmPlugin {
         fn meta(&self) -> &PluginMeta {
             &self.meta
@@ -199,37 +173,22 @@ pub mod wasm {
         fn init(&mut self) -> Result<(), String> {
             let bytes = std::fs::read(&self.meta.path)
                 .map_err(|e| format!("read WASM '{}': {e}", self.meta.path))?;
-            #[cfg(feature = "wit-bindgen")]
-            if component_bytes_are_component(&bytes) {
-                return self.init_component(&bytes);
-            }
-            self.init_module(&bytes)
+            self.init_component(&bytes)
         }
 
         fn cleanup(&mut self) {
-            if let Some(instance) = self.instance.as_mut() {
                 instance.call_cleanup();
             }
             #[cfg(feature = "wit-bindgen")]
             if let Some(component) = self.component_instance.as_mut() {
                 component.call_cleanup();
             }
-            self.instance = None;
-            #[cfg(feature = "wit-bindgen")]
-            { self.component_instance = None; }
+            self.component_instance = None;
             self.meta.state = PluginState::Disabled;
         }
 
         fn trigger_event(&mut self, event: &PluginEvent) -> Result<Vec<String>, String> {
             if !self.meta.enabled {
-                return Ok(Vec::new());
-            }
-            // Module path (JSON bridge)
-            if let Some(instance) = self.instance.as_mut() {
-                let code = instance.call_on_event(event)?;
-                if code < 0 {
-                    return Err(format!("guest returned event error {code}"));
-                }
                 return Ok(Vec::new());
             }
             // Component path (WIT, requires wit-bindgen)
@@ -254,10 +213,6 @@ pub mod wasm {
             if !self.meta.enabled {
                 return Err("plugin is disabled".to_string());
             }
-            if let Some(instance) = self.instance.as_mut() {
-                return instance.call_api(method, args);
-            }
-            #[cfg(feature = "wit-bindgen")]
             if let Some(component) = self.component_instance.as_mut() {
                 return component.call_api(method, args);
             }

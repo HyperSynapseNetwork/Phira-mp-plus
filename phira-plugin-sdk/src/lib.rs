@@ -27,28 +27,6 @@
 //! wit-bindgen = "0.30"
 //! ```
 
-/// Generate WASM plugin entry points (JSON ABI bridge).
-///
-/// Usage:
-/// ```ignore
-/// phira_plugin_sdk::plugin_entry!(init, get_info, cleanup, on_event, on_api);
-/// ```
-#[macro_export]
-macro_rules! plugin_entry {
-    ($init:ident, $get_info:ident, $cleanup:ident, $on_event:ident, $on_api:ident) => {
-        #[no_mangle]
-        pub extern "C" fn phira_init() -> i32 { $init() }
-        #[no_mangle]
-        pub extern "C" fn phira_get_info() { $get_info() }
-        #[no_mangle]
-        pub extern "C" fn phira_cleanup() { $cleanup() }
-        #[no_mangle]
-        pub extern "C" fn phira_on_event(ptr: i32, len: i32) -> i32 { $on_event(ptr, len) }
-        #[no_mangle]
-        pub extern "C" fn phira_on_api(method_ptr: i32, method_len: i32, args_ptr: i32, args_len: i32) -> i64 { $on_api(method_ptr, method_len, args_ptr, args_len) }
-    };
-}
-
 /// Generate WIT bindings for a plugin.
 ///
 /// This macro wraps `wit_bindgen::generate!` with the canonical WIT file path.

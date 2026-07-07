@@ -9,7 +9,7 @@
 | **运行时 ABI** | `abi-wit-v2` (WIT / Component Model) |
 | **规范 WIT** | `wit/phira-plugin.wit` |
 | **World** | `phira-plugin-v2` |
-| **MIGRATION_PHASE** | `2` (WIT-only skeleton; lifecycle 已接线, host API 已实现, cap enforcement 已加; 缺 integration tests 和 SDK 示例) |
+| **MIGRATION_PHASE** | `3` (JSON bridge 已删除; WIT-only: lifecycle 完整, 53 个 host API 全部实现; 缺 WASM 集成测试) |
 | **接口数量** | `12` |
 | **Host traits** | `WitPluginHost` 已完整实现 12 个接口；全部方法均有真实实现或 capability error；写能力方法强制 capability 检查 |
 | **Plugin ABI 模块** | `plugin_abi/{mod,plan,json,dto}.rs` |
