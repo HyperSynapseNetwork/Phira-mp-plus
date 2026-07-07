@@ -83,7 +83,7 @@ impl RuntimePlan {
                     title: "Persistence Worker ownership",
                     status: "done",
                     priority: "P1",
-                    next_step: "6/7 production writes migrated through PersistenceWorker with DB fallback. Only round_store round_data remains direct (deferred — high-frequency Touch/Judge, keep dual-write). ExtensionManager has worker reference. Telemetry cutover modes (direct_only/worker_preferred) in place. Write-path audit contract tests added.",
+                    next_step: "6/7 production writes migrated through PersistenceWorker with DB fallback. round_store round_data stays direct (permanent — high-frequency Touch/Judge data bypasses worker deliberately; dual-write via DirectOnly/WorkerPreferred telemetry cutover provides sufficient safety). ExtensionManager has worker reference. Telemetry cutover modes in place. Write-path audit contract tests added.",
                 },
                 RuntimeObjective {
                     key: "eventbus",

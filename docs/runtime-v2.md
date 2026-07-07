@@ -972,7 +972,7 @@ Remaining closure requirements:
 
 - **plugin-abi-v2**: WIT integration tests (init/cleanup/on-event/on-api via real WASM).
 - **actor-model**: lock/cycle Owned, remaining state WriteRouted → Owned.
-- **persistence-worker**: round_store bypass remains (high-frequency data, intentionally deferred).
+- **persistence-worker**: round_store direct write is permanent (high-frequency Touch/Judge data bypasses worker; dual-wire with DirectOnly/WorkerPreferred telemetry cutover is sufficient).
 - **test-coverage**: 130 unit tests, WIT capability contract tests included.
 - **simulation/benchmark-modes**: verified no-Phira default, cleanup tested.
 3. Move the next Room state slice into the mailbox worker instead of adding

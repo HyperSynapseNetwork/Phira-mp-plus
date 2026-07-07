@@ -179,7 +179,7 @@ fn simulation_scope_in_persistence_payload() {
 // | 3 | extensions.rs | record_room_event_sync | extension snapshots | per-ext-change | ✅ migrated to PersistenceWorker |
 // | 4 | session.rs | record_user_disconnect_sync | disconnect events | per-disconnect | ✅ migrated to PersistenceWorker |
 // | 5 | session.rs | record_user_seen_sync | user seen timestamp | per-command | ✅ migrated to PersistenceWorker |
-// | 6 | round_store.rs | open_round/close_round/append_touches/append_judges/... | round data | per-round |
+// | 6 | round_store.rs | open_round/close_round/append_touches/append_judges/... | round data | per-round | ⏭️ permanent direct write (high-frequency, telemetry cutover provides safety) |
 // | 7 | server.rs | record_user_room_history_sync | room join history | per-join | ✅ migrated to PersistenceWorker |
 //
 // Telemetry/Benchmark/Simulation events route through PersistenceWorker
