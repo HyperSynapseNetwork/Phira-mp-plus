@@ -57,8 +57,10 @@ pub mod wit {
     /// 0 = legacy JSON-memory bridge was active.
     /// 1 = Host WIT bindings generated.
     /// 2 = JSON bridge removed as the target ABI, WIT-only skeleton current.
-    /// 3 = WIT lifecycle complete, all host APIs implemented with capability enforcement.
-    pub const MIGRATION_PHASE: u8 = 3;
+    ///     Lifecycle wired, host APIs implemented, capability enforcement added,
+    ///     unit tests for capability model. Missing: WIT integration tests,
+    ///     lifecycle dispatch tests, SDK working example.
+    pub const MIGRATION_PHASE: u8 = 2;
 }
 
 pub fn supported_abi_versions() -> Vec<&'static str> {

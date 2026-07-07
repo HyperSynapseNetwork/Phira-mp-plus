@@ -109,9 +109,16 @@ impl RuntimePlan {
                 RuntimeObjective {
                     key: "technical-debt-triage",
                     title: "Source debt-comment backlog discipline",
-                    status: "active",
+                    status: "done",
                     priority: "P1",
-                    next_step: "All WIT host 'not yet implemented' stubs have been resolved — either implemented with real capability checks or replaced with explicit capability errors. No TODO/FIXME markers remain in production code. Keep scanning new code for unchecked markers.",
+                    next_step: "All WIT host 'not yet implemented' stubs have been resolved. No TODO/FIXME markers remain in production code. Keep scanning new code for unchecked markers.",
+                },
+                RuntimeObjective {
+                    key: "step-38-closure-gate",
+                    title: "Step 38: Runtime v2 closure gate",
+                    status: "active",
+                    priority: "P0",
+                    next_step: "Gate requires: (1) All RuntimeObjective are done/blocked/deferred — no active items with incomplete code+test+doc alignment. (2) Actor roadmap boundaries accurately reflect Owned/Routed. (3) Plugin ABI MIGRATION_PHASE matches test coverage. (4) All WIT host API methods have contract tests or explicit unsupported/capability error. (5) cargo test --workspace passes. (6) docs_contracts/wit_abi_contracts pass. Current blockers: plugin-abi-v2 (no integration tests), actor-model (lock not exclusive), persistence-worker (round_store bypass), simulation/benchmark-modes/low-overhead-diagnostics (no closure criteria), test-coverage (WIT integration tests missing).",
                 },
                 RuntimeObjective {
                     key: "tui-v2",
