@@ -87,34 +87,6 @@ pub struct WitHostState {
     pub limits: wasmtime::StoreLimits,
 }
 
-#[cfg(feature = "wit-bindgen")]
-impl WasmPluginServices {
-    fn host_state(
-        &self,
-        plugin_name: &str,
-        runtime: &WasmRuntimeConfig,
-    ) -> Result<(wasmtime::Store<WitHostState>, wasmtime::StoreLimits), String> {
-        let state_ref = self
-            .server_state
-            .lock()
-            .map_err(|e| format!("lock server state: {e}"))?
-            .take()
-            .ok_or_else(|| "server state not set".to_string())?;
-        let state = state_ref
-            .upgrade()
-            .ok_or_else(|| "server state dropped".to_string())?;
-        let host = crate::wit_host::WitPluginHost::new(state, plugin_name.to_string());
-        let limits = wasmtime::StoreLimitsBuilder::new()
-            .memory_size((runtime.max_memory_mb.max(1)) * 1024 * 1024)
-            .build();
-        let store = wasmtime::Store::new(
-            &wasmtime::Engine::default(),
-            WitHostState { host, limits },
-        );
-        Ok((store, limits))
-    }
-}
-
 /// WIT component model plugin instance.
 /// Wraps a compiled component and its store, providing lifecycle API.
 #[cfg(feature = "wit-bindgen")]
