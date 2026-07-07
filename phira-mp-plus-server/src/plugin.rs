@@ -304,7 +304,7 @@ impl PluginManager {
     /// Set the server state reference on WASM services (for WIT host impls).
     pub async fn set_server_state(&self, state: std::sync::Arc<crate::server::PlusServerState>) {
         #[cfg(feature = "plugin-system")]
-        self.wasm_services.set_server_state(&state);
+        self.wasm_services.set_server_state(&std::sync::Arc::downgrade(&state));
         let _ = state; // keep for non-plugin builds
     }
 
@@ -395,7 +395,7 @@ impl PluginManager {
 
             let slot = Arc::new(Mutex::new(plugin));
             self.wasm_services
-                .register_plugin_runtime(stable_id);
+                .register_plugin_runtime(&stable_id);
             self.plugins.write().await.push(slot);
             Ok(meta)
         }

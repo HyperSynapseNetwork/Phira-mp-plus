@@ -105,7 +105,7 @@ impl WasmPluginServices {
             .ok_or_else(|| "server state dropped".to_string())?;
         let host = crate::wit_host::WitPluginHost::new(state, plugin_name.to_string());
         let limits = wasmtime::StoreLimitsBuilder::new()
-            .memory_size(runtime.max_memory_mb.max(1) as u64 * 1024 * 1024)
+            .memory_size((runtime.max_memory_mb.max(1)) * 1024 * 1024)
             .build();
         let store = wasmtime::Store::new(
             &wasmtime::Engine::default(),
