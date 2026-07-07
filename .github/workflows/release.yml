@@ -1,4 +1,4 @@
-name: Release
+name: Release 发行版
 
 on:
   workflow_dispatch:
@@ -7,38 +7,50 @@ on:
         description: 版本号升级
         type: choice
         options:
-          - patch  # C+1（默认）
-          - minor  # B+1, C=0
+          - minor  # B+1, C=0（默认）
           - major  # A+1, B=0, C=0
-        default: "patch"
+        default: "minor"
+      description:
+        description: 版本说明（可选）
+        type: string
+        default: ""
 
 env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  release:
+  bump-version:
     runs-on: ubuntu-latest
+    outputs:
+      major: ${{ steps.version.outputs.major }}
+      minor: ${{ steps.version.outputs.minor }}
+      patch: ${{ steps.version.outputs.patch }}
+      version: ${{ steps.version.outputs.version }}
+      tag: ${{ steps.version.outputs.tag }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # 需要完整历史以计算 C
 
-      - name: 读取当前版本
+      - name: 计算版本号
         id: version
         run: |
           FULL_VERSION=$(grep '^version = ' phira-mp-plus-server/Cargo.toml | sed 's/.*"\(.*\)"/\1/')
           MAJOR=$(echo "$FULL_VERSION" | cut -d. -f1)
           MINOR=$(echo "$FULL_VERSION" | cut -d. -f2)
-          PATCH=$(echo "$FULL_VERSION" | cut -d. -f3)
 
           if [[ "${{ github.event.inputs.bump }}" == "major" ]]; then
             MAJOR=$((MAJOR + 1))
             MINOR=0
-            PATCH=0
-          elif [[ "${{ github.event.inputs.bump }}" == "minor" ]]; then
-            MINOR=$((MINOR + 1))
-            PATCH=0
+          fi
+
+          # C = 自上一个 v{A}.{B}.0 标签以来的 commit 数
+          TAG_PREFIX="v${MAJOR}.${MINOR}.0"
+          if git rev-parse "$TAG_PREFIX" >/dev/null 2>&1; then
+            PATCH=$(git rev-list --count "$TAG_PREFIX"..HEAD)
           else
-            PATCH=$((PATCH + 1))
+            PATCH=$(git rev-list --count HEAD)
           fi
 
           NEW_VERSION="${MAJOR}.${MINOR}.${PATCH}"
@@ -46,19 +58,28 @@ jobs:
           echo "minor=$MINOR" >> $GITHUB_OUTPUT
           echo "patch=$PATCH" >> $GITHUB_OUTPUT
           echo "version=$NEW_VERSION" >> $GITHUB_OUTPUT
+          echo "tag=v$NEW_VERSION" >> $GITHUB_OUTPUT
 
-      - name: 更新版本号
+      - name: 更新源码版本号
         run: |
-          # 更新主 crate 版本
-          sed -i "s/^version = \".*\"/version = \"${{ steps.version.outputs.version }}\"/" phira-mp-plus-server/Cargo.toml
-          # 更新 SDK 版本
-          sed -i "s/^version = \".*\"/version = \"${{ steps.version.outputs.version }}\"/" phira-plugin-sdk/Cargo.toml
-          # 提交版本变更
-          git add phira-mp-plus-server/Cargo.toml phira-plugin-sdk/Cargo.toml
+          sed -i "s/^version = \".*\"/version = \"${{ steps.version.outputs.major }}.${{ steps.version.outputs.minor }}.0\"/" phira-mp-plus-server/Cargo.toml
+          sed -i "s/^version = \".*\"/version = \"${{ steps.version.outputs.major }}.${{ steps.version.outputs.minor }}.0\"/" phira-plugin-sdk/Cargo.toml
+
+      - name: 提交并打标签
+        run: |
           git config user.name "github-actions"
           git config user.email "actions@github.com"
-          git commit -m "chore: bump version to ${{ steps.version.outputs.version }}"
-          git push
+          git add phira-mp-plus-server/Cargo.toml phira-plugin-sdk/Cargo.toml
+          git commit -m "chore: bump version to ${{ steps.version.outputs.major }}.${{ steps.version.outputs.minor }}.0"
+          git tag -a "${{ steps.version.outputs.tag }}" -m "v${{ steps.version.outputs.version }}"
+          git push --follow-tags
+
+  release:
+    needs: bump-version
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
 
       - name: 打包 SDK
         run: |
@@ -68,25 +89,28 @@ jobs:
           cp -r wit /tmp/sdk-release/wit
           cd /tmp/sdk-release
           tar czf phira-plugin-sdk.tar.gz phira-plugin-sdk wit
-          ls -lh phira-plugin-sdk.tar.gz
+          echo "SDK tarball: $(ls -lh phira-plugin-sdk.tar.gz | awk '{print $5}')"
 
       - name: 创建 Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v${{ steps.version.outputs.version }}
-          name: v${{ steps.version.outputs.version }}
+          tag_name: ${{ needs.bump-version.outputs.tag }}
+          name: v${{ needs.bump-version.outputs.version }}
           body: |
-            ## Phira-mp+ v${{ steps.version.outputs.version }}
+            ## Phira-mp+ v${{ needs.bump-version.outputs.version }}
 
-            ### 下载
-            - **phira-plugin-sdk.tar.gz**: 插件 SDK + WIT 文件，用于外部 WASM 插件编译
+            ### 版本信息
+            - 版本号: ${{ needs.bump-version.outputs.version }}
+            - C (patch) = 自 v${{ needs.bump-version.outputs.major }}.${{ needs.bump-version.outputs.minor }}.0 以来的 commit 数
+            ${{ github.event.inputs.description && '### 说明' || '' }}
+            ${{ github.event.inputs.description }}
 
-            ### SDK 使用
+            ### SDK 下载
+            包含 `phira-plugin-sdk` + `wit/`，用于开发 WASM 插件：
+
             ```bash
-            wget ${{ github.server_url }}/${{ github.repository }}/releases/download/v${{ steps.version.outputs.version }}/phira-plugin-sdk.tar.gz
+            wget ${{ github.server_url }}/${{ github.repository }}/releases/download/v${{ needs.bump-version.outputs.version }}/phira-plugin-sdk.tar.gz
             tar xzf phira-plugin-sdk.tar.gz
-            ln -s phira-plugin-sdk ./phira-plugin-sdk
-            ln -s wit ./wit
             ```
           files: |
             /tmp/sdk-release/phira-plugin-sdk.tar.gz
