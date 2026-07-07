@@ -63,15 +63,15 @@ jobs:
         run: |
           cargo build --release
           mkdir -p /tmp/release-files
-          cp target/release/phira-mp-plus-server /tmp/release-files/phira-mp-plus-server-linux-x86_64
-          strip /tmp/release-files/phira-mp-plus-server-linux-x86_64
-          echo "Linux binary: $(ls -lh /tmp/release-files/phira-mp-plus-server-linux-x86_64 | awk '{print $5}')"
+          cp target/release/phira-mp-plus-server "/tmp/release-files/phira-mp-plus-server-v${{ steps.version.outputs.version }}-linux-x86_64"
+          strip "/tmp/release-files/phira-mp-plus-server-v${{ steps.version.outputs.version }}-linux-x86_64"
+          echo "Linux binary: $(ls -lh /tmp/release-files/phira-mp-plus-server-v${{ steps.version.outputs.version }}-linux-x86_64 | awk '{print $5}')"
 
       - name: 构建 Windows 可执行文件
         run: |
           cargo build --release --target x86_64-pc-windows-gnu
-          cp target/x86_64-pc-windows-gnu/release/phira-mp-plus-server.exe /tmp/release-files/phira-mp-plus-server-windows-x86_64.exe
-          echo "Windows binary: $(ls -lh /tmp/release-files/phira-mp-plus-server-windows-x86_64.exe | awk '{print $5}')"
+          cp target/x86_64-pc-windows-gnu/release/phira-mp-plus-server.exe "/tmp/release-files/phira-mp-plus-server-v${{ steps.version.outputs.version }}-windows-x86_64.exe"
+          echo "Windows binary: $(ls -lh /tmp/release-files/phira-mp-plus-server-v${{ steps.version.outputs.version }}-windows-x86_64.exe | awk '{print $5}')"
 
       - name: 打包 SDK
         run: |
@@ -100,8 +100,8 @@ jobs:
 
             | 文件 | 平台 |
             |------|------|
-            | `phira-mp-plus-server-linux-x86_64` | Linux x86_64 |
-            | `phira-mp-plus-server-windows-x86_64.exe` | Windows x86_64 |
+            | `phira-mp-plus-server-v${{ steps.version.outputs.version }}-linux-x86_64` | Linux x86_64 |
+            | `phira-mp-plus-server-v${{ steps.version.outputs.version }}-windows-x86_64.exe` | Windows x86_64 |
             | `phira-plugin-sdk.tar.gz` | 插件 SDK + WIT |
 
             ### SDK 使用
@@ -110,8 +110,8 @@ jobs:
             tar xzf phira-plugin-sdk.tar.gz
             ```
           files: |
-            /tmp/release-files/phira-mp-plus-server-linux-x86_64
-            /tmp/release-files/phira-mp-plus-server-windows-x86_64.exe
+            /tmp/release-files/phira-mp-plus-server-v*-linux-x86_64
+            /tmp/release-files/phira-mp-plus-server-v*-windows-x86_64.exe
             /tmp/release-files/phira-plugin-sdk.tar.gz
           draft: false
           prerelease: false
