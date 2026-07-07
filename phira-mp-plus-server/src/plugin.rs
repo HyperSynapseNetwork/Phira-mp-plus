@@ -177,9 +177,6 @@ pub mod wasm {
         }
 
         fn cleanup(&mut self) {
-                instance.call_cleanup();
-            }
-            #[cfg(feature = "wit-bindgen")]
             if let Some(component) = self.component_instance.as_mut() {
                 component.call_cleanup();
             }
