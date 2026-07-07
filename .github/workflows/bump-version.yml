@@ -1,0 +1,53 @@
+name: Bump Version
+
+on:
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: 版本号升级
+        type: choice
+        options:
+          - minor  # B+1（默认）
+          - major  # A+1, B=0
+        default: "minor"
+
+jobs:
+  bump:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: 计算新版本
+        id: version
+        run: |
+          FULL_VERSION=$(grep '^version = ' phira-mp-plus-server/Cargo.toml | sed 's/.*"\(.*\)"/\1/')
+          MAJOR=$(echo "$FULL_VERSION" | cut -d. -f1)
+          MINOR=$(echo "$FULL_VERSION" | cut -d. -f2)
+
+          if [[ "${{ github.event.inputs.bump }}" == "major" ]]; then
+            MAJOR=$((MAJOR + 1))
+            MINOR=0
+          else
+            MINOR=$((MINOR + 1))
+          fi
+
+          echo "major=$MAJOR" >> $GITHUB_OUTPUT
+          echo "minor=$MINOR" >> $GITHUB_OUTPUT
+
+      - name: 更新源码版本号
+        run: |
+          sed -i "s/^version = \".*\"/version = \"${{ steps.version.outputs.major }}.${{ steps.version.outputs.minor }}.0\"/" phira-mp-plus-server/Cargo.toml
+          sed -i "s/^version = \".*\"/version = \"${{ steps.version.outputs.major }}.${{ steps.version.outputs.minor }}.0\"/" phira-plugin-sdk/Cargo.toml
+
+      - name: 提交并打标签
+        run: |
+          TAG="v${{ steps.version.outputs.major }}.${{ steps.version.outputs.minor }}.0"
+          git config user.name "github-actions"
+          git config user.email "actions@github.com"
+          git add phira-mp-plus-server/Cargo.toml phira-plugin-sdk/Cargo.toml
+          git commit -m "chore: bump version to $TAG"
+          git tag -a "$TAG" -m "Version $TAG"
+          git push --follow-tags
