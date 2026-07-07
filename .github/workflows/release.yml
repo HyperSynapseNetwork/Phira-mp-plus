@@ -23,20 +23,18 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: 获取最新版本标签
+      - name: 获取最新版本标签并计算 C
         id: version
         run: |
-          # 取最新 v*.*.* 标签
           LATEST_TAG=$(git tag --list 'v*.*.*' --sort=-v:refname | head -1)
           if [[ -z "$LATEST_TAG" ]]; then
-            echo "错误: 没有找到版本标签，请先运行 Bump Version workflow"
+            echo "错误: 没有找到版本标签"
             exit 1
           fi
           VERSION="${LATEST_TAG#v}"
           MAJOR=$(echo "$VERSION" | cut -d. -f1)
           MINOR=$(echo "$VERSION" | cut -d. -f2)
 
-          # 计算 C = 自 v{A}.{B}.0 以来的 commit 数
           BASE_TAG="v${MAJOR}.${MINOR}.0"
           if git rev-parse "$BASE_TAG" >/dev/null 2>&1; then
             PATCH=$(git rev-list --count "$BASE_TAG"..HEAD)
@@ -50,6 +48,17 @@ jobs:
           echo "major=$MAJOR" >> $GITHUB_OUTPUT
           echo "minor=$MINOR" >> $GITHUB_OUTPUT
           echo "patch=$PATCH" >> $GITHUB_OUTPUT
+
+      - name: 更新源码版本号
+        run: |
+          sed -i "s/^version = \".*\"/version = \"${{ steps.version.outputs.version }}\"/" phira-mp-plus-server/Cargo.toml
+          sed -i "s/^version = \".*\"/version = \"${{ steps.version.outputs.version }}\"/" phira-plugin-sdk/Cargo.toml
+          git config user.name "github-actions"
+          git config user.email "actions@github.com"
+          git add phira-mp-plus-server/Cargo.toml phira-plugin-sdk/Cargo.toml
+          git commit -m "chore: update version to ${{ steps.version.outputs.version }}"
+          git tag -fa "${{ steps.version.outputs.tag }}" -m "v${{ steps.version.outputs.version }}"
+          git push --follow-tags
 
       - name: 安装跨平台工具
         run: |
