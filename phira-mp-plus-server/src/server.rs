@@ -4149,15 +4149,16 @@ fn server_state_query(
             serde_json::to_value(ss).map_err(|e| e.to_string())
         }
         "http.register_route" => {
-            let path = args.get(0).and_then(|v| v.as_str()).ok_or("missing path arg")?;
+            let path = args.get(0).and_then(|v| v.as_str()).ok_or("missing path arg")?.to_string();
             let h = state.plugin_manager.http_handle();
             match h {
                 Some(handle) => {
                     let state_clone = Arc::clone(state);
-                    handle.register_route(path, Arc::new(move |_body, params| {
+                    let path_clone = path.clone();
+                    handle.register_route(&path, Arc::new(move |_body, params| {
                         let args: Vec<Value> = params.iter().map(|p| serde_json::json!(p)).collect();
                         let r = server_state_query_inner_http(
-                            &state_clone, path, &args,
+                            &state_clone, &path_clone, &args,
                         );
                         r.map_err(|e| (500u16, e))
                     }));
