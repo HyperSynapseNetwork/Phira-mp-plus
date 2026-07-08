@@ -226,8 +226,6 @@ pub struct PluginManager {
     runtime: WasmRuntimeConfig,
     event_gate: Arc<Semaphore>,
     http_handle: Arc<RwLock<Option<api::HttpHandle>>>,
-    send_chat: Arc<RwLock<Option<Arc<dyn Fn(i32, String) + Send + Sync>>>>,
-    default_state: Arc<RwLock<Option<api::ServerStateQuery>>>,
     #[cfg(feature = "plugin-system")]
     wasm_services: Arc<crate::wasm_host::WasmPluginServices>,
 }
@@ -238,24 +236,27 @@ impl PluginManager {
         extensions: Arc<ExtensionManager>,
         runtime: WasmRuntimeConfig,
     ) -> Self {
+        let cli_commands = Arc::new(Mutex::new(HashMap::new()));
+        let api_handlers = Arc::new(Mutex::new(HashMap::new()));
+        let http_handle = Arc::new(RwLock::new(None));
+
         #[cfg(feature = "plugin-system")]
         let wasm_services = Arc::new(crate::wasm_host::WasmPluginServices::new(
             extensions,
-            runtime.clone(),
+            Arc::clone(&cli_commands),
+            Arc::clone(&api_handlers),
         ));
         #[cfg(not(feature = "plugin-system"))]
         let _ = extensions;
 
         Self {
             plugins: Arc::new(RwLock::new(Vec::new())),
-            cli_commands: Arc::new(Mutex::new(HashMap::new())),
-            api_handlers: Arc::new(Mutex::new(HashMap::new())),
+            cli_commands,
+            api_handlers,
             plugins_dir: plugins_dir.to_string(),
             event_gate: Arc::new(Semaphore::new(runtime.max_event_concurrency.max(1))),
             runtime,
-            http_handle: Arc::new(RwLock::new(None)),
-            send_chat: Arc::new(RwLock::new(None)),
-            default_state: Arc::new(RwLock::new(None)),
+            http_handle,
             #[cfg(feature = "plugin-system")]
             wasm_services,
         }
@@ -268,9 +269,9 @@ impl PluginManager {
                 .wasm_services
                 .state_query
                 .lock()
-                .unwrap_or_else(|e| e.into_inner()) = Some(query.clone());
+                .unwrap_or_else(|e| e.into_inner()) = Some(query);
         }
-        *self.default_state.write().await = Some(query);
+        let _ = query;
     }
 
     pub async fn set_send_chat(&self, callback: Arc<dyn Fn(i32, String) + Send + Sync>) {
@@ -280,9 +281,8 @@ impl PluginManager {
                 .wasm_services
                 .send_chat
                 .lock()
-                .unwrap_or_else(|e| e.into_inner()) = Some(Arc::clone(&callback));
+                .unwrap_or_else(|e| e.into_inner()) = Some(callback);
         }
-        *self.send_chat.write().await = Some(callback);
     }
 
     pub fn http_handle(&self) -> Option<api::HttpHandle> {
@@ -290,22 +290,15 @@ impl PluginManager {
     }
 
     pub async fn set_http_handle(&self, handle: api::HttpHandle) {
-        #[cfg(feature = "plugin-system")]
-        {
-            *self
-                .wasm_services
-                .http_handle
-                .lock()
-                .unwrap_or_else(|e| e.into_inner()) = Some(handle.clone());
-        }
         *self.http_handle.write().await = Some(handle);
     }
 
     /// Set the server state reference on WASM services (for WIT host impls).
     pub async fn set_server_state(&self, state: std::sync::Arc<crate::server::PlusServerState>) {
         #[cfg(feature = "plugin-system")]
-        self.wasm_services.set_server_state(&std::sync::Arc::downgrade(&state));
-        let _ = state; // keep for non-plugin builds
+        self.wasm_services
+            .set_server_state(&std::sync::Arc::downgrade(&state));
+        let _ = state;
     }
 
     pub async fn register_plugin_api(&self, name: &str, handler: api::PluginApiHandler) {
@@ -313,12 +306,7 @@ impl PluginManager {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .insert(name.to_string(), Arc::clone(&handler));
-        #[cfg(feature = "plugin-system")]
-        self.wasm_services
-            .api_handlers
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .insert(name.to_string(), handler);
+        // wasm_services shares the same Arc<Mutex<HashMap>> — no separate write needed.
     }
 
     pub async fn load_plugins(&self) -> Result<usize, String> {

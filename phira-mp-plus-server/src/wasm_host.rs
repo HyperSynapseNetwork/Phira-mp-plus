@@ -23,24 +23,30 @@ pub struct WasmPluginServices {
     pub capabilities: Mutex<HashMap<String, Vec<String>>>,
     pub extensions: Arc<ExtensionManager>,
     pub server_state: Mutex<Option<Weak<crate::server::PlusServerState>>>,
+    /// Shared with PluginManager — do not write separately.
     pub api_handlers: Arc<Mutex<HashMap<String, api::PluginApiHandler>>>,
+    /// Shared with PluginManager — do not write separately.
     pub cli_commands: Arc<Mutex<HashMap<String, CliCommand>>>,
+    /// WASM-only: HTTP handle set by PluginManager::set_http_handle (now unused by WASM).
     pub http_handle: Mutex<Option<api::HttpHandle>>,
+    /// WASM-only: state query set by PluginManager::set_default_state.
     pub state_query: Mutex<Option<api::ServerStateQuery>>,
+    /// WASM-only: chat callback set by PluginManager::set_send_chat.
     pub send_chat: Mutex<Option<Arc<dyn Fn(i32, String) + Send + Sync>>>,
 }
 
 impl WasmPluginServices {
     pub fn new(
         extensions: Arc<ExtensionManager>,
-        _runtime: crate::plugin::WasmRuntimeConfig,
+        cli_commands: Arc<Mutex<HashMap<String, CliCommand>>>,
+        api_handlers: Arc<Mutex<HashMap<String, api::PluginApiHandler>>>,
     ) -> Self {
         Self {
             capabilities: Mutex::new(HashMap::new()),
             extensions,
             server_state: Mutex::new(None),
-            api_handlers: Arc::new(Mutex::new(HashMap::new())),
-            cli_commands: Arc::new(Mutex::new(HashMap::new())),
+            api_handlers,
+            cli_commands,
             http_handle: Mutex::new(None),
             state_query: Mutex::new(None),
             send_chat: Mutex::new(None),
