@@ -154,7 +154,7 @@ pub mod wasm {
                 self.runtime.clone(),
             )?;
             self.meta.info = component.info.clone();
-            component.call_init()?;
+            futures::executor::block_on(component.call_init())?;
             self.component_instance = Some(component);
             self.meta.state = PluginState::Enabled;
             info!("WIT component '{}' loaded", self.meta.info.name);
@@ -178,7 +178,7 @@ pub mod wasm {
 
         fn cleanup(&mut self) {
             if let Some(component) = self.component_instance.as_mut() {
-                component.call_cleanup();
+                futures::executor::block_on(component.call_cleanup());
             }
             self.component_instance = None;
             self.meta.state = PluginState::Disabled;
@@ -191,7 +191,7 @@ pub mod wasm {
             // Component path (WIT, requires wit-bindgen)
             #[cfg(feature = "wit-bindgen")]
             if let Some(component) = self.component_instance.as_mut() {
-                let code = component.call_on_event(event)?;
+                let code = futures::executor::block_on(component.call_on_event(event))?;
                 if code < 0 {
                     return Err(format!("component returned event error {code}"));
                 }
@@ -211,7 +211,7 @@ pub mod wasm {
                 return Err("plugin is disabled".to_string());
             }
             if let Some(component) = self.component_instance.as_mut() {
-                return component.call_api(method, args);
+                return futures::executor::block_on(component.call_api(method, args));
             }
             Err("plugin is not initialized".to_string())
         }
