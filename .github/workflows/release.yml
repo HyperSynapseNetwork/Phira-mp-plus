@@ -110,6 +110,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
+      - name: Package SDK
+        run: |
+          mkdir -p dist/sdk
+          cp -r wit dist/sdk/
+          cp -r phira-plugin-sdk/src dist/sdk/phira-plugin-sdk-src
+          cp phira-plugin-sdk/Cargo.toml dist/sdk/
+          cd dist && tar czf phira-plugin-sdk.tar.gz sdk/
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
@@ -121,5 +128,7 @@ jobs:
             phira-mp-plus-server-linux/phira-mp-plus-server-linux
             phira-mp-plus-server-windows/phira-mp-plus-server-windows.exe
             phira-mp-plus-server-plugins-linux/phira-mp-plus-server
+            phira-mp-plus-server-plugins-windows/phira-mp-plus-server.exe
+            dist/phira-plugin-sdk.tar.gz
           draft: false
           prerelease: false
