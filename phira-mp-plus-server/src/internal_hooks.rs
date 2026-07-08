@@ -81,6 +81,7 @@ static WELCOME: once_cell::sync::Lazy<Arc<Mutex<WelcomeConfig>>> =
 pub fn send_welcome(user_id: i32, user_name: &str, online: usize, state: &PlusServerState) {
     use std::time::{SystemTime, UNIX_EPOCH};
     let cfg = WELCOME.lock().unwrap();
+    let mut texts: Vec<String> = Vec::with_capacity(cfg.messages.len());
     for tpl in &cfg.messages {
         let mut text = tpl
             .replace("[user_name]", user_name)
@@ -265,20 +266,27 @@ pub fn send_welcome(user_id: i32, user_name: &str, online: usize, state: &PlusSe
                 .collect();
             text = text.replace("[top_playtime]", &top.join(" | "));
         }
-        if let Ok(users) = state.users.try_read() {
-            if let Some(user) = users.get(&user_id) {
-                if let Ok(session) = user.session.try_read() {
-                    if let Some(Some(session)) = session.as_ref().map(|w| w.upgrade()) {
-                        use phira_mp_common::{Message, ServerCommand};
-                        if let Ok(handle) = tokio::runtime::Handle::try_current() {
-                            let cmd = ServerCommand::Message(Message::Chat {
-                                user: 0,
-                                content: text,
-                            });
-                            handle.spawn(async move {
+        texts.push(text);
+    }
+
+    // Send all welcome messages in order in a single spawned task.
+    // Previously each message was spawned individually, which caused
+    // non-deterministic send order when tasks ran concurrently.
+    if let Ok(users) = state.users.try_read() {
+        if let Some(user) = users.get(&user_id) {
+            if let Ok(session) = user.session.try_read() {
+                if let Some(Some(session)) = session.as_ref().map(|w| w.upgrade()) {
+                    use phira_mp_common::{Message, ServerCommand};
+                    if let Ok(handle) = tokio::runtime::Handle::try_current() {
+                        handle.spawn(async move {
+                            for content in texts {
+                                let cmd = ServerCommand::Message(Message::Chat {
+                                    user: 0,
+                                    content,
+                                });
                                 let _ = session.stream.send(cmd).await;
-                            });
-                        }
+                            }
+                        });
                     }
                 }
             }
