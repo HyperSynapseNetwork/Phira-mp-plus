@@ -303,3 +303,52 @@ async fn dynamic_handler(
             .into_response(),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_server() -> PluginHttpServer {
+        PluginHttpServer::new(0, 0, Arc::new(super::SseHub::new()))
+    }
+
+    #[test]
+    fn sse_stream_registration() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            let server = make_server();
+            let config = SseStreamConfig {
+                plugin: "test-plugin".to_string(),
+                event_types: vec!["RoomCreate".to_string(), "RoomJoin".to_string()],
+            };
+            server.register_sse_stream("/test/stream", config).await;
+            let streams = server.sse_streams.read().await;
+            let entry = streams.get("/test/stream").unwrap();
+            assert_eq!(entry.plugin, "test-plugin");
+            assert_eq!(entry.event_types, vec!["RoomCreate", "RoomJoin"]);
+        });
+    }
+
+    #[test]
+    fn sse_stream_overwrites_existing() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            let server = make_server();
+            let c1 = SseStreamConfig { plugin: "plugin-a".to_string(), event_types: vec![] };
+            let c2 = SseStreamConfig { plugin: "plugin-b".to_string(), event_types: vec![] };
+            server.register_sse_stream("/test", c1).await;
+            server.register_sse_stream("/test", c2).await;
+            let streams = server.sse_streams.read().await;
+            assert_eq!(streams.get("/test").unwrap().plugin, "plugin-b");
+        });
+    }
+
+    #[test]
+    fn sse_stream_empty_registry() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            let server = make_server();
+            assert!(server.sse_streams.read().await.is_empty());
+        });
+    }
+}

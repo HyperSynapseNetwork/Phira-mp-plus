@@ -97,6 +97,25 @@ mod capability_tests {
         assert!(caps.contains("state.read"), "default must include state.read");
         assert!(caps.contains("config"), "default must include config");
     }
+
+    #[test]
+    fn persist_methods_require_state_read() {
+        // persist.* methods require the "state.read" capability.
+        let methods = ["persist.events", "persist.rooms", "persist.touches", "persist.judges"];
+        for method in &methods {
+            let cap = wasm_host_helpers::required_capability(method);
+            assert_eq!(cap, Some("state.read"), "method {method} should require state.read");
+        }
+    }
+
+    #[test]
+    fn admin_methods_require_admin() {
+        let methods = ["admin.list", "admin.add", "admin.remove", "admin.set"];
+        for method in &methods {
+            let cap = wasm_host_helpers::required_capability(method);
+            assert_eq!(cap, Some("admin"), "method {method} should require admin");
+        }
+    }
 }
 
 // ══════════════════════════════════════════════════════════════════════
