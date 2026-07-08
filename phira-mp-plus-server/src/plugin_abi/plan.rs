@@ -38,12 +38,13 @@ pub fn plugin_abi_plan() -> PluginAbiPlan {
             "All .wasm plugins must be compiled as WIT components, not modules",
             "Persistence host API methods return capability errors — no real DB query path",
             "PluginEvent→WIT event conversion and capability enforcement lack integration tests",
-            "SDK documentation and runtime diagnostics must not describe JSON ABI as current",
+            "SSE stream (sse.register_stream) relies on host-side axum routing — plugin cannot hold open connections",
         ],
         next_steps: vec![
             "add integration tests for WIT lifecycle dispatch, event conversion and every host API method",
             "add capability enforcement integration tests for WIT room/admin/config/simulation writes",
             "update phira-plugin-sdk examples so WIT/component model is the only current ABI path",
+            "add SSE stream integration test: register stream → connect SSE → assert event translation",
         ],
     }
 }

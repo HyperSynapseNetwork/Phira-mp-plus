@@ -97,7 +97,7 @@ impl RuntimePlan {
                     title: "Typed WASM plugin ABI",
                     status: "active",
                     priority: "P1",
-                    next_step: "All host APIs implemented with capability enforcement. WIT lifecycle wired (init/cleanup/on-event/on-api). Capability model contract tests added (23 wit_abi_contracts). Remaining: integration tests that compile+run a real WIT component (blocked on test WASM binary). SDK provides wit_bindgen! macro. JSON ABI removed. MIGRATION_PHASE 2 (accurate — integration tests pending).",
+                    next_step: "All host APIs implemented with capability enforcement. WIT lifecycle wired (init/cleanup/on-event/on-api). WitPluginHost decoupled from PlusServerState via WitHostContext. SSE stream registration + event translation (sse.register_stream). Capability model contract tests added (23 wit_abi_contracts). Remaining: integration tests that compile+run a real WIT component (blocked on test WASM binary). SDK provides wit_bindgen! macro. JSON ABI removed. MIGRATION_PHASE 3 (accurate — integration tests pending).",
                 },
                 RuntimeObjective {
                     key: "test-coverage",
