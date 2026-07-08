@@ -92,6 +92,7 @@ phira-mp-plus-server [OPTIONS]
   -d, --plugins-dir <DIR>    插件目录 [默认: "plugins"]
   -e, --ext-file <FILE>      扩展数据持久化文件 [默认: "data/extensions.json"]
       --no-cli               禁用管理控制台
+      --minimal              最小化模式: 无插件、无 HTTP API、无 CLI
   -l, --log-file <NAME>      日志文件基础名称 [默认: "phira-mp-plus"]
   -m, --monitor <IDS>...     允许旁观的用户 ID
       --http-port <PORT>     HTTP/SSE 服务端口 [默认: 12347]

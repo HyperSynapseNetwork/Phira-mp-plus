@@ -43,6 +43,12 @@ struct Args {
     #[arg(long = "no-cli", help = "Disable the administrative console")]
     no_cli: bool,
 
+    #[arg(
+        long = "minimal",
+        help = "Minimal mode: no plugins, no HTTP API, no CLI management console"
+    )]
+    minimal: bool,
+
     #[arg(short, long, default_value = "phira-mp-plus", help = "Log file prefix")]
     log_file: String,
 
@@ -93,6 +99,10 @@ async fn main() -> Result<()> {
         no_cli: args.no_cli,
         log_file: args.log_file.clone(),
     });
+    if args.minimal {
+        config.idle.minimal = true;
+        config.cli_enabled = false;
+    }
     if config.monitors.is_empty() {
         config.monitors.push(2);
     }
