@@ -108,71 +108,137 @@ phira-mp-plus-server [OPTIONS]
 ```
 Phira-mp-plus/
 │
-├── Cargo.toml                   # 工作区根 (workspace)
+├── Cargo.toml                       # 工作区根 (workspace)
 ├── Cargo.lock
-├── LICENSE                      # AGPL-3.0
+├── LICENSE                          # AGPL-3.0
 ├── README.md
+├── server_config.yml                # YAML 配置文件
+├── wit/                             # WIT 接口定义
+│   └── phira-plugin.wit             #   Plugin ABI v2 WIT (12 interfaces, 53 methods)
 │
-├── server_config.yml            # YAML 配置文件
-├── data/                        # 运行时数据目录
-│   ├── extensions.json          #   插件扩展数据持久化
-│   ├── rounds/                  #   轮次 Touches/Judges 记录
-│   └── plugins/                 #   插件私有数据
-├── log/                         # 运行日志（每小时轮转）
+├── data/                            # 运行时数据
+│   ├── extensions.json              #   插件扩展数据
+│   ├── rounds/                      #   轮次 Touches/Judges 记录
+│   └── plugins/                     #   插件私有数据
+├── log/                             # 运行日志（每小时轮转）
 │
-├── phira-mp-plus-server/        # 服务端核心
-│   ├── Cargo.toml               #   axum / tokio / wasmtime / clap 等依赖
-│   ├── locales/                 #   Fluent i18n 翻译文件
-│   │   ├── en-US.ftl
-│   │   ├── zh-CN.ftl
-│   │   └── zh-TW.ftl
-│   ├── src/
-│   │   ├── main.rs                  #   进程入口与生命周期
-│   │   ├── lib.rs                   #   模块导出
-│   │   ├── cli.rs                   #   CLI 生命周期、输入循环、输出 helper
-│   │   ├── cli/dispatch.rs          #   顶层命令路由
-│   │   ├── cli/commands/            #   按功能分组的命令模块
-│   │   │   ├── admin.rs             #   admin-id、ban、extension 管理
-│   │   │   ├── benchmark.rs         #   benchmark 命令
-│   │   │   ├── broadcast.rs         #   broadcast 消息广播
-│   │   │   ├── plugin.rs            #   WASM 插件管理
-│   │   │   ├── room.rs              #   房间管理子命令
-│   │   │   ├── runtime/             #   runtime 诊断子命令
-│   │   │   └── simulation/          #   simulation 压测子命令
-│   │   ├── cli_tui.rs               #   TUI 终端界面: ratatui + crossterm
-│   │   ├── server.rs                #   服务器核心: PlusConfig / PlusServerState / PlusServer
-│   │   ├── server_query.rs          #   Admin ID 等查询函数
-│   │   ├── command_registry.rs      #   Runtime v2 命令注册表
-│   │   ├── session*.rs              #   会话、认证、房间协议、遥测处理、session actor
-│   │   ├── session_actor.rs         #   Session Actor 命令 mailbox
-│   │   ├── supervisor_actor.rs      #   服务监督者 mailbox
-│   │   ├── room.rs                  #   房间状态机: InternalRoomState / Room
-│   │   ├── room_actor/              #   Room Actor 命令网关与 per-room mailbox
-│   │   ├── idle.rs                  #   空载模式: IdleConfig / IdleMonitor
-│   │   ├── persistence/             #   持久化 Worker 管道
-│   │   ├── proxy_protocol.rs        #   PROXY protocol 解析与 TrustForwardedFor 中间件
-│   │   ├── telemetry*.rs            #   TelemetryBatcher、cutover 模式、策略
-│   │   ├── round_store.rs           #   轮次数据存储 (DB 优先, 文件回退)
-│   │   ├── internal_hooks.rs        #   内部静态注册 (DB / playtime)
-│   │   ├── plugin.rs                #   插件管理器: PluginManager / PluginHost trait
-│   │   ├── plugin_abi/              #   Plugin ABI 边界、WIT 元数据
-│   │   ├── plugin_http/             #   HTTP 动态路由、SSE 与 WebSocket
-│   │   ├── wasm_host*.rs            #   WASM 运行时与 host 辅助函数
-│   │   ├── wit_host.rs              #   WIT/component-model host trait 实现
-│   │   ├── extensions.rs            #   扩展数据系统: 用户/房间/全局 KV 存储
-│   │   ├── ban.rs                   #   黑名单系统: 全局封禁 + 房间黑名单 + IP 封禁
-│   │   ├── phira_client.rs          #   统一 Phira HTTP RetryClient
-│   │   ├── rate_limiter.rs          #   速率限制: 滑动窗口 + 令牌桶
-│   │   ├── event_bus.rs             #   EventBus 运行时脊椎
-│   │   ├── simulation*.rs           #   Simulation 管理器与 realistic 场景
-│   │   ├── l10n.rs                  #   本地化: Fluent Bundle / tl! 宏
-│   │   └── logging.rs               #   tracing 输出、日志轮转、速率限制、敏感数据脱敏
-│   ├── tests/                       #   集成与合约测试
+├── docs/                            # 文档
+│   ├── cli.md                       #   CLI 命令参考
+│   ├── configuration.md             #   YAML 配置说明
+│   ├── plugin-dev.md                #   插件开发指南
+│   ├── plugin-config.md             #   插件配置说明
+│   ├── wit-abi.md                   #   WIT ABI 规范
+│   ├── api.md                       #   HTTP API 参考
+│   ├── simulation.md                #   Simulation 架构
+│   ├── benchmark-real.md            #   真实压测说明
+│   ├── migrate-from-hsnphira.md     #   HSNPhira 迁移
+│   └── plugins/                     #   插件文档
 │
-├── phira-mp-plus-server-api/    # WASM 插件共享类型 crate
-│   └── src/lib.rs               #   PluginEvent / PluginInfo / HttpHandle 等共享类型
+├── phira-mp-plus-server/            # 服务端核心 (crate)
+│   ├── Cargo.toml
+│   ├── locales/                     #   Fluent i18n (en/zh-CN/zh-TW)
+│   └── src/
+│       ├── main.rs                  #   进程入口 & 生命周期
+│       ├── lib.rs                   #   模块导出
+│       ├── server.rs                #   PlusConfig / PlusServerState / PlusServer
+│       ├── server_query.rs          #   Admin ID 等查询函数
+│       ├── cli.rs                   #   CLI 生命周期、输入循环
+│       ├── cli/dispatch.rs          #   顶层命令路由
+│       ├── cli/commands/            #   命令模块
+│       │   ├── admin.rs             #   admin-id / ban / extension
+│       │   ├── benchmark.rs         #   benchmark 命令
+│       │   ├── broadcast.rs         #   消息广播
+│       │   ├── plugin.rs            #   WASM 插件管理
+│       │   ├── room.rs              #   房间管理
+│       │   ├── runtime/             #   runtime 诊断 (actors/commands/events/persistence/schema/status/...)
+│       │   └── simulation/          #   simulation 压测 (reports/runner/world)
+│       ├── cli_tui.rs               #   TUI 终端 (ratatui + crossterm)
+│       ├── command_registry.rs      #   命令注册表
+│       ├── session.rs               #   会话生命周期
+│       ├── session_auth.rs          #   会话认证
+│       ├── session_dispatch.rs      #   命令分发
+│       ├── session_permissions.rs   #   会话权限
+│       ├── session_room.rs          #   房间协议
+│       ├── session_telemetry.rs     #   遥测处理
+│       ├── session_actor.rs         #   Session Actor mailbox
+│       ├── supervisor_actor.rs      #   服务监督者 mailbox
+│       ├── room.rs                  #   房间状态机 (InternalRoomState / Room)
+│       ├── room_actor/              #   Room Actor 命令网关
+│       │   ├── mod.rs,mailbox.rs,command.rs,handler.rs,context.rs,result.rs,audit.rs
+│       │   └── ops/                 #   操作: control.rs, membership.rs, settings.rs
+│       ├── idle.rs                  #   空载模式 (IdleConfig / IdleMonitor)
+│       ├── persistence/             #   持久化 Worker 管道
+│       │   ├── mod.rs               #   入口 & pipeline
+│       │   └── admin/benchmark/diagnostics/events/message/mirror/queries/rounds/schema
+│       ├── proxy_protocol.rs        #   PROXY protocol 解析
+│       ├── telemetry_batcher.rs     #   TelemetryBatcher
+│       ├── telemetry_batcher_test.rs#   Batcher 测试
+│       ├── round_store.rs           #   轮次数据存储 (DB优先, 文件回退)
+│       ├── internal_hooks.rs        #   内部静态注册 (欢迎语/playtime/DB)
+│       ├── plugin.rs                #   插件管理器 (PluginManager / PluginHost)
+│       ├── plugin_abi/              #   Plugin ABI 边界
+│       │   ├── mod.rs               #   导出 / wit_abi bindgen
+│       │   └── plan.rs              #   ABI 版本常量 / MIGRATION_PHASE
+│       ├── plugin_http/             #   HTTP 动态路由
+│       │   ├── mod.rs               #   PluginHttpServer / SSE handler
+│       │   ├── router.rs            #   DynamicRouter (支持 :param)
+│       │   ├── sse.rs               #   SseHub / EventStream
+│       │   └── websocket.rs         #   WebSocket handler
+│       ├── wasm_host.rs             #   WASM 运行时 (WitPluginComponent)
+│       ├── wasm_host_helpers.rs     #   SSRF/capability/config helpers
+│       ├── wit_host.rs              #   WIT host trait 实现 (WitPluginHost)
+│       ├── extensions.rs            #   扩展 KV 存储
+│       ├── ban.rs                   #   封禁系统
+│       ├── phira_client.rs          #   Phira HTTP RetryClient
+│       ├── rate_limiter.rs          #   速率限制 (滑动窗口)
+│       ├── rate_limiter_test.rs
+│       ├── event_bus.rs             #   EventBus 运行时脊椎
+│       ├── simulation.rs            #   Simulation 管理器
+│       ├── simulation_realistic.rs  #   Realistic 场景
+│       ├── simulation_realistic_test.rs
+│       ├── actor_runtime.rs         #   Actor 边界蓝图
+│       ├── runtime_diagnostics.rs   #   Runtime 诊断常量
+│       ├── benchmark_report.rs      #   Benchmark report 类型
+│       ├── benchmark_snapshot.rs    #   Benchmark snapshot
+│       ├── db.rs                    #   PostgreSQL 持久化
+│       ├── error.rs                 #   错误类型
+│       ├── l10n.rs                  #   Fluent i18n
+│       ├── logging.rs               #   tracing 配置
+│       └── terminal.rs              #   终端检测
+│   └── tests/                       # 集成 & 合约测试
+│       ├── admin_command_contracts.rs
+│       ├── cli_command_contracts.rs
+│       ├── command_surface_contracts.rs
+│       ├── docs_contracts.rs
+│       ├── persistence_contracts.rs
+│       ├── phira_http_contracts.rs
+│       ├── room_state_machine_tests.rs
+│       ├── simulation_contracts.rs
+│       ├── telemetry_cutover_contracts.rs
+│       ├── wit_abi_contracts.rs
+│       ├── wasm_lifecycle_tests.rs
+│       ├── wasm_api_tests.rs
+│       ├── sse_tests.rs
+│       ├── test-plugin.component.wasm  # WASM 测试夹具
+│       └── test-plugin/                # 测试 WASM 插件源
+│           ├── Cargo.toml, Makefile
+│           └── src/lib.rs
 │
-├── phira-plugin-sdk/            # WASM 插件开发 SDK
+├── phira-mp-plus-server-api/      # 共享类型 crate
+│   └── src/lib.rs                 # PluginEvent / HttpHandle / ServerStateQuery
+│
+├── phira-plugin-sdk/              # WASM 插件 SDK
+│   ├── Cargo.toml
+│   └── src/lib.rs                 # wit_bindgen! 宏
+│
+├── phira-mp/                      # 上游 phira-mp 协议层
+│   ├── phira-mp-common/           #   网络协议
+│   │   └── src/                   #   ClientCommand / ServerCommand / Stream 帧协议
+│   └── phira-mp-macros/           #   #[derive(BinaryData)] 过程宏
+│
+└── .hsnphira-pmp-plugin/          # HSNPhira v2 前端插件 (独立仓库)
+    └── plugin/src/lib.rs          #   房间 / SSE 事件翻译 / config 端点
+```
 │
 ├── phira-mp/                    # 上游 phira-mp 子模块（协议层与原始服务端）
 │   ├── phira-mp-common/         #   网络协议: 二进制编码 (BinaryData trait)、
