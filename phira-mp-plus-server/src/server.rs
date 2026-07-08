@@ -207,6 +207,9 @@ pub struct PlusConfig {
     /// adding more CLI surface area.
     #[serde(default)]
     pub runtime_v2: RuntimeV2Config,
+    /// Idle mode configuration (lazy services, timeouts, minimal mode).
+    #[serde(default)]
+    pub idle: crate::idle::IdleConfig,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -292,6 +295,7 @@ impl Default for PlusConfig {
             benchmark_phira_tokens: Vec::new(),
             wasm_runtime: WasmRuntimeConfig::default(),
             runtime_v2: RuntimeV2Config::default(),
+            idle: crate::idle::IdleConfig::default(),
             proxy_protocol_port: 0,
         }
     }
@@ -643,6 +647,8 @@ pub struct PlusServerState {
     pub game_monitors: SafeMap<i32, Weak<super::session::Session>>,
     /// PostgreSQL 数据库管理器。
     pub db_manager: super::db::DbManager,
+    /// Idle mode monitor — tracks activity and controls service suspension.
+    pub idle_monitor: Arc<crate::idle::IdleMonitor>,
 }
 
 /// Phira-mp+ 服务器
@@ -916,6 +922,7 @@ impl PlusServer {
             room_monitor: RwLock::new(None),
             game_monitors: SafeMap::default(),
             events,
+            idle_monitor: crate::idle::IdleMonitor::new(),
             db_manager,
         });
         // Wire PersistenceWorker into ExtensionManager for mirrored writes
@@ -1127,6 +1134,7 @@ impl PlusServer {
             }
         }
 
+        self.state.idle_monitor.mark_activity();
         let id = Uuid::new_v4();
         let session = match tokio::time::timeout(
             std::time::Duration::from_secs(15),

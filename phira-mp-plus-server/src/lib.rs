@@ -14,6 +14,7 @@ pub mod db;
 pub mod error;
 pub mod event_bus;
 pub mod extensions;
+pub(crate) mod idle;
 pub mod internal_hooks;
 pub mod l10n;
 pub mod logging;
