@@ -321,9 +321,9 @@ impl PlusConfig {
                 self.port
             )));
         }
-        if self.http_port == 0 {
+        if self.http_port == 0 && !self.idle.minimal {
             return Err(AppError::ConfigValidation(format!(
-                "HTTP 端口 {} 超出范围 (1-65535)",
+                "HTTP 端口 {} 超出范围 (1-65535)；设置 idle.minimal=true 或指定有效端口",
                 self.http_port
             )));
         }
@@ -1027,15 +1027,21 @@ impl PlusServer {
             .set_default_state(state_query_all)
             .await;
 
-        let http_server = Arc::new(PluginHttpServer::new(
-            http_port,
-            proxy_protocol_port,
-            Arc::clone(&state.events),
-        ));
-        let http_handle = api::HttpHandle::new(crate::plugin_http::HttpHandleBridge(Arc::clone(
-            &http_server,
-        )));
-        state.plugin_manager.set_http_handle(http_handle).await;
+        // 非最小化模式且 http_port>0 时启动 HTTP 服务
+        let http_server = if http_port > 0 {
+            let srv = Arc::new(PluginHttpServer::new(
+                http_port,
+                proxy_protocol_port,
+                Arc::clone(&state.events),
+            ));
+            let http_handle = api::HttpHandle::new(crate::plugin_http::HttpHandleBridge(Arc::clone(
+                &srv,
+            )));
+            state.plugin_manager.set_http_handle(http_handle).await;
+            Some(srv)
+        } else {
+            None
+        };
         // 设置 WIT 组件模型所需的服务端状态引用
         state.plugin_manager.set_server_state(Arc::clone(&state)).await;
         // 设置命令注册表的 Room ID 补全引用
@@ -1044,19 +1050,24 @@ impl PlusServer {
         // 初始化 session actor mailbox（Chat 等命令通过它路由）
         crate::session_actor::init();
 
-        // 加载插件
-        let plugin_count = state.plugin_manager.load_plugins().await.unwrap_or(0);
-        info!("loaded {} plugin(s)", plugin_count);
+        // 非最小化模式时加载插件
+        if http_port > 0 {
+            let plugin_count = state.plugin_manager.load_plugins().await.unwrap_or(0);
+            info!("loaded {} plugin(s)", plugin_count);
+        }
 
         // 初始化内置功能（欢迎语/追踪/排行等）
-        crate::internal_hooks::init_internal_hooks(&state, &http_server, &state.plugin_manager)
+        let http_server_ref = http_server.as_ref().map(|s| Arc::clone(s));
+        crate::internal_hooks::init_internal_hooks(&state, &http_server_ref, &state.plugin_manager)
             .await;
 
         // 启动中央 HTTP 服务器（所有路由已注册完毕）
-        let http_state = Arc::clone(&state);
-        tokio::spawn(async move {
-            http_server.start(http_state).await;
-        });
+        if let Some(srv) = http_server {
+            let http_state = Arc::clone(&state);
+            tokio::spawn(async move {
+                srv.start(http_state).await;
+            });
+        }
 
         // 定期持久化 auth 缓存（避免每次认证都写盘）
         let persist_state = Arc::clone(&state);
@@ -1136,8 +1147,9 @@ impl PlusServer {
 
         self.state.idle_monitor.mark_activity();
         let id = Uuid::new_v4();
+        let auth_timeout = self.state.config.idle.auth_timeout_secs.max(5);
         let session = match tokio::time::timeout(
-            std::time::Duration::from_secs(15),
+            std::time::Duration::from_secs(auth_timeout),
             super::session::Session::new(id, addr, stream, Arc::clone(&self.state)),
         )
         .await

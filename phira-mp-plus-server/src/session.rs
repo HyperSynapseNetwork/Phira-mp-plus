@@ -797,11 +797,12 @@ impl Session {
         let monitor_task_handle = tokio::spawn({
             let server_clone = Arc::clone(&server_clone);
             async move {
+                let timeout = Duration::from_secs(server_clone.config.idle.heartbeat_timeout_secs.max(10));
                 loop {
                     let recv = *last_recv.lock().await;
-                    time::sleep_until((recv + HEARTBEAT_DISCONNECT_TIMEOUT).into()).await;
+                    time::sleep_until((recv + timeout).into()).await;
 
-                    if *last_recv.lock().await + HEARTBEAT_DISCONNECT_TIMEOUT > Instant::now() {
+                    if *last_recv.lock().await + timeout > Instant::now() {
                         continue;
                     }
 

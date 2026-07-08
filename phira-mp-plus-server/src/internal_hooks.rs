@@ -17,7 +17,7 @@ const PLAYTIME_CACHE_MAX_ENTRIES: usize = 50_000;
 
 pub async fn init_internal_hooks(
     state: &PlusServerState,
-    http: &PluginHttpServer,
+    http: &Option<Arc<PluginHttpServer>>,
     pm: &PluginManager,
 ) {
     // Set the static reference from the state's db_manager
@@ -360,10 +360,12 @@ async fn init_player_tracker(
     http: &PluginHttpServer,
     pm: &PluginManager,
 ) {
-    http.register_route_sync(
-        "/api/players/count",
-        Arc::new(|_, _| Ok(serde_json::json!({"count": PLAYERS.lock().unwrap().len()}))),
-    );
+    if let Some(srv) = http {
+        srv.register_route_sync(
+            "/api/players/count",
+            Arc::new(|_, _| Ok(serde_json::json!({"count": PLAYERS.lock().unwrap().len()}))),
+        );
+    }
     let _ = pm
         .register_cli_command(crate::plugin::CliCommand {
             name: "player-count".into(),
