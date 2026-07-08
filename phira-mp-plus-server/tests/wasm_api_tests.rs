@@ -1,18 +1,17 @@
 //! WASM plugin host API tests.
 //!
 //! Exercises plugin→host calls: api_call, http_request, log.
-//! These tests require the full WitPluginComponent with services.
+//! Uses `WitPluginComponent::from_bytes_ctx` with a mock context.
 
 #[cfg(feature = "wit-bindgen")]
 mod tests {
-    use phira_mp_plus_server::wasm_host::{WitPluginComponent, WasmPluginServices};
-    use phira_mp_plus_server::extensions::ExtensionManager;
+    use phira_mp_plus_server::wasm_host::WitPluginComponent;
     use phira_mp_plus_server::plugin::WasmRuntimeConfig;
+    use phira_mp_plus_server::wit_host::WitHostContext;
     use phira_mp_plus_server_api as api;
     use serde_json::json;
-    use std::collections::HashMap;
     use std::path::PathBuf;
-    use std::sync::{Arc, Mutex};
+    use std::sync::Arc;
 
     fn workspace_root() -> PathBuf {
         let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -23,47 +22,41 @@ mod tests {
         workspace_root().join("phira-mp-plus-server/tests/test-plugin.component.wasm")
     }
 
-    fn mock_state_query() -> api::ServerStateQuery {
-        api::ServerStateQuery::new(|method: &str, args: &[serde_json::Value]| {
+    fn mock_context() -> Arc<WitHostContext> {
+        let state_query = api::ServerStateQuery::new(|method: &str, args: &[serde_json::Value]| {
             match method {
-                "rooms.list" => Ok(serde_json::json!([
+                "rooms.list" => Ok(json!([
                     {"name": "test-room", "player_count": 3}
                 ])),
-                "user_name" => Ok(serde_json::json!({
+                "user_name" => Ok(json!({
                     "user_id": args.get(0).and_then(|v| v.as_i64()).unwrap_or(0),
                     "name": "test-user"
                 })),
                 _ => Err(format!("mock: unknown method {method}")),
             }
+        });
+        let extensions = Arc::new(phira_mp_plus_server::extensions::ExtensionManager::new_in_memory());
+        Arc::new(WitHostContext {
+            state_query,
+            extensions: Arc::clone(&extensions),
+            room_commands: Arc::new(phira_mp_plus_server::room_actor::RoomCommandGateway::new()),
+            ban_manager: Arc::new(phira_mp_plus_server::ban::BanManager::new(extensions)),
+            simulation: Arc::new(phira_mp_plus_server::simulation::SimulationManager::new()),
+            event_bus: Arc::new(phira_mp_plus_server::event_bus::EventBus::new(1024)),
+            http_timeout_secs: 10,
+            http_max_body: 1024 * 1024,
         })
-    }
-
-    fn test_services() -> Arc<WasmPluginServices> {
-        let cli_commands = Arc::new(Mutex::new(HashMap::new()));
-        let api_handlers = Arc::new(Mutex::new(HashMap::new()));
-        let services = Arc::new(WasmPluginServices::new(
-            Arc::new(ExtensionManager::new_in_memory()),
-            cli_commands,
-            api_handlers,
-        ));
-        // Set mock state query so plugin can call host_api("api-call", …)
-        if let Ok(mut sq) = services.state_query.lock() {
-            *sq = Some(mock_state_query());
-        }
-        services
     }
 
     fn load_component() -> WitPluginComponent {
         let bytes = std::fs::read(wasm_path()).expect("WASM fixture not found");
-        let services = test_services();
-        WitPluginComponent::new(&bytes, "test-plugin".into(), services, WasmRuntimeConfig::default())
-            .expect("WitPluginComponent::new should succeed")
+        let ctx = mock_context();
+        WitPluginComponent::from_bytes_ctx(&bytes, "test-plugin".into(), ctx, WasmRuntimeConfig::default())
+            .expect("WitPluginComponent::from_bytes_ctx should succeed")
     }
 
     #[test]
     fn plugin_calls_host_api_call() {
-        // The test plugin's "host.api_call" method calls phira_host::api_call
-        // with the given method name and args, then returns the result.
         let mut component = load_component();
         component.call_init().unwrap();
 
@@ -106,7 +99,6 @@ mod tests {
     fn plugin_logs_via_host() {
         let mut component = load_component();
         component.call_init().unwrap();
-        // log() via host — just ensure it doesn't panic
         let result = component.call_api("log", &[
             json!("info"),
             json!("test log message"),

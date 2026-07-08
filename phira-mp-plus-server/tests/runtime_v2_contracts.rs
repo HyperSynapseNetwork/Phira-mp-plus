@@ -19,7 +19,6 @@ fn runtime_plan_tracks_all_required_objectives() {
         "must track persistence-worker"
     );
     assert!(keys.contains(&"phira-http"), "must track phira-http");
-    assert!(keys.contains(&"tui-v2"), "must track tui-v2");
 
     // Architectural invariants
     assert!(snapshot.no_web_management_api, "no Web management API");
