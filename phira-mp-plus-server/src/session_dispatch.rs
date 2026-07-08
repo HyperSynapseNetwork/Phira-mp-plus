@@ -6,8 +6,7 @@
 use crate::session::{SessionCategory, User};
 use crate::tl;
 #[allow(unused_imports)]
-use anyhow::bail;
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, bail, Result};
 use phira_mp_common::{ClientCommand, ServerCommand};
 use std::sync::Arc;
 use tracing::warn;
@@ -17,11 +16,6 @@ pub(crate) async fn process(
     category: SessionCategory,
     cmd: ClientCommand,
 ) -> Option<ServerCommand> {
-    #[inline]
-    fn err_to_str<T>(result: Result<T>) -> Result<T, String> {
-        result.map_err(|it| it.to_string())
-    }
-
     macro_rules! get_room {
         (~ $d:ident) => {
             let $d = match user.room.read().await.as_ref().map(Arc::clone) {
@@ -73,6 +67,39 @@ pub(crate) async fn process(
         ClientCommand::Chat { message } => {
             crate::session_actor::route_chat(user, category, message.into_inner()).await
         }
+        ClientCommand::LockRoom { lock } => {
+            crate::session_actor::route_lock(user, lock).await
+        }
+        ClientCommand::CycleRoom { cycle } => {
+            crate::session_actor::route_cycle(user, cycle).await
+        }
+        ClientCommand::LeaveRoom => {
+            crate::session_actor::route_leave(user, category).await
+        }
+        ClientCommand::CreateRoom { id } => {
+            crate::session_actor::route_create(user, id).await
+        }
+        ClientCommand::JoinRoom { id, monitor } => {
+            crate::session_actor::route_join(user, category, id, monitor).await
+        }
+        ClientCommand::SelectChart { id } => {
+            crate::session_actor::route_select_chart(user, id).await
+        }
+        ClientCommand::RequestStart => {
+            crate::session_actor::route_request_start(user).await
+        }
+        ClientCommand::Ready => {
+            crate::session_actor::route_ready(user).await
+        }
+        ClientCommand::CancelReady => {
+            crate::session_actor::route_cancel_ready(user).await
+        }
+        ClientCommand::Played { id } => {
+            crate::session_actor::route_played(user, id).await
+        }
+        ClientCommand::Abort => {
+            crate::session_actor::route_abort(user).await
+        }
         ClientCommand::Touches { frames } => {
             get_room!(~ room);
             crate::session_telemetry::handle_touches(Arc::clone(&user), room, frames).await;
@@ -82,51 +109,6 @@ pub(crate) async fn process(
             get_room!(~ room);
             crate::session_telemetry::handle_judges(Arc::clone(&user), room, judges).await;
             None
-        }
-        ClientCommand::CreateRoom { id } => {
-            let res = crate::session_room::create_room(Arc::clone(&user), id).await;
-            Some(ServerCommand::CreateRoom(err_to_str(res)))
-        }
-        ClientCommand::JoinRoom { id, monitor } => {
-            let res =
-                crate::session_room::join_room(Arc::clone(&user), category, id, monitor).await;
-            Some(ServerCommand::JoinRoom(err_to_str(res)))
-        }
-        ClientCommand::LeaveRoom => {
-            let res = crate::session_room::leave_room(Arc::clone(&user), category).await;
-            Some(ServerCommand::LeaveRoom(err_to_str(res)))
-        }
-        ClientCommand::LockRoom { lock } => {
-            let res = crate::session_room::lock_room(Arc::clone(&user), lock).await;
-            Some(ServerCommand::LockRoom(err_to_str(res)))
-        }
-        ClientCommand::CycleRoom { cycle } => {
-            let res = crate::session_room::cycle_room(Arc::clone(&user), cycle).await;
-            Some(ServerCommand::CycleRoom(err_to_str(res)))
-        }
-        ClientCommand::SelectChart { id } => {
-            let res = crate::session_room::select_chart(Arc::clone(&user), id).await;
-            Some(ServerCommand::SelectChart(err_to_str(res)))
-        }
-        ClientCommand::RequestStart => {
-            let res = crate::session_room::request_start(Arc::clone(&user)).await;
-            Some(ServerCommand::RequestStart(err_to_str(res)))
-        }
-        ClientCommand::Ready => {
-            let res = crate::session_room::ready(Arc::clone(&user)).await;
-            Some(ServerCommand::Ready(err_to_str(res)))
-        }
-        ClientCommand::CancelReady => {
-            let res = crate::session_room::cancel_ready(Arc::clone(&user)).await;
-            Some(ServerCommand::CancelReady(err_to_str(res)))
-        }
-        ClientCommand::Played { id } => {
-            let res = crate::session_room::played(Arc::clone(&user), id).await;
-            Some(ServerCommand::Played(err_to_str(res)))
-        }
-        ClientCommand::Abort => {
-            let res = crate::session_room::abort(Arc::clone(&user)).await;
-            Some(ServerCommand::Abort(err_to_str(res)))
         }
         ClientCommand::QueryRoomInfo => {
             match crate::session_room::query_room_info(Arc::clone(&user)).await {

@@ -107,7 +107,7 @@ fn default_boundaries() -> Vec<ActorBoundary> {
             responsibility: "Own one client connection, authentication state, inbound command decoding, and outbound send queue.".to_string(),
             source_files: vec!["session.rs".to_string(), "session_dispatch.rs".to_string(), "session_auth.rs".to_string(), "session_room.rs".to_string(), "session_telemetry.rs".to_string(), "session_actor.rs".to_string()],
             status: ActorBoundaryStatus::WriteRouted,
-            next_step: "Mailbox skeleton established (session_actor.rs). Chat commands routed through mailbox. Next: route remaining ClientCommand variants through the actor boundary.".to_string(),
+            next_step: "All ClientCommand variants (except Ping, Authenticate, Touches, Judges, QueryRoomInfo) routed through session actor mailbox. Chat, Lock, Cycle, Leave, Create, Join, SelectChart, RequestStart, Ready, CancelReady, Played, Abort are WriteRouted.".to_string(),
         },
         ActorBoundary {
             name: "room-actor".to_string(),
