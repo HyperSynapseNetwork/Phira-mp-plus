@@ -1038,6 +1038,9 @@ impl PlusServer {
         // 设置命令注册表的 Room ID 补全引用
         state.command_registry.install_room_completer(&state);
 
+        // 初始化 session actor mailbox（Chat 等命令通过它路由）
+        crate::session_actor::init();
+
         // 加载插件
         let plugin_count = state.plugin_manager.load_plugins().await.unwrap_or(0);
         info!("loaded {} plugin(s)", plugin_count);

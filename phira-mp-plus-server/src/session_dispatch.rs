@@ -71,35 +71,7 @@ pub(crate) async fn process(
             "repeated-authenticate"
         )))),
         ClientCommand::Chat { message } => {
-            if !user.server.config.chat_enabled {
-                return None;
-            }
-            let res: Result<()> = async move {
-                get_room!(room);
-                let content = message.into_inner();
-                if let Some(db) = crate::internal_hooks::DB.get() {
-                    db.record_room_event_sync(
-                        "chat.message",
-                        Some(room.id.to_string()),
-                        Some(user.id),
-                        serde_json::json!({
-                            "room_id": room.id.to_string(),
-                            "user_id": user.id,
-                            "user_name": user.name.clone(),
-                            "message": content.clone(),
-                        }),
-                    );
-                }
-                room.send_as(&user, content).await;
-                user.server
-                    .publish_runtime_event(crate::event_bus::MpEvent::ChatMessage {
-                        room_id: Some(room.id.clone()),
-                        user_id: user.id,
-                    });
-                Ok(())
-            }
-            .await;
-            Some(ServerCommand::Chat(err_to_str(res)))
+            crate::session_actor::route_chat(user, category, message.into_inner()).await
         }
         ClientCommand::Touches { frames } => {
             get_room!(~ room);
