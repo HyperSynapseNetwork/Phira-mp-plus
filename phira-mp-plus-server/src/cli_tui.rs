@@ -20,7 +20,7 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Position, Rect},
     style::{Color, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Clear, Paragraph},
+    widgets::{Block, Borders, Clear, Paragraph, Wrap},
     Frame, Terminal,
 };
 use std::collections::HashMap;
@@ -685,7 +685,10 @@ impl TuiApp {
                 .border_style(self.border_style()),
             output_area,
         );
-        frame.render_widget(Paragraph::new(visible), output_inner);
+        frame.render_widget(
+            Paragraph::new(visible).wrap(Wrap { trim: false }),
+            output_inner,
+        );
 
         if self.scroll_from_bottom > 0 && output_height > 0 && output_inner.width > 0 {
             let max_offset = max_start.max(1);
