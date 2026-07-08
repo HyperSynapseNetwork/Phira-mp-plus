@@ -124,55 +124,54 @@ async fn main() -> Result<()> {
             if screen_compat {
                 info!("GNU Screen detected; using conservative TUI capabilities with Ctrl+H backspace compatibility");
             }
-            Some(std::thread::spawn(move || match mode {
-                ConsoleMode::Tui(capabilities) => {
-                    if let Err(err) =
-                        phira_mp_plus_server::cli_tui::run_tui(cmd_tx, out_rx, log_rx, capabilities)
-                    {
-                        eprintln!("TUI error: {err}");
+            Some(std::thread::spawn(move || {
+                // 在非 tmux 的低兼容性终端下，提示安装 tmux 获得更好的 TUI 体验
+                let has_tmux = std::env::var_os("TMUX").is_some();
+                let term = std::env::var("TERM").unwrap_or_default();
+                let is_low_compat = term.is_empty() || term == "dumb"
+                    || term.starts_with("screen") || term == "linux"
+                    || term == "ansi" || term == "cons25";
+                if is_low_compat && !has_tmux {
+                    eprintln!("\n  ⚠ 当前终端兼容性较低，管理控制台将以降级模式运行。");
+                    eprintln!("  💡 建议安装 tmux 以获得完整的 TUI 体验：");
+                    if std::fs::metadata("/etc/debian_version").is_ok() {
+                        eprintln!("     apt install tmux");
+                    } else if std::fs::metadata("/etc/redhat-release").is_ok() {
+                        eprintln!("     yum install tmux");
+                    } else if std::fs::metadata("/etc/arch-release").is_ok() {
+                        eprintln!("     pacman -S tmux");
+                    } else if std::path::Path::new("/usr/local/bin/brew").exists() {
+                        eprintln!("     brew install tmux");
+                    } else {
+                        eprintln!("     # 请使用系统包管理器安装 tmux");
+                    }
+                    eprint!("\n  输入 y 继续启动 [y/N]: ");
+                    use std::io::Write;
+                    let _ = std::io::stdout().flush();
+                    let mut input = String::new();
+                    let proceed = std::io::stdin().read_line(&mut input)
+                        .map(|_| input.trim().to_lowercase() == "y")
+                        .unwrap_or(false);
+                    if !proceed {
+                        eprintln!("  已取消启动。");
+                        return;
                     }
                 }
-                ConsoleMode::Line => {
-                    // 低兼容性终端：提示用户可安装 tmux 获得更好的 TUI 体验
-                    let has_tmux = std::env::var_os("TMUX").is_some();
-                    // TerminalProfile already determined this is a non-TUI, low-compat line.
-                    // Only prompt when stdin is actually available (not piped).
-                    let is_piped = std::env::var("TERM").unwrap_or_default().is_empty()
-                        || std::env::var("TERM").unwrap_or_default() == "dumb";
-                    if !is_piped && !has_tmux {
-                        eprintln!("\n  ⚠ 当前终端兼容性较低，管理控制台将以降级逐行模式运行。");
-                        eprintln!("  💡 建议安装 tmux 以获得完整的 TUI 体验：");
-                        // 根据系统推荐安装指令
-                        if std::fs::metadata("/etc/debian_version").is_ok() {
-                            eprintln!("     apt install tmux");
-                        } else if std::fs::metadata("/etc/redhat-release").is_ok() {
-                            eprintln!("     yum install tmux");
-                        } else if std::fs::metadata("/etc/arch-release").is_ok() {
-                            eprintln!("     pacman -S tmux");
-                        } else if std::path::Path::new("/usr/local/bin/brew").exists() {
-                            eprintln!("     brew install tmux");
-                        } else {
-                            eprintln!("     # 请使用系统包管理器安装 tmux");
-                        }
-                        eprint!("\n  输入 y 继续启动降级控制台 [y/N]: ");
-                        use std::io::Write;
-                        let _ = std::io::stdout().flush();
-                        let mut input = String::new();
-                        let proceed = std::io::stdin().read_line(&mut input)
-                            .map(|_| input.trim().to_lowercase() == "y")
-                            .unwrap_or(false);
-                        if !proceed {
-                            eprintln!("  已取消启动降级控制台。");
-                            return;
+                match mode {
+                    ConsoleMode::Tui(capabilities) => {
+                        if let Err(err) =
+                            phira_mp_plus_server::cli_tui::run_tui(cmd_tx, out_rx, log_rx, capabilities)
+                        {
+                            eprintln!("TUI error: {err}");
                         }
                     }
-                    phira_mp_plus_server::cli_tui::run_stdin_cli_with_logs(
-                        cmd_tx,
-                        out_rx,
-                        log_rx,
-                        screen_compat,
-                    );
+                    ConsoleMode::Line => {
+                        phira_mp_plus_server::cli_tui::run_stdin_cli_with_logs(
+                            cmd_tx, out_rx, log_rx, screen_compat,
+                        );
+                    }
                 }
+            }))
             }))
         }
         _ => {
