@@ -35,6 +35,7 @@ pub mod server_query;
 pub mod session;
 mod session_auth;
 pub mod session_dispatch;
+pub(crate) mod session_actor;
 pub mod session_permissions;
 pub mod session_room;
 mod session_telemetry;

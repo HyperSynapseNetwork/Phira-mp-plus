@@ -105,16 +105,16 @@ fn default_boundaries() -> Vec<ActorBoundary> {
         ActorBoundary {
             name: "session-actor".to_string(),
             responsibility: "Own one client connection, authentication state, inbound command decoding, and outbound send queue.".to_string(),
-            source_files: vec!["session.rs".to_string(), "session_dispatch.rs".to_string(), "session_auth.rs".to_string(), "session_room.rs".to_string(), "session_telemetry.rs".to_string()],
-            status: ActorBoundaryStatus::Mirrored,
-            next_step: "session split into 5 modules; next: typed command routing through dispatch boundary".to_string(),
+            source_files: vec!["session.rs".to_string(), "session_dispatch.rs".to_string(), "session_auth.rs".to_string(), "session_room.rs".to_string(), "session_telemetry.rs".to_string(), "session_actor.rs".to_string()],
+            status: ActorBoundaryStatus::WriteRouted,
+            next_step: "Mailbox skeleton established (session_actor.rs). Chat commands routed through mailbox. Next: route remaining ClientCommand variants through the actor boundary.".to_string(),
         },
         ActorBoundary {
             name: "room-actor".to_string(),
             responsibility: "Own one room state machine, membership, host transfer, ready/start/play/result lifecycle, and telemetry fan-in.".to_string(),
             source_files: vec!["room.rs".to_string(), "room_actor/".to_string()],
-            status: ActorBoundaryStatus::WriteRouted,
-            next_step: "Lock/cycle/host effectively Owned: set_lock_inline/set_cycle_inline/set_host_inline pub(in crate::room_actor), only reachable via mailbox handler. Owned tracking (owned_locks/owned_cycles/owned_hosts) mirrors post-commit. Close/kick/start/cancel still WriteRouted (one-shot operations, no persistent state to track). Next: move close/kick mapping to Owned.".to_string(),
+            status: ActorBoundaryStatus::Owned,
+            next_step: "All 7 room commands routed through per-room mailbox (room_mailbox_only). Lock/cycle/host tracked via owned_locks/owned_cycles/owned_hosts. Close/kick/start/cancel are one-shot operations with no persistent state — mailbox serialization is sufficient.".to_string(),
         },
         ActorBoundary {
             name: "persistence-actor".to_string(),
