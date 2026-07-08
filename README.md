@@ -99,6 +99,8 @@ phira-mp-plus-server [OPTIONS]
   -c, --config <FILE>        YAML 配置文件路径 [默认: "server_config.yml"]
   -h, --help                 显示帮助
   -V, --version              显示版本
+
+空载模式（Idle Mode）及更多配置项见 [docs/configuration.md](docs/configuration.md)。
 ```
 
 ## 项目结构
