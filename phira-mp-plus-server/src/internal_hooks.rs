@@ -357,7 +357,7 @@ pub fn track_player(user_id: i32, user_name: &str) {
 
 async fn init_player_tracker(
     _state: &PlusServerState,
-    http: &PluginHttpServer,
+    http: &Option<Arc<PluginHttpServer>>,
     pm: &PluginManager,
 ) {
     if let Some(srv) = http {
@@ -450,7 +450,7 @@ fn prune_playtime_cache(data: &mut HashMap<i32, PlaytimeEntry>, keep_user_id: i3
 
 async fn init_playtime_tracker(
     _state: &PlusServerState,
-    _http: &PluginHttpServer,
+    _http: &Option<Arc<PluginHttpServer>>,
     pm: &PluginManager,
 ) {
     let _ = pm
