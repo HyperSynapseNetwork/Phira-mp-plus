@@ -784,7 +784,7 @@ Runtime v2 诊断总览。
 
 **输出:**
 ```
-  Runtime v2: <rooms> rooms | <N> commands | MIGRATION_PHASE=<phase> (WIT-only skeleton)
+  Runtime v2: <rooms> rooms | <N> commands | MIGRATION_PHASE=<phase> (WIT component ABI)
 ```
 
 ---

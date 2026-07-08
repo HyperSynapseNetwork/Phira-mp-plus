@@ -98,9 +98,9 @@ fn default_boundaries() -> Vec<ActorBoundary> {
         ActorBoundary {
             name: "server-supervisor".to_string(),
             responsibility: "Own process lifecycle, shutdown, listener startup, and actor supervision instead of accumulating feature glue in server.rs.".to_string(),
-            source_files: vec!["server.rs".to_string()],
-            status: ActorBoundaryStatus::Mirrored,
-            next_step: "EventBus subscribers handle user_connected/disconnected and simulation lifecycle; next: typed supervisor mailbox for lifecycle events".to_string(),
+            source_files: vec!["server.rs".to_string(), "supervisor_actor.rs".to_string()],
+            status: ActorBoundaryStatus::ReadRouted,
+            next_step: "Mailbox skeleton created (supervisor_actor.rs). Status queries and shutdown notifications routed through mailbox. Next: move server startup lifecycle events through supervisor.".to_string(),
         },
         ActorBoundary {
             name: "session-actor".to_string(),

@@ -2635,6 +2635,33 @@ fn runtime_state_query_timeout() -> std::time::Duration {
     crate::runtime_diagnostics::RUNTIME_STATE_QUERY_TIMEOUT
 }
 
+/// Spawn an async task on a Tokio runtime.
+///
+/// If the current thread has a Tokio Handle (e.g. called from an async
+/// context), use `tokio::spawn`.  Otherwise create a temporary single-
+/// threaded runtime so blocking threads (WASM plugin calls, CLI commands)
+/// can still use async helpers.
+///
+/// Returns `None` when falling back to a temp runtime (the task still
+/// runs, but the caller cannot await its completion).
+fn spawn_on_runtime<F>(f: F) -> Option<tokio::task::JoinHandle<()>>
+where
+    F: std::future::Future<Output = ()> + Send + 'static,
+{
+    if let Ok(handle) = tokio::runtime::Handle::try_current() {
+        Some(handle.spawn(f))
+    } else {
+        std::thread::spawn(move || {
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("build temp runtime");
+            rt.block_on(f);
+        });
+        None
+    }
+}
+
 fn parse_benchmark_mode_arg(value: &str) -> Option<BenchmarkMode> {
     match value {
         "simulation" | "sim" => Some(BenchmarkMode::Simulation),
@@ -2653,7 +2680,7 @@ fn server_state_query_inner(
         "runtime.status" => {
             let (tx, rx) = std::sync::mpsc::channel();
             let s = Arc::clone(state);
-            tokio::spawn(async move {
+            spawn_on_runtime(async move {
                 let simulation = s.simulation.status().await;
                 let persistence = s.persistence_worker.stats().await;
                 let events = s
@@ -2685,7 +2712,7 @@ fn server_state_query_inner(
         "simulation.status" => {
             let (tx, rx) = std::sync::mpsc::channel();
             let s = Arc::clone(state);
-            tokio::spawn(async move {
+            spawn_on_runtime(async move {
                 let status = s.simulation.status().await;
                 let _ = tx.send(Ok(serde_json::to_value(status).unwrap_or_default()));
             });
@@ -2696,7 +2723,7 @@ fn server_state_query_inner(
             let limit = args.get(0).and_then(|v| v.as_u64()).unwrap_or(20) as usize;
             let (tx, rx) = std::sync::mpsc::channel();
             let s = Arc::clone(state);
-            tokio::spawn(async move {
+            spawn_on_runtime(async move {
                 let result = s
                     .simulation
                     .world_snapshot(limit)
@@ -2745,7 +2772,7 @@ fn server_state_query_inner(
                 .map(|value| value as usize)
                 .unwrap_or(crate::runtime_diagnostics::BENCHMARK_REPORT_RECENT_DEFAULT);
             let (tx, rx) = std::sync::mpsc::channel::<Result<Value, String>>();
-            tokio::spawn(async move {
+            spawn_on_runtime(async move {
                 let rows = if let Some(db) = crate::internal_hooks::DB.get() {
                     db.runtime_benchmark_report_history(
                         crate::persistence::BenchmarkReportHistoryQuery::new(mode, limit),
@@ -2766,7 +2793,7 @@ fn server_state_query_inner(
             let uid = args.get(0).and_then(|v| v.as_i64()).unwrap_or(0) as i32;
             let (tx, rx) = std::sync::mpsc::channel();
             let s = Arc::clone(state);
-            tokio::spawn(async move {
+            spawn_on_runtime(async move {
                 let result = async {
                     let rooms = s.rooms.read().await;
                     for room in rooms.values() {
@@ -2787,7 +2814,7 @@ fn server_state_query_inner(
             let uid = args.get(0).and_then(|v| v.as_i64()).unwrap_or(0) as i32;
             let (tx, rx) = std::sync::mpsc::channel();
             let s = Arc::clone(state);
-            tokio::spawn(async move {
+            spawn_on_runtime(async move {
                 let result = async {
                     let rooms = s.rooms.read().await;
                     for room in rooms.values() {
@@ -2813,7 +2840,7 @@ fn server_state_query_inner(
             let (tx, rx) = std::sync::mpsc::channel();
             let s = Arc::clone(state);
             let uuid = round_uuid.to_string();
-            tokio::spawn(async move {
+            spawn_on_runtime(async move {
                 let result = s
                     .round_store
                     .read_player_data(&uuid, player_id)
@@ -2828,7 +2855,7 @@ fn server_state_query_inner(
         "round.list" => {
             let (tx, rx) = std::sync::mpsc::channel();
             let s = Arc::clone(state);
-            tokio::spawn(async move {
+            spawn_on_runtime(async move {
                 let rounds = s.round_store.list_rounds().await;
                 let _ = tx.send(Ok(serde_json::to_value(rounds).unwrap_or_default()));
             });
@@ -2882,7 +2909,7 @@ fn server_state_query_inner(
             }
             let (tx, rx) = std::sync::mpsc::channel();
             let s = Arc::clone(state);
-            tokio::spawn(async move {
+            spawn_on_runtime(async move {
                 let result = s.bind_benchmark_tokens(raw).await
                     .map(|count| serde_json::json!({"ok": true, "count": count, "path": BENCH_AUTH_FILE}));
                 let _ = tx.send(result);
@@ -2892,7 +2919,7 @@ fn server_state_query_inner(
         }
         "test.cleanup" => {
             let s = Arc::clone(state);
-            tokio::spawn(async move {
+            spawn_on_runtime(async move {
                 s.rooms
                     .write()
                     .await
@@ -2942,9 +2969,10 @@ fn server_state_query_inner(
             };
             let (tx, rx) = std::sync::mpsc::channel();
             let s = Arc::clone(state);
-            tokio::spawn(async move {
+            let rid2 = rid;
+            spawn_on_runtime(async move {
                 let rooms = s.rooms.read().await;
-                let result = match rooms.get(&rid) {
+                let result = match rooms.get(&rid2) {
                     Some(room) => {
                         let history = room.play_history.read().await;
                         let rounds: Vec<Value> = history
@@ -2979,7 +3007,7 @@ fn server_state_query_inner(
             }
             let (tx, rx) = std::sync::mpsc::channel();
             let s = Arc::clone(state);
-            tokio::spawn(async move {
+            spawn_on_runtime(async move {
                 let rooms = s.rooms.read().await;
                 let mut found = None;
                 for room in rooms.values() {
@@ -3014,7 +3042,7 @@ fn server_state_query_inner(
             let since_ms = args.get(0).and_then(|v| v.as_i64()).unwrap_or(0);
             let (tx, rx) = std::sync::mpsc::channel();
             let s = Arc::clone(state);
-            tokio::spawn(async move {
+            spawn_on_runtime(async move {
                 let rooms = s.rooms.read().await;
                 let list: Vec<Value> = rooms.values().filter(|r| r.created_at >= since_ms).map(|r| {
                     serde_json::json!({
@@ -3047,7 +3075,7 @@ fn server_state_query_inner(
             .flatten();
             let (tx, rx) = std::sync::mpsc::channel();
             let s = Arc::clone(state);
-            tokio::spawn(async move {
+            spawn_on_runtime(async move {
                 let result = s.create_empty_room(&room_id, endpoint, true).await;
                 let _ = tx.send(result);
             });
@@ -3066,7 +3094,7 @@ fn server_state_query_inner(
             }
             let (tx, rx) = std::sync::mpsc::channel();
             let s = Arc::clone(state);
-            tokio::spawn(async move {
+            spawn_on_runtime(async move {
                 let result = s.set_room_persistent_empty(&room_id, persistent).await;
                 let _ = tx.send(result);
             });
@@ -3085,7 +3113,7 @@ fn server_state_query_inner(
             }
             let (tx, rx) = std::sync::mpsc::channel();
             let s = Arc::clone(state);
-            tokio::spawn(async move {
+            spawn_on_runtime(async move {
                 let result = run_room_kick(&s, &room_id, target_id).await;
                 let _ = tx.send(result);
             });
@@ -3119,7 +3147,7 @@ fn server_state_query_inner(
             }
             let (tx, rx) = std::sync::mpsc::channel();
             let s = Arc::clone(state);
-            tokio::spawn(async move {
+            spawn_on_runtime(async move {
                 let result = run_room_set_host(&s, &room_id, target_id).await;
                 let _ = tx.send(result);
             });
@@ -3142,7 +3170,7 @@ fn server_state_query_inner(
             }
             let (tx, rx) = std::sync::mpsc::channel();
             let s = Arc::clone(state);
-            tokio::spawn(async move {
+            spawn_on_runtime(async move {
                 let result = s
                     .force_move_user_to_room(&room_id, target_id, monitor)
                     .await;
@@ -3163,7 +3191,7 @@ fn server_state_query_inner(
             }
             let (tx, rx) = std::sync::mpsc::channel();
             let s = Arc::clone(state);
-            tokio::spawn(async move {
+            spawn_on_runtime(async move {
                 let result = run_room_set_lock(&s, &room_id, locked).await;
                 let _ = tx.send(result);
             });
@@ -3182,7 +3210,7 @@ fn server_state_query_inner(
             }
             let (tx, rx) = std::sync::mpsc::channel();
             let s = Arc::clone(state);
-            tokio::spawn(async move {
+            spawn_on_runtime(async move {
                 let result = s.set_room_hidden(&room_id, hidden).await;
                 let _ = tx.send(result);
             });
@@ -3216,7 +3244,7 @@ fn server_state_query_inner(
             }
             let (tx, rx) = std::sync::mpsc::channel();
             let s = Arc::clone(state);
-            tokio::spawn(async move {
+            spawn_on_runtime(async move {
                 let result = s.get_room_phira_api_endpoint(&room_id).await;
                 let _ = tx.send(result);
             });
@@ -3239,7 +3267,7 @@ fn server_state_query_inner(
             .flatten();
             let (tx, rx) = std::sync::mpsc::channel();
             let s = Arc::clone(state);
-            tokio::spawn(async move {
+            spawn_on_runtime(async move {
                 let result = s.set_room_phira_api_endpoint(&room_id, endpoint).await;
                 let _ = tx.send(result);
             });
@@ -3257,7 +3285,7 @@ fn server_state_query_inner(
             }
             let (tx, rx) = std::sync::mpsc::channel();
             let s = Arc::clone(state);
-            tokio::spawn(async move {
+            spawn_on_runtime(async move {
                 let result = s.set_room_phira_api_endpoint(&room_id, None).await;
                 let _ = tx.send(result);
             });
@@ -3275,7 +3303,7 @@ fn server_state_query_inner(
             }
             let (tx, rx) = std::sync::mpsc::channel();
             let s = Arc::clone(state);
-            tokio::spawn(async move {
+            spawn_on_runtime(async move {
                 let result = run_room_close(&s, &room_id).await;
                 let _ = tx.send(result);
             });
@@ -3294,7 +3322,7 @@ fn server_state_query_inner(
                 .to_string();
             let (tx, rx) = std::sync::mpsc::channel();
             let s = Arc::clone(state);
-            tokio::spawn(async move {
+            spawn_on_runtime(async move {
                 let result = run_admin_kick_user(&s, uid, &reason).await;
                 let _ = tx.send(result);
             });
@@ -3313,7 +3341,7 @@ fn server_state_query_inner(
             }
             let (tx, rx) = std::sync::mpsc::channel();
             let s = Arc::clone(state);
-            tokio::spawn(async move {
+            spawn_on_runtime(async move {
                 let result = s
                     .ban_manager
                     .ban_user(uid, &reason)
@@ -3331,7 +3359,7 @@ fn server_state_query_inner(
             }
             let (tx, rx) = std::sync::mpsc::channel();
             let s = Arc::clone(state);
-            tokio::spawn(async move {
+            spawn_on_runtime(async move {
                 let result = s
                     .ban_manager
                     .unban_user(uid)
@@ -3349,7 +3377,7 @@ fn server_state_query_inner(
             }
             let (tx, rx) = std::sync::mpsc::channel();
             let s = Arc::clone(state);
-            tokio::spawn(async move {
+            spawn_on_runtime(async move {
                 let reason = s.ban_manager.ban_reason(uid).await;
                 let _ = tx.send(Ok(serde_json::json!({
                     "banned": reason.is_some(),
@@ -3362,7 +3390,7 @@ fn server_state_query_inner(
         "admin.ban_list" => {
             let (tx, rx) = std::sync::mpsc::channel();
             let s = Arc::clone(state);
-            tokio::spawn(async move {
+            spawn_on_runtime(async move {
                 let list = s.ban_manager.list_banned().await;
                 let _ = tx.send(Ok(serde_json::to_value(list).unwrap_or_default()));
             });
@@ -3372,7 +3400,7 @@ fn server_state_query_inner(
         "admin.list_users" => {
             let (tx, rx) = std::sync::mpsc::channel();
             let s = Arc::clone(state);
-            tokio::spawn(async move {
+            spawn_on_runtime(async move {
                 let users = s.users.read().await;
                 let list: Vec<Value> = users
                     .values()
@@ -3395,7 +3423,7 @@ fn server_state_query_inner(
             }
             let (tx, rx) = std::sync::mpsc::channel();
             let s = Arc::clone(state);
-            tokio::spawn(async move {
+            spawn_on_runtime(async move {
                 let history = s.user_room_history.read().await;
                 let entries = history.get(&uid).cloned().unwrap_or_default();
                 let list: Vec<Value> = entries.iter().map(|(room_id, room_uuid, ts)| {
@@ -3422,7 +3450,7 @@ fn server_state_query_inner(
                 .and_then(|v| v.as_i64())
                 .and_then(|v| i32::try_from(v).ok());
             let (tx, rx) = std::sync::mpsc::channel::<Result<Value, String>>();
-            tokio::spawn(async move {
+            spawn_on_runtime(async move {
                 let rows = if let Some(db) = crate::internal_hooks::DB.get() {
                     db.query_events(since, limit, kind.clone(), room_id.clone(), user_id)
                         .await
@@ -3443,7 +3471,7 @@ fn server_state_query_inner(
                 .unwrap_or(100)
                 .clamp(1, 1000);
             let (tx, rx) = std::sync::mpsc::channel::<Result<Value, String>>();
-            tokio::spawn(async move {
+            spawn_on_runtime(async move {
                 let rows = if let Some(db) = crate::internal_hooks::DB.get() {
                     db.query_room_snapshots(since, limit).await
                 } else {
@@ -3473,7 +3501,7 @@ fn server_state_query_inner(
                 .and_then(|v| v.as_i64())
                 .and_then(|v| i32::try_from(v).ok());
             let (tx, rx) = std::sync::mpsc::channel::<Result<Value, String>>();
-            tokio::spawn(async move {
+            spawn_on_runtime(async move {
                 let rows = if let Some(db) = crate::internal_hooks::DB.get() {
                     db.query_touch_batches(since, limit, round_uuid.clone(), player_id)
                         .await
@@ -3503,7 +3531,7 @@ fn server_state_query_inner(
                 .and_then(|v| v.as_i64())
                 .and_then(|v| i32::try_from(v).ok());
             let (tx, rx) = std::sync::mpsc::channel::<Result<Value, String>>();
-            tokio::spawn(async move {
+            spawn_on_runtime(async move {
                 let rows = if let Some(db) = crate::internal_hooks::DB.get() {
                     db.query_judge_batches(since, limit, round_uuid.clone(), player_id)
                         .await
@@ -3522,7 +3550,7 @@ fn server_state_query_inner(
                 return Err("invalid user_id".to_string());
             }
             let (tx, rx) = std::sync::mpsc::channel();
-            tokio::spawn(async move {
+            spawn_on_runtime(async move {
                 let row = if let Some(db) = crate::internal_hooks::DB.get() {
                     db.get_playtime(uid).await
                 } else {
@@ -3550,7 +3578,7 @@ fn server_state_query_inner(
                 .unwrap_or(10)
                 .clamp(1, 100);
             let (tx, rx) = std::sync::mpsc::channel::<Result<Value, String>>();
-            tokio::spawn(async move {
+            spawn_on_runtime(async move {
                 let rows = if let Some(db) = crate::internal_hooks::DB.get() {
                     db.top_playtime(limit).await
                 } else {
@@ -3565,7 +3593,7 @@ fn server_state_query_inner(
         "admin.ids" => {
             let (tx, rx) = std::sync::mpsc::channel();
             let s = Arc::clone(state);
-            tokio::spawn(async move {
+            spawn_on_runtime(async move {
                 let ids = s.admin_id_list().await;
                 let _ = tx.send(Ok(serde_json::json!({"admin_phira_ids": ids})));
             });
@@ -3576,7 +3604,7 @@ fn server_state_query_inner(
             let uid = args.get(0).and_then(|v| v.as_i64()).unwrap_or(0) as i32;
             let (tx, rx) = std::sync::mpsc::channel();
             let s = Arc::clone(state);
-            tokio::spawn(async move {
+            spawn_on_runtime(async move {
                 let value = s.is_admin_id(uid).await;
                 let _ = tx.send(Ok(serde_json::json!({"user_id": uid, "admin": value})));
             });
@@ -3590,7 +3618,7 @@ fn server_state_query_inner(
             }
             let (tx, rx) = std::sync::mpsc::channel();
             let s = Arc::clone(state);
-            tokio::spawn(async move {
+            spawn_on_runtime(async move {
                 let ids = s.add_admin_id(uid).await;
                 let _ = tx.send(Ok(serde_json::json!({"admin_phira_ids": ids})));
             });
@@ -3604,7 +3632,7 @@ fn server_state_query_inner(
             }
             let (tx, rx) = std::sync::mpsc::channel();
             let s = Arc::clone(state);
-            tokio::spawn(async move {
+            spawn_on_runtime(async move {
                 let ids = s.remove_admin_id(uid).await;
                 let _ = tx.send(Ok(serde_json::json!({"admin_phira_ids": ids})));
             });
@@ -3631,7 +3659,7 @@ fn server_state_query_inner(
             }
             let (tx, rx) = std::sync::mpsc::channel();
             let s = Arc::clone(state);
-            tokio::spawn(async move {
+            spawn_on_runtime(async move {
                 let ids = s.set_admin_ids(ids).await;
                 let _ = tx.send(Ok(serde_json::json!({"admin_phira_ids": ids})));
             });
@@ -4043,7 +4071,7 @@ fn server_state_query_dispatch(
                 .unwrap_or("")
                 .to_string();
             let server = Arc::clone(state);
-            tokio::spawn(async move {
+            spawn_on_runtime(async move {
                 let users = server.users.read().await;
                 if let Some(user) = users.get(&uid) {
                     user.try_send(phira_mp_common::ServerCommand::Message(
@@ -4177,7 +4205,7 @@ fn server_state_query_dispatch(
             let reason = args.get(1).and_then(|v| v.as_str()).unwrap_or("kicked by admin").to_string();
             let (tx, rx) = std::sync::mpsc::channel();
             let s = Arc::clone(state);
-            tokio::spawn(async move {
+            spawn_on_runtime(async move {
                 use phira_mp_common::{Message, RoomEvent};
                 use crate::event_bus::MpEvent;
                 use crate::plugin::PluginEvent;
@@ -4232,7 +4260,7 @@ fn server_state_query_dispatch(
             let reason = args.get(1).and_then(|v| v.as_str()).unwrap_or("").to_string();
             let (tx, rx) = std::sync::mpsc::channel();
             let s = Arc::clone(state);
-            tokio::spawn(async move {
+            spawn_on_runtime(async move {
                 let _ = tx.send(s.ban_manager.ban_user(uid, &reason).await
                     .map(|_| serde_json::json!({"banned": true})));
             });
@@ -4243,7 +4271,7 @@ fn server_state_query_dispatch(
             let uid = args.get(0).and_then(|v| v.as_i64()).unwrap_or(0) as i32;
             let (tx, rx) = std::sync::mpsc::channel();
             let s = Arc::clone(state);
-            tokio::spawn(async move {
+            spawn_on_runtime(async move {
                 let _ = tx.send(s.ban_manager.unban_user(uid).await
                     .map(|_| serde_json::json!({"unbanned": true})));
             });
@@ -4253,7 +4281,7 @@ fn server_state_query_dispatch(
         "ban.list" => {
             let (tx, rx) = std::sync::mpsc::channel();
             let s = Arc::clone(state);
-            tokio::spawn(async move {
+            spawn_on_runtime(async move {
                 let bans = s.ban_manager.list_banned().await;
                 let _ = tx.send(Ok(serde_json::to_value(&bans).unwrap_or_default()));
             });
@@ -4264,7 +4292,7 @@ fn server_state_query_dispatch(
             let uid = args.get(0).and_then(|v| v.as_i64()).unwrap_or(0) as i32;
             let (tx, rx) = std::sync::mpsc::channel();
             let s = Arc::clone(state);
-            tokio::spawn(async move {
+            spawn_on_runtime(async move {
                 let banned = s.ban_manager.is_banned(uid).await;
                 let _ = tx.send(Ok(serde_json::json!({"banned": banned})));
             });

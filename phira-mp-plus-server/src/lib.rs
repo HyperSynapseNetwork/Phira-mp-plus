@@ -37,6 +37,7 @@ mod session_auth;
 pub mod session_dispatch;
 pub(crate) mod session_actor;
 pub mod session_permissions;
+pub(crate) mod supervisor_actor;
 pub mod session_room;
 mod session_telemetry;
 pub mod simulation;

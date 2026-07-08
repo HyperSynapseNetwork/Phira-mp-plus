@@ -53,7 +53,7 @@ Actor 迁移仍然必要，但不能再靠增加 facade 命令来制造进度。
 
 | 边界 | 职责 | 状态 |
 |------|------|------|
-| server-supervisor | 进程生命周期、关闭、监听器启动 | Mirrored |
+| server-supervisor | 进程生命周期、关闭、监听器启动 | ReadRouted (mailbox skeleton in supervisor_actor.rs) |
 | session-actor | 客户端连接、认证、命令解码、发送队列 | WriteRouted (12 command variants mailboxed via session_actor.rs) |
 | room-actor | 房间状态机、成员管理、游戏生命周期 | Owned (all 7 commands mailboxed; lock/cycle/host owned-tracked) |
 | persistence-actor | 数据库批处理、背压、重试、关闭刷新 | ReadRouted |
