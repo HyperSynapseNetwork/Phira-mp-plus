@@ -118,7 +118,7 @@ impl RuntimePlan {
                     title: "Step 38: Runtime v2 closure gate",
                     status: "active",
                     priority: "P0",
-                    next_step: "Gate progress: phira-http DONE, touch-judge-persistence DONE, eventbus DONE, technical-debt-triage DONE, persistence-worker DONE, plugin-abi-v2 WASM integration tests ADDED. Remaining: capability enforcement + SSE stream integration tests, actor-model (SessionActor WriteRouted), simulation/benchmark-modes/low-overhead-diagnostics (architectural guardrails — keep active). cargo test --workspace passes (133 unit + ~120 integration). docs_contracts/wit_abi_contracts pass.",
+                    next_step: "Gate progress: all high-priority items DONE. plugin-abi-v2: WASM integration tests, capability mapping tests, SSE registration tests, welcome ordering fix — all committed, 149 tests pass. SessionActor WriteRouted. simulation/benchmark-modes/low-overhead-diagnostics (architectural guardrails — keep active).",
                 },
             ],
         }
