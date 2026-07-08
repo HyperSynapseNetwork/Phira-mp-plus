@@ -108,6 +108,8 @@ impl WitPluginComponent {
     ) -> Result<Self, String> {
         use crate::plugin_abi::wit_abi;
         let mut engine_config = wasmtime::Config::new();
+        engine_config.wasm_reference_types(true);
+        engine_config.wasm_bulk_memory(true);
         engine_config.consume_fuel(runtime.fuel_per_call > 0);
         engine_config.max_wasm_stack(runtime.max_stack_bytes.max(64 * 1024));
         let engine = wasmtime::Engine::new(&engine_config)
