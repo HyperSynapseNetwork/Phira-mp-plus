@@ -156,7 +156,7 @@ impl WitPluginComponent {
 
     pub fn call_init(&mut self) -> Result<(), String> {
         let result = self.component.call_init(&mut self.store)
-            .map_err(|e| format!("component init: {e}"))?;
+            .map_err(|e| format!("component init trap: {e}"))?;
         result.map_err(|e| format!("component init returned error: {e}"))?;
         self.initialized = true;
         Ok(())
