@@ -135,8 +135,11 @@ async fn main() -> Result<()> {
                 ConsoleMode::Line => {
                     // 低兼容性终端：提示用户可安装 tmux 获得更好的 TUI 体验
                     let has_tmux = std::env::var_os("TMUX").is_some();
-                    let is_redirected = !std::io::stdin().is_terminal();
-                    if !is_redirected && !has_tmux {
+                    // TerminalProfile already determined this is a non-TUI, low-compat line.
+                    // Only prompt when stdin is actually available (not piped).
+                    let is_piped = std::env::var("TERM").unwrap_or_default().is_empty()
+                        || std::env::var("TERM").unwrap_or_default() == "dumb";
+                    if !is_piped && !has_tmux {
                         eprintln!("\n  ⚠ 当前终端兼容性较低，管理控制台将以降级逐行模式运行。");
                         eprintln!("  💡 建议安装 tmux 以获得完整的 TUI 体验：");
                         // 根据系统推荐安装指令
