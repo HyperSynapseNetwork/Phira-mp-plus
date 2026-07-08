@@ -97,7 +97,7 @@ impl RuntimePlan {
                     title: "Typed WASM plugin ABI",
                     status: "active",
                     priority: "P1",
-                    next_step: "All host APIs implemented with capability enforcement. WIT lifecycle wired (init/cleanup/on-event/on-api). WitPluginHost decoupled from PlusServerState via WitHostContext. SSE stream registration + event translation (sse.register_stream). Capability model contract tests added (23 wit_abi_contracts). Remaining: integration tests that compile+run a real WIT component (blocked on test WASM binary). SDK provides wit_bindgen! macro. JSON ABI removed. MIGRATION_PHASE 3 (accurate — integration tests pending).",
+                    next_step: "All host APIs implemented with capability enforcement. WIT lifecycle wired (init/cleanup/on-event/on-api). WitPluginHost decoupled from PlusServerState via WitHostContext. SSE stream registration + event translation (sse.register_stream). Capability model contract tests added (23 wit_abi_contracts). WASM integration tests added (lifecycle + host API). SDK provides wit_bindgen! macro. JSON ABI removed. MIGRATION_PHASE 3.",
                 },
                 RuntimeObjective {
                     key: "test-coverage",
@@ -118,7 +118,7 @@ impl RuntimePlan {
                     title: "Step 38: Runtime v2 closure gate",
                     status: "active",
                     priority: "P0",
-                    next_step: "Gate progress: phira-http DONE, touch-judge-persistence DONE, eventbus DONE, technical-debt-triage DONE, persistence-worker DONE. Remaining: plugin-abi-v2 (needs WASM integration tests — blocked), actor-model (lock/cycle tracked+owned, rest WriteRouted — incremental), simulation/benchmark-modes/low-overhead-diagnostics (architectural guardrails — keep active), test-coverage (133 tests, WIT integration tests missing — blocked on WASM). cargo test --workspace passes (133 unit + ~120 integration). docs_contracts/wit_abi_contracts pass.",
+                    next_step: "Gate progress: phira-http DONE, touch-judge-persistence DONE, eventbus DONE, technical-debt-triage DONE, persistence-worker DONE, plugin-abi-v2 WASM integration tests ADDED. Remaining: capability enforcement + SSE stream integration tests, actor-model (SessionActor WriteRouted), simulation/benchmark-modes/low-overhead-diagnostics (architectural guardrails — keep active). cargo test --workspace passes (133 unit + ~120 integration). docs_contracts/wit_abi_contracts pass.",
                 },
             ],
         }
