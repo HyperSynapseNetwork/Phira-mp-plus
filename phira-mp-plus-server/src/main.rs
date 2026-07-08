@@ -133,6 +133,36 @@ async fn main() -> Result<()> {
                     }
                 }
                 ConsoleMode::Line => {
+                    // 低兼容性终端：提示用户可安装 tmux 获得更好的 TUI 体验
+                    let has_tmux = std::env::var_os("TMUX").is_some();
+                    let is_redirected = !std::io::stdin().is_terminal();
+                    if !is_redirected && !has_tmux {
+                        eprintln!("\n  ⚠ 当前终端兼容性较低，管理控制台将以降级逐行模式运行。");
+                        eprintln!("  💡 建议安装 tmux 以获得完整的 TUI 体验：");
+                        // 根据系统推荐安装指令
+                        if std::fs::metadata("/etc/debian_version").is_ok() {
+                            eprintln!("     apt install tmux");
+                        } else if std::fs::metadata("/etc/redhat-release").is_ok() {
+                            eprintln!("     yum install tmux");
+                        } else if std::fs::metadata("/etc/arch-release").is_ok() {
+                            eprintln!("     pacman -S tmux");
+                        } else if std::path::Path::new("/usr/local/bin/brew").exists() {
+                            eprintln!("     brew install tmux");
+                        } else {
+                            eprintln!("     # 请使用系统包管理器安装 tmux");
+                        }
+                        eprint!("\n  输入 y 继续启动降级控制台 [y/N]: ");
+                        use std::io::Write;
+                        let _ = std::io::stdout().flush();
+                        let mut input = String::new();
+                        let proceed = std::io::stdin().read_line(&mut input)
+                            .map(|_| input.trim().to_lowercase() == "y")
+                            .unwrap_or(false);
+                        if !proceed {
+                            eprintln!("  已取消启动降级控制台。");
+                            return;
+                        }
+                    }
                     phira_mp_plus_server::cli_tui::run_stdin_cli_with_logs(
                         cmd_tx,
                         out_rx,
