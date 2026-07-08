@@ -102,6 +102,30 @@ pub struct WitPluginComponent {
 
 #[cfg(feature = "wit-bindgen")]
 impl WitPluginComponent {
+    /// Create a WitHostContext from services that have server_state set.
+    fn build_context_from_services(services: &Arc<WasmPluginServices>) -> Result<Arc<crate::wit_host::WitHostContext>, String> {
+        let state_ref = services.server_state.lock().unwrap_or_else(|e| e.into_inner());
+        let s = state_ref.as_ref().and_then(|w| w.upgrade())
+            .ok_or_else(|| "server state not available — set via PluginManager::set_server_state".to_string())?;
+        let state_query = services.state_query.lock().unwrap_or_else(|e| e.into_inner()).clone()
+            .ok_or_else(|| "state query not available — set via PluginManager::set_default_state".to_string())?;
+        Ok(Arc::new(crate::wit_host::WitHostContext {
+            state_query,
+            extensions: Arc::clone(&services.extensions),
+            room_commands: Arc::clone(&s.room_commands),
+            ban_manager: Arc::clone(&s.ban_manager),
+            simulation: Arc::clone(&s.simulation),
+            event_bus: Arc::clone(&s.event_bus),
+            http_timeout_secs: s.config.wasm_runtime.http_timeout_secs,
+            http_max_body: s.config.wasm_runtime.max_http_response_bytes,
+        }))
+    }
+
+    /// Create a new WIT component plugin from raw WASM bytes.
+    ///
+    /// Requires `WasmPluginServices` with `server_state` and `state_query`
+    /// already set by `PluginManager::set_server_state` / `set_default_state`.
+    /// Tests should use `new_with_ctx` instead.
     pub fn new(
         wasm_bytes: &[u8],
         plugin_name: String,
@@ -123,36 +147,56 @@ impl WitPluginComponent {
         let mut linker = wasmtime::component::Linker::<WitHostState>::new(&engine);
         wit_abi::PhiraPluginV2::add_to_linker(&mut linker, |state| &mut state.host)
             .map_err(|e| format!("linker setup: {e}"))?;
-        let state_ref = services
-            .server_state
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        let s = state_ref
-            .as_ref()
-            .and_then(|w| w.upgrade())
-            .ok_or_else(|| "server state not available — set via PluginManager::set_server_state".to_string())?;
-        let state_query = services
-            .state_query
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .clone()
-            .ok_or_else(|| "state query not available — set via PluginManager::set_default_state".to_string())?;
-        let ctx = Arc::new(crate::wit_host::WitHostContext {
-            state_query,
-            extensions: Arc::clone(&services.extensions),
-            room_commands: Arc::clone(&s.room_commands),
-            ban_manager: Arc::clone(&s.ban_manager),
-            simulation: Arc::clone(&s.simulation),
-            event_bus: Arc::clone(&s.event_bus),
-            http_timeout_secs: s.config.wasm_runtime.http_timeout_secs,
-            http_max_body: s.config.wasm_runtime.max_http_response_bytes,
-        });
+        let ctx = Self::build_context_from_services(&services)?;
+        Self::new_with_context(engine, component, linker, ctx, plugin_name)
+    }
+
+    /// Create a WIT component from raw bytes with a pre-built host context.
+    ///
+    /// Tests that don't have a running server can construct a
+    /// `WitHostContext` directly (or use a mock `ServerStateQuery`)
+    /// and pass it here.  The engine and linker are set up internally.
+    pub fn from_bytes_ctx(
+        wasm_bytes: &[u8],
+        plugin_name: String,
+        ctx: Arc<crate::wit_host::WitHostContext>,
+        runtime: WasmRuntimeConfig,
+    ) -> Result<Self, String> {
+        use crate::plugin_abi::wit_abi;
+        let mut engine_config = wasmtime::Config::new();
+        engine_config.wasm_component_model(true);
+        engine_config.wasm_bulk_memory(true);
+        engine_config.wasm_multi_value(true);
+        engine_config.wasm_backtrace(true);
+        engine_config.max_wasm_stack(runtime.max_stack_bytes.max(64 * 1024));
+        let engine = wasmtime::Engine::new(&engine_config)
+            .map_err(|e| format!("engine creation: {e}"))?;
+        let component = wasmtime::component::Component::new(&engine, wasm_bytes)
+            .map_err(|e| format!("component compile: {e}"))?;
+        let mut linker = wasmtime::component::Linker::<WitHostState>::new(&engine);
+        wit_abi::PhiraPluginV2::add_to_linker(&mut linker, |state| &mut state.host)
+            .map_err(|e| format!("linker setup: {e}"))?;
+        Self::new_with_context(engine, component, linker, ctx, plugin_name)
+    }
+
+    /// Create a WIT component from pre-compiled engine/component/linker
+    /// and a pre-built host context.  Used by `new()` and by tests that
+    /// supply their own context.
+    #[allow(clippy::too_many_arguments)]
+    fn new_with_context(
+        engine: wasmtime::Engine,
+        component: wasmtime::component::Component,
+        linker: wasmtime::component::Linker<WitHostState>,
+        ctx: Arc<crate::wit_host::WitHostContext>,
+        plugin_name: String,
+    ) -> Result<Self, String> {
+        use crate::plugin_abi::wit_abi as wit;
         let host = crate::wit_host::WitPluginHost::new(ctx, plugin_name.clone());
         let host_state = WitHostState { host };
         let mut store = wasmtime::Store::new(&engine, host_state);
         let instance = linker.instantiate(&mut store, &component)
             .map_err(|e| format!("instantiate component: {e}"))?;
-        let component_handle = crate::plugin_abi::wit_abi::PhiraPluginV2::new(&mut store, &instance)
+        let component_handle = wit::PhiraPluginV2::new(&mut store, &instance)
             .map_err(|e| format!("get component handle: {e}"))?;
         let info = PluginInfo {
             name: plugin_name.clone(),
@@ -160,13 +204,7 @@ impl WitPluginComponent {
             author: "unknown".to_string(),
             description: "WIT component plugin".to_string(),
         };
-        Ok(Self {
-            store,
-            component: component_handle,
-            info,
-            plugin_name,
-            initialized: false,
-        })
+        Ok(Self { store, component: component_handle, info, plugin_name, initialized: false })
     }
 
     pub fn call_init(&mut self) -> Result<(), String> {
@@ -301,5 +339,123 @@ mod tests {
         assert!(wasm_host_helpers::validate_identifier("").is_err());
         assert!(wasm_host_helpers::validate_identifier("hello world").is_err());
         assert!(wasm_host_helpers::validate_identifier("valid-name.v2").is_ok());
+    }
+
+    // ── WASM component integration tests ──────────────────────────
+
+    fn wasm_fixture_path() -> std::path::PathBuf {
+        let manifest = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        manifest.join("tests/test-plugin.component.wasm")
+    }
+
+    fn load_wasm_bytes() -> Vec<u8> {
+        std::fs::read(wasm_fixture_path())
+            .expect("test-plugin.component.wasm not found — run `make` in tests/test-plugin/")
+    }
+
+    fn mock_host_context() -> Arc<crate::wit_host::WitHostContext> {
+        let state_query = phira_mp_plus_server_api::ServerStateQuery::new(|method: &str, _args: &[serde_json::Value]| {
+            Err(format!("mock: no handler for {method}"))
+        });
+        let extensions = Arc::new(crate::extensions::ExtensionManager::new_in_memory());
+        Arc::new(crate::wit_host::WitHostContext {
+            state_query,
+            extensions: Arc::clone(&extensions),
+            room_commands: Arc::new(crate::room_actor::RoomCommandGateway::new()),
+            ban_manager: Arc::new(crate::ban::BanManager::new(extensions)),
+            simulation: Arc::new(crate::simulation::SimulationManager::new()),
+            event_bus: Arc::new(crate::event_bus::EventBus::new(1024)),
+            http_timeout_secs: 10,
+            http_max_body: 1024 * 1024,
+        })
+    }
+
+    /// Load the test WASM component.  Panics on failure (test infrastructure issue).
+    fn load_component() -> WitPluginComponent {
+        let bytes = load_wasm_bytes();
+        let ctx = mock_host_context();
+        WitPluginComponent::from_bytes_ctx(&bytes, "test-plugin".into(), ctx, WasmRuntimeConfig::default())
+            .expect("WitPluginComponent::from_bytes_ctx should succeed")
+    }
+
+    mod wasm_tests {
+        use super::*;
+
+        #[test]
+        fn load_succeeds() {
+            load_component();
+        }
+
+        #[test]
+        fn init_returns_ok() {
+            let mut c = load_component();
+            c.call_init().unwrap();
+            assert!(c.initialized);
+        }
+
+        #[test]
+        fn info_has_default_placeholder() {
+            // The version is a placeholder until call_init() is called.
+            // The plugin reports "0.1.0-test" via get_info() but the
+            // component doesn't update its info field from that call.
+            let c = load_component();
+            assert_eq!(c.info.name, "test-plugin");
+            assert_eq!(c.info.version, "0.1.0");
+        }
+
+        #[test]
+        fn cleanup_does_not_panic() {
+            let mut c = load_component();
+            c.call_init().unwrap();
+            c.call_cleanup();
+            assert!(!c.initialized);
+        }
+
+        #[test]
+        fn double_cleanup_is_safe() {
+            let mut c = load_component();
+            c.call_cleanup();
+            c.call_cleanup();
+        }
+
+        #[test]
+        fn on_event_returns_false() {
+            let mut c = load_component();
+            c.call_init().unwrap();
+            let result = c.call_on_event(&PluginEvent::UserConnect {
+                user_id: 1, user_name: "test".into(), user_ip: "127.0.0.1".into(),
+            });
+            assert_eq!(result, Ok(0), "unhandled event should return 0");
+        }
+
+        #[test]
+        fn on_api_ping() {
+            let mut c = load_component();
+            c.call_init().unwrap();
+            assert_eq!(c.call_api("ping", &[]), Ok(serde_json::json!(null)));
+        }
+
+        #[test]
+        fn on_api_echo_roundtrip() {
+            let mut c = load_component();
+            c.call_init().unwrap();
+            assert_eq!(c.call_api("echo", &[serde_json::json!("hello")]), Ok(serde_json::json!("hello")));
+        }
+
+        #[test]
+        fn on_api_count_increments() {
+            let mut c = load_component();
+            c.call_init().unwrap();
+            assert_eq!(c.call_api("count", &[]), Ok(serde_json::json!(0)));
+            assert_eq!(c.call_api("count", &[]), Ok(serde_json::json!(1)));
+            assert_eq!(c.call_api("count", &[]), Ok(serde_json::json!(2)));
+        }
+
+        #[test]
+        fn on_api_unknown_method_returns_error() {
+            let mut c = load_component();
+            c.call_init().unwrap();
+            assert!(c.call_api("nonexistent", &[]).is_err());
+        }
     }
 }
