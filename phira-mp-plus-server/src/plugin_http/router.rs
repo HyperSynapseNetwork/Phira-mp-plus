@@ -38,7 +38,8 @@ fn match_route(pattern: &str, path: &str) -> Option<Vec<String>> {
     let mut params = Vec::new();
     for (pattern, value) in pattern_segments.iter().zip(path_segments) {
         let parameter = (pattern.starts_with('<') && pattern.ends_with('>'))
-            || (pattern.starts_with('{') && pattern.ends_with('}'));
+            || (pattern.starts_with('{') && pattern.ends_with('}'))
+            || (pattern.starts_with(':'));
         if parameter {
             params.push(value.to_string());
         } else if *pattern != value {
