@@ -109,6 +109,7 @@ impl WitPluginComponent {
         use crate::plugin_abi::wit_abi;
         let mut engine_config = wasmtime::Config::new();
         engine_config.wasm_backtrace(true);
+        engine_config.cranelift_debug_verifier(true);
         engine_config.consume_fuel(runtime.fuel_per_call > 0);
         engine_config.max_wasm_stack(runtime.max_stack_bytes.max(64 * 1024));
         let engine = wasmtime::Engine::new(&engine_config)
@@ -136,7 +137,6 @@ impl WitPluginComponent {
         };
         let host_state = WitHostState { host, limits: store_limits };
         let mut store = wasmtime::Store::new(&engine, host_state);
-        store.limiter(|state| &mut state.limits);
         let instance = linker.instantiate(&mut store, &component)
             .map_err(|e| format!("instantiate component: {e}"))?;
         let component_handle = crate::plugin_abi::wit_abi::PhiraPluginV2::new(&mut store, &instance)
