@@ -98,6 +98,7 @@ wasm_runtime:
 | `persistence_retention_days` | `u32` | `30` | PostgreSQL 统一持久化历史数据保留天数，`0` 表示不自动清理。 |
 | `touch_judge_retention_days` | `u32?` | 未设置 | Touches/Judges 高频遥测独立保留天数；未设置时遵循 `persistence_retention_days`，`0` 表示不自动清理遥测。 |
 | `runtime_v2` | `object` | 见下文 | Runtime v2 内部策略。用于配置 PersistenceWorker、TelemetryBatcher 和启动 cutover 模式，避免继续膨胀管理命令。 |
+| `idle` | `object` | 见下文 | 空载模式配置。无活动时自动挂起重服务（HTTP、插件、Simulation、PersistenceWorker），仅保留 TCP listener + CLI。 |
 | `server_name` | `String?` | 未设置 | 服务器展示名称，可用于欢迎语等场景。 |
 | `admin_token` | `String?` | 未设置 | 管理令牌预留/供管理接口或自定义扩展使用。基础公开 API 不需要配置。 |
 | `admin_phira_ids` | `Vec<i32>` | `[]` | 游戏内管理员 Phira ID。管理员可在创建房间弹窗输入 `_命令` 执行 CLI 命令。 |
@@ -276,6 +277,28 @@ RUST_LOG=debug ./phira-mp-plus-server
 ```
 
 `RUST_LOG` 只控制日志过滤级别，不会覆盖 `server_config.yml` 的业务字段。
+
+## 空载模式 (Idle Mode)
+
+当服务器无用户连接、无房间活动时自动进入空载状态，释放重服务占用的内存。
+
+| 配置项 | 类型 | 默认值 | 说明 |
+|---|---:|---:|---|
+| `idle.idle_after_secs` | `u64` | `300` | 无活动多少秒后进入空载。 |
+| `idle.check_interval_secs` | `u64` | `15` | 空载检查间隔。 |
+| `idle.heartbeat_timeout_secs` | `u64` | `30` | 会话心跳超时阈值。 |
+| `idle.auth_timeout_secs` | `u64` | `15` | 未认证连接超时阈值。 |
+| `idle.lazy_services` | `bool` | `false` | 重服务按需启动（HTTP/插件/PersistenceWorker 等默认启动）。 |
+| `idle.minimal` | `bool` | `false` | 最小化模式：无插件、无 CLI/TUI、无 Web API。 |
+
+**服务层级：**
+
+| 层级 | 始终运行 | 按需唤醒 |
+|------|---------|---------|
+| 轻内核 | TCP listener、CLI、Idle 控制器 | — |
+| 认证链路 | — | 用户连接时 |
+| 房间/用户链路 | — | 用户在线时 |
+| 重服务 | HTTP、插件、Simulation、Benchmark、PersistenceWorker | 默认全启动；`lazy_services: true` 时按需启动 |
 
 ## WASM 运行时限制
 

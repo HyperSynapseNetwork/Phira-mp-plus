@@ -10,10 +10,11 @@
 
 ### 核心特性
 
-- **WASM 插件系统** — 基于 wasmtime 组件模型（WIT ABI v2），12 个宿主接口覆盖查询/管理/持久化/模拟等全部能力
+- **轻内核 + 重服务按需唤醒** — TCP listener + CLI 常驻；HTTP/插件/PersistenceWorker 等重服务空闲时自动挂起；活动恢复后按需启动
+- **WASM 插件系统** — 基于 wasmtime 组件模型（WIT ABI v2），12 个宿主接口集成测试通过，capability 强制已启用
 - **TUI 管理控制台** — 基于 `ratatui` + `crossterm` 的终端界面，支持命令输入、日志实时显示
-- **Runtime v2 架构** — 事件总线 + 持久化 Worker + Actor 模型房间命令网关，渐进式迁移旧路径
-- **内置功能** — 房间信息 Web API、SSE 实时事件流、黑名单管理、IP 封禁、轮次数据持久化、速率限制等
+- **Actor 模型房间命令** — 7 个房间命令全 mailboxed，lock/cycle/host owned-tracked；12 个会话命令 WriteRouted
+- **内置功能** — 房间信息 Web API、SSE 实时事件流（SseHub）、blacklist/IP 封禁、轮次数据持久化、速率限制
 - **jemalloc 分配器** — Linux 下使用 jemalloc 替代 musl malloc，主动归还空闲内存，避免 RSS 虚高
 
 ## 技术栈
@@ -140,16 +141,19 @@ Phira-mp-plus/
 │   │   ├── server.rs                #   服务器核心: PlusConfig / PlusServerState / PlusServer
 │   │   ├── server_query.rs          #   Admin ID 等查询函数
 │   │   ├── command_registry.rs      #   Runtime v2 命令注册表
-│   │   ├── session*.rs              #   会话、认证、房间协议与遥测处理
+│   │   ├── session*.rs              #   会话、认证、房间协议、遥测处理、session actor
+│   │   ├── session_actor.rs         #   Session Actor 命令 mailbox
+│   │   ├── supervisor_actor.rs      #   服务监督者 mailbox
 │   │   ├── room.rs                  #   房间状态机: InternalRoomState / Room
 │   │   ├── room_actor/              #   Room Actor 命令网关与 per-room mailbox
+│   │   ├── idle.rs                  #   空载模式: IdleConfig / IdleMonitor
 │   │   ├── persistence/             #   持久化 Worker 管道
 │   │   ├── proxy_protocol.rs        #   PROXY protocol 解析与 TrustForwardedFor 中间件
 │   │   ├── telemetry*.rs            #   TelemetryBatcher、cutover 模式、策略
 │   │   ├── round_store.rs           #   轮次数据存储 (DB 优先, 文件回退)
 │   │   ├── internal_hooks.rs        #   内部静态注册 (DB / playtime)
 │   │   ├── plugin.rs                #   插件管理器: PluginManager / PluginHost trait
-│   │   ├── plugin_abi/              #   Plugin ABI 边界、typed DTO、WIT 元数据
+│   │   ├── plugin_abi/              #   Plugin ABI 边界、WIT 元数据
 │   │   ├── plugin_http/             #   HTTP 动态路由、SSE 与 WebSocket
 │   │   ├── wasm_host*.rs            #   WASM 运行时与 host 辅助函数
 │   │   ├── wit_host.rs              #   WIT/component-model host trait 实现
@@ -157,13 +161,11 @@ Phira-mp-plus/
 │   │   ├── ban.rs                   #   黑名单系统: 全局封禁 + 房间黑名单 + IP 封禁
 │   │   ├── phira_client.rs          #   统一 Phira HTTP RetryClient
 │   │   ├── rate_limiter.rs          #   速率限制: 滑动窗口 + 令牌桶
-│   │   ├── runtime_*.rs             #   Runtime v2 计划与诊断
 │   │   ├── event_bus.rs             #   EventBus 运行时脊椎
 │   │   ├── simulation*.rs           #   Simulation 管理器与 realistic 场景
 │   │   ├── l10n.rs                  #   本地化: Fluent Bundle / tl! 宏
 │   │   └── logging.rs               #   tracing 输出、日志轮转、速率限制、敏感数据脱敏
 │   ├── tests/                       #   集成与合约测试
-│   └── wit/phira/mpplus.wit         #   旧路径兼容说明
 │
 ├── phira-mp-plus-server-api/    # WASM 插件共享类型 crate
 │   └── src/lib.rs               #   PluginEvent / PluginInfo / HttpHandle 等共享类型
