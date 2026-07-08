@@ -135,7 +135,7 @@ fn default_boundaries() -> Vec<ActorBoundary> {
             responsibility: "Own plugin dispatch, capability checks, event fanout, and slow-plugin isolation.".to_string(),
             source_files: vec!["plugin.rs".to_string(), "wasm_host.rs".to_string(), "plugin_http.rs".to_string(), "plugin_abi/".to_string(), "wit_host.rs".to_string()],
             status: ActorBoundaryStatus::ReadRouted,
-            next_step: "JSON bridge is no longer the target ABI, but WIT lifecycle/on-event/on-api and many host traits are still incomplete. Next: make WIT component dispatch real before moving plugin ownership further.".to_string(),
+            next_step: "WIT lifecycle wired, all host API methods implemented (with capability errors where appropriate). WASM integration tests added. Capability mapping contract tests added. JSON ABI removed. Next: move plugin dispatch through typed mailbox.".to_string(),
         },
         ActorBoundary {
             name: "cli-actor".to_string(),

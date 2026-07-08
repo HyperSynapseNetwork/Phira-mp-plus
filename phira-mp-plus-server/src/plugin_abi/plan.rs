@@ -37,7 +37,6 @@ pub fn plugin_abi_plan() -> PluginAbiPlan {
             "Component model adapters increase binary size ~14MB",
             "All .wasm plugins must be compiled as WIT components, not modules",
             "Persistence host API methods return capability errors — no real DB query path",
-            "PluginEvent→WIT event conversion and capability enforcement lack integration tests",
             "SSE stream (sse.register_stream) relies on host-side axum routing — plugin cannot hold open connections",
         ],
         next_steps: vec![

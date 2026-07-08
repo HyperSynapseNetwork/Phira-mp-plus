@@ -957,11 +957,14 @@ necessary before Runtime v2 adds more surface area.
 
 Required cleanup (resolved):
 
-- ✅ Runtime status output matches `plugin_abi::wit::MIGRATION_PHASE` (phase 2).
+- ✅ Runtime status output matches `plugin_abi::wit::MIGRATION_PHASE` (phase 3).
 - ✅ All plan docs describe the same current state.
 - ✅ All TODO/FIXME markers removed from production code.
 - ✅ JSON ABI removed from `phira-plugin-sdk` docs; WIT-only.
-- ✅ Plan drift corrected: phira-http done, debt-triage done, MIGRATION_PHASE 2.
+- ✅ Plan drift corrected: phira-http done, debt-triage done, MIGRATION_PHASE 3.
+- ✅ WASM integration tests added (lifecycle + host API + SSE registration).
+- ✅ WitPluginHost decoupled from PlusServerState via WitHostContext.
+- ✅ SSE stream registration + event translation (sse.register_stream).
 
 ### Step 38: Runtime v2 closure gate
 

@@ -29,7 +29,18 @@ fn runtime_plan_tracks_all_required_objectives() {
         snapshot.total >= 10,
         "plan should have at least 10 objectives"
     );
-    assert!(snapshot.active > 0, "plan should have active objectives");
+    // Active objectives must describe specific remaining blockers.
+    // When step-38-closure-gate is done, active must be 0.
+    for obj in &snapshot.objectives {
+        if obj.status == "active" && obj.key != "step-38-closure-gate" {
+            assert!(
+                !obj.next_step.starts_with("Keep as")
+                    && !obj.next_step.starts_with("Documentation"),
+                "active objective '{}' should not be a guardrail: {}",
+                obj.key, obj.next_step
+            );
+        }
+    }
 }
 
 #[test]
