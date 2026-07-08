@@ -159,7 +159,7 @@ impl WitPluginComponent {
 
     pub fn call_init(&mut self) -> Result<(), String> {
         let result = futures::executor::block_on(
-            self.component.call_init_async(&mut self.store)
+            self.component.call_init(&mut self.store)
         ).map_err(|e| format!("component init: {e}"))?;
         result.map_err(|e| format!("component init returned error: {e}"))?;
         self.initialized = true;
@@ -169,7 +169,7 @@ impl WitPluginComponent {
     pub fn call_cleanup(&mut self) {
         if !self.initialized { return; }
         let _ = futures::executor::block_on(
-            self.component.call_cleanup_async(&mut self.store)
+            self.component.call_cleanup(&mut self.store)
         );
         self.initialized = false;
     }
@@ -247,8 +247,9 @@ impl WitPluginComponent {
             }
         };
         let result = futures::executor::block_on(
-            self.component.call_on_event_async(&mut self.store, &wit_event)
-        ).map_err(|e| format!("component on_event: {e}"))?;
+            self.component.call_on_event(&mut self.store, &wit_event)
+        )
+            .map_err(|e| format!("component on_event: {e}"))?;
         match result {
             Ok(handled) => Ok(if handled { 1 } else { 0 }),
             Err(e) => Err(format!("component on_event returned error: {e}")),
@@ -259,8 +260,9 @@ impl WitPluginComponent {
         use crate::plugin_abi::wit_abi::phira::plugin::phira_types as types;
         let wit_args: Vec<types::JsonValue> = args.iter().map(|v| crate::wit_host::json_value_to_wit(v)).collect();
         let result = futures::executor::block_on(
-            self.component.call_on_api_async(&mut self.store, method, &wit_args)
-        ).map_err(|e| format!("component on_api: {e}"))?;
+            self.component.call_on_api(&mut self.store, method, &wit_args)
+        )
+            .map_err(|e| format!("component on_api: {e}"))?;
         match result {
             types::ApiResult::Ok(value) => Ok(crate::wit_host::wit_json_value_to_serde(&value)),
             types::ApiResult::Error(e) => Err(e),
