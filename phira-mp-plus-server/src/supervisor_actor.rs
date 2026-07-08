@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! Server supervisor actor.
 //!
 //! Owns process lifecycle, shutdown coordination, listener startup,

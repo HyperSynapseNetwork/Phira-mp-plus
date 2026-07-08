@@ -35,7 +35,6 @@ fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
     diff == 0
 }
 
-const HEARTBEAT_DISCONNECT_TIMEOUT: Duration = Duration::from_secs(600);
 pub struct User {
     pub id: i32,
     pub name: String,

@@ -125,10 +125,12 @@ impl IdleMonitor {
 }
 
 /// Check whether the server should enter or leave idle.
+#[allow(dead_code)]
 pub fn should_enter_idle(user_count: usize, room_count: usize, idle_secs: u64, cfg: &IdleConfig) -> bool {
     user_count == 0 && room_count == 0 && idle_secs >= cfg.idle_after_secs
 }
 
+#[allow(dead_code)]
 pub fn should_leave_idle(user_count: usize, room_count: usize) -> bool {
     user_count > 0 || room_count > 0
 }
