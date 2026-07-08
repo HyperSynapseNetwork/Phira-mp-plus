@@ -230,10 +230,10 @@ fn generate_wit_docs() -> String {
     md.push_str("## 迁移计划\n\n");
     md.push_str("1. ✅ WIT 接口定义完成\n");
     md.push_str("2. ✅ Host bindings 已生成 (`wit-bindgen` feature)\n");
-    md.push_str("3. ✅ Host trait 骨架已实现 (`wit_host.rs`)\n");
-    md.push_str("4. ❌ Guest SDK (`phira-plugin-sdk`) 使用 WIT exports\n");
-    md.push_str("5. ❌ 双 ABI 支持过渡期\n");
-    md.push_str("6. ❌ 移除 JSON 桥\n");
+    md.push_str("3. ✅ Host trait 完整实现 (`wit_host.rs`) — WitHostContext decoupled from PlusServerState\n");
+    md.push_str("4. ✅ Guest SDK (`phira-plugin-sdk`) — WIT-only, provides wit_bindgen! macro\n");
+    md.push_str("5. ✅ 单 ABI (WIT-only) — JSON bridge removed, MIGRATION_PHASE=3\n");
+    md.push_str("6. ✅ WASM integration tests — lifecycle + host API + SSE + capability enforcement\n");
 
     md
 }

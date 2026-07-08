@@ -104,7 +104,7 @@ impl RuntimePlan {
                     title: "Unit and integration test coverage",
                     status: "done",
                     priority: "P1",
-                    next_step: "Contract tests enforce: runtime objectives, WIT ABI, docs, persistence, telemetry cutover, phira-http, simulation, WASM lifecycle/host API, capability enforcement. Lock visibility contract test verifies mailbox exclusivity. Workspace tests pass. Do not hard-code test counts.",
+                    next_step: "Contract tests enforce: runtime objectives, WIT ABI, docs, persistence, telemetry cutover, phira-http, simulation, WASM lifecycle/host API, capability enforcement. Lock visibility contract test verifies mailbox exclusivity. Workspace tests must pass in CI before release tagging. Do not hard-code test counts.",
                 },
                 RuntimeObjective {
                     key: "technical-debt-triage",
@@ -118,7 +118,7 @@ impl RuntimePlan {
                     title: "Step 38: Runtime v2 closure gate",
                     status: "done",
                     priority: "P0",
-                    next_step: "CLOSED. All objectives done. MIGRATION_PHASE 3 consistent across code/tests/docs/CLI. Workspace tests pass. Docs_contracts/wit_abi_contracts/runtime_v2_contracts/wasm_tests all pass. No hardcoded test counts. Active count = 0.",
+                    next_step: "CLOSED. All objectives done. MIGRATION_PHASE 3 consistent across code/tests/docs/CLI. Workspace tests must pass in CI before release tagging. Docs_contracts/wit_abi_contracts/runtime_v2_contracts/wasm_tests all pass. No hardcoded test counts. Active count = 0.",
                 },
             ],
         }

@@ -40,7 +40,7 @@ pub fn plugin_abi_plan() -> PluginAbiPlan {
             "SSE stream (sse.register_stream) relies on host-side axum routing — plugin cannot hold open connections",
         ],
         next_steps: vec![
-            "WASM integration tests: lifecycle (load/init/cleanup/on_event/on_api), host API (api_call/log/http_request), SSE registration, capability mapping. 149 tests pass. Binary fixture committed.",
+            "WASM integration tests: lifecycle (load/init/cleanup/on_event/on_api), host API (api_call/log/http_request), SSE registration, capability mapping. Covered by wasm_lifecycle_tests / wasm_api_tests — must pass in CI. Binary fixture committed.",
         ],
     }
 }
@@ -56,8 +56,8 @@ pub mod wit {
     /// 2 = JSON bridge removed as the target ABI, WIT skeleton active.
 
     /// 3 = JSON bridge code removed. WIT-only: lifecycle wired, all 53 host API
-    ///     methods implemented, capability enforcement, unit tests. Missing: WIT
-    ///     integration tests with real compiled .wasm components.
+    ///     methods implemented, capability enforcement, WASM integration tests
+    ///     (wasm_lifecycle_tests / wasm_api_tests) pass with real compiled component.
     pub const MIGRATION_PHASE: u8 = 3;
 }
 
