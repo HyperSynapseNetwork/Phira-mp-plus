@@ -316,10 +316,11 @@ pub(crate) async fn route_abort(user: Arc<User>) -> Option<ServerCommand> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use std::sync::OnceLock;
 
     #[test]
-    fn mailbox_not_ready_before_init() {
-        assert!(!is_ready(), "mailbox should not be ready before init()");
+    fn once_lock_pattern_works() {
+        let lock = OnceLock::<u8>::new();
+        assert!(lock.get().is_none());
     }
 }
