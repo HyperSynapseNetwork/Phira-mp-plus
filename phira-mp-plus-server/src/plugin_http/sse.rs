@@ -27,7 +27,7 @@ impl SseEvent {
         }
     }
 
-    fn into_axum(self) -> Event {
+    pub(crate) fn into_axum(self) -> Event {
         Event::default().event(self.event_type).data(self.data)
     }
 }

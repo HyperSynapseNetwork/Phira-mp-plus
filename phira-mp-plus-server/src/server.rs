@@ -4140,6 +4140,23 @@ fn server_state_query_dispatch(
                 None => Err("HTTP server not available".to_string()),
             }
         }
+        "sse.register_stream" => {
+            let obj = args.get(0).ok_or("missing args")?;
+            let path = obj.get("path").and_then(|v| v.as_str()).ok_or("missing path")?.to_string();
+            let plugin = obj.get("plugin").and_then(|v| v.as_str()).ok_or("missing plugin")?.to_string();
+            let event_types: Vec<String> = obj.get("event_types")
+                .and_then(|v| v.as_array())
+                .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+                .unwrap_or_default();
+            let h = state.plugin_manager.http_handle();
+            match h {
+                Some(handle) => {
+                    handle.register_sse_stream(&path, &plugin, &event_types);
+                    Ok(serde_json::json!({"registered": true, "path": path, "plugin": plugin}))
+                }
+                None => Err("HTTP server not available".to_string()),
+            }
+        }
         "user.kick" => {
             // Server-level kick: remove from room + notify + delete session.
             let uid = args.get(0).and_then(|v| v.as_i64()).unwrap_or(0) as i32;

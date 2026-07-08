@@ -130,6 +130,8 @@ pub type HttpHandler = Arc<
 /// HttpHandle 内部 trait（用于类型擦除）
 pub trait HttpHandleInner: Send + Sync {
     fn register(&self, path: &str, handler: HttpHandler);
+    /// Register a plugin-backed SSE stream.
+    fn register_sse(&self, path: &str, plugin: &str, event_types: &[String]);
 }
 
 /// HTTP 服务器句柄（插件通过它注册路由）
@@ -147,6 +149,10 @@ impl HttpHandle {
 
     pub fn register_route(&self, path: &str, handler: HttpHandler) {
         self.inner.register(path, handler);
+    }
+
+    pub fn register_sse_stream(&self, path: &str, plugin: &str, event_types: &[String]) {
+        self.inner.register_sse(path, plugin, event_types);
     }
 }
 

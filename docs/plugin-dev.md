@@ -142,6 +142,48 @@ fn on_api(method: String, args: Vec<JsonValue>) -> ApiResult {
 
 ---
 
+## 注册 SSE 事件流
+
+插件可以注册 SSE（Server-Sent Events）端点，宿主维护长连接，通过 `on_api` 回调插件翻译事件。
+
+```rust
+fn init() -> Result<(), String> {
+    host_api("sse.register_stream", &[json!({
+        "path": "/api/events/rooms",
+        "plugin": "my-plugin",
+        "event_types": ["RoomCreate", "RoomJoin", "RoomLeave"],
+    })]);
+    Ok(())
+}
+```
+
+事件发生时，宿主调用 `on_api("sse:translate", &[event_json])`：
+
+```rust
+fn on_api(method: String, args: Vec<JsonValue>) -> ApiResult {
+    match method.as_str() {
+        "sse:translate" => {
+            let obj = wit_json_to_serde(&args[0]).as_object().cloned().unwrap_or_default();
+            let raw_type = obj.get("event_type").and_then(|v| v.as_str()).unwrap_or("");
+            let raw_data: Value = obj.get("data")
+                .and_then(|v| v.as_str())
+                .and_then(|s| serde_json::from_str(s).ok())
+                .unwrap_or(json!({}));
+            let translated = match raw_type {
+                "RoomJoin" => json!({"type": "join_room", "room": raw_data.get("room_id"), "user": raw_data.get("user_id")}),
+                _ => json!(null), // null = 跳过此事件
+            };
+            ApiResult::Ok(json_value_to_wit(&translated))
+        }
+        _ => ApiResult::Error("unknown route".to_string()),
+    }
+}
+```
+
+**注意**：SSE 是长连接，插件本身不处理 HTTP 流式响应。宿主负责连接管理，插件只负责事件翻译。`on_api` 返回 `null` 时宿主跳过该事件不发送。
+
+---
+
 ## WIT ABI 参考
 
 插件使用 WIT 接口与宿主通信。定义文件：`wit/phira-plugin.wit`，World：`phira-plugin-v2`。
