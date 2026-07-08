@@ -111,7 +111,7 @@ impl WitPluginComponent {
         engine_config.wasm_bulk_memory(true);
         engine_config.wasm_multi_value(true);
         engine_config.wasm_backtrace(true);
-        engine_config.consume_fuel(runtime.fuel_per_call > 0);
+        // Fuel metering disabled — wasm init needs full execution to complete
         engine_config.max_wasm_stack(runtime.max_stack_bytes.max(64 * 1024));
         let engine = wasmtime::Engine::new(&engine_config)
             .map_err(|e| format!("engine creation: {e}"))?;
