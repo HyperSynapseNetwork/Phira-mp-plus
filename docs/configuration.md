@@ -2,6 +2,9 @@
 
 本文档说明 `server_config.yml`、运行时数据文件和常见环境变量。示例配置见项目根目录的 [`server_config.yml`](../server_config.yml)。
 
+> **编译特性**: 默认只编译 `postgres` 支持。WASM 插件系统需要 `--features wit-bindgen` 或 `--features plugin-system,wit-bindgen`。
+> `cargo build --release --features wit-bindgen` 编译包含完整插件系统的二进制。
+
 ## 配置加载规则
 
 - 默认读取项目当前工作目录下的 `server_config.yml`。

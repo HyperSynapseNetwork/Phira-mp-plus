@@ -15,112 +15,98 @@ permissions:
   contents: write
 
 jobs:
-  release:
+  version:
     runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.version.outputs.tag }}
+      version: ${{ steps.version.outputs.version }}
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-
-      - name: 获取最新版本标签并计算 C
-        id: version
+      - id: version
         run: |
           LATEST_TAG=$(git tag --list 'v*.*.*' --sort=-v:refname | head -1)
-          if [[ -z "$LATEST_TAG" ]]; then
-            echo "错误: 没有找到版本标签"
-            exit 1
-          fi
-          VERSION="${LATEST_TAG#v}"
-          MAJOR=$(echo "$VERSION" | cut -d. -f1)
-          MINOR=$(echo "$VERSION" | cut -d. -f2)
-
-          BASE_TAG="v${MAJOR}.${MINOR}.0"
-          if git rev-parse "$BASE_TAG" >/dev/null 2>&1; then
-            PATCH=$(git rev-list --count "$BASE_TAG"..HEAD)
+          [[ -z "$LATEST_TAG" ]] && { echo "no version tag"; exit 1; }
+          RAW="${LATEST_TAG#v}"
+          MAJOR=$(echo "$RAW" | cut -d. -f1)
+          MINOR=$(echo "$RAW" | cut -d. -f2)
+          BASE="v${MAJOR}.${MINOR}.0"
+          if git rev-parse "$BASE" >/dev/null 2>&1; then
+            PATCH=$(git rev-list --count "$BASE"..HEAD)
           else
             PATCH=$(git rev-list --count HEAD)
           fi
+          echo "tag=v$MAJOR.$MINOR.$PATCH" >> $GITHUB_OUTPUT
+          echo "version=$MAJOR.$MINOR.$PATCH" >> $GITHUB_OUTPUT
 
-          FULL_VERSION="${MAJOR}.${MINOR}.${PATCH}"
-          echo "version=$FULL_VERSION" >> $GITHUB_OUTPUT
-          echo "tag=v$FULL_VERSION" >> $GITHUB_OUTPUT
-          echo "major=$MAJOR" >> $GITHUB_OUTPUT
-          echo "minor=$MINOR" >> $GITHUB_OUTPUT
-          echo "patch=$PATCH" >> $GITHUB_OUTPUT
+  build-linux:
+    needs: version
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --release
+      - run: cp target/release/phira-mp-plus-server phira-mp-plus-server-linux
+      - uses: actions/upload-artifact@v4
+        with:
+          name: phira-mp-plus-server-linux
+          path: phira-mp-plus-server-linux
 
-      - name: 更新源码版本号
-        run: |
-          sed -i "s/^version = \".*\"/version = \"${{ steps.version.outputs.version }}\"/" phira-mp-plus-server/Cargo.toml
-          sed -i "s/^version = \".*\"/version = \"${{ steps.version.outputs.version }}\"/" phira-plugin-sdk/Cargo.toml
-          git config user.name "github-actions"
-          git config user.email "actions@github.com"
-          git add phira-mp-plus-server/Cargo.toml phira-plugin-sdk/Cargo.toml
-          git commit -m "chore: update version to ${{ steps.version.outputs.version }}"
-          git tag -fa "${{ steps.version.outputs.tag }}" -m "v${{ steps.version.outputs.version }}"
-          git push --follow-tags
+  build-windows:
+    needs: version
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --release
+      - run: cp target/release/phira-mp-plus-server.exe phira-mp-plus-server-windows.exe
+      - uses: actions/upload-artifact@v4
+        with:
+          name: phira-mp-plus-server-windows
+          path: phira-mp-plus-server-windows.exe
 
-      - name: 安装跨平台工具
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq mingw-w64
+  build-plugins-linux:
+    needs: version
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          target: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+      - name: Install wasm-tools
+        run: cargo install wasm-tools
+      - run: cargo build --release --features wit-bindgen
+      - run: |
+          cd phira-mp-plus-server/tests/test-plugin
+          cargo build --target wasm32-unknown-unknown --release
+          wasm-tools component new \
+            target/wasm32-unknown-unknown/release/test_plugin.wasm \
+            -o ../../target/release/test-plugin.component.wasm
+      - uses: actions/upload-artifact@v4
+        with:
+          name: phira-mp-plus-server-plugins-linux
+          path: target/release/phira-mp-plus-server
 
-      - name: 添加 Windows 目标
-        run: rustup target add x86_64-pc-windows-gnu
-
-      - name: 构建 Linux 可执行文件
-        run: |
-          cargo build --release
-          mkdir -p /tmp/release-files
-          cp target/release/phira-mp-plus-server "/tmp/release-files/phira-mp-plus-server-v${{ steps.version.outputs.version }}-linux-x86_64"
-          strip "/tmp/release-files/phira-mp-plus-server-v${{ steps.version.outputs.version }}-linux-x86_64"
-          echo "Linux binary: $(ls -lh /tmp/release-files/phira-mp-plus-server-v${{ steps.version.outputs.version }}-linux-x86_64 | awk '{print $5}')"
-
-      - name: 构建 Windows 可执行文件
-        run: |
-          cargo build --release --target x86_64-pc-windows-gnu
-          cp target/x86_64-pc-windows-gnu/release/phira-mp-plus-server.exe "/tmp/release-files/phira-mp-plus-server-v${{ steps.version.outputs.version }}-windows-x86_64.exe"
-          echo "Windows binary: $(ls -lh /tmp/release-files/phira-mp-plus-server-v${{ steps.version.outputs.version }}-windows-x86_64.exe | awk '{print $5}')"
-
-      - name: 打包 SDK
-        run: |
-          mkdir -p /tmp/sdk-release/phira-plugin-sdk
-          cp -r phira-plugin-sdk/src /tmp/sdk-release/phira-plugin-sdk/src
-          cp phira-plugin-sdk/Cargo.toml /tmp/sdk-release/phira-plugin-sdk/
-          cp -r wit /tmp/sdk-release/wit
-          cd /tmp/sdk-release
-          tar czf /tmp/release-files/phira-plugin-sdk.tar.gz phira-plugin-sdk wit
-          echo "SDK tarball: $(ls -lh /tmp/release-files/phira-plugin-sdk.tar.gz | awk '{print $5}')"
-
-      - name: 创建 Release
+  release:
+    needs: [version, build-linux, build-windows, build-plugins-linux]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+      - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ steps.version.outputs.tag }}
-          name: v${{ steps.version.outputs.version }}
+          tag_name: ${{ needs.version.outputs.tag }}
+          name: v${{ needs.version.outputs.version }}
           body: |
-            ## Phira-mp+ v${{ steps.version.outputs.version }}
-
-            ### 版本信息
-            - C (patch): ${{ steps.version.outputs.patch }}
-            ${{ github.event.inputs.description && '### 说明' || '' }}
-            ${{ github.event.inputs.description }}
-
-            ### 下载
-
-            | 文件 | 平台 |
-            |------|------|
-            | `phira-mp-plus-server-v${{ steps.version.outputs.version }}-linux-x86_64` | Linux x86_64 |
-            | `phira-mp-plus-server-v${{ steps.version.outputs.version }}-windows-x86_64.exe` | Windows x86_64 |
-            | `phira-plugin-sdk.tar.gz` | 插件 SDK + WIT |
-
-            ### SDK 使用
-            ```bash
-            wget ${{ github.server_url }}/${{ github.repository }}/releases/download/${{ steps.version.outputs.tag }}/phira-plugin-sdk.tar.gz
-            tar xzf phira-plugin-sdk.tar.gz
-            ```
+            ## Phira-mp-plus v${{ needs.version.outputs.version }}
           files: |
-            /tmp/release-files/phira-mp-plus-server-v*-linux-x86_64
-            /tmp/release-files/phira-mp-plus-server-v*-windows-x86_64.exe
-            /tmp/release-files/phira-plugin-sdk.tar.gz
+            phira-mp-plus-server-linux/phira-mp-plus-server-linux
+            phira-mp-plus-server-windows/phira-mp-plus-server-windows.exe
+            phira-mp-plus-server-plugins-linux/phira-mp-plus-server
           draft: false
           prerelease: false
