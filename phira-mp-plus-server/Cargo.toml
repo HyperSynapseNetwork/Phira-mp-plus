@@ -1,6 +1,6 @@
 [package]
 name = "phira-mp-plus-server"
-version = "0.3.0"
+version = "0.3.17"
 edition.workspace = true
 
 [dependencies]
