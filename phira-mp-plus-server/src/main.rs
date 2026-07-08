@@ -102,6 +102,7 @@ async fn main() -> Result<()> {
     if args.minimal {
         config.idle.minimal = true;
         config.cli_enabled = false;
+        config.http_port = 0;
     }
     if config.monitors.is_empty() {
         config.monitors.push(2);

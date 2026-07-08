@@ -30,7 +30,12 @@ pub struct IdleConfig {
     /// Minimal mode: no plugins, no CLI/TUI, no HTTP.
     #[serde(default)]
     pub minimal: bool,
+    /// Enable WASM plugin system. Disabled in minimal mode.
+    #[serde(default = "default_plugins_enabled")]
+    pub plugins_enabled: bool,
 }
+
+fn default_plugins_enabled() -> bool { true }
 
 fn default_idle_after_secs() -> u64 { 300 }
 fn default_check_interval_secs() -> u64 { 15 }
@@ -46,6 +51,7 @@ impl Default for IdleConfig {
             auth_timeout_secs: default_auth_timeout(),
             lazy_services: false,
             minimal: false,
+            plugins_enabled: default_plugins_enabled(),
         }
     }
 }

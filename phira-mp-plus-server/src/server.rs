@@ -321,13 +321,8 @@ impl PlusConfig {
                 self.port
             )));
         }
-        if self.http_port == 0 && !self.idle.minimal {
-            return Err(AppError::ConfigValidation(format!(
-                "HTTP 端口 {} 超出范围 (1-65535)；设置 idle.minimal=true 或指定有效端口",
-                self.http_port
-            )));
-        }
-        if self.port == self.http_port {
+        // http_port=0 表示禁用 HTTP 服务，是合法配置。
+        if self.http_port > 0 && self.port == self.http_port {
             return Err(AppError::ConfigValidation(
                 "TCP 端口和 HTTP 端口不能相同".into(),
             ));
@@ -1027,7 +1022,7 @@ impl PlusServer {
             .set_default_state(state_query_all)
             .await;
 
-        // 非最小化模式且 http_port>0 时启动 HTTP 服务
+        // http_port>0 时才启动 HTTP 服务
         let http_server = if http_port > 0 {
             let srv = Arc::new(PluginHttpServer::new(
                 http_port,
@@ -1050,8 +1045,8 @@ impl PlusServer {
         // 初始化 session actor mailbox（Chat 等命令通过它路由）
         crate::session_actor::init();
 
-        // 非最小化模式时加载插件
-        if http_port > 0 {
+        // 插件系统启用时加载插件
+        if state.config.idle.plugins_enabled && !state.config.idle.minimal {
             let plugin_count = state.plugin_manager.load_plugins().await.unwrap_or(0);
             info!("loaded {} plugin(s)", plugin_count);
         }
