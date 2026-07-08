@@ -12,13 +12,10 @@
 //! - `on-api(method: string, args: list<json-value>) -> api-result`
 
 use crate::extensions::ExtensionManager;
-use crate::plugin::{CliCommand, PluginEvent, PluginHost, PluginInfo, WasmRuntimeConfig};
+use crate::plugin::{CliCommand, PluginEvent, PluginInfo, WasmRuntimeConfig};
 use phira_mp_plus_server_api as api;
 use std::collections::HashMap;
-use std::path::Path;
 use std::sync::{Arc, Mutex, Weak};
-use tracing::{error, info, warn};
-use wasmtime::AsContext;
 
 // ── Shared host services (used by WitPluginComponent) ──
 
@@ -36,7 +33,7 @@ pub struct WasmPluginServices {
 impl WasmPluginServices {
     pub fn new(
         extensions: Arc<ExtensionManager>,
-        runtime: crate::plugin::WasmRuntimeConfig,
+        _runtime: crate::plugin::WasmRuntimeConfig,
     ) -> Self {
         Self {
             capabilities: Mutex::new(HashMap::new()),
@@ -124,11 +121,27 @@ impl WitPluginComponent {
             .server_state
             .lock()
             .unwrap_or_else(|e| e.into_inner());
-        let host = state_ref
+        let s = state_ref
             .as_ref()
             .and_then(|w| w.upgrade())
-            .map(|s| crate::wit_host::WitPluginHost::new(s, plugin_name.clone()))
             .ok_or_else(|| "server state not available — set via PluginManager::set_server_state".to_string())?;
+        let state_query = services
+            .state_query
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+            .ok_or_else(|| "state query not available — set via PluginManager::set_default_state".to_string())?;
+        let ctx = Arc::new(crate::wit_host::WitHostContext {
+            state_query,
+            extensions: Arc::clone(&services.extensions),
+            room_commands: Arc::clone(&s.room_commands),
+            ban_manager: Arc::clone(&s.ban_manager),
+            simulation: Arc::clone(&s.simulation),
+            event_bus: Arc::clone(&s.event_bus),
+            http_timeout_secs: s.config.wasm_runtime.http_timeout_secs,
+            http_max_body: s.config.wasm_runtime.max_http_response_bytes,
+        });
+        let host = crate::wit_host::WitPluginHost::new(ctx, plugin_name.clone());
         let host_state = WitHostState { host };
         let mut store = wasmtime::Store::new(&engine, host_state);
         let instance = linker.instantiate(&mut store, &component)

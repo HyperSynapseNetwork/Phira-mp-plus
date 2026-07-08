@@ -1,26 +1,70 @@
 //! WIT/component-model host trait implementations.
 //!
+//! Decoupled from PlusServerState — the host depends only on
+//! WitHostContext (an explicit bundle of the subsystems it needs)
+//! and the generic ServerStateQuery from the api crate.
+//!
 //! The core `WitPluginHost` skeleton is available with `plugin-system`.
 //! The generated trait impls require `wit-bindgen` (default feature).
 
-use crate::server::PlusServerState;
+use phira_mp_plus_server_api as api;
 use std::sync::Arc;
 
-/// Wraps server state to implement WIT host traits.
+/// Explicit dependency bundle for the WIT host.
+///
+/// Instead of grabbing the entire PlusServerState, WitPluginHost
+/// only sees the subsystems it actually uses.  This makes the
+/// dependency boundary visible and simplifies testing.
+pub struct WitHostContext {
+    /// Generic query dispatch (wraps server_state_query_for_host).
+    pub state_query: api::ServerStateQuery,
+    /// Extension manager for user/room extra data.
+    pub extensions: Arc<crate::extensions::ExtensionManager>,
+    /// Room command gateway.
+    pub room_commands: Arc<crate::room_actor::RoomCommandGateway>,
+    /// Ban manager.
+    pub ban_manager: Arc<crate::ban::BanManager>,
+    /// Simulation manager.
+    pub simulation: Arc<crate::simulation::SimulationManager>,
+    /// Event bus (for dispatching PluginEvents).
+    pub event_bus: Arc<crate::event_bus::EventBus>,
+    /// HTTP sandbox timeout (seconds).
+    pub http_timeout_secs: u64,
+    /// HTTP sandbox max response body (bytes).
+    pub http_max_body: usize,
+}
+
+/// Wraps server capabilities to implement WIT host traits.
 pub struct WitPluginHost {
-    state: Arc<PlusServerState>,
+    ctx: Arc<WitHostContext>,
     plugin_name: String,
 }
 
 impl WitPluginHost {
-    pub fn new(state: Arc<PlusServerState>, plugin_name: String) -> Self {
-        Self { state, plugin_name }
+    pub fn new(ctx: Arc<WitHostContext>, plugin_name: String) -> Self {
+        Self { ctx, plugin_name }
     }
 
     pub fn name(&self) -> &str {
         &self.plugin_name
     }
 
+    /// Convenience: run an async fn synchronously with panic protection.
+    ///
+    /// Every WIT host method is sync, but most server operations are async.
+    /// This helper wraps block_on + catch_unwind so a panicking plugin
+    /// call never takes down the host thread.
+    fn block_on_sync<T, F>(&self, f: F) -> Result<T, String>
+    where
+        F: FnOnce(&WitHostContext) -> T + Send,
+        T: Send,
+    {
+        let ctx = Arc::clone(&self.ctx);
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+            futures::executor::block_on(async { f(&ctx) })
+        }))
+        .map_err(|_| "WIT host operation panicked — plugin disabled".to_string())
+    }
 }
 
 #[cfg(test)]
@@ -107,9 +151,9 @@ mod wit_trait_impls {
     use crate::plugin_abi::wit_abi as wit;
     use wit::phira::plugin::phira_types as types;
 
-    /// Helper: call server_state_query_for_host and convert to ApiResult.
-    fn query_api_result(state: &std::sync::Arc<crate::server::PlusServerState>, method: &str, args: &[serde_json::Value]) -> types::ApiResult {
-        match crate::server::server_state_query_for_host(state, method, args) {
+    /// Helper: call ServerStateQuery and convert to ApiResult.
+    fn query_api_result(host: &WitPluginHost, method: &str, args: &[serde_json::Value]) -> types::ApiResult {
+        match host.ctx.state_query.call(method, args) {
             Ok(value) => types::ApiResult::Ok(json_to_wit_json(&value)),
             Err(e) => types::ApiResult::Error(e),
         }
@@ -147,7 +191,7 @@ mod wit_trait_impls {
 
         fn api_call(&mut self, method: String, args: Vec<types::JsonValue>) -> types::ApiResult {
             let args_serde: Vec<serde_json::Value> = args.iter().map(|v| wit_json_to_json(v)).collect();
-            match crate::server::server_state_query_for_host(&self.state, &method, &args_serde) {
+            match self.ctx.state_query.call(&method, &args_serde) {
                 Ok(value) => types::ApiResult::Ok(json_to_wit_json(&value)),
                 Err(e) => types::ApiResult::Error(e),
             }
@@ -170,8 +214,8 @@ mod wit_trait_impls {
             // SSRF validation — default to not allowing private networks
             crate::wasm_host_helpers::validate_http_url(&url, false)?;
 
-            let timeout_secs = self.state.config.wasm_runtime.http_timeout_secs.max(5);
-            let max_body = self.state.config.wasm_runtime.max_http_response_bytes.max(1);
+            let timeout_secs = self.ctx.http_timeout_secs.max(5);
+            let max_body = self.ctx.http_max_body.max(1);
 
             let client = reqwest::blocking::Client::builder()
                 .timeout(std::time::Duration::from_secs(timeout_secs))
@@ -221,87 +265,82 @@ mod wit_trait_impls {
     // ── phira-query ──
     impl wit::phira::plugin::phira_query::Host for WitPluginHost {
         fn get_user(&mut self, user_id: u32) -> types::ApiResult {
-            query_api_result(&self.state, "user_name", &[serde_json::json!(user_id as i32)])
+            query_api_result(self, "user_name", &[serde_json::json!(user_id as i32)])
         }
         fn get_user_extra(&mut self, user_id: u32, key: String) -> types::ApiResult {
-            let state = std::sync::Arc::clone(&self.state);
-            match futures::executor::block_on(state.extensions.get_user_extra(user_id as i32, &key)) {
-                Some(value) => types::ApiResult::Ok(types::JsonValue::Text(value)),
-                None => types::ApiResult::Ok(types::JsonValue::Null),
-            }
-        }
-        fn set_user_extra(&mut self, user_id: u32, key: String, value: String) -> types::ApiResult {
-            let state = std::sync::Arc::clone(&self.state);
-            match futures::executor::block_on(state.extensions.set_user_extra(user_id as i32, &key, value)) {
-                Ok(()) => types::ApiResult::Ok(types::JsonValue::Null),
+            match self.block_on_sync(|ctx| futures::executor::block_on(
+                ctx.extensions.get_user_extra(user_id as i32, &key)
+            )) {
+                Ok(Some(value)) => types::ApiResult::Ok(types::JsonValue::Text(value)),
+                Ok(None) => types::ApiResult::Ok(types::JsonValue::Null),
                 Err(e) => types::ApiResult::Error(e),
             }
         }
+        fn set_user_extra(&mut self, user_id: u32, key: String, value: String) -> types::ApiResult {
+            match self.block_on_sync(|ctx| futures::executor::block_on(
+                ctx.extensions.set_user_extra(user_id as i32, &key, value)
+            )) {
+                Ok(Ok(())) => types::ApiResult::Ok(types::JsonValue::Null),
+                Ok(Err(e)) | Err(e) => types::ApiResult::Error(e),
+            }
+        }
         fn get_room(&mut self, room_id: String) -> types::ApiResult {
-            query_api_result(&self.state, "rooms.by_name", &[serde_json::json!(room_id)])
+            query_api_result(self, "rooms.by_name", &[serde_json::json!(room_id)])
         }
         fn get_room_extra(&mut self, room_id: String, key: String) -> types::ApiResult {
-            let state = std::sync::Arc::clone(&self.state);
-            match futures::executor::block_on(state.extensions.get_room_extra(&room_id, &key)) {
-                Some(value) => types::ApiResult::Ok(types::JsonValue::Text(value)),
-                None => types::ApiResult::Ok(types::JsonValue::Null),
+            match self.block_on_sync(|ctx| futures::executor::block_on(
+                ctx.extensions.get_room_extra(&room_id, &key)
+            )) {
+                Ok(Some(value)) => types::ApiResult::Ok(types::JsonValue::Text(value)),
+                Ok(None) => types::ApiResult::Ok(types::JsonValue::Null),
+                Err(e) => types::ApiResult::Error(e),
             }
         }
         fn list_rooms(&mut self) -> types::ApiResult {
-            query_api_result(&self.state, "rooms.list", &[])
+            query_api_result(self, "rooms.list", &[])
         }
         fn list_online_users(&mut self) -> types::ApiResult {
-            query_api_result(&self.state, "rooms.list", &[])
+            query_api_result(self, "rooms.list", &[])
         }
         fn is_user_online(&mut self, user_id: u32) -> bool {
             // Check if the user has an active session by looking up their name.
             // If the user exists and has a session, they are online.
-            matches!(query_api_result(&self.state, "user_name", &[serde_json::json!(user_id as i32)]), types::ApiResult::Ok(_))
+            matches!(query_api_result(self, "user_name", &[serde_json::json!(user_id as i32)]), types::ApiResult::Ok(_))
         }
     }
 
     // ── phira-room-mgmt ──
     impl wit::phira::plugin::phira_room_mgmt::Host for WitPluginHost {
-        fn create_empty_room(&mut self, _room_id: String, _endpoint: Option<String>) -> types::ApiResult {
-            types::ApiResult::Error(
-                "create_empty_room requires capability 'room.manage' — not yet wired via mailbox".to_string()
-            )
+        fn create_empty_room(&mut self, room_id: String, endpoint: Option<String>) -> types::ApiResult {
+            let mut args = vec![serde_json::json!(room_id)];
+            if let Some(ep) = endpoint {
+                args.push(serde_json::json!(ep));
+            }
+            query_api_result(self, "room.create_empty", &args)
         }
         fn kick_from_room(&mut self, room_id: String, target_id: u32) -> types::ApiResult {
-            let state = std::sync::Arc::clone(&self.state);
-            match futures::executor::block_on(
-                state.room_commands.kick_user(&state, &room_id, target_id as i32)
-            ) {
-                Ok(v) => types::ApiResult::Ok(json_to_wit_json(&v)),
-                Err(e) => types::ApiResult::Error(e),
-            }
+            query_api_result(self, "room.kick", &[
+                serde_json::json!(room_id),
+                serde_json::json!(target_id),
+            ])
         }
         fn transfer_host(&mut self, room_id: String, target_id: u32) -> types::ApiResult {
-            let state = std::sync::Arc::clone(&self.state);
-            match futures::executor::block_on(
-                state.room_commands.set_host(&state, &room_id, Some(target_id as i32))
-            ) {
-                Ok(v) => types::ApiResult::Ok(json_to_wit_json(&v)),
-                Err(e) => types::ApiResult::Error(e),
-            }
+            query_api_result(self, "room.set_host", &[
+                serde_json::json!(room_id),
+                serde_json::json!(target_id),
+            ])
         }
         fn set_host(&mut self, room_id: String, target_id: Option<u32>) -> types::ApiResult {
-            let state = std::sync::Arc::clone(&self.state);
-            match futures::executor::block_on(
-                state.room_commands.set_host(&state, &room_id, target_id.map(|id| id as i32))
-            ) {
-                Ok(v) => types::ApiResult::Ok(json_to_wit_json(&v)),
-                Err(e) => types::ApiResult::Error(e),
-            }
+            query_api_result(self, "room.set_host", &[
+                serde_json::json!(room_id),
+                serde_json::json!(target_id.map(|id| id as i32)),
+            ])
         }
         fn set_room_lock(&mut self, room_id: String, locked: bool) -> types::ApiResult {
-            let state = std::sync::Arc::clone(&self.state);
-            match futures::executor::block_on(
-                state.room_commands.set_lock(&state, &room_id, locked)
-            ) {
-                Ok(v) => types::ApiResult::Ok(json_to_wit_json(&v)),
-                Err(e) => types::ApiResult::Error(e),
-            }
+            query_api_result(self, "room.set_lock", &[
+                serde_json::json!(room_id),
+                serde_json::json!(locked),
+            ])
         }
         fn set_room_hidden(&mut self, _room_id: String, _hidden: bool) -> types::ApiResult {
             types::ApiResult::Error(
@@ -309,13 +348,9 @@ mod wit_trait_impls {
             )
         }
         fn close_room(&mut self, room_id: String) -> types::ApiResult {
-            let state = std::sync::Arc::clone(&self.state);
-            match futures::executor::block_on(
-                state.room_commands.close_room(&state, &room_id)
-            ) {
-                Ok(v) => types::ApiResult::Ok(json_to_wit_json(&v)),
-                Err(e) => types::ApiResult::Error(e),
-            }
+            query_api_result(self, "room.close", &[
+                serde_json::json!(room_id),
+            ])
         }
         fn set_room_phira_api_endpoint(&mut self, _room_id: String, _endpoint: Option<String>) -> types::ApiResult {
             types::ApiResult::Error(
@@ -327,83 +362,29 @@ mod wit_trait_impls {
     // ── phira-user-mgmt ──
     impl wit::phira::plugin::phira_user_mgmt::Host for WitPluginHost {
         fn kick_user(&mut self, user_id: u32, reason: String) -> types::ApiResult {
-            // Server-level kick: remove from room + notify + delete session.
-            use phira_mp_common::{Message, RoomEvent};
-            use crate::event_bus::MpEvent;
-            use crate::plugin::PluginEvent;
-            let state = std::sync::Arc::clone(&self.state);
-            let result = futures::executor::block_on(async {
-                let uid = user_id as i32;
-                let user = state.users.read().await.get(&uid).map(std::sync::Arc::clone)
-                    .ok_or("user not found".to_string())?;
-                // Remove from room if present
-                if let Some(room) = user.room.read().await.as_ref().map(std::sync::Arc::clone) {
-                    let room_id = room.id.to_string();
-                    let room_key = room.id.clone();
-                    let was_monitor = user.monitor.load(std::sync::atomic::Ordering::SeqCst);
-                    if room.on_user_leave(&user).await {
-                        state.rooms.write().await.remove(&room_key);
-                    }
-                    if !was_monitor {
-                        state.publish_room_event(RoomEvent::LeaveRoom {
-                            room: room_key,
-                            user: uid,
-                        }).await;
-                    }
-                    state.event_bus.publish(MpEvent::PluginEventDispatched(
-                        std::sync::Arc::new(PluginEvent::RoomLeave {
-                            user_id: uid,
-                            room_id,
-                        }),
-                    ));
-                }
-                // Notify user's session
-                let sessions = state.sessions.read().await;
-                for session in sessions.values() {
-                    if session.user.id == uid {
-                        let _ = session.stream.send(
-                            phira_mp_common::ServerCommand::Message(
-                                Message::Chat {
-                                    user: 0,
-                                    content: format!("你已被管理员踢出: {reason}"),
-                                },
-                            )
-                        ).await;
-                        break;
-                    }
-                }
-                drop(sessions);
-                state.users.write().await.remove(&uid);
-                Ok(serde_json::json!({"kicked": true, "user_id": user_id}))
-            });
-            match result {
-                Ok(v) => types::ApiResult::Ok(json_to_wit_json(&v)),
-                Err(e) => types::ApiResult::Error(e),
-            }
+            query_api_result(self, "user.kick", &[
+                serde_json::json!(user_id),
+                serde_json::json!(reason),
+            ])
         }
         fn ban_user(&mut self, user_id: u32, reason: String) -> types::ApiResult {
-            let state = std::sync::Arc::clone(&self.state);
-            match futures::executor::block_on(state.ban_manager.ban_user(user_id as i32, &reason)) {
-                Ok(_) => types::ApiResult::Ok(types::JsonValue::Null),
-                Err(e) => types::ApiResult::Error(e),
-            }
+            query_api_result(self, "ban.add", &[
+                serde_json::json!(user_id),
+                serde_json::json!(reason),
+            ])
         }
         fn unban_user(&mut self, user_id: u32) -> types::ApiResult {
-            let state = std::sync::Arc::clone(&self.state);
-            match futures::executor::block_on(state.ban_manager.unban_user(user_id as i32)) {
-                Ok(_) => types::ApiResult::Ok(types::JsonValue::Null),
-                Err(e) => types::ApiResult::Error(e),
-            }
+            query_api_result(self, "ban.remove", &[
+                serde_json::json!(user_id),
+            ])
         }
         fn get_ban_list(&mut self) -> types::ApiResult {
-            let state = std::sync::Arc::clone(&self.state);
-            let bans = futures::executor::block_on(state.ban_manager.list_banned());
-            let json = serde_json::to_value(&bans).unwrap_or_default();
-            types::ApiResult::Ok(json_to_wit_json(&json))
+            query_api_result(self, "ban.list", &[])
         }
         fn is_banned(&mut self, user_id: u32) -> bool {
-            let state = std::sync::Arc::clone(&self.state);
-            futures::executor::block_on(state.ban_manager.is_banned(user_id as i32))
+            matches!(query_api_result(self, "ban.check", &[
+                serde_json::json!(user_id),
+            ]), types::ApiResult::Ok(_))
         }
     }
 
@@ -448,31 +429,21 @@ mod wit_trait_impls {
     // ── phira-admin ──
     impl wit::phira::plugin::phira_admin::Host for WitPluginHost {
         fn list_admin_ids(&mut self) -> types::ApiResult {
-            let ids = self.state.admin_ids.blocking_read();
-            let list: Vec<u32> = ids.iter().copied().map(|id| id as u32).collect();
-            types::ApiResult::Ok(json_to_wit_json(&serde_json::json!(list)))
+            query_api_result(self, "admin.list", &[])
         }
         fn is_admin(&mut self, user_id: u32) -> bool {
-            let ids = self.state.admin_ids.blocking_read();
-            ids.contains(&(user_id as i32))
+            matches!(query_api_result(self, "admin.check", &[
+                serde_json::json!(user_id),
+            ]), types::ApiResult::Ok(types::JsonValue::Flag(true)))
         }
         fn add_admin_id(&mut self, user_id: u32) -> types::ApiResult {
-            let mut ids = self.state.admin_ids.blocking_write();
-            ids.insert(user_id as i32);
-            types::ApiResult::Ok(types::JsonValue::Null)
+            query_api_result(self, "admin.add", &[serde_json::json!(user_id)])
         }
         fn remove_admin_id(&mut self, user_id: u32) -> types::ApiResult {
-            let mut ids = self.state.admin_ids.blocking_write();
-            ids.remove(&(user_id as i32));
-            types::ApiResult::Ok(types::JsonValue::Null)
+            query_api_result(self, "admin.remove", &[serde_json::json!(user_id)])
         }
         fn set_admin_ids(&mut self, ids: Vec<u32>) -> types::ApiResult {
-            let mut current = self.state.admin_ids.blocking_write();
-            current.clear();
-            for id in ids {
-                current.insert(id as i32);
-            }
-            types::ApiResult::Ok(types::JsonValue::Null)
+            query_api_result(self, "admin.set", &[serde_json::json!(ids)])
         }
     }
 
@@ -603,19 +574,29 @@ mod wit_trait_impls {
     // ── phira-simulation ──
     impl wit::phira::plugin::phira_simulation::Host for WitPluginHost {
         fn status(&mut self) -> types::ApiResult {
-            let status = futures::executor::block_on(self.state.simulation.status());
-            let json = serde_json::to_value(&status).unwrap_or_default();
-            types::ApiResult::Ok(json_to_wit_json(&json))
+            let result = self.block_on_sync(|ctx| {
+                futures::executor::block_on(ctx.simulation.status())
+            });
+            match result {
+                Ok(status) => {
+                    let json = serde_json::to_value(&status).unwrap_or_default();
+                    types::ApiResult::Ok(json_to_wit_json(&json))
+                }
+                Err(e) => types::ApiResult::Error(e),
+            }
         }
         fn run(&mut self, preset: String, users: Option<u32>, rooms: Option<u32>, duration: Option<u32>) -> types::ApiResult {
-            let mut config = crate::simulation::SimulationConfig::default();
-            if let Some(p) = crate::simulation::SimulationPreset::parse(&preset) {
-                config = p.defaults(self.state.simulation.seed_hint());
-            }
-            if let Some(u) = users { config.users = u as usize; }
-            if let Some(r) = rooms { config.rooms = r as usize; }
-            if let Some(d) = duration { config.duration_secs = d as u64; }
-            match futures::executor::block_on(self.state.simulation.start(config)) {
+            let result = self.block_on_sync(|ctx| {
+                let mut config = crate::simulation::SimulationConfig::default();
+                if let Some(p) = crate::simulation::SimulationPreset::parse(&preset) {
+                    config = p.defaults(ctx.simulation.seed_hint());
+                }
+                if let Some(u) = users { config.users = u as usize; }
+                if let Some(r) = rooms { config.rooms = r as usize; }
+                if let Some(d) = duration { config.duration_secs = d as u64; }
+                futures::executor::block_on(ctx.simulation.start(config))
+            });
+            match result {
                 Ok(status) => {
                     let json = serde_json::to_value(&status).unwrap_or_default();
                     types::ApiResult::Ok(json_to_wit_json(&json))
@@ -624,32 +605,43 @@ mod wit_trait_impls {
             }
         }
         fn stop(&mut self) -> types::ApiResult {
-            let status = futures::executor::block_on(self.state.simulation.stop("stopped via plugin API"));
-            let json = serde_json::to_value(&status).unwrap_or_default();
-            types::ApiResult::Ok(json_to_wit_json(&json))
+            let result = self.block_on_sync(|ctx| {
+                futures::executor::block_on(ctx.simulation.stop("stopped via plugin API"))
+            });
+            match result {
+                Ok(status) => {
+                    let json = serde_json::to_value(&status).unwrap_or_default();
+                    types::ApiResult::Ok(json_to_wit_json(&json))
+                }
+                Err(e) => types::ApiResult::Error(e),
+            }
         }
         fn cleanup(&mut self) -> types::ApiResult {
-            let status = futures::executor::block_on(self.state.simulation.cleanup());
-            let json = serde_json::to_value(&status).unwrap_or_default();
-            types::ApiResult::Ok(json_to_wit_json(&json))
+            let result = self.block_on_sync(|ctx| {
+                futures::executor::block_on(ctx.simulation.cleanup())
+            });
+            match result {
+                Ok(status) => {
+                    let json = serde_json::to_value(&status).unwrap_or_default();
+                    types::ApiResult::Ok(json_to_wit_json(&json))
+                }
+                Err(e) => types::ApiResult::Error(e),
+            }
         }
     }
 
     // ── phira-runtime ──
     impl wit::phira::plugin::phira_runtime::Host for WitPluginHost {
         fn status(&mut self) -> types::ApiResult {
-            let snapshot = self.state.runtime_plan.snapshot();
-            let json = serde_json::to_value(&snapshot).unwrap_or_default();
-            types::ApiResult::Ok(json_to_wit_json(&json))
+            query_api_result(self, "runtime.plan", &[])
         }
-        fn events(&mut self, _limit: Option<u32>) -> types::ApiResult {
-            let stats = self.state.event_bus.stats(50);
-            let json = serde_json::to_value(&stats).unwrap_or_default();
-            types::ApiResult::Ok(json_to_wit_json(&json))
+        fn events(&mut self, limit: Option<u32>) -> types::ApiResult {
+            query_api_result(self, "runtime.event_stats", &[
+                serde_json::json!(limit.unwrap_or(50)),
+            ])
         }
         fn commands(&mut self) -> types::ApiResult {
-            let names: Vec<&str> = self.state.command_registry.iter().map(|s| s.name.as_str()).collect();
-            types::ApiResult::Ok(json_to_wit_json(&serde_json::json!(names)))
+            query_api_result(self, "runtime.commands", &[])
         }
     }
 

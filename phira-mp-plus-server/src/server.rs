@@ -4124,6 +4124,148 @@ fn server_state_query(
                 None => Err("HTTP server not available".to_string()),
             }
         }
+        "user.kick" => {
+            // Server-level kick: remove from room + notify + delete session.
+            let uid = args.get(0).and_then(|v| v.as_i64()).unwrap_or(0) as i32;
+            let reason = args.get(1).and_then(|v| v.as_str()).unwrap_or("kicked by admin").to_string();
+            let (tx, rx) = std::sync::mpsc::channel();
+            let s = Arc::clone(state);
+            tokio::spawn(async move {
+                use phira_mp_common::{Message, RoomEvent};
+                use crate::event_bus::MpEvent;
+                use crate::plugin::PluginEvent;
+                let result = async {
+                    let user = s.users.read().await.get(&uid).map(std::sync::Arc::clone)
+                        .ok_or("user not found".to_string())?;
+                    if let Some(room) = user.room.read().await.as_ref().map(std::sync::Arc::clone) {
+                        let room_id = room.id.to_string();
+                        let room_key = room.id.clone();
+                        let was_monitor = user.monitor.load(std::sync::atomic::Ordering::SeqCst);
+                        if room.on_user_leave(&user).await {
+                            s.rooms.write().await.remove(&room_key);
+                        }
+                        if !was_monitor {
+                            s.publish_room_event(RoomEvent::LeaveRoom {
+                                room: room_key,
+                                user: uid,
+                            }).await;
+                        }
+                        s.event_bus.publish(MpEvent::PluginEventDispatched(
+                            std::sync::Arc::new(PluginEvent::RoomLeave {
+                                user_id: uid,
+                                room_id,
+                            }),
+                        ));
+                    }
+                    let sessions = s.sessions.read().await;
+                    for session in sessions.values() {
+                        if session.user.id == uid {
+                            let _ = session.stream.send(
+                                phira_mp_common::ServerCommand::Message(
+                                    Message::Chat {
+                                        user: 0,
+                                        content: format!("你已被管理员踢出: {reason}"),
+                                    },
+                                )
+                            ).await;
+                            break;
+                        }
+                    }
+                    drop(sessions);
+                    s.users.write().await.remove(&uid);
+                    Ok(serde_json::json!({"kicked": true, "user_id": uid}))
+                }.await;
+                let _ = tx.send(result);
+            });
+            rx.recv_timeout(runtime_state_query_timeout())
+                .unwrap_or(Err("user.kick timeout".to_string()))
+        }
+        "ban.add" => {
+            let uid = args.get(0).and_then(|v| v.as_i64()).unwrap_or(0) as i32;
+            let reason = args.get(1).and_then(|v| v.as_str()).unwrap_or("").to_string();
+            let (tx, rx) = std::sync::mpsc::channel();
+            let s = Arc::clone(state);
+            tokio::spawn(async move {
+                let _ = tx.send(s.ban_manager.ban_user(uid, &reason).await
+                    .map(|_| serde_json::json!({"banned": true})));
+            });
+            rx.recv_timeout(runtime_state_query_timeout())
+                .unwrap_or(Err("ban.add timeout".to_string()))
+        }
+        "ban.remove" => {
+            let uid = args.get(0).and_then(|v| v.as_i64()).unwrap_or(0) as i32;
+            let (tx, rx) = std::sync::mpsc::channel();
+            let s = Arc::clone(state);
+            tokio::spawn(async move {
+                let _ = tx.send(s.ban_manager.unban_user(uid).await
+                    .map(|_| serde_json::json!({"unbanned": true})));
+            });
+            rx.recv_timeout(runtime_state_query_timeout())
+                .unwrap_or(Err("ban.remove timeout".to_string()))
+        }
+        "ban.list" => {
+            let (tx, rx) = std::sync::mpsc::channel();
+            let s = Arc::clone(state);
+            tokio::spawn(async move {
+                let bans = s.ban_manager.list_banned().await;
+                let _ = tx.send(Ok(serde_json::to_value(&bans).unwrap_or_default()));
+            });
+            rx.recv_timeout(runtime_state_query_timeout())
+                .unwrap_or(Err("ban.list timeout".to_string()))
+        }
+        "ban.check" => {
+            let uid = args.get(0).and_then(|v| v.as_i64()).unwrap_or(0) as i32;
+            let (tx, rx) = std::sync::mpsc::channel();
+            let s = Arc::clone(state);
+            tokio::spawn(async move {
+                let banned = s.ban_manager.is_banned(uid).await;
+                let _ = tx.send(Ok(serde_json::json!({"banned": banned})));
+            });
+            rx.recv_timeout(runtime_state_query_timeout())
+                .unwrap_or(Ok(serde_json::json!({"banned": false})))
+        }
+        "admin.list" => {
+            let ids = state.admin_ids.blocking_read();
+            let list: Vec<u32> = ids.iter().copied().map(|id| id as u32).collect();
+            Ok(serde_json::json!(list))
+        }
+        "admin.check" => {
+            let uid = args.get(0).and_then(|v| v.as_i64()).unwrap_or(0) as i32;
+            let ids = state.admin_ids.blocking_read();
+            Ok(serde_json::json!(ids.contains(&uid)))
+        }
+        "admin.add" => {
+            let uid = args.get(0).and_then(|v| v.as_i64()).unwrap_or(0) as i32;
+            state.admin_ids.blocking_write().insert(uid);
+            Ok(serde_json::json!({"added": true}))
+        }
+        "admin.remove" => {
+            let uid = args.get(0).and_then(|v| v.as_i64()).unwrap_or(0) as i32;
+            state.admin_ids.blocking_write().remove(&uid);
+            Ok(serde_json::json!({"removed": true}))
+        }
+        "admin.set" => {
+            let ids: Vec<i32> = args.get(0).and_then(|v| v.as_array())
+                .map(|arr| arr.iter().filter_map(|v| v.as_i64()).map(|i| i as i32).collect())
+                .unwrap_or_default();
+            let mut current = state.admin_ids.blocking_write();
+            current.clear();
+            current.extend(ids);
+            Ok(serde_json::json!({"set": true}))
+        }
+        "runtime.plan" => {
+            let snapshot = state.runtime_plan.snapshot();
+            Ok(serde_json::to_value(&snapshot).unwrap_or_default())
+        }
+        "runtime.event_stats" => {
+            let limit = args.get(0).and_then(|v| v.as_u64()).unwrap_or(50) as usize;
+            let stats = state.event_bus.stats(limit);
+            Ok(serde_json::to_value(&stats).unwrap_or_default())
+        }
+        "runtime.commands" => {
+            let names: Vec<&str> = state.command_registry.iter().map(|c| c.name.as_str()).collect();
+            Ok(serde_json::json!({"commands": names}))
+        }
         _ => Err(format!("unknown query method: {method}")),
     }
 }
