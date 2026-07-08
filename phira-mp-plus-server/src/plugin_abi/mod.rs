@@ -1,7 +1,7 @@
 //! Plugin ABI boundary.
 //!
 //! WIT/component-model ABI v2 is the only ABI. JSON-memory bridge (abi-json-v1)
-//! has been removed — see `plugin_abi/plan.rs` for the migration history.
+//! has been removed. MIGRATION_PHASE=3.
 
 mod plan;
 

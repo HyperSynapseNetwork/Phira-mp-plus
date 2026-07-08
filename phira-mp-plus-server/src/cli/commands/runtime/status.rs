@@ -46,7 +46,6 @@ impl CliHandler {
             persistence.telemetry_cutover_mode
         ));
         let phira = self.state.phira_client.stats();
-        let plan = self.state.runtime_plan.snapshot();
         self.out(format!(
             "  {} room command gw:    routed={} ok={} failed={} mailbox={}",
             c::dim("│"),
@@ -74,14 +73,6 @@ impl CliHandler {
             c::dim("│"),
             benchmark_reports.retained,
             event_stats.trace_capacity
-        ));
-        self.out(format!(
-            "  {} runtime plan:       total={} active={} planned={} blocked={}",
-            c::dim("│"),
-            plan.total,
-            plan.active,
-            plan.planned,
-            plan.blocked
         ));
         self.out(format!(
             "  {} actor blueprint:    {} boundaries",

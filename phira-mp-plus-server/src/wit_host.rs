@@ -652,7 +652,7 @@ mod wit_trait_impls {
     // ── phira-runtime ──
     impl wit::phira::plugin::phira_runtime::Host for WitPluginHost {
         fn status(&mut self) -> types::ApiResult {
-            query_api_result(self, "runtime.plan", &[])
+            query_api_result(self, "runtime.status", &[])
         }
         fn events(&mut self, limit: Option<u32>) -> types::ApiResult {
             query_api_result(self, "runtime.event_stats", &[

@@ -776,11 +776,11 @@ help groups
 
 ---
 
-## Runtime v2 诊断
+## 运行时诊断
 
 ### `runtime status`
 
-Runtime v2 诊断总览。
+服务器运行时诊断总览。
 
 **输出:**
 ```

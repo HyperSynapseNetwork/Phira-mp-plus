@@ -29,7 +29,6 @@ pub mod room;
 pub mod room_actor;
 pub mod round_store;
 pub mod runtime_diagnostics;
-pub mod runtime_plan;
 pub mod server;
 pub mod server_query;
 pub mod session;

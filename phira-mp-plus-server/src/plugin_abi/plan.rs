@@ -1,5 +1,3 @@
-//! Plugin ABI plan, transport enum, version metadata and WIT constants.
-
 use serde::Serialize;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -17,32 +15,21 @@ impl PluginAbiTransport {
     }
 }
 
-#[derive(Debug, Clone, Serialize)]
-pub struct PluginAbiPlan {
-    pub current_transport: PluginAbiTransport,
-    pub target_transport: PluginAbiTransport,
-    pub current_version: &'static str,
-    pub target_version: &'static str,
-    pub risks: Vec<&'static str>,
-    pub next_steps: Vec<&'static str>,
-}
-
 pub fn plugin_abi_plan() -> PluginAbiPlan {
     PluginAbiPlan {
         current_transport: PluginAbiTransport::WitTypedV2,
         target_transport: PluginAbiTransport::WitTypedV2,
         current_version: "abi-wit-v2",
         target_version: "abi-wit-v2",
-        risks: vec![
-            "Component model adapters increase binary size ~14MB",
-            "All .wasm plugins must be compiled as WIT components, not modules",
-            "Persistence host API methods return capability errors — no real DB query path",
-            "SSE stream (sse.register_stream) relies on host-side axum routing — plugin cannot hold open connections",
-        ],
-        next_steps: vec![
-            "WASM integration tests: lifecycle + host API + SSE registration + capability mapping. Covered by wasm_lifecycle_tests / wasm_api_tests — must pass in CI. SSE publish/subscribe/registration tested. Full axum server chain tested in production via /api/events endpoint.",
-        ],
     }
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct PluginAbiPlan {
+    pub current_transport: PluginAbiTransport,
+    pub target_transport: PluginAbiTransport,
+    pub current_version: &'static str,
+    pub target_version: &'static str,
 }
 
 /// WIT ABI v2 metadata.
@@ -50,14 +37,6 @@ pub mod wit {
     pub const WIT_FILE: &str = "wit/phira-plugin.wit";
     pub const WIT_WORLD: &str = "phira-plugin-v2";
     pub const WIT_VERSION: &str = "abi-wit-v2";
-    /// Historical migration phases:
-    /// 0 = legacy JSON-memory bridge was active.
-    /// 1 = Host WIT bindings generated.
-    /// 2 = JSON bridge removed as the target ABI, WIT skeleton active.
-
-    /// 3 = JSON bridge code removed. WIT-only: lifecycle wired, all 53 host API
-    ///     methods implemented, capability enforcement, WASM integration tests
-    ///     (wasm_lifecycle_tests / wasm_api_tests) pass with real compiled component.
     pub const MIGRATION_PHASE: u8 = 3;
 }
 
@@ -78,18 +57,6 @@ mod tests {
         let plan = plugin_abi_plan();
         assert_eq!(plan.current_transport, PluginAbiTransport::WitTypedV2);
         assert_eq!(plan.target_transport, PluginAbiTransport::WitTypedV2);
-        assert!(
-            plan.risks.iter().any(|r| r.contains("binary size")),
-            "risks should include known deployment constraints"
-        );
-        assert!(
-            !plan.risks.iter().any(|r| r.contains("stubs")),
-            "WIT lifecycle stubs risk must be removed after implementation"
-        );
-        assert!(
-            plan.risks.iter().any(|r| r.contains("capability")),
-            "plan must track remaining capability risks (persistence/DB query)"
-        );
     }
 
     #[test]

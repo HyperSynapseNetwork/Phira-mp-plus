@@ -227,14 +227,6 @@ fn generate_wit_docs() -> String {
     md.push_str("## World\n\n");
     md.push_str("`phira-plugin-v2` — 导入上述所有接口，导出 `init`、`get-info`、`cleanup`、`on-event`、`on-api`。\n\n");
 
-    md.push_str("## 迁移计划\n\n");
-    md.push_str("1. ✅ WIT 接口定义完成\n");
-    md.push_str("2. ✅ Host bindings 已生成 (`wit-bindgen` feature)\n");
-    md.push_str("3. ✅ Host trait 完整实现 (`wit_host.rs`) — WitHostContext decoupled from PlusServerState\n");
-    md.push_str("4. ✅ Guest SDK (`phira-plugin-sdk`) — WIT-only, provides wit_bindgen! macro\n");
-    md.push_str("5. ✅ 单 ABI (WIT-only) — JSON bridge removed, MIGRATION_PHASE=3\n");
-    md.push_str("6. ✅ WASM integration tests — lifecycle + host API + SSE + capability enforcement\n");
-
     md
 }
 
@@ -244,7 +236,6 @@ fn wit_docs_can_be_generated() {
     assert!(docs.contains("phira-types"), "generated docs must include phira-types");
     assert!(docs.contains("phira-host"), "generated docs must include phira-host");
     assert!(docs.contains("phira-events"), "generated docs must include phira-events");
-    assert!(docs.contains("迁移计划"), "generated docs must include migration plan");
     assert!(docs.contains("自动生成"), "generated docs must note auto-generation");
 }
 
@@ -253,20 +244,6 @@ fn current_abi_is_wit() {
     let plan = plugin_abi::plugin_abi_plan();
     assert_eq!(plan.current_transport, plugin_abi::PluginAbiTransport::WitTypedV2);
     assert_eq!(plan.target_transport, plugin_abi::PluginAbiTransport::WitTypedV2);
-    assert!(
-        plan.risks.iter().any(|risk| risk.contains("binary size")),
-        "risks should include known deployment constraints"
-    );
-    assert!(
-        !plan.risks.iter().any(|risk| risk.contains("stubs")),
-        "WIT lifecycle stubs risk must be removed after implementation"
-    );
-    assert!(
-        plan.risks.iter().any(|risk| risk.contains("capability")),
-        "write-capable WIT host methods must track capability enforcement risk"
-    );
-    // Verify next_steps exist for remaining work
-    assert!(!plan.next_steps.is_empty(), "next_steps should list remaining work");
 }
 
 // ── WIT lifecycle contract tests ──

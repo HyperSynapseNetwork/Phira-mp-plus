@@ -630,8 +630,6 @@ pub struct PlusServerState {
     pub room_commands: Arc<crate::room_actor::RoomCommandGateway>,
     /// Runtime v2 Phira HTTP client. Authentication/chart/record paths should converge here before hybrid/real benchmark expansion.
     pub phira_client: Arc<crate::phira_client::PhiraRetryClient>,
-    /// Runtime v2 master workboard. Keeps the original long-term targets visible in CLI/TUI/API diagnostics.
-    pub runtime_plan: Arc<crate::runtime_plan::RuntimePlan>,
     /// 压测用 Phira token 列表（来自配置或 CLI 命令）。
     pub bench_tokens: RwLock<Vec<String>>,
     /// 管理员 Phira ID 集合。可由配置、PostgreSQL 设置、CLI/WIT 动态修改。
@@ -877,7 +875,6 @@ impl PlusServer {
         let phira_client = Arc::new(crate::phira_client::PhiraRetryClient::new(
             runtime_v2.phira_http.clone().into_policy(),
         )?);
-        let runtime_plan = Arc::new(crate::runtime_plan::RuntimePlan::master_plan());
         let events = Arc::new(SseHub::new());
         // Capture config fields before config is consumed by state
         let proxy_protocol_port = config.proxy_protocol_port;
@@ -913,7 +910,6 @@ impl PlusServer {
             actor_runtime,
             room_commands,
             phira_client,
-            runtime_plan,
             bench_tokens: RwLock::new(bench_tokens),
             admin_ids: RwLock::new(admin_ids),
             room_monitor_key: generate_secret_key("room_monitor", 64).unwrap_or_default(),
@@ -2692,7 +2688,6 @@ fn server_state_query_inner(
                 let benchmark_reports = s
                     .benchmark_reports
                     .snapshot(crate::runtime_diagnostics::BENCHMARK_REPORT_RECENT_DEFAULT);
-                let plan = s.runtime_plan.snapshot();
                 let _ = tx.send(Ok(serde_json::json!({
                     "runtime_v2": true,
                     "note": "Runtime v2 is partially installed; real Room/Session runtime is still the current production path.",
@@ -2703,7 +2698,6 @@ fn server_state_query_inner(
                     "room_command_gateway": room_commands,
                     "phira_http": phira_http,
                     "benchmark_reports": benchmark_reports,
-                    "plan": plan,
                 })));
             });
             rx.recv_timeout(runtime_state_query_timeout())
@@ -4327,10 +4321,6 @@ fn server_state_query_dispatch(
             current.clear();
             current.extend(ids);
             Ok(serde_json::json!({"set": true}))
-        }
-        "runtime.plan" => {
-            let snapshot = state.runtime_plan.snapshot();
-            Ok(serde_json::to_value(&snapshot).unwrap_or_default())
         }
         "runtime.event_stats" => {
             let limit = args.get(0).and_then(|v| v.as_u64()).unwrap_or(50) as usize;

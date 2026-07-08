@@ -9,7 +9,6 @@ mod cutover;
 mod events;
 mod persistence;
 mod phira;
-mod roadmap;
 mod rooms;
 mod schema;
 mod status;
@@ -25,7 +24,6 @@ impl CliHandler {
         let sub = args.first().copied().unwrap_or("status");
         match sub {
             "status" | "" => self.print_runtime_status().await,
-            "roadmap" => self.print_runtime_roadmap(),
             "phira" => self.print_runtime_phira(),
             "commands" => self.print_runtime_commands(),
             "events" => self.print_runtime_events(),
@@ -40,7 +38,7 @@ impl CliHandler {
                     c::red("✗"),
                     c::yellow(sub)
                 ));
-                self.out(format!("  {} 可用: runtime status | roadmap | phira | commands | events | persistence | schema | cutover | actors | rooms", c::dim("▸")));
+                self.out(format!("  {} 可用: runtime status | phira | commands | events | persistence | schema | cutover | actors | rooms", c::dim("▸")));
             }
         }
     }
