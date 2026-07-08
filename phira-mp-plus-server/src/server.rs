@@ -3679,107 +3679,118 @@ pub fn server_state_query_for_host(
     server_state_query(state, method, args)
 }
 
-/// Web API 状态查询（内置，无 feature gate）
+/// Web API 状态查询（内置）
+///
+/// Domain dispatch — match arms are grouped by prefix:
+///   rooms.* | user_name | send_chat | send_room_chat → room/user/chat ops
+///   ban.* | admin.* | user.kick                   → moderation ops
+///   http.register_route                            → plugin HTTP routes
+///   runtime.*                                      → runtime diagnostics
 fn server_state_query(
     state: &Arc<PlusServerState>,
     method: &str,
     args: &[Value],
 ) -> Result<Value, String> {
-    #[derive(Serialize)]
-    struct RoomSnapshot {
-        name: String,
-        data: RoomData,
-    }
-    #[derive(Serialize)]
-    struct UserSnapshot {
-        id: i32,
-        name: String,
-        monitor: bool,
-        is_host: bool,
-        in_room: bool,
-        has_session: bool,
-    }
-    #[derive(Serialize)]
-    struct RoomData {
-        // Backward-compatible fields used by the old Web API consumers.
-        host: i32,
-        users: Vec<i32>,
-        lock: bool,
-        cycle: bool,
-        chart: Option<i32>,
-        chart_name: Option<String>,
-        state: String,
-        playing_users: Vec<i32>,
-        rounds: Vec<RoundInfo>,
-        hidden: bool,
-        phira_api_endpoint: String,
-        phira_api_endpoint_override: Option<String>,
+    server_state_query_dispatch(state, method, args)
+}
 
-        // Full room information for dashboards and admin panels.
-        id: String,
-        uuid: String,
-        created_at: i64,
-        live: bool,
-        locked: bool,
-        cycling: bool,
-        persistent_empty: bool,
-        max_users: usize,
-        player_count: usize,
-        monitor_count: usize,
-        user_ids: Vec<i32>,
-        monitor_ids: Vec<i32>,
-        host_user: Option<UserSnapshot>,
-        host_is_system: bool,
-        users_info: Vec<UserSnapshot>,
-        monitors_info: Vec<UserSnapshot>,
-        chart_info: Option<Value>,
-        phira_api_endpoint_effective: String,
-        phira_api_endpoint_using_override: bool,
-        ready_users: Vec<i32>,
-        finished_users: Vec<i32>,
-        aborted_users: Vec<i32>,
-        result_count: usize,
-        current_round_id: Option<String>,
-        state_detail: Value,
-        round_history: Vec<RoundInfo>,
-    }
-    #[derive(Serialize, Clone)]
-    struct RoundInfo {
-        round_id: String,
-        chart: i32,
-        chart_id: i32,
-        chart_name: String,
-        records: Vec<Value>,
-        results: Vec<Value>,
-    }
+// ── Room/User snapshot types (used by rooms.* queries) ──
 
-    fn user_snapshot(
-        room: &crate::room::Room,
-        user: &super::session::User,
-        is_host: bool,
-        in_room: bool,
-    ) -> UserSnapshot {
-        let has_session = user
-            .session
-            .try_read()
-            .ok()
-            .and_then(|session| session.as_ref().and_then(|weak| weak.upgrade()))
-            .is_some();
-        UserSnapshot {
-            id: user.id,
-            name: room.display_name_sync(user),
-            monitor: user.monitor.load(Ordering::SeqCst),
-            is_host,
-            in_room,
-            has_session,
-        }
-    }
+#[derive(Serialize)]
+struct RoomSnapshot {
+    name: String,
+    data: RoomData,
+}
 
-    fn build_snapshot(
-        state: &PlusServerState,
-        name: &str,
-        room: &crate::room::Room,
-    ) -> RoomSnapshot {
+#[derive(Serialize)]
+struct UserSnapshot {
+    id: i32,
+    name: String,
+    monitor: bool,
+    is_host: bool,
+    in_room: bool,
+    has_session: bool,
+}
+
+#[derive(Serialize)]
+struct RoomData {
+    host: i32,
+    users: Vec<i32>,
+    lock: bool,
+    cycle: bool,
+    chart: Option<i32>,
+    chart_name: Option<String>,
+    state: String,
+    playing_users: Vec<i32>,
+    rounds: Vec<RoundInfo>,
+    hidden: bool,
+    phira_api_endpoint: String,
+    phira_api_endpoint_override: Option<String>,
+    id: String,
+    uuid: String,
+    created_at: i64,
+    live: bool,
+    locked: bool,
+    cycling: bool,
+    persistent_empty: bool,
+    max_users: usize,
+    player_count: usize,
+    monitor_count: usize,
+    user_ids: Vec<i32>,
+    monitor_ids: Vec<i32>,
+    host_user: Option<UserSnapshot>,
+    host_is_system: bool,
+    users_info: Vec<UserSnapshot>,
+    monitors_info: Vec<UserSnapshot>,
+    chart_info: Option<Value>,
+    phira_api_endpoint_effective: String,
+    phira_api_endpoint_using_override: bool,
+    ready_users: Vec<i32>,
+    finished_users: Vec<i32>,
+    aborted_users: Vec<i32>,
+    result_count: usize,
+    current_round_id: Option<String>,
+    state_detail: Value,
+    round_history: Vec<RoundInfo>,
+}
+
+#[derive(Serialize, Clone)]
+struct RoundInfo {
+    round_id: String,
+    chart: i32,
+    chart_id: i32,
+    chart_name: String,
+    records: Vec<Value>,
+    results: Vec<Value>,
+}
+
+fn user_snapshot(
+    room: &crate::room::Room,
+    user: &super::session::User,
+    is_host: bool,
+    in_room: bool,
+) -> UserSnapshot {
+    let has_session = user
+        .session
+        .try_read()
+        .ok()
+        .and_then(|session| session.as_ref().and_then(|weak| weak.upgrade()))
+        .is_some();
+    UserSnapshot {
+        id: user.id,
+        name: room.display_name_sync(user),
+        monitor: user.monitor.load(Ordering::SeqCst),
+        is_host,
+        in_room,
+        has_session,
+    }
+}
+
+fn build_snapshot(
+    state: &PlusServerState,
+    name: &str,
+    room: &crate::room::Room,
+) -> RoomSnapshot {
         let chart_op = read_lock!(room.chart).clone();
         let users_arcs: Vec<_> = {
             let ul = read_lock!(room.users);
@@ -3971,6 +3982,11 @@ fn server_state_query(
         }
     }
 
+fn server_state_query_dispatch(
+    state: &Arc<PlusServerState>,
+    method: &str,
+    args: &[Value],
+) -> Result<Value, String> {
     match method {
         "rooms.list" => {
             let rooms = read_lock!(state.rooms);
