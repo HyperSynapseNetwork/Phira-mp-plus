@@ -40,7 +40,7 @@ pub fn plugin_abi_plan() -> PluginAbiPlan {
             "SSE stream (sse.register_stream) relies on host-side axum routing — plugin cannot hold open connections",
         ],
         next_steps: vec![
-            "WASM integration tests: lifecycle (load/init/cleanup/on_event/on_api), host API (api_call/log/http_request), SSE registration, capability mapping. Covered by wasm_lifecycle_tests / wasm_api_tests — must pass in CI. Binary fixture committed.",
+            "WASM integration tests: lifecycle + host API + SSE registration + capability mapping. Covered by wasm_lifecycle_tests / wasm_api_tests — must pass in CI. SSE publish/subscribe/registration tested. Full axum server chain tested in production via /api/events endpoint.",
         ],
     }
 }

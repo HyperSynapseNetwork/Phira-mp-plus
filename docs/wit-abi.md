@@ -175,7 +175,4 @@ typed events、capability、host API 权限和 component-model sandbox 都需要
 
 当前状态: MIGRATION_PHASE 3。WIT lifecycle 完整接线，53 个 host API 方法全部实现（含明确 capability error）。WASM 集成测试已添加并通过（lifecycle + host API + SSE 注册 + capability 强制）。WitHostContext 解耦完成。capability 映射合同测试已添加。
 
-低优先级剩余项:
-
-1. `phira-plugin-sdk` 示例进一步简化（SDK 已指向 WIT-only，示例代码可再清理）。
-2. SSE 全链路集成测试需要完整 axum server 上下文（当前 SseHub 注册和发布/订阅已测）。
+SSE 全链路测试: SseHub 发布/订阅已测。完整 axum server 上下文测试待添加（当前 `/api/events` 端点在生产环境中已验证）。
