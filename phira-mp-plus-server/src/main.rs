@@ -172,7 +172,6 @@ async fn main() -> Result<()> {
                     }
                 }
             }))
-            }))
         }
         _ => {
             info!("CLI management console disabled; logs are written to stdout");
