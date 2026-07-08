@@ -3679,6 +3679,17 @@ pub fn server_state_query_for_host(
     method: &str,
     args: &[Value],
 ) -> Result<Value, String> {
+    // Capability enforcement: check if the caller has the required capability.
+    // Default capabilities include state.read, config, send, http.
+    // Privileged capabilities (admin, room.manage) are NOT in defaults.
+    if let Some(required) = crate::wasm_host_helpers::required_capability(method) {
+        let defaults = crate::wasm_host_helpers::default_capabilities();
+        if !defaults.contains(required) {
+            return Err(format!(
+                "method '{method}' requires capability '{required}', which is not in default capabilities"
+            ));
+        }
+    }
     server_state_query(state, method, args)
 }
 

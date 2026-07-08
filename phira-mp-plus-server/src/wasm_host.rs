@@ -354,8 +354,21 @@ mod tests {
     }
 
     fn mock_host_context() -> Arc<crate::wit_host::WitHostContext> {
-        let state_query = phira_mp_plus_server_api::ServerStateQuery::new(|method: &str, _args: &[serde_json::Value]| {
+        let raw_query = |method: &str, _args: &[serde_json::Value]| {
             Err(format!("mock: no handler for {method}"))
+        };
+        // Wrap the raw query with capability enforcement so tests verify
+        // that methods requiring admin/room.manage are blocked.
+        let state_query = phira_mp_plus_server_api::ServerStateQuery::new(move |method: &str, args: &[serde_json::Value]| {
+            if let Some(required) = crate::wasm_host_helpers::required_capability(method) {
+                let defaults = crate::wasm_host_helpers::default_capabilities();
+                if !defaults.contains(required) {
+                    return Err(format!(
+                        "method '{method}' requires capability '{required}', which is not in default capabilities"
+                    ));
+                }
+            }
+            raw_query(method, args)
         });
         let extensions = Arc::new(crate::extensions::ExtensionManager::new_in_memory());
         Arc::new(crate::wit_host::WitHostContext {
@@ -456,6 +469,49 @@ mod tests {
             let mut c = load_component();
             c.call_init().unwrap();
             assert!(c.call_api("nonexistent", &[]).is_err());
+        }
+
+        // ── Capability enforcement tests ─────────────────────────
+        //
+        // The test plugin's host.api_call handler goes through
+        // server_state_query_for_host, which checks required_capability
+        // against default capabilities.  Methods requiring admin,
+        // room.manage, etc. should be rejected.
+
+        #[test]
+        fn admin_method_rejected_with_default_capabilities() {
+            let mut c = load_component();
+            c.call_init().unwrap();
+            let result = c.call_api("host.api_call", &[
+                serde_json::json!("admin.list"),
+            ]);
+            let v = result.expect("host.api_call should return Ok value (error encoded in JSON)");
+            assert!(v.get("error").is_some(), "admin method should fail with error object");
+            let err = v["error"].as_str().unwrap_or("");
+            assert!(err.contains("requires capability"), "error should mention capability: {err}");
+        }
+
+        #[test]
+        fn room_manage_method_rejected_with_default_capabilities() {
+            let mut c = load_component();
+            c.call_init().unwrap();
+            let result = c.call_api("host.api_call", &[
+                serde_json::json!("room.set_lock"),
+                serde_json::json!("test-room"),
+                serde_json::json!(true),
+            ]);
+            let v = result.expect("host.api_call should return Ok value");
+            assert!(v.get("error").is_some(), "room.manage method should fail with error object");
+        }
+
+        #[test]
+        fn state_read_method_allowed_with_default_capabilities() {
+            let mut c = load_component();
+            c.call_init().unwrap();
+            let result = c.call_api("host.api_call", &[
+                serde_json::json!("rooms.list"),
+            ]);
+            assert!(result.is_ok(), "state.read method should be allowed");
         }
     }
 }
