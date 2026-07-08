@@ -120,20 +120,6 @@ impl RuntimePlan {
                     priority: "P0",
                     next_step: "Gate progress: phira-http DONE, touch-judge-persistence DONE, eventbus DONE, technical-debt-triage DONE, persistence-worker DONE. Remaining: plugin-abi-v2 (needs WASM integration tests — blocked), actor-model (lock/cycle tracked+owned, rest WriteRouted — incremental), simulation/benchmark-modes/low-overhead-diagnostics (architectural guardrails — keep active), test-coverage (133 tests, WIT integration tests missing — blocked on WASM). cargo test --workspace passes (133 unit + ~120 integration). docs_contracts/wit_abi_contracts pass.",
                 },
-                RuntimeObjective {
-                    key: "tui-v2",
-                    title: "TUI v2 observability panels",
-                    status: "planned",
-                    priority: "P3",
-                    next_step: "Defer. Useful only after Actor/Persistence/Benchmark signals stabilize; do not start a TUI panel pass while ownership boundaries are still moving.",
-                },
-                RuntimeObjective {
-                    key: "web-management-api",
-                    title: "Privileged Web management API",
-                    status: "blocked",
-                    priority: "never",
-                    next_step: "Do not implement. Web remains read-only diagnostics unless explicitly reversed by project policy.",
-                },
             ],
         }
     }

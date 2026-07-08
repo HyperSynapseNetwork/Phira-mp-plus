@@ -43,7 +43,6 @@ pub fn plugin_abi_plan() -> PluginAbiPlan {
         next_steps: vec![
             "add integration tests for WIT lifecycle dispatch, event conversion and every host API method",
             "add capability enforcement integration tests for WIT room/admin/config/simulation writes",
-            "update phira-plugin-sdk examples so WIT/component model is the only current ABI path",
             "add SSE stream integration test: register stream → connect SSE → assert event translation",
         ],
     }
