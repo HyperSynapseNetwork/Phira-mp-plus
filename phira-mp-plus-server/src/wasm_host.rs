@@ -108,7 +108,6 @@ impl WitPluginComponent {
     ) -> Result<Self, String> {
         use crate::plugin_abi::wit_abi;
         let mut engine_config = wasmtime::Config::new();
-        engine_config.async_support(true);
         engine_config.consume_fuel(runtime.fuel_per_call > 0);
         engine_config.max_wasm_stack(runtime.max_stack_bytes.max(64 * 1024));
         let engine = wasmtime::Engine::new(&engine_config)
@@ -136,10 +135,8 @@ impl WitPluginComponent {
         };
         let host_state = WitHostState { host, limits: store_limits };
         let mut store = wasmtime::Store::new(&engine, host_state);
-        let instance: wasmtime::component::Instance = futures::executor::block_on(
-            linker.instantiate_async(&mut store, &component),
-        )
-        .map_err(|e| format!("instantiate component: {e}"))?;
+        let instance = linker.instantiate(&mut store, &component)
+            .map_err(|e| format!("instantiate component: {e}"))?;
         let component_handle = crate::plugin_abi::wit_abi::PhiraPluginV2::new(&mut store, &instance)
             .map_err(|e| format!("get component handle: {e}"))?;
         let info = PluginInfo {
@@ -157,21 +154,21 @@ impl WitPluginComponent {
         })
     }
 
-    pub async fn call_init(&mut self) -> Result<(), String> {
-        let result = self.component.call_init(&mut self.store).await
+    pub fn call_init(&mut self) -> Result<(), String> {
+        let result = self.component.call_init(&mut self.store)
             .map_err(|e| format!("component init: {e}"))?;
         result.map_err(|e| format!("component init returned error: {e}"))?;
         self.initialized = true;
         Ok(())
     }
 
-    pub async fn call_cleanup(&mut self) {
+    pub fn call_cleanup(&mut self) {
         if !self.initialized { return; }
-        let _ = self.component.call_cleanup(&mut self.store).await;
+        let _ = self.component.call_cleanup(&mut self.store);
         self.initialized = false;
     }
 
-    pub async fn call_on_event(&mut self, event: &PluginEvent) -> Result<i32, String> {
+    pub fn call_on_event(&mut self, event: &PluginEvent) -> Result<i32, String> {
         use crate::plugin_abi::wit_abi::phira::plugin::phira_events as wit_events;
         let wit_event = match event {
             PluginEvent::UserConnect { user_id, user_name, user_ip } => {
@@ -243,7 +240,7 @@ impl WitPluginComponent {
                 })
             }
         };
-        let result = self.component.call_on_event(&mut self.store, &wit_event).await
+        let result = self.component.call_on_event(&mut self.store, &wit_event)
             .map_err(|e| format!("component on_event: {e}"))?;
         match result {
             Ok(handled) => Ok(if handled { 1 } else { 0 }),
@@ -251,10 +248,10 @@ impl WitPluginComponent {
         }
     }
 
-    pub async fn call_api(&mut self, method: &str, args: &[serde_json::Value]) -> Result<serde_json::Value, String> {
+    pub fn call_api(&mut self, method: &str, args: &[serde_json::Value]) -> Result<serde_json::Value, String> {
         use crate::plugin_abi::wit_abi::phira::plugin::phira_types as types;
         let wit_args: Vec<types::JsonValue> = args.iter().map(|v| crate::wit_host::json_value_to_wit(v)).collect();
-        let result = self.component.call_on_api(&mut self.store, method, &wit_args).await
+        let result = self.component.call_on_api(&mut self.store, method, &wit_args)
             .map_err(|e| format!("component on_api: {e}"))?;
         match result {
             types::ApiResult::Ok(value) => Ok(crate::wit_host::wit_json_value_to_serde(&value)),
@@ -266,10 +263,7 @@ impl WitPluginComponent {
 #[cfg(feature = "wit-bindgen")]
 impl Drop for WitPluginComponent {
     fn drop(&mut self) {
-        if self.initialized {
-            // Drop is sync; fire cleanup as best-effort
-            self.initialized = false;
-        }
+        self.call_cleanup();
     }
 }
 
