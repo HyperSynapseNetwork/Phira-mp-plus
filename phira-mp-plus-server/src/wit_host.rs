@@ -4,47 +4,23 @@
 //! The generated trait impls require `wit-bindgen` (default feature).
 
 use crate::server::PlusServerState;
-use std::collections::HashSet;
 use std::sync::Arc;
 
 /// Wraps server state to implement WIT host traits.
 pub struct WitPluginHost {
     state: Arc<PlusServerState>,
     plugin_name: String,
-    capabilities: HashSet<String>,
 }
 
 impl WitPluginHost {
     pub fn new(state: Arc<PlusServerState>, plugin_name: String) -> Self {
-        let caps = Self::load_capabilities(&plugin_name);
-        Self { state, plugin_name, capabilities: caps }
+        Self { state, plugin_name }
     }
 
     pub fn name(&self) -> &str {
         &self.plugin_name
     }
 
-    /// Load default capabilities. Manifest files are no longer required.
-    fn load_capabilities(_plugin_name: &str) -> HashSet<String> {
-        crate::wasm_host_helpers::default_capabilities()
-    }
-
-    /// Check if this plugin has a specific capability.
-    fn has_capability(&self, cap: &str) -> bool {
-        self.capabilities.contains(cap)
-    }
-
-    /// Require a capability; return an error string if missing.
-    fn require_cap_str(&self, cap: &str, operation: &str) -> Result<(), String> {
-        if self.has_capability(cap) {
-            Ok(())
-        } else {
-            Err(format!(
-                "plugin '{}' lacks required capability '{cap}' for {operation}",
-                self.plugin_name
-            ))
-        }
-    }
 }
 
 #[cfg(test)]
@@ -292,9 +268,6 @@ mod wit_trait_impls {
             )
         }
         fn kick_from_room(&mut self, room_id: String, target_id: u32) -> types::ApiResult {
-            if let Err(e) = self.require_cap_str("room.manage", "kick_from_room") {
-                return types::ApiResult::Error(e);
-            }
             let state = std::sync::Arc::clone(&self.state);
             match futures::executor::block_on(
                 state.room_commands.kick_user(&state, &room_id, target_id as i32)
@@ -304,9 +277,6 @@ mod wit_trait_impls {
             }
         }
         fn transfer_host(&mut self, room_id: String, target_id: u32) -> types::ApiResult {
-            if let Err(e) = self.require_cap_str("room.manage", "transfer_host") {
-                return types::ApiResult::Error(e);
-            }
             let state = std::sync::Arc::clone(&self.state);
             match futures::executor::block_on(
                 state.room_commands.set_host(&state, &room_id, Some(target_id as i32))
@@ -316,9 +286,6 @@ mod wit_trait_impls {
             }
         }
         fn set_host(&mut self, room_id: String, target_id: Option<u32>) -> types::ApiResult {
-            if let Err(e) = self.require_cap_str("room.manage", "set_host") {
-                return types::ApiResult::Error(e);
-            }
             let state = std::sync::Arc::clone(&self.state);
             match futures::executor::block_on(
                 state.room_commands.set_host(&state, &room_id, target_id.map(|id| id as i32))
@@ -328,9 +295,6 @@ mod wit_trait_impls {
             }
         }
         fn set_room_lock(&mut self, room_id: String, locked: bool) -> types::ApiResult {
-            if let Err(e) = self.require_cap_str("room.manage", "set_room_lock") {
-                return types::ApiResult::Error(e);
-            }
             let state = std::sync::Arc::clone(&self.state);
             match futures::executor::block_on(
                 state.room_commands.set_lock(&state, &room_id, locked)
@@ -345,9 +309,6 @@ mod wit_trait_impls {
             )
         }
         fn close_room(&mut self, room_id: String) -> types::ApiResult {
-            if let Err(e) = self.require_cap_str("room.manage", "close_room") {
-                return types::ApiResult::Error(e);
-            }
             let state = std::sync::Arc::clone(&self.state);
             match futures::executor::block_on(
                 state.room_commands.close_room(&state, &room_id)
@@ -366,9 +327,6 @@ mod wit_trait_impls {
     // ── phira-user-mgmt ──
     impl wit::phira::plugin::phira_user_mgmt::Host for WitPluginHost {
         fn kick_user(&mut self, user_id: u32, reason: String) -> types::ApiResult {
-            if let Err(e) = self.require_cap_str("admin", "kick_user") {
-                return types::ApiResult::Error(e);
-            }
             // Server-level kick: remove from room + notify + delete session.
             use phira_mp_common::{Message, RoomEvent};
             use crate::event_bus::MpEvent;
@@ -499,25 +457,16 @@ mod wit_trait_impls {
             ids.contains(&(user_id as i32))
         }
         fn add_admin_id(&mut self, user_id: u32) -> types::ApiResult {
-            if let Err(e) = self.require_cap_str("admin", "add_admin_id") {
-                return types::ApiResult::Error(e);
-            }
             let mut ids = self.state.admin_ids.blocking_write();
             ids.insert(user_id as i32);
             types::ApiResult::Ok(types::JsonValue::Null)
         }
         fn remove_admin_id(&mut self, user_id: u32) -> types::ApiResult {
-            if let Err(e) = self.require_cap_str("admin", "remove_admin_id") {
-                return types::ApiResult::Error(e);
-            }
             let mut ids = self.state.admin_ids.blocking_write();
             ids.remove(&(user_id as i32));
             types::ApiResult::Ok(types::JsonValue::Null)
         }
         fn set_admin_ids(&mut self, ids: Vec<u32>) -> types::ApiResult {
-            if let Err(e) = self.require_cap_str("admin", "set_admin_ids") {
-                return types::ApiResult::Error(e);
-            }
             let mut current = self.state.admin_ids.blocking_write();
             current.clear();
             for id in ids {
@@ -549,9 +498,6 @@ mod wit_trait_impls {
             }
         }
         fn set_config(&mut self, key: String, value: String) -> types::ApiResult {
-            if let Err(e) = self.require_cap_str("config", "set_config") {
-                return types::ApiResult::Error(e);
-            }
             let path = crate::wasm_host_helpers::config_path(&self.plugin_name);
             let mut root: serde_json::Value = std::fs::read_to_string(&path)
                 .ok()
@@ -662,9 +608,6 @@ mod wit_trait_impls {
             types::ApiResult::Ok(json_to_wit_json(&json))
         }
         fn run(&mut self, preset: String, users: Option<u32>, rooms: Option<u32>, duration: Option<u32>) -> types::ApiResult {
-            if let Err(e) = self.require_cap_str("admin", "simulation.run") {
-                return types::ApiResult::Error(e);
-            }
             let mut config = crate::simulation::SimulationConfig::default();
             if let Some(p) = crate::simulation::SimulationPreset::parse(&preset) {
                 config = p.defaults(self.state.simulation.seed_hint());
@@ -681,17 +624,11 @@ mod wit_trait_impls {
             }
         }
         fn stop(&mut self) -> types::ApiResult {
-            if let Err(e) = self.require_cap_str("admin", "simulation.stop") {
-                return types::ApiResult::Error(e);
-            }
             let status = futures::executor::block_on(self.state.simulation.stop("stopped via plugin API"));
             let json = serde_json::to_value(&status).unwrap_or_default();
             types::ApiResult::Ok(json_to_wit_json(&json))
         }
         fn cleanup(&mut self) -> types::ApiResult {
-            if let Err(e) = self.require_cap_str("admin", "simulation.cleanup") {
-                return types::ApiResult::Error(e);
-            }
             let status = futures::executor::block_on(self.state.simulation.cleanup());
             let json = serde_json::to_value(&status).unwrap_or_default();
             types::ApiResult::Ok(json_to_wit_json(&json))

@@ -55,23 +55,6 @@ pub fn load_manifest_capabilities(_plugin_path: &str) -> Result<HashSet<String>,
     Ok(default_capabilities())
 }
 
-/// Request a capability for a plugin at runtime.
-/// Plugins call this during init to request elevated capabilities.
-pub fn request_capability(plugin: &str, cap: &str, current_caps: &mut HashSet<String>) {
-    let allowed = match cap {
-        "admin" | "room.manage" => {
-            // Elevated capabilities require explicit host approval (future: prompt or config)
-            tracing::info!("plugin '{plugin}' requested capability '{cap}' — granted (default allow)");
-            true
-        }
-        "state.read" | "send" | "ext" | "config" | "file.read" | "file.write"
-        | "plugin.call" | "plugin.register" => true,
-        _ => false,
-    };
-    if allowed {
-        current_caps.insert(cap.to_string());
-    }
-}
 
 /// Reject path components that look like symlink traversal (..).
 pub fn reject_symlink_components(path: &Path) -> Result<(), String> {
