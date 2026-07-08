@@ -4,7 +4,9 @@
 //! that plugin_abi.rs references it correctly, and that the documentation
 //! is automatically generated from the WIT file (single source of truth).
 
-use phira_mp_plus_server::{plugin, plugin_abi, wasm_host_helpers, wit_host};
+use phira_mp_plus_server::{plugin, plugin_abi, wasm_host_helpers};
+#[cfg(feature = "wit-bindgen")]
+use phira_mp_plus_server::wit_host;
 use std::path::PathBuf;
 
 /// Absolute path to workspace root (two levels up from crate manifest dir).
@@ -297,15 +299,9 @@ fn wit_lifecycle_method_signatures_compile() {
 
 /// Test serde_json <-> WIT JsonValue round-trip for all JSON value types.
 /// These converters are used internally by call_api.
+#[cfg(feature = "wit-bindgen")]
 #[test]
 fn wit_json_value_round_trip() {
-    // The converters are gated by wit-bindgen (default feature).
-    // These tests verify the serde_json <-> WIT JsonValue conversion
-    // used internally by call_api.
-    //
-    // In the absence of the generated WIT types (no wit-bindgen feature),
-    // the functions don't exist — skip the test entirely.
-    #[cfg(feature = "wit-bindgen")]
     {
         // Null
         let null = serde_json::Value::Null;
@@ -411,6 +407,7 @@ fn required_capability_returns_unknown_for_unrecognized() {
     assert_eq!(wasm_host_helpers::required_capability("nonexistent.method"), Some("unknown"));
 }
 
+#[cfg(feature = "wit-bindgen")]
 #[test]
 fn wit_host_public_api_compiles() {
     // Compile-time check: WitPluginHost public methods exist

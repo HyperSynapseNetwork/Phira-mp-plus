@@ -7,6 +7,8 @@ use crate::extensions::ExtensionManager;
 use phira_mp_plus_server_api as api;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+#[cfg(feature = "plugin-system")]
+use std::collections::HashSet;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 use tokio::sync::{OwnedSemaphorePermit, RwLock, Semaphore};
@@ -114,7 +116,6 @@ pub mod wasm {
     pub struct WasmPlugin {
         meta: PluginMeta,
         services: Arc<wasm_host::WasmPluginServices>,
-        #[allow(dead_code)]
     runtime: WasmRuntimeConfig,
         component_instance: Option<wasm_host::WitPluginComponent>,
     }
@@ -124,8 +125,7 @@ pub mod wasm {
             path: &str,
             info: PluginInfo,
             services: Arc<wasm_host::WasmPluginServices>,
-            #[allow(dead_code)]
-    runtime: WasmRuntimeConfig,
+        runtime: WasmRuntimeConfig,
         ) -> Self {
             Self {
                 meta: PluginMeta {
@@ -237,7 +237,6 @@ impl PluginManager {
     pub fn new(
         plugins_dir: &str,
         extensions: Arc<ExtensionManager>,
-        #[allow(dead_code)]
     runtime: WasmRuntimeConfig,
     ) -> Self {
         let cli_commands = Arc::new(Mutex::new(HashMap::new()));
@@ -278,7 +277,7 @@ impl PluginManager {
         let _ = query;
     }
 
-    pub async fn set_send_chat(&self, _callback: Arc<dyn Fn(i32, String) + Send + Sync>) {
+    pub async fn set_send_chat(&self, #[allow(unused_variables)] callback: Arc<dyn Fn(i32, String) + Send + Sync>) {
         #[cfg(feature = "plugin-system")]
         {
             *self
