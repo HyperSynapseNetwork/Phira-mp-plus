@@ -84,7 +84,6 @@ impl WasmPluginServices {
 #[cfg(feature = "wit-bindgen")]
 pub struct WitHostState {
     pub host: crate::wit_host::WitPluginHost,
-    pub limits: wasmtime::StoreLimits,
 }
 
 /// WIT component model plugin instance.
@@ -109,7 +108,6 @@ impl WitPluginComponent {
         use crate::plugin_abi::wit_abi;
         let mut engine_config = wasmtime::Config::new();
         engine_config.wasm_backtrace(true);
-        engine_config.cranelift_debug_verifier(true);
         engine_config.consume_fuel(runtime.fuel_per_call > 0);
         engine_config.max_wasm_stack(runtime.max_stack_bytes.max(64 * 1024));
         let engine = wasmtime::Engine::new(&engine_config)
@@ -128,14 +126,7 @@ impl WitPluginComponent {
             .and_then(|w| w.upgrade())
             .map(|s| crate::wit_host::WitPluginHost::new(s, plugin_name.clone()))
             .ok_or_else(|| "server state not available — set via PluginManager::set_server_state".to_string())?;
-        let store_limits = {
-            let mut builder = wasmtime::StoreLimitsBuilder::new();
-            if runtime.max_memory_mb > 0 {
-                builder = builder.memory_size(runtime.max_memory_mb as usize * 1024 * 1024);
-            }
-            builder.build()
-        };
-        let host_state = WitHostState { host, limits: store_limits };
+        let host_state = WitHostState { host };
         let mut store = wasmtime::Store::new(&engine, host_state);
         let instance = linker.instantiate(&mut store, &component)
             .map_err(|e| format!("instantiate component: {e}"))?;
