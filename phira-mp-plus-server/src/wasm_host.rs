@@ -135,6 +135,7 @@ impl WitPluginComponent {
         };
         let host_state = WitHostState { host, limits: store_limits };
         let mut store = wasmtime::Store::new(&engine, host_state);
+        store.limiter(|state| &mut state.limits);
         let instance = linker.instantiate(&mut store, &component)
             .map_err(|e| format!("instantiate component: {e}"))?;
         let component_handle = crate::plugin_abi::wit_abi::PhiraPluginV2::new(&mut store, &instance)
