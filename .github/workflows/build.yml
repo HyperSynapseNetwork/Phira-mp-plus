@@ -20,7 +20,8 @@ jobs:
       - name: cargo test
         run: cargo test --workspace
 
-  plugins:
+  plugin:
+    needs: check
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -40,3 +41,14 @@ jobs:
           wasm-tools component new \
             target/wasm32-unknown-unknown/release/test_plugin.wasm \
             -o ../test-plugin.component.wasm
+
+  plugin-windows:
+    needs: check
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+      - name: cargo check (plugin-system + wit-bindgen)
+        run: cargo check --features wit-bindgen
+      - name: cargo test (plugin-system)
+        run: cargo test --features wit-bindgen
