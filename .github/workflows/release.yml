@@ -91,8 +91,21 @@ jobs:
           name: phira-mp-plus-server-plugins-linux
           path: target/release/phira-mp-plus-server
 
+  build-plugins-windows:
+    needs: version
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --release --features wit-bindgen
+      - uses: actions/upload-artifact@v4
+        with:
+          name: phira-mp-plus-server-plugins-windows
+          path: target/release/phira-mp-plus-server.exe
+
   release:
-    needs: [version, build-linux, build-windows, build-plugins-linux]
+    needs: [version, build-linux, build-windows, build-plugins-linux, build-plugins-windows]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
