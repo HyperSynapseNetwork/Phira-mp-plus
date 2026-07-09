@@ -4,12 +4,9 @@
 //! they use `spawn_on_runtime` for async operations and `read_lock!` for sync reads.
 
 use crate::benchmark_report::BenchmarkMode;
-use crate::plugin::PluginEvent;
-use crate::server::PlusServerState;
 use crate::server::snapshot::build_snapshot;
 use serde_json::Value;
 use std::sync::Arc;
-use tracing::warn;
 
 pub(crate) fn runtime_state_query_timeout() -> std::time::Duration {
     crate::runtime_diagnostics::RUNTIME_STATE_QUERY_TIMEOUT
