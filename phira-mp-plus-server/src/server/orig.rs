@@ -1027,7 +1027,7 @@ impl PlusServerState {
 
     /// 绑定真实 Phira 账号 token 作为网络压测客户端。
     pub async fn bind_benchmark_tokens(&self, raw_tokens: Vec<String>) -> Result<usize, String> {
-        let tokens = sanitize_benchmark_tokens(raw_tokens);
+        let tokens = super::benchmark::sanitize_benchmark_tokens(raw_tokens);
         if tokens.is_empty() {
             return Err(
                 "未提供有效 token；可传入空格/逗号分隔的 1 个或多个 Phira token".to_string(),
@@ -1230,7 +1230,7 @@ impl PlusServerState {
             o!("  ✗ 未配置 Phira 压测账号");
             o!("  │  请配置 benchmark_phira_tokens 或执行 benchmark-auth <token>");
             o!(r#"  │  或直接修改 server_config.yml: benchmark_phira_tokens: ["..."]"#);
-            o!(r#"  │  也可以写入 {BENCH_AUTH_FILE}: {{"tokens":["..."]}}"#);
+            o!(r#"  │  也可以写入 {super::benchmark::BENCH_AUTH_FILE}: {{"tokens":["..."]}}"#);
             let mut report = BenchmarkReport::new(
                 BenchmarkMode::Real,
                 "real TCP compatibility benchmark",
@@ -2254,7 +2254,7 @@ fn server_state_query_inner(
             let s = Arc::clone(state);
             spawn_on_runtime(async move {
                 let result = s.bind_benchmark_tokens(raw).await
-                    .map(|count| serde_json::json!({"ok": true, "count": count, "path": BENCH_AUTH_FILE}));
+                    .map(|count| serde_json::json!({"ok": true, "count": count, "path": super::benchmark::BENCH_AUTH_FILE}));
                 let _ = tx.send(result);
             });
             rx.recv_timeout(std::time::Duration::from_secs(5))

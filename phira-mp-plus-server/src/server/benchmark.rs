@@ -101,7 +101,7 @@ impl HybridBenchmarkConfig {
     }
 }
 
-const BENCH_AUTH_FILE: &str = "data/benchmark-auth.json";
+pub(crate) const BENCH_AUTH_FILE: &str = "data/benchmark-auth.json";
 
 #[derive(Debug, Default, Deserialize, Serialize)]
 struct BenchmarkAuthFile {
@@ -111,7 +111,7 @@ struct BenchmarkAuthFile {
     tokens: Vec<String>,
 }
 
-fn sanitize_benchmark_tokens<I>(items: I) -> Vec<String>
+pub(crate) fn sanitize_benchmark_tokens<I>(items: I) -> Vec<String>
 where I: IntoIterator<Item = String>,
 {
     let mut out: Vec<String> = Vec::new();

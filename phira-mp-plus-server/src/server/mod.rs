@@ -29,5 +29,6 @@ pub mod state;
 mod orig;
 
 // ── Re-exports for backward compatibility ──
+pub use benchmark::*;
 pub use config::*;
 pub use orig::*;
