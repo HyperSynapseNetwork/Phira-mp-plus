@@ -9,7 +9,6 @@ use crate::plugin_http::{PluginHttpServer, SseHub};
 use anyhow::Result;
 use phira_mp_common::{generate_secret_key, RoomEvent, RoomId, ServerCommand};
 use phira_mp_plus_server_api as api;
-use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{
     collections::HashSet,
@@ -71,7 +70,7 @@ use super::config::{LiveConfig, PlusConfig};
 /// Simulation remains the default benchmark path and is handled by
 /// [`crate::simulation::SimulationManager`]. This queue is only for explicit
 /// benchmark modes: real network tests and hybrid Phira probes.
-use super::benchmark::{BenchRequest, BenchRequestKind, HybridBenchmarkConfig, load_benchmark_tokens, save_benchmark_tokens, sanitize_benchmark_tokens};
+use super::benchmark::{BenchRequest, BenchRequestKind, HybridBenchmarkConfig, load_benchmark_tokens, save_benchmark_tokens};
 /// Phira-mp+ 服务器状态
 pub struct PlusServerState {
     pub config: PlusConfig,
