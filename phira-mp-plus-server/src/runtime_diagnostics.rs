@@ -12,7 +12,7 @@ use std::time::Duration;
 pub const EVENT_BUS_CHANNEL_CAPACITY: usize = 1024;
 
 /// Recent EventBus trace window kept in memory for readonly diagnostics.
-pub const EVENT_TRACE_WINDOW: usize = 256;
+pub const EVENT_TRACE_WINDOW: usize = 64;
 
 /// Recent benchmark reports kept in memory as digests/full latest entries.
 pub const BENCHMARK_REPORT_HISTORY: usize = 64;

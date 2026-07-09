@@ -124,8 +124,7 @@ pub(crate) fn server_state_query_inner(
         "rooms.history" => {
             let users = crate::read_lock!(state.rooms);
             let rooms_snapshot: Vec<Value> = users.iter().map(|(_, room)| {
-                let hist = crate::read_lock!(room.play_history);
-                let rounds: Vec<Value> = hist.iter().map(|r| {
+                let rounds: Vec<Value> = room.play_history.all().await.iter().map(|r| {
                     let results: Vec<Value> = r.results.iter().map(|res| serde_json::json!({
                         "player": res.user_id, "user_name": res.user_name.clone(),
                         "score": res.score, "accuracy": res.accuracy,

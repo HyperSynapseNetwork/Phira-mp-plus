@@ -8,7 +8,7 @@ use phira_mp_common::{
     ServerCommand, StrippedRoomState,
 };
 use rand::seq::IndexedRandom;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::{
     collections::{HashMap, HashSet},
     ops::Deref,
@@ -20,7 +20,6 @@ use std::{
 use tokio::sync::RwLock;
 use tracing::{debug, info, warn};
 
-const MAX_ROOM_PLAY_HISTORY: usize = 100;
 
 #[derive(Default, Debug, Clone)]
 pub enum InternalRoomState {
@@ -55,7 +54,7 @@ impl InternalRoomState {
 }
 
 /// 一轮游玩的结算数据
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PlayRound {
     /// 本轮唯一标识符
     pub round_id: uuid::Uuid,
@@ -95,7 +94,7 @@ impl PlayerLiveData {
 }
 
 /// 单个用户的游玩结算
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PlayResult {
     pub user_id: i32,
     pub user_name: String,
@@ -160,7 +159,8 @@ pub struct Room {
     pub chart: RwLock<Option<Chart>>,
 
     /// 历史游玩记录（不持久化，房间解散即清除）
-    pub play_history: RwLock<Vec<PlayRound>>,
+    /// 最近 MEMORY_CACHE_SIZE 轮在内存，其余异步写盘 JSONL。
+    pub play_history: crate::play_history::PlayHistoryStore,
     /// 当前轮次 ID（游戏开始时生成，结算时使用）
     pub current_round_id: RwLock<Option<uuid::Uuid>>,
 
@@ -215,7 +215,7 @@ impl Room {
             monitors: Vec::new().into(),
             chart: RwLock::default(),
             uuid: uuid::Uuid::new_v4(),
-            play_history: RwLock::new(Vec::new()),
+            play_history: crate::play_history::PlayHistoryStore::new(),
             current_round_id: RwLock::new(None),
             plugin_manager,
             server,
@@ -416,7 +416,7 @@ impl Room {
         let state = room.state.read().await.stripped();
         let rounds = room
             .play_history
-            .read()
+            .all()
             .await
             .iter()
             .map(protocol_round)
@@ -455,8 +455,17 @@ impl Room {
     }
 
     /// 存储玩家的触控帧数据（供 WASM 插件 host API 查询）
+    /// 无已启用的插件时跳过缓存以节省内存。
     pub async fn store_player_touches(&self, user_id: i32, data: &[TouchEventPoint]) {
         if data.is_empty() {
+            return;
+        }
+        // 无插件时不需要缓存触控数据
+        if let Some(pm) = &self.plugin_manager {
+            if !pm.has_plugins().await {
+                return;
+            }
+        } else {
             return;
         }
         let mut guard = self.player_data.write().await;
@@ -464,8 +473,17 @@ impl Room {
     }
 
     /// 存储玩家的判定事件数据（供 WASM 插件 host API 查询）
+    /// 无已启用的插件时跳过缓存以节省内存。
     pub async fn store_player_judges(&self, user_id: i32, data: &[JudgeEventItem]) {
         if data.is_empty() {
+            return;
+        }
+        // 无插件时不需要缓存判定数据
+        if let Some(pm) = &self.plugin_manager {
+            if !pm.has_plugins().await {
+                return;
+            }
+        } else {
             return;
         }
         let mut guard = self.player_data.write().await;
@@ -891,19 +909,12 @@ impl Room {
             }
         }
         let event = protocol_round(&round);
-        let total_rounds = {
-            let mut history = self.play_history.write().await;
-            history.push(round);
-            if history.len() > MAX_ROOM_PLAY_HISTORY {
-                let remove = history.len() - MAX_ROOM_PLAY_HISTORY;
-                history.drain(0..remove);
-            }
-            history.len()
-        };
+        self.play_history.push(round, &self.uuid).await;
+        let total = self.play_history.len().await;
         info!(
             room = self.id.to_string(),
             "saved play round history (total {})",
-            total_rounds
+            total
         );
         Some(event)
     }
@@ -1010,8 +1021,7 @@ impl Room {
 
                     // 发送结算排行
                     {
-                        let history = self.play_history.read().await;
-                        if let Some(last) = history.last() {
+                        if let Some(last) = self.play_history.last().await {
                             let mut sorted = last.results.clone();
                             sorted.sort_by(|a, b| b.score.cmp(&a.score));
                             let mut lines: Vec<String> =

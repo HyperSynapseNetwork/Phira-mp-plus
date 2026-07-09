@@ -538,9 +538,9 @@ impl CliHandler {
             ));
         }
         // 历史记录统计
-        let history = room.play_history.read().await;
-        if !history.is_empty() {
-            self.out(format!("  {} 历史对局: {} 轮", c::dim("│"), history.len()));
+        let total_rounds = room.play_history.len().await;
+        if total_rounds > 0 {
+            self.out(format!("  {} 历史对局: {} 轮", c::dim("│"), total_rounds));
         }
     }
 
@@ -864,7 +864,7 @@ impl CliHandler {
                 return;
             }
         };
-        let history = room.play_history.read().await;
+        let history = room.play_history.all().await;
         if history.is_empty() {
             self.out(format!("  {} 该房间暂无游玩记录", c::dim("·")));
             return;
@@ -933,7 +933,7 @@ impl CliHandler {
                 return;
             }
         };
-        let history = room.play_history.read().await;
+        let history = room.play_history.all().await;
         if history.is_empty() {
             self.out(format!("  · 该房间暂无轮次记录"));
             return;
@@ -954,7 +954,7 @@ impl CliHandler {
     pub(crate) async fn room_round_info(&self, round_uuid: &str) {
         let rooms = self.state.rooms.read().await;
         for room in rooms.values() {
-            let history = room.play_history.read().await;
+            let history = room.play_history.all().await;
             if let Some(round) = history
                 .iter()
                 .find(|r| r.round_id.to_string() == round_uuid)

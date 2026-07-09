@@ -21,6 +21,7 @@ pub mod logging;
 pub mod persistence;
 pub mod persistence_worker;
 pub mod phira_client;
+pub mod play_history;
 pub mod plugin;
 pub mod plugin_abi;
 pub mod plugin_http;

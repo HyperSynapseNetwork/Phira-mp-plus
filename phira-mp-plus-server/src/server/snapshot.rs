@@ -208,8 +208,7 @@ pub(super) fn build_snapshot(
     let current_round_id = crate::read_lock!(room.current_round_id)
         .as_ref()
         .map(|id| id.to_string());
-    let hist = crate::read_lock!(room.play_history);
-    let rounds: Vec<RoundInfo> = hist
+    let rounds: Vec<RoundInfo> = room.play_history.all().await
         .iter()
         .map(|r| {
             let results: Vec<Value> = r
@@ -243,7 +242,6 @@ pub(super) fn build_snapshot(
             }
         })
         .collect();
-    drop(hist);
 
     let chart_info = chart_op.as_ref().map(|c| {
         serde_json::json!({

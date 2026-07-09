@@ -30,8 +30,8 @@ use tokio::sync::mpsc;
 use tokio::sync::mpsc::error::TryRecvError;
 use unicode_width::UnicodeWidthChar;
 
-const MAX_LOGICAL_LINES: usize = 10_000;
-const RETAIN_LOGICAL_LINES: usize = 8_000;
+const MAX_LOGICAL_LINES: usize = 2_000;
+const RETAIN_LOGICAL_LINES: usize = 1_500;
 
 struct TerminalSession {
     capabilities: TuiCapabilities,
