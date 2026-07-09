@@ -596,7 +596,7 @@ impl PlusServer {
             room_monitor: RwLock::new(None),
             game_monitors: SafeMap::default(),
             events,
-            idle_monitor: crate::idle::IdleMonitor::new(),
+            idle_monitor: crate::idle::IdleMonitor::new(config.idle.clone()),
             db_manager,
         });
         // Wire PersistenceWorker into ExtensionManager for mirrored writes
@@ -612,6 +612,8 @@ impl PlusServer {
                 "set_lock/set_cycle/set_host/close/kick/start/cancel cross a per-room mailbox registry; gateway internals are now split for typed command migration",
             )
             .await;
+        // 启动 IdleMonitor 主循环（定期检查空闲条件，挂起/恢复重服务）
+        state.idle_monitor.start_loop(&state);
         let bench_state = Arc::clone(&state);
         crate::supervisor_actor::spawn_named("benchmark-worker", async move {
             let mut bench_rx = bench_rx;

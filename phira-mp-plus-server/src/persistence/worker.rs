@@ -18,13 +18,17 @@ use crate::telemetry_batcher::{
     TelemetryBatcher, TelemetryBatcherPolicy, TelemetryBatcherStats, TelemetryCutoverMode,
 };
 use serde_json::json;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tokio::sync::{mpsc, RwLock};
-use tracing::{debug, trace, warn};
+use tracing::{debug, info, trace, warn};
 
 #[derive(Debug)]
 pub struct PersistenceWorker {
     tx: mpsc::Sender<PersistenceEvent>,
+    /// When suspended, `enqueue` silently drops events instead of processing
+    /// them. Set by the IdleMonitor on idle enter/leave.
+    suspended: AtomicBool,
     stats: Arc<RwLock<PersistenceStats>>,
     telemetry_batcher: Arc<TelemetryBatcher>,
     telemetry_cutover_mode: Arc<RwLock<TelemetryCutoverMode>>,
@@ -219,7 +223,23 @@ impl PersistenceWorker {
             stats,
             telemetry_batcher,
             telemetry_cutover_mode,
+            suspended: AtomicBool::new(false),
         })
+    }
+
+    /// Check whether the persistence worker is suspended (idle mode).
+    pub fn is_suspended(&self) -> bool {
+        self.suspended.load(Ordering::Relaxed)
+    }
+
+    /// Set the suspended flag. When suspended, `enqueue` drops events.
+    pub async fn set_suspended(&self, suspended: bool) {
+        self.suspended.store(suspended, Ordering::Release);
+        if suspended {
+            info!("persistence worker suspended");
+        } else {
+            info!("persistence worker resumed");
+        }
     }
 
     pub async fn enqueue(&self, event: PersistenceEvent) -> Result<(), PersistenceEvent> {

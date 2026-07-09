@@ -10,6 +10,7 @@ use std::collections::HashMap;
 #[cfg(feature = "plugin-system")]
 use std::collections::HashSet;
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use tokio::sync::{OwnedSemaphorePermit, RwLock, Semaphore};
 use tracing::{info, warn};
@@ -229,6 +230,9 @@ pub struct PluginManager {
     runtime: WasmRuntimeConfig,
     event_gate: Arc<Semaphore>,
     http_handle: Arc<RwLock<Option<api::HttpHandle>>>,
+    /// When suspended, `try_spawn_trigger` drops incoming events instead of
+    /// processing them. Set by the IdleMonitor on idle enter/leave.
+    suspended: AtomicBool,
     #[cfg(feature = "plugin-system")]
     wasm_services: Arc<crate::wasm_host::WasmPluginServices>,
 }
@@ -260,8 +264,25 @@ impl PluginManager {
             event_gate: Arc::new(Semaphore::new(runtime.max_event_concurrency.max(1))),
             runtime,
             http_handle,
+            suspended: AtomicBool::new(false),
             #[cfg(feature = "plugin-system")]
             wasm_services,
+        }
+    }
+
+    /// Check whether the plugin manager is suspended (idle mode).
+    pub fn is_suspended(&self) -> bool {
+        self.suspended.load(Ordering::Relaxed)
+    }
+
+    /// Set the suspended flag. When suspended, `try_spawn_trigger` drops
+    /// incoming events instead of processing them.
+    pub async fn set_suspended(&self, suspended: bool) {
+        self.suspended.store(suspended, Ordering::Release);
+        if suspended {
+            info!("plugin event processing suspended");
+        } else {
+            info!("plugin event processing resumed");
         }
     }
 
@@ -415,6 +436,9 @@ impl PluginManager {
     /// High-frequency telemetry paths use this to avoid building an unbounded backlog of
     /// Tokio tasks while plugin WASM calls are already saturated.
     pub fn try_spawn_trigger(self: &Arc<Self>, event: PluginEvent) -> bool {
+        if self.is_suspended() {
+            return false;
+        }
         let permit = match Arc::clone(&self.event_gate).try_acquire_owned() {
             Ok(permit) => permit,
             Err(_) => return false,
