@@ -345,8 +345,6 @@ async fn simulation_multiple_stop_cleanup_cycles() {
         assert_eq!(cleaned.virtual_users, 0, "cycle {cycle}: no users");
         assert_eq!(cleaned.virtual_rooms, 0, "cycle {cycle}: no rooms");
     }
-        max_shadow_users: 0,
-        max_shadow_rooms: 0,
 }
 
 #[tokio::test]
