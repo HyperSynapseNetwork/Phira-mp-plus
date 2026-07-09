@@ -558,6 +558,7 @@ impl PlusServer {
         let events = Arc::new(SseHub::new());
         // Capture config fields before config is consumed by state
         let proxy_protocol_port = config.proxy_protocol_port;
+        let idle_config = config.idle.clone();
         // Initialize database connection early so it's available throughout
         let db_manager = crate::db::DbManager::new(config.database_url.as_deref()).await;
         let live_config = Arc::new(RwLock::new(LiveConfig::from_full(&config)));
@@ -596,7 +597,7 @@ impl PlusServer {
             room_monitor: RwLock::new(None),
             game_monitors: SafeMap::default(),
             events,
-            idle_monitor: crate::idle::IdleMonitor::new(config.idle.clone()),
+            idle_monitor: crate::idle::IdleMonitor::new(idle_config),
             db_manager,
         });
         // Wire PersistenceWorker into ExtensionManager for mirrored writes
