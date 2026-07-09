@@ -268,60 +268,6 @@ impl RoomCommandGateway {
         }
     }
 
-    /// Route a room command through the per-room mailbox only — no inline fallback.
-    /// Used by low-risk commands (set_lock, set_cycle, set_host) to prove mailbox
-    /// stability before removing the fallback entirely.
-    pub(super) async fn room_mailbox_only<Build>(
-        &self,
-        room_id: &str,
-        build: Build,
-    ) -> RoomCommandResult
-    where
-        Build: FnOnce(oneshot::Sender<RoomCommandResult>) -> RoomActorCommand,
-    {
-        if let Some(tx) = self.room_mailbox_sender(room_id) {
-            let (reply, rx) = oneshot::channel();
-            let cmd = build(reply);
-            self.mailbox_enqueued.fetch_add(1, Ordering::Relaxed);
-            match tokio::time::timeout(Self::COMMAND_TIMEOUT, tx.send(cmd)).await {
-                Ok(Ok(())) => match tokio::time::timeout(Self::COMMAND_TIMEOUT, rx).await {
-                    Ok(Ok(result)) => result,
-                    Ok(Err(_)) => {
-                        self.mailbox_closed.fetch_add(1, Ordering::Relaxed);
-                        self.mailbox_failed.fetch_add(1, Ordering::Relaxed);
-                        RoomCommandResult::mailbox_error(
-                            "mailbox reply lost; inline fallback disabled for this command"
-                        )
-                    }
-                    Err(_) => {
-                        // Reply timed out; command may still be executing.
-                        self.mailbox_failed.fetch_add(1, Ordering::Relaxed);
-                        RoomCommandResult::mailbox_error(
-                            "mailbox reply timed out; inline fallback disabled for this command"
-                        )
-                    }
-                },
-                Ok(Err(_)) => {
-                    self.mailbox_closed.fetch_add(1, Ordering::Relaxed);
-                    self.mailbox_failed.fetch_add(1, Ordering::Relaxed);
-                    RoomCommandResult::mailbox_error(
-                        "mailbox send failed; inline fallback disabled for this command"
-                    )
-                }
-                Err(_) => {
-                    // Send timed out — mailbox channel full or worker stuck.
-                    self.mailbox_failed.fetch_add(1, Ordering::Relaxed);
-                    RoomCommandResult::mailbox_error(
-                        "mailbox send timed out; inline fallback disabled for this command"
-                    )
-                }
-            }
-        } else {
-            self.mailbox_failed.fetch_add(1, Ordering::Relaxed);
-            RoomCommandResult::mailbox_error("mailbox not available; inline fallback disabled for this command")
-        }
-    }
-
     /// Route a non-idempotent room command through the per-room mailbox.
     ///
     /// If the command was successfully sent to the mailbox but the reply channel is
