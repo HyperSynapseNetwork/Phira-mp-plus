@@ -89,6 +89,7 @@ pub(crate) fn parse_room_endpoint_value(value: &str) -> Result<Option<String>, S
 ///
 /// 替代自旋 yield_now，使用指数退避（1μs → 2μs → 4μs → … → 1ms cap）
 /// 避免在锁竞争时浪费 CPU 并放大尾延迟。
+#[macro_export]
 macro_rules! read_lock {
     ($lock:expr) => {{
         let mut attempts = 0u32;
@@ -613,18 +614,18 @@ pub struct PlusServerState {
     pub config: PlusConfig,
     /// Hot-reloadable runtime config.
     pub live_config: Arc<RwLock<LiveConfig>>,
-    pub sessions: IdMap<Arc<super::session::Session>>,
-    pub users: SafeMap<i32, Arc<super::session::User>>,
-    pub rooms: SafeMap<RoomId, Arc<super::room::Room>>,
+    pub sessions: IdMap<Arc<crate::session::Session>>,
+    pub users: SafeMap<i32, Arc<crate::session::User>>,
+    pub rooms: SafeMap<RoomId, Arc<crate::room::Room>>,
     pub lost_con_tx: mpsc::Sender<Uuid>,
     pub plugin_manager: Arc<PluginManager>,
     pub extensions: Arc<ExtensionManager>,
     pub ban_manager: Arc<BanManager>,
     pub shutdown: Notify,
     /// 连接速率限制器（按 IP）
-    pub connection_limiter: super::rate_limiter::ConnectionRateLimiter,
+    pub connection_limiter: crate::rate_limiter::ConnectionRateLimiter,
     /// 轮次数据持久化存储（Touches/Judges 按轮次写入磁盘）
-    pub round_store: Arc<super::round_store::RoundStore>,
+    pub round_store: Arc<crate::round_store::RoundStore>,
     /// 用户房间访问历史: user_id → (room_id, room_uuid, join_timestamp_ms)
     pub user_room_history: SafeMap<i32, Vec<(String, String, i64)>>,
     /// 压测请求发送端（背景 tokio 任务消费）
@@ -655,11 +656,11 @@ pub struct PlusServerState {
     pub room_monitor_key: Vec<u8>,
     pub events: Arc<SseHub>,
     /// 房间 monitor 会话（唯一）
-    pub room_monitor: RwLock<Option<Weak<super::session::Session>>>,
+    pub room_monitor: RwLock<Option<Weak<crate::session::Session>>>,
     /// 游戏 monitor 会话（按用户 ID）
-    pub game_monitors: SafeMap<i32, Weak<super::session::Session>>,
+    pub game_monitors: SafeMap<i32, Weak<crate::session::Session>>,
     /// PostgreSQL 数据库管理器。
-    pub db_manager: super::db::DbManager,
+    pub db_manager: crate::db::DbManager,
     /// Idle mode monitor — tracks activity and controls service suspension.
     pub idle_monitor: Arc<crate::idle::IdleMonitor>,
 }
@@ -898,7 +899,7 @@ impl PlusServer {
         // Capture config fields before config is consumed by state
         let proxy_protocol_port = config.proxy_protocol_port;
         // Initialize database connection early so it's available throughout
-        let db_manager = super::db::DbManager::new(config.database_url.as_deref()).await;
+        let db_manager = crate::db::DbManager::new(config.database_url.as_deref()).await;
         let live_config = Arc::new(RwLock::new(LiveConfig::from_full(&config)));
         let state = Arc::new(PlusServerState {
             config,
@@ -911,11 +912,11 @@ impl PlusServer {
             extensions,
             ban_manager,
             shutdown: Notify::new(),
-            connection_limiter: super::rate_limiter::ConnectionRateLimiter::new(
+            connection_limiter: crate::rate_limiter::ConnectionRateLimiter::new(
                 rate_limit,
                 rate_window,
             ),
-            round_store: Arc::new(super::round_store::RoundStore::new("data", retention_days)),
+            round_store: Arc::new(crate::round_store::RoundStore::new("data", retention_days)),
             user_room_history: SafeMap::default(),
             bench_tx: bench_tx.clone(),
             room_metadata_refresh_gate: Arc::new(Semaphore::new(
@@ -1163,7 +1164,7 @@ impl PlusServer {
         let auth_timeout = self.state.config.idle.auth_timeout_secs.max(5);
         let session = match tokio::time::timeout(
             std::time::Duration::from_secs(auth_timeout),
-            super::session::Session::new(id, addr, stream, Arc::clone(&self.state)),
+            crate::session::Session::new(id, addr, stream, Arc::clone(&self.state)),
         )
         .await
         {
@@ -1368,7 +1369,7 @@ impl PlusServerState {
     }
 
     /// 获取房间 monitor 会话
-    pub async fn get_room_monitor(&self) -> Option<Arc<super::session::Session>> {
+    pub async fn get_room_monitor(&self) -> Option<Arc<crate::session::Session>> {
         self.room_monitor
             .read()
             .await
@@ -1376,11 +1377,11 @@ impl PlusServerState {
             .and_then(Weak::upgrade)
     }
     /// 设置房间 monitor 会话
-    pub async fn set_room_monitor(&self, session: Weak<super::session::Session>) {
+    pub async fn set_room_monitor(&self, session: Weak<crate::session::Session>) {
         *self.room_monitor.write().await = Some(session);
     }
     /// 获取游戏 monitor 会话
-    pub async fn get_game_monitor(&self, player_id: i32) -> Option<Arc<super::session::Session>> {
+    pub async fn get_game_monitor(&self, player_id: i32) -> Option<Arc<crate::session::Session>> {
         self.game_monitors
             .read()
             .await
@@ -1388,7 +1389,7 @@ impl PlusServerState {
             .and_then(Weak::upgrade)
     }
     /// 设置游戏 monitor 会话
-    pub async fn set_game_monitor(&self, player_id: i32, session: Weak<super::session::Session>) {
+    pub async fn set_game_monitor(&self, player_id: i32, session: Weak<crate::session::Session>) {
         self.game_monitors.write().await.insert(player_id, session);
     }
 
@@ -1513,7 +1514,7 @@ impl PlusServerState {
     pub async fn assign_room_host_if_missing(
         &self,
         room: &Arc<crate::room::Room>,
-        user: &Arc<super::session::User>,
+        user: &Arc<crate::session::User>,
         monitor: bool,
         announce: bool,
     ) -> bool {
@@ -3835,7 +3836,7 @@ struct RoundInfo {
 
 fn user_snapshot(
     room: &crate::room::Room,
-    user: &super::session::User,
+    user: &crate::session::User,
     is_host: bool,
     in_room: bool,
 ) -> UserSnapshot {
