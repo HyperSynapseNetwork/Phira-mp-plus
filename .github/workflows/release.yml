@@ -1,6 +1,12 @@
 name: Release
 
 on:
+  workflow_dispatch:
+    inputs:
+      description:
+        description: 版本说明（可选）
+        type: string
+        default: ""
   push:
     tags:
       - 'v[0-9]+.[0-9]+.[0-9]+'
