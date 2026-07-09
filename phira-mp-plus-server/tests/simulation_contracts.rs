@@ -215,11 +215,8 @@ async fn simulation_lifecycle_start_stop_cleanup() {
         tick_interval_ms: 500,
         seed: 42,
         persist_every_ticks: 0,
-    },
-
-    ..Default::default()
+        ..Default::default()
     };
-
 
     // Initial state: idle
     let status = manager.status().await;
@@ -279,7 +276,6 @@ async fn simulation_cleanup_mid_run_resets_all_state() {
         tick_interval_ms: 1000,
         seed: 42,
         persist_every_ticks: 0,
-    },
 
     ..Default::default()
     };
@@ -307,7 +303,6 @@ async fn simulation_cleanup_mid_run_resets_all_state() {
         duration_secs: 10,
         seed: 100,
         ..SimulationConfig::default()
-    },
 
     ..Default::default()
     };
@@ -336,7 +331,6 @@ async fn simulation_multiple_stop_cleanup_cycles() {
             duration_secs: 10,
             seed: 42 + cycle as u64,
             ..SimulationConfig::default()
-        },
 
         ..Default::default()
         };
@@ -374,7 +368,6 @@ async fn simulation_cleanup_no_side_effects_on_real_state() {
         duration_secs: 30,
         seed: 1,
         ..SimulationConfig::default()
-    },
 
     ..Default::default()
     };
@@ -386,7 +379,6 @@ async fn simulation_cleanup_no_side_effects_on_real_state() {
         duration_secs: 60,
         seed: 2,
         ..SimulationConfig::default()
-    },
 
     ..Default::default()
     };
