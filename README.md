@@ -34,6 +34,8 @@
 
 ## 快速开始
 
+> **编译特性**: 默认只编译 `postgres` 支持。WASM 插件系统需要 `--features wit-bindgen` 或 `--features plugin-system,wit-bindgen`。`cargo build --release --features wit-bindgen` 编译包含完整插件系统的二进制。
+
 确保已安装当前稳定版 Rust 工具链：
 
 ```bash
@@ -82,8 +84,6 @@ cli_enabled: true
 ```
 
 配置加载规则：默认读取 `server_config.yml`，也可通过 `--config <FILE>` 指定；配置文件缺失时使用默认值；命令行参数会覆盖端口、插件目录、监控 ID、扩展数据路径和 CLI 开关等同名设置。完整说明见 [docs/configuration.md](docs/configuration.md)。
-
-> **编译特性**: 默认只编译 `postgres` 支持。WASM 插件系统需要 `--features wit-bindgen` 或 `--features plugin-system,wit-bindgen`。`cargo build --release --features wit-bindgen` 编译包含完整插件系统的二进制。
 
 ### 命令行参数
 
