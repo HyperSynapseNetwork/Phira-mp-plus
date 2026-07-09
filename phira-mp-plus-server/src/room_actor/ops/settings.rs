@@ -20,13 +20,14 @@ impl RoomCommandGateway {
     ) -> Result<Value, String> {
         let started = Instant::now();
         let result = self
-            .room_mailbox_only(
+            .room_mailbox_or_inline(
                 room_id,
                 |reply| RoomActorCommand::SetHost {
                     room_id: room_id.to_string(),
                     target_id,
                     reply,
                 },
+                || self.set_host_inline(state, room_id, target_id, None),
             )
             .await;
         self.finish_command(
@@ -96,13 +97,14 @@ impl RoomCommandGateway {
     ) -> Result<Value, String> {
         let started = Instant::now();
         let result = self
-            .room_mailbox_only(
+            .room_mailbox_or_inline(
                 room_id,
                 |reply| RoomActorCommand::SetLock {
                     room_id: room_id.to_string(),
                     locked,
                     reply,
                 },
+                || self.set_lock_inline(state, room_id, locked, None),
             )
             .await;
         self.finish_command(
@@ -152,13 +154,14 @@ impl RoomCommandGateway {
     ) -> Result<Value, String> {
         let started = Instant::now();
         let result = self
-            .room_mailbox_only(
+            .room_mailbox_or_inline(
                 room_id,
                 |reply| RoomActorCommand::SetCycle {
                     room_id: room_id.to_string(),
                     cycle,
                     reply,
                 },
+                || self.set_cycle_inline(state, room_id, cycle, None),
             )
             .await;
         self.finish_command(

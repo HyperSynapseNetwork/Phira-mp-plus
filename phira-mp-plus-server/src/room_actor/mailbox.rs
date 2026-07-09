@@ -207,8 +207,8 @@ impl RoomCommandGateway {
     const COMMAND_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
     /// Runtime v2 mailbox routing: prefer per-room mailbox, fall back to inline.
-    /// Dead code until the command migration activates this path.
-    #[allow(dead_code)]
+    /// Used by general ops (set_lock, set_cycle, set_host, kick, close) where
+    /// inline fallback is safe.
     pub(super) async fn room_mailbox_or_inline<Build, Inline, Fut>(
         &self,
         room_id: &str,
@@ -328,7 +328,7 @@ impl RoomCommandGateway {
     /// lost, we deliberately return an error instead of falling back to inline
     /// execution.  This avoids duplicate `start`/`cancel` effects when the mailbox
     /// worker may already have executed the command but failed before replying.
-    #[allow(dead_code)]
+    /// Used by start_room and cancel_start.
     pub(super) async fn room_mailbox_or_inline_control<Build, Inline, Fut>(
         &self,
         room_id: &str,
