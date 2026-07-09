@@ -444,10 +444,17 @@ fn server_state_query_inner(
                 .and_then(|v| v.as_i64())
                 .map(|v| v as i32)
                 .ok_or_else(|| "target user_id required".to_string())?;
-            state
-                .room_commands
-                .kick_user(state, room_id, target_id)
-                .await
+            {
+            let (tx, rx) = std::sync::mpsc::channel();
+            let s = Arc::clone(state);
+            let room_id = room_id.to_string();
+            spawn_on_runtime(async move {
+                let result = s.room_commands.kick_user(&s, &room_id, target_id).await;
+                let _ = tx.send(result);
+            });
+            rx.recv_timeout(runtime_state_query_timeout())
+                .unwrap_or(Err("room.kick timeout".to_string()))
+        }
         }
         "room.set_host" => {
             let room_id = args
@@ -458,10 +465,17 @@ fn server_state_query_inner(
                 .get(1)
                 .and_then(|v| v.as_i64())
                 .map(|v| v as i32);
-            state
-                .room_commands
-                .set_host(state, room_id, target_id)
-                .await
+            {
+            let (tx, rx) = std::sync::mpsc::channel();
+            let s = Arc::clone(state);
+            let room_id = room_id.to_string();
+            spawn_on_runtime(async move {
+                let result = s.room_commands.set_host(&s, &room_id, target_id).await;
+                let _ = tx.send(result);
+            });
+            rx.recv_timeout(runtime_state_query_timeout())
+                .unwrap_or(Err("room.set_host timeout".to_string()))
+        }
         }
         "room.set_lock" => {
             let room_id = args
@@ -472,10 +486,17 @@ fn server_state_query_inner(
                 .get(1)
                 .and_then(|v| v.as_bool())
                 .ok_or_else(|| "locked (bool) required".to_string())?;
-            state
-                .room_commands
-                .set_lock(state, room_id, locked)
-                .await
+            {
+            let (tx, rx) = std::sync::mpsc::channel();
+            let s = Arc::clone(state);
+            let room_id = room_id.to_string();
+            spawn_on_runtime(async move {
+                let result = s.room_commands.set_lock(&s, &room_id, locked).await;
+                let _ = tx.send(result);
+            });
+            rx.recv_timeout(runtime_state_query_timeout())
+                .unwrap_or(Err("room.set_lock timeout".to_string()))
+        }
         }
         "room.set_cycle" => {
             let room_id = args
@@ -486,10 +507,17 @@ fn server_state_query_inner(
                 .get(1)
                 .and_then(|v| v.as_bool())
                 .ok_or_else(|| "cycle (bool) required".to_string())?;
-            state
-                .room_commands
-                .set_cycle(state, room_id, cycle)
-                .await
+            {
+            let (tx, rx) = std::sync::mpsc::channel();
+            let s = Arc::clone(state);
+            let room_id = room_id.to_string();
+            spawn_on_runtime(async move {
+                let result = s.room_commands.set_cycle(&s, &room_id, cycle).await;
+                let _ = tx.send(result);
+            });
+            rx.recv_timeout(runtime_state_query_timeout())
+                .unwrap_or(Err("room.set_cycle timeout".to_string()))
+        }
         }
         "room.force_move" => {
             let room_id = args
@@ -540,10 +568,17 @@ fn server_state_query_inner(
                 .first()
                 .and_then(|v| v.as_str())
                 .ok_or_else(|| "room_id required".to_string())?;
-            state
-                .room_commands
-                .close_room(state, room_id)
-                .await
+            {
+            let (tx, rx) = std::sync::mpsc::channel();
+            let s = Arc::clone(state);
+            let room_id = room_id.to_string();
+            spawn_on_runtime(async move {
+                let result = s.room_commands.close_room(&s, &room_id).await;
+                let _ = tx.send(result);
+            });
+            rx.recv_timeout(runtime_state_query_timeout())
+                .unwrap_or(Err("room.close timeout".to_string()))
+        }
         }
         "admin.kick_user" => {
             let room_id = args
