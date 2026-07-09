@@ -28,10 +28,6 @@ pub fn spawn_runtime_event_observer(event_bus: Arc<crate::event_bus::EventBus>) 
 }
 
 /// Subscribe to EventBus events and drive real side effects.
-///
-/// This is the Runtime v2 event-driven subscriber that gradually replaces direct
-/// calls in session.rs / runner.rs. Old paths remain intact (dual-write) until
-/// the EventBus path is proven stable.
 pub fn spawn_event_subscribers(state: &Arc<PlusServerState>) {
     let mut rx = state.event_bus.subscribe();
     let state_clone = Arc::clone(state);
@@ -53,25 +49,27 @@ pub fn spawn_event_subscribers(state: &Arc<PlusServerState>) {
                                 .await;
                         }
                         MpEvent::BenchmarkCompleted { report } => {
-                            state_clone.benchmark_reports.push(report.clone()).await;
+                            state_clone.benchmark_reports.record(report.clone());
                         }
-                        MpEvent::StateQuery { method, args, reply } => {
-                            let result = (state_clone.server_state_query)(method, args);
-                            let _ = reply.send(result);
-                        }
-                        MpEvent::UserConnected { user_id } => {
+                        MpEvent::UserConnected {
+                            user_id,
+                            ..
+                        } => {
                             state_clone
                                 .plugin_manager
-                                .trigger(&crate::plugin::PluginEvent::UserJoin {
+                                .trigger(&crate::plugin::PluginEvent::UserConnect {
                                     user_id: *user_id,
+                                    user_name: String::new(),
+                                    user_ip: String::new(),
                                 })
                                 .await;
                         }
                         MpEvent::UserDisconnected { user_id } => {
                             state_clone
                                 .plugin_manager
-                                .trigger(&crate::plugin::PluginEvent::UserLeave {
+                                .trigger(&crate::plugin::PluginEvent::UserDisconnect {
                                     user_id: *user_id,
+                                    user_name: String::new(),
                                 })
                                 .await;
                         }
@@ -88,8 +86,7 @@ pub fn spawn_event_subscribers(state: &Arc<PlusServerState>) {
 }
 
 /// Subscribe to EventBus PluginEventDispatched messages and dispatch
-/// them to the plugin manager.  This decouples plugin dispatch from
-/// the legacy synchronous event path.
+/// them to the plugin manager.
 pub fn spawn_plugin_subscriber(state: &Arc<PlusServerState>) {
     let mut rx = state.event_bus.subscribe();
     let pm = Arc::clone(&state.plugin_manager);

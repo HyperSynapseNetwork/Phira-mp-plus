@@ -329,10 +329,6 @@ pub struct PlusServer {
     _lost_con_handle: tokio::task::JoinHandle<()>,
 }
 
-// Removed: spawn_runtime_event_observer, spawn_event_subscribers,
-// spawn_plugin_subscriber moved to super::events.
-// use crate::event_bus::MpEvent; no longer needed here.
-
 // Event subscriber functions moved to super::events
 impl PlusServer {
     /// 创建新的 Phira-mp+ 服务器
@@ -387,7 +383,7 @@ impl PlusServer {
             crate::runtime_diagnostics::EVENT_BUS_CHANNEL_CAPACITY,
             crate::runtime_diagnostics::EVENT_TRACE_WINDOW,
         ));
-        spawn_runtime_event_observer(Arc::clone(&event_bus));
+        super::events::spawn_runtime_event_observer(Arc::clone(&event_bus));
         let benchmark_reports = Arc::new(BenchmarkReportStore::new(
             crate::runtime_diagnostics::BENCHMARK_REPORT_HISTORY,
         ));
@@ -453,8 +449,8 @@ impl PlusServer {
         });
         // Wire PersistenceWorker into ExtensionManager for mirrored writes
         state.extensions.set_persistence_worker(&state.persistence_worker).await;
-        spawn_event_subscribers(&state);
-        spawn_plugin_subscriber(&state);
+        super::events::spawn_event_subscribers(&state);
+        super::events::spawn_plugin_subscriber(&state);
         state.room_commands.start_mailbox(Arc::clone(&state), 1024);
         state
             .actor_runtime
