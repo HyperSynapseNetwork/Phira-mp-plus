@@ -16,6 +16,7 @@
 //! existing callers keep working unchanged during the migration.
 
 pub mod config;
+pub mod events;
 pub mod snapshot;
 pub mod state;
 
