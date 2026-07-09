@@ -94,7 +94,7 @@ where
     let handle = tokio::spawn(future);
     send(SupervisorCmd::Register {
         name: name.to_string(),
-        handle: handle.clone(),
+        handle,
     });
     handle
 }
