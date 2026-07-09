@@ -46,7 +46,7 @@ fn parse_benchmark_mode_arg(value: &str) -> Option<BenchmarkMode> {
     }
 }
 
-fn server_state_query_inner(
+async fn server_state_query_inner(
     state: &Arc<PlusServerState>,
     method: &str,
     args: &[Value],
@@ -444,16 +444,10 @@ fn server_state_query_inner(
                 .and_then(|v| v.as_i64())
                 .map(|v| v as i32)
                 .ok_or_else(|| "target user_id required".to_string())?;
-            {
-            let (tx, rx) = std::sync::mpsc::channel();
-            let s = Arc::clone(state);
-            let room_id = room_id.to_string();
-            spawn_on_runtime(async move {
-                let result = s.room_commands.kick_user(&s, &room_id, target_id).await;
-                let _ = tx.send(result);
-            });
-            rx.recv_timeout(runtime_state_query_timeout())
-                .unwrap_or(Err("room.kick timeout".to_string()))
+            state
+                .room_commands
+                .kick_user(state, room_id, target_id)
+                .await
         }
         }
         "room.set_host" => {
@@ -465,16 +459,10 @@ fn server_state_query_inner(
                 .get(1)
                 .and_then(|v| v.as_i64())
                 .map(|v| v as i32);
-            {
-            let (tx, rx) = std::sync::mpsc::channel();
-            let s = Arc::clone(state);
-            let room_id = room_id.to_string();
-            spawn_on_runtime(async move {
-                let result = s.room_commands.set_host(&s, &room_id, target_id).await;
-                let _ = tx.send(result);
-            });
-            rx.recv_timeout(runtime_state_query_timeout())
-                .unwrap_or(Err("room.set_host timeout".to_string()))
+            state
+                .room_commands
+                .set_host(state, room_id, target_id)
+                .await
         }
         }
         "room.set_lock" => {
@@ -486,16 +474,10 @@ fn server_state_query_inner(
                 .get(1)
                 .and_then(|v| v.as_bool())
                 .ok_or_else(|| "locked (bool) required".to_string())?;
-            {
-            let (tx, rx) = std::sync::mpsc::channel();
-            let s = Arc::clone(state);
-            let room_id = room_id.to_string();
-            spawn_on_runtime(async move {
-                let result = s.room_commands.set_lock(&s, &room_id, locked).await;
-                let _ = tx.send(result);
-            });
-            rx.recv_timeout(runtime_state_query_timeout())
-                .unwrap_or(Err("room.set_lock timeout".to_string()))
+            state
+                .room_commands
+                .set_lock(state, room_id, locked)
+                .await
         }
         }
         "room.set_cycle" => {
@@ -507,16 +489,10 @@ fn server_state_query_inner(
                 .get(1)
                 .and_then(|v| v.as_bool())
                 .ok_or_else(|| "cycle (bool) required".to_string())?;
-            {
-            let (tx, rx) = std::sync::mpsc::channel();
-            let s = Arc::clone(state);
-            let room_id = room_id.to_string();
-            spawn_on_runtime(async move {
-                let result = s.room_commands.set_cycle(&s, &room_id, cycle).await;
-                let _ = tx.send(result);
-            });
-            rx.recv_timeout(runtime_state_query_timeout())
-                .unwrap_or(Err("room.set_cycle timeout".to_string()))
+            state
+                .room_commands
+                .set_cycle(state, room_id, cycle)
+                .await
         }
         }
         "room.force_move" => {
@@ -568,16 +544,10 @@ fn server_state_query_inner(
                 .first()
                 .and_then(|v| v.as_str())
                 .ok_or_else(|| "room_id required".to_string())?;
-            {
-            let (tx, rx) = std::sync::mpsc::channel();
-            let s = Arc::clone(state);
-            let room_id = room_id.to_string();
-            spawn_on_runtime(async move {
-                let result = s.room_commands.close_room(&s, &room_id).await;
-                let _ = tx.send(result);
-            });
-            rx.recv_timeout(runtime_state_query_timeout())
-                .unwrap_or(Err("room.close timeout".to_string()))
+            state
+                .room_commands
+                .close_room(state, room_id)
+                .await
         }
         }
         "admin.kick_user" => {
@@ -807,13 +777,29 @@ pub fn server_state_query_for_host(
     server_state_query(state, method, args)
 }
 
-/// Web API state query dispatch stub.
+/// Web API state query dispatch stub — sync bridge to the async dispatch.
 fn server_state_query(
     state: &Arc<PlusServerState>,
     method: &str,
     args: &[Value],
 ) -> Result<Value, String> {
-    server_state_query_dispatch(state, method, args)
+    let s = Arc::clone(state);
+    let method = method.to_string();
+    let args = args.to_vec();
+    match tokio::runtime::Handle::try_current() {
+        Ok(handle) => handle.block_on(async {
+            server_state_query_dispatch(&s, &method, &args).await
+        }),
+        Err(_) => {
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("build temp runtime for state query");
+            rt.block_on(async {
+                server_state_query_dispatch(&s, &method, &args).await
+            })
+        }
+    }
 }
 
 /// Web API 状态查询（内置）
@@ -827,7 +813,7 @@ fn server_state_query(
 /// - `sse.*`    → SSE 流
 /// - `ban.*`    → 封禁管理
 /// - `runtime.*` → 运行时诊断
-fn server_state_query_dispatch(
+async fn server_state_query_dispatch(
     state: &Arc<PlusServerState>,
     method: &str,
     args: &[Value],
