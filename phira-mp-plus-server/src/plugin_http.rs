@@ -14,9 +14,9 @@ use axum::{
         IntoResponse, Response,
     },
     routing::{any, get},
-    serve::IntoMakeServiceWithConnectInfo,
     Json, Router,
 };
+use tower::make::Shared;
 use phira_mp_plus_server_api as api;
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -152,7 +152,7 @@ impl PluginHttpServer {
                 info!(%proxy_addr, "HTTP server started (PROXY protocol, X-Forwarded-For trusted)");
                 if let Err(err) = axum::serve::serve(
                     proxy_listener,
-                    IntoMakeServiceWithConnectInfo::<_, std::net::SocketAddr>::new(proxy_app),
+                    Shared::new(proxy_app.into_service()),
                 )
                 .await
                 {
@@ -163,7 +163,7 @@ impl PluginHttpServer {
 
         if let Err(err) = axum::serve::serve(
             listener,
-            IntoMakeServiceWithConnectInfo::<_, std::net::SocketAddr>::new(app),
+            Shared::new(app.into_service()),
         )
         .await
         {
@@ -222,7 +222,7 @@ fn sse_response(stream: sse::EventStream, interval: Duration) -> Response {
 /// SSE handler for plugin-registered event streams.
 /// Each incoming SseEvent is forwarded to the plugin's on_api("sse:translate", …)
 /// so the plugin can transform it into the HSNPhira v1/v2 format.
-/// The SSE stream path is read from the request URI (each registered stream has its own route).
+/// Each registered SSE stream has its own route; the path is read from the request URI.
 async fn plugin_sse_handler(
     State(state): State<Arc<HttpAppState>>,
     uri: axum::http::Uri,
@@ -232,10 +232,8 @@ async fn plugin_sse_handler(
     let pm = Arc::clone(&state.plugin_manager);
     let rx = state.events.subscribe_general();
 
-    // Ready event sent on connection open.
-    let stream_name = path.trim_start_matches('/').replace('/', ".");
     let ready = SseEvent::new("ready",
-        serde_json::json!({"stream": stream_name, "version": env!("CARGO_PKG_VERSION")}).to_string());
+        serde_json::json!({"stream": path.trim_start_matches('/'), "version": env!("CARGO_PKG_VERSION")}).to_string());
 
     let stream: sse::EventStream = Box::pin(
         stream::once(async move { Ok(ready.into_axum()) })
