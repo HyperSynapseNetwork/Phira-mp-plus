@@ -13,13 +13,12 @@
 //! 4. On enter-idle the heavy subsystems are suspended; on leave-idle
 //!    they are resumed.
 
-use crate::plugin::PluginManager;
 use crate::server::PlusServerState;
 use serde::{Deserialize, Serialize};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use tokio::sync::RwLock;
-use tracing::{info, warn};
+use tracing::info;
 
 // ── Configuration ────────────────────────────────────────────────────
 
@@ -85,9 +84,6 @@ pub struct IdleMonitor {
     state: RwLock<IdleState>,
     last_activity: AtomicU64,
     auto_idle_enabled: RwLock<bool>,
-    /// Whether the server has entered idle since boot (ensures enter/leave
-    /// hooks fire at most once per transition).
-    idle_since_boot: AtomicBool,
     config: IdleConfig,
 }
 
@@ -97,7 +93,6 @@ impl IdleMonitor {
             state: RwLock::new(IdleState::Active),
             last_activity: AtomicU64::new(now_secs()),
             auto_idle_enabled: RwLock::new(true),
-            idle_since_boot: AtomicBool::new(false),
             config,
         })
     }
