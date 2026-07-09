@@ -48,7 +48,7 @@ libc = "0.2"
 tikv-jemallocator = "0.6"
 
 [features]
-default = ["postgres"]
+default = ["postgres", "wit-bindgen"]
 plugin-system = ["dep:wasmtime"]
 # WIT/component-model bindgen.  JSON bridge removed (MIGRATION_PHASE=2),
 # so WIT bindings are now required for plugin support.
