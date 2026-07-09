@@ -1,0 +1,14 @@
+Phira-mp+ Third-Party Dependency Licenses
+=======================================
+Total: 5 crates
+
+AGPL-3.0 (2)
+====================
+  phira-mp-plus-server-api v0.1.0
+  phira-plugin-sdk v0.4.0
+
+Unknown (3)
+====================
+  phira-mp-common v0.1.0
+  phira-mp-macros v0.1.0
+  phira-mp-plus-server v0.4.0
