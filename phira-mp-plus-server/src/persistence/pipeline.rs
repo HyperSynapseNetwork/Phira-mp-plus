@@ -6,9 +6,9 @@
 
 use crate::persistence::{PersistenceEvent, PersistencePipeline};
 use crate::telemetry_batcher::{TelemetryBatcher, TelemetryItem, TelemetryKind};
-use std::sync::Arc;
 use serde_json::Value;
-use std::{sync::Arc, time::Instant};
+use std::sync::Arc;
+use std::time::Instant;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ProductionTelemetryStage {

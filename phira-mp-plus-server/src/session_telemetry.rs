@@ -16,7 +16,7 @@ use crate::room::Room;
 use crate::session::User;
 use std::sync::Arc;
 use phira_mp_common::{JudgeEvent, ServerCommand, TouchFrame};
-use std::sync::{atomic::Ordering, Arc};
+use std::sync::atomic::Ordering;
 use tracing::{debug, trace, warn};
 
 pub(crate) async fn handle_touches(user: Arc<User>, room: Arc<Room>, frames: Arc<Vec<TouchFrame>>) {

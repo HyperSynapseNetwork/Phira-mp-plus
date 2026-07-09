@@ -208,7 +208,7 @@ pub(super) fn build_snapshot(
     let current_round_id = crate::read_lock!(room.current_round_id)
         .as_ref()
         .map(|id| id.to_string());
-    let rounds: Vec<RoundInfo> = room.play_history.all().await
+    let rounds: Vec<RoundInfo> = room.play_history.recent_sync()
         .iter()
         .map(|r| {
             let results: Vec<Value> = r

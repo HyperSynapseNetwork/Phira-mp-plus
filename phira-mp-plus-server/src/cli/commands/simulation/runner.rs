@@ -57,13 +57,13 @@ pub(super) async fn publish_simulation_snapshot(
 
 pub(super) fn spawn_simulation_runner(
     state: Arc<PlusServerState>,
-    out_tx: mpsc::UnboundedSender<String>,
+    out_tx: mpsc::Sender<String>,
     run_id: uuid::Uuid,
     config: crate::simulation::SimulationConfig,
 ) {
     tokio::spawn(async move {
         let interval = std::time::Duration::from_millis(config.tick_interval_ms);
-        let _ = out_tx.send(format!(
+        let _ = out_tx.try_send(format!(
             "  ◆ simulation runner started: run_id={} tick_ms={} duration={}s persist_every={}",
             run_id, config.tick_interval_ms, config.duration_secs, config.persist_every_ticks
         ));
@@ -99,7 +99,7 @@ pub(super) fn spawn_simulation_runner(
                     let _ = state
                         .broadcast_system_message("性能测试已结束。Runtime v2 simulation runner reached its configured duration.")
                         .await;
-                    let _ = out_tx.send(format!(
+                    let _ = out_tx.try_send(format!(
                         "  ✓ simulation runner stopped: run_id={} ticks={} elapsed={}s reason={}",
                         run_id, stopped.counters.ticks, stopped.elapsed_secs, reason
                     ));
@@ -121,7 +121,7 @@ pub(super) fn spawn_simulation_runner(
 
 pub(super) fn spawn_simulation_suite_runner(
     state: Arc<PlusServerState>,
-    out_tx: mpsc::UnboundedSender<String>,
+    out_tx: mpsc::Sender<String>,
     suite: crate::simulation::SimulationSuite,
     steps: Vec<crate::simulation::SimulationSuiteStep>,
 ) {
@@ -155,7 +155,7 @@ pub(super) fn spawn_simulation_suite_runner(
                 "steps": plan,
             }),
         });
-        let _ = out_tx.send(format!(
+        let _ = out_tx.try_send(format!(
             "  ◆ simulation suite started: suite={} suite_run_id={} steps={}",
             suite.as_str(),
             suite_run_id,
@@ -175,7 +175,7 @@ pub(super) fn spawn_simulation_suite_runner(
             let step_index = idx + 1;
             if state.simulation.status().await.running {
                 abort_reason = format!("another simulation was running before step {step_index}");
-                let _ = out_tx.send(format!(
+                let _ = out_tx.try_send(format!(
                     "  ! simulation suite aborted before step {} because another simulation is running",
                     step_index
                 ));
@@ -187,7 +187,7 @@ pub(super) fn spawn_simulation_suite_runner(
                 Ok(status) => status,
                 Err(err) => {
                     abort_reason = format!("step {} failed to start: {}", step.name, err);
-                    let _ = out_tx.send(format!(
+                    let _ = out_tx.try_send(format!(
                         "  ✗ simulation suite step {} failed to start: {}",
                         step_index, err
                     ));
@@ -197,7 +197,7 @@ pub(super) fn spawn_simulation_suite_runner(
             };
             let Some(run_id) = status.run_id else {
                 abort_reason = format!("step {} started without run_id", step.name);
-                let _ = out_tx.send(format!(
+                let _ = out_tx.try_send(format!(
                     "  ✗ simulation suite step {} started without run_id; aborting suite",
                     step_index
                 ));
@@ -218,7 +218,7 @@ pub(super) fn spawn_simulation_suite_runner(
                     "scenario": step.config.scenario.as_str(),
                 }),
             });
-            let _ = out_tx.send(format!(
+            let _ = out_tx.try_send(format!(
                 "  ◆ suite step {}/{} started: {} scenario={} run_id={}",
                 step_index,
                 total_steps,
@@ -238,7 +238,7 @@ pub(super) fn spawn_simulation_suite_runner(
                     Ok(result) => result,
                     Err(_) => {
                         abort_reason = format!("step {} stopped externally", step.name);
-                        let _ = out_tx.send(format!(
+                        let _ = out_tx.try_send(format!(
                             "  ! simulation suite step {} stopped externally; aborting remaining steps",
                             step.name
                         ));
@@ -308,7 +308,7 @@ pub(super) fn spawn_simulation_suite_runner(
                             false,
                             reason.clone(),
                         ));
-                        let _ = out_tx.send(format!(
+                        let _ = out_tx.try_send(format!(
                             "  ✓ suite step {}/{} completed: {} ticks={} elapsed={}s workload_events={}",
                             step_index,
                             total_steps,
@@ -369,7 +369,7 @@ pub(super) fn spawn_simulation_suite_runner(
         let _ = state
             .broadcast_system_message("Runtime v2 Simulation suite 已结束。")
             .await;
-        let _ = out_tx.send(format!(
+        let _ = out_tx.try_send(format!(
             "  {} simulation suite finished: suite={} completed={}/{} aborted={} workload_events={} eps={:.2}",
             if aborted { "!" } else { "✓" },
             suite.as_str(),
@@ -383,9 +383,9 @@ pub(super) fn spawn_simulation_suite_runner(
             crate::benchmark_report::BenchmarkReport::from_simulation_suite(&report);
         state.publish_benchmark_completed(&benchmark_report);
         for line in benchmark_report.render_text().lines() {
-            let _ = out_tx.send(line.to_string());
+            let _ = out_tx.try_send(line.to_string());
         }
-        let _ = out_tx.send("  ▸ 查看完整 suite 明细：simulation report".to_string());
+        let _ = out_tx.try_send("  ▸ 查看完整 suite 明细：simulation report".to_string());
     });
 }
 

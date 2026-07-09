@@ -120,13 +120,13 @@ pub fn collect_cli_continuation(
 /// Used by the in-game admin `_<command>` room creation shortcut. The normal
 /// interactive banner is filtered so the client receives only command output.
 pub async fn execute_cli_once(state: Arc<PlusServerState>, line: String) -> Vec<String> {
-    let (out_tx, mut out_rx) = mpsc::unbounded_channel::<String>();
-    let (cmd_tx, cmd_rx) = mpsc::unbounded_channel::<String>();
+    let (out_tx, mut out_rx) = mpsc::channel::<String>(256);
+    let (cmd_tx, cmd_rx) = mpsc::channel::<String>(16);
     let handler = CliHandler::new(state, out_tx);
     let task = tokio::spawn(async move {
         handler.start(cmd_rx).await;
     });
-    let _ = cmd_tx.send(line);
+    let _ = cmd_tx.try_send(line);
     drop(cmd_tx);
 
     let mut lines = Vec::new();

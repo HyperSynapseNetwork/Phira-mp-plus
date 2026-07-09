@@ -126,6 +126,16 @@ impl PlayHistoryStore {
         result
     }
 
+    /// Sync read of in-memory rounds only (for non-async query contexts).
+    /// Returns at most `MEMORY_CACHE_SIZE` most recent rounds.
+    pub fn recent_sync(&self) -> Vec<PlayRound> {
+        self.recent
+            .try_read()
+            .ok()
+            .map(|r| r.iter().cloned().collect())
+            .unwrap_or_default()
+    }
+
     /// Total count (memory + approximate on-disk).
     pub async fn len(&self) -> usize {
         let mem = self.recent.read().await.len();
@@ -144,16 +154,18 @@ impl PlayHistoryStore {
 
     async fn disk_line_count(&self) -> usize {
         let path = self.file_path.read().await.clone();
-        match path {
-            Some(p) => {
-                let mut file = tokio::fs::File::open(&p).await.ok()?;
-                let mut buf = Vec::new();
-                file.read_to_end(&mut buf).await.ok()?;
-                Some(buf.iter().filter(|&&b| b == b'\n').count())
-            }
-            None => None,
+        let Some(p) = path else {
+            return 0;
+        };
+        let mut file = match tokio::fs::File::open(&p).await {
+            Ok(f) => f,
+            Err(_) => return 0,
+        };
+        let mut buf = Vec::new();
+        if file.read_to_end(&mut buf).await.is_err() {
+            return 0;
         }
-        .unwrap_or(0)
+        buf.iter().filter(|&&b| b == b'\n').count()
     }
 
     /// Read all rounds from a JSONL file.
