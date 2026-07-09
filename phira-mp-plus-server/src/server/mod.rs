@@ -19,6 +19,7 @@
 //! `pub use config::*; pub use orig::*;` so existing callers keep working
 //! unchanged during the migration.
 
+pub mod benchmark;
 pub mod config;
 pub mod events;
 pub mod snapshot;
