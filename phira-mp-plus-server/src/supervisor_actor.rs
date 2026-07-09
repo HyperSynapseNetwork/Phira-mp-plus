@@ -35,6 +35,7 @@ pub(crate) enum SupervisorCmd {
 }
 
 /// Server status snapshot.
+#[allow(dead_code)]
 pub(crate) struct SupervisorStatus {
     pub shutdown_requested: bool,
     /// Map of registered task name → whether the task is still alive.
@@ -101,6 +102,7 @@ where
 
 /// Unregister a previously spawned named task (call when the handle is dropped
 /// during controlled shutdown).
+#[allow(dead_code)]
 pub(crate) fn unregister(name: &str) {
     send(SupervisorCmd::Unregister {
         name: name.to_string(),
