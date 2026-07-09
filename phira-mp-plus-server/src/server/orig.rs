@@ -3,7 +3,6 @@
 use crate::ban::BanManager;
 use crate::benchmark_report::{BenchmarkMode, BenchmarkReport};
 use crate::benchmark_snapshot::BenchmarkReportStore;
-use crate::event_bus::MpEvent;
 use crate::extensions::ExtensionManager;
 use crate::plugin::{PluginEvent, PluginManager};
 use crate::plugin_http::{PluginHttpServer, SseHub};
@@ -789,8 +788,7 @@ impl PlusServerState {
     }
 
     async fn mirror_room_event_to_runtime_bus(&self, event: &RoomEvent) {
-        use crate::event_bus::MpEvent;
-
+        
         match event {
             RoomEvent::CreateRoom { room, .. } => {
                 let room_uuid = self
@@ -800,57 +798,57 @@ impl PlusServerState {
                     .get(room)
                     .map(|room| room.uuid)
                     .unwrap_or_else(Uuid::nil);
-                self.publish_runtime_event(MpEvent::RoomCreated {
+                self.publish_runtime_event(crate::event_bus::MpEvent::RoomCreated {
                     room_id: room.clone(),
                     room_uuid,
                 });
-                self.publish_runtime_event(MpEvent::RoomUpdated {
+                self.publish_runtime_event(crate::event_bus::MpEvent::RoomUpdated {
                     room_id: room.clone(),
                 });
             }
             RoomEvent::UpdateRoom { room, data } => {
-                self.publish_runtime_event(MpEvent::RoomUpdated {
+                self.publish_runtime_event(crate::event_bus::MpEvent::RoomUpdated {
                     room_id: room.clone(),
                 });
                 if let Some(host) = data.host {
-                    self.publish_runtime_event(MpEvent::HostChanged {
+                    self.publish_runtime_event(crate::event_bus::MpEvent::HostChanged {
                         room_id: room.clone(),
                         host: Some(host),
                     });
                 }
                 if let Some(lock) = data.lock {
-                    self.publish_runtime_event(MpEvent::RoomLocked {
+                    self.publish_runtime_event(crate::event_bus::MpEvent::RoomLocked {
                         room_id: room.clone(),
                         locked: lock,
                     });
                 }
                 if let Some(cycle) = data.cycle {
-                    self.publish_runtime_event(MpEvent::RoomCycled {
+                    self.publish_runtime_event(crate::event_bus::MpEvent::RoomCycled {
                         room_id: room.clone(),
                         cycle,
                     });
                 }
                 if let Some(chart_id) = data.chart {
-                    self.publish_runtime_event(MpEvent::ChartSelected {
+                    self.publish_runtime_event(crate::event_bus::MpEvent::ChartSelected {
                         room_id: room.clone(),
                         chart_id,
                     });
                 }
                 if let Some(state) = data.state {
-                    self.publish_runtime_event(MpEvent::RoomStateChanged {
+                    self.publish_runtime_event(crate::event_bus::MpEvent::RoomStateChanged {
                         room_id: room.clone(),
                         state: format!("{state:?}"),
                     });
                 }
             }
             RoomEvent::JoinRoom { room, user } => {
-                self.publish_runtime_event(MpEvent::RoomJoined {
+                self.publish_runtime_event(crate::event_bus::MpEvent::RoomJoined {
                     room_id: room.clone(),
                     user_id: *user,
                 });
             }
             RoomEvent::LeaveRoom { room, user } => {
-                self.publish_runtime_event(MpEvent::RoomLeft {
+                self.publish_runtime_event(crate::event_bus::MpEvent::RoomLeft {
                     room_id: room.clone(),
                     user_id: *user,
                 });
@@ -3461,8 +3459,7 @@ fn server_state_query_dispatch(
             let s = Arc::clone(state);
             spawn_on_runtime(async move {
                 use phira_mp_common::{Message, RoomEvent};
-                use crate::event_bus::MpEvent;
-                use crate::plugin::PluginEvent;
+                                use crate::plugin::PluginEvent;
                 let result = async {
                     let user = s.users.read().await.get(&uid).map(std::sync::Arc::clone)
                         .ok_or("user not found".to_string())?;

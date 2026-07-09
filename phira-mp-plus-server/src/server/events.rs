@@ -6,7 +6,7 @@
 use crate::event_bus::MpEvent;
 use crate::server::PlusServerState;
 use std::sync::Arc;
-use tracing::{info, trace, warn};
+use tracing::{trace, warn};
 
 // ── Spawned event observers ──────────────────────────────────────────
 
