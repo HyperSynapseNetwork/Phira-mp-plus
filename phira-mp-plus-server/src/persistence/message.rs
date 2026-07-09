@@ -2,29 +2,30 @@
 
 use crate::benchmark_report::{BenchmarkMode, BenchmarkReport};
 use serde_json::Value;
+use std::sync::Arc;
 
 #[derive(Debug, Clone)]
 pub enum PersistenceEvent {
     RoomSnapshot {
         room_id: String,
-        payload: Value,
+        payload: Arc<Value>,
         simulation: bool,
     },
     ServerEvent {
         kind: String,
-        payload: Value,
+        payload: Arc<Value>,
         simulation: bool,
     },
     TouchBatch {
         round_id: String,
         user_id: i32,
-        payload: Value,
+        payload: Arc<Value>,
         simulation: bool,
     },
     JudgeBatch {
         round_id: String,
         user_id: i32,
-        payload: Value,
+        payload: Arc<Value>,
         simulation: bool,
     },
     BenchmarkReport {

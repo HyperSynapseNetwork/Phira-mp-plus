@@ -14,6 +14,7 @@
 use crate::plugin::PluginEvent;
 use crate::room::Room;
 use crate::session::User;
+use std::sync::Arc;
 use phira_mp_common::{JudgeEvent, ServerCommand, TouchFrame};
 use std::sync::{atomic::Ordering, Arc};
 use tracing::{debug, trace, warn};
@@ -206,7 +207,7 @@ async fn persist_touches(
                 .enqueue(crate::persistence_worker::PersistenceEvent::TouchBatch {
                     round_id: rid.to_string(),
                     user_id: user.id,
-                    payload,
+                    payload: Arc::new(payload),
                     simulation: false,
                 })
                 .await;
@@ -262,7 +263,7 @@ async fn persist_judges(
                 .enqueue(crate::persistence_worker::PersistenceEvent::JudgeBatch {
                     round_id: rid.to_string(),
                     user_id: user.id,
-                    payload,
+                    payload: Arc::new(payload),
                     simulation: false,
                 })
                 .await;

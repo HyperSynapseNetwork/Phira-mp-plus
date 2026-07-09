@@ -47,11 +47,11 @@ pub(crate) fn mirror_event_bus_event(
         }
         MpEvent::RoomCreated { room_id, room_uuid } => Some(PersistenceEvent::RoomSnapshot {
             room_id: room_id.to_string(),
-            payload: json!({
+            payload: Arc::new(json!({
                 "event": event.kind(),
                 "room_id": room_id.to_string(),
                 "room_uuid": room_uuid.to_string(),
-            }),
+            })),
             simulation: false,
         }),
         MpEvent::RoomJoined { room_id, user_id } => server_event(
@@ -66,7 +66,7 @@ pub(crate) fn mirror_event_bus_event(
         ),
         MpEvent::RoomUpdated { room_id } => Some(PersistenceEvent::RoomSnapshot {
             room_id: room_id.to_string(),
-            payload: json!({ "event": event.kind(), "room_id": room_id.to_string() }),
+            payload: Arc::new(json!({ "event": event.kind(), "room_id": room_id.to_string() })),
             simulation: false,
         }),
         MpEvent::RoomLocked { room_id, locked } => server_event(
@@ -163,7 +163,7 @@ fn simulation_custom_event(kind: &str, payload: &Value) -> Option<PersistenceEve
                 .and_then(Value::as_i64)
                 .and_then(|value| i32::try_from(value).ok())
                 .unwrap_or(0),
-            payload: payload.clone(),
+            payload: Arc::new(payload.clone()),
             simulation: true,
         }),
         "simulation.judge" => Some(PersistenceEvent::JudgeBatch {
@@ -177,7 +177,7 @@ fn simulation_custom_event(kind: &str, payload: &Value) -> Option<PersistenceEve
                 .and_then(Value::as_i64)
                 .and_then(|value| i32::try_from(value).ok())
                 .unwrap_or(0),
-            payload: payload.clone(),
+            payload: Arc::new(payload.clone()),
             simulation: true,
         }),
         _ => server_event(kind, payload.clone(), true),
@@ -187,7 +187,7 @@ fn simulation_custom_event(kind: &str, payload: &Value) -> Option<PersistenceEve
 fn server_event(kind: &str, payload: Value, simulation: bool) -> Option<PersistenceEvent> {
     Some(PersistenceEvent::ServerEvent {
         kind: kind.to_string(),
-        payload,
+        payload: Arc::new(payload),
         simulation,
     })
 }

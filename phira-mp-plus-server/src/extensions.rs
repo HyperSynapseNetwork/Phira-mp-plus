@@ -294,9 +294,10 @@ impl ExtensionManager {
                 }
             }
         }
+        let payload_arc = Arc::new(payload.clone());
         let worker_event = crate::persistence::message::PersistenceEvent::ServerEvent {
             kind: kind.to_string(),
-            payload: payload.clone(),
+            payload: payload_arc,
             simulation: false,
         };
         let sent = self

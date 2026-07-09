@@ -6,6 +6,7 @@
 
 use crate::persistence::{PersistenceEvent, PersistencePipeline};
 use crate::telemetry_batcher::{TelemetryBatcher, TelemetryItem, TelemetryKind};
+use std::sync::Arc;
 use serde_json::Value;
 use std::{sync::Arc, time::Instant};
 
@@ -58,21 +59,21 @@ pub async fn persist_simulation_event_if_needed(event: &PersistenceEvent) -> Per
     let started = Instant::now();
     let result = match event {
         PersistenceEvent::ServerEvent { kind, payload, .. } => {
-            db.record_sim_event(extract_run_id(payload), kind, payload.clone())
+            db.record_sim_event(extract_run_id(payload), kind, (**payload).clone())
                 .await
         }
         PersistenceEvent::RoomSnapshot {
             room_id, payload, ..
         } => {
-            let mut payload = payload.clone();
-            if let Some(obj) = payload.as_object_mut() {
+            let mut payload_owned: Value = (**payload).clone();
+            if let Some(obj) = payload_owned.as_object_mut() {
                 obj.entry("room_id".to_string())
                     .or_insert_with(|| serde_json::json!(room_id));
             }
             db.record_sim_event(
-                extract_run_id(&payload),
+                extract_run_id(&payload_owned),
                 "simulation.room_snapshot",
-                payload,
+                payload_owned,
             )
             .await
         }
@@ -82,14 +83,14 @@ pub async fn persist_simulation_event_if_needed(event: &PersistenceEvent) -> Per
             payload,
             ..
         } => {
-            let mut payload = payload.clone();
-            if let Some(obj) = payload.as_object_mut() {
+            let mut payload_owned: Value = (**payload).clone();
+            if let Some(obj) = payload_owned.as_object_mut() {
                 obj.entry("round_id".to_string())
                     .or_insert_with(|| serde_json::json!(round_id));
                 obj.entry("user_id".to_string())
                     .or_insert_with(|| serde_json::json!(user_id));
             }
-            db.record_sim_event(extract_run_id(&payload), "simulation.touch_batch", payload)
+            db.record_sim_event(extract_run_id(&payload_owned), "simulation.touch_batch", payload_owned)
                 .await
         }
         PersistenceEvent::JudgeBatch {
@@ -98,14 +99,14 @@ pub async fn persist_simulation_event_if_needed(event: &PersistenceEvent) -> Per
             payload,
             ..
         } => {
-            let mut payload = payload.clone();
-            if let Some(obj) = payload.as_object_mut() {
+            let mut payload_owned: Value = (**payload).clone();
+            if let Some(obj) = payload_owned.as_object_mut() {
                 obj.entry("round_id".to_string())
                     .or_insert_with(|| serde_json::json!(round_id));
                 obj.entry("user_id".to_string())
                     .or_insert_with(|| serde_json::json!(user_id));
             }
-            db.record_sim_event(extract_run_id(&payload), "simulation.judge_batch", payload)
+            db.record_sim_event(extract_run_id(&payload_owned), "simulation.judge_batch", payload_owned)
                 .await
         }
         PersistenceEvent::UserOnline { .. }
@@ -153,7 +154,7 @@ pub async fn stage_production_telemetry_if_needed(
             round_id: Some(round_id.clone()),
             user_id: *user_id,
             item_count: extract_item_count(payload),
-            payload: payload.clone(),
+            payload: (**payload).clone(),
         }),
         PersistenceEvent::JudgeBatch {
             round_id,
@@ -166,7 +167,7 @@ pub async fn stage_production_telemetry_if_needed(
             round_id: Some(round_id.clone()),
             user_id: *user_id,
             item_count: extract_item_count(payload),
-            payload: payload.clone(),
+            payload: (**payload).clone(),
         }),
         _ => None,
     };
@@ -198,7 +199,7 @@ pub async fn persist_production_event_if_needed(event: &PersistenceEvent) -> Per
     let started = Instant::now();
     let result = match event {
         PersistenceEvent::ServerEvent { kind, payload, .. } => {
-            let payload = with_runtime_v2_persistence_meta(payload.clone());
+            let payload = with_runtime_v2_persistence_meta((**payload).clone());
             db.record_room_event(
                 kind,
                 extract_room_id(&payload),
@@ -210,7 +211,7 @@ pub async fn persist_production_event_if_needed(event: &PersistenceEvent) -> Per
         PersistenceEvent::RoomSnapshot {
             room_id, payload, ..
         } => {
-            let mut payload = with_runtime_v2_persistence_meta(payload.clone());
+            let mut payload = with_runtime_v2_persistence_meta((**payload).clone());
             if let Some(obj) = payload.as_object_mut() {
                 obj.entry("room_id".to_string())
                     .or_insert_with(|| serde_json::json!(room_id));
