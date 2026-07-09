@@ -493,7 +493,6 @@ async fn server_state_query_inner(
                 .set_cycle(state, room_id, cycle)
                 .await
         }
-        }
         "room.force_move" => {
             let room_id = args
                 .first()
@@ -547,7 +546,6 @@ async fn server_state_query_inner(
                 .room_commands
                 .close_room(state, room_id)
                 .await
-        }
         }
         "admin.kick_user" => {
             let room_id = args
