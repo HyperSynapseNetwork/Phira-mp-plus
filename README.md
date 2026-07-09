@@ -239,17 +239,13 @@ Phira-mp-plus/
 │   │   └── src/                   #   ClientCommand / ServerCommand / Stream 帧协议
 │   └── phira-mp-macros/           #   #[derive(BinaryData)] 过程宏
 │
-└── .hsnphira-pmp-plugin/          # HSNPhira v2 前端插件 (独立仓库)
-    └── plugin/src/lib.rs          #   房间 / SSE 事件翻译 / config 端点
-```
-│
 ├── phira-mp/                    # 上游 phira-mp 子模块（协议层与原始服务端）
 │   ├── phira-mp-common/         #   网络协议: 二进制编码 (BinaryData trait)、
 │   │   └── src/                 #     命令定义 (ClientCommand / ServerCommand)、
 │   │       ├── lib.rs           #     Stream 帧协议、RoomId / RoomState / 消息类型
 │   │       ├── command.rs
 │   │       └── bin.rs           #     BinaryReader / BinaryWriter (LEB128, 小端)
-│   ├── phira-mp-macros/         #   #[derive(BinaryData)] 过程宏
+│   └── phira-mp-macros/         #   #[derive(BinaryData)] 过程宏
 │
 ├── wit/                         # WIT 定义
 │   └── phira-plugin.wit         #   Plugin ABI v2 WIT / Component Model
