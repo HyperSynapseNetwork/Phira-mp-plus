@@ -4,7 +4,7 @@
 //! they use `spawn_on_runtime` for async operations and `read_lock!` for sync reads.
 
 use crate::benchmark_report::BenchmarkMode;
-use crate::plugin::PluginEvent;
+// use crate::plugin::PluginEvent; import moved to inline
 use crate::server::PlusServerState;
 use crate::server::snapshot::build_snapshot;
 use serde_json::Value;
@@ -115,7 +115,7 @@ pub(crate) fn server_state_query_inner(
         }
         "benchmark.latest" => {
             let reports = state.benchmark_reports.snapshot(1);
-            Ok(serde_json::json!(reports.first()))
+            Ok(serde_json::json!(reports.into_iter().next()))
         }
         "benchmark.history" => {
             let max = args.first().and_then(|v| v.as_u64()).map(|v| v as usize).unwrap_or(usize::MAX);
@@ -135,17 +135,12 @@ pub(crate) fn server_state_query_inner(
                     })).collect();
                     serde_json::json!({"round_id": r.round_id.to_string(), "chart_id": r.chart_id, "chart_name": r.chart_name, "results": results})
                 }).collect();
-                serde_json::json!({"room_id": room.id, "rounds": rounds})
+                serde_json::json!({"room_id": room.id.to_string(), "rounds": rounds})
             }).collect();
             Ok(serde_json::json!(rooms_snapshot))
         }
         "player.touches" | "player.judges" => {
-            let room_id = args.first().and_then(|v| v.as_str()).ok_or_else(|| "room_id required".to_string())?;
-            let user_id: i32 = args.get(1).and_then(|v| v.as_i64()).map(|v| v as i32).ok_or_else(|| "user_id required".to_string())?;
-            let limit: usize = args.get(2).and_then(|v| v.as_u64()).map(|v| v as usize).unwrap_or(100);
-            let rooms = state.rooms.read().await;
-            // This is inside a sync function but uses .await — needs spawn_on_runtime
-            Err("player.touches/judges not available via sync dispatch; use async path".to_string())
+            Err("player.touches/judges requires async context".to_string())
         }
         _ => Err(format!("unknown method: {method}"))
     }
@@ -275,7 +270,7 @@ fn server_state_query_dispatch(
             let s = Arc::clone(state);
             spawn_on_runtime(async move {
                 use phira_mp_common::{Message, RoomEvent};
-                use crate::plugin::PluginEvent;
+                // use crate::plugin::PluginEvent; import moved to inline
                 let result = async {
                     let user = s.users.read().await.get(&uid).map(std::sync::Arc::clone)
                         .ok_or("user not found".to_string())?;
@@ -370,13 +365,11 @@ fn server_state_query_dispatch(
             rx.recv_timeout(runtime_state_query_timeout()).unwrap_or(Err("room.create_empty timeout".to_string()))
         }
         "admin.kick_user" => {
-            let room_id = args.first().and_then(|v| v.as_str()).ok_or_else(|| "room_id required".to_string())?;
-            let target_id = args.get(1).and_then(|v| v.as_i64()).map(|v| v as i32).ok_or_else(|| "user_id required".to_string())?;
+            let target_id = args.get(0).and_then(|v| v.as_i64()).map(|v| v as i32).ok_or_else(|| "user_id required".to_string())?;
             let (tx, rx) = std::sync::mpsc::channel();
             let s = Arc::clone(state);
-            let rid = room_id.to_string();
             spawn_on_runtime(async move {
-                let result = crate::server::run_admin_kick_user(&*s, &rid, target_id).await;
+                let result = crate::server::run_admin_kick_user(&*s, target_id, "kicked via state query").await;
                 let _ = tx.send(Ok(result));
             });
             rx.recv_timeout(runtime_state_query_timeout()).unwrap_or(Err("admin.kick_user timeout".to_string()))

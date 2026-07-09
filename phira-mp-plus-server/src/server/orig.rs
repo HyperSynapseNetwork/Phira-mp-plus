@@ -348,7 +348,7 @@ impl PlusServer {
         let state_query_all = api::ServerStateQuery::new({
             let s = Arc::clone(&state);
             move |method: &str, args: &[Value]| -> Result<Value, String> {
-                server_state_query_inner(&s, method, args)
+                super::query::server_state_query_inner(&s, method, args)
             }
         });
         state
