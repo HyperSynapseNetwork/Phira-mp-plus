@@ -214,19 +214,20 @@ fn persistence_worker_simulation_isolation() {
     // PersistenceWorker should not process simulation events as production.
     // Verify by checking the pipeline separates simulation scopes.
     use phira_mp_plus_server::persistence::message::PersistenceEvent;
+    use std::sync::Arc;
     // Simulation events go through persist_simulation_event_if_needed,
     // production through persist_production_event_if_needed.
     // This test verifies the enum variants exist.
     let _sim = PersistenceEvent::TouchBatch {
         round_id: "sim-round".into(),
         user_id: 0,
-        payload: serde_json::json!({"run_id": "sim-123"}),
+        payload: Arc::new(serde_json::json!({"run_id": "sim-123"})),
         simulation: true,
     };
     let _prod = PersistenceEvent::TouchBatch {
         round_id: "prod-round".into(),
         user_id: 1,
-        payload: serde_json::json!({}),
+        payload: Arc::new(serde_json::json!({})),
         simulation: false,
     };
 }
