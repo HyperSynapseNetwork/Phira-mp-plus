@@ -103,13 +103,23 @@ impl PluginHttpServer {
             plugin_manager: Arc::clone(&server.plugin_manager),
             sse_streams: Arc::clone(&self.sse_streams),
         });
-        let app = Router::new()
+
+        // Build core router with static routes
+        let mut app = Router::new()
             .route("/api/events", get(general_sse_handler))
             .route("/api/ws", get(websocket::handler))
-            .route("/api/rooms/listen", get(plugin_sse_handler))
-            .route("/{*path}", any(dynamic_handler))
             .layer(CorsLayer::permissive())
-            .with_state(state);
+            .with_state(state.clone());
+
+        // Add dynamically registered SSE streams as routes.
+        // Each route reads its path from the request URI to look up the plugin config.
+        for (path, _) in self.sse_streams.read().await.iter() {
+            info!(path, "adding SSE stream route");
+            app = app.route(path, get(plugin_sse_handler));
+        }
+
+        // Catch-all for dynamic handler (must be last — order matters in axum)
+        app = app.route("/{*path}", any(dynamic_handler));
 
         // Direct HTTP port (no PROXY protocol)
         let address = format!("0.0.0.0:{}", self.port);
@@ -209,18 +219,21 @@ fn sse_response(stream: sse::EventStream, interval: Duration) -> Response {
 
 /// SSE handler for plugin-registered event streams.
 /// Each incoming SseEvent is forwarded to the plugin's on_api("sse:translate", …)
-/// so the plugin can transform it into the HSNPhira v2 format.
+/// so the plugin can transform it into the HSNPhira v1/v2 format.
+/// The SSE stream path is read from the request URI (each registered stream has its own route).
 async fn plugin_sse_handler(
     State(state): State<Arc<HttpAppState>>,
+    uri: axum::http::Uri,
 ) -> Response {
-    let config = state.sse_streams.read().await.get("/api/rooms/listen")
-        .cloned();
+    let path = uri.path().to_string();
+    let config = state.sse_streams.read().await.get(&path).cloned();
     let pm = Arc::clone(&state.plugin_manager);
     let rx = state.events.subscribe_general();
 
     // Ready event sent on connection open.
+    let stream_name = path.trim_start_matches('/').replace('/', ".");
     let ready = SseEvent::new("ready",
-        serde_json::json!({"stream": "rooms/listen", "version": env!("CARGO_PKG_VERSION")}).to_string());
+        serde_json::json!({"stream": stream_name, "version": env!("CARGO_PKG_VERSION")}).to_string());
 
     let stream: sse::EventStream = Box::pin(
         stream::once(async move { Ok(ready.into_axum()) })
