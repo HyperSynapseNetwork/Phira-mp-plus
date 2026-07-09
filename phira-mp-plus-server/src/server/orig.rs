@@ -28,7 +28,7 @@ const CONNECTION_LIMITER_CLEANUP_SECS: u64 = 60;
 
 // Import types/functions that moved to sub-modules
 use super::config::{Chart, IdMap, Record, SafeMap};
-use super::config::{normalize_phira_api_endpoint, parse_room_endpoint_value};
+use super::config::normalize_phira_api_endpoint;
 
 /// Backoff 获取 tokio RwLock 读锁（同步上下文使用，如 Web API 的 try_read 路径）
 ///
@@ -1861,6 +1861,7 @@ async fn bench_leave_room(stream: &mut tokio::net::TcpStream) -> Result<(), Stri
 }
 
 /// 从房间踢出用户。
+#[allow(dead_code)]
 async fn run_room_kick(
     state: &PlusServerState,
     room_id: &str,
@@ -1873,6 +1874,7 @@ async fn run_room_kick(
 }
 
 /// 设置房主；target_id=None 表示系统 `?` 房主。
+#[allow(dead_code)]
 async fn run_room_set_host(
     state: &PlusServerState,
     room_id: &str,
@@ -1885,6 +1887,7 @@ async fn run_room_set_host(
 }
 
 /// 设置房间锁定状态。
+#[allow(dead_code)]
 async fn run_room_set_lock(
     state: &PlusServerState,
     room_id: &str,
@@ -1894,6 +1897,7 @@ async fn run_room_set_lock(
 }
 
 /// 关闭/解散房间。
+#[allow(dead_code)]
 async fn run_room_close(state: &PlusServerState, room_id: &str) -> Result<Value, String> {
     state.room_commands.close_room(state, room_id).await
 }

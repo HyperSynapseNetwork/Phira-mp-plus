@@ -31,6 +31,7 @@ where
     }
 }
 
+#[allow(dead_code)]
 fn parse_benchmark_mode_arg(value: &str) -> Option<BenchmarkMode> {
     match value {
         "simulation" | "sim" => Some(BenchmarkMode::Simulation),
@@ -112,7 +113,7 @@ pub(crate) fn server_state_query_inner(
             serde_json::to_value(&reports).map_err(|e| format!("serialize benchmark reports: {e}"))
         }
         "benchmark.latest" => {
-            let reports = state.benchmark_reports.snapshot(1);
+            let _reports = state.benchmark_reports.snapshot(1);
             Ok(serde_json::json!({"latest": serde_json::Value::Null}))
         }
         "benchmark.history" => {
@@ -232,7 +233,7 @@ fn server_state_query_dispatch(
             let plugin = args.get(1).and_then(|v| v.as_str()).ok_or_else(|| "plugin name required".to_string())?;
             let s = Arc::clone(state);
             let path = path.to_string();
-            let plugin = plugin.to_string();
+            let _plugin = plugin.to_string();
             let (tx, rx) = std::sync::mpsc::channel();
             let path2 = path.clone();
             spawn_on_runtime(async move {
