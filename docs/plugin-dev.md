@@ -138,6 +138,24 @@ fn on_api(method: String, args: Vec<JsonValue>) -> ApiResult {
 }
 ```
 
+## 注册 SSE 事件流
+
+插件可以通过 `sse.register_stream` 注册 SSE（Server-Sent Events）端点。宿主自动为每个注册的流创建 HTTP 路由，客户端连接后事件会通过插件的 `on_api("sse:translate", …)` 翻译后推送：
+
+```rust
+fn init() -> Result<(), String> {
+    host_api("sse.register_stream", &[json!({
+        "path": "/api/rooms/listen",
+        "plugin": "my-plugin",
+        "event_types": ["RoomCreate", "RoomJoin", "RoomLeave",
+            "GameEnd", "RoundComplete"],
+    })]);
+    Ok(())
+}
+```
+
+注册后，客户端可连接 `GET /api/rooms/listen` 接收 SSE 事件。宿主收到每个 `MpEvent` 后调用插件 `on_api("sse:translate", &[json!({"event_type": ..., "data": ...})])`，插件返回翻译后的事件对象（或 `null` 跳过该事件）。
+
 路由路径中支持 `:param`、`<param>`、`{param}` 参数占位符。
 
 ---
