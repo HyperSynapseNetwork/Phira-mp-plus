@@ -138,15 +138,15 @@ pub struct PlusServer {
 impl PlusServer {
     /// 创建新的 Phira-mp+ 服务器
     pub async fn new(config: PlusConfig) -> Result<Self> {
-        let addrs: &[std::net::SocketAddr] = &[std::net::SocketAddr::new(
-            std::net::Ipv6Addr::UNSPECIFIED.into(),
+        // Windows 下 IPV6_V6ONLY 默认 true，[::] 不收 IPv4 连接。
+        // Linux 下 IPV6_V6ONLY 默认 false，绑 [::] 即可收 IPv4。
+        // 统一使用 0.0.0.0 确保两平台局域网 IP 都能连。
+        let addr = std::net::SocketAddr::new(
+            std::net::Ipv4Addr::UNSPECIFIED.into(),
             config.port,
-        )];
-
-        let listener = TcpListener::bind(addrs).await?;
-        for addr in addrs {
-            info!("Phira-mp+ Local Address: http://{}", addr);
-        }
+        );
+        let listener = TcpListener::bind(addr).await?;
+        info!("Phira-mp+ listening on http://{}", addr);
 
         // 初始化 Supervisor Actor（接受子任务注册与健康检查）
         crate::supervisor_actor::init();
