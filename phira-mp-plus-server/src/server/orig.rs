@@ -1899,7 +1899,7 @@ async fn run_room_close(state: &PlusServerState, room_id: &str) -> Result<Value,
 }
 
 /// 将用户踢出服务器
-async fn run_admin_kick_user(
+pub(crate) async fn run_admin_kick_user(
     state: &PlusServerState,
     target_id: i32,
     reason: &str,
@@ -1969,10 +1969,3 @@ async fn run_admin_kick_user(
     Ok(serde_json::json!({"ok": true, "reason": reason}))
 }
 
-/// 统一状态查询入口（插件 / WASM host API 均通过此函数查询）
-///
-/// 支持的 method:
-/// - `player.touches`  → 查询指定用户的最近触控数据
-/// - `player.judges`   → 查询指定用户的最近判定数据
-/// - 其它方法委托给 webapi feature 下的 server_state_query
-// State query functions moved to super::query.

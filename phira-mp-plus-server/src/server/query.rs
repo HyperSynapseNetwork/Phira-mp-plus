@@ -5,20 +5,14 @@
 use crate::benchmark_report::BenchmarkMode;
 use crate::benchmark_snapshot::BenchmarkReportStore;
 use crate::command_registry::CommandRegistry;
-use crate::event_bus::EventBus;
 use crate::plugin::PluginEvent;
-use crate::plugin_http::SseHub;
 use crate::server::snapshot::build_snapshot;
-use crate::server::PlusServerState;
-use crate::simulation::SimulationManager;
 use phira_mp_plus_server_api as api;
+use super::PlusServerState;
 use serde_json::Value;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use tracing::warn;
-
-// Need to import read_lock! via crate root for the snapshot builder
-use crate::read_lock;
 
 fn runtime_state_query_timeout() -> std::time::Duration {
     crate::runtime_diagnostics::RUNTIME_STATE_QUERY_TIMEOUT
@@ -645,99 +639,65 @@ fn server_state_query_inner(
             Ok(serde_json::json!({"ok": true, "admin_ids": result}))
         }
         "persist.events" => {
-            let limit: usize = args
-                .first()
-                .and_then(|v| v.as_u64())
-                .map(|v| v as usize)
-                .unwrap_or(100);
-            let (tx, rx) = std::sync::mpsc::channel();
+            let since = args.get(0).and_then(|v| v.as_i64()).unwrap_or(0);
+            let limit = args.get(1).and_then(|v| v.as_i64()).unwrap_or(100).clamp(1, 1000);
+            let kind = args.get(2).and_then(|v| v.as_str()).map(str::to_string);
+            let room_id = args.get(3).and_then(|v| v.as_str()).map(str::to_string);
+            let user_id = args.get(4).and_then(|v| v.as_i64()).and_then(|v| i32::try_from(v).ok());
+            let (tx, rx) = std::sync::mpsc::channel::<Result<Value, String>>();
             let s = Arc::clone(state);
             spawn_on_runtime(async move {
-                let data = crate::persistence::rounds::query_recent_events(
-                    &s.db_manager,
-                    s.config.persistence_retention_days,
-                    limit,
-                )
-                .await;
-                let _ = tx.send(serde_json::to_value(&data).unwrap_or_default());
+                let rows = if let Some(db) = crate::internal_hooks::DB.get() {
+                    db.query_events(since, limit, kind.clone(), room_id.clone(), user_id).await
+                } else { Vec::new() };
+                let total = rows.len();
+                let _ = tx.send(Ok(serde_json::json!({"events": rows, "total": total})));
             });
-            rx.recv_timeout(runtime_state_query_timeout())
+            rx.recv_timeout(std::time::Duration::from_secs(5))
                 .unwrap_or(Err("persist.events timeout".to_string()))
         }
         "persist.rooms" => {
-            let limit: usize = args
-                .first()
-                .and_then(|v| v.as_u64())
-                .map(|v| v as usize)
-                .unwrap_or(100);
-            let (tx, rx) = std::sync::mpsc::channel();
+            let since = args.get(0).and_then(|v| v.as_i64()).unwrap_or(0);
+            let limit = args.get(1).and_then(|v| v.as_i64()).unwrap_or(100).clamp(1, 1000);
+            let (tx, rx) = std::sync::mpsc::channel::<Result<Value, String>>();
             let s = Arc::clone(state);
             spawn_on_runtime(async move {
-                let data = crate::persistence::rounds::query_recent_rooms(
-                    &s.db_manager,
-                    s.config.persistence_retention_days,
-                    limit,
-                )
-                .await;
-                let _ = tx.send(serde_json::to_value(&data).unwrap_or_default());
+                let rows = if let Some(db) = crate::internal_hooks::DB.get() {
+                    db.query_room_snapshots(since, limit).await
+                } else { Vec::new() };
+                let _ = tx.send(Ok(serde_json::json!({"rooms": rows, "total": rows.len()})));
             });
-            rx.recv_timeout(runtime_state_query_timeout())
+            rx.recv_timeout(std::time::Duration::from_secs(5))
                 .unwrap_or(Err("persist.rooms timeout".to_string()))
         }
         "persist.touches" => {
-            let round_id = args
-                .first()
-                .and_then(|v| v.as_str())
-                .ok_or_else(|| "round_uuid required".to_string())?;
-            let user_id: i32 = args
-                .get(1)
-                .and_then(|v| v.as_i64())
-                .map(|v| v as i32)
-                .ok_or_else(|| "user_id required".to_string())?;
-            let limit: usize = args
-                .get(2)
-                .and_then(|v| v.as_u64())
-                .map(|v| v as usize)
-                .unwrap_or(1000);
-            let (tx, rx) = std::sync::mpsc::channel();
+            let round_id = args.get(0).and_then(|v| v.as_str()).ok_or_else(|| "round_uuid required".to_string())?.to_string();
+            let player_id = args.get(1).and_then(|v| v.as_i64()).map(|v| v as i32).ok_or_else(|| "player_id required".to_string())?;
+            let limit = args.get(2).and_then(|v| v.as_i64()).unwrap_or(1000).clamp(1, 10000);
+            let (tx, rx) = std::sync::mpsc::channel::<Result<Value, String>>();
             let s = Arc::clone(state);
-            let round_id = round_id.to_string();
             spawn_on_runtime(async move {
-                let data = crate::persistence::rounds::query_player_touches(
-                    &s.db_manager, &round_id, user_id, limit,
-                )
-                .await;
-                let _ = tx.send(serde_json::to_value(&data).unwrap_or_default());
+                let rows = if let Some(db) = crate::internal_hooks::DB.get() {
+                    db.query_touch_batches(&round_id, player_id, limit).await
+                } else { Vec::new() };
+                let _ = tx.send(Ok(serde_json::json!({"touches": rows, "total": rows.len()})));
             });
-            rx.recv_timeout(runtime_state_query_timeout())
+            rx.recv_timeout(std::time::Duration::from_secs(5))
                 .unwrap_or(Err("persist.touches timeout".to_string()))
         }
         "persist.judges" => {
-            let round_id = args
-                .first()
-                .and_then(|v| v.as_str())
-                .ok_or_else(|| "round_uuid required".to_string())?;
-            let user_id: i32 = args
-                .get(1)
-                .and_then(|v| v.as_i64())
-                .map(|v| v as i32)
-                .ok_or_else(|| "user_id required".to_string())?;
-            let limit: usize = args
-                .get(2)
-                .and_then(|v| v.as_u64())
-                .map(|v| v as usize)
-                .unwrap_or(1000);
-            let (tx, rx) = std::sync::mpsc::channel();
+            let round_id = args.get(0).and_then(|v| v.as_str()).ok_or_else(|| "round_uuid required".to_string())?.to_string();
+            let player_id = args.get(1).and_then(|v| v.as_i64()).map(|v| v as i32).ok_or_else(|| "player_id required".to_string())?;
+            let limit = args.get(2).and_then(|v| v.as_i64()).unwrap_or(1000).clamp(1, 10000);
+            let (tx, rx) = std::sync::mpsc::channel::<Result<Value, String>>();
             let s = Arc::clone(state);
-            let round_id = round_id.to_string();
             spawn_on_runtime(async move {
-                let data = crate::persistence::rounds::query_player_judges(
-                    &s.db_manager, &round_id, user_id, limit,
-                )
-                .await;
-                let _ = tx.send(serde_json::to_value(&data).unwrap_or_default());
+                let rows = if let Some(db) = crate::internal_hooks::DB.get() {
+                    db.query_judge_batches(&round_id, player_id, limit).await
+                } else { Vec::new() };
+                let _ = tx.send(Ok(serde_json::json!({"judges": rows, "total": rows.len()})));
             });
-            rx.recv_timeout(runtime_state_query_timeout())
+            rx.recv_timeout(std::time::Duration::from_secs(5))
                 .unwrap_or(Err("persist.judges timeout".to_string()))
         }
         "chart.by_phira_id" => {
@@ -945,32 +905,34 @@ fn server_state_query_dispatch(
             let path_captured = path.clone();
             let pm = Arc::clone(&state.plugin_manager);
             let path_cloned = path.clone();
-            let p_name = plugin.to_string();
             let http_handle = pm.http_handle().ok_or_else(|| "http not enabled".to_string())?;
-            let fut = async move {
-                http_handle
-                    .register_route(
-                        &path_cloned,
-                        api::HttpMethod::GET,
-                        "plugin",
-                        move |_, _args| {
-                            let pm = Arc::clone(&pm);
-                            let plugin_captured = plugin_captured.clone();
-                            let path_captured = path_captured.clone();
-                            async move {
-                                let result = pm
-                                    .call_plugin_api(&plugin_captured, &path_captured, _args)
-                                    .await;
-                                result.unwrap_or_else(|e| {
-                                    serde_json::json!({"error": e})
-                                })
-                            }
-                        },
-                        Some(p_name),
-                    )
-                    .await
-            };
-            tokio::runtime::Handle::current().block_on(fut);
+            let handler: api::HttpHandler = std::sync::Arc::new(
+                move |_body: Option<serde_json::Value>, _params: Vec<String>| {
+                    let pm = Arc::clone(&pm);
+                    let plugin = plugin_captured.clone();
+                    let method = path_captured.clone();
+                    // This runs on the HTTP server's thread pool, so we need
+                    // a tokio runtime to call_plugin_api.
+                    match tokio::runtime::Handle::try_current() {
+                        Ok(handle) => {
+                            handle.block_on(async {
+                                pm.call_plugin_api(&plugin, &method, _params.into_iter().map(serde_json::Value::String).collect())
+                                    .await
+                            })
+                        }
+                        Err(_) => {
+                            let rt = tokio::runtime::Builder::new_current_thread()
+                                .enable_all().build().expect("build temp runtime");
+                            rt.block_on(async {
+                                pm.call_plugin_api(&plugin, &method, _params.into_iter().map(serde_json::Value::String).collect())
+                                    .await
+                            })
+                        }
+                    }
+                    .map_err(|e| (500u16, e))
+                },
+            );
+            http_handle.register_route(&path_cloned, handler);
             Ok(serde_json::json!({"ok": true, "path": path}))
         }
         "sse.register_stream" => {
