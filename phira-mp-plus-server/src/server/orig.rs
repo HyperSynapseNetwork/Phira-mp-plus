@@ -703,7 +703,7 @@ impl PlusServer {
     pub async fn trigger_event(&self, event: &PluginEvent) {
         self.state
             .event_bus
-            .publish(crate::event_bus::crate::event_bus::MpEvent::PluginEventDispatched(
+            .publish(crate::event_bus::MpEvent::PluginEventDispatched(
                 std::sync::Arc::new(event.clone()),
             ));
     }
@@ -972,7 +972,7 @@ impl PlusServerState {
         })
         .await;
         self.event_bus
-            .publish(crate::event_bus::crate::event_bus::MpEvent::PluginEventDispatched(
+            .publish(crate::event_bus::MpEvent::PluginEventDispatched(
                 std::sync::Arc::new(PluginEvent::RoomCreate {
                     user_id: 0,
                     room_id: rid.to_string(),
@@ -1003,7 +1003,7 @@ impl PlusServerState {
         };
         room.set_persistent_empty(persistent);
         self.event_bus
-            .publish(crate::event_bus::crate::event_bus::MpEvent::PluginEventDispatched(
+            .publish(crate::event_bus::MpEvent::PluginEventDispatched(
                 std::sync::Arc::new(PluginEvent::RoomModify {
                     user_id: 0,
                     room_id: rid.to_string(),
@@ -1661,7 +1661,7 @@ impl PlusServerState {
                 .await;
             }
             self.event_bus
-                .publish(crate::event_bus::crate::event_bus::MpEvent::PluginEventDispatched(
+                .publish(crate::event_bus::MpEvent::PluginEventDispatched(
                     std::sync::Arc::new(PluginEvent::RoomLeave {
                         user_id: target_id,
                         room_id: old_id_text,
@@ -1729,14 +1729,14 @@ impl PlusServerState {
         .await;
 
         self.event_bus
-            .publish(crate::event_bus::crate::event_bus::MpEvent::PluginEventDispatched(
+            .publish(crate::event_bus::MpEvent::PluginEventDispatched(
                 std::sync::Arc::new(PluginEvent::RoomJoin {
                     user_id: target_id,
                     room_id: rid.to_string(),
                     is_monitor: monitor,
                 }),
             ));
-        self.event_bus.publish(crate::event_bus::crate::event_bus::MpEvent::PluginEventDispatched(
+        self.event_bus.publish(crate::event_bus::MpEvent::PluginEventDispatched(
             std::sync::Arc::new(PluginEvent::RoomModify {
                 user_id: target_id,
                 room_id: rid.to_string(),
@@ -1771,7 +1771,7 @@ impl PlusServerState {
         };
         room.set_hidden(hidden);
         self.event_bus
-            .publish(crate::event_bus::crate::event_bus::MpEvent::PluginEventDispatched(
+            .publish(crate::event_bus::MpEvent::PluginEventDispatched(
                 std::sync::Arc::new(PluginEvent::RoomModify {
                     user_id: 0,
                     room_id: rid.to_string(),
@@ -1829,7 +1829,7 @@ impl PlusServerState {
             .clone()
             .unwrap_or_else(|| self.config.phira_api_endpoint.clone());
         self.event_bus
-            .publish(crate::event_bus::crate::event_bus::MpEvent::PluginEventDispatched(
+            .publish(crate::event_bus::MpEvent::PluginEventDispatched(
                 std::sync::Arc::new(PluginEvent::RoomModify {
                     user_id: 0,
                     room_id: rid.to_string(),
@@ -2124,7 +2124,7 @@ async fn run_admin_kick_user(
             }
             state
                 .event_bus
-                .publish(crate::event_bus::crate::event_bus::MpEvent::PluginEventDispatched(
+                .publish(crate::event_bus::MpEvent::PluginEventDispatched(
                     std::sync::Arc::new(PluginEvent::RoomLeave {
                         user_id: target_id,
                         room_id,
@@ -2153,7 +2153,7 @@ async fn run_admin_kick_user(
     info!(user = target_id, reason = %reason, "kicked from server by admin");
     state
         .event_bus
-        .publish(crate::event_bus::crate::event_bus::MpEvent::PluginEventDispatched(
+        .publish(crate::event_bus::MpEvent::PluginEventDispatched(
             std::sync::Arc::new(PluginEvent::UserDisconnect {
                 user_id: target_id,
                 user_name: user.name.clone(),
