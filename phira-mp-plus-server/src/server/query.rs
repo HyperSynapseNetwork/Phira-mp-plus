@@ -11,11 +11,11 @@ use serde_json::Value;
 use std::sync::Arc;
 use tracing::warn;
 
-fn runtime_state_query_timeout() -> std::time::Duration {
+pub(crate) fn runtime_state_query_timeout() -> std::time::Duration {
     crate::runtime_diagnostics::RUNTIME_STATE_QUERY_TIMEOUT
 }
 
-fn spawn_on_runtime<F>(f: F) -> Option<tokio::task::JoinHandle<()>>
+pub(crate) fn spawn_on_runtime<F>(f: F) -> Option<tokio::task::JoinHandle<()>>
 where
     F: std::future::Future<Output = ()> + Send + 'static,
 {
@@ -42,7 +42,7 @@ fn parse_benchmark_mode_arg(value: &str) -> Option<BenchmarkMode> {
     }
 }
 
-fn server_state_query_inner(
+pub(crate) fn server_state_query_inner(
     state: &Arc<PlusServerState>,
     method: &str,
     args: &[Value],
@@ -119,7 +119,7 @@ fn server_state_query_inner(
         }
         "benchmark.history" => {
             let max = args.first().and_then(|v| v.as_u64()).map(|v| v as usize).unwrap_or(usize::MAX);
-            let reports = state.benchmark_reports.all_up_to(max);
+            let reports = state.benchmark_reports.snapshot(max);
             serde_json::to_value(&reports).map_err(|e| format!("serialize benchmark reports: {e}"))
         }
         "rooms.history" => {
@@ -263,7 +263,7 @@ fn server_state_query_dispatch(
             spawn_on_runtime(async move {
                 let event_bus_rx = s.event_bus.subscribe();
                 let (sse_tx, _) = tokio::sync::mpsc::channel(64);
-                let stream_id = s.events.register(event_bus_rx, sse_tx).await;
+                let stream_id = s.events.register_stream(event_bus_rx, sse_tx).await;
                 let _ = tx.send(Ok(serde_json::json!({"ok": true, "stream_id": stream_id})));
             });
             rx.recv_timeout(runtime_state_query_timeout()).unwrap_or(Err("sse.register_stream timeout".to_string()))
@@ -304,7 +304,7 @@ fn server_state_query_dispatch(
             let s = Arc::clone(state);
             let rid = room_id.to_string();
             spawn_on_runtime(async move {
-                let result = s.room_commands.kick_user(&s, &rid, target_id).await;
+                let result = s.room_commands.kick_user(&*s, &rid, target_id).await;
                 let _ = tx.send(result);
             });
             rx.recv_timeout(runtime_state_query_timeout()).unwrap_or(Err("room.kick timeout".to_string()))
@@ -316,7 +316,7 @@ fn server_state_query_dispatch(
             let s = Arc::clone(state);
             let rid = room_id.to_string();
             spawn_on_runtime(async move {
-                let result = s.room_commands.set_host(&s, &rid, target_id).await;
+                let result = s.room_commands.set_host(&*s, &rid, target_id).await;
                 let _ = tx.send(result);
             });
             rx.recv_timeout(runtime_state_query_timeout()).unwrap_or(Err("room.set_host timeout".to_string()))
@@ -328,7 +328,7 @@ fn server_state_query_dispatch(
             let s = Arc::clone(state);
             let rid = room_id.to_string();
             spawn_on_runtime(async move {
-                let result = s.room_commands.set_lock(&s, &rid, locked).await;
+                let result = s.room_commands.set_lock(&*s, &rid, locked).await;
                 let _ = tx.send(result);
             });
             rx.recv_timeout(runtime_state_query_timeout()).unwrap_or(Err("room.set_lock timeout".to_string()))
@@ -340,7 +340,7 @@ fn server_state_query_dispatch(
             let s = Arc::clone(state);
             let rid = room_id.to_string();
             spawn_on_runtime(async move {
-                let result = s.room_commands.set_cycle(&s, &rid, cycle).await;
+                let result = s.room_commands.set_cycle(&*s, &rid, cycle).await;
                 let _ = tx.send(result);
             });
             rx.recv_timeout(runtime_state_query_timeout()).unwrap_or(Err("room.set_cycle timeout".to_string()))
@@ -351,7 +351,7 @@ fn server_state_query_dispatch(
             let s = Arc::clone(state);
             let rid = room_id.to_string();
             spawn_on_runtime(async move {
-                let result = s.room_commands.close_room(&s, &rid).await;
+                let result = s.room_commands.close_room(&*s, &rid).await;
                 let _ = tx.send(result);
             });
             rx.recv_timeout(runtime_state_query_timeout()).unwrap_or(Err("room.close timeout".to_string()))
@@ -376,7 +376,7 @@ fn server_state_query_dispatch(
             let s = Arc::clone(state);
             let rid = room_id.to_string();
             spawn_on_runtime(async move {
-                let result = crate::server::run_admin_kick_user(&s, &rid, target_id).await;
+                let result = crate::server::run_admin_kick_user(&*s, &rid, target_id).await;
                 let _ = tx.send(Ok(result));
             });
             rx.recv_timeout(runtime_state_query_timeout()).unwrap_or(Err("admin.kick_user timeout".to_string()))
