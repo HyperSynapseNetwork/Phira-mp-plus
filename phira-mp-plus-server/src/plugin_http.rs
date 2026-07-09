@@ -16,7 +16,6 @@ use axum::{
     routing::{any, get},
     Json, Router,
 };
-use tower::make::Shared;
 use phira_mp_plus_server_api as api;
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -105,22 +104,15 @@ impl PluginHttpServer {
             sse_streams: Arc::clone(&self.sse_streams),
         });
 
-        // Build router: SSE routes + catch-all first, then attach state (axum 0.8 要求
-        // with_state 在所有 route/layer 之后调用，否则 Router 类型不完整)。
-        let mut app = Router::new()
+        // Build router with all routes + state.
+        // SSE streams are registered by plugins at init() time via sse.register_stream.
+        // The handler reads the path from the request URI to find the plugin config.
+        let app = Router::new()
             .route("/api/events", get(general_sse_handler))
             .route("/api/ws", get(websocket::handler))
-            .layer(CorsLayer::permissive());
-
-        // Add dynamically registered SSE streams as routes.
-        // Each route reads its path from the request URI to look up the plugin config.
-        for (path, _) in self.sse_streams.read().await.iter() {
-            info!(path, "adding SSE stream route");
-            app = app.route(path, get(plugin_sse_handler));
-        }
-
-        // Catch-all for dynamic handler (must be last — order matters in axum)
-        app = app.route("/{*path}", any(dynamic_handler))
+            .route("/api/rooms/listen", get(plugin_sse_handler))
+            .route("/{*path}", any(dynamic_handler))
+            .layer(CorsLayer::permissive())
             .with_state(state);
 
         // Direct HTTP port (no PROXY protocol)
@@ -150,9 +142,9 @@ impl PluginHttpServer {
                 .layer(crate::proxy_protocol::TrustForwardedForLayer);
             tokio::spawn(async move {
                 info!(%proxy_addr, "HTTP server started (PROXY protocol, X-Forwarded-For trusted)");
-                if let Err(err) = axum::serve::serve(
+                if let Err(err) = axum::serve(
                     proxy_listener,
-                    Shared::new(proxy_app.into_service()),
+                    proxy_app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
                 )
                 .await
                 {
@@ -161,9 +153,9 @@ impl PluginHttpServer {
             });
         }
 
-        if let Err(err) = axum::serve::serve(
+        if let Err(err) = axum::serve(
             listener,
-            Shared::new(app.into_service()),
+            app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
         )
         .await
         {
