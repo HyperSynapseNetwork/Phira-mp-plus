@@ -5,6 +5,7 @@
 
 use crate::benchmark_report::BenchmarkMode;
 use crate::server::snapshot::build_snapshot;
+use crate::server::PlusServerState;
 use serde_json::Value;
 use std::sync::Arc;
 
