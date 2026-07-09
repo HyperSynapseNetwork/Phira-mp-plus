@@ -338,7 +338,8 @@ WASM 插件通过 `phira:host/api` 和 `phira:host/log` 等导入函数与宿主
 
 Phira-mp+ 整体采用 **GNU Affero General Public License v3.0** — 详见 [LICENSE](LICENSE)。
 
-协议层（`phira-mp-common`、`phira-mp-macros`）基于 [phira-mp](https://github.com/TeamFlos/phira-mp) 衍生，该部分按 **Apache License, Version 2.0** 授权 — 详见 [LICENSE-APACHE](LICENSE-APACHE)。
+协议层（`phira-mp-common`、`phira-mp-macros`）基于 [phira-mp](https://github.com/TeamFlos/phira-mp) 衍生；
+`phira-plugin-sdk`（WASM 插件 SDK）亦按 **Apache License, Version 2.0** 授权 — 详见 [LICENSE-APACHE](LICENSE-APACHE)。
 
 完整的版权归属和第三方依赖许可证声明见 [NOTICE](NOTICE)。
 

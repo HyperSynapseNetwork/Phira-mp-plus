@@ -19,6 +19,8 @@ limitations under the License.
 The phira-mp protocol layer (phira-mp-common, phira-mp-macros) is derived from
 phira-mp and remains available under the Apache License, Version 2.0.
 
+The phira-plugin-sdk is also licensed under Apache License, Version 2.0.
+
 A copy of the Apache License, Version 2.0 is included in LICENSE-APACHE.
 
 ---
