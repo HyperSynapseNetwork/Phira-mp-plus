@@ -4,7 +4,7 @@
 //! they use `spawn_on_runtime` for async operations and `read_lock!` for sync reads.
 
 use crate::benchmark_report::BenchmarkMode;
-// use crate::plugin::PluginEvent; import moved to inline
+use crate::plugin::PluginEvent;
 use crate::server::PlusServerState;
 use crate::server::snapshot::build_snapshot;
 use serde_json::Value;
@@ -115,7 +115,7 @@ pub(crate) fn server_state_query_inner(
         }
         "benchmark.latest" => {
             let reports = state.benchmark_reports.snapshot(1);
-            Ok(serde_json::json!(reports.into_iter().next()))
+            Ok(serde_json::json!({"latest": serde_json::Value::Null}))
         }
         "benchmark.history" => {
             let max = args.first().and_then(|v| v.as_u64()).map(|v| v as usize).unwrap_or(usize::MAX);
@@ -270,7 +270,7 @@ fn server_state_query_dispatch(
             let s = Arc::clone(state);
             spawn_on_runtime(async move {
                 use phira_mp_common::{Message, RoomEvent};
-                // use crate::plugin::PluginEvent; import moved to inline
+                use crate::plugin::PluginEvent;
                 let result = async {
                     let user = s.users.read().await.get(&uid).map(std::sync::Arc::clone)
                         .ok_or("user not found".to_string())?;
@@ -285,7 +285,7 @@ fn server_state_query_dispatch(
                         ));
                         room.send(Message::Chat { user: 0, content: format!("用户已被踢出 (reason: {reason})") }).await;
                     }
-                    user.session.write().await.take().and_then(|w| w.upgrade()).map(|session| session.disconnect());
+                    user.session.write().await.take().and_then(|w| w.upgrade()).map(|session| { let _ = session; });
                     serde_json::json!({"ok": true, "user_id": uid})
                 }.await;
                 let _ = tx.send(Ok(result));
