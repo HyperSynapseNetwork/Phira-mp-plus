@@ -1,12 +1,13 @@
-#![allow(dead_code)]
 //! Server supervisor actor.
 //!
 //! Owns process lifecycle, shutdown coordination, listener startup,
-//! and supervisor responsibility for child actors.
+//! child-actor registration/health, and ordered shutdown.
 //!
-//! Migration: Mirrored → ReadRouted.  The mailbox receives lifecycle
-//! commands that were previously handled by ad-hoc code in server.rs.
+//! Every long-running `tokio::spawn` task should register with the supervisor
+//! so the server can track its health, restart it on failure (future), and
+//! coordinate graceful shutdown.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::sync::mpsc;
@@ -19,15 +20,27 @@ pub(crate) enum SupervisorCmd {
     },
     /// Notify: shutdown has been requested.
     ShutdownRequested,
+    /// Register a child task with the supervisor.
+    Register {
+        name: String,
+        handle: tokio::task::JoinHandle<()>,
+    },
+    /// Unregister a child task (e.g. on clean shutdown).
+    Unregister {
+        name: String,
+    },
 }
 
 /// Server status snapshot.
 pub(crate) struct SupervisorStatus {
     pub shutdown_requested: bool,
+    /// Map of registered task name → whether the task is still alive.
+    pub children: Vec<(String, bool)>,
 }
 
 /// Global supervisor mailbox sender. Initialized once at server startup.
-static SUPERVISOR: once_cell::sync::OnceCell<mpsc::Sender<SupervisorCmd>> = once_cell::sync::OnceCell::new();
+static SUPERVISOR: once_cell::sync::OnceCell<mpsc::Sender<SupervisorCmd>> =
+    once_cell::sync::OnceCell::new();
 
 /// Initialize the supervisor actor mailbox. Called once at server startup.
 pub(crate) fn init() {
@@ -36,16 +49,28 @@ pub(crate) fn init() {
 
     tokio::spawn(async move {
         let shutdown_flag = Arc::new(AtomicBool::new(false));
+        let mut children: HashMap<String, tokio::task::JoinHandle<()>> = HashMap::new();
 
         while let Some(cmd) = rx.recv().await {
             match cmd {
                 SupervisorCmd::Status { reply } => {
+                    let child_status: Vec<(String, bool)> = children
+                        .iter()
+                        .map(|(name, handle)| (name.clone(), !handle.is_finished()))
+                        .collect();
                     let _ = reply.send(SupervisorStatus {
                         shutdown_requested: shutdown_flag.load(Ordering::SeqCst),
+                        children: child_status,
                     });
                 }
                 SupervisorCmd::ShutdownRequested => {
                     shutdown_flag.store(true, Ordering::SeqCst);
+                }
+                SupervisorCmd::Register { name, handle } => {
+                    children.insert(name, handle);
+                }
+                SupervisorCmd::Unregister { name } => {
+                    children.remove(&name);
                 }
             }
         }
@@ -57,4 +82,27 @@ pub(crate) fn send(cmd: SupervisorCmd) {
     if let Some(tx) = SUPERVISOR.get() {
         let _ = tx.try_send(cmd);
     }
+}
+
+/// Spawn a named tokio task and register it with the supervisor.
+///
+/// Returns the `JoinHandle` so the caller can also store it directly.
+pub(crate) fn spawn_named<F>(name: &str, future: F) -> tokio::task::JoinHandle<()>
+where
+    F: std::future::Future<Output = ()> + Send + 'static,
+{
+    let handle = tokio::spawn(future);
+    send(SupervisorCmd::Register {
+        name: name.to_string(),
+        handle: handle.clone(),
+    });
+    handle
+}
+
+/// Unregister a previously spawned named task (call when the handle is dropped
+/// during controlled shutdown).
+pub(crate) fn unregister(name: &str) {
+    send(SupervisorCmd::Unregister {
+        name: name.to_string(),
+    });
 }

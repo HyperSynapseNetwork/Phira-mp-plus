@@ -331,7 +331,7 @@ pub struct PlusServer {
 
 fn spawn_runtime_event_observer(event_bus: Arc<crate::event_bus::EventBus>) {
     let mut rx = event_bus.subscribe();
-    tokio::spawn(async move {
+    crate::supervisor_actor::spawn_named("runtime-event-observer", async move {
         loop {
             match rx.recv().await {
                 Ok(event) => {
@@ -354,7 +354,7 @@ fn spawn_runtime_event_observer(event_bus: Arc<crate::event_bus::EventBus>) {
 fn spawn_event_subscribers(state: &Arc<PlusServerState>) {
     let mut rx = state.event_bus.subscribe();
     let state_clone = Arc::clone(state);
-    tokio::spawn(async move {
+    crate::supervisor_actor::spawn_named("event-subscribers", async move {
         loop {
             match rx.recv().await {
                 Ok(event) => {
@@ -458,7 +458,7 @@ fn spawn_event_subscribers(state: &Arc<PlusServerState>) {
 fn spawn_plugin_subscriber(state: &Arc<PlusServerState>) {
     let mut rx = state.event_bus.subscribe();
     let pm = Arc::clone(&state.plugin_manager);
-    tokio::spawn(async move {
+    crate::supervisor_actor::spawn_named("plugin-subscriber", async move {
         loop {
             match rx.recv().await {
                 Ok(event) => {
@@ -495,6 +495,9 @@ impl PlusServer {
         for addr in addrs {
             info!("Phira-mp+ Local Address: http://{}", addr);
         }
+
+        // 初始化 Supervisor Actor（接受子任务注册与健康检查）
+        crate::supervisor_actor::init();
 
         let (lost_con_tx, mut lost_con_rx) = mpsc::channel(16);
 
@@ -610,7 +613,7 @@ impl PlusServer {
             )
             .await;
         let bench_state = Arc::clone(&state);
-        tokio::spawn(async move {
+        crate::supervisor_actor::spawn_named("benchmark-worker", async move {
             let mut bench_rx = bench_rx;
             while let Some(request) = bench_rx.recv().await {
                 let bs = Arc::clone(&bench_state);
@@ -626,7 +629,7 @@ impl PlusServer {
         });
 
         let lost_con_state = Arc::clone(&state);
-        let lost_con_handle = tokio::spawn(async move {
+        let lost_con_handle = crate::supervisor_actor::spawn_named("lost-connection-cleanup", async move {
             while let Some(id) = lost_con_rx.recv().await {
                 warn!("lost connection with {id}");
                 let session_opt = lost_con_state.sessions.write().await.remove(&id);
@@ -735,14 +738,14 @@ impl PlusServer {
         // 启动中央 HTTP 服务器（所有路由已注册完毕）
         if let Some(srv) = http_server {
             let http_state = Arc::clone(&state);
-            tokio::spawn(async move {
+            crate::supervisor_actor::spawn_named("http-server", async move {
                 srv.start(http_state).await;
             });
         }
 
         // 定期持久化 auth 缓存（避免每次认证都写盘）
         let persist_state = Arc::clone(&state);
-        tokio::spawn(async move {
+        crate::supervisor_actor::spawn_named("auth-cache-persist", async move {
             loop {
                 tokio::time::sleep(std::time::Duration::from_secs(60)).await;
                 if let Err(e) = persist_state.extensions.persist().await {
@@ -752,7 +755,7 @@ impl PlusServer {
         });
 
         let limiter_cleanup_state = Arc::clone(&state);
-        tokio::spawn(async move {
+        crate::supervisor_actor::spawn_named("rate-limiter-cleanup", async move {
             loop {
                 tokio::time::sleep(std::time::Duration::from_secs(
                     CONNECTION_LIMITER_CLEANUP_SECS,
@@ -772,7 +775,7 @@ impl PlusServer {
             || telemetry_retention_days > 0
         {
             let cleanup_state = Arc::clone(&state);
-            tokio::spawn(async move {
+            crate::supervisor_actor::spawn_named("retention-cleanup", async move {
                 loop {
                     tokio::time::sleep(std::time::Duration::from_secs(3600)).await;
                     cleanup_state.round_store.cleanup_expired().await;
@@ -1183,7 +1186,7 @@ impl PlusServerState {
 
     fn persist_room_snapshot_background(&self, room: Arc<crate::room::Room>) {
         let fallback_endpoint = self.config.phira_api_endpoint.clone();
-        tokio::spawn(async move {
+        crate::supervisor_actor::spawn_named("room-snapshot", async move {
             let Some(db) = crate::internal_hooks::DB.get() else {
                 return;
             };
@@ -1320,7 +1323,7 @@ impl PlusServerState {
         let room = Arc::clone(room);
         let fallback_endpoint = self.config.phira_api_endpoint.clone();
         let phira_client = Arc::clone(&self.phira_client);
-        tokio::spawn(async move {
+        crate::supervisor_actor::spawn_named("room-metadata-refresh", async move {
             let _permit = permit;
             let endpoint = room
                 .phira_api_endpoint_override()
