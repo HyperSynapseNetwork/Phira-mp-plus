@@ -24,15 +24,16 @@ impl RoomCommandGateway {
         room_id: &str,
     ) -> Result<Value, String> {
         let started = Instant::now();
+        let rid = room_id.to_string();
         let result = self
             .room_mailbox_or_inline_control(
-                room_id,
+                &rid,
                 |reply| RoomActorCommand::StartRoom {
-                    room_id: room_id.to_string(),
+                    room_id: rid.clone(),
                     reply,
                 },
                 || async {
-                    self.start_room_inline(state, room_id, None)
+                    self.start_room_inline(state, &rid, None)
                         .await
                         .map(|p| p.into_json())
                 },
@@ -80,15 +81,16 @@ impl RoomCommandGateway {
         room_id: &str,
     ) -> Result<Value, String> {
         let started = Instant::now();
+        let rid = room_id.to_string();
         let result = self
             .room_mailbox_or_inline_control(
-                room_id,
+                &rid,
                 |reply| RoomActorCommand::CancelStart {
-                    room_id: room_id.to_string(),
+                    room_id: rid.clone(),
                     reply,
                 },
                 || async {
-                    self.cancel_start_inline(state, room_id, None)
+                    self.cancel_start_inline(state, &rid, None)
                         .await
                         .map(|p| p.into_json())
                 },

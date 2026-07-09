@@ -19,15 +19,20 @@ impl RoomCommandGateway {
         target_id: Option<i32>,
     ) -> Result<Value, String> {
         let started = Instant::now();
+        let rid = room_id.to_string();
         let result = self
             .room_mailbox_or_inline(
-                room_id,
+                &rid,
                 |reply| RoomActorCommand::SetHost {
-                    room_id: room_id.to_string(),
+                    room_id: rid.clone(),
                     target_id,
                     reply,
                 },
-                || self.set_host_inline(state, room_id, target_id, None),
+                || async {
+                    self.set_host_inline(state, &rid, target_id, None)
+                        .await
+                        .map(|p| p.into_json())
+                },
             )
             .await;
         self.finish_command(
@@ -96,15 +101,20 @@ impl RoomCommandGateway {
         locked: bool,
     ) -> Result<Value, String> {
         let started = Instant::now();
+        let rid = room_id.to_string();
         let result = self
             .room_mailbox_or_inline(
-                room_id,
+                &rid,
                 |reply| RoomActorCommand::SetLock {
-                    room_id: room_id.to_string(),
+                    room_id: rid.clone(),
                     locked,
                     reply,
                 },
-                || self.set_lock_inline(state, room_id, locked, None),
+                || async {
+                    self.set_lock_inline(state, &rid, locked, None)
+                        .await
+                        .map(|p| p.into_json())
+                },
             )
             .await;
         self.finish_command(
@@ -153,15 +163,20 @@ impl RoomCommandGateway {
         cycle: bool,
     ) -> Result<Value, String> {
         let started = Instant::now();
+        let rid = room_id.to_string();
         let result = self
             .room_mailbox_or_inline(
-                room_id,
+                &rid,
                 |reply| RoomActorCommand::SetCycle {
-                    room_id: room_id.to_string(),
+                    room_id: rid.clone(),
                     cycle,
                     reply,
                 },
-                || self.set_cycle_inline(state, room_id, cycle, None),
+                || async {
+                    self.set_cycle_inline(state, &rid, cycle, None)
+                        .await
+                        .map(|p| p.into_json())
+                },
             )
             .await;
         self.finish_command(

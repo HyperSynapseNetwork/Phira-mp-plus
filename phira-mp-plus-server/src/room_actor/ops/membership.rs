@@ -20,16 +20,17 @@ impl RoomCommandGateway {
         target_id: i32,
     ) -> Result<Value, String> {
         let started = Instant::now();
+        let rid = room_id.to_string();
         let result = self
             .room_mailbox_or_inline(
-                room_id,
+                &rid,
                 |reply| RoomActorCommand::KickUser {
-                    room_id: room_id.to_string(),
+                    room_id: rid.clone(),
                     target_id,
                     reply,
                 },
                 || async {
-                    self.kick_user_inline(state, room_id, target_id, None)
+                    self.kick_user_inline(state, &rid, target_id, None)
                         .await
                         .map(|p| p.into_json())
                 },
