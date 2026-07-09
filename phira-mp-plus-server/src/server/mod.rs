@@ -12,9 +12,10 @@
 //! | `benchmark`   | BenchRequest, HybridBenchmarkConfig, token helpers |
 //! | `config`      | PlusConfig, LiveConfig, RuntimeV2Config, … |
 //! | `events`      | Event subscribers (runtime/plugin observer) |
+//! | `query`       | State query dispatch (sync engine for CLI/WIT/Web) |
 //! | `snapshot`    | RoomSnapshot, UserSnapshot, build_snapshot  |
 //! | `state`       | PlusServerState struct definition           |
-//! | `orig`        | Legacy code (being gradually stripped)      |
+//! | `orig`        | ~1980 lines remaining (PlusServer::new, room_ops) |
 //!
 //! **Compatibility:** All `crate::server::*` items are re-exported via
 //! `pub use config::*; pub use orig::*;` so existing callers keep working
