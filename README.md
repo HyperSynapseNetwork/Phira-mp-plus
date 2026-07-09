@@ -143,7 +143,14 @@ Phira-mp-plus/
 │   └── src/
 │       ├── main.rs                  #   进程入口 & 生命周期
 │       ├── lib.rs                   #   模块导出
-│       ├── server.rs                #   PlusConfig / PlusServerState / PlusServer
+│       ├── server/                   #   Server 模块 (分解自原 server.rs)
+│       │   ├── mod.rs                #    模块声明 + 公共 re-export
+│       │   ├── config.rs             #    PlusConfig / LiveConfig / RuntimeV2Config / Chart / Record
+│       │   ├── benchmark.rs          #    BenchRequest / HybridBenchmarkConfig / token helpers
+│       │   ├── events.rs             #    事件订阅者 (runtime / plugin observer)
+│       │   ├── snapshot.rs           #    RoomSnapshot / UserSnapshot / build_snapshot
+│       │   ├── state.rs              #    PlusServerState 字段定义
+│       │   └── orig.rs               #    遗留代码 (逐步分解中)
 │       ├── server_query.rs          #   Admin ID 等查询函数
 │       ├── cli.rs                   #   CLI 生命周期、输入循环
 │       ├── cli/dispatch.rs          #   顶层命令路由

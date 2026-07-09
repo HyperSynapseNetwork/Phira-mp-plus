@@ -9,6 +9,7 @@
 //!
 //! | Module        | Responsibility                              |
 //! |---------------|---------------------------------------------|
+//! | `benchmark`   | BenchRequest, HybridBenchmarkConfig, token helpers |
 //! | `config`      | PlusConfig, LiveConfig, RuntimeV2Config, … |
 //! | `events`      | Event subscribers (runtime/plugin observer) |
 //! | `snapshot`    | RoomSnapshot, UserSnapshot, build_snapshot  |
