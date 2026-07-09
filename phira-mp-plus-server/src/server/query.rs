@@ -193,7 +193,7 @@ fn server_state_query_dispatch(
                 Some(user) => {
                     let name = user.session.try_read().ok()
                         .and_then(|s| s.as_ref().and_then(|w| w.upgrade()))
-                        .map(|s| { let s: &crate::session::Session = &*s; s.name.clone() })
+                        .map(|s| s.name().to_string())
                         .unwrap_or_default();
                     Ok(serde_json::json!({"id": user_id, "name": name}))
                 }
@@ -361,7 +361,7 @@ fn server_state_query_dispatch(
             let s = Arc::clone(state);
             spawn_on_runtime(async move {
                 let result = crate::server::run_admin_kick_user(&*s, target_id, "kicked via state query").await;
-                let _ = tx.send(Ok(result));
+                let _ = tx.send(result);
             });
             rx.recv_timeout(runtime_state_query_timeout()).unwrap_or(Err("admin.kick_user timeout".to_string()))
         }
