@@ -449,7 +449,6 @@ async fn server_state_query_inner(
                 .kick_user(state, room_id, target_id)
                 .await
         }
-        }
         "room.set_host" => {
             let room_id = args
                 .first()
