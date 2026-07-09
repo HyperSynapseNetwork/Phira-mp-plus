@@ -37,18 +37,8 @@ pub struct IdleConfig {
     /// Unauthenticated connection timeout (seconds).
     #[serde(default = "default_auth_timeout")]
     pub auth_timeout_secs: u64,
-    /// If true, services are lazily started on first demand instead of at boot.
-    #[serde(default)]
-    pub lazy_services: bool,
-    /// Minimal mode: no plugins, no CLI/TUI, no HTTP.
-    #[serde(default)]
-    pub minimal: bool,
-    /// Enable WASM plugin system. Disabled in minimal mode.
-    #[serde(default = "default_plugins_enabled")]
-    pub plugins_enabled: bool,
 }
 
-fn default_plugins_enabled() -> bool { true }
 fn default_idle_after_secs() -> u64 { 300 }
 fn default_check_interval_secs() -> u64 { 15 }
 fn default_heartbeat_timeout() -> u64 { 30 }
@@ -61,9 +51,6 @@ impl Default for IdleConfig {
             check_interval_secs: default_check_interval_secs(),
             heartbeat_timeout_secs: default_heartbeat_timeout(),
             auth_timeout_secs: default_auth_timeout(),
-            lazy_services: false,
-            minimal: false,
-            plugins_enabled: default_plugins_enabled(),
         }
     }
 }

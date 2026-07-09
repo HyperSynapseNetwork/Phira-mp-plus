@@ -1,42 +1,26 @@
 name: Release
 
 on:
-  workflow_dispatch:
-    inputs:
-      description:
-        description: 版本说明（可选）
-        type: string
-        default: ""
+  push:
+    tags:
+      - 'v[0-9]+.[0-9]+.[0-9]+'
 
 env:
   CARGO_TERM_COLOR: always
-
-permissions:
-  contents: write
 
 jobs:
   version:
     runs-on: ubuntu-latest
     outputs:
-      tag: ${{ steps.version.outputs.tag }}
-      version: ${{ steps.version.outputs.version }}
+      tag: ${{ steps.tag.outputs.tag }}
+      version: ${{ steps.tag.outputs.version }}
     steps:
       - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-      - id: version
+      - id: tag
         run: |
-          LATEST_TAG=$(git tag --list 'v*.*.*' --sort=-v:refname | head -1)
-          [[ -z "$LATEST_TAG" ]] && { echo "no version tag"; exit 1; }
-          RAW="${LATEST_TAG#v}"
-          MAJOR=$(echo "$RAW" | cut -d. -f1)
-          MINOR=$(echo "$RAW" | cut -d. -f2)
-          BASE="v${MAJOR}.${MINOR}.0"
-          if git rev-parse "$BASE" >/dev/null 2>&1; then
-            PATCH=$(git rev-list --count "$BASE"..HEAD)
-          else
-            PATCH=$(git rev-list --count HEAD)
-          fi
+          MAJOR=$(echo "${{ github.ref_name }}" | sed 's/^v//' | cut -d. -f1)
+          MINOR=$(echo "${{ github.ref_name }}" | sed 's/^v//' | cut -d. -f2)
+          PATCH=$(echo "${{ github.ref_name }}" | sed 's/^v//' | cut -d. -f3)
           echo "tag=v$MAJOR.$MINOR.$PATCH" >> $GITHUB_OUTPUT
           echo "version=$MAJOR.$MINOR.$PATCH" >> $GITHUB_OUTPUT
 
@@ -68,68 +52,24 @@ jobs:
           name: phira-mp-plus-server-windows
           path: phira-mp-plus-server-windows.exe
 
-  build-plugins-linux:
-    needs: version
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions-rust-lang/setup-rust-toolchain@v1
-        with:
-          target: wasm32-unknown-unknown
-      - uses: Swatinem/rust-cache@v2
-      - name: Install wasm-tools
-        run: cargo install wasm-tools
-      - run: cargo build --release --features wit-bindgen
-      - run: |
-          cd phira-mp-plus-server/tests/test-plugin
-          cargo build --target wasm32-unknown-unknown --release
-          mkdir -p ../../../target/release
-          wasm-tools component new \
-            target/wasm32-unknown-unknown/release/test_plugin.wasm \
-            -o ../../../target/release/test-plugin.component.wasm
-      - uses: actions/upload-artifact@v4
-        with:
-          name: phira-mp-plus-server-plugins-linux
-          path: target/release/phira-mp-plus-server
-
-  build-plugins-windows:
-    needs: version
-    runs-on: windows-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions-rust-lang/setup-rust-toolchain@v1
-      - uses: Swatinem/rust-cache@v2
-      - run: cargo build --release --features wit-bindgen
-      - uses: actions/upload-artifact@v4
-        with:
-          name: phira-mp-plus-server-plugins-windows
-          path: target/release/phira-mp-plus-server.exe
-
   release:
-    needs: [version, build-linux, build-windows, build-plugins-linux, build-plugins-windows]
+    needs: [build-linux, build-windows]
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
-      - name: Package SDK
-        run: |
-          mkdir -p dist/sdk
-          cp -r wit dist/sdk/
-          cp -r phira-plugin-sdk/src dist/sdk/phira-plugin-sdk-src
-          cp phira-plugin-sdk/Cargo.toml dist/sdk/
-          cd dist && tar czf phira-plugin-sdk.tar.gz sdk/
-      - name: Create Release
+        with:
+          pattern: phira-mp-plus-server-*
+          merge-multiple: true
+      - name: Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ needs.version.outputs.tag }}
-          name: v${{ needs.version.outputs.version }}
-          body: |
-            ## Phira-mp-plus v${{ needs.version.outputs.version }}
+          name: ${{ needs.version.outputs.tag }}
+          body_path: CHANGELOG.md
           files: |
-            phira-mp-plus-server-linux/phira-mp-plus-server-linux
-            phira-mp-plus-server-windows/phira-mp-plus-server-windows.exe
-            phira-mp-plus-server-plugins-linux/phira-mp-plus-server
-            phira-mp-plus-server-plugins-windows/phira-mp-plus-server.exe
-            dist/phira-plugin-sdk.tar.gz
-          draft: false
+            phira-mp-plus-server-linux
+            phira-mp-plus-server-windows.exe
           prerelease: false

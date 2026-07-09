@@ -379,11 +379,9 @@ impl PlusServer {
         // 初始化 session actor mailbox（Chat 等命令通过它路由）
         crate::session_actor::init();
 
-        // 插件系统启用时加载插件
-        if state.config.idle.plugins_enabled && !state.config.idle.minimal {
-            let plugin_count = state.plugin_manager.load_plugins().await.unwrap_or(0);
-            info!("loaded {} plugin(s)", plugin_count);
-        }
+        // 加载插件
+        let plugin_count = state.plugin_manager.load_plugins().await.unwrap_or(0);
+        info!("loaded {} plugin(s)", plugin_count);
 
         // 初始化内置功能（欢迎语/追踪/排行等）
         let http_server_ref = http_server.as_ref().map(|s| Arc::clone(s));

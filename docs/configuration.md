@@ -291,17 +291,15 @@ RUST_LOG=debug ./phira-mp-plus-server
 | `idle.check_interval_secs` | `u64` | `15` | 空载检查间隔。 |
 | `idle.heartbeat_timeout_secs` | `u64` | `30` | 会话心跳超时阈值。 |
 | `idle.auth_timeout_secs` | `u64` | `15` | 未认证连接超时阈值。 |
-| `idle.lazy_services` | `bool` | `false` | 重服务按需启动（HTTP/插件/PersistenceWorker 等默认启动）。 |
-| `idle.minimal` | `bool` | `false` | 最小化模式：无插件、无 CLI/TUI、无 Web API。 |
 
 **服务层级：**
 
-| 层级 | 始终运行 | 按需唤醒 |
-|------|---------|---------|
-| 轻内核 | TCP listener、CLI、Idle 控制器 | — |
-| 认证链路 | — | 用户连接时 |
-| 房间/用户链路 | — | 用户在线时 |
-| 重服务 | HTTP、插件、Simulation、Benchmark、PersistenceWorker | 默认全启动；`lazy_services: true` 时按需启动 |
+| 层级 | 说明 |
+|------|------|
+| 轻内核 | TCP listener、CLI、Idle 控制器 — 始终运行 |
+| 认证链路 | 用户连接时按需启动 |
+| 房间/用户链路 | 用户在线时按需启动 |
+| 重服务 | HTTP、插件、Simulation、Benchmark、PersistenceWorker — 空载时挂起，活动时全启动 |
 
 ## WASM 运行时限制
 

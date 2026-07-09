@@ -293,9 +293,6 @@ impl PlusConfig {
         if let Some(ext) = cli.extensions_file {
             self.extensions_file = Some(ext);
         }
-        if cli.no_cli {
-            self.cli_enabled = false;
-        }
         if cli.proxy_protocol_port > 0 {
             self.proxy_protocol_port = cli.proxy_protocol_port;
         }
@@ -311,7 +308,6 @@ pub struct PlusConfigCli {
     pub monitors: Vec<i32>,
     pub plugins_dir: String,
     pub extensions_file: Option<String>,
-    pub no_cli: bool,
     pub log_file: String,
 }
 
