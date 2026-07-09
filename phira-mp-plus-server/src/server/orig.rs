@@ -629,7 +629,7 @@ impl PlusServer {
         });
 
         let lost_con_state = Arc::clone(&state);
-        let lost_con_handle = crate::supervisor_actor::spawn_named("lost-connection-cleanup", async move {
+        let lost_con_handle = tokio::spawn(async move {
             while let Some(id) = lost_con_rx.recv().await {
                 warn!("lost connection with {id}");
                 let session_opt = lost_con_state.sessions.write().await.remove(&id);

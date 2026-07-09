@@ -85,9 +85,7 @@ pub(crate) fn send(cmd: SupervisorCmd) {
 }
 
 /// Spawn a named tokio task and register it with the supervisor.
-///
-/// Returns the `JoinHandle` so the caller can also store it directly.
-pub(crate) fn spawn_named<F>(name: &str, future: F) -> tokio::task::JoinHandle<()>
+pub(crate) fn spawn_named<F>(name: &str, future: F)
 where
     F: std::future::Future<Output = ()> + Send + 'static,
 {
@@ -96,7 +94,6 @@ where
         name: name.to_string(),
         handle,
     });
-    handle
 }
 
 /// Unregister a previously spawned named task (call when the handle is dropped
