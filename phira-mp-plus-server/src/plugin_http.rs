@@ -104,12 +104,12 @@ impl PluginHttpServer {
             sse_streams: Arc::clone(&self.sse_streams),
         });
 
-        // Build core router with static routes
+        // Build router: SSE routes + catch-all first, then attach state (axum 0.8 要求
+        // with_state 在所有 route/layer 之后调用，否则 Router 类型不完整)。
         let mut app = Router::new()
             .route("/api/events", get(general_sse_handler))
             .route("/api/ws", get(websocket::handler))
-            .layer(CorsLayer::permissive())
-            .with_state(state.clone());
+            .layer(CorsLayer::permissive());
 
         // Add dynamically registered SSE streams as routes.
         // Each route reads its path from the request URI to look up the plugin config.
@@ -119,7 +119,8 @@ impl PluginHttpServer {
         }
 
         // Catch-all for dynamic handler (must be last — order matters in axum)
-        app = app.route("/{*path}", any(dynamic_handler));
+        app = app.route("/{*path}", any(dynamic_handler))
+            .with_state(state);
 
         // Direct HTTP port (no PROXY protocol)
         let address = format!("0.0.0.0:{}", self.port);
