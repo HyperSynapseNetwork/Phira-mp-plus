@@ -58,8 +58,26 @@ jobs:
           name: phira-mp-plus-server-windows
           path: phira-mp-plus-server-windows.exe
 
+  package-sdk:
+    needs: version
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: 打包 SDK + WIT
+        run: |
+          mkdir -p _sdk
+          cp -r phira-plugin-sdk _sdk/phira-plugin-sdk
+          cp -r wit _sdk/wit
+          cd _sdk && tar czf ../phira-plugin-sdk.tar.gz phira-plugin-sdk wit
+      - name: 上传 SDK 到 Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.version.outputs.tag }}
+          files: phira-plugin-sdk.tar.gz
+          prerelease: false
+
   release:
-    needs: [build-linux, build-windows]
+    needs: [build-linux, build-windows, package-sdk]
     runs-on: ubuntu-latest
     permissions:
       contents: write
