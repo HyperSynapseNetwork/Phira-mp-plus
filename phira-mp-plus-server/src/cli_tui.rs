@@ -1063,7 +1063,7 @@ mod tests {
 
     #[test]
     fn screen_ctrl_h_is_backspace_but_plain_h_is_text() {
-        let (tx, _rx) = mpsc::unbounded_channel();
+        let (tx, _rx) = mpsc::channel(1024);
         let mut app = TuiApp::new(tx, false, false);
         app.insert_text("ah");
         app.handle_key(KeyEvent::new(KeyCode::Char('h'), KeyModifiers::CONTROL));
