@@ -13,6 +13,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::sync::mpsc;
 
 /// Supervisor command envelope.
+// Some variants are future-path scaffolding (Status/ShutdownRequested/Unregister)
+// that will be consumed by CLI/TUI integration in Phase 3.
+#[allow(dead_code)]
 pub(crate) enum SupervisorCmd {
     /// Query: server status snapshot.
     Status {
