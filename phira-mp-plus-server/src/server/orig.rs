@@ -65,7 +65,7 @@ macro_rules! read_lock {
 
 // Configuration types (LiveConfig, PlusConfig, PlusConfigCli, RuntimeV2Config,
 // and default-value helpers) moved to super::config.
-use super::config::{LiveConfig, PlusConfig, PlusConfigCli, RuntimeV2Config};
+use super::config::{LiveConfig, PlusConfig};
 
 /// Runtime v2 benchmark request.
 ///
