@@ -46,7 +46,7 @@ macro_rules! read_lock {
                 Err(_) => {
                     attempts += 1;
                     if attempts > 100 {
-                        warn!(
+                        ::tracing::warn!(
                             "read_lock! spinning on {} ({} attempts)",
                             stringify!($lock),
                             attempts
@@ -3422,7 +3422,7 @@ fn server_state_query(
 }
 
 // Snapshot types and builders moved to super::snapshot.
-use super::snapshot::{build_snapshot, RoomSnapshot};
+use super::snapshot::build_snapshot;
 
 
 fn server_state_query_dispatch(
