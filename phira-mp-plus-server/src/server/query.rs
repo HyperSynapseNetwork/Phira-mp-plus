@@ -234,12 +234,13 @@ fn server_state_query_dispatch(
             let path = path.to_string();
             let plugin = plugin.to_string();
             let (tx, rx) = std::sync::mpsc::channel();
+            let path2 = path.clone();
             spawn_on_runtime(async move {
                 let http_handle = s.plugin_manager.http_handle();
                 let result = match http_handle {
                     Some(handle) => {
                         let handler: phira_mp_plus_server_api::HttpHandler = std::sync::Arc::new(move |_, _| {
-                            Ok(serde_json::json!({"ok": true, "path": &path}))
+                            Ok(serde_json::json!({"ok": true, "path": &path2}))
                         });
                         handle.register_route(&path, handler);
                         Ok(serde_json::json!({"ok": true, "path": &path}))
