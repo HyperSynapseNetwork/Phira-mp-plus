@@ -150,7 +150,7 @@ impl PluginHttpServer {
                 info!(%proxy_addr, "HTTP server started (PROXY protocol, X-Forwarded-For trusted)");
                 if let Err(err) = axum::serve(
                     proxy_listener,
-                    proxy_app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+                    proxy_app.into_make_service(),
                 )
                 .await
                 {
@@ -161,7 +161,7 @@ impl PluginHttpServer {
 
         if let Err(err) = axum::serve(
             listener,
-            app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+            app.into_make_service(),
         )
         .await
         {
