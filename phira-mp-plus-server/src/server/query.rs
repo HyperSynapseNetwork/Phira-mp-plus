@@ -479,7 +479,6 @@ async fn server_state_query_inner(
                 .set_lock(state, room_id, locked)
                 .await
         }
-        }
         "room.set_cycle" => {
             let room_id = args
                 .first()
