@@ -463,7 +463,6 @@ async fn server_state_query_inner(
                 .set_host(state, room_id, target_id)
                 .await
         }
-        }
         "room.set_lock" => {
             let room_id = args
                 .first()
