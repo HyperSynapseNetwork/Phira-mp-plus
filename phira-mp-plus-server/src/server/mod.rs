@@ -23,6 +23,7 @@
 pub mod benchmark;
 pub mod config;
 pub mod events;
+pub mod query;
 pub mod snapshot;
 pub mod state;
 
@@ -33,3 +34,4 @@ mod orig;
 pub use benchmark::*;
 pub use config::*;
 pub use orig::*;
+pub use query::*;
