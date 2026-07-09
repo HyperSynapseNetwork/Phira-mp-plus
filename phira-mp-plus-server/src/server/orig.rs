@@ -1230,7 +1230,7 @@ impl PlusServerState {
             o!("  ✗ 未配置 Phira 压测账号");
             o!("  │  请配置 benchmark_phira_tokens 或执行 benchmark-auth <token>");
             o!(r#"  │  或直接修改 server_config.yml: benchmark_phira_tokens: ["..."]"#);
-            o!(r#"  │  也可以写入 {super::benchmark::BENCH_AUTH_FILE}: {{"tokens":["..."]}}"#);
+            o!("  │  也可以写入 data/benchmark-auth.json: {{\"tokens\":[\"...\"]}}");
             let mut report = BenchmarkReport::new(
                 BenchmarkMode::Real,
                 "real TCP compatibility benchmark",
