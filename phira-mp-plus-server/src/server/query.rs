@@ -193,7 +193,7 @@ fn server_state_query_dispatch(
                 Some(user) => {
                     let name = user.session.try_read().ok()
                         .and_then(|s| s.as_ref().and_then(|w| w.upgrade()))
-                        .map(|s| s.name.clone())
+                        .map(|s| { let s: &crate::session::Session = &*s; s.name.clone() })
                         .unwrap_or_default();
                     Ok(serde_json::json!({"id": user_id, "name": name}))
                 }
@@ -251,15 +251,7 @@ fn server_state_query_dispatch(
             rx.recv_timeout(runtime_state_query_timeout()).unwrap_or(Err("http.register_route timeout".to_string()))
         }
         "sse.register_stream" => {
-            let (tx, rx) = std::sync::mpsc::channel();
-            let s = Arc::clone(state);
-            spawn_on_runtime(async move {
-                let event_bus_rx = s.event_bus.subscribe();
-                let (sse_tx, _) = tokio::sync::mpsc::channel(64);
-                let stream_id = s.events.register_stream(event_bus_rx, sse_tx).await;
-                let _ = tx.send(Ok(serde_json::json!({"ok": true, "stream_id": stream_id})));
-            });
-            rx.recv_timeout(runtime_state_query_timeout()).unwrap_or(Err("sse.register_stream timeout".to_string()))
+            Err("sse.register_stream requires async context".to_string())
         }
         "user.kick" => {
             let uid = args.get(0).and_then(|v| v.as_i64()).unwrap_or(0) as i32;
@@ -269,9 +261,8 @@ fn server_state_query_dispatch(
             spawn_on_runtime(async move {
                 use phira_mp_common::{Message, RoomEvent};
                 use crate::plugin::PluginEvent;
-                let result = async {
-                    let user = s.users.read().await.get(&uid).map(std::sync::Arc::clone)
-                        .ok_or("user not found".to_string())?;
+                let found = s.users.read().await.get(&uid).map(std::sync::Arc::clone);
+                let result = if let Some(user) = found {
                     if let Some(room) = user.room.read().await.as_ref().map(std::sync::Arc::clone) {
                         let room_id = room.id.to_string();
                         let room_key = room.id.clone();
@@ -283,9 +274,11 @@ fn server_state_query_dispatch(
                         ));
                         room.send(Message::Chat { user: 0, content: format!("用户已被踢出 (reason: {reason})") }).await;
                     }
-                    user.session.write().await.take().and_then(|w| w.upgrade()).map(|session| { let _ = session; });
+                    user.session.write().await.take().and_then(|w| w.upgrade()).map(|_| ());
                     serde_json::json!({"ok": true, "user_id": uid})
-                }.await;
+                } else {
+                    serde_json::json!({"error": "user not found", "user_id": uid})
+                };
                 let _ = tx.send(Ok(result));
             });
             rx.recv_timeout(runtime_state_query_timeout()).unwrap_or(Err("user.kick timeout".to_string()))
@@ -357,7 +350,7 @@ fn server_state_query_dispatch(
             let rid = room_id.to_string();
             let ep = endpoint.map(|e| e.to_string());
             spawn_on_runtime(async move {
-                let result = s.create_empty_room(&rid, ep.as_deref()).await;
+                let result = s.create_empty_room(&rid, ep.clone(), false).await;
                 let _ = tx.send(result);
             });
             rx.recv_timeout(runtime_state_query_timeout()).unwrap_or(Err("room.create_empty timeout".to_string()))
