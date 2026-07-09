@@ -23,4 +23,5 @@ pub mod state;
 mod orig;
 
 // ── Re-exports for backward compatibility ──
+pub use config::*;
 pub use orig::*;

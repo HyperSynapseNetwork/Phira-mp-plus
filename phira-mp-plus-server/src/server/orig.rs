@@ -18,7 +18,7 @@ use std::{
 };
 use tokio::{
     net::TcpListener,
-    sync::{mpsc, Notify, RwLock, Semaphore},
+    sync::{mpsc, Notify, Semaphore},
 };
 use tracing::{info, trace, warn};
 use uuid::Uuid;
@@ -28,62 +28,9 @@ const BENCHMARK_QUEUE_CAPACITY: usize = 1;
 const ROOM_METADATA_REFRESH_CONCURRENCY: usize = 8;
 const CONNECTION_LIMITER_CLEANUP_SECS: u64 = 60;
 
-/// Chart information from the Phira API
-#[derive(Debug, Deserialize, Clone)]
-pub struct Chart {
-    pub id: i32,
-    pub name: String,
-}
-
-/// Record information from the Phira API
-#[derive(Debug, Deserialize, Serialize, Clone)]
-pub struct Record {
-    pub id: i32,
-    pub player: i32,
-    pub score: i32,
-    pub perfect: i32,
-    pub good: i32,
-    pub bad: i32,
-    pub miss: i32,
-    pub max_combo: i32,
-    pub accuracy: f32,
-    pub full_combo: bool,
-    pub std: f32,
-    pub std_score: f32,
-}
-
-pub type SafeMap<K, V> = RwLock<HashMap<K, V>>;
-
-pub(crate) fn normalize_phira_api_endpoint(value: &str) -> Result<String, String> {
-    let endpoint = value.trim().trim_end_matches('/').to_string();
-    if endpoint.is_empty() {
-        return Err("phira_api_endpoint cannot be empty".to_string());
-    }
-    let url =
-        reqwest::Url::parse(&endpoint).map_err(|e| format!("invalid phira_api_endpoint: {e}"))?;
-    match url.scheme() {
-        "http" | "https" => Ok(endpoint),
-        other => Err(format!("unsupported phira_api_endpoint scheme: {other}")),
-    }
-}
-
-pub(crate) fn parse_room_endpoint_value(value: &str) -> Result<Option<String>, String> {
-    let raw = value.trim();
-    if raw.is_empty()
-        || raw.eq_ignore_ascii_case("default")
-        || raw.eq_ignore_ascii_case("global")
-        || raw.eq_ignore_ascii_case("none")
-        || raw.eq_ignore_ascii_case("null")
-        || raw.eq_ignore_ascii_case("clear")
-        || raw == "全局"
-        || raw == "默认"
-        || raw == "清除"
-    {
-        Ok(None)
-    } else {
-        normalize_phira_api_endpoint(raw).map(Some)
-    }
-}
+// Import types/functions that moved to sub-modules
+use super::config::{Chart, IdMap, Record, SafeMap};
+use super::config::{normalize_phira_api_endpoint, parse_room_endpoint_value};
 
 /// Backoff 获取 tokio RwLock 读锁（同步上下文使用，如 Web API 的 try_read 路径）
 ///
@@ -115,7 +62,6 @@ macro_rules! read_lock {
         }
     }};
 }
-pub type IdMap<V> = SafeMap<Uuid, V>;
 
 /// Phira-mp+ 增强配置（支持 YAML 文件、环境变量、CLI 参数三层覆盖）
 /// Hot-reloadable runtime configuration subset.
