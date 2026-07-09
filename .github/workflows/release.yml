@@ -83,9 +83,10 @@ jobs:
       - run: |
           cd phira-mp-plus-server/tests/test-plugin
           cargo build --target wasm32-unknown-unknown --release
+          mkdir -p ../../../target/release
           wasm-tools component new \
             target/wasm32-unknown-unknown/release/test_plugin.wasm \
-            -o ../../target/release/test-plugin.component.wasm
+            -o ../../../target/release/test-plugin.component.wasm
       - uses: actions/upload-artifact@v4
         with:
           name: phira-mp-plus-server-plugins-linux
