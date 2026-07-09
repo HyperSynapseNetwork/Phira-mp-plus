@@ -314,6 +314,26 @@ RUST_LOG=debug ./phira-mp-plus-server
 | `wasm_runtime.allow_private_network` | `bool` | `false` | 是否允许插件访问私有网段地址；默认关闭以降低 SSRF 风险。 |
 | `wasm_runtime.max_event_concurrency` | `usize` | `100` | 插件事件处理最大并发数。 |
 
+## jemalloc 内存分配器
+
+Linux 下使用 `tikv-jemallocator` 替代 musl/glibc 默认分配器，并启用以下优化默认值：
+
+| 选项 | 值 | 说明 |
+|------|----|------|
+| `background_thread` | `true` | 后台线程异步归还内存页，减少应用停顿 |
+| `dirty_decay_ms` | `5000` | 脏页 5 秒未使用即归还 OS（默认 10 秒） |
+| `muzzy_decay_ms` | `5000` | 模糊页 5 秒未使用即归还 OS（默认 10 秒） |
+
+可通过 `MALLOC_CONF` 环境变量覆盖：
+
+```bash
+# 还原为 jemalloc 出厂默认值
+MALLOC_CONF=background_thread:false,dirty_decay_ms:10000,muzzy_decay_ms:10000 ./phira-mp-plus-server
+
+# 更激进：3 秒回收 + 打印统计
+MALLOC_CONF=background_thread:true,dirty_decay_ms:3000,muzzy_decay_ms:3000,stats_print:true ./phira-mp-plus-server
+```
+
 ## 数据文件路径
 
 | 路径 | 说明 |

@@ -73,8 +73,24 @@ struct Args {
     config: String,
 }
 
+/// 在 Linux 下提前配置 jemalloc 以更快地归还空闲内存给 OS。
+/// 可通过环境变量 `MALLOC_CONF` 覆盖（例如 `MALLOC_CONF=background_thread:false`）。
+fn configure_jemalloc() {
+    #[cfg(target_os = "linux")]
+    {
+        // 仅在用户未显式设置 MALLOC_CONF 时使用优化的默认值
+        if std::env::var("MALLOC_CONF").is_err() {
+            std::env::set_var(
+                "MALLOC_CONF",
+                "background_thread:true,dirty_decay_ms:5000,muzzy_decay_ms:5000",
+            );
+        }
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
+    configure_jemalloc();
     let terminal = TerminalProfile::detect();
     terminal.apply_environment();
     let args = Args::parse();
