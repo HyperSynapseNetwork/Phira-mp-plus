@@ -20,8 +20,8 @@ use tokio::sync::RwLock;
 use uuid::Uuid;
 
 pub const DEFAULT_SIMULATION_SEED: u64 = 114_514;
-const MAX_SHADOW_USERS: usize = 50_000;
-const MAX_SHADOW_ROOMS: usize = 10_000;
+const MAX_SHADOW_USERS: usize = 5_000;
+const MAX_SHADOW_ROOMS: usize = 2_000;
 const MAX_ROOM_MEMBERS: usize = 16;
 const MAX_EVENT_LOG: usize = 256;
 const MAX_SUITE_REPORTS: usize = 32;
@@ -425,6 +425,8 @@ impl SimulationPreset {
             auto_tick: true,
             tick_interval_ms: 1_000,
             persist_every_ticks: 0,
+            max_shadow_users: 0,
+            max_shadow_rooms: 0,
         }
     }
 }
@@ -453,6 +455,10 @@ pub struct SimulationConfig {
     /// 0 means disabled. When enabled, the CLI runner emits simulation.snapshot
     /// events every N ticks so PersistenceWorker can write mp_sim_events.
     pub persist_every_ticks: u64,
+    /// Shadow world user cap. 0 uses MAX_SHADOW_USERS default.
+    pub max_shadow_users: usize,
+    /// Shadow world room cap. 0 uses MAX_SHADOW_ROOMS default.
+    pub max_shadow_rooms: usize,
 }
 
 impl SimulationConfig {
@@ -497,6 +503,14 @@ impl SimulationConfig {
             "scenario" | "profile" | "mode" | "workload" => {
                 self.scenario = SimulationScenario::parse(value)
                     .ok_or_else(|| format!("unknown simulation scenario: {value}"))?;
+            }
+            "max_users" | "max_shadow_users" => {
+                self.max_shadow_users = value.parse::<usize>()
+                    .map_err(|_| "max_shadow_users must be usize".to_string())?;
+            }
+            "max_rooms" | "max_shadow_rooms" => {
+                self.max_shadow_rooms = value.parse::<usize>()
+                    .map_err(|_| "max_shadow_rooms must be usize".to_string())?;
             }
             other => return Err(format!("unknown simulation option: {other}")),
         }
@@ -1243,8 +1257,10 @@ fn now_ms() -> i64 {
 }
 
 fn build_shadow_world(run_id: Uuid, config: &SimulationConfig) -> SimulationWorld {
-    let users_materialized = config.users.min(MAX_SHADOW_USERS);
-    let rooms_materialized = config.rooms.min(MAX_SHADOW_ROOMS);
+    let max_users = if config.max_shadow_users > 0 { config.max_shadow_users } else { MAX_SHADOW_USERS };
+    let max_rooms = if config.max_shadow_rooms > 0 { config.max_shadow_rooms } else { MAX_SHADOW_ROOMS };
+    let users_materialized = config.users.min(max_users);
+    let rooms_materialized = config.rooms.min(max_rooms);
     let seed_offset = (config.seed % 10_000) as i32;
     let mut users = Vec::with_capacity(users_materialized);
     let mut rooms = Vec::with_capacity(rooms_materialized);
