@@ -106,7 +106,7 @@ impl PluginHttpServer {
         let app = Router::new()
             .route("/api/events", get(general_sse_handler))
             .route("/api/ws", get(websocket::handler))
-            .route("/newapi/rooms/listen", get(plugin_sse_handler))
+            .route("/api/rooms/listen", get(plugin_sse_handler))
             .route("/{*path}", any(dynamic_handler))
             .layer(CorsLayer::permissive())
             .with_state(state);
@@ -213,7 +213,7 @@ fn sse_response(stream: sse::EventStream, interval: Duration) -> Response {
 async fn plugin_sse_handler(
     State(state): State<Arc<HttpAppState>>,
 ) -> Response {
-    let config = state.sse_streams.read().await.get("/newapi/rooms/listen")
+    let config = state.sse_streams.read().await.get("/api/rooms/listen")
         .cloned();
     let pm = Arc::clone(&state.plugin_manager);
     let rx = state.events.subscribe_general();
