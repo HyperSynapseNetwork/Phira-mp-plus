@@ -9,7 +9,7 @@ use tokio::sync::broadcast;
 use tokio_stream::wrappers::errors::BroadcastStreamRecvError;
 use tokio_stream::wrappers::BroadcastStream;
 
-const CHANNEL_CAPACITY: usize = 1024;
+const CHANNEL_CAPACITY: usize = 512;
 
 pub type EventStream = Pin<Box<dyn Stream<Item = Result<Event, Infallible>> + Send>>;
 

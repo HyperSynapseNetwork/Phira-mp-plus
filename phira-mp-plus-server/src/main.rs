@@ -219,11 +219,11 @@ async fn main() -> Result<()> {
 fn optional_channel<T>(
     enabled: bool,
 ) -> (
-    Option<mpsc::UnboundedSender<T>>,
-    Option<mpsc::UnboundedReceiver<T>>,
+    Option<mpsc::Sender<T>>,
+    Option<mpsc::Receiver<T>>,
 ) {
     if enabled {
-        let (tx, rx) = mpsc::unbounded_channel();
+        let (tx, rx) = mpsc::channel(1024);
         (Some(tx), Some(rx))
     } else {
         (None, None)

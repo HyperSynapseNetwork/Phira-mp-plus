@@ -125,9 +125,9 @@ impl Drop for TerminalSession {
 }
 
 pub fn run_tui(
-    cmd_tx: mpsc::UnboundedSender<String>,
-    mut out_rx: mpsc::UnboundedReceiver<String>,
-    mut log_rx: mpsc::UnboundedReceiver<String>,
+    cmd_tx: mpsc::Sender<String>,
+    mut out_rx: mpsc::Receiver<String>,
+    mut log_rx: mpsc::Receiver<String>,
     capabilities: TuiCapabilities,
 ) -> io::Result<()> {
     let _session = match TerminalSession::enter(capabilities) {
@@ -169,7 +169,7 @@ struct TuiApp {
     cursor_pos: usize,
     history: Vec<String>,
     history_idx: Option<usize>,
-    cmd_tx: mpsc::UnboundedSender<String>,
+    cmd_tx: mpsc::Sender<String>,
     running: bool,
     last_wrap_width: usize,
     last_page_height: usize,
@@ -192,7 +192,7 @@ fn completion_prefix(before_cursor: &str) -> &str {
 }
 
 impl TuiApp {
-    fn new(cmd_tx: mpsc::UnboundedSender<String>, colors: bool, plain_ui: bool) -> Self {
+    fn new(cmd_tx: mpsc::Sender<String>, colors: bool, plain_ui: bool) -> Self {
         Self {
             output_lines: Vec::with_capacity(1024),
             scroll_from_bottom: 0,
@@ -214,8 +214,8 @@ impl TuiApp {
     fn run_loop(
         &mut self,
         terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
-        out_rx: &mut mpsc::UnboundedReceiver<String>,
-        log_rx: &mut mpsc::UnboundedReceiver<String>,
+        out_rx: &mut mpsc::Receiver<String>,
+        log_rx: &mut mpsc::Receiver<String>,
     ) -> io::Result<()> {
         self.add_output(format!(
             "Phira-mp+ v{} 管理控制台 — 输入 help 查看命令",
@@ -329,7 +329,7 @@ impl TuiApp {
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         match key.code {
             KeyCode::Char('c') if ctrl => {
-                let _ = self.cmd_tx.send("exit".to_string());
+                let _ = self.cmd_tx.try_send("exit".to_string());
                 self.add_output("> exit".to_string());
                 self.add_output("  ⟳ 正在关闭服务器...".to_string());
                 self.running = false;
@@ -522,7 +522,7 @@ impl TuiApp {
             self.history_idx = None;
             self.scroll_from_bottom = 0;
             self.add_output(format!("> {cmd}"));
-            let _ = self.cmd_tx.send(cmd);
+            let _ = self.cmd_tx.try_send(cmd);
         }
         self.input.clear();
         self.cursor_pos = 0;
@@ -973,17 +973,17 @@ fn pad_cells(input: &str, width: usize) -> String {
 
 /// Line-oriented fallback used when stdin/stdout are redirected or not TTYs.
 pub fn run_stdin_cli(
-    cmd_tx: mpsc::UnboundedSender<String>,
-    out_rx: mpsc::UnboundedReceiver<String>,
+    cmd_tx: mpsc::Sender<String>,
+    out_rx: mpsc::Receiver<String>,
 ) {
-    let (_log_tx, log_rx) = mpsc::unbounded_channel();
+    let (_log_tx, log_rx) = mpsc::channel(1024);
     run_stdin_cli_with_logs(cmd_tx, out_rx, log_rx, false);
 }
 
 pub fn run_stdin_cli_with_logs(
-    cmd_tx: mpsc::UnboundedSender<String>,
-    mut out_rx: mpsc::UnboundedReceiver<String>,
-    mut log_rx: mpsc::UnboundedReceiver<String>,
+    cmd_tx: mpsc::Sender<String>,
+    mut out_rx: mpsc::Receiver<String>,
+    mut log_rx: mpsc::Receiver<String>,
     ctrl_h_backspace: bool,
 ) {
     let _erase_key_guard = if ctrl_h_backspace {
@@ -1023,7 +1023,7 @@ pub fn run_stdin_cli_with_logs(
                     continue;
                 }
                 let exiting = matches!(command.as_str(), "exit" | "quit" | "q");
-                let _ = cmd_tx.send(command);
+                let _ = cmd_tx.try_send(command);
                 if exiting {
                     break;
                 }

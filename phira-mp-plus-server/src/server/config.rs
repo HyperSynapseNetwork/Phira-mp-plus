@@ -322,4 +322,4 @@ fn default_phira_api() -> String { "https://phira.5wyxi.com".to_string() }
 fn default_proxy_protocol_port() -> u16 { 0 }
 fn default_retention_days() -> u32 { 7 }
 fn default_persistence_retention_days() -> u32 { 30 }
-fn default_runtime_persistence_queue_capacity() -> usize { 4096 }
+fn default_runtime_persistence_queue_capacity() -> usize { 2048 }

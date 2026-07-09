@@ -145,7 +145,7 @@ fn default_enabled() -> bool {
     true
 }
 fn default_queue_capacity() -> usize {
-    8192
+    4096
 }
 fn default_max_items_per_batch() -> usize {
     256

@@ -10,7 +10,7 @@ use tracing_subscriber::{fmt, prelude::*, EnvFilter};
 
 enum ChannelWriter {
     Sink,
-    Channel(mpsc::UnboundedSender<String>, Vec<u8>),
+    Channel(mpsc::Sender<String>, Vec<u8>),
 }
 
 impl Write for ChannelWriter {
@@ -29,7 +29,8 @@ impl Write for ChannelWriter {
             if !pending.is_empty() {
                 let message = String::from_utf8_lossy(pending).into_owned();
                 pending.clear();
-                let _ = tx.send(message);
+                // 使用 try_send 避免 tracing subscriber 阻塞；channel 满时丢弃旧日志
+                let _ = tx.try_send(message);
             }
         }
         Ok(())
@@ -42,7 +43,7 @@ impl Drop for ChannelWriter {
     }
 }
 
-struct ChannelWriterFactory(Option<mpsc::UnboundedSender<String>>);
+struct ChannelWriterFactory(Option<mpsc::Sender<String>>);
 
 impl<'a> fmt::MakeWriter<'a> for ChannelWriterFactory {
     type Writer = ChannelWriter;
@@ -195,7 +196,7 @@ pub fn redact_sensitive(message: &str) -> String {
     result
 }
 
-pub fn init(file_name: &str, tui_tx: Option<mpsc::UnboundedSender<String>>) -> Result<WorkerGuard> {
+pub fn init(file_name: &str, tui_tx: Option<mpsc::Sender<String>>) -> Result<WorkerGuard> {
     let log_dir = Path::new("log");
     if log_dir.exists() && !log_dir.is_dir() {
         anyhow::bail!("'log' exists and is not a directory");

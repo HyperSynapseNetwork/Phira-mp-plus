@@ -194,11 +194,11 @@ fn strip_ansi_for_client(input: &str) -> String {
 pub struct CliHandler {
     state: Arc<PlusServerState>,
     running: Arc<RwLock<bool>>,
-    out_tx: mpsc::UnboundedSender<String>,
+    out_tx: mpsc::Sender<String>,
 }
 
 impl CliHandler {
-    pub fn new(state: Arc<PlusServerState>, out_tx: mpsc::UnboundedSender<String>) -> Self {
+    pub fn new(state: Arc<PlusServerState>, out_tx: mpsc::Sender<String>) -> Self {
         Self {
             state,
             running: Arc::new(RwLock::new(true)),
@@ -212,11 +212,12 @@ impl CliHandler {
 
     /// 发送一行输出到 TUI
     fn out(&self, msg: impl Into<String>) {
-        let _ = self.out_tx.send(msg.into());
+        // 使用 try_send 而非 send: output channel 满时直接丢弃（非关键数据）
+        let _ = self.out_tx.try_send(msg.into());
     }
 
     /// 启动 CLI 处理器（运行在 tokio 任务中）
-    pub async fn start(&self, mut cmd_rx: mpsc::UnboundedReceiver<String>) {
+    pub async fn start(&self, mut cmd_rx: mpsc::Receiver<String>) {
         info!("CLI management console started");
 
         self.out(String::new());
