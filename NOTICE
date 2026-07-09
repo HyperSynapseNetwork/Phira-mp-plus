@@ -26,17 +26,5 @@ A copy of the Apache License, Version 2.0 is included in LICENSE-APACHE.
 Third-Party Dependencies
 
 This project uses open-source components from the Rust ecosystem.
-A complete list of all 446 third-party crate licenses is available in
+A complete list of all third-party crate licenses is available in
 THIRDPARTY_LICENSES.
-
-Notable dependencies include but are not limited to:
-
-  axum (MIT)               — HTTP framework
-  tokio (MIT)              — Async runtime
-  ratatui (MIT)            — Terminal UI
-  wasmtime (Apache-2.0)   — WASM runtime
-  sqlx (MIT OR Apache-2.0) — PostgreSQL driver
-  crossterm (MIT)          — Terminal manipulation
-  clap (MIT OR Apache-2.0) — CLI argument parser
-  reqwest (MIT OR Apache-2.0) — HTTP client
-  serde (MIT OR Apache-2.0) — Serialization framework
