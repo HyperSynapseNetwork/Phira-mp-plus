@@ -52,16 +52,28 @@ impl WitPluginHost {
     /// Convenience: run an async fn synchronously with panic protection.
     ///
     /// Every WIT host method is sync, but most server operations are async.
-    /// This helper wraps block_on + catch_unwind so a panicking plugin
-    /// call never takes down the host thread.
-    fn block_on_sync<T, F>(&self, f: F) -> Result<T, String>
+    /// This helper accepts an async closure and runs it to completion via
+    /// `block_on`, preferring the current tokio runtime and falling back
+    /// to `futures::executor::block_on` when no tokio context is available
+    /// (e.g. from standalone test threads).
+    ///
+    /// The closure signature directly returns a future (`Fut`) instead of
+    /// requiring an inner `futures::executor::block_on` — this eliminates
+    /// the nested-executor overhead that previously existed.
+    /// `catch_unwind` ensures a panicking plugin call never takes down
+    /// the host thread.
+    fn block_on_sync<T, F, Fut>(&self, f: F) -> Result<T, String>
     where
-        F: FnOnce(&WitHostContext) -> T + Send,
+        F: FnOnce(&WitHostContext) -> Fut + Send,
+        Fut: std::future::Future<Output = T> + Send,
         T: Send,
     {
         let ctx = Arc::clone(&self.ctx);
         std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
-            futures::executor::block_on(async { f(&ctx) })
+            match tokio::runtime::Handle::try_current() {
+                Ok(handle) => handle.block_on(async { f(&ctx).await }),
+                Err(_) => futures::executor::block_on(async { f(&ctx).await }),
+            }
         }))
         .map_err(|_| "WIT host operation panicked — plugin disabled".to_string())
     }
@@ -287,18 +299,18 @@ mod wit_trait_impls {
             query_api_result(self, "user_name", &[serde_json::json!(user_id as i32)])
         }
         fn get_user_extra(&mut self, user_id: u32, key: String) -> types::ApiResult {
-            match self.block_on_sync(|ctx| futures::executor::block_on(
+            match self.block_on_sync(|ctx|
                 ctx.extensions.get_user_extra(user_id as i32, &key)
-            )) {
+            ) {
                 Ok(Some(value)) => types::ApiResult::Ok(types::JsonValue::Text(value)),
                 Ok(None) => types::ApiResult::Ok(types::JsonValue::Null),
                 Err(e) => types::ApiResult::Error(e),
             }
         }
         fn set_user_extra(&mut self, user_id: u32, key: String, value: String) -> types::ApiResult {
-            match self.block_on_sync(|ctx| futures::executor::block_on(
+            match self.block_on_sync(|ctx|
                 ctx.extensions.set_user_extra(user_id as i32, &key, value)
-            )) {
+            ) {
                 Ok(Ok(())) => types::ApiResult::Ok(types::JsonValue::Null),
                 Ok(Err(e)) | Err(e) => types::ApiResult::Error(e),
             }
@@ -307,9 +319,9 @@ mod wit_trait_impls {
             query_api_result(self, "rooms.by_name", &[serde_json::json!(room_id)])
         }
         fn get_room_extra(&mut self, room_id: String, key: String) -> types::ApiResult {
-            match self.block_on_sync(|ctx| futures::executor::block_on(
+            match self.block_on_sync(|ctx|
                 ctx.extensions.get_room_extra(&room_id, &key)
-            )) {
+            ) {
                 Ok(Some(value)) => types::ApiResult::Ok(types::JsonValue::Text(value)),
                 Ok(None) => types::ApiResult::Ok(types::JsonValue::Null),
                 Err(e) => types::ApiResult::Error(e),
@@ -593,9 +605,9 @@ mod wit_trait_impls {
     // ── phira-simulation ──
     impl wit::phira::plugin::phira_simulation::Host for WitPluginHost {
         fn status(&mut self) -> types::ApiResult {
-            let result = self.block_on_sync(|ctx| {
-                futures::executor::block_on(ctx.simulation.status())
-            });
+            let result = self.block_on_sync(|ctx|
+                ctx.simulation.status()
+            );
             match result {
                 Ok(status) => {
                     let json = serde_json::to_value(&status).unwrap_or_default();
@@ -613,7 +625,7 @@ mod wit_trait_impls {
                 if let Some(u) = users { config.users = u as usize; }
                 if let Some(r) = rooms { config.rooms = r as usize; }
                 if let Some(d) = duration { config.duration_secs = d as u64; }
-                futures::executor::block_on(ctx.simulation.start(config))
+                async move { ctx.simulation.start(config).await }
             });
             match result {
                 Ok(status) => {
@@ -624,9 +636,9 @@ mod wit_trait_impls {
             }
         }
         fn stop(&mut self) -> types::ApiResult {
-            let result = self.block_on_sync(|ctx| {
-                futures::executor::block_on(ctx.simulation.stop("stopped via plugin API"))
-            });
+            let result = self.block_on_sync(|ctx|
+                ctx.simulation.stop("stopped via plugin API")
+            );
             match result {
                 Ok(status) => {
                     let json = serde_json::to_value(&status).unwrap_or_default();
@@ -636,9 +648,9 @@ mod wit_trait_impls {
             }
         }
         fn cleanup(&mut self) -> types::ApiResult {
-            let result = self.block_on_sync(|ctx| {
-                futures::executor::block_on(ctx.simulation.cleanup())
-            });
+            let result = self.block_on_sync(|ctx|
+                ctx.simulation.cleanup()
+            );
             match result {
                 Ok(status) => {
                     let json = serde_json::to_value(&status).unwrap_or_default();

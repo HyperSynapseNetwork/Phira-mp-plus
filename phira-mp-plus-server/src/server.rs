@@ -85,13 +85,31 @@ pub(crate) fn parse_room_endpoint_value(value: &str) -> Result<Option<String>, S
     }
 }
 
-/// 自旋获取 tokio RwLock 读锁（同步上下文使用，如 Web API 的 try_read 路径）
+/// Backoff 获取 tokio RwLock 读锁（同步上下文使用，如 Web API 的 try_read 路径）
+///
+/// 替代自旋 yield_now，使用指数退避（1μs → 2μs → 4μs → … → 1ms cap）
+/// 避免在锁竞争时浪费 CPU 并放大尾延迟。
 macro_rules! read_lock {
     ($lock:expr) => {{
+        let mut attempts = 0u32;
         loop {
             match $lock.try_read() {
                 Ok(g) => break g,
-                Err(_) => std::thread::yield_now(),
+                Err(_) => {
+                    attempts += 1;
+                    if attempts > 100 {
+                        warn!(
+                            "read_lock! spinning on {} ({} attempts)",
+                            stringify!($lock),
+                            attempts
+                        );
+                    }
+                    // 指数退避：1μs → 2μs → 4μs → … → 1ms cap
+                    let cap = std::cmp::min(attempts, 10);
+                    let delay_us = 1u64 << cap;
+                    let delay = std::cmp::min(delay_us, 1024);
+                    std::thread::sleep(std::time::Duration::from_micros(delay));
+                }
             }
         }
     }};

@@ -204,6 +204,8 @@ impl RoomCommandGateway {
         }
     }
 
+    const COMMAND_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
     /// Runtime v2 mailbox routing: prefer per-room mailbox, fall back to inline.
     /// Dead code until the command migration activates this path.
     #[allow(dead_code)]
@@ -220,11 +222,12 @@ impl RoomCommandGateway {
     {
         if let Some(tx) = self.room_mailbox_sender(room_id) {
             let (reply, rx) = oneshot::channel();
+            let cmd = build(reply);
             self.mailbox_enqueued.fetch_add(1, Ordering::Relaxed);
-            match tx.send(build(reply)).await {
-                Ok(()) => match rx.await {
-                    Ok(result) => result,
-                    Err(_) => {
+            match tokio::time::timeout(Self::COMMAND_TIMEOUT, tx.send(cmd)).await {
+                Ok(Ok(())) => match tokio::time::timeout(Self::COMMAND_TIMEOUT, rx).await {
+                    Ok(Ok(result)) => result,
+                    Ok(Err(_)) => {
                         self.mailbox_closed.fetch_add(1, Ordering::Relaxed);
                         self.mailbox_fallback.fetch_add(1, Ordering::Relaxed);
                         RoomCommandResult::from_untyped(
@@ -232,9 +235,26 @@ impl RoomCommandGateway {
                             RoomCommandDelivery::FallbackInline,
                         )
                     }
+                    Err(_) => {
+                        // Reply timed out — command may still be executing.
+                        // Fall back to inline to avoid hanging caller.
+                        self.mailbox_failed.fetch_add(1, Ordering::Relaxed);
+                        RoomCommandResult::from_untyped(
+                            inline().await,
+                            RoomCommandDelivery::FallbackInline,
+                        )
+                    }
                 },
-                Err(_) => {
+                Ok(Err(_)) => {
                     self.mailbox_closed.fetch_add(1, Ordering::Relaxed);
+                    self.mailbox_fallback.fetch_add(1, Ordering::Relaxed);
+                    RoomCommandResult::from_untyped(
+                        inline().await,
+                        RoomCommandDelivery::FallbackInline,
+                    )
+                }
+                Err(_) => {
+                    // Send timed out — mailbox channel full or worker stuck.
                     self.mailbox_fallback.fetch_add(1, Ordering::Relaxed);
                     RoomCommandResult::from_untyped(
                         inline().await,
@@ -261,23 +281,38 @@ impl RoomCommandGateway {
     {
         if let Some(tx) = self.room_mailbox_sender(room_id) {
             let (reply, rx) = oneshot::channel();
+            let cmd = build(reply);
             self.mailbox_enqueued.fetch_add(1, Ordering::Relaxed);
-            match tx.send(build(reply)).await {
-                Ok(()) => match rx.await {
-                    Ok(result) => result,
-                    Err(_) => {
+            match tokio::time::timeout(Self::COMMAND_TIMEOUT, tx.send(cmd)).await {
+                Ok(Ok(())) => match tokio::time::timeout(Self::COMMAND_TIMEOUT, rx).await {
+                    Ok(Ok(result)) => result,
+                    Ok(Err(_)) => {
                         self.mailbox_closed.fetch_add(1, Ordering::Relaxed);
                         self.mailbox_failed.fetch_add(1, Ordering::Relaxed);
                         RoomCommandResult::mailbox_error(
                             "mailbox reply lost; inline fallback disabled for this command"
                         )
                     }
+                    Err(_) => {
+                        // Reply timed out; command may still be executing.
+                        self.mailbox_failed.fetch_add(1, Ordering::Relaxed);
+                        RoomCommandResult::mailbox_error(
+                            "mailbox reply timed out; inline fallback disabled for this command"
+                        )
+                    }
                 },
-                Err(_) => {
+                Ok(Err(_)) => {
                     self.mailbox_closed.fetch_add(1, Ordering::Relaxed);
                     self.mailbox_failed.fetch_add(1, Ordering::Relaxed);
                     RoomCommandResult::mailbox_error(
                         "mailbox send failed; inline fallback disabled for this command"
+                    )
+                }
+                Err(_) => {
+                    // Send timed out — mailbox channel full or worker stuck.
+                    self.mailbox_failed.fetch_add(1, Ordering::Relaxed);
+                    RoomCommandResult::mailbox_error(
+                        "mailbox send timed out; inline fallback disabled for this command"
                     )
                 }
             }
@@ -307,18 +342,33 @@ impl RoomCommandGateway {
     {
         if let Some(tx) = self.room_mailbox_sender(room_id) {
             let (reply, rx) = oneshot::channel();
+            let cmd = build(reply);
             self.mailbox_enqueued.fetch_add(1, Ordering::Relaxed);
-            match tx.send(build(reply)).await {
-                Ok(()) => match rx.await {
-                    Ok(result) => result,
-                    Err(_) => {
+            match tokio::time::timeout(Self::COMMAND_TIMEOUT, tx.send(cmd)).await {
+                Ok(Ok(())) => match tokio::time::timeout(Self::COMMAND_TIMEOUT, rx).await {
+                    Ok(Ok(result)) => result,
+                    Ok(Err(_)) => {
                         self.mailbox_closed.fetch_add(1, Ordering::Relaxed);
                         self.mailbox_failed.fetch_add(1, Ordering::Relaxed);
                         RoomCommandResult::mailbox_error("room command mailbox reply lost after enqueue; refused inline retry for non-idempotent command")
                     }
+                    Err(_) => {
+                        // Reply timed out; command may still be executing —
+                        // refuse inline retry for non-idempotent command.
+                        self.mailbox_failed.fetch_add(1, Ordering::Relaxed);
+                        RoomCommandResult::mailbox_error("room command mailbox reply timed out; refused inline retry for non-idempotent command")
+                    }
                 },
-                Err(_) => {
+                Ok(Err(_)) => {
                     self.mailbox_closed.fetch_add(1, Ordering::Relaxed);
+                    self.mailbox_fallback.fetch_add(1, Ordering::Relaxed);
+                    RoomCommandResult::from_untyped(
+                        inline().await,
+                        RoomCommandDelivery::FallbackInline,
+                    )
+                }
+                Err(_) => {
+                    // Send timed out — command was never enqueued, so inline is safe.
                     self.mailbox_fallback.fetch_add(1, Ordering::Relaxed);
                     RoomCommandResult::from_untyped(
                         inline().await,
