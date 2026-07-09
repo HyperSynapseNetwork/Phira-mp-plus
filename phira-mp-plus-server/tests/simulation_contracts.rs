@@ -302,7 +302,6 @@ async fn simulation_cleanup_mid_run_resets_all_state() {
         rooms: 1,
         duration_secs: 10,
         seed: 100,
-        ..SimulationConfig::default()
 
     ..Default::default()
     };
@@ -330,7 +329,6 @@ async fn simulation_multiple_stop_cleanup_cycles() {
             rooms: 2,
             duration_secs: 10,
             seed: 42 + cycle as u64,
-            ..SimulationConfig::default()
 
         ..Default::default()
         };
@@ -367,7 +365,6 @@ async fn simulation_cleanup_no_side_effects_on_real_state() {
         rooms: 3,
         duration_secs: 30,
         seed: 1,
-        ..SimulationConfig::default()
 
     ..Default::default()
     };
@@ -378,7 +375,6 @@ async fn simulation_cleanup_no_side_effects_on_real_state() {
         rooms: 10,
         duration_secs: 60,
         seed: 2,
-        ..SimulationConfig::default()
 
     ..Default::default()
     };
