@@ -357,15 +357,9 @@ pub fn track_player(user_id: i32, user_name: &str) {
 
 async fn init_player_tracker(
     _state: &PlusServerState,
-    http: &Option<Arc<PluginHttpServer>>,
+    _http: &Option<Arc<PluginHttpServer>>,
     pm: &PluginManager,
 ) {
-    if let Some(srv) = http {
-        srv.register_route_sync(
-            "/api/players/count",
-            Arc::new(|_, _| Ok(serde_json::json!({"count": PLAYERS.lock().unwrap().len()}))),
-        );
-    }
     let _ = pm
         .register_cli_command(crate::plugin::CliCommand {
             name: "player-count".into(),
