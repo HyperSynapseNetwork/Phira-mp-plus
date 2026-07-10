@@ -34,7 +34,6 @@
 
 ## 快速开始
 
-> **编译特性**: 默认只编译 `postgres` 支持。WASM 插件系统需要 `--features wit-bindgen` 或 `--features plugin-system,wit-bindgen`。`cargo build --release --features wit-bindgen` 编译包含完整插件系统的二进制。
 
 确保已安装当前稳定版 Rust 工具链：
 
@@ -298,13 +297,6 @@ curl -N http://127.0.0.1:12347/rooms/listen
 详细文档见 [docs/plugin-dev.md](docs/plugin-dev.md)。
 
 WASM 插件通过 `phira:host/api` 和 `phira:host/log` 等导入函数与宿主通信。
-
-## 构建特性
-
-| 特性 | 说明 | 默认 |
-|------|------|------|
-| `plugin-system` | WASM 插件支持（wasmtime） | 是 |
-| `postgres` | PostgreSQL 统一持久化 | 是 |
 
 ## 配置参考
 
