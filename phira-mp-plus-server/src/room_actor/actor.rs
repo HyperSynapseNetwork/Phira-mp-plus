@@ -39,7 +39,7 @@ impl RoomSnapshot {
 /// Room Actor — 每个房间一个，持有状态并处理命令。
 pub struct RoomActor {
     room: Arc<Room>,
-    state: Arc<PlusServerState>,
+    pub(super) state: Arc<PlusServerState>,
     latest_snapshot: RoomSnapshot,
 }
 

@@ -228,28 +228,15 @@ impl RoomCommandGateway {
         }
     }
 
-    /// Try to send a command through the mailbox, retrying once on timeout.
-    /// Returns `None` if the mailbox is unavailable or both attempts fail.
+    /// Try to send a command through the mailbox.
+    /// Returns `None` if the mailbox is unavailable.
     async fn try_mailbox_send<Build>(
         &self,
         room_id: &str,
         build: Build,
     ) -> Option<RoomCommandResult>
     where
-        Build: Fn(oneshot::Sender<RoomCommandResult>) -> RoomActorCommand,
-    {
-        self.try_mailbox_send_inner(room_id, &build).await
-            .or_else(|| self.try_mailbox_send_inner(room_id, &build).await)
-    }
-
-    /// Inner helper: single attempt at sending through the mailbox.
-    async fn try_mailbox_send_inner<Build>(
-        &self,
-        room_id: &str,
-        build: &Build,
-    ) -> Option<RoomCommandResult>
-    where
-        Build: Fn(oneshot::Sender<RoomCommandResult>) -> RoomActorCommand,
+        Build: FnOnce(oneshot::Sender<RoomCommandResult>) -> RoomActorCommand,
     {
         let tx = self.room_mailbox_sender(room_id)?;
         let (reply, rx) = oneshot::channel();
@@ -265,7 +252,6 @@ impl RoomCommandGateway {
                 }
                 Err(_) => {
                     self.mailbox_failed.fetch_add(1, Ordering::Relaxed);
-                    self.mailbox_retried.fetch_add(1, Ordering::Relaxed);
                     None
                 }
             },
@@ -275,7 +261,6 @@ impl RoomCommandGateway {
             }
             Err(_) => {
                 self.mailbox_failed.fetch_add(1, Ordering::Relaxed);
-                self.mailbox_retried.fetch_add(1, Ordering::Relaxed);
                 None
             }
         }
