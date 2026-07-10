@@ -710,7 +710,7 @@ impl PlusServerState {
         let _ = self.persistence_worker.enqueue(
             crate::persistence::message::PersistenceEvent::ServerEvent {
                 kind: event.event_type().to_string(),
-                payload: event.clone().inner(),
+                payload: Arc::new(event.clone().inner()),
                 simulation: false,
             },
         ).await;

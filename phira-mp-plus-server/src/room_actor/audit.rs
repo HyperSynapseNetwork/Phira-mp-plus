@@ -26,6 +26,7 @@ impl RoomCommandGateway {
             mailbox_enqueued: self.mailbox_enqueued.load(Ordering::Relaxed),
             mailbox_completed: self.mailbox_completed.load(Ordering::Relaxed),
             mailbox_failed: self.mailbox_failed.load(Ordering::Relaxed),
+            mailbox_retried: self.mailbox_retried.load(Ordering::Relaxed),
             mailbox_fallback: self.mailbox_fallback.load(Ordering::Relaxed),
             mailbox_closed: self.mailbox_closed.load(Ordering::Relaxed),
             room_mailboxes: self.room_mailboxes.read().map(|m| m.len()).unwrap_or(0),

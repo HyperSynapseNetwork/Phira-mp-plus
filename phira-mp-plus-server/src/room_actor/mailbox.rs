@@ -111,16 +111,17 @@ impl RoomCommandGateway {
                 return;
             };
             // Look up the room and create RoomActor.
-            let actor = {
+            let room = {
                 let rooms = state.rooms.read().await;
                 rooms.values()
                     .find(|r| r.id.to_string() == worker_room_id)
-                    .map(|room| RoomActor::new(room.clone(), state.clone()))
+                    .map(Arc::clone)
             };
-            let Some(mut actor) = actor else {
+            let Some(room) = room else {
                 gateway.mailbox_closed.fetch_add(1, Ordering::Relaxed);
                 return;
             };
+            let mut actor = RoomActor::new(room.clone(), state.clone()).await;
             // Publish initial snapshot.
             let snapshot = actor.snapshot().clone();
             if let Ok(mut snapshots) = gateway.snapshots.write() {
@@ -235,51 +236,48 @@ impl RoomCommandGateway {
         build: Build,
     ) -> Option<RoomCommandResult>
     where
-        Build: FnOnce(oneshot::Sender<RoomCommandResult>) -> RoomActorCommand,
+        Build: Fn(oneshot::Sender<RoomCommandResult>) -> RoomActorCommand,
+    {
+        self.try_mailbox_send_inner(room_id, &build).await
+            .or_else(|| self.try_mailbox_send_inner(room_id, &build).await)
+    }
+
+    /// Inner helper: single attempt at sending through the mailbox.
+    async fn try_mailbox_send_inner<Build>(
+        &self,
+        room_id: &str,
+        build: &Build,
+    ) -> Option<RoomCommandResult>
+    where
+        Build: Fn(oneshot::Sender<RoomCommandResult>) -> RoomActorCommand,
     {
         let tx = self.room_mailbox_sender(room_id)?;
         let (reply, rx) = oneshot::channel();
         let cmd = build(reply);
         self.mailbox_enqueued.fetch_add(1, Ordering::Relaxed);
 
-        // First attempt
-        match tokio::time::timeout(Self::COMMAND_TIMEOUT, tx.send(cmd)).await {
-            Ok(Ok(())) => {
-                match tokio::time::timeout(Self::COMMAND_TIMEOUT, rx).await {
-                    Ok(Ok(result)) => return Some(result),
-                    Ok(Err(_)) => {
-                        self.mailbox_closed.fetch_add(1, Ordering::Relaxed);
-                        return None;
-                    }
-                    Err(_) => {
-                        // Reply timed out — retry once
-                        self.mailbox_failed.fetch_add(1, Ordering::Relaxed);
-                        self.mailbox_retried.fetch_add(1, Ordering::Relaxed);
-                    }
-                }
-            }
-            Ok(Err(_)) => {
-                self.mailbox_closed.fetch_add(1, Ordering::Relaxed);
-                return None;
-            }
-            Err(_) => {
-                // Send timed out — retry once
-                self.mailbox_failed.fetch_add(1, Ordering::Relaxed);
-                self.mailbox_retried.fetch_add(1, Ordering::Relaxed);
-            }
-        }
-
-        // Retry: re-send command through mailbox
-        let tx = self.room_mailbox_sender(room_id)?;
-        let (reply, rx) = oneshot::channel();
-        let cmd = build(reply);
-        self.mailbox_enqueued.fetch_add(1, Ordering::Relaxed);
         match tokio::time::timeout(Self::COMMAND_TIMEOUT, tx.send(cmd)).await {
             Ok(Ok(())) => match tokio::time::timeout(Self::COMMAND_TIMEOUT, rx).await {
                 Ok(Ok(result)) => Some(result),
-                _ => None,
+                Ok(Err(_)) => {
+                    self.mailbox_closed.fetch_add(1, Ordering::Relaxed);
+                    None
+                }
+                Err(_) => {
+                    self.mailbox_failed.fetch_add(1, Ordering::Relaxed);
+                    self.mailbox_retried.fetch_add(1, Ordering::Relaxed);
+                    None
+                }
             },
-            _ => None,
+            Ok(Err(_)) => {
+                self.mailbox_closed.fetch_add(1, Ordering::Relaxed);
+                None
+            }
+            Err(_) => {
+                self.mailbox_failed.fetch_add(1, Ordering::Relaxed);
+                self.mailbox_retried.fetch_add(1, Ordering::Relaxed);
+                None
+            }
         }
     }
 

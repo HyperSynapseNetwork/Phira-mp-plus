@@ -101,7 +101,7 @@ where
 {
     let tx = {
         let guard = user.session.read().await;
-        guard.as_ref().and_then(Weak::upgrade).map(|s| s.actor_tx.clone())
+        guard.as_ref().and_then(Weak::upgrade).and_then(|s| s.actor_tx.get().cloned())
     };
     let tx = match tx {
         Some(tx) => tx,
@@ -149,7 +149,7 @@ async fn handle_chat(user: Arc<User>, _category: SessionCategory, content: Strin
         let _ = user.server.persistence_worker.enqueue(
             crate::persistence::message::PersistenceEvent::ServerEvent {
                 kind: "chat.message".to_string(),
-                payload: serde_json::json!({"room_id": room.id.to_string(), "user_id": user.id, "user_name": user.name.clone(), "message": content.clone()}),
+                payload: Arc::new(serde_json::json!({"room_id": room.id.to_string(), "user_id": user.id, "user_name": user.name.clone(), "message": content.clone()}),
                 simulation: false,
             },
         ).await;
@@ -164,7 +164,7 @@ async fn handle_chat(user: Arc<User>, _category: SessionCategory, content: Strin
 
 pub(crate) async fn route_chat(user: Arc<User>, category: SessionCategory, msg: String) -> Option<ServerCommand> {
     route_or_fallback(
-        &user,
+        &user.clone(),
         SessionActorCmd::Chat { user: Arc::clone(&user), category, msg: msg.clone(), reply: tokio::sync::oneshot::channel().0 },
         || handle_chat(user, category, msg),
     ).await
@@ -180,7 +180,7 @@ async fn handle_lock(user: Arc<User>, lock: bool) -> Option<ServerCommand> {
 
 pub(crate) async fn route_lock(user: Arc<User>, lock: bool) -> Option<ServerCommand> {
     route_or_fallback(
-        &user,
+        &user.clone(),
         SessionActorCmd::Lock { user: Arc::clone(&user), lock, reply: tokio::sync::oneshot::channel().0 },
         || handle_lock(user, lock),
     ).await
@@ -194,7 +194,7 @@ async fn handle_cycle(user: Arc<User>, cycle: bool) -> Option<ServerCommand> {
 
 pub(crate) async fn route_cycle(user: Arc<User>, cycle: bool) -> Option<ServerCommand> {
     route_or_fallback(
-        &user,
+        &user.clone(),
         SessionActorCmd::Cycle { user: Arc::clone(&user), cycle, reply: tokio::sync::oneshot::channel().0 },
         || handle_cycle(user, cycle),
     ).await
@@ -210,7 +210,7 @@ async fn handle_leave(user: Arc<User>, category: SessionCategory) -> Option<Serv
 
 pub(crate) async fn route_leave(user: Arc<User>, category: SessionCategory) -> Option<ServerCommand> {
     route_or_fallback(
-        &user,
+        &user.clone(),
         SessionActorCmd::Leave { user: Arc::clone(&user), category, reply: tokio::sync::oneshot::channel().0 },
         || handle_leave(user, category),
     ).await
@@ -226,7 +226,7 @@ async fn handle_create(user: Arc<User>, id: RoomId) -> Option<ServerCommand> {
 
 pub(crate) async fn route_create(user: Arc<User>, id: RoomId) -> Option<ServerCommand> {
     route_or_fallback(
-        &user,
+        &user.clone(),
         SessionActorCmd::Create { user: Arc::clone(&user), id: id.clone(), reply: tokio::sync::oneshot::channel().0 },
         || handle_create(user, id),
     ).await
@@ -240,7 +240,7 @@ async fn handle_join(user: Arc<User>, category: SessionCategory, id: RoomId, mon
 
 pub(crate) async fn route_join(user: Arc<User>, category: SessionCategory, id: RoomId, monitor: bool) -> Option<ServerCommand> {
     route_or_fallback(
-        &user,
+        &user.clone(),
         SessionActorCmd::Join { user: Arc::clone(&user), category, id: id.clone(), monitor, reply: tokio::sync::oneshot::channel().0 },
         || handle_join(user, category, id, monitor),
     ).await
@@ -256,7 +256,7 @@ async fn handle_select_chart(user: Arc<User>, id: i32) -> Option<ServerCommand> 
 
 pub(crate) async fn route_select_chart(user: Arc<User>, id: i32) -> Option<ServerCommand> {
     route_or_fallback(
-        &user,
+        &user.clone(),
         SessionActorCmd::SelectChart { user: Arc::clone(&user), id, reply: tokio::sync::oneshot::channel().0 },
         || handle_select_chart(user, id),
     ).await
@@ -272,7 +272,7 @@ async fn handle_request_start(user: Arc<User>) -> Option<ServerCommand> {
 
 pub(crate) async fn route_request_start(user: Arc<User>) -> Option<ServerCommand> {
     route_or_fallback(
-        &user,
+        &user.clone(),
         SessionActorCmd::RequestStart { user: Arc::clone(&user), reply: tokio::sync::oneshot::channel().0 },
         || handle_request_start(user),
     ).await
@@ -288,7 +288,7 @@ async fn handle_ready(user: Arc<User>) -> Option<ServerCommand> {
 
 pub(crate) async fn route_ready(user: Arc<User>) -> Option<ServerCommand> {
     route_or_fallback(
-        &user,
+        &user.clone(),
         SessionActorCmd::Ready { user: Arc::clone(&user), reply: tokio::sync::oneshot::channel().0 },
         || handle_ready(user),
     ).await
@@ -302,7 +302,7 @@ async fn handle_cancel_ready(user: Arc<User>) -> Option<ServerCommand> {
 
 pub(crate) async fn route_cancel_ready(user: Arc<User>) -> Option<ServerCommand> {
     route_or_fallback(
-        &user,
+        &user.clone(),
         SessionActorCmd::CancelReady { user: Arc::clone(&user), reply: tokio::sync::oneshot::channel().0 },
         || handle_cancel_ready(user),
     ).await
@@ -318,7 +318,7 @@ async fn handle_played(user: Arc<User>, id: i32) -> Option<ServerCommand> {
 
 pub(crate) async fn route_played(user: Arc<User>, id: i32) -> Option<ServerCommand> {
     route_or_fallback(
-        &user,
+        &user.clone(),
         SessionActorCmd::Played { user: Arc::clone(&user), id, reply: tokio::sync::oneshot::channel().0 },
         || handle_played(user, id),
     ).await
@@ -332,7 +332,7 @@ async fn handle_abort(user: Arc<User>) -> Option<ServerCommand> {
 
 pub(crate) async fn route_abort(user: Arc<User>) -> Option<ServerCommand> {
     route_or_fallback(
-        &user,
+        &user.clone(),
         SessionActorCmd::Abort { user: Arc::clone(&user), reply: tokio::sync::oneshot::channel().0 },
         || handle_abort(user),
     ).await
