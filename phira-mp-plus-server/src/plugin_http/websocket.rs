@@ -7,7 +7,7 @@
 use super::HttpAppState;
 use axum::{
     extract::ws::{Message, WebSocket, WebSocketUpgrade},
-    extract::State,
+    extract::Extension,
     response::IntoResponse,
 };
 use std::sync::Arc;
@@ -15,7 +15,7 @@ use tokio::sync::broadcast;
 
 pub async fn handler(
     ws: WebSocketUpgrade,
-    State(state): State<Arc<HttpAppState>>,
+    Extension(state): Extension<Arc<HttpAppState>>,
 ) -> impl IntoResponse {
     ws.on_upgrade(move |socket| run(socket, state))
 }

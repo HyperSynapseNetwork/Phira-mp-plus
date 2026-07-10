@@ -7,7 +7,7 @@ mod websocket;
 use crate::server::PlusServerState;
 use crate::plugin::PluginManager;
 use axum::{
-    extract::State,
+    extract::Extension,
     http::{header, HeaderName, HeaderValue, Method, StatusCode, Uri},
     response::{
         sse::{Event as AxumSseEvent, KeepAlive, Sse},
@@ -104,16 +104,16 @@ impl PluginHttpServer {
             sse_streams: Arc::clone(&self.sse_streams),
         });
 
-        // Build router with all routes + state.
-        // SSE streams are registered by plugins at init() time via sse.register_stream.
-        // The handler reads the path from the request URI to find the plugin config.
+        // Build Router<()> with all routes.
+        // State is passed via Extension layer instead of with_state,
+        // so the Router stays as Router<()> and into_make_service() is available.
         let app = Router::new()
             .route("/api/events", get(general_sse_handler))
             .route("/api/ws", get(websocket::handler))
             .route("/api/rooms/listen", get(plugin_sse_handler))
             .route("/{*path}", any(dynamic_handler))
             .layer(CorsLayer::permissive())
-            .with_state(state);
+            .layer(Extension(state));
 
         // Direct HTTP port (no PROXY protocol)
         let address = format!("0.0.0.0:{}", self.port);
@@ -144,7 +144,7 @@ impl PluginHttpServer {
                 info!(%proxy_addr, "HTTP server started (PROXY protocol, X-Forwarded-For trusted)");
                 if let Err(err) = axum::serve(
                     proxy_listener,
-                    proxy_app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+                    proxy_app.into_make_service(),
                 )
                 .await
                 {
@@ -155,7 +155,7 @@ impl PluginHttpServer {
 
         if let Err(err) = axum::serve(
             listener,
-            app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+            app.into_make_service(),
         )
         .await
         {
@@ -191,7 +191,7 @@ pub(super) struct HttpAppState {
     sse_streams: Arc<RwLock<HashMap<String, SseStreamConfig>>>,
 }
 
-async fn general_sse_handler(State(state): State<Arc<HttpAppState>>) -> Response {
+async fn general_sse_handler(Extension(state): Extension<Arc<HttpAppState>>) -> Response {
     sse_response(
         sse::general_stream(state.events.subscribe_general()),
         Duration::from_secs(15),
@@ -216,16 +216,14 @@ fn sse_response(stream: sse::EventStream, interval: Duration) -> Response {
 /// so the plugin can transform it into the HSNPhira v1/v2 format.
 /// Each registered SSE stream has its own route; the path is read from the request URI.
 async fn plugin_sse_handler(
-    State(state): State<Arc<HttpAppState>>,
-    uri: axum::http::Uri,
+    Extension(state): Extension<Arc<HttpAppState>>,
 ) -> Response {
-    let path = uri.path().to_string();
-    let config = state.sse_streams.read().await.get(&path).cloned();
+    let config = state.sse_streams.read().await.get("/api/rooms/listen").cloned();
     let pm = Arc::clone(&state.plugin_manager);
     let rx = state.events.subscribe_general();
 
     let ready = SseEvent::new("ready",
-        serde_json::json!({"stream": path.trim_start_matches('/'), "version": env!("CARGO_PKG_VERSION")}).to_string());
+        serde_json::json!({"stream": "rooms/listen", "version": env!("CARGO_PKG_VERSION")}).to_string());
 
     let stream: sse::EventStream = Box::pin(
         stream::once(async move { Ok(ready.into_axum()) })
@@ -280,7 +278,7 @@ fn plugin_sse_translate(
 }
 
 async fn dynamic_handler(
-    State(state): State<Arc<HttpAppState>>,
+    Extension(state): Extension<Arc<HttpAppState>>,
     method: Method,
     uri: Uri,
     body: Option<Json<Value>>,
