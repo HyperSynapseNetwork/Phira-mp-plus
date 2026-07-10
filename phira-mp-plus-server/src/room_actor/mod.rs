@@ -144,16 +144,37 @@ impl RoomCommandGateway {
         self.owned_locks.read().ok().and_then(|map| map.get(room_id).copied())
     }
 
+    /// Set the owned lock state for a room.
+    pub fn set_room_lock_owned(&self, room_id: &str, locked: bool) {
+        if let Ok(mut locks) = self.owned_locks.write() {
+            locks.insert(room_id.to_string(), locked);
+        }
+    }
+
     /// Check the owned cycle state for a room. Returns None if the room
     /// has not been tracked yet (falls back to Room.cycle).
     pub fn room_cycle_owned(&self, room_id: &str) -> Option<bool> {
         self.owned_cycles.read().ok().and_then(|map| map.get(room_id).copied())
     }
 
+    /// Set the owned cycle state for a room.
+    pub fn set_room_cycle_owned(&self, room_id: &str, cycle: bool) {
+        if let Ok(mut cycles) = self.owned_cycles.write() {
+            cycles.insert(room_id.to_string(), cycle);
+        }
+    }
+
     /// Check the owned host state for a room. Returns None if the room
     /// has not been tracked yet (falls back to Room.host lookup).
     pub fn room_host_owned(&self, room_id: &str) -> Option<Option<i32>> {
         self.owned_hosts.read().ok().and_then(|map| map.get(room_id).copied())
+    }
+
+    /// Set the owned host state for a room.
+    pub fn set_room_host_owned(&self, room_id: &str, host: Option<i32>) {
+        if let Ok(mut hosts) = self.owned_hosts.write() {
+            hosts.insert(room_id.to_string(), host);
+        }
     }
 }
 

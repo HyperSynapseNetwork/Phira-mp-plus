@@ -183,7 +183,7 @@ pub async fn join_room(
     let Some(room) = room else {
         bail!("{}", tl!("room-not-found"))
     };
-    if room.locked.load(Ordering::SeqCst) {
+    if room.is_locked() {
         bail!("{}", tl!("join-room-locked"));
     }
     // 检查房间黑名单（按 UUID 绑定，不按房间名）
@@ -361,6 +361,8 @@ pub async fn lock_room(user: Arc<User>, lock: bool) -> Result<()> {
         lock,
         "lock room"
     );
+    // 同步更新 owned state（真理源）
+    user.server.room_commands.set_room_lock_owned(&room.id.to_string(), lock);
     room.locked.store(lock, Ordering::SeqCst);
     room.send(Message::LockRoom { lock }).await;
     room.publish_update(PartialRoomData {
@@ -390,6 +392,7 @@ pub async fn cycle_room(user: Arc<User>, cycle: bool) -> Result<()> {
         cycle,
         "cycle room"
     );
+    user.server.room_commands.set_room_cycle_owned(&room.id.to_string(), cycle);
     room.cycle.store(cycle, Ordering::SeqCst);
     room.send(Message::CycleRoom { cycle }).await;
     room.publish_update(PartialRoomData {

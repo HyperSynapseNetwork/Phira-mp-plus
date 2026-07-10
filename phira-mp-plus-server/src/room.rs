@@ -251,10 +251,22 @@ impl Room {
     }
 
     pub fn is_locked(&self) -> bool {
+        // 优先查 mailbox owned state
+        if let Some(server) = self.server.upgrade() {
+            if let Some(owned) = server.room_commands.room_lock_owned(&self.id.to_string()) {
+                return owned;
+            }
+        }
         self.locked.load(Ordering::Relaxed)
     }
 
     pub fn is_cycle(&self) -> bool {
+        // 优先查 mailbox owned state
+        if let Some(server) = self.server.upgrade() {
+            if let Some(owned) = server.room_commands.room_cycle_owned(&self.id.to_string()) {
+                return owned;
+            }
+        }
         self.cycle.load(Ordering::Relaxed)
     }
 
@@ -424,8 +436,8 @@ impl Room {
         phira_mp_common::RoomData {
             host,
             users,
-            lock: room.locked.load(Ordering::Relaxed),
-            cycle: room.cycle.load(Ordering::Relaxed),
+            lock: room.is_locked(),
+            cycle: room.is_cycle(),
             chart,
             state,
             rounds,

@@ -255,8 +255,8 @@ pub(super) fn build_snapshot(
         data: RoomData {
             host,
             users,
-            lock: room.locked.load(Ordering::SeqCst),
-            cycle: room.cycle.load(Ordering::SeqCst),
+            lock: room.is_locked(),
+            cycle: room.is_cycle(),
             chart: chart_op.as_ref().map(|c| c.id),
             chart_name: chart_op.as_ref().map(|c| c.name.clone()),
             state: st,

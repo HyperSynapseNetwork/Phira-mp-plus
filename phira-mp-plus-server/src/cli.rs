@@ -482,12 +482,12 @@ impl CliHandler {
                 crate::room::InternalRoomState::WaitForReady { .. } => "WaitForReady",
                 crate::room::InternalRoomState::Playing { .. } => "Playing",
             };
-            let locked = if room.locked.load(std::sync::atomic::Ordering::Relaxed) {
+            let locked = if room.is_locked() {
                 c::yellow("锁定")
             } else {
                 c::dim("未锁定")
             };
-            let cycling = if room.cycle.load(std::sync::atomic::Ordering::Relaxed) {
+            let cycling = if room.is_cycle() {
                 c::cyan("轮换")
             } else {
                 c::dim("不轮换")

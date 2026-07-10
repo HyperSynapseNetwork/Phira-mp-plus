@@ -181,8 +181,8 @@ pub fn send_welcome(user_id: i32, user_name: &str, online: usize, state: &PlusSe
                                     .ok()
                                     .and_then(|c| c.as_ref().map(|c| c.name.clone()))
                                     .unwrap_or_default();
-                                let locked = room.locked.load(std::sync::atomic::Ordering::Relaxed);
-                                let cycling = room.cycle.load(std::sync::atomic::Ordering::Relaxed);
+                                let locked = room.is_locked();
+                                let cycling = room.is_cycle();
                                 let state_desc = room
                                     .state
                                     .try_read()
