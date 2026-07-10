@@ -5,7 +5,7 @@
 //! write acknowledgement instead of only `tokio::spawn` dispatch cost.
 
 use crate::persistence::{PersistenceEvent, PersistencePipeline};
-use crate::telemetry_batcher::{TelemetryBatcher, TelemetryItem, TelemetryKind};
+use crate::telemetry_batcher::TelemetryBatcher;
 use serde_json::Value;
 use std::sync::Arc;
 use std::time::Instant;
@@ -134,56 +134,20 @@ pub async fn persist_simulation_event_if_needed(event: &PersistenceEvent) -> Per
     }
 }
 
+/// Production telemetry (Touch/Judge) staging is handled directly by
+/// session_telemetry.rs hot path — not through PersistenceWorker.
+/// This function returns NotTelemetry for all events; the telemetry
+/// mirror path was removed as part of Worker dedup (Step 3).
 pub async fn stage_production_telemetry_if_needed(
     event: &PersistenceEvent,
-    batcher: &Arc<TelemetryBatcher>,
+    _batcher: &Arc<TelemetryBatcher>,
 ) -> ProductionTelemetryStage {
     if event.is_simulation() {
         return ProductionTelemetryStage::NotTelemetry;
     }
-
-    let item = match event {
-        PersistenceEvent::TouchBatch {
-            round_id,
-            user_id,
-            payload,
-            ..
-        } => Some(TelemetryItem {
-            kind: TelemetryKind::Touch,
-            room_id: extract_room_id(payload),
-            round_id: Some(round_id.clone()),
-            user_id: *user_id,
-            item_count: extract_item_count(payload),
-            payload: (**payload).clone(),
-        }),
-        PersistenceEvent::JudgeBatch {
-            round_id,
-            user_id,
-            payload,
-            ..
-        } => Some(TelemetryItem {
-            kind: TelemetryKind::Judge,
-            room_id: extract_room_id(payload),
-            round_id: Some(round_id.clone()),
-            user_id: *user_id,
-            item_count: extract_item_count(payload),
-            payload: (**payload).clone(),
-        }),
-        _ => None,
-    };
-
-    let Some(item) = item else {
-        return ProductionTelemetryStage::NotTelemetry;
-    };
-
-    let kind = item.kind.as_str().to_string();
-    let user_id = item.user_id;
-    match batcher.enqueue(item).await {
-        Ok(()) => ProductionTelemetryStage::Staged,
-        Err(_) => ProductionTelemetryStage::Failed(format!(
-            "telemetry batcher rejected {kind} batch for user_id={user_id}"
-        )),
-    }
+    // TouchBatch/JudgeBatch are written directly by the hot path.
+    // No Worker mirror is needed.
+    ProductionTelemetryStage::NotTelemetry
 }
 
 pub async fn persist_production_event_if_needed(event: &PersistenceEvent) -> PersistenceWriteStage {
