@@ -29,11 +29,11 @@ jobs:
           fetch-depth: 0
       - id: tag
         run: |
+          echo "ref_type=${{ github.ref_type }} ref_name=${{ github.ref_name }}"
           if [[ "${{ github.ref_type }}" == "tag" ]]; then
             # 标签触发：直接用标签名
             FULL_VERSION="${{ github.ref_name }}"
             FULL_VERSION="${FULL_VERSION#v}"
-          else
             # 手动触发：从最新 tag 推算下一个版本号
             LATEST_TAG=$(git tag --list 'v*.*.*' --sort=-v:refname | head -1)
             [[ -z "$LATEST_TAG" ]] && { echo "错误: 没有找到版本标签，请先运行 Bump Version workflow"; exit 1; }
@@ -96,7 +96,7 @@ jobs:
           path: phira-plugin-sdk.tar.gz
 
   release:
-    needs: [build-linux, build-windows, package-sdk]
+    needs: [version, build-linux, build-windows, package-sdk]
     runs-on: ubuntu-latest
     permissions:
       contents: write
