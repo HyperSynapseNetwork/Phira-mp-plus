@@ -200,6 +200,25 @@ fn server_state_query_dispatch(
                 None => Err(format!("user {user_id} not found")),
             }
         }
+        "playtime.leaderboard" => {
+            let (tx, rx) = std::sync::mpsc::channel();
+            let state = Arc::clone(state);
+            spawn_on_runtime(async move {
+                let data = if let Some(db) = crate::internal_hooks::DB.get() {
+                    db.top_playtime(1000).await
+                } else {
+                    Vec::new()
+                };
+                let total = data.len();
+                let _ = tx.send(Ok(json!({
+                    "success": true,
+                    "data": data,
+                    "timestamp": chrono::Utc::now().to_rfc3339(),
+                    "total_users": total,
+                })));
+            });
+            rx.recv_timeout(runtime_state_query_timeout()).unwrap_or(Err("playtime.leaderboard timeout".to_string()))
+        }
         "send_room_chat" => {
             let room_id = args.first().and_then(|v| v.as_str()).ok_or_else(|| "room_id required".to_string())?;
             let message = args.get(1).and_then(|v| v.as_str()).ok_or_else(|| "message required".to_string())?;

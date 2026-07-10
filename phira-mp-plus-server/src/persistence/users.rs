@@ -145,8 +145,7 @@ impl DbManager {
                 .map(|row| {
                     serde_json::json!({
                         "user_id": row.try_get::<i32, _>("user_id").unwrap_or_default(),
-                        "name": row.try_get::<String, _>("name").unwrap_or_default(),
-                        "total_secs": row.try_get::<i64, _>("secs").unwrap_or_default(),
+                        "total_playtime": row.try_get::<i64, _>("secs").unwrap_or_default(),
                     })
                 })
                 .collect();
