@@ -263,6 +263,7 @@ fn server_state_query_dispatch(
                         let pm = Arc::clone(&s.plugin_manager);
                         let pn = plugin_name.clone();
                         let route_path = path.clone();
+                        let route_path_for_closure = route_path.clone();
                         let handler: phira_mp_plus_server_api::HttpHandler =
                             std::sync::Arc::new(move |body, params| {
                                 let mut args: Vec<serde_json::Value> = params.into_iter()
@@ -271,7 +272,7 @@ fn server_state_query_dispatch(
                                     args.push(json_body);
                                 }
                                 match futures::executor::block_on(
-                                    pm.call_plugin_api(&pn, &route_path, args)
+                                    pm.call_plugin_api(&pn, &route_path_for_closure, args)
                                 ) {
                                     Ok(val) => Ok(val),
                                     Err(e) => Err((500, e)),
