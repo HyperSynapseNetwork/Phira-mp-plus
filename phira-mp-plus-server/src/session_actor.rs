@@ -140,10 +140,14 @@ async fn handle_chat(user: Arc<User>, _category: SessionCategory, content: Strin
     let res: Result<()> = async {
         let room = user.room.read().await.as_ref().map(Arc::clone)
             .ok_or_else(|| anyhow::anyhow!("{}", crate::tl!("no-room")))?;
-        if let Some(db) = crate::internal_hooks::DB.get() {
-            db.record_room_event_sync("chat.message", Some(room.id.to_string()), Some(user.id),
-                serde_json::json!({"room_id": room.id.to_string(), "user_id": user.id, "user_name": user.name.clone(), "message": content.clone()}));
-        }
+        // PersistenceWorker (exclusive — no direct DB write)
+        let _ = user.server.persistence_worker.enqueue(
+            crate::persistence::message::PersistenceEvent::ServerEvent {
+                kind: "chat.message".to_string(),
+                payload: serde_json::json!({"room_id": room.id.to_string(), "user_id": user.id, "user_name": user.name.clone(), "message": content.clone()}),
+                simulation: false,
+            },
+        ).await;
         room.send_as(&user, content).await;
         user.server.publish_runtime_event(crate::event_bus::MpEvent::ChatMessage {
             room_id: Some(room.id.clone()), user_id: user.id,

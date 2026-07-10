@@ -389,9 +389,13 @@ struct PlaytimeEntry {
 }
 
 pub fn playtime_connect(user_id: i32) {
-    // PostgreSQL 双写
-    if let Some(db) = DB.get() {
-        db.set_online_sync(user_id);
+    // PersistenceWorker (exclusive)
+    if let Some(worker) = PERSISTENCE_WORKER.get().and_then(|w| w.upgrade()) {
+        tokio::spawn(async move {
+            let _ = worker.enqueue(
+                crate::persistence::message::PersistenceEvent::UserOnline { user_id }
+            ).await;
+        });
     }
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -403,9 +407,13 @@ pub fn playtime_connect(user_id: i32) {
 }
 
 pub fn playtime_disconnect(user_id: i32) {
-    // PostgreSQL 双写
-    if let Some(db) = DB.get() {
-        db.set_offline_sync(user_id);
+    // PersistenceWorker (exclusive)
+    if let Some(worker) = PERSISTENCE_WORKER.get().and_then(|w| w.upgrade()) {
+        tokio::spawn(async move {
+            let _ = worker.enqueue(
+                crate::persistence::message::PersistenceEvent::UserOffline { user_id }
+            ).await;
+        });
     }
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)

@@ -707,29 +707,14 @@ impl PlusServerState {
 
     pub async fn publish_room_event(&self, event: RoomEvent) {
         self.mirror_room_event_to_runtime_bus(&event).await;
-        if let Some(db) = crate::internal_hooks::DB.get() {
-            let (room_id, user_id) = match &event {
-                RoomEvent::CreateRoom { room, .. }
-                | RoomEvent::UpdateRoom { room, .. }
-                | RoomEvent::NewRound { room, .. } => (Some(room.to_string()), None),
-                RoomEvent::JoinRoom { room, user } | RoomEvent::LeaveRoom { room, user } => {
-                    (Some(room.to_string()), Some(*user))
-                }
-            };
-            db.record_room_event_sync(
-                event.event_type(),
-                room_id.clone(),
-                user_id,
-                event.clone().inner(),
-            );
-            if let Some(room_id) = room_id {
-                if let Ok(rid) = room_id.clone().try_into() {
-                    if let Some(room) = self.rooms.read().await.get(&rid).map(Arc::clone) {
-                        self.persist_room_snapshot_background(room);
-                    }
-                }
-            }
-        }
+        // Enqueue to PersistenceWorker (exclusive — no direct DB fallback)
+        let _ = self.persistence_worker.enqueue(
+            crate::persistence::message::PersistenceEvent::ServerEvent {
+                kind: event.event_type().to_string(),
+                payload: event.clone().inner(),
+                simulation: false,
+            },
+        ).await;
         self.events.publish_room_event(event.clone());
         if let Some(monitor) = self.get_room_monitor().await {
             monitor.try_send(ServerCommand::RoomEvent(event)).await;

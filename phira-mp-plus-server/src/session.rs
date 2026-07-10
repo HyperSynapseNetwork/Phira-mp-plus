@@ -219,9 +219,13 @@ impl User {
             .publish_runtime_event(crate::event_bus::MpEvent::UserDisconnected {
                 user_id: self.id,
             });
-        if let Some(db) = crate::internal_hooks::DB.get() {
-            db.record_user_disconnect_sync(self.id, &self.name);
-        }
+        // PersistenceWorker (exclusive — no direct DB write)
+        let _ = self.server.persistence_worker.enqueue(
+            crate::persistence::message::PersistenceEvent::UserDisconnect {
+                user_id: self.id,
+                user_name: self.name.clone(),
+            }
+        ).await;
 
         let dangle_mark = Arc::new(());
         *self.dangle_mark.lock().await = Some(Arc::clone(&dangle_mark));
