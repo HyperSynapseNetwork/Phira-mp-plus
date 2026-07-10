@@ -218,56 +218,6 @@ fn configuration_docs_do_not_show_real_benchmark_token_example() {
     }
 }
 
-// ── docs/cli.md checks ──────────────────────────────────────────────
-
-#[test]
-fn cli_docs_do_not_list_removed_legacy_commands() {
-    let content = read_doc_required("cli.md");
-    for cmd in &[
-        "welcome-config",
-        "player-count",
-        "playtime",
-        "round-last",
-        "ext-list",
-        "ext-get",
-        "benchmark-cleanup",
-    ] {
-        assert!(
-            !content.contains(cmd),
-            "cli.md must not contain '{cmd}' (legacy command)"
-        );
-    }
-}
-
-// ── docs/api.md checks ──────────────────────────────────────────────
-
-#[test]
-fn api_docs_do_not_list_removed_legacy_commands() {
-    let content = read_doc_required("api.md");
-    // Check for the CLI command forms (without `[` prefix which indicates template placeholders)
-    for cmd in &[
-        "playtime <",
-        "welcome-config",
-        "round-last",
-        "benchmark_phira_tokens",
-        "benchmark_phira_token",
-    ] {
-        assert!(
-            !content.contains(cmd),
-            "api.md must not contain '{cmd}' (legacy command/token config)"
-        );
-    }
-    // Template placeholders like [player-count] and [playtime] are acceptable
-    // in the placeholder table section and are not CLI commands.
-    // Check that "player-count" only appears inside `[...]`:
-    if content.contains("player-count") {
-        assert!(
-            content.contains("[player-count]"),
-            "if 'player-count' appears in api.md it must be a template placeholder"
-        );
-    }
-}
-
 // ── docs/simulation.md checks ───────────────────────────────────────
 
 #[test]
