@@ -18,11 +18,11 @@ WebSocket 实时事件流。与 SSE 相同的事件内容，通过二进制 WebS
 
 ### 插件 SSE 端点
 
-#### `GET /api/rooms/listen`
-
-由插件通过 `sse.register_stream` 注册的 SSE 事件流。
+插件通过 `sse.register_stream` 注册 SSE 事件流后，宿主自动创建对应路由。
 连接后推送 `ready` 事件，事件通过对应插件的 `on_api("sse:translate", ...)` 翻译后推送。
 插件返回 `null` 的事件会被跳过。心跳每 15 秒。
+
+示例：HSNPhira 插件注册了 `/api/rooms/listen`。
 
 ### 插件路由
 
