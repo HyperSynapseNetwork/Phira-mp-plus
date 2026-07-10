@@ -10,13 +10,13 @@ use phira_mp_common::{ClientCommand, RoomEvent, ServerCommand, Stream, UserInfo}
 use std::{
     sync::{
         atomic::{AtomicBool, AtomicU32, Ordering},
-        Arc, Weak,
+        Arc, OnceLock, Weak,
     },
     time::{Duration, Instant},
 };
 use tokio::{
     net::TcpStream,
-    sync::{Mutex, Notify, OnceCell, RwLock},
+    sync::{mpsc, Mutex, Notify, OnceCell, RwLock},
     task::JoinHandle,
     time,
 };
@@ -288,6 +288,8 @@ pub struct Session {
     pub user: Arc<User>,
     pub category: SessionCategory,
 
+    /// Per-session actor mailbox sender. Set after authentication.
+    pub actor_tx: tokio::sync::OnceLock<mpsc::Sender<crate::session_actor::SessionActorCmd>>,
     monitor_task_handle: JoinHandle<()>,
     /// 命令速率限制器（按类别）
     cmd_limiter: crate::rate_limiter::CommandRateLimiter,
@@ -540,6 +542,11 @@ impl Session {
                                     }
                                     panicked.store(true, Ordering::SeqCst);
                                 } else {
+                                    // Initialize per-session mailbox
+                                    if let Some(session) = this.get() {
+                                        let tx = crate::session_actor::init_session_mailbox(session);
+                                        let _ = session.actor_tx.set(tx);
+                                    }
                                     let user = &this.get().unwrap().user;
                                     let room_state = match user.room.read().await.as_ref() {
                                         Some(room) => Some(room.client_state(user).await),
@@ -815,6 +822,7 @@ impl Session {
             stream,
             user,
             category,
+            actor_tx: tokio::sync::OnceLock::new(),
             monitor_task_handle,
             cmd_limiter: crate::rate_limiter::CommandRateLimiter::new(),
         });

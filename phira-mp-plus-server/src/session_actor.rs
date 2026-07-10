@@ -1,31 +1,31 @@
-//! Session actor 全局邮箱（迁移中）。
+//! Session actor 每连接独立邮箱（迁移中）。
 //!
-//! 当前为全进程统一邮箱（`static MAILBOX`），所有用户命令通过同一通道。
-//! 这能避免并发状态修改，但慢命令可能阻塞其他用户。
-//!
-//! 目标：每连接独立 Actor (`SessionActor(user A) → mailbox A`)。
+//! 每个 Session 创建时初始化独立 mailbox，命令通过该 Session 的邮箱路由。
 //! 邮箱不可用时会回退到原有直接处理路径。
 //!
 //! 迁移状态：WriteRouted（除 Ping、Authenticate、Touches/Judges、
 //! QueryRoomInfo 外均已迁移）。
 
-use crate::session::{SessionCategory, User};
+use crate::session::{Session, SessionCategory, User};
 use phira_mp_common::{RoomId, ServerCommand};
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, Weak};
 use tokio::sync::mpsc;
 
-// ── Global mailbox sender ──────────────────────────────────────────
+/// Channel capacity for each per-session mailbox.
+const SESSION_MAILBOX_CAPACITY: usize = 64;
 
-static MAILBOX: OnceLock<mpsc::Sender<SessionActorCmd>> = OnceLock::new();
-
-/// Initialize the global session actor mailbox. Called once at server startup.
-pub(crate) fn init() {
-    let (tx, mut rx) = mpsc::channel::<SessionActorCmd>(256);
-    MAILBOX.set(tx).expect("session actor init called twice");
-
+/// Create a per-session mailbox for the given session and spawn the worker.
+/// Returns the sender for the mailbox.
+pub(crate) fn init_session_mailbox(session: &Arc<Session>) -> mpsc::Sender<SessionActorCmd> {
+    let (tx, mut rx) = mpsc::channel::<SessionActorCmd>(SESSION_MAILBOX_CAPACITY);
+    let weak_session = Arc::downgrade(session);
     tokio::spawn(async move {
         while let Some(cmd) = rx.recv().await {
-            match cmd {
+            // If session is gone, stop processing
+            if weak_session.upgrade().is_none() {
+                break;
+            }
+            let result = match cmd {
                 SessionActorCmd::Chat { user, category, msg, reply } => {
                     let _ = reply.send(handle_chat(user, category, msg).await);
                 }
@@ -62,9 +62,11 @@ pub(crate) fn init() {
                 SessionActorCmd::Abort { user, reply } => {
                     let _ = reply.send(handle_abort(user).await);
                 }
-            }
+            };
+            let _ = result;
         }
     });
+    tx
 }
 
 // ── Command envelope ──────────────────────────────────────────────
@@ -86,9 +88,10 @@ pub(crate) enum SessionActorCmd {
 
 // ── Generic route helper ──────────────────────────────────────────
 
-/// Send a command through the mailbox.  Falls back to `fallback` if the
-/// mailbox isn't ready or the channel / reply is lost.
+/// Send a command through the per-session mailbox.
+/// Falls back to `fallback` if the mailbox isn't ready or the channel / reply is lost.
 async fn route_or_fallback<F, Fut>(
+    user: &User,
     cmd: SessionActorCmd,
     fallback: F,
 ) -> Option<ServerCommand>
@@ -96,13 +99,15 @@ where
     F: FnOnce() -> Fut,
     Fut: std::future::Future<Output = Option<ServerCommand>>,
 {
-    let tx = match MAILBOX.get() {
+    let tx = {
+        let guard = user.session.read().await;
+        guard.as_ref().and_then(Weak::upgrade).map(|s| s.actor_tx.clone())
+    };
+    let tx = match tx {
         Some(tx) => tx,
         None => return fallback().await,
     };
     let (reply, rx) = tokio::sync::oneshot::channel();
-    // Replace the reply channel in the command so the mailbox worker
-    // uses our channel instead of a dummy.
     let cmd = cmd.with_reply(reply);
     match tx.send(cmd).await {
         Ok(()) => match rx.await {
@@ -159,6 +164,7 @@ async fn handle_chat(user: Arc<User>, _category: SessionCategory, content: Strin
 
 pub(crate) async fn route_chat(user: Arc<User>, category: SessionCategory, msg: String) -> Option<ServerCommand> {
     route_or_fallback(
+        &user,
         SessionActorCmd::Chat { user: Arc::clone(&user), category, msg: msg.clone(), reply: tokio::sync::oneshot::channel().0 },
         || handle_chat(user, category, msg),
     ).await
@@ -174,6 +180,7 @@ async fn handle_lock(user: Arc<User>, lock: bool) -> Option<ServerCommand> {
 
 pub(crate) async fn route_lock(user: Arc<User>, lock: bool) -> Option<ServerCommand> {
     route_or_fallback(
+        &user,
         SessionActorCmd::Lock { user: Arc::clone(&user), lock, reply: tokio::sync::oneshot::channel().0 },
         || handle_lock(user, lock),
     ).await
@@ -187,6 +194,7 @@ async fn handle_cycle(user: Arc<User>, cycle: bool) -> Option<ServerCommand> {
 
 pub(crate) async fn route_cycle(user: Arc<User>, cycle: bool) -> Option<ServerCommand> {
     route_or_fallback(
+        &user,
         SessionActorCmd::Cycle { user: Arc::clone(&user), cycle, reply: tokio::sync::oneshot::channel().0 },
         || handle_cycle(user, cycle),
     ).await
@@ -202,6 +210,7 @@ async fn handle_leave(user: Arc<User>, category: SessionCategory) -> Option<Serv
 
 pub(crate) async fn route_leave(user: Arc<User>, category: SessionCategory) -> Option<ServerCommand> {
     route_or_fallback(
+        &user,
         SessionActorCmd::Leave { user: Arc::clone(&user), category, reply: tokio::sync::oneshot::channel().0 },
         || handle_leave(user, category),
     ).await
@@ -217,6 +226,7 @@ async fn handle_create(user: Arc<User>, id: RoomId) -> Option<ServerCommand> {
 
 pub(crate) async fn route_create(user: Arc<User>, id: RoomId) -> Option<ServerCommand> {
     route_or_fallback(
+        &user,
         SessionActorCmd::Create { user: Arc::clone(&user), id: id.clone(), reply: tokio::sync::oneshot::channel().0 },
         || handle_create(user, id),
     ).await
@@ -230,6 +240,7 @@ async fn handle_join(user: Arc<User>, category: SessionCategory, id: RoomId, mon
 
 pub(crate) async fn route_join(user: Arc<User>, category: SessionCategory, id: RoomId, monitor: bool) -> Option<ServerCommand> {
     route_or_fallback(
+        &user,
         SessionActorCmd::Join { user: Arc::clone(&user), category, id: id.clone(), monitor, reply: tokio::sync::oneshot::channel().0 },
         || handle_join(user, category, id, monitor),
     ).await
@@ -245,6 +256,7 @@ async fn handle_select_chart(user: Arc<User>, id: i32) -> Option<ServerCommand> 
 
 pub(crate) async fn route_select_chart(user: Arc<User>, id: i32) -> Option<ServerCommand> {
     route_or_fallback(
+        &user,
         SessionActorCmd::SelectChart { user: Arc::clone(&user), id, reply: tokio::sync::oneshot::channel().0 },
         || handle_select_chart(user, id),
     ).await
@@ -260,6 +272,7 @@ async fn handle_request_start(user: Arc<User>) -> Option<ServerCommand> {
 
 pub(crate) async fn route_request_start(user: Arc<User>) -> Option<ServerCommand> {
     route_or_fallback(
+        &user,
         SessionActorCmd::RequestStart { user: Arc::clone(&user), reply: tokio::sync::oneshot::channel().0 },
         || handle_request_start(user),
     ).await
@@ -275,6 +288,7 @@ async fn handle_ready(user: Arc<User>) -> Option<ServerCommand> {
 
 pub(crate) async fn route_ready(user: Arc<User>) -> Option<ServerCommand> {
     route_or_fallback(
+        &user,
         SessionActorCmd::Ready { user: Arc::clone(&user), reply: tokio::sync::oneshot::channel().0 },
         || handle_ready(user),
     ).await
@@ -288,6 +302,7 @@ async fn handle_cancel_ready(user: Arc<User>) -> Option<ServerCommand> {
 
 pub(crate) async fn route_cancel_ready(user: Arc<User>) -> Option<ServerCommand> {
     route_or_fallback(
+        &user,
         SessionActorCmd::CancelReady { user: Arc::clone(&user), reply: tokio::sync::oneshot::channel().0 },
         || handle_cancel_ready(user),
     ).await
@@ -303,6 +318,7 @@ async fn handle_played(user: Arc<User>, id: i32) -> Option<ServerCommand> {
 
 pub(crate) async fn route_played(user: Arc<User>, id: i32) -> Option<ServerCommand> {
     route_or_fallback(
+        &user,
         SessionActorCmd::Played { user: Arc::clone(&user), id, reply: tokio::sync::oneshot::channel().0 },
         || handle_played(user, id),
     ).await
@@ -316,6 +332,7 @@ async fn handle_abort(user: Arc<User>) -> Option<ServerCommand> {
 
 pub(crate) async fn route_abort(user: Arc<User>) -> Option<ServerCommand> {
     route_or_fallback(
+        &user,
         SessionActorCmd::Abort { user: Arc::clone(&user), reply: tokio::sync::oneshot::channel().0 },
         || handle_abort(user),
     ).await
