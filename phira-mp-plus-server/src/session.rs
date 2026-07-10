@@ -521,6 +521,13 @@ impl Session {
                                                 let mut guard = server.users.write().await;
                                                 guard.insert(user_info.id, Arc::clone(&user));
                                             }
+                                            let online = server.users.read().await.len();
+                                            crate::internal_hooks::send_welcome(
+                                                user_info.id,
+                                                &user.name,
+                                                online,
+                                                &server,
+                                            );
                                             server.publish_runtime_event(
                                                 crate::event_bus::MpEvent::UserConnected {
                                                     user_id: user_info.id,
