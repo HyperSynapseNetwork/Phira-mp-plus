@@ -289,7 +289,7 @@ pub struct Session {
     pub category: SessionCategory,
 
     /// Per-session actor mailbox sender. Set after authentication.
-    pub actor_tx: tokio::sync::OnceLock<mpsc::Sender<crate::session_actor::SessionActorCmd>>,
+    pub actor_tx: OnceLock<mpsc::Sender<crate::session_actor::SessionActorCmd>>,
     monitor_task_handle: JoinHandle<()>,
     /// 命令速率限制器（按类别）
     cmd_limiter: crate::rate_limiter::CommandRateLimiter,
@@ -822,7 +822,7 @@ impl Session {
             stream,
             user,
             category,
-            actor_tx: tokio::sync::OnceLock::new(),
+            actor_tx: OnceLock::new(),
             monitor_task_handle,
             cmd_limiter: crate::rate_limiter::CommandRateLimiter::new(),
         });
