@@ -27,10 +27,10 @@ impl CliHandler {
                     self.room_info(args[1]).await;
                 }
             }
-            "start" | "force-start" => {
+            "start" => {
                 if args.len() < 2 {
                     self.out(format!(
-                        "  {} {} room start <房间ID>  （兼容：room force-start <房间ID>）",
+                        "  {} {} room start <房间ID>",
                         c::yellow("?"),
                         c::bold("用法")
                     ));
