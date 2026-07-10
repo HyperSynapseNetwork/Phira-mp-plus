@@ -168,6 +168,27 @@ impl ExtensionDataStore {
     pub fn cleanup_room(&mut self, room_id: &str) {
         self.room_data.remove(room_id);
     }
+
+    /// 移除指定插件注册的所有扩展字段及其数据。
+    /// 返回被移除的字段名列表。
+    pub fn remove_fields_by_plugin(&mut self, plugin_name: &str) -> Vec<String> {
+        let keys: Vec<String> = self.fields.iter()
+            .filter(|(_, f)| f.registered_by == plugin_name)
+            .map(|(k, _)| k.clone())
+            .collect();
+        for key in &keys {
+            self.fields.remove(key);
+            // 清理所有用户数据中该字段的值
+            for user_data in self.user_data.values_mut() {
+                user_data.remove(key);
+            }
+            // 清理所有房间数据中该字段的值
+            for room_data in self.room_data.values_mut() {
+                room_data.remove(key);
+            }
+        }
+        keys
+    }
 }
 
 /// 扩展数据管理器（线程安全）
@@ -393,6 +414,12 @@ impl ExtensionManager {
 
     pub async fn list_room_fields(&self) -> Vec<String> {
         self.store.read().await.list_registered_room_fields()
+    }
+
+    /// 移除指定插件注册的所有扩展字段及其数据。
+    /// 返回被移除的字段名列表。
+    pub async fn remove_fields_by_plugin(&self, plugin_name: &str) -> Vec<String> {
+        self.store.write().await.remove_fields_by_plugin(plugin_name)
     }
 
     // ── 认证缓存持久化 ──

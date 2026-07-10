@@ -550,9 +550,10 @@ impl PluginManager {
         Err(format!("plugin '{id}' not found"))
     }
 
-    /// Remove a plugin: disable, delete its data directory, and remove from registry.
+    /// Remove a plugin: disable, delete its data directory, remove extension fields,
+    /// and remove from registry.
     pub async fn remove_plugin(&self, id: &str) -> Result<(), String> {
-        let plugin_dir = {
+        let (plugin_dir, plugin_name) = {
             let slots = self.plugins.read().await;
             let slot = slots.iter().find(|slot| {
                 let plugin = slot.lock().unwrap_or_else(|e| e.into_inner());
@@ -560,7 +561,9 @@ impl PluginManager {
             }).ok_or_else(|| format!("plugin '{id}' not found"))?;
             let plugin = slot.lock().unwrap_or_else(|e| e.into_inner());
             let meta = plugin.meta();
-            std::path::Path::new(&meta.path).parent().map(|p| p.to_path_buf())
+            let dir = std::path::Path::new(&meta.path).parent().map(|p| p.to_path_buf());
+            let name = meta.info.name.clone();
+            (dir, name)
         };
         // Remove from plugin list (triggers cleanup via Drop)
         let mut slots = self.plugins.write().await;
@@ -569,12 +572,18 @@ impl PluginManager {
             !plugin_matches(plugin.meta(), id)
         });
         // Delete plugin data directory
-        if let Some(dir) = plugin_dir {
+        if let Some(dir) = &plugin_dir {
             if dir.exists() {
+                let dir = dir.clone();
                 tokio::task::spawn_blocking(move || {
                     let _ = std::fs::remove_dir_all(&dir);
                 }).await.ok();
             }
+        }
+        // Clean up extension fields registered by this plugin
+        let removed = self.extensions.remove_fields_by_plugin(&plugin_name).await;
+        if !removed.is_empty() {
+            tracing::info!(plugin = %plugin_name, fields = ?removed, "removed extension fields");
         }
         Ok(())
     }

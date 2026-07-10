@@ -130,9 +130,26 @@ impl CliHandler {
     }
 
     pub(crate) async fn remove_plugin(&self, name: &str) {
-        match self.state.plugin_manager.remove_plugin(name).await {
-            Ok(_) => self.out(format!("  {} 插件 {} 已删除（文件及数据已清理）", c::green("✓"), c::bold(name))),
-            Err(e) => self.out(format!("  {} {}", c::red("✗"), e)),
+        self.out(format!("  {} 确认删除插件 {}？此操作将：", c::yellow("⚠"), c::bold(name)));
+        self.out(format!("  {} 删除插件文件", c::dim("•")));
+        self.out(format!("  {} 清除插件扩展数据", c::dim("•")));
+        self.out(format!("  {} 清除插件私有数据", c::dim("•")));
+        self.out(format!("  {} 此操作不可撤销！", c::red("!")));
+        self.out(format!("  {} 输入 y 确认，任意其他键取消", c::dim("→")));
+        use std::io::Write;
+        print!("> ");
+        let _ = std::io::stdout().flush();
+        let mut input = String::new();
+        match std::io::stdin().read_line(&mut input) {
+            Ok(_) if input.trim().to_lowercase() == "y" => {
+                match self.state.plugin_manager.remove_plugin(name).await {
+                    Ok(_) => self.out(format!("  {} 插件 {} 已删除", c::green("✓"), c::bold(name))),
+                    Err(e) => self.out(format!("  {} {}", c::red("✗"), e)),
+                }
+            }
+            _ => {
+                self.out(format!("  {} 已取消", c::dim("·")));
+            }
         }
     }
 
