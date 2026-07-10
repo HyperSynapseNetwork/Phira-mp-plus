@@ -3,7 +3,6 @@
 //! 当前作为读快照+写派发层：actor 持有 `RoomSnapshot` 和 `Room` 引用，
 //! 快照在每次命令执行后更新。外部代码通过 gateway 获取快照，不再直接读 room fields。
 
-use super::RoomCommandGateway;
 use crate::room::Room;
 use crate::server::PlusServerState;
 use serde::{Deserialize, Serialize};
