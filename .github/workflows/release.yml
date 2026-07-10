@@ -31,10 +31,11 @@ jobs:
         run: |
           echo "ref_type=${{ github.ref_type }} ref_name=${{ github.ref_name }}"
           if [[ "${{ github.ref_type }}" == "tag" ]]; then
-            # 标签触发：直接用标签名
+            # 标签触发：直接用标签名，C 由 Bump Version 在创建 tag 时确定
             FULL_VERSION="${{ github.ref_name }}"
             FULL_VERSION="${FULL_VERSION#v}"
-            # 手动触发：从最新 tag 推算下一个版本号
+          else
+            # 手动触发：从最新 tag 推算版本号，C = 自 A.B.0 以来的 commit 数
             LATEST_TAG=$(git tag --list 'v*.*.*' --sort=-v:refname | head -1)
             [[ -z "$LATEST_TAG" ]] && { echo "错误: 没有找到版本标签，请先运行 Bump Version workflow"; exit 1; }
             RAW="${LATEST_TAG#v}"
