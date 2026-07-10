@@ -187,7 +187,7 @@ fn server_state_query_dispatch(
         }
         "auth.visited_count" => {
             let users = crate::read_lock!(state.users);
-            Ok(json!(users.len()))
+            Ok(serde_json::json!(users.len()))
         }
         "user_name" => {
             let user_id = args.first().and_then(|v| v.as_i64()).map(|v| v as i32).ok_or_else(|| "user_id required".to_string())?;
@@ -214,7 +214,7 @@ fn server_state_query_dispatch(
                     Vec::new()
                 };
                 let total = data.len();
-                let _ = tx.send(Ok(json!({
+                let _ = tx.send(Ok(serde_json::json!({
                     "success": true,
                     "data": data,
                     "timestamp": chrono::Utc::now().to_rfc3339(),
