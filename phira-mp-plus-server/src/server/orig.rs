@@ -1019,12 +1019,8 @@ impl PlusServerState {
             room_uuid: room_uuid.clone(),
             joined_at,
         };
-        let worker_ok = self.persistence_worker.enqueue(worker_event).await.is_ok();
-        // Fallback: direct DB write if worker queue is full or unavailable
-        if !worker_ok {
-            if let Some(db) = crate::internal_hooks::DB.get() {
-                db.record_user_room_history_sync(user_id, room_id, room_uuid, joined_at);
-            }
+        if self.persistence_worker.enqueue(worker_event).await.is_err() {
+            warn!("record_user_room_history: worker enqueue failed, data kept in memory only");
         }
     }
 

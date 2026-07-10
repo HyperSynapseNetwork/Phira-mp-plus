@@ -5,6 +5,7 @@
 
 use crate::persistence_worker::PersistenceWorker;
 use serde::{Deserialize, Serialize};
+use tracing::warn;
 use std::collections::HashMap;
 use std::sync::{Arc, Weak};
 use tokio::sync::RwLock;
@@ -300,18 +301,9 @@ impl ExtensionManager {
             payload: payload_arc,
             simulation: false,
         };
-        let sent = self
-            .persistence_worker
-            .read()
-            .await
-            .as_ref()
-            .and_then(|w| w.upgrade())
-            .is_some_and(|worker| {
-                futures::executor::block_on(worker.enqueue(worker_event)).is_ok()
-            });
-        if !sent {
-            if let Some(db) = crate::internal_hooks::DB.get() {
-                db.record_room_event_sync(kind, _room_id, user_id, payload);
+        if let Some(worker) = self.persistence_worker.read().await.as_ref().and_then(|w| w.upgrade()) {
+            if futures::executor::block_on(worker.enqueue(worker_event)).is_err() {
+                warn!("enqueue_or_write_direct: worker enqueue failed");
             }
         }
     }
