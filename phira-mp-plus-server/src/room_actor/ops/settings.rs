@@ -52,6 +52,10 @@ impl RoomCommandGateway {
         target_id: Option<i32>,
         room_override: Option<Arc<crate::room::Room>>,
     ) -> Result<RoomCommandPayload, String> {
+        // 先写 owned state（真理源），再推送到 room（向后兼容）
+        if let Ok(mut hosts) = self.owned_hosts.write() {
+            hosts.insert(room_id.to_string(), target_id);
+        }
         let (_rid, room) = self.resolve_room(state, room_id, room_override).await?;
         match target_id {
             Some(user_id) => {
@@ -134,6 +138,10 @@ impl RoomCommandGateway {
         locked: bool,
         room_override: Option<Arc<crate::room::Room>>,
     ) -> Result<RoomCommandPayload, String> {
+        // 先写 owned state（真理源），再推送到 room（向后兼容）
+        if let Ok(mut locks) = self.owned_locks.write() {
+            locks.insert(room_id.to_string(), locked);
+        }
         let (_rid, room) = self.resolve_room(state, room_id, room_override).await?;
         room.locked.store(locked, Ordering::SeqCst);
         room.send(Message::LockRoom { lock: locked }).await;
@@ -196,6 +204,10 @@ impl RoomCommandGateway {
         cycle: bool,
         room_override: Option<Arc<crate::room::Room>>,
     ) -> Result<RoomCommandPayload, String> {
+        // 先写 owned state（真理源），再推送到 room（向后兼容）
+        if let Ok(mut cycles) = self.owned_cycles.write() {
+            cycles.insert(room_id.to_string(), cycle);
+        }
         let (_rid, room) = self.resolve_room(state, room_id, room_override).await?;
         room.cycle.store(cycle, Ordering::SeqCst);
         room.send(Message::CycleRoom { cycle }).await;

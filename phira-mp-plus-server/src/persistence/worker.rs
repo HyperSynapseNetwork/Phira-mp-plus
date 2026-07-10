@@ -1,4 +1,10 @@
-//! Runtime v2 PersistenceWorker facade and queue runtime.
+//! Runtime v2 PersistenceWorker —— 持久化 Worker（迁移中）。
+//!
+//! 当前 PersistenceWorker 作为镜像路径运行，不是唯一写入者。
+//! 存在多条直接 DB 写入旁路：session.rs、session_actor.rs、session_room.rs、server/orig.rs。
+//! 队列满时会丢弃事件。
+//!
+//! 目标：Persistence Actor 成为唯一持久化入口，包含批处理、重试、WAL、shutdown flush。
 
 use crate::persistence::message::PersistenceEvent;
 use crate::persistence::pipeline::{

@@ -1,15 +1,27 @@
-//! Runtime v2 room-command gateway.
+//! Runtime v2 room-command gateway（迁移中）。
 //!
-//! This is the first production-facing seam for the future `room-actor`.
-//! It deliberately does **not** own room state yet.  Instead, CLI/admin/WIT-like
-//! room write commands route through one facade while the existing `Room` state
-//! machine continues to own behavior.  The migration path is:
+//! 7 个房间命令已通过 per-room mailbox 串行化（`room_mailbox_only`），
+//! 包括 Lock/Cycle/Host/Close/Kick/Start/Cancel。
+//! Lock/cycle/host 状态通过 owned_locks/owned_cycles/owned_hosts 追踪。
 //!
-//! 1. route duplicate room write commands through this gateway;
-//! 2. add metrics, tests, and simulation coverage around the gateway;
-//! 3. route low-risk commands through a mailbox-backed path;
-//! 4. replace the remaining inline implementation with per-room actors;
-//! 5. remove the old direct calls from `cli.rs`, `server.rs`, and `session.rs`.
+//! 但房间状态仍由 `room.rs` + `PlusServerState.rooms` + `RwLock`/`Atomic` 拥有，
+//! Room Actor 尚未完全获得状态所有权。
+//!
+//! 架构：
+//!
+//! RoomCommandGateway
+//!     ↓
+//! per-room mailbox
+//!     ↓
+//! 调用旧 Room 对象完成操作
+//!
+//! 迁移路径：
+//!
+//! 1. 所有房间写命令通过此网关路由 ✅
+//! 2. 指标、测试和仿真覆盖 ✅
+//! 3. 低风险命令通过 mailbox ❌ → 完成
+//! 4. 剩余内联实现替换为 per-room actor ❌
+//! 5. 删除 cli.rs/server.rs/session.rs 中的旧直接调用 ❌
 
 mod audit;
 mod command;

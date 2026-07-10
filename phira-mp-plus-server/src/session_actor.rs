@@ -1,10 +1,13 @@
-//! Session actor mailbox.
+//! Session actor 全局邮箱（迁移中）。
 //!
-//! All non-trivial session commands are routed through a per-process mailbox
-//! that serialises execution and prevents concurrent state-machine mutations.
+//! 当前为全进程统一邮箱（`static MAILBOX`），所有用户命令通过同一通道。
+//! 这能避免并发状态修改，但慢命令可能阻塞其他用户。
 //!
-//! Migration status: WriteRouted (all commands except Ping, Authenticate,
-//! Touches/Judges and QueryRoomInfo have been migrated).
+//! 目标：每连接独立 Actor (`SessionActor(user A) → mailbox A`)。
+//! 邮箱不可用时会回退到原有直接处理路径。
+//!
+//! 迁移状态：WriteRouted（除 Ping、Authenticate、Touches/Judges、
+//! QueryRoomInfo 外均已迁移）。
 
 use crate::session::{SessionCategory, User};
 use phira_mp_common::{RoomId, ServerCommand};

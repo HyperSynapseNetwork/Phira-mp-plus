@@ -1,13 +1,21 @@
-//! Runtime v2 high-frequency telemetry infrastructure.
+//! Runtime v2 高频遥测基础设施（迁移中）。
 //!
-//! Production Touch/Judge telemetry is staged through the actor-based
-//! [`TelemetryBatcher`] which batches items, flushes on interval or
-//! batch-size threshold, and writes via the synchronous DB ack path.
+//! 当前采用双路径策略：
 //!
-//! The cutover switch (`TelemetryCutoverMode`) controls whether items go
-//! through the batcher mirror, or direct-path only, so the server can
-//! observe Runtime v2 batch performance without risking data loss: the
-//! direct path remains the authoritative source of truth.
+//! - **直接写入（DirectOnly）**：权威数据源，通过 `RoundStore`/`db.rs` 直接持久化
+//! - **Worker 镜像（WorkerPreferred）**：直接写入后，作为异步镜像发往 PersistenceWorker
+//!
+//! `DirectOnly` 模式完全绕过 batcher；`WorkerPreferred` 启用了异步镜像。
+//! 两种模式下直接写入始终是权威数据源，Worker 失败不阻塞热路径。
+//!
+//! 目标演进：
+//!
+//! 业务热路径 → 有界持久化消息 → Persistence Actor
+//!   ├── 批处理
+//!   ├── 重试
+//!   ├── WAL/落盘缓冲
+//!   ├── PostgreSQL
+//!   └── shutdown flush
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;

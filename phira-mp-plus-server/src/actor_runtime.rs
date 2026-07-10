@@ -1,13 +1,18 @@
-//! Runtime v2 actor-model blueprint.
+//! Runtime v2 actor model — 迁移状态记录。
 //!
-//! This module is intentionally a blueprint/diagnostic layer first.  It gives the
-//! project a concrete target for moving responsibilities out of `server.rs`,
-//! `session.rs`, `room.rs` and `cli.rs` without forcing a risky rewrite of the
-//! current protocol hot path.
+//! Actor 边界已定义，部分路径已完成迁移：
 //!
-//! The migration rule is: mirror first, then route reads, then route writes, then
-//! delete the old direct call once the actor path has been proven by tests and
-//! simulation suites.
+//! | Actor | 状态 |
+//! |-------|------|
+//! | Session Actor | 全局单邮箱，所有命令通过 mailbox 路由；旧路径仍作 fallback |
+//! | Room Actor | 每房间独立 mailbox，7 个房间命令已串行化；但状态仍由 `room.rs` + `RwLock` 拥有 |
+//! | Persistence Actor | PersistenceWorker 已运行，但 DirectOnly/WorkerPreferred 双路径并存，直接写入仍是权威源 |
+//! | Supervisor Actor | 邮箱骨架已建，状态查询和关闭通知通过 mailbox |
+//! | Simulation Actor | 读取路径已迁移，事件总线命令待完成 |
+//! | Plugin Actor | WIT 生命周期已接入，dispatch 待入 mailbox |
+//! | CLI Actor | 顶层派发已拆分，具体命令体仍在 CliHandler |
+//!
+//! 迁移原则：镜像 → 路由读 → 路由写 → 删除旧直接调用。
 
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -71,7 +76,7 @@ impl ActorRuntime {
     pub async fn stats(&self) -> ActorRuntimeStats {
         let boundaries = self.boundaries.read().await.values().cloned().collect();
         ActorRuntimeStats {
-            phase: "blueprint".to_string(),
+            phase: "migration_in_progress".to_string(),
             web_management_api: "out_of_scope".to_string(),
             rule: "mirror first; then route reads; then route writes; delete old direct calls last"
                 .to_string(),
