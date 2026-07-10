@@ -10,7 +10,41 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  auto-patch:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: 自动更新 C 版本号
+        id: patch
+        run: |
+          FULL_VERSION=$(grep '^version = ' phira-mp-plus-server/Cargo.toml | sed 's/.*"\(.*\)"/\1/')
+          MAJOR=$(echo "$FULL_VERSION" | cut -d. -f1)
+          MINOR=$(echo "$FULL_VERSION" | cut -d. -f2)
+          TAG_PREFIX="v${MAJOR}.${MINOR}.0"
+          if git rev-parse "$TAG_PREFIX" >/dev/null 2>&1; then
+            PATCH=$(git rev-list --count "$TAG_PREFIX"..HEAD)
+          else
+            PATCH=$(git rev-list --count HEAD)
+          fi
+          NEW_VERSION="${MAJOR}.${MINOR}.${PATCH}"
+          CURRENT_C=$(echo "$FULL_VERSION" | cut -d. -f3)
+          echo "current=$CURRENT_C computed=$PATCH"
+          if [[ "$CURRENT_C" != "$PATCH" && "${{ github.ref }}" == "refs/heads/main" && "${{ github.event_name }}" == "push" ]]; then
+            sed -i "s/^version = \".*\"/version = \"$NEW_VERSION\"/" phira-mp-plus-server/Cargo.toml
+            sed -i "s/^version = \".*\"/version = \"$NEW_VERSION\"/" phira-plugin-sdk/Cargo.toml
+            git config user.name "github-actions"
+            git config user.email "actions@github.com"
+            git add phira-mp-plus-server/Cargo.toml phira-plugin-sdk/Cargo.toml
+            git commit -m "chore: auto bump patch to $NEW_VERSION [skip ci]"
+            git push
+          fi
+
   check:
+    needs: auto-patch
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

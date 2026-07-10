@@ -7,8 +7,8 @@ on:
         description: 升级类型 | major=A+1 | minor=B+1（默认）
         type: choice
         options:
-          - minor  # → A.B+1.0
-          - major  # → A+1.0.0
+          - minor  # → A.B+1.C
+          - major  # → A+1.0.C
         default: "minor"
 
 permissions:
@@ -37,17 +37,29 @@ jobs:
             MINOR=$((MINOR + 1))
           fi
 
+          # C = 自上一个 v{A}.{B}.0 标签以来的 commit 数
+          TAG_PREFIX="v${MAJOR}.${MINOR}.0"
+          if git rev-parse "$TAG_PREFIX" >/dev/null 2>&1; then
+            PATCH=$(git rev-list --count "$TAG_PREFIX"..HEAD)
+          else
+            PATCH=$(git rev-list --count HEAD)
+          fi
+
+          NEW_VERSION="${MAJOR}.${MINOR}.${PATCH}"
           echo "major=$MAJOR" >> $GITHUB_OUTPUT
           echo "minor=$MINOR" >> $GITHUB_OUTPUT
+          echo "patch=$PATCH" >> $GITHUB_OUTPUT
+          echo "version=$NEW_VERSION" >> $GITHUB_OUTPUT
+          echo "tag=v$NEW_VERSION" >> $GITHUB_OUTPUT
 
-      - name: 更新源码版本号
+      - name: 更新 Cargo.toml 版本号
         run: |
-          sed -i "s/^version = \".*\"/version = \"${{ steps.version.outputs.major }}.${{ steps.version.outputs.minor }}.0\"/" phira-mp-plus-server/Cargo.toml
-          sed -i "s/^version = \".*\"/version = \"${{ steps.version.outputs.major }}.${{ steps.version.outputs.minor }}.0\"/" phira-plugin-sdk/Cargo.toml
+          sed -i "s/^version = \".*\"/version = \"${{ steps.version.outputs.version }}\"/" phira-mp-plus-server/Cargo.toml
+          sed -i "s/^version = \".*\"/version = \"${{ steps.version.outputs.version }}\"/" phira-plugin-sdk/Cargo.toml
 
       - name: 提交并打标签
         run: |
-          TAG="v${{ steps.version.outputs.major }}.${{ steps.version.outputs.minor }}.0"
+          TAG="${{ steps.version.outputs.tag }}"
           git config user.name "github-actions"
           git config user.email "actions@github.com"
           git add phira-mp-plus-server/Cargo.toml phira-plugin-sdk/Cargo.toml
