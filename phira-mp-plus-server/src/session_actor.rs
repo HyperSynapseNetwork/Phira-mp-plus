@@ -149,7 +149,7 @@ async fn handle_chat(user: Arc<User>, _category: SessionCategory, content: Strin
         let _ = user.server.persistence_worker.enqueue(
             crate::persistence::message::PersistenceEvent::ServerEvent {
                 kind: "chat.message".to_string(),
-                payload: Arc::new(serde_json::json!({"room_id": room.id.to_string(), "user_id": user.id, "user_name": user.name.clone(), "message": content.clone()}),
+                payload: Arc::new(serde_json::json!({"room_id": room.id.to_string(), "user_id": user.id, "user_name": user.name.clone(), "message": content.clone()})),
                 simulation: false,
             },
         ).await;
