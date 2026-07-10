@@ -22,21 +22,31 @@ jobs:
       version: ${{ steps.tag.outputs.version }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - id: tag
         run: |
           if [[ "${{ github.ref_type }}" == "tag" ]]; then
-            # 标签触发：从标签名提取版本号
-            RAW="${{ github.ref_name }}"
-            RAW="${RAW#v}"
+            # 标签触发：直接用标签名
+            FULL_VERSION="${{ github.ref_name }}"
+            FULL_VERSION="${FULL_VERSION#v}"
           else
-            # 手动触发：从 Cargo.toml 读取版本号
-            RAW=$(grep '^version = ' phira-mp-plus-server/Cargo.toml | sed 's/.*"\(.*\)"/\1/')
+            # 手动触发：从最新 tag 推算下一个版本号
+            LATEST_TAG=$(git tag --list 'v*.*.*' --sort=-v:refname | head -1)
+            [[ -z "$LATEST_TAG" ]] && { echo "错误: 没有找到版本标签，请先运行 Bump Version workflow"; exit 1; }
+            RAW="${LATEST_TAG#v}"
+            MAJOR=$(echo "$RAW" | cut -d. -f1)
+            MINOR=$(echo "$RAW" | cut -d. -f2)
+            BASE="v${MAJOR}.${MINOR}.0"
+            if git rev-parse "$BASE" >/dev/null 2>&1; then
+              PATCH=$(git rev-list --count "$BASE"..HEAD)
+            else
+              PATCH=$(git rev-list --count HEAD)
+            fi
+            FULL_VERSION="${MAJOR}.${MINOR}.${PATCH}"
           fi
-          MAJOR=$(echo "$RAW" | cut -d. -f1)
-          MINOR=$(echo "$RAW" | cut -d. -f2)
-          PATCH=$(echo "$RAW" | cut -d. -f3)
-          echo "tag=v$MAJOR.$MINOR.$PATCH" >> $GITHUB_OUTPUT
-          echo "version=$MAJOR.$MINOR.$PATCH" >> $GITHUB_OUTPUT
+          echo "tag=v$FULL_VERSION" >> $GITHUB_OUTPUT
+          echo "version=$FULL_VERSION" >> $GITHUB_OUTPUT
 
   build-linux:
     needs: version
@@ -93,15 +103,6 @@ jobs:
         with:
           pattern: phira-*
           merge-multiple: true
-      - name: 确保 tag 存在
-        run: |
-          TAG="${{ needs.version.outputs.tag }}"
-          if ! git rev-parse "$TAG" >/dev/null 2>&1; then
-            git config user.name "github-actions"
-            git config user.email "actions@github.com"
-            git tag -a "$TAG" -m "Release $TAG"
-            git push origin "$TAG"
-          fi
       - name: Release
         uses: softprops/action-gh-release@v2
         with:
