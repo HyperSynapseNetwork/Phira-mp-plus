@@ -206,7 +206,6 @@ fn server_state_query_dispatch(
         }
         "playtime.leaderboard" => {
             let (tx, rx) = std::sync::mpsc::channel();
-            let state = Arc::clone(state);
             spawn_on_runtime(async move {
                 let data = if let Some(db) = crate::internal_hooks::DB.get() {
                     db.top_playtime(1000).await
