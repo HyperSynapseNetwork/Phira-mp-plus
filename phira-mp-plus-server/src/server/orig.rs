@@ -990,6 +990,12 @@ impl PlusServerState {
 }
 
 impl PlusServerState {
+    /// Get the latest RoomActor snapshot for a room, if available.
+    /// Falls back to None if the room has no actor yet.
+    pub fn room_snapshot(&self, room_id: &str) -> Option<crate::room_actor::actor::RoomSnapshot> {
+        self.room_commands.room_snapshot(room_id)
+    }
+
     pub(crate) async fn record_user_room_history(
         &self,
         user_id: i32,

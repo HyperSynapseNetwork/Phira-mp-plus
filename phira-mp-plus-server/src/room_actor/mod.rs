@@ -32,6 +32,7 @@ mod mailbox;
 mod ops;
 mod result;
 
+pub use self::actor::RoomSnapshot;
 pub use self::result::{RoomCommandDelivery, RoomCommandPayload, RoomCommandResult};
 
 use self::command::RoomActorCommand;
