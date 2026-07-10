@@ -185,6 +185,10 @@ fn server_state_query_dispatch(
                 .collect();
             Ok(serde_json::json!(list))
         }
+        "auth.visited_count" => {
+            let users = crate::read_lock!(state.users);
+            Ok(json!(users.len()))
+        }
         "user_name" => {
             let user_id = args.first().and_then(|v| v.as_i64()).map(|v| v as i32).ok_or_else(|| "user_id required".to_string())?;
             let users = crate::read_lock!(state.users);
