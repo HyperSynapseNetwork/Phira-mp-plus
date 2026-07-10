@@ -9,7 +9,7 @@ use serde_json::Value;
 use std::{
     future::Future,
     sync::{
-        atomic::{AtomicU64, Ordering},
+        atomic::Ordering,
         Arc, Weak,
     },
 };
