@@ -581,7 +581,7 @@ impl PluginManager {
             }
         }
         // Clean up extension fields registered by this plugin
-        let removed = self.extensions.remove_fields_by_plugin(&plugin_name).await;
+        let removed = self.wasm_services.extensions.remove_fields_by_plugin(&plugin_name).await;
         if !removed.is_empty() {
             tracing::info!(plugin = %plugin_name, fields = ?removed, "removed extension fields");
         }
