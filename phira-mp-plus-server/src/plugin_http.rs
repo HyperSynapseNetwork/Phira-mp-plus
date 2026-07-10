@@ -104,16 +104,22 @@ impl PluginHttpServer {
             sse_streams: Arc::clone(&self.sse_streams),
         });
 
-        // Build Router<()> with all routes.
-        // State is passed via Extension layer instead of with_state,
-        // so the Router stays as Router<()> and into_make_service() is available.
-        let app = Router::new()
+        // Build Router<()> with all routes (static + dynamically registered SSE streams).
+        // State is passed via Extension, so Router stays Router<()> and into_make_service() works.
+        let mut app = Router::new()
             .route("/api/events", get(general_sse_handler))
             .route("/api/ws", get(websocket::handler))
-            .route("/api/rooms/listen", get(plugin_sse_handler))
             .route("/{*path}", any(dynamic_handler))
-            .layer(CorsLayer::permissive())
-            .layer(Extension(state));
+            .layer(CorsLayer::permissive());
+
+        // Dynamically add SSE stream routes from plugin registrations.
+        for (path, _) in self.sse_streams.read().await.iter() {
+            info!(path, "adding SSE stream route (plugin-backed)");
+            app = app.route(path, get(plugin_sse_handler));
+        }
+
+        // Wrap entire router with state so handlers can access HttpAppState via Extension.
+        app = app.layer(Extension(state));
 
         // Direct HTTP port (no PROXY protocol)
         let address = format!("0.0.0.0:{}", self.port);
@@ -217,13 +223,16 @@ fn sse_response(stream: sse::EventStream, interval: Duration) -> Response {
 /// Each registered SSE stream has its own route; the path is read from the request URI.
 async fn plugin_sse_handler(
     Extension(state): Extension<Arc<HttpAppState>>,
+    uri: Uri,
 ) -> Response {
-    let config = state.sse_streams.read().await.get("/api/rooms/listen").cloned();
+    let path = uri.path().to_string();
+    let config = state.sse_streams.read().await.get(&path).cloned();
     let pm = Arc::clone(&state.plugin_manager);
     let rx = state.events.subscribe_general();
 
+    let stream_name = path.trim_start_matches('/');
     let ready = SseEvent::new("ready",
-        serde_json::json!({"stream": "rooms/listen", "version": env!("CARGO_PKG_VERSION")}).to_string());
+        serde_json::json!({"stream": stream_name, "version": env!("CARGO_PKG_VERSION")}).to_string());
 
     let stream: sse::EventStream = Box::pin(
         stream::once(async move { Ok(ready.into_axum()) })
