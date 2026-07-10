@@ -20,7 +20,7 @@ use phira_mp_plus_server_api as api;
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::convert::Infallible;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock as StdRwLock};
 use std::time::Duration;
 use tokio::sync::{broadcast, RwLock};
 use tokio_stream::wrappers::errors::BroadcastStreamRecvError;
@@ -34,7 +34,7 @@ pub use router::HttpHandler;
 pub use sse::{SseEvent, SseHub};
 
 pub struct PluginHttpServer {
-    router: Arc<RwLock<DynamicRouter>>,
+    router: Arc<StdRwLock<DynamicRouter>>,
     events: Arc<SseHub>,
     /// SSE streams registered by plugins: path → (plugin_name, event_types).
     sse_streams: Arc<RwLock<HashMap<String, SseStreamConfig>>>,
@@ -52,7 +52,7 @@ pub struct SseStreamConfig {
 impl PluginHttpServer {
     pub fn new(port: u16, proxy_protocol_port: u16, events: Arc<SseHub>) -> Self {
         Self {
-            router: Arc::new(RwLock::new(DynamicRouter::default())),
+            router: Arc::new(StdRwLock::new(DynamicRouter::default())),
             events,
             sse_streams: Arc::new(RwLock::new(HashMap::new())),
             port,
@@ -65,8 +65,7 @@ impl PluginHttpServer {
     }
 
     pub async fn register_route(&self, path: &str, handler: HttpHandler) {
-        self.router.write().await.add(path.to_string(), handler);
-        info!(path, "HTTP route registered");
+        self.register_route_sync(path, handler);
     }
 
     /// Register an SSE stream endpoint backed by a plugin.
@@ -78,18 +77,9 @@ impl PluginHttpServer {
     }
 
     pub fn register_route_sync(&self, path: &str, handler: HttpHandler) {
-        let path = path.to_string();
-        if let Ok(mut router) = self.router.try_write() {
-            router.add(path.clone(), handler);
-            info!(path, "HTTP route registered");
-            return;
-        }
-
-        let router = Arc::clone(&self.router);
-        tokio::spawn(async move {
-            router.write().await.add(path.clone(), handler);
-            info!(path, "HTTP route registered");
-        });
+        let mut router = self.router.write().unwrap_or_else(|err| err.into_inner());
+        let registered_path = router.add(path, handler);
+        info!(path = %registered_path, "HTTP route registered");
     }
 
     pub fn broadcast(&self, event_type: &str, data: &str) {
@@ -191,7 +181,7 @@ impl api::HttpHandleInner for HttpHandleBridge {
 }
 
 pub(super) struct HttpAppState {
-    router: Arc<RwLock<DynamicRouter>>,
+    router: Arc<StdRwLock<DynamicRouter>>,
     events: Arc<SseHub>,
     plugin_manager: Arc<PluginManager>,
     sse_streams: Arc<RwLock<HashMap<String, SseStreamConfig>>>,
@@ -292,7 +282,11 @@ async fn dynamic_handler(
     uri: Uri,
     body: Option<Json<Value>>,
 ) -> impl IntoResponse {
-    let route = state.router.read().await.resolve(&method, &uri);
+    let route = state
+        .router
+        .read()
+        .unwrap_or_else(|err| err.into_inner())
+        .resolve(&method, &uri);
     let Some((handler, params)) = route else {
         return (
             StatusCode::NOT_FOUND,

@@ -81,3 +81,22 @@ pub(crate) async fn send_auth_rejection(send_tx: &StreamSender<ServerCommand>, m
         Err(_) => warn!("timed out while delivering authentication rejection"),
     }
 }
+
+
+#[cfg(test)]
+mod tests {
+    use super::ban_rejection_message;
+
+    #[test]
+    fn ban_rejection_includes_reason_in_client_language() {
+        let message = ban_rejection_message("zh-CN", "恶意刷屏");
+        assert!(message.contains("恶意刷屏"));
+        assert!(message.contains("封禁"));
+    }
+
+    #[test]
+    fn ban_rejection_uses_default_reason_when_empty() {
+        let message = ban_rejection_message("en-US", "   ");
+        assert!(message.contains("Violation of server rules"));
+    }
+}

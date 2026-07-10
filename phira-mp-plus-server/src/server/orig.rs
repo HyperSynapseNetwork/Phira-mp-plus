@@ -556,6 +556,36 @@ impl PlusServerState {
         self.event_bus.publish(event)
     }
 
+    /// If the banned user is currently online, deliver the localized reason before
+    /// closing the session. Returning `true` means an active session was found.
+    pub async fn disconnect_banned_user(&self, user_id: i32, reason: &str) -> bool {
+        let target = {
+            let sessions = self.sessions.read().await;
+            sessions
+                .iter()
+                .find(|(_, session)| session.user.id == user_id)
+                .map(|(session_id, session)| (*session_id, Arc::clone(session)))
+        };
+        let Some((session_id, session)) = target else {
+            return false;
+        };
+
+        let language = session.user.lang.0.to_string();
+        let message = crate::session_auth::ban_rejection_message(&language, reason);
+        if let Err(err) = session
+            .stream
+            .send_and_flush(ServerCommand::Authenticate(Err(message)))
+            .await
+        {
+            warn!(user = user_id, ?err, "failed to deliver ban reason before disconnect");
+        }
+
+        if let Err(err) = self.lost_con_tx.send(session_id).await {
+            warn!(user = user_id, ?err, "failed to disconnect banned user");
+        }
+        true
+    }
+
     pub fn publish_benchmark_completed(&self, report: &BenchmarkReport) -> usize {
         self.publish_runtime_event(crate::event_bus::MpEvent::BenchmarkCompleted {
             report: report.clone(),
@@ -805,8 +835,8 @@ impl PlusServerState {
     }
 
     /// 如果房间没有真实房主或系统 `?` 房主，让指定普通玩家成为房主。
-    /// `announce=false` 用于无人空房间首个玩家加入：只更新服务器状态与 host 标记，
-    /// 不广播 `NewHost`，避免客户端在还没收到 JoinRoom 用户表前显示 `? 成为房主`。
+    /// `announce=false` 用于无人空房间首个玩家加入：这里只更新服务器状态，
+    /// `JoinRoom(Ok)` 发出后再由 Session 发送 `ChangeHost(true)`，避免协议乱序。
     pub async fn assign_room_host_if_missing(
         &self,
         room: &Arc<crate::room::Room>,
@@ -817,7 +847,11 @@ impl PlusServerState {
         if monitor || room.has_host().await {
             return false;
         }
-        room.set_host(Some(user.id), announce).await.is_ok()
+        if announce {
+            room.set_host(Some(user.id), true).await.is_ok()
+        } else {
+            room.set_joining_user_as_host_silently(user).await.is_ok()
+        }
     }
 
 

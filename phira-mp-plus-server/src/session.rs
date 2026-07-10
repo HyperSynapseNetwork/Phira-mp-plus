@@ -4,7 +4,9 @@ use crate::l10n::{Language, LANGUAGE};
 use crate::phira_client::PhiraRetryNoticeTarget;
 use crate::plugin::PluginEvent;
 use crate::server::PlusServerState;
-use crate::session_auth::{authenticate_remote_with_notice, send_auth_rejection, AuthUserInfo};
+use crate::session_auth::{
+    authenticate_remote_with_notice, ban_rejection_message, send_auth_rejection, AuthUserInfo,
+};
 use anyhow::{anyhow, bail, Result};
 use phira_mp_common::{ClientCommand, RoomEvent, ServerCommand, Stream, UserInfo};
 use std::{
@@ -373,13 +375,22 @@ impl Session {
                                         };
                                         let user_info = if let Some(entry) = user_info {
                                             // 封禁检查（拒绝前不走 API，毫秒级响应）
-                                            if let Some(_reason) =
+                                            if let Some(reason) =
                                                 server.ban_manager.ban_reason(entry.user_id).await
                                             {
                                                 warn!(
                                                     "banned user {}({}) tried to connect (cache)",
                                                     entry.name, entry.user_id
                                                 );
+                                                let rejection = ban_rejection_message(
+                                                    &entry.language,
+                                                    &reason,
+                                                );
+                                                send_auth_rejection(
+                                                    retry_send_tx.as_ref(),
+                                                    rejection,
+                                                )
+                                                .await;
                                                 if let Some(tx) = auth_tx.take() {
                                                     let _ =
                                                         tx.send(AuthenticationOutcome::Rejected);
@@ -426,13 +437,22 @@ impl Session {
                                                         )
                                                         .await;
                                                     // 封禁检查
-                                                    if let Some(_reason) =
+                                                    if let Some(reason) =
                                                         server.ban_manager.ban_reason(info.id).await
                                                     {
                                                         warn!(
                                                             "banned user {}({}) tried to connect",
                                                             info.name, info.id
                                                         );
+                                                        let rejection = ban_rejection_message(
+                                                            &info.language,
+                                                            &reason,
+                                                        );
+                                                        send_auth_rejection(
+                                                            retry_send_tx.as_ref(),
+                                                            rejection,
+                                                        )
+                                                        .await;
                                                         if let Some(tx) = auth_tx.take() {
                                                             let _ = tx.send(
                                                                 AuthenticationOutcome::Rejected,
@@ -481,6 +501,13 @@ impl Session {
                                                 .set_session(Arc::downgrade(this.get().unwrap()))
                                                 .await;
                                             existing.set_auth_token(Some(token.to_string())).await;
+                                            let online = server.users.read().await.len();
+                                            crate::internal_hooks::send_welcome(
+                                                user_info.id,
+                                                &existing.name,
+                                                online,
+                                                &server,
+                                            );
                                             server.publish_runtime_event(
                                                 crate::event_bus::MpEvent::UserConnected {
                                                     user_id: user_info.id,
@@ -490,7 +517,18 @@ impl Session {
                                                 },
                                             );
                                         } else {
-                                            if server.ban_manager.is_banned(user_info.id).await {
+                                            if let Some(reason) =
+                                                server.ban_manager.ban_reason(user_info.id).await
+                                            {
+                                                let rejection = ban_rejection_message(
+                                                    &user_info.language,
+                                                    &reason,
+                                                );
+                                                send_auth_rejection(
+                                                    retry_send_tx.as_ref(),
+                                                    rejection,
+                                                )
+                                                .await;
                                                 let _ = auth_tx
                                                     .take()
                                                     .unwrap()
@@ -768,6 +806,11 @@ impl Session {
                             }
                         }
 
+                        let joining_player = matches!(
+                            &cmd,
+                            ClientCommand::JoinRoom { monitor: false, .. }
+                        )
+                        .then(|| Arc::clone(&user));
                         let result = LANGUAGE
                             .scope(
                                 Arc::new(user.lang.clone()),
@@ -779,6 +822,8 @@ impl Session {
                             )
                             .await;
                         if let Some(resp) = result {
+                            let joined_room = joining_player.is_some()
+                                && matches!(&resp, ServerCommand::JoinRoom(Ok(_)));
                             if let Err(err) = send_tx.send(resp).await {
                                 error!(
                                     "failed to handle message, aborting connection {id}: {err:?}",
@@ -786,6 +831,28 @@ impl Session {
                                 panicked.store(true, Ordering::SeqCst);
                                 if let Err(err) = server.lost_con_tx.send(id).await {
                                     error!("failed to mark lost connection ({id}): {err:?}");
+                                }
+                            } else if joined_room {
+                                let joining_player = joining_player.expect("checked above");
+                                let room = joining_player
+                                    .room
+                                    .read()
+                                    .await
+                                    .as_ref()
+                                    .map(Arc::clone);
+                                if let Some(room) = room {
+                                    if room.check_host(&joining_player).await.is_ok() {
+                                        // Preserve protocol order for the first player entering an
+                                        // administratively-created empty room.
+                                        if let Err(err) = send_tx
+                                            .send(ServerCommand::ChangeHost(true))
+                                            .await
+                                        {
+                                            error!(
+                                                "failed to deliver post-join host state to {id}: {err:?}"
+                                            );
+                                        }
+                                    }
                                 }
                             }
                         }

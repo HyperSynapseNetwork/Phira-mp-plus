@@ -31,6 +31,30 @@ where
     }
 }
 
+fn parse_http_route_registration(args: &[Value]) -> Result<(String, String), String> {
+    if let Some(config) = args.first().and_then(Value::as_object) {
+        let path = config
+            .get("path")
+            .and_then(Value::as_str)
+            .ok_or_else(|| "path required".to_string())?;
+        let plugin = config
+            .get("plugin")
+            .and_then(Value::as_str)
+            .ok_or_else(|| "plugin name required".to_string())?;
+        return Ok((path.to_string(), plugin.to_string()));
+    }
+
+    let path = args
+        .first()
+        .and_then(Value::as_str)
+        .ok_or_else(|| "path required".to_string())?;
+    let plugin = args
+        .get(1)
+        .and_then(Value::as_str)
+        .ok_or_else(|| "plugin name required".to_string())?;
+    Ok((path.to_string(), plugin.to_string()))
+}
+
 #[allow(dead_code)]
 fn parse_benchmark_mode_arg(value: &str) -> Option<BenchmarkMode> {
     match value {
@@ -137,6 +161,7 @@ pub(crate) fn server_state_query_inner(
             }).collect();
             Ok(serde_json::json!(rooms_snapshot))
         }
+        "http.register_route" => server_state_query_dispatch(state, method, args),
         "player.touches" | "player.judges" => {
             Err("player.touches/judges requires async context".to_string())
         }
@@ -250,11 +275,8 @@ fn server_state_query_dispatch(
             }
         }
         "http.register_route" => {
-            let path = args.first().and_then(|v| v.as_str()).ok_or_else(|| "path required".to_string())?;
-            let plugin = args.get(1).and_then(|v| v.as_str()).ok_or_else(|| "plugin name required".to_string())?;
+            let (path, plugin_name) = parse_http_route_registration(args)?;
             let s = Arc::clone(state);
-            let path = path.to_string();
-            let plugin_name = plugin.to_string();
             let (tx, rx) = std::sync::mpsc::channel();
             spawn_on_runtime(async move {
                 let http_handle = s.plugin_manager.http_handle();
@@ -407,5 +429,29 @@ fn server_state_query_dispatch(
             server_state_query_inner(state, method, args)
         }
         _ => server_state_query_inner(state, method, args)
+    }
+}
+
+#[cfg(test)]
+mod registration_tests {
+    use super::parse_http_route_registration;
+    use serde_json::json;
+
+    #[test]
+    fn parses_documented_object_form() {
+        let args = vec![json!({"path": "/api/hello", "plugin": "my-plugin"})];
+        assert_eq!(
+            parse_http_route_registration(&args).unwrap(),
+            ("/api/hello".to_string(), "my-plugin".to_string())
+        );
+    }
+
+    #[test]
+    fn keeps_positional_form_compatible() {
+        let args = vec![json!("/api/hello"), json!("my-plugin")];
+        assert_eq!(
+            parse_http_route_registration(&args).unwrap(),
+            ("/api/hello".to_string(), "my-plugin".to_string())
+        );
     }
 }

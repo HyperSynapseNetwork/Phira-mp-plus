@@ -171,8 +171,33 @@ pub fn wit_json_value_to_serde(value: &crate::plugin_abi::wit_abi::phira::plugin
 }
 
 #[cfg(feature = "wit-bindgen")]
+fn normalize_plugin_scoped_api_args(
+    method: &str,
+    plugin_name: &str,
+    args: Vec<serde_json::Value>,
+) -> Result<Vec<serde_json::Value>, String> {
+    if method != "http.register_route" {
+        return Ok(args);
+    }
+
+    let path = match args.first() {
+        Some(serde_json::Value::Object(config)) => config
+            .get("path")
+            .and_then(serde_json::Value::as_str),
+        Some(value) => value.as_str(),
+        None => None,
+    }
+    .ok_or_else(|| "path required".to_string())?;
+
+    Ok(vec![
+        serde_json::Value::String(path.to_string()),
+        serde_json::Value::String(plugin_name.to_string()),
+    ])
+}
+
+#[cfg(feature = "wit-bindgen")]
 mod wit_trait_impls {
-    use super::WitPluginHost;
+    use super::{normalize_plugin_scoped_api_args, WitPluginHost};
     use crate::plugin_abi::wit_abi as wit;
     use wit::phira::plugin::phira_types as types;
 
@@ -215,7 +240,18 @@ mod wit_trait_impls {
         }
 
         fn api_call(&mut self, method: String, args: Vec<types::JsonValue>) -> types::ApiResult {
-            let args_serde: Vec<serde_json::Value> = args.iter().map(|v| wit_json_to_json(v)).collect();
+            let args_serde: Vec<serde_json::Value> = args
+                .iter()
+                .map(wit_json_to_json)
+                .collect();
+            let args_serde = match normalize_plugin_scoped_api_args(
+                &method,
+                &self.plugin_name,
+                args_serde,
+            ) {
+                Ok(args) => args,
+                Err(error) => return types::ApiResult::Error(error),
+            };
             match self.ctx.state_query.call(&method, &args_serde) {
                 Ok(value) => types::ApiResult::Ok(json_to_wit_json(&value)),
                 Err(e) => types::ApiResult::Error(e),
@@ -720,5 +756,23 @@ mod tests {
         let s = uuid::Uuid::new_v4().to_string();
         assert_eq!(s.len(), 36);
         assert_eq!(s.chars().filter(|&c| c == '-').count(), 4);
+    }
+}
+
+#[cfg(all(test, feature = "wit-bindgen"))]
+mod plugin_scoped_api_tests {
+    use super::normalize_plugin_scoped_api_args;
+    use serde_json::json;
+
+    #[test]
+    fn route_registration_uses_calling_plugin_identity() {
+        let args = vec![json!({
+            "path": "/api/hello",
+            "plugin": "spoofed-plugin"
+        })];
+        assert_eq!(
+            normalize_plugin_scoped_api_args("http.register_route", "actual-plugin", args).unwrap(),
+            vec![json!("/api/hello"), json!("actual-plugin")]
+        );
     }
 }

@@ -171,7 +171,7 @@ help groups
 
 ### `room start <room_id>`
 
-管理员发起游戏开始。
+服务端强制发起房间游戏；客户端完成谱面加载并准备后正式开始。兼容旧命令 `force-start <room_id>`，也可使用 `room force-start <room_id>`。
 
 | 参数 | 类型 | 说明 |
 |------|------|------|

@@ -669,12 +669,16 @@ impl CliHandler {
             }
         };
         match self.state.ban_manager.ban_user(uid, reason).await {
-            Ok(reason) => self.out(format!(
-                "  {} 用户 {} 已封禁\n    理由：{}",
-                c::green("✓"),
-                uid,
-                c::yellow(&reason),
-            )),
+            Ok(reason) => {
+                let disconnected = self.state.disconnect_banned_user(uid, &reason).await;
+                self.out(format!(
+                    "  {} 用户 {} 已封禁{}\n    理由：{}",
+                    c::green("✓"),
+                    uid,
+                    if disconnected { "，在线会话已通知并断开" } else { "" },
+                    c::yellow(&reason),
+                ));
+            }
             Err(e) => self.out(format!("  {} {}", c::red("✗"), e)),
         }
     }

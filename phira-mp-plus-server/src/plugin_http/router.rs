@@ -16,8 +16,17 @@ pub struct DynamicRouter {
 }
 
 impl DynamicRouter {
-    pub fn add(&mut self, pattern: String, handler: HttpHandler) {
-        self.entries.push(RouteEntry { pattern, handler });
+    pub fn add(&mut self, pattern: &str, handler: HttpHandler) -> String {
+        let pattern = normalize_route_path(pattern);
+        if let Some(entry) = self.entries.iter_mut().find(|entry| entry.pattern == pattern) {
+            entry.handler = handler;
+        } else {
+            self.entries.push(RouteEntry {
+                pattern: pattern.clone(),
+                handler,
+            });
+        }
+        pattern
     }
 
     pub fn resolve(&self, _method: &Method, uri: &Uri) -> Option<(HttpHandler, Vec<String>)> {
@@ -25,6 +34,15 @@ impl DynamicRouter {
             match_route(&entry.pattern, uri.path())
                 .map(|params| (Arc::clone(&entry.handler), params))
         })
+    }
+}
+
+fn normalize_route_path(path: &str) -> String {
+    let path = path.trim();
+    if path.starts_with('/') {
+        path.to_string()
+    } else {
+        format!("/{path}")
     }
 }
 
@@ -51,7 +69,10 @@ fn match_route(pattern: &str, path: &str) -> Option<Vec<String>> {
 
 #[cfg(test)]
 mod tests {
-    use super::match_route;
+    use super::{match_route, DynamicRouter};
+    use axum::http::{Method, Uri};
+    use serde_json::json;
+    use std::sync::Arc;
 
     #[test]
     fn extracts_angle_and_brace_parameters() {
@@ -64,5 +85,24 @@ mod tests {
     #[test]
     fn rejects_different_paths() {
         assert_eq!(match_route("/rooms/<room>", "/users/alpha"), None);
+    }
+
+    #[test]
+    fn normalizes_missing_leading_slash() {
+        let mut router = DynamicRouter::default();
+        router.add("api/hello", Arc::new(|_, _| Ok(json!({"handler": 1}))));
+        let uri: Uri = "/api/hello".parse().unwrap();
+        assert!(router.resolve(&Method::GET, &uri).is_some());
+    }
+
+    #[test]
+    fn duplicate_registration_replaces_handler() {
+        let mut router = DynamicRouter::default();
+        router.add("/api/hello", Arc::new(|_, _| Ok(json!({"handler": 1}))));
+        router.add("/api/hello", Arc::new(|_, _| Ok(json!({"handler": 2}))));
+
+        let uri: Uri = "/api/hello".parse().unwrap();
+        let (handler, params) = router.resolve(&Method::GET, &uri).unwrap();
+        assert_eq!(handler(None, params).unwrap(), json!({"handler": 2}));
     }
 }

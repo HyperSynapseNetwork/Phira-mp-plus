@@ -53,7 +53,15 @@ fn default_overview_omits_developer_commands() {
 fn default_overview_shows_primary_commands() {
     let registry = runtime_v2_registry();
     let overview = registry.format_overview();
-    for cmd_name in &["help", "exit", "status", "users", "rooms", "plugin list"] {
+    for cmd_name in &[
+        "help",
+        "exit",
+        "status",
+        "users",
+        "rooms",
+        "room start",
+        "plugin list",
+    ] {
         assert!(
             overview.contains(cmd_name),
             "primary command '{cmd_name}' should appear in default help"
@@ -157,4 +165,12 @@ fn all_primary_commands_have_valid_help() {
             );
         }
     }
+}
+
+#[test]
+fn force_start_compatibility_command_is_registered() {
+    let registry = runtime_v2_registry();
+    assert!(registry.get("force-start").is_some());
+    assert!(registry.get("room force-start").is_some());
+    assert!(registry.get("room start").is_some());
 }

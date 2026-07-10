@@ -377,7 +377,7 @@ impl CommandRegistry {
         });
         for cmd in &[
             "room info", "room banlist", "room rounds", "room history",
-            "room uuid", "room start", "room cancel", "room hide", "room unhide",
+            "room uuid", "room start", "room force-start", "force-start", "room cancel", "room hide", "room unhide",
             "room close", "room kick", "room host", "room force-move",
             "room set", "room ban", "room unban",
         ] {
@@ -966,8 +966,21 @@ pub fn runtime_v2_registry() -> CommandRegistry {
         CommandSpec::new(
             "room start",
             "rooms",
-            "管理员发起游戏开始。",
+            "服务端强制发起房间游戏，等待客户端加载后开始。",
             "room start <room_id>",
+        ),
+        CommandSpec::new(
+            "room force-start",
+            "rooms",
+            "room start 的房间子命令兼容别名。",
+            "room force-start <room_id>",
+        )
+        .advanced(),
+        CommandSpec::new(
+            "force-start",
+            "rooms",
+            "room start 的旧版顶层兼容命令。",
+            "force-start <room_id>",
         )
         .advanced(),
         CommandSpec::new(

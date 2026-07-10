@@ -668,6 +668,29 @@ impl Room {
         self.set_host(Some(new_host_id), true).await
     }
 
+    /// 为刚加入无人房间的首位玩家建立房主状态，但不提前发送客户端命令。
+    ///
+    /// `JoinRoom(Ok)` 必须先于 `ChangeHost(true)` 到达客户端；否则官方客户端
+    /// 尚未建立房间状态就收到房主标记，可能一直不显示加入结果，直至重连。
+    pub async fn set_joining_user_as_host_silently(
+        &self,
+        user: &Arc<super::session::User>,
+    ) -> Result<()> {
+        let is_member = self.users().await.into_iter().any(|member| member.id == user.id);
+        if !is_member {
+            bail!("user not in room");
+        }
+
+        self.system_host.store(false, Ordering::Relaxed);
+        *self.host.write().await = Arc::downgrade(user);
+        self.publish_update(PartialRoomData {
+            host: Some(user.id),
+            ..Default::default()
+        })
+        .await;
+        Ok(())
+    }
+
     /// 设置房主。`None` 表示显式设置为系统 `?` 房主；这种状态不会被后续加入者自动接管。
     pub async fn set_host(&self, new_host_id: Option<i32>, announce: bool) -> Result<()> {
         let old_host = self.host.read().await.upgrade();
