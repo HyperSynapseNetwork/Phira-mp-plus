@@ -254,17 +254,30 @@ fn server_state_query_dispatch(
             let plugin = args.get(1).and_then(|v| v.as_str()).ok_or_else(|| "plugin name required".to_string())?;
             let s = Arc::clone(state);
             let path = path.to_string();
-            let _plugin = plugin.to_string();
+            let plugin_name = plugin.to_string();
             let (tx, rx) = std::sync::mpsc::channel();
-            let path2 = path.clone();
             spawn_on_runtime(async move {
                 let http_handle = s.plugin_manager.http_handle();
                 let result = match http_handle {
                     Some(handle) => {
-                        let handler: phira_mp_plus_server_api::HttpHandler = std::sync::Arc::new(move |_, _| {
-                            Ok(serde_json::json!({"ok": true, "path": &path2}))
-                        });
-                        handle.register_route(&path, handler);
+                        let pm = Arc::clone(&s.plugin_manager);
+                        let pn = plugin_name.clone();
+                        let route_path = path.clone();
+                        let handler: phira_mp_plus_server_api::HttpHandler =
+                            std::sync::Arc::new(move |body, params| {
+                                let mut args: Vec<serde_json::Value> = params.into_iter()
+                                    .map(serde_json::Value::String).collect();
+                                if let Some(json_body) = body {
+                                    args.push(json_body);
+                                }
+                                match futures::executor::block_on(
+                                    pm.call_plugin_api(&pn, &route_path, args)
+                                ) {
+                                    Ok(val) => Ok(val),
+                                    Err(e) => Err((500, e)),
+                                }
+                            });
+                        handle.register_route(&route_path, handler);
                         Ok(serde_json::json!({"ok": true, "path": &path}))
                     }
                     None => Err("http not enabled".to_string()),
