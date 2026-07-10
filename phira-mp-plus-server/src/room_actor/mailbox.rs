@@ -8,9 +8,13 @@ use crate::server::PlusServerState;
 use serde_json::Value;
 use std::{
     future::Future,
-    sync::{atomic::Ordering, Arc, Weak},
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Arc, Weak,
+    },
 };
 use tokio::sync::{mpsc, oneshot};
+use tracing::warn;
 
 impl RoomCommandGateway {
     pub fn start_mailbox(self: &Arc<Self>, state: Arc<PlusServerState>, capacity: usize) {
@@ -180,10 +184,13 @@ impl RoomCommandGateway {
     }
 
     const COMMAND_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+    const MAX_CONSECUTIVE_FALLBACK: u64 = 5;
 
     /// Runtime v2 mailbox routing: prefer per-room mailbox, fall back to inline.
-    /// Used by general ops (set_lock, set_cycle, set_host, kick, close) where
-    /// inline fallback is safe.
+    /// Used by general ops (set_lock, set_cycle, set_host, kick, close).
+    ///
+    /// On timeout, retries the mailbox once before falling back to inline,
+    /// and logs a warning if consecutive fallbacks exceed threshold.
     pub(super) async fn room_mailbox_or_inline<Build, Inline, Fut>(
         &self,
         room_id: &str,
@@ -195,51 +202,75 @@ impl RoomCommandGateway {
         Inline: FnOnce() -> Fut,
         Fut: Future<Output = Result<Value, String>>,
     {
-        if let Some(tx) = self.room_mailbox_sender(room_id) {
-            let (reply, rx) = oneshot::channel();
-            let cmd = build(reply);
-            self.mailbox_enqueued.fetch_add(1, Ordering::Relaxed);
-            match tokio::time::timeout(Self::COMMAND_TIMEOUT, tx.send(cmd)).await {
-                Ok(Ok(())) => match tokio::time::timeout(Self::COMMAND_TIMEOUT, rx).await {
-                    Ok(Ok(result)) => result,
+        let result = self.try_mailbox_send(room_id, build).await;
+        match result {
+            Some(r) => r,
+            None => {
+                let fb = self.mailbox_fallback.fetch_add(1, Ordering::Relaxed) + 1;
+                if fb >= Self::MAX_CONSECUTIVE_FALLBACK {
+                    warn!(fallbacks = fb, room = room_id, "room mailbox: too many consecutive fallbacks, using inline");
+                }
+                RoomCommandResult::from_untyped(
+                    inline().await,
+                    RoomCommandDelivery::FallbackInline,
+                )
+            }
+        }
+    }
+
+    /// Try to send a command through the mailbox, retrying once on timeout.
+    /// Returns `None` if the mailbox is unavailable or both attempts fail.
+    async fn try_mailbox_send<Build>(
+        &self,
+        room_id: &str,
+        build: Build,
+    ) -> Option<RoomCommandResult>
+    where
+        Build: FnOnce(oneshot::Sender<RoomCommandResult>) -> RoomActorCommand,
+    {
+        let tx = self.room_mailbox_sender(room_id)?;
+        let (reply, rx) = oneshot::channel();
+        let cmd = build(reply);
+        self.mailbox_enqueued.fetch_add(1, Ordering::Relaxed);
+
+        // First attempt
+        match tokio::time::timeout(Self::COMMAND_TIMEOUT, tx.send(cmd)).await {
+            Ok(Ok(())) => {
+                match tokio::time::timeout(Self::COMMAND_TIMEOUT, rx).await {
+                    Ok(Ok(result)) => return Some(result),
                     Ok(Err(_)) => {
                         self.mailbox_closed.fetch_add(1, Ordering::Relaxed);
-                        self.mailbox_fallback.fetch_add(1, Ordering::Relaxed);
-                        RoomCommandResult::from_untyped(
-                            inline().await,
-                            RoomCommandDelivery::FallbackInline,
-                        )
+                        return None;
                     }
                     Err(_) => {
-                        // Reply timed out — command may still be executing.
-                        // Fall back to inline to avoid hanging caller.
+                        // Reply timed out — retry once
                         self.mailbox_failed.fetch_add(1, Ordering::Relaxed);
-                        RoomCommandResult::from_untyped(
-                            inline().await,
-                            RoomCommandDelivery::FallbackInline,
-                        )
+                        self.mailbox_retried.fetch_add(1, Ordering::Relaxed);
                     }
-                },
-                Ok(Err(_)) => {
-                    self.mailbox_closed.fetch_add(1, Ordering::Relaxed);
-                    self.mailbox_fallback.fetch_add(1, Ordering::Relaxed);
-                    RoomCommandResult::from_untyped(
-                        inline().await,
-                        RoomCommandDelivery::FallbackInline,
-                    )
-                }
-                Err(_) => {
-                    // Send timed out — mailbox channel full or worker stuck.
-                    self.mailbox_fallback.fetch_add(1, Ordering::Relaxed);
-                    RoomCommandResult::from_untyped(
-                        inline().await,
-                        RoomCommandDelivery::FallbackInline,
-                    )
                 }
             }
-        } else {
-            self.mailbox_fallback.fetch_add(1, Ordering::Relaxed);
-            RoomCommandResult::from_untyped(inline().await, RoomCommandDelivery::FallbackInline)
+            Ok(Err(_)) => {
+                self.mailbox_closed.fetch_add(1, Ordering::Relaxed);
+                return None;
+            }
+            Err(_) => {
+                // Send timed out — retry once
+                self.mailbox_failed.fetch_add(1, Ordering::Relaxed);
+                self.mailbox_retried.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+
+        // Retry: re-send command through mailbox
+        let tx = self.room_mailbox_sender(room_id)?;
+        let (reply, rx) = oneshot::channel();
+        let cmd = build(reply);
+        self.mailbox_enqueued.fetch_add(1, Ordering::Relaxed);
+        match tokio::time::timeout(Self::COMMAND_TIMEOUT, tx.send(cmd)).await {
+            Ok(Ok(())) => match tokio::time::timeout(Self::COMMAND_TIMEOUT, rx).await {
+                Ok(Ok(result)) => Some(result),
+                _ => None,
+            },
+            _ => None,
         }
     }
 
