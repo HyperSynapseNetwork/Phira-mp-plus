@@ -111,7 +111,7 @@ jobs:
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           tag_name: ${{ needs.version.outputs.tag }}
-          name: ${{ needs.version.outputs.version }}
+          name: v${{ needs.version.outputs.version }}
           body: ${{ github.event.inputs.description }}
           files: |
             phira-mp-plus-server-linux
