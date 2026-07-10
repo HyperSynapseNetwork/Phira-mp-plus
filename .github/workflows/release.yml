@@ -69,12 +69,10 @@ jobs:
           cp -r phira-plugin-sdk _sdk/phira-plugin-sdk
           cp -r wit _sdk/wit
           cd _sdk && tar czf ../phira-plugin-sdk.tar.gz phira-plugin-sdk wit
-      - name: 上传 SDK 到 Release
-        uses: softprops/action-gh-release@v2
+      - uses: actions/upload-artifact@v4
         with:
-          tag_name: ${{ needs.version.outputs.tag }}
-          files: phira-plugin-sdk.tar.gz
-          prerelease: false
+          name: phira-plugin-sdk
+          path: phira-plugin-sdk.tar.gz
 
   release:
     needs: [build-linux, build-windows, package-sdk]
@@ -85,7 +83,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
-          pattern: phira-mp-plus-server-*
+          pattern: phira-*
           merge-multiple: true
       - name: Release
         uses: softprops/action-gh-release@v2
@@ -96,4 +94,5 @@ jobs:
           files: |
             phira-mp-plus-server-linux
             phira-mp-plus-server-windows.exe
+            phira-plugin-sdk.tar.gz
           prerelease: false
