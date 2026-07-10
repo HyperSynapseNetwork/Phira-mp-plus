@@ -300,14 +300,6 @@ fn extract_user_id(payload: &Value) -> Option<i32> {
         .and_then(|value| i32::try_from(value).ok())
 }
 
-fn extract_item_count(payload: &Value) -> usize {
-    payload
-        .get("count")
-        .and_then(Value::as_u64)
-        .and_then(|value| usize::try_from(value).ok())
-        .unwrap_or(1)
-        .max(1)
-}
 
 fn extract_run_id(payload: &Value) -> Option<String> {
     payload
