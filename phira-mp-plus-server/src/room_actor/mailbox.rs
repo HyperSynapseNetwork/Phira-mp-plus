@@ -1,8 +1,8 @@
 //! Mailbox-backed routing for room commands.
 
 use super::{
-    command::RoomActorCommand, context::RoomCommandContext, handler::RoomCommandHandler,
-    RoomCommandDelivery, RoomCommandGateway, RoomCommandResult,
+    actor::RoomActor, command::RoomActorCommand, context::RoomCommandContext,
+    handler::RoomCommandHandler, RoomCommandDelivery, RoomCommandGateway, RoomCommandResult,
 };
 use crate::server::PlusServerState;
 use serde_json::Value;
@@ -106,33 +106,39 @@ impl RoomCommandGateway {
         let worker_room_id = room_id.to_string();
         drop(mailboxes);
         tokio::spawn(async move {
+            let Some(state) = weak_state.upgrade() else {
+                gateway.mailbox_closed.fetch_add(1, Ordering::Relaxed);
+                return;
+            };
+            // Look up the room and create RoomActor.
+            let actor = {
+                let rooms = state.rooms.read().await;
+                rooms.values()
+                    .find(|r| r.id.to_string() == worker_room_id)
+                    .map(|room| RoomActor::new(room.clone(), state.clone()))
+            };
+            let Some(mut actor) = actor else {
+                gateway.mailbox_closed.fetch_add(1, Ordering::Relaxed);
+                return;
+            };
+            // Publish initial snapshot.
+            let snapshot = actor.snapshot().clone();
+            if let Ok(mut snapshots) = gateway.snapshots.write() {
+                snapshots.insert(worker_room_id.clone(), snapshot);
+            }
+
             while let Some(command) = rx.recv().await {
-                let Some(state) = weak_state.upgrade() else {
-                    gateway.mailbox_closed.fetch_add(1, Ordering::Relaxed);
-                    let result = RoomCommandResult::mailbox_error(
-                        "server state dropped before room command could run",
-                    );
-                    gateway.observe_mailbox_result(&result);
-                    command.reply_with(result);
-                    continue;
-                };
-                // Look up the room once and pass it through context so
-                // handlers don't need to call find_room() again.
-                let room = {
-                    let rooms = state.rooms.read().await;
-                    rooms.values().find(|r| r.id.to_string() == command.room_id()).map(Arc::clone)
-                };
-                // Owned state is already written by set_lock_inline/set_cycle_inline/set_host_inline,
-                // so no mirroring is needed here.
-                let should_stop = if let Some(room) = room {
-                    gateway.execute_mailbox_command_with_room(&state, room.clone(), command).await
-                } else {
-                    let result = RoomCommandResult::mailbox_error(
-                        "room not found in per-room mailbox",
-                    );
-                    gateway.observe_mailbox_result(&result);
-                    command.reply_with(result);
-                    continue;
+                let should_stop = {
+                    let result = gateway.execute_mailbox_command_with_room(
+                        &actor.state, actor.room().clone(), command,
+                    ).await;
+                    // Refresh snapshot after command execution.
+                    actor.refresh_snapshot().await;
+                    let snapshot = actor.snapshot().clone();
+                    if let Ok(mut snapshots) = gateway.snapshots.write() {
+                        snapshots.insert(worker_room_id.clone(), snapshot);
+                    }
+                    result
                 };
                 if should_stop {
                     break;
@@ -140,6 +146,9 @@ impl RoomCommandGateway {
             }
             if let Ok(mut mailboxes) = gateway.room_mailboxes.write() {
                 mailboxes.remove(&worker_room_id);
+            }
+            if let Ok(mut snapshots) = gateway.snapshots.write() {
+                snapshots.remove(&worker_room_id);
             }
             gateway.mailbox_closed.fetch_add(1, Ordering::Relaxed);
         });

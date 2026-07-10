@@ -23,6 +23,7 @@
 //! 4. 剩余内联实现替换为 per-room actor ❌
 //! 5. 删除 cli.rs/server.rs/session.rs 中的旧直接调用 ❌
 
+pub mod actor;
 mod audit;
 mod command;
 mod context;
@@ -95,6 +96,8 @@ pub struct RoomCommandGateway {
     owned_cycles: StdRwLock<HashMap<String, bool>>,
     /// Owned host state per room. Populated by SetHost in the mailbox path.
     owned_hosts: StdRwLock<HashMap<String, Option<i32>>>,
+    /// Latest room snapshots, updated after each mailbox command execution.
+    snapshots: StdRwLock<HashMap<String, actor::RoomSnapshot>>,
     mailbox_enqueued: AtomicU64,
     mailbox_completed: AtomicU64,
     mailbox_failed: AtomicU64,
@@ -124,6 +127,7 @@ impl RoomCommandGateway {
             owned_locks: StdRwLock::new(HashMap::new()),
             owned_cycles: StdRwLock::new(HashMap::new()),
             owned_hosts: StdRwLock::new(HashMap::new()),
+            snapshots: StdRwLock::new(HashMap::new()),
             mailbox_enqueued: AtomicU64::new(0),
             mailbox_completed: AtomicU64::new(0),
             mailbox_failed: AtomicU64::new(0),
@@ -178,6 +182,11 @@ impl RoomCommandGateway {
         if let Ok(mut hosts) = self.owned_hosts.write() {
             hosts.insert(room_id.to_string(), host);
         }
+    }
+
+    /// Get the latest snapshot for a room, if available.
+    pub fn room_snapshot(&self, room_id: &str) -> Option<actor::RoomSnapshot> {
+        self.snapshots.read().ok().and_then(|map| map.get(room_id).cloned())
     }
 }
 
