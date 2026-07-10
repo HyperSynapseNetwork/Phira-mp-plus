@@ -93,6 +93,15 @@ jobs:
         with:
           pattern: phira-*
           merge-multiple: true
+      - name: 确保 tag 存在
+        run: |
+          TAG="${{ needs.version.outputs.tag }}"
+          if ! git rev-parse "$TAG" >/dev/null 2>&1; then
+            git config user.name "github-actions"
+            git config user.email "actions@github.com"
+            git tag -a "$TAG" -m "Release $TAG"
+            git push origin "$TAG"
+          fi
       - name: Release
         uses: softprops/action-gh-release@v2
         with:
