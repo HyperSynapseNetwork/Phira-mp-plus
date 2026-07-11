@@ -6,6 +6,10 @@ on:
   pull_request:
     branches: [main]
 
+concurrency:
+  group: build-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 env:
   CARGO_TERM_COLOR: always
 
@@ -22,7 +26,9 @@ jobs:
           fetch-depth: 0
       - name: 自动更新 C 版本号
         id: patch
+        shell: bash
         run: |
+          set -euo pipefail
           FULL_VERSION=$(grep '^version = ' phira-mp-plus-server/Cargo.toml | sed 's/.*"\(.*\)"/\1/')
           MAJOR=$(echo "$FULL_VERSION" | cut -d. -f1)
           MINOR=$(echo "$FULL_VERSION" | cut -d. -f2)
@@ -36,11 +42,10 @@ jobs:
           CURRENT_C=$(echo "$FULL_VERSION" | cut -d. -f3)
           echo "current=$CURRENT_C computed=$PATCH"
           if [[ "$CURRENT_C" != "$PATCH" && "${{ github.ref }}" == "refs/heads/main" && "${{ github.event_name }}" == "push" ]]; then
-            sed -i "s/^version = \".*\"/version = \"$NEW_VERSION\"/" phira-mp-plus-server/Cargo.toml
-            sed -i "s/^version = \".*\"/version = \"$NEW_VERSION\"/" phira-plugin-sdk/Cargo.toml
+            python scripts/sync-workspace-version.py "$NEW_VERSION"
             git config user.name "github-actions"
             git config user.email "actions@github.com"
-            git add phira-mp-plus-server/Cargo.toml phira-plugin-sdk/Cargo.toml
+            git add phira-mp-plus-server/Cargo.toml phira-plugin-sdk/Cargo.toml Cargo.lock
             git commit -m "chore: auto bump patch to $NEW_VERSION [skip ci]"
             git push
           fi
@@ -49,19 +54,40 @@ jobs:
   check:
     needs: auto-patch
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@v4
         with:
           ref: ${{ needs.auto-patch.outputs.build_ref }}
+          fetch-depth: 0
       - uses: actions-rust-lang/setup-rust-toolchain@v1
-      - name: cargo check & test
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Changed Rust formatting
+        env:
+          GITHUB_EVENT_BEFORE: ${{ github.event.before }}
+        run: ./scripts/check-changed-rustfmt.sh
+      - name: Workspace version consistency
+        run: python scripts/sync-workspace-version.py --check
+      - name: Default workspace check
+        run: cargo check --locked --workspace --all-targets
+      - name: Feature boundary checks
         run: |
-          cargo check --workspace
-          cargo test --workspace
+          cargo check --locked -p phira-mp-plus-server --no-default-features
+          cargo check --locked -p phira-mp-plus-server --no-default-features --features postgres
+          cargo check --locked -p phira-mp-plus-server --no-default-features --features wit-bindgen
+      - name: Tests
+        run: cargo test --locked --workspace
+      - name: Clippy
+        run: cargo clippy --locked --workspace --all-targets
 
   linux:
     needs: [auto-patch, check]
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     env:
       CC_x86_64_unknown_linux_musl: musl-gcc
       CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER: musl-gcc
@@ -69,31 +95,41 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: ${{ needs.auto-patch.outputs.build_ref }}
+          fetch-depth: 0
       - uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
           target: x86_64-unknown-linux-musl
-
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: linux-musl
       - name: Setup System
         run: sudo apt-get update && sudo apt-get install -y musl-tools
-
       - name: cargo build
-        run: cargo build --release --target x86_64-unknown-linux-musl
+        run: cargo build --locked --release --target x86_64-unknown-linux-musl
       - uses: actions/upload-artifact@v4
         with:
           name: phira-mp-plus-server-linux
           path: target/x86_64-unknown-linux-musl/release/phira-mp-plus-server
+          if-no-files-found: error
 
   windows:
     needs: [auto-patch, check]
     runs-on: windows-latest
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@v4
         with:
           ref: ${{ needs.auto-patch.outputs.build_ref }}
+          fetch-depth: 0
       - uses: actions-rust-lang/setup-rust-toolchain@v1
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: windows
       - name: cargo build
-        run: cargo build --release
+        run: cargo build --locked --release
       - uses: actions/upload-artifact@v4
         with:
           name: phira-mp-plus-server-windows
           path: target/release/phira-mp-plus-server.exe
+          if-no-files-found: error

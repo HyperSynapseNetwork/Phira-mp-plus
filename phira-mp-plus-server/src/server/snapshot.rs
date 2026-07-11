@@ -115,68 +115,66 @@ pub(super) fn build_snapshot(
         let ml = crate::read_lock!(room.monitors);
         ml.iter().filter_map(|w| w.upgrade()).collect()
     };
-    let host_arc = crate::read_lock!(room.host).upgrade();
-    let host_is_system = room.is_system_host();
-    let host = host_arc.as_ref().map(|u| u.id).unwrap_or(-1);
+    let control = room.control_snapshot();
+    let host_arc = room.host_user_sync();
+    let host_is_system = control.system_host;
+    let host = if host_is_system {
+        -1
+    } else {
+        control.host_id.unwrap_or(-1)
+    };
 
     let guard = crate::read_lock!(room.state);
-    let (
-        st,
-        playing_users,
-        ready_users,
-        finished_users,
-        aborted_users,
-        result_count,
-        state_detail,
-    ) = match &*guard {
-        crate::room::InternalRoomState::SelectChart => (
-            "SELECTING_CHART".to_string(),
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-            0usize,
-            serde_json::json!({"kind":"select_chart"}),
-        ),
-        crate::room::InternalRoomState::WaitForReady { started, .. } => {
-            let mut ready: Vec<i32> = started.iter().copied().collect();
-            ready.sort_unstable();
-            (
-                "WAITING_FOR_READY".to_string(),
+    let (st, playing_users, ready_users, finished_users, aborted_users, result_count, state_detail) =
+        match &*guard {
+            crate::room::InternalRoomState::SelectChart => (
+                "SELECTING_CHART".to_string(),
                 Vec::new(),
-                ready.clone(),
+                Vec::new(),
                 Vec::new(),
                 Vec::new(),
                 0usize,
-                serde_json::json!({"kind":"wait_for_ready", "ready_users": ready}),
-            )
-        }
-        crate::room::InternalRoomState::Playing { results, aborted } => {
-            let mut finished: Vec<i32> = results.keys().copied().collect();
-            finished.sort_unstable();
-            let mut aborted_vec: Vec<i32> = aborted.iter().copied().collect();
-            aborted_vec.sort_unstable();
-            let playing: Vec<i32> = users_arcs
-                .iter()
-                .filter(|u| !results.contains_key(&u.id) && !aborted.contains(&u.id))
-                .map(|u| u.id)
-                .collect();
-            (
-                "PLAYING".to_string(),
-                playing,
-                Vec::new(),
-                finished.clone(),
-                aborted_vec.clone(),
-                results.len(),
-                serde_json::json!({
-                    "kind":"playing",
-                    "finished_users": finished,
-                    "aborted_users": aborted_vec,
-                    "result_count": results.len(),
-                }),
-            )
-        }
-    };
+                serde_json::json!({"kind":"select_chart"}),
+            ),
+            crate::room::InternalRoomState::WaitForReady { started, .. } => {
+                let mut ready: Vec<i32> = started.iter().copied().collect();
+                ready.sort_unstable();
+                (
+                    "WAITING_FOR_READY".to_string(),
+                    Vec::new(),
+                    ready.clone(),
+                    Vec::new(),
+                    Vec::new(),
+                    0usize,
+                    serde_json::json!({"kind":"wait_for_ready", "ready_users": ready}),
+                )
+            }
+            crate::room::InternalRoomState::Playing { results, aborted } => {
+                let mut finished: Vec<i32> = results.keys().copied().collect();
+                finished.sort_unstable();
+                let mut aborted_vec: Vec<i32> = aborted.iter().copied().collect();
+                aborted_vec.sort_unstable();
+                let playing: Vec<i32> = users_arcs
+                    .iter()
+                    .filter(|u| !results.contains_key(&u.id) && !aborted.contains(&u.id))
+                    .map(|u| u.id)
+                    .collect();
+                (
+                    "PLAYING".to_string(),
+                    playing,
+                    Vec::new(),
+                    finished.clone(),
+                    aborted_vec.clone(),
+                    results.len(),
+                    serde_json::json!({
+                        "kind":"playing",
+                        "finished_users": finished,
+                        "aborted_users": aborted_vec,
+                        "result_count": results.len(),
+                    }),
+                )
+            }
+        };
     drop(guard);
 
     let mut users: Vec<i32> = users_arcs.iter().map(|u| u.id).collect();
@@ -208,7 +206,9 @@ pub(super) fn build_snapshot(
     let current_round_id = crate::read_lock!(room.current_round_id)
         .as_ref()
         .map(|id| id.to_string());
-    let rounds: Vec<RoundInfo> = room.play_history.recent_sync()
+    let rounds: Vec<RoundInfo> = room
+        .play_history
+        .recent_sync()
         .iter()
         .map(|r| {
             let results: Vec<Value> = r

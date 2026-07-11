@@ -1,12 +1,9 @@
 //! Telemetry cutover safety contracts.
 //!
-//! These tests verify that the default telemetry cutover mode is safe
-//! (won't silently drop Touches/Judges), that WorkerPreferred requires
-//! explicit opt-in, and that parse/display are consistent.
-//!
-//! WorkerPreferred semantics: direct RoundStore/db.rs (authoritative) +
-//! best-effort enqueue to Runtime v2 worker as async mirror / batch
-//! observation. Worker failure never blocks data persistence.
+//! `direct_only` remains the safe default. `worker_preferred` attempts direct
+//! first, mirrors acknowledged direct writes and lets an accepted Worker event
+//! compensate a direct failure. `worker_authoritative` is explicit opt-in and
+//! writes direct only when Worker enqueue is known to have been rejected.
 
 use phira_mp_plus_server::telemetry::TelemetryCutoverMode;
 
@@ -65,8 +62,18 @@ fn worker_preferred_writes_direct_and_enqueues_worker() {
     );
     assert!(
         mode.should_enqueue_worker(),
-        "WorkerPreferred must enqueue worker as batch mirror"
+        "WorkerPreferred must enqueue Worker for mirror or canonical compensation"
     );
+}
+
+#[test]
+fn worker_authoritative_is_single_writer_after_acceptance() {
+    let mode = TelemetryCutoverMode::WorkerAuthoritative;
+    let decision = mode.cutover_decision();
+    assert!(decision.enqueue_worker);
+    assert!(!decision.write_direct_before_worker_result);
+    assert!(!decision.should_write_direct_after_worker_enqueue(true));
+    assert!(decision.should_write_direct_after_worker_enqueue(false));
 }
 
 #[test]
@@ -83,19 +90,22 @@ fn cutover_decision_contract() {
 }
 
 #[test]
-fn variants_cover_both_modes() {
+fn variants_cover_all_modes() {
     let variants = TelemetryCutoverMode::variants();
-    assert_eq!(variants.len(), 2, "should have exactly 2 modes");
+    assert_eq!(variants.len(), 3, "should have exactly 3 modes");
     assert!(variants.contains(&TelemetryCutoverMode::DirectOnly));
     assert!(variants.contains(&TelemetryCutoverMode::WorkerPreferred));
+    assert!(variants.contains(&TelemetryCutoverMode::WorkerAuthoritative));
 }
 
 #[test]
-fn no_dual_write_or_fallback_in_simplified_modes() {
+fn only_supported_mode_names_are_exposed() {
     let variants = TelemetryCutoverMode::variants();
     for v in variants {
         assert!(
-            v.as_str() == "direct_only" || v.as_str() == "worker_preferred",
+            v.as_str() == "direct_only"
+                || v.as_str() == "worker_preferred"
+                || v.as_str() == "worker_authoritative",
             "unexpected mode: {}",
             v.as_str()
         );
@@ -118,15 +128,19 @@ fn worker_preferred_parse_rejects_legacy_names() {
 }
 
 #[test]
-fn worker_preferred_decision_matches_description() {
+fn worker_preferred_description_matches_compensation_contract() {
     let mode = TelemetryCutoverMode::WorkerPreferred;
     let desc = mode.description();
     assert!(
-        desc.contains("direct write"),
-        "WorkerPreferred description must mention direct write: {desc}"
+        desc.contains("direct"),
+        "WorkerPreferred description must mention the direct path: {desc}"
     );
     assert!(
         desc.contains("mirror"),
         "WorkerPreferred description must mention mirror: {desc}"
+    );
+    assert!(
+        desc.contains("compensat"),
+        "WorkerPreferred description must mention direct-failure compensation: {desc}"
     );
 }

@@ -22,7 +22,11 @@ use tracing::{info, warn};
     long_about = "Phira multiplayer server with WASM plugins, an administrative console, and extension APIs."
 )]
 struct Args {
-    #[arg(short, long, help = "TCP listen port (overrides YAML only when provided)")]
+    #[arg(
+        short,
+        long,
+        help = "TCP listen port (overrides YAML only when provided)"
+    )]
     port: Option<u16>,
 
     #[arg(
@@ -139,9 +143,12 @@ async fn main() -> Result<()> {
                 // 在非 tmux 的低兼容性终端下，提示安装 tmux 获得更好的 TUI 体验
                 let has_tmux = std::env::var_os("TMUX").is_some();
                 let term = std::env::var("TERM").unwrap_or_default();
-                let is_low_compat = term.is_empty() || term == "dumb"
-                    || term.starts_with("screen") || term == "linux"
-                    || term == "ansi" || term == "cons25";
+                let is_low_compat = term.is_empty()
+                    || term == "dumb"
+                    || term.starts_with("screen")
+                    || term == "linux"
+                    || term == "ansi"
+                    || term == "cons25";
                 if is_low_compat && !has_tmux {
                     eprintln!("\n  ⚠ 当前终端兼容性较低，管理控制台将以降级模式运行。");
                     eprintln!("  💡 建议安装 tmux 以获得完整的 TUI 体验：");
@@ -160,7 +167,8 @@ async fn main() -> Result<()> {
                     use std::io::Write;
                     let _ = std::io::stdout().flush();
                     let mut input = String::new();
-                    let proceed = std::io::stdin().read_line(&mut input)
+                    let proceed = std::io::stdin()
+                        .read_line(&mut input)
                         .map(|_| input.trim().to_lowercase() == "y")
                         .unwrap_or(false);
                     if !proceed {
@@ -170,15 +178,21 @@ async fn main() -> Result<()> {
                 }
                 match mode {
                     ConsoleMode::Tui(capabilities) => {
-                        if let Err(err) =
-                            phira_mp_plus_server::cli_tui::run_tui(cmd_tx, out_rx, log_rx, capabilities)
-                        {
+                        if let Err(err) = phira_mp_plus_server::cli_tui::run_tui(
+                            cmd_tx,
+                            out_rx,
+                            log_rx,
+                            capabilities,
+                        ) {
                             eprintln!("TUI error: {err}");
                         }
                     }
                     ConsoleMode::Line => {
                         phira_mp_plus_server::cli_tui::run_stdin_cli_with_logs(
-                            cmd_tx, out_rx, log_rx, screen_compat,
+                            cmd_tx,
+                            out_rx,
+                            log_rx,
+                            screen_compat,
                         );
                     }
                 }
@@ -210,6 +224,7 @@ async fn main() -> Result<()> {
         }
     }
 
+    phira_mp_plus_server::supervisor_actor::begin_shutdown();
     server
         .state
         .shutting_down
@@ -219,9 +234,8 @@ async fn main() -> Result<()> {
     server.state.pre_auth_gate.close();
     server.state.session_gate.close();
 
-    let shutdown_timeout = Duration::from_secs(
-        server.state.config.graceful_shutdown_timeout_secs.max(1),
-    );
+    let shutdown_timeout =
+        Duration::from_secs(server.state.config.graceful_shutdown_timeout_secs.max(1));
     let shutdown_deadline = Instant::now() + shutdown_timeout;
     let remaining = || shutdown_deadline.saturating_duration_since(Instant::now());
 
@@ -283,7 +297,10 @@ async fn main() -> Result<()> {
                     .await;
             }
         };
-        if tokio::time::timeout(lifecycle_budget, lifecycle).await.is_err() {
+        if tokio::time::timeout(lifecycle_budget, lifecycle)
+            .await
+            .is_err()
+        {
             warn!("session lifecycle shutdown exceeded the shared deadline");
         }
     }
@@ -350,12 +367,7 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-fn optional_channel<T>(
-    enabled: bool,
-) -> (
-    Option<mpsc::Sender<T>>,
-    Option<mpsc::Receiver<T>>,
-) {
+fn optional_channel<T>(enabled: bool) -> (Option<mpsc::Sender<T>>, Option<mpsc::Receiver<T>>) {
     if enabled {
         let (tx, rx) = mpsc::channel(1024);
         (Some(tx), Some(rx))

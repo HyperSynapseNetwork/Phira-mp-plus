@@ -32,49 +32,73 @@ impl RoomCommandHandler {
         let room = ctx.room.clone();
         match command {
             RoomActorCommand::SetLock {
-                room_id, locked, actor_user_id, ..
+                room_id,
+                locked,
+                actor_user_id,
+                ..
             } => typed_or_err(
                 gateway
-                    .set_lock_inline(state, room_id, *locked, *actor_user_id, room.clone())
+                    .set_lock_in_actor(state, room_id, *locked, *actor_user_id, room.clone())
                     .await,
                 RoomCommandDelivery::PerRoomMailbox,
             ),
-            RoomActorCommand::SetCycle { room_id, cycle, actor_user_id, .. } => typed_or_err(
+            RoomActorCommand::SetCycle {
+                room_id,
+                cycle,
+                actor_user_id,
+                ..
+            } => typed_or_err(
                 gateway
-                    .set_cycle_inline(state, room_id, *cycle, *actor_user_id, room.clone())
+                    .set_cycle_in_actor(state, room_id, *cycle, *actor_user_id, room.clone())
                     .await,
                 RoomCommandDelivery::PerRoomMailbox,
             ),
             RoomActorCommand::SetHost {
                 room_id, target_id, ..
             } => typed_or_err(
-                gateway.set_host_inline(state, room_id, *target_id, room.clone()).await,
+                gateway
+                    .set_host_in_actor(state, room_id, *target_id, room.clone())
+                    .await,
                 RoomCommandDelivery::PerRoomMailbox,
             ),
-            RoomActorCommand::SetHidden { room_id, hidden, .. } => typed_or_err(
-                gateway.set_hidden_inline(state, room_id, *hidden, room.clone()).await,
+            RoomActorCommand::SetHidden {
+                room_id, hidden, ..
+            } => typed_or_err(
+                gateway
+                    .set_hidden_in_actor(state, room_id, *hidden, room.clone())
+                    .await,
                 RoomCommandDelivery::PerRoomMailbox,
             ),
-            RoomActorCommand::SetEndpoint { room_id, endpoint, .. } => typed_or_err(
-                gateway.set_endpoint_inline(state, room_id, endpoint.clone(), room.clone()).await,
+            RoomActorCommand::SetEndpoint {
+                room_id, endpoint, ..
+            } => typed_or_err(
+                gateway
+                    .set_endpoint_in_actor(state, room_id, endpoint.clone(), room.clone())
+                    .await,
                 RoomCommandDelivery::PerRoomMailbox,
             ),
             RoomActorCommand::CloseRoom { room_id, .. } => typed_or_err(
-                gateway.close_room_inline(state, room_id, room.clone()).await,
+                gateway
+                    .close_room_in_actor(state, room_id, room.clone())
+                    .await,
                 RoomCommandDelivery::PerRoomMailbox,
             ),
             RoomActorCommand::KickUser {
                 room_id, target_id, ..
             } => typed_or_err(
-                gateway.kick_user_inline(state, room_id, *target_id, room.clone()).await,
+                gateway
+                    .kick_user_in_actor(state, room_id, *target_id, room.clone())
+                    .await,
                 RoomCommandDelivery::PerRoomMailbox,
             ),
             RoomActorCommand::StartRoom { room_id, .. } => typed_or_err(
-                gateway.start_room_inline(state, room_id, room.clone()).await,
+                gateway
+                    .start_room_in_actor(state, room_id, room.clone())
+                    .await,
                 RoomCommandDelivery::PerRoomMailbox,
             ),
             RoomActorCommand::CancelStart { room_id, .. } => typed_or_err(
-                gateway.cancel_start_inline(state, room_id, room).await,
+                gateway.cancel_start_in_actor(state, room_id, room).await,
                 RoomCommandDelivery::PerRoomMailbox,
             ),
         }
@@ -188,36 +212,50 @@ mod tests {
     #[test]
     fn set_lock_does_not_stop_room_mailbox() {
         let command = RoomActorCommand::SetLock {
-            room_id: "room-c".to_string(), locked: true, actor_user_id: 0, reply: dummy_reply(),
+            room_id: "room-c".to_string(),
+            locked: true,
+            actor_user_id: 0,
+            reply: dummy_reply(),
         };
         let result = RoomCommandResult::from_untyped(
             Ok(serde_json::json!({"locked": true})),
             RoomCommandDelivery::PerRoomMailbox,
         );
-        assert!(!RoomCommandHandler::should_stop_room_mailbox(&command, &result));
+        assert!(!RoomCommandHandler::should_stop_room_mailbox(
+            &command, &result
+        ));
     }
 
     #[test]
     fn set_cycle_does_not_stop_room_mailbox() {
         let command = RoomActorCommand::SetCycle {
-            room_id: "room-d".to_string(), cycle: true, actor_user_id: 0, reply: dummy_reply(),
+            room_id: "room-d".to_string(),
+            cycle: true,
+            actor_user_id: 0,
+            reply: dummy_reply(),
         };
         let result = RoomCommandResult::from_untyped(
             Ok(serde_json::json!({"cycle": true})),
             RoomCommandDelivery::PerRoomMailbox,
         );
-        assert!(!RoomCommandHandler::should_stop_room_mailbox(&command, &result));
+        assert!(!RoomCommandHandler::should_stop_room_mailbox(
+            &command, &result
+        ));
     }
 
     #[test]
     fn set_host_does_not_stop_room_mailbox() {
         let command = RoomActorCommand::SetHost {
-            room_id: "room-e".to_string(), target_id: Some(42), reply: dummy_reply(),
+            room_id: "room-e".to_string(),
+            target_id: Some(42),
+            reply: dummy_reply(),
         };
         let result = RoomCommandResult::from_untyped(
             Ok(serde_json::json!({"host": 42})),
             RoomCommandDelivery::PerRoomMailbox,
         );
-        assert!(!RoomCommandHandler::should_stop_room_mailbox(&command, &result));
+        assert!(!RoomCommandHandler::should_stop_room_mailbox(
+            &command, &result
+        ));
     }
 }

@@ -1,7 +1,5 @@
 //! Game-control room command operations.
 
-
-use std::sync::Arc;
 use super::super::{
     command::{RoomActorCommand, RoomCommandKind},
     RoomCommandGateway, RoomCommandPayload,
@@ -9,6 +7,7 @@ use super::super::{
 use crate::{plugin::PluginEvent, server::PlusServerState};
 use phira_mp_common::Message;
 use serde_json::Value;
+use std::sync::Arc;
 use std::time::Instant;
 
 impl RoomCommandGateway {
@@ -26,18 +25,10 @@ impl RoomCommandGateway {
         let started = Instant::now();
         let rid = room_id.to_string();
         let result = self
-            .room_mailbox_or_inline_control(
-                &rid,
-                |reply| RoomActorCommand::StartRoom {
-                    room_id: rid.clone(),
-                    reply,
-                },
-                || async {
-                    self.start_room_inline(state, &rid, None)
-                        .await
-                        .map(|p| p.into_json())
-                },
-            )
+            .room_mailbox(&rid, |reply| RoomActorCommand::StartRoom {
+                room_id: rid.clone(),
+                reply,
+            })
             .await;
         self.finish_command(
             state,
@@ -49,7 +40,7 @@ impl RoomCommandGateway {
         .into_untyped()
     }
 
-    pub(in crate::room_actor) async fn start_room_inline(
+    pub(in crate::room_actor) async fn start_room_in_actor(
         &self,
         state: &PlusServerState,
         room_id: &str,
@@ -82,18 +73,10 @@ impl RoomCommandGateway {
         let started = Instant::now();
         let rid = room_id.to_string();
         let result = self
-            .room_mailbox_or_inline_control(
-                &rid,
-                |reply| RoomActorCommand::CancelStart {
-                    room_id: rid.clone(),
-                    reply,
-                },
-                || async {
-                    self.cancel_start_inline(state, &rid, None)
-                        .await
-                        .map(|p| p.into_json())
-                },
-            )
+            .room_mailbox(&rid, |reply| RoomActorCommand::CancelStart {
+                room_id: rid.clone(),
+                reply,
+            })
             .await;
         self.finish_command(
             state,
@@ -105,7 +88,7 @@ impl RoomCommandGateway {
         .into_untyped()
     }
 
-    pub(in crate::room_actor) async fn cancel_start_inline(
+    pub(in crate::room_actor) async fn cancel_start_in_actor(
         &self,
         state: &PlusServerState,
         room_id: &str,

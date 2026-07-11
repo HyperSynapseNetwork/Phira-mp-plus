@@ -125,7 +125,10 @@ mod tests {
         assert_eq!(RoomCommandKind::SetCycle.action(), "set_cycle");
         assert_eq!(RoomCommandKind::SetHost.action(), "set_host");
         assert_eq!(RoomCommandKind::SetHidden.action(), "set_hidden");
-        assert_eq!(RoomCommandKind::SetEndpoint.action(), "set_phira_api_endpoint");
+        assert_eq!(
+            RoomCommandKind::SetEndpoint.action(),
+            "set_phira_api_endpoint"
+        );
         assert_eq!(RoomCommandKind::CloseRoom.action(), "close");
         assert_eq!(RoomCommandKind::KickUser.action(), "kick");
         assert_eq!(RoomCommandKind::StartRoom.action(), "start");

@@ -34,8 +34,8 @@ impl RoomCommandGateway {
             mailbox_registry_hit: self.mailbox_registry_hit.load(Ordering::Relaxed),
             mailbox_registry_miss: self.mailbox_registry_miss.load(Ordering::Relaxed),
             recent_commands,
-            phase: if mailbox_enabled { "per_room_mailbox_partial" } else { "inline_facade" }.to_string(),
-            note: "set_lock/set_cycle/set_host/close/kick/start/cancel now cross a per-room mailbox registry with typed RoomCommandResult audit metadata".to_string(),
+            phase: if mailbox_enabled { "per_room_mailbox_strict" } else { "mailbox_not_started" }.to_string(),
+            note: "nine management commands use the per-room mailbox exclusively; legacy retry/fallback counters are retained only for diagnostic schema compatibility".to_string(),
         }
     }
 

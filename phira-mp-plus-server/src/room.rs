@@ -13,13 +13,13 @@ use std::{
     collections::{HashMap, HashSet},
     ops::Deref,
     sync::{
-        atomic::{AtomicBool, AtomicUsize, Ordering},
-        Arc, Weak,
+        atomic::{AtomicBool, Ordering},
+        Arc, RwLock as StdRwLock, RwLockReadGuard as StdRwLockReadGuard,
+        RwLockWriteGuard as StdRwLockWriteGuard, Weak,
     },
 };
 use tokio::sync::RwLock;
 use tracing::{debug, info, warn};
-
 
 #[derive(Default, Debug, Clone)]
 pub enum InternalRoomState {
@@ -33,6 +33,39 @@ pub enum InternalRoomState {
         results: HashMap<i32, crate::server::Record>,
         aborted: HashSet<i32>,
     },
+}
+
+/// Coherent control-plane state for a room.
+///
+/// These fields used to live in independent atomics and locks, which allowed
+/// diagnostics and management paths to observe impossible combinations (for
+/// example a new host with the previous `system_host` flag). All management
+/// writes are serialized by the room mailbox and committed under this one lock.
+struct RoomControlState {
+    host: Weak<super::session::User>,
+    locked: bool,
+    cycle: bool,
+    hidden: bool,
+    persistent_empty: bool,
+    system_host: bool,
+    phira_api_endpoint: Option<String>,
+    admin_start_pending: bool,
+    max_users: usize,
+    generation: u64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct RoomControlSnapshot {
+    pub host_id: Option<i32>,
+    pub locked: bool,
+    pub cycle: bool,
+    pub hidden: bool,
+    pub persistent_empty: bool,
+    pub system_host: bool,
+    pub phira_api_endpoint: Option<String>,
+    pub admin_start_pending: bool,
+    pub max_users: usize,
+    pub generation: u64,
 }
 
 impl InternalRoomState {
@@ -141,18 +174,11 @@ pub struct Room {
     /// 用于触发 RoundComplete 事件的插件管理器
     pub plugin_manager: Option<Arc<PluginManager>>,
     server: Weak<crate::server::PlusServerState>,
-    pub host: RwLock<Weak<super::session::User>>,
+    control: StdRwLock<RoomControlState>,
     pub state: RwLock<InternalRoomState>,
 
     pub live: AtomicBool,
-    pub locked: AtomicBool,
-    pub cycle: AtomicBool,
-    hidden: AtomicBool,
-    persistent_empty: AtomicBool,
-    system_host: AtomicBool,
-    phira_api_endpoint: RwLock<Option<String>>,
     display_names: RwLock<HashMap<i32, String>>,
-    admin_start_pending: AtomicBool,
 
     pub users: RwLock<Vec<Weak<super::session::User>>>,
     pub monitors: RwLock<Vec<Weak<super::session::User>>>,
@@ -163,9 +189,6 @@ pub struct Room {
     pub play_history: crate::play_history::PlayHistoryStore,
     /// 当前轮次 ID（游戏开始时生成，结算时使用）
     pub current_round_id: RwLock<Option<uuid::Uuid>>,
-
-    /// 房间最大玩家数（来自服务器配置或默认值）
-    pub max_users: AtomicUsize,
 
     /// 各玩家实时触控/判定数据缓存（供插件 WASM host API 查询）
     pub player_data: RwLock<HashMap<i32, PlayerLiveData>>,
@@ -198,18 +221,22 @@ impl Room {
         let hidden = room_id_is_hidden(&id.to_string());
         Self {
             id,
-            host: host.clone().into(),
+            control: StdRwLock::new(RoomControlState {
+                host: host.clone(),
+                locked: false,
+                cycle: false,
+                hidden,
+                persistent_empty: false,
+                system_host: false,
+                phira_api_endpoint: None,
+                admin_start_pending: false,
+                max_users,
+                generation: 0,
+            }),
             state: RwLock::default(),
 
             live: AtomicBool::new(false),
-            locked: AtomicBool::new(false),
-            cycle: AtomicBool::new(false),
-            hidden: AtomicBool::new(hidden),
-            persistent_empty: AtomicBool::new(false),
-            system_host: AtomicBool::new(false),
-            phira_api_endpoint: RwLock::new(None),
             display_names: RwLock::new(HashMap::new()),
-            admin_start_pending: AtomicBool::new(false),
 
             users: vec![host].into(),
             monitors: Vec::new().into(),
@@ -219,7 +246,6 @@ impl Room {
             current_round_id: RwLock::new(None),
             plugin_manager,
             server,
-            max_users: AtomicUsize::new(max_users),
             player_data: RwLock::new(HashMap::new()),
             round_store,
             created_at: now,
@@ -242,8 +268,55 @@ impl Room {
             round_store,
         );
         room.users = Vec::new().into();
-        room.persistent_empty.store(true, Ordering::Relaxed);
+        room.set_persistent_empty(true);
         room
+    }
+
+    fn control_read(&self) -> StdRwLockReadGuard<'_, RoomControlState> {
+        self.control
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    fn control_write(&self) -> StdRwLockWriteGuard<'_, RoomControlState> {
+        self.control
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    fn bump_control_generation(control: &mut RoomControlState) {
+        control.generation = control.generation.wrapping_add(1);
+    }
+
+    pub fn control_snapshot(&self) -> RoomControlSnapshot {
+        let control = self.control_read();
+        RoomControlSnapshot {
+            host_id: control.host.upgrade().map(|user| user.id),
+            locked: control.locked,
+            cycle: control.cycle,
+            hidden: control.hidden,
+            persistent_empty: control.persistent_empty,
+            system_host: control.system_host,
+            phira_api_endpoint: control.phira_api_endpoint.clone(),
+            admin_start_pending: control.admin_start_pending,
+            max_users: control.max_users,
+            generation: control.generation,
+        }
+    }
+
+    pub(crate) fn host_user_sync(&self) -> Option<Arc<super::session::User>> {
+        self.control_read().host.upgrade()
+    }
+
+    fn host_weak_sync(&self) -> Weak<super::session::User> {
+        self.control_read().host.clone()
+    }
+
+    fn set_host_control(&self, host: Weak<super::session::User>, system_host: bool) {
+        let mut control = self.control_write();
+        control.host = host;
+        control.system_host = system_host;
+        Self::bump_control_generation(&mut control);
     }
 
     pub fn is_live(&self) -> bool {
@@ -251,27 +324,51 @@ impl Room {
     }
 
     pub fn is_locked(&self) -> bool {
-        self.locked.load(Ordering::Acquire)
+        self.control_read().locked
+    }
+
+    pub(crate) fn set_locked(&self, locked: bool) {
+        let mut control = self.control_write();
+        if control.locked != locked {
+            control.locked = locked;
+            Self::bump_control_generation(&mut control);
+        }
     }
 
     pub fn is_cycle(&self) -> bool {
-        self.cycle.load(Ordering::Acquire)
+        self.control_read().cycle
+    }
+
+    pub(crate) fn set_cycle(&self, cycle: bool) {
+        let mut control = self.control_write();
+        if control.cycle != cycle {
+            control.cycle = cycle;
+            Self::bump_control_generation(&mut control);
+        }
     }
 
     pub fn is_hidden(&self) -> bool {
-        self.hidden.load(Ordering::Relaxed)
+        self.control_read().hidden
     }
 
     pub fn set_hidden(&self, hidden: bool) {
-        self.hidden.store(hidden, Ordering::Relaxed);
+        let mut control = self.control_write();
+        if control.hidden != hidden {
+            control.hidden = hidden;
+            Self::bump_control_generation(&mut control);
+        }
     }
 
     pub fn is_persistent_empty(&self) -> bool {
-        self.persistent_empty.load(Ordering::Relaxed)
+        self.control_read().persistent_empty
     }
 
     pub fn set_persistent_empty(&self, persistent: bool) {
-        self.persistent_empty.store(persistent, Ordering::Relaxed);
+        let mut control = self.control_write();
+        if control.persistent_empty != persistent {
+            control.persistent_empty = persistent;
+            Self::bump_control_generation(&mut control);
+        }
     }
 
     pub async fn set_display_name(&self, user_id: i32, name: String) {
@@ -296,11 +393,15 @@ impl Room {
     }
 
     pub async fn phira_api_endpoint_override(&self) -> Option<String> {
-        self.phira_api_endpoint.read().await.clone()
+        self.control_read().phira_api_endpoint.clone()
     }
 
     pub async fn set_phira_api_endpoint_override(&self, endpoint: Option<String>) {
-        *self.phira_api_endpoint.write().await = endpoint;
+        let mut control = self.control_write();
+        if control.phira_api_endpoint != endpoint {
+            control.phira_api_endpoint = endpoint;
+            Self::bump_control_generation(&mut control);
+        }
     }
 
     async fn clear_user_live_cache_if_absent(&self, user_id: i32) {
@@ -326,48 +427,49 @@ impl Room {
         &self,
         server: &crate::server::PlusServerState,
     ) -> String {
-        self.phira_api_endpoint
-            .read()
-            .await
+        self.control_read()
+            .phira_api_endpoint
             .clone()
             .unwrap_or_else(|| server.config.phira_api_endpoint.clone())
     }
 
     pub(crate) fn phira_api_endpoint_override_sync(&self) -> Option<String> {
-        self.phira_api_endpoint
-            .try_read()
-            .ok()
-            .and_then(|guard| guard.clone())
+        self.control_read().phira_api_endpoint.clone()
     }
 
     pub(crate) fn effective_phira_api_endpoint_sync(&self, fallback: &str) -> String {
-        match self.phira_api_endpoint.try_read() {
-            Ok(guard) => guard.clone().unwrap_or_else(|| fallback.to_string()),
-            Err(_) => fallback.to_string(),
-        }
+        self.control_read()
+            .phira_api_endpoint
+            .clone()
+            .unwrap_or_else(|| fallback.to_string())
     }
 
     /// 获取房主用户 ID
     pub async fn host_id(&self) -> Option<i32> {
-        self.host.read().await.upgrade().map(|u| u.id)
+        self.host_user_sync().map(|user| user.id)
     }
 
     pub fn is_system_host(&self) -> bool {
-        self.system_host.load(Ordering::Relaxed)
+        self.control_read().system_host
     }
 
     pub async fn has_host(&self) -> bool {
-        self.is_system_host() || self.host.read().await.upgrade().is_some()
+        let control = self.control_read();
+        control.system_host || control.host.upgrade().is_some()
     }
 
     /// 获取房间最大玩家数
     pub fn max_users_count(&self) -> usize {
-        self.max_users.load(Ordering::Relaxed)
+        self.control_read().max_users
     }
 
     /// 设置房间最大玩家数
     pub fn set_max_users(&self, n: usize) {
-        self.max_users.store(n, Ordering::Relaxed);
+        let mut control = self.control_write();
+        if control.max_users != n {
+            control.max_users = n;
+            Self::bump_control_generation(&mut control);
+        }
     }
 
     /// 获取当前谱面 ID
@@ -388,6 +490,7 @@ impl Room {
     }
 
     pub async fn client_state(&self, user: &super::session::User) -> ClientRoomState {
+        let control = self.control_snapshot();
         let users = self
             .users()
             .await
@@ -400,9 +503,9 @@ impl Room {
             id: self.id.clone(),
             state: self.client_room_state().await,
             live: self.is_live(),
-            locked: self.is_locked(),
-            cycle: self.is_cycle(),
-            is_host: self.check_host(user).await.is_ok(),
+            locked: control.locked,
+            cycle: control.cycle,
+            is_host: control.host_id == Some(user.id),
             is_ready: matches!(&*self.state.read().await, InternalRoomState::WaitForReady { started, .. } if started.contains(&user.id)),
             users,
         }
@@ -410,7 +513,12 @@ impl Room {
 
     /// 转换为 RoomData（供 monitor 协议使用）
     pub async fn into_data(room: &Arc<Self>) -> phira_mp_common::RoomData {
-        let host = room.host.read().await.upgrade().map(|u| u.id).unwrap_or(-1);
+        let control = room.control_snapshot();
+        let host = if control.system_host {
+            -1
+        } else {
+            control.host_id.unwrap_or(-1)
+        };
         let users: Vec<i32> = room.users().await.into_iter().map(|u| u.id).collect();
         let chart = room.chart.read().await.as_ref().map(|c| c.id);
         let state = room.state.read().await.stripped();
@@ -424,8 +532,8 @@ impl Room {
         phira_mp_common::RoomData {
             host,
             users,
-            lock: room.is_locked(),
-            cycle: room.is_cycle(),
+            lock: control.locked,
+            cycle: control.cycle,
             chart,
             state,
             rounds,
@@ -519,7 +627,7 @@ impl Room {
         } else {
             let mut guard = self.users.write().await;
             guard.retain(|it| it.strong_count() > 0);
-            if guard.len() >= self.max_users.load(Ordering::Relaxed) {
+            if guard.len() >= self.max_users_count() {
                 false
             } else {
                 guard.push(user);
@@ -574,14 +682,34 @@ impl Room {
     }
 
     pub async fn check_host(&self, user: &super::session::User) -> Result<()> {
-        if self.host.read().await.upgrade().map(|it| it.id) != Some(user.id) {
+        if self.host_user_sync().map(|it| it.id) != Some(user.id) {
             bail!("only host can do this");
         }
         Ok(())
     }
 
     pub fn admin_start_pending(&self) -> bool {
-        self.admin_start_pending.load(Ordering::Relaxed)
+        self.control_read().admin_start_pending
+    }
+
+    fn try_begin_admin_start_control(&self) -> bool {
+        let mut control = self.control_write();
+        if control.admin_start_pending {
+            return false;
+        }
+        control.admin_start_pending = true;
+        Self::bump_control_generation(&mut control);
+        true
+    }
+
+    fn finish_admin_start_control(&self) -> bool {
+        let mut control = self.control_write();
+        if !control.admin_start_pending {
+            return false;
+        }
+        control.admin_start_pending = false;
+        Self::bump_control_generation(&mut control);
+        true
     }
 
     /// Start a round from the administrative console without bypassing client loading.
@@ -591,11 +719,7 @@ impl Room {
     /// preparation step, so the host is temporarily presented as a regular player until it
     /// reports `Ready`. The real server-side host never changes.
     pub async fn begin_admin_start(&self) -> Result<()> {
-        if self
-            .admin_start_pending
-            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
-            .is_err()
-        {
+        if !self.try_begin_admin_start_control() {
             bail!("administrative start is already in progress");
         }
 
@@ -612,10 +736,7 @@ impl Room {
             self.on_state_change().await;
 
             let host = self
-                .host
-                .read()
-                .await
-                .upgrade()
+                .host_user_sync()
                 .ok_or_else(|| anyhow::anyhow!("room host disconnected"))?;
             host.try_send(ServerCommand::ChangeHost(false)).await;
 
@@ -637,17 +758,17 @@ impl Room {
         .await;
 
         if result.is_err() {
-            self.admin_start_pending.store(false, Ordering::Relaxed);
+            self.finish_admin_start_control();
         }
         result
     }
 
     /// Restore the client's host flag after an administrative start completes or is cancelled.
     pub async fn finish_admin_start(&self) {
-        if !self.admin_start_pending.swap(false, Ordering::SeqCst) {
+        if !self.finish_admin_start_control() {
             return;
         }
-        if let Some(host) = self.host.read().await.upgrade() {
+        if let Some(host) = self.host_user_sync() {
             host.try_send(ServerCommand::ChangeHost(true)).await;
         }
     }
@@ -664,13 +785,16 @@ impl Room {
         &self,
         user: &Arc<super::session::User>,
     ) -> Result<()> {
-        let is_member = self.users().await.into_iter().any(|member| member.id == user.id);
+        let is_member = self
+            .users()
+            .await
+            .into_iter()
+            .any(|member| member.id == user.id);
         if !is_member {
             bail!("user not in room");
         }
 
-        self.system_host.store(false, Ordering::Relaxed);
-        *self.host.write().await = Arc::downgrade(user);
+        self.set_host_control(Arc::downgrade(user), false);
         self.publish_update(PartialRoomData {
             host: Some(user.id),
             ..Default::default()
@@ -681,7 +805,7 @@ impl Room {
 
     /// 设置房主。`None` 表示显式设置为系统 `?` 房主；这种状态不会被后续加入者自动接管。
     pub async fn set_host(&self, new_host_id: Option<i32>, announce: bool) -> Result<()> {
-        let old_host = self.host.read().await.upgrade();
+        let old_host = self.host_user_sync();
         match new_host_id {
             Some(new_host_id) => {
                 let user = self
@@ -699,8 +823,7 @@ impl Room {
                         self.send(Message::NewHost { user: new_host_id }).await;
                     }
                 }
-                self.system_host.store(false, Ordering::Relaxed);
-                *self.host.write().await = Arc::downgrade(&user);
+                self.set_host_control(Arc::downgrade(&user), false);
                 user.try_send(ServerCommand::ChangeHost(true)).await;
                 self.publish_update(PartialRoomData {
                     host: Some(new_host_id),
@@ -712,8 +835,7 @@ impl Room {
                 if let Some(old_host) = old_host {
                     old_host.try_send(ServerCommand::ChangeHost(false)).await;
                 }
-                self.system_host.store(true, Ordering::Relaxed);
-                *self.host.write().await = Weak::<super::session::User>::new();
+                self.set_host_control(Weak::<super::session::User>::new(), true);
                 if announce {
                     self.send(Message::NewHost { user: -1 }).await;
                 }
@@ -808,7 +930,7 @@ impl Room {
                 info!("room users all disconnected, preserving persistent empty room");
                 self.clear_empty_room_live_caches().await;
                 if !self.is_system_host() {
-                    *self.host.write().await = Weak::<super::session::User>::new();
+                    self.set_host_control(Weak::<super::session::User>::new(), false);
                 }
                 return false;
             }
@@ -824,8 +946,7 @@ impl Room {
             };
             let user = new_host;
             debug!("selected {} as host", user.id);
-            self.system_host.store(false, Ordering::Relaxed);
-            *self.host.write().await = Arc::downgrade(user);
+            self.set_host_control(Arc::downgrade(user), false);
             self.send(Message::NewHost { user: user.id }).await;
             user.try_send(ServerCommand::ChangeHost(true)).await;
             self.publish_update(PartialRoomData {
@@ -930,13 +1051,17 @@ impl Room {
 
         if let Some(db) = crate::internal_hooks::DB.get() {
             for result in &round.results {
-                db.record_round_result(
-                    &round.round_id.to_string(),
-                    result.user_id,
-                    result.score as i64,
-                    result.max_combo as i64,
-                )
-                .await;
+                if !db
+                    .record_round_result(&round.round_id.to_string(), &self.id.to_string(), result)
+                    .await
+                {
+                    warn!(
+                        room = %self.id,
+                        round_id = %round.round_id,
+                        user_id = result.user_id,
+                        "failed to persist round result"
+                    );
+                }
             }
         }
         let event = protocol_round(&round);
@@ -944,8 +1069,7 @@ impl Room {
         let total = self.play_history.len().await;
         info!(
             room = self.id.to_string(),
-            "saved play round history (total {})",
-            total
+            "saved play round history (total {})", total
         );
         Some(event)
     }
@@ -1089,7 +1213,7 @@ impl Room {
                     *self.state.write().await = InternalRoomState::SelectChart;
                     if self.is_cycle() && !self.is_system_host() {
                         debug!(room = self.id.to_string(), "cycling");
-                        let host = Weak::clone(&*self.host.read().await);
+                        let host = self.host_weak_sync();
                         let new_host = {
                             let users = self.users().await;
                             if users.is_empty() {
@@ -1104,8 +1228,7 @@ impl Room {
                             }
                         };
                         if let Some(new_host) = new_host {
-                            self.system_host.store(false, Ordering::Relaxed);
-                            *self.host.write().await = Arc::downgrade(&new_host);
+                            self.set_host_control(Arc::downgrade(&new_host), false);
                             self.send(Message::NewHost { user: new_host.id }).await;
                             if let Some(old) = host.upgrade() {
                                 old.try_send(ServerCommand::ChangeHost(false)).await;

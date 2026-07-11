@@ -13,7 +13,7 @@
 | 接口/宿主函数 | 12 个接口、53 个宿主函数 |
 | 生命周期导出 | `init`、`get-info`、`cleanup`、`on-event`、`on-api` |
 
-本轮静态审计确认宿主分发路径已接通，但当前交付环境没有 Rust 工具链，因此不能声称这些测试已经在本环境通过。以 CI 的 workspace check/test 为准。
+本轮静态审计确认宿主分发路径已接通。本环境已组装 Rust 1.88 工具链并完成变更 Rust 文件的 rustfmt 校验，但由于 `index.crates.io` DNS 解析失败，依赖无法获取，WIT workspace check/test 尚未在本环境完成；以 CI 的锁文件构建与真实 Component fixture 测试为准。
 
 ## 接口
 
@@ -71,10 +71,12 @@
 至少执行：
 
 ```bash
-cargo fmt --check
-cargo check --workspace --all-targets
-cargo test --workspace
-cargo clippy --workspace --all-targets -- -D warnings
+scripts/check-changed-rustfmt.sh
+cargo check --locked --workspace --all-targets
+cargo check --locked -p phira-mp-plus-server --no-default-features --features wit-bindgen
+cargo test --locked --workspace
+cargo test --locked -p phira-mp-plus-server --test wit_abi_contracts
+cargo clippy --locked --workspace --all-targets
 ```
 
 另需覆盖无限循环、内存增长、越权、初始化超时、事件超时、API 超时、trap 后重载和卸载清理。

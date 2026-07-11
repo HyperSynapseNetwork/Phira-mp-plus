@@ -12,7 +12,10 @@ use phira_mp_plus_server_api as api;
 use serde_json::Value;
 use std::{
     collections::HashSet,
-    sync::{atomic::{AtomicBool, Ordering}, Arc, Weak},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc, Weak,
+    },
 };
 use tokio::{
     net::TcpListener,
@@ -27,8 +30,8 @@ const ROOM_METADATA_REFRESH_CONCURRENCY: usize = 8;
 const CONNECTION_LIMITER_CLEANUP_SECS: u64 = 60;
 
 // Import types/functions that moved to sub-modules
-use super::config::{Chart, IdMap, Record, SafeMap};
 use super::config::normalize_phira_api_endpoint;
+use super::config::{Chart, IdMap, Record, SafeMap};
 
 /// Backoff 获取 tokio RwLock 读锁（同步上下文使用，如 Web API 的 try_read 路径）
 ///
@@ -70,7 +73,10 @@ use super::config::{LiveConfig, PlusConfig};
 /// Simulation remains the default benchmark path and is handled by
 /// [`crate::simulation::SimulationManager`]. This queue is only for explicit
 /// benchmark modes: real network tests and hybrid Phira probes.
-use super::benchmark::{BenchRequest, BenchRequestKind, HybridBenchmarkConfig, load_benchmark_tokens, save_benchmark_tokens};
+use super::benchmark::{
+    load_benchmark_tokens, save_benchmark_tokens, BenchRequest, BenchRequestKind,
+    HybridBenchmarkConfig,
+};
 /// Phira-mp+ 服务器状态
 pub struct PlusServerState {
     pub config: PlusConfig,
@@ -150,10 +156,7 @@ impl PlusServer {
         // Windows 下 IPV6_V6ONLY 默认 true，[::] 不收 IPv4 连接。
         // Linux 下 IPV6_V6ONLY 默认 false，绑 [::] 即可收 IPv4。
         // 统一使用 0.0.0.0 确保两平台局域网 IP 都能连。
-        let addr = std::net::SocketAddr::new(
-            std::net::Ipv4Addr::UNSPECIFIED.into(),
-            config.port,
-        );
+        let addr = std::net::SocketAddr::new(std::net::Ipv4Addr::UNSPECIFIED.into(), config.port);
         let listener = TcpListener::bind(addr).await?;
         info!("Phira-mp+ listening on tcp://{}", addr);
 
@@ -192,6 +195,21 @@ impl PlusServer {
             tokio::sync::mpsc::channel::<BenchRequest>(BENCHMARK_QUEUE_CAPACITY);
 
         let runtime_v2 = config.runtime_v2.clone();
+        // Configuration validation checks the static prerequisites. The actual
+        // database connection is verified here: an explicitly requested
+        // authoritative Worker must never silently downgrade to another writer.
+        let db_manager = crate::db::DbManager::new(config.database_url.as_deref()).await;
+        if matches!(
+            runtime_v2.telemetry_cutover_mode,
+            crate::telemetry::TelemetryCutoverMode::WorkerAuthoritative
+        ) && !db_manager.is_active()
+        {
+            return Err(crate::error::AppError::Database(
+                "worker_authoritative was requested but PostgreSQL initialization failed"
+                    .to_string(),
+            )
+            .into());
+        }
         let command_registry = Arc::new(crate::command_registry::runtime_v2_registry());
         let event_bus = Arc::new(crate::event_bus::EventBus::new_with_trace(
             crate::runtime_diagnostics::EVENT_BUS_CHANNEL_CAPACITY,
@@ -202,11 +220,13 @@ impl PlusServer {
             crate::runtime_diagnostics::BENCHMARK_REPORT_HISTORY,
         ));
         let simulation = Arc::new(crate::simulation::SimulationManager::new());
-        let persistence_worker = crate::persistence_worker::PersistenceWorker::spawn_with_policy(
-            runtime_v2.persistence_queue_capacity,
-            runtime_v2.telemetry_batcher.clone(),
-            runtime_v2.telemetry_cutover_mode,
-        );
+        let persistence_worker =
+            crate::persistence_worker::PersistenceWorker::spawn_with_policy_and_dead_letter(
+                runtime_v2.persistence_queue_capacity,
+                runtime_v2.telemetry_batcher.clone(),
+                runtime_v2.telemetry_cutover_mode,
+                runtime_v2.persistence_dead_letter_path.clone(),
+            );
         crate::persistence_worker::spawn_event_bus_mirror(
             Arc::clone(&event_bus),
             Arc::clone(&persistence_worker),
@@ -223,8 +243,6 @@ impl PlusServer {
         let max_pending_auth = config.max_pending_auth;
         let max_sessions = config.max_sessions;
         let room_monitor_key = generate_secret_key("room_monitor", 64)?;
-        // Initialize database connection early so it's available throughout
-        let db_manager = crate::db::DbManager::new(config.database_url.as_deref()).await;
         let live_config = Arc::new(RwLock::new(LiveConfig::from_full(&config)));
         let state = Arc::new(PlusServerState {
             config,
@@ -248,9 +266,7 @@ impl PlusServer {
             bench_tx: bench_tx.clone(),
             pre_auth_gate: Arc::new(Semaphore::new(max_pending_auth)),
             session_gate: Arc::new(Semaphore::new(max_sessions)),
-            room_metadata_refresh_gate: Arc::new(Semaphore::new(
-                ROOM_METADATA_REFRESH_CONCURRENCY,
-            )),
+            room_metadata_refresh_gate: Arc::new(Semaphore::new(ROOM_METADATA_REFRESH_CONCURRENCY)),
             command_registry,
             event_bus,
             benchmark_reports,
@@ -269,7 +285,10 @@ impl PlusServer {
             db_manager,
         });
         // Wire PersistenceWorker into ExtensionManager for mirrored writes
-        state.extensions.set_persistence_worker(&state.persistence_worker).await;
+        state
+            .extensions
+            .set_persistence_worker(&state.persistence_worker)
+            .await;
         state.plugin_manager.start_event_dispatcher().await;
         super::events::spawn_event_subscribers(&state);
         state.room_commands.start_mailbox(Arc::clone(&state), 1024);
@@ -300,7 +319,7 @@ impl PlusServer {
         });
 
         let lost_con_state = Arc::clone(&state);
-        crate::supervisor_actor::spawn_named("lost-connection-worker", async move {
+        crate::supervisor_actor::spawn_critical("lost-connection-worker", async move {
             while let Some(id) = lost_con_rx.recv().await {
                 warn!("lost connection with {id}");
                 let session_opt = lost_con_state.sessions.write().await.remove(&id);
@@ -380,16 +399,18 @@ impl PlusServer {
                 proxy_protocol_port,
                 Arc::clone(&state.events),
             ));
-            let http_handle = api::HttpHandle::new(crate::plugin_http::HttpHandleBridge(Arc::clone(
-                &srv,
-            )));
+            let http_handle =
+                api::HttpHandle::new(crate::plugin_http::HttpHandleBridge(Arc::clone(&srv)));
             state.plugin_manager.set_http_handle(http_handle).await;
             Some(srv)
         } else {
             None
         };
         // 设置 WIT 组件模型所需的服务端状态引用
-        state.plugin_manager.set_server_state(Arc::clone(&state)).await;
+        state
+            .plugin_manager
+            .set_server_state(Arc::clone(&state))
+            .await;
         // 设置命令注册表的 Room ID 补全引用
         state.command_registry.install_room_completer(&state);
 
@@ -508,13 +529,7 @@ impl PlusServer {
             let _permit = permit;
             let session = match tokio::time::timeout(
                 std::time::Duration::from_secs(auth_timeout),
-                crate::session::Session::new(
-                    id,
-                    addr,
-                    stream,
-                    Arc::clone(&state),
-                    session_permit,
-                ),
+                crate::session::Session::new(id, addr, stream, Arc::clone(&state), session_permit),
             )
             .await
             {
@@ -548,10 +563,12 @@ impl PlusServer {
                         .await;
                     let _ = state
                         .persistence_worker
-                        .enqueue(crate::persistence::message::PersistenceEvent::UserDisconnect {
-                            user_id: session.user.id,
-                            user_name: session.user.name.clone(),
-                        })
+                        .enqueue(
+                            crate::persistence::message::PersistenceEvent::UserDisconnect {
+                                user_id: session.user.id,
+                                user_name: session.user.name.clone(),
+                            },
+                        )
                         .await;
                     let _ = state
                         .persistence_worker
@@ -617,9 +634,9 @@ impl PlusServerState {
     /// dispatcher rather than a broadcast subscriber.
     pub async fn dispatch_plugin_event(&self, event: PluginEvent) {
         self.event_bus
-            .publish(crate::event_bus::MpEvent::PluginEventDispatched(
-                Arc::new(event.clone()),
-            ));
+            .publish(crate::event_bus::MpEvent::PluginEventDispatched(Arc::new(
+                event.clone(),
+            )));
         self.plugin_manager.dispatch_event(event).await;
     }
 
@@ -649,11 +666,8 @@ impl PlusServerState {
             user_id,
             user_name: user_name.clone(),
         });
-        self.dispatch_plugin_event(PluginEvent::UserDisconnect {
-            user_id,
-            user_name,
-        })
-        .await;
+        self.dispatch_plugin_event(PluginEvent::UserDisconnect { user_id, user_name })
+            .await;
     }
 
     /// Publish a diagnostic/runtime event.
@@ -688,7 +702,11 @@ impl PlusServerState {
             .send_and_flush(ServerCommand::Authenticate(Err(message)))
             .await
         {
-            warn!(user = user_id, ?err, "failed to deliver ban reason before disconnect");
+            warn!(
+                user = user_id,
+                ?err,
+                "failed to deliver ban reason before disconnect"
+            );
         }
 
         session.stream.close();
@@ -733,7 +751,6 @@ impl PlusServerState {
     }
 
     async fn mirror_room_event_to_runtime_bus(&self, event: &RoomEvent) {
-        
         match event {
             RoomEvent::CreateRoom { room, .. } => {
                 let room_uuid = self
@@ -849,13 +866,14 @@ impl PlusServerState {
     pub async fn publish_room_event(&self, event: RoomEvent) {
         self.mirror_room_event_to_runtime_bus(&event).await;
         // Enqueue to PersistenceWorker (exclusive — no direct DB fallback)
-        let _ = self.persistence_worker.enqueue(
-            crate::persistence::message::PersistenceEvent::ServerEvent {
+        let _ = self
+            .persistence_worker
+            .enqueue(crate::persistence::message::PersistenceEvent::ServerEvent {
                 kind: event.event_type().to_string(),
                 payload: Arc::new(event.clone().inner()),
                 simulation: false,
-            },
-        ).await;
+            })
+            .await;
         self.events.publish_room_event(event.clone());
         if let Some(monitor) = self.get_room_monitor().await {
             monitor.try_send(ServerCommand::RoomEvent(event)).await;
@@ -938,8 +956,7 @@ impl PlusServerState {
         self.dispatch_plugin_event(PluginEvent::RoomModify {
             user_id: 0,
             room_id: rid.to_string(),
-            data: serde_json::json!({"action":"persistent_empty","value": persistent})
-                .to_string(),
+            data: serde_json::json!({"action":"persistent_empty","value": persistent}).to_string(),
         })
         .await;
         Ok(
@@ -966,7 +983,6 @@ impl PlusServerState {
             room.set_joining_user_as_host_silently(user).await.is_ok()
         }
     }
-
 
     /// 刷新房间内展示用用户名与谱面名。只影响服务端 TUI/Web/欢迎语/历史展示；不改客户端本机 Phira API。
     pub async fn refresh_room_display_metadata(&self, room: &Arc<crate::room::Room>) {
@@ -1006,10 +1022,7 @@ impl PlusServerState {
         }
         let chart_id = room.chart.read().await.as_ref().map(|chart| chart.id);
         if let Some(chart_id) = chart_id {
-            if let Some(chart) = phira_client
-                .fetch_chart_by_id(&endpoint, chart_id)
-                .await
-            {
+            if let Some(chart) = phira_client.fetch_chart_by_id(&endpoint, chart_id).await {
                 *room.chart.write().await = Some(chart);
                 room.publish_update(phira_mp_common::PartialRoomData {
                     chart: Some(chart_id),
@@ -1046,7 +1059,9 @@ impl PlusServerState {
                 .await
                 .unwrap_or(fallback_endpoint);
             PlusServerState::refresh_room_display_metadata_with_endpoint(
-                &room, endpoint, phira_client,
+                &room,
+                endpoint,
+                phira_client,
             )
             .await;
         });
@@ -1160,11 +1175,7 @@ impl PlusServerState {
             if let Some(token) = tokens.first() {
                 match self
                     .phira_client
-                    .fetch_user_by_token(
-                        &self.config.phira_api_endpoint,
-                        endpoint_override,
-                        token,
-                    )
+                    .fetch_user_by_token(&self.config.phira_api_endpoint, endpoint_override, token)
                     .await
                 {
                     Some((user_id, user_name)) => {
@@ -1175,7 +1186,10 @@ impl PlusServerState {
                     None => {
                         failed += 1;
                         report.probes.record_failure();
-                        report.add_failure_sample("authenticate", "fetch_user_by_token returned None".to_string());
+                        report.add_failure_sample(
+                            "authenticate",
+                            "fetch_user_by_token returned None".to_string(),
+                        );
                         o!("  │ ✗ authenticate failed: returned None");
                     }
                 }
@@ -2019,12 +2033,10 @@ pub(crate) async fn run_admin_kick_user(
     drop(registration_guard);
 
     if let Some(session) = target_session {
-        let message = phira_mp_common::ServerCommand::Message(
-            phira_mp_common::Message::Chat {
-                user: 0,
-                content: format!("你已被管理员踢出服务器: {reason}"),
-            },
-        );
+        let message = phira_mp_common::ServerCommand::Message(phira_mp_common::Message::Chat {
+            user: 0,
+            content: format!("你已被管理员踢出服务器: {reason}"),
+        });
         let _ = tokio::time::timeout(
             std::time::Duration::from_secs(2),
             session.stream.send_and_flush(message),
@@ -2040,18 +2052,17 @@ pub(crate) async fn run_admin_kick_user(
     crate::internal_hooks::playtime_disconnect(target_id);
     let _ = state
         .persistence_worker
-        .enqueue(crate::persistence::message::PersistenceEvent::UserDisconnect {
-            user_id: target_id,
-            user_name: user.name.clone(),
-        })
+        .enqueue(
+            crate::persistence::message::PersistenceEvent::UserDisconnect {
+                user_id: target_id,
+                user_name: user.name.clone(),
+            },
+        )
         .await;
     let _ = state
         .persistence_worker
-        .enqueue(crate::persistence::message::PersistenceEvent::UserOffline {
-            user_id: target_id,
-        })
+        .enqueue(crate::persistence::message::PersistenceEvent::UserOffline { user_id: target_id })
         .await;
 
     Ok(serde_json::json!({"ok": true, "reason": reason}))
 }
-

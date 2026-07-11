@@ -1,56 +1,47 @@
-//! Runtime v2 高频遥测基础设施（迁移中）。
+//! Runtime v2 高频遥测基础设施。
 //!
-//! 当前采用双路径策略：
+//! 生产 Touch/Judge 支持三种显式切换模式：
 //!
-//! - **直接写入（DirectOnly）**：权威数据源，通过 `RoundStore`/`db.rs` 直接持久化
-//! - **Worker 镜像（WorkerPreferred）**：直接写入后，作为异步镜像发往 PersistenceWorker
+//! - **DirectOnly**：只通过 `RoundStore`/`db.rs` 直写（安全默认值）
+//! - **WorkerPreferred**：先直写；直写成功时 Worker 是迁移镜像，直写失败但
+//!   Worker 接收时由 Worker 作为该批次的权威补偿路径
+//! - **WorkerAuthoritative**：只把数据送入有界 PersistenceWorker/TelemetryBatcher；
+//!   仅在 Worker 明确拒收、能够确认命令未入队时回退直写
 //!
-//! `DirectOnly` 模式完全绕过 batcher；`WorkerPreferred` 启用了异步镜像。
-//! 两种模式下直接写入始终是权威数据源，Worker 失败不阻塞热路径。
-//!
-//! 目标演进：
-//!
-//! 业务热路径 → 有界持久化消息 → Persistence Actor
-//!   ├── 批处理
-//!   ├── 重试
-//!   ├── WAL/落盘缓冲
-//!   ├── PostgreSQL
-//!   └── shutdown flush
+//! Worker 路径提供有界背压、批处理、数据库有限重试以及可确认的 flush。
+//! 它仍没有磁盘 WAL，因此不能承诺进程崩溃或主机掉电时零数据丢失。
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{
     collections::VecDeque,
     sync::{
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
         Arc,
     },
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
-use tokio::sync::{mpsc, oneshot, RwLock};
+use tokio::sync::{mpsc, oneshot, Mutex, RwLock};
 use tracing::{debug, trace, warn};
 
 const MAX_TELEMETRY_TRACE: usize = 64;
-pub const TELEMETRY_SCHEMA_VERSION: i32 = 2;
+pub const TELEMETRY_SCHEMA_VERSION: i32 = 3;
 static TELEMETRY_BATCH_SEQ: AtomicU64 = AtomicU64::new(1);
 
 // ── Cutover mode & decision ──────────────────────────────────────────
 
 /// Cutover mode controlling how production Touch/Judge telemetry is persisted.
-///
-/// Two modes: `DirectOnly` (safe default) and `WorkerPreferred` (direct
-/// source + worker mirror). DualWrite and FallbackOnly have been removed —
-/// they were development-stage comparison modes that added hot-path complexity.
-/// WorkerPreferred gives runtime v2 async batch visibility while keeping the
-/// direct RoundStore/db.rs path as the authoritative production fact source.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TelemetryCutoverMode {
     /// Only the direct RoundStore/db.rs path writes production Touch/Judge data.
     DirectOnly,
-    /// Direct RoundStore/db.rs (authoritative) + best-effort Runtime v2 worker
-    /// enqueue as async mirror / batch observation.
+    /// Direct write is attempted first. The Worker is a mirror only after direct
+    /// acknowledgement; after direct failure it may be the canonical compensation path.
     WorkerPreferred,
+    /// PersistenceWorker/TelemetryBatcher is the normal-operation single writer.
+    /// A direct fallback is permitted only when enqueue is explicitly rejected.
+    WorkerAuthoritative,
 }
 
 /// Structured decision derived from a [`TelemetryCutoverMode`].
@@ -59,6 +50,7 @@ pub struct TelemetryCutoverDecision {
     pub mode: TelemetryCutoverMode,
     pub enqueue_worker: bool,
     pub write_direct_before_worker_result: bool,
+    pub fallback_direct_when_worker_rejects: bool,
 }
 
 impl TelemetryCutoverDecision {
@@ -68,17 +60,26 @@ impl TelemetryCutoverDecision {
                 mode,
                 enqueue_worker: false,
                 write_direct_before_worker_result: true,
+                fallback_direct_when_worker_rejects: true,
             },
             TelemetryCutoverMode::WorkerPreferred => Self {
                 mode,
                 enqueue_worker: true,
                 write_direct_before_worker_result: true,
+                fallback_direct_when_worker_rejects: true,
+            },
+            TelemetryCutoverMode::WorkerAuthoritative => Self {
+                mode,
+                enqueue_worker: true,
+                write_direct_before_worker_result: false,
+                fallback_direct_when_worker_rejects: true,
             },
         }
     }
 
-    pub fn should_write_direct_after_worker_enqueue(self, _worker_enqueue_ok: bool) -> bool {
+    pub fn should_write_direct_after_worker_enqueue(self, worker_enqueue_ok: bool) -> bool {
         self.write_direct_before_worker_result
+            || (!worker_enqueue_ok && self.fallback_direct_when_worker_rejects)
     }
 }
 
@@ -95,6 +96,7 @@ impl TelemetryCutoverMode {
         match self {
             Self::DirectOnly => "direct_only",
             Self::WorkerPreferred => "worker_preferred",
+            Self::WorkerAuthoritative => "worker_authoritative",
         }
     }
 
@@ -102,6 +104,7 @@ impl TelemetryCutoverMode {
         match value.trim().to_ascii_lowercase().as_str() {
             "direct" | "direct_only" | "direct-only" => Some(Self::DirectOnly),
             "worker_preferred" | "worker-preferred" => Some(Self::WorkerPreferred),
+            "worker_authoritative" | "worker-authoritative" => Some(Self::WorkerAuthoritative),
             _ => None,
         }
     }
@@ -122,13 +125,20 @@ impl TelemetryCutoverMode {
         match self {
             Self::DirectOnly => "direct RoundStore/db.rs only; Runtime v2 batcher is bypassed",
             Self::WorkerPreferred => {
-                "Runtime v2 telemetry batch-write mirror + direct write for safety"
+                "direct first; Worker mirrors acknowledged writes and compensates direct failures"
+            }
+            Self::WorkerAuthoritative => {
+                "Worker is the normal-operation single writer; direct fallback only on explicit enqueue rejection"
             }
         }
     }
 
     pub fn variants() -> &'static [TelemetryCutoverMode] {
-        &[Self::DirectOnly, Self::WorkerPreferred]
+        &[
+            Self::DirectOnly,
+            Self::WorkerPreferred,
+            Self::WorkerAuthoritative,
+        ]
     }
 }
 
@@ -291,11 +301,14 @@ impl TelemetryKind {
 /// A single telemetry item to be batched and flushed.
 #[derive(Debug, Clone)]
 pub struct TelemetryItem {
+    pub event_id: String,
     pub kind: TelemetryKind,
     pub room_id: Option<String>,
     pub round_id: Option<String>,
     pub user_id: i32,
     pub item_count: usize,
+    pub dual_write: bool,
+    pub persistence_mode: String,
     pub payload: Value,
 }
 
@@ -308,13 +321,15 @@ pub struct TelemetryItem {
 #[derive(Debug)]
 enum TelemetryMessage {
     Item(TelemetryItem),
-    Flush(oneshot::Sender<()>),
-    Shutdown(oneshot::Sender<()>),
+    Flush(oneshot::Sender<Result<(), String>>),
+    Shutdown(oneshot::Sender<Result<(), String>>),
 }
 
 #[derive(Debug)]
 pub struct TelemetryBatcher {
     tx: mpsc::Sender<TelemetryMessage>,
+    send_gate: Mutex<()>,
+    closed: AtomicBool,
     stats: Arc<RwLock<TelemetryBatcherStats>>,
 }
 
@@ -332,22 +347,37 @@ impl TelemetryBatcher {
         )));
         let worker_stats = Arc::clone(&stats);
 
-        crate::supervisor_actor::spawn_named("telemetry-batcher", async move {
+        crate::supervisor_actor::spawn_critical("telemetry-batcher", async move {
             run_batcher(worker_policy, rx, worker_stats).await;
         });
 
-        Arc::new(Self { tx, stats })
+        Arc::new(Self {
+            tx,
+            send_gate: Mutex::new(()),
+            closed: AtomicBool::new(false),
+            stats,
+        })
     }
 
     /// Enqueue a telemetry item for batched persistence.
     ///
-    /// Returns `Ok(())` on success or `Err(item)` if the queue is full / closed.
+    /// Uses bounded backpressure. Returns `Err(item)` only when the batcher is closed.
     pub async fn enqueue(&self, item: TelemetryItem) -> Result<(), TelemetryItem> {
         let kind = item.kind.as_str().to_string();
         let room_id = item.room_id.clone();
         let user_id = item.user_id;
         let item_count = item.item_count;
-        match self.tx.try_send(TelemetryMessage::Item(item)) {
+        let _send_guard = self.send_gate.lock().await;
+        if self.closed.load(Ordering::Acquire) {
+            let mut stats = self.stats.write().await;
+            stats.dropped += 1;
+            stats.last_error = Some("telemetry batcher is shutting down".to_string());
+            push_trace(
+                &mut stats, "rejected", kind, room_id, user_id, item_count, None,
+            );
+            return Err(item);
+        }
+        match self.tx.send(TelemetryMessage::Item(item)).await {
             Ok(()) => {
                 let mut stats = self.stats.write().await;
                 stats.queued += 1;
@@ -356,31 +386,17 @@ impl TelemetryBatcher {
                 );
                 Ok(())
             }
-            Err(mpsc::error::TrySendError::Full(TelemetryMessage::Item(item))) => {
-                let mut stats = self.stats.write().await;
-                stats.dropped += 1;
-                stats.last_error = Some("telemetry batcher queue is full".to_string());
-                push_trace(
-                    &mut stats, "dropped", kind, room_id, user_id, item_count, None,
-                );
-                warn!(
-                    kind = %item.kind.as_str(),
-                    user_id = item.user_id,
-                    "telemetry mirror queue is full; item dropped (direct path remains authoritative)"
-                );
-                Err(item)
-            }
-            Err(mpsc::error::TrySendError::Closed(TelemetryMessage::Item(item))) => {
+            Err(mpsc::error::SendError(TelemetryMessage::Item(item))) => {
                 let mut stats = self.stats.write().await;
                 stats.dropped += 1;
                 stats.last_error = Some("telemetry batcher queue is closed".to_string());
                 push_trace(
-                    &mut stats, "dropped", kind, room_id, user_id, item_count, None,
+                    &mut stats, "rejected", kind, room_id, user_id, item_count, None,
                 );
                 warn!(
                     kind = %item.kind.as_str(),
                     user_id = item.user_id,
-                    "telemetry mirror queue is closed; item dropped (direct path remains authoritative)"
+                    "telemetry batcher is closed; item rejected before acceptance"
                 );
                 Err(item)
             }
@@ -391,27 +407,51 @@ impl TelemetryBatcher {
     /// Flush all items accepted before this call.
     pub async fn flush(&self, timeout: Duration) -> Result<(), String> {
         let (reply, rx) = oneshot::channel();
-        self.tx
-            .send(TelemetryMessage::Flush(reply))
-            .await
-            .map_err(|_| "telemetry batcher is closed".to_string())?;
+        {
+            let _send_guard = self.send_gate.lock().await;
+            if self.closed.load(Ordering::Acquire) {
+                return Err("telemetry batcher is shutting down".to_string());
+            }
+            self.tx
+                .send(TelemetryMessage::Flush(reply))
+                .await
+                .map_err(|_| "telemetry batcher is closed".to_string())?;
+        }
         tokio::time::timeout(timeout, rx)
             .await
             .map_err(|_| "telemetry flush timed out".to_string())?
-            .map_err(|_| "telemetry flush acknowledgement was dropped".to_string())
+            .map_err(|_| "telemetry flush acknowledgement was dropped".to_string())??;
+        Ok(())
     }
 
     /// Flush accepted items and stop the batcher.
     pub async fn shutdown(&self, timeout: Duration) -> Result<(), String> {
         let (reply, rx) = oneshot::channel();
-        self.tx
-            .send(TelemetryMessage::Shutdown(reply))
-            .await
-            .map_err(|_| "telemetry batcher is closed".to_string())?;
-        tokio::time::timeout(timeout, rx)
-            .await
-            .map_err(|_| "telemetry shutdown timed out".to_string())?
-            .map_err(|_| "telemetry shutdown acknowledgement was dropped".to_string())
+        {
+            let _send_guard = self.send_gate.lock().await;
+            if self.closed.swap(true, Ordering::AcqRel) {
+                return Ok(());
+            }
+            if self
+                .tx
+                .send(TelemetryMessage::Shutdown(reply))
+                .await
+                .is_err()
+            {
+                self.closed.store(false, Ordering::Release);
+                return Err("telemetry batcher is closed".to_string());
+            }
+        }
+        let result = match tokio::time::timeout(timeout, rx).await {
+            Ok(Ok(result)) => result,
+            Ok(Err(_)) => Err("telemetry shutdown acknowledgement was dropped".to_string()),
+            Err(_) => Err("telemetry shutdown timed out".to_string()),
+        };
+        if let Err(error) = result {
+            self.closed.store(false, Ordering::Release);
+            return Err(error);
+        }
+        Ok(())
     }
 
     /// Snapshot current batcher statistics.
@@ -446,7 +486,7 @@ async fn run_batcher(
                         pending.push_back(item);
                         update_pending(&stats, pending.len()).await;
                         if pending.len() >= max_items {
-                            flush_pending(&policy, &mut pending, &stats, "max_items").await;
+                            let _ = flush_pending(&policy, &mut pending, &stats, "max_items").await;
                         }
                     }
                     Some(TelemetryMessage::Item(item)) => {
@@ -464,22 +504,25 @@ async fn run_batcher(
                         );
                     }
                     Some(TelemetryMessage::Flush(reply)) => {
-                        flush_pending(&policy, &mut pending, &stats, "explicit_flush").await;
-                        let _ = reply.send(());
+                        let result = flush_pending(&policy, &mut pending, &stats, "explicit_flush").await;
+                        let _ = reply.send(result);
                     }
                     Some(TelemetryMessage::Shutdown(reply)) => {
-                        flush_pending(&policy, &mut pending, &stats, "shutdown").await;
-                        let _ = reply.send(());
-                        break;
+                        let result = flush_pending(&policy, &mut pending, &stats, "shutdown").await;
+                        let should_stop = result.is_ok();
+                        let _ = reply.send(result);
+                        if should_stop {
+                            break;
+                        }
                     }
                     None => {
-                        flush_pending(&policy, &mut pending, &stats, "closed").await;
+                        let _ = flush_pending(&policy, &mut pending, &stats, "closed").await;
                         break;
                     }
                 }
             }
             _ = ticker.tick() => {
-                flush_pending(&policy, &mut pending, &stats, "interval").await;
+                let _ = flush_pending(&policy, &mut pending, &stats, "interval").await;
             }
         }
     }
@@ -524,10 +567,10 @@ async fn flush_pending(
     pending: &mut VecDeque<TelemetryItem>,
     stats: &Arc<RwLock<TelemetryBatcherStats>>,
     reason: &str,
-) {
+) -> Result<(), String> {
     if pending.is_empty() {
         update_pending(stats, 0).await;
-        return;
+        return Ok(());
     }
 
     let items = pending.len();
@@ -550,29 +593,49 @@ async fn flush_pending(
 
     let mut stats = stats.write().await;
     stats.flushed_batches += 1;
-    stats.flushed_items += telemetry_points as u64;
-    stats.pending = 0;
     if !policy.dry_run {
         record_db_dispatch_latency(&mut stats, write_elapsed_ms);
     }
+
     let action = match write_result {
         Ok((true, item_rows)) => {
+            stats.flushed_items += telemetry_points as u64;
             stats.write_batches += 1;
             stats.write_items += telemetry_points as u64;
             stats.write_item_rows += item_rows as u64;
             stats.last_batch_uuid = Some(batch_uuid.clone());
+            stats.pending = pending.len();
             "db_flush"
         }
         Ok((false, _)) => {
+            stats.flushed_items += telemetry_points as u64;
             stats.last_batch_uuid = Some(batch_uuid.clone());
+            stats.pending = pending.len();
             "dry_flush"
         }
         Err(err) => {
+            for item in flushed.into_iter().rev() {
+                pending.push_front(item);
+            }
             stats.write_errors += 1;
-            stats.last_error = Some(err);
-            "write_failed"
+            stats.pending = pending.len();
+            stats.last_error = Some(err.clone());
+            if let Some(item) = first {
+                push_trace(
+                    &mut stats,
+                    "write_retained",
+                    item.kind.as_str().to_string(),
+                    item.room_id,
+                    item.user_id,
+                    telemetry_points,
+                    Some(batch_uuid),
+                );
+            }
+            warn!(items, telemetry_points, reason, %err, "telemetry batch retained after database write failure");
+            return Err(err);
         }
     };
+
     if let Some(item) = first {
         push_trace(
             &mut stats,
@@ -592,6 +655,7 @@ async fn flush_pending(
         reason,
         "telemetry batcher flushed batch"
     );
+    Ok(())
 }
 
 async fn write_runtime_telemetry_batch(
@@ -606,14 +670,19 @@ async fn write_runtime_telemetry_batch(
     let records: Vec<crate::db::RuntimeTelemetryBatchRecord> = items
         .iter()
         .map(|item| crate::db::RuntimeTelemetryBatchRecord {
+            event_id: item.event_id.clone(),
             batch_uuid: batch_uuid.to_string(),
             run_id: extract_run_id(&item.payload),
             scope: "production".to_string(),
-            pipeline: "runtime_v2.telemetry_batcher".to_string(),
-            source: "telemetry_batcher".to_string(),
+            pipeline: format!("runtime_v2.telemetry_batcher.{}", item.persistence_mode),
+            source: if item.dual_write {
+                "telemetry_batcher_mirror".to_string()
+            } else {
+                "telemetry_batcher_authoritative".to_string()
+            },
             flush_reason: reason.to_string(),
             schema_version: TELEMETRY_SCHEMA_VERSION,
-            dual_write: true,
+            dual_write: item.dual_write,
             kind: item.kind.as_str().to_string(),
             room_id: item.room_id.clone(),
             round_uuid: item.round_id.clone(),
@@ -693,6 +762,11 @@ mod tests {
         assert!(worker.enqueue_worker);
         assert!(worker.should_write_direct_after_worker_enqueue(false));
         assert!(worker.should_write_direct_after_worker_enqueue(true));
+
+        let authoritative = TelemetryCutoverMode::WorkerAuthoritative.cutover_decision();
+        assert!(authoritative.enqueue_worker);
+        assert!(authoritative.should_write_direct_after_worker_enqueue(false));
+        assert!(!authoritative.should_write_direct_after_worker_enqueue(true));
     }
 
     #[test]

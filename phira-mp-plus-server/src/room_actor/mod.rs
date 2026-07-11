@@ -2,8 +2,10 @@
 //!
 //! 9 个房间管理命令已通过 per-room mailbox 串行化，
 //! 包括 Lock/Cycle/Host/Hidden/Endpoint/Close/Kick/Start/Cancel。
-//! Room 本身是 lock/cycle/host 的唯一真理源；mailbox 只负责串行化写命令，
-//! 不再维护第二份影子状态。
+//! RoomControlState 是 host/system-host/lock/cycle/hidden/endpoint/容量等
+//! 控制字段的唯一真理源；mailbox 只负责串行化写命令，不维护影子状态。
+//! mailbox 与快照注册表均绑定房间 UUID，避免同名房间重建时旧 Actor
+//! 覆盖或清理新房间代次。
 //!
 //! 但房间状态仍由 `room.rs` + `PlusServerState.rooms` + `RwLock`/`Atomic` 拥有，
 //! Room Actor 尚未完全获得状态所有权。
@@ -21,8 +23,9 @@
 //! 1. 9 个管理写命令通过此网关路由 ✅
 //! 2. 已入队命令的不确定结果不再重放 ✅
 //! 3. mailbox 容量由运行时配置传入 ✅
-//! 4. 房间完整状态迁入单一 actor-owned `RoomState` ❌
-//! 5. 删除跨字段共享锁和剩余直接状态写入 ❌
+//! 4. mailbox/快照注册表绑定房间 UUID 代次 ✅
+//! 5. 房间完整状态迁入单一 actor-owned `RoomState` ❌
+//! 6. 删除跨字段共享锁和剩余直接状态写入 ❌
 
 pub mod actor;
 mod audit;
@@ -83,6 +86,18 @@ pub struct RoomCommandAuditEntry {
 
 const MAX_ROOM_COMMAND_AUDIT: usize = 128;
 
+#[derive(Clone)]
+struct RoomMailboxEntry {
+    room_uuid: uuid::Uuid,
+    tx: mpsc::Sender<RoomActorCommand>,
+}
+
+#[derive(Clone)]
+struct RoomSnapshotEntry {
+    room_uuid: uuid::Uuid,
+    snapshot: actor::RoomSnapshot,
+}
+
 pub struct RoomCommandGateway {
     routed: AtomicU64,
     succeeded: AtomicU64,
@@ -91,9 +106,9 @@ pub struct RoomCommandGateway {
     state_ref: StdRwLock<Option<Weak<PlusServerState>>>,
     mailbox_started: AtomicBool,
     mailbox_capacity: AtomicUsize,
-    room_mailboxes: StdRwLock<HashMap<String, mpsc::Sender<RoomActorCommand>>>,
+    room_mailboxes: StdRwLock<HashMap<String, RoomMailboxEntry>>,
     /// Latest room snapshots, updated after each mailbox command execution.
-    snapshots: StdRwLock<HashMap<String, actor::RoomSnapshot>>,
+    snapshots: StdRwLock<HashMap<String, RoomSnapshotEntry>>,
     mailbox_enqueued: AtomicU64,
     mailbox_completed: AtomicU64,
     mailbox_failed: AtomicU64,
@@ -141,7 +156,10 @@ impl RoomCommandGateway {
 
     /// Get the latest snapshot for a room, if available.
     pub fn room_snapshot(&self, room_id: &str) -> Option<actor::RoomSnapshot> {
-        self.snapshots.read().ok().and_then(|map| map.get(room_id).cloned())
+        self.snapshots
+            .read()
+            .ok()
+            .and_then(|map| map.get(room_id).map(|entry| entry.snapshot.clone()))
     }
 }
 

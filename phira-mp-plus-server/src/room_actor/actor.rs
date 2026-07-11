@@ -13,6 +13,7 @@ use std::sync::Arc;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RoomSnapshot {
     pub room_id: String,
+    pub room_uuid: String,
     pub locked: bool,
     pub cycle: bool,
     pub host: Option<i32>,
@@ -24,12 +25,14 @@ pub struct RoomSnapshot {
 impl RoomSnapshot {
     /// 从 Room 对象构建快照。
     pub async fn from_room(room: &Room) -> Self {
+        let control = room.control_snapshot();
         Self {
             room_id: room.id.to_string(),
-            locked: room.is_locked(),
-            cycle: room.is_cycle(),
-            host: room.host_id().await,
-            hidden: room.is_hidden(),
+            room_uuid: room.uuid.to_string(),
+            locked: control.locked,
+            cycle: control.cycle,
+            host: control.host_id,
+            hidden: control.hidden,
             live: room.is_live(),
             created_at: room.created_at,
         }

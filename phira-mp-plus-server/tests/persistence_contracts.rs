@@ -1,6 +1,6 @@
 //! Persistence layer contract tests.
 //!
-//! These tests verify that telemetry cutover modes, WorkerPreferred semantics,
+//! These tests verify telemetry cutover modes and persistence semantics,
 //! and persistence payload helpers are documented and consistent.
 
 use phira_mp_plus_server::telemetry::TelemetryCutoverMode;
@@ -15,11 +15,12 @@ fn telemetry_cutover_default_is_direct_only() {
 }
 
 #[test]
-fn telemetry_cutover_mode_variants_are_exactly_two() {
+fn telemetry_cutover_mode_variants_cover_all_supported_modes() {
     let variants = TelemetryCutoverMode::variants();
-    assert_eq!(variants.len(), 2, "must have exactly 2 modes");
+    assert_eq!(variants.len(), 3, "must have exactly 3 modes");
     assert!(variants.contains(&TelemetryCutoverMode::DirectOnly));
     assert!(variants.contains(&TelemetryCutoverMode::WorkerPreferred));
+    assert!(variants.contains(&TelemetryCutoverMode::WorkerAuthoritative));
 }
 
 #[test]
@@ -28,6 +29,10 @@ fn telemetry_cutover_modes_as_str_match_contract() {
     assert_eq!(
         TelemetryCutoverMode::WorkerPreferred.as_str(),
         "worker_preferred"
+    );
+    assert_eq!(
+        TelemetryCutoverMode::WorkerAuthoritative.as_str(),
+        "worker_authoritative"
     );
 }
 
@@ -69,20 +74,34 @@ fn worker_preferred_writes_direct_and_enqueues_worker() {
     );
     assert!(
         TelemetryCutoverMode::WorkerPreferred.should_enqueue_worker(),
-        "WorkerPreferred must enqueue worker as mirror"
+        "WorkerPreferred must enqueue Worker for mirror or canonical compensation"
     );
 }
 
 #[test]
-fn worker_preferred_description_mentions_direct_and_mirror() {
+fn worker_authoritative_enqueues_and_only_falls_back_on_rejection() {
+    let mode = TelemetryCutoverMode::WorkerAuthoritative;
+    let decision = mode.cutover_decision();
+    assert!(mode.should_enqueue_worker());
+    assert!(!mode.should_write_direct());
+    assert!(!decision.should_write_direct_after_worker_enqueue(true));
+    assert!(decision.should_write_direct_after_worker_enqueue(false));
+}
+
+#[test]
+fn worker_preferred_description_mentions_direct_mirror_and_compensation() {
     let desc = TelemetryCutoverMode::WorkerPreferred.description();
     assert!(
         desc.contains("direct"),
-        "WorkerPreferred description must mention direct write: {desc}"
+        "WorkerPreferred description must mention the direct path: {desc}"
     );
     assert!(
         desc.contains("mirror"),
         "WorkerPreferred description must mention mirror: {desc}"
+    );
+    assert!(
+        desc.contains("compensat"),
+        "WorkerPreferred description must mention direct-failure compensation: {desc}"
     );
 }
 
@@ -92,7 +111,7 @@ fn no_legacy_modes_in_variants() {
     for v in variants {
         let s = v.as_str();
         assert!(
-            s == "direct_only" || s == "worker_preferred",
+            s == "direct_only" || s == "worker_preferred" || s == "worker_authoritative",
             "unexpected mode variant: {s}"
         );
     }
@@ -129,6 +148,7 @@ fn dual_write_field_exists_as_schema_legacy() {
     // Its presence is intentional for backward compatibility.
     // This test verifies it's still accessible but doesn't assert on value.
     let _ = phira_mp_plus_server::db::RuntimeTelemetryBatchRecord {
+        event_id: "event-test".to_string(),
         batch_uuid: "test".to_string(),
         run_id: None,
         scope: "test".to_string(),
@@ -155,11 +175,14 @@ fn simulation_scope_in_persistence_payload() {
     // We can't easily create a full batch record without a DB,
     // but we can verify the enum/struct contract holds.
     let _item = TelemetryItem {
+        event_id: "event-test".to_string(),
         kind: TelemetryKind::Touch,
         room_id: None,
         round_id: None,
         user_id: 1,
         item_count: 1,
+        dual_write: false,
+        persistence_mode: "worker_authoritative".to_string(),
         payload: serde_json::json!({"run_id": "sim-123"}),
     };
 }
@@ -179,7 +202,7 @@ fn simulation_scope_in_persistence_payload() {
 // | 3 | extensions.rs | record_room_event_sync | extension snapshots | per-ext-change | ✅ migrated to PersistenceWorker |
 // | 4 | session.rs | record_user_disconnect_sync | disconnect events | per-disconnect | ✅ migrated to PersistenceWorker |
 // | 5 | session.rs | record_user_seen_sync | user seen timestamp | per-command | ✅ migrated to PersistenceWorker |
-// | 6 | round_store.rs | open_round/close_round/append_touches/append_judges/... | round data | per-round | ⏭️ permanent direct write (high-frequency, telemetry cutover provides safety) |
+// | 6 | round_store.rs | open_round/close_round and direct-only/preferred append paths | round data | per-round | telemetry append becomes Worker-exclusive only in explicit worker_authoritative mode |
 // | 7 | server.rs | record_user_room_history_sync | room join history | per-join | ✅ migrated to PersistenceWorker |
 //
 // Telemetry/Benchmark/Simulation events route through PersistenceWorker
@@ -245,7 +268,10 @@ fn user_room_history_event_kind() {
     assert!(!event.is_simulation(), "room history is not simulation");
     let summary = event.summary();
     assert!(summary.contains("user_id=42"), "summary contains user_id");
-    assert!(summary.contains("room_id=room-a"), "summary contains room_id");
+    assert!(
+        summary.contains("room_id=room-a"),
+        "summary contains room_id"
+    );
 }
 
 #[test]
@@ -257,7 +283,10 @@ fn user_room_history_enum_constructs() {
         room_uuid: "u".into(),
         joined_at: 0,
     };
-    assert!(format!("{event:?}").contains("UserRoomHistory"), "debug format mentions variant");
+    assert!(
+        format!("{event:?}").contains("UserRoomHistory"),
+        "debug format mentions variant"
+    );
 }
 
 #[test]

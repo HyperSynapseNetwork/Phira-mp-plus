@@ -1,7 +1,5 @@
 //! Membership and lifecycle room command operations.
 
-
-use std::sync::Arc;
 use super::super::{
     command::{RoomActorCommand, RoomCommandKind},
     RoomCommandGateway, RoomCommandPayload,
@@ -9,6 +7,7 @@ use super::super::{
 use crate::{plugin::PluginEvent, server::PlusServerState};
 use phira_mp_common::{Message, RoomEvent, ServerCommand};
 use serde_json::Value;
+use std::sync::Arc;
 use std::{sync::atomic::Ordering, time::Instant};
 
 impl RoomCommandGateway {
@@ -22,19 +21,11 @@ impl RoomCommandGateway {
         let started = Instant::now();
         let rid = room_id.to_string();
         let result = self
-            .room_mailbox_or_inline(
-                &rid,
-                |reply| RoomActorCommand::KickUser {
-                    room_id: rid.clone(),
-                    target_id,
-                    reply,
-                },
-                || async {
-                    self.kick_user_inline(state, &rid, target_id, None)
-                        .await
-                        .map(|p| p.into_json())
-                },
-            )
+            .room_mailbox(&rid, |reply| RoomActorCommand::KickUser {
+                room_id: rid.clone(),
+                target_id,
+                reply,
+            })
             .await;
         self.finish_command(
             state,
@@ -46,7 +37,7 @@ impl RoomCommandGateway {
         .into_untyped()
     }
 
-    pub(in crate::room_actor) async fn kick_user_inline(
+    pub(in crate::room_actor) async fn kick_user_in_actor(
         &self,
         state: &PlusServerState,
         room_id: &str,
@@ -106,18 +97,10 @@ impl RoomCommandGateway {
     ) -> Result<Value, String> {
         let started = Instant::now();
         let result = self
-            .room_mailbox_or_inline(
-                room_id,
-                |reply| RoomActorCommand::CloseRoom {
-                    room_id: room_id.to_string(),
-                    reply,
-                },
-                || async {
-                    self.close_room_inline(state, room_id, None)
-                        .await
-                        .map(|p| p.into_json())
-                },
-            )
+            .room_mailbox(room_id, |reply| RoomActorCommand::CloseRoom {
+                room_id: room_id.to_string(),
+                reply,
+            })
             .await;
         self.finish_command(
             state,
@@ -129,7 +112,7 @@ impl RoomCommandGateway {
         .into_untyped()
     }
 
-    pub(in crate::room_actor) async fn close_room_inline(
+    pub(in crate::room_actor) async fn close_room_in_actor(
         &self,
         state: &PlusServerState,
         room_id: &str,

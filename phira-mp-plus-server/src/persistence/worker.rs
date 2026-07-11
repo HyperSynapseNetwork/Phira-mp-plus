@@ -3,8 +3,12 @@
 //! Ordinary persistence events use bounded backpressure instead of queue-full
 //! loss. Flush and shutdown are ordered control messages with acknowledgements,
 //! so accepted work can be drained before process termination. Production
-//! Touch/Judge telemetry still keeps its direct authoritative path while the
-//! worker is used as a batched mirror during cutover.
+//! Touch/Judge telemetry supports three explicit cutover modes. The default
+//! remains direct-only; worker-preferred mirrors direct writes; and the guarded
+//! worker-authoritative mode makes the batcher the normal-operation single
+//! writer while retaining a direct fallback only when enqueue is rejected.
+//! Accepted telemetry batches are retained in memory after database failure,
+//! but there is still no disk WAL for crash/power-loss recovery.
 
 use crate::persistence::message::PersistenceEvent;
 use crate::persistence::pipeline::{
@@ -15,30 +19,35 @@ use crate::persistence::pipeline::{
 use crate::persistence::stats::{
     record_benchmark_report_persist_request, record_benchmark_report_persist_skipped,
     record_db_dispatch_failure, record_db_dispatch_skipped_no_database, record_db_dispatch_success,
-    record_dropped, record_processed, record_production_persist_request,
-    record_production_persist_skipped, record_production_telemetry_stage_failed,
-    record_production_telemetry_staged, record_queued, record_simulation_persist_request,
-    record_telemetry_cutover_observation, PersistenceStats, TelemetryCutoverObservation,
+    record_dead_letter_failed, record_dead_letter_written, record_dropped, record_processed,
+    record_production_persist_request, record_production_persist_skipped,
+    record_production_telemetry_stage_failed, record_production_telemetry_staged, record_queued,
+    record_simulation_persist_request, record_telemetry_cutover_observation, PersistenceStats,
+    TelemetryCutoverObservation,
 };
 use crate::telemetry_batcher::{
     TelemetryBatcher, TelemetryBatcherPolicy, TelemetryBatcherStats, TelemetryCutoverMode,
 };
 use serde_json::json;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use tokio::io::AsyncWriteExt;
 use tokio::sync::{mpsc, oneshot, Mutex, RwLock};
 use tracing::{debug, info, trace, warn};
+
+static DEAD_LETTER_FAILURE_REPORTED: AtomicBool = AtomicBool::new(false);
 
 enum WorkerMessage {
     Event(PersistenceEvent),
     Flush {
         timeout: Duration,
-        reply: oneshot::Sender<()>,
+        reply: oneshot::Sender<Result<(), String>>,
     },
     Shutdown {
         timeout: Duration,
-        reply: oneshot::Sender<()>,
+        reply: oneshot::Sender<Result<(), String>>,
     },
 }
 
@@ -57,6 +66,97 @@ pub struct PersistenceWorker {
     telemetry_cutover_mode: Arc<RwLock<TelemetryCutoverMode>>,
 }
 
+async fn report_dead_letter_durability_failure(error: String) {
+    if !DEAD_LETTER_FAILURE_REPORTED.swap(true, Ordering::AcqRel) {
+        crate::supervisor_actor::report_critical_failure("persistence-dead-letter", error).await;
+    }
+}
+
+async fn preserve_failed_event(
+    path: Option<&Path>,
+    event: &PersistenceEvent,
+    stage: &str,
+    error: &str,
+    stats: &Arc<RwLock<PersistenceStats>>,
+) {
+    let kind = event.kind();
+    let simulation = event.is_simulation();
+    let summary = event.summary();
+    let Some(payload) = event.dead_letter_payload() else {
+        return;
+    };
+    let Some(path) = path else {
+        let durability_error =
+            "dead-letter journal disabled; failed event was not preserved".to_string();
+        record_dead_letter_failed(stats, kind, simulation, summary, durability_error.clone()).await;
+        report_dead_letter_durability_failure(durability_error).await;
+        return;
+    };
+    let timestamp_ms = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis() as u64)
+        .unwrap_or(0);
+    let record = json!({
+        "schema_version": 1,
+        "dead_letter_id": uuid::Uuid::new_v4().to_string(),
+        "failed_at_ms": timestamp_ms,
+        "stage": stage,
+        "kind": kind,
+        "simulation": simulation,
+        "summary": summary,
+        "error": error,
+        "event": payload,
+    });
+    match append_dead_letter(path, &record).await {
+        Ok(()) => {
+            record_dead_letter_written(stats, event.kind(), simulation, event.summary()).await;
+        }
+        Err(dead_letter_error) => {
+            let durability_error =
+                format!("failed to persist dead-letter record: {dead_letter_error}");
+            record_dead_letter_failed(
+                stats,
+                event.kind(),
+                simulation,
+                event.summary(),
+                durability_error.clone(),
+            )
+            .await;
+            report_dead_letter_durability_failure(durability_error).await;
+        }
+    }
+}
+
+async fn append_dead_letter(path: &Path, record: &serde_json::Value) -> Result<(), String> {
+    if let Some(parent) = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+    {
+        tokio::fs::create_dir_all(parent)
+            .await
+            .map_err(|error| format!("create {}: {error}", parent.display()))?;
+    }
+    let mut file = tokio::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+        .await
+        .map_err(|error| format!("open {}: {error}", path.display()))?;
+    let mut line = serde_json::to_vec(record)
+        .map_err(|error| format!("serialize dead-letter record: {error}"))?;
+    line.push(b'\n');
+    file.write_all(&line)
+        .await
+        .map_err(|error| format!("append {}: {error}", path.display()))?;
+    file.flush()
+        .await
+        .map_err(|error| format!("flush {}: {error}", path.display()))?;
+    file.sync_data()
+        .await
+        .map_err(|error| format!("sync {}: {error}", path.display()))?;
+    Ok(())
+}
+
 impl PersistenceWorker {
     pub fn spawn(queue_capacity: usize) -> Arc<Self> {
         Self::spawn_with_policy(
@@ -71,37 +171,62 @@ impl PersistenceWorker {
         telemetry_policy: TelemetryBatcherPolicy,
         telemetry_cutover_mode: TelemetryCutoverMode,
     ) -> Arc<Self> {
+        Self::spawn_with_policy_and_dead_letter(
+            queue_capacity,
+            telemetry_policy,
+            telemetry_cutover_mode,
+            Some("data/persistence-dead-letter.jsonl".to_string()),
+        )
+    }
+
+    pub fn spawn_with_policy_and_dead_letter(
+        queue_capacity: usize,
+        telemetry_policy: TelemetryBatcherPolicy,
+        telemetry_cutover_mode: TelemetryCutoverMode,
+        dead_letter_path: Option<String>,
+    ) -> Arc<Self> {
         let capacity = queue_capacity.max(16);
+        let dead_letter_path = dead_letter_path
+            .map(|path| path.trim().to_string())
+            .filter(|path| !path.is_empty());
         let (tx, mut rx) = mpsc::channel::<WorkerMessage>(capacity);
         let initial_cutover = telemetry_cutover_mode;
         let telemetry_batcher = TelemetryBatcher::spawn(telemetry_policy.clone());
         let telemetry_cutover_mode = Arc::new(RwLock::new(initial_cutover));
         let stats = Arc::new(RwLock::new(PersistenceStats {
             capacity,
+            dead_letter_path: dead_letter_path.clone(),
             telemetry_cutover_mode: initial_cutover.as_str().to_string(),
             telemetry: TelemetryBatcherStats::from_policy(&telemetry_policy),
             ..PersistenceStats::default()
         }));
         let worker_stats = Arc::clone(&stats);
         let worker_telemetry = Arc::clone(&telemetry_batcher);
+        let worker_dead_letter_path = dead_letter_path.map(PathBuf::from);
 
-        crate::supervisor_actor::spawn_named("persistence-worker", async move {
+        crate::supervisor_actor::spawn_critical("persistence-worker", async move {
             while let Some(message) = rx.recv().await {
                 let event = match message {
                     WorkerMessage::Event(event) => event,
                     WorkerMessage::Flush { timeout, reply } => {
-                        if let Err(error) = worker_telemetry.flush(timeout).await {
-                            warn!(%error, "telemetry flush failed");
+                        let result = worker_telemetry.flush(timeout).await;
+                        if let Err(error) = &result {
+                            warn!(%error, "telemetry flush failed; persistence worker remains active");
                         }
-                        let _ = reply.send(());
+                        let _ = reply.send(result);
                         continue;
                     }
                     WorkerMessage::Shutdown { timeout, reply } => {
-                        if let Err(error) = worker_telemetry.shutdown(timeout).await {
-                            warn!(%error, "telemetry shutdown failed");
+                        let result = worker_telemetry.shutdown(timeout).await;
+                        let should_stop = result.is_ok();
+                        if let Err(error) = &result {
+                            warn!(%error, "telemetry shutdown failed; persistence worker remains active");
                         }
-                        let _ = reply.send(());
-                        break;
+                        let _ = reply.send(result);
+                        if should_stop {
+                            break;
+                        }
+                        continue;
                     }
                 };
                 let kind = event.kind();
@@ -118,6 +243,14 @@ impl PersistenceWorker {
                         .await;
                     }
                     BenchmarkReportStage::Failed { elapsed_ms, error } => {
+                        preserve_failed_event(
+                            worker_dead_letter_path.as_deref(),
+                            &event,
+                            "benchmark_report",
+                            &error,
+                            &worker_stats,
+                        )
+                        .await;
                         record_benchmark_report_persist_skipped(&worker_stats).await;
                         record_db_dispatch_failure(
                             &worker_stats,
@@ -150,6 +283,14 @@ impl PersistenceWorker {
                                 elapsed_ms,
                                 error,
                             } => {
+                                preserve_failed_event(
+                                    worker_dead_letter_path.as_deref(),
+                                    &event,
+                                    "simulation",
+                                    &error,
+                                    &worker_stats,
+                                )
+                                .await;
                                 record_simulation_persist_request(&worker_stats).await;
                                 record_db_dispatch_failure(
                                     &worker_stats,
@@ -174,6 +315,14 @@ impl PersistenceWorker {
                                         record_production_telemetry_staged(&worker_stats).await;
                                     }
                                     ProductionTelemetryStage::Failed(error) => {
+                                        preserve_failed_event(
+                                            worker_dead_letter_path.as_deref(),
+                                            &event,
+                                            "telemetry_stage",
+                                            &error,
+                                            &worker_stats,
+                                        )
+                                        .await;
                                         record_production_telemetry_stage_failed(
                                             &worker_stats,
                                             error,
@@ -200,6 +349,14 @@ impl PersistenceWorker {
                                                 elapsed_ms,
                                                 error,
                                             } => {
+                                                preserve_failed_event(
+                                                    worker_dead_letter_path.as_deref(),
+                                                    &event,
+                                                    "production",
+                                                    &error,
+                                                    &worker_stats,
+                                                )
+                                                .await;
                                                 record_production_persist_request(&worker_stats)
                                                     .await;
                                                 record_db_dispatch_failure(
@@ -337,7 +494,8 @@ impl PersistenceWorker {
         tokio::time::timeout(timeout, rx)
             .await
             .map_err(|_| "persistence flush timed out".to_string())?
-            .map_err(|_| "persistence flush acknowledgement was dropped".to_string())
+            .map_err(|_| "persistence flush acknowledgement was dropped".to_string())??;
+        Ok(())
     }
 
     /// Drain accepted events, flush telemetry, then stop the worker.
@@ -358,10 +516,18 @@ impl PersistenceWorker {
                 return Err("persistence worker is closed".to_string());
             }
         }
-        tokio::time::timeout(timeout, rx)
-            .await
-            .map_err(|_| "persistence shutdown timed out".to_string())?
-            .map_err(|_| "persistence shutdown acknowledgement was dropped".to_string())
+        let result = match tokio::time::timeout(timeout, rx).await {
+            Ok(Ok(result)) => result,
+            Ok(Err(_)) => Err("persistence shutdown acknowledgement was dropped".to_string()),
+            Err(_) => Err("persistence shutdown timed out".to_string()),
+        };
+        if let Err(error) = result {
+            // A failed control operation did not establish that the worker stopped.
+            // Re-open admission so an operator can retry flush/shutdown explicitly.
+            self.closed.store(false, Ordering::Release);
+            return Err(error);
+        }
+        Ok(())
     }
 
     pub async fn stats(&self) -> PersistenceStats {
@@ -389,15 +555,19 @@ impl PersistenceWorker {
         let stats = self.stats().await;
         let mode = self.telemetry_cutover_mode().await;
         let decision = mode.cutover_decision();
-        if let Some(db) = crate::internal_hooks::DB.get() {
+        if let Some(db) = crate::internal_hooks::DB.get().filter(|db| db.is_active()) {
             db.record_runtime_persistence_meta_sync("runtime_v2.persistence_policy", json!({
                 "queue_capacity": stats.capacity,
                 "queue_health": stats.queue_health,
                 "pending_ratio_percent": stats.pending_ratio_percent,
+                "dead_letter_path": stats.dead_letter_path,
+                "dead_letter_written": stats.dead_letter_written,
+                "dead_letter_failed": stats.dead_letter_failed,
                 "telemetry_cutover_mode": stats.telemetry_cutover_mode,
                 "telemetry_cutover_decision": {
                     "enqueue_worker": decision.enqueue_worker,
                     "write_direct_before_worker_result": decision.write_direct_before_worker_result,
+                    "fallback_direct_when_worker_rejects": decision.fallback_direct_when_worker_rejects,
                 },
                 "telemetry": {
                     "enabled": stats.telemetry.enabled,
@@ -421,7 +591,26 @@ impl PersistenceWorker {
     pub async fn set_telemetry_cutover_mode(
         &self,
         mode: TelemetryCutoverMode,
-    ) -> TelemetryCutoverMode {
+    ) -> Result<TelemetryCutoverMode, String> {
+        if matches!(mode, TelemetryCutoverMode::WorkerAuthoritative) {
+            let telemetry = self.telemetry_batcher.stats().await;
+            if !telemetry.enabled {
+                return Err(
+                    "worker_authoritative requires telemetry_batcher.enabled=true".to_string(),
+                );
+            }
+            if telemetry.dry_run {
+                return Err(
+                    "worker_authoritative requires telemetry_batcher.dry_run=false".to_string(),
+                );
+            }
+            let database_active = crate::internal_hooks::DB
+                .get()
+                .is_some_and(|database| database.is_active());
+            if !database_active {
+                return Err("worker_authoritative requires an active database".to_string());
+            }
+        }
         {
             let mut current = self.telemetry_cutover_mode.write().await;
             *current = mode;
@@ -431,7 +620,7 @@ impl PersistenceWorker {
         stats.telemetry_cutover_changes += 1;
         stats.telemetry.cutover_mode = mode.as_str().to_string();
         stats.last_error = None;
-        if let Some(db) = crate::internal_hooks::DB.get() {
+        if let Some(db) = crate::internal_hooks::DB.get().filter(|db| db.is_active()) {
             let decision = mode.cutover_decision();
             db.record_runtime_persistence_meta_sync("telemetry.cutover_mode", json!({
                 "mode": mode.as_str(),
@@ -439,12 +628,13 @@ impl PersistenceWorker {
                 "decision": {
                     "enqueue_worker": decision.enqueue_worker,
                     "write_direct_before_worker_result": decision.write_direct_before_worker_result,
+                    "fallback_direct_when_worker_rejects": decision.fallback_direct_when_worker_rejects,
                 },
                 "available_modes": TelemetryCutoverMode::variants().iter().map(|mode| mode.as_str()).collect::<Vec<_>>(),
                 "updated_by": "runtime_v2.persistence_worker"
             }));
         }
-        mode
+        Ok(mode)
     }
 
     pub async fn telemetry_should_write_direct(&self) -> bool {

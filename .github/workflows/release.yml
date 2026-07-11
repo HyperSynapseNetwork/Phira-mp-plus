@@ -11,6 +11,10 @@ on:
     tags:
       - 'v[0-9]+.[0-9]+.[0-9]+'
 
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
 env:
   CARGO_TERM_COLOR: always
 
@@ -26,14 +30,53 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - id: tag
+        shell: bash
         run: |
-          # Cargo.toml 版本号由 auto-patch 在每次推送时自动更新，一定正确
+          set -euo pipefail
           FULL_VERSION=$(grep '^version = ' phira-mp-plus-server/Cargo.toml | sed 's/.*"\(.*\)"/\1/')
-          echo "tag=v$FULL_VERSION" >> $GITHUB_OUTPUT
-          echo "version=$FULL_VERSION" >> $GITHUB_OUTPUT
+          python scripts/sync-workspace-version.py --check "$FULL_VERSION"
+          if [[ "${GITHUB_REF_TYPE:-}" == "tag" && "${GITHUB_REF_NAME}" != "v$FULL_VERSION" ]]; then
+            echo "release tag ${GITHUB_REF_NAME} does not match Cargo version v$FULL_VERSION" >&2
+            exit 1
+          fi
+          echo "tag=v$FULL_VERSION" >> "$GITHUB_OUTPUT"
+          echo "version=$FULL_VERSION" >> "$GITHUB_OUTPUT"
+
+  quality-gate:
+    needs: version
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: release-quality
+      - name: Changed Rust formatting
+        env:
+          GITHUB_EVENT_BEFORE: ${{ github.event.before }}
+        run: ./scripts/check-changed-rustfmt.sh
+      - name: Workspace version consistency
+        run: python scripts/sync-workspace-version.py --check
+      - name: Workspace check
+        run: cargo check --locked --workspace --all-targets
+      - name: Feature boundary checks
+        run: |
+          cargo check --locked -p phira-mp-plus-server --no-default-features
+          cargo check --locked -p phira-mp-plus-server --no-default-features --features postgres
+          cargo check --locked -p phira-mp-plus-server --no-default-features --features wit-bindgen
+      - name: Tests
+        run: cargo test --locked --workspace
+      - name: Clippy
+        run: cargo clippy --locked --workspace --all-targets
 
   build-linux:
-    needs: version
+    needs: [version, quality-gate]
     runs-on: ubuntu-latest
     env:
       CC_x86_64_unknown_linux_musl: musl-gcc
@@ -46,34 +89,41 @@ jobs:
       - name: Install musl toolchain
         run: sudo apt-get update && sudo apt-get install -y musl-tools
       - uses: Swatinem/rust-cache@v2
-      - run: cargo build --release --target x86_64-unknown-linux-musl
+        with:
+          key: release-linux-musl
+      - run: cargo build --locked --release --target x86_64-unknown-linux-musl
       - run: cp target/x86_64-unknown-linux-musl/release/phira-mp-plus-server phira-mp-plus-server-linux
       - uses: actions/upload-artifact@v4
         with:
           name: phira-mp-plus-server-linux
           path: phira-mp-plus-server-linux
+          if-no-files-found: error
 
   build-windows:
-    needs: version
+    needs: [version, quality-gate]
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions-rust-lang/setup-rust-toolchain@v1
       - uses: Swatinem/rust-cache@v2
-      - run: cargo build --release
+        with:
+          key: release-windows
+      - run: cargo build --locked --release
       - run: cp target/release/phira-mp-plus-server.exe phira-mp-plus-server-windows.exe
       - uses: actions/upload-artifact@v4
         with:
           name: phira-mp-plus-server-windows
           path: phira-mp-plus-server-windows.exe
+          if-no-files-found: error
 
   package-sdk:
-    needs: version
+    needs: [version, quality-gate]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - name: 打包 SDK + WIT
         run: |
+          set -euo pipefail
           mkdir -p _sdk
           cp -r phira-plugin-sdk _sdk/phira-plugin-sdk
           cp -r wit _sdk/wit
@@ -82,9 +132,10 @@ jobs:
         with:
           name: phira-plugin-sdk
           path: phira-plugin-sdk.tar.gz
+          if-no-files-found: error
 
   release:
-    needs: [version, build-linux, build-windows, package-sdk]
+    needs: [version, quality-gate, build-linux, build-windows, package-sdk]
     runs-on: ubuntu-latest
     permissions:
       contents: write

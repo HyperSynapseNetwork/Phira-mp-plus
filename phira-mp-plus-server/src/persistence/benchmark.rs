@@ -6,6 +6,8 @@ use serde_json::Value;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BenchmarkReportPersistenceRecord {
+    /// Stable idempotency key reused across database retries.
+    pub report_id: String,
     pub mode: BenchmarkMode,
     pub title: String,
     pub duration_secs: u64,
@@ -27,6 +29,7 @@ pub struct BenchmarkReportPersistenceRecord {
 impl BenchmarkReportPersistenceRecord {
     pub fn from_report(report: &BenchmarkReport, source: impl Into<String>) -> Self {
         Self {
+            report_id: uuid::Uuid::new_v4().to_string(),
             mode: report.mode,
             title: report.title.clone(),
             duration_secs: report.duration_secs,
@@ -50,6 +53,8 @@ impl BenchmarkReportPersistenceRecord {
         let mut payload = serde_json::to_value(&self.report)
             .unwrap_or_else(|err| serde_json::json!({"serialize_error": err.to_string()}));
         if let Some(obj) = payload.as_object_mut() {
+            obj.entry("runtime_v2_report_id".to_string())
+                .or_insert_with(|| serde_json::json!(self.report_id.clone()));
             obj.entry("runtime_v2_schema_version".to_string())
                 .or_insert_with(|| serde_json::json!(self.schema_version));
             obj.entry("runtime_v2_storage".to_string())
@@ -112,8 +117,19 @@ mod tests {
             record.schema_version,
             crate::persistence::schema::RUNTIME_BENCHMARK_REPORTS_SCHEMA_VERSION
         );
+        let first_payload = record.payload();
+        let second_payload = record.payload();
+        assert!(!record.report_id.is_empty());
         assert_eq!(
-            record.payload()["runtime_v2_storage"].as_str(),
+            first_payload["runtime_v2_report_id"].as_str(),
+            Some(record.report_id.as_str())
+        );
+        assert_eq!(
+            second_payload["runtime_v2_report_id"].as_str(),
+            Some(record.report_id.as_str())
+        );
+        assert_eq!(
+            first_payload["runtime_v2_storage"].as_str(),
             Some(crate::persistence::schema::RUNTIME_BENCHMARK_REPORTS_TABLE)
         );
     }
@@ -125,7 +141,7 @@ mod tests {
     }
 
     /// Verify that the SQL column names used in INSERT match the column
-    /// names in CREATE TABLE (db.rs line 1313: `report JSONB NOT NULL`).
+    /// names in CREATE TABLE (`report JSONB NOT NULL`).
     /// If this test fails after a refactor, check that INSERT uses `report`
     /// not `payload`, and SELECT uses `report::text AS report`.
     #[test]
@@ -154,10 +170,11 @@ mod tests {
 /// SQL constants exposed for unit test verification of column names.
 #[cfg(test)]
 pub(crate) const INSERT_BENCHMARK_REPORT: &str = "INSERT INTO mp_runtime_benchmark_reports
-                   (mode, title, duration_secs, is_simulation, operations, failed_operations,
+                   (report_id, mode, title, duration_secs, is_simulation, operations, failed_operations,
                     probes_attempted, probes_succeeded, probes_failed, probes_blocked, probes_skipped,
                     failure_samples, notes, source, schema_version, report, created_at, sequence)
-                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16::jsonb, $17, nextval('mp_persist_sequence'))";
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17::jsonb, $18, nextval('mp_persist_sequence'))
+                 ON CONFLICT (report_id) WHERE report_id IS NOT NULL DO NOTHING";
 
 #[cfg(test)]
 pub(crate) const SELECT_BENCHMARK_HISTORY: &str = "SELECT sequence, mode, title, duration_secs, is_simulation, operations, failed_operations,
@@ -180,11 +197,13 @@ impl DbManager {
             let payload = record.payload();
             return sqlx::query(
                 "INSERT INTO mp_runtime_benchmark_reports
-                   (mode, title, duration_secs, is_simulation, operations, failed_operations,
+                   (report_id, mode, title, duration_secs, is_simulation, operations, failed_operations,
                     probes_attempted, probes_succeeded, probes_failed, probes_blocked, probes_skipped,
                     failure_samples, notes, source, schema_version, report, created_at, sequence)
-                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16::jsonb, $17, nextval('mp_persist_sequence'))",
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17::jsonb, $18, nextval('mp_persist_sequence'))
+                 ON CONFLICT (report_id) WHERE report_id IS NOT NULL DO NOTHING",
             )
+            .bind(&record.report_id)
             .bind(record.mode.as_str())
             .bind(&record.title)
             .bind(record.duration_secs as i64)

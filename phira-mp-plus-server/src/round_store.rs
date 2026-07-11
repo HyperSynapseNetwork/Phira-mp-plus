@@ -100,13 +100,20 @@ impl RoundStore {
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
         tokio::fs::write(self.meta_path(&meta.round_uuid), json).await?;
 
+        if let Some(db) = crate::internal_hooks::DB.get().filter(|db| db.is_active()) {
+            if !db.open_round(meta).await {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::Other,
+                    "PostgreSQL round-open transaction failed",
+                ));
+            }
+        }
+        // Only expose the round as active after all configured authoritative
+        // persistence backends have accepted the open transition.
         self.active_rounds
             .write()
             .await
             .insert(meta.round_uuid.clone(), true);
-        if let Some(db) = crate::internal_hooks::DB.get() {
-            db.open_round(meta).await;
-        }
         info!(
             "round store: opened round {} (chart={})",
             meta.round_uuid, meta.chart_name
@@ -133,8 +140,10 @@ impl RoundStore {
             .write()
             .await
             .insert(round_uuid.to_string(), false);
-        if let Some(db) = crate::internal_hooks::DB.get() {
-            db.close_round(round_uuid).await;
+        if let Some(db) = crate::internal_hooks::DB.get().filter(|db| db.is_active()) {
+            if !db.close_round(round_uuid).await {
+                tracing::warn!(round_uuid, "PostgreSQL round-close transaction failed");
+            }
         }
         info!("round store: closed round {round_uuid}");
     }
@@ -146,12 +155,17 @@ impl RoundStore {
     /// When PostgreSQL is configured, data is written via DB directly and
     /// file I/O is skipped. When no DB is available, file-based storage
     /// is used as the persistence fallback.
-    pub async fn append_touches(&self, round_uuid: &str, player_id: i32, data: &[TouchEventPoint]) {
+    pub async fn append_touches(
+        &self,
+        round_uuid: &str,
+        player_id: i32,
+        data: &[TouchEventPoint],
+    ) -> bool {
         if data.is_empty() {
-            return;
+            return true;
         }
-        if let Some(db) = crate::internal_hooks::DB.get() {
-            db.append_touches(round_uuid, player_id, data).await;
+        if let Some(db) = crate::internal_hooks::DB.get().filter(|db| db.is_active()) {
+            return db.append_touches(round_uuid, player_id, data).await;
         } else {
             let path = self.touches_path(round_uuid, player_id);
             if let Some(parent) = path.parent() {
@@ -166,14 +180,22 @@ impl RoundStore {
                 Ok(f) => f,
                 Err(e) => {
                     warn!("round store: append touches error: {e}");
-                    return;
+                    return false;
                 }
             };
             for point in data {
-                if let Ok(line) = serde_json::to_string(point) {
-                    let _ = file.write_all(format!("{line}\n").as_bytes()).await;
+                let Ok(line) = serde_json::to_string(point) else {
+                    return false;
+                };
+                if file
+                    .write_all(format!("{line}\n").as_bytes())
+                    .await
+                    .is_err()
+                {
+                    return false;
                 }
             }
+            file.flush().await.is_ok()
         }
     }
 
@@ -182,12 +204,17 @@ impl RoundStore {
     /// When PostgreSQL is configured, data is written via DB directly and
     /// file I/O is skipped. When no DB is available, file-based storage
     /// is used as the persistence fallback.
-    pub async fn append_judges(&self, round_uuid: &str, player_id: i32, data: &[JudgeEventItem]) {
+    pub async fn append_judges(
+        &self,
+        round_uuid: &str,
+        player_id: i32,
+        data: &[JudgeEventItem],
+    ) -> bool {
         if data.is_empty() {
-            return;
+            return true;
         }
-        if let Some(db) = crate::internal_hooks::DB.get() {
-            db.append_judges(round_uuid, player_id, data).await;
+        if let Some(db) = crate::internal_hooks::DB.get().filter(|db| db.is_active()) {
+            return db.append_judges(round_uuid, player_id, data).await;
         } else {
             let path = self.judges_path(round_uuid, player_id);
             if let Some(parent) = path.parent() {
@@ -202,14 +229,22 @@ impl RoundStore {
                 Ok(f) => f,
                 Err(e) => {
                     warn!("round store: append judges error: {e}");
-                    return;
+                    return false;
                 }
             };
             for item in data {
-                if let Ok(line) = serde_json::to_string(item) {
-                    let _ = file.write_all(format!("{line}\n").as_bytes()).await;
+                let Ok(line) = serde_json::to_string(item) else {
+                    return false;
+                };
+                if file
+                    .write_all(format!("{line}\n").as_bytes())
+                    .await
+                    .is_err()
+                {
+                    return false;
                 }
             }
+            file.flush().await.is_ok()
         }
     }
 
@@ -228,7 +263,7 @@ impl RoundStore {
         round_uuid: &str,
         player_id: i32,
     ) -> Option<RoundPlayerData> {
-        if let Some(db) = crate::internal_hooks::DB.get() {
+        if let Some(db) = crate::internal_hooks::DB.get().filter(|db| db.is_active()) {
             if let Some(data) = db.read_round_player_data(round_uuid, player_id).await {
                 return Some(data);
             }
@@ -258,7 +293,7 @@ impl RoundStore {
 
     /// 列出所有已记录的轮次
     pub async fn list_rounds(&self) -> Vec<RoundMeta> {
-        if let Some(db) = crate::internal_hooks::DB.get() {
+        if let Some(db) = crate::internal_hooks::DB.get().filter(|db| db.is_active()) {
             let rows = db.list_rounds(1000).await;
             if !rows.is_empty() {
                 return rows;

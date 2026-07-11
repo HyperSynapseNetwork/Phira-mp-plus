@@ -41,6 +41,7 @@ impl PersistenceLatencyStats {
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
 pub struct TelemetryCutoverObservation {
     pub kind: String,
     pub mode: String,
@@ -52,9 +53,16 @@ pub struct TelemetryCutoverObservation {
     pub direct_written: bool,
     pub direct_write_ms: Option<u64>,
     pub fallback_direct: bool,
+    /// WorkerPreferred direct persistence failed, but the Worker accepted this
+    /// batch as the canonical compensation path rather than as a mirror.
+    pub worker_canonical_fallback: bool,
+    /// At least one configured persistence path accepted the batch. For the
+    /// Worker path this means queue acceptance, not a database commit ACK.
+    pub persistence_path_accepted: bool,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
 pub struct TelemetryCutoverStats {
     pub observed_batches: u64,
     pub observed_items: u64,
@@ -64,9 +72,15 @@ pub struct TelemetryCutoverStats {
     pub worker_enqueued_items: u64,
     pub direct_attempted_batches: u64,
     pub direct_written_batches: u64,
+    /// Direct persistence was attempted but returned failure/no acknowledgement.
+    pub direct_failed_batches: u64,
+    /// Direct persistence was not attempted under the selected cutover mode.
     pub direct_skipped_batches: u64,
     pub direct_written_items: u64,
     pub fallback_direct_batches: u64,
+    pub worker_canonical_fallback_batches: u64,
+    /// Batches accepted by neither the direct backend nor the Worker queue.
+    pub unaccepted_batches: u64,
     pub worker_dry_run_success_batches: u64,
     pub worker_dry_run_failed_batches: u64,
     pub worker_enqueue_success_ratio_percent: u8,
@@ -106,13 +120,19 @@ impl TelemetryCutoverStats {
                     self.direct_write_latency.record(elapsed_ms);
                 }
             } else {
-                self.direct_skipped_batches += 1;
+                self.direct_failed_batches += 1;
             }
         } else {
             self.direct_skipped_batches += 1;
         }
         if observation.fallback_direct {
             self.fallback_direct_batches += 1;
+        }
+        if observation.worker_canonical_fallback {
+            self.worker_canonical_fallback_batches += 1;
+        }
+        if !observation.persistence_path_accepted {
+            self.unaccepted_batches += 1;
         }
         // Workers in WorkerPreferred mode both attempt worker and write direct;
         // count those observations toward the dry-run readiness signal.
@@ -174,6 +194,13 @@ pub struct PersistenceStats {
     pub production_persist_skipped: u64,
     pub production_telemetry_staged: u64,
     pub production_telemetry_stage_failed: u64,
+    /// Events preserved in the local JSONL dead-letter journal after the
+    /// configured database retry budget was exhausted.
+    pub dead_letter_path: Option<String>,
+    pub dead_letter_written: u64,
+    /// Dead-letter writes that also failed. A non-zero value is a durability
+    /// incident and should mark the service degraded operationally.
+    pub dead_letter_failed: u64,
     pub telemetry_cutover: TelemetryCutoverStats,
     pub db_dispatch: BTreeMap<String, PersistenceLatencyStats>,
     pub db_dispatch_failures: BTreeMap<String, u64>,
@@ -243,6 +270,30 @@ pub async fn record_production_telemetry_stage_failed(
     stats.last_error = Some(error);
 }
 
+pub async fn record_dead_letter_written(
+    stats: &Arc<RwLock<PersistenceStats>>,
+    kind: String,
+    simulation: bool,
+    summary: String,
+) {
+    let mut stats = stats.write().await;
+    stats.dead_letter_written += 1;
+    push_trace(&mut stats, "dead_letter", kind, simulation, summary);
+}
+
+pub async fn record_dead_letter_failed(
+    stats: &Arc<RwLock<PersistenceStats>>,
+    kind: String,
+    simulation: bool,
+    summary: String,
+    error: String,
+) {
+    let mut stats = stats.write().await;
+    stats.dead_letter_failed += 1;
+    stats.last_error = Some(error);
+    push_trace(&mut stats, "dead_letter_failed", kind, simulation, summary);
+}
+
 pub async fn record_telemetry_cutover_observation(
     stats: &Arc<RwLock<PersistenceStats>>,
     observation: TelemetryCutoverObservation,
@@ -255,7 +306,7 @@ pub async fn record_telemetry_cutover_observation(
         format!("telemetry.{}", observation.kind),
         false,
         format!(
-            "mode={} items={} worker={}/{} worker_ms={} direct={}/{} direct_ms={} fallback={}",
+            "mode={} items={} worker={}/{} worker_ms={} direct={}/{} direct_ms={} fallback_direct={} worker_canonical_fallback={} path_accepted={}",
             observation.mode,
             observation.item_count,
             observation.worker_attempted,
@@ -265,6 +316,8 @@ pub async fn record_telemetry_cutover_observation(
             observation.direct_written,
             observation.direct_write_ms.unwrap_or(0),
             observation.fallback_direct,
+            observation.worker_canonical_fallback,
+            observation.persistence_path_accepted,
         ),
     );
 }
@@ -403,12 +456,51 @@ mod tests {
             direct_written: true,
             direct_write_ms: Some(7),
             fallback_direct: false,
+            worker_canonical_fallback: false,
+            persistence_path_accepted: true,
         });
         assert_eq!(cutover.worker_enqueue_success_ratio_percent, 100);
         assert_eq!(cutover.worker_dry_run_success_ratio_percent, 100);
         assert_eq!(cutover.readiness, "enqueue_path_ready_for_worker_preferred");
         assert_eq!(cutover.worker_enqueue_latency.last_ms, 2);
         assert_eq!(cutover.direct_write_latency.last_ms, 7);
+    }
+
+    #[test]
+    fn telemetry_cutover_tracks_worker_canonical_fallback_and_total_failure() {
+        let mut cutover = TelemetryCutoverStats::default();
+        cutover.record(&TelemetryCutoverObservation {
+            kind: "judge".to_string(),
+            mode: "worker_preferred".to_string(),
+            item_count: 3,
+            worker_attempted: true,
+            worker_enqueued: true,
+            worker_enqueue_ms: 1,
+            direct_attempted: true,
+            direct_written: false,
+            direct_write_ms: Some(5),
+            fallback_direct: false,
+            worker_canonical_fallback: true,
+            persistence_path_accepted: true,
+        });
+        cutover.record(&TelemetryCutoverObservation {
+            kind: "touch".to_string(),
+            mode: "direct_only".to_string(),
+            item_count: 2,
+            worker_attempted: false,
+            worker_enqueued: false,
+            worker_enqueue_ms: 0,
+            direct_attempted: true,
+            direct_written: false,
+            direct_write_ms: Some(4),
+            fallback_direct: false,
+            worker_canonical_fallback: false,
+            persistence_path_accepted: false,
+        });
+        assert_eq!(cutover.worker_canonical_fallback_batches, 1);
+        assert_eq!(cutover.direct_failed_batches, 2);
+        assert_eq!(cutover.direct_skipped_batches, 0);
+        assert_eq!(cutover.unaccepted_batches, 1);
     }
 
     #[test]

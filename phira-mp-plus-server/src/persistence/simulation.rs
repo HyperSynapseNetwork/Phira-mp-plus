@@ -20,10 +20,17 @@ impl DbManager {
                 .duration_since(std::time::UNIX_EPOCH)
                 .map(|d| d.as_millis() as i64)
                 .unwrap_or(0);
+            let event_id = payload
+                .get("runtime_v2_event_id")
+                .and_then(Value::as_str)
+                .filter(|value| !value.is_empty())
+                .map(ToString::to_string);
             return sqlx::query(
-                "INSERT INTO mp_sim_events (run_id, kind, payload, created_at)
-                 VALUES ($1, $2, $3, $4)",
+                "INSERT INTO mp_sim_events (event_id, run_id, kind, payload, created_at)
+                 VALUES ($1, $2, $3, $4, $5)
+                 ON CONFLICT (event_id) WHERE event_id IS NOT NULL DO NOTHING",
             )
+            .bind(event_id.as_deref())
             .bind(run_id.as_deref())
             .bind(kind)
             .bind(payload)

@@ -157,7 +157,7 @@ config reload
 
 收到 Ctrl+C/SIGTERM 后，PMP 在 `graceful_shutdown_timeout_secs` 总时限内依次停止接入、摘除并关闭会话、刷新插件事件队列、执行插件 cleanup、保存扩展数据、Flush/Shutdown 持久化 Worker，并取消和等待受监督后台任务。所有步骤共享同一 deadline，避免每个子系统分别消耗完整超时。
 
-该机制保证“进程仍正常运行且依赖可响应”条件下已接收队列项尽量落地；它不是崩溃一致性协议。没有 WAL 时，`kill -9`、进程崩溃或主机掉电仍可能丢失尚未写入数据库的数据。
+该机制保证“进程仍正常运行且依赖可响应”条件下已接收队列项按顺序 drain，并把 Flush/Shutdown 的真实失败返回给调用方。数据库重试耗尽的事件会尝试写入 dead-letter；但它仍不是崩溃一致性协议。没有 enqueue-before WAL 时，`kill -9`、进程崩溃或主机掉电仍可能丢失尚在内存队列中的数据。
 
 ## 统一 PostgreSQL 持久化
 
@@ -194,7 +194,8 @@ Runtime v2 的内部策略优先放在配置文件中，避免继续新增过多
 ```yaml
 runtime_v2:
   persistence_queue_capacity: 4096
-  telemetry_cutover_mode: direct_only   # direct_only / worker_preferred
+  persistence_dead_letter_path: data/persistence-dead-letter.jsonl  # null = 禁用
+  telemetry_cutover_mode: direct_only   # direct_only / worker_preferred / worker_authoritative
   telemetry_batcher:
     enabled: true
     dry_run: false
@@ -212,7 +213,19 @@ runtime_v2:
       open_duration_ms: 20000
 ```
 
-`direct_only` 只通过 RoundStore/db.rs 权威写入。`worker_preferred` 保留权威写入，并把高频遥测镜像到有界 TelemetryBatcher。队列和数据库写入有背压、有限重试及关机 flush，但当前没有磁盘 WAL，因此进程崩溃或主机掉电时仍不承诺零数据丢失。
+三种遥测模式的权威语义不同：
+
+| 模式 | 权威写入 | Worker 作用 | 失败行为 |
+|------|----------|-------------|----------|
+| `direct_only` | RoundStore/数据库直写 | 不接收生产 Touch/Judge | 直写返回真实成功或失败；无有效数据库时使用文件回退 |
+| `worker_preferred` | 优先直写 | 直写成功时为迁移镜像；直写失败且 Worker 接收时成为该批次的权威补偿路径 | Worker 镜像失败不改变已成功直写的结果；两条路径均未接受时计入 `unaccepted` 并报告 degraded |
+| `worker_authoritative` | PersistenceWorker/TelemetryBatcher | 正常运行时唯一写入者 | 仅在事件尚未入队且 Worker 明确拒绝时允许直写回退；已入队后不双写 |
+
+`worker_authoritative` 不是自动升级模式。它要求 `database_url` 非空、PostgreSQL 实际初始化成功、`telemetry_batcher.enabled=true` 且 `dry_run=false`；任一条件不满足时拒绝启动或拒绝运行时切换，不会静默降级。
+
+`worker_preferred` 中，Worker payload 只有在直写已经确认成功时才标记为 mirror；若直写失败而 Worker 队列接收成功，同一事件 ID 由 Worker 更新权威轮次表并写 Runtime v2 明细。CLI 的 `direct_failed` 与 `path_accepted`/`unaccepted` 指标描述的是“至少一个持久化入口接收了批次”，Worker 入队并不等于数据库已经 commit，最终结果必须结合 batcher DB ACK、重试和 dead-letter 指标判断。
+
+普通事件与遥测的数据库写入使用有限重试和稳定幂等键。重试耗尽后，能序列化的失败事件写入 `persistence_dead_letter_path` 指定的 JSONL，并执行 `flush + sync_data`。设置为 `null` 可禁用 dead-letter；此时数据库最终失败会使 Supervisor 进入 degraded。dead-letter 只保全已经完成数据库尝试的失败事件，不是 enqueue-before WAL，无法保证 `kill -9`、进程崩溃或主机掉电时内存队列零丢失，也不会自动 replay。
 
 `phira_http` 控制统一 Phira RetryClient。默认策略会在连续失败达到阈值后短暂打开熔断器，避免 Phira 官方服务 502/超时期间继续把认证、选谱、成绩查询压在业务热路径上。Simulation 默认不访问 Phira；real/hybrid benchmark 必须显式走这套 client。
 

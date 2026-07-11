@@ -80,6 +80,11 @@ pub struct RuntimeV2Config {
     /// Bounded queue size for Runtime v2 PersistenceWorker.
     #[serde(default = "default_runtime_persistence_queue_capacity")]
     pub persistence_queue_capacity: usize,
+    /// Local JSONL journal for events that still fail after the database retry
+    /// budget. Set to `null` only when an external supervisor captures the same
+    /// failed payloads; otherwise disabling it reintroduces silent loss.
+    #[serde(default = "default_persistence_dead_letter_path")]
+    pub persistence_dead_letter_path: Option<String>,
     /// Batcher policy for production Touch/Judge telemetry.
     #[serde(default)]
     pub telemetry_batcher: TelemetryBatcherPolicy,
@@ -95,6 +100,7 @@ impl Default for RuntimeV2Config {
     fn default() -> Self {
         Self {
             persistence_queue_capacity: default_runtime_persistence_queue_capacity(),
+            persistence_dead_letter_path: default_persistence_dead_letter_path(),
             telemetry_batcher: TelemetryBatcherPolicy::default(),
             telemetry_cutover_mode: TelemetryCutoverMode::default(),
             phira_http: PhiraHttpPolicyConfig::default(),
@@ -292,8 +298,7 @@ impl PlusConfig {
             ));
         }
         if self.proxy_protocol_port > 0
-            && (self.proxy_protocol_port == self.port
-                || self.proxy_protocol_port == self.http_port)
+            && (self.proxy_protocol_port == self.port || self.proxy_protocol_port == self.http_port)
         {
             return Err(AppError::ConfigValidation(
                 "PROXY protocol 端口不能与 TCP/HTTP 端口相同".into(),
@@ -307,25 +312,35 @@ impl PlusConfig {
                 "max_users_per_room 必须大于 0".into(),
             ));
         }
-        if self.max_sessions == 0 {
-            return Err(AppError::ConfigValidation("max_sessions 必须大于 0".into()));
+        if self
+            .max_users_per_room
+            .is_some_and(|max_users| max_users > self.max_sessions)
+        {
+            return Err(AppError::ConfigValidation(
+                "max_users_per_room 不能超过 max_sessions".into(),
+            ));
+        }
+        if self.max_sessions == 0 || self.max_sessions > 1_000_000 {
+            return Err(AppError::ConfigValidation(
+                "max_sessions 必须在 1..=1000000 范围内".into(),
+            ));
         }
         if self.max_pending_auth == 0 || self.max_pending_auth > self.max_sessions {
             return Err(AppError::ConfigValidation(
                 "max_pending_auth 必须大于 0 且不能超过 max_sessions".into(),
             ));
         }
-        if self.graceful_shutdown_timeout_secs == 0 {
+        if !(1..=300).contains(&self.graceful_shutdown_timeout_secs) {
             return Err(AppError::ConfigValidation(
-                "graceful_shutdown_timeout_secs 必须大于 0".into(),
+                "graceful_shutdown_timeout_secs 必须在 1..=300 范围内".into(),
             ));
         }
         if self.plugins_dir.trim().is_empty() {
             return Err(AppError::ConfigValidation("plugins_dir 不能为空".into()));
         }
-        if self.wasm_runtime.max_memory_mb == 0 {
+        if !(1..=4096).contains(&self.wasm_runtime.max_memory_mb) {
             return Err(AppError::ConfigValidation(
-                "wasm_runtime.max_memory_mb 必须大于 0".into(),
+                "wasm_runtime.max_memory_mb 必须在 1..=4096 范围内".into(),
             ));
         }
         if self.wasm_runtime.fuel_per_call == 0 {
@@ -333,20 +348,75 @@ impl PlusConfig {
                 "wasm_runtime.fuel_per_call 必须大于 0；PMP 不允许无计量插件执行".into(),
             ));
         }
-        if self.wasm_runtime.max_stack_bytes < 64 * 1024 {
+        if !((64 * 1024)..=(64 * 1024 * 1024)).contains(&self.wasm_runtime.max_stack_bytes) {
             return Err(AppError::ConfigValidation(
-                "wasm_runtime.max_stack_bytes 不能小于 65536".into(),
+                "wasm_runtime.max_stack_bytes 必须在 65536..=67108864 范围内".into(),
             ));
         }
-        if self.wasm_runtime.http_timeout_secs == 0
-            || self.wasm_runtime.max_http_response_bytes == 0
-            || self.wasm_runtime.max_file_bytes == 0
-            || self.wasm_runtime.max_event_concurrency == 0
-            || self.wasm_runtime.event_queue_capacity == 0
-            || self.wasm_runtime.call_timeout_ms == 0
+        if !(1..=300).contains(&self.wasm_runtime.http_timeout_secs)
+            || !(1..=(128 * 1024 * 1024)).contains(&self.wasm_runtime.max_http_response_bytes)
+            || !(1..=(128 * 1024 * 1024)).contains(&self.wasm_runtime.max_file_bytes)
+            || !(1..=256).contains(&self.wasm_runtime.max_event_concurrency)
+            || !(16..=1_000_000).contains(&self.wasm_runtime.event_queue_capacity)
+            || !(1..=300_000).contains(&self.wasm_runtime.call_timeout_ms)
         {
             return Err(AppError::ConfigValidation(
-                "wasm_runtime 的超时、大小与并发限制必须全部大于 0".into(),
+                "wasm_runtime 的超时、大小、并发或队列限制超出安全范围".into(),
+            ));
+        }
+        let runtime = &self.runtime_v2;
+        if !(16..=1_000_000).contains(&runtime.persistence_queue_capacity) {
+            return Err(AppError::ConfigValidation(
+                "runtime_v2.persistence_queue_capacity 必须在 16..=1000000 范围内".into(),
+            ));
+        }
+        if runtime
+            .persistence_dead_letter_path
+            .as_deref()
+            .is_some_and(|path| path.trim().is_empty())
+        {
+            return Err(AppError::ConfigValidation(
+                "runtime_v2.persistence_dead_letter_path 不能是空字符串；使用 null 可显式禁用"
+                    .into(),
+            ));
+        }
+        let telemetry = &runtime.telemetry_batcher;
+        if !(16..=1_000_000).contains(&telemetry.queue_capacity)
+            || telemetry.max_items_per_batch == 0
+            || telemetry.max_items_per_batch > telemetry.queue_capacity
+            || !(50..=60_000).contains(&telemetry.flush_interval_ms)
+        {
+            return Err(AppError::ConfigValidation(
+                "runtime_v2.telemetry_batcher 的队列、批量或刷新间隔无效".into(),
+            ));
+        }
+        if matches!(
+            runtime.telemetry_cutover_mode,
+            TelemetryCutoverMode::WorkerAuthoritative
+        ) {
+            if !telemetry.enabled || telemetry.dry_run {
+                return Err(AppError::ConfigValidation(
+                    "worker_authoritative 要求 telemetry_batcher.enabled=true 且 dry_run=false"
+                        .into(),
+                ));
+            }
+            if self
+                .database_url
+                .as_deref()
+                .map_or(true, |database_url| database_url.trim().is_empty())
+            {
+                return Err(AppError::ConfigValidation(
+                    "worker_authoritative 要求配置非空 database_url".into(),
+                ));
+            }
+        }
+        if self
+            .database_url
+            .as_deref()
+            .is_some_and(|database_url| database_url.trim().is_empty())
+        {
+            return Err(AppError::ConfigValidation(
+                "database_url 不能是空字符串；无数据库时应省略该字段".into(),
             ));
         }
         if self.connection_rate_limit == 0 {
@@ -408,35 +478,73 @@ pub struct PlusConfigCli {
 
 // ── Default-value helpers ──────────────────────────────────────────
 
-fn default_http_port() -> u16 { 12347 }
-fn default_config_path() -> String { "server_config.yml".to_string() }
-fn default_plugins_dir() -> String { "plugins".to_string() }
-fn default_monitors() -> Vec<i32> { vec![2] }
-fn default_true() -> bool { true }
-fn default_rate_limit() -> u32 { 30 }
-fn default_rate_window() -> u32 { 10 }
-fn default_phira_api() -> String { "https://phira.5wyxi.com".to_string() }
-fn default_proxy_protocol_port() -> u16 { 0 }
-fn default_retention_days() -> u32 { 7 }
-fn default_persistence_retention_days() -> u32 { 30 }
-fn default_runtime_persistence_queue_capacity() -> usize { 2048 }
-fn default_max_sessions() -> usize { 4096 }
-fn default_max_pending_auth() -> usize { 256 }
-fn default_graceful_shutdown_timeout_secs() -> u64 { 15 }
-
+fn default_http_port() -> u16 {
+    12347
+}
+fn default_config_path() -> String {
+    "server_config.yml".to_string()
+}
+fn default_plugins_dir() -> String {
+    "plugins".to_string()
+}
+fn default_monitors() -> Vec<i32> {
+    vec![2]
+}
+fn default_true() -> bool {
+    true
+}
+fn default_rate_limit() -> u32 {
+    30
+}
+fn default_rate_window() -> u32 {
+    10
+}
+fn default_phira_api() -> String {
+    "https://phira.5wyxi.com".to_string()
+}
+fn default_proxy_protocol_port() -> u16 {
+    0
+}
+fn default_retention_days() -> u32 {
+    7
+}
+fn default_persistence_retention_days() -> u32 {
+    30
+}
+fn default_runtime_persistence_queue_capacity() -> usize {
+    2048
+}
+fn default_persistence_dead_letter_path() -> Option<String> {
+    Some("data/persistence-dead-letter.jsonl".to_string())
+}
+fn default_max_sessions() -> usize {
+    4096
+}
+fn default_max_pending_auth() -> usize {
+    256
+}
+fn default_graceful_shutdown_timeout_secs() -> u64 {
+    15
+}
 
 #[cfg(test)]
 mod tests {
-    use super::{PlusConfig, PlusConfigCli};
+    use super::{PlusConfig, PlusConfigCli, TelemetryCutoverMode};
 
     #[test]
     fn partial_yaml_uses_runtime_defaults() {
-        let config: PlusConfig = serde_yaml::from_str("chat_enabled: false
-").unwrap();
+        let config: PlusConfig = serde_yaml::from_str(
+            "chat_enabled: false
+",
+        )
+        .unwrap();
         assert_eq!(config.port, 12346);
         assert_eq!(config.http_port, 12347);
         assert_eq!(config.monitors, vec![2]);
-        assert_eq!(config.extensions_file.as_deref(), Some("data/extensions.json"));
+        assert_eq!(
+            config.extensions_file.as_deref(),
+            Some("data/extensions.json")
+        );
         assert!(!config.chat_enabled);
     }
 
@@ -459,8 +567,11 @@ mod tests {
 
     #[test]
     fn explicit_empty_monitor_list_is_preserved() {
-        let config: PlusConfig = serde_yaml::from_str("monitors: []
-").unwrap();
+        let config: PlusConfig = serde_yaml::from_str(
+            "monitors: []
+",
+        )
+        .unwrap();
         assert!(config.monitors.is_empty());
     }
 
@@ -532,4 +643,51 @@ mod tests {
         assert!(config.validate().is_err());
     }
 
+    #[test]
+    fn rejects_invalid_runtime_v2_batching_contract() {
+        let mut config = PlusConfig::default();
+        config.runtime_v2.persistence_queue_capacity = 0;
+        assert!(config.validate().is_err());
+
+        let mut config = PlusConfig::default();
+        config.runtime_v2.telemetry_batcher.max_items_per_batch =
+            config.runtime_v2.telemetry_batcher.queue_capacity + 1;
+        assert!(config.validate().is_err());
+
+        let mut config = PlusConfig::default();
+        config.runtime_v2.telemetry_batcher.flush_interval_ms = 0;
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn default_runtime_v2_enables_dead_letter_journal() {
+        let config = PlusConfig::default();
+        assert_eq!(
+            config.runtime_v2.persistence_dead_letter_path.as_deref(),
+            Some("data/persistence-dead-letter.jsonl")
+        );
+    }
+
+    #[test]
+    fn rejects_empty_dead_letter_path_but_allows_explicit_disable() {
+        let mut config = PlusConfig::default();
+        config.runtime_v2.persistence_dead_letter_path = Some("   ".to_string());
+        assert!(config.validate().is_err());
+
+        config.runtime_v2.persistence_dead_letter_path = None;
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn worker_authoritative_requires_real_database_and_active_batcher() {
+        let mut config = PlusConfig::default();
+        config.runtime_v2.telemetry_cutover_mode = TelemetryCutoverMode::WorkerAuthoritative;
+        assert!(config.validate().is_err());
+
+        config.database_url = Some("postgres://localhost/phira".to_string());
+        assert!(config.validate().is_ok());
+
+        config.runtime_v2.telemetry_batcher.dry_run = true;
+        assert!(config.validate().is_err());
+    }
 }

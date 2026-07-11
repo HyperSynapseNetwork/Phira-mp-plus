@@ -7,7 +7,7 @@ use super::super::{
 use crate::{plugin::PluginEvent, server::PlusServerState};
 use phira_mp_common::{Message, PartialRoomData};
 use serde_json::Value;
-use std::sync::{atomic::Ordering, Arc};
+use std::sync::Arc;
 use std::time::Instant;
 
 impl RoomCommandGateway {
@@ -21,19 +21,11 @@ impl RoomCommandGateway {
         let started = Instant::now();
         let rid = room_id.to_string();
         let result = self
-            .room_mailbox_or_inline(
-                &rid,
-                |reply| RoomActorCommand::SetHost {
-                    room_id: rid.clone(),
-                    target_id,
-                    reply,
-                },
-                || async {
-                    self.set_host_inline(state, &rid, target_id, None)
-                        .await
-                        .map(|p| p.into_json())
-                },
-            )
+            .room_mailbox(&rid, |reply| RoomActorCommand::SetHost {
+                room_id: rid.clone(),
+                target_id,
+                reply,
+            })
             .await;
         self.finish_command(
             state,
@@ -45,7 +37,7 @@ impl RoomCommandGateway {
         .into_untyped()
     }
 
-    pub(in crate::room_actor) async fn set_host_inline(
+    pub(in crate::room_actor) async fn set_host_in_actor(
         &self,
         state: &PlusServerState,
         room_id: &str,
@@ -113,20 +105,12 @@ impl RoomCommandGateway {
         let started = Instant::now();
         let rid = room_id.to_string();
         let result = self
-            .room_mailbox_or_inline(
-                &rid,
-                |reply| RoomActorCommand::SetLock {
-                    room_id: rid.clone(),
-                    locked,
-                    actor_user_id,
-                    reply,
-                },
-                || async {
-                    self.set_lock_inline(state, &rid, locked, actor_user_id, None)
-                        .await
-                        .map(|p| p.into_json())
-                },
-            )
+            .room_mailbox(&rid, |reply| RoomActorCommand::SetLock {
+                room_id: rid.clone(),
+                locked,
+                actor_user_id,
+                reply,
+            })
             .await;
         self.finish_command(
             state,
@@ -138,7 +122,7 @@ impl RoomCommandGateway {
         .into_untyped()
     }
 
-    pub(in crate::room_actor) async fn set_lock_inline(
+    pub(in crate::room_actor) async fn set_lock_in_actor(
         &self,
         state: &PlusServerState,
         room_id: &str,
@@ -147,7 +131,7 @@ impl RoomCommandGateway {
         room_override: Option<Arc<crate::room::Room>>,
     ) -> Result<RoomCommandPayload, String> {
         let (_rid, room) = self.resolve_room(state, room_id, room_override).await?;
-        room.locked.store(locked, Ordering::SeqCst);
+        room.set_locked(locked);
         room.send(Message::LockRoom { lock: locked }).await;
         room.publish_update(PartialRoomData {
             lock: Some(locked),
@@ -186,20 +170,12 @@ impl RoomCommandGateway {
         let started = Instant::now();
         let rid = room_id.to_string();
         let result = self
-            .room_mailbox_or_inline(
-                &rid,
-                |reply| RoomActorCommand::SetCycle {
-                    room_id: rid.clone(),
-                    cycle,
-                    actor_user_id,
-                    reply,
-                },
-                || async {
-                    self.set_cycle_inline(state, &rid, cycle, actor_user_id, None)
-                        .await
-                        .map(|p| p.into_json())
-                },
-            )
+            .room_mailbox(&rid, |reply| RoomActorCommand::SetCycle {
+                room_id: rid.clone(),
+                cycle,
+                actor_user_id,
+                reply,
+            })
             .await;
         self.finish_command(
             state,
@@ -211,7 +187,7 @@ impl RoomCommandGateway {
         .into_untyped()
     }
 
-    pub(in crate::room_actor) async fn set_cycle_inline(
+    pub(in crate::room_actor) async fn set_cycle_in_actor(
         &self,
         state: &PlusServerState,
         room_id: &str,
@@ -220,7 +196,7 @@ impl RoomCommandGateway {
         room_override: Option<Arc<crate::room::Room>>,
     ) -> Result<RoomCommandPayload, String> {
         let (_rid, room) = self.resolve_room(state, room_id, room_override).await?;
-        room.cycle.store(cycle, Ordering::SeqCst);
+        room.set_cycle(cycle);
         room.send(Message::CycleRoom { cycle }).await;
         room.publish_update(PartialRoomData {
             cycle: Some(cycle),
@@ -249,19 +225,11 @@ impl RoomCommandGateway {
         let started = Instant::now();
         let rid = room_id.to_string();
         let result = self
-            .room_mailbox_or_inline(
-                &rid,
-                |reply| RoomActorCommand::SetHidden {
-                    room_id: rid.clone(),
-                    hidden,
-                    reply,
-                },
-                || async {
-                    self.set_hidden_inline(state, &rid, hidden, None)
-                        .await
-                        .map(|payload| payload.into_json())
-                },
-            )
+            .room_mailbox(&rid, |reply| RoomActorCommand::SetHidden {
+                room_id: rid.clone(),
+                hidden,
+                reply,
+            })
             .await;
         self.finish_command(
             state,
@@ -273,7 +241,7 @@ impl RoomCommandGateway {
         .into_untyped()
     }
 
-    pub(in crate::room_actor) async fn set_hidden_inline(
+    pub(in crate::room_actor) async fn set_hidden_in_actor(
         &self,
         state: &PlusServerState,
         room_id: &str,
@@ -304,19 +272,11 @@ impl RoomCommandGateway {
         let started = Instant::now();
         let rid = room_id.to_string();
         let result = self
-            .room_mailbox_or_inline(
-                &rid,
-                |reply| RoomActorCommand::SetEndpoint {
-                    room_id: rid.clone(),
-                    endpoint: endpoint.clone(),
-                    reply,
-                },
-                || async {
-                    self.set_endpoint_inline(state, &rid, endpoint.clone(), None)
-                        .await
-                        .map(|payload| payload.into_json())
-                },
-            )
+            .room_mailbox(&rid, |reply| RoomActorCommand::SetEndpoint {
+                room_id: rid.clone(),
+                endpoint: endpoint.clone(),
+                reply,
+            })
             .await;
         self.finish_command(
             state,
@@ -328,7 +288,7 @@ impl RoomCommandGateway {
         .into_untyped()
     }
 
-    pub(in crate::room_actor) async fn set_endpoint_inline(
+    pub(in crate::room_actor) async fn set_endpoint_in_actor(
         &self,
         state: &PlusServerState,
         room_id: &str,
@@ -340,7 +300,8 @@ impl RoomCommandGateway {
             Some(value) => Some(crate::server::normalize_phira_api_endpoint(&value)?),
             None => None,
         };
-        room.set_phira_api_endpoint_override(normalized.clone()).await;
+        room.set_phira_api_endpoint_override(normalized.clone())
+            .await;
         state.refresh_room_display_metadata_background(&room);
         let using_room_override = normalized.is_some();
         let effective = normalized
@@ -365,7 +326,6 @@ impl RoomCommandGateway {
             using_room_override,
         })
     }
-
 }
 
 #[cfg(test)]

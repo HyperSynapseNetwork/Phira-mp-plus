@@ -12,8 +12,9 @@
 
 - **有界连接接入** — TCP accept 与认证解耦，认证并发和在线会话由信号量预留，慢认证连接不会串行阻塞全局 accept
 - **WASM 插件边界** — 基于 wasmtime 组件模型（WIT ABI v2），逐插件 capability、fuel、线性内存/实例/表限制、有界事件队列与超时 quarantine 已接线
-- **可靠生命周期** — 插件事件和持久化使用有界队列；Flush/Shutdown 带确认；后台任务由 Supervisor 统一跟踪并在关闭时取消和等待
-- **房间命令网关** — 管理命令经 per-room mailbox 串行化；命令已入队但回复超时时不再内联重放副作用。Room 全状态 Actor 化仍在迁移中
+- **可靠生命周期** — 插件事件和持久化使用有界队列；Flush/Shutdown 带确认；数据库重试耗尽后写入本地 dead-letter；后台任务由 Supervisor 统一跟踪并在关闭时取消和等待
+- **严格命令入口** — Session 与 Room 管理命令只经 mailbox 执行；mailbox 缺失、关闭、拥塞或结果不确定时显式失败，不再切换到直接处理路径
+- **一致房间控制面** — host/lock/cycle/hidden/endpoint/容量等控制字段共享同一快照和 generation。成员、谱面与轮次的完整 Actor ownership 仍在迁移中
 - **慢消费者隔离** — 会话发送采用有界队列和非阻塞路径；网络读取与业务处理通过有界命令队列解耦
 - **PMP 内部接口** — 保留房间信息 HTTP、SSE、WebSocket 和插件动态路由，供 PPB/受控网络调用，不承担公共边缘安全职责
 - **jemalloc 分配器** — Linux 下使用 jemalloc 替代 musl malloc，降低长期运行中的 RSS 膨胀风险
@@ -83,7 +84,7 @@ cli_enabled: true
 # 如需使用，请看 docs/benchmark-real.md。
 ```
 
-架构加固的实现范围、剩余限制和验证边界见 [HARDENING_REPORT.md](HARDENING_REPORT.md)。
+架构加固的第一阶段范围见 [HARDENING_REPORT.md](HARDENING_REPORT.md)，第二阶段的严格 mailbox、持久化幂等与 dead-letter 修改见 [PHASE2_HARDENING_REPORT.md](PHASE2_HARDENING_REPORT.md)。
 
 配置加载规则：默认读取 `server_config.yml`，也可通过 `--config <FILE>` 指定；配置文件缺失时使用内置默认值，配置文件存在但格式、字段名或取值无效时拒绝启动。只有用户显式提供的命令行参数才覆盖 YAML，避免 CLI 默认值意外覆盖配置文件。完整说明见 [docs/configuration.md](docs/configuration.md)。
 
@@ -123,6 +124,7 @@ Phira-mp-plus/
 ├── data/                            # 运行时数据
 │   ├── extensions.json              #   插件扩展数据
 │   ├── rounds/                      #   轮次 Touches/Judges 记录
+│   ├── persistence-dead-letter.jsonl #   数据库重试耗尽后的失败事件保全
 │   └── plugins/                     #   插件私有数据
 ├── log/                             # 运行日志（每小时轮转）
 │
@@ -319,6 +321,10 @@ WASM 插件通过 `phira:host/api` 和 `phira:host/log` 等导入函数与宿主
 | `database_url` | String | — | PostgreSQL 统一持久化连接串 |
 | `persistence_retention_days` | u32 | 30 | PG 历史数据保留天数，0 为不清理 |
 | `touch_judge_retention_days` | u32? | 未设置 | Touches/Judges 高频遥测独立保留天数；未设置时遵循 `persistence_retention_days`，0 为不清理 |
+| `runtime_v2.persistence_dead_letter_path` | String? | `data/persistence-dead-letter.jsonl` | 数据库重试耗尽后的失败事件 JSONL；`null` 禁用，但不等同于 WAL |
+| `runtime_v2.telemetry_cutover_mode` | enum | `direct_only` | `direct_only`、`worker_preferred` 或显式前置校验后的 `worker_authoritative` |
+
+`worker_preferred` 会先执行直写：直写成功时 Worker 记录为迁移镜像；直写失败但 Worker 队列接受时，该批次由 Worker 作为权威补偿路径。Worker 入队只表示持久化管线已接收，不等同于 PostgreSQL commit；最终结果以 batcher/DB ACK、重试与 dead-letter 指标为准。
 | `admin_phira_ids` | Vec<i32> | [] | 游戏内管理员 ID，可使用 `_命令` 入口 |
 | `chat_enabled` | bool | `true` | 聊天功能开关 |
 | `cli_enabled` | bool | `true` | TUI/CLI 控制台开关 |

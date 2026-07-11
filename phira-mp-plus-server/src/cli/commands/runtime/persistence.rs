@@ -62,6 +62,13 @@ impl CliHandler {
             c::dim("│"),
             stats.production_telemetry_stage_failed
         ));
+        self.out(format!(
+            "  {} dead_letter: path={} written={} failed_or_disabled={}",
+            c::dim("│"),
+            stats.dead_letter_path.as_deref().unwrap_or("disabled"),
+            stats.dead_letter_written,
+            stats.dead_letter_failed
+        ));
         self.out(format!("  {} telemetry cutover", c::cyan("▸")));
         self.out(format!(
             "    observed_batches={} items={} worker_attempted={} worker_ok={} worker_failed={} enqueue_ok={}%% readiness={}",
@@ -74,11 +81,14 @@ impl CliHandler {
             stats.telemetry_cutover.readiness
         ));
         self.out(format!(
-            "    direct_attempted={} direct_written={} direct_skipped={} fallback_direct={} dry_run_ok={}%%",
+            "    direct_attempted={} direct_written={} direct_failed={} direct_skipped={} fallback_direct={} worker_canonical_fallback={} unaccepted={} dry_run_ok={}%%",
             stats.telemetry_cutover.direct_attempted_batches,
             stats.telemetry_cutover.direct_written_batches,
+            stats.telemetry_cutover.direct_failed_batches,
             stats.telemetry_cutover.direct_skipped_batches,
             stats.telemetry_cutover.fallback_direct_batches,
+            stats.telemetry_cutover.worker_canonical_fallback_batches,
+            stats.telemetry_cutover.unaccepted_batches,
             stats.telemetry_cutover.worker_dry_run_success_ratio_percent
         ));
         self.out(format!(
@@ -185,14 +195,14 @@ impl CliHandler {
                 ));
             }
         }
-        self.out(format!("  {} 低频生产事件已 EventBus → Worker → mp_events 双写；现有 db.rs 直接写入路径仍保持不变", c::dim("▸")));
+        self.out(format!("  {} 低频生产事件由 PersistenceWorker 写入；数据库重试耗尽后写入本地 JSONL dead-letter，不再静默丢弃", c::dim("▸")));
         self.out(format!("  {} 生产 Touch/Judge cutover={}；EventBus 只保留计数观测，完整 payload 走 Session → Worker", c::dim("▸"), stats.telemetry_cutover_mode));
         self.out(format!(
             "  {} Touch/Judge 持久化不依赖 active monitor；active monitor 只控制实时 monitor 广播",
             c::dim("▸")
         ));
-        self.out(format!("  {} BenchmarkReport 已通过 benchmark.completed → PersistenceWorker → mp_runtime_benchmark_reports 镜像，供 CLI/Web 只读历史查询", c::dim("▸")));
-        self.out(format!("  {} Step 54 infra: PersistenceWorker 已拆为 message/stats/mirror/pipeline/worker，backpressure 为观测信号，不是粗暴限流", c::dim("▸")));
-        self.out(format!("  {} Step 56 infra: TelemetryBatcher 与 Persistence pipeline 已走 async DB ack，延迟观测更接近真实 SQL 完成耗时", c::dim("▸")));
+        self.out(format!("  {} BenchmarkReport 通过 PersistenceWorker 幂等写入 mp_runtime_benchmark_reports，供 CLI/PPB 内部查询读取", c::dim("▸")));
+        self.out(format!("  {} PersistenceWorker 对普通事件施加有界背压；数据库重试耗尽后进入 dead-letter，dead-letter 再失败会触发 degraded", c::dim("▸")));
+        self.out(format!("  {} TelemetryBatcher 的 Flush/Shutdown 返回真实数据库结果；worker_authoritative 仅在前置条件满足时允许启用", c::dim("▸")));
     }
 }

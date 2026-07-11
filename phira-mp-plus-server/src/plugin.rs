@@ -12,9 +12,7 @@ use std::collections::HashSet;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, RwLock as StdRwLock};
-use tokio::sync::{
-    mpsc, oneshot, Mutex as AsyncMutex, RwLock,
-};
+use tokio::sync::{mpsc, oneshot, Mutex as AsyncMutex, RwLock};
 use tracing::{info, warn};
 
 pub use api::{HttpHandle, JudgeEventItem, PluginEvent, PluginInfo, TouchEventPoint};
@@ -212,9 +210,8 @@ impl PluginSlotInner {
             .clone();
         if self.is_quarantined() {
             meta.enabled = false;
-            meta.state = PluginState::Error(
-                "quarantined after a timed-out in-process call".to_string(),
-            );
+            meta.state =
+                PluginState::Error("quarantined after a timed-out in-process call".to_string());
         }
         meta
     }
@@ -337,7 +334,6 @@ pub mod wasm {
     }
 }
 
-
 enum PluginDispatchMessage {
     Event(PluginEvent),
     Flush(oneshot::Sender<()>),
@@ -415,7 +411,7 @@ impl PluginManager {
             return;
         };
         let manager = Arc::clone(self);
-        crate::supervisor_actor::spawn_named("plugin-event-dispatcher", async move {
+        crate::supervisor_actor::spawn_critical("plugin-event-dispatcher", async move {
             while let Some(message) = rx.recv().await {
                 match message {
                     PluginDispatchMessage::Event(event) => {
@@ -444,10 +440,17 @@ impl PluginManager {
         }
         let _send_guard = self.event_send_gate.lock().await;
         if self.dispatcher_closed.load(Ordering::Acquire) {
-            warn!(kind = event.kind(), "plugin event rejected after dispatcher shutdown");
+            warn!(
+                kind = event.kind(),
+                "plugin event rejected after dispatcher shutdown"
+            );
             return;
         }
-        if let Err(error) = self.event_tx.send(PluginDispatchMessage::Event(event)).await {
+        if let Err(error) = self
+            .event_tx
+            .send(PluginDispatchMessage::Event(event))
+            .await
+        {
             if let PluginDispatchMessage::Event(event) = error.0 {
                 warn!(kind = event.kind(), "plugin event dispatcher is closed");
             }
@@ -552,7 +555,10 @@ impl PluginManager {
         let _ = query;
     }
 
-    pub async fn set_send_chat(&self, #[allow(unused_variables)] callback: Arc<dyn Fn(i32, String) + Send + Sync>) {
+    pub async fn set_send_chat(
+        &self,
+        #[allow(unused_variables)] callback: Arc<dyn Fn(i32, String) + Send + Sync>,
+    ) {
         #[cfg(feature = "plugin-system")]
         {
             *self
@@ -626,12 +632,11 @@ impl PluginManager {
                 .ok_or_else(|| "plugin filename is not UTF-8".to_string())?
                 .to_string();
             let capabilities = crate::wasm_host_helpers::load_manifest_capabilities(
-                path.to_str().ok_or_else(|| "plugin path is not UTF-8".to_string())?,
+                path.to_str()
+                    .ok_or_else(|| "plugin path is not UTF-8".to_string())?,
             )?;
-            self.wasm_services.set_capabilities(
-                &stable_id,
-                capabilities.into_iter().collect(),
-            );
+            self.wasm_services
+                .set_capabilities(&stable_id, capabilities.into_iter().collect());
             let info = PluginInfo {
                 name: stable_id.clone(),
                 version: "0.1.0".to_string(),
@@ -645,7 +650,8 @@ impl PluginManager {
                 Arc::clone(&self.wasm_services),
                 self.runtime.clone(),
             ));
-            let init_timeout = std::time::Duration::from_millis(self.runtime.call_timeout_ms.max(1));
+            let init_timeout =
+                std::time::Duration::from_millis(self.runtime.call_timeout_ms.max(1));
             let plugin = match tokio::time::timeout(
                 init_timeout,
                 tokio::task::spawn_blocking(move || {
@@ -666,7 +672,10 @@ impl PluginManager {
                 }
                 Err(_) => {
                     self.wasm_services.remove_capabilities(&stable_id);
-                    return Err(format!("plugin init exceeded {} ms", self.runtime.call_timeout_ms));
+                    return Err(format!(
+                        "plugin init exceeded {} ms",
+                        self.runtime.call_timeout_ms
+                    ));
                 }
             };
             let meta = plugin.meta().clone();
@@ -686,8 +695,7 @@ impl PluginManager {
             }
 
             let slot = PluginSlotInner::new(plugin);
-            self.wasm_services
-                .register_plugin_runtime(&stable_id);
+            self.wasm_services.register_plugin_runtime(&stable_id);
             self.plugins.write().await.push(slot);
             Ok(meta)
         }
@@ -766,7 +774,10 @@ impl PluginManager {
         while !tasks.is_empty() {
             let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
             if remaining.is_zero() {
-                warn!(timeout_ms = self.runtime.call_timeout_ms, "plugin event deadline exceeded");
+                warn!(
+                    timeout_ms = self.runtime.call_timeout_ms,
+                    "plugin event deadline exceeded"
+                );
                 for slot in &slots {
                     if slot.executing.load(Ordering::Acquire) {
                         slot.quarantine();
@@ -782,7 +793,10 @@ impl PluginManager {
                 Ok(Some(Err(error))) => warn!(%error, "plugin event task failed"),
                 Ok(None) => break,
                 Err(_) => {
-                    warn!(timeout_ms = self.runtime.call_timeout_ms, "plugin event deadline exceeded");
+                    warn!(
+                        timeout_ms = self.runtime.call_timeout_ms,
+                        "plugin event deadline exceeded"
+                    );
                     for slot in &slots {
                         if slot.executing.load(Ordering::Acquire) {
                             slot.quarantine();
@@ -858,10 +872,9 @@ impl PluginManager {
             if !slot.matches(id) {
                 continue;
             }
-            let mut plugin = slot
-                .host
-                .try_lock()
-                .map_err(|_| format!("plugin '{id}' is busy; retry after the current call exits"))?;
+            let mut plugin = slot.host.try_lock().map_err(|_| {
+                format!("plugin '{id}' is busy; retry after the current call exits")
+            })?;
             if enabled {
                 slot.clear_quarantine();
             }
@@ -941,8 +954,9 @@ impl PluginManager {
                     .map_err(|e| format!("remove plugin '{}': {e}", plugin_path.display()))?;
             }
             if sidecar.exists() {
-                std::fs::remove_file(&sidecar)
-                    .map_err(|e| format!("remove capability sidecar '{}': {e}", sidecar.display()))?;
+                std::fs::remove_file(&sidecar).map_err(|e| {
+                    format!("remove capability sidecar '{}': {e}", sidecar.display())
+                })?;
             }
             if data_dir.exists() {
                 std::fs::remove_dir_all(&data_dir)
@@ -970,7 +984,9 @@ impl PluginManager {
                 slot.quarantine();
                 match slot.host.try_lock() {
                     Ok(mut plugin) => plugin.cleanup(),
-                    Err(_) => warn!("plugin cleanup skipped because an in-process call is still running"),
+                    Err(_) => {
+                        warn!("plugin cleanup skipped because an in-process call is still running")
+                    }
                 }
             }
         })

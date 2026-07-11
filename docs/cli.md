@@ -802,13 +802,13 @@ help groups
 
 ---
 
-### `runtime cutover [direct_only|worker_preferred]`
+### `runtime cutover [direct_only|worker_preferred|worker_authoritative]`
 
 查看或切换 Touch/Judge 持久化 Cutover 模式。
 
 | 参数 | 类型 | 说明 |
 |------|------|------|
-| `mode` | `str` (可选) | `direct_only` 仅直写, `worker_preferred` 优先走 worker |
+| `mode` | `str` (可选) | `direct_only` 仅直写；`worker_preferred` 优先直写，直写成功后 Worker 为镜像，直写失败时 Worker 可接管该批次；`worker_authoritative` 由 Worker 正常运行时单写，启用前强制检查数据库与 batcher |
 
 **输出:** 当前 cutover 模式和说明
 
@@ -818,7 +818,7 @@ help groups
 
 查看持久化 Worker 和遥测批处理器统计。
 
-**输出:** Worker 队列状态、pending 数、mirror/skip 计数、lag 计数器、per-kind 队列数、最近 trace 条目
+**输出:** Worker 队列与 pending、数据库确认/失败、dead-letter 路径与成功/失败计数、遥测 cutover、`direct_failed`、`worker_canonical_fallback`、`unaccepted`、batcher 批次与延迟、per-kind 统计和最近 trace 条目。`worker_enqueued/path_accepted` 仅表示管线接收，不表示 PostgreSQL 已 commit。
 
 ---
 
@@ -858,7 +858,7 @@ help groups
 
 查看房间命令通道与 Actor 迁移状态。仅 developer。
 
-**输出:** 房间命令路由统计（mailbox hits/misses/fallbacks、每个房间的通道数）
+**输出:** 房间 mailbox 命中/缺失/关闭/拥塞/不确定结果统计和已注册房间通道；fallback 字段仅为旧诊断结构兼容，不代表仍存在 inline 执行路径
 
 ---
 

@@ -2,8 +2,8 @@
 //!
 //! | Actor | 当前边界 |
 //! |-------|----------|
-//! | Session Actor | 每连接独立有界邮箱；已入队命令结果未知时拒绝重放；协议快路径仍直接处理 |
-//! | Room Actor | 每房间有界邮箱串行化 9 个管理命令；完整房间状态仍由 `Room` 的锁/原子字段持有 |
+//! | Session Actor | 每连接独立有界邮箱；缺失/关闭/超时均关闭连接，不再切换到直接执行；协议快路径仍直接处理 |
+//! | Room Actor | 每房间有界邮箱串行化 9 个管理命令；控制面已收敛到一致性锁，成员/谱面/轮次仍未完全 Actor-owned |
 //! | Persistence Actor | 有界背压、有限重试、确认式 flush/shutdown；无本地 WAL，崩溃级零丢失未承诺 |
 //! | Supervisor Actor | 跟踪、观测、取消并等待具名后台任务；不对任意任务自动重启 |
 //! | Simulation Actor | 查询与报告已接入；控制面仍未完全事件化 |
@@ -111,14 +111,14 @@ fn default_boundaries() -> Vec<ActorBoundary> {
             responsibility: "Serialize one authenticated connection's ordered business commands while keeping protocol liveness paths separate.".to_string(),
             source_files: vec!["session.rs".to_string(), "session_dispatch.rs".to_string(), "session_auth.rs".to_string(), "session_room.rs".to_string(), "session_telemetry.rs".to_string(), "session_actor.rs".to_string()],
             status: ActorBoundaryStatus::WriteRouted,
-            next_step: "Remove direct fallback once mailbox initialization is guaranteed by construction; retain Ping/auth/telemetry fast paths only where ordering contracts are documented and tested.".to_string(),
+            next_step: "Mailbox fallback is removed. Retain Ping/auth/telemetry fast paths only where ordering contracts are documented and add reconnect/failure-injection tests for mailbox loss.".to_string(),
         },
         ActorBoundary {
             name: "room-actor".to_string(),
             responsibility: "Serialize room management transitions and ultimately own membership, host, chart, round and lifecycle state.".to_string(),
             source_files: vec!["room.rs".to_string(), "room_actor/".to_string()],
             status: ActorBoundaryStatus::WriteRouted,
-            next_step: "Nine management commands are mailbox-routed without uncertain replay. The structural next step is one actor-owned RoomState and removal of cross-field RwLock/Atomic snapshots.".to_string(),
+            next_step: "Nine management commands are mailbox-only and control fields share one generation-stamped snapshot. The structural next step is to move membership, chart, current round and lifecycle transitions into one actor-owned RoomState.".to_string(),
         },
         ActorBoundary {
             name: "persistence-actor".to_string(),

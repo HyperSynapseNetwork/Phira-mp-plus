@@ -24,24 +24,32 @@
 
 ## 未能执行的验证
 
-当前执行环境没有 Rust/Cargo 工具链，且无法解析 Rust 官方下载域名，因此没有执行：
+本环境已从可用镜像组装 Rust 1.88 的 `rustc`、`cargo`、`rustfmt` 和 `clippy`。相对上传基线发生变化的 Rust 文件已逐一通过：
 
 ```bash
-cargo fmt --check
-cargo check --workspace --all-targets
-cargo test --workspace
-cargo clippy --workspace --all-targets -- -D warnings
+rustfmt --edition 2021 --check <changed-files>
 ```
 
-分隔符扫描只能发现词法/结构类错误，不能替代 Rust 编译器的名称解析、trait 约束、借用检查、条件编译和依赖 API 校验。因此交付状态是“代码已修改并完成静态审阅”，不是“已证明编译与测试全部通过”。
+同时成功执行 `cargo metadata --locked --no-deps --offline`。真实命令：
+
+```bash
+cargo check --locked --workspace --all-targets
+```
+
+已经启动，但因环境无法解析 `index.crates.io`、且本地没有完整依赖缓存，在线模式在获取 `anyhow` 前因 `index.crates.io` DNS 失败而终止；离线模式则明确报告本地缺少 `axum`。因此尚未获得 Rust 名称解析、trait、借用检查、条件编译和依赖 API 层的通过证明，也未实际执行 workspace tests 或 Clippy。
+
+全仓 `cargo fmt --check` 还会命中上传基线已有的大量格式债。为避免本轮架构补丁产生大面积无关格式 diff，CI 当前对**本次变化的 Rust 文件**执行 rustfmt 门禁；全仓格式债应以独立提交清理。
 
 ## 合并前必须执行的 CI 门禁
 
 ```bash
-cargo fmt --check
-cargo check --workspace --all-targets
-cargo test --workspace
-cargo clippy --workspace --all-targets -- -D warnings
+scripts/check-changed-rustfmt.sh
+cargo check --locked --workspace --all-targets
+cargo check --locked -p phira-mp-plus-server --no-default-features
+cargo check --locked -p phira-mp-plus-server --no-default-features --features postgres
+cargo check --locked -p phira-mp-plus-server --no-default-features --features wit-bindgen
+cargo test --locked --workspace
+cargo clippy --locked --workspace --all-targets
 cargo audit
 ```
 
@@ -50,3 +58,36 @@ cargo audit
 ## 结论边界
 
 本轮消除了此前审计中最直接的拒绝服务、重复副作用、权限绕过、静默队列丢弃和假监督路径。但在 Rust 编译与动态回归通过前，不应标记为“生产验证完成”；Room 全状态 Actor 化、崩溃一致性 WAL 和不可信插件进程级隔离仍是结构性后续工作。
+
+
+## 第二阶段静态验证补充
+
+本阶段再次解析 8 个 Cargo TOML、示例 YAML 和 JSON，并对 126 个 Rust 文件执行注释/字符串/raw-string/字符字面量/生命周期感知的分隔符扫描。另对建表语句与 INSERT/UPDATE 字段进行静态交叉检查；动态 `{field}` 遥测更新语句除外。
+
+静态检查发现并修复了额外数据库契约问题、配置测试标注错误、无数据库 RoundStore fallback 和在线时长单位错误。由于 crates.io 依赖解析仍受阻，以上结果不能替代 Rust 类型系统、SQLx 运行时和真实 PostgreSQL 迁移验证。
+
+
+### 第二阶段新增契约检查
+
+- Session/Room 有序业务路径中不存在可执行的 direct/inline fallback；旧 fallback 字段只保留为诊断结构兼容。
+- `worker_authoritative` 的配置校验、运行时切换校验和 PostgreSQL 初始化失败路径保持一致，不允许静默降级。
+- Touch/Judge、普通事件、Simulation 与 Benchmark 的重试使用稳定幂等键；相关表具有对应唯一索引。
+- PostgreSQL 建表字段与静态 INSERT/UPDATE 字段进行了交叉扫描；唯一剩余报警来自运行时受控的动态遥测字段名，不是表字段缺失。
+- dead-letter 负载覆盖所有数据型 `PersistenceEvent`，Flush/Shutdown 控制标记明确不进入 dead-letter。
+- Supervisor 在自身命令通道已关闭时仍通过进程级关键失败计数保留 degraded 信号。
+
+- Room mailbox/snapshot cleanup is UUID-generation guarded; stale Room Actor cleanup cannot remove a replacement room generation.
+- Supervisor cleanup is generation guarded so a completed old supervisor cannot clear a newly initialized process handle.
+
+- Room Actor snapshots carry `room_uuid`; orphaned/replaced actors perform bounded lifecycle revalidation before cleanup.
+
+## Tree-sitter syntax comparison
+
+All 126 Rust files were parsed with `tree-sitter-rust`. The modified tree produced the same 11 parser-compatibility nodes as the uploaded baseline (`&raw` syntax and project macro `~` tokens) and introduced no new `ERROR` or missing nodes. This is stronger than delimiter scanning but still does not perform Rust name/type/borrow checking.
+
+- GitHub Actions YAML for Build and Release was parsed structurally after the quality-gate rewrite.
+- Workspace package versions and both corresponding Cargo.lock entries are checked by `scripts/sync-workspace-version.py --check`; the stale `0.4.0` lock entries were corrected to `0.4.169`.
+
+## Local Rust toolchain validation
+
+A Rust 1.88 toolchain (`rustc`, `cargo`, `rustfmt`, `clippy`) was assembled locally. All 42 Rust files changed relative to the uploaded baseline were formatted and passed direct `rustfmt --edition 2021 --check`. A real `cargo check --locked --workspace --all-targets` was started but dependency resolution could not proceed because this environment cannot resolve `index.crates.io`; therefore name/type/borrow checks and tests remain delegated to the mandatory CI quality gate.

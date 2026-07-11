@@ -61,11 +61,15 @@ persistence_retention_days: 30
 # ---- Runtime v2 内部策略 ----
 
 # Runtime v2 不再继续膨胀管理命令；核心开关尽量放在配置里。
-# telemetry_cutover_mode 可选：direct_only / worker_preferred。
-# 开发阶段推荐 direct_only；生产稳定后建议 worker_preferred。
+# telemetry_cutover_mode 可选：direct_only / worker_preferred / worker_authoritative。
+# 默认使用 direct_only；先通过 worker_preferred 验证队列和数据库，再显式切换 worker_authoritative。
+# worker_preferred 直写成功时 Worker 是镜像；直写失败但 Worker 接收时由 Worker 补偿该批次。
 # runtime_v2:
 #   persistence_queue_capacity: 4096
-#   telemetry_cutover_mode: direct_only  # direct_only (safe) | worker_preferred (direct + mirror)
+#   # 数据库重试耗尽后的失败事件保全。设为 null 可禁用；禁用后若数据库最终失败，Supervisor 会进入 degraded。
+#   # 这不是 enqueue-before WAL，不能保证 kill -9/断电零丢失。
+#   persistence_dead_letter_path: data/persistence-dead-letter.jsonl
+#   telemetry_cutover_mode: direct_only  # direct_only | worker_preferred (direct first; Worker mirror or canonical compensation) | worker_authoritative (Worker normal-operation single writer)
 #   telemetry_batcher:
 #     enabled: true
 #     dry_run: false

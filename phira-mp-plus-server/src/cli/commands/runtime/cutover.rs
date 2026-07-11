@@ -7,24 +7,37 @@ impl CliHandler {
         if let Some(raw_mode) = args.get(1) {
             match crate::telemetry_batcher::TelemetryCutoverMode::parse(raw_mode) {
                 Some(mode) => {
-                    let mode = self
+                    match self
                         .state
                         .persistence_worker
                         .set_telemetry_cutover_mode(mode)
-                        .await;
-                    self.out(format!(
-                        "  {} telemetry cutover mode set to {}",
-                        c::green("✓"),
-                        c::bold(mode.as_str())
-                    ));
-                    self.out(format!("  {} {}", c::dim("▸"), mode.description()));
-                    let decision = mode.cutover_decision();
-                    self.out(format!(
-                        "  {} decision: enqueue_worker={} direct_before_result={}",
-                        c::dim("▸"),
-                        decision.enqueue_worker,
-                        decision.write_direct_before_worker_result,
-                    ));
+                        .await
+                    {
+                        Ok(mode) => {
+                            self.out(format!(
+                                "  {} telemetry cutover mode set to {}",
+                                c::green("✓"),
+                                c::bold(mode.as_str())
+                            ));
+                            self.out(format!("  {} {}", c::dim("▸"), mode.description()));
+                            let decision = mode.cutover_decision();
+                            self.out(format!(
+                                "  {} decision: enqueue_worker={} direct_before_result={} fallback_on_reject={}",
+                                c::dim("▸"),
+                                decision.enqueue_worker,
+                                decision.write_direct_before_worker_result,
+                                decision.fallback_direct_when_worker_rejects,
+                            ));
+                        }
+                        Err(error) => {
+                            self.out(format!(
+                                "  {} cannot enable {}: {}",
+                                c::red("✗"),
+                                c::yellow(mode.as_str()),
+                                error
+                            ));
+                        }
+                    }
                 }
                 None => {
                     self.out(format!(
@@ -72,6 +85,7 @@ impl CliHandler {
             }
             self.out(format!("  {} examples", c::cyan("▸")));
             self.out("    runtime cutover worker_preferred".to_string());
+            self.out("    runtime cutover worker_authoritative".to_string());
             self.out("    runtime cutover direct_only".to_string());
         }
     }

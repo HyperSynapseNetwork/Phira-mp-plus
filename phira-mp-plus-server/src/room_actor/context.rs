@@ -19,9 +19,13 @@ pub(super) struct RoomCommandContext<'a> {
 }
 
 impl<'a> RoomCommandContext<'a> {
-#[allow(dead_code)]
-pub(super) fn new(gateway: &'a RoomCommandGateway, state: &'a PlusServerState) -> Self {
-        Self { gateway, state, room: None }
+    #[allow(dead_code)]
+    pub(super) fn new(gateway: &'a RoomCommandGateway, state: &'a PlusServerState) -> Self {
+        Self {
+            gateway,
+            state,
+            room: None,
+        }
     }
 
     /// Create a context with a room reference (used by per-room mailbox).
@@ -30,6 +34,10 @@ pub(super) fn new(gateway: &'a RoomCommandGateway, state: &'a PlusServerState) -
         state: &'a PlusServerState,
         room: Arc<crate::room::Room>,
     ) -> Self {
-        Self { gateway, state, room: Some(room) }
+        Self {
+            gateway,
+            state,
+            room: Some(room),
+        }
     }
 }

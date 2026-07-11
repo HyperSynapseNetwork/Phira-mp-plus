@@ -166,10 +166,7 @@ pub fn send_welcome(user_id: i32, user_name: &str, online: usize, state: &PlusSe
                             .into_iter()
                             .map(|(id, room)| {
                                 let host_name = room
-                                    .host
-                                    .try_read()
-                                    .ok()
-                                    .and_then(|h| h.upgrade())
+                                    .host_user_sync()
                                     .map(|u| room.display_name_sync(&u))
                                     .unwrap_or_default();
                                 let players =
@@ -280,10 +277,8 @@ pub fn send_welcome(user_id: i32, user_name: &str, online: usize, state: &PlusSe
                     if let Ok(handle) = tokio::runtime::Handle::try_current() {
                         handle.spawn(async move {
                             for content in texts {
-                                let cmd = ServerCommand::Message(Message::Chat {
-                                    user: 0,
-                                    content,
-                                });
+                                let cmd =
+                                    ServerCommand::Message(Message::Chat { user: 0, content });
                                 let _ = session.stream.send(cmd).await;
                             }
                         });

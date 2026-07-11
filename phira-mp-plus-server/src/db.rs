@@ -28,6 +28,8 @@ pub struct PlaytimeRow {
 
 #[derive(Debug, Clone)]
 pub struct RuntimeTelemetryBatchRecord {
+    /// Stable idempotency key for one accepted telemetry event.
+    pub event_id: String,
     pub batch_uuid: String,
     pub run_id: Option<String>,
     pub scope: String,
@@ -125,14 +127,15 @@ impl DbManager {
         false
     }
 
-
     pub async fn cleanup_expired(&self, retention_days: u32, touch_judge_retention_days: u32) {
         #[cfg(feature = "postgres")]
         if let Self::Pg(pool) = self {
-            let now = || std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_millis() as i64)
-                .unwrap_or(0);
+            let now = || {
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_millis() as i64)
+                    .unwrap_or(0)
+            };
             if retention_days > 0 {
                 let cutoff = now().saturating_sub(retention_days as i64 * 86_400_000);
                 for sql in [
@@ -166,12 +169,12 @@ impl DbManager {
             }
         }
     }
-
 }
 
 #[cfg(feature = "postgres")]
 pub(crate) async fn append_event_pg(
     pool: &sqlx::PgPool,
+    event_id: Option<&str>,
     kind: &str,
     room_id: Option<&str>,
     user_id: Option<i32>,
@@ -179,9 +182,11 @@ pub(crate) async fn append_event_pg(
 ) -> Result<()> {
     let payload = payload.to_string();
     sqlx::query(
-        "INSERT INTO mp_events (kind, room_id, user_id, payload, created_at)
-         VALUES ($1, $2, $3, $4::jsonb, $5)",
+        "INSERT INTO mp_events (event_id, kind, room_id, user_id, payload, created_at)
+         VALUES ($1, $2, $3, $4, $5::jsonb, $6)
+         ON CONFLICT (event_id) WHERE event_id IS NOT NULL DO NOTHING",
     )
+    .bind(event_id)
     .bind(kind)
     .bind(room_id)
     .bind(user_id)
@@ -230,6 +235,7 @@ async fn init_tables(pool: &sqlx::PgPool) -> Result<()> {
             user_id INTEGER PRIMARY KEY,
             name TEXT NOT NULL,
             language TEXT NOT NULL DEFAULT '',
+            ip TEXT,
             first_seen_at BIGINT NOT NULL,
             last_seen_at BIGINT NOT NULL,
             last_connected_at BIGINT,
@@ -256,6 +262,7 @@ async fn init_tables(pool: &sqlx::PgPool) -> Result<()> {
     sqlx::query(
         "CREATE TABLE IF NOT EXISTS mp_events (
             sequence BIGINT PRIMARY KEY DEFAULT nextval('mp_persist_sequence'),
+            event_id TEXT,
             kind TEXT NOT NULL,
             room_id TEXT,
             user_id INTEGER,
@@ -340,6 +347,7 @@ async fn init_tables(pool: &sqlx::PgPool) -> Result<()> {
             judges JSONB NOT NULL DEFAULT '[]'::jsonb,
             created_at BIGINT NOT NULL,
             updated_at BIGINT NOT NULL,
+            sequence BIGINT NOT NULL DEFAULT nextval('mp_persist_sequence'),
             PRIMARY KEY (round_uuid, player_id)
         )",
     )
@@ -366,6 +374,7 @@ async fn init_tables(pool: &sqlx::PgPool) -> Result<()> {
     sqlx::query(
         "CREATE TABLE IF NOT EXISTS mp_runtime_telemetry_batches (
             sequence BIGINT PRIMARY KEY DEFAULT nextval('mp_persist_sequence'),
+            event_id TEXT UNIQUE,
             batch_uuid TEXT NOT NULL,
             run_id TEXT,
             scope TEXT NOT NULL DEFAULT 'production',
@@ -379,9 +388,9 @@ async fn init_tables(pool: &sqlx::PgPool) -> Result<()> {
             created_at BIGINT NOT NULL,
             source TEXT NOT NULL DEFAULT 'telemetry_batcher',
             -- Historical column, kept for backward-compatible reads.
-            -- Current telemetry modes: direct_only, worker_preferred.
+            -- Current telemetry modes: direct_only, worker_preferred, worker_authoritative.
             dual_write BOOLEAN NOT NULL DEFAULT TRUE,
-            schema_version INTEGER NOT NULL DEFAULT 2,
+            schema_version INTEGER NOT NULL DEFAULT 3,
             flush_reason TEXT NOT NULL DEFAULT 'unknown'
         )",
     )
@@ -391,6 +400,7 @@ async fn init_tables(pool: &sqlx::PgPool) -> Result<()> {
     sqlx::query(
         "CREATE TABLE IF NOT EXISTS mp_runtime_telemetry_items (
             sequence BIGINT PRIMARY KEY DEFAULT nextval('mp_persist_sequence'),
+            event_id TEXT,
             batch_uuid TEXT NOT NULL,
             ordinal INTEGER NOT NULL,
             kind TEXT NOT NULL,
@@ -399,7 +409,7 @@ async fn init_tables(pool: &sqlx::PgPool) -> Result<()> {
             player_id INTEGER NOT NULL,
             payload JSONB NOT NULL,
             created_at BIGINT NOT NULL,
-            schema_version INTEGER NOT NULL DEFAULT 2
+            schema_version INTEGER NOT NULL DEFAULT 3
         )",
     )
     .execute(pool)
@@ -429,6 +439,7 @@ async fn init_tables(pool: &sqlx::PgPool) -> Result<()> {
     sqlx::query(
         "CREATE TABLE IF NOT EXISTS mp_runtime_benchmark_reports (
             sequence BIGINT PRIMARY KEY DEFAULT nextval('mp_persist_sequence'),
+            report_id TEXT,
             mode TEXT NOT NULL,
             title TEXT NOT NULL,
             duration_secs BIGINT NOT NULL,
@@ -454,6 +465,7 @@ async fn init_tables(pool: &sqlx::PgPool) -> Result<()> {
     sqlx::query(
         "CREATE TABLE IF NOT EXISTS mp_sim_events (
             sequence BIGINT PRIMARY KEY DEFAULT nextval('mp_persist_sequence'),
+            event_id TEXT,
             run_id TEXT,
             kind TEXT NOT NULL,
             payload JSONB NOT NULL,
@@ -474,11 +486,22 @@ async fn init_tables(pool: &sqlx::PgPool) -> Result<()> {
     .await?;
 
     for alter in [
+        "ALTER TABLE mp_users ADD COLUMN IF NOT EXISTS ip TEXT",
+        "ALTER TABLE mp_events ADD COLUMN IF NOT EXISTS event_id TEXT",
+        "ALTER TABLE mp_sim_events ADD COLUMN IF NOT EXISTS event_id TEXT",
+        "ALTER TABLE mp_round_player_data ADD COLUMN IF NOT EXISTS sequence BIGINT NOT NULL DEFAULT nextval('mp_persist_sequence')",
+        "ALTER TABLE mp_runtime_telemetry_batches ADD COLUMN IF NOT EXISTS event_id TEXT",
+        "ALTER TABLE mp_runtime_benchmark_reports ADD COLUMN IF NOT EXISTS report_id TEXT",
+        "ALTER TABLE mp_runtime_telemetry_batches ADD COLUMN IF NOT EXISTS dual_write BOOLEAN NOT NULL DEFAULT TRUE",
+        "ALTER TABLE mp_runtime_telemetry_batches ADD COLUMN IF NOT EXISTS source TEXT NOT NULL DEFAULT 'telemetry_batcher'",
+        "ALTER TABLE mp_runtime_telemetry_items ADD COLUMN IF NOT EXISTS event_id TEXT",
         "ALTER TABLE mp_runtime_telemetry_batches ADD COLUMN IF NOT EXISTS batch_uuid TEXT",
         "ALTER TABLE mp_runtime_telemetry_batches ADD COLUMN IF NOT EXISTS run_id TEXT",
         "ALTER TABLE mp_runtime_telemetry_batches ADD COLUMN IF NOT EXISTS scope TEXT NOT NULL DEFAULT 'production'",
         "ALTER TABLE mp_runtime_telemetry_batches ADD COLUMN IF NOT EXISTS pipeline TEXT NOT NULL DEFAULT 'runtime_v2.telemetry_batcher'",
-        "ALTER TABLE mp_runtime_telemetry_batches ADD COLUMN IF NOT EXISTS schema_version INTEGER NOT NULL DEFAULT 2",
+        "ALTER TABLE mp_runtime_telemetry_batches ADD COLUMN IF NOT EXISTS schema_version INTEGER NOT NULL DEFAULT 3",
+        "ALTER TABLE mp_runtime_telemetry_batches ALTER COLUMN schema_version SET DEFAULT 3",
+        "ALTER TABLE mp_runtime_telemetry_items ALTER COLUMN schema_version SET DEFAULT 3",
         "ALTER TABLE mp_runtime_telemetry_batches ADD COLUMN IF NOT EXISTS flush_reason TEXT NOT NULL DEFAULT 'unknown'",
     ] {
         sqlx::query(alter).execute(pool).await?;
@@ -491,12 +514,12 @@ async fn init_tables(pool: &sqlx::PgPool) -> Result<()> {
          ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = EXCLUDED.updated_at"
     )
     .bind(serde_json::json!({
-        "schema_version": 2,
+        "schema_version": 3,
         "batch_table": "mp_runtime_telemetry_batches",
         "item_table": "mp_runtime_telemetry_items",
         "mode": "direct_only",
-        "available_modes": ["direct_only", "worker_preferred"],
-        "notes": "Runtime v2 telemetry schema normalizes batch headers and raw telemetry items. Modes: direct_only, worker_preferred."
+        "available_modes": ["direct_only", "worker_preferred", "worker_authoritative"],
+        "notes": "Runtime v2 telemetry schema normalizes batch headers and raw telemetry items. Modes: direct_only, worker_preferred, worker_authoritative."
     }))
     .bind(now)
     .execute(pool)
@@ -509,8 +532,8 @@ async fn init_tables(pool: &sqlx::PgPool) -> Result<()> {
     )
     .bind(serde_json::json!({
         "mode": "direct_only",
-        "description": "direct RoundStore/db.rs only (safe default). WorkerPreferred = direct + worker mirror.",
-        "available_modes": ["direct_only", "worker_preferred"],
+        "description": "direct RoundStore/db.rs only (safe default). WorkerPreferred = direct first; Worker mirror after direct ACK or canonical compensation after direct failure.",
+        "available_modes": ["direct_only", "worker_preferred", "worker_authoritative"],
         "updated_by": "runtime_v2.bootstrap"
     }))
     .bind(now)
@@ -551,6 +574,23 @@ async fn init_tables(pool: &sqlx::PgPool) -> Result<()> {
         .await?;
     }
 
+    // Older versions allowed duplicate room-history rows. Normalize them
+    // before adding natural-key indexes used by retry-safe transactional writes.
+    for cleanup in [
+        "DELETE FROM room_history newer USING room_history older
+         WHERE newer.id > older.id
+           AND newer.user_id = older.user_id
+           AND newer.room_uuid = older.room_uuid
+           AND newer.joined_at = older.joined_at",
+        "DELETE FROM mp_user_room_history newer USING mp_user_room_history older
+         WHERE newer.id > older.id
+           AND newer.user_id = older.user_id
+           AND newer.room_uuid = older.room_uuid
+           AND newer.joined_at = older.joined_at",
+    ] {
+        sqlx::query(cleanup).execute(pool).await?;
+    }
+
     for index in [
         "CREATE INDEX IF NOT EXISTS idx_mp_events_created ON mp_events(created_at)",
         "CREATE INDEX IF NOT EXISTS idx_mp_events_kind ON mp_events(kind)",
@@ -562,6 +602,10 @@ async fn init_tables(pool: &sqlx::PgPool) -> Result<()> {
         "CREATE INDEX IF NOT EXISTS idx_mp_judge_batches_round_player_seq ON mp_round_judge_batches(round_uuid, player_id, sequence)",
         "CREATE INDEX IF NOT EXISTS idx_mp_judge_batches_created ON mp_round_judge_batches(created_at)",
         "CREATE INDEX IF NOT EXISTS idx_mp_user_room_history_user ON mp_user_room_history(user_id)",
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_room_history_join_identity ON room_history(user_id, room_uuid, joined_at)",
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_mp_user_room_history_join_identity ON mp_user_room_history(user_id, room_uuid, joined_at)",
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_mp_runtime_telemetry_event_id ON mp_runtime_telemetry_batches(event_id)",
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_mp_runtime_telemetry_item_event_ordinal ON mp_runtime_telemetry_items(event_id, ordinal)",
         "CREATE INDEX IF NOT EXISTS idx_mp_runtime_telemetry_batch_uuid ON mp_runtime_telemetry_batches(batch_uuid)",
         "CREATE INDEX IF NOT EXISTS idx_mp_runtime_telemetry_created ON mp_runtime_telemetry_batches(created_at)",
         "CREATE INDEX IF NOT EXISTS idx_mp_runtime_telemetry_kind ON mp_runtime_telemetry_batches(kind)",
@@ -572,9 +616,12 @@ async fn init_tables(pool: &sqlx::PgPool) -> Result<()> {
         "CREATE INDEX IF NOT EXISTS idx_mp_runtime_telemetry_items_batch ON mp_runtime_telemetry_items(batch_uuid, ordinal)",
         "CREATE INDEX IF NOT EXISTS idx_mp_runtime_telemetry_items_round_player ON mp_runtime_telemetry_items(round_uuid, player_id, sequence)",
         "CREATE INDEX IF NOT EXISTS idx_mp_runtime_telemetry_items_kind_created ON mp_runtime_telemetry_items(kind, created_at)",
+        "CREATE UNIQUE INDEX IF NOT EXISTS uq_mp_runtime_benchmark_report_id ON mp_runtime_benchmark_reports(report_id) WHERE report_id IS NOT NULL",
         "CREATE INDEX IF NOT EXISTS idx_mp_runtime_benchmark_reports_mode_created ON mp_runtime_benchmark_reports(mode, created_at)",
         "CREATE INDEX IF NOT EXISTS idx_mp_runtime_benchmark_reports_created ON mp_runtime_benchmark_reports(created_at)",
         "CREATE INDEX IF NOT EXISTS idx_mp_runtime_benchmark_reports_sim ON mp_runtime_benchmark_reports(is_simulation, created_at)",
+        "CREATE UNIQUE INDEX IF NOT EXISTS uq_mp_events_event_id ON mp_events(event_id) WHERE event_id IS NOT NULL",
+        "CREATE UNIQUE INDEX IF NOT EXISTS uq_mp_sim_events_event_id ON mp_sim_events(event_id) WHERE event_id IS NOT NULL",
         "CREATE INDEX IF NOT EXISTS idx_mp_sim_events_run ON mp_sim_events(run_id)",
         "CREATE INDEX IF NOT EXISTS idx_mp_sim_events_kind ON mp_sim_events(kind)",
         "CREATE INDEX IF NOT EXISTS idx_mp_sim_events_created ON mp_sim_events(created_at)",

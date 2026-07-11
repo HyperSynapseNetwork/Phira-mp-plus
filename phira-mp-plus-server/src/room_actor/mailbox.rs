@@ -2,17 +2,10 @@
 
 use super::{
     actor::RoomActor, command::RoomActorCommand, context::RoomCommandContext,
-    handler::RoomCommandHandler, RoomCommandDelivery, RoomCommandGateway, RoomCommandResult,
+    handler::RoomCommandHandler, RoomCommandGateway, RoomCommandResult,
 };
 use crate::server::PlusServerState;
-use serde_json::Value;
-use std::{
-    future::Future,
-    sync::{
-        atomic::Ordering,
-        Arc, Weak,
-    },
-};
+use std::sync::{atomic::Ordering, Arc, Weak};
 use tokio::sync::{mpsc, oneshot};
 
 enum MailboxAttempt {
@@ -29,7 +22,8 @@ impl RoomCommandGateway {
         if let Ok(mut guard) = self.state_ref.write() {
             *guard = Some(Arc::downgrade(&state));
         }
-        self.mailbox_capacity.store(capacity.max(16), Ordering::Release);
+        self.mailbox_capacity
+            .store(capacity.max(16), Ordering::Release);
         self.mailbox_started.store(true, Ordering::Release);
     }
 
@@ -52,14 +46,6 @@ impl RoomCommandGateway {
         &self,
         room_id: &str,
     ) -> Option<mpsc::Sender<RoomActorCommand>> {
-        if let Ok(mailboxes) = self.room_mailboxes.read() {
-            if let Some(tx) = mailboxes.get(room_id).cloned() {
-                self.mailbox_registry_hit.fetch_add(1, Ordering::Relaxed);
-                return Some(tx);
-            }
-        }
-
-        self.mailbox_registry_miss.fetch_add(1, Ordering::Relaxed);
         let state = self.state_weak()?.upgrade()?;
         let gateway = self.self_arc()?;
         let rid: phira_mp_common::RoomId = room_id.to_string().try_into().ok()?;
@@ -67,52 +53,165 @@ impl RoomCommandGateway {
             let rooms = state.rooms.read().await;
             rooms.get(&rid).map(Arc::clone)
         }?;
+        let room_uuid = room.uuid.clone();
 
+        if let Ok(mailboxes) = self.room_mailboxes.read() {
+            if let Some(entry) = mailboxes.get(room_id) {
+                if entry.room_uuid == room_uuid && !entry.tx.is_closed() {
+                    self.mailbox_registry_hit.fetch_add(1, Ordering::Relaxed);
+                    return Some(entry.tx.clone());
+                }
+            }
+        }
+
+        self.mailbox_registry_miss.fetch_add(1, Ordering::Relaxed);
         let mut mailboxes = self.room_mailboxes.write().ok()?;
-        if let Some(tx) = mailboxes.get(room_id).cloned() {
-            self.mailbox_registry_hit.fetch_add(1, Ordering::Relaxed);
-            return Some(tx);
+        if let Some(entry) = mailboxes.get(room_id) {
+            if entry.room_uuid == room_uuid && !entry.tx.is_closed() {
+                self.mailbox_registry_hit.fetch_add(1, Ordering::Relaxed);
+                return Some(entry.tx.clone());
+            }
         }
 
         let capacity = self.mailbox_capacity.load(Ordering::Acquire).max(16);
         let (tx, mut rx) = mpsc::channel::<RoomActorCommand>(capacity);
-        mailboxes.insert(room_id.to_string(), tx.clone());
+        mailboxes.insert(
+            room_id.to_string(),
+            super::RoomMailboxEntry {
+                room_uuid: room_uuid.clone(),
+                tx: tx.clone(),
+            },
+        );
         self.mailbox_created.fetch_add(1, Ordering::Relaxed);
         let worker_room_id = room_id.to_string();
+        let worker_room_uuid = room_uuid.clone();
+        let worker_rid = rid.clone();
         drop(mailboxes);
-        crate::supervisor_actor::spawn_named(format!("room-mailbox-{worker_room_id}"), async move {
-            let mut actor = RoomActor::new(room, state.clone()).await;
-            let snapshot = actor.snapshot().clone();
-            if let Ok(mut snapshots) = gateway.snapshots.write() {
-                snapshots.insert(worker_room_id.clone(), snapshot);
-            }
 
-            while let Some(command) = rx.recv().await {
-                let should_stop = gateway
-                    .execute_mailbox_command_with_room(
-                        &actor.state,
-                        actor.room().clone(),
-                        command,
-                    )
-                    .await;
-                actor.refresh_snapshot().await;
-                let snapshot = actor.snapshot().clone();
-                if let Ok(mut snapshots) = gateway.snapshots.write() {
-                    snapshots.insert(worker_room_id.clone(), snapshot);
+        // The room registry may have changed while the mailbox registry was
+        // being updated. Refuse this command rather than attaching a fresh
+        // sender to a room generation that is no longer authoritative.
+        let still_current = {
+            let rooms = state.rooms.read().await;
+            rooms
+                .get(&rid)
+                .map(|current| current.uuid == room_uuid)
+                .unwrap_or(false)
+        };
+        if !still_current {
+            self.remove_mailbox_if_current(room_id, room_uuid);
+            return None;
+        }
+
+        crate::supervisor_actor::spawn_named(
+            format!("room-mailbox-{worker_room_id}"),
+            async move {
+                let mut actor = RoomActor::new(room, state.clone()).await;
+                gateway.store_snapshot_if_current(
+                    &worker_room_id,
+                    worker_room_uuid.clone(),
+                    actor.snapshot().clone(),
+                );
+
+                let mut lifecycle_tick = tokio::time::interval(std::time::Duration::from_secs(1));
+                lifecycle_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+                loop {
+                    tokio::select! {
+                        command = rx.recv() => {
+                            let Some(command) = command else {
+                                break;
+                            };
+                            let should_stop = gateway
+                                .execute_mailbox_command_with_room(
+                                    &actor.state,
+                                    actor.room().clone(),
+                                    command,
+                                )
+                                .await;
+                            actor.refresh_snapshot().await;
+                            gateway.store_snapshot_if_current(
+                                &worker_room_id,
+                                worker_room_uuid.clone(),
+                                actor.snapshot().clone(),
+                            );
+                            if should_stop {
+                                break;
+                            }
+                        }
+                        _ = lifecycle_tick.tick() => {
+                            let generation_is_current = {
+                                let rooms = actor.state.rooms.read().await;
+                                rooms
+                                    .get(&worker_rid)
+                                    .map(|current| current.uuid == worker_room_uuid)
+                                    .unwrap_or(false)
+                            };
+                            if !generation_is_current {
+                                break;
+                            }
+                        }
+                    }
                 }
-                if should_stop {
-                    break;
-                }
-            }
-            if let Ok(mut mailboxes) = gateway.room_mailboxes.write() {
-                mailboxes.remove(&worker_room_id);
-            }
-            if let Ok(mut snapshots) = gateway.snapshots.write() {
-                snapshots.remove(&worker_room_id);
-            }
-            gateway.mailbox_closed.fetch_add(1, Ordering::Relaxed);
-        });
+                gateway.remove_mailbox_if_current(&worker_room_id, worker_room_uuid.clone());
+                gateway.remove_snapshot_if_current(&worker_room_id, worker_room_uuid);
+                gateway.mailbox_closed.fetch_add(1, Ordering::Relaxed);
+            },
+        );
         Some(tx)
+    }
+
+    fn store_snapshot_if_current(
+        &self,
+        room_id: &str,
+        room_uuid: uuid::Uuid,
+        snapshot: super::actor::RoomSnapshot,
+    ) {
+        // Keep the mailbox read guard until the snapshot update commits. This
+        // prevents an old actor from passing an identity check, being replaced,
+        // and then overwriting the new room generation's snapshot.
+        let Ok(mailboxes) = self.room_mailboxes.read() else {
+            return;
+        };
+        let current = mailboxes
+            .get(room_id)
+            .map(|entry| entry.room_uuid == room_uuid && !entry.tx.is_closed())
+            .unwrap_or(false);
+        if !current {
+            return;
+        }
+        if let Ok(mut snapshots) = self.snapshots.write() {
+            snapshots.insert(
+                room_id.to_string(),
+                super::RoomSnapshotEntry {
+                    room_uuid,
+                    snapshot,
+                },
+            );
+        }
+    }
+
+    fn remove_mailbox_if_current(&self, room_id: &str, room_uuid: uuid::Uuid) {
+        if let Ok(mut mailboxes) = self.room_mailboxes.write() {
+            let matches = mailboxes
+                .get(room_id)
+                .map(|entry| entry.room_uuid == room_uuid)
+                .unwrap_or(false);
+            if matches {
+                mailboxes.remove(room_id);
+            }
+        }
+    }
+
+    fn remove_snapshot_if_current(&self, room_id: &str, room_uuid: uuid::Uuid) {
+        if let Ok(mut snapshots) = self.snapshots.write() {
+            let matches = snapshots
+                .get(room_id)
+                .map(|entry| entry.room_uuid == room_uuid)
+                .unwrap_or(false);
+            if matches {
+                snapshots.remove(room_id);
+            }
+        }
     }
 
     /// Execute a command with a room reference already resolved.
@@ -141,28 +240,19 @@ impl RoomCommandGateway {
 
     const COMMAND_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
-    /// Prefer the per-room mailbox. Inline fallback is permitted only when the
-    /// command is known not to have been enqueued. Once enqueue succeeds, a
-    /// missing/timed-out reply is an uncertain outcome and is never retried
-    /// inline, preventing duplicate side effects.
-    pub(super) async fn room_mailbox_or_inline<Build, Inline, Fut>(
-        &self,
-        room_id: &str,
-        build: Build,
-        inline: Inline,
-    ) -> RoomCommandResult
+    /// Route through the per-room mailbox only. Missing, closed, congested or
+    /// uncertain mailboxes fail explicitly so the room control plane has one
+    /// execution model and one lock ordering.
+    pub(super) async fn room_mailbox<Build>(&self, room_id: &str, build: Build) -> RoomCommandResult
     where
         Build: FnOnce(oneshot::Sender<RoomCommandResult>) -> RoomActorCommand,
-        Inline: FnOnce() -> Fut,
-        Fut: Future<Output = Result<Value, String>>,
     {
         match self.try_mailbox_send(room_id, build).await {
             MailboxAttempt::Completed(result) => result,
             MailboxAttempt::NotEnqueued => {
-                self.mailbox_fallback.fetch_add(1, Ordering::Relaxed);
-                RoomCommandResult::from_untyped(
-                    inline().await,
-                    RoomCommandDelivery::FallbackInline,
+                self.mailbox_failed.fetch_add(1, Ordering::Relaxed);
+                RoomCommandResult::mailbox_error(
+                    "room mailbox unavailable before enqueue; inline execution is disabled",
                 )
             }
             MailboxAttempt::Uncertain(message) => {
@@ -172,11 +262,7 @@ impl RoomCommandGateway {
         }
     }
 
-    async fn try_mailbox_send<Build>(
-        &self,
-        room_id: &str,
-        build: Build,
-    ) -> MailboxAttempt
+    async fn try_mailbox_send<Build>(&self, room_id: &str, build: Build) -> MailboxAttempt
     where
         Build: FnOnce(oneshot::Sender<RoomCommandResult>) -> RoomActorCommand,
     {
@@ -209,20 +295,76 @@ impl RoomCommandGateway {
             Err(_) => MailboxAttempt::NotEnqueued,
         }
     }
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-    /// Non-idempotent controls use the same uncertainty-safe routing policy.
-    pub(super) async fn room_mailbox_or_inline_control<Build, Inline, Fut>(
-        &self,
-        room_id: &str,
-        build: Build,
-        inline: Inline,
-    ) -> RoomCommandResult
-    where
-        Build: FnOnce(oneshot::Sender<RoomCommandResult>) -> RoomActorCommand,
-        Inline: FnOnce() -> Fut,
-        Fut: Future<Output = Result<Value, String>>,
-    {
-        self.room_mailbox_or_inline(room_id, build, inline).await
+    #[test]
+    fn stale_actor_cleanup_cannot_remove_new_mailbox_generation() {
+        let gateway = RoomCommandGateway::new();
+        let old_uuid = uuid::Uuid::new_v4();
+        let new_uuid = uuid::Uuid::new_v4();
+        let (tx, _rx) = mpsc::channel(1);
+
+        gateway
+            .room_mailboxes
+            .write()
+            .expect("mailbox registry lock")
+            .insert(
+                "same-name".to_string(),
+                super::super::RoomMailboxEntry {
+                    room_uuid: new_uuid,
+                    tx,
+                },
+            );
+
+        gateway.remove_mailbox_if_current("same-name", old_uuid);
+
+        let guard = gateway
+            .room_mailboxes
+            .read()
+            .expect("mailbox registry lock");
+        assert_eq!(
+            guard.get("same-name").map(|entry| entry.room_uuid),
+            Some(new_uuid)
+        );
     }
 
+    #[test]
+    fn stale_actor_cleanup_cannot_remove_new_snapshot_generation() {
+        let gateway = RoomCommandGateway::new();
+        let old_uuid = uuid::Uuid::new_v4();
+        let new_uuid = uuid::Uuid::new_v4();
+        let snapshot = super::super::actor::RoomSnapshot {
+            room_id: "same-name".to_string(),
+            room_uuid: new_uuid.to_string(),
+            locked: false,
+            cycle: false,
+            host: None,
+            hidden: false,
+            live: false,
+            created_at: 0,
+        };
+
+        gateway
+            .snapshots
+            .write()
+            .expect("snapshot registry lock")
+            .insert(
+                "same-name".to_string(),
+                super::super::RoomSnapshotEntry {
+                    room_uuid: new_uuid,
+                    snapshot,
+                },
+            );
+
+        gateway.remove_snapshot_if_current("same-name", old_uuid);
+
+        let guard = gateway.snapshots.read().expect("snapshot registry lock");
+        assert_eq!(
+            guard.get("same-name").map(|entry| entry.room_uuid),
+            Some(new_uuid)
+        );
+    }
 }

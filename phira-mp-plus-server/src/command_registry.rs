@@ -140,7 +140,10 @@ impl Clone for CommandRegistry {
             roots: self.roots.clone(),
             children: self.children.clone(),
             arg_completers: std::sync::RwLock::new(
-                self.arg_completers.read().map(|g| g.clone()).unwrap_or_default()
+                self.arg_completers
+                    .read()
+                    .map(|g| g.clone())
+                    .unwrap_or_default(),
             ),
         }
     }
@@ -336,50 +339,81 @@ impl CommandRegistry {
     /// `Weak` and are only active while the server is running.
     pub fn init_completers(&self) {
         // Benchmark mode completer: benchmark run <real|hybrid>
-        self.set_arg_completer("benchmark run", Arc::new(|_cmd, prefix| {
-            vec!["real", "hybrid"].into_iter()
-                .filter(|m| m.starts_with(prefix))
-                .map(|s| s.to_string())
-                .collect()
-        }));
+        self.set_arg_completer(
+            "benchmark run",
+            Arc::new(|_cmd, prefix| {
+                vec!["real", "hybrid"]
+                    .into_iter()
+                    .filter(|m| m.starts_with(prefix))
+                    .map(|s| s.to_string())
+                    .collect()
+            }),
+        );
 
         // Simulation preset completer: simulation run <preset>
-        self.set_arg_completer("simulation run", Arc::new(|_cmd, prefix| {
-            vec!["baseline", "small", "medium", "large", "custom"].into_iter()
-                .filter(|p| p.starts_with(prefix))
-                .map(|s| s.to_string())
-                .collect()
-        }));
+        self.set_arg_completer(
+            "simulation run",
+            Arc::new(|_cmd, prefix| {
+                vec!["baseline", "small", "medium", "large", "custom"]
+                    .into_iter()
+                    .filter(|p| p.starts_with(prefix))
+                    .map(|s| s.to_string())
+                    .collect()
+            }),
+        );
 
         // Simulation suite completer: simulation suite <name>
-        self.set_arg_completer("simulation suite", Arc::new(|_cmd, prefix| {
-            vec!["smoke", "mixed", "stress"].into_iter()
-                .filter(|s| s.starts_with(prefix))
-                .map(|s| s.to_string())
-                .collect()
-        }));
-
+        self.set_arg_completer(
+            "simulation suite",
+            Arc::new(|_cmd, prefix| {
+                vec!["smoke", "mixed", "stress"]
+                    .into_iter()
+                    .filter(|s| s.starts_with(prefix))
+                    .map(|s| s.to_string())
+                    .collect()
+            }),
+        );
     }
 
     /// Install a room-ID completer after PlusServerState is available.
     /// Called from server.rs after state creation.
     pub fn install_room_completer(&self, state: &Arc<crate::server::PlusServerState>) {
         let weak = Arc::downgrade(state);
-        let completer: ArgCompleter = Arc::new(move |_cmd: &[String], prefix: &str| -> Vec<String> {
-            let Some(state) = weak.upgrade() else { return vec![] };
-            let Ok(rooms) = state.rooms.try_read() else { return vec![] };
-            let mut out: Vec<String> = rooms.keys()
-                .filter(|id| id.to_string().starts_with(prefix))
-                .map(|id| id.to_string())
-                .collect();
-            out.sort();
-            out
-        });
+        let completer: ArgCompleter =
+            Arc::new(move |_cmd: &[String], prefix: &str| -> Vec<String> {
+                let Some(state) = weak.upgrade() else {
+                    return vec![];
+                };
+                let Ok(rooms) = state.rooms.try_read() else {
+                    return vec![];
+                };
+                let mut out: Vec<String> = rooms
+                    .keys()
+                    .filter(|id| id.to_string().starts_with(prefix))
+                    .map(|id| id.to_string())
+                    .collect();
+                out.sort();
+                out
+            });
         for cmd in &[
-            "room info", "room banlist", "room rounds", "room history",
-            "room uuid", "room start", "room force-start", "force-start", "room cancel", "room hide", "room unhide",
-            "room close", "room kick", "room host", "room force-move",
-            "room set", "room ban", "room unban",
+            "room info",
+            "room banlist",
+            "room rounds",
+            "room history",
+            "room uuid",
+            "room start",
+            "room force-start",
+            "force-start",
+            "room cancel",
+            "room hide",
+            "room unhide",
+            "room close",
+            "room kick",
+            "room host",
+            "room force-move",
+            "room set",
+            "room ban",
+            "room unban",
         ] {
             self.set_arg_completer(cmd, Arc::clone(&completer));
         }
@@ -781,18 +815,17 @@ pub fn runtime_v2_registry() -> CommandRegistry {
             };
 
             let benchmark_path = std::path::Path::new(crate::server::benchmark::BENCH_AUTH_FILE);
-            let token_update = if !config.benchmark_phira_tokens.is_empty()
-                || benchmark_path.exists()
-            {
-                match crate::server::benchmark::try_load_benchmark_tokens(&config) {
-                    Ok(tokens) => Some(tokens),
-                    Err(e) => return vec![format!("  ✗ 读取持久化压测凭据失败: {e}")],
-                }
-            } else {
-                // Preserve runtime-managed credentials when neither YAML nor
-                // the persistent auth file is the source of truth.
-                None
-            };
+            let token_update =
+                if !config.benchmark_phira_tokens.is_empty() || benchmark_path.exists() {
+                    match crate::server::benchmark::try_load_benchmark_tokens(&config) {
+                        Ok(tokens) => Some(tokens),
+                        Err(e) => return vec![format!("  ✗ 读取持久化压测凭据失败: {e}")],
+                    }
+                } else {
+                    // Preserve runtime-managed credentials when neither YAML nor
+                    // the persistent auth file is the source of truth.
+                    None
+                };
 
             let live = crate::server::LiveConfig::from_full(&config);
             let mut live_guard = match state.live_config.try_write() {
@@ -810,9 +843,7 @@ pub fn runtime_v2_registry() -> CommandRegistry {
             let token_guard = if token_update.is_some() {
                 match state.bench_tokens.try_write() {
                     Ok(guard) => Some(guard),
-                    Err(_) => {
-                        return vec!["  ✗ Benchmark token 列表正在被占用，请重试".to_string()]
-                    }
+                    Err(_) => return vec!["  ✗ Benchmark token 列表正在被占用，请重试".to_string()],
                 }
             } else {
                 None
@@ -830,10 +861,8 @@ pub fn runtime_v2_registry() -> CommandRegistry {
 
             vec![
                 format!("  ✓ 已从 {} 重新加载配置", path.display()),
-                "  ▸ 已热更新：chat_enabled、monitors；显式管理员/压测凭据同步更新"
-                    .to_string(),
-                "  ▸ CLI monitor 覆盖及未在 YAML/持久化文件中声明的动态状态保持不变"
-                    .to_string(),
+                "  ▸ 已热更新：chat_enabled、monitors；显式管理员/压测凭据同步更新".to_string(),
+                "  ▸ CLI monitor 覆盖及未在 YAML/持久化文件中声明的动态状态保持不变".to_string(),
                 "  ▸ 端口、目录、数据库、限流和 Runtime v2 策略仍需重启生效".to_string(),
             ]
         })),
@@ -841,12 +870,12 @@ pub fn runtime_v2_registry() -> CommandRegistry {
             "runtime cutover",
             "runtime-v2",
             "查看或切换 Touch/Judge 持久化 cutover 模式。",
-            "runtime cutover [direct_only|worker_preferred]",
+            "runtime cutover [direct_only|worker_preferred|worker_authoritative]",
         )
         .advanced()
         .arg(CommandArgSpec::optional(
             "mode",
-            "direct_only 或 worker_preferred",
+            "direct_only、worker_preferred 或 worker_authoritative",
         ))
         .example("runtime cutover")
         .example("runtime cutover worker_preferred"),

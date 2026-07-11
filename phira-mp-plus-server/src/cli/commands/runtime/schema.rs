@@ -31,7 +31,7 @@ impl CliHandler {
             "    production Touch/Judge cutover: {}",
             stats.telemetry_cutover_mode
         ));
-        self.out("    modes: direct_only | worker_preferred".to_string());
+        self.out("    modes: direct_only | worker_preferred | worker_authoritative".to_string());
         self.out(
             "    read path: direct mp_round_player_data first, Runtime v2 item table fallback"
                 .to_string(),

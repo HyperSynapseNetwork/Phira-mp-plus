@@ -16,7 +16,12 @@ impl DbManager {
             let now = now_ms_inline();
             return sqlx::query(
                 "INSERT INTO playtime (user_id, total_secs, session_start) VALUES ($1, 0, $2)
-                 ON CONFLICT (user_id) DO UPDATE SET session_start = $2",
+                 ON CONFLICT (user_id) DO UPDATE SET
+                   total_secs = playtime.total_secs + CASE
+                     WHEN playtime.session_start IS NULL THEN 0
+                     ELSE GREATEST(0, ($2 - playtime.session_start) / 1000)
+                   END,
+                   session_start = $2",
             )
             .bind(user_id)
             .bind(now)
@@ -59,12 +64,18 @@ impl DbManager {
         if let Self::Pg(pool) = self {
             let now = now_ms_inline();
             return sqlx::query(
-                "INSERT INTO mp_users (user_id, name, language, ip, first_seen, last_seen, updated_at)
-                 VALUES ($1, $2, $3, $4, $5, $5, $5)
+                "INSERT INTO mp_users (
+                   user_id, name, language, ip, first_seen_at, last_seen_at,
+                   last_connected_at, updated_at
+                 )
+                 VALUES ($1, $2, $3, $4, $5, $5, $5, $5)
                  ON CONFLICT (user_id) DO UPDATE SET
-                   name = $2, language = $3,
-                   ip = COALESCE($4, mp_users.ip),
-                   last_seen = $5, updated_at = $5",
+                   name = EXCLUDED.name,
+                   language = EXCLUDED.language,
+                   ip = COALESCE(EXCLUDED.ip, mp_users.ip),
+                   last_seen_at = EXCLUDED.last_seen_at,
+                   last_connected_at = EXCLUDED.last_connected_at,
+                   updated_at = EXCLUDED.updated_at",
             )
             .bind(user_id)
             .bind(name)
@@ -84,7 +95,11 @@ impl DbManager {
         if let Self::Pg(pool) = self {
             let now = now_ms_inline();
             return sqlx::query(
-                "UPDATE mp_users SET name = $2, last_seen = $3, updated_at = $3
+                "UPDATE mp_users
+                 SET name = $2,
+                     last_seen_at = $3,
+                     last_disconnected_at = $3,
+                     updated_at = $3
                  WHERE user_id = $1",
             )
             .bind(user_id)
@@ -106,7 +121,12 @@ impl DbManager {
             tokio::spawn(async move {
                 let _ = sqlx::query(
                     "INSERT INTO playtime (user_id, total_secs, session_start) VALUES ($1, 0, $2)
-                     ON CONFLICT (user_id) DO UPDATE SET session_start = $2"
+                     ON CONFLICT (user_id) DO UPDATE SET
+                       total_secs = playtime.total_secs + CASE
+                         WHEN playtime.session_start IS NULL THEN 0
+                         ELSE GREATEST(0, ($2 - playtime.session_start) / 1000)
+                       END,
+                       session_start = $2",
                 )
                 .bind(user_id)
                 .bind(now)
@@ -127,7 +147,7 @@ impl DbManager {
                     "UPDATE playtime
                      SET total_secs = total_secs + GREATEST(0, ($2 - session_start) / 1000),
                          session_start = NULL
-                     WHERE user_id = $1 AND session_start IS NOT NULL"
+                     WHERE user_id = $1 AND session_start IS NOT NULL",
                 )
                 .bind(user_id)
                 .bind(now)
@@ -153,12 +173,18 @@ impl DbManager {
             let now = now_ms_inline();
             tokio::spawn(async move {
                 let _ = sqlx::query(
-                    "INSERT INTO mp_users (user_id, name, language, ip, first_seen, last_seen, updated_at)
-                     VALUES ($1, $2, $3, $4, $5, $5, $5)
+                    "INSERT INTO mp_users (
+                       user_id, name, language, ip, first_seen_at, last_seen_at,
+                       last_connected_at, updated_at
+                     )
+                     VALUES ($1, $2, $3, $4, $5, $5, $5, $5)
                      ON CONFLICT (user_id) DO UPDATE SET
-                       name = $2, language = $3,
-                       ip = COALESCE($4, mp_users.ip),
-                       last_seen = $5, updated_at = $5"
+                       name = EXCLUDED.name,
+                       language = EXCLUDED.language,
+                       ip = COALESCE(EXCLUDED.ip, mp_users.ip),
+                       last_seen_at = EXCLUDED.last_seen_at,
+                       last_connected_at = EXCLUDED.last_connected_at,
+                       updated_at = EXCLUDED.updated_at",
                 )
                 .bind(user_id)
                 .bind(&name)
@@ -180,8 +206,12 @@ impl DbManager {
             let now = now_ms_inline();
             tokio::spawn(async move {
                 let _ = sqlx::query(
-                    "UPDATE mp_users SET name = $2, last_seen = $3, updated_at = $3
-                     WHERE user_id = $1"
+                    "UPDATE mp_users
+                     SET name = $2,
+                         last_seen_at = $3,
+                         last_disconnected_at = $3,
+                         updated_at = $3
+                     WHERE user_id = $1",
                 )
                 .bind(user_id)
                 .bind(&name)
@@ -204,7 +234,8 @@ impl DbManager {
                     .ok()??;
             return Some(crate::db::PlaytimeRow {
                 total_secs: row.try_get::<i64, _>("total_secs").unwrap_or(0),
-                session_start: row.try_get::<Option<i64>, _>("session_start")
+                session_start: row
+                    .try_get::<Option<i64>, _>("session_start")
                     .ok()
                     .flatten(),
             });
@@ -216,12 +247,15 @@ impl DbManager {
     pub async fn top_playtime(&self, limit: i64) -> Vec<Value> {
         #[cfg(feature = "postgres")]
         if let Self::Pg(pool) = self {
-            let now = now_secs_inline();
+            let now = now_ms_inline();
             let rows = sqlx::query(
                 "SELECT p.user_id, COALESCE(u.name, p.user_id::text) AS name,
-                        p.total_secs + CASE WHEN p.session_start IS NULL THEN 0 ELSE $2 - p.session_start END AS secs
+                        p.total_secs + CASE
+                          WHEN p.session_start IS NULL THEN 0
+                          ELSE GREATEST(0, ($2 - p.session_start) / 1000)
+                        END AS secs
                  FROM playtime p LEFT JOIN mp_users u ON u.user_id = p.user_id
-                 ORDER BY secs DESC LIMIT $1"
+                 ORDER BY secs DESC LIMIT $1",
             )
             .bind(limit)
             .bind(now)
@@ -252,9 +286,10 @@ impl DbManager {
             let now = now_ms_inline();
             tokio::spawn(async move {
                 let _ = sqlx::query(
-                    "INSERT INTO mp_runtime_persistence_meta (key, value, created_at)
+                    "INSERT INTO mp_runtime_persistence_meta (key, value, updated_at)
                      VALUES ($1, $2::jsonb, $3)
-                     ON CONFLICT (key) DO UPDATE SET value = $2::jsonb, created_at = $3",
+                     ON CONFLICT (key) DO UPDATE
+                     SET value = EXCLUDED.value, updated_at = EXCLUDED.updated_at",
                 )
                 .bind(&key)
                 .bind(&value)
@@ -271,13 +306,5 @@ fn now_ms_inline() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as i64)
-        .unwrap_or(0)
-}
-
-/// Inline now_secs helper.
-fn now_secs_inline() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs() as i64)
         .unwrap_or(0)
 }

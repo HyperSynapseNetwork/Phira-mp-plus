@@ -1,4 +1,22 @@
-# 架构修改清单
+# Architecture change log
+
+## 2026-07-11 · Hardening phase 2
+
+- Session/Room ordered commands are mailbox-only; runtime direct/inline fallback removed.
+- Removed the unused Room gateway inline-closure compatibility API and renamed actor-local executors to `*_in_actor`.
+- Room control fields consolidated into one coherent snapshot with generation.
+- Room mailbox/snapshot registries are UUID-generation bound, preventing stale same-name room actors from corrupting replacement rooms.
+- Orphaned Room Actors now self-retire when their room UUID is removed or replaced; snapshots expose `room_uuid`.
+- Added explicit `worker_authoritative` telemetry cutover with fail-fast prerequisites.
+- Tightened `worker_preferred`: Worker is a mirror only after direct acknowledgement; direct failure promotes the accepted Worker event to a canonical compensation path, while dual rejection is counted and reported as degraded.
+- Separated direct persistence failures from policy-driven direct skips in cutover diagnostics.
+- Added stable idempotency keys for telemetry, generic events, simulation events and benchmark reports.
+- Added JSONL persistence dead-letter and Supervisor degradation when both DB and dead-letter fail.
+- Fixed PostgreSQL schema/write mismatches, room snapshot/history transactions, no-DB file fallback and playtime millisecond accounting.
+- Tightened configuration range and cross-field validation.
+- Supervisor handle is restartable in-process and protected by generation-aware cleanup.
+- Release now has a mandatory changed-file-format/check/feature/test/clippy quality gate; Linux/Windows artifacts use the lockfile and fail on missing outputs.
+- Synchronized workspace TOML and Cargo.lock versions, added a checked version-sync helper, and rejected release tags that do not match the Cargo version.
 
 ## 本轮代码修改
 
@@ -17,5 +35,5 @@
 
 - PMP 内部 HTTP/SSE/WebSocket 不重构为公网网关。
 - Room 全状态 Actor ownership 尚未完成。
-- 当前持久化无磁盘 WAL。
+- 当前有数据库最终失败 dead-letter，但无 enqueue-before WAL、启动 replay 与 compaction。
 - 插件仍在 PMP 进程内执行。
