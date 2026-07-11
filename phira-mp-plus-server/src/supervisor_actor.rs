@@ -18,6 +18,7 @@ struct ChildTask {
     handle: tokio::task::JoinHandle<()>,
 }
 
+#[allow(dead_code)]
 pub(crate) enum SupervisorCmd {
     Status {
         reply: oneshot::Sender<SupervisorStatus>,
@@ -34,6 +35,7 @@ pub(crate) enum SupervisorCmd {
 }
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub(crate) struct SupervisorStatus {
     pub shutdown_requested: bool,
     pub children: Vec<(String, bool)>,
@@ -185,6 +187,7 @@ where
     }
 }
 
+#[allow(dead_code)]
 pub(crate) async fn status() -> Option<SupervisorStatus> {
     let tx = SUPERVISOR.get()?.clone();
     let (reply, rx) = oneshot::channel();

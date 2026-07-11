@@ -19,7 +19,8 @@ pub(super) struct RoomCommandContext<'a> {
 }
 
 impl<'a> RoomCommandContext<'a> {
-    pub(super) fn new(gateway: &'a RoomCommandGateway, state: &'a PlusServerState) -> Self {
+#[allow(dead_code)]
+pub(super) fn new(gateway: &'a RoomCommandGateway, state: &'a PlusServerState) -> Self {
         Self { gateway, state, room: None }
     }
 
