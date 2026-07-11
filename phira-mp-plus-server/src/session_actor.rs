@@ -1,10 +1,11 @@
 //! Session actor 每连接独立邮箱（迁移中）。
 //!
 //! 每个 Session 创建时初始化独立 mailbox，命令通过该 Session 的邮箱路由。
-//! 邮箱不可用时会回退到原有直接处理路径。
+//! 只有明确未入队时才允许直接执行；入队后的回复丢失属于不确定结果，
+//! 不会重放副作用，而是关闭当前连接并要求客户端重连同步状态。
 //!
-//! 迁移状态：WriteRouted（除 Ping、Authenticate、Touches/Judges、
-//! QueryRoomInfo 外均已迁移）。
+//! 迁移状态：WriteRouted（Ping、Authenticate、Touches/Judges、
+//! QueryRoomInfo 属于协议快路径，不进入业务命令邮箱）。
 
 use crate::session::{Session, SessionCategory, User};
 use phira_mp_common::{RoomId, ServerCommand};
@@ -19,13 +20,13 @@ const SESSION_MAILBOX_CAPACITY: usize = 64;
 pub(crate) fn init_session_mailbox(session: &Arc<Session>) -> mpsc::Sender<SessionActorCmd> {
     let (tx, mut rx) = mpsc::channel::<SessionActorCmd>(SESSION_MAILBOX_CAPACITY);
     let weak_session = Arc::downgrade(session);
-    tokio::spawn(async move {
+    crate::supervisor_actor::spawn_named(format!("session-mailbox-{}", session.id), async move {
         while let Some(cmd) = rx.recv().await {
-            // If session is gone, stop processing
+            // If session is gone, stop processing.
             if weak_session.upgrade().is_none() {
                 break;
             }
-            let result = match cmd {
+            match cmd {
                 SessionActorCmd::Chat { user, category, msg, reply } => {
                     let _ = reply.send(handle_chat(user, category, msg).await);
                 }
@@ -62,8 +63,7 @@ pub(crate) fn init_session_mailbox(session: &Arc<Session>) -> mpsc::Sender<Sessi
                 SessionActorCmd::Abort { user, reply } => {
                     let _ = reply.send(handle_abort(user).await);
                 }
-            };
-            let _ = result;
+            }
         }
     });
     tx
@@ -88,8 +88,28 @@ pub(crate) enum SessionActorCmd {
 
 // ── Generic route helper ──────────────────────────────────────────
 
+/// Maximum time spent enqueueing or waiting for one ordered session command.
+const SESSION_COMMAND_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+async fn close_uncertain_session(user: &User, reason: &'static str) {
+    tracing::warn!(user = user.id, reason, "session command outcome is uncertain; closing transport");
+    let session = user
+        .session
+        .read()
+        .await
+        .as_ref()
+        .and_then(Weak::upgrade);
+    if let Some(session) = session {
+        session.stream.close();
+        let _ = user.server.lost_con_tx.try_send(session.id);
+    }
+}
+
 /// Send a command through the per-session mailbox.
-/// Falls back to `fallback` if the mailbox isn't ready or the channel / reply is lost.
+///
+/// Direct execution is allowed only when the command is known not to have been
+/// enqueued. Once enqueue succeeds, reply loss/timeout is an uncertain result;
+/// replaying inline could duplicate non-idempotent room transitions.
 async fn route_or_fallback<F, Fut>(
     user: &User,
     cmd: SessionActorCmd,
@@ -101,20 +121,30 @@ where
 {
     let tx = {
         let guard = user.session.read().await;
-        guard.as_ref().and_then(Weak::upgrade).and_then(|s| s.actor_tx.get().cloned())
+        guard
+            .as_ref()
+            .and_then(Weak::upgrade)
+            .and_then(|session| session.actor_tx.get().cloned())
     };
-    let tx = match tx {
-        Some(tx) => tx,
-        None => return fallback().await,
+    let Some(tx) = tx else {
+        return fallback().await;
     };
+
     let (reply, rx) = tokio::sync::oneshot::channel();
     let cmd = cmd.with_reply(reply);
-    match tx.send(cmd).await {
-        Ok(()) => match rx.await {
-            Ok(result) => result,
-            Err(_) => fallback().await,
+    match tokio::time::timeout(SESSION_COMMAND_TIMEOUT, tx.send(cmd)).await {
+        Ok(Ok(())) => match tokio::time::timeout(SESSION_COMMAND_TIMEOUT, rx).await {
+            Ok(Ok(result)) => result,
+            Ok(Err(_)) => {
+                close_uncertain_session(user, "reply channel closed after enqueue").await;
+                None
+            }
+            Err(_) => {
+                close_uncertain_session(user, "reply timed out after enqueue").await;
+                None
+            }
         },
-        Err(_) => fallback().await,
+        Ok(Err(_)) | Err(_) => fallback().await,
     }
 }
 

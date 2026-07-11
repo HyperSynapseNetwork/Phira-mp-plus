@@ -1,5 +1,7 @@
 # room-info-web-api 插件
 
+> 该插件输出的是 PMP 内部数据接口，预期由 PPB 聚合和对外治理，不是独立公网 API。
+
 提供 REST API 和 SSE 接口查询房间信息、游玩记录等。
 
 ## 端点

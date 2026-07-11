@@ -9,6 +9,7 @@ use phira_mp_plus_server::server::{PlusConfig, PlusConfigCli, PlusServer};
 use phira_mp_plus_server::terminal::{ConsoleMode, TerminalProfile};
 use std::path::Path;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 use tracing::{info, warn};
 
@@ -56,7 +57,7 @@ struct Args {
 
     #[arg(
         long = "proxy-port",
-        help = "PROXY protocol HTTP port (0 = disabled; overrides YAML only when provided)"
+        help = "Forwarded-header compatibility HTTP port (0 = disabled; overrides YAML only when provided)"
     )]
     proxy_protocol_port: Option<u16>,
 
@@ -121,7 +122,7 @@ async fn main() -> Result<()> {
 
     if let (Some(cmd_rx), Some(out_tx)) = (cmd_rx, out_tx) {
         let state = Arc::clone(&server.state);
-        tokio::spawn(async move {
+        phira_mp_plus_server::supervisor_actor::spawn_named("cli-handler", async move {
             CliHandler::new(state, out_tx).start(cmd_rx).await;
         });
         info!("CLI management console started");
@@ -209,21 +210,140 @@ async fn main() -> Result<()> {
         }
     }
 
-    for session in server.state.sessions.read().await.values() {
-        let _ = session
-            .stream
-            .send(phira_mp_common::ServerCommand::Message(
+    server
+        .state
+        .shutting_down
+        .store(true, std::sync::atomic::Ordering::Release);
+    // Prevent new permit acquisition immediately. Existing pre-auth tasks check
+    // `shutting_down` before publishing a Session into the authoritative map.
+    server.state.pre_auth_gate.close();
+    server.state.session_gate.close();
+
+    let shutdown_timeout = Duration::from_secs(
+        server.state.config.graceful_shutdown_timeout_secs.max(1),
+    );
+    let shutdown_deadline = Instant::now() + shutdown_timeout;
+    let remaining = || shutdown_deadline.saturating_duration_since(Instant::now());
+
+    // Remove transports from the authoritative session map first. Their later
+    // socket callbacks then find no session and cannot repeat shutdown effects.
+    let sessions = {
+        let mut sessions = server.state.sessions.write().await;
+        std::mem::take(&mut *sessions)
+            .into_values()
+            .collect::<Vec<_>>()
+    };
+    let mut disconnect_users = std::collections::HashMap::<i32, String>::new();
+    for session in &sessions {
+        *session.user.session.write().await = None;
+        if session.user.id >= 0 {
+            disconnect_users
+                .entry(session.user.id)
+                .or_insert_with(|| session.user.name.clone());
+        }
+        session
+            .try_send(phira_mp_common::ServerCommand::Message(
                 phira_mp_common::Message::Chat {
                     user: 0,
                     content: "服务器正在关闭...".to_string(),
                 },
             ))
             .await;
+        session.stream.close();
     }
-    server.state.plugin_manager.cleanup_all().await;
-    if let Err(err) = server.state.extensions.persist().await {
-        warn!(?err, "failed to persist extension data");
+
+    // Emit one canonical disconnect and one offline write per user. This avoids
+    // the ordinary reconnect grace period leaving stale online rows on process exit.
+    let lifecycle_budget = remaining();
+    if !lifecycle_budget.is_zero() {
+        let lifecycle = async {
+            for (user_id, user_name) in disconnect_users {
+                server
+                    .state
+                    .publish_user_disconnected(user_id, user_name.clone())
+                    .await;
+                let _ = server
+                    .state
+                    .persistence_worker
+                    .enqueue(
+                        phira_mp_plus_server::persistence::message::PersistenceEvent::UserDisconnect {
+                            user_id,
+                            user_name,
+                        },
+                    )
+                    .await;
+                let _ = server
+                    .state
+                    .persistence_worker
+                    .enqueue(
+                        phira_mp_plus_server::persistence::message::PersistenceEvent::UserOffline {
+                            user_id,
+                        },
+                    )
+                    .await;
+            }
+        };
+        if tokio::time::timeout(lifecycle_budget, lifecycle).await.is_err() {
+            warn!("session lifecycle shutdown exceeded the shared deadline");
+        }
     }
+
+    let budget = remaining();
+    if !budget.is_zero() {
+        if let Err(error) = server.state.plugin_manager.flush_events(budget).await {
+            warn!(%error, "plugin event flush failed during shutdown");
+        }
+    }
+    let budget = remaining();
+    if !budget.is_zero() {
+        if let Err(error) = server
+            .state
+            .plugin_manager
+            .shutdown_event_dispatcher(budget)
+            .await
+        {
+            warn!(%error, "plugin event dispatcher shutdown failed");
+        }
+    }
+
+    let budget = remaining();
+    if !budget.is_zero() {
+        if tokio::time::timeout(budget, server.state.plugin_manager.cleanup_all())
+            .await
+            .is_err()
+        {
+            warn!("plugin cleanup exceeded the shared shutdown deadline");
+        }
+    }
+    let budget = remaining();
+    if !budget.is_zero() {
+        match tokio::time::timeout(budget, server.state.extensions.persist()).await {
+            Ok(Ok(())) => {}
+            Ok(Err(err)) => warn!(?err, "failed to persist extension data"),
+            Err(_) => warn!("extension persistence exceeded the shared shutdown deadline"),
+        }
+    }
+
+    let budget = remaining();
+    if !budget.is_zero() {
+        if let Err(error) = server.state.persistence_worker.flush(budget).await {
+            warn!(%error, "persistence flush failed during shutdown");
+        }
+    }
+    let budget = remaining();
+    if !budget.is_zero() {
+        if let Err(error) = server.state.persistence_worker.shutdown(budget).await {
+            warn!(%error, "persistence shutdown failed");
+        }
+    }
+
+    let budget = remaining();
+    let stopped = if budget.is_zero() {
+        0
+    } else {
+        phira_mp_plus_server::supervisor_actor::shutdown_all(budget).await
+    };
+    info!(stopped_tasks = stopped, "background tasks stopped");
 
     drop(console_handle);
     info!("server stopped");

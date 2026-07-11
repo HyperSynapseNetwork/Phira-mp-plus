@@ -112,7 +112,7 @@ impl PluginHttpServer {
         // Wrap entire router with state so handlers can access HttpAppState via Extension.
         app = app.layer(Extension(state));
 
-        // Direct HTTP port (no PROXY protocol)
+        // Direct internal HTTP port (does not trust forwarded client headers)
         let address = format!("0.0.0.0:{}", self.port);
         let listener = match tokio::net::TcpListener::bind(&address).await {
             Ok(listener) => listener,
@@ -123,14 +123,14 @@ impl PluginHttpServer {
         };
         info!(%address, "HTTP server started (direct)");
 
-        // PROXY protocol port — apply TrustForwardedFor middleware so
-        // reverse-proxy-set X-Forwarded-For headers are trusted here.
+        // Trusted-forwarded-header compatibility port. This is not HAProxy
+        // PROXY v1/v2; it trusts X-Forwarded-For only behind PPB/a trusted proxy.
         if self.proxy_port > 0 && self.proxy_port != self.port {
             let proxy_addr = format!("0.0.0.0:{}", self.proxy_port);
             let proxy_listener = match tokio::net::TcpListener::bind(&proxy_addr).await {
                 Ok(l) => l,
                 Err(err) => {
-                    error!(%proxy_addr, ?err, "failed to bind PROXY protocol HTTP server");
+                    error!(%proxy_addr, ?err, "failed to bind trusted-forwarded-header HTTP server");
                     return;
                 }
             };
@@ -138,14 +138,14 @@ impl PluginHttpServer {
                 .clone()
                 .layer(crate::proxy_protocol::TrustForwardedForLayer);
             tokio::spawn(async move {
-                info!(%proxy_addr, "HTTP server started (PROXY protocol, X-Forwarded-For trusted)");
+                info!(%proxy_addr, "HTTP server started (trusted X-Forwarded-For compatibility port)");
                 if let Err(err) = axum::serve(
                     proxy_listener,
                     proxy_app.into_make_service(),
                 )
                 .await
                 {
-                    error!(?err, "PROXY protocol HTTP server stopped");
+                    error!(?err, "trusted-forwarded-header HTTP server stopped");
                 }
             });
         }

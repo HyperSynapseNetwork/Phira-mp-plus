@@ -381,74 +381,13 @@ impl CliHandler {
             }
         };
 
-        let user = {
-            let users = self.state.users.read().await;
-            users.get(&target).map(Arc::clone)
-        };
-
-        if let Some(user) = user {
-            // 从房间移除（如果在房间中）
-            {
-                let room_clone = {
-                    let room_guard = user.room.read().await;
-                    room_guard.as_ref().map(Arc::clone)
-                };
-                if let Some(room) = room_clone {
-                    let room_id = room.id.to_string();
-                    if room.on_user_leave(&user).await {
-                        self.state.rooms.write().await.remove(&room.id);
-                    }
-                    self.state
-                        .plugin_manager
-                        .trigger(&PluginEvent::RoomLeave {
-                            user_id: target,
-                            room_id,
-                        })
-                        .await;
-                }
-            }
-
-            // 发送踢出消息并立即关闭对应会话，避免客户端仍可在旧连接上发命令。
-            let target_session = {
-                let sessions = self.state.sessions.read().await;
-                sessions
-                    .iter()
-                    .find(|(_, session)| session.user.id == target)
-                    .map(|(id, session)| (*id, Arc::clone(session)))
-            };
-            if let Some((session_id, session)) = target_session {
-                let _ = session
-                    .stream
-                    .send_and_flush(phira_mp_common::ServerCommand::Message(
-                        phira_mp_common::Message::Chat {
-                            user: 0,
-                            content: "你已被管理员踢出服务器".to_string(),
-                        },
-                    ))
-                    .await;
-                session.stream.close();
-                self.state.sessions.write().await.remove(&session_id);
-            }
-
-            // 从用户列表移除
-            self.state.users.write().await.remove(&target);
-            info!(user = target, "kicked from server by admin");
-            self.state
-                .plugin_manager
-                .trigger(&PluginEvent::UserDisconnect {
-                    user_id: target,
-                    user_name: user.name.clone(),
-                })
-                .await;
-
-            self.out(format!(
-                "  {} 用户 {} ({}) 已从服务器踢出",
+        match crate::server::run_admin_kick_user(&self.state, target, "kicked by admin").await {
+            Ok(_) => self.out(format!(
+                "  {} 用户 {} 已从服务器踢出",
                 c::green("✓"),
-                c::bold(&user.name),
                 target
-            ));
-        } else {
-            self.out(format!("  {} 未找到用户 {}", c::red("✗"), target));
+            )),
+            Err(error) => self.out(format!("  {} {}", c::red("✗"), error)),
         }
     }
 
@@ -700,7 +639,7 @@ impl CliHandler {
     }
 
     pub(crate) async fn room_hide(&self, room_id: &str, hidden: bool) {
-        match self.state.set_room_hidden(room_id, hidden).await {
+        match self.state.room_commands.set_hidden(&self.state, room_id, hidden).await {
             Ok(_) => self.out(format!(
                 "  {} 房间 {} 已{}隐藏",
                 c::green("✓"),
@@ -756,7 +695,7 @@ impl CliHandler {
             }
             "hidden" => {
                 let v = parse_cli_bool(value);
-                match self.state.set_room_hidden(room_id, v).await {
+                match self.state.room_commands.set_hidden(&self.state, room_id, v).await {
                     Ok(_) => self.out(format!(
                         "  {} 房间 {} 已{}隐藏",
                         c::green("✓"),
@@ -781,7 +720,8 @@ impl CliHandler {
             "phira_api_endpoint" => match crate::server::parse_room_endpoint_value(value) {
                 Ok(endpoint) => match self
                     .state
-                    .set_room_phira_api_endpoint(room_id, endpoint)
+                    .room_commands
+                    .set_phira_api_endpoint(&self.state, room_id, endpoint)
                     .await
                 {
                     Ok(res) => {
@@ -876,8 +816,7 @@ impl CliHandler {
                 })
                 .await;
                 self.state
-                    .plugin_manager
-                    .trigger(&PluginEvent::RoomModify {
+                    .dispatch_plugin_event(PluginEvent::RoomModify {
                         user_id: 0,
                         room_id: room_id.to_string(),
                         data: format!(r#"{{"action":"select-chart","chart-id":{cid}}}"#),

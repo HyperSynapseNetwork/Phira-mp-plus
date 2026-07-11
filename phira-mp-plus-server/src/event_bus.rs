@@ -34,6 +34,7 @@ pub enum MpEvent {
     },
     UserDisconnected {
         user_id: i32,
+        user_name: String,
     },
     RoomCreated {
         room_id: RoomId,
@@ -115,8 +116,8 @@ pub enum MpEvent {
     BenchmarkCompleted {
         report: crate::benchmark_report::BenchmarkReport,
     },
-    /// Plugin event dispatched through the bus for unified routing.
-    /// The subscriber calls PluginManager::trigger() on each received event.
+    /// Diagnostic copy of a plugin event. Reliable delivery is owned by the
+    /// dedicated PluginManager queue; broadcast subscribers must not re-trigger it.
     PluginEventDispatched(Arc<PluginEvent>),
     Custom {
         kind: String,
@@ -171,7 +172,7 @@ impl MpEvent {
             Self::UserConnected {
                 user_id, user_name, ..
             } => format!("user_id={user_id} user_name={user_name}"),
-            Self::UserDisconnected { user_id } => format!("user_id={user_id}"),
+            Self::UserDisconnected { user_id, user_name } => format!("user_id={user_id} user_name={user_name}"),
             Self::RoomCreated { room_id, room_uuid } => {
                 format!("room_id={room_id} uuid={room_uuid}")
             }

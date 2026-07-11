@@ -9,6 +9,94 @@ use serde_json::Value;
 use sqlx::Row;
 
 impl DbManager {
+    /// Mark a user as online and wait for PostgreSQL acknowledgement.
+    pub async fn set_online(&self, user_id: i32) -> bool {
+        #[cfg(feature = "postgres")]
+        if let Self::Pg(pool) = self {
+            let now = now_ms_inline();
+            return sqlx::query(
+                "INSERT INTO playtime (user_id, total_secs, session_start) VALUES ($1, 0, $2)
+                 ON CONFLICT (user_id) DO UPDATE SET session_start = $2",
+            )
+            .bind(user_id)
+            .bind(now)
+            .execute(pool)
+            .await
+            .is_ok();
+        }
+        false
+    }
+
+    /// Mark a user as offline and wait for PostgreSQL acknowledgement.
+    pub async fn set_offline(&self, user_id: i32) -> bool {
+        #[cfg(feature = "postgres")]
+        if let Self::Pg(pool) = self {
+            let now = now_ms_inline();
+            return sqlx::query(
+                "UPDATE playtime
+                 SET total_secs = total_secs + GREATEST(0, ($2 - session_start) / 1000),
+                     session_start = NULL
+                 WHERE user_id = $1 AND session_start IS NOT NULL",
+            )
+            .bind(user_id)
+            .bind(now)
+            .execute(pool)
+            .await
+            .is_ok();
+        }
+        false
+    }
+
+    /// Upsert a user record and wait for acknowledgement.
+    pub async fn record_user_seen(
+        &self,
+        user_id: i32,
+        name: &str,
+        language: &str,
+        ip: Option<String>,
+    ) -> bool {
+        #[cfg(feature = "postgres")]
+        if let Self::Pg(pool) = self {
+            let now = now_ms_inline();
+            return sqlx::query(
+                "INSERT INTO mp_users (user_id, name, language, ip, first_seen, last_seen, updated_at)
+                 VALUES ($1, $2, $3, $4, $5, $5, $5)
+                 ON CONFLICT (user_id) DO UPDATE SET
+                   name = $2, language = $3,
+                   ip = COALESCE($4, mp_users.ip),
+                   last_seen = $5, updated_at = $5",
+            )
+            .bind(user_id)
+            .bind(name)
+            .bind(language)
+            .bind(ip)
+            .bind(now)
+            .execute(pool)
+            .await
+            .is_ok();
+        }
+        false
+    }
+
+    /// Record a user disconnect and wait for acknowledgement.
+    pub async fn record_user_disconnect(&self, user_id: i32, name: &str) -> bool {
+        #[cfg(feature = "postgres")]
+        if let Self::Pg(pool) = self {
+            let now = now_ms_inline();
+            return sqlx::query(
+                "UPDATE mp_users SET name = $2, last_seen = $3, updated_at = $3
+                 WHERE user_id = $1",
+            )
+            .bind(user_id)
+            .bind(name)
+            .bind(now)
+            .execute(pool)
+            .await
+            .is_ok();
+        }
+        false
+    }
+
     /// Mark a user as online.
     pub fn set_online_sync(&self, user_id: i32) {
         #[cfg(feature = "postgres")]

@@ -59,14 +59,14 @@ pub(crate) async fn handle_touches(user: Arc<User>, room: Arc<Room>, frames: Arc
     if user.server.plugin_manager.has_plugins().await {
         let pm = Arc::clone(&user.server.plugin_manager);
         let room_id = room.id.to_string();
-        if !pm.try_spawn_trigger(PluginEvent::PlayerTouches {
+        if !pm.try_dispatch_event(PluginEvent::PlayerTouches {
             user_id: player_id,
             room_id,
             data: touch_data,
         }) {
             trace!(
                 user_id = player_id,
-                "dropping plugin touch event because plugin event concurrency is saturated"
+                "dropping plugin touch event because plugin event queue is saturated"
             );
         }
     }
@@ -118,14 +118,14 @@ pub(crate) async fn handle_judges(user: Arc<User>, room: Arc<Room>, judges: Arc<
     if user.server.plugin_manager.has_plugins().await {
         let pm = Arc::clone(&user.server.plugin_manager);
         let room_id = room.id.to_string();
-        if !pm.try_spawn_trigger(PluginEvent::PlayerJudges {
+        if !pm.try_dispatch_event(PluginEvent::PlayerJudges {
             user_id: player_id,
             room_id,
             data: judge_data,
         }) {
             trace!(
                 user_id = player_id,
-                "dropping plugin judge event because plugin event concurrency is saturated"
+                "dropping plugin judge event because plugin event queue is saturated"
             );
         }
     }

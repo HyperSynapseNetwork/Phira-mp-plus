@@ -19,31 +19,33 @@ impl DbManager {
         #[cfg(feature = "postgres")]
         if let Self::Pg(pool) = self {
             let limit = limit.clamp(1, 500);
-            let rows = if let Some(ref kind) = kind {
-                let mut q = String::from(
-                    "SELECT sequence, kind, room_id, user_id, payload::text AS payload, created_at
-                     FROM mp_events WHERE kind = $1 AND sequence > $2 ORDER BY sequence ASC LIMIT $3"
-                );
-                let mut bind_count = 3u8;
-                if room_id.is_some() { bind_count += 1; q.push_str(&format!(" AND room_id = ${bind_count}")); }
-                if user_id.is_some() { bind_count += 1; q.push_str(&format!(" AND user_id = ${bind_count}")); }
-                let mut query = sqlx::query(&q).bind(kind).bind(since_sequence).bind(limit);
-                if let Some(ref rid) = room_id { query = query.bind(rid); }
-                if let Some(uid) = user_id { query = query.bind(uid); }
-                query.fetch_all(pool).await.unwrap_or_default()
-            } else {
-                let mut q = String::from(
-                    "SELECT sequence, kind, room_id, user_id, payload::text AS payload, created_at
-                     FROM mp_events WHERE sequence > $1 ORDER BY sequence ASC LIMIT $2"
-                );
-                let mut bind_count = 2u8;
-                if room_id.is_some() { bind_count += 1; q.push_str(&format!(" AND room_id = ${bind_count}")); }
-                if user_id.is_some() { bind_count += 1; q.push_str(&format!(" AND user_id = ${bind_count}")); }
-                let mut query = sqlx::query(&q).bind(since_sequence).bind(limit);
-                if let Some(ref rid) = room_id { query = query.bind(rid); }
-                if let Some(uid) = user_id { query = query.bind(uid); }
-                query.fetch_all(pool).await.unwrap_or_default()
-            };
+            let mut query_text = String::from(
+                "SELECT sequence, kind, room_id, user_id, payload::text AS payload, created_at
+                 FROM mp_events WHERE sequence > $1",
+            );
+            let mut bind_count = 1u8;
+            if kind.is_some() {
+                bind_count += 1;
+                query_text.push_str(&format!(" AND kind = ${bind_count}"));
+            }
+            if room_id.is_some() {
+                bind_count += 1;
+                query_text.push_str(&format!(" AND room_id = ${bind_count}"));
+            }
+            if user_id.is_some() {
+                bind_count += 1;
+                query_text.push_str(&format!(" AND user_id = ${bind_count}"));
+            }
+            bind_count += 1;
+            query_text.push_str(&format!(" ORDER BY sequence ASC LIMIT ${bind_count}"));
+
+            let mut query = sqlx::query(&query_text).bind(since_sequence);
+            if let Some(ref value) = kind { query = query.bind(value); }
+            if let Some(ref value) = room_id { query = query.bind(value); }
+            if let Some(value) = user_id { query = query.bind(value); }
+            query = query.bind(limit);
+
+            let rows = query.fetch_all(pool).await.unwrap_or_default();
             return rows.iter().map(|row| {
                 serde_json::json!({
                     "sequence": row.try_get::<i64, _>("sequence").unwrap_or_default(),
@@ -51,7 +53,7 @@ impl DbManager {
                     "room_id": row.try_get::<Option<String>, _>("room_id").ok().flatten(),
                     "user_id": row.try_get::<Option<i32>, _>("user_id").ok().flatten(),
                     "payload": row.try_get::<String, _>("payload").ok()
-                        .and_then(|s| serde_json::from_str(&s).ok())
+                        .and_then(|value| serde_json::from_str(&value).ok())
                         .unwrap_or(Value::Null),
                     "created_at": row.try_get::<i64, _>("created_at").unwrap_or_default(),
                 })

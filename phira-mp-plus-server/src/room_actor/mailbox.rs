@@ -14,7 +14,12 @@ use std::{
     },
 };
 use tokio::sync::{mpsc, oneshot};
-use tracing::warn;
+
+enum MailboxAttempt {
+    Completed(RoomCommandResult),
+    NotEnqueued,
+    Uncertain(&'static str),
+}
 
 impl RoomCommandGateway {
     pub fn start_mailbox(self: &Arc<Self>, state: Arc<PlusServerState>, capacity: usize) {
@@ -24,49 +29,12 @@ impl RoomCommandGateway {
         if let Ok(mut guard) = self.state_ref.write() {
             *guard = Some(Arc::downgrade(&state));
         }
-
-        let (tx, mut rx) = mpsc::channel::<RoomActorCommand>(capacity.max(1));
-        if let Ok(mut guard) = self.mailbox_tx.write() {
-            *guard = Some(tx);
-        } else {
-            self.mailbox_closed.fetch_add(1, Ordering::Relaxed);
-            return;
-        }
-
-        let gateway = Arc::clone(self);
-        let state = Arc::downgrade(&state);
-        tokio::spawn(async move {
-            while let Some(command) = rx.recv().await {
-                let Some(state) = state.upgrade() else {
-                    gateway.mailbox_closed.fetch_add(1, Ordering::Relaxed);
-                    let result = RoomCommandResult::mailbox_error(
-                        "server state dropped before room command could run",
-                    );
-                    gateway.observe_mailbox_result(&result);
-                    command.reply_with(result);
-                    continue;
-                };
-
-                let should_stop = gateway.execute_mailbox_command(&state, command).await;
-                if should_stop {
-                    break;
-                }
-            }
-            gateway.mailbox_closed.fetch_add(1, Ordering::Relaxed);
-        });
-    }
-
-    pub(super) fn mailbox_sender(&self) -> Option<mpsc::Sender<RoomActorCommand>> {
-        self.mailbox_tx.read().ok().and_then(|guard| guard.clone())
+        self.mailbox_capacity.store(capacity.max(16), Ordering::Release);
+        self.mailbox_started.store(true, Ordering::Release);
     }
 
     pub(super) fn mailbox_enabled(&self) -> bool {
-        self.mailbox_sender().is_some()
-            || self
-                .room_mailboxes
-                .read()
-                .map(|mailboxes| !mailboxes.is_empty())
-                .unwrap_or(false)
+        self.mailbox_started.load(Ordering::Acquire)
     }
 
     pub(super) fn state_weak(&self) -> Option<Weak<PlusServerState>> {
@@ -80,7 +48,7 @@ impl RoomCommandGateway {
             .and_then(|guard| guard.as_ref().and_then(Weak::upgrade))
     }
 
-    pub(super) fn room_mailbox_sender(
+    pub(super) async fn room_mailbox_sender(
         &self,
         room_id: &str,
     ) -> Option<mpsc::Sender<RoomActorCommand>> {
@@ -92,55 +60,46 @@ impl RoomCommandGateway {
         }
 
         self.mailbox_registry_miss.fetch_add(1, Ordering::Relaxed);
-        let weak_state = self.state_weak()?;
+        let state = self.state_weak()?.upgrade()?;
         let gateway = self.self_arc()?;
+        let rid: phira_mp_common::RoomId = room_id.to_string().try_into().ok()?;
+        let room = {
+            let rooms = state.rooms.read().await;
+            rooms.get(&rid).map(Arc::clone)
+        }?;
+
         let mut mailboxes = self.room_mailboxes.write().ok()?;
         if let Some(tx) = mailboxes.get(room_id).cloned() {
             self.mailbox_registry_hit.fetch_add(1, Ordering::Relaxed);
             return Some(tx);
         }
 
-        let (tx, mut rx) = mpsc::channel::<RoomActorCommand>(128);
+        let capacity = self.mailbox_capacity.load(Ordering::Acquire).max(16);
+        let (tx, mut rx) = mpsc::channel::<RoomActorCommand>(capacity);
         mailboxes.insert(room_id.to_string(), tx.clone());
         self.mailbox_created.fetch_add(1, Ordering::Relaxed);
         let worker_room_id = room_id.to_string();
         drop(mailboxes);
-        tokio::spawn(async move {
-            let Some(state) = weak_state.upgrade() else {
-                gateway.mailbox_closed.fetch_add(1, Ordering::Relaxed);
-                return;
-            };
-            // Look up the room and create RoomActor.
-            let room = {
-                let rooms = state.rooms.read().await;
-                rooms.values()
-                    .find(|r| r.id.to_string() == worker_room_id)
-                    .map(Arc::clone)
-            };
-            let Some(room) = room else {
-                gateway.mailbox_closed.fetch_add(1, Ordering::Relaxed);
-                return;
-            };
-            let mut actor = RoomActor::new(room.clone(), state.clone()).await;
-            // Publish initial snapshot.
+        crate::supervisor_actor::spawn_named(format!("room-mailbox-{worker_room_id}"), async move {
+            let mut actor = RoomActor::new(room, state.clone()).await;
             let snapshot = actor.snapshot().clone();
             if let Ok(mut snapshots) = gateway.snapshots.write() {
                 snapshots.insert(worker_room_id.clone(), snapshot);
             }
 
             while let Some(command) = rx.recv().await {
-                let should_stop = {
-                    let result = gateway.execute_mailbox_command_with_room(
-                        &actor.state, actor.room().clone(), command,
-                    ).await;
-                    // Refresh snapshot after command execution.
-                    actor.refresh_snapshot().await;
-                    let snapshot = actor.snapshot().clone();
-                    if let Ok(mut snapshots) = gateway.snapshots.write() {
-                        snapshots.insert(worker_room_id.clone(), snapshot);
-                    }
-                    result
-                };
+                let should_stop = gateway
+                    .execute_mailbox_command_with_room(
+                        &actor.state,
+                        actor.room().clone(),
+                        command,
+                    )
+                    .await;
+                actor.refresh_snapshot().await;
+                let snapshot = actor.snapshot().clone();
+                if let Ok(mut snapshots) = gateway.snapshots.write() {
+                    snapshots.insert(worker_room_id.clone(), snapshot);
+                }
                 if should_stop {
                     break;
                 }
@@ -154,19 +113,6 @@ impl RoomCommandGateway {
             gateway.mailbox_closed.fetch_add(1, Ordering::Relaxed);
         });
         Some(tx)
-    }
-
-    pub(super) async fn execute_mailbox_command(
-        &self,
-        state: &PlusServerState,
-        command: RoomActorCommand,
-    ) -> bool {
-        let ctx = RoomCommandContext::new(self, state);
-        let result = RoomCommandHandler::execute(ctx, &command).await;
-        let should_stop = RoomCommandHandler::should_stop_room_mailbox(&command, &result);
-        self.observe_mailbox_result(&result);
-        command.reply_with(result);
-        should_stop
     }
 
     /// Execute a command with a room reference already resolved.
@@ -194,13 +140,11 @@ impl RoomCommandGateway {
     }
 
     const COMMAND_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
-    const MAX_CONSECUTIVE_FALLBACK: u64 = 5;
 
-    /// Runtime v2 mailbox routing: prefer per-room mailbox, fall back to inline.
-    /// Used by general ops (set_lock, set_cycle, set_host, kick, close).
-    ///
-    /// On timeout, retries the mailbox once before falling back to inline,
-    /// and logs a warning if consecutive fallbacks exceed threshold.
+    /// Prefer the per-room mailbox. Inline fallback is permitted only when the
+    /// command is known not to have been enqueued. Once enqueue succeeds, a
+    /// missing/timed-out reply is an uncertain outcome and is never retried
+    /// inline, preventing duplicate side effects.
     pub(super) async fn room_mailbox_or_inline<Build, Inline, Fut>(
         &self,
         room_id: &str,
@@ -212,67 +156,61 @@ impl RoomCommandGateway {
         Inline: FnOnce() -> Fut,
         Fut: Future<Output = Result<Value, String>>,
     {
-        let result = self.try_mailbox_send(room_id, build).await;
-        match result {
-            Some(r) => r,
-            None => {
-                let fb = self.mailbox_fallback.fetch_add(1, Ordering::Relaxed) + 1;
-                if fb >= Self::MAX_CONSECUTIVE_FALLBACK {
-                    warn!(fallbacks = fb, room = room_id, "room mailbox: too many consecutive fallbacks, using inline");
-                }
+        match self.try_mailbox_send(room_id, build).await {
+            MailboxAttempt::Completed(result) => result,
+            MailboxAttempt::NotEnqueued => {
+                self.mailbox_fallback.fetch_add(1, Ordering::Relaxed);
                 RoomCommandResult::from_untyped(
                     inline().await,
                     RoomCommandDelivery::FallbackInline,
                 )
             }
+            MailboxAttempt::Uncertain(message) => {
+                self.mailbox_failed.fetch_add(1, Ordering::Relaxed);
+                RoomCommandResult::mailbox_error(message)
+            }
         }
     }
 
-    /// Try to send a command through the mailbox.
-    /// Returns `None` if the mailbox is unavailable.
     async fn try_mailbox_send<Build>(
         &self,
         room_id: &str,
         build: Build,
-    ) -> Option<RoomCommandResult>
+    ) -> MailboxAttempt
     where
         Build: FnOnce(oneshot::Sender<RoomCommandResult>) -> RoomActorCommand,
     {
-        let tx = self.room_mailbox_sender(room_id)?;
+        let Some(tx) = self.room_mailbox_sender(room_id).await else {
+            return MailboxAttempt::NotEnqueued;
+        };
         let (reply, rx) = oneshot::channel();
-        let cmd = build(reply);
-        self.mailbox_enqueued.fetch_add(1, Ordering::Relaxed);
+        let command = build(reply);
 
-        match tokio::time::timeout(Self::COMMAND_TIMEOUT, tx.send(cmd)).await {
-            Ok(Ok(())) => match tokio::time::timeout(Self::COMMAND_TIMEOUT, rx).await {
-                Ok(Ok(result)) => Some(result),
-                Ok(Err(_)) => {
-                    self.mailbox_closed.fetch_add(1, Ordering::Relaxed);
-                    None
+        match tokio::time::timeout(Self::COMMAND_TIMEOUT, tx.send(command)).await {
+            Ok(Ok(())) => {
+                self.mailbox_enqueued.fetch_add(1, Ordering::Relaxed);
+                match tokio::time::timeout(Self::COMMAND_TIMEOUT, rx).await {
+                    Ok(Ok(result)) => MailboxAttempt::Completed(result),
+                    Ok(Err(_)) => {
+                        self.mailbox_closed.fetch_add(1, Ordering::Relaxed);
+                        MailboxAttempt::Uncertain(
+                            "room command reply channel closed after enqueue; inline retry refused",
+                        )
+                    }
+                    Err(_) => MailboxAttempt::Uncertain(
+                        "room command reply timed out after enqueue; inline retry refused",
+                    ),
                 }
-                Err(_) => {
-                    self.mailbox_failed.fetch_add(1, Ordering::Relaxed);
-                    None
-                }
-            },
+            }
             Ok(Err(_)) => {
                 self.mailbox_closed.fetch_add(1, Ordering::Relaxed);
-                None
+                MailboxAttempt::NotEnqueued
             }
-            Err(_) => {
-                self.mailbox_failed.fetch_add(1, Ordering::Relaxed);
-                None
-            }
+            Err(_) => MailboxAttempt::NotEnqueued,
         }
     }
 
-    /// Route a non-idempotent room command through the per-room mailbox.
-    ///
-    /// If the command was successfully sent to the mailbox but the reply channel is
-    /// lost, we deliberately return an error instead of falling back to inline
-    /// execution.  This avoids duplicate `start`/`cancel` effects when the mailbox
-    /// worker may already have executed the command but failed before replying.
-    /// Used by start_room and cancel_start.
+    /// Non-idempotent controls use the same uncertainty-safe routing policy.
     pub(super) async fn room_mailbox_or_inline_control<Build, Inline, Fut>(
         &self,
         room_id: &str,
@@ -284,45 +222,7 @@ impl RoomCommandGateway {
         Inline: FnOnce() -> Fut,
         Fut: Future<Output = Result<Value, String>>,
     {
-        if let Some(tx) = self.room_mailbox_sender(room_id) {
-            let (reply, rx) = oneshot::channel();
-            let cmd = build(reply);
-            self.mailbox_enqueued.fetch_add(1, Ordering::Relaxed);
-            match tokio::time::timeout(Self::COMMAND_TIMEOUT, tx.send(cmd)).await {
-                Ok(Ok(())) => match tokio::time::timeout(Self::COMMAND_TIMEOUT, rx).await {
-                    Ok(Ok(result)) => result,
-                    Ok(Err(_)) => {
-                        self.mailbox_closed.fetch_add(1, Ordering::Relaxed);
-                        self.mailbox_failed.fetch_add(1, Ordering::Relaxed);
-                        RoomCommandResult::mailbox_error("room command mailbox reply lost after enqueue; refused inline retry for non-idempotent command")
-                    }
-                    Err(_) => {
-                        // Reply timed out; command may still be executing —
-                        // refuse inline retry for non-idempotent command.
-                        self.mailbox_failed.fetch_add(1, Ordering::Relaxed);
-                        RoomCommandResult::mailbox_error("room command mailbox reply timed out; refused inline retry for non-idempotent command")
-                    }
-                },
-                Ok(Err(_)) => {
-                    self.mailbox_closed.fetch_add(1, Ordering::Relaxed);
-                    self.mailbox_fallback.fetch_add(1, Ordering::Relaxed);
-                    RoomCommandResult::from_untyped(
-                        inline().await,
-                        RoomCommandDelivery::FallbackInline,
-                    )
-                }
-                Err(_) => {
-                    // Send timed out — command was never enqueued, so inline is safe.
-                    self.mailbox_fallback.fetch_add(1, Ordering::Relaxed);
-                    RoomCommandResult::from_untyped(
-                        inline().await,
-                        RoomCommandDelivery::FallbackInline,
-                    )
-                }
-            }
-        } else {
-            self.mailbox_fallback.fetch_add(1, Ordering::Relaxed);
-            RoomCommandResult::from_untyped(inline().await, RoomCommandDelivery::FallbackInline)
-        }
+        self.room_mailbox_or_inline(room_id, build, inline).await
     }
+
 }

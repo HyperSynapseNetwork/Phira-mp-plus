@@ -8,6 +8,7 @@
 //! The generated trait impls require `wit-bindgen` (default feature).
 
 use phira_mp_plus_server_api as api;
+use std::collections::HashSet;
 use std::sync::Arc;
 
 /// Explicit dependency bundle for the WIT host.
@@ -28,10 +29,16 @@ pub struct WitHostContext {
     pub simulation: Arc<crate::simulation::SimulationManager>,
     /// Event bus (for dispatching PluginEvents).
     pub event_bus: Arc<crate::event_bus::EventBus>,
+    /// Immutable capability grant bound to this plugin instance.
+    pub capabilities: Arc<HashSet<String>>,
+    /// Host messaging callback. uid=0 means broadcast.
+    pub send_chat: Option<Arc<dyn Fn(i32, String) + Send + Sync>>,
     /// HTTP sandbox timeout (seconds).
     pub http_timeout_secs: u64,
     /// HTTP sandbox max response body (bytes).
     pub http_max_body: usize,
+    /// Whether plugin HTTP calls may target private/reserved addresses.
+    pub http_allow_private_network: bool,
 }
 
 /// Wraps server capabilities to implement WIT host traits.
@@ -47,6 +54,27 @@ impl WitPluginHost {
 
     pub fn name(&self) -> &str {
         &self.plugin_name
+    }
+
+    fn require_capability(&self, capability: &str) -> Result<(), String> {
+        if self.ctx.capabilities.contains(capability) {
+            Ok(())
+        } else {
+            Err(format!(
+                "plugin '{}' lacks capability '{}'",
+                self.plugin_name, capability
+            ))
+        }
+    }
+
+    #[cfg(feature = "wit-bindgen")]
+    fn require_api_capability(
+        &self,
+        capability: &str,
+    ) -> Result<(), crate::plugin_abi::wit_abi::phira::plugin::phira_types::ApiResult> {
+        self.require_capability(capability).map_err(
+            crate::plugin_abi::wit_abi::phira::plugin::phira_types::ApiResult::Error,
+        )
     }
 
     /// Convenience: run an async fn synchronously with panic protection.
@@ -259,10 +287,15 @@ mod wit_trait_impls {
         }
 
         fn send_chat(&mut self, user_id: u32, message: String) {
-            tracing::info!(
-                "[chat:plugin:{}] user={user_id}: {message}",
-                self.plugin_name
-            );
+            if let Err(error) = self.require_capability("send") {
+                tracing::warn!(plugin = %self.plugin_name, %error, "plugin send_chat denied");
+                return;
+            }
+            if let Some(send_chat) = &self.ctx.send_chat {
+                send_chat(user_id as i32, message);
+            } else {
+                tracing::warn!(plugin = %self.plugin_name, "plugin send_chat unavailable");
+            }
         }
 
         fn http_request(
@@ -272,15 +305,18 @@ mod wit_trait_impls {
             headers: Vec<(String, String)>,
             body: Vec<u8>,
         ) -> Result<types::HttpResponse, String> {
-            // SSRF validation — default to not allowing private networks
-            crate::wasm_host_helpers::validate_http_url(&url, false)?;
+            self.require_capability("http")?;
+            crate::wasm_host_helpers::validate_http_url(
+                &url,
+                self.ctx.http_allow_private_network,
+            )?;
 
             let timeout_secs = self.ctx.http_timeout_secs.max(5);
             let max_body = self.ctx.http_max_body.max(1);
 
             let client = reqwest::blocking::Client::builder()
                 .timeout(std::time::Duration::from_secs(timeout_secs))
-                .redirect(reqwest::redirect::Policy::limited(5))
+                .redirect(reqwest::redirect::Policy::none())
                 .build()
                 .map_err(|e| format!("create HTTP client: {e}"))?;
 
@@ -308,12 +344,26 @@ mod wit_trait_impls {
                 .map(|(k, v)| (k.to_string(), v.to_str().unwrap_or("").to_string()))
                 .collect();
 
-            let resp_body: Vec<u8> = response
-                .bytes()
-                .map_err(|e| format!("read response body: {e}"))?
-                .into_iter()
-                .take(max_body)
-                .collect();
+            if response
+                .content_length()
+                .is_some_and(|length| length > max_body as u64)
+            {
+                return Err(format!(
+                    "HTTP response exceeds configured limit of {max_body} bytes"
+                ));
+            }
+            let mut limited = std::io::Read::take(
+                response,
+                (max_body as u64).saturating_add(1),
+            );
+            let mut resp_body = Vec::with_capacity(max_body.min(64 * 1024));
+            std::io::Read::read_to_end(&mut limited, &mut resp_body)
+                .map_err(|e| format!("read response body: {e}"))?;
+            if resp_body.len() > max_body {
+                return Err(format!(
+                    "HTTP response exceeds configured limit of {max_body} bytes"
+                ));
+            }
 
             Ok(types::HttpResponse {
                 status,
@@ -329,6 +379,7 @@ mod wit_trait_impls {
             query_api_result(self, "user_name", &[serde_json::json!(user_id as i32)])
         }
         fn get_user_extra(&mut self, user_id: u32, key: String) -> types::ApiResult {
+            if let Err(error) = self.require_api_capability("ext") { return error; }
             match self.block_on_sync(|ctx|
                 futures::executor::block_on(ctx.extensions.get_user_extra(user_id as i32, &key))
             ) {
@@ -338,6 +389,7 @@ mod wit_trait_impls {
             }
         }
         fn set_user_extra(&mut self, user_id: u32, key: String, value: String) -> types::ApiResult {
+            if let Err(error) = self.require_api_capability("ext") { return error; }
             match self.block_on_sync(|ctx|
                 futures::executor::block_on(ctx.extensions.set_user_extra(user_id as i32, &key, value))
             ) {
@@ -349,6 +401,7 @@ mod wit_trait_impls {
             query_api_result(self, "rooms.by_name", &[serde_json::json!(room_id)])
         }
         fn get_room_extra(&mut self, room_id: String, key: String) -> types::ApiResult {
+            if let Err(error) = self.require_api_capability("ext") { return error; }
             match self.block_on_sync(|ctx|
                 futures::executor::block_on(ctx.extensions.get_room_extra(&room_id, &key))
             ) {
@@ -361,12 +414,13 @@ mod wit_trait_impls {
             query_api_result(self, "rooms.list", &[])
         }
         fn list_online_users(&mut self) -> types::ApiResult {
-            query_api_result(self, "rooms.list", &[])
+            query_api_result(self, "users.list", &[])
         }
         fn is_user_online(&mut self, user_id: u32) -> bool {
-            // Check if the user has an active session by looking up their name.
-            // If the user exists and has a session, they are online.
-            matches!(query_api_result(self, "user_name", &[serde_json::json!(user_id as i32)]), types::ApiResult::Ok(_))
+            matches!(
+                query_api_result(self, "user.is_online", &[serde_json::json!(user_id as i32)]),
+                types::ApiResult::Ok(types::JsonValue::Flag(true))
+            )
         }
     }
 
@@ -403,20 +457,26 @@ mod wit_trait_impls {
                 serde_json::json!(locked),
             ])
         }
-        fn set_room_hidden(&mut self, _room_id: String, _hidden: bool) -> types::ApiResult {
-            types::ApiResult::Error(
-                "set_room_hidden requires capability 'room.manage' — no mailbox command for hidden".to_string()
-            )
+        fn set_room_hidden(&mut self, room_id: String, hidden: bool) -> types::ApiResult {
+            query_api_result(self, "room.set_hidden", &[
+                serde_json::json!(room_id),
+                serde_json::json!(hidden),
+            ])
         }
         fn close_room(&mut self, room_id: String) -> types::ApiResult {
             query_api_result(self, "room.close", &[
                 serde_json::json!(room_id),
             ])
         }
-        fn set_room_phira_api_endpoint(&mut self, _room_id: String, _endpoint: Option<String>) -> types::ApiResult {
-            types::ApiResult::Error(
-                "set_room_phira_api_endpoint requires capability 'room.manage' — no mailbox command".to_string()
-            )
+        fn set_room_phira_api_endpoint(&mut self, room_id: String, endpoint: Option<String>) -> types::ApiResult {
+            let method = if endpoint.is_some() {
+                "room.set_phira_api_endpoint"
+            } else {
+                "room.clear_phira_api_endpoint"
+            };
+            let mut args = vec![serde_json::json!(room_id)];
+            if let Some(endpoint) = endpoint { args.push(serde_json::json!(endpoint)); }
+            query_api_result(self, method, &args)
         }
     }
 
@@ -445,45 +505,66 @@ mod wit_trait_impls {
         fn is_banned(&mut self, user_id: u32) -> bool {
             matches!(query_api_result(self, "ban.check", &[
                 serde_json::json!(user_id),
-            ]), types::ApiResult::Ok(_))
+            ]), types::ApiResult::Ok(types::JsonValue::Flag(true)))
         }
     }
 
     // ── phira-messaging ──
     impl wit::phira::plugin::phira_messaging::Host for WitPluginHost {
         fn send_to_user(&mut self, user_id: u32, message: String) -> types::ApiResult {
-            tracing::info!("[plugin:{}] send_to_user({user_id}): {message}", self.plugin_name);
-            types::ApiResult::Ok(types::JsonValue::Null)
+            if let Err(error) = self.require_api_capability("send") { return error; }
+            match &self.ctx.send_chat {
+                Some(send_chat) => {
+                    send_chat(user_id as i32, message);
+                    types::ApiResult::Ok(types::JsonValue::Null)
+                }
+                None => types::ApiResult::Error("host messaging is unavailable".to_string()),
+            }
         }
-        fn send_to_room(&mut self, _room_id: String, message: String) -> types::ApiResult {
-            tracing::info!("[plugin:{}] send_to_room: {message}", self.plugin_name);
-            types::ApiResult::Ok(types::JsonValue::Null)
+        fn send_to_room(&mut self, room_id: String, message: String) -> types::ApiResult {
+            query_api_result(self, "send_room_chat", &[
+                serde_json::json!(room_id),
+                serde_json::json!(message),
+            ])
         }
         fn send_to_all(&mut self, message: String) -> types::ApiResult {
-            tracing::info!("[plugin:{}] send_to_all: {message}", self.plugin_name);
-            types::ApiResult::Ok(types::JsonValue::Null)
+            if let Err(error) = self.require_api_capability("send") { return error; }
+            match &self.ctx.send_chat {
+                Some(send_chat) => {
+                    send_chat(0, message);
+                    types::ApiResult::Ok(types::JsonValue::Null)
+                }
+                None => types::ApiResult::Error("host messaging is unavailable".to_string()),
+            }
         }
     }
 
     // ── phira-persistence ──
     impl wit::phira::plugin::phira_persistence::Host for WitPluginHost {
-        fn query_events(&mut self, _since: u64, _limit: u32, _kind: Option<String>, _room: Option<String>, _user: Option<u32>) -> types::ApiResult {
-            types::ApiResult::Error("query_events requires capability 'persist.read' — not yet wired to PersistenceWorker".to_string())
+        fn query_events(&mut self, since: u64, limit: u32, kind: Option<String>, room: Option<String>, user: Option<u32>) -> types::ApiResult {
+            query_api_result(self, "persist.events", &[
+                serde_json::json!(since), serde_json::json!(limit), serde_json::json!(kind),
+                serde_json::json!(room), serde_json::json!(user),
+            ])
         }
-        fn query_room_snapshots(&mut self, _since: u64, _limit: u32) -> types::ApiResult {
-            types::ApiResult::Error("query_room_snapshots requires capability 'persist.read' — not yet wired to PersistenceWorker".to_string())
+        fn query_room_snapshots(&mut self, since: u64, limit: u32) -> types::ApiResult {
+            query_api_result(self, "persist.rooms", &[serde_json::json!(since), serde_json::json!(limit)])
         }
-        fn query_touches(&mut self, _since: u64, _limit: u32, _round: Option<String>, _player: Option<u32>) -> types::ApiResult {
-            types::ApiResult::Error("query_touches requires capability 'persist.read' — not yet wired to RoundStore".to_string())
+        fn query_touches(&mut self, since: u64, limit: u32, round: Option<String>, player: Option<u32>) -> types::ApiResult {
+            query_api_result(self, "persist.touches", &[
+                serde_json::json!(since), serde_json::json!(limit), serde_json::json!(round), serde_json::json!(player),
+            ])
         }
-        fn query_judges(&mut self, _since: u64, _limit: u32, _round: Option<String>, _player: Option<u32>) -> types::ApiResult {
-            types::ApiResult::Error("query_judges requires capability 'persist.read' — not yet wired to RoundStore".to_string())
+        fn query_judges(&mut self, since: u64, limit: u32, round: Option<String>, player: Option<u32>) -> types::ApiResult {
+            query_api_result(self, "persist.judges", &[
+                serde_json::json!(since), serde_json::json!(limit), serde_json::json!(round), serde_json::json!(player),
+            ])
         }
-        fn get_playtime(&mut self, _user_id: u32) -> types::ApiResult {
-            types::ApiResult::Error("get_playtime requires capability 'persist.read' — no DbManager query path for playtime".to_string())
+        fn get_playtime(&mut self, user_id: u32) -> types::ApiResult {
+            query_api_result(self, "persist.playtime", &[serde_json::json!(user_id)])
         }
-        fn top_playtime(&mut self, _limit: u32) -> types::ApiResult {
-            types::ApiResult::Error("top_playtime requires capability 'persist.read' — no DbManager query path for playtime".to_string())
+        fn top_playtime(&mut self, limit: u32) -> types::ApiResult {
+            query_api_result(self, "persist.top_playtime", &[serde_json::json!(limit)])
         }
     }
 
@@ -511,6 +592,10 @@ mod wit_trait_impls {
     // ── phira-config ──
     impl wit::phira::plugin::phira_config::Host for WitPluginHost {
         fn get_config(&mut self, key: String) -> types::ApiResult {
+            if let Err(error) = self.require_api_capability("config") { return error; }
+            if let Err(error) = crate::wasm_host_helpers::validate_config_key(&key) {
+                return types::ApiResult::Error(error);
+            }
             let path = crate::wasm_host_helpers::config_path(&self.plugin_name);
             let content = match std::fs::read_to_string(&path) {
                 Ok(c) => c,
@@ -530,6 +615,10 @@ mod wit_trait_impls {
             }
         }
         fn set_config(&mut self, key: String, value: String) -> types::ApiResult {
+            if let Err(error) = self.require_api_capability("config") { return error; }
+            if let Err(error) = crate::wasm_host_helpers::validate_config_key(&key) {
+                return types::ApiResult::Error(error);
+            }
             let path = crate::wasm_host_helpers::config_path(&self.plugin_name);
             let mut root: serde_json::Value = std::fs::read_to_string(&path)
                 .ok()
@@ -565,12 +654,19 @@ mod wit_trait_impls {
             if let Some(parent) = path.parent() {
                 let _ = std::fs::create_dir_all(parent);
             }
-            match std::fs::write(&path, serde_json::to_string_pretty(&root).unwrap_or_default()) {
+            let bytes = serde_json::to_vec_pretty(&root).unwrap_or_default();
+            match crate::wasm_host_helpers::atomic_write(&path, &bytes) {
                 Ok(()) => types::ApiResult::Ok(types::JsonValue::Null),
                 Err(e) => types::ApiResult::Error(format!("write config: {e}")),
             }
         }
         fn list_config(&mut self, prefix: String) -> types::ApiResult {
+            if let Err(error) = self.require_api_capability("config") { return error; }
+            if !prefix.is_empty() {
+                if let Err(error) = crate::wasm_host_helpers::validate_config_key(&prefix) {
+                    return types::ApiResult::Error(error);
+                }
+            }
             let path = crate::wasm_host_helpers::config_path(&self.plugin_name);
             let content = match std::fs::read_to_string(&path) {
                 Ok(c) => c,
@@ -604,6 +700,7 @@ mod wit_trait_impls {
             types::ApiResult::Ok(json_to_wit_json(&serde_json::json!(keys)))
         }
         fn reload_config(&mut self) -> types::ApiResult {
+            if let Err(error) = self.require_api_capability("config") { return error; }
             let path = crate::wasm_host_helpers::config_path(&self.plugin_name);
             match std::fs::read_to_string(&path) {
                 Ok(content) => match serde_json::from_str::<serde_json::Value>(&content) {
@@ -614,6 +711,7 @@ mod wit_trait_impls {
             }
         }
         fn poll_config_changes(&mut self, _since: u64) -> types::ApiResult {
+            if let Err(error) = self.require_api_capability("config") { return error; }
             // Simple implementation: check if the config file exists and return its
             // modification time as a version indicator.
             let path = crate::wasm_host_helpers::config_path(&self.plugin_name);
@@ -635,6 +733,7 @@ mod wit_trait_impls {
     // ── phira-simulation ──
     impl wit::phira::plugin::phira_simulation::Host for WitPluginHost {
         fn status(&mut self) -> types::ApiResult {
+            if let Err(error) = self.require_api_capability("simulation") { return error; }
             let result = self.block_on_sync(|ctx|
                 futures::executor::block_on(ctx.simulation.status())
             );
@@ -647,6 +746,7 @@ mod wit_trait_impls {
             }
         }
         fn run(&mut self, preset: String, users: Option<u32>, rooms: Option<u32>, duration: Option<u32>) -> types::ApiResult {
+            if let Err(error) = self.require_api_capability("simulation") { return error; }
             let result = self.block_on_sync(|ctx| {
                 let mut config = crate::simulation::SimulationConfig::default();
                 if let Some(p) = crate::simulation::SimulationPreset::parse(&preset) {
@@ -666,6 +766,7 @@ mod wit_trait_impls {
             }
         }
         fn stop(&mut self) -> types::ApiResult {
+            if let Err(error) = self.require_api_capability("simulation") { return error; }
             let result = self.block_on_sync(|ctx|
                 futures::executor::block_on(ctx.simulation.stop("stopped via plugin API"))
             );
@@ -678,6 +779,7 @@ mod wit_trait_impls {
             }
         }
         fn cleanup(&mut self) -> types::ApiResult {
+            if let Err(error) = self.require_api_capability("simulation") { return error; }
             let result = self.block_on_sync(|ctx|
                 futures::executor::block_on(ctx.simulation.cleanup())
             );

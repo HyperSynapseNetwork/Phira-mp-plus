@@ -1,13 +1,13 @@
-//! PROXY protocol support: trusted-forwarded-for middleware.
+//! Trusted-forwarded-for compatibility middleware (not PROXY v1/v2).
 //!
-//! For the PROXY protocol listener port we trust `X-Forwarded-For` headers
+//! On the dedicated trusted-proxy listener we accept `X-Forwarded-For` headers
 //! set by a reverse proxy (HAProxy, Nginx) and inject the real client IP
 //! into request extensions via [`RealClientIp`].  Direct ports skip this.
 //!
 //! # Architecture
 //! - **Direct port** (default 12346 / `--port`): No middleware — the TCP
 //!   peer address is authoritative.
-//! - **PROXY port** (default 0 / `--proxy-port`, e.g. 12344): The
+//! - **Trusted proxy port** (default 0 / `--proxy-port`, e.g. 12344): The
 //!   [`TrustForwardedForLayer`] is applied so that `X-Forwarded-For` headers
 //!   from the reverse proxy are trusted.
 
@@ -16,7 +16,7 @@ use std::net::IpAddr;
 type Request<B> = axum::http::Request<B>;
 type Response<B> = axum::http::Response<B>;
 
-/// Extension key injected into requests that arrived via PROXY protocol.
+/// Extension key injected into requests that arrived via the trusted proxy port.
 ///
 /// Read this from `req.extensions().get::<RealClientIp>()` in handlers
 /// that need the original client IP behind a reverse proxy.
@@ -26,7 +26,7 @@ pub struct RealClientIp(pub IpAddr);
 /// Tower layer that trusts `X-Forwarded-For` headers and injects
 /// [`RealClientIp`] into request extensions.
 ///
-/// Only apply this layer on the PROXY protocol listener port.
+/// Only apply this layer on a listener reachable exclusively through PPB/a trusted proxy.
 #[derive(Clone)]
 pub struct TrustForwardedForLayer;
 

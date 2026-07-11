@@ -32,19 +32,31 @@ impl RoomCommandHandler {
         let room = ctx.room.clone();
         match command {
             RoomActorCommand::SetLock {
-                room_id, locked, ..
+                room_id, locked, actor_user_id, ..
             } => typed_or_err(
-                gateway.set_lock_inline(state, room_id, *locked, room.clone()).await,
+                gateway
+                    .set_lock_inline(state, room_id, *locked, *actor_user_id, room.clone())
+                    .await,
                 RoomCommandDelivery::PerRoomMailbox,
             ),
-            RoomActorCommand::SetCycle { room_id, cycle, .. } => typed_or_err(
-                gateway.set_cycle_inline(state, room_id, *cycle, room.clone()).await,
+            RoomActorCommand::SetCycle { room_id, cycle, actor_user_id, .. } => typed_or_err(
+                gateway
+                    .set_cycle_inline(state, room_id, *cycle, *actor_user_id, room.clone())
+                    .await,
                 RoomCommandDelivery::PerRoomMailbox,
             ),
             RoomActorCommand::SetHost {
                 room_id, target_id, ..
             } => typed_or_err(
                 gateway.set_host_inline(state, room_id, *target_id, room.clone()).await,
+                RoomCommandDelivery::PerRoomMailbox,
+            ),
+            RoomActorCommand::SetHidden { room_id, hidden, .. } => typed_or_err(
+                gateway.set_hidden_inline(state, room_id, *hidden, room.clone()).await,
+                RoomCommandDelivery::PerRoomMailbox,
+            ),
+            RoomActorCommand::SetEndpoint { room_id, endpoint, .. } => typed_or_err(
+                gateway.set_endpoint_inline(state, room_id, endpoint.clone(), room.clone()).await,
                 RoomCommandDelivery::PerRoomMailbox,
             ),
             RoomActorCommand::CloseRoom { room_id, .. } => typed_or_err(
@@ -176,7 +188,7 @@ mod tests {
     #[test]
     fn set_lock_does_not_stop_room_mailbox() {
         let command = RoomActorCommand::SetLock {
-            room_id: "room-c".to_string(), locked: true, reply: dummy_reply(),
+            room_id: "room-c".to_string(), locked: true, actor_user_id: 0, reply: dummy_reply(),
         };
         let result = RoomCommandResult::from_untyped(
             Ok(serde_json::json!({"locked": true})),
@@ -188,7 +200,7 @@ mod tests {
     #[test]
     fn set_cycle_does_not_stop_room_mailbox() {
         let command = RoomActorCommand::SetCycle {
-            room_id: "room-d".to_string(), cycle: true, reply: dummy_reply(),
+            room_id: "room-d".to_string(), cycle: true, actor_user_id: 0, reply: dummy_reply(),
         };
         let result = RoomCommandResult::from_untyped(
             Ok(serde_json::json!({"cycle": true})),

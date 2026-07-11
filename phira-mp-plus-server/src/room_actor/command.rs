@@ -8,6 +8,8 @@ pub(super) enum RoomCommandKind {
     SetLock,
     SetCycle,
     SetHost,
+    SetHidden,
+    SetEndpoint,
     CloseRoom,
     KickUser,
     StartRoom,
@@ -20,6 +22,8 @@ impl RoomCommandKind {
             Self::SetLock => "set_lock",
             Self::SetCycle => "set_cycle",
             Self::SetHost => "set_host",
+            Self::SetHidden => "set_hidden",
+            Self::SetEndpoint => "set_phira_api_endpoint",
             Self::CloseRoom => "close",
             Self::KickUser => "kick",
             Self::StartRoom => "start",
@@ -36,16 +40,28 @@ pub(super) enum RoomActorCommand {
     SetLock {
         room_id: String,
         locked: bool,
+        actor_user_id: i32,
         reply: oneshot::Sender<RoomCommandResult>,
     },
     SetCycle {
         room_id: String,
         cycle: bool,
+        actor_user_id: i32,
         reply: oneshot::Sender<RoomCommandResult>,
     },
     SetHost {
         room_id: String,
         target_id: Option<i32>,
+        reply: oneshot::Sender<RoomCommandResult>,
+    },
+    SetHidden {
+        room_id: String,
+        hidden: bool,
+        reply: oneshot::Sender<RoomCommandResult>,
+    },
+    SetEndpoint {
+        room_id: String,
+        endpoint: Option<String>,
         reply: oneshot::Sender<RoomCommandResult>,
     },
     CloseRoom {
@@ -73,6 +89,8 @@ impl RoomActorCommand {
             Self::SetLock { .. } => RoomCommandKind::SetLock,
             Self::SetCycle { .. } => RoomCommandKind::SetCycle,
             Self::SetHost { .. } => RoomCommandKind::SetHost,
+            Self::SetHidden { .. } => RoomCommandKind::SetHidden,
+            Self::SetEndpoint { .. } => RoomCommandKind::SetEndpoint,
             Self::CloseRoom { .. } => RoomCommandKind::CloseRoom,
             Self::KickUser { .. } => RoomCommandKind::KickUser,
             Self::StartRoom { .. } => RoomCommandKind::StartRoom,
@@ -85,6 +103,8 @@ impl RoomActorCommand {
             Self::SetLock { reply, .. }
             | Self::SetCycle { reply, .. }
             | Self::SetHost { reply, .. }
+            | Self::SetHidden { reply, .. }
+            | Self::SetEndpoint { reply, .. }
             | Self::CloseRoom { reply, .. }
             | Self::KickUser { reply, .. }
             | Self::StartRoom { reply, .. }
@@ -104,6 +124,8 @@ mod tests {
         assert_eq!(RoomCommandKind::SetLock.action(), "set_lock");
         assert_eq!(RoomCommandKind::SetCycle.action(), "set_cycle");
         assert_eq!(RoomCommandKind::SetHost.action(), "set_host");
+        assert_eq!(RoomCommandKind::SetHidden.action(), "set_hidden");
+        assert_eq!(RoomCommandKind::SetEndpoint.action(), "set_phira_api_endpoint");
         assert_eq!(RoomCommandKind::CloseRoom.action(), "close");
         assert_eq!(RoomCommandKind::KickUser.action(), "kick");
         assert_eq!(RoomCommandKind::StartRoom.action(), "start");

@@ -18,7 +18,18 @@ impl RoomCommandGateway {
         preferred: Option<Arc<crate::room::Room>>,
     ) -> Result<(RoomId, Arc<crate::room::Room>), String> {
         if let Some(room) = preferred {
-            let rid: RoomId = room_id.to_string().try_into().map_err(|_| "invalid room_id")?;
+            let rid: RoomId = room_id
+                .to_string()
+                .try_into()
+                .map_err(|_| "invalid room_id".to_string())?;
+            let current = {
+                let rooms = state.rooms.read().await;
+                rooms.get(&rid).map(Arc::clone)
+            }
+            .ok_or_else(|| "room not found".to_string())?;
+            if !Arc::ptr_eq(&current, &room) {
+                return Err("room actor reference is stale".to_string());
+            }
             return Ok((rid, room));
         }
         self.find_room(state, room_id).await

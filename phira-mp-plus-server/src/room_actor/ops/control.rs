@@ -57,13 +57,12 @@ impl RoomCommandGateway {
     ) -> Result<RoomCommandPayload, String> {
         let (_rid, room) = self.resolve_room(state, room_id, room_override).await?;
         room.begin_admin_start().await.map_err(|e| e.to_string())?;
-        if let Some(pm) = &room.plugin_manager {
-            pm.trigger(&PluginEvent::GameStart {
+        state
+            .dispatch_plugin_event(PluginEvent::GameStart {
                 user_id: 0,
                 room_id: room_id.to_string(),
             })
             .await;
-        }
         Ok(RoomCommandPayload::RoomStarted {
             room_id: room_id.to_string(),
         })

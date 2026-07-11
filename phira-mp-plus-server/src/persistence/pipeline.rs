@@ -8,7 +8,7 @@ use crate::persistence::{PersistenceEvent, PersistencePipeline};
 use crate::telemetry_batcher::TelemetryBatcher;
 use serde_json::Value;
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ProductionTelemetryStage {
@@ -42,6 +42,16 @@ pub enum BenchmarkReportStage {
     Failed { elapsed_ms: u64, error: String },
 }
 
+
+const DB_WRITE_ATTEMPTS: usize = 3;
+const DB_RETRY_BACKOFF_MS: [u64; DB_WRITE_ATTEMPTS - 1] = [50, 250];
+
+async fn wait_before_retry(attempt: usize) {
+    if let Some(delay_ms) = DB_RETRY_BACKOFF_MS.get(attempt) {
+        tokio::time::sleep(Duration::from_millis(*delay_ms)).await;
+    }
+}
+
 fn elapsed_ms(start: Instant) -> u64 {
     u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX)
 }
@@ -50,14 +60,16 @@ pub async fn persist_simulation_event_if_needed(event: &PersistenceEvent) -> Per
     if !event.is_simulation() {
         return PersistenceWriteStage::NotApplicable;
     }
-    let Some(db) = crate::internal_hooks::DB.get() else {
+    let Some(db) = crate::internal_hooks::DB.get().filter(|db| db.is_active()) else {
         return PersistenceWriteStage::SkippedNoDatabase {
             pipeline: PersistencePipeline::Simulation,
         };
     };
 
     let started = Instant::now();
-    let result = match event {
+    let mut result = false;
+    for attempt in 0..DB_WRITE_ATTEMPTS {
+        result = match event {
         PersistenceEvent::ServerEvent { kind, payload, .. } => {
             db.record_sim_event(extract_run_id(payload), kind, (**payload).clone())
                 .await
@@ -120,6 +132,11 @@ pub async fn persist_simulation_event_if_needed(event: &PersistenceEvent) -> Per
             return PersistenceWriteStage::NotApplicable;
         }
     };
+        if result {
+            break;
+        }
+        wait_before_retry(attempt).await;
+    }
     if result {
         PersistenceWriteStage::Acknowledged {
             pipeline: PersistencePipeline::Simulation,
@@ -134,34 +151,70 @@ pub async fn persist_simulation_event_if_needed(event: &PersistenceEvent) -> Per
     }
 }
 
-/// Production telemetry (Touch/Judge) staging is handled directly by
-/// session_telemetry.rs hot path — not through PersistenceWorker.
-/// This function returns NotTelemetry for all events; the telemetry
-/// mirror path was removed as part of Worker dedup (Step 3).
+/// Stage the optional WorkerPreferred telemetry mirror. The direct
+/// RoundStore/db path remains authoritative; this queue only feeds the
+/// runtime-v2 batch/diagnostic tables.
 pub async fn stage_production_telemetry_if_needed(
     event: &PersistenceEvent,
-    _batcher: &Arc<TelemetryBatcher>,
+    batcher: &Arc<TelemetryBatcher>,
 ) -> ProductionTelemetryStage {
     if event.is_simulation() {
         return ProductionTelemetryStage::NotTelemetry;
     }
-    // TouchBatch/JudgeBatch are written directly by the hot path.
-    // No Worker mirror is needed.
-    ProductionTelemetryStage::NotTelemetry
+    let item = match event {
+        PersistenceEvent::TouchBatch {
+            round_id,
+            user_id,
+            payload,
+            ..
+        } => crate::telemetry::TelemetryItem {
+            kind: crate::telemetry::TelemetryKind::Touch,
+            room_id: extract_room_id(payload),
+            round_id: Some(round_id.clone()),
+            user_id: *user_id,
+            item_count: crate::persistence::telemetry::telemetry_point_count(payload),
+            payload: (**payload).clone(),
+        },
+        PersistenceEvent::JudgeBatch {
+            round_id,
+            user_id,
+            payload,
+            ..
+        } => crate::telemetry::TelemetryItem {
+            kind: crate::telemetry::TelemetryKind::Judge,
+            room_id: extract_room_id(payload),
+            round_id: Some(round_id.clone()),
+            user_id: *user_id,
+            item_count: crate::persistence::telemetry::telemetry_point_count(payload),
+            payload: (**payload).clone(),
+        },
+        _ => return ProductionTelemetryStage::NotTelemetry,
+    };
+
+    match batcher.enqueue(item).await {
+        Ok(()) => ProductionTelemetryStage::Staged,
+        Err(item) => ProductionTelemetryStage::Failed(format!(
+            "telemetry batcher rejected {} item for user {}",
+            item.kind.as_str(),
+            item.user_id
+        )),
+    }
 }
 
 pub async fn persist_production_event_if_needed(event: &PersistenceEvent) -> PersistenceWriteStage {
     if event.is_simulation() {
         return PersistenceWriteStage::NotApplicable;
     }
-    let Some(db) = crate::internal_hooks::DB.get() else {
+    let Some(db) = crate::internal_hooks::DB.get().filter(|db| db.is_active()) else {
         return PersistenceWriteStage::SkippedNoDatabase {
             pipeline: PersistencePipeline::EventMirror,
         };
     };
 
     let started = Instant::now();
-    let result = match event {
+    let mut result = false;
+    for attempt in 0..DB_WRITE_ATTEMPTS {
+        result = match event {
         PersistenceEvent::ServerEvent { kind, payload, .. } => {
             let payload = with_runtime_v2_persistence_meta((**payload).clone());
             db.record_room_event(
@@ -197,39 +250,19 @@ pub async fn persist_production_event_if_needed(event: &PersistenceEvent) -> Per
             room_uuid,
             joined_at,
         } => {
-            db.record_user_room_history_sync(*user_id, room_id.clone(), room_uuid.clone(), *joined_at);
-            return PersistenceWriteStage::Acknowledged {
-                pipeline: PersistencePipeline::EventMirror,
-                elapsed_ms: started.elapsed().as_millis() as u64,
-            };
+            db.record_user_room_history(*user_id, room_id, room_uuid, *joined_at).await
         }
         PersistenceEvent::UserOnline { user_id } => {
-            db.set_online_sync(*user_id);
-            return PersistenceWriteStage::Acknowledged {
-                pipeline: PersistencePipeline::EventMirror,
-                elapsed_ms: started.elapsed().as_millis() as u64,
-            };
+            db.set_online(*user_id).await
         }
         PersistenceEvent::UserOffline { user_id } => {
-            db.set_offline_sync(*user_id);
-            return PersistenceWriteStage::Acknowledged {
-                pipeline: PersistencePipeline::EventMirror,
-                elapsed_ms: started.elapsed().as_millis() as u64,
-            };
+            db.set_offline(*user_id).await
         }
         PersistenceEvent::UserDisconnect { user_id, user_name } => {
-            db.record_user_disconnect_sync(*user_id, user_name);
-            return PersistenceWriteStage::Acknowledged {
-                pipeline: PersistencePipeline::EventMirror,
-                elapsed_ms: started.elapsed().as_millis() as u64,
-            };
+            db.record_user_disconnect(*user_id, user_name).await
         }
         PersistenceEvent::UserSeen { user_id, user_name, language, ip } => {
-            db.record_user_seen_sync(*user_id, user_name, language, Some(ip.clone()));
-            return PersistenceWriteStage::Acknowledged {
-                pipeline: PersistencePipeline::EventMirror,
-                elapsed_ms: started.elapsed().as_millis() as u64,
-            };
+            db.record_user_seen(*user_id, user_name, language, Some(ip.clone())).await
         }
         PersistenceEvent::BenchmarkReport { .. }
         | PersistenceEvent::Flush
@@ -237,6 +270,11 @@ pub async fn persist_production_event_if_needed(event: &PersistenceEvent) -> Per
             return PersistenceWriteStage::NotApplicable;
         }
     };
+        if result {
+            break;
+        }
+        wait_before_retry(attempt).await;
+    }
     if result {
         PersistenceWriteStage::Acknowledged {
             pipeline: PersistencePipeline::EventMirror,
@@ -255,15 +293,23 @@ pub async fn persist_benchmark_report_if_needed(event: &PersistenceEvent) -> Ben
     let PersistenceEvent::BenchmarkReport { report } = event else {
         return BenchmarkReportStage::NotBenchmark;
     };
-    let Some(db) = crate::internal_hooks::DB.get() else {
+    let Some(db) = crate::internal_hooks::DB.get().filter(|db| db.is_active()) else {
         return BenchmarkReportStage::SkippedNoDatabase;
     };
     let started = Instant::now();
-    let record = crate::persistence::BenchmarkReportPersistenceRecord::from_report(
-        report,
-        "benchmark.completed.event_bus",
-    );
-    if db.record_runtime_benchmark_report(record).await {
+    let mut persisted = false;
+    for attempt in 0..DB_WRITE_ATTEMPTS {
+        let record = crate::persistence::BenchmarkReportPersistenceRecord::from_report(
+            report,
+            "benchmark.completed.event_bus",
+        );
+        persisted = db.record_runtime_benchmark_report(record).await;
+        if persisted {
+            break;
+        }
+        wait_before_retry(attempt).await;
+    }
+    if persisted {
         BenchmarkReportStage::Acknowledged {
             elapsed_ms: elapsed_ms(started),
         }
@@ -280,7 +326,9 @@ fn with_runtime_v2_persistence_meta(mut payload: Value) -> Value {
         obj.entry("runtime_v2_source".to_string())
             .or_insert_with(|| serde_json::json!("persistence_worker"));
         obj.entry("runtime_v2_dual_write".to_string())
-            .or_insert_with(|| serde_json::json!(true));
+            .or_insert_with(|| serde_json::json!(false));
+        obj.entry("runtime_v2_persistence_mode".to_string())
+            .or_insert_with(|| serde_json::json!("worker_exclusive"));
     }
     payload
 }

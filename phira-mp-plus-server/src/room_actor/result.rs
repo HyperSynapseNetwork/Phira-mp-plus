@@ -51,6 +51,16 @@ pub enum RoomCommandPayload {
         host_name: String,
         host_is_system: bool,
     },
+    HiddenChanged {
+        room_id: String,
+        hidden: bool,
+    },
+    EndpointChanged {
+        room_id: String,
+        endpoint: String,
+        endpoint_override: Option<String>,
+        using_room_override: bool,
+    },
     UserKicked {
         room_id: String,
         user_id: i32,
@@ -88,6 +98,21 @@ impl RoomCommandPayload {
                 "ok": true, "room_id": room_id,
                 "host": host, "host_name": host_name,
                 "host_is_system": host_is_system,
+            }),
+            Self::HiddenChanged { room_id, hidden } => json!({
+                "ok": true, "room_id": room_id, "hidden": hidden,
+            }),
+            Self::EndpointChanged {
+                room_id,
+                endpoint,
+                endpoint_override,
+                using_room_override,
+            } => json!({
+                "ok": true,
+                "room_id": room_id,
+                "phira_api_endpoint": endpoint,
+                "phira_api_endpoint_override": endpoint_override,
+                "using_room_override": using_room_override,
             }),
             Self::UserKicked {
                 room_id,

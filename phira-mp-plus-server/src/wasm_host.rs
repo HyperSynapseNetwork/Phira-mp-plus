@@ -59,6 +59,12 @@ impl WasmPluginServices {
         }
     }
 
+    pub fn remove_capabilities(&self, plugin: &str) {
+        if let Ok(mut map) = self.capabilities.lock() {
+            map.remove(plugin);
+        }
+    }
+
     pub fn clear_dynamic_registrations(&self) {
         if let Ok(mut cmds) = self.cli_commands.lock() {
             cmds.clear();
@@ -87,6 +93,7 @@ impl WasmPluginServices {
 #[cfg(feature = "wit-bindgen")]
 pub struct WitHostState {
     pub host: crate::wit_host::WitPluginHost,
+    pub limits: wasmtime::StoreLimits,
 }
 
 /// WIT component model plugin instance.
@@ -98,33 +105,73 @@ pub struct WitPluginComponent {
     pub info: PluginInfo,
     pub plugin_name: String,
     pub initialized: bool,
+    fuel_per_call: u64,
 }
 
 #[cfg(feature = "wit-bindgen")]
 impl WitPluginComponent {
     /// Create a WitHostContext from services that have server_state set.
-    fn build_context_from_services(services: &Arc<WasmPluginServices>) -> Result<Arc<crate::wit_host::WitHostContext>, String> {
+    fn build_context_from_services(
+        services: &Arc<WasmPluginServices>,
+        plugin_name: &str,
+    ) -> Result<Arc<crate::wit_host::WitHostContext>, String> {
         let state_ref = services.server_state.lock().unwrap_or_else(|e| e.into_inner());
-        let s = state_ref.as_ref().and_then(|w| w.upgrade())
+        let server = state_ref
+            .as_ref()
+            .and_then(|weak| weak.upgrade())
             .ok_or_else(|| "server state not available — set via PluginManager::set_server_state".to_string())?;
-        let state_query = services.state_query.lock().unwrap_or_else(|e| e.into_inner()).clone()
-            .ok_or_else(|| "state query not available — set via PluginManager::set_default_state".to_string())?;
+        drop(state_ref);
+
+        let capabilities = services
+            .capabilities
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(plugin_name)
+            .cloned()
+            .unwrap_or_else(|| crate::wasm_host_helpers::default_capabilities().into_iter().collect());
+        let capabilities = Arc::new(
+            capabilities
+                .into_iter()
+                .collect::<std::collections::HashSet<_>>(),
+        );
+        let query_capabilities = Arc::clone(&capabilities);
+        let query_state = Arc::clone(&server);
+        let plugin = plugin_name.to_string();
+        let state_query = api::ServerStateQuery::new(move |method: &str, args: &[serde_json::Value]| {
+            if let Some(required) = crate::wasm_host_helpers::required_capability(method) {
+                if !query_capabilities.contains(required) {
+                    return Err(format!(
+                        "plugin '{plugin}' lacks capability '{required}' required by method '{method}'"
+                    ));
+                }
+            }
+            crate::server::query::server_state_query_inner(&query_state, method, args)
+        });
+        let send_chat = services
+            .send_chat
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+
         Ok(Arc::new(crate::wit_host::WitHostContext {
             state_query,
             extensions: Arc::clone(&services.extensions),
-            room_commands: Arc::clone(&s.room_commands),
-            ban_manager: Arc::clone(&s.ban_manager),
-            simulation: Arc::clone(&s.simulation),
-            event_bus: Arc::clone(&s.event_bus),
-            http_timeout_secs: s.config.wasm_runtime.http_timeout_secs,
-            http_max_body: s.config.wasm_runtime.max_http_response_bytes,
+            room_commands: Arc::clone(&server.room_commands),
+            ban_manager: Arc::clone(&server.ban_manager),
+            simulation: Arc::clone(&server.simulation),
+            event_bus: Arc::clone(&server.event_bus),
+            capabilities,
+            send_chat,
+            http_timeout_secs: server.config.wasm_runtime.http_timeout_secs,
+            http_max_body: server.config.wasm_runtime.max_http_response_bytes,
+            http_allow_private_network: server.config.wasm_runtime.allow_private_network,
         }))
     }
 
     /// Create a new WIT component plugin from raw WASM bytes.
     ///
-    /// Requires `WasmPluginServices` with `server_state` and `state_query`
-    /// already set by `PluginManager::set_server_state` / `set_default_state`.
+    /// Requires `WasmPluginServices` with `server_state` set. The state-query
+    /// closure is built per plugin and enforces that plugin's capability set.
     /// Tests should use `new_with_ctx` instead.
     pub fn new(
         wasm_bytes: &[u8],
@@ -138,7 +185,7 @@ impl WitPluginComponent {
         engine_config.wasm_bulk_memory(true);
         engine_config.wasm_multi_value(true);
         engine_config.wasm_backtrace(true);
-        // Fuel metering disabled — wasm init needs full execution to complete
+        engine_config.consume_fuel(runtime.fuel_per_call > 0);
         engine_config.max_wasm_stack(runtime.max_stack_bytes.max(64 * 1024));
         let engine = wasmtime::Engine::new(&engine_config)
             .map_err(|e| format!("engine creation: {e}"))?;
@@ -147,8 +194,8 @@ impl WitPluginComponent {
         let mut linker = wasmtime::component::Linker::<WitHostState>::new(&engine);
         wit_abi::PhiraPluginV2::add_to_linker(&mut linker, |state| &mut state.host)
             .map_err(|e| format!("linker setup: {e}"))?;
-        let ctx = Self::build_context_from_services(&services)?;
-        Self::new_with_context(engine, component, linker, ctx, plugin_name)
+        let ctx = Self::build_context_from_services(&services, &plugin_name)?;
+        Self::new_with_context(engine, component, linker, ctx, plugin_name, runtime)
     }
 
     /// Create a WIT component from raw bytes with a pre-built host context.
@@ -168,6 +215,7 @@ impl WitPluginComponent {
         engine_config.wasm_bulk_memory(true);
         engine_config.wasm_multi_value(true);
         engine_config.wasm_backtrace(true);
+        engine_config.consume_fuel(runtime.fuel_per_call > 0);
         engine_config.max_wasm_stack(runtime.max_stack_bytes.max(64 * 1024));
         let engine = wasmtime::Engine::new(&engine_config)
             .map_err(|e| format!("engine creation: {e}"))?;
@@ -176,7 +224,7 @@ impl WitPluginComponent {
         let mut linker = wasmtime::component::Linker::<WitHostState>::new(&engine);
         wit_abi::PhiraPluginV2::add_to_linker(&mut linker, |state| &mut state.host)
             .map_err(|e| format!("linker setup: {e}"))?;
-        Self::new_with_context(engine, component, linker, ctx, plugin_name)
+        Self::new_with_context(engine, component, linker, ctx, plugin_name, runtime)
     }
 
     /// Create a WIT component from pre-compiled engine/component/linker
@@ -189,11 +237,29 @@ impl WitPluginComponent {
         linker: wasmtime::component::Linker<WitHostState>,
         ctx: Arc<crate::wit_host::WitHostContext>,
         plugin_name: String,
+        runtime: WasmRuntimeConfig,
     ) -> Result<Self, String> {
         use crate::plugin_abi::wit_abi as wit;
         let host = crate::wit_host::WitPluginHost::new(ctx, plugin_name.clone());
-        let host_state = WitHostState { host };
+        let memory_bytes = runtime
+            .max_memory_mb
+            .max(1)
+            .saturating_mul(1024 * 1024);
+        let limits = wasmtime::StoreLimitsBuilder::new()
+            .memory_size(memory_bytes)
+            .instances(128)
+            .memories(128)
+            .tables(128)
+            .trap_on_grow_failure(true)
+            .build();
+        let host_state = WitHostState { host, limits };
         let mut store = wasmtime::Store::new(&engine, host_state);
+        store.limiter(|state| &mut state.limits);
+        if runtime.fuel_per_call > 0 {
+            store
+                .set_fuel(runtime.fuel_per_call)
+                .map_err(|e| format!("set initial plugin fuel: {e}"))?;
+        }
         let instance = linker.instantiate(&mut store, &component)
             .map_err(|e| format!("instantiate component: {e}"))?;
         let component_handle = wit::PhiraPluginV2::new(&mut store, &instance)
@@ -204,24 +270,58 @@ impl WitPluginComponent {
             author: "unknown".to_string(),
             description: "WIT component plugin".to_string(),
         };
-        Ok(Self { store, component: component_handle, info, plugin_name, initialized: false })
+        Ok(Self {
+            store,
+            component: component_handle,
+            info,
+            plugin_name,
+            initialized: false,
+            fuel_per_call: runtime.fuel_per_call,
+        })
+    }
+
+    fn reset_fuel(&mut self) -> Result<(), String> {
+        if self.fuel_per_call > 0 {
+            self.store
+                .set_fuel(self.fuel_per_call)
+                .map_err(|e| format!("reset plugin fuel: {e}"))?;
+        }
+        Ok(())
     }
 
     pub fn call_init(&mut self) -> Result<(), String> {
-        let result = self.component.call_init(&mut self.store)
+        self.reset_fuel()?;
+        let result = self
+            .component
+            .call_init(&mut self.store)
             .map_err(|e| format!("component init trap: {e}"))?;
         result.map_err(|e| format!("component init returned error: {e}"))?;
+
+        self.reset_fuel()?;
+        let reported = self
+            .component
+            .call_get_info(&mut self.store)
+            .map_err(|e| format!("component get-info trap: {e}"))?;
+        self.info = PluginInfo {
+            name: reported.name,
+            version: reported.version,
+            author: reported.author,
+            description: reported.description,
+        };
         self.initialized = true;
         Ok(())
     }
 
     pub fn call_cleanup(&mut self) {
         if !self.initialized { return; }
-        let _ = self.component.call_cleanup(&mut self.store);
+        if self.reset_fuel().is_ok() {
+            let _ = self.component.call_cleanup(&mut self.store);
+        }
         self.initialized = false;
     }
 
     pub fn call_on_event(&mut self, event: &PluginEvent) -> Result<i32, String> {
+        self.reset_fuel()?;
         use crate::plugin_abi::wit_abi::phira::plugin::phira_events as wit_events;
         let wit_event = match event {
             PluginEvent::UserConnect { user_id, user_name, user_ip } => {
@@ -302,6 +402,7 @@ impl WitPluginComponent {
     }
 
     pub fn call_api(&mut self, method: &str, args: &[serde_json::Value]) -> Result<serde_json::Value, String> {
+        self.reset_fuel()?;
         use crate::plugin_abi::wit_abi::phira::plugin::phira_types as types;
         let wit_args: Vec<types::JsonValue> = args.iter().map(|v| crate::wit_host::json_value_to_wit(v)).collect();
         let result = self.component.call_on_api(&mut self.store, method, &wit_args)
@@ -378,8 +479,11 @@ mod tests {
             ban_manager: Arc::new(crate::ban::BanManager::new(extensions)),
             simulation: Arc::new(crate::simulation::SimulationManager::new()),
             event_bus: Arc::new(crate::event_bus::EventBus::new(1024)),
+            capabilities: Arc::new(crate::wasm_host_helpers::default_capabilities()),
+            send_chat: None,
             http_timeout_secs: 10,
             http_max_body: 1024 * 1024,
+            http_allow_private_network: false,
         })
     }
 
@@ -407,13 +511,12 @@ mod tests {
         }
 
         #[test]
-        fn info_has_default_placeholder() {
-            // The version is a placeholder until call_init() is called.
-            // The plugin reports "0.1.0-test" via get_info() but the
-            // component doesn't update its info field from that call.
-            let c = load_component();
+        fn info_is_refreshed_from_guest_after_init() {
+            let mut c = load_component();
+            c.call_init().unwrap();
             assert_eq!(c.info.name, "test-plugin");
-            assert_eq!(c.info.version, "0.1.0");
+            assert_eq!(c.info.version, "0.1.0-test");
+            assert_eq!(c.info.author, "phira-mp-plus");
         }
 
         #[test]

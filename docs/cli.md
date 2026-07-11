@@ -12,7 +12,7 @@ phira-mp-plus-server [OPTIONS]
   -l, --log-file <NAME>      日志文件基础名称 [默认: "phira-mp-plus"]
   -m, --monitor <IDS>...     覆盖允许旁观的用户 ID
       --http-port <PORT>     覆盖 HTTP/SSE 端口（内置默认 12347）
-      --proxy-port <PORT>    覆盖 PROXY protocol 端口（内置默认 0）
+      --proxy-port <PORT>    覆盖可信转发头兼容端口（不是 PROXY v1/v2；内置默认 0）
   -c, --config <FILE>        YAML 配置文件路径 [默认: "server_config.yml"]
   -h, --help                 显示帮助信息
   -V, --version              显示版本号

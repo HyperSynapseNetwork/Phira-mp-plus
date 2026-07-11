@@ -35,12 +35,15 @@ impl DbManager {
                 .duration_since(std::time::UNIX_EPOCH)
                 .map(|d| d.as_millis() as i64)
                 .unwrap_or(0);
+            let Ok(mut transaction) = pool.begin().await else {
+                return false;
+            };
             for record in records {
                 let items: Vec<Value> = record
                     .payload
                     .get("data")
                     .and_then(Value::as_array)
-                    .map(|a| a.clone())
+                    .cloned()
                     .unwrap_or_else(|| vec![record.payload.clone()]);
                 if sqlx::query(
                     "INSERT INTO mp_runtime_telemetry_batches
@@ -63,7 +66,7 @@ impl DbManager {
                 .bind(record.dual_write)
                 .bind(record.schema_version)
                 .bind(&record.flush_reason)
-                .execute(pool)
+                .execute(&mut *transaction)
                 .await
                 .is_err()
                 {
@@ -85,7 +88,7 @@ impl DbManager {
                     .bind(raw_item)
                     .bind(now)
                     .bind(record.schema_version)
-                    .execute(pool)
+                    .execute(&mut *transaction)
                     .await
                     .is_err()
                     {
@@ -93,7 +96,7 @@ impl DbManager {
                     }
                 }
             }
-            return true;
+            return transaction.commit().await.is_ok();
         }
         #[cfg(not(feature = "postgres"))]
         let _ = records;

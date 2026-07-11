@@ -27,7 +27,7 @@ use std::{
     },
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
-use tokio::sync::{mpsc, RwLock};
+use tokio::sync::{mpsc, oneshot, RwLock};
 use tracing::{debug, trace, warn};
 
 const MAX_TELEMETRY_TRACE: usize = 64;
@@ -306,8 +306,15 @@ pub struct TelemetryItem {
 /// Items are enqueued via [`enqueue`](Self::enqueue) and flushed
 /// periodically or when the batch-size threshold is reached.
 #[derive(Debug)]
+enum TelemetryMessage {
+    Item(TelemetryItem),
+    Flush(oneshot::Sender<()>),
+    Shutdown(oneshot::Sender<()>),
+}
+
+#[derive(Debug)]
 pub struct TelemetryBatcher {
-    tx: mpsc::Sender<TelemetryItem>,
+    tx: mpsc::Sender<TelemetryMessage>,
     stats: Arc<RwLock<TelemetryBatcherStats>>,
 }
 
@@ -319,13 +326,13 @@ impl TelemetryBatcher {
             queue_capacity: capacity,
             ..policy
         };
-        let (tx, rx) = mpsc::channel::<TelemetryItem>(capacity);
+        let (tx, rx) = mpsc::channel::<TelemetryMessage>(capacity);
         let stats = Arc::new(RwLock::new(TelemetryBatcherStats::from_policy(
             &worker_policy,
         )));
         let worker_stats = Arc::clone(&stats);
 
-        tokio::spawn(async move {
+        crate::supervisor_actor::spawn_named("telemetry-batcher", async move {
             run_batcher(worker_policy, rx, worker_stats).await;
         });
 
@@ -340,7 +347,7 @@ impl TelemetryBatcher {
         let room_id = item.room_id.clone();
         let user_id = item.user_id;
         let item_count = item.item_count;
-        match self.tx.try_send(item) {
+        match self.tx.try_send(TelemetryMessage::Item(item)) {
             Ok(()) => {
                 let mut stats = self.stats.write().await;
                 stats.queued += 1;
@@ -349,7 +356,7 @@ impl TelemetryBatcher {
                 );
                 Ok(())
             }
-            Err(mpsc::error::TrySendError::Full(item)) => {
+            Err(mpsc::error::TrySendError::Full(TelemetryMessage::Item(item))) => {
                 let mut stats = self.stats.write().await;
                 stats.dropped += 1;
                 stats.last_error = Some("telemetry batcher queue is full".to_string());
@@ -359,11 +366,11 @@ impl TelemetryBatcher {
                 warn!(
                     kind = %item.kind.as_str(),
                     user_id = item.user_id,
-                    "telemetry batcher queue is full; item dropped"
+                    "telemetry mirror queue is full; item dropped (direct path remains authoritative)"
                 );
                 Err(item)
             }
-            Err(mpsc::error::TrySendError::Closed(item)) => {
+            Err(mpsc::error::TrySendError::Closed(TelemetryMessage::Item(item))) => {
                 let mut stats = self.stats.write().await;
                 stats.dropped += 1;
                 stats.last_error = Some("telemetry batcher queue is closed".to_string());
@@ -373,11 +380,38 @@ impl TelemetryBatcher {
                 warn!(
                     kind = %item.kind.as_str(),
                     user_id = item.user_id,
-                    "telemetry batcher queue is closed; item dropped"
+                    "telemetry mirror queue is closed; item dropped (direct path remains authoritative)"
                 );
                 Err(item)
             }
+            Err(_) => unreachable!("enqueue only sends telemetry items"),
         }
+    }
+
+    /// Flush all items accepted before this call.
+    pub async fn flush(&self, timeout: Duration) -> Result<(), String> {
+        let (reply, rx) = oneshot::channel();
+        self.tx
+            .send(TelemetryMessage::Flush(reply))
+            .await
+            .map_err(|_| "telemetry batcher is closed".to_string())?;
+        tokio::time::timeout(timeout, rx)
+            .await
+            .map_err(|_| "telemetry flush timed out".to_string())?
+            .map_err(|_| "telemetry flush acknowledgement was dropped".to_string())
+    }
+
+    /// Flush accepted items and stop the batcher.
+    pub async fn shutdown(&self, timeout: Duration) -> Result<(), String> {
+        let (reply, rx) = oneshot::channel();
+        self.tx
+            .send(TelemetryMessage::Shutdown(reply))
+            .await
+            .map_err(|_| "telemetry batcher is closed".to_string())?;
+        tokio::time::timeout(timeout, rx)
+            .await
+            .map_err(|_| "telemetry shutdown timed out".to_string())?
+            .map_err(|_| "telemetry shutdown acknowledgement was dropped".to_string())
     }
 
     /// Snapshot current batcher statistics.
@@ -390,12 +424,11 @@ impl TelemetryBatcher {
 
 async fn run_batcher(
     policy: TelemetryBatcherPolicy,
-    mut rx: mpsc::Receiver<TelemetryItem>,
+    mut rx: mpsc::Receiver<TelemetryMessage>,
     stats: Arc<RwLock<TelemetryBatcherStats>>,
 ) {
     if !policy.enabled {
-        debug!("telemetry batcher disabled");
-        return;
+        debug!("telemetry batcher disabled; control messages remain available");
     }
 
     let flush_interval = Duration::from_millis(policy.flush_interval_ms.max(100));
@@ -406,15 +439,38 @@ async fn run_batcher(
 
     loop {
         tokio::select! {
-            maybe_item = rx.recv() => {
-                match maybe_item {
-                    Some(item) => {
+            message = rx.recv() => {
+                match message {
+                    Some(TelemetryMessage::Item(item)) if policy.enabled => {
                         record_accepted(&stats, &item).await;
                         pending.push_back(item);
                         update_pending(&stats, pending.len()).await;
                         if pending.len() >= max_items {
                             flush_pending(&policy, &mut pending, &stats, "max_items").await;
                         }
+                    }
+                    Some(TelemetryMessage::Item(item)) => {
+                        let mut state = stats.write().await;
+                        state.dropped += 1;
+                        state.last_error = Some("telemetry batcher disabled".to_string());
+                        push_trace(
+                            &mut state,
+                            "disabled",
+                            item.kind.as_str().to_string(),
+                            item.room_id.clone(),
+                            item.user_id,
+                            item.item_count,
+                            None,
+                        );
+                    }
+                    Some(TelemetryMessage::Flush(reply)) => {
+                        flush_pending(&policy, &mut pending, &stats, "explicit_flush").await;
+                        let _ = reply.send(());
+                    }
+                    Some(TelemetryMessage::Shutdown(reply)) => {
+                        flush_pending(&policy, &mut pending, &stats, "shutdown").await;
+                        let _ = reply.send(());
+                        break;
                     }
                     None => {
                         flush_pending(&policy, &mut pending, &stats, "closed").await;
@@ -487,6 +543,7 @@ async fn flush_pending(
         Ok((false, 0usize))
     } else {
         write_runtime_telemetry_batch(&batch_uuid, &flushed, reason)
+            .await
             .map(|item_rows| (true, item_rows))
     };
     let write_elapsed_ms = elapsed_ms(write_started);
@@ -537,13 +594,13 @@ async fn flush_pending(
     );
 }
 
-fn write_runtime_telemetry_batch(
+async fn write_runtime_telemetry_batch(
     batch_uuid: &str,
     items: &[TelemetryItem],
     reason: &str,
 ) -> Result<usize, String> {
-    let Some(db) = crate::internal_hooks::DB.get() else {
-        return Err("database manager is not initialized".to_string());
+    let Some(db) = crate::internal_hooks::DB.get().filter(|db| db.is_active()) else {
+        return Err("database is not active".to_string());
     };
     let item_rows: usize = items.iter().map(|i| i.item_count).sum();
     let records: Vec<crate::db::RuntimeTelemetryBatchRecord> = items
@@ -565,11 +622,18 @@ fn write_runtime_telemetry_batch(
             payload: item.payload.clone(),
         })
         .collect();
-    if db.record_runtime_telemetry_batches_sync(records) {
-        Ok(item_rows)
-    } else {
-        Err("database is not active; telemetry batch was not written".to_string())
+
+    const ATTEMPTS: usize = 3;
+    for attempt in 0..ATTEMPTS {
+        if db.record_runtime_telemetry_batches(records.clone()).await {
+            return Ok(item_rows);
+        }
+        if attempt + 1 < ATTEMPTS {
+            let delay = if attempt == 0 { 50 } else { 250 };
+            tokio::time::sleep(Duration::from_millis(delay)).await;
+        }
     }
+    Err("telemetry batch database write failed after retries".to_string())
 }
 
 fn push_trace(

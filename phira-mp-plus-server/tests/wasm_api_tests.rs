@@ -43,8 +43,11 @@ mod tests {
             ban_manager: Arc::new(phira_mp_plus_server::ban::BanManager::new(extensions)),
             simulation: Arc::new(phira_mp_plus_server::simulation::SimulationManager::new()),
             event_bus: Arc::new(phira_mp_plus_server::event_bus::EventBus::new(1024)),
+            capabilities: Arc::new(phira_mp_plus_server::wasm_host_helpers::default_capabilities()),
+            send_chat: None,
             http_timeout_secs: 10,
             http_max_body: 1024 * 1024,
+            http_allow_private_network: false,
         })
     }
 

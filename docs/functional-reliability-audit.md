@@ -51,3 +51,7 @@
 ## 验证限制
 
 本次环境未提供 Rust/Cargo 工具链，因此无法在本地执行 `cargo check`、`cargo test` 与 `cargo fmt`。已执行源码差异审阅、TOML/YAML 解析、工作流结构检查、关键合同静态检查与压缩包完整性检查；最终仍应以 GitHub Actions 的 workspace check/test 为合并门槛。
+
+## 架构加固后续说明
+
+本文记录的是较早一轮实用功能修复。连接接入、Actor 不确定结果、插件 capability/资源限制、持久化 flush、Supervisor 和关闭顺序的最新状态以 [architecture-hardening.md](architecture-hardening.md) 与根目录 `HARDENING_REPORT.md` 为准。两份文档发生冲突时，以后者及当前代码为准。

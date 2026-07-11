@@ -84,7 +84,7 @@ pub(crate) fn server_state_query_inner(
                 let benchmark_reports = s.benchmark_reports.snapshot(crate::runtime_diagnostics::BENCHMARK_REPORT_RECENT_DEFAULT);
                 let _ = tx.send(Ok(serde_json::json!({
                     "runtime_v2": true,
-                    "note": "Runtime v2 is partially installed; real Room/Session runtime is still the current production path.",
+                    "note": "Runtime hardening is active: Session and Room management commands use bounded mailboxes; full Room state ownership and crash-consistent persistence remain migration items.",
                     "commands": {"registered": commands},
                     "event_bus": events, "simulation": simulation,
                     "persistence_worker": persistence, "room_command_gateway": room_commands,
@@ -137,8 +137,8 @@ pub(crate) fn server_state_query_inner(
             serde_json::to_value(&reports).map_err(|e| format!("serialize benchmark reports: {e}"))
         }
         "benchmark.latest" => {
-            let _reports = state.benchmark_reports.snapshot(1);
-            Ok(serde_json::json!({"latest": serde_json::Value::Null}))
+            let latest = state.benchmark_reports.snapshot(1).into_iter().next();
+            serde_json::to_value(latest).map_err(|e| format!("serialize latest benchmark report: {e}"))
         }
         "benchmark.history" => {
             let max = args.first().and_then(|v| v.as_u64()).map(|v| v as usize).unwrap_or(usize::MAX);
@@ -161,11 +161,87 @@ pub(crate) fn server_state_query_inner(
             }).collect();
             Ok(serde_json::json!(rooms_snapshot))
         }
-        "http.register_route" => server_state_query_dispatch(state, method, args),
+        "persist.events" => {
+            let since = args.first().and_then(Value::as_i64).unwrap_or(0);
+            let limit = args.get(1).and_then(Value::as_i64).unwrap_or(100);
+            let kind = args.get(2).and_then(Value::as_str).map(str::to_string);
+            let room_id = args.get(3).and_then(Value::as_str).map(str::to_string);
+            let user_id = args.get(4).and_then(Value::as_i64).map(|value| value as i32);
+            let (tx, rx) = std::sync::mpsc::channel();
+            let s = Arc::clone(state);
+            spawn_on_runtime(async move {
+                let rows = s.db_manager.query_events(since, limit, kind, room_id, user_id).await;
+                let _ = tx.send(Ok(serde_json::json!(rows)));
+            });
+            rx.recv_timeout(runtime_state_query_timeout()).unwrap_or(Err("persist.events timeout".to_string()))
+        }
+        "persist.rooms" => {
+            let since = args.first().and_then(Value::as_i64).unwrap_or(0);
+            let limit = args.get(1).and_then(Value::as_i64).unwrap_or(100);
+            let (tx, rx) = std::sync::mpsc::channel();
+            let s = Arc::clone(state);
+            spawn_on_runtime(async move {
+                let rows = s.db_manager.query_room_snapshots(since, limit).await;
+                let _ = tx.send(Ok(serde_json::json!(rows)));
+            });
+            rx.recv_timeout(runtime_state_query_timeout()).unwrap_or(Err("persist.rooms timeout".to_string()))
+        }
+        "persist.touches" => {
+            let since = args.first().and_then(Value::as_i64).unwrap_or(0);
+            let limit = args.get(1).and_then(Value::as_i64).unwrap_or(100);
+            let round = args.get(2).and_then(Value::as_str).map(str::to_string);
+            let player = args.get(3).and_then(Value::as_i64).map(|value| value as i32);
+            let (tx, rx) = std::sync::mpsc::channel();
+            let s = Arc::clone(state);
+            spawn_on_runtime(async move {
+                let rows = s.db_manager.query_touch_batches(since, limit, round, player).await;
+                let _ = tx.send(Ok(serde_json::json!(rows)));
+            });
+            rx.recv_timeout(runtime_state_query_timeout()).unwrap_or(Err("persist.touches timeout".to_string()))
+        }
+        "persist.judges" => {
+            let since = args.first().and_then(Value::as_i64).unwrap_or(0);
+            let limit = args.get(1).and_then(Value::as_i64).unwrap_or(100);
+            let round = args.get(2).and_then(Value::as_str).map(str::to_string);
+            let player = args.get(3).and_then(Value::as_i64).map(|value| value as i32);
+            let (tx, rx) = std::sync::mpsc::channel();
+            let s = Arc::clone(state);
+            spawn_on_runtime(async move {
+                let rows = s.db_manager.query_judge_batches(since, limit, round, player).await;
+                let _ = tx.send(Ok(serde_json::json!(rows)));
+            });
+            rx.recv_timeout(runtime_state_query_timeout()).unwrap_or(Err("persist.judges timeout".to_string()))
+        }
+        "persist.playtime" => {
+            let user_id = args.first().and_then(Value::as_i64).map(|value| value as i32)
+                .ok_or_else(|| "user_id required".to_string())?;
+            let (tx, rx) = std::sync::mpsc::channel();
+            let s = Arc::clone(state);
+            spawn_on_runtime(async move {
+                let row = s.db_manager.get_playtime(user_id).await;
+                let value = row.map(|row| serde_json::json!({
+                    "user_id": user_id,
+                    "total_secs": row.total_secs,
+                    "session_start": row.session_start,
+                })).unwrap_or(Value::Null);
+                let _ = tx.send(Ok(value));
+            });
+            rx.recv_timeout(runtime_state_query_timeout()).unwrap_or(Err("persist.playtime timeout".to_string()))
+        }
+        "persist.top_playtime" => {
+            let limit = args.first().and_then(Value::as_i64).unwrap_or(100).clamp(1, 1000);
+            let (tx, rx) = std::sync::mpsc::channel();
+            let s = Arc::clone(state);
+            spawn_on_runtime(async move {
+                let rows = s.db_manager.top_playtime(limit).await;
+                let _ = tx.send(Ok(serde_json::json!(rows)));
+            });
+            rx.recv_timeout(runtime_state_query_timeout()).unwrap_or(Err("persist.top_playtime timeout".to_string()))
+        }
         "player.touches" | "player.judges" => {
             Err("player.touches/judges requires async context".to_string())
         }
-        _ => Err(format!("unknown method: {method}"))
+        _ => server_state_query_dispatch(state, method, args)
     }
 }
 
@@ -214,6 +290,35 @@ fn server_state_query_dispatch(
             let users = crate::read_lock!(state.users);
             Ok(serde_json::json!(users.len()))
         }
+        "users.list" => {
+            let users = crate::read_lock!(state.users);
+            let list = users
+                .iter()
+                .filter_map(|(user_id, user)| {
+                    let session = user.session.try_read().ok()?;
+                    let session = session.as_ref()?.upgrade()?;
+                    Some(serde_json::json!({
+                        "id": user_id,
+                        "name": session.name(),
+                        "online": true,
+                    }))
+                })
+                .collect::<Vec<_>>();
+            Ok(serde_json::json!(list))
+        }
+        "user.is_online" => {
+            let user_id = args.first().and_then(Value::as_i64).map(|value| value as i32)
+                .ok_or_else(|| "user_id required".to_string())?;
+            let users = crate::read_lock!(state.users);
+            let online = users.get(&user_id).is_some_and(|user| {
+                user.session
+                    .try_read()
+                    .ok()
+                    .and_then(|session| session.as_ref().and_then(|weak| weak.upgrade()))
+                    .is_some()
+            });
+            Ok(serde_json::json!(online))
+        }
         "user_name" => {
             let user_id = args.first().and_then(|v| v.as_i64()).map(|v| v as i32).ok_or_else(|| "user_id required".to_string())?;
             let users = crate::read_lock!(state.users);
@@ -261,6 +366,15 @@ fn server_state_query_dispatch(
             });
             rx.recv_timeout(std::time::Duration::from_secs(5)).ok();
             Ok(serde_json::json!({"ok": true}))
+        }
+        "rooms.by_name" => {
+            let room_id = args.first().and_then(Value::as_str)
+                .ok_or_else(|| "room_id required".to_string())?;
+            let rooms = crate::read_lock!(state.rooms);
+            let room = rooms.values().find(|room| room.id.to_string() == room_id)
+                .ok_or_else(|| format!("room {room_id} not found"))?;
+            let snapshot = build_snapshot(state, room_id, room);
+            serde_json::to_value(snapshot).map_err(|error| format!("serialize room snapshot: {error}"))
         }
         "rooms.by_user" => {
             let user_id = args.first().and_then(|v| v.as_i64()).map(|v| v as i32).ok_or_else(|| "user_id required".to_string())?;
@@ -314,33 +428,19 @@ fn server_state_query_dispatch(
         }
         "user.kick" => {
             let uid = args.get(0).and_then(|v| v.as_i64()).unwrap_or(0) as i32;
-            let reason = args.get(1).and_then(|v| v.as_str()).unwrap_or("kicked by admin").to_string();
+            let reason = args
+                .get(1)
+                .and_then(|v| v.as_str())
+                .unwrap_or("kicked by admin")
+                .to_string();
             let (tx, rx) = std::sync::mpsc::channel();
             let s = Arc::clone(state);
             spawn_on_runtime(async move {
-                use phira_mp_common::{Message, RoomEvent};
-                use crate::plugin::PluginEvent;
-                let found = s.users.read().await.get(&uid).map(std::sync::Arc::clone);
-                let result = if let Some(user) = found {
-                    if let Some(room) = user.room.read().await.as_ref().map(std::sync::Arc::clone) {
-                        let room_id = room.id.to_string();
-                        let room_key = room.id.clone();
-                        let was_monitor = user.monitor.load(std::sync::atomic::Ordering::SeqCst);
-                        if room.on_user_leave(&user).await { s.rooms.write().await.remove(&room_key); }
-                        if !was_monitor { s.publish_room_event(RoomEvent::LeaveRoom { room: room_key, user: uid }).await; }
-                        s.event_bus.publish(crate::event_bus::MpEvent::PluginEventDispatched(
-                            std::sync::Arc::new(PluginEvent::RoomLeave { user_id: uid, room_id }),
-                        ));
-                        room.send(Message::Chat { user: 0, content: format!("用户已被踢出 (reason: {reason})") }).await;
-                    }
-                    user.session.write().await.take().and_then(|w| w.upgrade()).map(|_| ());
-                    serde_json::json!({"ok": true, "user_id": uid})
-                } else {
-                    serde_json::json!({"error": "user not found", "user_id": uid})
-                };
-                let _ = tx.send(Ok(result));
+                let result = crate::server::run_admin_kick_user(&s, uid, &reason).await;
+                let _ = tx.send(result);
             });
-            rx.recv_timeout(runtime_state_query_timeout()).unwrap_or(Err("user.kick timeout".to_string()))
+            rx.recv_timeout(runtime_state_query_timeout())
+                .unwrap_or(Err("user.kick timeout".to_string()))
         }
         "room.kick" => {
             let room_id = args.first().and_then(|v| v.as_str()).ok_or_else(|| "room_id required".to_string())?;
@@ -424,11 +524,110 @@ fn server_state_query_dispatch(
             });
             rx.recv_timeout(runtime_state_query_timeout()).unwrap_or(Err("admin.kick_user timeout".to_string()))
         }
-        "admin.list" | "admin.check" | "admin.add" | "admin.remove" | "admin.set"
-        | "ban.list" | "ban.add" | "ban.remove" | "ban.check" => {
-            server_state_query_inner(state, method, args)
+        "room.set_hidden" => {
+            let room_id = args.first().and_then(Value::as_str).ok_or_else(|| "room_id required".to_string())?;
+            let hidden = args.get(1).and_then(Value::as_bool).ok_or_else(|| "hidden (bool) required".to_string())?;
+            let (tx, rx) = std::sync::mpsc::channel();
+            let s = Arc::clone(state);
+            let room_id = room_id.to_string();
+            spawn_on_runtime(async move { let _ = tx.send(s.room_commands.set_hidden(&s, &room_id, hidden).await); });
+            rx.recv_timeout(runtime_state_query_timeout()).unwrap_or(Err("room.set_hidden timeout".to_string()))
         }
-        _ => server_state_query_inner(state, method, args)
+        "room.get_phira_api_endpoint" => {
+            let room_id = args.first().and_then(Value::as_str).ok_or_else(|| "room_id required".to_string())?;
+            let (tx, rx) = std::sync::mpsc::channel();
+            let s = Arc::clone(state);
+            let room_id = room_id.to_string();
+            spawn_on_runtime(async move { let _ = tx.send(s.get_room_phira_api_endpoint(&room_id).await); });
+            rx.recv_timeout(runtime_state_query_timeout()).unwrap_or(Err("room.get_phira_api_endpoint timeout".to_string()))
+        }
+        "room.set_phira_api_endpoint" | "room.clear_phira_api_endpoint" => {
+            let room_id = args.first().and_then(Value::as_str).ok_or_else(|| "room_id required".to_string())?;
+            let endpoint = if method == "room.clear_phira_api_endpoint" {
+                None
+            } else {
+                args.get(1).and_then(Value::as_str).map(str::to_string)
+            };
+            let (tx, rx) = std::sync::mpsc::channel();
+            let s = Arc::clone(state);
+            let room_id = room_id.to_string();
+            spawn_on_runtime(async move { let _ = tx.send(s.room_commands.set_phira_api_endpoint(&s, &room_id, endpoint).await); });
+            rx.recv_timeout(runtime_state_query_timeout()).unwrap_or(Err("room.set_phira_api_endpoint timeout".to_string()))
+        }
+        "admin.list" => {
+            let (tx, rx) = std::sync::mpsc::channel();
+            let s = Arc::clone(state);
+            spawn_on_runtime(async move { let _ = tx.send(Ok(serde_json::json!(s.admin_id_list().await))); });
+            rx.recv_timeout(runtime_state_query_timeout()).unwrap_or(Err("admin.list timeout".to_string()))
+        }
+        "admin.check" => {
+            let user_id = args.first().and_then(Value::as_i64).map(|value| value as i32)
+                .ok_or_else(|| "user_id required".to_string())?;
+            let (tx, rx) = std::sync::mpsc::channel();
+            let s = Arc::clone(state);
+            spawn_on_runtime(async move { let _ = tx.send(Ok(serde_json::json!(s.is_admin_id(user_id).await))); });
+            rx.recv_timeout(runtime_state_query_timeout()).unwrap_or(Err("admin.check timeout".to_string()))
+        }
+        "admin.add" | "admin.remove" => {
+            let user_id = args.first().and_then(Value::as_i64).map(|value| value as i32)
+                .ok_or_else(|| "user_id required".to_string())?;
+            let add = method == "admin.add";
+            let (tx, rx) = std::sync::mpsc::channel();
+            let s = Arc::clone(state);
+            spawn_on_runtime(async move {
+                let ids = if add { s.add_admin_id(user_id).await } else { s.remove_admin_id(user_id).await };
+                let _ = tx.send(Ok(serde_json::json!(ids)));
+            });
+            rx.recv_timeout(runtime_state_query_timeout()).unwrap_or(Err("admin update timeout".to_string()))
+        }
+        "admin.set" => {
+            let ids = args.first().and_then(Value::as_array).ok_or_else(|| "admin id array required".to_string())?
+                .iter().filter_map(Value::as_i64).map(|value| value as i32).collect::<Vec<_>>();
+            let (tx, rx) = std::sync::mpsc::channel();
+            let s = Arc::clone(state);
+            spawn_on_runtime(async move { let _ = tx.send(Ok(serde_json::json!(s.set_admin_ids(ids).await))); });
+            rx.recv_timeout(runtime_state_query_timeout()).unwrap_or(Err("admin.set timeout".to_string()))
+        }
+        "ban.list" => {
+            let (tx, rx) = std::sync::mpsc::channel();
+            let manager = Arc::clone(&state.ban_manager);
+            spawn_on_runtime(async move { let _ = tx.send(Ok(serde_json::json!(manager.list_banned().await))); });
+            rx.recv_timeout(runtime_state_query_timeout()).unwrap_or(Err("ban.list timeout".to_string()))
+        }
+        "ban.check" => {
+            let user_id = args.first().and_then(Value::as_i64).map(|value| value as i32)
+                .ok_or_else(|| "user_id required".to_string())?;
+            let (tx, rx) = std::sync::mpsc::channel();
+            let manager = Arc::clone(&state.ban_manager);
+            spawn_on_runtime(async move { let _ = tx.send(Ok(serde_json::json!(manager.is_banned(user_id).await))); });
+            rx.recv_timeout(runtime_state_query_timeout()).unwrap_or(Err("ban.check timeout".to_string()))
+        }
+        "ban.add" => {
+            let user_id = args.first().and_then(Value::as_i64).map(|value| value as i32)
+                .ok_or_else(|| "user_id required".to_string())?;
+            let reason = args.get(1).and_then(Value::as_str).unwrap_or("banned by plugin").to_string();
+            let (tx, rx) = std::sync::mpsc::channel();
+            let manager = Arc::clone(&state.ban_manager);
+            spawn_on_runtime(async move {
+                let result = manager.ban_user(user_id, &reason).await
+                    .map(|reason| serde_json::json!({"ok": true, "user_id": user_id, "reason": reason}));
+                let _ = tx.send(result);
+            });
+            rx.recv_timeout(runtime_state_query_timeout()).unwrap_or(Err("ban.add timeout".to_string()))
+        }
+        "ban.remove" => {
+            let user_id = args.first().and_then(Value::as_i64).map(|value| value as i32)
+                .ok_or_else(|| "user_id required".to_string())?;
+            let (tx, rx) = std::sync::mpsc::channel();
+            let manager = Arc::clone(&state.ban_manager);
+            spawn_on_runtime(async move {
+                let result = manager.unban_user(user_id).await
+                    .map(|()| serde_json::json!({"ok": true, "user_id": user_id}));
+                let _ = tx.send(result);
+            });
+            rx.recv_timeout(runtime_state_query_timeout()).unwrap_or(Err("ban.remove timeout".to_string()))
+        }
+        _ => Err(format!("unknown method: {method}"))
     }
 }
 

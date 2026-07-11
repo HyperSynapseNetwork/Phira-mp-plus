@@ -1,8 +1,9 @@
 //! Runtime v2 room-command gateway（迁移中）。
 //!
-//! 7 个房间命令已通过 per-room mailbox 串行化（`room_mailbox_only`），
-//! 包括 Lock/Cycle/Host/Close/Kick/Start/Cancel。
-//! Lock/cycle/host 状态通过 owned_locks/owned_cycles/owned_hosts 追踪。
+//! 9 个房间管理命令已通过 per-room mailbox 串行化，
+//! 包括 Lock/Cycle/Host/Hidden/Endpoint/Close/Kick/Start/Cancel。
+//! Room 本身是 lock/cycle/host 的唯一真理源；mailbox 只负责串行化写命令，
+//! 不再维护第二份影子状态。
 //!
 //! 但房间状态仍由 `room.rs` + `PlusServerState.rooms` + `RwLock`/`Atomic` 拥有，
 //! Room Actor 尚未完全获得状态所有权。
@@ -17,11 +18,11 @@
 //!
 //! 迁移路径：
 //!
-//! 1. 所有房间写命令通过此网关路由 ✅
-//! 2. 指标、测试和仿真覆盖 ✅
-//! 3. 低风险命令通过 mailbox ❌ → 完成
-//! 4. 剩余内联实现替换为 per-room actor ❌
-//! 5. 删除 cli.rs/server.rs/session.rs 中的旧直接调用 ❌
+//! 1. 9 个管理写命令通过此网关路由 ✅
+//! 2. 已入队命令的不确定结果不再重放 ✅
+//! 3. mailbox 容量由运行时配置传入 ✅
+//! 4. 房间完整状态迁入单一 actor-owned `RoomState` ❌
+//! 5. 删除跨字段共享锁和剩余直接状态写入 ❌
 
 pub mod actor;
 mod audit;
@@ -40,7 +41,7 @@ use crate::server::PlusServerState;
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{HashMap, VecDeque},
-    sync::atomic::AtomicU64,
+    sync::atomic::{AtomicBool, AtomicU64, AtomicUsize},
     sync::{RwLock as StdRwLock, Weak},
 };
 use tokio::sync::mpsc;
@@ -88,15 +89,9 @@ pub struct RoomCommandGateway {
     failed: AtomicU64,
     self_ref: StdRwLock<Option<Weak<RoomCommandGateway>>>,
     state_ref: StdRwLock<Option<Weak<PlusServerState>>>,
-    mailbox_tx: StdRwLock<Option<mpsc::Sender<RoomActorCommand>>>,
+    mailbox_started: AtomicBool,
+    mailbox_capacity: AtomicUsize,
     room_mailboxes: StdRwLock<HashMap<String, mpsc::Sender<RoomActorCommand>>>,
-    /// Owned lock state per room. Each entry tracks what the mailbox worker
-    /// believes the lock state is. Populated by SetLock in the mailbox path.
-    owned_locks: StdRwLock<HashMap<String, bool>>,
-    /// Owned cycle state per room. Populated by SetCycle in the mailbox path.
-    owned_cycles: StdRwLock<HashMap<String, bool>>,
-    /// Owned host state per room. Populated by SetHost in the mailbox path.
-    owned_hosts: StdRwLock<HashMap<String, Option<i32>>>,
     /// Latest room snapshots, updated after each mailbox command execution.
     snapshots: StdRwLock<HashMap<String, actor::RoomSnapshot>>,
     mailbox_enqueued: AtomicU64,
@@ -123,11 +118,9 @@ impl RoomCommandGateway {
             failed: AtomicU64::new(0),
             self_ref: StdRwLock::new(None),
             state_ref: StdRwLock::new(None),
-            mailbox_tx: StdRwLock::new(None),
+            mailbox_started: AtomicBool::new(false),
+            mailbox_capacity: AtomicUsize::new(128),
             room_mailboxes: StdRwLock::new(HashMap::new()),
-            owned_locks: StdRwLock::new(HashMap::new()),
-            owned_cycles: StdRwLock::new(HashMap::new()),
-            owned_hosts: StdRwLock::new(HashMap::new()),
             snapshots: StdRwLock::new(HashMap::new()),
             mailbox_enqueued: AtomicU64::new(0),
             mailbox_completed: AtomicU64::new(0),
@@ -146,45 +139,6 @@ impl RoomCommandGateway {
         }
     }
 
-    /// Check the owned lock state for a room. Returns None if the room
-    /// has not been tracked yet (falls back to Room.locked).
-    pub fn room_lock_owned(&self, room_id: &str) -> Option<bool> {
-        self.owned_locks.read().ok().and_then(|map| map.get(room_id).copied())
-    }
-
-    /// Set the owned lock state for a room.
-    pub fn set_room_lock_owned(&self, room_id: &str, locked: bool) {
-        if let Ok(mut locks) = self.owned_locks.write() {
-            locks.insert(room_id.to_string(), locked);
-        }
-    }
-
-    /// Check the owned cycle state for a room. Returns None if the room
-    /// has not been tracked yet (falls back to Room.cycle).
-    pub fn room_cycle_owned(&self, room_id: &str) -> Option<bool> {
-        self.owned_cycles.read().ok().and_then(|map| map.get(room_id).copied())
-    }
-
-    /// Set the owned cycle state for a room.
-    pub fn set_room_cycle_owned(&self, room_id: &str, cycle: bool) {
-        if let Ok(mut cycles) = self.owned_cycles.write() {
-            cycles.insert(room_id.to_string(), cycle);
-        }
-    }
-
-    /// Check the owned host state for a room. Returns None if the room
-    /// has not been tracked yet (falls back to Room.host lookup).
-    pub fn room_host_owned(&self, room_id: &str) -> Option<Option<i32>> {
-        self.owned_hosts.read().ok().and_then(|map| map.get(room_id).copied())
-    }
-
-    /// Set the owned host state for a room.
-    pub fn set_room_host_owned(&self, room_id: &str, host: Option<i32>) {
-        if let Ok(mut hosts) = self.owned_hosts.write() {
-            hosts.insert(room_id.to_string(), host);
-        }
-    }
-
     /// Get the latest snapshot for a room, if available.
     pub fn room_snapshot(&self, room_id: &str) -> Option<actor::RoomSnapshot> {
         self.snapshots.read().ok().and_then(|map| map.get(room_id).cloned())
@@ -196,72 +150,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn owned_lock_returns_none_for_unknown_room() {
+    fn mailbox_is_disabled_before_runtime_start() {
         let gateway = RoomCommandGateway::new();
-        assert_eq!(gateway.room_lock_owned("nonexistent"), None);
-    }
-
-    #[test]
-    fn owned_lock_updates_after_set_lock() {
-        let gateway = RoomCommandGateway::new();
-        if let Ok(mut locks) = gateway.owned_locks.write() {
-            locks.insert("room-1".to_string(), true);
-        }
-        assert_eq!(gateway.room_lock_owned("room-1"), Some(true));
-    }
-
-    #[test]
-    fn owned_cycle_returns_none_for_unknown_room() {
-        let gateway = RoomCommandGateway::new();
-        assert_eq!(gateway.room_cycle_owned("nonexistent"), None);
-    }
-
-    #[test]
-    fn owned_cycle_updates_after_set_cycle() {
-        let gateway = RoomCommandGateway::new();
-        if let Ok(mut cycles) = gateway.owned_cycles.write() {
-            cycles.insert("room-2".to_string(), true);
-        }
-        assert_eq!(gateway.room_cycle_owned("room-2"), Some(true));
-    }
-
-    #[test]
-    fn owned_host_returns_none_for_unknown_room() {
-        let gateway = RoomCommandGateway::new();
-        assert_eq!(gateway.room_host_owned("nonexistent"), None);
-    }
-
-    #[test]
-    fn owned_host_updates_after_set_host() {
-        let gateway = RoomCommandGateway::new();
-        if let Ok(mut hosts) = gateway.owned_hosts.write() {
-            hosts.insert("room-3".to_string(), Some(42));
-        }
-        assert_eq!(gateway.room_host_owned("room-3"), Some(Some(42)));
-    }
-
-    #[test]
-    fn owned_host_can_be_none_for_system_host() {
-        let gateway = RoomCommandGateway::new();
-        if let Ok(mut hosts) = gateway.owned_hosts.write() {
-            hosts.insert("room-4".to_string(), None);
-        }
-        assert_eq!(gateway.room_host_owned("room-4"), Some(None));
-    }
-
-    #[test]
-    fn set_lock_visibility_is_restricted() {
-        // Compile-time check: set_lock_inline is pub(in crate::room_actor)
-        // and NOT accessible from outside the module. The only write path
-        // to room.locked is through the mailbox handler via set_lock_inline.
-        // Verify the public API surface: set_lock goes through mailbox_only.
-        let gateway = RoomCommandGateway::new();
-        // room_mailbox_sender is None before start_mailbox — this means
-        // mailbox-only routing will fail with "mailbox not available",
-        // proving the path is gated, not a direct write.
-        assert!(
-            !gateway.mailbox_enabled(),
-            "mailbox not available before start_mailbox"
-        );
+        assert!(!gateway.mailbox_enabled());
     }
 }

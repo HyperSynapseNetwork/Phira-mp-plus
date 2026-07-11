@@ -1,10 +1,10 @@
-//! Runtime v2 PersistenceWorker —— 持久化 Worker（迁移中）。
+//! Runtime v2 PersistenceWorker.
 //!
-//! 当前 PersistenceWorker 作为镜像路径运行，不是唯一写入者。
-//! 存在多条直接 DB 写入旁路：session.rs、session_actor.rs、session_room.rs、server/orig.rs。
-//! 队列满时会丢弃事件。
-//!
-//! 目标：Persistence Actor 成为唯一持久化入口，包含批处理、重试、WAL、shutdown flush。
+//! Ordinary persistence events use bounded backpressure instead of queue-full
+//! loss. Flush and shutdown are ordered control messages with acknowledgements,
+//! so accepted work can be drained before process termination. Production
+//! Touch/Judge telemetry still keeps its direct authoritative path while the
+//! worker is used as a batched mirror during cutover.
 
 use crate::persistence::message::PersistenceEvent;
 use crate::persistence::pipeline::{
@@ -26,15 +26,32 @@ use crate::telemetry_batcher::{
 use serde_json::json;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use tokio::sync::{mpsc, RwLock};
+use std::time::Duration;
+use tokio::sync::{mpsc, oneshot, Mutex, RwLock};
 use tracing::{debug, info, trace, warn};
+
+enum WorkerMessage {
+    Event(PersistenceEvent),
+    Flush {
+        timeout: Duration,
+        reply: oneshot::Sender<()>,
+    },
+    Shutdown {
+        timeout: Duration,
+        reply: oneshot::Sender<()>,
+    },
+}
 
 #[derive(Debug)]
 pub struct PersistenceWorker {
-    tx: mpsc::Sender<PersistenceEvent>,
-    /// When suspended, `enqueue` silently drops events instead of processing
-    /// them. Set by the IdleMonitor on idle enter/leave.
+    tx: mpsc::Sender<WorkerMessage>,
+    /// Serializes event/control insertion so nothing can be accepted behind a
+    /// Shutdown marker and then remain unprocessed.
+    send_gate: Mutex<()>,
+    /// Idle-mode diagnostic hint. Persistence remains active while idle so
+    /// accepted events are never discarded merely because gameplay is quiet.
     suspended: AtomicBool,
+    closed: AtomicBool,
     stats: Arc<RwLock<PersistenceStats>>,
     telemetry_batcher: Arc<TelemetryBatcher>,
     telemetry_cutover_mode: Arc<RwLock<TelemetryCutoverMode>>,
@@ -55,7 +72,7 @@ impl PersistenceWorker {
         telemetry_cutover_mode: TelemetryCutoverMode,
     ) -> Arc<Self> {
         let capacity = queue_capacity.max(16);
-        let (tx, mut rx) = mpsc::channel::<PersistenceEvent>(capacity);
+        let (tx, mut rx) = mpsc::channel::<WorkerMessage>(capacity);
         let initial_cutover = telemetry_cutover_mode;
         let telemetry_batcher = TelemetryBatcher::spawn(telemetry_policy.clone());
         let telemetry_cutover_mode = Arc::new(RwLock::new(initial_cutover));
@@ -68,8 +85,25 @@ impl PersistenceWorker {
         let worker_stats = Arc::clone(&stats);
         let worker_telemetry = Arc::clone(&telemetry_batcher);
 
-        tokio::spawn(async move {
-            while let Some(event) = rx.recv().await {
+        crate::supervisor_actor::spawn_named("persistence-worker", async move {
+            while let Some(message) = rx.recv().await {
+                let event = match message {
+                    WorkerMessage::Event(event) => event,
+                    WorkerMessage::Flush { timeout, reply } => {
+                        if let Err(error) = worker_telemetry.flush(timeout).await {
+                            warn!(%error, "telemetry flush failed");
+                        }
+                        let _ = reply.send(());
+                        continue;
+                    }
+                    WorkerMessage::Shutdown { timeout, reply } => {
+                        if let Err(error) = worker_telemetry.shutdown(timeout).await {
+                            warn!(%error, "telemetry shutdown failed");
+                        }
+                        let _ = reply.send(());
+                        break;
+                    }
+                };
                 let kind = event.kind();
                 let simulation = event.is_simulation();
                 let summary = event.summary();
@@ -226,10 +260,12 @@ impl PersistenceWorker {
 
         Arc::new(Self {
             tx,
+            send_gate: Mutex::new(()),
             stats,
             telemetry_batcher,
             telemetry_cutover_mode,
             suspended: AtomicBool::new(false),
+            closed: AtomicBool::new(false),
         })
     }
 
@@ -238,13 +274,13 @@ impl PersistenceWorker {
         self.suspended.load(Ordering::Relaxed)
     }
 
-    /// Set the suspended flag. When suspended, `enqueue` drops events.
+    /// Set the idle-mode hint. Ingestion deliberately remains active.
     pub async fn set_suspended(&self, suspended: bool) {
         self.suspended.store(suspended, Ordering::Release);
         if suspended {
-            info!("persistence worker suspended");
+            info!("persistence idle hint enabled; ingestion remains active");
         } else {
-            info!("persistence worker resumed");
+            info!("persistence idle hint cleared");
         }
     }
 
@@ -252,24 +288,24 @@ impl PersistenceWorker {
         let kind = event.kind();
         let simulation = event.is_simulation();
         let summary = event.summary();
-        match self.tx.try_send(event) {
+        let _send_guard = self.send_gate.lock().await;
+        if self.closed.load(Ordering::Acquire) {
+            record_dropped(
+                &self.stats,
+                kind,
+                simulation,
+                summary,
+                "persistence worker is shutting down".to_string(),
+            )
+            .await;
+            return Err(event);
+        }
+        match self.tx.send(WorkerMessage::Event(event)).await {
             Ok(()) => {
                 record_queued(&self.stats, kind, simulation, summary).await;
                 Ok(())
             }
-            Err(mpsc::error::TrySendError::Full(event)) => {
-                record_dropped(
-                    &self.stats,
-                    kind,
-                    simulation,
-                    summary,
-                    "persistence worker queue is full".to_string(),
-                )
-                .await;
-                warn!("persistence worker queue is full; event dropped");
-                Err(event)
-            }
-            Err(mpsc::error::TrySendError::Closed(event)) => {
+            Err(mpsc::error::SendError(WorkerMessage::Event(event))) => {
                 record_dropped(
                     &self.stats,
                     kind,
@@ -278,10 +314,54 @@ impl PersistenceWorker {
                     "persistence worker queue is closed".to_string(),
                 )
                 .await;
-                warn!("persistence worker queue is closed; event dropped");
+                warn!("persistence worker queue is closed; event rejected");
                 Err(event)
             }
+            Err(_) => unreachable!("enqueue only sends persistence events"),
         }
+    }
+
+    /// Drain every event accepted before this control message.
+    pub async fn flush(&self, timeout: Duration) -> Result<(), String> {
+        let (reply, rx) = oneshot::channel();
+        {
+            let _send_guard = self.send_gate.lock().await;
+            if self.closed.load(Ordering::Acquire) {
+                return Err("persistence worker is shutting down".to_string());
+            }
+            self.tx
+                .send(WorkerMessage::Flush { timeout, reply })
+                .await
+                .map_err(|_| "persistence worker is closed".to_string())?;
+        }
+        tokio::time::timeout(timeout, rx)
+            .await
+            .map_err(|_| "persistence flush timed out".to_string())?
+            .map_err(|_| "persistence flush acknowledgement was dropped".to_string())
+    }
+
+    /// Drain accepted events, flush telemetry, then stop the worker.
+    pub async fn shutdown(&self, timeout: Duration) -> Result<(), String> {
+        let (reply, rx) = oneshot::channel();
+        {
+            let _send_guard = self.send_gate.lock().await;
+            if self.closed.swap(true, Ordering::AcqRel) {
+                return Ok(());
+            }
+            if self
+                .tx
+                .send(WorkerMessage::Shutdown { timeout, reply })
+                .await
+                .is_err()
+            {
+                self.closed.store(false, Ordering::Release);
+                return Err("persistence worker is closed".to_string());
+            }
+        }
+        tokio::time::timeout(timeout, rx)
+            .await
+            .map_err(|_| "persistence shutdown timed out".to_string())?
+            .map_err(|_| "persistence shutdown acknowledgement was dropped".to_string())
     }
 
     pub async fn stats(&self) -> PersistenceStats {

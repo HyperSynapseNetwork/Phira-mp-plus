@@ -161,8 +161,7 @@ pub async fn create_room(user: Arc<User>, id: RoomId) -> Result<()> {
     info!("房间 '{}' 唯一标识: {}", id, room_uuid);
 
     user.server
-        .plugin_manager
-        .trigger(&PluginEvent::RoomCreate {
+        .dispatch_plugin_event(PluginEvent::RoomCreate {
             user_id: user.id,
             room_id: id.to_string(),
         })
@@ -289,18 +288,13 @@ pub async fn join_room(
     // Protocol-only game monitors are not exposed as players to plugins.
     // 插件事件可能执行 WASM/HTTP 逻辑，不能阻塞 JoinRoom 响应。
     if category == SessionCategory::Normal {
-        let plugin_manager = Arc::clone(&user.server.plugin_manager);
-        let room_id = id.to_string();
-        let user_id = user.id;
-        tokio::spawn(async move {
-            plugin_manager
-                .trigger(&PluginEvent::RoomJoin {
-                    user_id,
-                    room_id,
-                    is_monitor: monitor,
-                })
-                .await;
-        });
+        user.server
+            .dispatch_plugin_event(PluginEvent::RoomJoin {
+                user_id: user.id,
+                room_id: id.to_string(),
+                is_monitor: monitor,
+            })
+            .await;
     }
 
     let mut users = room.users().await;
@@ -346,8 +340,7 @@ pub async fn leave_room(user: Arc<User>, category: SessionCategory) -> Result<()
 
     if category == SessionCategory::Normal {
         user.server
-            .plugin_manager
-            .trigger(&PluginEvent::RoomLeave {
+            .dispatch_plugin_event(PluginEvent::RoomLeave {
                 user_id: user.id,
                 room_id: room_id.to_string(),
             })
@@ -360,61 +353,24 @@ pub async fn leave_room(user: Arc<User>, category: SessionCategory) -> Result<()
 pub async fn lock_room(user: Arc<User>, lock: bool) -> Result<()> {
     let room = current_room(&user).await?;
     room.check_host(&user).await?;
-    info!(
-        user = user.id,
-        room = room.id.to_string(),
-        lock,
-        "lock room"
-    );
-    // 同步更新 owned state（真理源）
-    user.server.room_commands.set_room_lock_owned(&room.id.to_string(), lock);
-    room.locked.store(lock, Ordering::SeqCst);
-    room.send(Message::LockRoom { lock }).await;
-    room.publish_update(PartialRoomData {
-        lock: Some(lock),
-        ..Default::default()
-    })
-    .await;
-
+    info!(user = user.id, room = room.id.to_string(), lock, "lock room");
     user.server
-        .plugin_manager
-        .trigger(&PluginEvent::RoomModify {
-            user_id: user.id,
-            room_id: room.id.to_string(),
-            data: serde_json::json!({"action":"lock", "value": lock}).to_string(),
-        })
-        .await;
-
+        .room_commands
+        .set_lock_as(&user.server, &room.id.to_string(), lock, user.id)
+        .await
+        .map_err(anyhow::Error::msg)?;
     Ok(())
 }
 
 pub async fn cycle_room(user: Arc<User>, cycle: bool) -> Result<()> {
     let room = current_room(&user).await?;
     room.check_host(&user).await?;
-    info!(
-        user = user.id,
-        room = room.id.to_string(),
-        cycle,
-        "cycle room"
-    );
-    user.server.room_commands.set_room_cycle_owned(&room.id.to_string(), cycle);
-    room.cycle.store(cycle, Ordering::SeqCst);
-    room.send(Message::CycleRoom { cycle }).await;
-    room.publish_update(PartialRoomData {
-        cycle: Some(cycle),
-        ..Default::default()
-    })
-    .await;
-
+    info!(user = user.id, room = room.id.to_string(), cycle, "cycle room");
     user.server
-        .plugin_manager
-        .trigger(&PluginEvent::RoomModify {
-            user_id: user.id,
-            room_id: room.id.to_string(),
-            data: serde_json::json!({"action":"cycle", "value": cycle}).to_string(),
-        })
-        .await;
-
+        .room_commands
+        .set_cycle_as(&user.server, &room.id.to_string(), cycle, user.id)
+        .await
+        .map_err(anyhow::Error::msg)?;
     Ok(())
 }
 
@@ -482,8 +438,7 @@ pub async fn request_start(user: Arc<User>) -> Result<()> {
     room.check_all_ready().await;
 
     user.server
-        .plugin_manager
-        .trigger(&PluginEvent::GameStart {
+        .dispatch_plugin_event(PluginEvent::GameStart {
             user_id: user.id,
             room_id: room.id.to_string(),
         })
@@ -587,8 +542,7 @@ pub async fn played(user: Arc<User>, id: i32) -> Result<()> {
         room.check_all_ready().await;
 
         user.server
-            .plugin_manager
-            .trigger(&PluginEvent::GameEnd {
+            .dispatch_plugin_event(PluginEvent::GameEnd {
                 user_id: user.id,
                 user_name: user.name.clone(),
                 room_id: room.id.to_string(),

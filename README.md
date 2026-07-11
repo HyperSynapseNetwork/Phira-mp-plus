@@ -6,16 +6,17 @@
 
 ## 简介
 
-**Phira-mp+** 是基于 [phira-mp](https://github.com/HyperSynapseNetwork/phira-mp) 扩展的 Phira 多人游戏服务端，提供 WASM 插件、管理控制台、HTTP API 与监控数据流。
+**Phira-mp+（PMP）** 是基于 [phira-mp](https://github.com/HyperSynapseNetwork/phira-mp) 扩展的 Phira 多人游戏服务端。在 PP 架构中，PMP 负责游戏协议、房间运行时、插件与持久化；**PPB 负责公共 Web API、认证、限流、网关与边缘暴露**。PMP 保留的 HTTP/SSE/WebSocket 仅用于受控网络中的兼容、诊断和内部集成，不应作为公网边缘接口。
 
 ### 核心特性
 
-- **轻内核 + 重服务按需唤醒** — TCP listener + CLI 常驻；HTTP/插件/PersistenceWorker 等重服务空闲时自动挂起；活动恢复后按需启动
-- **WASM 插件系统** — 基于 wasmtime 组件模型（WIT ABI v2），12 个宿主接口集成测试通过，capability 强制已启用
-- **TUI 管理控制台** — 基于 `ratatui` + `crossterm` 的终端界面，支持命令输入、日志实时显示
-- **Actor 模型房间命令** — 7 个房间命令全 mailboxed，lock/cycle/host owned-tracked；12 个会话命令 WriteRouted
-- **内置功能** — 房间信息 Web API、SSE 实时事件流（SseHub）、blacklist/IP 封禁、轮次数据持久化、速率限制
-- **jemalloc 分配器** — Linux 下使用 jemalloc 替代 musl malloc，主动归还空闲内存，避免 RSS 虚高
+- **有界连接接入** — TCP accept 与认证解耦，认证并发和在线会话由信号量预留，慢认证连接不会串行阻塞全局 accept
+- **WASM 插件边界** — 基于 wasmtime 组件模型（WIT ABI v2），逐插件 capability、fuel、线性内存/实例/表限制、有界事件队列与超时 quarantine 已接线
+- **可靠生命周期** — 插件事件和持久化使用有界队列；Flush/Shutdown 带确认；后台任务由 Supervisor 统一跟踪并在关闭时取消和等待
+- **房间命令网关** — 管理命令经 per-room mailbox 串行化；命令已入队但回复超时时不再内联重放副作用。Room 全状态 Actor 化仍在迁移中
+- **慢消费者隔离** — 会话发送采用有界队列和非阻塞路径；网络读取与业务处理通过有界命令队列解耦
+- **PMP 内部接口** — 保留房间信息 HTTP、SSE、WebSocket 和插件动态路由，供 PPB/受控网络调用，不承担公共边缘安全职责
+- **jemalloc 分配器** — Linux 下使用 jemalloc 替代 musl malloc，降低长期运行中的 RSS 膨胀风险
 
 ## 技术栈
 
@@ -82,6 +83,8 @@ cli_enabled: true
 # 如需使用，请看 docs/benchmark-real.md。
 ```
 
+架构加固的实现范围、剩余限制和验证边界见 [HARDENING_REPORT.md](HARDENING_REPORT.md)。
+
 配置加载规则：默认读取 `server_config.yml`，也可通过 `--config <FILE>` 指定；配置文件缺失时使用内置默认值，配置文件存在但格式、字段名或取值无效时拒绝启动。只有用户显式提供的命令行参数才覆盖 YAML，避免 CLI 默认值意外覆盖配置文件。完整说明见 [docs/configuration.md](docs/configuration.md)。
 
 ### 命令行参数
@@ -95,13 +98,13 @@ phira-mp-plus-server [OPTIONS]
   -l, --log-file <NAME>      日志文件基础名称 [默认: "phira-mp-plus"]
   -m, --monitor <IDS>...     覆盖允许旁观的用户 ID
       --http-port <PORT>     覆盖 HTTP/SSE 端口（内置默认 12347）
-      --proxy-port <PORT>    覆盖 PROXY protocol 端口（内置默认 0）
+      --proxy-port <PORT>    覆盖可信 X-Forwarded-For 兼容监听端口（内置默认 0）
       --no-cli               禁用交互式管理控制台
   -c, --config <FILE>        YAML 配置文件路径 [默认: "server_config.yml"]
   -h, --help                 显示帮助
   -V, --version              显示版本
 
-空载模式（Idle Mode）及更多配置项见 [docs/configuration.md](docs/configuration.md)。
+空载模式仅改变非关键后台活动的调度偏好，不会暂停权威持久化或可靠插件事件。更多配置项见 [docs/configuration.md](docs/configuration.md)。
 ```
 
 ## 项目结构
@@ -169,7 +172,7 @@ Phira-mp-plus/
 │       ├── session_room.rs          #   房间协议
 │       ├── session_telemetry.rs     #   遥测处理
 │       ├── session_actor.rs         #   Session Actor mailbox
-│       ├── supervisor_actor.rs      #   服务监督者 mailbox
+│       ├── supervisor_actor.rs      #   后台任务注册、退出检测与有序关闭
 │       ├── room.rs                  #   房间状态机 (InternalRoomState / Room)
 │       ├── room_actor/              #   Room Actor 命令网关
 │       │   ├── mod.rs,mailbox.rs,command.rs,handler.rs,context.rs,result.rs,audit.rs
@@ -178,7 +181,7 @@ Phira-mp-plus/
 │       ├── persistence/             #   持久化 Worker 管道
 │       │   ├── mod.rs               #   入口 & pipeline
 │       │   └── admin/benchmark/diagnostics/events/message/mirror/queries/rounds/schema
-│       ├── proxy_protocol.rs        #   PROXY protocol 解析
+│       ├── proxy_protocol.rs        #   可信 X-Forwarded-For 兼容监听（非 PROXY v1/v2）
 │       ├── telemetry_batcher.rs     #   TelemetryBatcher
 │       ├── telemetry_batcher_test.rs#   Batcher 测试
 │       ├── round_store.rs           #   轮次数据存储 (DB优先, 文件回退)
@@ -272,7 +275,9 @@ Phira-mp-plus/
 
 启动时会检测 stdin/stdout、`TERM`、`STY` 与 `TMUX`。GNU Screen、Linux console、`ansi`/`cons25` 等环境使用保守 TUI：禁用备用屏幕、鼠标捕获和 Bracketed Paste，并修正 Ctrl+H Backspace；如果 TUI 初始化失败，会自动降级到逐行兼容控制台。tmux、xterm、WezTerm、iTerm、Kitty 等普通终端继续使用完整 TUI。项目遵循 `NO_COLOR`，逐行输出会再次过滤残留控制序列；非交互环境同样使用逐行控制台。
 
-## SSE 房间事件
+## PMP 内部 SSE 房间事件
+
+> 该接口面向 PPB 或受控运维网络。公网 Web API 由 PPB 提供。
 
 `GET /rooms/listen` 建立连接后先发送 `ready`，随后以 `update_room` 补发当前房间快照，再持续推送 `create_room`、`update_room`、`join_room`、`leave_room` 和 `new_round`。可用下列命令直接检查数据流：
 
@@ -306,8 +311,8 @@ WASM 插件通过 `phira:host/api` 和 `phira:host/log` 等导入函数与宿主
 | 配置项 | 类型 | 默认值 | 说明 |
 |--------|------|--------|------|
 | `port` | u16 | `12346` | TCP 监听端口 |
-| `http_port` | u16 | `12347` | HTTP/SSE/WebSocket 服务端口 |
-| `proxy_protocol_port` | u16 | `0` | PROXY protocol 端口（0=禁用，典型值 12344） |
+| `http_port` | u16 | `12347` | PMP 内部 HTTP/SSE/WebSocket 兼容端口；公共接口由 PPB 提供 |
+| `proxy_protocol_port` | u16 | `0` | 可信 X-Forwarded-For 兼容监听端口；不是 PROXY v1/v2 |
 | `monitors` | Vec<i32> | `[2]` | 允许旁观的用户 ID |
 | `phira_api_endpoint` | String | `https://phira.5wyxi.com` | 全局 Phira API 端点；房间可临时覆盖 |
 | `plugins_dir` | String | `plugins` | WASM 插件目录 |
@@ -321,13 +326,18 @@ WASM 插件通过 `phira:host/api` 和 `phira:host/log` 等导入函数与宿主
 | `connection_rate_window` | u32 | `10` | 连接速率统计窗口（秒） |
 | `max_rooms` | usize | — | 最大房间数（未设置为不限制） |
 | `max_users_per_room` | usize | `100` | 每房间最大玩家数 |
+| `max_sessions` | usize | `4096` | 在线/已注册会话硬上限 |
+| `max_pending_auth` | usize | `256` | 并发认证握手上限，且不得超过 `max_sessions` |
+| `graceful_shutdown_timeout_secs` | u64 | `15` | 有序关闭共享总时限 |
 | `round_data_retention_days` | u32 | `7` | 轮次 Touches/Judges 保留天数（0=不保留） |
 | `server_name` | String | — | 服务器名称 |
-| `wasm_runtime.*` | object | 见文档 | WASM 插件资源限制 |
+| `wasm_runtime.*` | object | 见文档 | WASM 插件 fuel、内存、事件队列、并发和调用期限 |
 
 真实网络压测（`benchmark run real`）是高级兼容性测试，详见 docs/benchmark-real.md。默认压测推荐使用 Simulation，不需要 token。
 
 本轮实用功能可靠性审计、修复范围和回归检查清单见 [docs/functional-reliability-audit.md](docs/functional-reliability-audit.md)。
+
+本轮架构加固的边界、实现、不变量、剩余风险和验收门槛见 [docs/architecture-hardening.md](docs/architecture-hardening.md)。静态验证结果见 [docs/static-verification.md](docs/static-verification.md)。
 
 ## 许可证
 

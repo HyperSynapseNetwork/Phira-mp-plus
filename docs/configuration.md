@@ -4,6 +4,8 @@
 
 > **编译特性**：当前默认特性为 `postgres` 和 `wit-bindgen`，常规 `cargo build --release` 已包含 PostgreSQL 与完整 WIT 插件系统。需要裁剪功能时再使用 `--no-default-features`。
 
+> **PP 架构边界**：PMP 是受控游戏服务端；PPB 统一提供公网 Web API、认证、限流、网关和边缘安全。`http_port` 仅用于 PPB/受控网络兼容与诊断，不应直接暴露到公网。
+
 ## 配置加载规则
 
 - 默认读取项目当前工作目录下的 `server_config.yml`。
@@ -20,6 +22,9 @@
 ```yaml
 port: 12346
 http_port: 12347
+max_sessions: 4096
+max_pending_auth: 256
+graceful_shutdown_timeout_secs: 15
 monitors:
   - 2
 plugins_dir: plugins
@@ -36,6 +41,10 @@ round_data_retention_days: 7
 # ---- 网络 ----
 port: 12346
 http_port: 12347
+# proxy_protocol_port: 12344  # 可信 X-Forwarded-For 兼容监听；不是 PROXY v1/v2
+max_sessions: 4096
+max_pending_auth: 256
+graceful_shutdown_timeout_secs: 15
 
 # ---- 认证 / Phira API ----
 monitors:
@@ -79,6 +88,8 @@ wasm_runtime:
   max_file_bytes: 4194304
   allow_private_network: false
   max_event_concurrency: 8
+  event_queue_capacity: 2048
+  call_timeout_ms: 2000
 ```
 
 ## 配置项说明
@@ -86,8 +97,8 @@ wasm_runtime:
 | 配置项 | 类型 | 默认值 | 说明 |
 |---|---:|---:|---|
 | `port` | `u16` | `12346` | TCP 游戏协议监听端口。Phira 客户端连接这个端口。 |
-| `http_port` | `u16` | `12347` | HTTP API、SSE、WebSocket 监听端口。 |
-| `proxy_protocol_port` | `u16` | `0` | PROXY protocol 监听端口。0=禁用。启用后 TrustForwardedFor 中间件在此端口解析 X-Forwarded-For。直连端口不走此中间件。典型值: 12344 |
+| `http_port` | `u16` | `12347` | PMP 内部 HTTP/SSE/WebSocket 兼容端口；公共接口由 PPB 提供。 |
+| `proxy_protocol_port` | `u16` | `0` | 可信转发头兼容监听端口。读取 `X-Forwarded-For`，不是 HAProxy PROXY protocol v1/v2；只能放在 PPB/可信代理之后。 |
 | `monitors` | `Vec<i32>` | `[2]` | 允许用 room monitor 协议旁观的 Phira 用户 ID。 |
 | `phira_api_endpoint` | `String` | `https://phira.5wyxi.com` | 全局 Phira API 地址。认证默认访问它；房间未配置覆盖时，查谱面、查成绩也访问它。 |
 | `plugins_dir` | `String` | `plugins` | WASM 插件目录。服务端启动时会自动创建。 |
@@ -96,6 +107,9 @@ wasm_runtime:
 | `chat_enabled` | `bool` | `true` | 是否允许聊天；可通过 `config reload` 热更新。 |
 | `max_rooms` | `usize?` | 不限制 | 最大房间数。达到上限后会拒绝继续创建房间。 |
 | `max_users_per_room` | `usize?` | `100` | 每个房间最大玩家数。 |
+| `max_sessions` | `usize` | `4096` | 在线/已注册会话硬上限；容量名额从认证前预留到 Session 生命周期结束。 |
+| `max_pending_auth` | `usize` | `256` | 并发认证握手上限；必须大于 0 且不超过 `max_sessions`。 |
+| `graceful_shutdown_timeout_secs` | `u64` | `15` | 会话通知、插件事件、持久化 flush 和后台任务退出共享的总时限。 |
 | `connection_rate_limit` | `u32` | `30` | 每个统计窗口内允许的连接次数。 |
 | `connection_rate_window` | `u32` | `10` | 连接限速窗口，单位秒。 |
 | `round_data_retention_days` | `u32` | `7` | Touches/Judges 轮次文件保留天数，`0` 表示不清理轮次文件。 |
@@ -103,13 +117,30 @@ wasm_runtime:
 | `persistence_retention_days` | `u32` | `30` | PostgreSQL 统一持久化历史数据保留天数，`0` 表示不自动清理。 |
 | `touch_judge_retention_days` | `u32?` | 未设置 | Touches/Judges 高频遥测独立保留天数；未设置时遵循 `persistence_retention_days`，`0` 表示不自动清理遥测。 |
 | `runtime_v2` | `object` | 见下文 | Runtime v2 内部策略。用于配置 PersistenceWorker、TelemetryBatcher 和启动 cutover 模式，避免继续膨胀管理命令。 |
-| `idle` | `object` | 见下文 | 空载模式配置。无活动时自动挂起重服务（HTTP、插件、Simulation、PersistenceWorker），仅保留 TCP listener + CLI。 |
+| `idle` | `object` | 见下文 | 空载调度提示。不得暂停或丢弃权威持久化与可靠插件事件；只允许降低非关键后台活动。 |
 | `server_name` | `String?` | 未设置 | 服务器展示名称，可用于欢迎语等场景。 |
-| `admin_token` | `String?` | 未设置 | 管理令牌预留/供管理接口或自定义扩展使用。基础公开 API 不需要配置。 |
+| `admin_token` | `String?` | 未设置 | 预留字段；当前 PMP 内部 HTTP 不把它作为统一认证边界，公共认证由 PPB 负责。 |
 | `admin_phira_ids` | `Vec<i32>` | `[]` | 游戏内管理员 Phira ID。管理员可在创建房间弹窗输入 `_命令` 执行 CLI 命令。 |
 | `wasm_runtime` | `object` | 见下表 | WASM 插件运行时资源限制。 |
 
-端口校验规则：`port`、`http_port` 和启用后的 `proxy_protocol_port` 不能冲突；设置 `proxy_protocol_port > 0` 时必须同时启用 `http_port`。`max_rooms` 与 `max_users_per_room` 若设置，必须大于 0。`max_rooms` 同时约束客户端建房与管理端/WIT 创建空房。
+端口校验规则：`port`、`http_port` 和启用后的 `proxy_protocol_port` 不能冲突；设置 `proxy_protocol_port > 0` 时必须同时启用 `http_port`。`proxy_protocol_port` 只解析可信代理写入的 `X-Forwarded-For`，不实现 PROXY v1/v2。`max_rooms` 与 `max_users_per_room` 若设置，必须大于 0；`max_sessions`、`max_pending_auth` 和关闭时限也必须为正。`max_rooms` 同时约束客户端建房与管理端/WIT 创建空房。
+
+### WASM 运行时限制
+
+| 配置项 | 默认值 | 语义 |
+|---|---:|---|
+| `max_memory_mb` | `64` | 单个插件 Store 的线性内存增长上限。 |
+| `fuel_per_call` | `10000000` | 每次 guest 调用重置的 fuel；PMP 拒绝 `0`，避免无计量执行。 |
+| `max_stack_bytes` | `2097152` | Wasmtime guest 栈上限，最小 65536。 |
+| `http_timeout_secs` | `10` | 插件出站 HTTP 超时。 |
+| `max_http_response_bytes` | `2097152` | 出站 HTTP 流式读取上限。 |
+| `max_file_bytes` | `4194304` | 插件文件读取/写入大小上限。 |
+| `allow_private_network` | `false` | 是否允许插件访问私网地址；默认拒绝。 |
+| `max_event_concurrency` | `8` | 单个有序事件内并行执行的插件数量上限；事件之间仍按队列顺序处理。 |
+| `event_queue_capacity` | `2048` | 可靠低/中频插件事件队列容量。 |
+| `call_timeout_ms` | `2000` | init/event/API 的墙钟期限。fuel 约束 guest CPU，但进程内宿主阻塞调用不能获得 OS 级强杀保证。 |
+
+插件 capability 从同目录 sidecar `<plugin>.capabilities.json` 读取。缺失时只授予非特权默认能力；未知 capability 会拒绝加载。
 
 
 ## 运行时重载
@@ -121,6 +152,12 @@ config reload
 命令会重新读取启动时 `--config` 指定的同一文件，而不是固定读取当前目录下的 `server_config.yml`。聊天开关和 monitor 列表可立即生效；YAML 或对应持久化文件明确提供的管理员/压测凭据也会同步。显式 `--monitor` 仍保持最高优先级，未由 YAML 或持久化源声明的数据库/运行时动态列表不会被误清空。
 
 端口、目录、数据库、连接限流以及 Runtime v2 内部策略需要重启服务端。配置或相关持久化列表读取、解析、未知字段或校验失败时保留当前运行配置并返回明确错误，不会用空列表覆盖现有状态。
+
+## 有序关闭语义
+
+收到 Ctrl+C/SIGTERM 后，PMP 在 `graceful_shutdown_timeout_secs` 总时限内依次停止接入、摘除并关闭会话、刷新插件事件队列、执行插件 cleanup、保存扩展数据、Flush/Shutdown 持久化 Worker，并取消和等待受监督后台任务。所有步骤共享同一 deadline，避免每个子系统分别消耗完整超时。
+
+该机制保证“进程仍正常运行且依赖可响应”条件下已接收队列项尽量落地；它不是崩溃一致性协议。没有 WAL 时，`kill -9`、进程崩溃或主机掉电仍可能丢失尚未写入数据库的数据。
 
 ## 统一 PostgreSQL 持久化
 
@@ -175,7 +212,7 @@ runtime_v2:
       open_duration_ms: 20000
 ```
 
-`direct_only` 只通过 RoundStore/db.rs 直写（安全默认）。`worker_preferred` 直接写入 + 异步 Runtime v2 worker 镜像（生产推荐）。
+`direct_only` 只通过 RoundStore/db.rs 权威写入。`worker_preferred` 保留权威写入，并把高频遥测镜像到有界 TelemetryBatcher。队列和数据库写入有背压、有限重试及关机 flush，但当前没有磁盘 WAL，因此进程崩溃或主机掉电时仍不承诺零数据丢失。
 
 `phira_http` 控制统一 Phira RetryClient。默认策略会在连续失败达到阈值后短暂打开熔断器，避免 Phira 官方服务 502/超时期间继续把认证、选谱、成绩查询压在业务热路径上。Simulation 默认不访问 Phira；real/hybrid benchmark 必须显式走这套 client。
 
@@ -294,36 +331,29 @@ RUST_LOG=debug ./phira-mp-plus-server
 
 ## 空载模式 (Idle Mode)
 
-当服务器无用户连接、无房间活动时自动进入空载状态，释放重服务占用的内存。
+空载状态只降低非关键后台活动，不改变权威持久化、可靠插件事件或连接接入的正确性语义。当前实现不会在 idle 时卸载 HTTP、插件或 PersistenceWorker，也不会把 `suspended` 当作丢弃数据的许可。
 
 | 配置项 | 类型 | 默认值 | 说明 |
 |---|---:|---:|---|
-| `idle.idle_after_secs` | `u64` | `300` | 无活动多少秒后进入空载。 |
-| `idle.check_interval_secs` | `u64` | `15` | 空载检查间隔。 |
+| `idle.idle_after_secs` | `u64` | `300` | 无活动多少秒后标记为空载。 |
+| `idle.check_interval_secs` | `u64` | `15` | 空载检查间隔，必须大于 0。 |
 | `idle.heartbeat_timeout_secs` | `u64` | `30` | 会话心跳超时阈值。 |
 | `idle.auth_timeout_secs` | `u64` | `15` | 未认证连接超时阈值。 |
-
-**服务层级：**
-
-| 层级 | 说明 |
-|------|------|
-| 轻内核 | TCP listener、CLI、Idle 控制器 — 始终运行 |
-| 认证链路 | 用户连接时按需启动 |
-| 房间/用户链路 | 用户在线时按需启动 |
-| 重服务 | HTTP、插件、Simulation、Benchmark、PersistenceWorker — 空载时挂起，活动时全启动 |
 
 ## WASM 运行时限制
 
 | 配置项 | 类型 | 默认值 | 说明 |
 |---|---:|---:|---|
 | `wasm_runtime.max_memory_mb` | `usize` | `64` | 单个插件线性内存上限，单位 MB。 |
-| `wasm_runtime.fuel_per_call` | `u64` | `10000000` | 每次 guest 调用补充的 fuel；`0` 表示关闭 fuel 计量。 |
-| `wasm_runtime.max_stack_bytes` | `usize` | `2097152` | WASM 调用栈上限。 |
-| `wasm_runtime.http_timeout_secs` | `u64` | `10` | 插件 `http.get/post` 超时时间。 |
-| `wasm_runtime.max_http_response_bytes` | `usize` | `2097152` | 插件 HTTP 响应最大读取字节数。 |
-| `wasm_runtime.max_file_bytes` | `usize` | `4194304` | 插件文件读写最大字节数。 |
-| `wasm_runtime.allow_private_network` | `bool` | `false` | 是否允许插件访问私有网段地址；默认关闭以降低 SSRF 风险。 |
-| `wasm_runtime.max_event_concurrency` | `usize` | `100` | 插件事件处理最大并发数。 |
+| `wasm_runtime.fuel_per_call` | `u64` | `10000000` | 每次 guest 调用重置的 fuel；必须大于 0。 |
+| `wasm_runtime.max_stack_bytes` | `usize` | `2097152` | WASM guest 栈上限。 |
+| `wasm_runtime.http_timeout_secs` | `u64` | `10` | 插件出站 HTTP 超时。 |
+| `wasm_runtime.max_http_response_bytes` | `usize` | `2097152` | 插件 HTTP 响应流式读取上限。 |
+| `wasm_runtime.max_file_bytes` | `usize` | `4194304` | 插件文件读写上限。 |
+| `wasm_runtime.allow_private_network` | `bool` | `false` | 是否允许插件访问私有网段；默认关闭。 |
+| `wasm_runtime.max_event_concurrency` | `usize` | `8` | 单个事件内的插件并发上限；可靠事件本身不并行。 |
+| `wasm_runtime.event_queue_capacity` | `usize` | `2048` | 可靠插件事件队列容量。 |
+| `wasm_runtime.call_timeout_ms` | `u64` | `2000` | init/event/API 超时观测期限；超时后 quarantine，不能强杀已进入阻塞宿主函数的线程。 |
 
 ## jemalloc 内存分配器
 

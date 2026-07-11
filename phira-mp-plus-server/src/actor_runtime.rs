@@ -1,18 +1,17 @@
-//! Runtime v2 actor model — 迁移状态记录。
+//! Runtime v2 actor model — 当前真实迁移状态。
 //!
-//! Actor 边界已定义，部分路径已完成迁移：
+//! | Actor | 当前边界 |
+//! |-------|----------|
+//! | Session Actor | 每连接独立有界邮箱；已入队命令结果未知时拒绝重放；协议快路径仍直接处理 |
+//! | Room Actor | 每房间有界邮箱串行化 9 个管理命令；完整房间状态仍由 `Room` 的锁/原子字段持有 |
+//! | Persistence Actor | 有界背压、有限重试、确认式 flush/shutdown；无本地 WAL，崩溃级零丢失未承诺 |
+//! | Supervisor Actor | 跟踪、观测、取消并等待具名后台任务；不对任意任务自动重启 |
+//! | Simulation Actor | 查询与报告已接入；控制面仍未完全事件化 |
+//! | Plugin Actor | 有界事件分发、capability、fuel/Store limiter 与超时隔离/单执行闸门已接入；仍为进程内隔离 |
+//! | CLI Actor | 顶层派发已拆分，具体命令体仍保留在现有处理器 |
 //!
-//! | Actor | 状态 |
-//! |-------|------|
-//! | Session Actor | 全局单邮箱，所有命令通过 mailbox 路由；旧路径仍作 fallback |
-//! | Room Actor | 每房间独立 mailbox，7 个房间命令已串行化；但状态仍由 `room.rs` + `RwLock` 拥有 |
-//! | Persistence Actor | PersistenceWorker 已运行，但 DirectOnly/WorkerPreferred 双路径并存，直接写入仍是权威源 |
-//! | Supervisor Actor | 邮箱骨架已建，状态查询和关闭通知通过 mailbox |
-//! | Simulation Actor | 读取路径已迁移，事件总线命令待完成 |
-//! | Plugin Actor | WIT 生命周期已接入，dispatch 待入 mailbox |
-//! | CLI Actor | 顶层派发已拆分，具体命令体仍在 CliHandler |
-//!
-//! 迁移原则：镜像 → 路由读 → 路由写 → 删除旧直接调用。
+//! PMP 的公网 Web API 属于 PPB；PMP 内部 HTTP 仅作为受控网络中的兼容、诊断和插件接口。
+//! 迁移原则：先建立单一写边界与可观测故障语义，再删除共享状态和兼容路径。
 
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -76,9 +75,9 @@ impl ActorRuntime {
     pub async fn stats(&self) -> ActorRuntimeStats {
         let boundaries = self.boundaries.read().await.values().cloned().collect();
         ActorRuntimeStats {
-            phase: "migration_in_progress".to_string(),
-            web_management_api: "out_of_scope".to_string(),
-            rule: "mirror first; then route reads; then route writes; delete old direct calls last"
+            phase: "hardening_in_progress".to_string(),
+            web_management_api: "delegated_to_ppb".to_string(),
+            rule: "single write boundary; bounded queues; explicit uncertainty; remove compatibility paths only after tests"
                 .to_string(),
             boundaries,
         }
@@ -102,52 +101,52 @@ fn default_boundaries() -> Vec<ActorBoundary> {
     vec![
         ActorBoundary {
             name: "server-supervisor".to_string(),
-            responsibility: "Own process lifecycle, shutdown, listener startup, and actor supervision instead of accumulating feature glue in server.rs.".to_string(),
-            source_files: vec!["server.rs".to_string(), "supervisor_actor.rs".to_string()],
-            status: ActorBoundaryStatus::ReadRouted,
-            next_step: "Mailbox skeleton created (supervisor_actor.rs). Status queries and shutdown notifications routed through mailbox. Next: move server startup lifecycle events through supervisor.".to_string(),
+            responsibility: "Track process-lifetime background tasks and perform bounded, ordered shutdown.".to_string(),
+            source_files: vec!["server.rs".to_string(), "supervisor_actor.rs".to_string(), "main.rs".to_string()],
+            status: ActorBoundaryStatus::WriteRouted,
+            next_step: "Define explicit restart policies only for tasks whose startup and side effects are idempotent; the current supervisor intentionally observes and cancels but does not blindly restart.".to_string(),
         },
         ActorBoundary {
             name: "session-actor".to_string(),
-            responsibility: "Own one client connection, authentication state, inbound command decoding, and outbound send queue.".to_string(),
+            responsibility: "Serialize one authenticated connection's ordered business commands while keeping protocol liveness paths separate.".to_string(),
             source_files: vec!["session.rs".to_string(), "session_dispatch.rs".to_string(), "session_auth.rs".to_string(), "session_room.rs".to_string(), "session_telemetry.rs".to_string(), "session_actor.rs".to_string()],
             status: ActorBoundaryStatus::WriteRouted,
-            next_step: "Per-connection mailboxes implemented (Session::actor_tx, init_session_mailbox). Global static MAILBOX removed. Next: remove fallback paths for non-critical commands.".to_string(),
+            next_step: "Remove direct fallback once mailbox initialization is guaranteed by construction; retain Ping/auth/telemetry fast paths only where ordering contracts are documented and tested.".to_string(),
         },
         ActorBoundary {
             name: "room-actor".to_string(),
-            responsibility: "Own one room state machine, membership, host transfer, ready/start/play/result lifecycle, and telemetry fan-in.".to_string(),
+            responsibility: "Serialize room management transitions and ultimately own membership, host, chart, round and lifecycle state.".to_string(),
             source_files: vec!["room.rs".to_string(), "room_actor/".to_string()],
             status: ActorBoundaryStatus::WriteRouted,
-            next_step: "7 room commands routed through per-room mailbox. Lock/cycle/host owned state as source of truth. RoomActor created per room with snapshot publishing. Room state still partially in room.rs+PlusServerState.rooms — next: move remaining state into actor.".to_string(),
+            next_step: "Nine management commands are mailbox-routed without uncertain replay. The structural next step is one actor-owned RoomState and removal of cross-field RwLock/Atomic snapshots.".to_string(),
         },
         ActorBoundary {
             name: "persistence-actor".to_string(),
-            responsibility: "Own database batching, backpressure, retry, shutdown flush, simulation isolation, and high-frequency Touch/Judge writes.".to_string(),
-            source_files: vec!["persistence/".to_string(), "db.rs".to_string(), "persistence_worker.rs".to_string()],
+            responsibility: "Own reliable normal-operation writes, bounded backpressure, retry and acknowledged shutdown drain.".to_string(),
+            source_files: vec!["persistence/".to_string(), "db.rs".to_string()],
             status: ActorBoundaryStatus::WriteRouted,
-            next_step: "Non-telemetry writes moved to Worker exclusive (RoomEvent, ServerEvent, UserOnline/Offline, UserDisconnect, UserSeen, UserRoomHistory, Chat). Touch/Judge telemetry remain direct writes for performance. Fallback paths removed.".to_string(),
+            next_step: "Add an append-only WAL or transactional outbox only if crash/power-loss durability is a product requirement; current guarantees cover accepted work during normal operation and graceful shutdown, not kill -9.".to_string(),
         },
         ActorBoundary {
             name: "simulation-actor".to_string(),
-            responsibility: "Own shadow users, shadow rooms, scenario suites, deterministic replay, and synthetic workload generation.".to_string(),
+            responsibility: "Own shadow users, rooms, scenarios, deterministic replay and synthetic workload reporting.".to_string(),
             source_files: vec!["simulation.rs".to_string()],
             status: ActorBoundaryStatus::ReadRouted,
-            next_step: "suite reports and lifecycle contract tests added; next: typed EventBus commands for simulation control".to_string(),
+            next_step: "Move remaining simulation controls to typed commands and isolate simulation quotas from production session/room limits.".to_string(),
         },
         ActorBoundary {
             name: "plugin-actor".to_string(),
-            responsibility: "Own plugin dispatch, capability checks, event fanout, and slow-plugin isolation.".to_string(),
-            source_files: vec!["plugin.rs".to_string(), "wasm_host.rs".to_string(), "plugin_http.rs".to_string(), "plugin_abi/".to_string(), "wit_host.rs".to_string()],
-            status: ActorBoundaryStatus::ReadRouted,
-            next_step: "WIT lifecycle wired, all host API methods implemented (with capability errors where appropriate). WASM integration tests added. Capability mapping contract tests added. JSON ABI removed. Next: move plugin dispatch through typed mailbox.".to_string(),
+            responsibility: "Own bounded plugin event dispatch, capability enforcement and guest resource budgets.".to_string(),
+            source_files: vec!["plugin.rs".to_string(), "wasm_host.rs".to_string(), "wasm_host_helpers.rs".to_string(), "wit_host.rs".to_string()],
+            status: ActorBoundaryStatus::WriteRouted,
+            next_step: "For fully untrusted plugins, move execution to a separate process/cgroup. In-process timeouts cannot forcibly terminate a blocking host function after it has entered native code.".to_string(),
         },
         ActorBoundary {
             name: "cli-actor".to_string(),
-            responsibility: "Own CLI/TUI/admin-command execution through Command Registry without command logic spreading across cli.rs.".to_string(),
+            responsibility: "Route administrative commands through the same state-transition boundaries used by sessions and plugins.".to_string(),
             source_files: vec!["cli.rs".to_string(), "cli_tui.rs".to_string(), "command_registry.rs".to_string()],
             status: ActorBoundaryStatus::WriteRouted,
-            next_step: "Top-level dispatch and command-family routing are split. Concrete command bodies still live on CliHandler. Next: move implementation bodies only when it removes real coupling; do not add more command-surface-only steps.".to_string(),
+            next_step: "Continue moving only mutating operations that still bypass canonical server/room gateways; avoid surface-only file splitting.".to_string(),
         },
     ]
 }

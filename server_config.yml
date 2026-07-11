@@ -9,13 +9,20 @@
 # TCP 监听端口（游戏客户端直连）
 port: 12346
 
-# HTTP/SSE/WebSocket 服务端口（REST API、监控面板、事件流）
+# PMP 内部 HTTP/SSE/WebSocket 兼容端口。PP 架构中公共 Web API、认证、限流与边缘暴露由 PPB 统一提供；
+# PMP 端口仅应位于受控网络，不作为公网边缘接口。
 http_port: 12347
 
-# PROXY protocol 监听端口。启用后 TrustForwardedFor 中间件在此端口生效。
-# 直连端口（port / http_port）不走 PROXY 解析，避免额外开销。
-# 设为 0 禁用。典型值: 12344
+# 可信转发头兼容监听端口。该端口读取 X-Forwarded-For；它不是 HAProxy PROXY protocol v1/v2。
+# 只能放在 PPB/可信反向代理之后，禁止直接暴露给不可信客户端。设为 0 禁用。
 # proxy_protocol_port: 12344
+
+# 认证完成前与在线会话容量。认证任务通过有界并发执行，避免慢认证阻塞 TCP accept。
+max_sessions: 4096
+max_pending_auth: 256
+
+# SIGTERM/Ctrl+C 后，通知会话、插件事件、持久化 flush 与受监督任务退出共享的总时限。
+graceful_shutdown_timeout_secs: 15
 
 # ---- 认证 / Phira API ----
 
@@ -118,14 +125,16 @@ round_data_retention_days: 7
 #   max_http_response_bytes: 2097152
 #   max_file_bytes: 4194304
 #   allow_private_network: false
-#   max_event_concurrency: 8
+#   max_event_concurrency: 8  # 单个有序事件内并行执行的插件数
+#   event_queue_capacity: 2048
+#   call_timeout_ms: 2000
 
 # ---- 定制 / 管理 ----
 
 # 服务器名称（显示在欢迎语等位置）
 # server_name: "My Phira Server"
 
-# 管理员 API 令牌（预留/供管理接口或自定义扩展使用）
+# 管理员 API 令牌（预留字段；当前 PMP 内部 HTTP 不把它作为统一认证边界，公共认证由 PPB 负责）
 # admin_token: "your-secret-token"
 
 # 游戏内管理员 Phira ID。管理员在创建房间弹窗输入 _<CLI命令> 时不会创建房间，

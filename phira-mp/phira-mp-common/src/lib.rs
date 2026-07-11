@@ -57,6 +57,20 @@ mod stream_impl {
                 .map_err(|_| anyhow!("send queue closed"))
         }
 
+        /// Enqueue without waiting. Room broadcasts use this path so one slow
+        /// consumer cannot stall every other client in the room.
+        pub fn try_send(&self, payload: S) -> Result<()> {
+            self.tx
+                .try_send(Outbound {
+                    payload,
+                    flushed: None,
+                })
+                .map_err(|err| match err {
+                    mpsc::error::TrySendError::Full(_) => anyhow!("send queue full"),
+                    mpsc::error::TrySendError::Closed(_) => anyhow!("send queue closed"),
+                })
+        }
+
         pub async fn send_and_flush(&self, payload: S) -> Result<()> {
             let (flushed_tx, flushed_rx) = oneshot::channel();
             self.tx
@@ -91,6 +105,7 @@ mod stream_impl {
 
         send_task_handle: JoinHandle<()>,
         recv_task_handle: JoinHandle<Result<()>>,
+        handler_task_handle: JoinHandle<()>,
 
         _marker: PhantomData<(S, R)>,
     }
@@ -145,7 +160,9 @@ mod stream_impl {
                         let result = async {
                             write.write_all(&len_buf[..n]).await?;
                             write.write_all(&buffer).await?;
-                            write.flush().await?;
+                            if flushed.is_some() {
+                                write.flush().await?;
+                            }
                             Ok::<_, Error>(())
                         }
                         .await;
@@ -163,8 +180,19 @@ mod stream_impl {
                 }
             });
 
-            let recv_task_handle = tokio::spawn({
+            // Keep socket reads independent from business handling while
+            // preserving command order through one bounded dispatch queue.
+            let (dispatch_tx, mut dispatch_rx) = mpsc::channel::<R>(256);
+            let handler_task_handle = tokio::spawn({
                 let send_tx = Arc::clone(&send_tx);
+                async move {
+                    while let Some(payload) = dispatch_rx.recv().await {
+                        handler(Arc::clone(&send_tx), payload).await;
+                    }
+                }
+            });
+
+            let recv_task_handle = tokio::spawn({
                 #[allow(clippy::read_zero_byte_vec)]
                 async move {
                     let mut buffer = Vec::new();
@@ -199,7 +227,10 @@ mod stream_impl {
                             }
                         };
                         trace!("decodes to {payload:?}");
-                        handler(Arc::clone(&send_tx), payload).await;
+                        dispatch_tx
+                            .send(payload)
+                            .await
+                            .map_err(|_| anyhow!("command handler stopped"))?;
                     }
                     Ok(())
                 }
@@ -212,6 +243,7 @@ mod stream_impl {
 
                 send_task_handle,
                 recv_task_handle,
+                handler_task_handle,
 
                 _marker: PhantomData,
             })
@@ -223,6 +255,10 @@ mod stream_impl {
 
         pub async fn send(&self, payload: S) -> Result<()> {
             self.send_tx.send(payload).await
+        }
+
+        pub fn try_send(&self, payload: S) -> Result<()> {
+            self.send_tx.try_send(payload)
         }
 
         pub async fn send_and_flush(&self, payload: S) -> Result<()> {
@@ -238,6 +274,7 @@ mod stream_impl {
         pub fn close(&self) {
             self.send_task_handle.abort();
             self.recv_task_handle.abort();
+            self.handler_task_handle.abort();
         }
     }
 
@@ -245,14 +282,21 @@ mod stream_impl {
         fn drop(&mut self) {
             self.send_task_handle.abort();
             self.recv_task_handle.abort();
+            self.handler_task_handle.abort();
         }
     }
 
     pub fn generate_secret_key(info: &str, len: usize) -> Result<Vec<u8>> {
-        let original = std::env::var("HSN_SECRET_KEY").unwrap_or_else(|_| {
-            warn!("HSN_SECRET_KEY is not set, using default value");
-            "some_random_secret_key_for_debugging".to_string()
-        });
+        let original = match std::env::var("HSN_SECRET_KEY") {
+            Ok(value) if value.as_bytes().len() >= 32 => value,
+            Ok(_) => return Err(anyhow!("HSN_SECRET_KEY must contain at least 32 bytes")),
+            Err(_) if cfg!(debug_assertions) => {
+                let value = format!("debug-only-{}-{}", std::process::id(), uuid::Uuid::new_v4());
+                warn!("HSN_SECRET_KEY is not set; using an ephemeral debug-only key");
+                value
+            }
+            Err(_) => return Err(anyhow!("HSN_SECRET_KEY is required in release builds")),
+        };
         let salt = SaltString::encode_b64(b"some$random#salt")
             .map_err(|e| anyhow!("failed to generate salt string: {e}"))?;
         let ikm = Argon2::default()

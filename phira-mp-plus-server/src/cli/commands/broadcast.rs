@@ -84,8 +84,7 @@ impl CliHandler {
         }
         info!(sent, message = %message, "broadcast to all");
         self.state
-            .plugin_manager
-            .trigger(&PluginEvent::RoomModify {
+            .dispatch_plugin_event(PluginEvent::RoomModify {
                 user_id: 0,
                 room_id: "*broadcast*".to_string(),
                 data: serde_json::json!({
@@ -114,8 +113,7 @@ impl CliHandler {
         let users = room.users().await.len();
         info!(room = room_id, message = %message, "broadcast to room");
         self.state
-            .plugin_manager
-            .trigger(&PluginEvent::RoomModify {
+            .dispatch_plugin_event(PluginEvent::RoomModify {
                 user_id: 0,
                 room_id: room_id.to_string(),
                 data: serde_json::json!({

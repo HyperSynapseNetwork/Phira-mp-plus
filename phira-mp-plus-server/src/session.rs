@@ -2,7 +2,6 @@
 
 use crate::l10n::{Language, LANGUAGE};
 use crate::phira_client::PhiraRetryNoticeTarget;
-use crate::plugin::PluginEvent;
 use crate::server::PlusServerState;
 use crate::session_auth::{
     authenticate_remote_with_notice, ban_rejection_message, send_auth_rejection, AuthUserInfo,
@@ -18,7 +17,7 @@ use std::{
 };
 use tokio::{
     net::TcpStream,
-    sync::{mpsc, Mutex, Notify, OnceCell, RwLock},
+    sync::{mpsc, Mutex, Notify, OnceCell, OwnedSemaphorePermit, RwLock},
     task::JoinHandle,
     time,
 };
@@ -123,11 +122,33 @@ impl User {
         }
     }
 
-    pub async fn dangle(self: Arc<Self>) {
-        warn!(user = self.id, "user dangling");
-        let guard = self.room.read().await;
-        let room = guard.as_ref().map(Arc::clone);
-        drop(guard);
+    pub async fn dangle(self: Arc<Self>, disconnected_session_id: Uuid) {
+        warn!(user = self.id, session = %disconnected_session_id, "user dangling");
+
+        // Normal-user registration and disconnect finalization share one gate.
+        // This prevents a reconnect from racing an offline transition.
+        let registration_guard = if self.id >= 0 {
+            Some(self.server.user_registration_gate.lock().await)
+        } else {
+            None
+        };
+        let is_current_session = self
+            .session
+            .read()
+            .await
+            .as_ref()
+            .and_then(Weak::upgrade)
+            .is_some_and(|session| session.id == disconnected_session_id);
+        if !is_current_session {
+            debug!(
+                user = self.id,
+                session = %disconnected_session_id,
+                "ignoring stale disconnect after transport replacement"
+            );
+            return;
+        }
+
+        let room = self.room.read().await.as_ref().map(Arc::clone);
 
         // Monitor sessions are transient and never enter the player lifecycle.
         if self.id < 0 {
@@ -155,25 +176,28 @@ impl User {
             return;
         }
 
-        if let Some(room) = room {
-            let guard = room.state.read().await;
-            if matches!(*guard, crate::room::InternalRoomState::Playing { .. }) {
-                warn!(user = self.id, "lost connection on playing, aborting");
-                {
-                    let mut users = self.server.users.write().await;
-                    if users
-                        .get(&self.id)
-                        .is_some_and(|current| Arc::ptr_eq(current, &self))
-                    {
-                        users.remove(&self.id);
-                    }
-                }
-                drop(guard);
+        if let Some(room) = room.as_ref() {
+            let playing = matches!(
+                *room.state.read().await,
+                crate::room::InternalRoomState::Playing { .. }
+            );
+            if playing {
+                warn!(user = self.id, "lost connection while playing; removing immediately");
                 let room_id = room.id.clone();
                 let was_monitor = self.monitor.load(Ordering::Relaxed);
                 if room.on_user_leave(&self).await {
                     self.server.rooms.write().await.remove(&room_id);
                 }
+                let mut users = self.server.users.write().await;
+                if users
+                    .get(&self.id)
+                    .is_some_and(|current| Arc::ptr_eq(current, &self))
+                {
+                    users.remove(&self.id);
+                }
+                drop(users);
+                drop(registration_guard);
+
                 if !was_monitor {
                     self.server
                         .publish_room_event(RoomEvent::LeaveRoom {
@@ -183,90 +207,113 @@ impl User {
                         .await;
                 }
                 self.server
-                    .plugin_manager
-                    .trigger(&PluginEvent::UserDisconnect {
+                    .publish_user_disconnected(self.id, self.name.clone())
+                    .await;
+                crate::internal_hooks::playtime_disconnect(self.id);
+                let _ = self
+                    .server
+                    .persistence_worker
+                    .enqueue(
+                        crate::persistence::message::PersistenceEvent::UserDisconnect {
+                            user_id: self.id,
+                            user_name: self.name.clone(),
+                        },
+                    )
+                    .await;
+                let _ = self
+                    .server
+                    .persistence_worker
+                    .enqueue(crate::persistence::message::PersistenceEvent::UserOffline {
                         user_id: self.id,
-                        user_name: self.name.clone(),
                     })
                     .await;
-                self.server
-                    .publish_runtime_event(crate::event_bus::MpEvent::UserDisconnected {
-                        user_id: self.id,
-                    });
-                crate::internal_hooks::playtime_disconnect(self.id);
-                // PersistenceWorker (exclusive — no direct fallback)
-                let _ = self.server.persistence_worker.enqueue(
-                    crate::persistence::message::PersistenceEvent::UserDisconnect {
-                        user_id: self.id,
-                        user_name: self.name.clone(),
-                    }
-                ).await;
-                // Also mirror offline status to worker
-                let _ = self.server.persistence_worker.enqueue(
-                    crate::persistence::message::PersistenceEvent::UserOffline {
-                        user_id: self.id,
-                    }
-                ).await;
                 return;
             }
         }
-        self.server
-            .plugin_manager
-            .trigger(&PluginEvent::UserDisconnect {
-                user_id: self.id,
-                user_name: self.name.clone(),
-            })
-            .await;
-        self.server
-            .publish_runtime_event(crate::event_bus::MpEvent::UserDisconnected {
-                user_id: self.id,
-            });
-        // PersistenceWorker (exclusive — no direct DB write)
-        let _ = self.server.persistence_worker.enqueue(
-            crate::persistence::message::PersistenceEvent::UserDisconnect {
-                user_id: self.id,
-                user_name: self.name.clone(),
-            }
-        ).await;
 
         let dangle_mark = Arc::new(());
         *self.dangle_mark.lock().await = Some(Arc::clone(&dangle_mark));
+        drop(registration_guard);
+
+        self.server
+            .publish_user_disconnected(self.id, self.name.clone())
+            .await;
+        let _ = self
+            .server
+            .persistence_worker
+            .enqueue(
+                crate::persistence::message::PersistenceEvent::UserDisconnect {
+                    user_id: self.id,
+                    user_name: self.name.clone(),
+                },
+            )
+            .await;
+
         let weak_self = Arc::downgrade(&self);
-        tokio::spawn(async move {
-            time::sleep(Duration::from_secs(10)).await;
-            if Arc::strong_count(&dangle_mark) > 1 {
-                if let Some(self_) = weak_self.upgrade() {
-                    let guard = self_.room.read().await;
-                    let room = guard.as_ref().map(Arc::clone);
-                    drop(guard);
-                    if let Some(room) = room {
-                        {
-                            let mut users = self_.server.users.write().await;
-                            if users
-                                .get(&self_.id)
-                                .is_some_and(|current| Arc::ptr_eq(current, &self_))
-                            {
-                                users.remove(&self_.id);
-                            }
-                        }
-                        let room_id = room.id.clone();
-                        let was_monitor = self_.monitor.load(Ordering::Relaxed);
-                        if room.on_user_leave(&self_).await {
-                            self_.server.rooms.write().await.remove(&room_id);
-                        }
-                        if !was_monitor {
-                            self_
-                                .server
-                                .publish_room_event(RoomEvent::LeaveRoom {
-                                    room: room_id,
-                                    user: self_.id,
-                                })
-                                .await;
-                        }
+        crate::supervisor_actor::spawn_named(
+            format!("dangle-grace-{}", self.id),
+            async move {
+                time::sleep(Duration::from_secs(10)).await;
+                let Some(self_) = weak_self.upgrade() else {
+                    return;
+                };
+                let registration_guard =
+                    self_.server.user_registration_gate.lock().await;
+                let expired = {
+                    let mut current = self_.dangle_mark.lock().await;
+                    if current
+                        .as_ref()
+                        .is_some_and(|mark| Arc::ptr_eq(mark, &dangle_mark))
+                    {
+                        current.take();
+                        true
+                    } else {
+                        false
+                    }
+                };
+                if !expired {
+                    return;
+                }
+
+                let room = self_.room.read().await.as_ref().map(Arc::clone);
+                let mut room_leave_event = None;
+                if let Some(room) = room {
+                    let room_id = room.id.clone();
+                    let was_monitor = self_.monitor.load(Ordering::Relaxed);
+                    if room.on_user_leave(&self_).await {
+                        self_.server.rooms.write().await.remove(&room_id);
+                    }
+                    if !was_monitor {
+                        room_leave_event = Some(RoomEvent::LeaveRoom {
+                            room: room_id,
+                            user: self_.id,
+                        });
                     }
                 }
-            }
-        });
+
+                let mut users = self_.server.users.write().await;
+                if users
+                    .get(&self_.id)
+                    .is_some_and(|current| Arc::ptr_eq(current, &self_))
+                {
+                    users.remove(&self_.id);
+                }
+                drop(users);
+                drop(registration_guard);
+
+                if let Some(event) = room_leave_event {
+                    self_.server.publish_room_event(event).await;
+                }
+                crate::internal_hooks::playtime_disconnect(self_.id);
+                let _ = self_
+                    .server
+                    .persistence_worker
+                    .enqueue(crate::persistence::message::PersistenceEvent::UserOffline {
+                        user_id: self_.id,
+                    })
+                    .await;
+            },
+        );
     }
 }
 
@@ -293,6 +340,8 @@ pub struct Session {
     /// Per-session actor mailbox sender. Set after authentication.
     pub(crate) actor_tx: OnceLock<mpsc::Sender<crate::session_actor::SessionActorCmd>>,
     monitor_task_handle: JoinHandle<()>,
+    /// Releases one authenticated-session capacity slot on drop.
+    _session_permit: OwnedSemaphorePermit,
     /// 命令速率限制器（按类别）
     cmd_limiter: crate::rate_limiter::CommandRateLimiter,
 }
@@ -303,6 +352,7 @@ impl Session {
         addr: std::net::SocketAddr,
         stream: TcpStream,
         server: Arc<PlusServerState>,
+        session_permit: OwnedSemaphorePermit,
     ) -> Result<Arc<Self>> {
         stream.set_nodelay(true)?;
         let this = Arc::new(OnceCell::<Arc<Session>>::new());
@@ -488,7 +538,11 @@ impl Session {
                                             }
                                         ).await;
 
-                                        let user_ip = addr.ip().to_string();
+                                        // Keep the final reconnect/new-user decision atomic across
+                                        // Session construction. Cancellation releases this guard,
+                                        // so a failed handshake cannot leave a reserved user entry.
+                                        let _registration_guard =
+                                            server.user_registration_gate.lock().await;
                                         let existing_user = {
                                             let guard = server.users.write().await;
                                             guard.get(&user_info.id).map(Arc::clone)
@@ -517,19 +571,10 @@ impl Session {
                                                     previous.stream.close();
                                                     let _ = server
                                                         .lost_con_tx
-                                                        .send(previous.id)
-                                                        .await;
+                                                        .try_send(previous.id);
                                                 }
                                             }
                                             existing.set_auth_token(Some(token.to_string())).await;
-                                            server.publish_runtime_event(
-                                                crate::event_bus::MpEvent::UserConnected {
-                                                    user_id: user_info.id,
-                                                    user_name: user_info.name.clone(),
-                                                    user_ip: user_ip.clone(),
-                                                    user_language: user_info.language.clone(),
-                                                },
-                                            );
                                         } else {
                                             if let Some(reason) =
                                                 server.ban_manager.ban_reason(user_info.id).await
@@ -573,14 +618,6 @@ impl Session {
                                                 let mut guard = server.users.write().await;
                                                 guard.insert(user_info.id, Arc::clone(&user));
                                             }
-                                            server.publish_runtime_event(
-                                                crate::event_bus::MpEvent::UserConnected {
-                                                    user_id: user_info.id,
-                                                    user_name: user.name.clone(),
-                                                    user_ip: user_ip.clone(),
-                                                    user_language: user.lang.0.to_string(),
-                                                },
-                                            );
                                         }
                                         Ok(())
                                     }
@@ -621,6 +658,14 @@ impl Session {
                                         return;
                                     }
                                     debug!("auth response sent");
+                                    server
+                                        .publish_user_connected(
+                                            user.id,
+                                            user.name.clone(),
+                                            addr.ip().to_string(),
+                                            user.lang.0.to_string(),
+                                        )
+                                        .await;
                                     // Welcome chat must follow the successful authentication frame;
                                     // otherwise clients may discard it before room/user state exists.
                                     let online = server.users.read().await.len();
@@ -632,15 +677,17 @@ impl Session {
                                     );
                                     // 通知 room monitor 新用户
                                     let uid = user.id;
-                                    let _session = this.get().map(|s| Arc::clone(s));
-                                    tokio::spawn(async move {
-                                        if let Some(mon) = server.get_room_monitor().await {
-                                            mon.stream
-                                                .send(ServerCommand::UserVisit(uid))
-                                                .await
-                                                .ok();
-                                        }
-                                    });
+                                    crate::supervisor_actor::spawn_named(
+                                        format!("room-monitor-visit-{uid}"),
+                                        async move {
+                                            if let Some(mon) = server.get_room_monitor().await {
+                                                mon.stream
+                                                    .send(ServerCommand::UserVisit(uid))
+                                                    .await
+                                                    .ok();
+                                            }
+                                        },
+                                    );
                                     waiting_for_authenticate.store(false, Ordering::SeqCst);
                                 }
                                 return;
@@ -939,10 +986,29 @@ impl Session {
             category,
             actor_tx: OnceLock::new(),
             monitor_task_handle,
+            _session_permit: session_permit,
             cmd_limiter: crate::rate_limiter::CommandRateLimiter::new(),
         });
         let _ = this.set(Arc::clone(&res));
         this_inited.notify_one();
+
+        if category == SessionCategory::Normal {
+            crate::internal_hooks::playtime_connect(res.user.id);
+            if let Err(event) = server
+                .persistence_worker
+                .enqueue(crate::persistence::message::PersistenceEvent::UserOnline {
+                    user_id: res.user.id,
+                })
+                .await
+            {
+                warn!(
+                    user = res.user.id,
+                    kind = %event.kind(),
+                    "failed to enqueue authoritative online state"
+                );
+            }
+        }
+
         Ok(res)
     }
 
@@ -955,8 +1021,13 @@ impl Session {
     }
 
     pub async fn try_send(&self, cmd: ServerCommand) {
-        if let Err(err) = self.stream.send(cmd).await {
-            error!("failed to deliver command to {}: {err:?}", self.id);
+        if let Err(err) = self.stream.try_send(cmd) {
+            // A full outbound queue means this client is no longer keeping up.
+            // Disconnect it instead of allowing one slow consumer to stall a
+            // room-wide broadcast or actor command.
+            warn!(session = %self.id, user = self.user.id, ?err, "disconnecting slow client");
+            self.stream.close();
+            let _ = self.user.server.lost_con_tx.try_send(self.id);
         }
     }
 }

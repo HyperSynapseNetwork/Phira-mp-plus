@@ -84,8 +84,7 @@ impl RoomCommandGateway {
                 .await;
         }
         state
-            .plugin_manager
-            .trigger(&PluginEvent::RoomModify {
+            .dispatch_plugin_event(PluginEvent::RoomModify {
                 user_id: target_id,
                 room_id: room_id.to_string(),
                 data: serde_json::json!({"action":"kicked"}).to_string(),
@@ -159,8 +158,7 @@ impl RoomCommandGateway {
         }
         state.rooms.write().await.remove(&rid);
         state
-            .plugin_manager
-            .trigger(&PluginEvent::RoomModify {
+            .dispatch_plugin_event(PluginEvent::RoomModify {
                 user_id: 0,
                 room_id: room_id_str.clone(),
                 data: serde_json::json!({"action":"closed"}).to_string(),

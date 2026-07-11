@@ -389,10 +389,8 @@ struct PlaytimeEntry {
 }
 
 pub fn playtime_connect(user_id: i32) {
-    // Direct DB write (sync, low-frequency — not through Worker)
-    if let Some(db) = DB.get() {
-        db.set_online_sync(user_id);
-    }
+    // Database online/offline state is owned by PersistenceWorker. This hook
+    // only maintains the local playtime cache used by the built-in command.
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
@@ -403,10 +401,8 @@ pub fn playtime_connect(user_id: i32) {
 }
 
 pub fn playtime_disconnect(user_id: i32) {
-    // Direct DB write (sync, low-frequency — not through Worker)
-    if let Some(db) = DB.get() {
-        db.set_offline_sync(user_id);
-    }
+    // Database online/offline state is owned by PersistenceWorker. This hook
+    // only finalizes the local playtime cache.
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())

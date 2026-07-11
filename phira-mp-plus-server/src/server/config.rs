@@ -174,7 +174,16 @@ pub struct PlusConfig {
     pub max_rooms: Option<usize>,
     #[serde(default)]
     pub max_users_per_room: Option<usize>,
-    /// Port for PROXY protocol (v1/v2) connections from reverse proxies.
+    /// Maximum number of authenticated/registered sessions.
+    #[serde(default = "default_max_sessions")]
+    pub max_sessions: usize,
+    /// Maximum number of concurrent pre-authentication handshakes.
+    #[serde(default = "default_max_pending_auth")]
+    pub max_pending_auth: usize,
+    /// Total deadline used by the ordered shutdown sequence.
+    #[serde(default = "default_graceful_shutdown_timeout_secs")]
+    pub graceful_shutdown_timeout_secs: u64,
+    /// Port for the optional forwarded-header compatibility listener.
     #[serde(default = "default_proxy_protocol_port")]
     pub proxy_protocol_port: u16,
     #[serde(default = "default_rate_limit")]
@@ -223,6 +232,9 @@ impl Default for PlusConfig {
             cli_enabled: true,
             max_rooms: None,
             max_users_per_room: None,
+            max_sessions: default_max_sessions(),
+            max_pending_auth: default_max_pending_auth(),
+            graceful_shutdown_timeout_secs: default_graceful_shutdown_timeout_secs(),
             connection_rate_limit: 30,
             connection_rate_window: 10,
             server_name: None,
@@ -295,11 +307,47 @@ impl PlusConfig {
                 "max_users_per_room 必须大于 0".into(),
             ));
         }
-        if !std::path::Path::new(&self.plugins_dir).exists() {
-            return Err(AppError::ConfigValidation(format!(
-                "插件目录不存在: {}",
-                self.plugins_dir
-            )));
+        if self.max_sessions == 0 {
+            return Err(AppError::ConfigValidation("max_sessions 必须大于 0".into()));
+        }
+        if self.max_pending_auth == 0 || self.max_pending_auth > self.max_sessions {
+            return Err(AppError::ConfigValidation(
+                "max_pending_auth 必须大于 0 且不能超过 max_sessions".into(),
+            ));
+        }
+        if self.graceful_shutdown_timeout_secs == 0 {
+            return Err(AppError::ConfigValidation(
+                "graceful_shutdown_timeout_secs 必须大于 0".into(),
+            ));
+        }
+        if self.plugins_dir.trim().is_empty() {
+            return Err(AppError::ConfigValidation("plugins_dir 不能为空".into()));
+        }
+        if self.wasm_runtime.max_memory_mb == 0 {
+            return Err(AppError::ConfigValidation(
+                "wasm_runtime.max_memory_mb 必须大于 0".into(),
+            ));
+        }
+        if self.wasm_runtime.fuel_per_call == 0 {
+            return Err(AppError::ConfigValidation(
+                "wasm_runtime.fuel_per_call 必须大于 0；PMP 不允许无计量插件执行".into(),
+            ));
+        }
+        if self.wasm_runtime.max_stack_bytes < 64 * 1024 {
+            return Err(AppError::ConfigValidation(
+                "wasm_runtime.max_stack_bytes 不能小于 65536".into(),
+            ));
+        }
+        if self.wasm_runtime.http_timeout_secs == 0
+            || self.wasm_runtime.max_http_response_bytes == 0
+            || self.wasm_runtime.max_file_bytes == 0
+            || self.wasm_runtime.max_event_concurrency == 0
+            || self.wasm_runtime.event_queue_capacity == 0
+            || self.wasm_runtime.call_timeout_ms == 0
+        {
+            return Err(AppError::ConfigValidation(
+                "wasm_runtime 的超时、大小与并发限制必须全部大于 0".into(),
+            ));
         }
         if self.connection_rate_limit == 0 {
             return Err(AppError::ConfigValidation(
@@ -372,6 +420,9 @@ fn default_proxy_protocol_port() -> u16 { 0 }
 fn default_retention_days() -> u32 { 7 }
 fn default_persistence_retention_days() -> u32 { 30 }
 fn default_runtime_persistence_queue_capacity() -> usize { 2048 }
+fn default_max_sessions() -> usize { 4096 }
+fn default_max_pending_auth() -> usize { 256 }
+fn default_graceful_shutdown_timeout_secs() -> u64 { 15 }
 
 
 #[cfg(test)]
@@ -451,4 +502,34 @@ mod tests {
         assert_eq!(config.monitors, vec![7, 9]);
         assert_eq!(config.cli_monitors_override, Some(vec![7, 9]));
     }
+    #[test]
+    fn rejects_invalid_capacity_and_shutdown_limits() {
+        let mut config = PlusConfig::default();
+        config.max_sessions = 0;
+        assert!(config.validate().is_err());
+
+        let mut config = PlusConfig::default();
+        config.max_pending_auth = config.max_sessions + 1;
+        assert!(config.validate().is_err());
+
+        let mut config = PlusConfig::default();
+        config.graceful_shutdown_timeout_secs = 0;
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn rejects_unmetered_or_unbounded_plugin_runtime() {
+        let mut config = PlusConfig::default();
+        config.wasm_runtime.fuel_per_call = 0;
+        assert!(config.validate().is_err());
+
+        let mut config = PlusConfig::default();
+        config.wasm_runtime.event_queue_capacity = 0;
+        assert!(config.validate().is_err());
+
+        let mut config = PlusConfig::default();
+        config.wasm_runtime.call_timeout_ms = 0;
+        assert!(config.validate().is_err());
+    }
+
 }

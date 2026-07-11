@@ -3,13 +3,10 @@
 // This is the typed replacement for the current JSON-memory bridge (abi-json-v1).
 // Target: abi-wit-v2
 //
-// Migration:
-//   1. Define WIT interfaces matching the current JSON ABI (this file)
-//   2. Generate host bindings with wasmtime::component::bindgen!
-//   3. Implement host side (wasm_host.rs → typed WIT imports)
-//   4. Update guest SDK (phira-mp-plus-sdk) to use WIT exports
-//   5. Dual-support both ABIs during transition
-//   6. Remove JSON bridge after all plugins migrate
+// Status:
+//   - abi-json-v1 has been removed; this WIT world is the only supported ABI.
+//   - Host capability and resource boundaries are implemented in the server.
+//   - Release readiness still depends on workspace tests and real component fixtures.
 
 package phira:plugin@0.2.0;
 

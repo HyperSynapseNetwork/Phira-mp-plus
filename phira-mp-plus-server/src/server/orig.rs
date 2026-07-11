@@ -12,11 +12,11 @@ use phira_mp_plus_server_api as api;
 use serde_json::Value;
 use std::{
     collections::HashSet,
-    sync::{atomic::Ordering, Arc, Weak},
+    sync::{atomic::{AtomicBool, Ordering}, Arc, Weak},
 };
 use tokio::{
     net::TcpListener,
-    sync::{mpsc, Notify, RwLock, Semaphore},
+    sync::{mpsc, Mutex, Notify, RwLock, Semaphore},
 };
 use tracing::{info, trace, warn};
 use uuid::Uuid;
@@ -78,12 +78,17 @@ pub struct PlusServerState {
     pub live_config: Arc<RwLock<LiveConfig>>,
     pub sessions: IdMap<Arc<crate::session::Session>>,
     pub users: SafeMap<i32, Arc<crate::session::User>>,
+    /// Serializes final user registration/reconnect replacement so concurrent
+    /// authentication for one account cannot create two authoritative users.
+    pub user_registration_gate: Mutex<()>,
     pub rooms: SafeMap<RoomId, Arc<crate::room::Room>>,
     pub lost_con_tx: mpsc::Sender<Uuid>,
     pub plugin_manager: Arc<PluginManager>,
     pub extensions: Arc<ExtensionManager>,
     pub ban_manager: Arc<BanManager>,
     pub shutdown: Notify,
+    /// Persistent lifecycle flag used by accept/auth tasks during ordered shutdown.
+    pub shutting_down: AtomicBool,
     /// 连接速率限制器（按 IP）
     pub connection_limiter: crate::rate_limiter::ConnectionRateLimiter,
     /// 轮次数据持久化存储（Touches/Judges 按轮次写入磁盘）
@@ -92,6 +97,10 @@ pub struct PlusServerState {
     pub user_room_history: SafeMap<i32, Vec<(String, String, i64)>>,
     /// 压测请求发送端（背景 tokio 任务消费）
     pub bench_tx: tokio::sync::mpsc::Sender<BenchRequest>,
+    /// Concurrent pre-authentication handshakes. The listener never waits for authentication.
+    pub pre_auth_gate: Arc<Semaphore>,
+    /// Capacity reservation held for the entire authenticated session lifetime.
+    pub session_gate: Arc<Semaphore>,
     /// 房间展示元数据后台刷新并发闸门。
     pub room_metadata_refresh_gate: Arc<Semaphore>,
     /// Runtime v2 命令元数据注册表。Step 1 仅用于 help/补全/未来统一入口，不改变现有执行逻辑。
@@ -102,9 +111,10 @@ pub struct PlusServerState {
     pub benchmark_reports: Arc<BenchmarkReportStore>,
     /// Runtime v2 Simulation 状态管理器。当前只创建隔离 shadow world，不污染真实 rooms/users。
     pub simulation: Arc<crate::simulation::SimulationManager>,
-    /// Runtime v2 持久化 Worker 骨架。现有 db.rs 写入路径暂不迁移。
+    /// Bounded persistence worker with retry and acknowledged flush/shutdown.
+    /// Touch/Judge high-frequency rows retain their explicit telemetry path.
     pub persistence_worker: Arc<crate::persistence_worker::PersistenceWorker>,
-    /// Runtime v2 Actor 模型迁移蓝图。当前是诊断/路线层，不替换真实协议热路径。
+    /// Actor-boundary diagnostics. Full RoomState ownership is still migrating.
     pub actor_runtime: Arc<crate::actor_runtime::ActorRuntime>,
     /// Runtime v2 Room command gateway. Admin/StateQuery room writes route through this facade while the gateway gradually moves commands into per-room mailboxes.
     pub room_commands: Arc<crate::room_actor::RoomCommandGateway>,
@@ -131,7 +141,6 @@ pub struct PlusServerState {
 pub struct PlusServer {
     pub state: Arc<PlusServerState>,
     listener: TcpListener,
-    _lost_con_handle: tokio::task::JoinHandle<()>,
 }
 
 // Event subscriber functions moved to super::events
@@ -146,12 +155,12 @@ impl PlusServer {
             config.port,
         );
         let listener = TcpListener::bind(addr).await?;
-        info!("Phira-mp+ listening on http://{}", addr);
+        info!("Phira-mp+ listening on tcp://{}", addr);
 
         // 初始化 Supervisor Actor（接受子任务注册与健康检查）
         crate::supervisor_actor::init();
 
-        let (lost_con_tx, mut lost_con_rx) = mpsc::channel(16);
+        let (lost_con_tx, mut lost_con_rx) = mpsc::channel(1024);
 
         // 初始化扩展管理器
         let extensions = Arc::new(ExtensionManager::new(config.extensions_file.clone()));
@@ -211,6 +220,9 @@ impl PlusServer {
         // Capture config fields before config is consumed by state
         let proxy_protocol_port = config.proxy_protocol_port;
         let idle_config = config.idle.clone();
+        let max_pending_auth = config.max_pending_auth;
+        let max_sessions = config.max_sessions;
+        let room_monitor_key = generate_secret_key("room_monitor", 64)?;
         // Initialize database connection early so it's available throughout
         let db_manager = crate::db::DbManager::new(config.database_url.as_deref()).await;
         let live_config = Arc::new(RwLock::new(LiveConfig::from_full(&config)));
@@ -219,12 +231,14 @@ impl PlusServer {
             live_config,
             sessions: IdMap::default(),
             users: SafeMap::default(),
+            user_registration_gate: Mutex::new(()),
             rooms: SafeMap::default(),
             lost_con_tx,
             plugin_manager,
             extensions,
             ban_manager,
             shutdown: Notify::new(),
+            shutting_down: AtomicBool::new(false),
             connection_limiter: crate::rate_limiter::ConnectionRateLimiter::new(
                 rate_limit,
                 rate_window,
@@ -232,6 +246,8 @@ impl PlusServer {
             round_store: Arc::new(crate::round_store::RoundStore::new("data", retention_days)),
             user_room_history: SafeMap::default(),
             bench_tx: bench_tx.clone(),
+            pre_auth_gate: Arc::new(Semaphore::new(max_pending_auth)),
+            session_gate: Arc::new(Semaphore::new(max_sessions)),
             room_metadata_refresh_gate: Arc::new(Semaphore::new(
                 ROOM_METADATA_REFRESH_CONCURRENCY,
             )),
@@ -245,7 +261,7 @@ impl PlusServer {
             phira_client,
             bench_tokens: RwLock::new(bench_tokens),
             admin_ids: RwLock::new(admin_ids),
-            room_monitor_key: generate_secret_key("room_monitor", 64).unwrap_or_default(),
+            room_monitor_key,
             room_monitor: RwLock::new(None),
             game_monitors: SafeMap::default(),
             events,
@@ -254,15 +270,15 @@ impl PlusServer {
         });
         // Wire PersistenceWorker into ExtensionManager for mirrored writes
         state.extensions.set_persistence_worker(&state.persistence_worker).await;
+        state.plugin_manager.start_event_dispatcher().await;
         super::events::spawn_event_subscribers(&state);
-        super::events::spawn_plugin_subscriber(&state);
         state.room_commands.start_mailbox(Arc::clone(&state), 1024);
         state
             .actor_runtime
             .mark_status(
                 "room-actor",
                 crate::actor_runtime::ActorBoundaryStatus::WriteRouted,
-                "set_lock/set_cycle/set_host/close/kick/start/cancel cross a per-room mailbox registry; gateway internals are now split for typed command migration",
+                "nine room management commands cross a bounded per-room mailbox; uncertain post-enqueue outcomes are not replayed; full RoomState ownership remains pending",
             )
             .await;
         // 启动 IdleMonitor 主循环（定期检查空闲条件，挂起/恢复重服务）
@@ -284,7 +300,7 @@ impl PlusServer {
         });
 
         let lost_con_state = Arc::clone(&state);
-        let lost_con_handle = tokio::spawn(async move {
+        crate::supervisor_actor::spawn_named("lost-connection-worker", async move {
             while let Some(id) = lost_con_rx.recv().await {
                 warn!("lost connection with {id}");
                 let session_opt = lost_con_state.sessions.write().await.remove(&id);
@@ -297,7 +313,7 @@ impl PlusServer {
                             .is_some_and(|it| it.ptr_eq(&Arc::downgrade(&session)))
                     };
                     if user_ref {
-                        Arc::clone(&session.user).dangle().await;
+                        Arc::clone(&session.user).dangle(id).await;
                     }
                 }
             }
@@ -345,11 +361,11 @@ impl PlusServer {
             }))
             .await;
 
-        // 设置默认状态查询（所有插件可用 state.query host API）
+        // Legacy/default state query. WIT components receive a stricter per-plugin wrapper.
         let state_query_all = api::ServerStateQuery::new({
             let s = Arc::clone(&state);
             move |method: &str, args: &[Value]| -> Result<Value, String> {
-                super::query::server_state_query_inner(&s, method, args)
+                super::query::server_state_query_for_host(&s, method, args)
             }
         });
         state
@@ -447,69 +463,119 @@ impl PlusServer {
             });
         }
 
-        Ok(Self {
-            state,
-            listener,
-            _lost_con_handle: lost_con_handle,
-        })
+        Ok(Self { state, listener })
     }
 
-    /// 接受新连接
+    /// Accept a TCP connection and hand authentication to a bounded task.
+    ///
+    /// The listener path intentionally performs no protocol reads: one slow or
+    /// malicious unauthenticated client must not block subsequent accepts.
     pub async fn accept(&self) -> Result<()> {
+        if self.state.shutting_down.load(Ordering::Acquire) {
+            return Ok(());
+        }
         let (stream, addr) = self.listener.accept().await?;
+        if self.state.shutting_down.load(Ordering::Acquire) {
+            return Ok(());
+        }
         let ip = addr.ip().to_string();
 
-        // 连接速率限制检查
         if !self.state.connection_limiter.check(&ip).await {
-            // 限流时直接静默丢弃，不产生日志
             return Ok(());
         }
 
-        // 最大会话数快速检查（try_read 避免阻塞）
-        if let Ok(guard) = self.state.sessions.try_read() {
-            if guard.len() > 4096 {
-                return Ok(());
-            }
-        }
-
-        self.state.idle_monitor.mark_activity();
-        let id = Uuid::new_v4();
-        let auth_timeout = self.state.config.idle.auth_timeout_secs.max(5);
-        let session = match tokio::time::timeout(
-            std::time::Duration::from_secs(auth_timeout),
-            crate::session::Session::new(id, addr, stream, Arc::clone(&self.state)),
-        )
-        .await
-        {
-            Ok(Ok(s)) => s,
-            Ok(Err(e)) => {
-                warn!("failed to create session for {ip}: {e:?}");
-                return Ok(());
-            }
+        let session_permit = match Arc::clone(&self.state.session_gate).try_acquire_owned() {
+            Ok(permit) => permit,
             Err(_) => {
-                warn!("session creation timed out for {ip}");
+                warn!(%ip, "connection rejected: session capacity reached");
                 return Ok(());
             }
         };
 
-        // 写锁窗口最小化：仅插入 session
-        if let Ok(mut guard) = self.state.sessions.try_write() {
-            guard.insert(id, session);
-        } else {
-            self.state.sessions.write().await.insert(id, session);
-        }
+        let permit = match Arc::clone(&self.state.pre_auth_gate).try_acquire_owned() {
+            Ok(permit) => permit,
+            Err(_) => {
+                warn!(%ip, "connection rejected: pre-authentication capacity reached");
+                return Ok(());
+            }
+        };
 
-        trace!("connection from {ip} accepted, session {id}");
+        self.state.idle_monitor.mark_activity();
+        let id = Uuid::new_v4();
+        let auth_timeout = self.state.config.idle.auth_timeout_secs.max(5);
+        let state = Arc::clone(&self.state);
+        crate::supervisor_actor::spawn_named(format!("pre-auth-{id}"), async move {
+            let _permit = permit;
+            let session = match tokio::time::timeout(
+                std::time::Duration::from_secs(auth_timeout),
+                crate::session::Session::new(
+                    id,
+                    addr,
+                    stream,
+                    Arc::clone(&state),
+                    session_permit,
+                ),
+            )
+            .await
+            {
+                Ok(Ok(session)) => session,
+                Ok(Err(err)) => {
+                    warn!(%ip, ?err, "failed to create session");
+                    return;
+                }
+                Err(_) => {
+                    warn!(%ip, "session creation timed out");
+                    return;
+                }
+            };
+
+            // Authentication may complete while the main task has already begun
+            // shutdown. Never publish a late session into the authoritative map.
+            if state.shutting_down.load(Ordering::Acquire) {
+                *session.user.session.write().await = None;
+                session.stream.close();
+                if session.user.id >= 0 {
+                    let mut users = state.users.write().await;
+                    if users
+                        .get(&session.user.id)
+                        .is_some_and(|current| Arc::ptr_eq(current, &session.user))
+                    {
+                        users.remove(&session.user.id);
+                    }
+                    drop(users);
+                    state
+                        .publish_user_disconnected(session.user.id, session.user.name.clone())
+                        .await;
+                    let _ = state
+                        .persistence_worker
+                        .enqueue(crate::persistence::message::PersistenceEvent::UserDisconnect {
+                            user_id: session.user.id,
+                            user_name: session.user.name.clone(),
+                        })
+                        .await;
+                    let _ = state
+                        .persistence_worker
+                        .enqueue(crate::persistence::message::PersistenceEvent::UserOffline {
+                            user_id: session.user.id,
+                        })
+                        .await;
+                    crate::internal_hooks::playtime_disconnect(session.user.id);
+                }
+                return;
+            }
+
+            // The session-capacity permit was reserved before authentication
+            // and is now owned by Session, so insertion cannot overrun the limit.
+            state.sessions.write().await.insert(id, session);
+            trace!(%ip, %id, "connection accepted");
+        });
+
         Ok(())
     }
 
     /// 触发插件事件
     pub async fn trigger_event(&self, event: &PluginEvent) {
-        self.state
-            .event_bus
-            .publish(crate::event_bus::MpEvent::PluginEventDispatched(
-                std::sync::Arc::new(event.clone()),
-            ));
+        self.state.dispatch_plugin_event(event.clone()).await;
     }
 
     /// 获取服务器统计信息
@@ -546,10 +612,54 @@ pub struct ServerStats {
 }
 
 impl PlusServerState {
-    /// Publish a Runtime v2 event without changing the current side-effect path.
+    /// Publish a plugin event to the diagnostic bus and the reliable bounded
+    /// plugin dispatcher. The bus is observational; delivery is owned by the
+    /// dispatcher rather than a broadcast subscriber.
+    pub async fn dispatch_plugin_event(&self, event: PluginEvent) {
+        self.event_bus
+            .publish(crate::event_bus::MpEvent::PluginEventDispatched(
+                Arc::new(event.clone()),
+            ));
+        self.plugin_manager.dispatch_event(event).await;
+    }
+
+    pub async fn publish_user_connected(
+        &self,
+        user_id: i32,
+        user_name: String,
+        user_ip: String,
+        user_language: String,
+    ) {
+        self.publish_runtime_event(crate::event_bus::MpEvent::UserConnected {
+            user_id,
+            user_name: user_name.clone(),
+            user_ip: user_ip.clone(),
+            user_language,
+        });
+        self.dispatch_plugin_event(PluginEvent::UserConnect {
+            user_id,
+            user_name,
+            user_ip,
+        })
+        .await;
+    }
+
+    pub async fn publish_user_disconnected(&self, user_id: i32, user_name: String) {
+        self.publish_runtime_event(crate::event_bus::MpEvent::UserDisconnected {
+            user_id,
+            user_name: user_name.clone(),
+        });
+        self.dispatch_plugin_event(PluginEvent::UserDisconnect {
+            user_id,
+            user_name,
+        })
+        .await;
+    }
+
+    /// Publish a diagnostic/runtime event.
     ///
-    /// Step 4 uses this as an observation-only mirror: plugins, room monitor,
-    /// SSE and PostgreSQL direct writes continue to run exactly as before.
+    /// Mandatory plugin and persistence side effects use their dedicated bounded
+    /// dispatchers; the broadcast EventBus is an observation channel and may lag.
     pub fn publish_runtime_event(&self, event: crate::event_bus::MpEvent) -> usize {
         if let crate::event_bus::MpEvent::BenchmarkCompleted { report } = &event {
             self.benchmark_reports.record(report.clone());
@@ -796,13 +906,11 @@ impl PlusServerState {
             data: crate::room::Room::into_data(&room).await,
         })
         .await;
-        self.event_bus
-            .publish(crate::event_bus::MpEvent::PluginEventDispatched(
-                std::sync::Arc::new(PluginEvent::RoomCreate {
-                    user_id: 0,
-                    room_id: rid.to_string(),
-                }),
-            ));
+        self.dispatch_plugin_event(PluginEvent::RoomCreate {
+            user_id: 0,
+            room_id: rid.to_string(),
+        })
+        .await;
         Ok(serde_json::json!({
             "ok": true,
             "room_id": rid.to_string(),
@@ -827,15 +935,13 @@ impl PlusServerState {
             rooms.get(&rid).map(Arc::clone).ok_or("room not found")?
         };
         room.set_persistent_empty(persistent);
-        self.event_bus
-            .publish(crate::event_bus::MpEvent::PluginEventDispatched(
-                std::sync::Arc::new(PluginEvent::RoomModify {
-                    user_id: 0,
-                    room_id: rid.to_string(),
-                    data: serde_json::json!({"action":"persistent_empty","value": persistent})
-                        .to_string(),
-                }),
-            ));
+        self.dispatch_plugin_event(PluginEvent::RoomModify {
+            user_id: 0,
+            room_id: rid.to_string(),
+            data: serde_json::json!({"action":"persistent_empty","value": persistent})
+                .to_string(),
+        })
+        .await;
         Ok(
             serde_json::json!({"ok": true, "room_id": rid.to_string(), "persistent_empty": persistent}),
         )
@@ -1424,13 +1530,11 @@ impl PlusServerState {
                 })
                 .await;
             }
-            self.event_bus
-                .publish(crate::event_bus::MpEvent::PluginEventDispatched(
-                    std::sync::Arc::new(PluginEvent::RoomLeave {
-                        user_id: target_id,
-                        room_id: old_id_text,
-                    }),
-                ));
+            self.dispatch_plugin_event(PluginEvent::RoomLeave {
+                user_id: target_id,
+                room_id: old_id_text,
+            })
+            .await;
         }
 
         user.monitor.store(monitor, Ordering::SeqCst);
@@ -1492,21 +1596,18 @@ impl PlusServerState {
         )
         .await;
 
-        self.event_bus
-            .publish(crate::event_bus::MpEvent::PluginEventDispatched(
-                std::sync::Arc::new(PluginEvent::RoomJoin {
-                    user_id: target_id,
-                    room_id: rid.to_string(),
-                    is_monitor: monitor,
-                }),
-            ));
-        self.event_bus.publish(crate::event_bus::MpEvent::PluginEventDispatched(
-            std::sync::Arc::new(PluginEvent::RoomModify {
-                user_id: target_id,
-                room_id: rid.to_string(),
-                data: serde_json::json!({"action":"force-move","from": old_room_id.clone(),"monitor": monitor}).to_string(),
-            }),
-        ));
+        self.dispatch_plugin_event(PluginEvent::RoomJoin {
+            user_id: target_id,
+            room_id: rid.to_string(),
+            is_monitor: monitor,
+        })
+        .await;
+        self.dispatch_plugin_event(PluginEvent::RoomModify {
+            user_id: target_id,
+            room_id: rid.to_string(),
+            data: serde_json::json!({"action":"force-move","from": old_room_id.clone(),"monitor": monitor}).to_string(),
+        })
+        .await;
 
         target_room
             .send(phira_mp_common::Message::Chat {
@@ -1534,14 +1635,12 @@ impl PlusServerState {
             rooms.get(&rid).map(Arc::clone).ok_or("room not found")?
         };
         room.set_hidden(hidden);
-        self.event_bus
-            .publish(crate::event_bus::MpEvent::PluginEventDispatched(
-                std::sync::Arc::new(PluginEvent::RoomModify {
-                    user_id: 0,
-                    room_id: rid.to_string(),
-                    data: format!(r#"{{"action":"hidden","value":{hidden}}}"#),
-                }),
-            ));
+        self.dispatch_plugin_event(PluginEvent::RoomModify {
+            user_id: 0,
+            room_id: rid.to_string(),
+            data: format!(r#"{{"action":"hidden","value":{hidden}}}"#),
+        })
+        .await;
         Ok(serde_json::json!({"ok": true, "room_id": rid.to_string(), "hidden": hidden}))
     }
 
@@ -1592,19 +1691,17 @@ impl PlusServerState {
         let effective_endpoint = normalized
             .clone()
             .unwrap_or_else(|| self.config.phira_api_endpoint.clone());
-        self.event_bus
-            .publish(crate::event_bus::MpEvent::PluginEventDispatched(
-                std::sync::Arc::new(PluginEvent::RoomModify {
-                    user_id: 0,
-                    room_id: rid.to_string(),
-                    data: serde_json::json!({
-                        "action": "phira_api_endpoint",
-                        "value": normalized.clone(),
-                        "effective": effective_endpoint.clone(),
-                    })
-                    .to_string(),
-                }),
-            ));
+        self.dispatch_plugin_event(PluginEvent::RoomModify {
+            user_id: 0,
+            room_id: rid.to_string(),
+            data: serde_json::json!({
+                "action": "phira_api_endpoint",
+                "value": normalized.clone(),
+                "effective": effective_endpoint.clone(),
+            })
+            .to_string(),
+        })
+        .await;
         Ok(serde_json::json!({
             "ok": true,
             "room_id": rid.to_string(),
@@ -1866,6 +1963,9 @@ pub(crate) async fn run_admin_kick_user(
     target_id: i32,
     reason: &str,
 ) -> Result<Value, String> {
+    // Serialize against authentication/reconnect finalization so the old
+    // transport cannot race with a replacement and reinsert stale presence.
+    let registration_guard = state.user_registration_gate.lock().await;
     let user = state
         .users
         .read()
@@ -1873,61 +1973,85 @@ pub(crate) async fn run_admin_kick_user(
         .get(&target_id)
         .map(Arc::clone)
         .ok_or("user not found")?;
-    {
-        let room_clone = user.room.read().await.as_ref().map(Arc::clone);
-        if let Some(room) = room_clone {
-            let room_id = room.id.to_string();
-            let room_key = room.id.clone();
-            let was_monitor = user.monitor.load(Ordering::SeqCst);
-            if room.on_user_leave(&user).await {
-                state.rooms.write().await.remove(&room_key);
-            }
-            if !was_monitor {
-                state
-                    .publish_room_event(RoomEvent::LeaveRoom {
-                        room: room_key,
-                        user: target_id,
-                    })
-                    .await;
-            }
+
+    if let Some(room) = user.room.read().await.as_ref().map(Arc::clone) {
+        let room_id = room.id.to_string();
+        let room_key = room.id.clone();
+        let was_monitor = user.monitor.load(Ordering::SeqCst);
+        if room.on_user_leave(&user).await {
+            state.rooms.write().await.remove(&room_key);
+        }
+        if !was_monitor {
             state
-                .event_bus
-                .publish(crate::event_bus::MpEvent::PluginEventDispatched(
-                    std::sync::Arc::new(PluginEvent::RoomLeave {
-                        user_id: target_id,
-                        room_id,
-                    }),
-                ));
+                .publish_room_event(RoomEvent::LeaveRoom {
+                    room: room_key,
+                    user: target_id,
+                })
+                .await;
         }
+        state
+            .dispatch_plugin_event(PluginEvent::RoomLeave {
+                user_id: target_id,
+                room_id,
+            })
+            .await;
     }
+
+    let target_session = {
+        let mut sessions = state.sessions.write().await;
+        let session_id = sessions
+            .iter()
+            .find(|(_, session)| session.user.id == target_id)
+            .map(|(id, _)| *id);
+        session_id.and_then(|id| sessions.remove(&id))
+    };
+
+    // Make the eventual transport-lost notification stale before closing.
+    *user.session.write().await = None;
+    let mut users = state.users.write().await;
+    if users
+        .get(&target_id)
+        .is_some_and(|current| Arc::ptr_eq(current, &user))
     {
-        let sessions = state.sessions.read().await;
-        for session in sessions.values() {
-            if session.user.id == target_id {
-                let _ = session
-                    .stream
-                    .send(phira_mp_common::ServerCommand::Message(
-                        phira_mp_common::Message::Chat {
-                            user: 0,
-                            content: format!("你已被管理员踢出服务器: {reason}"),
-                        },
-                    ))
-                    .await;
-                break;
-            }
-        }
+        users.remove(&target_id);
     }
-    state.users.write().await.remove(&target_id);
+    drop(users);
+    drop(registration_guard);
+
+    if let Some(session) = target_session {
+        let message = phira_mp_common::ServerCommand::Message(
+            phira_mp_common::Message::Chat {
+                user: 0,
+                content: format!("你已被管理员踢出服务器: {reason}"),
+            },
+        );
+        let _ = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            session.stream.send_and_flush(message),
+        )
+        .await;
+        session.stream.close();
+    }
+
     info!(user = target_id, reason = %reason, "kicked from server by admin");
     state
-        .event_bus
-        .publish(crate::event_bus::MpEvent::PluginEventDispatched(
-            std::sync::Arc::new(PluginEvent::UserDisconnect {
-                user_id: target_id,
-                user_name: user.name.clone(),
-            }),
-        ));
-    state.publish_runtime_event(crate::event_bus::MpEvent::UserDisconnected { user_id: target_id });
+        .publish_user_disconnected(target_id, user.name.clone())
+        .await;
+    crate::internal_hooks::playtime_disconnect(target_id);
+    let _ = state
+        .persistence_worker
+        .enqueue(crate::persistence::message::PersistenceEvent::UserDisconnect {
+            user_id: target_id,
+            user_name: user.name.clone(),
+        })
+        .await;
+    let _ = state
+        .persistence_worker
+        .enqueue(crate::persistence::message::PersistenceEvent::UserOffline {
+            user_id: target_id,
+        })
+        .await;
+
     Ok(serde_json::json!({"ok": true, "reason": reason}))
 }
 

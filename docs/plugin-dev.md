@@ -108,6 +108,30 @@ cp target/wasm32-unknown-unknown/release/my_plugin.component.wasm \
 
 ---
 
+
+## Capability 清单
+
+宿主使用插件文件的稳定 ID 读取同目录 sidecar。例如 `plugins/my-plugin.wasm` 对应：
+
+```json
+// plugins/my-plugin.capabilities.json
+{
+  "capabilities": ["state.read", "send", "http"]
+}
+```
+
+允许值为 `state.read`、`send`、`ext`、`config`、`file.read`、`file.write`、`plugin.call`、`plugin.register`、`http`、`room.manage`、`admin`、`simulation`。未知值会拒绝加载。`room.manage`、`admin`、`simulation` 和 `http` 等能力必须显式授予；不要用可变的插件显示名称作为授权身份。
+
+缺少 sidecar 时仅获得兼容性默认能力，不包含 `http`、`room.manage`、`admin` 或 `simulation`。插件应显式提交最小 capability 清单，不要依赖默认集合。
+
+## 资源与超时语义
+
+- 每次 guest 调用有 fuel 预算，线性内存、实例、内存与表数量受 Store limiter 限制。
+- 同一插件同时只执行一个 init/event/API 调用；并发请求会快速失败。
+- 调用超过 `call_timeout_ms` 后插件会被 quarantine，后续调用被拒绝。
+- quarantine 是故障隔离，不是线程强杀。若插件进入任意阻塞宿主函数，进程内运行时无法像独立进程一样强制终止它。
+- 完全不可信插件应部署到独立进程/容器，不应只依赖 PMP 进程内沙箱。
+
 ## 注册 HTTP 路由
 
 插件通过 `api-call` 注册 HTTP 路由：
@@ -160,9 +184,9 @@ fn init() -> Result<(), String> {
 
 ---
 
-## 注册 SSE 事件流
+## SSE 翻译回调
 
-插件可以注册 SSE（Server-Sent Events）端点，宿主维护长连接，通过 `on_api` 回调插件翻译事件。
+宿主维护长连接，并通过 `on_api` 回调插件翻译事件。
 
 ```rust
 fn init() -> Result<(), String> {

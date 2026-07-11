@@ -7,6 +7,61 @@ use crate::db::DbManager;
 use serde_json::Value;
 
 impl DbManager {
+    /// Record user room join history and wait for all three writes.
+    pub async fn record_user_room_history(
+        &self,
+        user_id: i32,
+        room_id: &str,
+        room_uuid: &str,
+        joined_at: i64,
+    ) -> bool {
+        #[cfg(feature = "postgres")]
+        if let Self::Pg(pool) = self {
+            if sqlx::query(
+                "INSERT INTO room_history (user_id, room_id, room_uuid, joined_at) VALUES ($1, $2, $3, $4)",
+            )
+            .bind(user_id)
+            .bind(room_id)
+            .bind(room_uuid)
+            .bind(joined_at)
+            .execute(pool)
+            .await
+            .is_err()
+            {
+                return false;
+            }
+            if sqlx::query(
+                "INSERT INTO mp_user_room_history (user_id, room_id, room_uuid, joined_at, created_at)
+                 VALUES ($1, $2, $3, $4, $4)",
+            )
+            .bind(user_id)
+            .bind(room_id)
+            .bind(room_uuid)
+            .bind(joined_at)
+            .execute(pool)
+            .await
+            .is_err()
+            {
+                return false;
+            }
+            return crate::db::append_event_pg(
+                pool,
+                "room.join",
+                Some(room_id),
+                Some(user_id),
+                serde_json::json!({
+                    "user_id": user_id,
+                    "room_id": room_id,
+                    "room_uuid": room_uuid,
+                    "joined_at": joined_at,
+                }),
+            )
+            .await
+            .is_ok();
+        }
+        false
+    }
+
     /// Record a room snapshot via spawn-and-forget.
     pub fn record_room_snapshot_sync(&self, room_id: String, room_uuid: String, payload: Value) {
         #[cfg(feature = "postgres")]

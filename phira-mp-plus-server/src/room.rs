@@ -251,23 +251,11 @@ impl Room {
     }
 
     pub fn is_locked(&self) -> bool {
-        // 优先查 mailbox owned state
-        if let Some(server) = self.server.upgrade() {
-            if let Some(owned) = server.room_commands.room_lock_owned(&self.id.to_string()) {
-                return owned;
-            }
-        }
-        self.locked.load(Ordering::Relaxed)
+        self.locked.load(Ordering::Acquire)
     }
 
     pub fn is_cycle(&self) -> bool {
-        // 优先查 mailbox owned state
-        if let Some(server) = self.server.upgrade() {
-            if let Some(owned) = server.room_commands.room_cycle_owned(&self.id.to_string()) {
-                return owned;
-            }
-        }
-        self.cycle.load(Ordering::Relaxed)
+        self.cycle.load(Ordering::Acquire)
     }
 
     pub fn is_hidden(&self) -> bool {
@@ -1054,7 +1042,7 @@ impl Room {
                             .as_ref()
                             .map(|c| (c.id, c.name.clone()))
                             .unwrap_or((0, "?".into()));
-                        pm.trigger(&PluginEvent::RoundComplete {
+                        pm.dispatch_event(PluginEvent::RoundComplete {
                             room_id: self.id.to_string(),
                             chart_id: cid,
                             chart_name: cn,
