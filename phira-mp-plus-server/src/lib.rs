@@ -1,6 +1,7 @@
 //! Phira-mp+ - 增强版 Phira 多人游戏服务端
 //!
 //! 基于 Phira-mp 二次开发，通过受控的 WIT WASM 插件 ABI、管理控制台和扩展 API
+#![allow(dead_code, unused_variables, unused_imports)]
 //! 提供可部署、可观察、可扩展的多人游戏服务。
 
 pub mod actor_runtime;
