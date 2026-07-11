@@ -35,6 +35,7 @@ struct ChildTask {
 }
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub(crate) struct SupervisorFailure {
     pub task: String,
     pub critical: bool,

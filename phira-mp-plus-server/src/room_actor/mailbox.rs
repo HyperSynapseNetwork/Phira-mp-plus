@@ -66,7 +66,7 @@ impl RoomCommandGateway {
 
         self.mailbox_registry_miss.fetch_add(1, Ordering::Relaxed);
         // 作用域限制 StdRwLockWriteGuard 在 .await 之前释放
-        let (tx, mut rx, capacity) = {
+        let (tx, mut rx, _capacity) = {
             let mut mailboxes = self.room_mailboxes.write().ok()?;
             if let Some(entry) = mailboxes.get(room_id) {
                 if entry.room_uuid == room_uuid && !entry.tx.is_closed() {
