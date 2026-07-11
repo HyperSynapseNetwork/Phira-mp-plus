@@ -283,8 +283,9 @@ pub async fn persist_production_event_if_needed(event: &PersistenceEvent) -> Per
                 let room_uuid = payload
                     .get("room_uuid")
                     .and_then(Value::as_str)
-                    .unwrap_or(room_id);
-                db.record_room_snapshot(room_id, room_uuid, payload).await
+                    .unwrap_or(room_id)
+                    .to_owned();
+                db.record_room_snapshot(room_id, &room_uuid, payload).await
             }
             PersistenceEvent::TouchBatch { .. } | PersistenceEvent::JudgeBatch { .. } => {
                 return PersistenceWriteStage::NotApplicable;

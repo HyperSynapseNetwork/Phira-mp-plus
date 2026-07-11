@@ -65,28 +65,31 @@ impl RoomCommandGateway {
         }
 
         self.mailbox_registry_miss.fetch_add(1, Ordering::Relaxed);
-        let mut mailboxes = self.room_mailboxes.write().ok()?;
-        if let Some(entry) = mailboxes.get(room_id) {
-            if entry.room_uuid == room_uuid && !entry.tx.is_closed() {
-                self.mailbox_registry_hit.fetch_add(1, Ordering::Relaxed);
-                return Some(entry.tx.clone());
+        // 作用域限制 StdRwLockWriteGuard 在 .await 之前释放
+        let (tx, mut rx, capacity) = {
+            let mut mailboxes = self.room_mailboxes.write().ok()?;
+            if let Some(entry) = mailboxes.get(room_id) {
+                if entry.room_uuid == room_uuid && !entry.tx.is_closed() {
+                    self.mailbox_registry_hit.fetch_add(1, Ordering::Relaxed);
+                    return Some(entry.tx.clone());
+                }
             }
-        }
-
-        let capacity = self.mailbox_capacity.load(Ordering::Acquire).max(16);
-        let (tx, mut rx) = mpsc::channel::<RoomActorCommand>(capacity);
-        mailboxes.insert(
-            room_id.to_string(),
-            super::RoomMailboxEntry {
-                room_uuid: room_uuid.clone(),
-                tx: tx.clone(),
-            },
-        );
+            let cap = self.mailbox_capacity.load(Ordering::Acquire).max(16);
+            let (tx, rx) = mpsc::channel::<RoomActorCommand>(cap);
+            mailboxes.insert(
+                room_id.to_string(),
+                super::RoomMailboxEntry {
+                    room_uuid: room_uuid.clone(),
+                    tx: tx.clone(),
+                },
+            );
+            (tx, rx, cap)
+        };
         self.mailbox_created.fetch_add(1, Ordering::Relaxed);
         let worker_room_id = room_id.to_string();
         let worker_room_uuid = room_uuid.clone();
         let worker_rid = rid.clone();
-        drop(mailboxes);
+        // 作用域结束，mailboxes 已释放
 
         // The room registry may have changed while the mailbox registry was
         // being updated. Refuse this command rather than attaching a fresh
