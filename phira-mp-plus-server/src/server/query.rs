@@ -137,7 +137,7 @@ pub(crate) fn server_state_query_inner(
             serde_json::to_value(&reports).map_err(|e| format!("serialize benchmark reports: {e}"))
         }
         "benchmark.latest" => {
-            let latest = state.benchmark_reports.snapshot(1).into_iter().next();
+            let latest = state.benchmark_reports.snapshot(1).recent.into_iter().next();
             serde_json::to_value(latest).map_err(|e| format!("serialize latest benchmark report: {e}"))
         }
         "benchmark.history" => {
