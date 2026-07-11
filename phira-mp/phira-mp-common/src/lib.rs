@@ -288,7 +288,7 @@ mod stream_impl {
 
     pub fn generate_secret_key(info: &str, len: usize) -> Result<Vec<u8>> {
         let original = match std::env::var("HSN_SECRET_KEY") {
-            Ok(value) if value.as_bytes().len() >= 32 => value,
+            Ok(value) if value.len() >= 32 => value,
             Ok(_) => return Err(anyhow!("HSN_SECRET_KEY must contain at least 32 bytes")),
             Err(_) if cfg!(debug_assertions) => {
                 let value = format!("debug-only-{}-{}", std::process::id(), uuid::Uuid::new_v4());

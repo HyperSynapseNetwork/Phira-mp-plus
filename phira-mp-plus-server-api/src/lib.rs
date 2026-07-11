@@ -166,6 +166,7 @@ pub type PluginApiHandler = Arc<dyn Fn(&str, &[Value]) -> Result<Value, String> 
 /// 服务端状态查询句柄（插件通过它读取房间/用户数据）
 #[derive(Clone)]
 pub struct ServerStateQuery {
+    #[allow(clippy::type_complexity)]
     inner: Arc<dyn Fn(&str, &[Value]) -> Result<Value, String> + Send + Sync>,
 }
 
