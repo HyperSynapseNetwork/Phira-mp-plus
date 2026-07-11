@@ -6,7 +6,7 @@
 
 ## 简介
 
-**Phira-mp+（PMP）** 是基于 [phira-mp](https://github.com/HyperSynapseNetwork/phira-mp) 扩展的 Phira 多人游戏服务端。在 PP 架构中，PMP 负责游戏协议、房间运行时、插件与持久化；**PPB 负责公共 Web API、认证、限流、网关与边缘暴露**。PMP 保留的 HTTP/SSE/WebSocket 仅用于受控网络中的兼容、诊断和内部集成，不应作为公网边缘接口。
+**Phira-mp+（PMP）** 是基于 [phira-mp](https://github.com/HyperSynapseNetwork/phira-mp) 扩展的 Phira 多人游戏服务端。在 Phira+ 规划 中，PMP 负责游戏协议、房间运行时、插件与游戏数据持久化等；**Phira＋ Backend（开发中） 负责公共 Web API、认证、限流、网关与边缘暴露等**。应此PMP 保留的 HTTP/SSE/WebSocket 仅用于受控网络中的兼容、诊断和内部集成，不应作为公网边缘接口。
 
 ### 核心特性
 
