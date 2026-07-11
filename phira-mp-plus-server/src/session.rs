@@ -91,7 +91,12 @@ impl User {
     }
 
     pub async fn can_monitor(&self) -> bool {
-        self.server.live_config.read().await.monitors.contains(&self.id)
+        self.server
+            .live_config
+            .read()
+            .await
+            .monitors
+            .contains(&self.id)
     }
 
     pub async fn set_session(&self, session: Weak<Session>) {
@@ -182,7 +187,10 @@ impl User {
                 crate::room::InternalRoomState::Playing { .. }
             );
             if playing {
-                warn!(user = self.id, "lost connection while playing; removing immediately");
+                warn!(
+                    user = self.id,
+                    "lost connection while playing; removing immediately"
+                );
                 let room_id = room.id.clone();
                 let was_monitor = self.monitor.load(Ordering::Relaxed);
                 if room.on_user_leave(&self).await {
@@ -250,70 +258,66 @@ impl User {
             .await;
 
         let weak_self = Arc::downgrade(&self);
-        crate::supervisor_actor::spawn_named(
-            format!("dangle-grace-{}", self.id),
-            async move {
-                time::sleep(Duration::from_secs(10)).await;
-                let Some(self_) = weak_self.upgrade() else {
-                    return;
-                };
-                let registration_guard =
-                    self_.server.user_registration_gate.lock().await;
-                let expired = {
-                    let mut current = self_.dangle_mark.lock().await;
-                    if current
-                        .as_ref()
-                        .is_some_and(|mark| Arc::ptr_eq(mark, &dangle_mark))
-                    {
-                        current.take();
-                        true
-                    } else {
-                        false
-                    }
-                };
-                if !expired {
-                    return;
-                }
-
-                let room = self_.room.read().await.as_ref().map(Arc::clone);
-                let mut room_leave_event = None;
-                if let Some(room) = room {
-                    let room_id = room.id.clone();
-                    let was_monitor = self_.monitor.load(Ordering::Relaxed);
-                    if room.on_user_leave(&self_).await {
-                        self_.server.rooms.write().await.remove(&room_id);
-                    }
-                    if !was_monitor {
-                        room_leave_event = Some(RoomEvent::LeaveRoom {
-                            room: room_id,
-                            user: self_.id,
-                        });
-                    }
-                }
-
-                let mut users = self_.server.users.write().await;
-                if users
-                    .get(&self_.id)
-                    .is_some_and(|current| Arc::ptr_eq(current, &self_))
+        crate::supervisor_actor::spawn_named(format!("dangle-grace-{}", self.id), async move {
+            time::sleep(Duration::from_secs(10)).await;
+            let Some(self_) = weak_self.upgrade() else {
+                return;
+            };
+            let registration_guard = self_.server.user_registration_gate.lock().await;
+            let expired = {
+                let mut current = self_.dangle_mark.lock().await;
+                if current
+                    .as_ref()
+                    .is_some_and(|mark| Arc::ptr_eq(mark, &dangle_mark))
                 {
-                    users.remove(&self_.id);
+                    current.take();
+                    true
+                } else {
+                    false
                 }
-                drop(users);
-                drop(registration_guard);
+            };
+            if !expired {
+                return;
+            }
 
-                if let Some(event) = room_leave_event {
-                    self_.server.publish_room_event(event).await;
+            let room = self_.room.read().await.as_ref().map(Arc::clone);
+            let mut room_leave_event = None;
+            if let Some(room) = room {
+                let room_id = room.id.clone();
+                let was_monitor = self_.monitor.load(Ordering::Relaxed);
+                if room.on_user_leave(&self_).await {
+                    self_.server.rooms.write().await.remove(&room_id);
                 }
-                crate::internal_hooks::playtime_disconnect(self_.id);
-                let _ = self_
-                    .server
-                    .persistence_worker
-                    .enqueue(crate::persistence::message::PersistenceEvent::UserOffline {
-                        user_id: self_.id,
-                    })
-                    .await;
-            },
-        );
+                if !was_monitor {
+                    room_leave_event = Some(RoomEvent::LeaveRoom {
+                        room: room_id,
+                        user: self_.id,
+                    });
+                }
+            }
+
+            let mut users = self_.server.users.write().await;
+            if users
+                .get(&self_.id)
+                .is_some_and(|current| Arc::ptr_eq(current, &self_))
+            {
+                users.remove(&self_.id);
+            }
+            drop(users);
+            drop(registration_guard);
+
+            if let Some(event) = room_leave_event {
+                self_.server.publish_room_event(event).await;
+            }
+            crate::internal_hooks::playtime_disconnect(self_.id);
+            let _ = self_
+                .server
+                .persistence_worker
+                .enqueue(crate::persistence::message::PersistenceEvent::UserOffline {
+                    user_id: self_.id,
+                })
+                .await;
+        });
     }
 }
 
@@ -952,7 +956,8 @@ impl Session {
         let monitor_task_handle = tokio::spawn({
             let server_clone = Arc::clone(&server_clone);
             async move {
-                let timeout = Duration::from_secs(server_clone.config.idle.heartbeat_timeout_secs.max(10));
+                let timeout =
+                    Duration::from_secs(server_clone.config.idle.heartbeat_timeout_secs.max(10));
                 loop {
                     let recv = *last_recv.lock().await;
                     time::sleep_until((recv + timeout).into()).await;

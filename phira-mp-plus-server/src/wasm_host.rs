@@ -115,11 +115,16 @@ impl WitPluginComponent {
         services: &Arc<WasmPluginServices>,
         plugin_name: &str,
     ) -> Result<Arc<crate::wit_host::WitHostContext>, String> {
-        let state_ref = services.server_state.lock().unwrap_or_else(|e| e.into_inner());
+        let state_ref = services
+            .server_state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let server = state_ref
             .as_ref()
             .and_then(|weak| weak.upgrade())
-            .ok_or_else(|| "server state not available — set via PluginManager::set_server_state".to_string())?;
+            .ok_or_else(|| {
+                "server state not available — set via PluginManager::set_server_state".to_string()
+            })?;
         drop(state_ref);
 
         let capabilities = services
@@ -128,7 +133,11 @@ impl WitPluginComponent {
             .unwrap_or_else(|e| e.into_inner())
             .get(plugin_name)
             .cloned()
-            .unwrap_or_else(|| crate::wasm_host_helpers::default_capabilities().into_iter().collect());
+            .unwrap_or_else(|| {
+                crate::wasm_host_helpers::default_capabilities()
+                    .into_iter()
+                    .collect()
+            });
         let capabilities = Arc::new(
             capabilities
                 .into_iter()
@@ -137,16 +146,18 @@ impl WitPluginComponent {
         let query_capabilities = Arc::clone(&capabilities);
         let query_state = Arc::clone(&server);
         let plugin = plugin_name.to_string();
-        let state_query = api::ServerStateQuery::new(move |method: &str, args: &[serde_json::Value]| {
-            if let Some(required) = crate::wasm_host_helpers::required_capability(method) {
-                if !query_capabilities.contains(required) {
-                    return Err(format!(
+        let state_query = api::ServerStateQuery::new(
+            move |method: &str, args: &[serde_json::Value]| {
+                if let Some(required) = crate::wasm_host_helpers::required_capability(method) {
+                    if !query_capabilities.contains(required) {
+                        return Err(format!(
                         "plugin '{plugin}' lacks capability '{required}' required by method '{method}'"
                     ));
+                    }
                 }
-            }
-            crate::server::query::server_state_query_inner(&query_state, method, args)
-        });
+                crate::server::query::server_state_query_inner(&query_state, method, args)
+            },
+        );
         let send_chat = services
             .send_chat
             .lock()
@@ -187,8 +198,8 @@ impl WitPluginComponent {
         engine_config.wasm_backtrace(true);
         engine_config.consume_fuel(runtime.fuel_per_call > 0);
         engine_config.max_wasm_stack(runtime.max_stack_bytes.max(64 * 1024));
-        let engine = wasmtime::Engine::new(&engine_config)
-            .map_err(|e| format!("engine creation: {e}"))?;
+        let engine =
+            wasmtime::Engine::new(&engine_config).map_err(|e| format!("engine creation: {e}"))?;
         let component = wasmtime::component::Component::new(&engine, wasm_bytes)
             .map_err(|e| format!("component compile: {e}"))?;
         let mut linker = wasmtime::component::Linker::<WitHostState>::new(&engine);
@@ -217,8 +228,8 @@ impl WitPluginComponent {
         engine_config.wasm_backtrace(true);
         engine_config.consume_fuel(runtime.fuel_per_call > 0);
         engine_config.max_wasm_stack(runtime.max_stack_bytes.max(64 * 1024));
-        let engine = wasmtime::Engine::new(&engine_config)
-            .map_err(|e| format!("engine creation: {e}"))?;
+        let engine =
+            wasmtime::Engine::new(&engine_config).map_err(|e| format!("engine creation: {e}"))?;
         let component = wasmtime::component::Component::new(&engine, wasm_bytes)
             .map_err(|e| format!("component compile: {e}"))?;
         let mut linker = wasmtime::component::Linker::<WitHostState>::new(&engine);
@@ -241,10 +252,7 @@ impl WitPluginComponent {
     ) -> Result<Self, String> {
         use crate::plugin_abi::wit_abi as wit;
         let host = crate::wit_host::WitPluginHost::new(ctx, plugin_name.clone());
-        let memory_bytes = runtime
-            .max_memory_mb
-            .max(1)
-            .saturating_mul(1024 * 1024);
+        let memory_bytes = runtime.max_memory_mb.max(1).saturating_mul(1024 * 1024);
         let limits = wasmtime::StoreLimitsBuilder::new()
             .memory_size(memory_bytes)
             .instances(128)
@@ -260,7 +268,8 @@ impl WitPluginComponent {
                 .set_fuel(runtime.fuel_per_call)
                 .map_err(|e| format!("set initial plugin fuel: {e}"))?;
         }
-        let instance = linker.instantiate(&mut store, &component)
+        let instance = linker
+            .instantiate(&mut store, &component)
             .map_err(|e| format!("instantiate component: {e}"))?;
         let component_handle = wit::PhiraPluginV2::new(&mut store, &instance)
             .map_err(|e| format!("get component handle: {e}"))?;
@@ -313,7 +322,9 @@ impl WitPluginComponent {
     }
 
     pub fn call_cleanup(&mut self) {
-        if !self.initialized { return; }
+        if !self.initialized {
+            return;
+        }
         if self.reset_fuel().is_ok() {
             let _ = self.component.call_cleanup(&mut self.store);
         }
@@ -324,76 +335,138 @@ impl WitPluginComponent {
         self.reset_fuel()?;
         use crate::plugin_abi::wit_abi::phira::plugin::phira_events as wit_events;
         let wit_event = match event {
-            PluginEvent::UserConnect { user_id, user_name, user_ip } => {
-                wit_events::PluginEvent::UserConnect(wit_events::UserConnectInfo {
-                    user_id: *user_id as u32, user_name: user_name.clone(), user_ip: user_ip.clone(),
-                })
-            }
+            PluginEvent::UserConnect {
+                user_id,
+                user_name,
+                user_ip,
+            } => wit_events::PluginEvent::UserConnect(wit_events::UserConnectInfo {
+                user_id: *user_id as u32,
+                user_name: user_name.clone(),
+                user_ip: user_ip.clone(),
+            }),
             PluginEvent::UserDisconnect { user_id, user_name } => {
                 wit_events::PluginEvent::UserDisconnect(wit_events::UserDisconnectInfo {
-                    user_id: *user_id as u32, user_name: user_name.clone(),
+                    user_id: *user_id as u32,
+                    user_name: user_name.clone(),
                 })
             }
             PluginEvent::RoomCreate { user_id, room_id } => {
                 wit_events::PluginEvent::RoomCreate(wit_events::RoomUserEvent {
-                    user_id: *user_id as u32, room_id: room_id.clone(),
+                    user_id: *user_id as u32,
+                    room_id: room_id.clone(),
                 })
             }
-            PluginEvent::RoomJoin { user_id, room_id, is_monitor } => {
-                wit_events::PluginEvent::RoomJoin(wit_events::RoomJoinInfo {
-                    user_id: *user_id as u32, room_id: room_id.clone(), is_monitor: *is_monitor,
-                })
-            }
+            PluginEvent::RoomJoin {
+                user_id,
+                room_id,
+                is_monitor,
+            } => wit_events::PluginEvent::RoomJoin(wit_events::RoomJoinInfo {
+                user_id: *user_id as u32,
+                room_id: room_id.clone(),
+                is_monitor: *is_monitor,
+            }),
             PluginEvent::RoomLeave { user_id, room_id } => {
                 wit_events::PluginEvent::RoomLeave(wit_events::RoomUserEvent {
-                    user_id: *user_id as u32, room_id: room_id.clone(),
+                    user_id: *user_id as u32,
+                    room_id: room_id.clone(),
                 })
             }
-            PluginEvent::RoomModify { user_id, room_id, data } => {
-                wit_events::PluginEvent::RoomModify(wit_events::RoomModifyInfo {
-                    user_id: *user_id as u32, room_id: room_id.clone(), data: data.clone(),
-                })
-            }
+            PluginEvent::RoomModify {
+                user_id,
+                room_id,
+                data,
+            } => wit_events::PluginEvent::RoomModify(wit_events::RoomModifyInfo {
+                user_id: *user_id as u32,
+                room_id: room_id.clone(),
+                data: data.clone(),
+            }),
             PluginEvent::GameStart { user_id, room_id } => {
                 wit_events::PluginEvent::GameStart(wit_events::RoomUserEvent {
-                    user_id: *user_id as u32, room_id: room_id.clone(),
+                    user_id: *user_id as u32,
+                    room_id: room_id.clone(),
                 })
             }
-            PluginEvent::GameEnd { user_id, user_name, room_id, score, accuracy, perfect, good, bad, miss, max_combo, full_combo } => {
-                wit_events::PluginEvent::GameEnd(wit_events::GameEndInfo {
-                    user_id: *user_id as u32, room_id: room_id.clone(),
-                    game_result: wit_events::GameEndRecord {
-                        user_id: *user_id as u32, user_name: user_name.clone(),
-                        score: *score as u32, accuracy: *accuracy,
-                        perfect: *perfect as u32, good: *good as u32,
-                        bad: *bad as u32, miss: *miss as u32,
-                        max_combo: *max_combo as u32, full_combo: *full_combo,
-                    },
-                })
-            }
-            PluginEvent::PlayerTouches { user_id, room_id, data } => {
-                let wit_points: Vec<wit_events::TouchEventPoint> = data.iter().map(|p| wit_events::TouchEventPoint {
-                    time: p.time, finger: p.finger as u32, x: p.x, y: p.y,
-                }).collect();
+            PluginEvent::GameEnd {
+                user_id,
+                user_name,
+                room_id,
+                score,
+                accuracy,
+                perfect,
+                good,
+                bad,
+                miss,
+                max_combo,
+                full_combo,
+            } => wit_events::PluginEvent::GameEnd(wit_events::GameEndInfo {
+                user_id: *user_id as u32,
+                room_id: room_id.clone(),
+                game_result: wit_events::GameEndRecord {
+                    user_id: *user_id as u32,
+                    user_name: user_name.clone(),
+                    score: *score as u32,
+                    accuracy: *accuracy,
+                    perfect: *perfect as u32,
+                    good: *good as u32,
+                    bad: *bad as u32,
+                    miss: *miss as u32,
+                    max_combo: *max_combo as u32,
+                    full_combo: *full_combo,
+                },
+            }),
+            PluginEvent::PlayerTouches {
+                user_id,
+                room_id,
+                data,
+            } => {
+                let wit_points: Vec<wit_events::TouchEventPoint> = data
+                    .iter()
+                    .map(|p| wit_events::TouchEventPoint {
+                        time: p.time,
+                        finger: p.finger as u32,
+                        x: p.x,
+                        y: p.y,
+                    })
+                    .collect();
                 wit_events::PluginEvent::PlayerTouches(wit_events::PlayerTouchesInfo {
-                    user_id: *user_id as u32, room_id: room_id.clone(), data: wit_points,
+                    user_id: *user_id as u32,
+                    room_id: room_id.clone(),
+                    data: wit_points,
                 })
             }
-            PluginEvent::PlayerJudges { user_id, room_id, data } => {
-                let wit_items: Vec<wit_events::JudgeEventItem> = data.iter().map(|j| wit_events::JudgeEventItem {
-                    time: j.time, line_id: j.line_id, note_id: j.note_id, judgement: j.judgement.clone(),
-                }).collect();
+            PluginEvent::PlayerJudges {
+                user_id,
+                room_id,
+                data,
+            } => {
+                let wit_items: Vec<wit_events::JudgeEventItem> = data
+                    .iter()
+                    .map(|j| wit_events::JudgeEventItem {
+                        time: j.time,
+                        line_id: j.line_id,
+                        note_id: j.note_id,
+                        judgement: j.judgement.clone(),
+                    })
+                    .collect();
                 wit_events::PluginEvent::PlayerJudges(wit_events::PlayerJudgesInfo {
-                    user_id: *user_id as u32, room_id: room_id.clone(), data: wit_items,
+                    user_id: *user_id as u32,
+                    room_id: room_id.clone(),
+                    data: wit_items,
                 })
             }
-            PluginEvent::RoundComplete { room_id, chart_id, chart_name } => {
-                wit_events::PluginEvent::RoundComplete(wit_events::RoundCompleteInfo {
-                    room_id: room_id.clone(), chart_id: *chart_id as u32, chart_name: chart_name.clone(),
-                })
-            }
+            PluginEvent::RoundComplete {
+                room_id,
+                chart_id,
+                chart_name,
+            } => wit_events::PluginEvent::RoundComplete(wit_events::RoundCompleteInfo {
+                room_id: room_id.clone(),
+                chart_id: *chart_id as u32,
+                chart_name: chart_name.clone(),
+            }),
         };
-        let result = self.component.call_on_event(&mut self.store, &wit_event)
+        let result = self
+            .component
+            .call_on_event(&mut self.store, &wit_event)
             .map_err(|e| format!("component on_event: {e}"))?;
         match result {
             Ok(handled) => Ok(if handled { 1 } else { 0 }),
@@ -401,11 +474,20 @@ impl WitPluginComponent {
         }
     }
 
-    pub fn call_api(&mut self, method: &str, args: &[serde_json::Value]) -> Result<serde_json::Value, String> {
+    pub fn call_api(
+        &mut self,
+        method: &str,
+        args: &[serde_json::Value],
+    ) -> Result<serde_json::Value, String> {
         self.reset_fuel()?;
         use crate::plugin_abi::wit_abi::phira::plugin::phira_types as types;
-        let wit_args: Vec<types::JsonValue> = args.iter().map(|v| crate::wit_host::json_value_to_wit(v)).collect();
-        let result = self.component.call_on_api(&mut self.store, method, &wit_args)
+        let wit_args: Vec<types::JsonValue> = args
+            .iter()
+            .map(|v| crate::wit_host::json_value_to_wit(v))
+            .collect();
+        let result = self
+            .component
+            .call_on_api(&mut self.store, method, &wit_args)
             .map_err(|e| format!("component on_api: {e}"))?;
         match result {
             types::ApiResult::Ok(value) => Ok(crate::wit_host::wit_json_value_to_serde(&value)),
@@ -432,7 +514,10 @@ mod tests {
     fn default_capabilities_are_not_privileged() {
         let caps = wasm_host_helpers::default_capabilities();
         assert!(!caps.contains("admin"), "default must not include admin");
-        assert!(!caps.contains("room.manage"), "default must not include room.manage");
+        assert!(
+            !caps.contains("room.manage"),
+            "default must not include room.manage"
+        );
     }
 
     #[test]
@@ -460,17 +545,19 @@ mod tests {
         };
         // Wrap the raw query with capability enforcement so tests verify
         // that methods requiring admin/room.manage are blocked.
-        let state_query = phira_mp_plus_server_api::ServerStateQuery::new(move |method: &str, args: &[serde_json::Value]| {
-            if let Some(required) = crate::wasm_host_helpers::required_capability(method) {
-                let defaults = crate::wasm_host_helpers::default_capabilities();
-                if !defaults.contains(required) {
-                    return Err(format!(
+        let state_query = phira_mp_plus_server_api::ServerStateQuery::new(
+            move |method: &str, args: &[serde_json::Value]| {
+                if let Some(required) = crate::wasm_host_helpers::required_capability(method) {
+                    let defaults = crate::wasm_host_helpers::default_capabilities();
+                    if !defaults.contains(required) {
+                        return Err(format!(
                         "method '{method}' requires capability '{required}', which is not in default capabilities"
                     ));
+                    }
                 }
-            }
-            raw_query(method, args)
-        });
+                raw_query(method, args)
+            },
+        );
         let extensions = Arc::new(crate::extensions::ExtensionManager::new_in_memory());
         Arc::new(crate::wit_host::WitHostContext {
             state_query,
@@ -491,8 +578,13 @@ mod tests {
     fn load_component() -> WitPluginComponent {
         let bytes = load_wasm_bytes();
         let ctx = mock_host_context();
-        WitPluginComponent::from_bytes_ctx(&bytes, "test-plugin".into(), ctx, WasmRuntimeConfig::default())
-            .expect("WitPluginComponent::from_bytes_ctx should succeed")
+        WitPluginComponent::from_bytes_ctx(
+            &bytes,
+            "test-plugin".into(),
+            ctx,
+            WasmRuntimeConfig::default(),
+        )
+        .expect("WitPluginComponent::from_bytes_ctx should succeed")
     }
 
     mod wasm_tests {
@@ -539,7 +631,9 @@ mod tests {
             let mut c = load_component();
             c.call_init().unwrap();
             let result = c.call_on_event(&PluginEvent::UserConnect {
-                user_id: 1, user_name: "test".into(), user_ip: "127.0.0.1".into(),
+                user_id: 1,
+                user_name: "test".into(),
+                user_ip: "127.0.0.1".into(),
             });
             assert_eq!(result, Ok(0), "unhandled event should return 0");
         }
@@ -555,7 +649,10 @@ mod tests {
         fn on_api_echo_roundtrip() {
             let mut c = load_component();
             c.call_init().unwrap();
-            assert_eq!(c.call_api("echo", &[serde_json::json!("hello")]), Ok(serde_json::json!("hello")));
+            assert_eq!(
+                c.call_api("echo", &[serde_json::json!("hello")]),
+                Ok(serde_json::json!("hello"))
+            );
         }
 
         #[test]
@@ -585,35 +682,43 @@ mod tests {
         fn admin_method_rejected_with_default_capabilities() {
             let mut c = load_component();
             c.call_init().unwrap();
-            let result = c.call_api("host.api_call", &[
-                serde_json::json!("admin.list"),
-            ]);
+            let result = c.call_api("host.api_call", &[serde_json::json!("admin.list")]);
             let v = result.expect("host.api_call should return Ok value (error encoded in JSON)");
-            assert!(v.get("error").is_some(), "admin method should fail with error object");
+            assert!(
+                v.get("error").is_some(),
+                "admin method should fail with error object"
+            );
             let err = v["error"].as_str().unwrap_or("");
-            assert!(err.contains("requires capability"), "error should mention capability: {err}");
+            assert!(
+                err.contains("requires capability"),
+                "error should mention capability: {err}"
+            );
         }
 
         #[test]
         fn room_manage_method_rejected_with_default_capabilities() {
             let mut c = load_component();
             c.call_init().unwrap();
-            let result = c.call_api("host.api_call", &[
-                serde_json::json!("room.set_lock"),
-                serde_json::json!("test-room"),
-                serde_json::json!(true),
-            ]);
+            let result = c.call_api(
+                "host.api_call",
+                &[
+                    serde_json::json!("room.set_lock"),
+                    serde_json::json!("test-room"),
+                    serde_json::json!(true),
+                ],
+            );
             let v = result.expect("host.api_call should return Ok value");
-            assert!(v.get("error").is_some(), "room.manage method should fail with error object");
+            assert!(
+                v.get("error").is_some(),
+                "room.manage method should fail with error object"
+            );
         }
 
         #[test]
         fn state_read_method_allowed_with_default_capabilities() {
             let mut c = load_component();
             c.call_init().unwrap();
-            let result = c.call_api("host.api_call", &[
-                serde_json::json!("rooms.list"),
-            ]);
+            let result = c.call_api("host.api_call", &[serde_json::json!("rooms.list")]);
             assert!(result.is_ok(), "state.read method should be allowed");
         }
     }

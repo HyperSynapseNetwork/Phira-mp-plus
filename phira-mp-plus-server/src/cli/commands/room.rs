@@ -250,7 +250,11 @@ impl CliHandler {
                                         } else {
                                             format!("，原因：{reason}")
                                         },
-                                        if removed { "，并已立即移出房间" } else { "" }
+                                        if removed {
+                                            "，并已立即移出房间"
+                                        } else {
+                                            ""
+                                        }
                                     ));
                                 }
                                 Err(e) => self.out(format!("  {} {}", c::red("✗"), e)),
@@ -639,7 +643,12 @@ impl CliHandler {
     }
 
     pub(crate) async fn room_hide(&self, room_id: &str, hidden: bool) {
-        match self.state.room_commands.set_hidden(&self.state, room_id, hidden).await {
+        match self
+            .state
+            .room_commands
+            .set_hidden(&self.state, room_id, hidden)
+            .await
+        {
             Ok(_) => self.out(format!(
                 "  {} 房间 {} 已{}隐藏",
                 c::green("✓"),
@@ -695,7 +704,12 @@ impl CliHandler {
             }
             "hidden" => {
                 let v = parse_cli_bool(value);
-                match self.state.room_commands.set_hidden(&self.state, room_id, v).await {
+                match self
+                    .state
+                    .room_commands
+                    .set_hidden(&self.state, room_id, v)
+                    .await
+                {
                     Ok(_) => self.out(format!(
                         "  {} 房间 {} 已{}隐藏",
                         c::green("✓"),

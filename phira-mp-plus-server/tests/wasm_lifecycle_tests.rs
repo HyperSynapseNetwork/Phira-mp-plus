@@ -9,13 +9,20 @@ use std::path::PathBuf;
 
 fn wasm_path() -> PathBuf {
     let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    manifest.parent().unwrap().join("phira-mp-plus-server/tests/test-plugin.component.wasm")
+    manifest
+        .parent()
+        .unwrap()
+        .join("phira-mp-plus-server/tests/test-plugin.component.wasm")
 }
 
 #[test]
 fn wasm_fixture_exists() {
     let path = wasm_path();
-    assert!(path.exists(), "WASM fixture not found at {}", path.display());
+    assert!(
+        path.exists(),
+        "WASM fixture not found at {}",
+        path.display()
+    );
     assert!(path.metadata().unwrap().len() > 1000);
 }
 

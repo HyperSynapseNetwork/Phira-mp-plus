@@ -675,7 +675,11 @@ impl CliHandler {
                     "  {} 用户 {} 已封禁{}\n    理由：{}",
                     c::green("✓"),
                     uid,
-                    if disconnected { "，在线会话已通知并断开" } else { "" },
+                    if disconnected {
+                        "，在线会话已通知并断开"
+                    } else {
+                        ""
+                    },
                     c::yellow(&reason),
                 ));
             }

@@ -19,7 +19,10 @@ impl BenchRequest {
         result_tx: std::sync::mpsc::Sender<String>,
     ) -> Self {
         Self {
-            kind: BenchRequestKind::Real { duration_secs, target_rooms },
+            kind: BenchRequestKind::Real {
+                duration_secs,
+                target_rooms,
+            },
             result_tx,
         }
     }
@@ -28,7 +31,10 @@ impl BenchRequest {
         config: HybridBenchmarkConfig,
         result_tx: std::sync::mpsc::Sender<String>,
     ) -> Self {
-        Self { kind: BenchRequestKind::Hybrid(config), result_tx }
+        Self {
+            kind: BenchRequestKind::Hybrid(config),
+            result_tx,
+        }
     }
 
     pub fn timeout_secs(&self) -> u64 {
@@ -40,7 +46,10 @@ impl BenchRequest {
 }
 
 pub enum BenchRequestKind {
-    Real { duration_secs: u64, target_rooms: usize },
+    Real {
+        duration_secs: u64,
+        target_rooms: usize,
+    },
     Hybrid(HybridBenchmarkConfig),
 }
 
@@ -81,10 +90,18 @@ impl HybridBenchmarkConfig {
 
     pub fn enabled_switches(&self) -> Vec<String> {
         let mut out = Vec::new();
-        if self.authenticate { out.push("authenticate".to_string()); }
-        if let Some(id) = self.chart_lookup { out.push(format!("chart_lookup={id}")); }
-        if let Some(id) = self.record_lookup { out.push(format!("record_lookup={id}")); }
-        if self.upload_record { out.push("upload_record".to_string()); }
+        if self.authenticate {
+            out.push("authenticate".to_string());
+        }
+        if let Some(id) = self.chart_lookup {
+            out.push(format!("chart_lookup={id}"));
+        }
+        if let Some(id) = self.record_lookup {
+            out.push(format!("record_lookup={id}"));
+        }
+        if self.upload_record {
+            out.push("upload_record".to_string());
+        }
         out
     }
 
@@ -92,8 +109,16 @@ impl HybridBenchmarkConfig {
         if !(5..=300).contains(&self.duration_secs) {
             return Err("hybrid duration must be between 5 and 300 seconds".to_string());
         }
-        if let Some(id) = self.chart_lookup { if id <= 0 { return Err("hybrid chart_lookup id must be positive".to_string()); } }
-        if let Some(id) = self.record_lookup { if id <= 0 { return Err("hybrid record_lookup id must be positive".to_string()); } }
+        if let Some(id) = self.chart_lookup {
+            if id <= 0 {
+                return Err("hybrid chart_lookup id must be positive".to_string());
+            }
+        }
+        if let Some(id) = self.record_lookup {
+            if id <= 0 {
+                return Err("hybrid record_lookup id must be positive".to_string());
+            }
+        }
         if let Some(endpoint) = &self.endpoint_override {
             normalize_phira_api_endpoint(endpoint)?;
         }
@@ -112,13 +137,16 @@ struct BenchmarkAuthFile {
 }
 
 pub(crate) fn sanitize_benchmark_tokens<I>(items: I) -> Vec<String>
-where I: IntoIterator<Item = String>,
+where
+    I: IntoIterator<Item = String>,
 {
     let mut out: Vec<String> = Vec::new();
     for item in items {
         for token in item.split(|ch: char| ch == ',' || ch == ';' || ch.is_whitespace()) {
             let token = token.trim();
-            if token.is_empty() || token.len() > 32 { continue; }
+            if token.is_empty() || token.len() > 32 {
+                continue;
+            }
             if !out.iter().any(|existing| existing.as_str() == token) {
                 out.push(token.to_string());
             }
@@ -151,7 +179,10 @@ pub(crate) fn load_benchmark_tokens(config: &PlusConfig) -> Vec<String> {
     match try_load_benchmark_tokens(config) {
         Ok(tokens) => tokens,
         Err(err) => {
-            warn!(path = BENCH_AUTH_FILE, "failed to load benchmark auth file: {err}");
+            warn!(
+                path = BENCH_AUTH_FILE,
+                "failed to load benchmark auth file: {err}"
+            );
             Vec::new()
         }
     }
@@ -159,7 +190,10 @@ pub(crate) fn load_benchmark_tokens(config: &PlusConfig) -> Vec<String> {
 
 pub(crate) fn save_benchmark_tokens(tokens: &[String]) -> Result<(), String> {
     std::fs::create_dir_all("data").map_err(|e| format!("create data directory: {e}"))?;
-    let file = BenchmarkAuthFile { token: None, tokens: tokens.to_vec() };
+    let file = BenchmarkAuthFile {
+        token: None,
+        tokens: tokens.to_vec(),
+    };
     let payload = serde_json::to_string_pretty(&file)
         .map_err(|e| format!("serialize benchmark auth: {e}"))?;
     std::fs::write(BENCH_AUTH_FILE, payload).map_err(|e| format!("write {BENCH_AUTH_FILE}: {e}"))

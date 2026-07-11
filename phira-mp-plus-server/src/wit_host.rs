@@ -72,9 +72,8 @@ impl WitPluginHost {
         &self,
         capability: &str,
     ) -> Result<(), crate::plugin_abi::wit_abi::phira::plugin::phira_types::ApiResult> {
-        self.require_capability(capability).map_err(
-            crate::plugin_abi::wit_abi::phira::plugin::phira_types::ApiResult::Error,
-        )
+        self.require_capability(capability)
+            .map_err(crate::plugin_abi::wit_abi::phira::plugin::phira_types::ApiResult::Error)
     }
 
     /// Convenience: run an async fn synchronously with panic protection.
@@ -107,14 +106,26 @@ mod capability_tests {
 
     #[test]
     fn required_cap_maps_admin_methods() {
-        assert_eq!(wasm_host_helpers::required_capability("admin.list"), Some("admin"));
-        assert_eq!(wasm_host_helpers::required_capability("admin.add"), Some("admin"));
+        assert_eq!(
+            wasm_host_helpers::required_capability("admin.list"),
+            Some("admin")
+        );
+        assert_eq!(
+            wasm_host_helpers::required_capability("admin.add"),
+            Some("admin")
+        );
     }
 
     #[test]
     fn required_cap_maps_room_methods() {
-        assert_eq!(wasm_host_helpers::required_capability("room.set_lock"), Some("room.manage"));
-        assert_eq!(wasm_host_helpers::required_capability("room.kick"), Some("room.manage"));
+        assert_eq!(
+            wasm_host_helpers::required_capability("room.set_lock"),
+            Some("room.manage")
+        );
+        assert_eq!(
+            wasm_host_helpers::required_capability("room.kick"),
+            Some("room.manage")
+        );
     }
 
     #[test]
@@ -127,18 +138,33 @@ mod capability_tests {
     fn default_capabilities_dont_include_privileged() {
         let caps = wasm_host_helpers::default_capabilities();
         assert!(!caps.contains("admin"), "default must not include admin");
-        assert!(!caps.contains("room.manage"), "default must not include room.manage");
-        assert!(caps.contains("state.read"), "default must include state.read");
+        assert!(
+            !caps.contains("room.manage"),
+            "default must not include room.manage"
+        );
+        assert!(
+            caps.contains("state.read"),
+            "default must include state.read"
+        );
         assert!(caps.contains("config"), "default must include config");
     }
 
     #[test]
     fn persist_methods_require_state_read() {
         // persist.* methods require the "state.read" capability.
-        let methods = ["persist.events", "persist.rooms", "persist.touches", "persist.judges"];
+        let methods = [
+            "persist.events",
+            "persist.rooms",
+            "persist.touches",
+            "persist.judges",
+        ];
         for method in &methods {
             let cap = wasm_host_helpers::required_capability(method);
-            assert_eq!(cap, Some("state.read"), "method {method} should require state.read");
+            assert_eq!(
+                cap,
+                Some("state.read"),
+                "method {method} should require state.read"
+            );
         }
     }
 
@@ -158,7 +184,9 @@ mod capability_tests {
 
 /// Convert a serde_json::Value to a WIT JsonValue. Only available with wit-bindgen.
 #[cfg(feature = "wit-bindgen")]
-pub fn json_value_to_wit(value: &serde_json::Value) -> crate::plugin_abi::wit_abi::phira::plugin::phira_types::JsonValue {
+pub fn json_value_to_wit(
+    value: &serde_json::Value,
+) -> crate::plugin_abi::wit_abi::phira::plugin::phira_types::JsonValue {
     use crate::plugin_abi::wit_abi::phira::plugin::phira_types::JsonValue;
     match value {
         serde_json::Value::Null => JsonValue::Null,
@@ -184,7 +212,9 @@ pub fn json_value_to_wit(value: &serde_json::Value) -> crate::plugin_abi::wit_ab
 
 /// Convert a WIT JsonValue back to serde_json::Value. Only available with wit-bindgen.
 #[cfg(feature = "wit-bindgen")]
-pub fn wit_json_value_to_serde(value: &crate::plugin_abi::wit_abi::phira::plugin::phira_types::JsonValue) -> serde_json::Value {
+pub fn wit_json_value_to_serde(
+    value: &crate::plugin_abi::wit_abi::phira::plugin::phira_types::JsonValue,
+) -> serde_json::Value {
     use crate::plugin_abi::wit_abi::phira::plugin::phira_types::JsonValue;
     match value {
         JsonValue::Null => serde_json::Value::Null,
@@ -209,9 +239,9 @@ fn normalize_plugin_scoped_api_args(
     }
 
     let path = match args.first() {
-        Some(serde_json::Value::Object(config)) => config
-            .get("path")
-            .and_then(serde_json::Value::as_str),
+        Some(serde_json::Value::Object(config)) => {
+            config.get("path").and_then(serde_json::Value::as_str)
+        }
         Some(value) => value.as_str(),
         None => None,
     }
@@ -230,7 +260,11 @@ mod wit_trait_impls {
     use wit::phira::plugin::phira_types as types;
 
     /// Helper: call ServerStateQuery and convert to ApiResult.
-    fn query_api_result(host: &WitPluginHost, method: &str, args: &[serde_json::Value]) -> types::ApiResult {
+    fn query_api_result(
+        host: &WitPluginHost,
+        method: &str,
+        args: &[serde_json::Value],
+    ) -> types::ApiResult {
         match host.ctx.state_query.call(method, args) {
             Ok(value) => types::ApiResult::Ok(json_to_wit_json(&value)),
             Err(e) => types::ApiResult::Error(e),
@@ -268,18 +302,12 @@ mod wit_trait_impls {
         }
 
         fn api_call(&mut self, method: String, args: Vec<types::JsonValue>) -> types::ApiResult {
-            let args_serde: Vec<serde_json::Value> = args
-                .iter()
-                .map(wit_json_to_json)
-                .collect();
-            let args_serde = match normalize_plugin_scoped_api_args(
-                &method,
-                &self.plugin_name,
-                args_serde,
-            ) {
-                Ok(args) => args,
-                Err(error) => return types::ApiResult::Error(error),
-            };
+            let args_serde: Vec<serde_json::Value> = args.iter().map(wit_json_to_json).collect();
+            let args_serde =
+                match normalize_plugin_scoped_api_args(&method, &self.plugin_name, args_serde) {
+                    Ok(args) => args,
+                    Err(error) => return types::ApiResult::Error(error),
+                };
             match self.ctx.state_query.call(&method, &args_serde) {
                 Ok(value) => types::ApiResult::Ok(json_to_wit_json(&value)),
                 Err(e) => types::ApiResult::Error(e),
@@ -306,10 +334,7 @@ mod wit_trait_impls {
             body: Vec<u8>,
         ) -> Result<types::HttpResponse, String> {
             self.require_capability("http")?;
-            crate::wasm_host_helpers::validate_http_url(
-                &url,
-                self.ctx.http_allow_private_network,
-            )?;
+            crate::wasm_host_helpers::validate_http_url(&url, self.ctx.http_allow_private_network)?;
 
             let timeout_secs = self.ctx.http_timeout_secs.max(5);
             let max_body = self.ctx.http_max_body.max(1);
@@ -331,7 +356,11 @@ mod wit_trait_impls {
             };
 
             let req = headers.into_iter().fold(req, |r, (k, v)| r.header(&k, &v));
-            let req = if !body.is_empty() { req.body(body) } else { req };
+            let req = if !body.is_empty() {
+                req.body(body)
+            } else {
+                req
+            };
 
             let response = req
                 .send()
@@ -352,10 +381,7 @@ mod wit_trait_impls {
                     "HTTP response exceeds configured limit of {max_body} bytes"
                 ));
             }
-            let mut limited = std::io::Read::take(
-                response,
-                (max_body as u64).saturating_add(1),
-            );
+            let mut limited = std::io::Read::take(response, (max_body as u64).saturating_add(1));
             let mut resp_body = Vec::with_capacity(max_body.min(64 * 1024));
             std::io::Read::read_to_end(&mut limited, &mut resp_body)
                 .map_err(|e| format!("read response body: {e}"))?;
@@ -379,20 +405,28 @@ mod wit_trait_impls {
             query_api_result(self, "user_name", &[serde_json::json!(user_id as i32)])
         }
         fn get_user_extra(&mut self, user_id: u32, key: String) -> types::ApiResult {
-            if let Err(error) = self.require_api_capability("ext") { return error; }
-            match self.block_on_sync(|ctx|
+            if let Err(error) = self.require_api_capability("ext") {
+                return error;
+            }
+            match self.block_on_sync(|ctx| {
                 futures::executor::block_on(ctx.extensions.get_user_extra(user_id as i32, &key))
-            ) {
+            }) {
                 Ok(Some(value)) => types::ApiResult::Ok(types::JsonValue::Text(value)),
                 Ok(None) => types::ApiResult::Ok(types::JsonValue::Null),
                 Err(e) => types::ApiResult::Error(e),
             }
         }
         fn set_user_extra(&mut self, user_id: u32, key: String, value: String) -> types::ApiResult {
-            if let Err(error) = self.require_api_capability("ext") { return error; }
-            match self.block_on_sync(|ctx|
-                futures::executor::block_on(ctx.extensions.set_user_extra(user_id as i32, &key, value))
-            ) {
+            if let Err(error) = self.require_api_capability("ext") {
+                return error;
+            }
+            match self.block_on_sync(|ctx| {
+                futures::executor::block_on(ctx.extensions.set_user_extra(
+                    user_id as i32,
+                    &key,
+                    value,
+                ))
+            }) {
                 Ok(Ok(())) => types::ApiResult::Ok(types::JsonValue::Null),
                 Ok(Err(e)) | Err(e) => types::ApiResult::Error(e),
             }
@@ -401,10 +435,12 @@ mod wit_trait_impls {
             query_api_result(self, "rooms.by_name", &[serde_json::json!(room_id)])
         }
         fn get_room_extra(&mut self, room_id: String, key: String) -> types::ApiResult {
-            if let Err(error) = self.require_api_capability("ext") { return error; }
-            match self.block_on_sync(|ctx|
+            if let Err(error) = self.require_api_capability("ext") {
+                return error;
+            }
+            match self.block_on_sync(|ctx| {
                 futures::executor::block_on(ctx.extensions.get_room_extra(&room_id, &key))
-            ) {
+            }) {
                 Ok(Some(value)) => types::ApiResult::Ok(types::JsonValue::Text(value)),
                 Ok(None) => types::ApiResult::Ok(types::JsonValue::Null),
                 Err(e) => types::ApiResult::Error(e),
@@ -426,7 +462,11 @@ mod wit_trait_impls {
 
     // ── phira-room-mgmt ──
     impl wit::phira::plugin::phira_room_mgmt::Host for WitPluginHost {
-        fn create_empty_room(&mut self, room_id: String, endpoint: Option<String>) -> types::ApiResult {
+        fn create_empty_room(
+            &mut self,
+            room_id: String,
+            endpoint: Option<String>,
+        ) -> types::ApiResult {
             let mut args = vec![serde_json::json!(room_id)];
             if let Some(ep) = endpoint {
                 args.push(serde_json::json!(ep));
@@ -434,48 +474,60 @@ mod wit_trait_impls {
             query_api_result(self, "room.create_empty", &args)
         }
         fn kick_from_room(&mut self, room_id: String, target_id: u32) -> types::ApiResult {
-            query_api_result(self, "room.kick", &[
-                serde_json::json!(room_id),
-                serde_json::json!(target_id),
-            ])
+            query_api_result(
+                self,
+                "room.kick",
+                &[serde_json::json!(room_id), serde_json::json!(target_id)],
+            )
         }
         fn transfer_host(&mut self, room_id: String, target_id: u32) -> types::ApiResult {
-            query_api_result(self, "room.set_host", &[
-                serde_json::json!(room_id),
-                serde_json::json!(target_id),
-            ])
+            query_api_result(
+                self,
+                "room.set_host",
+                &[serde_json::json!(room_id), serde_json::json!(target_id)],
+            )
         }
         fn set_host(&mut self, room_id: String, target_id: Option<u32>) -> types::ApiResult {
-            query_api_result(self, "room.set_host", &[
-                serde_json::json!(room_id),
-                serde_json::json!(target_id.map(|id| id as i32)),
-            ])
+            query_api_result(
+                self,
+                "room.set_host",
+                &[
+                    serde_json::json!(room_id),
+                    serde_json::json!(target_id.map(|id| id as i32)),
+                ],
+            )
         }
         fn set_room_lock(&mut self, room_id: String, locked: bool) -> types::ApiResult {
-            query_api_result(self, "room.set_lock", &[
-                serde_json::json!(room_id),
-                serde_json::json!(locked),
-            ])
+            query_api_result(
+                self,
+                "room.set_lock",
+                &[serde_json::json!(room_id), serde_json::json!(locked)],
+            )
         }
         fn set_room_hidden(&mut self, room_id: String, hidden: bool) -> types::ApiResult {
-            query_api_result(self, "room.set_hidden", &[
-                serde_json::json!(room_id),
-                serde_json::json!(hidden),
-            ])
+            query_api_result(
+                self,
+                "room.set_hidden",
+                &[serde_json::json!(room_id), serde_json::json!(hidden)],
+            )
         }
         fn close_room(&mut self, room_id: String) -> types::ApiResult {
-            query_api_result(self, "room.close", &[
-                serde_json::json!(room_id),
-            ])
+            query_api_result(self, "room.close", &[serde_json::json!(room_id)])
         }
-        fn set_room_phira_api_endpoint(&mut self, room_id: String, endpoint: Option<String>) -> types::ApiResult {
+        fn set_room_phira_api_endpoint(
+            &mut self,
+            room_id: String,
+            endpoint: Option<String>,
+        ) -> types::ApiResult {
             let method = if endpoint.is_some() {
                 "room.set_phira_api_endpoint"
             } else {
                 "room.clear_phira_api_endpoint"
             };
             let mut args = vec![serde_json::json!(room_id)];
-            if let Some(endpoint) = endpoint { args.push(serde_json::json!(endpoint)); }
+            if let Some(endpoint) = endpoint {
+                args.push(serde_json::json!(endpoint));
+            }
             query_api_result(self, method, &args)
         }
     }
@@ -483,36 +535,39 @@ mod wit_trait_impls {
     // ── phira-user-mgmt ──
     impl wit::phira::plugin::phira_user_mgmt::Host for WitPluginHost {
         fn kick_user(&mut self, user_id: u32, reason: String) -> types::ApiResult {
-            query_api_result(self, "user.kick", &[
-                serde_json::json!(user_id),
-                serde_json::json!(reason),
-            ])
+            query_api_result(
+                self,
+                "user.kick",
+                &[serde_json::json!(user_id), serde_json::json!(reason)],
+            )
         }
         fn ban_user(&mut self, user_id: u32, reason: String) -> types::ApiResult {
-            query_api_result(self, "ban.add", &[
-                serde_json::json!(user_id),
-                serde_json::json!(reason),
-            ])
+            query_api_result(
+                self,
+                "ban.add",
+                &[serde_json::json!(user_id), serde_json::json!(reason)],
+            )
         }
         fn unban_user(&mut self, user_id: u32) -> types::ApiResult {
-            query_api_result(self, "ban.remove", &[
-                serde_json::json!(user_id),
-            ])
+            query_api_result(self, "ban.remove", &[serde_json::json!(user_id)])
         }
         fn get_ban_list(&mut self) -> types::ApiResult {
             query_api_result(self, "ban.list", &[])
         }
         fn is_banned(&mut self, user_id: u32) -> bool {
-            matches!(query_api_result(self, "ban.check", &[
-                serde_json::json!(user_id),
-            ]), types::ApiResult::Ok(types::JsonValue::Flag(true)))
+            matches!(
+                query_api_result(self, "ban.check", &[serde_json::json!(user_id),]),
+                types::ApiResult::Ok(types::JsonValue::Flag(true))
+            )
         }
     }
 
     // ── phira-messaging ──
     impl wit::phira::plugin::phira_messaging::Host for WitPluginHost {
         fn send_to_user(&mut self, user_id: u32, message: String) -> types::ApiResult {
-            if let Err(error) = self.require_api_capability("send") { return error; }
+            if let Err(error) = self.require_api_capability("send") {
+                return error;
+            }
             match &self.ctx.send_chat {
                 Some(send_chat) => {
                     send_chat(user_id as i32, message);
@@ -522,13 +577,16 @@ mod wit_trait_impls {
             }
         }
         fn send_to_room(&mut self, room_id: String, message: String) -> types::ApiResult {
-            query_api_result(self, "send_room_chat", &[
-                serde_json::json!(room_id),
-                serde_json::json!(message),
-            ])
+            query_api_result(
+                self,
+                "send_room_chat",
+                &[serde_json::json!(room_id), serde_json::json!(message)],
+            )
         }
         fn send_to_all(&mut self, message: String) -> types::ApiResult {
-            if let Err(error) = self.require_api_capability("send") { return error; }
+            if let Err(error) = self.require_api_capability("send") {
+                return error;
+            }
             match &self.ctx.send_chat {
                 Some(send_chat) => {
                     send_chat(0, message);
@@ -541,24 +599,68 @@ mod wit_trait_impls {
 
     // ── phira-persistence ──
     impl wit::phira::plugin::phira_persistence::Host for WitPluginHost {
-        fn query_events(&mut self, since: u64, limit: u32, kind: Option<String>, room: Option<String>, user: Option<u32>) -> types::ApiResult {
-            query_api_result(self, "persist.events", &[
-                serde_json::json!(since), serde_json::json!(limit), serde_json::json!(kind),
-                serde_json::json!(room), serde_json::json!(user),
-            ])
+        fn query_events(
+            &mut self,
+            since: u64,
+            limit: u32,
+            kind: Option<String>,
+            room: Option<String>,
+            user: Option<u32>,
+        ) -> types::ApiResult {
+            query_api_result(
+                self,
+                "persist.events",
+                &[
+                    serde_json::json!(since),
+                    serde_json::json!(limit),
+                    serde_json::json!(kind),
+                    serde_json::json!(room),
+                    serde_json::json!(user),
+                ],
+            )
         }
         fn query_room_snapshots(&mut self, since: u64, limit: u32) -> types::ApiResult {
-            query_api_result(self, "persist.rooms", &[serde_json::json!(since), serde_json::json!(limit)])
+            query_api_result(
+                self,
+                "persist.rooms",
+                &[serde_json::json!(since), serde_json::json!(limit)],
+            )
         }
-        fn query_touches(&mut self, since: u64, limit: u32, round: Option<String>, player: Option<u32>) -> types::ApiResult {
-            query_api_result(self, "persist.touches", &[
-                serde_json::json!(since), serde_json::json!(limit), serde_json::json!(round), serde_json::json!(player),
-            ])
+        fn query_touches(
+            &mut self,
+            since: u64,
+            limit: u32,
+            round: Option<String>,
+            player: Option<u32>,
+        ) -> types::ApiResult {
+            query_api_result(
+                self,
+                "persist.touches",
+                &[
+                    serde_json::json!(since),
+                    serde_json::json!(limit),
+                    serde_json::json!(round),
+                    serde_json::json!(player),
+                ],
+            )
         }
-        fn query_judges(&mut self, since: u64, limit: u32, round: Option<String>, player: Option<u32>) -> types::ApiResult {
-            query_api_result(self, "persist.judges", &[
-                serde_json::json!(since), serde_json::json!(limit), serde_json::json!(round), serde_json::json!(player),
-            ])
+        fn query_judges(
+            &mut self,
+            since: u64,
+            limit: u32,
+            round: Option<String>,
+            player: Option<u32>,
+        ) -> types::ApiResult {
+            query_api_result(
+                self,
+                "persist.judges",
+                &[
+                    serde_json::json!(since),
+                    serde_json::json!(limit),
+                    serde_json::json!(round),
+                    serde_json::json!(player),
+                ],
+            )
         }
         fn get_playtime(&mut self, user_id: u32) -> types::ApiResult {
             query_api_result(self, "persist.playtime", &[serde_json::json!(user_id)])
@@ -574,9 +676,10 @@ mod wit_trait_impls {
             query_api_result(self, "admin.list", &[])
         }
         fn is_admin(&mut self, user_id: u32) -> bool {
-            matches!(query_api_result(self, "admin.check", &[
-                serde_json::json!(user_id),
-            ]), types::ApiResult::Ok(types::JsonValue::Flag(true)))
+            matches!(
+                query_api_result(self, "admin.check", &[serde_json::json!(user_id),]),
+                types::ApiResult::Ok(types::JsonValue::Flag(true))
+            )
         }
         fn add_admin_id(&mut self, user_id: u32) -> types::ApiResult {
             query_api_result(self, "admin.add", &[serde_json::json!(user_id)])
@@ -592,7 +695,9 @@ mod wit_trait_impls {
     // ── phira-config ──
     impl wit::phira::plugin::phira_config::Host for WitPluginHost {
         fn get_config(&mut self, key: String) -> types::ApiResult {
-            if let Err(error) = self.require_api_capability("config") { return error; }
+            if let Err(error) = self.require_api_capability("config") {
+                return error;
+            }
             if let Err(error) = crate::wasm_host_helpers::validate_config_key(&key) {
                 return types::ApiResult::Error(error);
             }
@@ -606,16 +711,18 @@ mod wit_trait_impls {
                 Err(e) => return types::ApiResult::Error(format!("parse config: {e}")),
             };
             // Navigate dot-separated key path (e.g. "api.timeout")
-            let value = key.split('.').fold(Some(&root), |acc, part| {
-                acc.and_then(|v| v.get(part))
-            });
+            let value = key
+                .split('.')
+                .fold(Some(&root), |acc, part| acc.and_then(|v| v.get(part)));
             match value {
                 Some(v) => types::ApiResult::Ok(json_to_wit_json(v)),
                 None => types::ApiResult::Ok(types::JsonValue::Null),
             }
         }
         fn set_config(&mut self, key: String, value: String) -> types::ApiResult {
-            if let Err(error) = self.require_api_capability("config") { return error; }
+            if let Err(error) = self.require_api_capability("config") {
+                return error;
+            }
             if let Err(error) = crate::wasm_host_helpers::validate_config_key(&key) {
                 return types::ApiResult::Error(error);
             }
@@ -642,7 +749,11 @@ mod wit_trait_impls {
                 for &part in keys.iter().take(keys.len() - 1) {
                     current = match current.get_mut(part) {
                         Some(v @ serde_json::Value::Object(_)) => v,
-                        Some(_) => return types::ApiResult::Error(format!("key '{part}' is not an object")),
+                        Some(_) => {
+                            return types::ApiResult::Error(format!(
+                                "key '{part}' is not an object"
+                            ))
+                        }
                         None => return types::ApiResult::Error(format!("key '{part}' not found")),
                     };
                 }
@@ -661,7 +772,9 @@ mod wit_trait_impls {
             }
         }
         fn list_config(&mut self, prefix: String) -> types::ApiResult {
-            if let Err(error) = self.require_api_capability("config") { return error; }
+            if let Err(error) = self.require_api_capability("config") {
+                return error;
+            }
             if !prefix.is_empty() {
                 if let Err(error) = crate::wasm_host_helpers::validate_config_key(&prefix) {
                     return types::ApiResult::Error(error);
@@ -682,7 +795,11 @@ mod wit_trait_impls {
                     serde_json::Value::Object(map) => {
                         let mut keys = Vec::new();
                         for (k, v) in map {
-                            let path = if current.is_empty() { k.clone() } else { format!("{current}.{k}") };
+                            let path = if current.is_empty() {
+                                k.clone()
+                            } else {
+                                format!("{current}.{k}")
+                            };
                             if path.starts_with(prefix) {
                                 keys.push(path.clone());
                             }
@@ -700,7 +817,9 @@ mod wit_trait_impls {
             types::ApiResult::Ok(json_to_wit_json(&serde_json::json!(keys)))
         }
         fn reload_config(&mut self) -> types::ApiResult {
-            if let Err(error) = self.require_api_capability("config") { return error; }
+            if let Err(error) = self.require_api_capability("config") {
+                return error;
+            }
             let path = crate::wasm_host_helpers::config_path(&self.plugin_name);
             match std::fs::read_to_string(&path) {
                 Ok(content) => match serde_json::from_str::<serde_json::Value>(&content) {
@@ -711,7 +830,9 @@ mod wit_trait_impls {
             }
         }
         fn poll_config_changes(&mut self, _since: u64) -> types::ApiResult {
-            if let Err(error) = self.require_api_capability("config") { return error; }
+            if let Err(error) = self.require_api_capability("config") {
+                return error;
+            }
             // Simple implementation: check if the config file exists and return its
             // modification time as a version indicator.
             let path = crate::wasm_host_helpers::config_path(&self.plugin_name);
@@ -733,10 +854,11 @@ mod wit_trait_impls {
     // ── phira-simulation ──
     impl wit::phira::plugin::phira_simulation::Host for WitPluginHost {
         fn status(&mut self) -> types::ApiResult {
-            if let Err(error) = self.require_api_capability("simulation") { return error; }
-            let result = self.block_on_sync(|ctx|
-                futures::executor::block_on(ctx.simulation.status())
-            );
+            if let Err(error) = self.require_api_capability("simulation") {
+                return error;
+            }
+            let result =
+                self.block_on_sync(|ctx| futures::executor::block_on(ctx.simulation.status()));
             match result {
                 Ok(status) => {
                     let json = serde_json::to_value(&status).unwrap_or_default();
@@ -745,16 +867,30 @@ mod wit_trait_impls {
                 Err(e) => types::ApiResult::Error(e),
             }
         }
-        fn run(&mut self, preset: String, users: Option<u32>, rooms: Option<u32>, duration: Option<u32>) -> types::ApiResult {
-            if let Err(error) = self.require_api_capability("simulation") { return error; }
+        fn run(
+            &mut self,
+            preset: String,
+            users: Option<u32>,
+            rooms: Option<u32>,
+            duration: Option<u32>,
+        ) -> types::ApiResult {
+            if let Err(error) = self.require_api_capability("simulation") {
+                return error;
+            }
             let result = self.block_on_sync(|ctx| {
                 let mut config = crate::simulation::SimulationConfig::default();
                 if let Some(p) = crate::simulation::SimulationPreset::parse(&preset) {
                     config = p.defaults(ctx.simulation.seed_hint());
                 }
-                if let Some(u) = users { config.users = u as usize; }
-                if let Some(r) = rooms { config.rooms = r as usize; }
-                if let Some(d) = duration { config.duration_secs = d as u64; }
+                if let Some(u) = users {
+                    config.users = u as usize;
+                }
+                if let Some(r) = rooms {
+                    config.rooms = r as usize;
+                }
+                if let Some(d) = duration {
+                    config.duration_secs = d as u64;
+                }
                 futures::executor::block_on(ctx.simulation.start(config))
             });
             match result {
@@ -766,10 +902,12 @@ mod wit_trait_impls {
             }
         }
         fn stop(&mut self) -> types::ApiResult {
-            if let Err(error) = self.require_api_capability("simulation") { return error; }
-            let result = self.block_on_sync(|ctx|
+            if let Err(error) = self.require_api_capability("simulation") {
+                return error;
+            }
+            let result = self.block_on_sync(|ctx| {
                 futures::executor::block_on(ctx.simulation.stop("stopped via plugin API"))
-            );
+            });
             match result {
                 Ok(status) => {
                     let json = serde_json::to_value(&status).unwrap_or_default();
@@ -779,10 +917,11 @@ mod wit_trait_impls {
             }
         }
         fn cleanup(&mut self) -> types::ApiResult {
-            if let Err(error) = self.require_api_capability("simulation") { return error; }
-            let result = self.block_on_sync(|ctx|
-                futures::executor::block_on(ctx.simulation.cleanup())
-            );
+            if let Err(error) = self.require_api_capability("simulation") {
+                return error;
+            }
+            let result =
+                self.block_on_sync(|ctx| futures::executor::block_on(ctx.simulation.cleanup()));
             match result {
                 Ok(status) => {
                     let json = serde_json::to_value(&status).unwrap_or_default();
@@ -799,9 +938,11 @@ mod wit_trait_impls {
             query_api_result(self, "runtime.status", &[])
         }
         fn events(&mut self, limit: Option<u32>) -> types::ApiResult {
-            query_api_result(self, "runtime.event_stats", &[
-                serde_json::json!(limit.unwrap_or(50)),
-            ])
+            query_api_result(
+                self,
+                "runtime.event_stats",
+                &[serde_json::json!(limit.unwrap_or(50))],
+            )
         }
         fn commands(&mut self) -> types::ApiResult {
             query_api_result(self, "runtime.commands", &[])

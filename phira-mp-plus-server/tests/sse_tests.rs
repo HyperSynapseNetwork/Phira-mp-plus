@@ -6,8 +6,8 @@
 //! directly here and the HTTP layer is exercised by
 //! the existing general_sse_handler in production.
 
-use phira_mp_plus_server::plugin_http::{SseEvent, SseHub};
 use phira_mp_plus_server::plugin_http::SseStreamConfig;
+use phira_mp_plus_server::plugin_http::{SseEvent, SseHub};
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
@@ -60,7 +60,10 @@ async fn sse_room_events_format() {
 
     let received = rx.recv().await.expect("should receive room event");
     assert_eq!(received.event_type, "create_room");
-    assert!(received.data.contains("test-room"), "data should contain room name");
+    assert!(
+        received.data.contains("test-room"),
+        "data should contain room name"
+    );
 }
 
 #[tokio::test]
@@ -71,7 +74,10 @@ async fn sse_stream_registration_integration() {
         event_types: vec!["RoomCreate".to_string(), "RoomJoin".to_string()],
     };
     let streams = Arc::new(RwLock::new(std::collections::HashMap::new()));
-    streams.write().await.insert("/test/stream".to_string(), config);
+    streams
+        .write()
+        .await
+        .insert("/test/stream".to_string(), config);
 
     let entry = streams.read().await.get("/test/stream").cloned().unwrap();
     assert_eq!(entry.plugin, "test-plugin");

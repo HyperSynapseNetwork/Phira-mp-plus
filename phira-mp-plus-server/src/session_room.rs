@@ -303,9 +303,7 @@ pub async fn join_room(
     }
 
     let room_state = if late_join {
-        phira_mp_common::RoomState::SelectChart(
-            room.chart.read().await.as_ref().map(|c| c.id),
-        )
+        phira_mp_common::RoomState::SelectChart(room.chart.read().await.as_ref().map(|c| c.id))
     } else {
         room.client_room_state().await
     };
@@ -353,7 +351,12 @@ pub async fn leave_room(user: Arc<User>, category: SessionCategory) -> Result<()
 pub async fn lock_room(user: Arc<User>, lock: bool) -> Result<()> {
     let room = current_room(&user).await?;
     room.check_host(&user).await?;
-    info!(user = user.id, room = room.id.to_string(), lock, "lock room");
+    info!(
+        user = user.id,
+        room = room.id.to_string(),
+        lock,
+        "lock room"
+    );
     user.server
         .room_commands
         .set_lock_as(&user.server, &room.id.to_string(), lock, user.id)
@@ -365,7 +368,12 @@ pub async fn lock_room(user: Arc<User>, lock: bool) -> Result<()> {
 pub async fn cycle_room(user: Arc<User>, cycle: bool) -> Result<()> {
     let room = current_room(&user).await?;
     room.check_host(&user).await?;
-    info!(user = user.id, room = room.id.to_string(), cycle, "cycle room");
+    info!(
+        user = user.id,
+        room = room.id.to_string(),
+        cycle,
+        "cycle room"
+    );
     user.server
         .room_commands
         .set_cycle_as(&user.server, &room.id.to_string(), cycle, user.id)

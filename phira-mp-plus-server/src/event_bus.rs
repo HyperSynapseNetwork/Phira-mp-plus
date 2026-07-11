@@ -172,7 +172,9 @@ impl MpEvent {
             Self::UserConnected {
                 user_id, user_name, ..
             } => format!("user_id={user_id} user_name={user_name}"),
-            Self::UserDisconnected { user_id, user_name } => format!("user_id={user_id} user_name={user_name}"),
+            Self::UserDisconnected { user_id, user_name } => {
+                format!("user_id={user_id} user_name={user_name}")
+            }
             Self::RoomCreated { room_id, room_uuid } => {
                 format!("room_id={room_id} uuid={room_uuid}")
             }

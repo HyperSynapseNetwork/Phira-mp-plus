@@ -320,8 +320,8 @@ impl PhiraHttpCounters {
             e.last_status = Some(status);
         }
     }
-/// Reserved for future diagnostics/metrics integration.
-#[allow(dead_code)]
+    /// Reserved for future diagnostics/metrics integration.
+    #[allow(dead_code)]
     fn record_endpoint_failure(&self, path: &str, status: Option<u16>) {
         if let Ok(mut ec) = self.endpoint_counters.write() {
             let e = ec.entry(path.to_string()).or_default();
@@ -331,17 +331,24 @@ impl PhiraHttpCounters {
         }
     }
     fn endpoint_stats(&self) -> Vec<PhiraEndpointStats> {
-        self.endpoint_counters.read().ok().map(|ec| {
-            let mut v: Vec<PhiraEndpointStats> = ec.iter().map(|(path, c)| PhiraEndpointStats {
-                endpoint: path.clone(),
-                requests: c.requests,
-                successes: c.successes,
-                failures: c.failures,
-                last_status: c.last_status,
-            }).collect();
-            v.sort_by(|a, b| b.requests.cmp(&a.requests));
-            v
-        }).unwrap_or_default()
+        self.endpoint_counters
+            .read()
+            .ok()
+            .map(|ec| {
+                let mut v: Vec<PhiraEndpointStats> = ec
+                    .iter()
+                    .map(|(path, c)| PhiraEndpointStats {
+                        endpoint: path.clone(),
+                        requests: c.requests,
+                        successes: c.successes,
+                        failures: c.failures,
+                        last_status: c.last_status,
+                    })
+                    .collect();
+                v.sort_by(|a, b| b.requests.cmp(&a.requests));
+                v
+            })
+            .unwrap_or_default()
     }
 }
 
@@ -482,7 +489,8 @@ impl PhiraRetryClient {
                 Ok(response) => {
                     let status = response.status();
                     if status.is_success() {
-                        self.counters.record_endpoint_success(&endpoint_key, status.as_u16());
+                        self.counters
+                            .record_endpoint_success(&endpoint_key, status.as_u16());
                         match response.json::<T>().await {
                             Ok(value) => {
                                 self.counters.successes.fetch_add(1, Ordering::Relaxed);

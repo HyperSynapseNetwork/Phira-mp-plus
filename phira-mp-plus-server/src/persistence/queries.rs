@@ -40,24 +40,33 @@ impl DbManager {
             query_text.push_str(&format!(" ORDER BY sequence ASC LIMIT ${bind_count}"));
 
             let mut query = sqlx::query(&query_text).bind(since_sequence);
-            if let Some(ref value) = kind { query = query.bind(value); }
-            if let Some(ref value) = room_id { query = query.bind(value); }
-            if let Some(value) = user_id { query = query.bind(value); }
+            if let Some(ref value) = kind {
+                query = query.bind(value);
+            }
+            if let Some(ref value) = room_id {
+                query = query.bind(value);
+            }
+            if let Some(value) = user_id {
+                query = query.bind(value);
+            }
             query = query.bind(limit);
 
             let rows = query.fetch_all(pool).await.unwrap_or_default();
-            return rows.iter().map(|row| {
-                serde_json::json!({
-                    "sequence": row.try_get::<i64, _>("sequence").unwrap_or_default(),
-                    "kind": row.try_get::<String, _>("kind").unwrap_or_default(),
-                    "room_id": row.try_get::<Option<String>, _>("room_id").ok().flatten(),
-                    "user_id": row.try_get::<Option<i32>, _>("user_id").ok().flatten(),
-                    "payload": row.try_get::<String, _>("payload").ok()
-                        .and_then(|value| serde_json::from_str(&value).ok())
-                        .unwrap_or(Value::Null),
-                    "created_at": row.try_get::<i64, _>("created_at").unwrap_or_default(),
+            return rows
+                .iter()
+                .map(|row| {
+                    serde_json::json!({
+                        "sequence": row.try_get::<i64, _>("sequence").unwrap_or_default(),
+                        "kind": row.try_get::<String, _>("kind").unwrap_or_default(),
+                        "room_id": row.try_get::<Option<String>, _>("room_id").ok().flatten(),
+                        "user_id": row.try_get::<Option<i32>, _>("user_id").ok().flatten(),
+                        "payload": row.try_get::<String, _>("payload").ok()
+                            .and_then(|value| serde_json::from_str(&value).ok())
+                            .unwrap_or(Value::Null),
+                        "created_at": row.try_get::<i64, _>("created_at").unwrap_or_default(),
+                    })
                 })
-            }).collect();
+                .collect();
         }
         Vec::new()
     }
@@ -75,18 +84,21 @@ impl DbManager {
             .fetch_all(pool)
             .await
             .unwrap_or_default();
-            return rows.iter().map(|row| {
-                serde_json::json!({
-                    "sequence": row.try_get::<i64, _>("sequence").unwrap_or_default(),
-                    "room_id": row.try_get::<String, _>("room_id").unwrap_or_default(),
-                    "room_uuid": row.try_get::<String, _>("room_uuid").unwrap_or_default(),
-                    "payload": row.try_get::<String, _>("payload").ok()
-                        .and_then(|s| serde_json::from_str(&s).ok())
-                        .unwrap_or(Value::Null),
-                    "created_at": row.try_get::<i64, _>("created_at").unwrap_or_default(),
-                    "updated_at": row.try_get::<i64, _>("updated_at").unwrap_or_default(),
+            return rows
+                .iter()
+                .map(|row| {
+                    serde_json::json!({
+                        "sequence": row.try_get::<i64, _>("sequence").unwrap_or_default(),
+                        "room_id": row.try_get::<String, _>("room_id").unwrap_or_default(),
+                        "room_uuid": row.try_get::<String, _>("room_uuid").unwrap_or_default(),
+                        "payload": row.try_get::<String, _>("payload").ok()
+                            .and_then(|s| serde_json::from_str(&s).ok())
+                            .unwrap_or(Value::Null),
+                        "created_at": row.try_get::<i64, _>("created_at").unwrap_or_default(),
+                        "updated_at": row.try_get::<i64, _>("updated_at").unwrap_or_default(),
+                    })
                 })
-            }).collect();
+                .collect();
         }
         Vec::new()
     }
@@ -107,13 +119,24 @@ impl DbManager {
                  FROM mp_round_touch_batches WHERE sequence > $1"
             );
             let mut bind_count = 1u8;
-            if round_uuid.is_some() { bind_count += 1; q.push_str(&format!(" AND round_uuid = ${bind_count}")); }
-            if player_id.is_some() { bind_count += 1; q.push_str(&format!(" AND player_id = ${bind_count}")); }
+            if round_uuid.is_some() {
+                bind_count += 1;
+                q.push_str(&format!(" AND round_uuid = ${bind_count}"));
+            }
+            if player_id.is_some() {
+                bind_count += 1;
+                q.push_str(&format!(" AND player_id = ${bind_count}"));
+            }
             q.push_str(" ORDER BY sequence ASC LIMIT $");
-            bind_count += 1; q.push_str(&bind_count.to_string());
+            bind_count += 1;
+            q.push_str(&bind_count.to_string());
             let mut query = sqlx::query(&q).bind(since_sequence);
-            if let Some(ref ru) = round_uuid { query = query.bind(ru); }
-            if let Some(pid) = player_id { query = query.bind(pid); }
+            if let Some(ref ru) = round_uuid {
+                query = query.bind(ru);
+            }
+            if let Some(pid) = player_id {
+                query = query.bind(pid);
+            }
             query = query.bind(limit);
             let rows = query.fetch_all(pool).await.unwrap_or_default();
             return rows.iter().map(|row| {
@@ -150,13 +173,24 @@ impl DbManager {
                  FROM mp_round_judge_batches WHERE sequence > $1"
             );
             let mut bind_count = 1u8;
-            if round_uuid.is_some() { bind_count += 1; q.push_str(&format!(" AND round_uuid = ${bind_count}")); }
-            if player_id.is_some() { bind_count += 1; q.push_str(&format!(" AND player_id = ${bind_count}")); }
+            if round_uuid.is_some() {
+                bind_count += 1;
+                q.push_str(&format!(" AND round_uuid = ${bind_count}"));
+            }
+            if player_id.is_some() {
+                bind_count += 1;
+                q.push_str(&format!(" AND player_id = ${bind_count}"));
+            }
             q.push_str(" ORDER BY sequence ASC LIMIT $");
-            bind_count += 1; q.push_str(&bind_count.to_string());
+            bind_count += 1;
+            q.push_str(&bind_count.to_string());
             let mut query = sqlx::query(&q).bind(since_sequence);
-            if let Some(ref ru) = round_uuid { query = query.bind(ru); }
-            if let Some(pid) = player_id { query = query.bind(pid); }
+            if let Some(ref ru) = round_uuid {
+                query = query.bind(ru);
+            }
+            if let Some(pid) = player_id {
+                query = query.bind(pid);
+            }
             query = query.bind(limit);
             let rows = query.fetch_all(pool).await.unwrap_or_default();
             return rows.iter().map(|row| {

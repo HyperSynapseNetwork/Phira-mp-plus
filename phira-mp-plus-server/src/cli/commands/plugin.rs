@@ -130,7 +130,11 @@ impl CliHandler {
     }
 
     pub(crate) async fn remove_plugin(&self, name: &str) {
-        self.out(format!("  {} 确认删除插件 {}？此操作将：", c::yellow("⚠"), c::bold(name)));
+        self.out(format!(
+            "  {} 确认删除插件 {}？此操作将：",
+            c::yellow("⚠"),
+            c::bold(name)
+        ));
         self.out(format!("  {} 删除插件文件", c::dim("•")));
         self.out(format!("  {} 清除插件扩展数据", c::dim("•")));
         self.out(format!("  {} 清除插件私有数据", c::dim("•")));

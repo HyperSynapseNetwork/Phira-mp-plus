@@ -277,9 +277,8 @@ async fn simulation_cleanup_mid_run_resets_all_state() {
         seed: 42,
         persist_every_ticks: 0,
 
-    ..Default::default()
+        ..Default::default()
     };
-
 
     let started = manager.start(config).await.unwrap();
     assert!(started.running, "should be running after start");
@@ -303,19 +302,13 @@ async fn simulation_cleanup_mid_run_resets_all_state() {
         duration_secs: 10,
         seed: 100,
 
-    ..Default::default()
+        ..Default::default()
     };
 
     let restarted = manager.start(config2).await.unwrap();
     assert!(restarted.running, "can start after cleanup");
-    assert_eq!(
-        restarted.virtual_users, 3,
-        "fresh run has correct users"
-    );
-    assert_eq!(
-        restarted.virtual_rooms, 1,
-        "fresh run has correct rooms"
-    );
+    assert_eq!(restarted.virtual_users, 3, "fresh run has correct users");
+    assert_eq!(restarted.virtual_rooms, 1, "fresh run has correct rooms");
 }
 
 #[tokio::test]
@@ -330,9 +323,8 @@ async fn simulation_multiple_stop_cleanup_cycles() {
             duration_secs: 10,
             seed: 42 + cycle as u64,
 
-        ..Default::default()
+            ..Default::default()
         };
-
 
         let started = manager.start(config).await.unwrap();
         assert!(started.running, "cycle {cycle}: should start");
@@ -364,7 +356,7 @@ async fn simulation_cleanup_no_side_effects_on_real_state() {
         duration_secs: 30,
         seed: 1,
 
-    ..Default::default()
+        ..Default::default()
     };
 
     let config2 = SimulationConfig {
@@ -374,9 +366,8 @@ async fn simulation_cleanup_no_side_effects_on_real_state() {
         duration_secs: 60,
         seed: 2,
 
-    ..Default::default()
+        ..Default::default()
     };
-
 
     let s1 = manager1.start(config1).await.unwrap();
     let s2 = manager2.start(config2).await.unwrap();
@@ -390,6 +381,9 @@ async fn simulation_cleanup_no_side_effects_on_real_state() {
 
     // manager2 must be unaffected
     let s2_after = manager2.status().await;
-    assert!(s2_after.running, "manager2 still running after manager1 cleanup");
+    assert!(
+        s2_after.running,
+        "manager2 still running after manager1 cleanup"
+    );
     assert_eq!(s2_after.virtual_users, 50, "manager2 users unchanged");
 }

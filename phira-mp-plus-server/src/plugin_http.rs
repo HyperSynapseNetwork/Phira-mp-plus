@@ -4,8 +4,8 @@ mod router;
 mod sse;
 mod websocket;
 
-use crate::server::PlusServerState;
 use crate::plugin::PluginManager;
+use crate::server::PlusServerState;
 use axum::{
     extract::Extension,
     http::{header, HeaderName, HeaderValue, Method, StatusCode, Uri},
@@ -16,6 +16,7 @@ use axum::{
     routing::{any, get},
     Json, Router,
 };
+use futures::{stream, Stream, StreamExt};
 use phira_mp_plus_server_api as api;
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -25,12 +26,11 @@ use std::time::Duration;
 use tokio::sync::{broadcast, RwLock};
 use tokio_stream::wrappers::errors::BroadcastStreamRecvError;
 use tokio_stream::wrappers::BroadcastStream;
-use futures::{stream, Stream, StreamExt};
 use tower_http::cors::CorsLayer;
 use tracing::{error, info};
 
-use router::{normalize_route_path, DynamicRouter};
 pub use router::HttpHandler;
+use router::{normalize_route_path, DynamicRouter};
 pub use sse::{SseEvent, SseHub};
 
 pub struct PluginHttpServer {
@@ -139,23 +139,13 @@ impl PluginHttpServer {
                 .layer(crate::proxy_protocol::TrustForwardedForLayer);
             tokio::spawn(async move {
                 info!(%proxy_addr, "HTTP server started (trusted X-Forwarded-For compatibility port)");
-                if let Err(err) = axum::serve(
-                    proxy_listener,
-                    proxy_app.into_make_service(),
-                )
-                .await
-                {
+                if let Err(err) = axum::serve(proxy_listener, proxy_app.into_make_service()).await {
                     error!(?err, "trusted-forwarded-header HTTP server stopped");
                 }
             });
         }
 
-        if let Err(err) = axum::serve(
-            listener,
-            app.into_make_service(),
-        )
-        .await
-        {
+        if let Err(err) = axum::serve(listener, app.into_make_service()).await {
             error!(?err, "HTTP server stopped unexpectedly");
         }
     }
@@ -212,10 +202,7 @@ fn sse_response(stream: sse::EventStream, interval: Duration) -> Response {
 /// Each incoming SseEvent is forwarded to the plugin's on_api("sse:translate", …)
 /// so the plugin can transform it into the HSNPhira v1/v2 format.
 /// Each registered SSE stream has its own route; the path is read from the request URI.
-async fn plugin_sse_handler(
-    Extension(state): Extension<Arc<HttpAppState>>,
-    uri: Uri,
-) -> Response {
+async fn plugin_sse_handler(Extension(state): Extension<Arc<HttpAppState>>, uri: Uri) -> Response {
     plugin_sse_response(state, uri).await
 }
 
@@ -264,11 +251,9 @@ fn plugin_sse_translate(
             let event = match message {
                 Ok(e) => e,
                 Err(BroadcastStreamRecvError::Lagged(skipped)) => {
-                    return Some(Ok(
-                        AxumSseEvent::default()
-                            .event("stream_lagged")
-                            .data(json!({"skipped": skipped}).to_string()),
-                    ))
+                    return Some(Ok(AxumSseEvent::default()
+                        .event("stream_lagged")
+                        .data(json!({"skipped": skipped}).to_string())))
                 }
             };
             if !event_types.is_empty()
@@ -291,9 +276,7 @@ fn plugin_sse_translate(
                         .and_then(|v| v.as_str())
                         .unwrap_or("event");
                     let data = serde_json::to_string(&result).unwrap_or_default();
-                    Some(Ok(
-                        AxumSseEvent::default().event(event_type).data(data),
-                    ))
+                    Some(Ok(AxumSseEvent::default().event(event_type).data(data)))
                 }
                 Err(err) => {
                     error!(plugin = %plugin, ?err, "plugin SSE translation failed");
@@ -417,8 +400,14 @@ mod tests {
         let rt = tokio::runtime::Runtime::new().unwrap();
         rt.block_on(async {
             let server = make_server();
-            let c1 = SseStreamConfig { plugin: "plugin-a".to_string(), event_types: vec![] };
-            let c2 = SseStreamConfig { plugin: "plugin-b".to_string(), event_types: vec![] };
+            let c1 = SseStreamConfig {
+                plugin: "plugin-a".to_string(),
+                event_types: vec![],
+            };
+            let c2 = SseStreamConfig {
+                plugin: "plugin-b".to_string(),
+                event_types: vec![],
+            };
             server.register_sse_stream("/test", c1).await;
             server.register_sse_stream("/test", c2).await;
             let streams = server.sse_streams.read().await;

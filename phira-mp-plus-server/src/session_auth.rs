@@ -82,7 +82,6 @@ pub(crate) async fn send_auth_rejection(send_tx: &StreamSender<ServerCommand>, m
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::ban_rejection_message;

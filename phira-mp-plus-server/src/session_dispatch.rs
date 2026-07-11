@@ -67,39 +67,21 @@ pub(crate) async fn process(
         ClientCommand::Chat { message } => {
             crate::session_actor::route_chat(user, category, message.into_inner()).await
         }
-        ClientCommand::LockRoom { lock } => {
-            crate::session_actor::route_lock(user, lock).await
-        }
-        ClientCommand::CycleRoom { cycle } => {
-            crate::session_actor::route_cycle(user, cycle).await
-        }
-        ClientCommand::LeaveRoom => {
-            crate::session_actor::route_leave(user, category).await
-        }
-        ClientCommand::CreateRoom { id } => {
-            crate::session_actor::route_create(user, id).await
-        }
+        ClientCommand::LockRoom { lock } => crate::session_actor::route_lock(user, lock).await,
+        ClientCommand::CycleRoom { cycle } => crate::session_actor::route_cycle(user, cycle).await,
+        ClientCommand::LeaveRoom => crate::session_actor::route_leave(user, category).await,
+        ClientCommand::CreateRoom { id } => crate::session_actor::route_create(user, id).await,
         ClientCommand::JoinRoom { id, monitor } => {
             crate::session_actor::route_join(user, category, id, monitor).await
         }
         ClientCommand::SelectChart { id } => {
             crate::session_actor::route_select_chart(user, id).await
         }
-        ClientCommand::RequestStart => {
-            crate::session_actor::route_request_start(user).await
-        }
-        ClientCommand::Ready => {
-            crate::session_actor::route_ready(user).await
-        }
-        ClientCommand::CancelReady => {
-            crate::session_actor::route_cancel_ready(user).await
-        }
-        ClientCommand::Played { id } => {
-            crate::session_actor::route_played(user, id).await
-        }
-        ClientCommand::Abort => {
-            crate::session_actor::route_abort(user).await
-        }
+        ClientCommand::RequestStart => crate::session_actor::route_request_start(user).await,
+        ClientCommand::Ready => crate::session_actor::route_ready(user).await,
+        ClientCommand::CancelReady => crate::session_actor::route_cancel_ready(user).await,
+        ClientCommand::Played { id } => crate::session_actor::route_played(user, id).await,
+        ClientCommand::Abort => crate::session_actor::route_abort(user).await,
         ClientCommand::Touches { frames } => {
             get_room!(~ room);
             crate::session_telemetry::handle_touches(Arc::clone(&user), room, frames).await;

@@ -39,10 +39,18 @@ pub struct IdleConfig {
     pub auth_timeout_secs: u64,
 }
 
-fn default_idle_after_secs() -> u64 { 300 }
-fn default_check_interval_secs() -> u64 { 15 }
-fn default_heartbeat_timeout() -> u64 { 30 }
-fn default_auth_timeout() -> u64 { 15 }
+fn default_idle_after_secs() -> u64 {
+    300
+}
+fn default_check_interval_secs() -> u64 {
+    15
+}
+fn default_heartbeat_timeout() -> u64 {
+    30
+}
+fn default_auth_timeout() -> u64 {
+    15
+}
 
 impl Default for IdleConfig {
     fn default() -> Self {
@@ -136,12 +144,18 @@ impl IdleMonitor {
                 let current_state = monitor.state().await;
 
                 match current_state {
-                    IdleState::Active if auto_enabled && should_enter_idle(user_count, room_count, idle_secs, &monitor.config) => {
+                    IdleState::Active
+                        if auto_enabled
+                            && should_enter_idle(
+                                user_count,
+                                room_count,
+                                idle_secs,
+                                &monitor.config,
+                            ) =>
+                    {
                         info!(
                             user_count,
-                            room_count,
-                            idle_secs,
-                            "entering idle mode — suspending heavy services"
+                            room_count, idle_secs, "entering idle mode — suspending heavy services"
                         );
                         monitor.set_state(IdleState::Idle).await;
                         suspend_services(&state).await;
@@ -149,8 +163,7 @@ impl IdleMonitor {
                     IdleState::Idle if should_leave_idle(user_count, room_count) => {
                         info!(
                             user_count,
-                            room_count,
-                            "leaving idle mode — resuming heavy services"
+                            room_count, "leaving idle mode — resuming heavy services"
                         );
                         monitor.set_state(IdleState::Active).await;
                         resume_services(&state).await;
@@ -164,7 +177,12 @@ impl IdleMonitor {
 
 // ── Condition checks ────────────────────────────────────────────────
 
-pub fn should_enter_idle(user_count: usize, room_count: usize, idle_secs: u64, cfg: &IdleConfig) -> bool {
+pub fn should_enter_idle(
+    user_count: usize,
+    room_count: usize,
+    idle_secs: u64,
+    cfg: &IdleConfig,
+) -> bool {
     user_count == 0 && room_count == 0 && idle_secs >= cfg.idle_after_secs
 }
 

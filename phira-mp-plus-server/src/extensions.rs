@@ -5,10 +5,10 @@
 
 use crate::persistence_worker::PersistenceWorker;
 use serde::{Deserialize, Serialize};
-use tracing::warn;
 use std::collections::HashMap;
 use std::sync::{Arc, Weak};
 use tokio::sync::RwLock;
+use tracing::warn;
 
 /// 扩展字段注册信息
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -172,7 +172,9 @@ impl ExtensionDataStore {
     /// 移除指定插件注册的所有扩展字段及其数据。
     /// 返回被移除的字段名列表。
     pub fn remove_fields_by_plugin(&mut self, plugin_name: &str) -> Vec<String> {
-        let keys: Vec<String> = self.fields.iter()
+        let keys: Vec<String> = self
+            .fields
+            .iter()
             .filter(|(_, f)| f.registered_by == plugin_name)
             .map(|(k, _)| k.clone())
             .collect();
@@ -240,7 +242,8 @@ impl ExtensionManager {
                 serde_json::to_string_pretty(&value).map_err(|e| format!("serialize: {}", e))?;
             std::fs::write(path, json).map_err(|e| format!("write: {}", e))?;
         }
-        self.enqueue_or_write_direct("extensions.snapshot", value, None, None).await;
+        self.enqueue_or_write_direct("extensions.snapshot", value, None, None)
+            .await;
         Ok(())
     }
 
@@ -270,7 +273,8 @@ impl ExtensionManager {
                 }),
                 None,
                 None,
-            ).await;
+            )
+            .await;
         }
         result
     }
@@ -299,7 +303,8 @@ impl ExtensionManager {
                 }),
                 None,
                 None,
-            ).await;
+            )
+            .await;
         }
         result
     }
@@ -307,7 +312,13 @@ impl ExtensionManager {
     /// Enqueue a persistence event via worker, falling back to direct DB write.
     /// `user_id` and `room_id` are passed separately for the DB fallback and
     /// included in the payload for pipeline extraction.
-    async fn enqueue_or_write_direct(&self, kind: &str, mut payload: serde_json::Value, user_id: Option<i32>, _room_id: Option<String>) {
+    async fn enqueue_or_write_direct(
+        &self,
+        kind: &str,
+        mut payload: serde_json::Value,
+        user_id: Option<i32>,
+        _room_id: Option<String>,
+    ) {
         // Include user_id in payload for pipeline extraction if not already set
         if let Some(uid) = user_id {
             if payload.get("user_id").is_none() {
@@ -322,7 +333,13 @@ impl ExtensionManager {
             payload: payload_arc,
             simulation: false,
         };
-        if let Some(worker) = self.persistence_worker.read().await.as_ref().and_then(|w| w.upgrade()) {
+        if let Some(worker) = self
+            .persistence_worker
+            .read()
+            .await
+            .as_ref()
+            .and_then(|w| w.upgrade())
+        {
             if futures::executor::block_on(worker.enqueue(worker_event)).is_err() {
                 warn!("enqueue_or_write_direct: worker enqueue failed");
             }
@@ -359,7 +376,8 @@ impl ExtensionManager {
                 }),
                 Some(user_id),
                 None,
-            ).await;
+            )
+            .await;
         }
         result
     }
@@ -395,7 +413,8 @@ impl ExtensionManager {
                 }),
                 None,
                 Some(room_owned),
-            ).await;
+            )
+            .await;
         }
         result
     }
@@ -419,7 +438,10 @@ impl ExtensionManager {
     /// 移除指定插件注册的所有扩展字段及其数据。
     /// 返回被移除的字段名列表。
     pub async fn remove_fields_by_plugin(&self, plugin_name: &str) -> Vec<String> {
-        self.store.write().await.remove_fields_by_plugin(plugin_name)
+        self.store
+            .write()
+            .await
+            .remove_fields_by_plugin(plugin_name)
     }
 
     // ── 认证缓存持久化 ──

@@ -972,10 +972,7 @@ fn pad_cells(input: &str, width: usize) -> String {
 }
 
 /// Line-oriented fallback used when stdin/stdout are redirected or not TTYs.
-pub fn run_stdin_cli(
-    cmd_tx: mpsc::Sender<String>,
-    out_rx: mpsc::Receiver<String>,
-) {
+pub fn run_stdin_cli(cmd_tx: mpsc::Sender<String>, out_rx: mpsc::Receiver<String>) {
     let (_log_tx, log_rx) = mpsc::channel(1024);
     run_stdin_cli_with_logs(cmd_tx, out_rx, log_rx, false);
 }

@@ -505,11 +505,13 @@ impl SimulationConfig {
                     .ok_or_else(|| format!("unknown simulation scenario: {value}"))?;
             }
             "max_users" | "max_shadow_users" => {
-                self.max_shadow_users = value.parse::<usize>()
+                self.max_shadow_users = value
+                    .parse::<usize>()
                     .map_err(|_| "max_shadow_users must be usize".to_string())?;
             }
             "max_rooms" | "max_shadow_rooms" => {
-                self.max_shadow_rooms = value.parse::<usize>()
+                self.max_shadow_rooms = value
+                    .parse::<usize>()
                     .map_err(|_| "max_shadow_rooms must be usize".to_string())?;
             }
             other => return Err(format!("unknown simulation option: {other}")),
@@ -1257,8 +1259,16 @@ fn now_ms() -> i64 {
 }
 
 fn build_shadow_world(run_id: Uuid, config: &SimulationConfig) -> SimulationWorld {
-    let max_users = if config.max_shadow_users > 0 { config.max_shadow_users } else { MAX_SHADOW_USERS };
-    let max_rooms = if config.max_shadow_rooms > 0 { config.max_shadow_rooms } else { MAX_SHADOW_ROOMS };
+    let max_users = if config.max_shadow_users > 0 {
+        config.max_shadow_users
+    } else {
+        MAX_SHADOW_USERS
+    };
+    let max_rooms = if config.max_shadow_rooms > 0 {
+        config.max_shadow_rooms
+    } else {
+        MAX_SHADOW_ROOMS
+    };
     let users_materialized = config.users.min(max_users);
     let rooms_materialized = config.rooms.min(max_rooms);
     let seed_offset = (config.seed % 10_000) as i32;

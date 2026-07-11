@@ -13,7 +13,8 @@ pub fn truncate_string(value: &str, max: usize) -> String {
 
 /// Validate a plugin display name.
 pub fn validate_display_name(value: &str) -> Result<(), String> {
-    if value.trim().is_empty() || value.chars().count() > 128 || value.chars().any(char::is_control) {
+    if value.trim().is_empty() || value.chars().count() > 128 || value.chars().any(char::is_control)
+    {
         return Err("invalid plugin display name".to_string());
     }
     Ok(())
@@ -23,7 +24,9 @@ pub fn validate_display_name(value: &str) -> Result<(), String> {
 pub fn validate_identifier(value: &str) -> Result<(), String> {
     if value.is_empty()
         || value.len() > 96
-        || !value.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-' | b'.'))
+        || !value
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-' | b'.'))
     {
         return Err(format!("invalid identifier '{value}'"));
     }
@@ -50,8 +53,14 @@ pub fn validate_config_key(value: &str) -> Result<(), String> {
 /// Default set of capabilities for plugins without a manifest.
 pub fn default_capabilities() -> HashSet<String> {
     [
-        "state.read", "send", "ext", "config",
-        "file.read", "file.write", "plugin.call", "plugin.register",
+        "state.read",
+        "send",
+        "ext",
+        "config",
+        "file.read",
+        "file.write",
+        "plugin.call",
+        "plugin.register",
     ]
     .into_iter()
     .map(str::to_string)
@@ -85,8 +94,18 @@ pub fn load_manifest_capabilities(plugin_path: &str) -> Result<HashSet<String>, 
     };
 
     let allowed: HashSet<&'static str> = [
-        "state.read", "send", "ext", "config", "file.read", "file.write",
-        "plugin.call", "plugin.register", "http", "room.manage", "admin", "simulation",
+        "state.read",
+        "send",
+        "ext",
+        "config",
+        "file.read",
+        "file.write",
+        "plugin.call",
+        "plugin.register",
+        "http",
+        "room.manage",
+        "admin",
+        "simulation",
     ]
     .into_iter()
     .collect();
@@ -103,7 +122,6 @@ pub fn load_manifest_capabilities(plugin_path: &str) -> Result<HashSet<String>, 
     }
     Ok(capabilities)
 }
-
 
 /// Reject path components that look like symlink traversal (..).
 pub fn reject_symlink_components(path: &Path) -> Result<(), String> {
@@ -136,20 +154,43 @@ pub fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), String> {
 pub fn required_capability(method: &str) -> Option<&'static str> {
     match method {
         "uuid.v4" | "time.now" => None,
-        value if value.starts_with("admin.") || value.starts_with("ban.")
-            || value == "user.kick" => Some("admin"),
-        "room.create_empty" | "room.kick" | "room.set_host" | "room.clear_host"
-        | "room.set_lock" | "room.force_move" | "room.set_hidden" | "room.set_persistent_empty"
-        | "room.set_phira_api_endpoint" | "room.clear_phira_api_endpoint" | "room.close" => Some("room.manage"),
-        value if value.starts_with("room.") || value.starts_with("player.")
-            || value.starts_with("round.") || value.starts_with("user.")
-            || value.starts_with("persist.") || value.starts_with("runtime.")
-            || value.starts_with("benchmark.") || value == "state.query"
-            || value == "rooms.list" || value == "rooms.by_name"
-            || value == "rooms.by_user" || value == "rooms.history"
-            || value == "auth.visited_count" || value == "user_name"
-            || value == "users.list" || value == "user.is_online"
-            || value == "playtime.leaderboard" => Some("state.read"),
+        value
+            if value.starts_with("admin.") || value.starts_with("ban.") || value == "user.kick" =>
+        {
+            Some("admin")
+        }
+        "room.create_empty"
+        | "room.kick"
+        | "room.set_host"
+        | "room.clear_host"
+        | "room.set_lock"
+        | "room.force_move"
+        | "room.set_hidden"
+        | "room.set_persistent_empty"
+        | "room.set_phira_api_endpoint"
+        | "room.clear_phira_api_endpoint"
+        | "room.close" => Some("room.manage"),
+        value
+            if value.starts_with("room.")
+                || value.starts_with("player.")
+                || value.starts_with("round.")
+                || value.starts_with("user.")
+                || value.starts_with("persist.")
+                || value.starts_with("runtime.")
+                || value.starts_with("benchmark.")
+                || value == "state.query"
+                || value == "rooms.list"
+                || value == "rooms.by_name"
+                || value == "rooms.by_user"
+                || value == "rooms.history"
+                || value == "auth.visited_count"
+                || value == "user_name"
+                || value == "users.list"
+                || value == "user.is_online"
+                || value == "playtime.leaderboard" =>
+        {
+            Some("state.read")
+        }
         value if value.starts_with("send.") || value == "send_room_chat" => Some("send"),
         value if value.starts_with("ext.") => Some("ext"),
         value if value.starts_with("config.") => Some("config"),
@@ -226,7 +267,8 @@ pub fn validate_http_url(value: &str, allow_private: bool) -> Result<(), String>
         return Err("HTTP URL too long".to_string());
     }
 
-    let parsed = reqwest::Url::parse(value).map_err(|error| format!("invalid HTTP URL: {error}"))?;
+    let parsed =
+        reqwest::Url::parse(value).map_err(|error| format!("invalid HTTP URL: {error}"))?;
     if !matches!(parsed.scheme(), "http" | "https") {
         return Err("only http/https URLs are allowed".to_string());
     }
@@ -245,7 +287,9 @@ pub fn validate_http_url(value: &str, allow_private: bool) -> Result<(), String>
 
     if let Ok(ip) = host.parse::<std::net::IpAddr>() {
         return if is_disallowed_plugin_ip(ip) {
-            Err(format!("private or reserved network address not allowed: {host}"))
+            Err(format!(
+                "private or reserved network address not allowed: {host}"
+            ))
         } else {
             Ok(())
         };
@@ -438,4 +482,3 @@ mod tests {
         assert!(atomic_write(Path::new("/../tmp/evil.txt"), b"data").is_err());
     }
 }
-

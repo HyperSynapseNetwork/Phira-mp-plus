@@ -4,15 +4,18 @@
 //! that plugin_abi.rs references it correctly, and that the documentation
 //! is automatically generated from the WIT file (single source of truth).
 
-use phira_mp_plus_server::{plugin, plugin_abi, wasm_host_helpers};
 #[cfg(feature = "wit-bindgen")]
 use phira_mp_plus_server::wit_host;
+use phira_mp_plus_server::{plugin, plugin_abi, wasm_host_helpers};
 use std::path::PathBuf;
 
 /// Absolute path to workspace root (two levels up from crate manifest dir).
 fn workspace_root() -> PathBuf {
     let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    manifest.parent().expect("server crate should have a parent").to_path_buf()
+    manifest
+        .parent()
+        .expect("server crate should have a parent")
+        .to_path_buf()
 }
 
 fn canonical_wit() -> PathBuf {
@@ -28,7 +31,11 @@ fn read_canonical() -> String {
 #[test]
 fn canonical_wit_file_exists() {
     let path = canonical_wit();
-    assert!(path.exists(), "canonical WIT file not found at {}", path.display());
+    assert!(
+        path.exists(),
+        "canonical WIT file not found at {}",
+        path.display()
+    );
 }
 
 #[test]
@@ -43,32 +50,63 @@ fn plugin_abi_constants_are_locked() {
 #[test]
 fn canonical_wit_contains_world_phira_plugin_v2() {
     let wit = read_canonical();
-    assert!(wit.contains("world phira-plugin-v2"), "WIT must declare world phira-plugin-v2");
-    assert!(wit.contains("import phira-host;"), "world must import phira-host");
-    assert!(wit.contains("import phira-events;"), "world must import phira-events");
+    assert!(
+        wit.contains("world phira-plugin-v2"),
+        "WIT must declare world phira-plugin-v2"
+    );
+    assert!(
+        wit.contains("import phira-host;"),
+        "world must import phira-host"
+    );
+    assert!(
+        wit.contains("import phira-events;"),
+        "world must import phira-events"
+    );
     assert!(wit.contains("export init:"), "world must export init");
-    assert!(wit.contains("export on-event:"), "world must export on-event");
+    assert!(
+        wit.contains("export on-event:"),
+        "world must export on-event"
+    );
 }
 
 #[test]
 fn legacy_wit_marked_deprecated() {
     let wit = read_canonical();
-    assert!(!wit.contains("mpplus"), "canonical WIT should not reference legacy mpplus.wit");
+    assert!(
+        !wit.contains("mpplus"),
+        "canonical WIT should not reference legacy mpplus.wit"
+    );
 }
 
 #[test]
 fn legacy_wit_has_no_full_abi() {
     let canonical = read_canonical();
-    assert!(canonical.contains("phira-types"), "canonical WIT must define phira-types");
-    assert!(canonical.contains("phira-host"), "canonical WIT must define phira-host");
-    assert!(canonical.contains("phira-events"), "canonical WIT must define phira-events");
-    assert!(canonical.contains("phira-query"), "canonical WIT must define phira-query");
+    assert!(
+        canonical.contains("phira-types"),
+        "canonical WIT must define phira-types"
+    );
+    assert!(
+        canonical.contains("phira-host"),
+        "canonical WIT must define phira-host"
+    );
+    assert!(
+        canonical.contains("phira-events"),
+        "canonical WIT must define phira-events"
+    );
+    assert!(
+        canonical.contains("phira-query"),
+        "canonical WIT must define phira-query"
+    );
 }
 
 #[test]
 fn phira_plugin_wit_is_canonical_only() {
     let path = canonical_wit();
-    assert!(path.exists(), "canonical WIT file must exist at {}", path.display());
+    assert!(
+        path.exists(),
+        "canonical WIT file must exist at {}",
+        path.display()
+    );
 }
 
 // ── WIT interface extraction (for doc generation) ──
@@ -106,7 +144,8 @@ fn parse_wit_interfaces(wit_content: &str) -> Vec<WitInterface> {
 
         // Detect interface definitions
         if line.trim().starts_with("interface ") {
-            let name = line.trim()
+            let name = line
+                .trim()
                 .trim_start_matches("interface ")
                 .trim_end_matches('{')
                 .trim();
@@ -115,11 +154,17 @@ fn parse_wit_interfaces(wit_content: &str) -> Vec<WitInterface> {
             // Collect function signatures until matching closing brace
             while let Some(export_line) = lines.next() {
                 let trimmed = export_line.trim();
-                if trimmed.starts_with("world ") { break; }
+                if trimmed.starts_with("world ") {
+                    break;
+                }
                 // Track brace depth to handle nested records/variants
                 for ch in trimmed.chars() {
-                    if ch == '{' { brace_depth += 1; }
-                    if ch == '}' { brace_depth -= 1; }
+                    if ch == '{' {
+                        brace_depth += 1;
+                    }
+                    if ch == '}' {
+                        brace_depth -= 1;
+                    }
                 }
                 if brace_depth < 0 {
                     // This } closes the interface itself
@@ -130,13 +175,26 @@ fn parse_wit_interfaces(wit_content: &str) -> Vec<WitInterface> {
                 }
                 // Extract function/record/variant names
                 let tokens: Vec<&str> = trimmed.split_whitespace().collect();
-                if tokens.is_empty() { continue; }
-                let export_name = if tokens.len() >= 2 && matches!(tokens[0], "record" | "variant" | "type" | "func") {
-                    tokens[1].trim_end_matches('(').trim_end_matches('{').trim_end_matches(';').to_string()
+                if tokens.is_empty() {
+                    continue;
+                }
+                let export_name = if tokens.len() >= 2
+                    && matches!(tokens[0], "record" | "variant" | "type" | "func")
+                {
+                    tokens[1]
+                        .trim_end_matches('(')
+                        .trim_end_matches('{')
+                        .trim_end_matches(';')
+                        .to_string()
                 } else {
-                    tokens[0].trim_end_matches(':').trim_end_matches(';').to_string()
+                    tokens[0]
+                        .trim_end_matches(':')
+                        .trim_end_matches(';')
+                        .to_string()
                 };
-                if !export_name.is_empty() && !matches!(export_name.as_str(), "}" | "{" | ")" | ";" | "") {
+                if !export_name.is_empty()
+                    && !matches!(export_name.as_str(), "}" | "{" | ")" | ";" | "")
+                {
                     exports.push(export_name);
                 }
             }
@@ -162,15 +220,37 @@ fn wit_interfaces_are_extracted_correctly() {
     assert!(names.contains(&"phira-host"), "should find phira-host");
     assert!(names.contains(&"phira-events"), "should find phira-events");
     assert!(names.contains(&"phira-query"), "should find phira-query");
-    assert!(names.contains(&"phira-room-mgmt"), "should find phira-room-mgmt");
-    assert!(names.contains(&"phira-user-mgmt"), "should find phira-user-mgmt");
-    assert!(names.contains(&"phira-messaging"), "should find phira-messaging");
-    assert!(names.contains(&"phira-persistence"), "should find phira-persistence");
+    assert!(
+        names.contains(&"phira-room-mgmt"),
+        "should find phira-room-mgmt"
+    );
+    assert!(
+        names.contains(&"phira-user-mgmt"),
+        "should find phira-user-mgmt"
+    );
+    assert!(
+        names.contains(&"phira-messaging"),
+        "should find phira-messaging"
+    );
+    assert!(
+        names.contains(&"phira-persistence"),
+        "should find phira-persistence"
+    );
     assert!(names.contains(&"phira-admin"), "should find phira-admin");
     assert!(names.contains(&"phira-config"), "should find phira-config");
-    assert!(names.contains(&"phira-simulation"), "should find phira-simulation");
-    assert!(names.contains(&"phira-runtime"), "should find phira-runtime");
-    assert_eq!(interfaces.len(), 12, "WIT should define exactly 12 interfaces");
+    assert!(
+        names.contains(&"phira-simulation"),
+        "should find phira-simulation"
+    );
+    assert!(
+        names.contains(&"phira-runtime"),
+        "should find phira-runtime"
+    );
+    assert_eq!(
+        interfaces.len(),
+        12,
+        "WIT should define exactly 12 interfaces"
+    );
 }
 
 #[test]
@@ -178,14 +258,35 @@ fn wit_host_events_have_minimal_exports() {
     let wit = read_canonical();
     let interfaces = parse_wit_interfaces(&wit);
     let host = interfaces.iter().find(|i| i.name == "phira-host").unwrap();
-    assert!(host.exports.iter().any(|e| e == "log"), "phira-host must have log");
-    assert!(host.exports.iter().any(|e| e == "api-call"), "phira-host must have api-call");
-    assert!(host.exports.iter().any(|e| e == "http-request"), "phira-host must have http-request");
+    assert!(
+        host.exports.iter().any(|e| e == "log"),
+        "phira-host must have log"
+    );
+    assert!(
+        host.exports.iter().any(|e| e == "api-call"),
+        "phira-host must have api-call"
+    );
+    assert!(
+        host.exports.iter().any(|e| e == "http-request"),
+        "phira-host must have http-request"
+    );
 
-    let events = interfaces.iter().find(|i| i.name == "phira-events").unwrap();
-    assert!(events.exports.iter().any(|e| e == "user-connect-info"), "phira-events must have user-connect-info");
-    assert!(events.exports.iter().any(|e| e == "game-end-info"), "phira-events must have game-end-info");
-    assert!(events.exports.iter().any(|e| e == "round-complete-info"), "phira-events must have round-complete-info");
+    let events = interfaces
+        .iter()
+        .find(|i| i.name == "phira-events")
+        .unwrap();
+    assert!(
+        events.exports.iter().any(|e| e == "user-connect-info"),
+        "phira-events must have user-connect-info"
+    );
+    assert!(
+        events.exports.iter().any(|e| e == "game-end-info"),
+        "phira-events must have game-end-info"
+    );
+    assert!(
+        events.exports.iter().any(|e| e == "round-complete-info"),
+        "phira-events must have round-complete-info"
+    );
 }
 
 /// Generate docs/wit-abi.md content from the WIT file.
@@ -198,7 +299,9 @@ fn generate_wit_docs() -> String {
     let mut md = String::new();
     md.push_str("# WIT ABI 规范\n\n");
     md.push_str("> 本文档由 `wit/phira-plugin.wit` 自动生成，请勿手动编辑。\n");
-    md.push_str("> 更新方式: 修改 WIT 文件后运行 `cargo test --test wit_abi_contracts` 验证一致性。\n\n");
+    md.push_str(
+        "> 更新方式: 修改 WIT 文件后运行 `cargo test --test wit_abi_contracts` 验证一致性。\n\n",
+    );
 
     md.push_str("## 当前状态\n\n");
     md.push_str("| 属性 | 值 |\n");
@@ -206,7 +309,10 @@ fn generate_wit_docs() -> String {
     md.push_str("| **运行时 ABI** | `abi-wit-v2` (WIT / Component Model) |\n");
     md.push_str("| **目标 ABI** | `abi-wit-v2` |\n");
     md.push_str("| **规范 WIT** | `wit/phira-plugin.wit` |\n");
-    md.push_str(&format!("| **MIGRATION_PHASE** | `{}` (JSON bridge removed, WIT-only component ABI) |\n", plugin_abi::wit::MIGRATION_PHASE));
+    md.push_str(&format!(
+        "| **MIGRATION_PHASE** | `{}` (JSON bridge removed, WIT-only component ABI) |\n",
+        plugin_abi::wit::MIGRATION_PHASE
+    ));
     md.push_str(&format!("| **接口数量** | `{}` |\n\n", interfaces.len()));
 
     md.push_str("## 规范 WIT 接口\n\n");
@@ -235,17 +341,35 @@ fn generate_wit_docs() -> String {
 #[test]
 fn wit_docs_can_be_generated() {
     let docs = generate_wit_docs();
-    assert!(docs.contains("phira-types"), "generated docs must include phira-types");
-    assert!(docs.contains("phira-host"), "generated docs must include phira-host");
-    assert!(docs.contains("phira-events"), "generated docs must include phira-events");
-    assert!(docs.contains("自动生成"), "generated docs must note auto-generation");
+    assert!(
+        docs.contains("phira-types"),
+        "generated docs must include phira-types"
+    );
+    assert!(
+        docs.contains("phira-host"),
+        "generated docs must include phira-host"
+    );
+    assert!(
+        docs.contains("phira-events"),
+        "generated docs must include phira-events"
+    );
+    assert!(
+        docs.contains("自动生成"),
+        "generated docs must note auto-generation"
+    );
 }
 
 #[test]
 fn current_abi_is_wit() {
     let plan = plugin_abi::plugin_abi_plan();
-    assert_eq!(plan.current_transport, plugin_abi::PluginAbiTransport::WitTypedV2);
-    assert_eq!(plan.target_transport, plugin_abi::PluginAbiTransport::WitTypedV2);
+    assert_eq!(
+        plan.current_transport,
+        plugin_abi::PluginAbiTransport::WitTypedV2
+    );
+    assert_eq!(
+        plan.target_transport,
+        plugin_abi::PluginAbiTransport::WitTypedV2
+    );
 }
 
 // ── WIT lifecycle contract tests ──
@@ -263,11 +387,7 @@ fn wit_event_variants_are_mapped() {
         room_id: "test".to_string(),
         is_monitor: false,
     };
-    assert_eq!(
-        _event.kind(),
-        "room_join",
-        "event kind check sanity"
-    );
+    assert_eq!(_event.kind(), "room_join", "event kind check sanity");
 }
 
 /// Test that WIT lifecycle methods on WitPluginComponent compile and
@@ -278,23 +398,75 @@ fn wit_event_variants_are_mapped() {
 fn wit_lifecycle_method_signatures_compile() {
     // Compile-time check: PluginEvent has all expected variants
     let variants = [
-        plugin::PluginEvent::UserConnect { user_id: 1, user_name: "a".into(), user_ip: "0.0.0.0".into() },
-        plugin::PluginEvent::UserDisconnect { user_id: 1, user_name: "a".into() },
-        plugin::PluginEvent::RoomCreate { user_id: 1, room_id: "r".into() },
-        plugin::PluginEvent::RoomJoin { user_id: 1, room_id: "r".into(), is_monitor: false },
-        plugin::PluginEvent::RoomLeave { user_id: 1, room_id: "r".into() },
-        plugin::PluginEvent::RoomModify { user_id: 1, room_id: "r".into(), data: "{}".into() },
-        plugin::PluginEvent::GameStart { user_id: 1, room_id: "r".into() },
-        plugin::PluginEvent::GameEnd { user_id: 1, user_name: "a".into(), room_id: "r".into(), score: 100, accuracy: 0.95, perfect: 10, good: 2, bad: 1, miss: 0, max_combo: 15, full_combo: true },
-        plugin::PluginEvent::PlayerTouches { user_id: 1, room_id: "r".into(), data: vec![] },
-        plugin::PluginEvent::PlayerJudges { user_id: 1, room_id: "r".into(), data: vec![] },
-        plugin::PluginEvent::RoundComplete { room_id: "r".into(), chart_id: 42, chart_name: "test".into() },
+        plugin::PluginEvent::UserConnect {
+            user_id: 1,
+            user_name: "a".into(),
+            user_ip: "0.0.0.0".into(),
+        },
+        plugin::PluginEvent::UserDisconnect {
+            user_id: 1,
+            user_name: "a".into(),
+        },
+        plugin::PluginEvent::RoomCreate {
+            user_id: 1,
+            room_id: "r".into(),
+        },
+        plugin::PluginEvent::RoomJoin {
+            user_id: 1,
+            room_id: "r".into(),
+            is_monitor: false,
+        },
+        plugin::PluginEvent::RoomLeave {
+            user_id: 1,
+            room_id: "r".into(),
+        },
+        plugin::PluginEvent::RoomModify {
+            user_id: 1,
+            room_id: "r".into(),
+            data: "{}".into(),
+        },
+        plugin::PluginEvent::GameStart {
+            user_id: 1,
+            room_id: "r".into(),
+        },
+        plugin::PluginEvent::GameEnd {
+            user_id: 1,
+            user_name: "a".into(),
+            room_id: "r".into(),
+            score: 100,
+            accuracy: 0.95,
+            perfect: 10,
+            good: 2,
+            bad: 1,
+            miss: 0,
+            max_combo: 15,
+            full_combo: true,
+        },
+        plugin::PluginEvent::PlayerTouches {
+            user_id: 1,
+            room_id: "r".into(),
+            data: vec![],
+        },
+        plugin::PluginEvent::PlayerJudges {
+            user_id: 1,
+            room_id: "r".into(),
+            data: vec![],
+        },
+        plugin::PluginEvent::RoundComplete {
+            room_id: "r".into(),
+            chart_id: 42,
+            chart_name: "test".into(),
+        },
     ];
     assert_eq!(variants.len(), 11, "all 11 PluginEvent variants are tested");
 
     // Verify each variant produces a distinct kind string
     let kinds: std::collections::HashSet<&str> = variants.iter().map(|v| v.kind()).collect();
-    assert_eq!(kinds.len(), 11, "each variant must have a unique kind string");
+    assert_eq!(
+        kinds.len(),
+        11,
+        "each variant must have a unique kind string"
+    );
 }
 
 /// Test serde_json <-> WIT JsonValue round-trip for all JSON value types.
@@ -352,17 +524,30 @@ fn wit_json_value_round_trip() {
 #[test]
 fn default_capabilities_include_expected_set() {
     let caps = wasm_host_helpers::default_capabilities();
-    assert!(caps.contains("state.read"), "default should include state.read");
+    assert!(
+        caps.contains("state.read"),
+        "default should include state.read"
+    );
     assert!(caps.contains("send"), "default should include send");
     assert!(caps.contains("config"), "default should include config");
     assert!(!caps.contains("admin"), "default should NOT include admin");
-    assert!(!caps.contains("room.manage"), "default should NOT include room.manage");
+    assert!(
+        !caps.contains("room.manage"),
+        "default should NOT include room.manage"
+    );
 }
 
 #[test]
 fn default_capabilities_covers_basic_plugin_needs() {
     let caps = wasm_host_helpers::default_capabilities();
-    let essentials = ["state.read", "send", "ext", "config", "file.read", "file.write"];
+    let essentials = [
+        "state.read",
+        "send",
+        "ext",
+        "config",
+        "file.read",
+        "file.write",
+    ];
     for cap in &essentials {
         assert!(caps.contains(*cap), "default should contain {cap}");
     }
@@ -370,41 +555,98 @@ fn default_capabilities_covers_basic_plugin_needs() {
 
 #[test]
 fn required_capability_maps_admin_methods() {
-    assert_eq!(wasm_host_helpers::required_capability("admin.list"), Some("admin"));
-    assert_eq!(wasm_host_helpers::required_capability("admin.add"), Some("admin"));
+    assert_eq!(
+        wasm_host_helpers::required_capability("admin.list"),
+        Some("admin")
+    );
+    assert_eq!(
+        wasm_host_helpers::required_capability("admin.add"),
+        Some("admin")
+    );
 }
 
 #[test]
 fn required_capability_maps_room_methods() {
-    assert_eq!(wasm_host_helpers::required_capability("room.set_lock"), Some("room.manage"));
-    assert_eq!(wasm_host_helpers::required_capability("room.kick"), Some("room.manage"));
-    assert_eq!(wasm_host_helpers::required_capability("room.close"), Some("room.manage"));
-    assert_eq!(wasm_host_helpers::required_capability("room.set_hidden"), Some("room.manage"));
-    assert_eq!(wasm_host_helpers::required_capability("room.create_empty"), Some("room.manage"));
-    assert_eq!(wasm_host_helpers::required_capability("room.force_move"), Some("room.manage"));
-    assert_eq!(wasm_host_helpers::required_capability("room.set_host"), Some("room.manage"));
-    assert_eq!(wasm_host_helpers::required_capability("room.clear_host"), Some("room.manage"));
-    assert_eq!(wasm_host_helpers::required_capability("room.set_persistent_empty"), Some("room.manage"));
-    assert_eq!(wasm_host_helpers::required_capability("room.set_phira_api_endpoint"), Some("room.manage"));
+    assert_eq!(
+        wasm_host_helpers::required_capability("room.set_lock"),
+        Some("room.manage")
+    );
+    assert_eq!(
+        wasm_host_helpers::required_capability("room.kick"),
+        Some("room.manage")
+    );
+    assert_eq!(
+        wasm_host_helpers::required_capability("room.close"),
+        Some("room.manage")
+    );
+    assert_eq!(
+        wasm_host_helpers::required_capability("room.set_hidden"),
+        Some("room.manage")
+    );
+    assert_eq!(
+        wasm_host_helpers::required_capability("room.create_empty"),
+        Some("room.manage")
+    );
+    assert_eq!(
+        wasm_host_helpers::required_capability("room.force_move"),
+        Some("room.manage")
+    );
+    assert_eq!(
+        wasm_host_helpers::required_capability("room.set_host"),
+        Some("room.manage")
+    );
+    assert_eq!(
+        wasm_host_helpers::required_capability("room.clear_host"),
+        Some("room.manage")
+    );
+    assert_eq!(
+        wasm_host_helpers::required_capability("room.set_persistent_empty"),
+        Some("room.manage")
+    );
+    assert_eq!(
+        wasm_host_helpers::required_capability("room.set_phira_api_endpoint"),
+        Some("room.manage")
+    );
 }
 
 #[test]
 fn required_capability_maps_config_methods() {
-    assert_eq!(wasm_host_helpers::required_capability("config.get"), Some("config"));
-    assert_eq!(wasm_host_helpers::required_capability("config.set"), Some("config"));
+    assert_eq!(
+        wasm_host_helpers::required_capability("config.get"),
+        Some("config")
+    );
+    assert_eq!(
+        wasm_host_helpers::required_capability("config.set"),
+        Some("config")
+    );
 }
 
 #[test]
 fn required_capability_maps_state_read() {
-    assert_eq!(wasm_host_helpers::required_capability("state.query"), Some("state.read"));
-    assert_eq!(wasm_host_helpers::required_capability("room.info"), Some("state.read"));
-    assert_eq!(wasm_host_helpers::required_capability("user.info"), Some("state.read"));
-    assert_eq!(wasm_host_helpers::required_capability("persist.query"), Some("state.read"));
+    assert_eq!(
+        wasm_host_helpers::required_capability("state.query"),
+        Some("state.read")
+    );
+    assert_eq!(
+        wasm_host_helpers::required_capability("room.info"),
+        Some("state.read")
+    );
+    assert_eq!(
+        wasm_host_helpers::required_capability("user.info"),
+        Some("state.read")
+    );
+    assert_eq!(
+        wasm_host_helpers::required_capability("persist.query"),
+        Some("state.read")
+    );
 }
 
 #[test]
 fn required_capability_returns_unknown_for_unrecognized() {
-    assert_eq!(wasm_host_helpers::required_capability("nonexistent.method"), Some("unknown"));
+    assert_eq!(
+        wasm_host_helpers::required_capability("nonexistent.method"),
+        Some("unknown")
+    );
 }
 
 #[cfg(feature = "wit-bindgen")]
@@ -419,13 +661,24 @@ fn wit_host_public_api_compiles() {
 fn wit_host_capability_loads_defaults_for_unknown_plugin() {
     // load_manifest_capabilities for a non-existent plugin should return defaults
     let caps = wasm_host_helpers::load_manifest_capabilities("/nonexistent/plugin.wasm");
-    assert!(caps.is_ok(), "non-existent plugin should get default capabilities");
+    assert!(
+        caps.is_ok(),
+        "non-existent plugin should get default capabilities"
+    );
     let caps = caps.unwrap();
-    assert!(caps.contains("state.read"), "defaults should include state.read");
+    assert!(
+        caps.contains("state.read"),
+        "defaults should include state.read"
+    );
 }
 
 #[test]
 fn wit_host_reject_symlink_components() {
-    assert!(wasm_host_helpers::reject_symlink_components(&std::path::Path::new("/safe/path")).is_ok());
-    assert!(wasm_host_helpers::reject_symlink_components(&std::path::Path::new("/unsafe/../path")).is_err());
+    assert!(
+        wasm_host_helpers::reject_symlink_components(&std::path::Path::new("/safe/path")).is_ok()
+    );
+    assert!(
+        wasm_host_helpers::reject_symlink_components(&std::path::Path::new("/unsafe/../path"))
+            .is_err()
+    );
 }

@@ -18,7 +18,11 @@ pub struct DynamicRouter {
 impl DynamicRouter {
     pub fn add(&mut self, pattern: &str, handler: HttpHandler) -> String {
         let pattern = normalize_route_path(pattern);
-        if let Some(entry) = self.entries.iter_mut().find(|entry| entry.pattern == pattern) {
+        if let Some(entry) = self
+            .entries
+            .iter_mut()
+            .find(|entry| entry.pattern == pattern)
+        {
             entry.handler = handler;
         } else {
             self.entries.push(RouteEntry {
