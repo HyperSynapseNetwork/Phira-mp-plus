@@ -91,8 +91,8 @@ impl User {
         }
     }
 
-    pub fn can_monitor(&self) -> bool {
-        self.server.config.monitors.contains(&self.id)
+    pub async fn can_monitor(&self) -> bool {
+        self.server.live_config.read().await.monitors.contains(&self.id)
     }
 
     pub async fn set_session(&self, session: Weak<Session>) {
@@ -462,7 +462,13 @@ impl Session {
                                                     }
                                                     info
                                                 }
-                                                Err(_err) => {
+                                                Err(err) => {
+                                                    warn!(?err, "remote authentication failed");
+                                                    send_auth_rejection(
+                                                        retry_send_tx.as_ref(),
+                                                        "authentication failed".to_string(),
+                                                    )
+                                                    .await;
                                                     if let Some(tx) = auth_tx.take() {
                                                         let _ = tx
                                                             .send(AuthenticationOutcome::Rejected);
@@ -482,14 +488,20 @@ impl Session {
                                             }
                                         ).await;
 
-                                        let user_ip =
-                                            this.get().map(|s| s.ip.clone()).unwrap_or_default();
+                                        let user_ip = addr.ip().to_string();
                                         let existing_user = {
                                             let guard = server.users.write().await;
                                             guard.get(&user_info.id).map(Arc::clone)
                                         };
                                         if let Some(existing) = existing_user {
                                             info!("reconnect");
+                                            // Replace the transport atomically. The old socket can
+                                            // otherwise remain active until heartbeat timeout and
+                                            // issue commands concurrently with the new session.
+                                            let previous_session = {
+                                                let guard = existing.session.read().await;
+                                                guard.as_ref().and_then(std::sync::Weak::upgrade)
+                                            };
                                             let _ = auth_tx.take().unwrap().send(
                                                 AuthenticationOutcome::Accepted(
                                                     existing.clone(),
@@ -500,14 +512,16 @@ impl Session {
                                             existing
                                                 .set_session(Arc::downgrade(this.get().unwrap()))
                                                 .await;
+                                            if let Some(previous) = previous_session {
+                                                if previous.id != id {
+                                                    previous.stream.close();
+                                                    let _ = server
+                                                        .lost_con_tx
+                                                        .send(previous.id)
+                                                        .await;
+                                                }
+                                            }
                                             existing.set_auth_token(Some(token.to_string())).await;
-                                            let online = server.users.read().await.len();
-                                            crate::internal_hooks::send_welcome(
-                                                user_info.id,
-                                                &existing.name,
-                                                online,
-                                                &server,
-                                            );
                                             server.publish_runtime_event(
                                                 crate::event_bus::MpEvent::UserConnected {
                                                     user_id: user_info.id,
@@ -559,13 +573,6 @@ impl Session {
                                                 let mut guard = server.users.write().await;
                                                 guard.insert(user_info.id, Arc::clone(&user));
                                             }
-                                            let online = server.users.read().await.len();
-                                            crate::internal_hooks::send_welcome(
-                                                user_info.id,
-                                                &user.name,
-                                                online,
-                                                &server,
-                                            );
                                             server.publish_runtime_event(
                                                 crate::event_bus::MpEvent::UserConnected {
                                                     user_id: user_info.id,
@@ -586,6 +593,10 @@ impl Session {
                                         let _ = tx.send(AuthenticationOutcome::Rejected);
                                     }
                                     panicked.store(true, Ordering::SeqCst);
+                                } else if this.get().is_none() {
+                                    // Authentication was deliberately rejected and the Session was
+                                    // never initialized. Do not fall through into the success path.
+                                    panicked.store(true, Ordering::SeqCst);
                                 } else {
                                     // Initialize per-session mailbox
                                     if let Some(session) = this.get() {
@@ -598,13 +609,27 @@ impl Session {
                                         None => None,
                                     };
                                     debug!("sending auth OK to user {}", user.id);
-                                    let _ = send_tx
-                                        .send(ServerCommand::Authenticate(Ok((
+                                    if let Err(err) = send_tx
+                                        .send_and_flush(ServerCommand::Authenticate(Ok((
                                             user.to_info(),
                                             room_state,
                                         ))))
-                                        .await;
+                                        .await
+                                    {
+                                        warn!(user = user.id, ?err, "failed to flush auth response");
+                                        panicked.store(true, Ordering::SeqCst);
+                                        return;
+                                    }
                                     debug!("auth response sent");
+                                    // Welcome chat must follow the successful authentication frame;
+                                    // otherwise clients may discard it before room/user state exists.
+                                    let online = server.users.read().await.len();
+                                    crate::internal_hooks::send_welcome(
+                                        user.id,
+                                        &user.name,
+                                        online,
+                                        &server,
+                                    );
                                     // 通知 room monitor 新用户
                                     let uid = user.id;
                                     let _session = this.get().map(|s| Arc::clone(s));
@@ -811,6 +836,8 @@ impl Session {
                             ClientCommand::JoinRoom { monitor: false, .. }
                         )
                         .then(|| Arc::clone(&user));
+                        let creating_player = matches!(&cmd, ClientCommand::CreateRoom { .. })
+                            .then(|| Arc::clone(&user));
                         let result = LANGUAGE
                             .scope(
                                 Arc::new(user.lang.clone()),
@@ -824,6 +851,8 @@ impl Session {
                         if let Some(resp) = result {
                             let joined_room = joining_player.is_some()
                                 && matches!(&resp, ServerCommand::JoinRoom(Ok(_)));
+                            let created_room = creating_player.is_some()
+                                && matches!(&resp, ServerCommand::CreateRoom(Ok(())));
                             if let Err(err) = send_tx.send(resp).await {
                                 error!(
                                     "failed to handle message, aborting connection {id}: {err:?}",
@@ -831,6 +860,18 @@ impl Session {
                                 panicked.store(true, Ordering::SeqCst);
                                 if let Err(err) = server.lost_con_tx.send(id).await {
                                     error!("failed to mark lost connection ({id}): {err:?}");
+                                }
+                            } else if created_room {
+                                let creating_player = creating_player.expect("checked above");
+                                if let Err(err) = send_tx
+                                    .send(ServerCommand::Message(Message::CreateRoom {
+                                        user: creating_player.id,
+                                    }))
+                                    .await
+                                {
+                                    error!(
+                                        "failed to deliver post-create room event to {id}: {err:?}"
+                                    );
                                 }
                             } else if joined_room {
                                 let joining_player = joining_player.expect("checked above");

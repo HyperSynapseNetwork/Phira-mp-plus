@@ -36,6 +36,18 @@ impl CliHandler {
                 self.dispatch_room_command(args).await;
                 true
             }
+            "force-start" => {
+                if let Some(room_id) = args.first() {
+                    self.room_start(room_id).await;
+                } else {
+                    self.out(format!(
+                        "  {} {} force-start <房间ID>",
+                        c::yellow("?"),
+                        c::bold("用法")
+                    ));
+                }
+                true
+            }
             "kick" => {
                 self.dispatch_user_kick_command(args).await;
                 true

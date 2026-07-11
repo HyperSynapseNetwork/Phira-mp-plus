@@ -152,15 +152,22 @@ impl LiveConfig {
 
 /// Phira-mp+ 增强配置（支持 YAML 文件、环境变量、CLI 参数三层覆盖）
 #[derive(Debug, Clone, Deserialize)]
+#[serde(default, deny_unknown_fields)]
 pub struct PlusConfig {
     pub port: u16,
     #[serde(default = "default_http_port")]
     pub http_port: u16,
-    #[serde(default)]
+    #[serde(default = "default_monitors")]
     pub monitors: Vec<i32>,
+    /// Explicit CLI monitor override retained across `config reload`.
+    #[serde(skip)]
+    pub cli_monitors_override: Option<Vec<i32>>,
     #[serde(default = "default_plugins_dir")]
     pub plugins_dir: String,
     pub extensions_file: Option<String>,
+    /// Source YAML path used by `config reload`.
+    #[serde(skip, default = "default_config_path")]
+    pub config_path: String,
     #[serde(default = "default_true")]
     pub cli_enabled: bool,
     #[serde(default)]
@@ -180,7 +187,7 @@ pub struct PlusConfig {
     pub admin_token: Option<String>,
     #[serde(default = "default_phira_api")]
     pub phira_api_endpoint: String,
-    #[serde(default)]
+    #[serde(default = "default_true")]
     pub chat_enabled: bool,
     #[serde(default = "default_retention_days")]
     pub round_data_retention_days: u32,
@@ -208,9 +215,11 @@ impl Default for PlusConfig {
         Self {
             port: 12346,
             http_port: 12347,
-            monitors: vec![2],
+            monitors: default_monitors(),
+            cli_monitors_override: None,
             plugins_dir: "plugins".to_string(),
-            extensions_file: None,
+            extensions_file: Some("data/extensions.json".to_string()),
+            config_path: default_config_path(),
             cli_enabled: true,
             max_rooms: None,
             max_users_per_room: None,
@@ -235,6 +244,14 @@ impl Default for PlusConfig {
 }
 
 impl PlusConfig {
+    /// Normalize values that are accepted in a user-friendly form but must be
+    /// canonical before any subsystem stores them.
+    pub fn normalize(&mut self) -> Result<(), AppError> {
+        self.phira_api_endpoint = normalize_phira_api_endpoint(&self.phira_api_endpoint)
+            .map_err(AppError::ConfigValidation)?;
+        Ok(())
+    }
+
     /// 从 YAML 文件加载配置
     pub fn from_yaml(path: &str) -> Result<Self, anyhow::Error> {
         let content = std::fs::read_to_string(path)
@@ -257,6 +274,27 @@ impl PlusConfig {
                 "TCP 端口和 HTTP 端口不能相同".into(),
             ));
         }
+        if self.proxy_protocol_port > 0 && self.http_port == 0 {
+            return Err(AppError::ConfigValidation(
+                "启用 proxy_protocol_port 时必须同时启用 http_port".into(),
+            ));
+        }
+        if self.proxy_protocol_port > 0
+            && (self.proxy_protocol_port == self.port
+                || self.proxy_protocol_port == self.http_port)
+        {
+            return Err(AppError::ConfigValidation(
+                "PROXY protocol 端口不能与 TCP/HTTP 端口相同".into(),
+            ));
+        }
+        if self.max_rooms == Some(0) {
+            return Err(AppError::ConfigValidation("max_rooms 必须大于 0".into()));
+        }
+        if self.max_users_per_room == Some(0) {
+            return Err(AppError::ConfigValidation(
+                "max_users_per_room 必须大于 0".into(),
+            ));
+        }
         if !std::path::Path::new(&self.plugins_dir).exists() {
             return Err(AppError::ConfigValidation(format!(
                 "插件目录不存在: {}",
@@ -273,48 +311,59 @@ impl PlusConfig {
                 "connection_rate_window 必须大于 0".into(),
             ));
         }
+        if self.idle.check_interval_secs == 0 {
+            return Err(AppError::ConfigValidation(
+                "idle.check_interval_secs 必须大于 0".into(),
+            ));
+        }
         Ok(())
     }
 
-    /// 合并 CLI 参数覆盖
+    /// 合并 CLI 参数覆盖。只有显式提供的参数才覆盖 YAML。
     pub fn merge_cli(mut self, cli: PlusConfigCli) -> Self {
-        if cli.port != 12346 {
-            self.port = cli.port;
+        if let Some(port) = cli.port {
+            self.port = port;
         }
-        if cli.http_port != 12347 {
-            self.http_port = cli.http_port;
+        if let Some(http_port) = cli.http_port {
+            self.http_port = http_port;
         }
         if !cli.monitors.is_empty() {
+            self.cli_monitors_override = Some(cli.monitors.clone());
             self.monitors = cli.monitors;
         }
-        if cli.plugins_dir != "plugins" {
-            self.plugins_dir = cli.plugins_dir;
+        if let Some(plugins_dir) = cli.plugins_dir {
+            self.plugins_dir = plugins_dir;
         }
         if let Some(ext) = cli.extensions_file {
             self.extensions_file = Some(ext);
         }
-        if cli.proxy_protocol_port > 0 {
-            self.proxy_protocol_port = cli.proxy_protocol_port;
+        if let Some(proxy_protocol_port) = cli.proxy_protocol_port {
+            self.proxy_protocol_port = proxy_protocol_port;
+        }
+        if cli.disable_cli {
+            self.cli_enabled = false;
         }
         self
     }
 }
 
-/// CLI 覆盖配置（来自命令行参数）
+/// CLI 覆盖配置（只有用户显式提供的参数才覆盖 YAML）
 pub struct PlusConfigCli {
-    pub port: u16,
-    pub http_port: u16,
-    pub proxy_protocol_port: u16,
+    pub port: Option<u16>,
+    pub http_port: Option<u16>,
+    pub proxy_protocol_port: Option<u16>,
     pub monitors: Vec<i32>,
-    pub plugins_dir: String,
+    pub plugins_dir: Option<String>,
     pub extensions_file: Option<String>,
-    pub log_file: String,
+    pub disable_cli: bool,
 }
 
 // ── Default-value helpers ──────────────────────────────────────────
 
 fn default_http_port() -> u16 { 12347 }
+fn default_config_path() -> String { "server_config.yml".to_string() }
 fn default_plugins_dir() -> String { "plugins".to_string() }
+fn default_monitors() -> Vec<i32> { vec![2] }
 fn default_true() -> bool { true }
 fn default_rate_limit() -> u32 { 30 }
 fn default_rate_window() -> u32 { 10 }
@@ -323,3 +372,83 @@ fn default_proxy_protocol_port() -> u16 { 0 }
 fn default_retention_days() -> u32 { 7 }
 fn default_persistence_retention_days() -> u32 { 30 }
 fn default_runtime_persistence_queue_capacity() -> usize { 2048 }
+
+
+#[cfg(test)]
+mod tests {
+    use super::{PlusConfig, PlusConfigCli};
+
+    #[test]
+    fn partial_yaml_uses_runtime_defaults() {
+        let config: PlusConfig = serde_yaml::from_str("chat_enabled: false
+").unwrap();
+        assert_eq!(config.port, 12346);
+        assert_eq!(config.http_port, 12347);
+        assert_eq!(config.monitors, vec![2]);
+        assert_eq!(config.extensions_file.as_deref(), Some("data/extensions.json"));
+        assert!(!config.chat_enabled);
+    }
+
+    #[test]
+    fn normalization_canonicalizes_phira_endpoint() {
+        let mut config = PlusConfig {
+            phira_api_endpoint: " https://example.com/api/ ".to_string(),
+            ..PlusConfig::default()
+        };
+        config.normalize().unwrap();
+        assert_eq!(config.phira_api_endpoint, "https://example.com/api");
+    }
+
+    #[test]
+    fn unknown_top_level_field_is_rejected() {
+        let err = serde_yaml::from_str::<PlusConfig>("chat_enabld: false\n")
+            .expect_err("misspelled config keys must not be ignored");
+        assert!(err.to_string().contains("unknown field"));
+    }
+
+    #[test]
+    fn explicit_empty_monitor_list_is_preserved() {
+        let config: PlusConfig = serde_yaml::from_str("monitors: []
+").unwrap();
+        assert!(config.monitors.is_empty());
+    }
+
+    #[test]
+    fn only_explicit_cli_values_override_yaml() {
+        let config = PlusConfig {
+            port: 23456,
+            http_port: 23457,
+            plugins_dir: "custom-plugins".to_string(),
+            ..PlusConfig::default()
+        }
+        .merge_cli(PlusConfigCli {
+            port: None,
+            http_port: None,
+            proxy_protocol_port: None,
+            monitors: Vec::new(),
+            plugins_dir: None,
+            extensions_file: None,
+            disable_cli: true,
+        });
+        assert_eq!(config.port, 23456);
+        assert_eq!(config.http_port, 23457);
+        assert_eq!(config.plugins_dir, "custom-plugins");
+        assert!(config.cli_monitors_override.is_none());
+        assert!(!config.cli_enabled);
+    }
+
+    #[test]
+    fn explicit_monitor_cli_override_is_recorded() {
+        let config = PlusConfig::default().merge_cli(PlusConfigCli {
+            port: None,
+            http_port: None,
+            proxy_protocol_port: None,
+            monitors: vec![7, 9],
+            plugins_dir: None,
+            extensions_file: None,
+            disable_cli: false,
+        });
+        assert_eq!(config.monitors, vec![7, 9]);
+        assert_eq!(config.cli_monitors_override, Some(vec![7, 9]));
+    }
+}

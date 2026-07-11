@@ -119,6 +119,14 @@ pub async fn create_room(user: Arc<User>, id: RoomId) -> Result<()> {
     }
 
     let mut map_guard = user.server.rooms.write().await;
+    if map_guard.contains_key(&id) {
+        bail!("{}", tl!("create-id-occupied"));
+    }
+    if let Some(limit) = user.server.config.max_rooms {
+        if map_guard.len() >= limit {
+            bail!("server room limit reached (max {limit})");
+        }
+    }
     let max_users = user.server.config.max_users_per_room.unwrap_or(100);
     let room = Arc::new(crate::room::Room::new(
         id.clone(),
@@ -128,17 +136,11 @@ pub async fn create_room(user: Arc<User>, id: RoomId) -> Result<()> {
         max_users,
         Some(Arc::clone(&user.server.round_store)),
     ));
-    match map_guard.entry(id.clone()) {
-        std::collections::hash_map::Entry::Vacant(entry) => {
-            entry.insert(Arc::clone(&room));
-        }
-        std::collections::hash_map::Entry::Occupied(_) => {
-            bail!("{}", tl!("create-id-occupied"));
-        }
-    }
+    map_guard.insert(id.clone(), Arc::clone(&room));
     let room_uuid = room.uuid;
     room.set_display_name(user.id, user.name.clone()).await;
-    room.send(Message::CreateRoom { user: user.id }).await;
+    // CreateRoom(Ok) establishes client room state; do not emit a room event to
+    // the creator before that response.
     drop(map_guard);
     user.server
         .publish_room_event(RoomEvent::CreateRoom {
@@ -183,55 +185,56 @@ pub async fn join_room(
     let Some(room) = room else {
         bail!("{}", tl!("room-not-found"))
     };
-    if room.is_locked() {
-        bail!("{}", tl!("join-room-locked"));
-    }
-    // 检查房间黑名单（按 UUID 绑定，不按房间名）
-    if user
-        .server
-        .ban_manager
-        .is_room_banned(&room.uuid.to_string(), user.id)
-        .await
-    {
-        bail!("{}", tl!("join-room-banned"));
+    // Protocol game monitors may observe any room. Normal monitor users still
+    // require explicit permission, but monitors bypass player-only lock/ban/game-state gates.
+    if monitor && user.id > 0 && !user.can_monitor().await {
+        bail!("{}", tl!("join-cant-monitor"));
     }
     let mut late_join = false;
     let mut need_abort = false;
-    {
-        let state = room.state.read().await;
-        match &*state {
-            crate::room::InternalRoomState::SelectChart => {}
-            crate::room::InternalRoomState::Playing { .. } => {
-                let mut pending = user.join_pending_game.write().await;
-                if pending.as_ref().map(|s| s.as_str()) == Some(id.to_string().as_str()) {
-                    pending.take();
-                    late_join = true;
-                    need_abort = true;
-                } else {
-                    *pending = Some(id.to_string());
-                    let _ = user
-                        .try_send(ServerCommand::Message(Message::Chat {
-                            user: 0,
-                            content: tl!("join-game-ongoing-warning"),
-                        }))
-                        .await;
-                    bail!("{}", tl!("join-game-ongoing"));
+    if !monitor {
+        if room.is_locked() {
+            bail!("{}", tl!("join-room-locked"));
+        }
+        if user
+            .server
+            .ban_manager
+            .is_room_banned(&room.uuid.to_string(), user.id)
+            .await
+        {
+            bail!("{}", tl!("join-room-banned"));
+        }
+        {
+            let state = room.state.read().await;
+            match &*state {
+                crate::room::InternalRoomState::SelectChart => {}
+                crate::room::InternalRoomState::Playing { .. } => {
+                    let mut pending = user.join_pending_game.write().await;
+                    if pending.as_ref().map(|s| s.as_str()) == Some(id.to_string().as_str()) {
+                        pending.take();
+                        late_join = true;
+                        need_abort = true;
+                    } else {
+                        *pending = Some(id.to_string());
+                        let _ = user
+                            .try_send(ServerCommand::Message(Message::Chat {
+                                user: 0,
+                                content: tl!("join-game-ongoing-warning"),
+                            }))
+                            .await;
+                        bail!("{}", tl!("join-game-ongoing"));
+                    }
                 }
-            }
-            _ => {
-                bail!("{}", tl!("join-game-ongoing"));
+                _ => bail!("{}", tl!("join-game-ongoing")),
             }
         }
-    }
-    // 标记中途加入者为本轮已中止（免于结算等待），下一轮重置
-    if need_abort {
-        if let crate::room::InternalRoomState::Playing { aborted, .. } = &mut *room.state.write().await {
-            aborted.insert(user.id);
+        if need_abort {
+            if let crate::room::InternalRoomState::Playing { aborted, .. } =
+                &mut *room.state.write().await
+            {
+                aborted.insert(user.id);
+            }
         }
-    }
-    // GameMonitor 会话（user.id < 0）可以旁观任意房间
-    if monitor && !user.can_monitor() && user.id > 0 {
-        bail!("{}", tl!("join-cant-monitor"));
     }
     if !room.add_user(Arc::downgrade(&user), monitor).await {
         bail!("{}", tl!("join-room-full"));
@@ -271,8 +274,10 @@ pub async fn join_room(
         room.broadcast_players(join).await;
         room.broadcast_players(message).await;
     } else {
-        room.broadcast(join).await;
-        room.broadcast(message).await;
+        // The joining client first receives JoinRoom(Ok), which already contains
+        // the full user snapshot. Only existing room members need incremental events.
+        room.broadcast_except(user.id, join).await;
+        room.broadcast_except(user.id, message).await;
         user.server
             .publish_room_event(RoomEvent::JoinRoom {
                 room: id.clone(),

@@ -82,20 +82,21 @@ cli_enabled: true
 # 如需使用，请看 docs/benchmark-real.md。
 ```
 
-配置加载规则：默认读取 `server_config.yml`，也可通过 `--config <FILE>` 指定；配置文件缺失时使用默认值；命令行参数会覆盖端口、插件目录、监控 ID、扩展数据路径和 CLI 开关等同名设置。完整说明见 [docs/configuration.md](docs/configuration.md)。
+配置加载规则：默认读取 `server_config.yml`，也可通过 `--config <FILE>` 指定；配置文件缺失时使用内置默认值，配置文件存在但格式、字段名或取值无效时拒绝启动。只有用户显式提供的命令行参数才覆盖 YAML，避免 CLI 默认值意外覆盖配置文件。完整说明见 [docs/configuration.md](docs/configuration.md)。
 
 ### 命令行参数
 
 ```
 phira-mp-plus-server [OPTIONS]
 
-  -p, --port <PORT>          服务器监听端口 [默认: 12346]
-  -d, --plugins-dir <DIR>    插件目录 [默认: "plugins"]
-  -e, --ext-file <FILE>      扩展数据持久化文件 [默认: "data/extensions.json"]
+  -p, --port <PORT>          覆盖 TCP 监听端口（内置默认 12346）
+  -d, --plugins-dir <DIR>    覆盖插件目录（内置默认 "plugins"）
+  -e, --ext-file <FILE>      覆盖扩展数据文件（内置默认 "data/extensions.json"）
   -l, --log-file <NAME>      日志文件基础名称 [默认: "phira-mp-plus"]
-  -m, --monitor <IDS>...     允许旁观的用户 ID
-      --http-port <PORT>     HTTP/SSE 服务端口 [默认: 12347]
-      --proxy-port <PORT>    PROXY protocol 端口 [默认: 0=禁用, 典型值 12344]
+  -m, --monitor <IDS>...     覆盖允许旁观的用户 ID
+      --http-port <PORT>     覆盖 HTTP/SSE 端口（内置默认 12347）
+      --proxy-port <PORT>    覆盖 PROXY protocol 端口（内置默认 0）
+      --no-cli               禁用交互式管理控制台
   -c, --config <FILE>        YAML 配置文件路径 [默认: "server_config.yml"]
   -h, --help                 显示帮助
   -V, --version              显示版本
@@ -289,7 +290,7 @@ curl -N http://127.0.0.1:12347/rooms/listen
 | 诊断/压测 | `benchmark`, `simulation` | 真实网络压测（默认路径：simulation） |
 | WASM 插件 | `plugin list/enable/disable/info/reload` | 插件管理 |
 | 用户 | `users`, `kick`, `broadcast` | 用户管理和消息 |
-| 房间 | `rooms`, `room info/start/cancel/kick/host/force-move/hide/set/close/history` | 房间管理子命令 |
+| 房间 | `rooms`, `room info/start/force-start/cancel/kick/host/force-move/hide/set/close/history` | 房间管理子命令 |
 | 黑名单 | `ban`, `unban`, `banlist`, `room ban/unban/banlist` | 全局与房间封禁管理 |
 
 ## WASM 插件开发
@@ -314,17 +315,19 @@ WASM 插件通过 `phira:host/api` 和 `phira:host/log` 等导入函数与宿主
 | `persistence_retention_days` | u32 | 30 | PG 历史数据保留天数，0 为不清理 |
 | `touch_judge_retention_days` | u32? | 未设置 | Touches/Judges 高频遥测独立保留天数；未设置时遵循 `persistence_retention_days`，0 为不清理 |
 | `admin_phira_ids` | Vec<i32> | [] | 游戏内管理员 ID，可使用 `_命令` 入口 |
-| `chat_enabled` | bool | 示例为 `true` | 聊天功能开关 |
+| `chat_enabled` | bool | `true` | 聊天功能开关 |
 | `cli_enabled` | bool | `true` | TUI/CLI 控制台开关 |
 | `connection_rate_limit` | u32 | `30` | 连接速率限制（窗口内允许次数） |
 | `connection_rate_window` | u32 | `10` | 连接速率统计窗口（秒） |
 | `max_rooms` | usize | — | 最大房间数（未设置为不限制） |
-| `max_users_per_room` | usize | `8` | 每房间最大玩家数 |
+| `max_users_per_room` | usize | `100` | 每房间最大玩家数 |
 | `round_data_retention_days` | u32 | `7` | 轮次 Touches/Judges 保留天数（0=不保留） |
 | `server_name` | String | — | 服务器名称 |
 | `wasm_runtime.*` | object | 见文档 | WASM 插件资源限制 |
 
 真实网络压测（`benchmark run real`）是高级兼容性测试，详见 docs/benchmark-real.md。默认压测推荐使用 Simulation，不需要 token。
+
+本轮实用功能可靠性审计、修复范围和回归检查清单见 [docs/functional-reliability-audit.md](docs/functional-reliability-audit.md)。
 
 ## 许可证
 

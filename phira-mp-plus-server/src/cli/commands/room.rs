@@ -27,7 +27,7 @@ impl CliHandler {
                     self.room_info(args[1]).await;
                 }
             }
-            "start" => {
+            "start" | "force-start" => {
                 if args.len() < 2 {
                     self.out(format!(
                         "  {} {} room start <房间ID>",
@@ -201,28 +201,61 @@ impl CliHandler {
                     } else {
                         String::new()
                     };
-                    let room_uuid = self.find_room(args[1]).await.map(|r| r.uuid.to_string());
-                    match room_uuid {
-                        Some(uuid) => match self
-                            .state
-                            .ban_manager
-                            .room_ban_user(&uuid, uid, &reason)
-                            .await
-                        {
-                            Ok(_) => self.out(format!(
-                                "  {} 用户 {} 已加入房间 {} ({}) 的黑名单{}",
-                                c::green("✓"),
-                                uid,
-                                args[1],
-                                &uuid[..8],
-                                if reason.is_empty() {
-                                    String::new()
-                                } else {
-                                    format!("，原因：{reason}")
+                    match self.find_room(args[1]).await {
+                        Some(room) => {
+                            let uuid = room.uuid.to_string();
+                            match self
+                                .state
+                                .ban_manager
+                                .room_ban_user(&uuid, uid, &reason)
+                                .await
+                            {
+                                Ok(_) => {
+                                    let target = room
+                                        .users()
+                                        .await
+                                        .into_iter()
+                                        .chain(room.monitors().await)
+                                        .find(|user| user.id == uid);
+                                    let mut removed = false;
+                                    if let Some(target) = target {
+                                        let detail = if reason.trim().is_empty() {
+                                            "你已被加入该房间的黑名单".to_string()
+                                        } else {
+                                            format!("你已被加入该房间的黑名单：{}", reason.trim())
+                                        };
+                                        target
+                                            .try_send(phira_mp_common::ServerCommand::Message(
+                                                phira_mp_common::Message::Chat {
+                                                    user: 0,
+                                                    content: detail,
+                                                },
+                                            ))
+                                            .await;
+                                        removed = self
+                                            .state
+                                            .room_commands
+                                            .kick_user(&self.state, args[1], uid)
+                                            .await
+                                            .is_ok();
+                                    }
+                                    self.out(format!(
+                                        "  {} 用户 {} 已加入房间 {} ({}) 的黑名单{}{}",
+                                        c::green("✓"),
+                                        uid,
+                                        args[1],
+                                        &uuid[..8],
+                                        if reason.is_empty() {
+                                            String::new()
+                                        } else {
+                                            format!("，原因：{reason}")
+                                        },
+                                        if removed { "，并已立即移出房间" } else { "" }
+                                    ));
                                 }
-                            )),
-                            Err(e) => self.out(format!("  {} {}", c::red("✗"), e)),
-                        },
+                                Err(e) => self.out(format!("  {} {}", c::red("✗"), e)),
+                            }
+                        }
                         None => self.out(format!("  {} 未找到房间 {}", c::red("✗"), args[1])),
                     }
                 }
@@ -291,7 +324,7 @@ impl CliHandler {
                     c::red("✗"),
                     c::yellow(sub)
                 ));
-                self.out(format!("  {} 可用: room list|create-empty|info|start|cancel|kick|host|force-move|hide|unhide|close|set|history|rounds|round|uuid|ban|unban|banlist", c::dim("▸")));
+                self.out(format!("  {} 可用: room list|create-empty|info|start|force-start|cancel|kick|host|force-move|hide|unhide|close|set|history|rounds|round|uuid|ban|unban|banlist", c::dim("▸")));
             }
         }
     }
@@ -375,23 +408,26 @@ impl CliHandler {
                 }
             }
 
-            // 发送踢出消息
-            {
+            // 发送踢出消息并立即关闭对应会话，避免客户端仍可在旧连接上发命令。
+            let target_session = {
                 let sessions = self.state.sessions.read().await;
-                for session in sessions.values() {
-                    if session.user.id == target {
-                        let _ = session
-                            .stream
-                            .send(phira_mp_common::ServerCommand::Message(
-                                phira_mp_common::Message::Chat {
-                                    user: 0,
-                                    content: "你已被管理员踢出服务器".to_string(),
-                                },
-                            ))
-                            .await;
-                        break;
-                    }
-                }
+                sessions
+                    .iter()
+                    .find(|(_, session)| session.user.id == target)
+                    .map(|(id, session)| (*id, Arc::clone(session)))
+            };
+            if let Some((session_id, session)) = target_session {
+                let _ = session
+                    .stream
+                    .send_and_flush(phira_mp_common::ServerCommand::Message(
+                        phira_mp_common::Message::Chat {
+                            user: 0,
+                            content: "你已被管理员踢出服务器".to_string(),
+                        },
+                    ))
+                    .await;
+                session.stream.close();
+                self.state.sessions.write().await.remove(&session_id);
             }
 
             // 从用户列表移除

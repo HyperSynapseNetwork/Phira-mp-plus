@@ -29,7 +29,7 @@ use futures::{stream, Stream, StreamExt};
 use tower_http::cors::CorsLayer;
 use tracing::{error, info};
 
-use router::DynamicRouter;
+use router::{normalize_route_path, DynamicRouter};
 pub use router::HttpHandler;
 pub use sse::{SseEvent, SseHub};
 
@@ -72,8 +72,9 @@ impl PluginHttpServer {
     /// The host manages the SSE connection; the plugin translates events
     /// via on_api("sse:translate", &[json!(event)]) callbacks.
     pub async fn register_sse_stream(&self, path: &str, config: SseStreamConfig) {
-        self.sse_streams.write().await.insert(path.to_string(), config);
-        info!(path, "SSE stream registered (plugin-backed)");
+        let path = normalize_route_path(path);
+        self.sse_streams.write().await.insert(path.clone(), config);
+        info!(path = %path, "SSE stream registered (plugin-backed)");
     }
 
     pub fn register_route_sync(&self, path: &str, handler: HttpHandler) {
@@ -215,65 +216,115 @@ async fn plugin_sse_handler(
     Extension(state): Extension<Arc<HttpAppState>>,
     uri: Uri,
 ) -> Response {
-    let path = uri.path().to_string();
-    let config = state.sse_streams.read().await.get(&path).cloned();
+    plugin_sse_response(state, uri).await
+}
+
+async fn plugin_sse_response(state: Arc<HttpAppState>, uri: Uri) -> Response {
+    let path = normalize_route_path(uri.path());
+    let Some(config) = state.sse_streams.read().await.get(&path).cloned() else {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(json!({"error": format!("SSE stream not found: {path}")})),
+        )
+            .into_response();
+    };
     let pm = Arc::clone(&state.plugin_manager);
     let rx = state.events.subscribe_general();
 
     let stream_name = path.trim_start_matches('/');
-    let ready = SseEvent::new("ready",
-        serde_json::json!({"stream": stream_name, "version": env!("CARGO_PKG_VERSION")}).to_string());
+    let ready = SseEvent::new(
+        "ready",
+        serde_json::json!({"stream": stream_name, "version": env!("CARGO_PKG_VERSION")})
+            .to_string(),
+    );
 
     let stream: sse::EventStream = Box::pin(
         stream::once(async move { Ok(ready.into_axum()) })
-            .chain(plugin_sse_translate(rx, pm, config))
+            .chain(plugin_sse_translate(rx, pm, config)),
     );
 
     sse_response(stream, Duration::from_secs(15))
 }
 
-/// Translate SseHub events through the plugin's on_api("sse:translate", …)
-/// and emit only the non-null translations as SSE.
+/// Translate matching SseHub events through the plugin's
+/// on_api("sse:translate", …) callback.
 fn plugin_sse_translate(
     rx: broadcast::Receiver<SseEvent>,
     pm: Arc<PluginManager>,
-    config: Option<SseStreamConfig>,
+    config: SseStreamConfig,
 ) -> impl Stream<Item = Result<AxumSseEvent, Infallible>> {
-    let plugin = config.as_ref().map(|c| c.plugin.clone());
+    let plugin = config.plugin;
+    let event_types = config.event_types;
 
     BroadcastStream::new(rx).filter_map(move |message| {
         let plugin = plugin.clone();
+        let event_types = event_types.clone();
         let pm = Arc::clone(&pm);
         async move {
             let event = match message {
                 Ok(e) => e,
-                Err(BroadcastStreamRecvError::Lagged(skipped)) => return Some(Ok(
-                    AxumSseEvent::default().event("stream_lagged")
-                        .data(json!({"skipped": skipped}).to_string())
-                )),
-            };
-            let plugin = match &plugin {
-                Some(p) => p.clone(),
-                None => return Some(Ok(event.into_axum())), // no plugin → raw
-            };
-
-            // Call plugin to translate the event
-            let payload = json!({"event_type": event.event_type, "data": event.data});
-            match pm.call_plugin_api(&plugin, "sse:translate", vec![payload]).await {
-                Ok(result) => {
-                    if result.is_null() {
-                        None // plugin says skip this event
-                    } else {
-                        let event_type = result.get("type")
-                            .and_then(|v| v.as_str()).unwrap_or("event");
-                        let data = serde_json::to_string(&result).unwrap_or_default();
-                        Some(Ok(AxumSseEvent::default().event(event_type).data(data)))
-                    }
+                Err(BroadcastStreamRecvError::Lagged(skipped)) => {
+                    return Some(Ok(
+                        AxumSseEvent::default()
+                            .event("stream_lagged")
+                            .data(json!({"skipped": skipped}).to_string()),
+                    ))
                 }
-                Err(_) => None, // plugin error → skip
+            };
+            if !event_types.is_empty()
+                && !event_types
+                    .iter()
+                    .any(|allowed| event_type_matches(allowed, &event.event_type))
+            {
+                return None;
+            }
+
+            let payload = json!({"event_type": event.event_type, "data": event.data});
+            match pm
+                .call_plugin_api(&plugin, "sse:translate", vec![payload])
+                .await
+            {
+                Ok(result) if result.is_null() => None,
+                Ok(result) => {
+                    let event_type = result
+                        .get("type")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("event");
+                    let data = serde_json::to_string(&result).unwrap_or_default();
+                    Some(Ok(
+                        AxumSseEvent::default().event(event_type).data(data),
+                    ))
+                }
+                Err(err) => {
+                    error!(plugin = %plugin, ?err, "plugin SSE translation failed");
+                    None
+                }
             }
         }
     })
+}
+
+fn event_type_matches(configured: &str, actual: &str) -> bool {
+    fn compact(value: &str) -> String {
+        value
+            .chars()
+            .filter(|ch| ch.is_ascii_alphanumeric())
+            .flat_map(char::to_lowercase)
+            .collect()
+    }
+
+    let configured = compact(configured);
+    let actual_compact = compact(actual);
+    if configured == actual_compact {
+        return true;
+    }
+
+    // Compatibility with the historical documentation names RoomCreate,
+    // RoomJoin, RoomLeave and RoomUpdate.
+    let legacy_room_alias = actual
+        .strip_suffix("_room")
+        .map(|verb| format!("room{}", compact(verb)));
+    legacy_room_alias.as_deref() == Some(configured.as_str())
 }
 
 async fn dynamic_handler(
@@ -282,6 +333,18 @@ async fn dynamic_handler(
     uri: Uri,
     body: Option<Json<Value>>,
 ) -> impl IntoResponse {
+    // SSE registrations may be added after the Axum router has started (for
+    // example after a plugin reload). Resolve them from the live registry.
+    if method == Method::GET
+        && state
+            .sse_streams
+            .read()
+            .await
+            .contains_key(&normalize_route_path(uri.path()))
+    {
+        return plugin_sse_response(Arc::clone(&state), uri).await;
+    }
+
     let route = state
         .router
         .read()
@@ -336,6 +399,20 @@ mod tests {
     }
 
     #[test]
+    fn sse_stream_normalizes_missing_leading_slash() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            let server = make_server();
+            let config = SseStreamConfig {
+                plugin: "test-plugin".to_string(),
+                event_types: vec![],
+            };
+            server.register_sse_stream("test/stream", config).await;
+            assert!(server.sse_streams.read().await.contains_key("/test/stream"));
+        });
+    }
+
+    #[test]
     fn sse_stream_overwrites_existing() {
         let rt = tokio::runtime::Runtime::new().unwrap();
         rt.block_on(async {
@@ -347,6 +424,14 @@ mod tests {
             let streams = server.sse_streams.read().await;
             assert_eq!(streams.get("/test").unwrap().plugin, "plugin-b");
         });
+    }
+
+    #[test]
+    fn sse_event_type_filter_accepts_wire_and_legacy_names() {
+        assert!(event_type_matches("create_room", "create_room"));
+        assert!(event_type_matches("CreateRoom", "create_room"));
+        assert!(event_type_matches("RoomCreate", "create_room"));
+        assert!(!event_type_matches("join_room", "create_room"));
     }
 
     #[test]

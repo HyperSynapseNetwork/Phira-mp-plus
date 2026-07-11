@@ -37,7 +37,7 @@ impl DynamicRouter {
     }
 }
 
-fn normalize_route_path(path: &str) -> String {
+pub(super) fn normalize_route_path(path: &str) -> String {
     let path = path.trim();
     if path.starts_with('/') {
         path.to_string()

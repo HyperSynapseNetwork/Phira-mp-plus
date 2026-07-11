@@ -1,7 +1,7 @@
 # Phira-mp+ 服务端配置文件
 # 所有选项均有默认值，可按需覆盖。
 # 默认读取当前工作目录的 server_config.yml，也可通过 --config <FILE> 指定。
-# 命令行参数会覆盖同名 YAML 字段；RUST_LOG/NO_COLOR 只影响日志或终端显示。
+# 只有显式提供的命令行参数才覆盖同名 YAML 字段；RUST_LOG/NO_COLOR 只影响日志或终端显示。
 # 完整说明见 docs/configuration.md。
 
 # ---- 网络 ----
@@ -93,8 +93,8 @@ cli_enabled: true
 # 最大房间数（不设则无限制）
 # max_rooms: 100
 
-# 每房间最大玩家数（不设则使用默认 8）
-# max_users_per_room: 8
+# 每房间最大玩家数（不设则使用默认 100）
+# max_users_per_room: 100
 
 # ---- 限速 / 数据保留 ----
 

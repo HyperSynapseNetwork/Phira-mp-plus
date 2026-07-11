@@ -12,6 +12,8 @@ env:
 jobs:
   auto-patch:
     runs-on: ubuntu-latest
+    outputs:
+      build_ref: ${{ steps.patch.outputs.build_ref }}
     permissions:
       contents: write
     steps:
@@ -42,12 +44,15 @@ jobs:
             git commit -m "chore: auto bump patch to $NEW_VERSION [skip ci]"
             git push
           fi
+          echo "build_ref=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
   check:
     needs: auto-patch
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.auto-patch.outputs.build_ref }}
       - uses: actions-rust-lang/setup-rust-toolchain@v1
       - name: cargo check & test
         run: |
@@ -55,10 +60,15 @@ jobs:
           cargo test --workspace
 
   linux:
-    needs: check
+    needs: [auto-patch, check]
     runs-on: ubuntu-latest
+    env:
+      CC_x86_64_unknown_linux_musl: musl-gcc
+      CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER: musl-gcc
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.auto-patch.outputs.build_ref }}
       - uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
           target: x86_64-unknown-linux-musl
@@ -74,10 +84,12 @@ jobs:
           path: target/x86_64-unknown-linux-musl/release/phira-mp-plus-server
 
   windows:
-    needs: check
+    needs: [auto-patch, check]
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.auto-patch.outputs.build_ref }}
       - uses: actions-rust-lang/setup-rust-toolchain@v1
       - name: cargo build
         run: cargo build --release

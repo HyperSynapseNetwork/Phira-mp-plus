@@ -5,20 +5,20 @@
 ```
 phira-mp-plus-server [OPTIONS]
 
-  -p, --port <PORT>          服务器监听端口 [默认: 12346]
-  -d, --plugins-dir <DIR>    WASM 插件目录路径 [默认: "plugins"]
-  -e, --ext-file <FILE>      扩展数据持久化 JSON 文件路径 [默认: "data/extensions.json"]
+  -p, --port <PORT>          覆盖 TCP 监听端口（内置默认 12346）
+  -d, --plugins-dir <DIR>    覆盖 WASM 插件目录（内置默认 "plugins"）
+  -e, --ext-file <FILE>      覆盖扩展数据文件（内置默认 "data/extensions.json"）
       --no-cli               禁用交互式 CLI 管理控制台
   -l, --log-file <NAME>      日志文件基础名称 [默认: "phira-mp-plus"]
-  -m, --monitor <IDS>...     允许旁观的用户 ID（可多次指定，如 `-m 1 -m 2`）
-      --http-port <PORT>     HTTP/SSE 服务端口 [默认: 12347]
-      --proxy-port <PORT>    PROXY protocol 端口 [默认: 0=禁用, 典型值 12344]
+  -m, --monitor <IDS>...     覆盖允许旁观的用户 ID
+      --http-port <PORT>     覆盖 HTTP/SSE 端口（内置默认 12347）
+      --proxy-port <PORT>    覆盖 PROXY protocol 端口（内置默认 0）
   -c, --config <FILE>        YAML 配置文件路径 [默认: "server_config.yml"]
   -h, --help                 显示帮助信息
   -V, --version              显示版本号
 ```
 
-配置加载规则：默认读取 `server_config.yml`，也可通过 `--config <FILE>` 指定；命令行参数会覆盖 YAML 中对应字段。`RUST_LOG`、`NO_COLOR` 等环境变量只影响日志或终端显示。完整配置说明见 [configuration.md](configuration.md)。
+配置加载规则：默认读取 `server_config.yml`，也可通过 `--config <FILE>` 指定；只有显式提供的命令行参数才覆盖 YAML。配置文件存在但解析或校验失败时服务端拒绝启动。`RUST_LOG`、`NO_COLOR` 等环境变量只影响日志或终端显示。完整配置说明见 [configuration.md](configuration.md)。
 
 ## 交互式管理控制台
 
@@ -202,7 +202,7 @@ help groups
 | `room_id` | `str` | 房间名 |
 | `user_id` | `int` | 目标用户 ID |
 
-**输出:** 踢出结果
+**输出:** 踢出结果。目标客户端会立即收到 `LeaveRoom(Ok)` 并退出本地房间状态，不再等待超时重连。
 
 ---
 
@@ -293,7 +293,7 @@ help groups
 
 ---
 
-### `room ban <room_id> <user_id>`
+### `room ban <room_id> <user_id> [reason]`
 
 将用户加入房间黑名单。
 
@@ -301,8 +301,9 @@ help groups
 |------|------|------|
 | `room_id` | `str` | 房间名 |
 | `user_id` | `int` | 用户 ID |
+| `reason` | `str` | 可选封禁原因 |
 
-**输出:** `已封禁 <reason>` 或 `该用户已被封禁`
+**输出:** 封禁结果。若目标当前仍在房间，服务端先向其显示封禁原因，再立即发送离房响应并移出房间。
 
 ---
 
@@ -871,9 +872,9 @@ help groups
 
 ### `config reload`
 
-热重载 `server_config.yml`。
+重新读取启动时 `--config` 指定的 YAML 文件。热更新 `chat_enabled` 和 `monitors`；YAML 中显式声明的管理员/压测凭据也会同步更新。显式 `--monitor` 始终保持高于 YAML 的优先级；YAML 与持久化文件都未声明的动态管理员/凭据状态不会被重载误清空。端口、目录、数据库、限流和 Runtime v2 策略仍需重启。
 
-**输出:** `配置已重新加载` 或错误信息
+**输出:** 实际读取路径、已热更新字段及错误信息。配置失败或运行时锁繁忙时保留现有运行配置。
 
 ---
 

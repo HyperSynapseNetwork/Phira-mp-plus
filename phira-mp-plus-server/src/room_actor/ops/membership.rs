@@ -7,7 +7,7 @@ use super::super::{
     RoomCommandGateway, RoomCommandPayload,
 };
 use crate::{plugin::PluginEvent, server::PlusServerState};
-use phira_mp_common::{Message, RoomEvent};
+use phira_mp_common::{Message, RoomEvent, ServerCommand};
 use serde_json::Value;
 use std::{sync::atomic::Ordering, time::Instant};
 
@@ -69,6 +69,9 @@ impl RoomCommandGateway {
         .await;
         let was_monitor = user.monitor.load(Ordering::SeqCst);
         let should_drop = room.on_user_leave(&user).await;
+        // Force the target client out of its local room immediately instead of
+        // waiting for a reconnect snapshot.
+        user.try_send(ServerCommand::LeaveRoom(Ok(()))).await;
         if should_drop {
             state.rooms.write().await.remove(&rid);
         }
@@ -142,6 +145,7 @@ impl RoomCommandGateway {
         .await;
         for user in room.users().await {
             *user.room.write().await = None;
+            user.try_send(ServerCommand::LeaveRoom(Ok(()))).await;
             state
                 .publish_room_event(RoomEvent::LeaveRoom {
                     room: rid.clone(),
@@ -151,6 +155,7 @@ impl RoomCommandGateway {
         }
         for monitor in room.monitors().await {
             *monitor.room.write().await = None;
+            monitor.try_send(ServerCommand::LeaveRoom(Ok(()))).await;
         }
         state.rooms.write().await.remove(&rid);
         state

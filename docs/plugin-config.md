@@ -8,7 +8,7 @@
 
 | 配置源 | 文件 | 管理方式 | 热重载 |
 |--------|------|----------|--------|
-| 服务端核心 | `server_config.yml` | CLI `config reload` | ✅ |
+| 服务端核心 | 启动时 `--config` 指定的 YAML | CLI `config reload` | 部分字段 |
 | 扩展 KV 存储 | `data/extensions.json` | CLI `extension list/get`；写入由内部逻辑或插件 API 完成 | ✅ |
 | 插件自有配置 | 无标准位置 | 各自为政 | ❌ |
 
@@ -88,7 +88,7 @@ pub struct LiveConfig {
 }
 ```
 
-目标行为：`config reload` 命令自动重载所有插件的 `config.json`。当前 `config reload` 只热重载 `server_config.yml` 中可安全更新的服务端字段。
+目标行为：`config reload` 命令自动重载所有插件的 `config.json`。当前 `config reload` 只重新读取启动时指定的服务端 YAML，并热更新聊天、monitor 及配置源明确提供的管理员/压测凭据；插件配置仍需各插件调用 `reload-config`。
 
 ### 5. 文件格式示例
 

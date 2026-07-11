@@ -127,19 +127,31 @@ where I: IntoIterator<Item = String>,
     out
 }
 
-pub(crate) fn load_benchmark_tokens(config: &PlusConfig) -> Vec<String> {
+pub(crate) fn try_load_benchmark_tokens(config: &PlusConfig) -> Result<Vec<String>, String> {
     let configured = sanitize_benchmark_tokens(config.benchmark_phira_tokens.clone());
-    if !configured.is_empty() { return configured; }
+    if !configured.is_empty() {
+        return Ok(configured);
+    }
 
-    let Ok(content) = std::fs::read_to_string(BENCH_AUTH_FILE) else { return Vec::new(); };
-    match serde_json::from_str::<BenchmarkAuthFile>(&content) {
-        Ok(file) => {
-            let mut tokens = file.tokens;
-            if let Some(token) = file.token { tokens.push(token); }
-            sanitize_benchmark_tokens(tokens)
-        }
+    let content = match std::fs::read_to_string(BENCH_AUTH_FILE) {
+        Ok(content) => content,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(err) => return Err(format!("read {BENCH_AUTH_FILE}: {err}")),
+    };
+    let file = serde_json::from_str::<BenchmarkAuthFile>(&content)
+        .map_err(|err| format!("parse {BENCH_AUTH_FILE}: {err}"))?;
+    let mut tokens = file.tokens;
+    if let Some(token) = file.token {
+        tokens.push(token);
+    }
+    Ok(sanitize_benchmark_tokens(tokens))
+}
+
+pub(crate) fn load_benchmark_tokens(config: &PlusConfig) -> Vec<String> {
+    match try_load_benchmark_tokens(config) {
+        Ok(tokens) => tokens,
         Err(err) => {
-            warn!(path = BENCH_AUTH_FILE, "failed to parse benchmark auth file: {err}");
+            warn!(path = BENCH_AUTH_FILE, "failed to load benchmark auth file: {err}");
             Vec::new()
         }
     }

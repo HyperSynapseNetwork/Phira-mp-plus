@@ -599,8 +599,18 @@ impl CommandRegistry {
         command: &str,
         args: &[&str],
     ) -> Option<Vec<String>> {
-        self.get(command)
-            .and_then(|spec| spec.handler.as_ref().map(|handler| handler(state, args)))
+        let mut tokens = Vec::with_capacity(args.len() + 1);
+        tokens.extend(command.split_whitespace());
+        tokens.extend(args.iter().copied());
+        for command_len in (1..=tokens.len()).rev() {
+            let candidate = normalize_command_name(&tokens[..command_len].join(" "));
+            if let Some(spec) = self.commands.get(&candidate) {
+                if let Some(handler) = &spec.handler {
+                    return Some(handler(state, &tokens[command_len..]));
+                }
+            }
+        }
+        None
     }
 
     fn index_command_path(&mut self, name: &str) {
@@ -719,28 +729,112 @@ pub fn runtime_v2_registry() -> CommandRegistry {
         CommandSpec::new(
             "config reload",
             "runtime-v2",
-            "重新加载 server_config.yml 并热更新运行时配置。",
+            "重新加载启动时指定的 YAML 并热更新运行时配置。",
             "config reload",
         )
         .handler(Arc::new(|state, _args| {
-            let path = std::path::Path::new("server_config.yml");
+            let path = std::path::Path::new(&state.config.config_path);
             let content = match std::fs::read_to_string(path) {
                 Ok(c) => c,
                 Err(e) => return vec![format!("  ✗ 读取配置文件失败: {e}")],
             };
-            let config: crate::server::PlusConfig = match serde_yaml::from_str(&content) {
+            let mut config: crate::server::PlusConfig = match serde_yaml::from_str(&content) {
                 Ok(c) => c,
                 Err(e) => return vec![format!("  ✗ 解析配置文件失败: {e}")],
             };
-            if let Err(e) = config.validate() {
+            config.config_path = state.config.config_path.clone();
+            if let Some(monitors) = state.config.cli_monitors_override.clone() {
+                // Explicit CLI values keep their higher priority after a reload.
+                config.monitors = monitors.clone();
+                config.cli_monitors_override = Some(monitors);
+            }
+            if let Err(e) = config.normalize().and_then(|_| config.validate()) {
                 return vec![format!("  ✗ 配置校验失败: {e}")];
             }
+
+            let admin_update = if !config.admin_phira_ids.is_empty() {
+                Some(
+                    config
+                        .admin_phira_ids
+                        .iter()
+                        .copied()
+                        .filter(|id| *id > 0)
+                        .collect::<std::collections::HashSet<_>>(),
+                )
+            } else {
+                let admin_path = std::path::Path::new("data/admin-phira-ids.json");
+                if admin_path.exists() {
+                    let raw = match std::fs::read_to_string(admin_path) {
+                        Ok(raw) => raw,
+                        Err(e) => return vec![format!("  ✗ 读取持久化管理员列表失败: {e}")],
+                    };
+                    let ids = match serde_json::from_str::<Vec<i32>>(&raw) {
+                        Ok(ids) => ids,
+                        Err(e) => return vec![format!("  ✗ 解析持久化管理员列表失败: {e}")],
+                    };
+                    Some(ids.into_iter().filter(|id| *id > 0).collect())
+                } else {
+                    // A database-backed or runtime-managed list may not have a
+                    // JSON mirror. Keep it unless YAML explicitly provides IDs.
+                    None
+                }
+            };
+
+            let benchmark_path = std::path::Path::new(crate::server::benchmark::BENCH_AUTH_FILE);
+            let token_update = if !config.benchmark_phira_tokens.is_empty()
+                || benchmark_path.exists()
+            {
+                match crate::server::benchmark::try_load_benchmark_tokens(&config) {
+                    Ok(tokens) => Some(tokens),
+                    Err(e) => return vec![format!("  ✗ 读取持久化压测凭据失败: {e}")],
+                }
+            } else {
+                // Preserve runtime-managed credentials when neither YAML nor
+                // the persistent auth file is the source of truth.
+                None
+            };
+
             let live = crate::server::LiveConfig::from_full(&config);
-            *state.live_config.blocking_write() = live;
+            let mut live_guard = match state.live_config.try_write() {
+                Ok(guard) => guard,
+                Err(_) => return vec!["  ✗ 运行时配置正在被占用，请重试".to_string()],
+            };
+            let admin_guard = if admin_update.is_some() {
+                match state.admin_ids.try_write() {
+                    Ok(guard) => Some(guard),
+                    Err(_) => return vec!["  ✗ 管理员列表正在被占用，请重试".to_string()],
+                }
+            } else {
+                None
+            };
+            let token_guard = if token_update.is_some() {
+                match state.bench_tokens.try_write() {
+                    Ok(guard) => Some(guard),
+                    Err(_) => {
+                        return vec!["  ✗ Benchmark token 列表正在被占用，请重试".to_string()]
+                    }
+                }
+            } else {
+                None
+            };
+
+            // Commit only after every required lock is available so a busy
+            // lock cannot leave the runtime configuration partially updated.
+            *live_guard = live;
+            if let (Some(mut guard), Some(ids)) = (admin_guard, admin_update) {
+                *guard = ids;
+            }
+            if let (Some(mut guard), Some(tokens)) = (token_guard, token_update) {
+                *guard = tokens;
+            }
+
             vec![
-                "  ✓ 配置已重新加载".to_string(),
-                "  ▸ 部分字段 (port/http_port/plugins_dir/database_url) 需要重启服务端才能生效"
+                format!("  ✓ 已从 {} 重新加载配置", path.display()),
+                "  ▸ 已热更新：chat_enabled、monitors；显式管理员/压测凭据同步更新"
                     .to_string(),
+                "  ▸ CLI monitor 覆盖及未在 YAML/持久化文件中声明的动态状态保持不变"
+                    .to_string(),
+                "  ▸ 端口、目录、数据库、限流和 Runtime v2 策略仍需重启生效".to_string(),
             ]
         })),
         CommandSpec::new(

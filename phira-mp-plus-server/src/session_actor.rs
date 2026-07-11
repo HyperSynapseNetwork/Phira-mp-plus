@@ -139,9 +139,15 @@ impl SessionActorCmd {
 
 // ── Chat ──────────────────────────────────────────────────────────
 
-async fn handle_chat(user: Arc<User>, _category: SessionCategory, content: String) -> Option<ServerCommand> {
+async fn handle_chat(
+    user: Arc<User>,
+    _category: SessionCategory,
+    content: String,
+) -> Option<ServerCommand> {
     use anyhow::Result;
-    if !user.server.config.chat_enabled { return None; }
+    if !user.server.live_config.read().await.chat_enabled {
+        return Some(ServerCommand::Chat(Err("chat is disabled".to_string())));
+    }
     let res: Result<()> = async {
         let room = user.room.read().await.as_ref().map(Arc::clone)
             .ok_or_else(|| anyhow::anyhow!("{}", crate::tl!("no-room")))?;

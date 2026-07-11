@@ -2,15 +2,17 @@
 
 本文档说明 `server_config.yml`、运行时数据文件和常见环境变量。示例配置见项目根目录的 [`server_config.yml`](../server_config.yml)。
 
-> **编译特性**: 默认只编译 `postgres` 支持。WASM 插件系统需要 `--features wit-bindgen` 或 `--features plugin-system,wit-bindgen`。
-> `cargo build --release --features wit-bindgen` 编译包含完整插件系统的二进制。
+> **编译特性**：当前默认特性为 `postgres` 和 `wit-bindgen`，常规 `cargo build --release` 已包含 PostgreSQL 与完整 WIT 插件系统。需要裁剪功能时再使用 `--no-default-features`。
 
 ## 配置加载规则
 
 - 默认读取项目当前工作目录下的 `server_config.yml`。
 - 可用 `--config <FILE>` 指定其他 YAML 配置文件。
-- 配置文件不存在时使用内置默认值；配置文件解析失败时会记录 warning 并回退默认值。
-- 命令行参数会覆盖 YAML 中对应字段：`--port`、`--http-port`、`--proxy-port`、`--monitor`、`--plugins-dir`、`--ext-file`、`--no-cli`。
+- 配置文件不存在时使用内置默认值；配置文件存在但 YAML 解析失败、包含未知顶层字段或校验不通过时直接拒绝启动，避免拼写错误被静默忽略并继续使用默认安全策略。
+- YAML 可以只写需要覆盖的字段，其余字段使用结构体默认值。
+- 只有显式提供的命令行参数才覆盖 YAML：`--port`、`--http-port`、`--proxy-port`、`--monitor`、`--plugins-dir`、`--ext-file`、`--no-cli`。未提供的 CLI 参数不会再用其默认值覆盖 YAML。
+- `config reload` 仍遵循同一优先级：显式 `--monitor` 不会被 YAML 重载覆盖；运行时或数据库维护的管理员/压测凭据在 YAML 与持久化文件均未声明时保持不变。
+- `phira_api_endpoint` 在启动和重载时会去除首尾空白及末尾 `/`，并校验必须为 HTTP(S) URL；`idle.check_interval_secs` 必须大于 0，防止空闲检测形成忙循环。
 - `RUST_LOG`、`NO_COLOR`、`TERM`、`STY`、`TMUX` 等环境变量只影响日志或终端显示，不会覆盖业务配置项。
 
 ## 最小可用配置
@@ -89,9 +91,9 @@ wasm_runtime:
 | `monitors` | `Vec<i32>` | `[2]` | 允许用 room monitor 协议旁观的 Phira 用户 ID。 |
 | `phira_api_endpoint` | `String` | `https://phira.5wyxi.com` | 全局 Phira API 地址。认证默认访问它；房间未配置覆盖时，查谱面、查成绩也访问它。 |
 | `plugins_dir` | `String` | `plugins` | WASM 插件目录。服务端启动时会自动创建。 |
-| `extensions_file` | `String?` | CLI 默认 `data/extensions.json` | 扩展数据持久化 JSON 路径。 |
+| `extensions_file` | `String?` | `data/extensions.json` | 扩展数据持久化 JSON 路径。 |
 | `cli_enabled` | `bool` | `true` | 是否启用交互式 TUI/CLI 管理控制台。`--no-cli` 会覆盖为 false。 |
-| `chat_enabled` | `bool` | `false`（示例建议 `true`） | 是否允许聊天。未写入配置时采用结构体默认值；建议在配置中显式写出。 |
+| `chat_enabled` | `bool` | `true` | 是否允许聊天；可通过 `config reload` 热更新。 |
 | `max_rooms` | `usize?` | 不限制 | 最大房间数。达到上限后会拒绝继续创建房间。 |
 | `max_users_per_room` | `usize?` | `100` | 每个房间最大玩家数。 |
 | `connection_rate_limit` | `u32` | `30` | 每个统计窗口内允许的连接次数。 |
@@ -107,9 +109,18 @@ wasm_runtime:
 | `admin_phira_ids` | `Vec<i32>` | `[]` | 游戏内管理员 Phira ID。管理员可在创建房间弹窗输入 `_命令` 执行 CLI 命令。 |
 | `wasm_runtime` | `object` | 见下表 | WASM 插件运行时资源限制。 |
 
-> 注意：`chat_enabled` 的 Rust 结构体默认值是 `false`，但项目示例配置显式设置为 `true`。如果希望聊天可用，请在 `server_config.yml` 里明确写 `chat_enabled: true`。
+端口校验规则：`port`、`http_port` 和启用后的 `proxy_protocol_port` 不能冲突；设置 `proxy_protocol_port > 0` 时必须同时启用 `http_port`。`max_rooms` 与 `max_users_per_room` 若设置，必须大于 0。`max_rooms` 同时约束客户端建房与管理端/WIT 创建空房。
 
 
+## 运行时重载
+
+```text
+config reload
+```
+
+命令会重新读取启动时 `--config` 指定的同一文件，而不是固定读取当前目录下的 `server_config.yml`。聊天开关和 monitor 列表可立即生效；YAML 或对应持久化文件明确提供的管理员/压测凭据也会同步。显式 `--monitor` 仍保持最高优先级，未由 YAML 或持久化源声明的数据库/运行时动态列表不会被误清空。
+
+端口、目录、数据库、连接限流以及 Runtime v2 内部策略需要重启服务端。配置或相关持久化列表读取、解析、未知字段或校验失败时保留当前运行配置并返回明确错误，不会用空列表覆盖现有状态。
 
 ## 统一 PostgreSQL 持久化
 

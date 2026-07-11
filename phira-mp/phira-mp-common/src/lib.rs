@@ -232,6 +232,13 @@ mod stream_impl {
         pub fn blocking_send(&self, payload: S) -> Result<()> {
             self.send_tx.blocking_send(payload)
         }
+        /// Abort both socket tasks immediately. This is used when a session is
+        /// replaced, kicked, or banned; dropping the outer Arc may be delayed by
+        /// task-owned references.
+        pub fn close(&self) {
+            self.send_task_handle.abort();
+            self.recv_task_handle.abort();
+        }
     }
 
     impl<S, R> Drop for Stream<S, R> {

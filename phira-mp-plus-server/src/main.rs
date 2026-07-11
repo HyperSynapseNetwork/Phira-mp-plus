@@ -21,24 +21,22 @@ use tracing::{info, warn};
     long_about = "Phira multiplayer server with WASM plugins, an administrative console, and extension APIs."
 )]
 struct Args {
-    #[arg(short, long, default_value_t = 12346, help = "TCP listen port")]
-    port: u16,
+    #[arg(short, long, help = "TCP listen port (overrides YAML only when provided)")]
+    port: Option<u16>,
 
     #[arg(
         short = 'd',
         long = "plugins-dir",
-        default_value = "plugins",
-        help = "WASM plugin directory"
+        help = "WASM plugin directory (overrides YAML only when provided)"
     )]
-    plugins_dir: String,
+    plugins_dir: Option<String>,
 
     #[arg(
         short = 'e',
         long = "ext-file",
-        default_value = "data/extensions.json",
-        help = "Extension data file"
+        help = "Extension data file (overrides YAML only when provided)"
     )]
-    extensions_file: String,
+    extensions_file: Option<String>,
 
     #[arg(short, long, default_value = "phira-mp-plus", help = "Log file prefix")]
     log_file: String,
@@ -52,17 +50,18 @@ struct Args {
 
     #[arg(
         long = "http-port",
-        default_value_t = 12347,
-        help = "HTTP and SSE listen port"
+        help = "HTTP and SSE listen port (overrides YAML only when provided)"
     )]
-    http_port: u16,
+    http_port: Option<u16>,
 
     #[arg(
         long = "proxy-port",
-        default_value_t = 0,
-        help = "PROXY protocol HTTP port (0 = disabled). Set to 12344 for reverse proxy support."
+        help = "PROXY protocol HTTP port (0 = disabled; overrides YAML only when provided)"
     )]
-    proxy_protocol_port: u16,
+    proxy_protocol_port: Option<u16>,
+
+    #[arg(long = "no-cli", help = "Disable the interactive management console")]
+    no_cli: bool,
 
     #[arg(
         short = 'c',
@@ -95,22 +94,21 @@ async fn main() -> Result<()> {
     terminal.apply_environment();
     let args = Args::parse();
 
-    let (base_config, config_load) = load_config(&args.config);
+    let (mut base_config, config_load) = load_config(&args.config)?;
+    base_config.config_path = args.config.clone();
     let mut config = base_config.merge_cli(PlusConfigCli {
         port: args.port,
         http_port: args.http_port,
         proxy_protocol_port: args.proxy_protocol_port,
         monitors: args.monitors.clone(),
         plugins_dir: args.plugins_dir.clone(),
-        extensions_file: Some(args.extensions_file.clone()),
-        log_file: args.log_file.clone(),
+        extensions_file: args.extensions_file.clone(),
+        disable_cli: args.no_cli,
     });
-    if config.monitors.is_empty() {
-        config.monitors.push(2);
-    }
-
+    config.normalize()?;
     std::fs::create_dir_all("data")?;
     std::fs::create_dir_all(&config.plugins_dir)?;
+    config.validate()?;
 
     let cli_enabled = config.cli_enabled;
     let (cmd_tx, cmd_rx) = optional_channel(cli_enabled);
@@ -249,7 +247,6 @@ fn optional_channel<T>(
 enum ConfigLoad {
     Loaded,
     Missing,
-    Invalid(String),
 }
 
 impl ConfigLoad {
@@ -257,23 +254,15 @@ impl ConfigLoad {
         match self {
             Self::Loaded => info!(path, "configuration loaded"),
             Self::Missing => info!(path, "configuration file not found; using defaults"),
-            Self::Invalid(error) => {
-                warn!(path, %error, "failed to load configuration; using defaults")
-            }
         }
     }
 }
 
-fn load_config(path: &str) -> (PlusConfig, ConfigLoad) {
+fn load_config(path: &str) -> Result<(PlusConfig, ConfigLoad)> {
     if !Path::new(path).exists() {
-        return (PlusConfig::default(), ConfigLoad::Missing);
+        return Ok((PlusConfig::default(), ConfigLoad::Missing));
     }
 
-    match PlusConfig::from_yaml(path) {
-        Ok(config) => (config, ConfigLoad::Loaded),
-        Err(error) => (
-            PlusConfig::default(),
-            ConfigLoad::Invalid(error.to_string()),
-        ),
-    }
+    let config = PlusConfig::from_yaml(path)?;
+    Ok((config, ConfigLoad::Loaded))
 }

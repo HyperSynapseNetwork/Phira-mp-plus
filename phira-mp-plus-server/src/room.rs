@@ -751,6 +751,14 @@ impl Room {
         }
     }
 
+    pub async fn broadcast_except(&self, excluded_user_id: i32, cmd: ServerCommand) {
+        for session in self.users().await.into_iter().chain(self.monitors().await) {
+            if session.id != excluded_user_id {
+                session.try_send(cmd.clone()).await;
+            }
+        }
+    }
+
     pub async fn broadcast_players(&self, cmd: ServerCommand) {
         for session in self.users().await {
             session.try_send(cmd.clone()).await;

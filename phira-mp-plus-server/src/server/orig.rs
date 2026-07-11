@@ -289,6 +289,7 @@ impl PlusServer {
                 warn!("lost connection with {id}");
                 let session_opt = lost_con_state.sessions.write().await.remove(&id);
                 if let Some(session) = session_opt {
+                    session.stream.close();
                     let user_ref = {
                         let session_guard = session.user.session.read().await;
                         session_guard
@@ -580,6 +581,7 @@ impl PlusServerState {
             warn!(user = user_id, ?err, "failed to deliver ban reason before disconnect");
         }
 
+        session.stream.close();
         if let Err(err) = self.lost_con_tx.send(session_id).await {
             warn!(user = user_id, ?err, "failed to disconnect banned user");
         }
@@ -781,6 +783,11 @@ impl PlusServerState {
             let mut rooms = self.rooms.write().await;
             if rooms.contains_key(&rid) {
                 return Err("room already exists".to_string());
+            }
+            if let Some(limit) = self.config.max_rooms {
+                if rooms.len() >= limit {
+                    return Err(format!("server room limit reached (max {limit})"));
+                }
             }
             rooms.insert(rid.clone(), Arc::clone(&room));
         }

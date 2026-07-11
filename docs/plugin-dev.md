@@ -147,16 +147,16 @@ fn init() -> Result<(), String> {
     host_api("sse.register_stream", &[json!({
         "path": "/api/rooms/listen",
         "plugin": "my-plugin",
-        "event_types": ["RoomCreate", "RoomJoin", "RoomLeave",
-            "GameEnd", "RoundComplete"],
+        "event_types": ["create_room", "join_room", "leave_room", "new_round"],
     })]);
     Ok(())
 }
 ```
 
 注册后，客户端可连接 `GET /api/rooms/listen` 接收 SSE 事件。宿主收到每个 `MpEvent` 后调用插件 `on_api("sse:translate", &[json!({"event_type": ..., "data": ...})])`，插件返回翻译后的事件对象（或 `null` 跳过该事件）。
+`event_types` 会在调用插件前由宿主执行过滤；空数组表示接收全部事件。内置房间事件名称为 `create_room`、`update_room`、`join_room`、`leave_room`、`new_round`。为兼容旧配置，`CreateRoom`/`RoomCreate` 等历史写法仍可识别。插件启用或重载后新增的 SSE 路由立即生效，不需要重启 HTTP 服务。
 
-路由路径中支持 `:param`、`<param>`、`{param}` 参数占位符。
+路由路径中支持 `:param`、`<param>`、`{param}` 参数占位符。路径缺少开头 `/` 时宿主会自动补全；重复注册同一路径会替换原处理器。普通 HTTP 路由与 SSE 路由均可在插件重载后即时生效。
 
 ---
 
@@ -169,7 +169,7 @@ fn init() -> Result<(), String> {
     host_api("sse.register_stream", &[json!({
         "path": "/api/events/rooms",
         "plugin": "my-plugin",
-        "event_types": ["RoomCreate", "RoomJoin", "RoomLeave"],
+        "event_types": ["create_room", "join_room", "leave_room"],
     })]);
     Ok(())
 }
@@ -188,7 +188,7 @@ fn on_api(method: String, args: Vec<JsonValue>) -> ApiResult {
                 .and_then(|s| serde_json::from_str(s).ok())
                 .unwrap_or(json!({}));
             let translated = match raw_type {
-                "RoomJoin" => json!({"type": "join_room", "room": raw_data.get("room_id"), "user": raw_data.get("user_id")}),
+                "join_room" => json!({"type": "join_room", "room": raw_data.get("room"), "user": raw_data.get("user")}),
                 _ => json!(null), // null = 跳过此事件
             };
             ApiResult::Ok(json_value_to_wit(&translated))
