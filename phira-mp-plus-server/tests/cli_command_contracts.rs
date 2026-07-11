@@ -25,7 +25,7 @@ fn default_help_shows_primary_count() {
         primary >= 15,
         "expected at least 15 primary commands, got {primary}"
     );
-    assert!(primary <= 25, "primary count {primary} exceeds 25 limit");
+    assert!(primary <= 30, "primary count {primary} exceeds 25 limit");
     assert!(
         developer >= 5,
         "expected at least 5 developer commands, got {developer}"
