@@ -16,7 +16,6 @@ use crate::persistence::pipeline::{
     persist_simulation_event_if_needed, stage_production_telemetry_if_needed, BenchmarkReportStage,
     PersistenceWriteStage, ProductionTelemetryStage,
 };
-use crate::persistence::wal::PersistenceWal;
 use crate::persistence::stats::{
     record_benchmark_report_persist_request, record_benchmark_report_persist_skipped,
     record_db_dispatch_failure, record_db_dispatch_skipped_no_database, record_db_dispatch_success,
@@ -26,6 +25,7 @@ use crate::persistence::stats::{
     record_simulation_persist_request, record_telemetry_cutover_observation, PersistenceStats,
     TelemetryCutoverObservation,
 };
+use crate::persistence::wal::PersistenceWal;
 use crate::telemetry_batcher::{
     TelemetryBatcher, TelemetryBatcherPolicy, TelemetryBatcherStats, TelemetryCutoverMode,
 };
@@ -41,7 +41,10 @@ use tracing::{debug, info, trace, warn};
 static DEAD_LETTER_FAILURE_REPORTED: AtomicBool = AtomicBool::new(false);
 
 enum WorkerMessage {
-    Event { wal_id: uuid::Uuid, event: PersistenceEvent },
+    Event {
+        wal_id: uuid::Uuid,
+        event: PersistenceEvent,
+    },
     Flush {
         timeout: Duration,
         reply: oneshot::Sender<Result<(), String>>,
@@ -188,7 +191,10 @@ impl PersistenceWorker {
         dead_letter_path: Option<String>,
     ) -> Arc<Self> {
         Self::spawn_with_policy_and_journals(
-            queue_capacity, telemetry_policy, telemetry_cutover_mode, dead_letter_path,
+            queue_capacity,
+            telemetry_policy,
+            telemetry_cutover_mode,
+            dead_letter_path,
             "data/persistence-worker.wal.jsonl".to_string(),
         )
     }
@@ -225,7 +231,8 @@ impl PersistenceWorker {
             let mut replay = match worker_wal.replay().await {
                 Ok(events) => std::collections::VecDeque::from(events),
                 Err(error) => {
-                    crate::supervisor_actor::report_critical_failure("persistence-wal", error).await;
+                    crate::supervisor_actor::report_critical_failure("persistence-wal", error)
+                        .await;
                     std::collections::VecDeque::new()
                 }
             };
@@ -233,7 +240,9 @@ impl PersistenceWorker {
                 let message = if let Some((wal_id, event)) = replay.pop_front() {
                     WorkerMessage::Event { wal_id, event }
                 } else {
-                    let Some(message) = rx.recv().await else { break; };
+                    let Some(message) = rx.recv().await else {
+                        break;
+                    };
                     message
                 };
                 let (wal_id, event) = match message {
@@ -443,7 +452,8 @@ impl PersistenceWorker {
                 }
                 record_processed(&worker_stats, kind, simulation, summary).await;
                 if let Err(error) = worker_wal.ack(wal_id).await {
-                    crate::supervisor_actor::report_critical_failure("persistence-wal-ack", error).await;
+                    crate::supervisor_actor::report_critical_failure("persistence-wal-ack", error)
+                        .await;
                 }
             }
         });
