@@ -85,6 +85,9 @@ pub struct RuntimeV2Config {
     /// failed payloads; otherwise disabling it reintroduces silent loss.
     #[serde(default = "default_persistence_dead_letter_path")]
     pub persistence_dead_letter_path: Option<String>,
+    /// Enqueue-before write-ahead log used for crash recovery and startup replay.
+    #[serde(default = "default_persistence_wal_path")]
+    pub persistence_wal_path: String,
     /// Batcher policy for production Touch/Judge telemetry.
     #[serde(default)]
     pub telemetry_batcher: TelemetryBatcherPolicy,
@@ -101,6 +104,7 @@ impl Default for RuntimeV2Config {
         Self {
             persistence_queue_capacity: default_runtime_persistence_queue_capacity(),
             persistence_dead_letter_path: default_persistence_dead_letter_path(),
+            persistence_wal_path: default_persistence_wal_path(),
             telemetry_batcher: TelemetryBatcherPolicy::default(),
             telemetry_cutover_mode: TelemetryCutoverMode::default(),
             phira_http: PhiraHttpPolicyConfig::default(),
@@ -380,6 +384,11 @@ impl PlusConfig {
                     .into(),
             ));
         }
+        if runtime.persistence_wal_path.trim().is_empty() {
+            return Err(AppError::ConfigValidation(
+                "runtime_v2.persistence_wal_path 不能为空".into(),
+            ));
+        }
         let telemetry = &runtime.telemetry_batcher;
         if !(16..=1_000_000).contains(&telemetry.queue_capacity)
             || telemetry.max_items_per_batch == 0
@@ -516,6 +525,9 @@ fn default_runtime_persistence_queue_capacity() -> usize {
 }
 fn default_persistence_dead_letter_path() -> Option<String> {
     Some("data/persistence-dead-letter.jsonl".to_string())
+}
+fn default_persistence_wal_path() -> String {
+    "data/persistence-worker.wal.jsonl".to_string()
 }
 fn default_max_sessions() -> usize {
     4096

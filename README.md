@@ -357,3 +357,7 @@ Phira-mp+ 整体采用 **GNU Affero General Public License v3.0** — 详见 [LI
 ## 致谢
 
 感谢 [TeamFlos](https://github.com/TeamFlos) 开发和维护 Phira、phira-mp 项目，以及 [tphira-mp](https://github.com/Pimeng/tphira-mp) 与 [jphira-mp](https://github.com/lRENyaaa/jphira-mp) 提供的实现思路，还有所有支持本项目的用户。详见 [NOTICE](NOTICE)。
+
+### Persistence crash recovery
+
+Runtime v2 now includes an fsync-before-admission PersistenceWorker WAL (`runtime_v2.persistence_wal_path`). Unacknowledged ordinary events are replayed on restart, and graceful flush/shutdown compacts the journal. This closes the previous in-memory-queue crash window for ordinary worker events. Touch/Judge telemetry still requires batch commit acknowledgements for a full end-to-end commit guarantee.

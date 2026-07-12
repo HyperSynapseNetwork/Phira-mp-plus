@@ -18,6 +18,7 @@ pub mod simulation;
 pub mod stats;
 pub mod telemetry;
 pub mod users;
+pub mod wal;
 pub mod worker;
 
 pub use benchmark::{

@@ -221,11 +221,12 @@ impl PlusServer {
         ));
         let simulation = Arc::new(crate::simulation::SimulationManager::new());
         let persistence_worker =
-            crate::persistence_worker::PersistenceWorker::spawn_with_policy_and_dead_letter(
+            crate::persistence_worker::PersistenceWorker::spawn_with_policy_and_journals(
                 runtime_v2.persistence_queue_capacity,
                 runtime_v2.telemetry_batcher.clone(),
                 runtime_v2.telemetry_cutover_mode,
                 runtime_v2.persistence_dead_letter_path.clone(),
+                runtime_v2.persistence_wal_path.clone(),
             );
         crate::persistence_worker::spawn_event_bus_mirror(
             Arc::clone(&event_bus),

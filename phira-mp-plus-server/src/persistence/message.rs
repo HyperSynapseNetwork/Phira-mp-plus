@@ -1,10 +1,11 @@
 //! Typed PersistenceWorker message envelope.
 
 use crate::benchmark_report::{BenchmarkMode, BenchmarkReport};
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::sync::Arc;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum PersistenceEvent {
     RoomSnapshot {
         room_id: String,

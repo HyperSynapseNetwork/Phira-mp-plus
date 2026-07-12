@@ -8,7 +8,7 @@
 //! worker-authoritative mode makes the batcher the normal-operation single
 //! writer while retaining a direct fallback only when enqueue is rejected.
 //! Accepted telemetry batches are retained in memory after database failure,
-//! but there is still no disk WAL for crash/power-loss recovery.
+//! ordinary events now use an fsync-before-admission WAL with startup replay and ACK compaction. Touch/Judge durability still terminates at TelemetryBatcher admission until batch commit acknowledgements are wired end-to-end.
 
 use crate::persistence::message::PersistenceEvent;
 use crate::persistence::pipeline::{
@@ -16,6 +16,7 @@ use crate::persistence::pipeline::{
     persist_simulation_event_if_needed, stage_production_telemetry_if_needed, BenchmarkReportStage,
     PersistenceWriteStage, ProductionTelemetryStage,
 };
+use crate::persistence::wal::PersistenceWal;
 use crate::persistence::stats::{
     record_benchmark_report_persist_request, record_benchmark_report_persist_skipped,
     record_db_dispatch_failure, record_db_dispatch_skipped_no_database, record_db_dispatch_success,
@@ -40,7 +41,7 @@ use tracing::{debug, info, trace, warn};
 static DEAD_LETTER_FAILURE_REPORTED: AtomicBool = AtomicBool::new(false);
 
 enum WorkerMessage {
-    Event(PersistenceEvent),
+    Event { wal_id: uuid::Uuid, event: PersistenceEvent },
     Flush {
         timeout: Duration,
         reply: oneshot::Sender<Result<(), String>>,
@@ -64,6 +65,7 @@ pub struct PersistenceWorker {
     stats: Arc<RwLock<PersistenceStats>>,
     telemetry_batcher: Arc<TelemetryBatcher>,
     telemetry_cutover_mode: Arc<RwLock<TelemetryCutoverMode>>,
+    wal: Arc<PersistenceWal>,
 }
 
 async fn report_dead_letter_durability_failure(error: String) {
@@ -185,6 +187,19 @@ impl PersistenceWorker {
         telemetry_cutover_mode: TelemetryCutoverMode,
         dead_letter_path: Option<String>,
     ) -> Arc<Self> {
+        Self::spawn_with_policy_and_journals(
+            queue_capacity, telemetry_policy, telemetry_cutover_mode, dead_letter_path,
+            "data/persistence-worker.wal.jsonl".to_string(),
+        )
+    }
+
+    pub fn spawn_with_policy_and_journals(
+        queue_capacity: usize,
+        telemetry_policy: TelemetryBatcherPolicy,
+        telemetry_cutover_mode: TelemetryCutoverMode,
+        dead_letter_path: Option<String>,
+        wal_path: String,
+    ) -> Arc<Self> {
         let capacity = queue_capacity.max(16);
         let dead_letter_path = dead_letter_path
             .map(|path| path.trim().to_string())
@@ -203,11 +218,26 @@ impl PersistenceWorker {
         let worker_stats = Arc::clone(&stats);
         let worker_telemetry = Arc::clone(&telemetry_batcher);
         let worker_dead_letter_path = dead_letter_path.map(PathBuf::from);
+        let wal = Arc::new(PersistenceWal::new(wal_path));
+        let worker_wal = Arc::clone(&wal);
 
         crate::supervisor_actor::spawn_critical("persistence-worker", async move {
-            while let Some(message) = rx.recv().await {
-                let event = match message {
-                    WorkerMessage::Event(event) => event,
+            let mut replay = match worker_wal.replay().await {
+                Ok(events) => std::collections::VecDeque::from(events),
+                Err(error) => {
+                    crate::supervisor_actor::report_critical_failure("persistence-wal", error).await;
+                    std::collections::VecDeque::new()
+                }
+            };
+            loop {
+                let message = if let Some((wal_id, event)) = replay.pop_front() {
+                    WorkerMessage::Event { wal_id, event }
+                } else {
+                    let Some(message) = rx.recv().await else { break; };
+                    message
+                };
+                let (wal_id, event) = match message {
+                    WorkerMessage::Event { wal_id, event } => (wal_id, event),
                     WorkerMessage::Flush { timeout, reply } => {
                         let result = worker_telemetry.flush(timeout).await;
                         if let Err(error) = &result {
@@ -412,6 +442,9 @@ impl PersistenceWorker {
                     }
                 }
                 record_processed(&worker_stats, kind, simulation, summary).await;
+                if let Err(error) = worker_wal.ack(wal_id).await {
+                    crate::supervisor_actor::report_critical_failure("persistence-wal-ack", error).await;
+                }
             }
         });
 
@@ -421,6 +454,7 @@ impl PersistenceWorker {
             stats,
             telemetry_batcher,
             telemetry_cutover_mode,
+            wal,
             suspended: AtomicBool::new(false),
             closed: AtomicBool::new(false),
         })
@@ -457,12 +491,19 @@ impl PersistenceWorker {
             .await;
             return Err(event);
         }
-        match self.tx.send(WorkerMessage::Event(event)).await {
+        let wal_id = match self.wal.admit(event.clone()).await {
+            Ok(id) => id,
+            Err(error) => {
+                record_dropped(&self.stats, kind, simulation, summary, error).await;
+                return Err(event);
+            }
+        };
+        match self.tx.send(WorkerMessage::Event { wal_id, event }).await {
             Ok(()) => {
                 record_queued(&self.stats, kind, simulation, summary).await;
                 Ok(())
             }
-            Err(mpsc::error::SendError(WorkerMessage::Event(event))) => {
+            Err(mpsc::error::SendError(WorkerMessage::Event { event, .. })) => {
                 record_dropped(
                     &self.stats,
                     kind,
@@ -495,6 +536,7 @@ impl PersistenceWorker {
             .await
             .map_err(|_| "persistence flush timed out".to_string())?
             .map_err(|_| "persistence flush acknowledgement was dropped".to_string())??;
+        self.wal.compact().await?;
         Ok(())
     }
 
@@ -527,6 +569,7 @@ impl PersistenceWorker {
             self.closed.store(false, Ordering::Release);
             return Err(error);
         }
+        self.wal.compact().await?;
         Ok(())
     }
 

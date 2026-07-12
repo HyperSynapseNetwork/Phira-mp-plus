@@ -398,3 +398,19 @@ MALLOC_CONF=background_thread:true,dirty_decay_ms:3000,muzzy_decay_ms:3000,stats
 | `data/plugins/<plugin>/` | 插件私有持久化文件目录。 |
 | `log/` | 运行日志目录。 |
 | `NOTICE` | 版权归属与第三方依赖许可证声明。 |
+
+### Persistence admission WAL
+
+`runtime_v2.persistence_wal_path` configures the local write-ahead journal used before PersistenceWorker queue admission. The default is `data/persistence-worker.wal.jsonl`.
+
+For each accepted event PMP performs:
+
+```text
+serialize admission → append WAL → flush → sync_data → enqueue
+```
+
+At startup the worker scans the journal and replays every admission without a matching ACK. After terminal handling it appends an ACK. Explicit `runtime flush` and graceful shutdown compact the file by atomically rewriting only outstanding admissions.
+
+The WAL is local-node durability, not replication. It does not survive loss of the host filesystem. A corrupt record stops trusted replay and marks the persistence subsystem degraded; PMP does not silently discard the damaged suffix.
+
+For low-frequency ordinary events, ACK follows successful persistence, an explicit no-database terminal policy, or successful dead-letter preservation. Touch/Judge currently ACK after TelemetryBatcher accepts the event; therefore the WAL does not yet prove PostgreSQL commit for telemetry batches.

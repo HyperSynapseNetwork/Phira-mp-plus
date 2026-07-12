@@ -37,3 +37,11 @@
 - Room 全状态 Actor ownership 尚未完成。
 - 当前有数据库最终失败 dead-letter，但无 enqueue-before WAL、启动 replay 与 compaction。
 - 插件仍在 PMP 进程内执行。
+## Phase 3 — Persistence admission WAL
+
+- Added `runtime_v2.persistence_wal_path` (default `data/persistence-worker.wal.jsonl`).
+- PersistenceWorker now fsyncs an admission record before accepting an event into its bounded queue.
+- Startup replays admissions that do not have a matching ACK.
+- Terminal processing appends an ACK; explicit Flush/Shutdown safely compact the WAL to outstanding admissions only.
+- A malformed WAL line is treated as a critical durability failure rather than being silently skipped.
+- Current boundary: ordinary PersistenceWorker events reach terminal DB/dead-letter handling before ACK. Touch/Judge events are ACKed after successful TelemetryBatcher staging; end-to-end batch commit ACK is still required before claiming crash-safe telemetry commits.
