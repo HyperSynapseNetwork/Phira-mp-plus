@@ -151,4 +151,144 @@ impl RoomCommandGateway {
             room_id: room_id_str,
         })
     }
+
+    // ── AddUser ────────────────────────────────────────────────────────────
+
+    pub async fn add_user(
+        &self,
+        state: &PlusServerState,
+        room_id: &str,
+        user_id: i32,
+        user_name: &str,
+        monitor: bool,
+    ) -> Result<Value, String> {
+        let started = Instant::now();
+        let rid = room_id.to_string();
+        let uname = user_name.to_string();
+        let result = self
+            .room_mailbox(&rid, |reply| RoomActorCommand::AddUser {
+                room_id: rid.clone(),
+                user_id,
+                user_name: uname,
+                monitor,
+                reply,
+            })
+            .await;
+        self.finish_command(state, RoomCommandKind::AddUser.action(), room_id, started, result)
+            .into_untyped()
+    }
+
+    pub(in crate::room_actor) async fn add_user_in_actor(
+        &self,
+        state: &PlusServerState,
+        room_id: &str,
+        user_id: i32,
+        user_name: &str,
+        monitor: bool,
+        room_override: Option<Arc<crate::room::Room>>,
+    ) -> Result<RoomCommandPayload, String> {
+        let (rid, room) = self.resolve_room(state, room_id, room_override).await?;
+
+        // Check capacity
+        let current_count = room.users().await.len();
+        if current_count >= room.control_snapshot().max_users && !monitor {
+            return Err("room is full".to_string());
+        }
+
+        // Add user to appropriate list and set live flag.
+        // The caller (session_room) sets user.room and user.monitor.
+        // Here we only manage the room-side lists.
+        if monitor {
+            // Keep a lightweight tracking entry for monitors (they are still in users for compatibility)
+            // The actual monitor reference is added via add_user below
+        }
+
+        if !room.live.swap(true, std::sync::atomic::Ordering::SeqCst) {
+            info!(room = %rid, "room goes live via add_user");
+        }
+
+        state.dispatch_plugin_event(PluginEvent::RoomModify {
+            user_id,
+            room_id: room_id.to_string(),
+            data: serde_json::json!({"action": if monitor { "monitor_join" } else { "join" }}).to_string(),
+        })
+        .await;
+
+        Ok(RoomCommandPayload::UserAdded {
+            room_id: room_id.to_string(),
+            user_id,
+            monitor,
+            room_full: current_count + 1 >= room.control_snapshot().max_users,
+        })
+    }
+
+    // ── RemoveUser ──────────────────────────────────────────────────────────
+
+    pub async fn remove_user(
+        &self,
+        state: &PlusServerState,
+        room_id: &str,
+        user_id: i32,
+    ) -> Result<Value, String> {
+        let started = Instant::now();
+        let rid = room_id.to_string();
+        let result = self
+            .room_mailbox(&rid, |reply| RoomActorCommand::RemoveUser {
+                room_id: rid.clone(),
+                user_id,
+                reply,
+            })
+            .await;
+        self.finish_command(state, RoomCommandKind::RemoveUser.action(), room_id, started, result)
+            .into_untyped()
+    }
+
+    pub(in crate::room_actor) async fn remove_user_in_actor(
+        &self,
+        state: &PlusServerState,
+        room_id: &str,
+        user_id: i32,
+        room_override: Option<Arc<crate::room::Room>>,
+    ) -> Result<RoomCommandPayload, String> {
+        let (rid, room) = self.resolve_room(state, room_id, room_override).await?;
+
+        // Find the user in room lists before we can drive on_user_leave.
+        // Search users first, then monitors.
+        let found = {
+            let users = room.users().await;
+            users.iter().find(|u| u.id == user_id).cloned()
+        };
+        let found = found.or_else(|| {
+            let monitors = room.monitors().await;
+            monitors.iter().find(|u| u.id == user_id).cloned()
+        });
+
+        if let Some(user) = found {
+            let was_monitor = user.monitor.load(std::sync::atomic::Ordering::SeqCst);
+            let should_drop = room.on_user_leave(&user).await;
+            if should_drop {
+                state.rooms.write().await.remove(&rid);
+            }
+            if !was_monitor {
+                state.publish_room_event(RoomEvent::LeaveRoom {
+                    room: rid.clone(),
+                    user: user_id,
+                })
+                .await;
+            }
+            state.dispatch_plugin_event(PluginEvent::RoomModify {
+                user_id,
+                room_id: room_id.to_string(),
+                data: serde_json::json!({"action": "leave"}).to_string(),
+            })
+            .await;
+            Ok(RoomCommandPayload::UserRemoved {
+                room_id: room_id.to_string(),
+                user_id,
+                room_dropped: should_drop,
+            })
+        } else {
+            Err("user not found in room".to_string())
+        }
+    }
 }

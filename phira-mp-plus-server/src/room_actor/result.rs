@@ -98,6 +98,17 @@ pub enum RoomCommandPayload {
         room_id: String,
         user_id: i32,
     },
+    UserAdded {
+        room_id: String,
+        user_id: i32,
+        monitor: bool,
+        room_full: bool,
+    },
+    UserRemoved {
+        room_id: String,
+        user_id: i32,
+        room_dropped: bool,
+    },
 }
 
 impl RoomCommandPayload {
@@ -167,6 +178,14 @@ impl RoomCommandPayload {
             }),
             Self::RoundAborted { room_id, user_id } => json!({
                 "ok": true, "room_id": room_id, "user_id": user_id,
+            }),
+            Self::UserAdded { room_id, user_id, monitor, room_full } => json!({
+                "ok": true, "room_id": room_id, "user_id": user_id,
+                "monitor": monitor, "room_full": room_full,
+            }),
+            Self::UserRemoved { room_id, user_id, room_dropped } => json!({
+                "ok": true, "room_id": room_id, "user_id": user_id,
+                "room_dropped": room_dropped,
             }),
         }
     }

@@ -19,6 +19,8 @@ pub(super) enum RoomCommandKind {
     CancelReady,
     SubmitResult,
     AbortRound,
+    AddUser,
+    RemoveUser,
 }
 
 impl RoomCommandKind {
@@ -38,6 +40,8 @@ impl RoomCommandKind {
             Self::CancelReady => "cancel_ready",
             Self::SubmitResult => "submit_result",
             Self::AbortRound => "abort_round",
+            Self::AddUser => "add_user",
+            Self::RemoveUser => "remove_user",
         }
     }
 
@@ -125,6 +129,18 @@ pub(super) enum RoomActorCommand {
         user_id: i32,
         reply: oneshot::Sender<RoomCommandResult>,
     },
+    AddUser {
+        room_id: String,
+        user_id: i32,
+        user_name: String,
+        monitor: bool,
+        reply: oneshot::Sender<RoomCommandResult>,
+    },
+    RemoveUser {
+        room_id: String,
+        user_id: i32,
+        reply: oneshot::Sender<RoomCommandResult>,
+    },
 }
 
 impl RoomActorCommand {
@@ -144,6 +160,8 @@ impl RoomActorCommand {
             Self::CancelReady { .. } => RoomCommandKind::CancelReady,
             Self::SubmitResult { .. } => RoomCommandKind::SubmitResult,
             Self::AbortRound { .. } => RoomCommandKind::AbortRound,
+            Self::AddUser { .. } => RoomCommandKind::AddUser,
+            Self::RemoveUser { .. } => RoomCommandKind::RemoveUser,
         }
     }
 
@@ -162,7 +180,9 @@ impl RoomActorCommand {
             | Self::SetReady { reply, .. }
             | Self::CancelReady { reply, .. }
             | Self::SubmitResult { reply, .. }
-            | Self::AbortRound { reply, .. } => {
+            | Self::AbortRound { reply, .. }
+            | Self::AddUser { reply, .. }
+            | Self::RemoveUser { reply, .. } => {
                 let _ = reply.send(result);
             }
         }

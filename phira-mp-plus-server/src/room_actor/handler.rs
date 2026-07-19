@@ -152,6 +152,24 @@ impl RoomCommandHandler {
                     .await,
                 RoomCommandDelivery::PerRoomMailbox,
             ),
+            RoomActorCommand::AddUser {
+                room_id,
+                user_id,
+                user_name,
+                monitor,
+                ..
+            } => typed_or_err(
+                gateway
+                    .add_user_in_actor(state, room_id, *user_id, user_name, *monitor, room.clone())
+                    .await,
+                RoomCommandDelivery::PerRoomMailbox,
+            ),
+            RoomActorCommand::RemoveUser { room_id, user_id, .. } => typed_or_err(
+                gateway
+                    .remove_user_in_actor(state, room_id, *user_id, room.clone())
+                    .await,
+                RoomCommandDelivery::PerRoomMailbox,
+            ),
         }
     }
 
