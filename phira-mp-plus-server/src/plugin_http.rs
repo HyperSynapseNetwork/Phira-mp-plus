@@ -148,9 +148,10 @@ impl PluginHttpServer {
             });
         }
 
-        if let Err(err) = axum::serve(listener, app.into_make_service()).await {
-            error!(?err, "HTTP server stopped unexpectedly");
-        }
+        axum::serve(listener, app.into_make_service())
+            .await
+            .map_err(|e| format!("HTTP server error: {e}"))?;
+        Ok(())
     }
 }
 
