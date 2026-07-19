@@ -623,9 +623,10 @@ mod tests {
         let path =
             std::env::temp_dir().join(format!("pmp-wal-corrupt-{}.jsonl", uuid::Uuid::new_v4()));
         // Write a manually crafted frame with wrong checksum.
-        // Write a manually crafted frame with wrong checksum.
         let bad_frame = r#"{"ver":1,"record":"admission","id":"00000000-0000-0000-0000-000000000001","event":{"PersistenceEvent":{"ServerEvent":{"kind":"bad","payload":{"n":1},"simulation":false}}},"cksum":"0000"}"#;
-        tokio::fs::write(&path, format!("{bad_frame}\n")).await.unwrap();
+        tokio::fs::write(&path, format!("{bad_frame}\n"))
+            .await
+            .unwrap();
         let wal = PersistenceWal::new(&path);
 
         let result = wal.replay().await;
@@ -652,8 +653,12 @@ mod tests {
         // Append a trailing incomplete line (simulate crash during write).
         let mut file = tokio::fs::OpenOptions::new()
             .append(true)
-            .open(&path).await.unwrap();
-        file.write_all(b"{\"ver\":1,\"record\":\"admission\",").await.unwrap();
+            .open(&path)
+            .await
+            .unwrap();
+        file.write_all(b"{\"ver\":1,\"record\":\"admission\",")
+            .await
+            .unwrap();
         drop(file);
 
         // Replay should succeed, discarding the truncated line.
@@ -666,8 +671,10 @@ mod tests {
 
     #[tokio::test]
     async fn empty_wal_compacts_to_zero() {
-        let path =
-            std::env::temp_dir().join(format!("pmp-wal-empty-compact-{}.jsonl", uuid::Uuid::new_v4()));
+        let path = std::env::temp_dir().join(format!(
+            "pmp-wal-empty-compact-{}.jsonl",
+            uuid::Uuid::new_v4()
+        ));
         let wal = PersistenceWal::new(&path);
         wal.replay().await.unwrap();
         assert_eq!(wal.compact().await.unwrap(), 0);
@@ -707,7 +714,9 @@ mod tests {
         let path =
             std::env::temp_dir().join(format!("pmp-wal-vers-{}.jsonl", uuid::Uuid::new_v4()));
         let future_frame = r#"{"ver":255,"record":"admission","id":"00000000-0000-0000-0000-000000000001","event":{"PersistenceEvent":{"ServerEvent":{"kind":"future","payload":{},"simulation":false}}},"cksum":"0000000000000000000000000000000000000000000000000000000000000000"}"#;
-        tokio::fs::write(&path, format!("{future_frame}\n")).await.unwrap();
+        tokio::fs::write(&path, format!("{future_frame}\n"))
+            .await
+            .unwrap();
         let wal = PersistenceWal::new(&path);
         assert!(wal.replay().await.is_err());
         let _ = tokio::fs::remove_file(path).await;
