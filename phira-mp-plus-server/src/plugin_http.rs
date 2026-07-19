@@ -125,18 +125,22 @@ impl PluginHttpServer {
 
         // Direct internal HTTP port (does not trust forwarded client headers)
         let address = format!("{}:{}", self.bind_address, self.port);
-        let listener = tokio::net::TcpListener::bind(&address).await.map_err(|e| {
-            format!("failed to bind HTTP server on {address}: {e}")
-        })?;
+        let listener = tokio::net::TcpListener::bind(&address)
+            .await
+            .map_err(|e| format!("failed to bind HTTP server on {address}: {e}"))?;
         info!(%address, "HTTP server started (direct)");
 
         // Trusted-forwarded-header compatibility port. This is not HAProxy
         // PROXY v1/v2; it trusts X-Forwarded-For only behind PPB/a trusted proxy.
         if self.proxy_port > 0 && self.proxy_port != self.port {
             let proxy_addr = format!("{}:{}", self.bind_address, self.proxy_port);
-            let proxy_listener = tokio::net::TcpListener::bind(&proxy_addr).await.map_err(|e| {
-                format!("failed to bind trusted-forwarded-header HTTP server on {proxy_addr}: {e}")
-            })?;
+            let proxy_listener = tokio::net::TcpListener::bind(&proxy_addr)
+                .await
+                .map_err(|e| {
+                    format!(
+                        "failed to bind trusted-forwarded-header HTTP server on {proxy_addr}: {e}"
+                    )
+                })?;
             let proxy_app = app
                 .clone()
                 .layer(crate::proxy_protocol::TrustForwardedForLayer);
@@ -366,15 +370,25 @@ async fn dynamic_handler(
 /// Liveness: process is alive and Tokio runtime is active.
 /// Always returns 200 with `{"status":"ok"}` unless the process is shutting down.
 async fn health_live(Extension(state): Extension<Arc<HttpAppState>>) -> impl IntoResponse {
-    if state.server_state.shutting_down.load(std::sync::atomic::Ordering::Acquire) {
-        return (StatusCode::SERVICE_UNAVAILABLE, Json(serde_json::json!({
-            "status": "shutting_down"
-        })));
+    if state
+        .server_state
+        .shutting_down
+        .load(std::sync::atomic::Ordering::Acquire)
+    {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(serde_json::json!({
+                "status": "shutting_down"
+            })),
+        );
     }
-    (StatusCode::OK, Json(serde_json::json!({
-        "status": "ok",
-        "service": "phira-mp-plus-server",
-    })))
+    (
+        StatusCode::OK,
+        Json(serde_json::json!({
+            "status": "ok",
+            "service": "phira-mp-plus-server",
+        })),
+    )
 }
 
 /// Readiness: the server is ready to accept traffic.
@@ -384,7 +398,11 @@ async fn health_ready(Extension(state): Extension<Arc<HttpAppState>>) -> impl In
     let mut checks = serde_json::json!({});
 
     // 1. Not shutting down
-    if state.server_state.shutting_down.load(std::sync::atomic::Ordering::Acquire) {
+    if state
+        .server_state
+        .shutting_down
+        .load(std::sync::atomic::Ordering::Acquire)
+    {
         ready = false;
         checks["shutdown"] = serde_json::json!("shutting_down");
     }
@@ -401,15 +419,21 @@ async fn health_ready(Extension(state): Extension<Arc<HttpAppState>>) -> impl In
     // (Checked via supervisor health — the supervisor tracks critical tasks)
 
     if ready {
-        (StatusCode::OK, Json(serde_json::json!({
-            "status": "ok",
-            "checks": checks,
-        })))
+        (
+            StatusCode::OK,
+            Json(serde_json::json!({
+                "status": "ok",
+                "checks": checks,
+            })),
+        )
     } else {
-        (StatusCode::SERVICE_UNAVAILABLE, Json(serde_json::json!({
-            "status": "degraded",
-            "checks": checks,
-        })))
+        (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(serde_json::json!({
+                "status": "degraded",
+                "checks": checks,
+            })),
+        )
     }
 }
 
