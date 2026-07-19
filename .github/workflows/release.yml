@@ -64,60 +64,50 @@ jobs:
         run: ./scripts/check-changed-rustfmt.sh
       - name: Workspace version consistency
         run: python scripts/sync-workspace-version.py --check
-      - name: Workspace check
-        run: cargo check --locked --workspace --all-targets
-      - name: Feature boundary checks
-        run: |
-          cargo check --locked -p phira-mp-plus-server --no-default-features
-          cargo check --locked -p phira-mp-plus-server --no-default-features --features postgres
-          cargo check --locked -p phira-mp-plus-server --no-default-features --features wit-bindgen
-          cargo check --locked -p phira-mp-plus-server --all-features
+      - name: Check
+        run: cargo check --locked --workspace --all-targets --all-features
       - name: Tests
-        run: cargo test --locked --workspace
+        run: cargo test --locked --workspace --all-features
       - name: Clippy
         run: cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
 
-  build-linux:
+  build:
     needs: [version, quality-gate]
-    runs-on: ubuntu-latest
-    env:
-      CC_x86_64_unknown_linux_musl: musl-gcc
-      CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER: musl-gcc
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-musl
+            artifact-name: phira-mp-plus-server-linux
+            artifact-path: target/x86_64-unknown-linux-musl/release/phira-mp-plus-server
+            setup: sudo apt-get update && sudo apt-get install -y musl-tools
+            env:
+              CC_x86_64_unknown_linux_musl: musl-gcc
+              CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER: musl-gcc
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            artifact-name: phira-mp-plus-server-windows.exe
+            artifact-path: target/x86_64-pc-windows-msvc/release/phira-mp-plus-server.exe
+    runs-on: ${{ matrix.os }}
+    env: ${{ matrix.env }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
-          target: x86_64-unknown-linux-musl
-      - name: Install musl toolchain
-        run: sudo apt-get update && sudo apt-get install -y musl-tools
+          target: ${{ matrix.target }}
       - uses: Swatinem/rust-cache@v2
         with:
-          key: release-linux-musl
+          key: release-${{ matrix.target }}
           cache-on-failure: true
-      - run: cargo build --locked --release --target x86_64-unknown-linux-musl
-      - run: cp target/x86_64-unknown-linux-musl/release/phira-mp-plus-server phira-mp-plus-server-linux
+      - if: matrix.setup
+        name: Install system dependencies
+        run: ${{ matrix.setup }}
+      - run: cargo build --locked --release --target ${{ matrix.target }}
+      - run: cp ${{ matrix.artifact-path }} ${{ matrix.artifact-name }}
       - uses: actions/upload-artifact@v4
         with:
-          name: phira-mp-plus-server-linux
-          path: phira-mp-plus-server-linux
-          if-no-files-found: error
-
-  build-windows:
-    needs: [version, quality-gate]
-    runs-on: windows-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions-rust-lang/setup-rust-toolchain@v1
-      - uses: Swatinem/rust-cache@v2
-        with:
-          key: release-windows
-          cache-on-failure: true
-      - run: cargo build --locked --release
-      - run: cp target/release/phira-mp-plus-server.exe phira-mp-plus-server-windows.exe
-      - uses: actions/upload-artifact@v4
-        with:
-          name: phira-mp-plus-server-windows
-          path: phira-mp-plus-server-windows.exe
+          name: ${{ matrix.artifact-name }}
+          path: ${{ matrix.artifact-name }}
           if-no-files-found: error
 
   package-sdk:
@@ -139,7 +129,7 @@ jobs:
           if-no-files-found: error
 
   release:
-    needs: [version, quality-gate, build-linux, build-windows, package-sdk]
+    needs: [version, quality-gate, build, package-sdk]
     runs-on: ubuntu-latest
     permissions:
       contents: write
