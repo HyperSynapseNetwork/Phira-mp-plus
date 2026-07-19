@@ -228,8 +228,8 @@ impl PersistenceWal {
             }
         }
 
-        let mut line = serde_json::to_vec(frame)
-            .map_err(|e| format!("serialize WAL frame: {e}"))?;
+        let mut line =
+            serde_json::to_vec(frame).map_err(|e| format!("serialize WAL frame: {e}"))?;
         line.push(b'\n');
         file.write_all(&line)
             .await
@@ -241,7 +241,8 @@ impl PersistenceWal {
             .await
             .map_err(|e| format!("sync WAL {}: {e}", self.path.display()))?;
 
-        self.total_bytes.fetch_add(line.len() as u64, Ordering::Release);
+        self.total_bytes
+            .fetch_add(line.len() as u64, Ordering::Release);
         Ok(())
     }
 
@@ -251,10 +252,7 @@ impl PersistenceWal {
         }
         self.check_disk_space().await?;
         let id = uuid::Uuid::new_v4();
-        let frame = WalFrame::new(WalRecord::Admission {
-            id,
-            event,
-        })?;
+        let frame = WalFrame::new(WalRecord::Admission { id, event })?;
         self.append_frame(&frame).await?;
         self.admission_count.fetch_add(1, Ordering::Release);
         Ok(id)
@@ -346,7 +344,8 @@ impl PersistenceWal {
             }
         }
 
-        self.total_bytes.store(bytes.len() as u64, Ordering::Release);
+        self.total_bytes
+            .store(bytes.len() as u64, Ordering::Release);
         self.admission_count
             .store(admitted.len() as u64, Ordering::Release);
         self.ack_count.store(acked.len() as u64, Ordering::Release);
@@ -400,7 +399,11 @@ impl PersistenceWal {
                 continue;
             }
             let frame: WalFrame = serde_json::from_slice(line).map_err(|e| {
-                format!("corrupt WAL {} line {}: {e}", self.path.display(), index + 1)
+                format!(
+                    "corrupt WAL {} line {}: {e}",
+                    self.path.display(),
+                    index + 1
+                )
             })?;
             if frame.ver > WAL_FORMAT_VERSION {
                 return Err(format!(
@@ -478,16 +481,20 @@ impl PersistenceWal {
         drop(file);
 
         // Atomic rename.
-        tokio::fs::rename(&temp, &self.path)
-            .await
-            .map_err(|e| format!("rename WAL {} -> {}: {e}", temp.display(), self.path.display()))?;
+        tokio::fs::rename(&temp, &self.path).await.map_err(|e| {
+            format!(
+                "rename WAL {} -> {}: {e}",
+                temp.display(),
+                self.path.display()
+            )
+        })?;
 
         // Sync parent directory so the rename is durable.
         if let Some(parent) = self.path.parent() {
             if let Ok(dir) = tokio::fs::File::open(parent).await {
-                dir.sync_all().await.map_err(|e| {
-                    format!("sync parent directory {}: {e}", parent.display())
-                })?;
+                dir.sync_all()
+                    .await
+                    .map_err(|e| format!("sync parent directory {}: {e}", parent.display()))?;
             }
         }
 
@@ -495,7 +502,8 @@ impl PersistenceWal {
             pending.len() as u64 * 256, // approximate
             Ordering::Release,
         );
-        self.admission_count.store(pending.len() as u64, Ordering::Release);
+        self.admission_count
+            .store(pending.len() as u64, Ordering::Release);
         self.ack_count.store(0, Ordering::Release);
 
         if has_truncated {
@@ -545,7 +553,8 @@ mod tests {
 
     #[tokio::test]
     async fn replays_only_unacknowledged_events() {
-        let path = std::env::temp_dir().join(format!("pmp-wal-test-{}.jsonl", uuid::Uuid::new_v4()));
+        let path =
+            std::env::temp_dir().join(format!("pmp-wal-test-{}.jsonl", uuid::Uuid::new_v4()));
         let wal = PersistenceWal::new(&path);
 
         // replay on empty wal succeeds
@@ -566,7 +575,8 @@ mod tests {
 
     #[tokio::test]
     async fn compact_removes_acked_events() {
-        let path = std::env::temp_dir().join(format!("pmp-wal-compact-{}.jsonl", uuid::Uuid::new_v4()));
+        let path =
+            std::env::temp_dir().join(format!("pmp-wal-compact-{}.jsonl", uuid::Uuid::new_v4()));
         let wal = PersistenceWal::new(&path);
 
         wal.replay().await.unwrap();
@@ -583,7 +593,8 @@ mod tests {
 
     #[tokio::test]
     async fn compact_atomic_no_concurrent_loss() {
-        let path = std::env::temp_dir().join(format!("pmp-wal-atomic-{}.jsonl", uuid::Uuid::new_v4()));
+        let path =
+            std::env::temp_dir().join(format!("pmp-wal-atomic-{}.jsonl", uuid::Uuid::new_v4()));
         let wal = PersistenceWal::new(&path);
         wal.replay().await.unwrap();
 
@@ -609,7 +620,9 @@ mod tests {
 
     #[tokio::test]
     async fn replay_rejects_corrupt_checksum() {
-        let path = std::env::temp_dir().join(format!("pmp-wal-corrupt-{}.jsonl", uuid::Uuid::new_v4()));
+        let path =
+            std::env::temp_dir().join(format!("pmp-wal-corrupt-{}.jsonl", uuid::Uuid::new_v4()));
+        // Write a manually crafted frame with wrong checksum.
         // Write a manually crafted frame with wrong checksum.
         let bad_frame = r#"{"ver":1,"record":"admission","id":"00000000-0000-0000-0000-000000000001","event":{"PersistenceEvent":{"ServerEvent":{"kind":"bad","payload":{"n":1},"simulation":false}}},"cksum":"0000"}"#;
         tokio::fs::write(&path, format!("{bad_frame}\n")).await.unwrap();
@@ -628,7 +641,8 @@ mod tests {
 
     #[tokio::test]
     async fn replay_accepts_truncated_trailing_line() {
-        let path = std::env::temp_dir().join(format!("pmp-wal-trunc-{}.jsonl", uuid::Uuid::new_v4()));
+        let path =
+            std::env::temp_dir().join(format!("pmp-wal-trunc-{}.jsonl", uuid::Uuid::new_v4()));
         let wal = PersistenceWal::new(&path);
         wal.replay().await.unwrap();
 
@@ -652,7 +666,8 @@ mod tests {
 
     #[tokio::test]
     async fn empty_wal_compacts_to_zero() {
-        let path = std::env::temp_dir().join(format!("pmp-wal-empty-compact-{}.jsonl", uuid::Uuid::new_v4()));
+        let path =
+            std::env::temp_dir().join(format!("pmp-wal-empty-compact-{}.jsonl", uuid::Uuid::new_v4()));
         let wal = PersistenceWal::new(&path);
         wal.replay().await.unwrap();
         assert_eq!(wal.compact().await.unwrap(), 0);
@@ -679,7 +694,8 @@ mod tests {
 
     #[tokio::test]
     async fn admits_rejected_before_replay() {
-        let path = std::env::temp_dir().join(format!("pmp-wal-noreplay-{}.jsonl", uuid::Uuid::new_v4()));
+        let path =
+            std::env::temp_dir().join(format!("pmp-wal-noreplay-{}.jsonl", uuid::Uuid::new_v4()));
         let wal = PersistenceWal::new(&path);
         let result = wal.admit(make_event("before-replay")).await;
         assert!(result.is_err());
@@ -688,7 +704,8 @@ mod tests {
 
     #[tokio::test]
     async fn replay_version_mismatch_is_rejected() {
-        let path = std::env::temp_dir().join(format!("pmp-wal-vers-{}.jsonl", uuid::Uuid::new_v4()));
+        let path =
+            std::env::temp_dir().join(format!("pmp-wal-vers-{}.jsonl", uuid::Uuid::new_v4()));
         let future_frame = r#"{"ver":255,"record":"admission","id":"00000000-0000-0000-0000-000000000001","event":{"PersistenceEvent":{"ServerEvent":{"kind":"future","payload":{},"simulation":false}}},"cksum":"0000000000000000000000000000000000000000000000000000000000000000"}"#;
         tokio::fs::write(&path, format!("{future_frame}\n")).await.unwrap();
         let wal = PersistenceWal::new(&path);
