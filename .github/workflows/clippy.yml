@@ -1,0 +1,40 @@
+name: Clippy pedantic
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  CARGO_TERM_COLOR: always
+
+concurrency:
+  group: clippy-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  clippy-pedantic:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: clippy-pedantic
+          cache-on-failure: true
+      - name: Clippy pedantic
+        continue-on-error: true
+        run: cargo clippy --locked --workspace --all-targets --all-features -- \
+          -W clippy::pedantic \
+          -A clippy::too_many_lines \
+          -A clippy::similar_names \
+          -A clippy::many_single_char_names \
+          -D clippy::unwrap_used \
+          -D clippy::expect_used
