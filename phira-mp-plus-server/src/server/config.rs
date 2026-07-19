@@ -217,6 +217,12 @@ pub struct PlusConfig {
     pub round_data_retention_days: u32,
     #[serde(default)]
     pub database_url: Option<String>,
+    /// When set, database initialization failure is tolerated even when
+    /// `database_url` is explicitly configured. The server will start without
+    /// structured persistence (readiness reports degraded).
+    /// This is intended for development/staging only.
+    #[serde(default)]
+    pub allow_database_degraded_mode: bool,
     #[serde(default = "default_persistence_retention_days")]
     pub persistence_retention_days: u32,
     #[serde(default)]
@@ -259,6 +265,7 @@ impl Default for PlusConfig {
             chat_enabled: true,
             round_data_retention_days: 7,
             database_url: None,
+            allow_database_degraded_mode: false,
             persistence_retention_days: 30,
             touch_judge_retention_days: None,
             admin_phira_ids: Vec::new(),
