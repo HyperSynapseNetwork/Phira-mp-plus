@@ -1,12 +1,15 @@
 # Phira-mp+
 
-> 本项目使用 AI 开发，仍处于快速迭代期，不建议直接用于生产环境。
+> Phira+ 架构中的实时多人游戏运行时 — 高并发会话、房间状态、可信插件与可靠事件持久化。
 
 [![License](https://img.shields.io/badge/License-AGPLv3-blue.svg)](LICENSE)
+[![Build](https://github.com/HyperSynapseNetwork/Phira-mp-plus/actions/workflows/build.yml/badge.svg)](https://github.com/HyperSynapseNetwork/Phira-mp-plus/actions/workflows/build.yml)
 
 ## 简介
 
-**Phira-mp+（PMP）** 是基于 [phira-mp](https://github.com/HyperSynapseNetwork/phira-mp) 扩展的 Phira 多人游戏服务端。在 Phira+ 规划 中，PMP 负责游戏协议、房间运行时、插件与游戏数据持久化等；**Phira＋ Backend（开发中） 负责公共 Web API、认证、限流、网关与边缘暴露等**。应此PMP 保留的 HTTP/SSE/WebSocket 仅用于受控网络中的兼容、诊断和内部集成，不应作为公网边缘接口。
+**Phira-mp+（PMP）** 是 [phira-mp](https://github.com/HyperSynapseNetwork/phira-mp) 的增强版多人游戏服务端。在 Phira+ 架构中，PMP 负责游戏协议、房间运行时、WASM 插件与游戏数据持久化；**Phira+ Backend（PPB）负责公共 Web API、认证、限流、网关与边缘暴露**。因此 PMP 保留的 HTTP/SSE/WebSocket 仅用于受控网络中的兼容、诊断和内部集成，不作为公网边缘接口。
+
+> **当前状态：预生产加固候选版本（v0.4.x）** — 已完成多项 P0/P1 加固，适合受控测试和内部灰度部署。完整生产就绪状态追踪见 [`PMP_PRODUCTION_PRODUCTIZATION_AUDIT.md`](PMP_PRODUCTION_PRODUCTIZATION_AUDIT.md)。
 
 ### 核心特性
 
@@ -18,6 +21,13 @@
 - **慢消费者隔离** — 会话发送采用有界队列和非阻塞路径；网络读取与业务处理通过有界命令队列解耦
 - **PMP 内部接口** — 保留房间信息 HTTP、SSE、WebSocket 和插件动态路由，供 PPB/受控网络调用，不承担公共边缘安全职责
 - **jemalloc 分配器** — Linux 下使用 jemalloc 替代 musl malloc，降低长期运行中的 RSS 膨胀风险
+
+## 文档
+
+- [产品概览](docs/product/overview.md) — PMP 定位、边界与架构
+- [当前保证](docs/guarantees.md) — 各子系统的保证、前提、失败语义与测试证据
+- [CHANGELOG](CHANGELOG.md) — 版本变更历史
+- [审计报告](PMP_PRODUCTION_PRODUCTIZATION_AUDIT.md) — 生产化与产品化全面审计
 
 ## 技术栈
 
