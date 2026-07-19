@@ -450,47 +450,21 @@ pub async fn request_start(user: Arc<User>) -> Result<()> {
 
 pub async fn ready(user: Arc<User>) -> Result<()> {
     let room = current_room(&user).await?;
-    let mut guard = room.state.write().await;
-    if let crate::room::InternalRoomState::WaitForReady { started, .. } = &mut *guard {
-        if !started.insert(user.id) {
-            bail!("{}", tl!("already-ready"));
-        }
-        room.send(Message::Ready { user: user.id }).await;
-        user.server
-            .publish_runtime_event(crate::event_bus::MpEvent::PlayerReadyChanged {
-                room_id: room.id.clone(),
-                user_id: user.id,
-                ready: true,
-            });
-        drop(guard);
-        room.check_all_ready().await;
-    }
+    user.server
+        .room_commands
+        .set_ready(&user.server, &room.id.to_string(), user.id)
+        .await
+        .map_err(|e| anyhow!("ready failed: {e}"))?;
     Ok(())
 }
 
 pub async fn cancel_ready(user: Arc<User>) -> Result<()> {
     let room = current_room(&user).await?;
-    let mut guard = room.state.write().await;
-    if let crate::room::InternalRoomState::WaitForReady { started, .. } = &mut *guard {
-        if !started.remove(&user.id) {
-            bail!("{}", tl!("not-ready"));
-        }
-        if room.check_host(&user).await.is_ok() {
-            room.send(Message::CancelGame { user: user.id }).await;
-            *guard = crate::room::InternalRoomState::SelectChart;
-            drop(guard);
-            room.finish_admin_start().await;
-            room.on_state_change().await;
-        } else {
-            room.send(Message::CancelReady { user: user.id }).await;
-        }
-        user.server
-            .publish_runtime_event(crate::event_bus::MpEvent::PlayerReadyChanged {
-                room_id: room.id.clone(),
-                user_id: user.id,
-                ready: false,
-            });
-    }
+    user.server
+        .room_commands
+        .cancel_ready(&user.server, &room.id.to_string(), user.id)
+        .await
+        .map_err(|e| anyhow!("cancel ready failed: {e}"))?;
     Ok(())
 }
 
@@ -516,65 +490,26 @@ pub async fn played(user: Arc<User>, id: i32) -> Result<()> {
         user = user.id,
         "user played: {res:?}"
     );
-    room.send(Message::Played {
-        user: user.id,
-        score: res.score,
-        accuracy: res.accuracy,
-        full_combo: res.full_combo,
-    })
-    .await;
-    let score = res.score;
-    let accuracy = res.accuracy;
-    let perfect = res.perfect;
-    let good = res.good;
-    let bad = res.bad;
-    let miss = res.miss;
-    let max_combo = res.max_combo;
-    let full_combo = res.full_combo;
-    let mut guard = room.state.write().await;
-    if let crate::room::InternalRoomState::Playing { results, aborted } = &mut *guard {
-        if aborted.contains(&user.id) {
-            bail!("aborted");
-        }
-        if results.insert(user.id, res).is_some() {
-            bail!("{}", tl!("already-uploaded"));
-        }
-        drop(guard);
-        room.check_all_ready().await;
-
-        user.server
-            .dispatch_plugin_event(PluginEvent::GameEnd {
-                user_id: user.id,
-                user_name: user.name.clone(),
-                room_id: room.id.to_string(),
-                score,
-                accuracy,
-                perfect,
-                good,
-                bad,
-                miss,
-                max_combo,
-                full_combo,
-            })
-            .await;
-    }
+    // Route state mutation through RoomActor mailbox.
+    user.server
+        .room_commands
+        .submit_result(
+            &user.server, &room.id.to_string(), user.id,
+            res.score, res.accuracy, res.perfect, res.good,
+            res.bad, res.miss, res.max_combo, res.full_combo,
+        )
+        .await
+        .map_err(|e| anyhow!("submit result failed: {e}"))?;
     Ok(())
 }
 
 pub async fn abort(user: Arc<User>) -> Result<()> {
     let room = current_room(&user).await?;
-    let mut guard = room.state.write().await;
-    if let crate::room::InternalRoomState::Playing { results, aborted } = &mut *guard {
-        if results.contains_key(&user.id) {
-            bail!("{}", tl!("already-uploaded"));
-        }
-        if !aborted.insert(user.id) {
-            bail!("{}", tl!("aborted"));
-        }
-        drop(guard);
-        room.send(Message::Abort { user: user.id }).await;
-        room.check_all_ready().await;
-    }
+    user.server
+        .room_commands
+        .abort_round(&user.server, &room.id.to_string(), user.id)
+        .await
+        .map_err(|e| anyhow!("abort failed: {e}"))?;
     Ok(())
 }
 
