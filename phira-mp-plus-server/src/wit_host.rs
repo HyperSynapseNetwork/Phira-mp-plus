@@ -8,8 +8,10 @@
 //! The generated trait impls require `wit-bindgen` (default feature).
 
 use phira_mp_plus_server_api as api;
-use std::collections::HashSet;
-use std::sync::Arc;
+use sha2::{Digest, Sha256};
+use std::collections::{HashMap, HashSet};
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 /// Explicit dependency bundle for the WIT host.
 ///
@@ -31,8 +33,16 @@ pub struct WitHostContext {
     pub event_bus: Arc<crate::event_bus::EventBus>,
     /// Immutable capability grant bound to this plugin instance.
     pub capabilities: Arc<HashSet<String>>,
+    /// Node key pair for crypto operations (derived from HSN_SECRET_KEY).
+    pub node_key: Arc<crate::crypto::NodeKey>,
+    /// Shared timer registry (plugin_name → timer map).
+    pub timers: Arc<Mutex<HashMap<String, HashMap<String, tokio::task::JoinHandle<()>>>>>,
+    /// Federation actor sender for outbound operations.
+    pub federation: Option<tokio::sync::mpsc::Sender<crate::federation::FederationCommand>>,
     /// Host messaging callback. uid=0 means broadcast.
     pub send_chat: Option<Arc<dyn Fn(i32, String) + Send + Sync>>,
+    /// Timer fire callback: calls the plugin's on_api("timer:fired", ...).
+    pub timer_callback: Option<Arc<dyn Fn(String, String) + Send + Sync>>,
     /// HTTP sandbox timeout (seconds).
     pub http_timeout_secs: u64,
     /// HTTP sandbox max response body (bytes).
@@ -973,6 +983,85 @@ mod wit_trait_impls {
             }
             serde_json::Value::Object(obj) => {
                 JsonValue::Object(serde_json::to_string(obj).unwrap_or_default())
+            }
+        }
+    }
+
+    // ── phira-timer ──
+    impl wit::phira::plugin::phira_timer::Host for WitPluginHost {
+        fn set_timer(&mut self, delay_ms: u64, timer_id: String) -> Result<(), String> {
+            let plugin_name = self.plugin_name.clone();
+            let ctx = Arc::clone(&self.ctx);
+
+            let handle = tokio::spawn(async move {
+                tokio::time::sleep(Duration::from_millis(delay_ms)).await;
+                if let Some(cb) = &ctx.timer_callback {
+                    cb(plugin_name.clone(), timer_id);
+                }
+            });
+
+            let mut registry = self.ctx.timers.lock().map_err(|e| format!("timer lock: {e}"))?;
+            registry
+                .entry(plugin_name)
+                .or_default()
+                .insert(timer_id, handle);
+            Ok(())
+        }
+
+        fn clear_timer(&mut self, timer_id: String) -> Result<(), String> {
+            let mut registry = self.ctx.timers.lock().map_err(|e| format!("timer lock: {e}"))?;
+            if let Some(timers) = registry.get_mut(&self.plugin_name) {
+                if let Some(handle) = timers.remove(&timer_id) {
+                    handle.abort();
+                }
+            }
+            Ok(())
+        }
+    }
+
+    // ── phira-crypto ──
+    impl wit::phira::plugin::phira_crypto::Host for WitPluginHost {
+        fn sign(&mut self, payload: Vec<u8>) -> Result<Vec<u8>, String> {
+            self.require_capability("crypto")?;
+            Ok(self.ctx.node_key.sign(&payload))
+        }
+
+        fn verify(&mut self, pubkey: Vec<u8>, payload: Vec<u8>, signature: Vec<u8>) -> Result<bool, String> {
+            self.require_capability("crypto")?;
+            Ok(crate::crypto::NodeKey::verify(&pubkey, &payload, &signature))
+        }
+
+        fn sha256(&mut self, data: Vec<u8>) -> Result<Vec<u8>, String> {
+            self.require_capability("crypto")?;
+            Ok(crate::crypto::sha256(&data))
+        }
+
+        fn get_node_public_key(&mut self) -> Result<Vec<u8>, String> {
+            Ok(self.ctx.node_key.public_key.clone())
+        }
+    }
+
+    // ── phira-federation ──
+    impl wit::phira::plugin::phira_federation::Host for WitPluginHost {
+        fn send(&mut self, handle: u64, bytes: Vec<u8>) -> Result<(), String> {
+            self.require_capability("federation")?;
+            match &self.ctx.federation {
+                Some(tx) => {
+                    tx.try_send(crate::federation::FederationCommand::Send { handle, bytes })
+                        .map_err(|e| format!("federation send failed: {e}"))
+                }
+                None => Err("federation not available".to_string()),
+            }
+        }
+
+        fn close(&mut self, handle: u64) -> Result<(), String> {
+            self.require_capability("federation")?;
+            match &self.ctx.federation {
+                Some(tx) => {
+                    tx.try_send(crate::federation::FederationCommand::Close { handle })
+                        .map_err(|e| format!("federation close failed: {e}"))
+                }
+                None => Err("federation not available".to_string()),
             }
         }
     }

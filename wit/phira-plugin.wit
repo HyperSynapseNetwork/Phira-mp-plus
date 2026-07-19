@@ -167,6 +167,25 @@ interface phira-events {
         is-monitor: bool,
     }
 
+    /// Payload for federation events.
+    record federation-accept-info {
+        handle: u64,
+        /// Peer's public key (hex-encoded) or empty if anonymous.
+        peer-pubkey: string,
+        /// Remote endpoint address.
+        remote-addr: string,
+    }
+
+    record federation-receive-info {
+        handle: u64,
+        bytes: list<u8>,
+    }
+
+    record federation-disconnect-info {
+        handle: u64,
+        reason: string,
+    }
+
     /// All event types the host can dispatch to plugins.
     variant plugin-event {
         user-connect(user-connect-info),
@@ -180,6 +199,9 @@ interface phira-events {
         player-touches(player-touches-info),
         player-judges(player-judges-info),
         round-complete(round-complete-info),
+        federation-accept(federation-accept-info),
+        federation-receive(federation-receive-info),
+        federation-disconnect(federation-disconnect-info),
     }
 }
 
@@ -357,6 +379,42 @@ interface phira-simulation {
     cleanup: func() -> api-result;
 }
 
+/// Cryptographic operations (host-side key management).
+interface phira-crypto {
+    /// Sign data with the server's node key.
+    /// The private key never leaves the host process.
+    sign: func(payload: list<u8>) -> result<list<u8>, string>;
+
+    /// Verify a signature against a public key.
+    verify: func(pubkey: list<u8>, payload: list<u8>, signature: list<u8>) -> result<bool, string>;
+
+    /// SHA-256 hash of arbitrary data.
+    sha256: func(data: list<u8>) -> result<list<u8>, string>;
+
+    /// Get the server's node public key (for peer verification).
+    get-node-public-key: func() -> result<list<u8>, string>;
+}
+
+/// Federated networking — send/close existing connections.
+/// Connection lifecycle events (accept, receive, disconnect)
+/// are delivered via on-api callbacks.
+interface phira-federation {
+    /// Send bytes on an established connection handle.
+    send: func(handle: u64, bytes: list<u8>) -> result<_, string>;
+
+    /// Close a connection handle gracefully.
+    close: func(handle: u64) -> result<_, string>;
+}
+
+/// Non-realtime timer for plugin-internal scheduling.
+interface phira-timer {
+    /// Set a one-shot timer. When fired, host calls on-api("timer:fired", [timer-id]).
+    set-timer: func(delay-ms: u64, timer-id: string) -> result<_, string>;
+
+    /// Cancel a pending timer. No-op if timer already fired or unknown.
+    clear-timer: func(timer-id: string) -> result<_, string>;
+}
+
 /// Runtime diagnostics.
 interface phira-runtime {
     use phira-types.{api-result};
@@ -387,6 +445,9 @@ world phira-plugin-v2 {
     import phira-admin;
     import phira-config;
     import phira-simulation;
+    import phira-crypto;
+    import phira-federation;
+    import phira-timer;
     import phira-runtime;
 
     export init: func() -> result<_, string>;
