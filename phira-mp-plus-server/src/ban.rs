@@ -164,17 +164,16 @@ impl BanManager {
         let mut result = store
             .user_data
             .iter()
-            .filter_map(|(&user_id, data)| {
-                (data.get(BAN_STATUS_KEY).map(String::as_str) == Some(BANNED_STATUS)).then(|| {
-                    BanEntry {
-                        user_id,
-                        reason: normalize_reason(
-                            data.get(BAN_REASON_KEY)
-                                .map(String::as_str)
-                                .unwrap_or_default(),
-                        ),
-                    }
-                })
+            .filter(|(_, data)| {
+                data.get(BAN_STATUS_KEY).map(String::as_str) == Some(BANNED_STATUS)
+            })
+            .map(|(&user_id, data)| BanEntry {
+                user_id,
+                reason: normalize_reason(
+                    data.get(BAN_REASON_KEY)
+                        .map(String::as_str)
+                        .unwrap_or_default(),
+                ),
             })
             .collect::<Vec<_>>();
         result.sort_unstable_by_key(|entry| entry.user_id);
