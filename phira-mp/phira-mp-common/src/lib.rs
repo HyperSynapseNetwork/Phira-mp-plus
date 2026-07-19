@@ -289,13 +289,17 @@ mod stream_impl {
     pub fn generate_secret_key(info: &str, len: usize) -> Result<Vec<u8>> {
         let original = match std::env::var("HSN_SECRET_KEY") {
             Ok(value) if value.len() >= 32 => value,
-            Ok(_) => return Err(anyhow!("HSN_SECRET_KEY must contain at least 32 bytes")),
-            Err(_) if cfg!(debug_assertions) => {
-                let value = format!("debug-only-{}-{}", std::process::id(), uuid::Uuid::new_v4());
-                warn!("HSN_SECRET_KEY is not set; using an ephemeral debug-only key");
-                value
+            Ok(_) => {
+                warn!("HSN_SECRET_KEY is set but shorter than 32 bytes; using ephemeral key");
+                format!("ephemeral-{}-{}", std::process::id(), uuid::Uuid::new_v4())
             }
-            Err(_) => return Err(anyhow!("HSN_SECRET_KEY is required in release builds")),
+            Err(_) => {
+                warn!(
+                    "HSN_SECRET_KEY is not set; using an ephemeral key. \
+                     Set a persistent 32+ byte key for reproducible server identity."
+                );
+                format!("ephemeral-{}-{}", std::process::id(), uuid::Uuid::new_v4())
+            }
         };
         let salt = SaltString::encode_b64(b"some$random#salt")
             .map_err(|e| anyhow!("failed to generate salt string: {e}"))?;

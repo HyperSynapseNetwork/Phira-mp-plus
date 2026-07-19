@@ -163,11 +163,29 @@ impl LiveConfig {
 /// Phira-mp+ 增强配置（支持 YAML 文件、环境变量、CLI 参数三层覆盖）
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default, deny_unknown_fields)]
+/// Operating profile that controls safe defaults.
+/// Production profile enforces additional validation (finite limits, loopback bind, etc.).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ConfigProfile {
+    Development,
+    Staging,
+    Production,
+}
+
+impl Default for ConfigProfile {
+    fn default() -> Self {
+        Self::Development
+    }
+}
+
 pub struct PlusConfig {
     /// Schema version for config file forward-compatibility.
     /// Current version: 1. Increment when making backward-incompatible changes.
     #[serde(default = "default_config_version")]
     pub config_version: u8,
+    #[serde(default)]
+    pub profile: ConfigProfile,
     pub port: u16,
     #[serde(default = "default_http_port")]
     pub http_port: u16,
@@ -239,6 +257,9 @@ pub struct PlusConfig {
     pub wasm_runtime: WasmRuntimeConfig,
     #[serde(default)]
     pub runtime_v2: RuntimeV2Config,
+    /// Role-based access control configuration.
+    #[serde(default)]
+    pub rbac: crate::rbac::RbacConfig,
     /// Idle mode configuration.
     #[serde(default)]
     pub idle: crate::idle::IdleConfig,
@@ -249,6 +270,7 @@ impl Default for PlusConfig {
         Self {
             port: 12346,
             config_version: 1,
+            profile: ConfigProfile::Development,
             http_port: 12347,
             http_bind_address: default_http_bind_address(),
             monitors: default_monitors(),
@@ -277,6 +299,7 @@ impl Default for PlusConfig {
             benchmark_phira_tokens: Vec::new(),
             wasm_runtime: WasmRuntimeConfig::default(),
             runtime_v2: RuntimeV2Config::default(),
+            rbac: crate::rbac::RbacConfig::default(),
             idle: crate::idle::IdleConfig::default(),
             proxy_protocol_port: 0,
         }
@@ -389,9 +412,34 @@ impl PlusConfig {
             return Err(AppError::ConfigValidation("max_rooms 必须大于 0".into()));
         }
         if self.max_rooms.is_none() {
+            if self.profile == ConfigProfile::Production {
+                return Err(AppError::ConfigValidation(
+                    "production profile requires finite max_rooms (set max_rooms to a positive integer)"
+                        .into(),
+                ));
+            }
             tracing::warn!(
                 "max_rooms is null (unlimited). Set a finite limit for production safety."
             );
+        }
+        if self.profile == ConfigProfile::Production {
+            if self.http_bind_address != "127.0.0.1" {
+                return Err(AppError::ConfigValidation(
+                    "production profile requires http_bind_address=\"127.0.0.1\"; "
+                        .to_string()
+                        + "set profile=development to bind externally",
+                ));
+            }
+            if self.allow_database_degraded_mode {
+                return Err(AppError::ConfigValidation(
+                    "allow_database_degraded_mode is incompatible with production profile".into(),
+                ));
+            }
+            if self.database_url.is_none() {
+                return Err(AppError::ConfigValidation(
+                    "production profile requires database_url".into(),
+                ));
+            }
         }
         if self.max_users_per_room == Some(0) {
             return Err(AppError::ConfigValidation(
