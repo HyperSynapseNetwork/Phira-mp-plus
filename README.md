@@ -24,10 +24,14 @@
 
 ## 文档
 
-- [产品概览](docs/product/overview.md) — PMP 定位、边界与架构
-- [当前保证](docs/guarantees.md) — 各子系统的保证、前提、失败语义与测试证据
-- [CHANGELOG](CHANGELOG.md) — 版本变更历史
-- [审计报告](PMP_PRODUCTION_PRODUCTIZATION_AUDIT.md) — 生产化与产品化全面审计
+| 分类 | 文档 |
+|------|------|
+| **产品** | [产品概览](docs/product/overview.md) · [当前保证](docs/guarantees.md) |
+| **快速开始** | [构建与运行](docs/getting-started/quick-start.md) |
+| **运维** | [配置参考](docs/operations/configuration-reference.md) |
+| **开发** | [架构](docs/development/architecture.md) |
+| **插件** | [生命周期](docs/plugins/lifecycle.md) |
+| **其他** | [CHANGELOG](CHANGELOG.md) · [审计报告](PMP_PRODUCTION_PRODUCTIZATION_AUDIT.md) |
 
 ## 技术栈
 
