@@ -31,10 +31,13 @@ jobs:
           cache-on-failure: true
       - name: Clippy pedantic
         continue-on-error: true
-        run: cargo clippy --locked --workspace --all-targets --all-features -- \
-          -W clippy::pedantic \
-          -A clippy::too_many_lines \
-          -A clippy::similar_names \
-          -A clippy::many_single_char_names \
-          -D clippy::unwrap_used \
+        run: >
+          cargo clippy
+          --locked --workspace --all-targets --all-features
+          --
+          -W clippy::pedantic
+          -A clippy::too_many_lines
+          -A clippy::similar_names
+          -A clippy::many_single_char_names
+          -D clippy::unwrap_used
           -D clippy::expect_used

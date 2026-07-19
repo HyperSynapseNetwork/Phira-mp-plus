@@ -152,7 +152,7 @@ fn parse_wit_interfaces(wit_content: &str) -> Vec<WitInterface> {
             let mut exports = Vec::new();
             let mut brace_depth = 0;
             // Collect function signatures until matching closing brace
-            while let Some(export_line) = lines.next() {
+            for export_line in lines.by_ref() {
                 let trimmed = export_line.trim();
                 if trimmed.starts_with("world ") {
                     break;
@@ -328,7 +328,7 @@ fn generate_wit_docs() -> String {
             for export in &iface.exports {
                 md.push_str(&format!("- `{}`\n", export));
             }
-            md.push_str("\n");
+            md.push('\n');
         }
     }
 
@@ -494,6 +494,7 @@ fn wit_json_value_round_trip() {
         assert_eq!(back, i, "integer round-trip");
 
         // Float
+        #[allow(clippy::approx_constant)]
         let f = serde_json::json!(3.14);
         let wit = wit_host::json_value_to_wit(&f);
         let back = wit_host::wit_json_value_to_serde(&wit);
@@ -675,10 +676,10 @@ fn wit_host_capability_loads_defaults_for_unknown_plugin() {
 #[test]
 fn wit_host_reject_symlink_components() {
     assert!(
-        wasm_host_helpers::reject_symlink_components(&std::path::Path::new("/safe/path")).is_ok()
+        wasm_host_helpers::reject_symlink_components(std::path::Path::new("/safe/path")).is_ok()
     );
     assert!(
-        wasm_host_helpers::reject_symlink_components(&std::path::Path::new("/unsafe/../path"))
+        wasm_host_helpers::reject_symlink_components(std::path::Path::new("/unsafe/../path"))
             .is_err()
     );
 }
