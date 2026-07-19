@@ -31,6 +31,26 @@ where
     }
 }
 
+fn parse_sse_stream_registration(args: &[Value]) -> Result<(String, String, Vec<String>), String> {
+    if let Some(config) = args.first().and_then(Value::as_object) {
+        let path = config
+            .get("path")
+            .and_then(Value::as_str)
+            .ok_or_else(|| "path required".to_string())?;
+        let plugin = config
+            .get("plugin")
+            .and_then(Value::as_str)
+            .ok_or_else(|| "plugin name required".to_string())?;
+        let event_types = config
+            .get("event_types")
+            .and_then(|v| v.as_array())
+            .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+            .unwrap_or_default();
+        return Ok((path.to_string(), plugin.to_string(), event_types));
+    }
+    Err("sse.register_stream requires json object with path/plugin/event_types".to_string())
+}
+
 fn parse_http_route_registration(args: &[Value]) -> Result<(String, String), String> {
     if let Some(config) = args.first().and_then(Value::as_object) {
         let path = config
@@ -526,7 +546,24 @@ fn server_state_query_dispatch(
             rx.recv_timeout(runtime_state_query_timeout())
                 .unwrap_or(Err("http.register_route timeout".to_string()))
         }
-        "sse.register_stream" => Err("sse.register_stream requires async context".to_string()),
+        "sse.register_stream" => {
+            let (path, plugin_name, event_types) = parse_sse_stream_registration(args)?;
+            let s = Arc::clone(state);
+            let (tx, rx) = std::sync::mpsc::channel();
+            spawn_on_runtime(async move {
+                let http_handle = s.plugin_manager.http_handle();
+                let result = match http_handle {
+                    Some(handle) => {
+                        handle.register_sse(&path, &plugin_name, &event_types);
+                        Ok(serde_json::json!({"ok": true, "path": path}))
+                    }
+                    None => Err("http not enabled".to_string()),
+                };
+                let _ = tx.send(result);
+            });
+            rx.recv_timeout(runtime_state_query_timeout())
+                .unwrap_or(Err("sse.register_stream timeout".to_string()))
+        }
         "user.kick" => {
             let uid = args.get(0).and_then(|v| v.as_i64()).unwrap_or(0) as i32;
             let reason = args
