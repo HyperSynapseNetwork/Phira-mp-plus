@@ -162,6 +162,268 @@ async fn append_dead_letter(path: &Path, record: &serde_json::Value) -> Result<(
     Ok(())
 }
 
+/// Normal worker loop: processes replayed events first, then new admissions
+/// from the channel, dispatching each through the persistence pipeline and
+/// ACKing the WAL on completion.
+async fn process_worker_loop(
+    rx: &mut mpsc::Receiver<WorkerMessage>,
+    replay: &mut std::collections::VecDeque<(uuid::Uuid, PersistenceEvent)>,
+    worker_stats: &std::sync::Arc<std::sync::RwLock<PersistenceStats>>,
+    worker_telemetry: &std::sync::Arc<TelemetryBatcher>,
+    worker_dead_letter_path: &Option<std::path::PathBuf>,
+    worker_wal: &std::sync::Arc<PersistenceWal>,
+) {
+    use crate::persistence::pipeline::{
+        persist_benchmark_report_if_needed, persist_production_event_if_needed,
+        persist_simulation_event_if_needed, stage_production_telemetry_if_needed,
+        BenchmarkReportStage, PersistenceWriteStage, ProductionTelemetryStage,
+    };
+    use crate::persistence::stats::{
+        record_benchmark_report_persist_request, record_benchmark_report_persist_skipped,
+        record_db_dispatch_failure, record_db_dispatch_skipped_no_database,
+        record_db_dispatch_success, record_dead_letter_failed, record_dead_letter_written,
+        record_dropped, record_processed, record_production_persist_request,
+        record_production_persist_skipped, record_production_telemetry_stage_failed,
+        record_production_telemetry_staged, record_queued,
+        record_simulation_persist_request, record_telemetry_cutover_observation,
+        PersistenceStats, TelemetryCutoverObservation,
+    };
+    use tracing::{debug, trace, warn};
+
+    loop {
+        let message = if let Some((wal_id, event)) = replay.pop_front() {
+            WorkerMessage::Event { wal_id, event }
+        } else {
+            let Some(message) = rx.recv().await else {
+                break;
+            };
+            message
+        };
+        let (wal_id, event) = match message {
+            WorkerMessage::Event { wal_id, event } => (wal_id, event),
+            WorkerMessage::Flush { timeout, reply } => {
+                let result = worker_telemetry.flush(timeout).await;
+                if let Err(error) = &result {
+                    warn!(%error, "telemetry flush failed; persistence worker remains active");
+                }
+                let _ = reply.send(result);
+                continue;
+            }
+            WorkerMessage::Shutdown { timeout, reply } => {
+                let result = worker_telemetry.shutdown(timeout).await;
+                let should_stop = result.is_ok();
+                if let Err(error) = &result {
+                    warn!(%error, "telemetry shutdown failed; persistence worker remains active");
+                }
+                let _ = reply.send(result);
+                if should_stop {
+                    break;
+                }
+                continue;
+            }
+        };
+        let kind = event.kind();
+        let simulation = event.is_simulation();
+        let summary = event.summary();
+        match persist_benchmark_report_if_needed(&event).await {
+            BenchmarkReportStage::Acknowledged { elapsed_ms } => {
+                record_benchmark_report_persist_request(worker_stats).await;
+                record_db_dispatch_success(
+                    worker_stats,
+                    crate::persistence::PersistencePipeline::BenchmarkReport,
+                    elapsed_ms,
+                )
+                .await;
+            }
+            BenchmarkReportStage::Failed { elapsed_ms, error } => {
+                preserve_failed_event(
+                    worker_dead_letter_path.as_deref(),
+                    &event,
+                    "benchmark_report",
+                    &error,
+                    worker_stats,
+                )
+                .await;
+                record_benchmark_report_persist_skipped(worker_stats).await;
+                record_db_dispatch_failure(
+                    worker_stats,
+                    crate::persistence::PersistencePipeline::BenchmarkReport,
+                    elapsed_ms,
+                    error,
+                )
+                .await;
+            }
+            BenchmarkReportStage::SkippedNoDatabase => {
+                record_benchmark_report_persist_skipped(worker_stats).await;
+                record_db_dispatch_skipped_no_database(
+                    worker_stats,
+                    crate::persistence::PersistencePipeline::BenchmarkReport,
+                )
+                .await;
+            }
+            BenchmarkReportStage::NotBenchmark => {
+                match persist_simulation_event_if_needed(&event).await {
+                    PersistenceWriteStage::Acknowledged {
+                        pipeline,
+                        elapsed_ms,
+                    } => {
+                        record_simulation_persist_request(worker_stats).await;
+                        record_db_dispatch_success(worker_stats, pipeline, elapsed_ms).await;
+                    }
+                    PersistenceWriteStage::Failed {
+                        pipeline,
+                        elapsed_ms,
+                        error,
+                    } => {
+                        preserve_failed_event(
+                            worker_dead_letter_path.as_deref(),
+                            &event,
+                            "simulation",
+                            &error,
+                            worker_stats,
+                        )
+                        .await;
+                        record_simulation_persist_request(worker_stats).await;
+                        record_db_dispatch_failure(worker_stats, pipeline, elapsed_ms, error).await;
+                    }
+                    PersistenceWriteStage::SkippedNoDatabase { pipeline } => {
+                        record_db_dispatch_skipped_no_database(worker_stats, pipeline).await;
+                    }
+                    PersistenceWriteStage::NotApplicable => {
+                        match stage_production_telemetry_if_needed(&event, worker_telemetry).await {
+                            ProductionTelemetryStage::Staged => {
+                                record_production_telemetry_staged(worker_stats).await;
+                            }
+                            ProductionTelemetryStage::Failed(error) => {
+                                preserve_failed_event(
+                                    worker_dead_letter_path.as_deref(),
+                                    &event,
+                                    "telemetry_stage",
+                                    &error,
+                                    worker_stats,
+                                )
+                                .await;
+                                record_production_telemetry_stage_failed(worker_stats, error).await;
+                            }
+                            ProductionTelemetryStage::NotTelemetry => {
+                                match persist_production_event_if_needed(&event).await {
+                                    PersistenceWriteStage::Acknowledged {
+                                        pipeline,
+                                        elapsed_ms,
+                                    } => {
+                                        record_production_persist_request(worker_stats).await;
+                                        record_db_dispatch_success(
+                                            worker_stats, pipeline, elapsed_ms,
+                                        )
+                                        .await;
+                                    }
+                                    PersistenceWriteStage::Failed {
+                                        pipeline,
+                                        elapsed_ms,
+                                        error,
+                                    } => {
+                                        preserve_failed_event(
+                                            worker_dead_letter_path.as_deref(),
+                                            &event,
+                                            "production",
+                                            &error,
+                                            worker_stats,
+                                        )
+                                        .await;
+                                        record_production_persist_request(worker_stats).await;
+                                        record_db_dispatch_failure(
+                                            worker_stats, pipeline, elapsed_ms, error,
+                                        )
+                                        .await;
+                                    }
+                                    PersistenceWriteStage::SkippedNoDatabase { pipeline } => {
+                                        record_db_dispatch_skipped_no_database(
+                                            worker_stats, pipeline,
+                                        )
+                                        .await;
+                                    }
+                                    PersistenceWriteStage::NotApplicable => {
+                                        if !event.is_simulation()
+                                            && !matches!(
+                                                &event,
+                                                PersistenceEvent::Flush
+                                                    | PersistenceEvent::Shutdown
+                                            )
+                                        {
+                                            record_production_persist_skipped(worker_stats).await;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        match event {
+            PersistenceEvent::Shutdown => {
+                debug!(kind = %kind, "persistence worker shutdown requested");
+                record_processed(worker_stats, kind, simulation, summary).await;
+                break;
+            }
+            PersistenceEvent::Flush => {
+                debug!(kind = %kind, "persistence worker flush marker received");
+            }
+            other => {
+                trace!(?other, "persistence worker consumed mirrored event");
+            }
+        }
+        record_processed(worker_stats, kind, simulation, summary).await;
+
+        // NOTE (P0): WAL ack is issued after the event has been dispatched
+        // through the persistence pipeline. This is still the "current" ACK
+        // model that the PMP audit flags as a P0 issue: events may be ACKed
+        // even when they reached only best-effort telemetry staging rather
+        // than a durable terminal state (DatabaseCommitted /
+        // DurableDeadLetterStored). A proper fix requires the pipeline to
+        // return the terminal outcome so ACK is gated on durable persistence.
+        if let Err(error) = worker_wal.ack(wal_id).await {
+            crate::supervisor_actor::report_critical_failure("persistence-wal-ack", error).await;
+        }
+    }
+}
+
+/// Degraded worker loop: entered when WAL replay fails. Only accepts
+/// Shutdown commands; all other messages are logged and discarded so no
+/// data is processed with an unverified WAL.
+async fn process_degraded_worker_loop(
+    rx: &mut mpsc::Receiver<WorkerMessage>,
+    worker_telemetry: &std::sync::Arc<TelemetryBatcher>,
+) {
+    use tracing::{error, info, warn};
+
+    error!("persistence worker entered degraded mode: WAL replay failed, rejecting all events");
+
+    loop {
+        let Some(message) = rx.recv().await else {
+            break;
+        };
+        match message {
+            WorkerMessage::Event { wal_id, .. } => {
+                warn!(wal_id = %wal_id, "dropping event in degraded persistence worker");
+                continue;
+            }
+            WorkerMessage::Flush { timeout, reply } => {
+                let result = worker_telemetry.flush(timeout).await;
+                let _ = reply.send(result);
+                continue;
+            }
+            WorkerMessage::Shutdown { timeout, reply } => {
+                info!("degraded persistence worker shutting down");
+                let result = worker_telemetry.shutdown(timeout).await;
+                let _ = reply.send(result);
+                break;
+            }
+        }
+    }
+}
+
 impl PersistenceWorker {
     pub fn spawn(queue_capacity: usize) -> Arc<Self> {
         Self::spawn_with_policy(
@@ -228,232 +490,29 @@ impl PersistenceWorker {
         let worker_wal = Arc::clone(&wal);
 
         crate::supervisor_actor::spawn_critical("persistence-worker", async move {
-            let mut replay = match worker_wal.replay().await {
-                Ok(events) => std::collections::VecDeque::from(events),
+            match worker_wal.replay().await {
+                Ok(events) => {
+                    let mut replay: std::collections::VecDeque<(uuid::Uuid, PersistenceEvent)> =
+                        std::collections::VecDeque::from(events);
+                    process_worker_loop(
+                        &mut rx,
+                        &mut replay,
+                        &worker_stats,
+                        &worker_telemetry,
+                        &worker_dead_letter_path,
+                        &worker_wal,
+                    )
+                    .await;
+                }
                 Err(error) => {
-                    crate::supervisor_actor::report_critical_failure("persistence-wal", error)
-                        .await;
-                    std::collections::VecDeque::new()
-                }
-            };
-            loop {
-                let message = if let Some((wal_id, event)) = replay.pop_front() {
-                    WorkerMessage::Event { wal_id, event }
-                } else {
-                    let Some(message) = rx.recv().await else {
-                        break;
-                    };
-                    message
-                };
-                let (wal_id, event) = match message {
-                    WorkerMessage::Event { wal_id, event } => (wal_id, event),
-                    WorkerMessage::Flush { timeout, reply } => {
-                        let result = worker_telemetry.flush(timeout).await;
-                        if let Err(error) = &result {
-                            warn!(%error, "telemetry flush failed; persistence worker remains active");
-                        }
-                        let _ = reply.send(result);
-                        continue;
-                    }
-                    WorkerMessage::Shutdown { timeout, reply } => {
-                        let result = worker_telemetry.shutdown(timeout).await;
-                        let should_stop = result.is_ok();
-                        if let Err(error) = &result {
-                            warn!(%error, "telemetry shutdown failed; persistence worker remains active");
-                        }
-                        let _ = reply.send(result);
-                        if should_stop {
-                            break;
-                        }
-                        continue;
-                    }
-                };
-                let kind = event.kind();
-                let simulation = event.is_simulation();
-                let summary = event.summary();
-                match persist_benchmark_report_if_needed(&event).await {
-                    BenchmarkReportStage::Acknowledged { elapsed_ms } => {
-                        record_benchmark_report_persist_request(&worker_stats).await;
-                        record_db_dispatch_success(
-                            &worker_stats,
-                            crate::persistence::PersistencePipeline::BenchmarkReport,
-                            elapsed_ms,
-                        )
-                        .await;
-                    }
-                    BenchmarkReportStage::Failed { elapsed_ms, error } => {
-                        preserve_failed_event(
-                            worker_dead_letter_path.as_deref(),
-                            &event,
-                            "benchmark_report",
-                            &error,
-                            &worker_stats,
-                        )
-                        .await;
-                        record_benchmark_report_persist_skipped(&worker_stats).await;
-                        record_db_dispatch_failure(
-                            &worker_stats,
-                            crate::persistence::PersistencePipeline::BenchmarkReport,
-                            elapsed_ms,
-                            error,
-                        )
-                        .await;
-                    }
-                    BenchmarkReportStage::SkippedNoDatabase => {
-                        record_benchmark_report_persist_skipped(&worker_stats).await;
-                        record_db_dispatch_skipped_no_database(
-                            &worker_stats,
-                            crate::persistence::PersistencePipeline::BenchmarkReport,
-                        )
-                        .await;
-                    }
-                    BenchmarkReportStage::NotBenchmark => {
-                        match persist_simulation_event_if_needed(&event).await {
-                            PersistenceWriteStage::Acknowledged {
-                                pipeline,
-                                elapsed_ms,
-                            } => {
-                                record_simulation_persist_request(&worker_stats).await;
-                                record_db_dispatch_success(&worker_stats, pipeline, elapsed_ms)
-                                    .await;
-                            }
-                            PersistenceWriteStage::Failed {
-                                pipeline,
-                                elapsed_ms,
-                                error,
-                            } => {
-                                preserve_failed_event(
-                                    worker_dead_letter_path.as_deref(),
-                                    &event,
-                                    "simulation",
-                                    &error,
-                                    &worker_stats,
-                                )
-                                .await;
-                                record_simulation_persist_request(&worker_stats).await;
-                                record_db_dispatch_failure(
-                                    &worker_stats,
-                                    pipeline,
-                                    elapsed_ms,
-                                    error,
-                                )
-                                .await;
-                            }
-                            PersistenceWriteStage::SkippedNoDatabase { pipeline } => {
-                                record_db_dispatch_skipped_no_database(&worker_stats, pipeline)
-                                    .await;
-                            }
-                            PersistenceWriteStage::NotApplicable => {
-                                match stage_production_telemetry_if_needed(
-                                    &event,
-                                    &worker_telemetry,
-                                )
-                                .await
-                                {
-                                    ProductionTelemetryStage::Staged => {
-                                        record_production_telemetry_staged(&worker_stats).await;
-                                    }
-                                    ProductionTelemetryStage::Failed(error) => {
-                                        preserve_failed_event(
-                                            worker_dead_letter_path.as_deref(),
-                                            &event,
-                                            "telemetry_stage",
-                                            &error,
-                                            &worker_stats,
-                                        )
-                                        .await;
-                                        record_production_telemetry_stage_failed(
-                                            &worker_stats,
-                                            error,
-                                        )
-                                        .await;
-                                    }
-                                    ProductionTelemetryStage::NotTelemetry => {
-                                        match persist_production_event_if_needed(&event).await {
-                                            PersistenceWriteStage::Acknowledged {
-                                                pipeline,
-                                                elapsed_ms,
-                                            } => {
-                                                record_production_persist_request(&worker_stats)
-                                                    .await;
-                                                record_db_dispatch_success(
-                                                    &worker_stats,
-                                                    pipeline,
-                                                    elapsed_ms,
-                                                )
-                                                .await;
-                                            }
-                                            PersistenceWriteStage::Failed {
-                                                pipeline,
-                                                elapsed_ms,
-                                                error,
-                                            } => {
-                                                preserve_failed_event(
-                                                    worker_dead_letter_path.as_deref(),
-                                                    &event,
-                                                    "production",
-                                                    &error,
-                                                    &worker_stats,
-                                                )
-                                                .await;
-                                                record_production_persist_request(&worker_stats)
-                                                    .await;
-                                                record_db_dispatch_failure(
-                                                    &worker_stats,
-                                                    pipeline,
-                                                    elapsed_ms,
-                                                    error,
-                                                )
-                                                .await;
-                                            }
-                                            PersistenceWriteStage::SkippedNoDatabase {
-                                                pipeline,
-                                            } => {
-                                                record_db_dispatch_skipped_no_database(
-                                                    &worker_stats,
-                                                    pipeline,
-                                                )
-                                                .await;
-                                            }
-                                            PersistenceWriteStage::NotApplicable => {
-                                                if !event.is_simulation()
-                                                    && !matches!(
-                                                        &event,
-                                                        PersistenceEvent::Flush
-                                                            | PersistenceEvent::Shutdown
-                                                    )
-                                                {
-                                                    record_production_persist_skipped(
-                                                        &worker_stats,
-                                                    )
-                                                    .await;
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-
-                match event {
-                    PersistenceEvent::Shutdown => {
-                        debug!(kind = %kind, "persistence worker shutdown requested");
-                        record_processed(&worker_stats, kind, simulation, summary).await;
-                        break;
-                    }
-                    PersistenceEvent::Flush => {
-                        debug!(kind = %kind, "persistence worker flush marker received");
-                    }
-                    other => {
-                        trace!(?other, "persistence worker consumed mirrored event");
-                    }
-                }
-                record_processed(&worker_stats, kind, simulation, summary).await;
-                if let Err(error) = worker_wal.ack(wal_id).await {
-                    crate::supervisor_actor::report_critical_failure("persistence-wal-ack", error)
-                        .await;
+                    crate::supervisor_actor::report_critical_failure(
+                        "persistence-wal",
+                        format!("WAL replay failed — persistence worker cannot start: {error}"),
+                    )
+                    .await;
+                    // Fail-closed: enter a degraded loop that only accepts
+                    // shutdown/control messages; all events are rejected.
+                    process_degraded_worker_loop(&mut rx, &worker_telemetry).await;
                 }
             }
         });

@@ -1,0 +1,58 @@
+[Unit]
+Description=Phira-mp+ Multiplayer Game Server
+Documentation=https://github.com/your-org/phira-mp-plus
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+
+# Run as non-root user
+User=pmp
+Group=pmp
+
+# Working directory
+WorkingDirectory=/var/lib/pmp
+
+# Executable and arguments
+ExecStart=/usr/local/bin/phira-mp-plus-server \
+    --config /etc/pmp/server_config.yml \
+    --no-cli
+
+# Graceful shutdown
+KillSignal=SIGTERM
+TimeoutStopSec=30
+SendSIGKILL=yes
+
+# Resource limits
+LimitNOFILE=65536
+LimitNPROC=4096
+
+# Sandboxing (systemd 240+)
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+NoNewPrivileges=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+PrivateDevices=true
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+
+# Read-only paths (except data/plugins)
+ReadWritePaths=/var/lib/pmp/data /var/lib/pmp/plugins
+
+# Restart policy
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

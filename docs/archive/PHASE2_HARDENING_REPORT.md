@@ -1,8 +1,5 @@
 # PMP 架构加固第二阶段报告
 
-**状态：SUPERSEDED** — 本文件已被 `PMP_PRODUCTION_PRODUCTIZATION_AUDIT.md` 取代（2026-07-19）。
-当前所有生产化与产品化要求以该审计报告为准。
-
 ## 1. 本阶段目标
 
 本阶段以第一阶段加固版本为基线，继续消除“表面 Actor 化、实际仍存在双执行路径”和“持久化调用完成但无法证明数据落地”的问题。PP 架构边界保持不变：PMP 是 PPB 后方的游戏服务端，PMP HTTP/SSE/WebSocket 继续作为受控内部兼容与诊断接口，不扩展为公共 Web API。

@@ -397,6 +397,7 @@ impl PlusServer {
         let http_server = if http_port > 0 {
             let srv = Arc::new(PluginHttpServer::new(
                 http_port,
+                &config.http_bind_address,
                 proxy_protocol_port,
                 Arc::clone(&state.events),
             ));

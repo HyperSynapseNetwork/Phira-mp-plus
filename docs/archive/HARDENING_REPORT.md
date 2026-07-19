@@ -3,6 +3,8 @@
 **状态：SUPERSEDED** — 本文件已被 `PMP_PRODUCTION_PRODUCTIZATION_AUDIT.md` 取代（2026-07-19）。
 当前所有生产化与产品化要求以该审计报告为准。
 
+---
+
 第一阶段与第二阶段修改已经合并到当前工程。最新、可作为交付依据的说明见：
 
 - [`PHASE2_HARDENING_REPORT.md`](PHASE2_HARDENING_REPORT.md)：第二阶段实现、保证边界、残余结构性问题与结论；

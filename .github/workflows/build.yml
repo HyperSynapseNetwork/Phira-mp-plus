@@ -8,7 +8,6 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
-  RUSTFLAGS: -A clippy::all
 
 concurrency:
   group: build-${{ github.workflow }}-${{ github.ref }}
@@ -79,10 +78,11 @@ jobs:
           cargo check --locked -p phira-mp-plus-server --no-default-features
           cargo check --locked -p phira-mp-plus-server --no-default-features --features postgres
           cargo check --locked -p phira-mp-plus-server --no-default-features --features wit-bindgen
+          cargo check --locked -p phira-mp-plus-server --all-features
       - name: Tests
         run: cargo test --locked --workspace
       - name: Clippy
-        run: cargo clippy --locked --workspace --all-targets
+        run: cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
 
   linux:
     needs: [auto-patch, check]

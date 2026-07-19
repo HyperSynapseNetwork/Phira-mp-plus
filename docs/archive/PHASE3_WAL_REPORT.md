@@ -1,8 +1,5 @@
 # PMP Phase 3 WAL implementation report
 
-**状态：SUPERSEDED** — 本文件已被 `PMP_PRODUCTION_PRODUCTIZATION_AUDIT.md` 取代（2026-07-19）。
-当前所有生产化与产品化要求以该审计报告为准。
-
 ## Implemented
 
 - New `persistence/wal.rs` journal with versioned JSONL admission and ACK records.

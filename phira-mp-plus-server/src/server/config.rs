@@ -167,6 +167,11 @@ pub struct PlusConfig {
     pub port: u16,
     #[serde(default = "default_http_port")]
     pub http_port: u16,
+    /// HTTP/SSE listener bind address. Defaults to loopback for production
+    /// safety; change to "0.0.0.0" only when PPB or a reverse proxy requires
+    /// it and the network boundary is explicitly controlled.
+    #[serde(default = "default_http_bind_address")]
+    pub http_bind_address: String,
     #[serde(default = "default_monitors")]
     pub monitors: Vec<i32>,
     /// Explicit CLI monitor override retained across `config reload`.
@@ -234,6 +239,7 @@ impl Default for PlusConfig {
         Self {
             port: 12346,
             http_port: 12347,
+            http_bind_address: default_http_bind_address(),
             monitors: default_monitors(),
             cli_monitors_override: None,
             plugins_dir: "plugins".to_string(),
@@ -307,6 +313,21 @@ impl PlusConfig {
             return Err(AppError::ConfigValidation(
                 "PROXY protocol 端口不能与 TCP/HTTP 端口相同".into(),
             ));
+        }
+        if self.http_port > 0 && self.http_bind_address.trim().is_empty() {
+            return Err(AppError::ConfigValidation(
+                "http_bind_address 不能为空".into(),
+            ));
+        }
+        if self.http_port > 0 && self.http_bind_address != "0.0.0.0" {
+            // Validate that the address can be parsed, but don't force a specific format.
+            let addr = format!("{}:{}", self.http_bind_address, self.http_port);
+            if addr.parse::<std::net::SocketAddr>().is_err() {
+                return Err(AppError::ConfigValidation(format!(
+                    "http_bind_address \"{}\" 无法解析为有效的 IP 地址",
+                    self.http_bind_address
+                )));
+            }
         }
         if self.max_rooms == Some(0) {
             return Err(AppError::ConfigValidation("max_rooms 必须大于 0".into()));
@@ -489,6 +510,10 @@ pub struct PlusConfigCli {
 
 fn default_http_port() -> u16 {
     12347
+}
+
+fn default_http_bind_address() -> String {
+    "127.0.0.1".to_string()
 }
 fn default_config_path() -> String {
     "server_config.yml".to_string()

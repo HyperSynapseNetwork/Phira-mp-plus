@@ -39,6 +39,7 @@ pub struct PluginHttpServer {
     /// SSE streams registered by plugins: path → (plugin_name, event_types).
     sse_streams: Arc<RwLock<HashMap<String, SseStreamConfig>>>,
     port: u16,
+    bind_address: String,
     proxy_port: u16,
 }
 
@@ -50,12 +51,18 @@ pub struct SseStreamConfig {
 }
 
 impl PluginHttpServer {
-    pub fn new(port: u16, proxy_protocol_port: u16, events: Arc<SseHub>) -> Self {
+    pub fn new(
+        port: u16,
+        bind_address: impl Into<String>,
+        proxy_protocol_port: u16,
+        events: Arc<SseHub>,
+    ) -> Self {
         Self {
             router: Arc::new(StdRwLock::new(DynamicRouter::default())),
             events,
             sse_streams: Arc::new(RwLock::new(HashMap::new())),
             port,
+            bind_address: bind_address.into(),
             proxy_port: proxy_protocol_port,
         }
     }
@@ -113,7 +120,7 @@ impl PluginHttpServer {
         app = app.layer(Extension(state));
 
         // Direct internal HTTP port (does not trust forwarded client headers)
-        let address = format!("0.0.0.0:{}", self.port);
+        let address = format!("{}:{}", self.bind_address, self.port);
         let listener = match tokio::net::TcpListener::bind(&address).await {
             Ok(listener) => listener,
             Err(err) => {
@@ -126,7 +133,7 @@ impl PluginHttpServer {
         // Trusted-forwarded-header compatibility port. This is not HAProxy
         // PROXY v1/v2; it trusts X-Forwarded-For only behind PPB/a trusted proxy.
         if self.proxy_port > 0 && self.proxy_port != self.port {
-            let proxy_addr = format!("0.0.0.0:{}", self.proxy_port);
+            let proxy_addr = format!("{}:{}", self.bind_address, self.proxy_port);
             let proxy_listener = match tokio::net::TcpListener::bind(&proxy_addr).await {
                 Ok(l) => l,
                 Err(err) => {
@@ -361,7 +368,7 @@ mod tests {
     use super::*;
 
     fn make_server() -> PluginHttpServer {
-        PluginHttpServer::new(0, 0, Arc::new(super::SseHub::new()))
+        PluginHttpServer::new(0, "127.0.0.1", 0, Arc::new(super::SseHub::new()))
     }
 
     #[test]

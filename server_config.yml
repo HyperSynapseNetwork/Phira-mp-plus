@@ -13,6 +13,10 @@ port: 12346
 # PMP 端口仅应位于受控网络，不作为公网边缘接口。
 http_port: 12347
 
+# HTTP/SSE 监听地址。生产环境中应绑定到 loopback (127.0.0.1)，
+# 仅在 PPB 或反向代理以受控网络方式连接时才改为 0.0.0.0。
+# http_bind_address: "127.0.0.1"
+
 # 可信转发头兼容监听端口。该端口读取 X-Forwarded-For；它不是 HAProxy PROXY protocol v1/v2。
 # 只能放在 PPB/可信反向代理之后，禁止直接暴露给不可信客户端。设为 0 禁用。
 # proxy_protocol_port: 12344

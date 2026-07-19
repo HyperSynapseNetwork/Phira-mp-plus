@@ -33,3 +33,4 @@ phira-mp/phira-mp-client/
 phira-mp/target/
 phira-mp/Cargo.lock
 *.patch
+PMP_PRODUCTION_PRODUCTIZATION_AUDIT.md
