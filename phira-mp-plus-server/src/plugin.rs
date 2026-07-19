@@ -890,9 +890,11 @@ impl PluginManager {
         Err(format!("plugin '{id}' not found"))
     }
 
-    /// Remove a plugin and its sidecar/private data without touching sibling plugins.
+    /// Remove a plugin from the registry. The plugin is disabled and unloaded,
+    /// but its .wasm file, capability sidecar, and data directory are NOT deleted.
+    /// Use `purge_plugin_data` to clean up files separately.
     pub async fn remove_plugin(&self, id: &str) -> Result<(), String> {
-        let (slot, plugin_path, plugin_name, stable_id) = {
+        let (slot, plugin_name, stable_id) = {
             let slots = self.plugins.read().await;
             let slot = slots
                 .iter()
@@ -906,7 +908,7 @@ impl PluginManager {
                 .and_then(|value| value.to_str())
                 .ok_or_else(|| "plugin filename is not UTF-8".to_string())?
                 .to_string();
-            (slot.clone(), path, meta.info.name.clone(), stable_id)
+            (slot.clone(), meta.info.name.clone(), stable_id)
         };
 
         {
@@ -946,26 +948,45 @@ impl PluginManager {
         #[cfg(not(feature = "plugin-system"))]
         let _ = (&stable_id, &plugin_name);
 
+        info!(plugin = %plugin_name, stable_id = %stable_id,
+            "plugin removed from registry; files and data retained. Use purge_plugin_data to delete them."
+        );
+        Ok(())
+    }
+
+    /// Permanently delete a plugin's .wasm file, capability sidecar, and data directory.
+    /// The plugin must already be removed via `remove_plugin`.
+    pub async fn purge_plugin_data(&self, id: &str) -> Result<(), String> {
+        // Resolve the plugin path from the extension store — the plugin may no longer
+        // be in the live registry.
+        let plugin_path = std::path::Path::new(&self.plugins_dir).join(format!("{id}.wasm"));
         let sidecar = plugin_path.with_extension("capabilities.json");
-        let data_dir = std::path::Path::new("data/plugins").join(&stable_id);
+        let data_dir = std::path::Path::new("data/plugins").join(id);
+
         tokio::task::spawn_blocking(move || -> Result<(), String> {
+            let mut removed_any = false;
             if plugin_path.exists() {
                 std::fs::remove_file(&plugin_path)
-                    .map_err(|e| format!("remove plugin '{}': {e}", plugin_path.display()))?;
+                    .map_err(|e| format!("remove plugin file '{}': {e}", plugin_path.display()))?;
+                removed_any = true;
             }
             if sidecar.exists() {
-                std::fs::remove_file(&sidecar).map_err(|e| {
-                    format!("remove capability sidecar '{}': {e}", sidecar.display())
-                })?;
+                std::fs::remove_file(&sidecar)
+                    .map_err(|e| format!("remove capability sidecar '{}': {e}", sidecar.display()))?;
+                removed_any = true;
             }
             if data_dir.exists() {
                 std::fs::remove_dir_all(&data_dir)
                     .map_err(|e| format!("remove plugin data '{}': {e}", data_dir.display()))?;
+                removed_any = true;
+            }
+            if !removed_any {
+                return Err(format!("no files found for plugin '{id}'"));
             }
             Ok(())
         })
         .await
-        .map_err(|e| format!("plugin removal task failed: {e}"))??;
+        .map_err(|e| format!("plugin purge task failed: {e}"))??;
         Ok(())
     }
 

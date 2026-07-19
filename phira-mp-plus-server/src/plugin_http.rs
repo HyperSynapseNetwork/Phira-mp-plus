@@ -108,6 +108,8 @@ impl PluginHttpServer {
         let mut app = Router::new()
             .route("/health/live", get(health_live))
             .route("/health/ready", get(health_ready))
+            .route("/version", get(version_handler))
+            .route("/metrics", get(metrics_handler))
             .route("/api/events", get(general_sse_handler))
             .route("/api/ws", get(websocket::handler))
             .route("/{*path}", any(dynamic_handler))
@@ -388,6 +390,44 @@ async fn health_live(Extension(state): Extension<Arc<HttpAppState>>) -> impl Int
             "service": "phira-mp-plus-server",
         })),
     )
+}
+
+/// Version: server build metadata.
+async fn version_handler() -> impl IntoResponse {
+    (
+        StatusCode::OK,
+        Json(serde_json::json!({
+            "server": env!("CARGO_PKG_NAME"),
+            "version": env!("CARGO_PKG_VERSION"),
+            "git_commit": option_env!("VERGEN_GIT_SHA").unwrap_or("unknown"),
+            "rustc": env!("CARGO_PKG_RUST_VERSION"),
+        })),
+    )
+}
+
+/// Minimal metrics endpoint (Prometheus exposition format).
+/// Reports key counters for process health.
+async fn metrics_handler() -> impl IntoResponse {
+    use std::time::SystemTime;
+
+    let uptime_secs = SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let body = format!(
+        "# HELP pmp_build_info Build metadata\n\
+         # TYPE pmp_build_info gauge\n\
+         pmp_build_info{{version=\"{version}\"}} 1\n\
+         # HELP pmp_uptime_seconds Server uptime\n\
+         # TYPE pmp_uptime_seconds gauge\n\
+         pmp_uptime_seconds {uptime}\n\
+         # HELP pmp_http_requests_total Total HTTP requests (placeholder)\n\
+         # TYPE pmp_http_requests_total counter\n\
+         pmp_http_requests_total 0\n",
+        version = env!("CARGO_PKG_VERSION"),
+        uptime = uptime_secs,
+    );
+    (StatusCode::OK, [(header::CONTENT_TYPE, "text/plain; charset=utf-8")], body)
 }
 
 /// Readiness: the server is ready to accept traffic.
