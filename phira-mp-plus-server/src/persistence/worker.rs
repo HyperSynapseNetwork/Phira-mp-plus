@@ -184,9 +184,8 @@ async fn process_worker_loop(
         record_db_dispatch_success, record_dead_letter_failed, record_dead_letter_written,
         record_dropped, record_processed, record_production_persist_request,
         record_production_persist_skipped, record_production_telemetry_stage_failed,
-        record_production_telemetry_staged, record_queued,
-        record_simulation_persist_request, record_telemetry_cutover_observation,
-        PersistenceStats, TelemetryCutoverObservation,
+        record_production_telemetry_staged, record_queued, record_simulation_persist_request,
+        record_telemetry_cutover_observation, PersistenceStats, TelemetryCutoverObservation,
     };
     use tracing::{debug, trace, warn};
 
@@ -313,7 +312,9 @@ async fn process_worker_loop(
                                     } => {
                                         record_production_persist_request(worker_stats).await;
                                         record_db_dispatch_success(
-                                            worker_stats, pipeline, elapsed_ms,
+                                            worker_stats,
+                                            pipeline,
+                                            elapsed_ms,
                                         )
                                         .await;
                                     }
@@ -332,13 +333,17 @@ async fn process_worker_loop(
                                         .await;
                                         record_production_persist_request(worker_stats).await;
                                         record_db_dispatch_failure(
-                                            worker_stats, pipeline, elapsed_ms, error,
+                                            worker_stats,
+                                            pipeline,
+                                            elapsed_ms,
+                                            error,
                                         )
                                         .await;
                                     }
                                     PersistenceWriteStage::SkippedNoDatabase { pipeline } => {
                                         record_db_dispatch_skipped_no_database(
-                                            worker_stats, pipeline,
+                                            worker_stats,
+                                            pipeline,
                                         )
                                         .await;
                                     }
