@@ -65,6 +65,8 @@ jobs:
         with:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
       - name: Changed Rust formatting
         env:
           GITHUB_EVENT_BEFORE: ${{ github.event.before }}
@@ -103,6 +105,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           key: linux-musl
+          cache-on-failure: true
       - name: Setup System
         run: sudo apt-get update && sudo apt-get install -y musl-tools
       - name: cargo build
@@ -127,6 +130,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           key: windows
+          cache-on-failure: true
       - name: cargo build
         run: cargo build --locked --release
       - uses: actions/upload-artifact@v4

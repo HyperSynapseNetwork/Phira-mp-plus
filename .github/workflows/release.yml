@@ -57,6 +57,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           key: release-quality
+          cache-on-failure: true
       - name: Changed Rust formatting
         env:
           GITHUB_EVENT_BEFORE: ${{ github.event.before }}
@@ -92,6 +93,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           key: release-linux-musl
+          cache-on-failure: true
       - run: cargo build --locked --release --target x86_64-unknown-linux-musl
       - run: cp target/x86_64-unknown-linux-musl/release/phira-mp-plus-server phira-mp-plus-server-linux
       - uses: actions/upload-artifact@v4
@@ -109,6 +111,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           key: release-windows
+          cache-on-failure: true
       - run: cargo build --locked --release
       - run: cp target/release/phira-mp-plus-server.exe phira-mp-plus-server-windows.exe
       - uses: actions/upload-artifact@v4
