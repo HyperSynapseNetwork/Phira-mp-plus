@@ -394,7 +394,7 @@ async fn process_worker_loop(
 /// data is processed with an unverified WAL.
 async fn process_degraded_worker_loop(
     rx: &mut mpsc::Receiver<WorkerMessage>,
-    worker_telemetry: &std::sync::Arc<TelemetryBatcher>,
+    worker_telemetry: &Arc<TelemetryBatcher>,
 ) {
     use tracing::{error, info, warn};
 
