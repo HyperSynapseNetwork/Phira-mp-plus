@@ -6,7 +6,6 @@ mod websocket;
 
 use crate::plugin::PluginManager;
 use crate::server::PlusServerState;
-use std::time::Instant;
 use axum::{
     extract::Extension,
     http::{header, HeaderName, HeaderValue, Method, StatusCode, Uri},
