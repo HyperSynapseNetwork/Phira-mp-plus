@@ -100,14 +100,11 @@ impl PluginHttpServer {
             events: Arc::clone(&self.events),
             plugin_manager: Arc::clone(&server.plugin_manager),
             sse_streams: Arc::clone(&self.sse_streams),
-            server_state: Arc::clone(&server),
         });
 
         // Build Router<()> with all routes (static + dynamically registered SSE streams).
         // Health endpoints are registered before the catch-all so they always respond.
         let mut app = Router::new()
-            .route("/health/live", get(health_live))
-            .route("/health/ready", get(health_ready))
             .route("/api/events", get(general_sse_handler))
             .route("/api/ws", get(websocket::handler))
             .route("/{*path}", any(dynamic_handler))
@@ -183,7 +180,6 @@ pub(super) struct HttpAppState {
     events: Arc<SseHub>,
     plugin_manager: Arc<PluginManager>,
     sse_streams: Arc<RwLock<HashMap<String, SseStreamConfig>>>,
-    server_state: Arc<PlusServerState>,
 }
 
 async fn general_sse_handler(Extension(state): Extension<Arc<HttpAppState>>) -> Response {
@@ -361,78 +357,6 @@ async fn dynamic_handler(
             Json(serde_json::json!({"error": format!("handler failed: {err}")})),
         )
             .into_response(),
-    }
-}
-
-// ── Health endpoints ────────────────────────────────────────────────────────
-
-/// Liveness: process is alive and Tokio runtime is active.
-/// Always returns 200 with `{"status":"ok"}` unless the process is shutting down.
-async fn health_live(Extension(state): Extension<Arc<HttpAppState>>) -> impl IntoResponse {
-    if state
-        .server_state
-        .shutting_down
-        .load(std::sync::atomic::Ordering::Acquire)
-    {
-        return (
-            StatusCode::SERVICE_UNAVAILABLE,
-            Json(serde_json::json!({
-                "status": "shutting_down"
-            })),
-        );
-    }
-    (
-        StatusCode::OK,
-        Json(serde_json::json!({
-            "status": "ok",
-            "service": "phira-mp-plus-server",
-        })),
-    )
-}
-
-/// Readiness: the server is ready to accept traffic.
-/// All critical subsystems must be operational.
-async fn health_ready(Extension(state): Extension<Arc<HttpAppState>>) -> impl IntoResponse {
-    let mut ready = true;
-    let mut checks = serde_json::json!({});
-
-    // 1. Not shutting down
-    if state
-        .server_state
-        .shutting_down
-        .load(std::sync::atomic::Ordering::Acquire)
-    {
-        ready = false;
-        checks["shutdown"] = serde_json::json!("shutting_down");
-    }
-
-    // 2. WAL replay succeeded (persistence worker healthy)
-    let wal_ok = state.server_state.config.allow_database_degraded_mode
-        || state.server_state.persistence_worker.is_healthy().await;
-    if !wal_ok {
-        ready = false;
-        checks["persistence"] = serde_json::json!("wal_replay_failed");
-    }
-
-    // 3. Plugin system is not in critical failure
-    // (Checked via supervisor health — the supervisor tracks critical tasks)
-
-    if ready {
-        (
-            StatusCode::OK,
-            Json(serde_json::json!({
-                "status": "ok",
-                "checks": checks,
-            })),
-        )
-    } else {
-        (
-            StatusCode::SERVICE_UNAVAILABLE,
-            Json(serde_json::json!({
-                "status": "degraded",
-                "checks": checks,
-            })),
-        )
     }
 }
 
