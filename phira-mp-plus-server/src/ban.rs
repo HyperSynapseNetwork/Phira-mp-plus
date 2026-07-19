@@ -164,9 +164,7 @@ impl BanManager {
         let mut result = store
             .user_data
             .iter()
-            .filter(|(_, data)| {
-                data.get(BAN_STATUS_KEY).map(String::as_str) == Some(BANNED_STATUS)
-            })
+            .filter(|(_, data)| data.get(BAN_STATUS_KEY).map(String::as_str) == Some(BANNED_STATUS))
             .map(|(&user_id, data)| BanEntry {
                 user_id,
                 reason: normalize_reason(

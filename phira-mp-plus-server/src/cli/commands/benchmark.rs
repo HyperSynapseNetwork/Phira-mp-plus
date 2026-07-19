@@ -113,22 +113,32 @@ impl CliHandler {
 
             match result {
                 Ok(Ok(output)) => {
-                    let _ = out_tx.send(format!(
-                        "  ◆ benchmark 完成（{} 秒 / {} 房间）",
-                        duration, rooms
-                    )).await;
+                    let _ = out_tx
+                        .send(format!(
+                            "  ◆ benchmark 完成（{} 秒 / {} 房间）",
+                            duration, rooms
+                        ))
+                        .await;
                     for line in output.lines() {
-                        let _ = out_tx.send(line.to_string()).await;
+                        let _ = out_tx
+                            .send(line.to_string())
+                            .await;
                     }
                 }
                 Ok(Err(_)) => {
-                    let _ = out_tx.send(format!(
-                        "  ✗ benchmark 超时或被取消（等待 {} 秒后仍无结果）",
-                        timeout_secs
-                    )).await;
+                    let _ = out_tx
+                        .send(format!(
+                            "  ✗ benchmark 超时或被取消（等待 {} 秒后仍无结果）",
+                            timeout_secs
+                        ))
+                        .await;
                 }
                 Err(err) => {
-                    let _ = out_tx.send(format!("  ✗ benchmark 等待任务失败: {err}")).await;
+                    let _ = out_tx
+                        .send(format!("  ✗ benchmark 等待任务失败: {err}"))
+                        .await;
+                }
+    .await;
                 }
             }
         });
@@ -197,19 +207,29 @@ impl CliHandler {
 
             match result {
                 Ok(Ok(output)) => {
-                    let _ = out_tx.send("  ◆ benchmark hybrid 完成".to_string()).await;
+                    let _ = out_tx
+                        .send("  ◆ benchmark hybrid 完成".to_string())
+                        .await;
                     for line in output.lines() {
-                        let _ = out_tx.send(line.to_string()).await;
+                        let _ = out_tx
+                            .send(line.to_string())
+                            .await;
                     }
                 }
                 Ok(Err(_)) => {
-                    let _ = out_tx.send(format!(
-                        "  ✗ benchmark hybrid 超时或被取消（等待 {} 秒后仍无结果）",
-                        timeout_secs
-                    )).await;
+                    let _ = out_tx
+                        .send(format!(
+                            "  ✗ benchmark hybrid 超时或被取消（等待 {} 秒后仍无结果）",
+                            timeout_secs
+                        ))
+                        .await;
                 }
                 Err(err) => {
-                    let _ = out_tx.send(format!("  ✗ benchmark hybrid 等待任务失败: {err}")).await;
+                    let _ = out_tx
+                        .send(format!("  ✗ benchmark hybrid 等待任务失败: {err}"))
+                        .await;
+                }
+    .await;
                 }
             }
         });
