@@ -78,6 +78,7 @@ jobs:
       - name: Feature boundary checks
         run: |
           cargo check --locked -p phira-mp-plus-server --no-default-features
+          cargo check --locked -p phira-mp-plus-server
           cargo check --locked -p phira-mp-plus-server --no-default-features --features postgres
           cargo check --locked -p phira-mp-plus-server --no-default-features --features wit-bindgen
           cargo check --locked -p phira-mp-plus-server --all-features
