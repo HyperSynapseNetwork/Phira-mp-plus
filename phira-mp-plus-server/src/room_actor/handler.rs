@@ -101,6 +101,57 @@ impl RoomCommandHandler {
                 gateway.cancel_start_in_actor(state, room_id, room).await,
                 RoomCommandDelivery::PerRoomMailbox,
             ),
+            RoomActorCommand::SetChart {
+                room_id,
+                chart_id,
+                chart_name,
+                ..
+            } => typed_or_err(
+                gateway
+                    .set_chart_in_actor(state, room_id, *chart_id, chart_name, room.clone())
+                    .await,
+                RoomCommandDelivery::PerRoomMailbox,
+            ),
+            RoomActorCommand::SetReady { room_id, user_id, .. } => typed_or_err(
+                gateway
+                    .set_ready_in_actor(state, room_id, *user_id, room.clone())
+                    .await,
+                RoomCommandDelivery::PerRoomMailbox,
+            ),
+            RoomActorCommand::CancelReady { room_id, user_id, .. } => typed_or_err(
+                gateway
+                    .cancel_ready_in_actor(state, room_id, *user_id, room.clone())
+                    .await,
+                RoomCommandDelivery::PerRoomMailbox,
+            ),
+            RoomActorCommand::SubmitResult {
+                room_id,
+                user_id,
+                score,
+                accuracy,
+                perfect,
+                good,
+                bad,
+                miss,
+                max_combo,
+                full_combo,
+                ..
+            } => typed_or_err(
+                gateway
+                    .submit_result_in_actor(
+                        state, room_id, *user_id, *score, *accuracy,
+                        *perfect, *good, *bad, *miss, *max_combo, *full_combo,
+                        room.clone(),
+                    )
+                    .await,
+                RoomCommandDelivery::PerRoomMailbox,
+            ),
+            RoomActorCommand::AbortRound { room_id, user_id, .. } => typed_or_err(
+                gateway
+                    .abort_round_in_actor(state, room_id, *user_id, room.clone())
+                    .await,
+                RoomCommandDelivery::PerRoomMailbox,
+            ),
         }
     }
 

@@ -77,6 +77,27 @@ pub enum RoomCommandPayload {
         room_id: String,
         canceled: bool,
     },
+    ChartSelected {
+        room_id: String,
+        chart_id: i32,
+    },
+    UserReady {
+        room_id: String,
+        user_id: i32,
+    },
+    UserNotReady {
+        room_id: String,
+        user_id: i32,
+    },
+    RoundResultSubmitted {
+        room_id: String,
+        user_id: i32,
+        score: i32,
+    },
+    RoundAborted {
+        room_id: String,
+        user_id: i32,
+    },
 }
 
 impl RoomCommandPayload {
@@ -131,6 +152,21 @@ impl RoomCommandPayload {
             }),
             Self::CancelResult { room_id, canceled } => json!({
                 "ok": true, "room_id": room_id, "canceled": canceled,
+            }),
+            Self::ChartSelected { room_id, chart_id } => json!({
+                "ok": true, "room_id": room_id, "chart_id": chart_id,
+            }),
+            Self::UserReady { room_id, user_id } => json!({
+                "ok": true, "room_id": room_id, "user_id": user_id,
+            }),
+            Self::UserNotReady { room_id, user_id } => json!({
+                "ok": true, "room_id": room_id, "user_id": user_id,
+            }),
+            Self::RoundResultSubmitted { room_id, user_id, score } => json!({
+                "ok": true, "room_id": room_id, "user_id": user_id, "score": score,
+            }),
+            Self::RoundAborted { room_id, user_id } => json!({
+                "ok": true, "room_id": room_id, "user_id": user_id,
             }),
         }
     }

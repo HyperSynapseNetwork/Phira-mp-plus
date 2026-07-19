@@ -406,19 +406,12 @@ pub async fn select_chart(user: Arc<User>, id: i32) -> Result<()> {
             )
             .await?;
         debug!("chart is {res:?}");
-        room.send(Message::SelectChart {
-            user: user.id,
-            name: res.name.clone(),
-            id: res.id,
-        })
-        .await;
-        *room.chart.write().await = Some(res);
-        room.on_state_change().await;
-        room.publish_update(PartialRoomData {
-            chart: Some(id),
-            ..Default::default()
-        })
-        .await;
+        // Route state mutation through RoomActor mailbox for serialized access.
+        user.server
+            .room_commands
+            .set_chart(&user.server, &room.id.to_string(), id, &res.name)
+            .await
+            .map_err(|e| anyhow!("set chart failed: {e}"))?;
         Ok(())
     }
     .instrument(span)

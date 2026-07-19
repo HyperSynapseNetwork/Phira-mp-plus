@@ -14,6 +14,11 @@ pub(super) enum RoomCommandKind {
     KickUser,
     StartRoom,
     CancelStart,
+    SetChart,
+    SetReady,
+    CancelReady,
+    SubmitResult,
+    AbortRound,
 }
 
 impl RoomCommandKind {
@@ -28,6 +33,11 @@ impl RoomCommandKind {
             Self::KickUser => "kick",
             Self::StartRoom => "start",
             Self::CancelStart => "cancel",
+            Self::SetChart => "set_chart",
+            Self::SetReady => "set_ready",
+            Self::CancelReady => "cancel_ready",
+            Self::SubmitResult => "submit_result",
+            Self::AbortRound => "abort_round",
         }
     }
 
@@ -81,6 +91,40 @@ pub(super) enum RoomActorCommand {
         room_id: String,
         reply: oneshot::Sender<RoomCommandResult>,
     },
+    SetChart {
+        room_id: String,
+        chart_id: i32,
+        chart_name: String,
+        reply: oneshot::Sender<RoomCommandResult>,
+    },
+    SetReady {
+        room_id: String,
+        user_id: i32,
+        reply: oneshot::Sender<RoomCommandResult>,
+    },
+    CancelReady {
+        room_id: String,
+        user_id: i32,
+        reply: oneshot::Sender<RoomCommandResult>,
+    },
+    SubmitResult {
+        room_id: String,
+        user_id: i32,
+        score: i32,
+        accuracy: f32,
+        perfect: i32,
+        good: i32,
+        bad: i32,
+        miss: i32,
+        max_combo: i32,
+        full_combo: bool,
+        reply: oneshot::Sender<RoomCommandResult>,
+    },
+    AbortRound {
+        room_id: String,
+        user_id: i32,
+        reply: oneshot::Sender<RoomCommandResult>,
+    },
 }
 
 impl RoomActorCommand {
@@ -95,6 +139,11 @@ impl RoomActorCommand {
             Self::KickUser { .. } => RoomCommandKind::KickUser,
             Self::StartRoom { .. } => RoomCommandKind::StartRoom,
             Self::CancelStart { .. } => RoomCommandKind::CancelStart,
+            Self::SetChart { .. } => RoomCommandKind::SetChart,
+            Self::SetReady { .. } => RoomCommandKind::SetReady,
+            Self::CancelReady { .. } => RoomCommandKind::CancelReady,
+            Self::SubmitResult { .. } => RoomCommandKind::SubmitResult,
+            Self::AbortRound { .. } => RoomCommandKind::AbortRound,
         }
     }
 
@@ -108,7 +157,12 @@ impl RoomActorCommand {
             | Self::CloseRoom { reply, .. }
             | Self::KickUser { reply, .. }
             | Self::StartRoom { reply, .. }
-            | Self::CancelStart { reply, .. } => {
+            | Self::CancelStart { reply, .. }
+            | Self::SetChart { reply, .. }
+            | Self::SetReady { reply, .. }
+            | Self::CancelReady { reply, .. }
+            | Self::SubmitResult { reply, .. }
+            | Self::AbortRound { reply, .. } => {
                 let _ = reply.send(result);
             }
         }

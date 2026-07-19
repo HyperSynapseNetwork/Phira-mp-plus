@@ -2,6 +2,7 @@
 
 mod control;
 mod membership;
+mod session;
 mod settings;
 
 use super::RoomCommandGateway;
