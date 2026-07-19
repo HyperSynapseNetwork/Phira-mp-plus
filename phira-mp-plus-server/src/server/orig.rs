@@ -21,7 +21,7 @@ use tokio::{
     net::TcpListener,
     sync::{mpsc, Mutex, Notify, RwLock, Semaphore},
 };
-use tracing::{info, trace, warn};
+use tracing::{error, info, trace, warn};
 use uuid::Uuid;
 
 const USER_ROOM_HISTORY_LIMIT: usize = 64;
@@ -445,10 +445,14 @@ impl PlusServer {
             .await;
 
         // 启动中央 HTTP 服务器（所有路由已注册完毕）
+        // The `start()` call binds the listener; failure is reported to Supervisor.
         if let Some(srv) = http_server {
             let http_state = Arc::clone(&state);
             crate::supervisor_actor::spawn_named("http-server", async move {
-                srv.start(http_state).await;
+                if let Err(err) = srv.start(http_state).await {
+                    error!("HTTP server failed to start: {err}");
+                    crate::supervisor_actor::report_critical_failure("http-server", err).await;
+                }
             });
         }
 

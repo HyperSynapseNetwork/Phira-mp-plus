@@ -754,6 +754,10 @@ impl PersistenceWorker {
         Ok(mode)
     }
 
+    pub async fn is_healthy(&self) -> bool {
+        self.wal.replay_succeeded() && !self.closed.load(Ordering::Acquire)
+    }
+
     pub async fn telemetry_should_write_direct(&self) -> bool {
         self.telemetry_cutover_mode().await.should_write_direct()
     }
