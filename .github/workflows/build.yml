@@ -97,6 +97,7 @@ jobs:
             target: x86_64-pc-windows-msvc
             artifact: phira-mp-plus-server-windows
             artifact-path: target/x86_64-pc-windows-msvc/release/phira-mp-plus-server.exe
+            env: {}
     runs-on: ${{ matrix.os }}
     permissions:
       contents: read
