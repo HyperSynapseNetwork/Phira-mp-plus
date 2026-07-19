@@ -137,8 +137,10 @@ fn custom_config_apply_kv() {
 
 #[test]
 fn simulation_config_validate_rejects_zero_values() {
-    let mut config = SimulationConfig::default();
-    config.users = 0;
+    let mut config = SimulationConfig {
+        users: 0,
+        ..SimulationConfig::default()
+    };
     assert!(
         config.validate().is_err(),
         "config with 0 users should be invalid"
@@ -194,7 +196,7 @@ fn simulation_generated_events_have_run_id() {
         workload_events: 100,
         workload_events_per_sec: 3.33,
     };
-    assert!(true, "SimulationRunReport has run_id field");
+    // SimulationRunReport verified via struct construction above
 }
 
 #[tokio::test]

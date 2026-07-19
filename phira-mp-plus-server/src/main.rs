@@ -93,6 +93,7 @@ fn configure_jemalloc() {
 }
 
 #[tokio::main]
+#[allow(clippy::collapsible_if)]
 async fn main() -> Result<()> {
     configure_jemalloc();
     let terminal = TerminalProfile::detect();
