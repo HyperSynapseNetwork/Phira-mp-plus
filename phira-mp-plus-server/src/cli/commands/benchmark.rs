@@ -120,9 +120,7 @@ impl CliHandler {
                         ))
                         .await;
                     for line in output.lines() {
-                        let _ = out_tx
-                            .send(line.to_string())
-                            .await;
+                        let _ = out_tx.send(line.to_string()).await;
                     }
                 }
                 Ok(Err(_)) => {
@@ -205,13 +203,9 @@ impl CliHandler {
 
             match result {
                 Ok(Ok(output)) => {
-                    let _ = out_tx
-                        .send("  ◆ benchmark hybrid 完成".to_string())
-                        .await;
+                    let _ = out_tx.send("  ◆ benchmark hybrid 完成".to_string()).await;
                     for line in output.lines() {
-                        let _ = out_tx
-                            .send(line.to_string())
-                            .await;
+                        let _ = out_tx.send(line.to_string()).await;
                     }
                 }
                 Ok(Err(_)) => {
