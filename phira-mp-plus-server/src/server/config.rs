@@ -319,6 +319,23 @@ impl PlusConfig {
         Ok(())
     }
 
+    /// Return a YAML representation of the config with secret fields masked.
+    pub fn redacted_string(&self) -> String {
+        let mut value = serde_json::to_value(self).unwrap_or_default();
+        // Mask known secret fields
+        if let Some(obj) = value.as_object_mut() {
+            for field in &["database_url", "admin_token", "benchmark_phira_tokens"] {
+                if let Some(val) = obj.get_mut(*field) {
+                    if !val.is_null() && !val.as_str().map_or(true, |s| s.is_empty()) {
+                        *val = serde_json::json!("****");
+                    }
+                }
+            }
+        }
+        // Convert to YAML-like format (serde_json→serde_yaml)
+        serde_yaml::to_string(&value).unwrap_or_else(|_| "<redacted config error>".to_string())
+    }
+
     /// 从 YAML 文件加载配置
     pub fn from_yaml(path: &str) -> Result<Self, anyhow::Error> {
         let content = std::fs::read_to_string(path)
@@ -774,5 +791,15 @@ mod tests {
 
         config.runtime_v2.telemetry_batcher.dry_run = true;
         assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn redacted_config_hides_secrets() {
+        let mut config = PlusConfig::default();
+        config.database_url = Some("postgres://user:secret@localhost/db".to_string());
+        config.admin_token = Some("my-secret-token".to_string());
+        let redacted = config.redacted_string();
+        assert!(!redacted.contains("secret"), "redacted config should not contain secret: {redacted}");
+        assert!(redacted.contains("****"), "redacted config should mask values");
     }
 }
