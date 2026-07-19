@@ -138,8 +138,6 @@ impl CliHandler {
                         .send(format!("  ✗ benchmark 等待任务失败: {err}"))
                         .await;
                 }
-    .await;
-                }
             }
         });
     }
@@ -228,8 +226,6 @@ impl CliHandler {
                     let _ = out_tx
                         .send(format!("  ✗ benchmark hybrid 等待任务失败: {err}"))
                         .await;
-                }
-    .await;
                 }
             }
         });
