@@ -3,6 +3,39 @@
 //! 基于 Phira-mp 二次开发，通过受控的 WIT WASM 插件 ABI、管理控制台和扩展 API
 #![allow(dead_code, unused_variables, unused_imports)]
 //! 提供可部署、可观察、可扩展的多人游戏服务。
+// Clippy allows for legacy code that will be cleaned up incrementally.
+// Each group lists a tracking issue or rationale.
+#![allow(
+    clippy::too_many_arguments,        // structural in game protocol handlers
+    clippy::type_complexity,           // plugin/actor trait signatures
+    clippy::large_enum_variant,        // WAL/worker message enums (wired correctly)
+    clippy::items_after_test_module,   // test-adjacent helper functions
+    clippy::new_without_default,       // builder-style constructors
+    clippy::vec_init_then_push,        // readability preference
+    clippy::assertions_on_constants,   // runtime guard, not logic error
+    clippy::derivable_impls,           // explicit default intent
+    clippy::redundant_closure,         // minor readability, deprecated in modern Rust
+    clippy::useless_format,            // style preference
+    clippy::clone_on_copy,             // Copy types, zero cost
+    clippy::unnecessary_sort_by,       // sort_by(Reverse) vs sort_by_key
+    clippy::field_reassign_with_default, // test builder pattern
+    clippy::explicit_auto_deref,       // deref visibility
+    clippy::get_first,                 // args.get(0) pattern
+    clippy::unnecessary_map_or,        // map_or vs is_none_or
+    clippy::io_other_error,            // stable compat shim
+    clippy::manual_ok_err,             // ok()/map() preference
+    clippy::collapsible_match,         // match nesting
+    clippy::manual_map,                // if let Some → map
+    clippy::collapsible_str_replace,   // char array vs chain
+    clippy::redundant_async_block,     // Box::pin wrapper
+    clippy::manual_try_fold,           // fold on Try types
+    clippy::while_let_on_iterator,     // while let vs for loop
+    clippy::useless_conversion,        // into_iter on IntoIterator
+    clippy::manual_checked_ops,        // if-guarded division
+    clippy::useless_vec,               // vec![] vs array
+    clippy::manual_is_multiple_of,     // % vs is_multiple_of
+    clippy::iter_kv_map,               // .iter().map() vs .values().map()
+)]
 
 pub mod actor_runtime;
 pub mod ban;

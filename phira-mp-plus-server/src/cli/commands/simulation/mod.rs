@@ -178,12 +178,12 @@ impl CliHandler {
                                 .tick(&state, runner.config.seed.wrapping_add(ticks))
                                 .await;
                             ticks += 1;
-                            let _ = out_tx.send(format!("  simulation realistic tick={ticks} chat={} ready={} touch={} judge={} round={}",
+                            let _ = out_tx.try_send(format!("  simulation realistic tick={ticks} chat={} ready={} touch={} judge={} round={}",
                                 counters.chat_messages, counters.ready_events,
                                 counters.touch_batches, counters.judge_batches, counters.round_results));
                         }
                         runner.cleanup(&state).await;
-                        let _ = out_tx.send(format!(
+                        let _ = out_tx.try_send(format!(
                             "  {} Realistic simulation 已完成 (ticks={ticks})",
                             c::green("✓")
                         ));
