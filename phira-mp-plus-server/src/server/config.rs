@@ -164,6 +164,10 @@ impl LiveConfig {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct PlusConfig {
+    /// Schema version for config file forward-compatibility.
+    /// Current version: 1. Increment when making backward-incompatible changes.
+    #[serde(default = "default_config_version")]
+    pub config_version: u8,
     pub port: u16,
     #[serde(default = "default_http_port")]
     pub http_port: u16,
@@ -244,6 +248,7 @@ impl Default for PlusConfig {
     fn default() -> Self {
         Self {
             port: 12346,
+            config_version: 1,
             http_port: 12347,
             http_bind_address: default_http_bind_address(),
             monitors: default_monitors(),
@@ -282,6 +287,33 @@ impl PlusConfig {
     /// Normalize values that are accepted in a user-friendly form but must be
     /// canonical before any subsystem stores them.
     pub fn normalize(&mut self) -> Result<(), AppError> {
+        // Environment variable overrides for secrets (highest priority).
+        // PM_DATABASE_URL / PM_DATABASE_URL_FILE overrides database_url.
+        if let Ok(val) = std::env::var("PM_DATABASE_URL") {
+            if !val.trim().is_empty() {
+                self.database_url = Some(val.trim().to_string());
+            }
+        } else if let Ok(path) = std::env::var("PM_DATABASE_URL_FILE") {
+            if let Ok(val) = std::fs::read_to_string(&path) {
+                let trimmed = val.trim().to_string();
+                if !trimmed.is_empty() {
+                    self.database_url = Some(trimmed);
+                }
+            }
+        }
+        // PM_ADMIN_TOKEN overrides admin_token.
+        if let Ok(val) = std::env::var("PM_ADMIN_TOKEN") {
+            if !val.trim().is_empty() {
+                self.admin_token = Some(val.trim().to_string());
+            }
+        } else if let Ok(path) = std::env::var("PM_ADMIN_TOKEN_FILE") {
+            if let Ok(val) = std::fs::read_to_string(&path) {
+                let trimmed = val.trim().to_string();
+                if !trimmed.is_empty() {
+                    self.admin_token = Some(trimmed);
+                }
+            }
+        }
         self.phira_api_endpoint = normalize_phira_api_endpoint(&self.phira_api_endpoint)
             .map_err(AppError::ConfigValidation)?;
         Ok(())
@@ -338,6 +370,11 @@ impl PlusConfig {
         }
         if self.max_rooms == Some(0) {
             return Err(AppError::ConfigValidation("max_rooms 必须大于 0".into()));
+        }
+        if self.max_rooms.is_none() {
+            tracing::warn!(
+                "max_rooms is null (unlimited). Set a finite limit for production safety."
+            );
         }
         if self.max_users_per_room == Some(0) {
             return Err(AppError::ConfigValidation(
@@ -514,6 +551,10 @@ pub struct PlusConfigCli {
 }
 
 // ── Default-value helpers ──────────────────────────────────────────
+
+fn default_config_version() -> u8 {
+    1
+}
 
 fn default_http_port() -> u16 {
     12347
