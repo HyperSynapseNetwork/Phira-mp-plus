@@ -240,6 +240,7 @@ impl PlusServer {
         let events = Arc::new(SseHub::new());
         // Capture config fields before config is consumed by state
         let proxy_protocol_port = config.proxy_protocol_port;
+        let http_bind_address = config.http_bind_address.clone();
         let idle_config = config.idle.clone();
         let max_pending_auth = config.max_pending_auth;
         let max_sessions = config.max_sessions;
@@ -397,7 +398,7 @@ impl PlusServer {
         let http_server = if http_port > 0 {
             let srv = Arc::new(PluginHttpServer::new(
                 http_port,
-                &config.http_bind_address,
+                &http_bind_address,
                 proxy_protocol_port,
                 Arc::clone(&state.events),
             ));

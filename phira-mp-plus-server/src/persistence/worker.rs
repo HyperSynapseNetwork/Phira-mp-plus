@@ -168,10 +168,10 @@ async fn append_dead_letter(path: &Path, record: &serde_json::Value) -> Result<(
 async fn process_worker_loop(
     rx: &mut mpsc::Receiver<WorkerMessage>,
     replay: &mut std::collections::VecDeque<(uuid::Uuid, PersistenceEvent)>,
-    worker_stats: &std::sync::Arc<std::sync::RwLock<PersistenceStats>>,
-    worker_telemetry: &std::sync::Arc<TelemetryBatcher>,
+    worker_stats: &Arc<RwLock<PersistenceStats>>,
+    worker_telemetry: &Arc<TelemetryBatcher>,
     worker_dead_letter_path: &Option<std::path::PathBuf>,
-    worker_wal: &std::sync::Arc<PersistenceWal>,
+    worker_wal: &Arc<PersistenceWal>,
 ) {
     use crate::persistence::pipeline::{
         persist_benchmark_report_if_needed, persist_production_event_if_needed,
