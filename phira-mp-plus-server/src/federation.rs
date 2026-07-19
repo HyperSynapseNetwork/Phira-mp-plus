@@ -44,19 +44,11 @@ pub enum FederationCommand {
         reply: tokio::sync::oneshot::Sender<Result<u64, String>>,
     },
     /// Send bytes on an established connection.
-    Send {
-        handle: u64,
-        bytes: Vec<u8>,
-    },
+    Send { handle: u64, bytes: Vec<u8> },
     /// Set read timeout on a connection.
-    SetReadTimeout {
-        handle: u64,
-        timeout_ms: u64,
-    },
+    SetReadTimeout { handle: u64, timeout_ms: u64 },
     /// Close a connection or stop a listener.
-    Close {
-        handle: u64,
-    },
+    Close { handle: u64 },
 }
 
 /// Events from the federation actor back to the plugin system.
@@ -153,24 +145,38 @@ impl FederationActor {
 
         while let Some(cmd) = self.rx.recv().await {
             match cmd {
-                FederationCommand::Connect { addr, tls_opts, reply } => {
+                FederationCommand::Connect {
+                    addr,
+                    tls_opts,
+                    reply,
+                } => {
                     let handle = self.alloc_handle();
                     let (tx, _rx) = mpsc::channel::<Vec<u8>>(64);
-                    self.connections.insert(handle, Connection {
-                        tx,
-                        remote_addr: addr.clone(),
-                    });
+                    self.connections.insert(
+                        handle,
+                        Connection {
+                            tx,
+                            remote_addr: addr.clone(),
+                        },
+                    );
                     info!(%handle, %addr, ?tls_opts.verify_peer, "federation connect requested");
                     // TODO: actual TCP+TLS connect (requires tokio-tcp + rustls)
                     let _ = reply.send(Ok(handle));
                 }
-                FederationCommand::Listen { addr, tls_opts, reply } => {
+                FederationCommand::Listen {
+                    addr,
+                    tls_opts,
+                    reply,
+                } => {
                     let handle = self.alloc_handle();
                     let (shutdown_tx, _shutdown_rx) = tokio::sync::oneshot::channel::<()>();
-                    self.listeners.insert(handle, Listener {
-                        addr: addr.clone(),
-                        shutdown_tx: Some(shutdown_tx),
-                    });
+                    self.listeners.insert(
+                        handle,
+                        Listener {
+                            addr: addr.clone(),
+                            shutdown_tx: Some(shutdown_tx),
+                        },
+                    );
                     info!(%handle, %addr, ?tls_opts.verify_peer, "federation listen requested");
                     // TODO: actual TCP+TLS listener (requires tokio-tcp + rustls)
                     let _ = reply.send(Ok(handle));
@@ -179,10 +185,13 @@ impl FederationActor {
                     if let Some(conn) = self.connections.get(&handle) {
                         if let Err(e) = conn.tx.try_send(bytes) {
                             warn!(%handle, error = %e, "federation send failed");
-                            self.emit_event("federation:error", serde_json::json!({
-                                "handle": handle,
-                                "error": e.to_string(),
-                            }));
+                            self.emit_event(
+                                "federation:error",
+                                serde_json::json!({
+                                    "handle": handle,
+                                    "error": e.to_string(),
+                                }),
+                            );
                         }
                     } else {
                         warn!(%handle, "federation send on unknown handle");
