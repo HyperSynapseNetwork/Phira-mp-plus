@@ -32,7 +32,7 @@ fn default_help_shows_primary_count() {
     );
     let total = primary + advanced + developer;
     assert!(
-        total >= 50 && total <= 85,
+        (50..=85).contains(&total),
         "unexpected total command count: {total}"
     );
 }

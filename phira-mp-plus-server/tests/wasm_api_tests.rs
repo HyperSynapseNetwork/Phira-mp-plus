@@ -29,7 +29,7 @@ mod tests {
                     {"name": "test-room", "player_count": 3}
                 ])),
                 "user_name" => Ok(json!({
-                    "user_id": args.get(0).and_then(|v| v.as_i64()).unwrap_or(0),
+                    "user_id": args.first().and_then(|v| v.as_i64()).unwrap_or(0),
                     "name": "test-user"
                 })),
                 _ => Err(format!("mock: unknown method {method}")),
