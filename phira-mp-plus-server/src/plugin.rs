@@ -10,7 +10,7 @@ use std::collections::HashMap;
 #[cfg(feature = "plugin-system")]
 use std::collections::HashSet;
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, RwLock as StdRwLock};
 use tokio::sync::{mpsc, oneshot, Mutex as AsyncMutex, RwLock};
 use tracing::{info, warn};
@@ -107,6 +107,10 @@ pub struct PluginMeta {
     pub path: String,
     pub state: PluginState,
     pub enabled: bool,
+    /// Maximum concurrent API/event calls for this plugin (0 = use server default).
+    /// Set via capabilities.json: { "max_concurrent_calls": 4 }
+    /// Defaults to 1 (serialized execution).
+    pub max_concurrent_calls: usize,
 }
 
 pub trait PluginHost: Send {
@@ -127,7 +131,10 @@ pub trait PluginHost: Send {
 struct PluginSlotInner {
     host: Mutex<Box<dyn PluginHost>>,
     meta_cache: StdRwLock<PluginMeta>,
-    executing: AtomicBool,
+    /// Current number of in-flight executions.
+    inflight: AtomicUsize,
+    /// Maximum concurrent executions (Atomically updatable).
+    max_concurrent: AtomicUsize,
     quarantined: AtomicBool,
 }
 
@@ -139,7 +146,7 @@ struct PluginExecutionPermit<'a> {
 
 impl Drop for PluginExecutionPermit<'_> {
     fn drop(&mut self) {
-        self.slot.executing.store(false, Ordering::Release);
+        self.slot.inflight.fetch_sub(1, Ordering::Release);
     }
 }
 
@@ -149,9 +156,16 @@ impl PluginSlotInner {
         Arc::new(Self {
             host: Mutex::new(host),
             meta_cache: StdRwLock::new(meta),
-            executing: AtomicBool::new(false),
+            inflight: AtomicUsize::new(0),
+            max_concurrent: AtomicUsize::new(1),
             quarantined: AtomicBool::new(false),
         })
+    }
+
+    /// Set the maximum concurrent execution count.
+    /// Used by plugins that request higher concurrency (e.g. PDFP adapter).
+    fn set_max_concurrent(&self, max: usize) {
+        self.max_concurrent.store(max.max(1), Ordering::Release);
     }
 
     fn lock(&self) -> std::sync::LockResult<std::sync::MutexGuard<'_, Box<dyn PluginHost>>> {
@@ -162,9 +176,14 @@ impl PluginSlotInner {
         if self.quarantined.load(Ordering::Acquire) {
             return Err("plugin is quarantined after a timed-out call");
         }
-        self.executing
-            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-            .map_err(|_| "plugin already has an in-flight call")?;
+        let max = self.max_concurrent.load(Ordering::Acquire);
+        let current = self.inflight.load(Ordering::Acquire);
+        if current >= max {
+            return Err("plugin has reached maximum concurrent calls");
+        }
+        self.inflight
+            .compare_exchange(current, current + 1, Ordering::AcqRel, Ordering::Acquire)
+            .map_err(|_| "plugin concurrency race")?;
         Ok(PluginExecutionPermit { slot: self })
     }
 
@@ -247,6 +266,7 @@ pub mod wasm {
                     path: path.to_string(),
                     state: PluginState::Loaded,
                     enabled: true,
+                    max_concurrent_calls: 1,
                 },
                 services,
                 runtime,
@@ -695,6 +715,15 @@ impl PluginManager {
             }
 
             let slot = PluginSlotInner::new(plugin);
+            if meta.max_concurrent_calls > 1 {
+                // Unusual: non-default concurrency. Log it for observability.
+                tracing::info!(
+                    plugin = %meta.info.name,
+                    max_concurrent = meta.max_concurrent_calls,
+                    "plugin requests concurrent execution"
+                );
+            }
+            { slot.set_max_concurrent(meta.max_concurrent_calls); }
             self.wasm_services.register_plugin_runtime(&stable_id);
             self.plugins.write().await.push(slot);
             Ok(meta)

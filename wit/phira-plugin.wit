@@ -379,6 +379,26 @@ interface phira-simulation {
     cleanup: func() -> api-result;
 }
 
+/// TLS options for federation connections.
+interface phira-federation-types {
+    /// TLS configuration for a federated connection.
+    record federation-tls-opts {
+        /// List of expected peer CA identifiers (DN or key hash).
+        /// If empty, any valid certificate is accepted (not recommended).
+        expected-ca-ids: list<string>,
+        /// Whether to verify the peer's certificate chain.
+        verify-peer: bool,
+        /// PEM-encoded local certificate chain (optional).
+        /// If empty, the server's default node cert is used.
+        local-cert-chain: option<string>,
+        /// PEM-encoded local private key (optional).
+        /// If empty, the server's default node key is used.
+        local-private-key: option<string>,
+        /// Minimum TLS version to accept.
+        min-tls-version: option<string>,
+    }
+}
+
 /// Cryptographic operations (host-side key management).
 interface phira-crypto {
     /// Sign data with the server's node key.
@@ -395,14 +415,25 @@ interface phira-crypto {
     get-node-public-key: func() -> result<list<u8>, string>;
 }
 
-/// Federated networking — send/close existing connections.
-/// Connection lifecycle events (accept, receive, disconnect)
-/// are delivered via on-api callbacks.
+/// Federated networking — plugin-controlled TLS connections.
+/// Host manages TCP/TLS; plugin operates on handles.
 interface phira-federation {
-    /// Send bytes on an established connection handle.
+    use phira-federation-types.{federation-tls-opts};
+
+    /// Connect to a remote peer. Host performs TCP + TLS handshake + cert chain validation.
+    /// Returns a connection handle on success.
+    connect: func(addr: string, tls-opts: federation-tls-opts) -> result<u64, string>;
+
+    /// Start a TLS listener. Returns a listener handle.
+    listen: func(addr: string, tls-opts: federation-tls-opts) -> result<u64, string>;
+
+    /// Send raw bytes on an established connection.
     send: func(handle: u64, bytes: list<u8>) -> result<_, string>;
 
-    /// Close a connection handle gracefully.
+    /// Set read timeout on a connection (milliseconds). 0 = no timeout.
+    set-read-timeout: func(handle: u64, timeout-ms: u64) -> result<_, string>;
+
+    /// Close a connection or stop a listener by handle.
     close: func(handle: u64) -> result<_, string>;
 }
 

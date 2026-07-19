@@ -1043,26 +1043,71 @@ mod wit_trait_impls {
 
     // ── phira-federation ──
     impl wit::phira::plugin::phira_federation::Host for WitPluginHost {
+        fn connect(
+            &mut self,
+            addr: String,
+            tls_opts: wit::phira::plugin::phira_federation_types::FederationTlsOpts,
+        ) -> Result<u64, String> {
+            self.require_capability("federation")?;
+            let tx = self.ctx.federation.as_ref().ok_or("federation not available")?;
+            let (reply, rx) = tokio::sync::oneshot::channel();
+            tx.try_send(crate::federation::FederationCommand::Connect {
+                addr,
+                tls_opts: crate::federation::FederationTlsOpts {
+                    expected_ca_ids: tls_opts.expected_ca_ids,
+                    verify_peer: tls_opts.verify_peer,
+                    local_cert_chain: tls_opts.local_cert_chain,
+                    local_private_key: tls_opts.local_private_key,
+                    min_tls_version: tls_opts.min_tls_version,
+                },
+                reply,
+            })
+            .map_err(|e| format!("federation connect failed: {e}"))?;
+            rx.try_recv().map_err(|_| "federation connect reply lost".to_string())?
+        }
+
+        fn listen(
+            &mut self,
+            addr: String,
+            tls_opts: wit::phira::plugin::phira_federation_types::FederationTlsOpts,
+        ) -> Result<u64, String> {
+            self.require_capability("federation")?;
+            let tx = self.ctx.federation.as_ref().ok_or("federation not available")?;
+            let (reply, rx) = tokio::sync::oneshot::channel();
+            tx.try_send(crate::federation::FederationCommand::Listen {
+                addr,
+                tls_opts: crate::federation::FederationTlsOpts {
+                    expected_ca_ids: tls_opts.expected_ca_ids,
+                    verify_peer: tls_opts.verify_peer,
+                    local_cert_chain: tls_opts.local_cert_chain,
+                    local_private_key: tls_opts.local_private_key,
+                    min_tls_version: tls_opts.min_tls_version,
+                },
+                reply,
+            })
+            .map_err(|e| format!("federation listen failed: {e}"))?;
+            rx.try_recv().map_err(|_| "federation listen reply lost".to_string())?
+        }
+
         fn send(&mut self, handle: u64, bytes: Vec<u8>) -> Result<(), String> {
             self.require_capability("federation")?;
-            match &self.ctx.federation {
-                Some(tx) => {
-                    tx.try_send(crate::federation::FederationCommand::Send { handle, bytes })
-                        .map_err(|e| format!("federation send failed: {e}"))
-                }
-                None => Err("federation not available".to_string()),
-            }
+            let tx = self.ctx.federation.as_ref().ok_or("federation not available")?;
+            tx.try_send(crate::federation::FederationCommand::Send { handle, bytes })
+                .map_err(|e| format!("federation send failed: {e}"))
+        }
+
+        fn set_read_timeout(&mut self, handle: u64, timeout_ms: u64) -> Result<(), String> {
+            self.require_capability("federation")?;
+            let tx = self.ctx.federation.as_ref().ok_or("federation not available")?;
+            tx.try_send(crate::federation::FederationCommand::SetReadTimeout { handle, timeout_ms })
+                .map_err(|e| format!("federation set_read_timeout failed: {e}"))
         }
 
         fn close(&mut self, handle: u64) -> Result<(), String> {
             self.require_capability("federation")?;
-            match &self.ctx.federation {
-                Some(tx) => {
-                    tx.try_send(crate::federation::FederationCommand::Close { handle })
-                        .map_err(|e| format!("federation close failed: {e}"))
-                }
-                None => Err("federation not available".to_string()),
-            }
+            let tx = self.ctx.federation.as_ref().ok_or("federation not available")?;
+            tx.try_send(crate::federation::FederationCommand::Close { handle })
+                .map_err(|e| format!("federation close failed: {e}"))
         }
     }
 
