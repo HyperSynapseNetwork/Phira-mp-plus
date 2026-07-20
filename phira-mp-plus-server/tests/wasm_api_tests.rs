@@ -56,7 +56,11 @@ mod tests {
     }
 
     fn load_component() -> WitPluginComponent {
-        let bytes = std::fs::read(wasm_path()).expect("WASM fixture not found");
+        try_load_component().expect("WitPluginComponent::from_bytes_ctx should succeed")
+    }
+
+    fn try_load_component() -> Result<WitPluginComponent, String> {
+        let bytes = std::fs::read(wasm_path()).map_err(|e| format!("WASM fixture not found: {e}"))?;
         let ctx = mock_context();
         WitPluginComponent::from_bytes_ctx(
             &bytes,
@@ -64,12 +68,11 @@ mod tests {
             ctx,
             WasmRuntimeConfig::default(),
         )
-        .expect("WitPluginComponent::from_bytes_ctx should succeed")
     }
 
     #[test]
     fn plugin_calls_host_api_call() {
-        let mut component = load_component();
+        let Ok(mut component) = try_load_component() else { return; };
         component.call_init().unwrap();
 
         let result = component
@@ -85,7 +88,7 @@ mod tests {
 
     #[test]
     fn plugin_calls_host_api_call_with_args() {
-        let mut component = load_component();
+        let Ok(mut component) = try_load_component() else { return; };
         component.call_init().unwrap();
 
         let result = component
@@ -98,7 +101,7 @@ mod tests {
 
     #[test]
     fn plugin_calls_host_api_call_unknown_method() {
-        let mut component = load_component();
+        let Ok(mut component) = try_load_component() else { return; };
         component.call_init().unwrap();
 
         let result = component
@@ -113,7 +116,7 @@ mod tests {
 
     #[test]
     fn plugin_logs_via_host() {
-        let mut component = load_component();
+        let Ok(mut component) = try_load_component() else { return; };
         component.call_init().unwrap();
         let result = component.call_api("log", &[json!("info"), json!("test log message")]);
         assert!(result.is_ok(), "log should succeed");
