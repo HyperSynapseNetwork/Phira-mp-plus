@@ -386,7 +386,7 @@ async fn process_worker_loop(
                 trace!(?other, "persistence worker consumed mirrored event");
             }
         }
-        record_processed(worker_stats, kind, simulation, summary).await;
+        record_processed(worker_stats, kind.clone(), simulation, summary).await;
 
         // Only ACK events that reached a durable terminal state.
         // DatabaseCommitted / DurableDeadLetterStored → ACK

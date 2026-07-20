@@ -554,7 +554,7 @@ fn server_state_query_dispatch(
                 let http_handle = s.plugin_manager.http_handle();
                 let result = match http_handle {
                     Some(handle) => {
-                        handle.register_sse(&path, &plugin_name, &event_types);
+                        handle.register_sse_stream(&path, &plugin_name, &event_types);
                         Ok(serde_json::json!({"ok": true, "path": path}))
                     }
                     None => Err("http not enabled".to_string()),

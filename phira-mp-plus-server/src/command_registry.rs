@@ -1281,7 +1281,8 @@ pub fn runtime_v2_registry() -> CommandRegistry {
                     if let Ok(content) = std::fs::read_to_string(path) {
                         let count = content.lines().filter(|l| !l.trim().is_empty()).count();
                         lines.push(format!("  ◆ 总记录数: {count}"));
-                        for line in content.lines().rev().take(limit).rev() {
+                        let all_lines: Vec<&str> = content.lines().collect();
+                        for line in all_lines.iter().rev().take(limit) {
                             if let Ok(val) = serde_json::from_str::<serde_json::Value>(line) {
                                 let summary = val.get("summary").and_then(|v| v.as_str()).unwrap_or("?");
                                 let kind = val.get("kind").and_then(|v| v.as_str()).unwrap_or("?");
@@ -1379,10 +1380,10 @@ pub fn runtime_v2_registry() -> CommandRegistry {
     for spec in [
         CommandSpec::new("backup create", "ops", "创建数据备份归档。", "backup create [output]")
             .handler(Arc::new(|state, args| {
-                let output = args.first().map(|s| s.as_str()).unwrap_or("pmp-backup.tar.gz");
+                let output = args.first().map(|s| &s[..]).unwrap_or("pmp-backup.tar.gz");
                 let mut lines = vec![format!("  ◆ 创建备份: {output}")];
                 match crate::backup::create_backup(&state, output) {
-                    Ok(()) => {
+                    Ok(_path) => {
                         lines.push(format!("  ✓ 备份完成: {output}"));
                     }
                     Err(e) => {
@@ -1393,7 +1394,7 @@ pub fn runtime_v2_registry() -> CommandRegistry {
             })),
         CommandSpec::new("restore verify", "ops", "验证备份归档完整性。", "restore verify <path>")
             .handler(Arc::new(|_state, args| {
-                let path = args.first().map(|s| s.as_str()).unwrap_or("pmp-backup.tar.gz");
+                let path = args.first().map(|s| &s[..]).unwrap_or("pmp-backup.tar.gz");
                 let mut lines = vec![format!("  ◆ 验证备份: {path}")];
                 match crate::backup::verify_backup(path) {
                     Ok(report) => {

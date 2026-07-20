@@ -987,6 +987,9 @@ mod wit_trait_impls {
         }
     }
 
+    // ── phira-federation-types (data-only, no methods) ──
+    impl wit::phira::plugin::phira_federation_types::Host for WitPluginHost {}
+
     // ── phira-timer ──
     impl wit::phira::plugin::phira_timer::Host for WitPluginHost {
         fn set_timer(&mut self, delay_ms: u64, timer_id: String) -> Result<(), String> {
@@ -1050,7 +1053,7 @@ mod wit_trait_impls {
         ) -> Result<u64, String> {
             self.require_capability("federation")?;
             let tx = self.ctx.federation.as_ref().ok_or("federation not available")?;
-            let (reply, rx) = tokio::sync::oneshot::channel();
+            let (reply, mut rx) = tokio::sync::oneshot::channel();
             tx.try_send(crate::federation::FederationCommand::Connect {
                 addr,
                 tls_opts: crate::federation::FederationTlsOpts {
@@ -1073,7 +1076,7 @@ mod wit_trait_impls {
         ) -> Result<u64, String> {
             self.require_capability("federation")?;
             let tx = self.ctx.federation.as_ref().ok_or("federation not available")?;
-            let (reply, rx) = tokio::sync::oneshot::channel();
+            let (reply, mut rx) = tokio::sync::oneshot::channel();
             tx.try_send(crate::federation::FederationCommand::Listen {
                 addr,
                 tls_opts: crate::federation::FederationTlsOpts {

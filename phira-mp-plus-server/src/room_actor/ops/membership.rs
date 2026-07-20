@@ -9,6 +9,7 @@ use phira_mp_common::{Message, RoomEvent, ServerCommand};
 use serde_json::Value;
 use std::sync::Arc;
 use std::{sync::atomic::Ordering, time::Instant};
+use tracing::{info, warn};
 
 impl RoomCommandGateway {
     /// Kick a user/monitor from a room.
@@ -254,14 +255,14 @@ impl RoomCommandGateway {
 
         // Find the user in room lists before we can drive on_user_leave.
         // Search users first, then monitors.
-        let found = {
+        let mut found = {
             let users = room.users().await;
             users.iter().find(|u| u.id == user_id).cloned()
         };
-        let found = found.or_else(|| {
+        if found.is_none() {
             let monitors = room.monitors().await;
-            monitors.iter().find(|u| u.id == user_id).cloned()
-        });
+            found = monitors.iter().find(|u| u.id == user_id).cloned();
+        }
 
         if let Some(user) = found {
             let was_monitor = user.monitor.load(std::sync::atomic::Ordering::SeqCst);

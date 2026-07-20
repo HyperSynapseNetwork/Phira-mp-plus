@@ -160,9 +160,6 @@ impl LiveConfig {
     }
 }
 
-/// Phira-mp+ 增强配置（支持 YAML 文件、环境变量、CLI 参数三层覆盖）
-#[derive(Debug, Clone, Deserialize)]
-#[serde(default, deny_unknown_fields)]
 /// Operating profile that controls safe defaults.
 /// Production profile enforces additional validation (finite limits, loopback bind, etc.).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
@@ -179,6 +176,9 @@ impl Default for ConfigProfile {
     }
 }
 
+/// Phira-mp+ 增强配置（支持 YAML 文件、环境变量、CLI 参数三层覆盖）
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
 pub struct PlusConfig {
     /// Schema version for config file forward-compatibility.
     /// Current version: 1. Increment when making backward-incompatible changes.

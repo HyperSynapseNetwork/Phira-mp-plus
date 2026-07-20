@@ -808,7 +808,7 @@ impl PluginManager {
                     "plugin event deadline exceeded"
                 );
                 for slot in &slots {
-                    if slot.executing.load(Ordering::Acquire) {
+                    if slot.inflight.load(Ordering::Acquire) > 0 {
                         slot.quarantine();
                     }
                 }
@@ -827,7 +827,7 @@ impl PluginManager {
                         "plugin event deadline exceeded"
                     );
                     for slot in &slots {
-                        if slot.executing.load(Ordering::Acquire) {
+                        if slot.inflight.load(Ordering::Acquire) > 0 {
                             slot.quarantine();
                         }
                     }

@@ -1287,12 +1287,16 @@ mod tests {
 
     #[test]
     fn state_transitions_roundtrip() {
-        let mut s: InternalRoomState = InternalRoomState::SelectChart;
-        s = InternalRoomState::WaitForReady { started: HashSet::from([1]), admin_started: false };
+        let s = InternalRoomState::WaitForReady {
+            started: HashSet::from([1]),
+            admin_started: false,
+        };
         assert!(matches!(&s, InternalRoomState::WaitForReady { .. }));
-        s = InternalRoomState::Playing { results: HashMap::new(), aborted: HashSet::new() };
+        let s = InternalRoomState::Playing {
+            results: HashMap::new(),
+            aborted: HashSet::new(),
+        };
         assert!(matches!(&s, InternalRoomState::Playing { .. }));
-        s = InternalRoomState::SelectChart;
-        assert!(matches!(&s, InternalRoomState::SelectChart));
+        assert!(matches!(&InternalRoomState::SelectChart, InternalRoomState::SelectChart));
     }
 }
