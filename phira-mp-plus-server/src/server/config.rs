@@ -75,7 +75,7 @@ pub(crate) fn parse_room_endpoint_value(value: &str) -> Result<Option<String>, S
 
 // ── Configuration types ────────────────────────────────────────────
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RuntimeV2Config {
     /// Bounded queue size for Runtime v2 PersistenceWorker.
     #[serde(default = "default_runtime_persistence_queue_capacity")]
@@ -162,7 +162,7 @@ impl LiveConfig {
 
 /// Operating profile that controls safe defaults.
 /// Production profile enforces additional validation (finite limits, loopback bind, etc.).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ConfigProfile {
     Development,

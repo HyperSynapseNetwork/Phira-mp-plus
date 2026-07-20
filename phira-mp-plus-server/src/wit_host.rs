@@ -267,6 +267,8 @@ fn normalize_plugin_scoped_api_args(
 mod wit_trait_impls {
     use super::{normalize_plugin_scoped_api_args, WitPluginHost};
     use crate::plugin_abi::wit_abi as wit;
+    use std::sync::Arc;
+    use std::time::Duration;
     use wit::phira::plugin::phira_types as types;
 
     /// Helper: call ServerStateQuery and convert to ApiResult.
