@@ -248,8 +248,8 @@ fn wit_interfaces_are_extracted_correctly() {
     );
     assert_eq!(
         interfaces.len(),
-        12,
-        "WIT should define exactly 12 interfaces"
+        16,
+        "WIT should define exactly 16 interfaces"
     );
 }
 
