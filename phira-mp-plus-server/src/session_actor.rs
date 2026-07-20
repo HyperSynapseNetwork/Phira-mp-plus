@@ -28,54 +28,57 @@ pub(crate) fn init_session_mailbox(session: &Arc<Session>) -> mpsc::Sender<Sessi
             }
             match cmd {
                 SessionActorCmd::Chat {
+                    meta,
                     user,
                     category,
                     msg,
                     reply,
                 } => {
+                    tracing::trace!(cmd_id = meta.command_id, "session actor: chat");
                     let _ = reply.send(handle_chat(user, category, msg).await);
                 }
-                SessionActorCmd::Lock { user, lock, reply } => {
+                SessionActorCmd::Lock { meta, user, lock, reply } => {
+                    tracing::trace!(cmd_id = meta.command_id, "session actor: lock");
                     let _ = reply.send(handle_lock(user, lock).await);
                 }
-                SessionActorCmd::Cycle { user, cycle, reply } => {
+                SessionActorCmd::Cycle { meta, user, cycle, reply } => {
+                    tracing::trace!(cmd_id = meta.command_id, "session actor: cycle");
                     let _ = reply.send(handle_cycle(user, cycle).await);
                 }
-                SessionActorCmd::Leave {
-                    user,
-                    category,
-                    reply,
-                } => {
+                SessionActorCmd::Leave { meta, user, category, reply } => {
+                    tracing::trace!(cmd_id = meta.command_id, "session actor: leave");
                     let _ = reply.send(handle_leave(user, category).await);
                 }
-                SessionActorCmd::Create { user, id, reply } => {
+                SessionActorCmd::Create { meta, user, id, reply } => {
+                    tracing::trace!(cmd_id = meta.command_id, "session actor: create");
                     let _ = reply.send(handle_create(user, id).await);
                 }
-                SessionActorCmd::Join {
-                    user,
-                    category,
-                    id,
-                    monitor,
-                    reply,
-                } => {
+                SessionActorCmd::Join { meta, user, category, id, monitor, reply } => {
+                    tracing::trace!(cmd_id = meta.command_id, "session actor: join");
                     let _ = reply.send(handle_join(user, category, id, monitor).await);
                 }
-                SessionActorCmd::SelectChart { user, id, reply } => {
+                SessionActorCmd::SelectChart { meta, user, id, reply } => {
+                    tracing::trace!(cmd_id = meta.command_id, "session actor: select_chart");
                     let _ = reply.send(handle_select_chart(user, id).await);
                 }
-                SessionActorCmd::RequestStart { user, reply } => {
+                SessionActorCmd::RequestStart { meta, user, reply } => {
+                    tracing::trace!(cmd_id = meta.command_id, "session actor: request_start");
                     let _ = reply.send(handle_request_start(user).await);
                 }
-                SessionActorCmd::Ready { user, reply } => {
+                SessionActorCmd::Ready { meta, user, reply } => {
+                    tracing::trace!(cmd_id = meta.command_id, "session actor: ready");
                     let _ = reply.send(handle_ready(user).await);
                 }
-                SessionActorCmd::CancelReady { user, reply } => {
+                SessionActorCmd::CancelReady { meta, user, reply } => {
+                    tracing::trace!(cmd_id = meta.command_id, "session actor: cancel_ready");
                     let _ = reply.send(handle_cancel_ready(user).await);
                 }
-                SessionActorCmd::Played { user, id, reply } => {
+                SessionActorCmd::Played { meta, user, id, reply } => {
+                    tracing::trace!(cmd_id = meta.command_id, "session actor: played");
                     let _ = reply.send(handle_played(user, id).await);
                 }
-                SessionActorCmd::Abort { user, reply } => {
+                SessionActorCmd::Abort { meta, user, reply } => {
+                    tracing::trace!(cmd_id = meta.command_id, "session actor: abort");
                     let _ = reply.send(handle_abort(user).await);
                 }
             }
@@ -86,34 +89,60 @@ pub(crate) fn init_session_mailbox(session: &Arc<Session>) -> mpsc::Sender<Sessi
 
 // ── Command envelope ──────────────────────────────────────────────
 
+/// A global atomic counter for session command tracing.
+static NEXT_COMMAND_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+pub(crate) struct CommandMeta {
+    pub command_id: u64,
+    pub created_at_ms: u64,
+}
+
+impl CommandMeta {
+    fn new() -> Self {
+        Self {
+            command_id: NEXT_COMMAND_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+            created_at_ms: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis() as u64)
+                .unwrap_or(0),
+        }
+    }
+}
+
 pub(crate) enum SessionActorCmd {
     Chat {
+        meta: CommandMeta,
         user: Arc<User>,
         category: SessionCategory,
         msg: String,
         reply: tokio::sync::oneshot::Sender<Option<ServerCommand>>,
     },
     Lock {
+        meta: CommandMeta,
         user: Arc<User>,
         lock: bool,
         reply: tokio::sync::oneshot::Sender<Option<ServerCommand>>,
     },
     Cycle {
+        meta: CommandMeta,
         user: Arc<User>,
         cycle: bool,
         reply: tokio::sync::oneshot::Sender<Option<ServerCommand>>,
     },
     Leave {
+        meta: CommandMeta,
         user: Arc<User>,
         category: SessionCategory,
         reply: tokio::sync::oneshot::Sender<Option<ServerCommand>>,
     },
     Create {
+        meta: CommandMeta,
         user: Arc<User>,
         id: RoomId,
         reply: tokio::sync::oneshot::Sender<Option<ServerCommand>>,
     },
     Join {
+        meta: CommandMeta,
         user: Arc<User>,
         category: SessionCategory,
         id: RoomId,
@@ -121,28 +150,34 @@ pub(crate) enum SessionActorCmd {
         reply: tokio::sync::oneshot::Sender<Option<ServerCommand>>,
     },
     SelectChart {
+        meta: CommandMeta,
         user: Arc<User>,
         id: i32,
         reply: tokio::sync::oneshot::Sender<Option<ServerCommand>>,
     },
     RequestStart {
+        meta: CommandMeta,
         user: Arc<User>,
         reply: tokio::sync::oneshot::Sender<Option<ServerCommand>>,
     },
     Ready {
+        meta: CommandMeta,
         user: Arc<User>,
         reply: tokio::sync::oneshot::Sender<Option<ServerCommand>>,
     },
     CancelReady {
+        meta: CommandMeta,
         user: Arc<User>,
         reply: tokio::sync::oneshot::Sender<Option<ServerCommand>>,
     },
     Played {
+        meta: CommandMeta,
         user: Arc<User>,
         id: i32,
         reply: tokio::sync::oneshot::Sender<Option<ServerCommand>>,
     },
     Abort {
+        meta: CommandMeta,
         user: Arc<User>,
         reply: tokio::sync::oneshot::Sender<Option<ServerCommand>>,
     },
@@ -250,6 +285,7 @@ pub(crate) async fn route_chat(
     msg: String,
 ) -> Option<ServerCommand> {
     route_via_mailbox(user, |user, reply| SessionActorCmd::Chat {
+        meta: CommandMeta::new(),
         user,
         category,
         msg,
@@ -270,6 +306,7 @@ async fn handle_lock(user: Arc<User>, lock: bool) -> Option<ServerCommand> {
 
 pub(crate) async fn route_lock(user: Arc<User>, lock: bool) -> Option<ServerCommand> {
     route_via_mailbox(user, |user, reply| SessionActorCmd::Lock {
+        meta: CommandMeta::new(),
         user,
         lock,
         reply,
@@ -287,6 +324,7 @@ async fn handle_cycle(user: Arc<User>, cycle: bool) -> Option<ServerCommand> {
 
 pub(crate) async fn route_cycle(user: Arc<User>, cycle: bool) -> Option<ServerCommand> {
     route_via_mailbox(user, |user, reply| SessionActorCmd::Cycle {
+        meta: CommandMeta::new(),
         user,
         cycle,
         reply,
@@ -309,6 +347,7 @@ pub(crate) async fn route_leave(
     category: SessionCategory,
 ) -> Option<ServerCommand> {
     route_via_mailbox(user, |user, reply| SessionActorCmd::Leave {
+        meta: CommandMeta::new(),
         user,
         category,
         reply,
@@ -328,6 +367,7 @@ async fn handle_create(user: Arc<User>, id: RoomId) -> Option<ServerCommand> {
 
 pub(crate) async fn route_create(user: Arc<User>, id: RoomId) -> Option<ServerCommand> {
     route_via_mailbox(user, |user, reply| SessionActorCmd::Create {
+        meta: CommandMeta::new(),
         user,
         id,
         reply,
@@ -355,6 +395,7 @@ pub(crate) async fn route_join(
     monitor: bool,
 ) -> Option<ServerCommand> {
     route_via_mailbox(user, |user, reply| SessionActorCmd::Join {
+        meta: CommandMeta::new(),
         user,
         category,
         id,
@@ -376,6 +417,7 @@ async fn handle_select_chart(user: Arc<User>, id: i32) -> Option<ServerCommand> 
 
 pub(crate) async fn route_select_chart(user: Arc<User>, id: i32) -> Option<ServerCommand> {
     route_via_mailbox(user, |user, reply| SessionActorCmd::SelectChart {
+        meta: CommandMeta::new(),
         user,
         id,
         reply,
@@ -395,6 +437,7 @@ async fn handle_request_start(user: Arc<User>) -> Option<ServerCommand> {
 
 pub(crate) async fn route_request_start(user: Arc<User>) -> Option<ServerCommand> {
     route_via_mailbox(user, |user, reply| SessionActorCmd::RequestStart {
+        meta: CommandMeta::new(),
         user,
         reply,
     })
@@ -412,7 +455,8 @@ async fn handle_ready(user: Arc<User>) -> Option<ServerCommand> {
 }
 
 pub(crate) async fn route_ready(user: Arc<User>) -> Option<ServerCommand> {
-    route_via_mailbox(user, |user, reply| SessionActorCmd::Ready { user, reply }).await
+    route_via_mailbox(user, |user, reply| SessionActorCmd::Ready {
+        meta: CommandMeta::new(), user, reply }).await
 }
 
 async fn handle_cancel_ready(user: Arc<User>) -> Option<ServerCommand> {
@@ -425,6 +469,7 @@ async fn handle_cancel_ready(user: Arc<User>) -> Option<ServerCommand> {
 
 pub(crate) async fn route_cancel_ready(user: Arc<User>) -> Option<ServerCommand> {
     route_via_mailbox(user, |user, reply| SessionActorCmd::CancelReady {
+        meta: CommandMeta::new(),
         user,
         reply,
     })
@@ -443,6 +488,7 @@ async fn handle_played(user: Arc<User>, id: i32) -> Option<ServerCommand> {
 
 pub(crate) async fn route_played(user: Arc<User>, id: i32) -> Option<ServerCommand> {
     route_via_mailbox(user, |user, reply| SessionActorCmd::Played {
+        meta: CommandMeta::new(),
         user,
         id,
         reply,
@@ -459,7 +505,8 @@ async fn handle_abort(user: Arc<User>) -> Option<ServerCommand> {
 }
 
 pub(crate) async fn route_abort(user: Arc<User>) -> Option<ServerCommand> {
-    route_via_mailbox(user, |user, reply| SessionActorCmd::Abort { user, reply }).await
+    route_via_mailbox(user, |user, reply| SessionActorCmd::Abort {
+        meta: CommandMeta::new(), user, reply }).await
 }
 
 #[cfg(test)]
