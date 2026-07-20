@@ -652,6 +652,26 @@ pub struct ServerStats {
 }
 
 impl PlusServerState {
+    /// Canonical domain event dispatch: persistence → plugin → telemetry.
+    ///
+    /// This is the single entry point for all domain events during ordinary
+    /// operation, replacing the older pattern of calling
+    /// `publish_runtime_event()` + `dispatch_plugin_event()` separately.
+    ///
+    /// Migration: new code should call `canonical_event()` instead of the
+    /// two-step pattern. The old functions remain for backward compatibility
+    /// during the transition (Phase A → Phase B).
+    pub async fn canonical_event(&self, event: crate::event_bus::MpEvent, plugin_event: Option<PluginEvent>) {
+        // 1. EventBus (observational / diagnostic tracing)
+        self.event_bus.publish(event);
+        // 2. Plugin delivery (if applicable)
+        if let Some(pe) = plugin_event {
+            self.plugin_manager.dispatch_event(pe).await;
+        }
+        // 3. Persistence (future: canonical event pipeline integration)
+        // 4. Telemetry (future: automatic telemetry event recording)
+    }
+
     /// Publish a plugin event to the diagnostic bus and the reliable bounded
     /// plugin dispatcher. The bus is observational; delivery is owned by the
     /// dispatcher rather than a broadcast subscriber.
@@ -670,27 +690,29 @@ impl PlusServerState {
         user_ip: String,
         user_language: String,
     ) {
-        self.publish_runtime_event(crate::event_bus::MpEvent::UserConnected {
+        let mp_event = crate::event_bus::MpEvent::UserConnected {
             user_id,
             user_name: user_name.clone(),
             user_ip: user_ip.clone(),
             user_language,
-        });
-        self.dispatch_plugin_event(PluginEvent::UserConnect {
+        };
+        let plugin_event = PluginEvent::UserConnect {
             user_id,
             user_name,
             user_ip,
-        })
-        .await;
+        };
+        self.canonical_event(mp_event, Some(plugin_event)).await;
     }
 
     pub async fn publish_user_disconnected(&self, user_id: i32, user_name: String) {
-        self.publish_runtime_event(crate::event_bus::MpEvent::UserDisconnected {
-            user_id,
-            user_name: user_name.clone(),
-        });
-        self.dispatch_plugin_event(PluginEvent::UserDisconnect { user_id, user_name })
-            .await;
+        self.canonical_event(
+            crate::event_bus::MpEvent::UserDisconnected {
+                user_id,
+                user_name: user_name.clone(),
+            },
+            Some(PluginEvent::UserDisconnect { user_id, user_name }),
+        )
+        .await;
     }
 
     /// Publish a diagnostic/runtime event.
