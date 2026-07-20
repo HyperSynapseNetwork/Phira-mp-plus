@@ -1261,6 +1261,45 @@ pub fn runtime_v2_registry() -> CommandRegistry {
         register(&mut registry, spec);
     }
 
+    // ── WAL / dead-letter ──
+    for spec in [
+        CommandSpec::new("wal inspect", "ops", "查看 WAL 状态统计。", "wal inspect")
+            .handler(Arc::new(|state, _args| {
+                let mut lines = vec![];
+                let wal_path = &state.config.runtime_v2.persistence_wal_path;
+                lines.push(format!("  ◆ WAL 路径: {wal_path}"));
+                if let Ok(meta) = std::fs::metadata(wal_path) {
+                    lines.push(format!("  ◆ 文件大小: {} 字节", meta.len()));
+                }
+                lines
+            })),
+        CommandSpec::new("dead-letter list", "ops", "列出 dead-letter 记录摘要。", "dead-letter list [limit]")
+            .handler(Arc::new(|state, args| {
+                let limit = args.first().and_then(|v| v.parse::<usize>().ok()).unwrap_or(10);
+                let mut lines = vec![format!("  ◆ dead-letter 最近 {limit} 条")];
+                if let Some(path) = &state.config.runtime_v2.persistence_dead_letter_path {
+                    if let Ok(content) = std::fs::read_to_string(path) {
+                        let count = content.lines().filter(|l| !l.trim().is_empty()).count();
+                        lines.push(format!("  ◆ 总记录数: {count}"));
+                        for line in content.lines().rev().take(limit).rev() {
+                            if let Ok(val) = serde_json::from_str::<serde_json::Value>(line) {
+                                let summary = val.get("summary").and_then(|v| v.as_str()).unwrap_or("?");
+                                let kind = val.get("kind").and_then(|v| v.as_str()).unwrap_or("?");
+                                lines.push(format!("  · [{kind}] {summary}"));
+                            }
+                        }
+                    } else {
+                        lines.push("  ○ dead-letter 文件不存在或无法读取".to_string());
+                    }
+                } else {
+                    lines.push("  ○ dead-letter 未配置".to_string());
+                }
+                lines
+            })),
+    ] {
+        register(&mut registry, spec);
+    }
+
     // ── config / diagnostics ──
     for spec in [
         CommandSpec::new("check-config", "core", "验证当前加载的配置并显示脱敏摘要。", "check-config")
