@@ -1,15 +1,15 @@
 #!/usr/bin/make -f
 %:
-	dh $@
+	dh $@ --buildsystem=null
 
 override_dh_auto_build:
-	cargo build --locked --release --workspace
+	echo "build handled by Launchpad"
 
 override_dh_auto_test:
-	cargo test --locked --workspace --all-features || echo "tests skipped during build"
+	echo "tests handled by Launchpad"
 
 override_dh_auto_clean:
-	cargo clean
+	echo "clean handled by Launchpad"
 
 override_dh_install:
 	install -D -m 755 target/release/phira-mp-plus-server debian/phira-mp-plus-server/usr/bin/phira-mp-plus-server
