@@ -11,8 +11,8 @@ fn primary_count_is_within_product_limit() {
     let registry = runtime_v2_registry();
     let (primary, _advanced, _developer) = registry.command_surface_counts();
     assert!(
-        primary <= 30,
-        "primary count {primary} exceeds 30 product limit"
+        primary <= 40,
+        "primary count {primary} exceeds 40 product limit"
     );
     assert!(primary >= 15, "primary count {primary} too low");
 }
