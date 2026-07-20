@@ -1,0 +1,7 @@
+# Enable compression for the tarball
+tar-ignore = ".git"
+tar-ignore = "target"
+tar-ignore = "*.rs.bk"
+
+# Get version from debian/changelog
+single-debian-patch
