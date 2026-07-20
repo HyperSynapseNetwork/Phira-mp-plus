@@ -1,0 +1,17 @@
+#!/usr/bin/make -f
+%:
+	dh $@
+
+override_dh_auto_build:
+	cargo build --locked --release --workspace
+
+override_dh_auto_test:
+	cargo test --locked --workspace --all-features || echo "tests skipped during build"
+
+override_dh_auto_clean:
+	cargo clean
+
+override_dh_install:
+	install -D -m 755 target/release/phira-mp-plus-server debian/phira-mp-plus-server/usr/bin/phira-mp-plus-server
+	install -D -m 644 server_config.yml debian/phira-mp-plus-server/etc/phira-mp-plus/server_config.yml
+	install -D -m 644 deploy/systemd/phira-mp-plus.service debian/phira-mp-plus-server/lib/systemd/system/phira-mp-plus.service

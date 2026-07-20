@@ -23,6 +23,42 @@ use uuid::Uuid;
 
 const DEFAULT_MAX_EVENT_TRACE: usize = crate::runtime_diagnostics::EVENT_TRACE_WINDOW;
 
+/// Schema version for domain events. Increment on breaking changes to MpEvent.
+pub const MP_EVENT_SCHEMA_VERSION: u32 = 1;
+
+/// A unique event ID for deduplication and tracing.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EventId(pub String);
+
+impl EventId {
+    pub fn new() -> Self {
+        Self(uuid::Uuid::new_v4().to_string())
+    }
+}
+
+/// Envelope wrapping every domain event with schema version and trace context.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DomainEvent<T: Clone> {
+    pub event_id: EventId,
+    pub schema_version: u32,
+    pub inner: T,
+    pub created_at_ms: u64,
+}
+
+impl<T: Clone> DomainEvent<T> {
+    pub fn new(inner: T) -> Self {
+        Self {
+            event_id: EventId::new(),
+            schema_version: MP_EVENT_SCHEMA_VERSION,
+            inner,
+            created_at_ms: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis() as u64)
+                .unwrap_or(0),
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub enum MpEvent {
     /// A normal game client authenticated or reconnected. Monitor/console sessions are excluded.

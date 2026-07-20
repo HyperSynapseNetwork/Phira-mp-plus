@@ -1,0 +1,20 @@
+Source: phira-mp-plus-server
+Section: games
+Priority: optional
+Maintainer: PMP Dev <dev@phira-mp-plus.dev>
+Build-Depends: debhelper-compat (= 13), rustc (>= 1.70), cargo, pkg-config, libssl-dev, musl-tools
+Standards-Version: 4.6.2
+Homepage: https://github.com/HyperSynapseNetwork/Phira-mp-plus
+Rules-Requires-Root: no
+
+Package: phira-mp-plus-server
+Architecture: any
+Depends: ${shlibs:Depends}, ${misc:Depends}, adduser
+Description: Real-time multiplayer game server for Phira+
+ Phira-mp+ (PMP) is the real-time multiplayer game runtime for the Phira+
+ architecture. It handles TCP game protocol, session management, room state
+ machines, game rounds, trusted WASM plugin execution, and reliable event
+ persistence.
+ .
+ PMP operates on a trusted internal network behind Phira+ Backend (PPB).
+ It is not a public-facing web gateway.
