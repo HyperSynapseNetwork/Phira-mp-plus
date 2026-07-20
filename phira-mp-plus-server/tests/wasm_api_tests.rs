@@ -55,6 +55,7 @@ mod tests {
         })
     }
 
+    #[allow(dead_code)]
     fn load_component() -> WitPluginComponent {
         try_load_component().expect("WitPluginComponent::from_bytes_ctx should succeed")
     }
