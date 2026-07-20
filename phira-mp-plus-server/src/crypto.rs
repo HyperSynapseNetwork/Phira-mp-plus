@@ -95,8 +95,8 @@ mod tests {
         let key = NodeKey::from_secret(b"test-secret-key-32-bytes-long!!");
         let payload = b"hello world";
         let sig = key.sign(payload);
-        assert!(NodeKey::verify(&key.public_key, payload, &sig));
-        assert!(!NodeKey::verify(&key.public_key, b"tampered", &sig));
+        assert!(NodeKey::verify(&key.signing_key, payload, &sig));
+        assert!(!NodeKey::verify(&key.signing_key, b"tampered", &sig));
     }
 
     #[test]

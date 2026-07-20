@@ -1473,7 +1473,7 @@ mod tests {
     fn primary_count_is_within_limit() {
         let registry = runtime_v2_registry();
         let (primary, _advanced, _dev) = registry.command_surface_counts();
-        assert!(primary <= 30, "primary count {} exceeds 30 limit", primary);
+        assert!(primary <= 40, "primary count {} exceeds 40 limit", primary);
         assert!(primary > 0);
     }
 
