@@ -1,7 +1,26 @@
 # 快速开始
 
-## 前置条件
+## 安装方式
 
+### 方式一：APT 包管理器（推荐）
+
+```bash
+sudo add-apt-repository ppa:fireflyf09/phira-mp-plus
+sudo apt update
+sudo apt install phira-mp-plus-server
+```
+
+或手动添加源：
+```bash
+echo "deb http://ppa.launchpad.net/fireflyf09/phira-mp-plus/ubuntu $(lsb_release -cs) main" | sudo tee /etc/apt/sources.list.d/phira-mp-plus.list
+sudo apt-key adv --keyserver keyserver.ubuntu.com --recv-keys 1B92CD21EAC1F4C1401F1F25360EE8752C12B3B1
+sudo apt update
+sudo apt install phira-mp-plus-server
+```
+
+### 方式二：源码构建
+
+前置条件：
 - Rust 工具链（版本见 `rust-toolchain.toml`）
 - （可选）PostgreSQL 14+
 
