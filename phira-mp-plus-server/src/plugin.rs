@@ -870,6 +870,13 @@ impl PluginManager {
             let _execution = call_slot
                 .wait_for_execution_until(execution_deadline)
                 .map_err(str::to_string)?;
+            // NOTE: The Mutex still serializes API calls even when
+            // max_concurrent_calls > 1. True parallelism requires
+            // PluginHost::call_api(&self) instead of &mut self, or
+            // using RwLock<()> with read-lock for API calls and
+            // write-lock for lifecycle (init/cleanup).
+            // For now, the execution permit prevents admission beyond
+            // max_concurrent_calls, and the Mutex ensures safety.
             call_slot
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
