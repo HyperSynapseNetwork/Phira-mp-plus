@@ -16,6 +16,38 @@ use tracing::{error, info, warn};
 
 const MAX_RECENT_FAILURES: usize = 32;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum ShutdownOrder {
+    /// Network listeners (accept new connections). Stopped first.
+    Listeners = 0,
+    /// Active game sessions. Stopped second.
+    Sessions = 1,
+    /// Room actors and mailboxes. Stopped third.
+    Rooms = 2,
+    /// WASM plugin runtime. Stopped fourth.
+    Plugins = 3,
+    /// Persistence worker + WAL. Stopped fifth.
+    Persistence = 4,
+    /// Telemetry batcher. Stopped last.
+    Telemetry = 5,
+    /// No specific ordering (default).
+    Unordered = 99,
+}
+
+impl ShutdownOrder {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Listeners => "listeners",
+            Self::Sessions => "sessions",
+            Self::Rooms => "rooms",
+            Self::Plugins => "plugins",
+            Self::Persistence => "persistence",
+            Self::Telemetry => "telemetry",
+            Self::Unordered => "unordered",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TaskCriticality {
     BestEffort,
@@ -31,6 +63,7 @@ impl TaskCriticality {
 struct ChildTask {
     name: String,
     criticality: TaskCriticality,
+    shutdown_order: ShutdownOrder,
     handle: tokio::task::JoinHandle<()>,
 }
 
@@ -52,6 +85,7 @@ pub(crate) enum SupervisorCmd {
         id: u64,
         name: String,
         criticality: TaskCriticality,
+        shutdown_order: ShutdownOrder,
         handle: tokio::task::JoinHandle<()>,
     },
     ReportFailure {
@@ -190,14 +224,14 @@ async fn run_supervisor(mut rx: mpsc::Receiver<SupervisorCmd>) {
                             recent_failures: recent_failures.iter().cloned().collect(),
                         });
                     }
-                    SupervisorCmd::Register { id, name, criticality, handle } => {
+                    SupervisorCmd::Register { id, name, criticality, shutdown_order, handle } => {
                         if shutdown_flag.load(Ordering::Acquire)
                             || SHUTDOWN_PHASE.load(Ordering::Acquire)
                         {
                             handle.abort();
                             continue;
                         }
-                        children.insert(id, ChildTask { name, criticality, handle });
+                        children.insert(id, ChildTask { name, criticality, shutdown_order, handle });
                     }
                     SupervisorCmd::ReportFailure { task, critical, outcome } => {
                         if !SHUTDOWN_PHASE.load(Ordering::Acquire) {
@@ -297,8 +331,20 @@ fn unix_time_ms() -> u64 {
 }
 
 async fn abort_and_join(children: &mut HashMap<u64, ChildTask>, timeout: Duration) -> usize {
+    // Sort by shutdown order: lower order = shut down first (Listeners → Sessions → ...)
     let mut tasks = children.drain().map(|(_, child)| child).collect::<Vec<_>>();
+    tasks.sort_by_key(|child| child.shutdown_order);
     let count = tasks.len();
+
+    // Log the shutdown sequence for observability
+    if !tasks.is_empty() {
+        let order_str: Vec<String> = tasks
+            .iter()
+            .map(|t| format!("{}:{}", t.shutdown_order.label(), t.name))
+            .collect();
+        info!(sequence = %order_str.join(" → "), "shutting down tasks in order");
+    }
+
     for child in &tasks {
         child.handle.abort();
     }
@@ -340,6 +386,7 @@ where
         id,
         name,
         criticality,
+        shutdown_order: ShutdownOrder::Unordered,
         handle,
     };
     match tx.try_send(command) {
@@ -367,6 +414,51 @@ where
     F: std::future::Future<Output = ()> + Send + 'static,
 {
     spawn_with_criticality(name, TaskCriticality::BestEffort, future);
+}
+
+/// Spawn a named task with an explicit shutdown order.
+pub fn spawn_with_order<F>(name: impl Into<String>, shutdown_order: ShutdownOrder, future: F)
+where
+    F: std::future::Future<Output = ()> + Send + 'static,
+{
+    let name = name.into();
+    let criticality = TaskCriticality::BestEffort;
+    let id = NEXT_TASK_ID.fetch_add(1, Ordering::SeqCst);
+    let handle = tokio::spawn({
+        let n = name.clone();
+        async move {
+            future.await;
+            info!(task = %n, "supervisor registered task completed");
+        }
+    });
+    let command = SupervisorCmd::Register {
+        id,
+        name: name.clone(),
+        criticality,
+        shutdown_order,
+        handle,
+    };
+    let Some(tx) = current_sender() else {
+        warn!("supervisor not initialized; task '{name}' is unregistered");
+        return;
+    };
+    match tx.try_send(command) {
+        Ok(()) => {}
+        Err(mpsc::error::TrySendError::Full(command)) => {
+            tokio::spawn(async move {
+                if let Err(err) = tx.send(command).await {
+                    if let SupervisorCmd::Register { handle, .. } = err.0 {
+                        handle.abort();
+                    }
+                }
+            });
+        }
+        Err(mpsc::error::TrySendError::Closed(command)) => {
+            if let SupervisorCmd::Register { handle, .. } = command {
+                handle.abort();
+            }
+        }
+    }
 }
 
 /// Spawn and register a process-critical named task. Unexpected completion
