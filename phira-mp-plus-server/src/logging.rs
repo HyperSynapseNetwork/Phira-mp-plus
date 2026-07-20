@@ -215,26 +215,55 @@ pub fn init(file_name: &str, tui_tx: Option<mpsc::Sender<String>>) -> Result<Wor
         .add_directive("wasmtime=info".parse()?);
 
     let has_tui = tui_tx.is_some();
+    let log_format = std::env::var("RUST_LOG_FORMAT").unwrap_or_default();
 
-    // Human-readable text output (default).
-    let file_layer = fmt::layer()
-        .with_writer(file_writer)
-        .with_ansi(false)
-        .with_filter(LevelFilter::TRACE);
-    let stdout_layer = fmt::layer()
-        .with_writer(StdoutWriter(has_tui))
-        .with_ansi(false)
-        .with_filter(filter.clone());
-    let tui_layer = fmt::layer()
-        .with_writer(ChannelWriterFactory(tui_tx))
-        .with_ansi(false)
-        .with_filter(filter);
-    tracing_subscriber::registry()
-        .with(RateLimitLayer::new(RATE_LIMIT_BURST))
-        .with(file_layer)
-        .with(stdout_layer)
-        .with(tui_layer)
-        .init();
+    if log_format == "json" {
+        // JSON structured output (machine-parseable, for production).
+        let json_file_layer = fmt::layer()
+            .json()
+            .with_writer(file_writer)
+            .with_ansi(false)
+            .with_current_span(true)
+            .with_span_list(true)
+            .with_filter(LevelFilter::TRACE);
+        let stdout_layer = fmt::layer()
+            .json()
+            .with_writer(StdoutWriter(has_tui))
+            .with_ansi(false)
+            .with_current_span(true)
+            .with_span_list(true)
+            .with_filter(filter.clone());
+        let tui_layer = fmt::layer()
+            .with_writer(ChannelWriterFactory(tui_tx))
+            .with_ansi(false)
+            .with_filter(filter);
+        tracing_subscriber::registry()
+            .with(RateLimitLayer::new(RATE_LIMIT_BURST))
+            .with(json_file_layer)
+            .with(stdout_layer)
+            .with(tui_layer)
+            .init();
+    } else {
+        // Human-readable text output (default).
+        let file_layer = fmt::layer()
+            .with_writer(file_writer)
+            .with_ansi(false)
+            .with_filter(LevelFilter::TRACE);
+        let stdout_layer = fmt::layer()
+            .with_writer(StdoutWriter(has_tui))
+            .with_ansi(false)
+            .with_filter(filter.clone());
+        let tui_layer = fmt::layer()
+            .with_writer(ChannelWriterFactory(tui_tx))
+            .with_ansi(false)
+            .with_filter(filter);
+        tracing_subscriber::registry()
+            .with(RateLimitLayer::new(RATE_LIMIT_BURST))
+            .with(file_layer)
+            .with(stdout_layer)
+            .with(tui_layer)
+            .init();
+    }
 
     Ok(guard)
 }
