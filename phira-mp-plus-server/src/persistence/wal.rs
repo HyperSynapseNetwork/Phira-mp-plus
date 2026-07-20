@@ -789,4 +789,62 @@ mod tests {
         assert!(wal.replay().await.is_err());
         let _ = tokio::fs::remove_file(path).await;
     }
+
+    // ── Fault injection tests ──────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn fault_wal_deleted_during_replay() {
+        let path =
+            std::env::temp_dir().join(format!("pmp-wal-del-{}.jsonl", uuid::Uuid::new_v4()));
+        let wal = PersistenceWal::new(&path);
+        wal.replay().await.unwrap();
+        wal.admit(make_event("will-be-lost")).await.unwrap();
+        let _ = tokio::fs::remove_file(&path).await;
+        let wal2 = PersistenceWal::new(&path);
+        let r = wal2.replay().await.unwrap();
+        assert!(r.is_empty());
+        assert!(wal2.replay_succeeded());
+    }
+
+    #[tokio::test]
+    async fn fault_compact_and_admit_no_data_loss() {
+        let path =
+            std::env::temp_dir().join(format!("pmp-wal-cc-{}.jsonl", uuid::Uuid::new_v4()));
+        let wal = std::sync::Arc::new(PersistenceWal::new(&path));
+        wal.replay().await.unwrap();
+        let _ = wal.admit(make_event("seed1")).await.unwrap();
+        let _ = wal.admit(make_event("seed2")).await.unwrap();
+        let w1 = std::sync::Arc::clone(&wal);
+        let h1 = tokio::spawn(async move { w1.compact().await });
+        let w2 = std::sync::Arc::clone(&wal);
+        let h2 = tokio::spawn(async move {
+            let _ = w2.admit(make_event("concurrent")).await;
+        });
+        let _ = tokio::join!(h1, h2);
+        let replay = wal.replay().await.unwrap();
+        let kinds: Vec<String> = replay.iter().map(|(_, e)| e.kind().to_string()).collect();
+        assert!(
+            kinds.contains(&"concurrent".to_string()),
+            "concurrent event must survive: {kinds:?}"
+        );
+        let _ = tokio::fs::remove_file(path).await;
+    }
+
+    #[tokio::test]
+    async fn fault_zeroed_wal_recovers_empty() {
+        let path =
+            std::env::temp_dir().join(format!("pmp-wal-zero-{}.jsonl", uuid::Uuid::new_v4()));
+        let wal = PersistenceWal::new(&path);
+        wal.replay().await.unwrap();
+        wal.admit(make_event("lost")).await.unwrap();
+        tokio::fs::write(&path, b"").await.unwrap();
+        let wal2 = PersistenceWal::new(&path);
+        let r = wal2.replay().await.unwrap();
+        assert!(r.is_empty());
+        wal2.admit(make_event("fresh")).await.unwrap();
+        let r2 = wal2.replay().await.unwrap();
+        assert_eq!(r2.len(), 1);
+        assert_eq!(r2[0].1.kind(), "fresh");
+        let _ = tokio::fs::remove_file(path).await;
+    }
 }
