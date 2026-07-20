@@ -1296,6 +1296,41 @@ pub fn runtime_v2_registry() -> CommandRegistry {
                 }
                 lines
             })),
+        CommandSpec::new("dead-letter replay", "ops", "重放 dead-letter 事件到持久化队列。", "dead-letter replay")
+            .handler(Arc::new(|state, _args| {
+                let mut lines = vec!["  ◆ dead-letter replay...".to_string()];
+                let path = &state.config.runtime_v2.persistence_dead_letter_path.clone();
+                let Some(path) = path else {
+                    lines.push("  ○ dead-letter 未配置".to_string());
+                    return lines;
+                };
+                let content = match std::fs::read_to_string(&path) {
+                    Ok(c) => c,
+                    Err(e) => {
+                        lines.push(format!("  ✗ 读取 dead-letter 失败: {e}"));
+                        return lines;
+                    }
+                };
+                let mut count = 0usize;
+                for line in content.lines() {
+                    let line = line.trim();
+                    if line.is_empty() { continue; }
+                    if let Ok(val) = serde_json::from_str::<serde_json::Value>(line) {
+                        let event: Option<crate::persistence::message::PersistenceEvent> =
+                            val.get("event").and_then(|v| serde_json::from_value(v.clone()).ok());
+                        if let Some(ev) = event {
+                            // Re-enqueue via PersistenceWorker (fire-and-forget)
+                            let pw = Arc::clone(&state.persistence_worker);
+                            tokio::task::spawn(async move {
+                                let _ = pw.enqueue(ev).await;
+                            });
+                            count += 1;
+                        }
+                    }
+                }
+                lines.push(format!("  ✓ 已提交 {count} 个事件到持久化队列"));
+                lines
+            })),
     ] {
         register(&mut registry, spec);
     }
