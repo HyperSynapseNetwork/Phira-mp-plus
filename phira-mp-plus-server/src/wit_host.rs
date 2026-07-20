@@ -997,11 +997,13 @@ mod wit_trait_impls {
         fn set_timer(&mut self, delay_ms: u64, timer_id: String) -> Result<(), String> {
             let plugin_name = self.plugin_name.clone();
             let ctx = Arc::clone(&self.ctx);
+            let timer_name = timer_id.clone();
+            let cb_plugin = plugin_name.clone();
 
             let handle = tokio::spawn(async move {
                 tokio::time::sleep(Duration::from_millis(delay_ms)).await;
                 if let Some(cb) = &ctx.timer_callback {
-                    cb(plugin_name.clone(), timer_id);
+                    cb(cb_plugin, timer_name);
                 }
             });
 

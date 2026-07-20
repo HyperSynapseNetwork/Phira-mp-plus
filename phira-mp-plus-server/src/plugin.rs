@@ -995,8 +995,9 @@ impl PluginManager {
     pub async fn purge_plugin_data(&self, id: &str) -> Result<(), String> {
         // Resolve the plugin path from the extension store — the plugin may no longer
         // be in the live registry.
-        let stable_id = id.to_string();
-        let plugin_path = std::path::Path::new(&self.plugins_dir).join(format!("{stable_id}.wasm"));
+        let stable_id = id.to_owned();
+        let plugins_dir = self.plugins_dir.clone();
+        let plugin_path = std::path::Path::new(&plugins_dir).join(format!("{stable_id}.wasm"));
         let sidecar = plugin_path.with_extension("capabilities.json");
         let data_dir = std::path::Path::new("data/plugins").join(&stable_id);
 
