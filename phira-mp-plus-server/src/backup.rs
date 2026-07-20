@@ -145,7 +145,8 @@ pub fn verify_backup(path: &str) -> Result<VerifyReport, String> {
 }
 
 /// Simple recursive directory walker (no external dep).
-fn walkdir(dir: &Path, _base: &Path) -> Vec<Result<PathBuf, String>> {
+#[allow(clippy::only_used_in_recursion)]
+fn walkdir(dir: &Path, base: &Path) -> Vec<Result<PathBuf, String>> {
     let mut results = Vec::new();
     if let Ok(entries) = std::fs::read_dir(dir) {
         for entry in entries {
