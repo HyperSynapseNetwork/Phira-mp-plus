@@ -48,6 +48,10 @@ mod tests {
             http_timeout_secs: 10,
             http_max_body: 1024 * 1024,
             http_allow_private_network: false,
+            node_key: Arc::new(phira_mp_plus_server::crypto::NodeKey::from_secret(b"test")),
+            timers: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
+            federation: None,
+            timer_callback: None,
         })
     }
 
