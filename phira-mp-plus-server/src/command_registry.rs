@@ -1305,7 +1305,7 @@ pub fn runtime_v2_registry() -> CommandRegistry {
                     lines.push("  ○ dead-letter 未配置".to_string());
                     return lines;
                 };
-                let content = match std::fs::read_to_string(&path) {
+                let content = match std::fs::read_to_string(path) {
                     Ok(c) => c,
                     Err(e) => {
                         lines.push(format!("  ✗ 读取 dead-letter 失败: {e}"));
@@ -1382,7 +1382,7 @@ pub fn runtime_v2_registry() -> CommandRegistry {
             .handler(Arc::new(|state, args| {
                 let output = args.first().map(|s| &s[..]).unwrap_or("pmp-backup.tar.gz");
                 let mut lines = vec![format!("  ◆ 创建备份: {output}")];
-                match crate::backup::create_backup(&state, output) {
+                match crate::backup::create_backup(state, output) {
                     Ok(_path) => {
                         lines.push(format!("  ✓ 备份完成: {output}"));
                     }

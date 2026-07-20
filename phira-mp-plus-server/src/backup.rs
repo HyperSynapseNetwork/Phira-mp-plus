@@ -145,7 +145,7 @@ pub fn verify_backup(path: &str) -> Result<VerifyReport, String> {
 }
 
 /// Simple recursive directory walker (no external dep).
-fn walkdir(dir: &Path, base: &Path) -> Vec<Result<PathBuf, String>> {
+fn walkdir(dir: &Path, _base: &Path) -> Vec<Result<PathBuf, String>> {
     let mut results = Vec::new();
     if let Ok(entries) = std::fs::read_dir(dir) {
         for entry in entries {
@@ -182,7 +182,7 @@ mod tests {
         std::fs::create_dir_all(&tmp).unwrap();
         std::fs::write(tmp.join("test.txt"), b"hello").unwrap();
         let files = walkdir(&tmp, &tmp);
-        assert!(files.len() >= 1);
+        assert!(!files.is_empty());
         let _ = std::fs::remove_dir_all(&tmp);
     }
 }
