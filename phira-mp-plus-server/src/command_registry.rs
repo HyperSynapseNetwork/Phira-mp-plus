@@ -1301,6 +1301,40 @@ pub fn runtime_v2_registry() -> CommandRegistry {
         register(&mut registry, spec);
     }
 
+    // ── backup / restore ──
+    for spec in [
+        CommandSpec::new("backup create", "ops", "创建数据备份归档。", "backup create [output]")
+            .handler(Arc::new(|state, args| {
+                let output = args.first().map(|s| s.as_str()).unwrap_or("pmp-backup.tar.gz");
+                let mut lines = vec![format!("  ◆ 创建备份: {output}")];
+                match crate::backup::create_backup(&state, output) {
+                    Ok(()) => {
+                        lines.push(format!("  ✓ 备份完成: {output}"));
+                    }
+                    Err(e) => {
+                        lines.push(format!("  ✗ 备份失败: {e}"));
+                    }
+                }
+                lines
+            })),
+        CommandSpec::new("restore verify", "ops", "验证备份归档完整性。", "restore verify <path>")
+            .handler(Arc::new(|_state, args| {
+                let path = args.first().map(|s| s.as_str()).unwrap_or("pmp-backup.tar.gz");
+                let mut lines = vec![format!("  ◆ 验证备份: {path}")];
+                match crate::backup::verify_backup(path) {
+                    Ok(report) => {
+                        lines.push(format!("  ✓ 备份有效: {} 个文件, {} 字节", report.file_count, report.total_size));
+                    }
+                    Err(e) => {
+                        lines.push(format!("  ✗ 验证失败: {e}"));
+                    }
+                }
+                lines
+            })),
+    ] {
+        register(&mut registry, spec);
+    }
+
     registry.init_completers();
     registry
 }

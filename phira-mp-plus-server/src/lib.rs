@@ -38,6 +38,7 @@
 )]
 
 pub mod actor_runtime;
+pub mod backup;
 pub mod ban;
 pub mod benchmark_report;
 pub mod benchmark_snapshot;
