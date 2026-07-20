@@ -224,8 +224,13 @@ async fn process_worker_loop(
         let kind = event.kind();
         let simulation = event.is_simulation();
         let summary = event.summary();
+        // Track whether this event reached a durable terminal state.
+        // Only durable events get WAL ACKed; non-durable entries remain
+        // in the WAL for replay on restart (crash recovery).
+        let mut durable = false;
         match persist_benchmark_report_if_needed(&event).await {
             BenchmarkReportStage::Acknowledged { elapsed_ms } => {
+                durable = true;
                 record_benchmark_report_persist_request(worker_stats).await;
                 record_db_dispatch_success(
                     worker_stats,
@@ -266,6 +271,7 @@ async fn process_worker_loop(
                         pipeline,
                         elapsed_ms,
                     } => {
+                        durable = true;
                         record_simulation_persist_request(worker_stats).await;
                         record_db_dispatch_success(worker_stats, pipeline, elapsed_ms).await;
                     }
@@ -310,6 +316,7 @@ async fn process_worker_loop(
                                         pipeline,
                                         elapsed_ms,
                                     } => {
+                                        durable = true;
                                         record_production_persist_request(worker_stats).await;
                                         record_db_dispatch_success(
                                             worker_stats,
@@ -381,15 +388,18 @@ async fn process_worker_loop(
         }
         record_processed(worker_stats, kind, simulation, summary).await;
 
-        // NOTE (P0): WAL ack is issued after the event has been dispatched
-        // through the persistence pipeline. This is still the "current" ACK
-        // model that the PMP audit flags as a P0 issue: events may be ACKed
-        // even when they reached only best-effort telemetry staging rather
-        // than a durable terminal state (DatabaseCommitted /
-        // DurableDeadLetterStored). A proper fix requires the pipeline to
-        // return the terminal outcome so ACK is gated on durable persistence.
-        if let Err(error) = worker_wal.ack(wal_id).await {
-            crate::supervisor_actor::report_critical_failure("persistence-wal-ack", error).await;
+        // Only ACK events that reached a durable terminal state.
+        // DatabaseCommitted / DurableDeadLetterStored → ACK
+        // TelemetryStaged / DeadLetterFailed / SkippedNoDB → retain in WAL
+        if durable {
+            if let Err(error) = worker_wal.ack(wal_id).await {
+                crate::supervisor_actor::report_critical_failure("persistence-wal-ack", error).await;
+            }
+        } else {
+            tracing::warn!(
+                wal_id = %wal_id, kind = %kind,
+                "WAL entry not ACKed (non-durable outcome); will replay on restart"
+            );
         }
     }
 }
