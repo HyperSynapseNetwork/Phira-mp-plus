@@ -1,0 +1,52 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Phira-mp+ Configuration",
+  "description": "Schema for server_config.yml — validates structure and constraints",
+  "type": "object",
+  "properties": {
+    "config_version": { "type": "integer", "minimum": 1, "maximum": 1, "default": 1 },
+    "profile": { "type": "string", "enum": ["development", "staging", "production"], "default": "development" },
+    "port": { "type": "integer", "minimum": 1, "maximum": 65535, "default": 12346 },
+    "http_port": { "type": "integer", "minimum": 0, "maximum": 65535, "default": 12347 },
+    "http_bind_address": { "type": "string", "default": "127.0.0.1" },
+    "proxy_protocol_port": { "type": "integer", "minimum": 0, "maximum": 65535, "default": 0 },
+    "max_sessions": { "type": "integer", "minimum": 1, "maximum": 1000000, "default": 4096 },
+    "max_pending_auth": { "type": "integer", "minimum": 1, "default": 256 },
+    "max_rooms": { "oneOf": [{ "type": "null" }, { "type": "integer", "minimum": 1 }], "default": null },
+    "max_users_per_room": { "oneOf": [{ "type": "null" }, { "type": "integer", "minimum": 1 }], "default": null },
+    "graceful_shutdown_timeout_secs": { "type": "integer", "minimum": 1, "maximum": 300, "default": 15 },
+    "connection_rate_limit": { "type": "integer", "minimum": 1, "default": 30 },
+    "connection_rate_window": { "type": "integer", "minimum": 1, "default": 10 },
+    "database_url": { "oneOf": [{ "type": "null" }, { "type": "string" }], "default": null },
+    "allow_database_degraded_mode": { "type": "boolean", "default": false },
+    "admin_token": { "oneOf": [{ "type": "null" }, { "type": "string" }], "default": null },
+    "server_name": { "oneOf": [{ "type": "null" }, { "type": "string" }] },
+    "plugins_dir": { "type": "string", "default": "plugins" },
+    "chat_enabled": { "type": "boolean", "default": true },
+    "cli_enabled": { "type": "boolean", "default": true },
+    "persistence_retention_days": { "type": "integer", "minimum": 0, "default": 30 },
+    "touch_judge_retention_days": { "oneOf": [{ "type": "null" }, { "type": "integer", "minimum": 0 }] },
+    "round_data_retention_days": { "type": "integer", "minimum": 0, "default": 7 },
+    "phira_api_endpoint": { "type": "string", "default": "https://phira.5wyxi.com" },
+    "admin_phira_ids": { "type": "array", "items": { "type": "integer" }, "default": [] },
+    "wasm_runtime": {
+      "type": "object",
+      "properties": {
+        "max_memory_mb": { "type": "integer", "minimum": 1, "maximum": 4096, "default": 64 },
+        "fuel_per_call": { "type": "integer", "minimum": 1, "default": 10000000 },
+        "max_stack_bytes": { "type": "integer", "minimum": 65536, "maximum": 67108864, "default": 2097152 },
+        "http_timeout_secs": { "type": "integer", "minimum": 1, "maximum": 300, "default": 10 },
+        "call_timeout_ms": { "type": "integer", "minimum": 1, "maximum": 300000, "default": 2000 }
+      }
+    },
+    "runtime_v2": {
+      "type": "object",
+      "properties": {
+        "persistence_queue_capacity": { "type": "integer", "minimum": 16, "maximum": 1000000, "default": 4096 },
+        "persistence_dead_letter_path": { "oneOf": [{ "type": "null" }, { "type": "string" }] },
+        "persistence_wal_path": { "type": "string", "default": "data/persistence-worker.wal.jsonl" }
+      }
+    }
+  },
+  "additionalProperties": false
+}

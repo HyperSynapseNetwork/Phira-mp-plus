@@ -629,6 +629,24 @@ async fn init_tables(pool: &sqlx::PgPool) -> Result<()> {
         sqlx::query(index).execute(pool).await?;
     }
 
-    tracing::info!("统一 PostgreSQL 持久化表已就绪");
+    // Track schema version for migration awareness.
+    let _ = sqlx::query(
+        "CREATE TABLE IF NOT EXISTS _pmp_schema_version (
+            version INTEGER PRIMARY KEY,
+            applied_at BIGINT NOT NULL DEFAULT extract(epoch from now())::bigint * 1000,
+            description TEXT NOT NULL DEFAULT ''
+        )",
+    )
+    .execute(pool)
+    .await;
+    let _ = sqlx::query(
+        "INSERT INTO _pmp_schema_version (version, description)
+         VALUES (1, 'migrations/20260720000001_initial_schema.sql')
+         ON CONFLICT (version) DO NOTHING",
+    )
+    .execute(pool)
+    .await;
+
+    tracing::info!("统一 PostgreSQL 持久化表已就绪 (schema v1)");
     Ok(())
 }
