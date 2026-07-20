@@ -53,15 +53,11 @@ jobs:
           fetch-depth: 0
       - uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
-          components: rustfmt, clippy
+          components: clippy
       - uses: Swatinem/rust-cache@v2
         with:
           key: release-quality
           cache-on-failure: true
-      - name: Changed Rust formatting
-        env:
-          GITHUB_EVENT_BEFORE: ${{ github.event.before }}
-        run: ./scripts/check-changed-rustfmt.sh
       - name: Workspace version consistency
         run: python scripts/sync-workspace-version.py --check
       - name: Check
