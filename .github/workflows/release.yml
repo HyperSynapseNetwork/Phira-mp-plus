@@ -140,6 +140,27 @@ jobs:
         with:
           pattern: phira-*
           merge-multiple: true
+      - name: Generate SHA-256 checksums
+        run: |
+          set -euo pipefail
+          for f in phira-mp-plus-server-linux phira-mp-plus-server-windows.exe phira-plugin-sdk.tar.gz; do
+            if [ -f "$f" ]; then
+              sha256sum "$f" >> SHA256SUMS
+            fi
+          done
+          echo "Generated checksums:"
+          cat SHA256SUMS
+      - name: GPG sign artifacts
+        if: ${{ secrets.GPG_PRIVATE_KEY != '' }}
+        uses: crazy-max/ghaction-import-gpg@v6
+        with:
+          gpg_private_key: ${{ secrets.GPG_PRIVATE_KEY }}
+          passphrase: ${{ secrets.GPG_PASSPHRASE }}
+      - name: Sign checksums
+        if: ${{ secrets.GPG_PRIVATE_KEY != '' }}
+        run: |
+          gpg --batch --yes --detach-sign --armor SHA256SUMS
+          echo "Signed SHA256SUMS with GPG"
       - name: Release
         uses: softprops/action-gh-release@v2
         with:
@@ -151,4 +172,6 @@ jobs:
             phira-mp-plus-server-linux
             phira-mp-plus-server-windows.exe
             phira-plugin-sdk.tar.gz
+            SHA256SUMS
+            SHA256SUMS.asc
           prerelease: false
