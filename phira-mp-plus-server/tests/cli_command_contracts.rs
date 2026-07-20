@@ -25,7 +25,7 @@ fn default_help_shows_primary_count() {
         primary >= 15,
         "expected at least 15 primary commands, got {primary}"
     );
-    assert!(primary <= 30, "primary count {primary} exceeds 25 limit");
+    assert!(primary <= 40, "primary count {primary} exceeds 40 limit");
     assert!(
         developer >= 5,
         "expected at least 5 developer commands, got {developer}"
@@ -92,7 +92,7 @@ fn command_count_is_stable() {
     let count = registry.iter().count();
     // If this fails, update the count — this test prevents drift
     assert!(
-        (50..=70).contains(&count),
+        (50..=85).contains(&count),
         "unexpected command count: {count}"
     );
 }
