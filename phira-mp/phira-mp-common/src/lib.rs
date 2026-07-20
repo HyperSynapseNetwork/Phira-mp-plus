@@ -6,8 +6,9 @@ pub use command::*;
 
 use anyhow::Result;
 
-pub fn encode_packet(payload: &impl BinaryData, vec: &mut Vec<u8>) {
-    BinaryWriter::new(vec).write(payload).unwrap();
+pub fn encode_packet(payload: &impl BinaryData, vec: &mut Vec<u8>) -> Result<()> {
+    BinaryWriter::new(vec).write(payload)?;
+    Ok(())
 }
 
 pub fn decode_packet<T>(data: &[u8]) -> Result<T>
@@ -141,7 +142,7 @@ mod stream_impl {
                     while let Some(outbound) = send_rx.recv().await {
                         let Outbound { payload, flushed } = outbound;
                         buffer.clear();
-                        encode_packet(&payload, &mut buffer);
+                        encode_packet(&payload, &mut buffer).expect("encode_packet failed");
                         trace!("sending {} bytes ({payload:?}): {buffer:?}", buffer.len());
 
                         let mut x = buffer.len() as u32;

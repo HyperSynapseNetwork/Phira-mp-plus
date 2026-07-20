@@ -1755,7 +1755,8 @@ async fn bench_send_command(
 ) -> Result<(), String> {
     use tokio::io::AsyncWriteExt;
     let mut buffer = Vec::new();
-    phira_mp_common::encode_packet(payload, &mut buffer);
+    phira_mp_common::encode_packet(payload, &mut buffer)
+        .map_err(|e| format!("encode packet failed: {e}"))?;
     let mut len_buf = [0u8; 5];
     let mut x = buffer.len() as u32;
     let mut n = 0usize;
