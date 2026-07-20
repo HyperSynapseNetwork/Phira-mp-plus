@@ -710,6 +710,74 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn fuzz_malformed_json_is_rejected() {
+        let path = std::env::temp_dir().join(format!("pmp-wal-fuzz-{}.jsonl", uuid::Uuid::new_v4()));
+        // Write completely invalid JSON
+        tokio::fs::write(&path, b"not valid json\n").await.unwrap();
+        let wal = PersistenceWal::new(&path);
+        assert!(wal.replay().await.is_err());
+        assert!(!wal.replay_succeeded());
+        let _ = tokio::fs::remove_file(path).await;
+    }
+
+    #[tokio::test]
+    async fn fuzz_partial_frame_at_end_is_truncated() {
+        let path = std::env::temp_dir().join(format!("pmp-wal-trunc2-{}.jsonl", uuid::Uuid::new_v4()));
+        let wal = PersistenceWal::new(&path);
+        wal.replay().await.unwrap();
+        wal.admit(make_event("good")).await.unwrap();
+        // Append a truncated JSON fragment
+        let mut file = tokio::fs::OpenOptions::new()
+            .append(true).open(&path).await.unwrap();
+        use tokio::io::AsyncWriteExt;
+        file.write_all(b"{\"ver\":1,\"record\":\"admission\"").await.unwrap();
+        file.flush().await.unwrap();
+        drop(file);
+        // Replay should succeed, discarding truncated line
+        let replay = wal.replay().await.unwrap();
+        assert_eq!(replay.len(), 1);
+        let _ = tokio::fs::remove_file(path).await;
+    }
+
+    #[tokio::test]
+    async fn fuzz_repeated_ack_is_idempotent() {
+        let path = std::env::temp_dir().join(format!("pmp-wal-idem-{}.jsonl", uuid::Uuid::new_v4()));
+        let wal = PersistenceWal::new(&path);
+        wal.replay().await.unwrap();
+        let id = wal.admit(make_event("test")).await.unwrap();
+        wal.ack(id).await.unwrap();
+        wal.ack(id).await.unwrap(); // duplicate ACK
+        let replay = wal.replay().await.unwrap();
+        assert_eq!(replay.len(), 0);
+        let _ = tokio::fs::remove_file(path).await;
+    }
+
+    #[tokio::test]
+    async fn fuzz_concurrent_admit_and_replay() {
+        let path = std::env::temp_dir().join(format!("pmp-wal-conc-{}.jsonl", uuid::Uuid::new_v4()));
+        let wal = std::sync::Arc::new(PersistenceWal::new(&path));
+        wal.replay().await.unwrap();
+
+        let w1 = std::sync::Arc::clone(&wal);
+        let w2 = std::sync::Arc::clone(&wal);
+        let h1 = tokio::spawn(async move {
+            for i in 0..10 {
+                let _ = w1.admit(make_event(&format!("e{i}"))).await;
+            }
+        });
+        let h2 = tokio::spawn(async move {
+            for i in 0..10 {
+                let _ = w2.admit(make_event(&format!("f{i}"))).await;
+            }
+        });
+        let _ = tokio::join!(h1, h2);
+
+        let replay = wal.replay().await.unwrap();
+        assert_eq!(replay.len(), 20);
+        let _ = tokio::fs::remove_file(path).await;
+    }
+
+    #[tokio::test]
     async fn replay_version_mismatch_is_rejected() {
         let path =
             std::env::temp_dir().join(format!("pmp-wal-vers-{}.jsonl", uuid::Uuid::new_v4()));

@@ -1248,3 +1248,51 @@ impl Room {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::collections::{HashMap, HashSet};
+    use super::*;
+
+    #[test]
+    fn internal_state_default_is_select_chart() {
+        assert!(matches!(InternalRoomState::default(), InternalRoomState::SelectChart));
+    }
+
+    #[test]
+    fn wait_for_ready_tracks_started_users() {
+        let mut started = HashSet::new();
+        started.insert(1);
+        let state = InternalRoomState::WaitForReady { started, admin_started: false };
+        if let InternalRoomState::WaitForReady { ref started, .. } = state {
+            assert!(started.contains(&1));
+            assert!(!started.contains(&2));
+        } else {
+            panic!("expected WaitForReady");
+        }
+    }
+
+    #[test]
+    fn playing_state_accepts_aborted_users() {
+        let state = InternalRoomState::Playing {
+            results: HashMap::new(),
+            aborted: HashSet::from([42]),
+        };
+        if let InternalRoomState::Playing { ref aborted, .. } = state {
+            assert!(aborted.contains(&42));
+        } else {
+            panic!("expected Playing");
+        }
+    }
+
+    #[test]
+    fn state_transitions_roundtrip() {
+        let mut s: InternalRoomState = InternalRoomState::SelectChart;
+        s = InternalRoomState::WaitForReady { started: HashSet::from([1]), admin_started: false };
+        assert!(matches!(&s, InternalRoomState::WaitForReady { .. }));
+        s = InternalRoomState::Playing { results: HashMap::new(), aborted: HashSet::new() };
+        assert!(matches!(&s, InternalRoomState::Playing { .. }));
+        s = InternalRoomState::SelectChart;
+        assert!(matches!(&s, InternalRoomState::SelectChart));
+    }
+}
