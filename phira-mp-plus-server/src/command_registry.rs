@@ -1261,6 +1261,46 @@ pub fn runtime_v2_registry() -> CommandRegistry {
         register(&mut registry, spec);
     }
 
+    // ── config / diagnostics ──
+    for spec in [
+        CommandSpec::new("check-config", "core", "验证当前加载的配置并显示脱敏摘要。", "check-config")
+            .handler(Arc::new(|state, _args| {
+                let mut lines = vec![format!("  ◆ 配置版本: {}", state.config.config_version)];
+                lines.push(format!("  ◆ 服务端: {} v{}", env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION")));
+                lines.push(format!("  ◆ TCP 端口: {}", state.config.port));
+                lines.push(format!("  ◆ HTTP: {}:{}", state.config.http_bind_address, state.config.http_port));
+                lines.push(format!("  ◆ 数据库: {}", state.config.database_url.as_deref().unwrap_or("未配置")));
+                lines.push(format!("  ◆ 插件目录: {}", state.config.plugins_dir));
+                lines.push(format!("  ◆ 最大会话: {}", state.config.max_sessions));
+                lines.push(format!("  ◆ 最大房间: {}", state.config.max_rooms.map(|v| v.to_string()).unwrap_or("无限制".into())));
+                lines.push(format!("  ◆ 数据保留: {} 天", state.config.persistence_retention_days));
+                lines.push(format!("  ◆ profile: {:?}", state.config.profile));
+                if state.config.database_url.is_some() {
+                    let db_status = crate::internal_hooks::DB.get()
+                        .map(|db| if db.is_active() { "已连接" } else { "已断开" })
+                        .unwrap_or("不可用");
+                    lines.push(format!("  ◆ 数据库状态: {db_status}"));
+                }
+                lines
+            })),
+        CommandSpec::new("doctor", "core", "运行系统诊断检查。", "doctor")
+            .handler(Arc::new(|state, _args| {
+                let mut lines = vec![format!("  ◆ Phira-mp+ v{} Doctor", env!("CARGO_PKG_VERSION"))];
+                if let Some(db) = crate::internal_hooks::DB.get() {
+                    lines.push(format!("  {} 数据库: {}", if db.is_active() { "✓" } else { "✗" }, if db.is_active() { "已连接" } else { "已断开" }));
+                } else {
+                    lines.push("  ○ 数据库: 未配置".to_string());
+                }
+                let sessions = state.sessions.try_read().map(|s| s.len()).unwrap_or(0);
+                lines.push(format!("  ✓ 会话: {sessions} 活跃"));
+                let rooms = state.rooms.try_read().map(|r| r.len()).unwrap_or(0);
+                lines.push(format!("  ✓ 房间: {rooms} 个"));
+                lines
+            })),
+    ] {
+        register(&mut registry, spec);
+    }
+
     registry.init_completers();
     registry
 }
