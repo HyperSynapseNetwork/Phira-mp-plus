@@ -22,7 +22,7 @@ thiserror = "2"
 tokio = { workspace = true, features = ["fs", "io-util", "io-std", "process", "signal"] }
 tracing = { workspace = true }
 tracing-appender = "0.2.4"
-tracing-subscriber = { version = "0.3.22", features = ["env-filter", "json"] }
+tracing-subscriber = { version = "0.3.22", features = ["env-filter"] }
 unic-langid = { version = "0.9.6", features = ["macros"] }
 unicode-width = { workspace = true }
 sqlx = { version = "0.8", features = ["runtime-tokio", "postgres", "chrono", "json", "uuid"], optional = true }
