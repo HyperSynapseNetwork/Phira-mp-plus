@@ -1019,7 +1019,7 @@ impl PluginManager {
                 removed_any = true;
             }
             if !removed_any {
-                return Err(format!("no files found for plugin '{id}'"));
+                return Err(format!("no files found for plugin '{stable_id}'"));
             }
             Ok(())
         })
