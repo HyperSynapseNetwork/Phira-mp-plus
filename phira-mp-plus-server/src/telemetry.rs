@@ -317,6 +317,9 @@ pub struct TelemetryItem {
 
 // ── Batcher actor ────────────────────────────────────────────────────
 
+/// Shared handle for WAL ACK channel, passed to run_batcher.
+type WalAckTx = std::sync::Arc<std::sync::Mutex<Option<mpsc::Sender<uuid::Uuid>>>>;
+
 /// Actor-based telemetry batcher.
 ///
 /// Items are enqueued via [`enqueue`](Self::enqueue) and flushed
@@ -334,6 +337,9 @@ pub struct TelemetryBatcher {
     send_gate: Mutex<()>,
     closed: AtomicBool,
     stats: Arc<RwLock<TelemetryBatcherStats>>,
+    /// Channel to ACK WAL IDs after successful database commit.
+    /// Set by the PersistenceWorker after spawn.
+    wal_ack_tx: WalAckTx,
 }
 
 impl TelemetryBatcher {
@@ -349,9 +355,10 @@ impl TelemetryBatcher {
             &worker_policy,
         )));
         let worker_stats = Arc::clone(&stats);
+        let ack_tx: WalAckTx = Arc::new(std::sync::Mutex::new(None));
 
         crate::supervisor_actor::spawn_critical("telemetry-batcher", async move {
-            run_batcher(worker_policy, rx, worker_stats).await;
+            run_batcher(worker_policy, rx, worker_stats, ack_tx).await;
         });
 
         Arc::new(Self {
@@ -359,6 +366,7 @@ impl TelemetryBatcher {
             send_gate: Mutex::new(()),
             closed: AtomicBool::new(false),
             stats,
+            wal_ack_tx: Arc::clone(&ack_tx),
         })
     }
 
@@ -408,6 +416,14 @@ impl TelemetryBatcher {
     }
 
     /// Flush all items accepted before this call.
+    /// Set the WAL ACK channel. After each successful database batch commit,
+    /// the batcher sends all WAL IDs from that batch through this channel.
+    pub fn set_wal_ack_tx(&self, tx: mpsc::Sender<uuid::Uuid>) {
+        if let Ok(mut guard) = self.wal_ack_tx.lock() {
+            *guard = Some(tx);
+        }
+    }
+
     pub async fn flush(&self, timeout: Duration) -> Result<(), String> {
         let (reply, rx) = oneshot::channel();
         {
@@ -469,6 +485,7 @@ async fn run_batcher(
     policy: TelemetryBatcherPolicy,
     mut rx: mpsc::Receiver<TelemetryMessage>,
     stats: Arc<RwLock<TelemetryBatcherStats>>,
+    ack_tx: WalAckTx,
 ) {
     if !policy.enabled {
         debug!("telemetry batcher disabled; control messages remain available");
@@ -489,7 +506,7 @@ async fn run_batcher(
                         pending.push_back(item);
                         update_pending(&stats, pending.len()).await;
                         if pending.len() >= max_items {
-                            let _ = flush_pending(&policy, &mut pending, &stats, "max_items").await;
+                            let _ = flush_pending(&policy, &mut pending, &stats, "max_items", &ack_tx).await;
                         }
                     }
                     Some(TelemetryMessage::Item(item)) => {
@@ -570,6 +587,7 @@ async fn flush_pending(
     pending: &mut VecDeque<TelemetryItem>,
     stats: &Arc<RwLock<TelemetryBatcherStats>>,
     reason: &str,
+    ack_tx: &WalAckTx,
 ) -> Result<(), String> {
     if pending.is_empty() {
         update_pending(stats, 0).await;
@@ -608,6 +626,16 @@ async fn flush_pending(
             stats.write_item_rows += item_rows as u64;
             stats.last_batch_uuid = Some(batch_uuid.clone());
             stats.pending = pending.len();
+            // ACK WAL IDs after successful database commit.
+            if let Ok(ref ack_tx) = wal_ack_tx.lock() {
+                if let Some(ref tx) = *ack_tx {
+                    for item in &flushed {
+                        if let Some(wal_id) = item.wal_id {
+                            let _ = tx.try_send(wal_id);
+                        }
+                    }
+                }
+            }
             "db_flush"
         }
         Ok((false, _)) => {

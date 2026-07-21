@@ -604,6 +604,9 @@ impl PersistenceWorker {
         let (tx, mut rx) = mpsc::channel::<WorkerMessage>(capacity);
         let initial_cutover = telemetry_cutover_mode;
         let telemetry_batcher = TelemetryBatcher::spawn(telemetry_policy.clone());
+        // Wire WAL ACK channel: TelemetryBatcher will ACK WAL IDs after DB commit.
+        let (wal_ack_tx, mut wal_ack_rx) = mpsc::channel::<uuid::Uuid>(1024);
+        telemetry_batcher.set_wal_ack_tx(wal_ack_tx);
         let telemetry_cutover_mode = Arc::new(RwLock::new(initial_cutover));
         let stats = Arc::new(RwLock::new(PersistenceStats {
             capacity,
@@ -617,6 +620,19 @@ impl PersistenceWorker {
         let worker_dead_letter_path = dead_letter_path.map(PathBuf::from);
         let wal = Arc::new(PersistenceWal::new(wal_path));
         let worker_wal = Arc::clone(&wal);
+
+        // Spawn a task to receive WAL ACKs from the TelemetryBatcher.
+        let wal_ack_worker_wal = Arc::clone(&wal);
+        crate::supervisor_actor::spawn_named("persistence-wal-ack", async move {
+            use tracing::{debug, error};
+            while let Some(wal_id) = wal_ack_rx.recv().await {
+                if let Err(e) = wal_ack_worker_wal.ack(wal_id).await {
+                    error!(wal_id = %wal_id, error = %e, "WAL ACK from batcher failed");
+                } else {
+                    debug!(wal_id = %wal_id, "WAL ACK from telemetry batcher");
+                }
+            }
+        });
 
         crate::supervisor_actor::spawn_critical("persistence-worker", async move {
             // Check WAL instance consistency before replay to detect
