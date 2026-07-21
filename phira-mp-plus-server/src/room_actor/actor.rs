@@ -227,7 +227,7 @@ impl RoomActor {
 
     /// Execute a command against the actor's owned state.
     /// Returns `true` if the mailbox should stop after this command.
-    pub async fn execute_command(&mut self, command: RoomActorCommand) -> bool {
+    pub(super) async fn execute_command(&mut self, command: RoomActorCommand) -> bool {
         use super::handler::RoomCommandHandler;
         use super::context::RoomCommandContext;
         let gateway = Arc::clone(&self.state.room_commands);

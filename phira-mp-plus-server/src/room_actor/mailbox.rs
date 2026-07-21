@@ -207,6 +207,7 @@ impl RoomCommandGateway {
 
     /// Execute a command with a room reference already resolved.
     /// The context carries the room so handlers can use it directly.
+    #[allow(dead_code)]
     pub(super) async fn execute_mailbox_command_with_room(
         &self,
         state: &PlusServerState,
