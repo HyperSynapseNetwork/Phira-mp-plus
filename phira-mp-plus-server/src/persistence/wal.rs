@@ -93,6 +93,9 @@ pub struct PersistenceWal {
     io_gate: Mutex<()>,
     /// Set to true when replay succeeds; admissions are rejected until then.
     replay_succeeded: AtomicBool,
+    /// Set to true when ACK/admit operations fail due to disk or I/O errors.
+    /// Cleared when an ACK operation eventually succeeds.
+    degraded: AtomicBool,
     /// Total bytes written (approx, updated on admission/ACK).
     total_bytes: std::sync::atomic::AtomicU64,
     /// Number of truncated trailing frames detected during replay.
@@ -109,6 +112,7 @@ impl PersistenceWal {
             path: path.into(),
             io_gate: Mutex::new(()),
             replay_succeeded: AtomicBool::new(false),
+            degraded: AtomicBool::new(false),
             total_bytes: std::sync::atomic::AtomicU64::new(0),
             truncated_frames: std::sync::atomic::AtomicU64::new(0),
             admission_count: std::sync::atomic::AtomicU64::new(0),
@@ -142,6 +146,16 @@ impl PersistenceWal {
 
     pub fn replay_succeeded(&self) -> bool {
         self.replay_succeeded.load(Ordering::Acquire)
+    }
+
+    /// Mark the WAL as degraded (e.g. disk full / I/O errors during ACK).
+    pub fn set_degraded(&self, degraded: bool) {
+        self.degraded.store(degraded, Ordering::Release);
+    }
+
+    /// Whether the WAL is currently degraded due to disk or I/O errors.
+    pub fn is_degraded(&self) -> bool {
+        self.degraded.load(Ordering::Acquire)
     }
 
     async fn ensure_parent(&self) -> Result<(), String> {

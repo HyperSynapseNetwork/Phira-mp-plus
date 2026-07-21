@@ -208,30 +208,35 @@ async fn process_worker_loop(
             message
         };
         // Retry pending WAL ACKs (up to 5 per iteration).
+        // Infinite retries with exponential backoff — never discard.
         for _ in 0..5 {
             let Some((retry_id, retry_attempt)) = pending_acks.front().copied() else {
                 break;
             };
-            if retry_attempt > 10 {
-                crate::supervisor_actor::report_critical_failure(
-                    "persistence-wal-ack",
-                    format!("ACK retry exhausted for wal_id={retry_id} after 10 attempts; WAL entry will not be removed"),
-                ).await;
-                pending_acks.pop_front();
-                continue;
-            }
             match worker_wal.ack(retry_id).await {
                 Ok(()) => {
+                    worker_wal.set_degraded(false);
                     debug!(wal_id = %retry_id, "ACK retry succeeded");
                     pending_acks.pop_front();
                 }
                 Err(e) => {
-                    trace!(wal_id = %retry_id, attempt = %retry_attempt, error = %e, "ACK retry failed");
+                    worker_wal.set_degraded(true);
+                    trace!(wal_id = %retry_id, attempt = %retry_attempt, error = %e, "ACK retry failed, will retry with backoff");
                     // Move to back with incremented attempt count
                     if let Some(mut entry) = pending_acks.pop_front() {
                         entry.1 = entry.1.saturating_add(1);
                         pending_acks.push_back(entry);
                     }
+                    // Exponential backoff: 2s, 4s, 8s, ..., max 60s
+                    let delay_secs = match retry_attempt {
+                        0 => 2,
+                        1 => 4,
+                        2 => 8,
+                        3 => 16,
+                        4 => 32,
+                        _ => 60,
+                    };
+                    tokio::time::sleep(Duration::from_secs(delay_secs)).await;
                 }
             }
         }
@@ -260,6 +265,13 @@ async fn process_worker_loop(
                 drain_pending_acks(worker_wal, &mut pending_acks).await;
                 let result = worker_telemetry.shutdown(timeout).await;
                 let ack_pending = pending_acks.len();
+                // Merge telemetry shutdown result and pending ACK result.
+                // If ACKs remain pending, return error instead of Ok.
+                let combined = if ack_pending > 0 {
+                    Err(format!("{ack_pending} WAL ACKs still pending after drain"))
+                } else {
+                    result
+                };
                 let should_stop = ack_pending == 0 && result.is_ok();
                 if let Err(error) = &result {
                     warn!(%error, "telemetry shutdown failed; persistence worker remains active");
@@ -267,7 +279,7 @@ async fn process_worker_loop(
                 if ack_pending > 0 {
                     warn!(count = ack_pending, "WAL ACKs still pending during shutdown");
                 }
-                let _ = reply.send(result);
+                let _ = reply.send(combined);
                 if should_stop {
                     break;
                 }
@@ -462,8 +474,11 @@ async fn process_worker_loop(
         // TelemetryStaged / DeadLetterFailed / SkippedNoDB → retain in WAL
         if durable {
             if let Err(error) = worker_wal.ack(wal_id).await {
+                worker_wal.set_degraded(true);
                 crate::supervisor_actor::report_critical_failure("persistence-wal-ack", error).await;
                 pending_acks.push_back((wal_id, 0));
+            } else {
+                worker_wal.set_degraded(false);
             }
         } else {
             tracing::warn!(
@@ -483,7 +498,8 @@ async fn process_worker_loop(
     }
 }
 
-/// Drain the pending ACK queue, retrying each entry until success or exhausted.
+/// Drain the pending ACK queue, retrying each entry until success.
+/// Does not discard entries — failed ACKs remain in the queue for later retry.
 async fn drain_pending_acks(
     worker_wal: &Arc<PersistenceWal>,
     pending_acks: &mut std::collections::VecDeque<(uuid::Uuid, u32)>,
@@ -491,15 +507,15 @@ async fn drain_pending_acks(
     use tracing::{debug, warn};
     while let Some((id, attempt)) = pending_acks.pop_front() {
         match worker_wal.ack(id).await {
-            Ok(()) => debug!(wal_id = %id, "pending ACK drained"),
+            Ok(()) => {
+                worker_wal.set_degraded(false);
+                debug!(wal_id = %id, "pending ACK drained");
+            }
             Err(e) => {
-                if attempt > 10 {
-                    warn!(wal_id = %id, "pending ACK exhausted during drain");
-                } else {
-                    warn!(wal_id = %id, error = %e, "pending ACK drain failed, will retry");
-                    pending_acks.push_back((id, attempt + 1));
-                    break; // stop draining on failure, retry next iteration
-                }
+                worker_wal.set_degraded(true);
+                warn!(wal_id = %id, error = %e, "pending ACK drain failed, will retry later");
+                pending_acks.push_back((id, attempt + 1));
+                break; // stop draining on failure, retry next iteration
             }
         }
     }
@@ -610,7 +626,7 @@ impl PersistenceWorker {
 
         // Spawn a task to receive WAL ACKs from the TelemetryBatcher.
         let wal_ack_worker_wal = Arc::clone(&wal);
-        crate::supervisor_actor::spawn_named("persistence-wal-ack", async move {
+        crate::supervisor_actor::spawn_critical("persistence-wal-ack", async move {
             use tracing::{debug, error};
             while let Some(wal_id) = wal_ack_rx.recv().await {
                 if let Err(e) = wal_ack_worker_wal.ack(wal_id).await {
@@ -896,7 +912,9 @@ impl PersistenceWorker {
     }
 
     pub async fn is_healthy(&self) -> bool {
-        self.wal.replay_succeeded() && !self.closed.load(Ordering::Acquire)
+        self.wal.replay_succeeded()
+            && !self.wal.is_degraded()
+            && !self.closed.load(Ordering::Acquire)
     }
 
     pub async fn telemetry_should_write_direct(&self) -> bool {
