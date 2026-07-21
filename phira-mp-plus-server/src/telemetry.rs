@@ -543,7 +543,7 @@ async fn run_batcher(
                 }
             }
             _ = ticker.tick() => {
-                let _ = flush_pending(&policy, &mut pending, &stats, "interval").await;
+                let _ = flush_pending(&policy, &mut pending, &stats, "interval", &ack_tx).await;
             }
         }
     }
@@ -628,8 +628,8 @@ async fn flush_pending(
             stats.last_batch_uuid = Some(batch_uuid.clone());
             stats.pending = pending.len();
             // ACK WAL IDs after successful database commit.
-            if let Ok(ref ack_tx_guard) = ack_tx.lock() {
-                if let Some(ref tx) = *ack_tx_guard {
+            if let Ok(ack_tx_guard) = ack_tx.lock() {
+                if let Some(tx) = ack_tx_guard.as_ref() {
                     for item in &flushed {
                         if let Some(wal_id) = item.wal_id {
                             let _ = tx.try_send(wal_id);
