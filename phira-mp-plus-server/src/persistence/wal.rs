@@ -315,6 +315,9 @@ impl PersistenceWal {
                         self.path.display()
                     ));
                 }
+                // First start with no WAL — write the marker so future
+                // tampering (deletion/zeroing) is detected.
+                self.write_instance_marker().await?;
                 self.replay_succeeded.store(true, Ordering::Release);
                 return Ok(Vec::new());
             }
