@@ -117,6 +117,26 @@ impl PersistenceWal {
         &self.path
     }
 
+    /// Normalize a path by resolving `.` and `..` components without requiring
+    /// the file to exist (unlike `canonicalize`).
+    fn normalize_path(path: &Path) -> std::path::PathBuf {
+        use std::path::Component;
+        let mut components = std::path::PathBuf::new();
+        for component in path.components() {
+            match component {
+                Component::Normal(_) => components.push(component),
+                Component::CurDir => {}  // skip standalone "."
+                Component::ParentDir => {
+                    if !components.as_os_str().is_empty() {
+                        components.pop();
+                    }
+                }
+                other => components.push(other.as_os_str()),
+            }
+        }
+        components
+    }
+
     pub fn replay_succeeded(&self) -> bool {
         self.replay_succeeded.load(Ordering::Acquire)
     }
@@ -155,16 +175,14 @@ impl PersistenceWal {
     /// to the same file.
     pub fn validate_paths_not_equal(dead_letter: Option<&Path>, wal: &Path) -> Result<(), String> {
         if let Some(dl) = dead_letter {
-            let canonical_wal = wal
-                .canonicalize()
-                .map_err(|e| format!("canonicalize WAL path {}: {e}", wal.display()))?;
-            let canonical_dl = dl
-                .canonicalize()
-                .map_err(|e| format!("canonicalize dead-letter path {}: {e}", dl.display()))?;
-            if canonical_wal == canonical_dl {
+            // Normalize both paths: resolve . and .. components without requiring
+            // the file to exist (canonicalize fails on non-existent paths).
+            let normalized_wal = PersistenceWal::normalize_path(wal);
+            let normalized_dl = PersistenceWal::normalize_path(dl);
+            if normalized_wal == normalized_dl {
                 return Err(format!(
                     "WAL path and dead-letter path are the same file: {}",
-                    canonical_wal.display()
+                    normalized_wal.display()
                 ));
             }
         }
