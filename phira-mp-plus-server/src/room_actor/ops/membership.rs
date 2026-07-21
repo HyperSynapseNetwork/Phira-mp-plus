@@ -188,7 +188,7 @@ impl RoomCommandGateway {
         monitor: bool,
         room_override: Option<Arc<crate::room::Room>>,
     ) -> Result<RoomCommandPayload, String> {
-        let (_rid, room) = self.resolve_room(state, room_id, room_override).await?;
+        let (rid, room) = self.resolve_room(state, room_id, room_override).await?;
 
         // Check capacity
         let current_count = room.users().await.len();

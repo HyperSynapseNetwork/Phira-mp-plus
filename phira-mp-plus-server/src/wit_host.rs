@@ -8,7 +8,6 @@
 //! The generated trait impls require `wit-bindgen` (default feature).
 
 use phira_mp_plus_server_api as api;
-use sha2::Sha256;
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 

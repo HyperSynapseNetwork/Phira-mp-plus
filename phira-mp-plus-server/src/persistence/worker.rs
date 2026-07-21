@@ -12,15 +12,15 @@
 
 use crate::persistence::message::PersistenceEvent;
 use crate::persistence::stats::{
-    record_dead_letter_failed, record_dead_letter_written, record_dropped, record_processed,
-    record_queued, record_telemetry_cutover_observation, PersistenceStats,
-    TelemetryCutoverObservation,
+    record_dead_letter_failed, record_dead_letter_written, record_dropped, record_queued,
+    record_telemetry_cutover_observation, PersistenceStats, TelemetryCutoverObservation,
 };
 use crate::persistence::wal::PersistenceWal;
 use crate::telemetry_batcher::{
     TelemetryBatcher, TelemetryBatcherPolicy, TelemetryBatcherStats, TelemetryCutoverMode,
 };
 use serde_json::json;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -186,11 +186,9 @@ async fn process_worker_loop(
     use crate::persistence::stats::{
         record_benchmark_report_persist_request, record_benchmark_report_persist_skipped,
         record_db_dispatch_failure, record_db_dispatch_skipped_no_database,
-        record_db_dispatch_success, record_dead_letter_failed, record_dead_letter_written,
-        record_dropped, record_processed, record_production_persist_request,
+        record_db_dispatch_success, record_processed, record_production_persist_request,
         record_production_persist_skipped, record_production_telemetry_stage_failed,
-        record_production_telemetry_staged, record_queued, record_simulation_persist_request,
-        record_telemetry_cutover_observation, PersistenceStats, TelemetryCutoverObservation,
+        record_production_telemetry_staged, record_simulation_persist_request,
     };
     use tracing::{debug, trace, warn};
 
