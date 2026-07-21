@@ -143,12 +143,10 @@ Phira-mp-plus/
 ├── README.md
 ├── server_config.yml                # YAML 配置文件
 ├── wit/                             # WIT 接口定义
-│   └── phira-plugin.wit             #   Plugin ABI v2 WIT (12 interfaces, 53 methods)
+│   └── phira-plugin.wit             #   Plugin ABI v2 WIT (16 interfaces)
 │
-├── data/                            # 运行时数据
+├── data/                            # 运行时数据目录
 │   ├── extensions.json              #   插件扩展数据
-│   ├── rounds/                      #   轮次 Touches/Judges 记录
-│   ├── persistence-dead-letter.jsonl #   数据库重试耗尽后的失败事件保全
 │   └── plugins/                     #   插件私有数据
 ├── log/                             # 运行日志（每小时轮转）
 │
@@ -170,14 +168,15 @@ Phira-mp-plus/
 │   └── src/
 │       ├── main.rs                  #   进程入口 & 生命周期
 │       ├── lib.rs                   #   模块导出
-│       ├── server/                   #   Server 模块 (分解自原 server.rs)
+│       ├── server/                   #   Server 模块
 │       │   ├── mod.rs                #    模块声明 + 公共 re-export
-│       │   ├── config.rs             #    PlusConfig / LiveConfig / RuntimeV2Config / Chart / Record
-│       │   ├── benchmark.rs          #    BenchRequest / HybridBenchmarkConfig / token helpers
-│       │   ├── events.rs             #    事件订阅者 (runtime / plugin observer)
-│       │   ├── snapshot.rs           #    RoomSnapshot / UserSnapshot / build_snapshot
+│       │   ├── config.rs             #    PlusConfig / LiveConfig
+│       │   ├── benchmark.rs          #    BenchRequest / token helpers
+│       │   ├── events.rs             #    事件订阅者
+│       │   ├── snapshot.rs           #    RoomSnapshot / UserSnapshot
 │       │   ├── state.rs              #    PlusServerState 字段定义
-│       │   └── orig.rs               #    遗留代码 (逐步分解中)
+│       │   ├── query.rs              #    ServerStateQuery dispatch
+│       │   └── orig.rs               #    遗留代码
 │       ├── server_query.rs          #   Admin ID 等查询函数
 │       ├── cli.rs                   #   CLI 生命周期、输入循环
 │       ├── cli/dispatch.rs          #   顶层命令路由
@@ -200,24 +199,34 @@ Phira-mp-plus/
 │       ├── session_actor.rs         #   Session Actor mailbox
 │       ├── supervisor_actor.rs      #   后台任务注册、退出检测与有序关闭
 │       ├── room.rs                  #   房间状态机 (InternalRoomState / Room)
+│       ├── backup.rs               #   备份与恢复
+│       ├── crypto.rs               #   HMAC 签名 (sha2)
+│       ├── federation.rs           #   联邦网络 Actor
+│       ├── play_history.rs         #   游玩历史
+│       ├── rbac.rs                 #   基于角色的访问控制
+│       ├── telemetry.rs            #   遥测类型 & CutoverMode
 │       ├── room_actor/              #   Room Actor 命令网关
-│       │   ├── mod.rs,mailbox.rs,command.rs,handler.rs,context.rs,result.rs,audit.rs
-│       │   └── ops/                 #   操作: control.rs, membership.rs, settings.rs
+│       │   ├── mod.rs, actor.rs, mailbox.rs, command.rs, handler.rs
+│       │   └── ops/                 #   操作: mod.rs, control.rs, membership.rs, session.rs, settings.rs
 │       ├── idle.rs                  #   空载模式 (IdleConfig / IdleMonitor)
 │       ├── persistence/             #   持久化 Worker 管道
-│       │   ├── mod.rs               #   入口 & pipeline
-│       │   └── admin/benchmark/diagnostics/events/message/mirror/queries/rounds/schema
+│       │   ├── mod.rs               #   入口
+│       │   ├── pipeline.rs          #   写入管道遍历
+│       │   ├── wal.rs               #   Write-Ahead Log
+│       │   ├── worker.rs            #   PersistenceWorker 主循环
+│       │   ├── stats.rs             #   写入统计
+│       │   ├── message.rs           #   PersistenceEvent 类型
+│       │   └── admin/benchmark/diagnostics/events/mirror/queries/rounds/schema/simulation/telemetry/users
 │       ├── proxy_protocol.rs        #   可信 X-Forwarded-For 兼容监听（非 PROXY v1/v2）
 │       ├── telemetry_batcher.rs     #   TelemetryBatcher
-│       ├── telemetry_batcher_test.rs#   Batcher 测试
-│       ├── round_store.rs           #   轮次数据存储 (DB优先, 文件回退)
+│       ├── round_store.rs           #   轮次数据存储
 │       ├── internal_hooks.rs        #   内部静态注册 (欢迎语/playtime/DB)
 │       ├── plugin.rs                #   插件管理器 (PluginManager / PluginHost)
 │       ├── plugin_abi/              #   Plugin ABI 边界
 │       │   ├── mod.rs               #   导出 / wit_abi bindgen
 │       │   └── plan.rs              #   ABI 版本常量 / MIGRATION_PHASE
 │       ├── plugin_http/             #   HTTP 动态路由
-│       │   ├── mod.rs               #   PluginHttpServer / SSE handler
+│       │   ├── mod.rs               #   模块入口
 │       │   ├── router.rs            #   DynamicRouter (支持 :param)
 │       │   ├── sse.rs               #   SseHub / EventStream
 │       │   └── websocket.rs         #   WebSocket handler
@@ -228,11 +237,9 @@ Phira-mp-plus/
 │       ├── ban.rs                   #   封禁系统
 │       ├── phira_client.rs          #   Phira HTTP RetryClient
 │       ├── rate_limiter.rs          #   速率限制 (滑动窗口)
-│       ├── rate_limiter_test.rs
 │       ├── event_bus.rs             #   EventBus 运行时脊椎
 │       ├── simulation.rs            #   Simulation 管理器
 │       ├── simulation_realistic.rs  #   Realistic 场景
-│       ├── simulation_realistic_test.rs
 │       ├── actor_runtime.rs         #   Actor 边界蓝图
 │       ├── runtime_diagnostics.rs   #   Runtime 诊断常量
 │       ├── benchmark_report.rs      #   Benchmark report 类型
@@ -244,7 +251,6 @@ Phira-mp-plus/
 │       └── terminal.rs              #   终端检测
 │   └── tests/                       # 集成 & 合约测试
 │       ├── admin_command_contracts.rs
-│       ├── cli_command_contracts.rs
 │       ├── command_surface_contracts.rs
 │       ├── docs_contracts.rs
 │       ├── persistence_contracts.rs
@@ -272,29 +278,6 @@ Phira-mp-plus/
 │   ├── phira-mp-common/           #   网络协议
 │   │   └── src/                   #   ClientCommand / ServerCommand / Stream 帧协议
 │   └── phira-mp-macros/           #   #[derive(BinaryData)] 过程宏
-│
-├── phira-mp/                    # 上游 phira-mp 子模块（协议层与原始服务端）
-│   ├── phira-mp-common/         #   网络协议: 二进制编码 (BinaryData trait)、
-│   │   └── src/                 #     命令定义 (ClientCommand / ServerCommand)、
-│   │       ├── lib.rs           #     Stream 帧协议、RoomId / RoomState / 消息类型
-│   │       ├── command.rs
-│   │       └── bin.rs           #     BinaryReader / BinaryWriter (LEB128, 小端)
-│   └── phira-mp-macros/         #   #[derive(BinaryData)] 过程宏
-│
-├── wit/                         # WIT 定义
-│   └── phira-plugin.wit         #   Plugin ABI v2 WIT / Component Model
-│
-├── docs/                        # 文档
-│   ├── api.md                   #   HTTP API 文档
-│   ├── benchmark-real.md        #   Real Benchmark 使用说明
-│   ├── cli.md                   #   CLI 命令参考
-│   ├── configuration.md         #   配置文件与运行时参数说明
-│   ├── migrate-from-hsnphira.md #   从 HSN Phira 迁移指南
-│   ├── plugin-config.md         #   插件配置说明
-│   ├── plugin-dev.md            #   WASM 插件开发指南
-│   ├── runtime-v2-actor-roadmap.md # Actor 迁移路线图
-│   ├── simulation.md            #   Simulation 说明
-│   └── wit-abi.md               #   WIT ABI 说明
 ```
 
 ## 终端兼容性
