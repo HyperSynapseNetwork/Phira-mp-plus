@@ -127,6 +127,11 @@ impl RoomState {
             created_at,
         }
     }
+
+    /// 设置房间锁定状态。
+    pub fn set_locked(&mut self, locked: bool) {
+        self.control.locked = locked;
+    }
 }
 
 /// Full actor-owned room state (migration target).
@@ -217,10 +222,13 @@ impl RoomActor {
     pub async fn execute_command(&mut self, command: RoomActorCommand) -> bool {
         use super::handler::RoomCommandHandler;
         use super::context::RoomCommandContext;
+        let gateway = Arc::clone(&self.state.room_commands);
+        let state = Arc::clone(&self.state);
+        let room = self.room.clone();
         let ctx = RoomCommandContext::with_actor(
-            &self.state.room_commands,
-            &self.state,
-            self.room.clone(),
+            gateway.as_ref(),
+            state.as_ref(),
+            room,
             self,
         );
         let result = RoomCommandHandler::execute_with_actor(ctx, &command).await;

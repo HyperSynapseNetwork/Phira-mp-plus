@@ -265,6 +265,7 @@ async fn process_worker_loop(
                 drain_pending_acks(worker_wal, &mut pending_acks).await;
                 let result = worker_telemetry.shutdown(timeout).await;
                 let ack_pending = pending_acks.len();
+                let should_stop = ack_pending == 0 && result.is_ok();
                 // Merge telemetry shutdown result and pending ACK result.
                 // If ACKs remain pending, return error instead of Ok.
                 let combined = if ack_pending > 0 {
@@ -272,7 +273,6 @@ async fn process_worker_loop(
                 } else {
                     result
                 };
-                let should_stop = ack_pending == 0 && result.is_ok();
                 if let Err(error) = &result {
                     warn!(%error, "telemetry shutdown failed; persistence worker remains active");
                 }

@@ -287,9 +287,10 @@ fn build_client_tls_config(tls_opts: &FederationTlsOpts) -> Result<Arc<ClientCon
 }
 
 /// Extract peer identity from TLS session: (cert_sha256, ca_sha256).
-fn peer_identity(
-    tls_stream: &tokio_rustls::TlsStream<TcpStream>,
-) -> (String, String) {
+fn peer_identity<S>(tls_stream: &tokio_rustls::TlsStream<S>) -> (String, String)
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite,
+{
     let peer_certs = tls_stream.get_ref().1.peer_certificates().unwrap_or_default();
     let cert_id = peer_certs.first().map(|c| {
         let h = Sha256::digest(&c.0);

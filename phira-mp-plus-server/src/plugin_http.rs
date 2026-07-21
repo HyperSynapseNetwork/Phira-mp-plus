@@ -211,12 +211,12 @@ async fn health_ready(Extension(state): Extension<Arc<HttpAppState>>) -> Respons
     }
 
     if issues.is_empty() {
-        (StatusCode::OK, serde_json::json!({"status": "ready"})).into_response()
+        (StatusCode::OK, Json(serde_json::json!({"status": "ready"}))).into_response()
     } else {
-        (StatusCode::SERVICE_UNAVAILABLE, serde_json::json!({
+        (StatusCode::SERVICE_UNAVAILABLE, Json(serde_json::json!({
             "status": "not ready",
             "issues": issues,
-        }))
+        })))
         .into_response()
     }
 }
