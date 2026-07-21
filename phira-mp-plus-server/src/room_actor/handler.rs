@@ -310,7 +310,7 @@ impl RoomCommandHandler {
                 if result.is_ok() {
                     if let Some(actor) = ctx.actor.as_mut() {
                         if let Some(ref room) = room {
-                            *actor.actor_state = Some(
+                            actor.actor_state = Some(
                                 crate::room_actor::actor::RoomActorState::from_room(room).await,
                             );
                         }

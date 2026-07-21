@@ -26,7 +26,7 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::io::AsyncWriteExt;
 use tokio::sync::{mpsc, oneshot, Mutex, RwLock};
-use tracing::{info, warn};
+use tracing::info;
 
 static DEAD_LETTER_FAILURE_REPORTED: AtomicBool = AtomicBool::new(false);
 
@@ -273,7 +273,7 @@ async fn process_worker_loop(
                 } else {
                     result
                 };
-                if let Err(error) = &result {
+                if let Err(error) = &combined {
                     warn!(%error, "telemetry shutdown failed; persistence worker remains active");
                 }
                 if ack_pending > 0 {
