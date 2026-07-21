@@ -19,7 +19,7 @@ serde = { version = "1.0.228", features = ["derive", "rc"] }
 serde_json = "1.0"
 serde_yaml = "0.9"
 thiserror = "2"
-rustls = { version = "0.23", features = ["ring", "dangerous_configuration"] }
+rustls = { version = "0.23", features = ["ring"] }
 tokio-rustls = "0.26"
 webpki-roots = "1"
 rustls-pemfile = "2"
