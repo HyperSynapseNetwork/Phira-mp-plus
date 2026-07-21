@@ -1,9 +1,10 @@
 //! Room Actor — 每个房间一个 actor，持有房间状态快照。
 //!
-//! 当前作为读快照+写派发层：actor 持有 `RoomSnapshot` 和 `Room` 引用，
-//! 快照在每次命令执行后更新。外部代码通过 gateway 获取快照，不再直接读 room fields。
+//! 迁移中：actor 正从 `RoomSnapshot` + `Room` 引用迁移到完整
+//! `RoomActorState` 所有权。当前 actor 仍通过 `Room` 对象读取状态，
+//! 但新代码应优先使用 `self.actor_state`。
 
-use crate::room::Room;
+use crate::room::{InternalRoomState, Room};
 use crate::server::PlusServerState;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -39,20 +40,63 @@ impl RoomSnapshot {
     }
 }
 
+/// Full actor-owned room state (migration target).
+/// All room data lives here, not in the shared Room object.
+#[derive(Debug, Clone)]
+pub struct RoomActorState {
+    pub room_id: String,
+    pub room_uuid: String,
+    pub control: crate::room::RoomControlSnapshot,
+    pub lifecycle: InternalRoomState,
+    pub users: Vec<i32>,
+    pub monitors: Vec<i32>,
+    pub chart: Option<i32>,
+    pub current_round_id: Option<uuid::Uuid>,
+    pub live: bool,
+    pub created_at: i64,
+}
+
+impl RoomActorState {
+    /// Snapshot the current Room state into an actor-owned copy.
+    /// During migration, this is called after each command to sync
+    /// from the shared Room into the actor's local state.
+    pub async fn from_room(room: &Room) -> Self {
+        let control = room.control_snapshot();
+        let state = room.state.read().await;
+        Self {
+            room_id: room.id.to_string(),
+            room_uuid: room.uuid.to_string(),
+            control,
+            lifecycle: state.clone(),
+            users: room.users().await.iter().map(|u| u.id).collect(),
+            monitors: room.monitors().await.iter().map(|u| u.id).collect(),
+            chart: room.chart.read().await.as_ref().map(|c| c.id),
+            current_round_id: *room.current_round_id.read().await,
+            live: room.is_live(),
+            created_at: room.created_at,
+        }
+    }
+}
+
 /// Room Actor — 每个房间一个，持有状态并处理命令。
 pub struct RoomActor {
     room: Arc<Room>,
     pub(super) state: Arc<PlusServerState>,
     latest_snapshot: RoomSnapshot,
+    /// Actor-owned state mirror. During migration, populated from Room
+    /// and updated by commands. Eventually replaces Room entirely.
+    pub actor_state: Option<RoomActorState>,
 }
 
 impl RoomActor {
     pub async fn new(room: Arc<Room>, state: Arc<PlusServerState>) -> Self {
         let snapshot = RoomSnapshot::from_room(&room).await;
+        let actor_state = Some(RoomActorState::from_room(&room).await);
         Self {
             room,
             state,
             latest_snapshot: snapshot,
+            actor_state,
         }
     }
 
@@ -64,8 +108,9 @@ impl RoomActor {
         &self.latest_snapshot
     }
 
-    /// 刷新快照（命令执行后调用）。
+    /// 刷新快照和 actor 状态（命令执行后调用）。
     pub async fn refresh_snapshot(&mut self) {
         self.latest_snapshot = RoomSnapshot::from_room(&self.room).await;
+        self.actor_state = Some(RoomActorState::from_room(&self.room).await);
     }
 }
