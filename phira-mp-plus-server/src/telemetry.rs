@@ -302,6 +302,9 @@ impl TelemetryKind {
 #[derive(Debug, Clone)]
 pub struct TelemetryItem {
     pub event_id: String,
+    /// WAL admission ID for ACK-after-commit tracking.
+    /// Set by the caller when the event was admitted to WAL.
+    pub wal_id: Option<uuid::Uuid>,
     pub kind: TelemetryKind,
     pub room_id: Option<String>,
     pub round_id: Option<String>,

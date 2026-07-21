@@ -182,6 +182,7 @@ pub async fn stage_production_telemetry_if_needed(
                 .filter(|value| !value.is_empty())
                 .map(ToString::to_string)
                 .unwrap_or_else(|| uuid::Uuid::new_v4().to_string()),
+            wal_id: None,
             kind: crate::telemetry::TelemetryKind::Touch,
             room_id: extract_room_id(payload),
             round_id: Some(round_id.clone()),
@@ -210,6 +211,7 @@ pub async fn stage_production_telemetry_if_needed(
                 .filter(|value| !value.is_empty())
                 .map(ToString::to_string)
                 .unwrap_or_else(|| uuid::Uuid::new_v4().to_string()),
+            wal_id: None,
             kind: crate::telemetry::TelemetryKind::Judge,
             room_id: extract_room_id(payload),
             round_id: Some(round_id.clone()),
