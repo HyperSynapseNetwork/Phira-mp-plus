@@ -20,7 +20,7 @@
 - **一致房间控制面** — host/lock/cycle/hidden/endpoint/容量等控制字段共享同一快照和 generation。成员、谱面与轮次的完整 Actor ownership 仍在迁移中
 - **慢消费者隔离** — 会话发送采用有界队列和非阻塞路径；网络读取与业务处理通过有界命令队列解耦
 - **PMP 内部接口** — 保留房间信息 HTTP、SSE、WebSocket 和插件动态路由，供 PPB/受控网络调用，不承担公共边缘安全职责
-- **联邦网络（Experimental）** — 基于 TCP+TLS 的跨 PMP 实例通信，默认关闭且仅限受控网络使用；CA 身份验证、连接限额和证书轮换等生产安全特性尚未完成
+- **插件 TCP/TLS 连接 API（Experimental）** — 供 WASM 插件通过句柄建立和管理 TLS 连接；默认关闭，CA 验证和连接限额等尚未完成
 - **jemalloc 分配器** — Linux 下使用 jemalloc 替代 musl malloc，降低长期运行中的 RSS 膨胀风险
 
 ## 文档

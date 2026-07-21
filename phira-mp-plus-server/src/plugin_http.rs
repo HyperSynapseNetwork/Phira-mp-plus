@@ -180,6 +180,47 @@ pub(super) struct HttpAppState {
     events: Arc<SseHub>,
     plugin_manager: Arc<PluginManager>,
     sse_streams: Arc<RwLock<HashMap<String, SseStreamConfig>>>,
+    /// Server state for health checks and diagnostics.
+    server_state: Arc<PlusServerState>,
+}
+
+/// GET /health/live — lightweight process aliveness check.
+async fn health_live() -> Response {
+    (StatusCode::OK, "live").into_response()
+}
+
+/// GET /health/ready — true readiness check with dependency verification.
+async fn health_ready(Extension(state): Extension<Arc<HttpAppState>>) -> Response {
+    let mut issues: Vec<String> = Vec::new();
+
+    // Check WAL replay succeeded
+    let wal_ok = state.server_state.persistence_worker.wal.replay_succeeded();
+    if !wal_ok {
+        issues.push("WAL replay has not succeeded".to_string());
+    }
+
+    // Check Supervisor not degraded
+    let degraded = crate::supervisor_actor::is_degraded();
+    if degraded {
+        issues.push("supervisor is degraded".to_string());
+    }
+
+    // Check DB available (if configured)
+    let db_active = crate::internal_hooks::DB.get().map(|db| db.is_active()).unwrap_or(false);
+    let has_config = state.server_state.config.database_url.is_some();
+    if has_config && !db_active {
+        issues.push("database is not active".to_string());
+    }
+
+    if issues.is_empty() {
+        (StatusCode::OK, serde_json::json!({"status": "ready"})).into_response()
+    } else {
+        (StatusCode::SERVICE_UNAVAILABLE, serde_json::json!({
+            "status": "not ready",
+            "issues": issues,
+        }))
+        .into_response()
+    }
 }
 
 async fn general_sse_handler(Extension(state): Extension<Arc<HttpAppState>>) -> Response {

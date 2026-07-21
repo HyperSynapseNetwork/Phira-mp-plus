@@ -1,6 +1,8 @@
-//! Federation actor — TCP/TLS 联邦网络传输实现。
+//! TCP/TLS 连接句柄管理 — 为 WASM 插件提供出站/入站 TLS 连接。
 //!
-//! Host 提供基于 tokio-rustls 的真实 TCP+TLS 传输。
+//! 不涉及 PMP 实例间互通，仅为插件提供通过 WIT host API
+//! 控制 TCP+TLS 连接句柄的机制。
+//!
 //! connect   → TCP 连接 + TLS 客户端握手 + 双向读写循环
 //! listen    → TCP 监听 + TLS 服务端握手 + 按连接读写循环
 //! send      → 通过共享连接注册表写入对应 TLS 流
