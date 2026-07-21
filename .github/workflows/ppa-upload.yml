@@ -28,7 +28,10 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq devscripts dpkg-dev
-          dpkg-buildpackage -S -d -nc
+          dpkg-buildpackage -S -d -nc --no-sign
+      - name: Sign source package
+        run: |
+          DEBEMAIL="releases@phira-mp-plus.dev" debsign -k"releases@phira-mp-plus.dev" ../phira-mp-plus-server_*.source.changes
       - name: Upload to PPA
         run: |
           sudo apt-get install -y -qq dput
