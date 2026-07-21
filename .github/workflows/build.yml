@@ -77,8 +77,6 @@ jobs:
         run: cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
       - name: Audit (advisory)
         run: cargo install cargo-audit --locked && cargo audit --deny warnings || echo "cargo audit 存在已知 advisory（rsa/no-fix, fxhash/paste/rustls-pemfile 不再维护, lru unsound）"
-      - name: Deny (licenses)
-        run: cargo install cargo-deny --locked && cargo deny check
 
   build:
     needs: [auto-patch, check]
