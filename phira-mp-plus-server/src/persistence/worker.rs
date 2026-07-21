@@ -722,6 +722,7 @@ impl PersistenceWorker {
         // Enqueue to worker via try_send (synchronous, no cancellation window).
         // If the channel is full or closed, the event stays in WAL and will be
         // replayed on next startup (crash recovery).
+        let event_for_err = event.clone();
         match self.tx.try_send(WorkerMessage::Event { wal_id, event }) {
             Ok(()) => {
                 record_queued(&self.stats, kind, simulation, summary).await;
@@ -730,14 +731,12 @@ impl PersistenceWorker {
             Err(mpsc::error::TrySendError::Full(_)) => {
                 warn!("persistence worker queue full; event admitted to WAL but not queued (will replay on restart)");
                 record_queued(&self.stats, kind, simulation, summary).await;
-                // Return Ok even though we didn't queue — WAL will replay it.
                 Ok(())
             }
             Err(mpsc::error::TrySendError::Closed(_)) => {
                 warn!("persistence worker queue closed after WAL admit; event will replay on restart");
-                Err(event)
+                Err(event_for_err)
             }
-            Err(_) => unreachable!("enqueue only sends persistence events"),
         }
     }
 

@@ -423,9 +423,7 @@ impl PersistenceWal {
         let wal_exists = tokio::fs::try_exists(&self.path).await.unwrap_or(false);
         if !wal_exists {
             return Err(format!(
-                "WAL instance marker exists at {} but WAL file {} is missing. "
-                    + "This may indicate accidental deletion or volume misconfiguration. "
-                    + "Remove the marker file manually to reinitialize.",
+                "WAL instance marker exists at {} but WAL file {} is missing. Remove the marker file manually to reinitialize.",
                 marker_path.display(),
                 self.path.display()
             ));
@@ -434,8 +432,7 @@ impl PersistenceWal {
             .map_err(|e| format!("stat WAL: {e}"))?;
         if metadata.len() == 0 {
             return Err(format!(
-                "WAL instance marker exists but WAL file {} is empty. "
-                    + "This may indicate file corruption or truncation.",
+                "WAL instance marker exists but WAL file {} is empty (corruption or truncation).",
                 self.path.display()
             ));
         }

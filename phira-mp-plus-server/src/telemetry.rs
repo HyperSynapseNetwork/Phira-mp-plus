@@ -356,6 +356,7 @@ impl TelemetryBatcher {
         )));
         let worker_stats = Arc::clone(&stats);
         let ack_tx: WalAckTx = Arc::new(std::sync::Mutex::new(None));
+        let batcher_ack_tx = Arc::clone(&ack_tx);
 
         crate::supervisor_actor::spawn_critical("telemetry-batcher", async move {
             run_batcher(worker_policy, rx, worker_stats, ack_tx).await;
@@ -366,7 +367,7 @@ impl TelemetryBatcher {
             send_gate: Mutex::new(()),
             closed: AtomicBool::new(false),
             stats,
-            wal_ack_tx: Arc::clone(&ack_tx),
+            wal_ack_tx: batcher_ack_tx,
         })
     }
 
@@ -524,11 +525,11 @@ async fn run_batcher(
                         );
                     }
                     Some(TelemetryMessage::Flush(reply)) => {
-                        let result = flush_pending(&policy, &mut pending, &stats, "explicit_flush").await;
+                        let result = flush_pending(&policy, &mut pending, &stats, "explicit_flush", &ack_tx).await;
                         let _ = reply.send(result);
                     }
                     Some(TelemetryMessage::Shutdown(reply)) => {
-                        let result = flush_pending(&policy, &mut pending, &stats, "shutdown").await;
+                        let result = flush_pending(&policy, &mut pending, &stats, "shutdown", &ack_tx).await;
                         let should_stop = result.is_ok();
                         let _ = reply.send(result);
                         if should_stop {
@@ -536,7 +537,7 @@ async fn run_batcher(
                         }
                     }
                     None => {
-                        let _ = flush_pending(&policy, &mut pending, &stats, "closed").await;
+                        let _ = flush_pending(&policy, &mut pending, &stats, "closed", &ack_tx).await;
                         break;
                     }
                 }
@@ -627,8 +628,8 @@ async fn flush_pending(
             stats.last_batch_uuid = Some(batch_uuid.clone());
             stats.pending = pending.len();
             // ACK WAL IDs after successful database commit.
-            if let Ok(ref ack_tx) = wal_ack_tx.lock() {
-                if let Some(ref tx) = *ack_tx {
+            if let Ok(ref ack_tx_guard) = ack_tx.lock() {
+                if let Some(ref tx) = *ack_tx_guard {
                     for item in &flushed {
                         if let Some(wal_id) = item.wal_id {
                             let _ = tx.try_send(wal_id);
