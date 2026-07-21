@@ -170,6 +170,7 @@ fn walkdir(dir: &Path, base: &Path) -> Vec<Result<PathBuf, String>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
 
     #[test]
     fn verify_nonexistent_fails() {
@@ -185,5 +186,38 @@ mod tests {
         let files = walkdir(&tmp, &tmp);
         assert!(!files.is_empty());
         let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn backup_create_and_verify_roundtrip() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        // Create a mock backup manually and verify it
+        let tmp = std::env::temp_dir().join("pmp-backup-roundtrip");
+        let data_dir = tmp.join("data");
+        fs::create_dir_all(&data_dir).unwrap();
+        fs::write(data_dir.join("test.wal"), b"some wal data").unwrap();
+        fs::write(tmp.join("server_config.yml"), b"port: 12346").unwrap();
+
+        // Generate manifest
+        let manifest_path = tmp.join("MANIFEST.sha256");
+        let mut manifest = fs::File::create(&manifest_path).unwrap();
+        for entry in walkdir(&tmp, &tmp) {
+            let path = entry.unwrap();
+            if path.is_dir() || path == manifest_path {
+                continue;
+            }
+            let data = fs::read(&path).unwrap();
+            let hash = sha256(&data);
+            let hex: String = hash.iter().map(|b| format!("{b:02x}")).collect();
+            let relative = path.strip_prefix(&tmp).unwrap();
+            use std::io::Write;
+            writeln!(manifest, "{hex}  {}", relative.display()).unwrap();
+        }
+        drop(manifest);
+
+        let report = verify_backup(tmp.to_str().unwrap()).unwrap();
+        assert!(report.file_count > 0, "should verify at least one file");
+        assert!(report.total_size > 0, "total size should be positive");
+        let _ = fs::remove_dir_all(&tmp);
     }
 }

@@ -107,6 +107,11 @@ jobs:
           chmod +x ${{ matrix.artifact-name }}
           ./${{ matrix.artifact-name }} --version
           ./${{ matrix.artifact-name }} --help
+      - name: Generate provenance
+        if: matrix.os == 'ubuntu-latest'
+        uses: actions/attest-build-provenance@v1
+        with:
+          subject-path: ${{ matrix.artifact-name }}
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact-name }}
