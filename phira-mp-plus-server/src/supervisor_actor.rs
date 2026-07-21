@@ -525,3 +525,45 @@ pub async fn shutdown_all(timeout: Duration) -> usize {
     let _ = tokio::time::timeout(Duration::from_secs(1), tx.closed()).await;
     stopped
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn shutdown_order_ascending() {
+        let orders = [
+            ShutdownOrder::Listeners,
+            ShutdownOrder::Sessions,
+            ShutdownOrder::Rooms,
+            ShutdownOrder::Plugins,
+            ShutdownOrder::Persistence,
+            ShutdownOrder::Telemetry,
+        ];
+        for pair in orders.windows(2) {
+            assert!(
+                pair[0] < pair[1],
+                "{:?} should shut down before {:?}",
+                pair[0],
+                pair[1]
+            );
+        }
+    }
+
+    #[test]
+    fn shutdown_order_labels_are_unique() {
+        let orders = [
+            ShutdownOrder::Listeners,
+            ShutdownOrder::Sessions,
+            ShutdownOrder::Rooms,
+            ShutdownOrder::Plugins,
+            ShutdownOrder::Persistence,
+            ShutdownOrder::Telemetry,
+            ShutdownOrder::Unordered,
+        ];
+        let mut labels: std::collections::HashSet<&str> = std::collections::HashSet::new();
+        for o in &orders {
+            assert!(labels.insert(o.label()), "duplicate label: {}", o.label());
+        }
+    }
+}

@@ -383,6 +383,19 @@ mod tests {
     }
 
     #[test]
+    #[test]
+    fn reject_traversal_with_dotdot() {
+        assert!(reject_symlink_components(Path::new("/safe/../etc/passwd")).is_err());
+        assert!(reject_symlink_components(Path::new("/safe/../../etc")).is_err());
+        assert!(reject_symlink_components(Path::new("/safe/..")).is_err());
+        assert!(reject_symlink_components(Path::new("/safe/./../etc")).is_err());
+    }
+
+    #[test]
+    fn reject_absolute_in_relative_chain() {
+        assert!(reject_symlink_components(Path::new("/safe/../../../tmp/evil")).is_err());
+    }
+
     fn reject_symlink_components_works() {
         assert!(reject_symlink_components(Path::new("/safe/path")).is_ok());
         assert!(reject_symlink_components(Path::new("/unsafe/../path")).is_err());
