@@ -2,7 +2,7 @@
 vulnerability = "deny"
 unmaintained = "transitive"
 notice = "transitive"
-yanked = "transitive"
+yanked = "warn"
 ignore = [
     # rsa 0.9.10 — Marvin Attack, no fix available (transitive dep)
     "RUSTSEC-2023-0071",
