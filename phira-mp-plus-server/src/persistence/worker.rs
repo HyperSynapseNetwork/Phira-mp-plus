@@ -356,7 +356,7 @@ async fn process_worker_loop(
                         record_db_dispatch_skipped_no_database(worker_stats, pipeline).await;
                     }
                     PersistenceWriteStage::NotApplicable => {
-                        match stage_production_telemetry_if_needed(&event, worker_telemetry).await {
+                        match stage_production_telemetry_if_needed(wal_id, &event, worker_telemetry).await {
                             ProductionTelemetryStage::Staged => {
                                 record_production_telemetry_staged(worker_stats).await;
                             }
