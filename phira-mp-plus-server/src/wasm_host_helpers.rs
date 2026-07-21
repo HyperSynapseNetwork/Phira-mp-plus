@@ -383,7 +383,6 @@ mod tests {
     }
 
     #[test]
-    #[test]
     fn reject_traversal_with_dotdot() {
         assert!(reject_symlink_components(Path::new("/safe/../etc/passwd")).is_err());
         assert!(reject_symlink_components(Path::new("/safe/../../etc")).is_err());
