@@ -1,6 +1,12 @@
 name: PPA upload
 
 on:
+  workflow_dispatch:
+    inputs:
+      description:
+        description: 版本说明（可选）
+        type: string
+        default: ""
   push:
     branches: [main]
 
@@ -24,8 +30,6 @@ jobs:
           sudo apt-get install -y -qq devscripts dpkg-dev
           dpkg-buildpackage -S -d -nc
       - name: Upload to PPA
-        env:
-          DPUT_HOST: ppa.launchpad.net
         run: |
           sudo apt-get install -y -qq dput
           dput ppa:fireflyf09/phira-mp-plus ../phira-mp-plus-server_*.source.changes
