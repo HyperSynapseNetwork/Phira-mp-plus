@@ -95,6 +95,8 @@ pub struct PersistenceWal {
     replay_succeeded: AtomicBool,
     /// Total bytes written (approx, updated on admission/ACK).
     total_bytes: std::sync::atomic::AtomicU64,
+    /// Number of truncated trailing frames detected during replay.
+    truncated_frames: std::sync::atomic::AtomicU64,
     /// Total admission count since last compact (for auto-compaction).
     admission_count: std::sync::atomic::AtomicU64,
     /// Total ACK count since last compact.
@@ -108,6 +110,7 @@ impl PersistenceWal {
             io_gate: Mutex::new(()),
             replay_succeeded: AtomicBool::new(false),
             total_bytes: std::sync::atomic::AtomicU64::new(0),
+            truncated_frames: std::sync::atomic::AtomicU64::new(0),
             admission_count: std::sync::atomic::AtomicU64::new(0),
             ack_count: std::sync::atomic::AtomicU64::new(0),
         }
@@ -369,9 +372,12 @@ impl PersistenceWal {
         self.ack_count.store(acked.len() as u64, Ordering::Release);
 
         if has_truncated {
+            self.truncated_frames.fetch_add(1, Ordering::Release);
             warn!(
-                "WAL {} had trailing truncated bytes (discarded); this is expected after a crash",
-                self.path.display()
+                "WAL {} had trailing truncated bytes (discarded); this is expected after a crash \
+                 (total truncated frames: {})",
+                self.path.display(),
+                self.truncated_frames.load(Ordering::Acquire),
             );
         }
 
@@ -586,6 +592,11 @@ impl PersistenceWal {
         }
 
         Ok(pending.len())
+    }
+
+    /// Number of truncated trailing frames detected since startup.
+    pub fn truncated_frames_count(&self) -> u64 {
+        self.truncated_frames.load(Ordering::Acquire)
     }
 
     /// Check whether auto-compaction is worth running based on admission/ACK ratio.
