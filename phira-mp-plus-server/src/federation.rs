@@ -10,11 +10,12 @@
 //! 子任务间共享，确保 `send(handle, bytes)` 对 listen 接受的
 //! 连接同样有效。
 
-use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerifier, ServerCertVerified};
+use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
 use rustls::pki_types::{CertificateDer, PrivateKeyDer, ServerName, UnixTime};
 use rustls::{ClientConfig, DigitallySignedStruct, Error, ServerConfig};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
+use tokio::io::AsyncReadExt;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{mpsc, oneshot};
 use tokio_rustls::{TlsAcceptor, TlsConnector};
@@ -73,13 +74,11 @@ pub enum FederationEvent {
 }
 
 /// Shared connection registry: conn_handle → sender for outgoing data.
-/// Used by both the actor (send/close) and accept-spawned tasks.
 type ConnectionMap = Arc<Mutex<HashMap<u64, mpsc::Sender<Vec<u8>>>>>;
 
 /// Per-connection state tracked by the actor.
 struct Connection {
     remote_addr: String,
-    /// Signal the connection task to shut down.
     close_tx: Option<oneshot::Sender<()>>,
 }
 
@@ -92,13 +91,9 @@ struct Listener {
 /// Federation actor managing connection and listener handles.
 pub struct FederationActor {
     rx: mpsc::Receiver<FederationCommand>,
-    /// Pre-allocated handles for connect. For accepted connections,
-    /// the accept loop generates its own handles (they share the
-    /// ConnectionMap but not the actor's handle allocator).
     connections: HashMap<u64, Connection>,
     listeners: HashMap<u64, Listener>,
     next_handle: u64,
-    /// Shared connection map — also used by accept-spawned tasks.
     conn_map: ConnectionMap,
     event_callback: Option<Arc<dyn Fn(String, serde_json::Value) + Send + Sync>>,
 }
@@ -149,7 +144,7 @@ impl FederationActor {
                     let cm = Arc::clone(&self.conn_map);
 
                     match connect_with_tls(&addr, &tls_opts, handle, cb, cm).await {
-                        Ok((data_tx, close_tx)) => {
+                        Ok((_data_tx, close_tx)) => {
                             self.connections.insert(
                                 handle,
                                 Connection {
@@ -159,10 +154,6 @@ impl FederationActor {
                             );
                             info!(%handle, %addr, "federation connected");
                             let _ = reply.send(Ok(handle));
-                            // Connect tasks register themselves; no need
-                            // to also insert here since connect_with_tls
-                            // already calls register_connection for us.
-                            let _ = data_tx;
                         }
                         Err(e) => {
                             warn!(%handle, %addr, error = %e, "federation connect failed");
@@ -257,26 +248,24 @@ fn build_client_tls_config(tls_opts: &FederationTlsOpts) -> Result<Arc<ClientCon
         webpki_roots::TLS_SERVER_ROOTS.iter().cloned(),
     );
 
-    let mut builder = ClientConfig::builder_with_provider(
+    let builder = ClientConfig::builder_with_provider(
         rustls::crypto::ring::default_provider().into(),
     )
     .with_safe_default_protocol_versions()
     .map_err(|e| format!("protocol versions: {e}"))?
     .with_root_certificates(root_store);
 
-    if let (Some(cert_pem), Some(key_pem)) =
+    let mut config = if let (Some(cert_pem), Some(key_pem)) =
         (&tls_opts.local_cert_chain, &tls_opts.local_private_key)
     {
         let certs = parse_pem_certs(cert_pem)?;
         let key = parse_pem_key(key_pem)?;
-        builder = builder
+        builder
             .with_client_auth_cert(certs, key)
-            .map_err(|e| format!("invalid client cert/key: {e}"))?;
+            .map_err(|e| format!("invalid client cert/key: {e}"))?
     } else {
-        builder = builder.with_no_client_auth();
-    }
-
-    let mut config = builder.build();
+        builder.with_no_client_auth()
+    };
 
     if !tls_opts.verify_peer {
         config
@@ -305,7 +294,7 @@ fn build_server_tls_config(tls_opts: &FederationTlsOpts) -> Result<Arc<ServerCon
     .with_safe_default_protocol_versions()
     .map_err(|e| format!("protocol versions: {e}"))?;
 
-    let builder = if tls_opts.verify_peer {
+    let server_config = if tls_opts.verify_peer {
         let root_store = rustls::RootCertStore::from_iter(
             webpki_roots::TLS_SERVER_ROOTS.iter().cloned(),
         );
@@ -324,10 +313,8 @@ fn build_server_tls_config(tls_opts: &FederationTlsOpts) -> Result<Arc<ServerCon
             .map_err(|e| format!("build server config: {e}"))?
     };
 
-    let mut config = builder.build();
-    Ok(Arc::new(config))
+    Ok(Arc::new(server_config))
 }
-
 
 /// Connect to a remote peer: TCP + TLS handshake, spawn read/write task.
 async fn connect_with_tls(
@@ -353,7 +340,6 @@ async fn connect_with_tls(
     let (data_tx, data_rx) = mpsc::channel::<Vec<u8>>(64);
     let (close_tx, close_rx) = oneshot::channel();
 
-    // Register in shared map.
     conn_map
         .lock()
         .unwrap()
@@ -369,7 +355,7 @@ async fn connect_with_tls(
     Ok((data_tx, close_tx))
 }
 
-/// Start a TLS listener: bind TCP, accept loop, spawn per-connection tasks.
+/// Start a TLS listener: bind TCP, accept loop.
 async fn listen_with_tls(
     addr: &str,
     tls_opts: &FederationTlsOpts,
@@ -397,7 +383,7 @@ async fn listen_with_tls(
     Ok(close_tx)
 }
 
-/// Accept loop: accept TCP connections, TLS handshake, spawn read tasks.
+/// Accept loop.
 async fn accept_loop(
     listener: TcpListener,
     acceptor: TlsAcceptor,
@@ -410,10 +396,9 @@ async fn accept_loop(
     loop {
         tokio::select! {
             accept = listener.accept() => {
-                let peer_addr;
                 match accept {
                     Ok((stream, addr)) => {
-                        peer_addr = addr.to_string();
+                        let peer = addr.to_string();
                         let conn_handle = (listener_handle << 32) | next_conn;
                         next_conn += 1;
                         let acceptor = acceptor.clone();
@@ -421,13 +406,11 @@ async fn accept_loop(
                         let cm = Arc::clone(&conn_map);
 
                         tokio::spawn(async move {
-                            let peer = peer_addr.clone();
                             match acceptor.accept(stream).await {
                                 Ok(tls_stream) => {
                                     let (data_tx, data_rx) = mpsc::channel::<Vec<u8>>(64);
-                                    let (close_tx, close_rx) = oneshot::channel();
+                                    let (_close_tx, close_rx) = oneshot::channel::<()>();
 
-                                    // Register in shared map so send(handle) works.
                                     cm.lock().unwrap().insert(conn_handle, data_tx);
 
                                     if let Some(ref cb) = cb {
@@ -441,12 +424,7 @@ async fn accept_loop(
                                     }
 
                                     connection_read_task(
-                                        tls_stream,
-                                        conn_handle,
-                                        data_rx,
-                                        close_rx,
-                                        cb,
-                                        peer,
+                                        tls_stream, conn_handle, data_rx, close_rx, cb, peer,
                                     ).await;
 
                                     cm.lock().unwrap().remove(&conn_handle);
@@ -471,9 +449,9 @@ async fn accept_loop(
     }
 }
 
-/// Read task: reads from TLS stream, dispatches events.
+/// Read task: reads from TLS stream, writes outgoing data, dispatches events.
 async fn connection_read_task(
-    mut tls_stream: impl tokio::io::AsyncRead + tokio::io::AsyncWrite + Send + Unpin + 'static,
+    tls_stream: impl tokio::io::AsyncRead + tokio::io::AsyncWrite + Send + Unpin + 'static,
     handle: u64,
     mut data_rx: mpsc::Receiver<Vec<u8>>,
     mut close_rx: oneshot::Receiver<()>,
@@ -547,14 +525,12 @@ fn parse_pem_certs(pem: &str) -> Result<Vec<CertificateDer<'static>>, String> {
 
 fn parse_pem_key(pem: &str) -> Result<PrivateKeyDer<'static>, String> {
     let reader = &mut pem.as_bytes();
-    // Try PKCS#8 first.
     if let Ok(Some(key)) = rustls_pemfile::pkcs8_private_keys(reader)
         .collect::<Result<Vec<_>, _>>()
         .map(|mut ks| if ks.len() == 1 { Some(PrivateKeyDer::Pkcs8(ks.remove(0))) } else { None })
     {
         return Ok(key);
     }
-    // Try SEC1 (EC) keys.
     let reader = &mut pem.as_bytes();
     if let Ok(Some(key)) = rustls_pemfile::ec_private_keys(reader)
         .collect::<Result<Vec<_>, _>>()
@@ -565,37 +541,48 @@ fn parse_pem_key(pem: &str) -> Result<PrivateKeyDer<'static>, String> {
     Err("no valid private key found in PEM data (tried PKCS#8 and SEC1)".to_string())
 }
 
-// ── Accept-all cert verifier (for verify_peer=false) ─────────────────────
+// ── Accept-all cert verifier ─────────────────────────────────────────────
 
+#[derive(Debug)]
 struct AcceptAllVerifier;
 
-impl rustls::client::danger::ServerCertVerifier for AcceptAllVerifier {
+impl ServerCertVerifier for AcceptAllVerifier {
+    fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
+        rustls::crypto::ring::default_provider()
+            .signature_verification_algorithms
+            .supported_schemes()
+    }
+
     fn verify_server_cert(
         &self,
         _end_entity: &CertificateDer<'_>,
         _intermediates: &[CertificateDer<'_>],
         _server_name: &ServerName<'_>,
         _ocsp: &[u8],
-        _now: rustls::pki_types::UnixTime,
-    ) -> Result<rustls::client::danger::ServerCertVerified, rustls::Error> {
-        Ok(rustls::client::danger::ServerCertVerified::assertion())
+        _now: UnixTime,
+    ) -> Result<ServerCertVerified, Error> {
+        Ok(ServerCertVerified::assertion())
     }
 
     fn verify_tls12_signature(
         &self,
         message: &[u8],
         cert: &CertificateDer<'_>,
-        dss: &rustls::DigitallySignedStruct,
-    ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
-        rustls::crypto::verify_tls12_signature(message, cert, dss)
+        dss: &DigitallySignedStruct,
+    ) -> Result<HandshakeSignatureValid, Error> {
+        rustls::crypto::ring::default_provider()
+            .signature_verification_algorithms
+            .verify_tls12_signature(message, cert, dss)
     }
 
     fn verify_tls13_signature(
         &self,
         message: &[u8],
         cert: &CertificateDer<'_>,
-        dss: &rustls::DigitallySignedStruct,
-    ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
-        rustls::crypto::verify_tls13_signature(message, cert, dss)
+        dss: &DigitallySignedStruct,
+    ) -> Result<HandshakeSignatureValid, Error> {
+        rustls::crypto::ring::default_provider()
+            .signature_verification_algorithms
+            .verify_tls13_signature(message, cert, dss)
     }
 }
