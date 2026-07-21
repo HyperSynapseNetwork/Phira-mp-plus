@@ -29,8 +29,7 @@ tracing-appender = "0.2.4"
 tracing-subscriber = { version = "0.3.22", features = ["env-filter", "json"] }
 unic-langid = { version = "0.9.6", features = ["macros"] }
 unicode-width = { workspace = true }
-sqlx = { version = "0.8", features = ["runtime-tokio", "postgres", "chrono", "json", "uuid", "migrations"], optional = true }
-uuid = { workspace = true, features = ["v4"] }
+sqlx = { version = "0.8", features = ["runtime-tokio", "postgres", "chrono", "json", "uuid", "migrate"], optional = true }
 wasmtime = { version = "32", features = ["component-model", "async"], optional = true }
 
 # HTTP/SSE 中央服务器（插件系统）
