@@ -594,6 +594,15 @@ impl PersistenceWorker {
         let worker_wal = Arc::clone(&wal);
 
         crate::supervisor_actor::spawn_critical("persistence-worker", async move {
+            // Check WAL instance consistency before replay to detect
+            // accidental deletion/truncation of an already-initialized WAL.
+            if let Err(e) = worker_wal.check_instance_consistency().await {
+                crate::supervisor_actor::report_critical_failure(
+                    "persistence-wal-consistency",
+                    e,
+                )
+                .await;
+            }
             match worker_wal.replay().await {
                 Ok(events) => {
                     let mut replay: std::collections::VecDeque<(uuid::Uuid, PersistenceEvent)> =

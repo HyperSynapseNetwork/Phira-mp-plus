@@ -375,11 +375,65 @@ impl PersistenceWal {
             );
         }
 
+        // Record that this WAL instance has been initialized.
+        // Used to detect accidental WAL deletion on subsequent starts.
+        self.write_instance_marker().await?;
+
         self.replay_succeeded.store(true, Ordering::Release);
         Ok(admitted
             .into_iter()
             .filter(|(id, _)| !acked.contains(id))
             .collect())
+    }
+
+    /// Write an instance marker file next to the WAL so we can detect
+    /// accidental deletion or truncation on subsequent starts.
+    async fn write_instance_marker(&self) -> Result<(), String> {
+        let marker_path = self.path.with_extension("wal.instance");
+        if marker_path.exists() {
+            return Ok(()); // already initialized
+        }
+        let marker = serde_json::json!({
+            "version": 1,
+            "created_at_ms": std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis() as u64)
+                .unwrap_or(0),
+            "wal_path": self.path.to_string_lossy(),
+        });
+        tokio::fs::write(&marker_path, serde_json::to_vec(&marker).map_err(|e| format!("serialize instance marker: {e}"))?)
+            .await
+            .map_err(|e| format!("write instance marker: {e}"))?;
+        Ok(())
+    }
+
+    /// Check if the instance marker exists but the WAL file is gone or empty.
+    /// This indicates accidental WAL deletion after first use.
+    pub async fn check_instance_consistency(&self) -> Result<(), String> {
+        let marker_path = self.path.with_extension("wal.instance");
+        if !marker_path.exists() {
+            return Ok(()); // first start, no instance yet
+        }
+        let wal_exists = tokio::fs::try_exists(&self.path).await.unwrap_or(false);
+        if !wal_exists {
+            return Err(format!(
+                "WAL instance marker exists at {} but WAL file {} is missing. "
+                    + "This may indicate accidental deletion or volume misconfiguration. "
+                    + "Remove the marker file manually to reinitialize.",
+                marker_path.display(),
+                self.path.display()
+            ));
+        }
+        let metadata = tokio::fs::metadata(&self.path).await
+            .map_err(|e| format!("stat WAL: {e}"))?;
+        if metadata.len() == 0 {
+            return Err(format!(
+                "WAL instance marker exists but WAL file {} is empty. "
+                    + "This may indicate file corruption or truncation.",
+                self.path.display()
+            ));
+        }
+        Ok(())
     }
 
     /// Compact the WAL by rewriting only unacknowledged admissions.
@@ -811,17 +865,20 @@ mod tests {
     // ── Fault injection tests ──────────────────────────────────────────────
 
     #[tokio::test]
-    async fn fault_wal_deleted_during_replay() {
+    async fn fault_wal_deleted_fails_with_instance_marker() {
         let path =
             std::env::temp_dir().join(format!("pmp-wal-del-{}.jsonl", uuid::Uuid::new_v4()));
         let wal = PersistenceWal::new(&path);
-        wal.replay().await.unwrap();
-        wal.admit(make_event("will-be-lost")).await.unwrap();
+        wal.replay().await.unwrap(); // creates instance marker
+        wal.admit(make_event("will-be-detected")).await.unwrap();
         let _ = tokio::fs::remove_file(&path).await;
         let wal2 = PersistenceWal::new(&path);
-        let r = wal2.replay().await.unwrap();
-        assert!(r.is_empty());
-        assert!(wal2.replay_succeeded());
+        let result = wal2.replay().await;
+        assert!(result.is_err(), "deleted WAL after first use must fail: {result:?}");
+        assert!(!wal2.replay_succeeded());
+        // Cleanup: remove instance marker
+        let marker = path.with_extension("wal.instance");
+        let _ = tokio::fs::remove_file(&marker).await;
     }
 
     #[tokio::test]
@@ -849,20 +906,19 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn fault_zeroed_wal_recovers_empty() {
+    async fn fault_zeroed_wal_fails_with_instance_marker() {
         let path =
             std::env::temp_dir().join(format!("pmp-wal-zero-{}.jsonl", uuid::Uuid::new_v4()));
         let wal = PersistenceWal::new(&path);
-        wal.replay().await.unwrap();
+        wal.replay().await.unwrap(); // creates instance marker
         wal.admit(make_event("lost")).await.unwrap();
         tokio::fs::write(&path, b"").await.unwrap();
         let wal2 = PersistenceWal::new(&path);
-        let r = wal2.replay().await.unwrap();
-        assert!(r.is_empty());
-        wal2.admit(make_event("fresh")).await.unwrap();
-        let r2 = wal2.replay().await.unwrap();
-        assert_eq!(r2.len(), 1);
-        assert_eq!(r2[0].1.kind(), "fresh");
+        let result = wal2.replay().await;
+        assert!(result.is_err(), "zeroed WAL after first use must fail: {result:?}");
+        assert!(!wal2.replay_succeeded());
+        let marker = path.with_extension("wal.instance");
+        let _ = tokio::fs::remove_file(&marker).await;
         let _ = tokio::fs::remove_file(path).await;
     }
 }
