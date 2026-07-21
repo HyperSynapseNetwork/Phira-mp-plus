@@ -628,17 +628,14 @@ async fn flush_pending(
             stats.last_batch_uuid = Some(batch_uuid.clone());
             stats.pending = pending.len();
             // ACK WAL IDs after successful database commit.
-            // Clone sender outside the std Mutex to allow async send with
-            // backpressure instead of silently dropping when the channel is full.
-            if let Ok(guard) = ack_tx.lock() {
-                if let Some(tx) = guard.as_ref() {
-                    let ack_sender = tx.clone();
-                    drop(guard);
-                    for item in &flushed {
-                        if let Some(wal_id) = item.wal_id {
-                            if let Err(e) = ack_sender.send(wal_id).await {
-                                warn!(wal_id = %wal_id, error = %e, "WAL ACK send failed; channel closed");
-                            }
+            // Clone sender outside std::sync::Mutex so MutexGuard is dropped
+            // before the async send (MutexGuard is not Send).
+            let ack_sender = ack_tx.lock().ok().and_then(|g| g.clone());
+            if let Some(tx) = ack_sender {
+                for item in &flushed {
+                    if let Some(wal_id) = item.wal_id {
+                        if let Err(e) = tx.send(wal_id).await {
+                            warn!(wal_id = %wal_id, error = %e, "WAL ACK send failed; channel closed");
                         }
                     }
                 }

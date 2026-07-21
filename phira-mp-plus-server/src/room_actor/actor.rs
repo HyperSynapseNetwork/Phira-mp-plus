@@ -132,6 +132,14 @@ impl RoomState {
     pub fn set_locked(&mut self, locked: bool) {
         self.control.locked = locked;
     }
+
+    pub fn set_cycle(&mut self, cycle: bool) {
+        self.control.cycle = cycle;
+    }
+
+    pub fn set_hidden(&mut self, hidden: bool) {
+        self.control.hidden = hidden;
+    }
 }
 
 /// Full actor-owned room state (migration target).
