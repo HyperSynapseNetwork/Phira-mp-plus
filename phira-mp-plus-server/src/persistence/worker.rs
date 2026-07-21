@@ -30,6 +30,7 @@ use crate::telemetry_batcher::{
     TelemetryBatcher, TelemetryBatcherPolicy, TelemetryBatcherStats, TelemetryCutoverMode,
 };
 use serde_json::json;
+use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -149,6 +150,7 @@ async fn append_dead_letter(path: &Path, record: &serde_json::Value) -> Result<(
     let mut file = tokio::fs::OpenOptions::new()
         .create(true)
         .append(true)
+        .mode(0o600) // secure permissions: owner read/write only
         .open(path)
         .await
         .map_err(|error| format!("open {}: {error}", path.display()))?;
@@ -164,6 +166,15 @@ async fn append_dead_letter(path: &Path, record: &serde_json::Value) -> Result<(
     file.sync_data()
         .await
         .map_err(|error| format!("sync {}: {error}", path.display()))?;
+    drop(file);
+    // Sync parent directory so the dead-letter entry survives a rename.
+    if let Some(parent) = path.parent().filter(|p| p.as_os_str() != "") {
+        if let Ok(dir) = tokio::fs::File::open(parent).await {
+            dir.sync_all().await.map_err(|error| {
+                format!("sync parent directory {}: {error}", parent.display())
+            })?;
+        }
+    }
     Ok(())
 }
 
