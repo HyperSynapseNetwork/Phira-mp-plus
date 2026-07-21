@@ -336,7 +336,7 @@ mod tests {
             "unexpected migration version"
         );
         assert!(
-            m.description.contains("initial_schema"),
+            m.description.contains("initial schema"),
             "migration description mismatch: {}",
             m.description
         );
