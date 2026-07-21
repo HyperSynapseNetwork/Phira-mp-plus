@@ -20,18 +20,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Import GPG key
-        uses: crazy-max/ghaction-import-gpg@v6
-        with:
-          gpg_private_key: ${{ secrets.PPA_GPG_PRIVATE_KEY }}
-          passphrase: ${{ secrets.PPA_GPG_PASSPHRASE }}
+        env:
+          KEY: ${{ secrets.PPA_GPG_PRIVATE_KEY }}
+        run: |
+          echo "$KEY" | gpg --batch --import
+          gpg --batch --list-keys --with-colons releases@phira-mp-plus.dev || echo "key not found"
       - name: Build source package
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq devscripts dpkg-dev
-          dpkg-buildpackage -S -d -nc --no-sign
-      - name: Sign source package
-        run: |
-          DEBEMAIL="releases@phira-mp-plus.dev" debsign -k"releases@phira-mp-plus.dev" ../phira-mp-plus-server_*.source.changes
+          dpkg-buildpackage -S -d -nc -k"releases@phira-mp-plus.dev"
       - name: Upload to PPA
         run: |
           sudo apt-get install -y -qq dput
