@@ -1,6 +1,0 @@
-phira-mp-plus-server (0.4.0-1) unstable; urgency=medium
-
-  * Initial Debian package.
-  * Pre-production hardening release.
-
- -- PMP Dev <dev@phira-mp-plus.dev>  Sun, 19 Jul 2026 00:00:00 +0000

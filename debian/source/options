@@ -1,5 +1,0 @@
-# Ignore build artifacts when creating source tarball
-tar-ignore = ".git"
-tar-ignore = "target"
-tar-ignore = "*.rs.bk"
-

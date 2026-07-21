@@ -1,7 +1,0 @@
-# Phira-mp+ PPA daily build recipe
-# Launchpad git-build-recipe format 0.4
-#
-# Usage: Import this recipe in Launchpad PPA:
-#   https://launchpad.net/~fireflyf09/+archive/ubuntu/phira-mp-plus
-
-lp:~fireflyf09/+git/phira-mp-plus main
