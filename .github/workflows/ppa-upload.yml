@@ -35,5 +35,7 @@ jobs:
       - name: Upload to PPA
         run: |
           sudo apt-get install -y -qq dput
-          cd ..
-          dput ppa:fireflyf09/phira-mp-plus phira-mp-plus-server_*.source.changes
+          ls -la ../
+          changes=$(ls /home/runner/work/Phira-mp-plus/*.source.changes 2>/dev/null || ls ../*.source.changes 2>/dev/null)
+          echo "Uploading: $changes"
+          dput ppa:fireflyf09/phira-mp-plus "$changes"
