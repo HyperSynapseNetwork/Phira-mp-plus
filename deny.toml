@@ -3,7 +3,18 @@ vulnerability = "deny"
 unmaintained = "warn"
 notice = "warn"
 yanked = "warn"
-ignore = []
+ignore = [
+    # rsa 0.9.10 — Marvin Attack, no fix available (transitive dep)
+    "RUSTSEC-2023-0071",
+    # fxhash — unmaintained (transitive dep)
+    "RUSTSEC-2025-0057",
+    # paste — unmaintained (transitive dep)
+    "RUSTSEC-2024-0436",
+    # rustls-pemfile — unmaintained (our direct dep for PEM parsing)
+    "RUSTSEC-2025-0134",
+    # lru — unsound IterMut (transitive dep)
+    "RUSTSEC-2026-0002",
+]
 
 [licenses]
 allow = [
