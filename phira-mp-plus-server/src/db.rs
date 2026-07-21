@@ -9,6 +9,12 @@
 use anyhow::Result;
 use serde_json::Value;
 
+/// Managed schema migrator — resolved at compile time via `CARGO_MANIFEST_DIR`
+/// so sqlx 0.8 can find the `migrations/` directory from any crate root.
+#[cfg(feature = "postgres")]
+pub const MIGRATOR: sqlx::migrate::Migrator =
+    sqlx::migrate!(concat!(env!("CARGO_MANIFEST_DIR"), "/migrations"));
+
 /// Unix 毫秒时间戳。
 pub(crate) fn now_ms() -> i64 {
     std::time::SystemTime::now()
@@ -205,7 +211,7 @@ pub(crate) async fn append_event_pg(
 #[cfg(feature = "postgres")]
 async fn init_tables(pool: &sqlx::PgPool) -> Result<()> {
     // Apply managed schema migrations via sqlx.
-    sqlx::migrate!("migrations").run(pool).await?;
+    MIGRATOR.run(pool).await?;
 
     let now = now_ms();
     sqlx::query(
@@ -311,7 +317,7 @@ mod tests {
     #[cfg(feature = "postgres")]
     #[test]
     fn migration_macro_compiles_and_has_expected_count() {
-        let migrator = sqlx::migrate!("migrations");
+        let migrator = MIGRATOR;
         assert!(
             !migrator.migrations.is_empty(),
             "must have at least one migration"
