@@ -10,8 +10,9 @@
 //! 子任务间共享，确保 `send(handle, bytes)` 对 listen 接受的
 //! 连接同样有效。
 
-use rustls::pki_types::{CertificateDer, PrivateKeyDer, ServerName};
-use rustls::{ClientConfig, ServerConfig, TlsVersion};
+use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerifier, ServerCertVerified};
+use rustls::pki_types::{CertificateDer, PrivateKeyDer, ServerName, UnixTime};
+use rustls::{ClientConfig, DigitallySignedStruct, Error, ServerConfig};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use tokio::net::{TcpListener, TcpStream};
@@ -276,7 +277,6 @@ fn build_client_tls_config(tls_opts: &FederationTlsOpts) -> Result<Arc<ClientCon
     }
 
     let mut config = builder.build();
-    apply_tls_version(&mut config.min_tls_version, &tls_opts.min_tls_version);
 
     if !tls_opts.verify_peer {
         config
@@ -325,19 +325,9 @@ fn build_server_tls_config(tls_opts: &FederationTlsOpts) -> Result<Arc<ServerCon
     };
 
     let mut config = builder.build();
-    apply_tls_version(&mut config.min_tls_version, &tls_opts.min_tls_version);
     Ok(Arc::new(config))
 }
 
-fn apply_tls_version(ver: &mut Option<rustls::TlsVersion>, requested: &Option<String>) {
-    if let Some(ver_str) = requested {
-        match ver_str.as_str() {
-            "1.2" => *ver = Some(rustls::TlsVersion::TLSv1_2),
-            "1.3" => *ver = Some(rustls::TlsVersion::TLSv1_3),
-            _ => warn!(version = %ver_str, "unsupported min TLS version"),
-        }
-    }
-}
 
 /// Connect to a remote peer: TCP + TLS handshake, spawn read/write task.
 async fn connect_with_tls(
@@ -579,7 +569,7 @@ fn parse_pem_key(pem: &str) -> Result<PrivateKeyDer<'static>, String> {
 
 struct AcceptAllVerifier;
 
-impl rustls::client::ServerCertVerifier for AcceptAllVerifier {
+impl rustls::client::danger::ServerCertVerifier for AcceptAllVerifier {
     fn verify_server_cert(
         &self,
         _end_entity: &CertificateDer<'_>,
@@ -587,8 +577,8 @@ impl rustls::client::ServerCertVerifier for AcceptAllVerifier {
         _server_name: &ServerName<'_>,
         _ocsp: &[u8],
         _now: rustls::pki_types::UnixTime,
-    ) -> Result<rustls::client::ServerCertVerified, rustls::Error> {
-        Ok(rustls::client::ServerCertVerified::assertion())
+    ) -> Result<rustls::client::danger::ServerCertVerified, rustls::Error> {
+        Ok(rustls::client::danger::ServerCertVerified::assertion())
     }
 
     fn verify_tls12_signature(
@@ -596,7 +586,7 @@ impl rustls::client::ServerCertVerifier for AcceptAllVerifier {
         message: &[u8],
         cert: &CertificateDer<'_>,
         dss: &rustls::DigitallySignedStruct,
-    ) -> Result<rustls::client::HandshakeSignatureValid, rustls::Error> {
+    ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
         rustls::crypto::verify_tls12_signature(message, cert, dss)
     }
 
@@ -605,7 +595,7 @@ impl rustls::client::ServerCertVerifier for AcceptAllVerifier {
         message: &[u8],
         cert: &CertificateDer<'_>,
         dss: &rustls::DigitallySignedStruct,
-    ) -> Result<rustls::client::HandshakeSignatureValid, rustls::Error> {
+    ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
         rustls::crypto::verify_tls13_signature(message, cert, dss)
     }
 }
