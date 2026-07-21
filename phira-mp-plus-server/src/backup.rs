@@ -170,6 +170,7 @@ fn walkdir(dir: &Path, base: &Path) -> Vec<Result<PathBuf, String>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::crypto::sha256;
     use std::fs;
 
     #[test]
