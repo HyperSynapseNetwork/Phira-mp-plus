@@ -3,11 +3,21 @@
 //! The mailbox worker should not keep growing command execution logic.  This
 //! handler is the seam where the current adapter-based implementation will be
 //! swapped for real room-owned actor state over time.
+//!
+//! Migration:
+//! - `execute()` dispatches via the gateway (Room object path, legacy)
+//! - `execute_with_actor()` dispatches via actor-owned state (new path)
+//!   For commands that support direct state modification (SetLock, SetCycle,
+//!   SetHidden), the actor state is modified directly.  Other commands still
+//!   fall back to the legacy gateway path but receive the actor reference so
+//!   the gateway can also write to actor state.
 
 use super::{
     command::RoomActorCommand, context::RoomCommandContext, RoomCommandDelivery,
     RoomCommandPayload, RoomCommandResult,
 };
+use crate::plugin::PluginEvent;
+use phira_mp_common::{Message, PartialRoomData};
 use serde_json::Value;
 
 fn typed_or_err(
@@ -23,6 +33,8 @@ fn typed_or_err(
 pub(super) struct RoomCommandHandler;
 
 impl RoomCommandHandler {
+    /// Execute a command using the existing gateway path (legacy).
+    /// Commands go through `resolve_room` → `Room` object methods.
     pub(super) async fn execute(
         ctx: RoomCommandContext<'_>,
         command: &RoomActorCommand,
@@ -164,12 +176,148 @@ impl RoomCommandHandler {
                     .await,
                 RoomCommandDelivery::PerRoomMailbox,
             ),
+            RoomActorCommand::HostStart {
+                room_id, user_id, ..
+            } => typed_or_err(
+                gateway
+                    .host_start_in_actor(state, room_id, *user_id, room.clone())
+                    .await,
+                RoomCommandDelivery::PerRoomMailbox,
+            ),
             RoomActorCommand::RemoveUser { room_id, user_id, .. } => typed_or_err(
                 gateway
                     .remove_user_in_actor(state, room_id, *user_id, room.clone())
                     .await,
                 RoomCommandDelivery::PerRoomMailbox,
             ),
+        }
+    }
+
+    /// Execute a command using actor-owned state (migration path).
+    /// Simple control commands (SetLock, SetCycle, SetHidden) modify
+    /// actor_state directly.  Other commands still delegate to the
+    /// gateway `_in_actor` methods, but the gateway also receives the
+    /// actor reference so it can sync state.
+    pub(super) async fn execute_with_actor(
+        mut ctx: RoomCommandContext<'_>,
+        command: &RoomActorCommand,
+    ) -> RoomCommandResult {
+        let room = ctx.room.clone();
+        let state = ctx.state;
+        let gateway = ctx.gateway;
+
+        match command {
+            // ── Direct state modification (migration target) ─────────────
+            RoomActorCommand::SetLock {
+                room_id,
+                locked,
+                actor_user_id,
+                ..
+            } => {
+                let actor_state = ctx.expect_actor_state();
+                actor_state.state.set_locked(*locked);
+                // Side effects via room for backward compat
+                if let Some(ref room) = room {
+                    room.set_locked(*locked);
+                    room.send(Message::LockRoom { lock: *locked }).await;
+                    room.publish_update(PartialRoomData {
+                        lock: Some(*locked),
+                        ..Default::default()
+                    })
+                    .await;
+                }
+                state
+                    .dispatch_plugin_event(PluginEvent::RoomModify {
+                        user_id: *actor_user_id,
+                        room_id: room_id.clone(),
+                        data: serde_json::json!({"action":"lock","value":locked}).to_string(),
+                    })
+                    .await;
+                RoomCommandResult::ok(
+                    RoomCommandPayload::LockChanged {
+                        room_id: room_id.clone(),
+                        locked: *locked,
+                    },
+                    RoomCommandDelivery::PerRoomMailbox,
+                )
+            }
+
+            RoomActorCommand::SetCycle {
+                room_id,
+                cycle,
+                actor_user_id,
+                ..
+            } => {
+                let actor_state = ctx.expect_actor_state();
+                actor_state.state.set_cycle(*cycle);
+                if let Some(ref room) = room {
+                    room.set_cycle(*cycle);
+                    room.send(Message::CycleRoom { cycle: *cycle }).await;
+                    room.publish_update(PartialRoomData {
+                        cycle: Some(*cycle),
+                        ..Default::default()
+                    })
+                    .await;
+                }
+                state
+                    .dispatch_plugin_event(PluginEvent::RoomModify {
+                        user_id: *actor_user_id,
+                        room_id: room_id.clone(),
+                        data: serde_json::json!({"action":"cycle","value":cycle}).to_string(),
+                    })
+                    .await;
+                RoomCommandResult::ok(
+                    RoomCommandPayload::CycleChanged {
+                        room_id: room_id.clone(),
+                        cycle: *cycle,
+                    },
+                    RoomCommandDelivery::PerRoomMailbox,
+                )
+            }
+
+            RoomActorCommand::SetHidden {
+                room_id, hidden, ..
+            } => {
+                let actor_state = ctx.expect_actor_state();
+                actor_state.state.set_hidden(*hidden);
+                if let Some(ref room) = room {
+                    room.set_hidden(*hidden);
+                }
+                state
+                    .dispatch_plugin_event(PluginEvent::RoomModify {
+                        user_id: 0,
+                        room_id: room_id.clone(),
+                        data: serde_json::json!({"action":"hidden","value":hidden}).to_string(),
+                    })
+                    .await;
+                RoomCommandResult::ok(
+                    RoomCommandPayload::HiddenChanged {
+                        room_id: room_id.clone(),
+                        hidden: *hidden,
+                    },
+                    RoomCommandDelivery::PerRoomMailbox,
+                )
+            }
+
+            // ── Delegated to gateway (actor state synced afterward) ──────
+            _ => {
+                let result = Self::execute(
+                    RoomCommandContext::with_room(gateway, state, room.clone().unwrap()),
+                    command,
+                )
+                .await;
+                // After gateway execution, sync actor state from room
+                if result.is_ok() {
+                    if let Some(actor) = ctx.actor.as_mut() {
+                        if let Some(ref room) = room {
+                            *actor.actor_state = Some(
+                                crate::room_actor::actor::RoomActorState::from_room(room).await,
+                            );
+                        }
+                    }
+                }
+                result
+            }
         }
     }
 

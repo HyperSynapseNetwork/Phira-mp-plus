@@ -14,6 +14,7 @@ pub(super) enum RoomCommandKind {
     KickUser,
     StartRoom,
     CancelStart,
+    HostStart,
     SetChart,
     SetReady,
     CancelReady,
@@ -35,6 +36,7 @@ impl RoomCommandKind {
             Self::KickUser => "kick",
             Self::StartRoom => "start",
             Self::CancelStart => "cancel",
+            Self::HostStart => "host_start",
             Self::SetChart => "set_chart",
             Self::SetReady => "set_ready",
             Self::CancelReady => "cancel_ready",
@@ -93,6 +95,11 @@ pub(super) enum RoomActorCommand {
     },
     CancelStart {
         room_id: String,
+        reply: oneshot::Sender<RoomCommandResult>,
+    },
+    HostStart {
+        room_id: String,
+        user_id: i32,
         reply: oneshot::Sender<RoomCommandResult>,
     },
     SetChart {
@@ -155,6 +162,7 @@ impl RoomActorCommand {
             Self::KickUser { .. } => RoomCommandKind::KickUser,
             Self::StartRoom { .. } => RoomCommandKind::StartRoom,
             Self::CancelStart { .. } => RoomCommandKind::CancelStart,
+            Self::HostStart { .. } => RoomCommandKind::HostStart,
             Self::SetChart { .. } => RoomCommandKind::SetChart,
             Self::SetReady { .. } => RoomCommandKind::SetReady,
             Self::CancelReady { .. } => RoomCommandKind::CancelReady,
@@ -176,6 +184,7 @@ impl RoomActorCommand {
             | Self::KickUser { reply, .. }
             | Self::StartRoom { reply, .. }
             | Self::CancelStart { reply, .. }
+            | Self::HostStart { reply, .. }
             | Self::SetChart { reply, .. }
             | Self::SetReady { reply, .. }
             | Self::CancelReady { reply, .. }

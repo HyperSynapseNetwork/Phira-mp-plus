@@ -73,6 +73,9 @@ pub enum RoomCommandPayload {
     RoomStarted {
         room_id: String,
     },
+    HostStarted {
+        room_id: String,
+    },
     CancelResult {
         room_id: String,
         canceled: bool,
@@ -159,6 +162,9 @@ impl RoomCommandPayload {
                 "ok": true, "room_id": room_id,
             }),
             Self::RoomStarted { room_id } => json!({
+                "ok": true, "room_id": room_id,
+            }),
+            Self::HostStarted { room_id } => json!({
                 "ok": true, "room_id": room_id,
             }),
             Self::CancelResult { room_id, canceled } => json!({

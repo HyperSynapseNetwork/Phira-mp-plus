@@ -117,4 +117,76 @@ impl RoomCommandGateway {
             canceled,
         })
     }
+
+    // ── HostStart ─────────────────────────────────────────────────────────
+
+    /// Host-initiated game start. Routes through the per-room mailbox.
+    pub async fn host_start(
+        &self,
+        state: &PlusServerState,
+        room_id: &str,
+        user_id: i32,
+    ) -> Result<Value, String> {
+        let started = Instant::now();
+        let rid = room_id.to_string();
+        let result = self
+            .room_mailbox(&rid, |reply| RoomActorCommand::HostStart {
+                room_id: rid.clone(),
+                user_id,
+                reply,
+            })
+            .await;
+        self.finish_command(
+            state,
+            RoomCommandKind::HostStart.action(),
+            room_id,
+            started,
+            result,
+        )
+        .into_untyped()
+    }
+
+    pub(in crate::room_actor) async fn host_start_in_actor(
+        &self,
+        state: &PlusServerState,
+        room_id: &str,
+        user_id: i32,
+        room_override: Option<Arc<crate::room::Room>>,
+    ) -> Result<RoomCommandPayload, String> {
+        let (_rid, room) = self.resolve_room(state, room_id, room_override).await?;
+        // Validate state
+        if !matches!(
+            &*room.state.read().await,
+            crate::room::InternalRoomState::SelectChart
+        ) {
+            return Err("room is not selecting a chart".to_string());
+        }
+        if room.admin_start_pending() {
+            return Err("administrative start is already in progress".to_string());
+        }
+        if room.chart.read().await.is_none() {
+            return Err("no chart selected".to_string());
+        }
+
+        room.finish_admin_start().await;
+        room.reset_game_time().await;
+        room.send(Message::GameStart { user: user_id }).await;
+        *room.state.write().await = crate::room::InternalRoomState::WaitForReady {
+            started: std::iter::once(user_id).collect(),
+            admin_started: false,
+        };
+        room.on_state_change().await;
+        room.check_all_ready().await;
+
+        state
+            .dispatch_plugin_event(PluginEvent::GameStart {
+                user_id,
+                room_id: room_id.to_string(),
+            })
+            .await;
+
+        Ok(RoomCommandPayload::HostStarted {
+            room_id: room_id.to_string(),
+        })
+    }
 }

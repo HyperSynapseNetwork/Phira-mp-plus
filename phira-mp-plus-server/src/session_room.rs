@@ -428,23 +428,12 @@ pub async fn request_start(user: Arc<User>) -> Result<()> {
         bail!("{}", tl!("start-no-chart-selected"));
     }
     debug!(room = room.id.to_string(), "room wait for ready");
-    room.finish_admin_start().await;
-    room.reset_game_time().await;
-    room.send(Message::GameStart { user: user.id }).await;
-    *room.state.write().await = crate::room::InternalRoomState::WaitForReady {
-        started: std::iter::once(user.id).collect(),
-        admin_started: false,
-    };
-    room.on_state_change().await;
-    room.check_all_ready().await;
-
+    // Route through per-room mailbox for serialized state mutation.
     user.server
-        .dispatch_plugin_event(PluginEvent::GameStart {
-            user_id: user.id,
-            room_id: room.id.to_string(),
-        })
-        .await;
-
+        .room_commands
+        .host_start(&user.server, &room.id.to_string(), user.id)
+        .await
+        .map_err(|e| anyhow!("host start failed: {e}"))?;
     Ok(())
 }
 

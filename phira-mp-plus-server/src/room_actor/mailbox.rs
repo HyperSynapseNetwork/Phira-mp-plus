@@ -124,19 +124,7 @@ impl RoomCommandGateway {
                             let Some(command) = command else {
                                 break;
                             };
-                            let should_stop = gateway
-                                .execute_mailbox_command_with_room(
-                                    &actor.state,
-                                    actor.room().clone(),
-                                    command,
-                                )
-                                .await;
-                            actor.refresh_snapshot().await;
-                            gateway.store_snapshot_if_current(
-                                &worker_room_id,
-                                worker_room_uuid.clone(),
-                                actor.snapshot().clone(),
-                            );
+                            let should_stop = actor.execute_command(command).await;
                             if should_stop {
                                 break;
                             }
@@ -163,7 +151,7 @@ impl RoomCommandGateway {
         Some(tx)
     }
 
-    fn store_snapshot_if_current(
+    pub(super) fn store_snapshot_if_current(
         &self,
         room_id: &str,
         room_uuid: uuid::Uuid,

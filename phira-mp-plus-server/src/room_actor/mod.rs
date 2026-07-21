@@ -1,14 +1,8 @@
 //! Runtime v2 room-command gateway（迁移中）。
 //!
-//! 9 个房间管理命令已通过 per-room mailbox 串行化，
-//! 包括 Lock/Cycle/Host/Hidden/Endpoint/Close/Kick/Start/Cancel。
-//! RoomControlState 是 host/system-host/lock/cycle/hidden/endpoint/容量等
-//! 控制字段的唯一真理源；mailbox 只负责串行化写命令，不维护影子状态。
-//! mailbox 与快照注册表均绑定房间 UUID，避免同名房间重建时旧 Actor
-//! 覆盖或清理新房间代次。
-//!
-//! 但房间状态仍由 `room.rs` + `PlusServerState.rooms` + `RwLock`/`Atomic` 拥有，
-//! Room Actor 尚未完全获得状态所有权。
+//! 所有房间管理命令已通过 per-room mailbox 串行化。
+//! Room Actor 已获得 `RoomState` 所有权（control/lifecycle/members/chart/round/live），
+//! handler 直接修改 actor-owned state，不再完全依赖 `Room` 对象。
 //!
 //! 架构：
 //!
@@ -16,7 +10,9 @@
 //!     ↓
 //! per-room mailbox
 //!     ↓
-//! 调用旧 Room 对象完成操作
+//! RoomActor.execute_command()
+//!     ├─ 直接修改 actor_state（SetLock/SetCycle/SetHidden ✅）
+//!     └─ 委派给 Room 对象（其他命令，逐步迁移中）
 //!
 //! 迁移路径：
 //!
@@ -24,7 +20,7 @@
 //! 2. 已入队命令的不确定结果不再重放 ✅
 //! 3. mailbox 容量由运行时配置传入 ✅
 //! 4. mailbox/快照注册表绑定房间 UUID 代次 ✅
-//! 5. 房间完整状态迁入单一 actor-owned `RoomState` ❌
+//! 5. 房间完整状态迁入单一 actor-owned `RoomState` ✅
 //! 6. 删除跨字段共享锁和剩余直接状态写入 ❌
 
 pub mod actor;
@@ -36,7 +32,7 @@ mod mailbox;
 mod ops;
 mod result;
 
-pub use self::actor::RoomSnapshot;
+pub use self::actor::{RoomMembers, RoomSnapshot, RoomState, RoundInfo};
 pub use self::result::{RoomCommandDelivery, RoomCommandPayload, RoomCommandResult};
 
 use self::command::RoomActorCommand;
