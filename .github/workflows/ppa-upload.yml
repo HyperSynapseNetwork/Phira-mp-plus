@@ -26,19 +26,14 @@ jobs:
           # Also import the public key from keyserver for verification
           gpg --keyserver keyserver.ubuntu.com --recv-keys 1B92CD21EAC1F4C1401F1F25360EE8752C12B3B1 || true
           gpg --list-keys releases@phira-mp-plus.dev
-      - name: Build source package
+      - name: Build and sign source package
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq devscripts dpkg-dev
-          # Build unsigned, then sign separately
-          dpkg-buildpackage -S -d -nc --no-sign
-      - name: Sign source package
-        run: |
-          changes_file=$(ls ../*.source.changes | head -1)
-          echo "Signing: $changes_file"
-          debsign -k1B92CD21EAC1F4C1401F1F25360EE8752C12B3B1 "$changes_file"
+          dpkg-buildpackage -S -d -nc -k"releases@phira-mp-plus.dev"
+          ls -la ../*.{changes,dsc}
       - name: Upload to PPA
         run: |
           sudo apt-get install -y -qq dput
-          changes_file=$(ls ../*.source.changes | head -1)
-          dput ppa:fireflyf09/phira-mp-plus "$changes_file"
+          cd ..
+          dput ppa:fireflyf09/phira-mp-plus phira-mp-plus-server_*.source.changes
