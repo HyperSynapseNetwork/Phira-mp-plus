@@ -11,18 +11,9 @@
 //! ordinary events now use an fsync-before-admission WAL with startup replay and ACK compaction. Touch/Judge durability still terminates at TelemetryBatcher admission until batch commit acknowledgements are wired end-to-end.
 
 use crate::persistence::message::PersistenceEvent;
-use crate::persistence::pipeline::{
-    persist_benchmark_report_if_needed, persist_production_event_if_needed,
-    persist_simulation_event_if_needed, stage_production_telemetry_if_needed, BenchmarkReportStage,
-    PersistenceWriteStage, ProductionTelemetryStage,
-};
 use crate::persistence::stats::{
-    record_benchmark_report_persist_request, record_benchmark_report_persist_skipped,
-    record_db_dispatch_failure, record_db_dispatch_skipped_no_database, record_db_dispatch_success,
     record_dead_letter_failed, record_dead_letter_written, record_dropped, record_processed,
-    record_production_persist_request, record_production_persist_skipped,
-    record_production_telemetry_stage_failed, record_production_telemetry_staged, record_queued,
-    record_simulation_persist_request, record_telemetry_cutover_observation, PersistenceStats,
+    record_queued, record_telemetry_cutover_observation, PersistenceStats,
     TelemetryCutoverObservation,
 };
 use crate::persistence::wal::PersistenceWal;
@@ -30,14 +21,12 @@ use crate::telemetry_batcher::{
     TelemetryBatcher, TelemetryBatcherPolicy, TelemetryBatcherStats, TelemetryCutoverMode,
 };
 use serde_json::json;
-use std::os::unix::fs::OpenOptionsExt;
-use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::io::AsyncWriteExt;
 use tokio::sync::{mpsc, oneshot, Mutex, RwLock};
-use tracing::{debug, info, trace, warn};
+use tracing::{info, warn};
 
 static DEAD_LETTER_FAILURE_REPORTED: AtomicBool = AtomicBool::new(false);
 

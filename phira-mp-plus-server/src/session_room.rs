@@ -9,7 +9,7 @@ use crate::session::{SessionCategory, User};
 use crate::tl;
 use anyhow::{anyhow, bail, Result};
 use phira_mp_common::{
-    JoinRoomResponse, Message, PartialRoomData, RoomEvent, RoomId, ServerCommand,
+    JoinRoomResponse, Message, RoomEvent, RoomId, ServerCommand,
 };
 use std::{
     collections::HashMap,

@@ -196,6 +196,7 @@ impl PersistenceWal {
     /// Uses `statvfs` on Unix; always succeeds on other platforms.
     #[cfg(unix)]
     async fn check_disk_space(&self) -> Result<(), String> {
+        #[allow(unused_imports)]
         use std::os::unix::fs::MetadataExt;
         use std::path::Path;
 
@@ -655,7 +656,7 @@ mod tests {
         assert!(wal.replay_succeeded());
 
         let first_id = wal.admit(make_event("first")).await.unwrap();
-        let second_id = wal.admit(make_event("second")).await.unwrap();
+        let _second_id = wal.admit(make_event("second")).await.unwrap();
         wal.ack(first_id).await.unwrap();
 
         let replay = wal.replay().await.unwrap();
@@ -672,7 +673,7 @@ mod tests {
         let wal = PersistenceWal::new(&path);
 
         wal.replay().await.unwrap();
-        let id = wal.admit(make_event("keep")).await.unwrap();
+        let _id = wal.admit(make_event("keep")).await.unwrap();
         let ack_id = wal.admit(make_event("ack-me")).await.unwrap();
         wal.ack(ack_id).await.unwrap();
 

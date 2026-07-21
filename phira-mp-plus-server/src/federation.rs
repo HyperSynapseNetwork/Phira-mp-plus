@@ -80,13 +80,16 @@ struct Connection {
     /// Channel to send data to the connection's read task.
     tx: mpsc::Sender<Vec<u8>>,
     /// Remote address for diagnostics.
+    #[allow(dead_code)]
     remote_addr: String,
 }
 
 /// Per-listener state.
 struct Listener {
+    #[allow(dead_code)]
     addr: String,
     /// Channel to signal listener shutdown.
+    #[allow(dead_code)]
     shutdown_tx: Option<tokio::sync::oneshot::Sender<()>>,
 }
 
@@ -139,7 +142,7 @@ impl FederationActor {
     }
 
     pub async fn run(&mut self) {
-        use tracing::{error, info, warn};
+        use tracing::{info, warn};
 
         info!("federation actor started");
 

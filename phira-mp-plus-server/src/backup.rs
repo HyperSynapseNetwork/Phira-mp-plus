@@ -191,7 +191,6 @@ mod tests {
 
     #[test]
     fn backup_create_and_verify_roundtrip() {
-        use std::sync::atomic::{AtomicBool, Ordering};
         // Create a mock backup manually and verify it
         let tmp = std::env::temp_dir().join("pmp-backup-roundtrip");
         let data_dir = tmp.join("data");

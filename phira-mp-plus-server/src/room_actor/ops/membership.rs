@@ -9,7 +9,7 @@ use phira_mp_common::{Message, RoomEvent, ServerCommand};
 use serde_json::Value;
 use std::sync::Arc;
 use std::{sync::atomic::Ordering, time::Instant};
-use tracing::{info, warn};
+use tracing::info;
 
 impl RoomCommandGateway {
     /// Kick a user/monitor from a room.
@@ -184,11 +184,11 @@ impl RoomCommandGateway {
         state: &PlusServerState,
         room_id: &str,
         user_id: i32,
-        user_name: &str,
+        _user_name: &str,
         monitor: bool,
         room_override: Option<Arc<crate::room::Room>>,
     ) -> Result<RoomCommandPayload, String> {
-        let (rid, room) = self.resolve_room(state, room_id, room_override).await?;
+        let (_rid, room) = self.resolve_room(state, room_id, room_override).await?;
 
         // Check capacity
         let current_count = room.users().await.len();

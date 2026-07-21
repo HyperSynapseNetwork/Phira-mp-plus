@@ -68,6 +68,7 @@ struct ChildTask {
 }
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub(crate) struct SupervisorFailure {
     pub task: String,
     pub critical: bool,
@@ -75,6 +76,7 @@ pub(crate) struct SupervisorFailure {
     pub observed_at_ms: u64,
 }
 
+#[allow(dead_code)]
 pub(crate) enum SupervisorCmd {
     Status {
         reply: oneshot::Sender<SupervisorStatus>,
@@ -98,6 +100,7 @@ pub(crate) enum SupervisorCmd {
 }
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub(crate) struct SupervisorStatus {
     pub shutdown_requested: bool,
     pub degraded: bool,

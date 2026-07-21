@@ -92,6 +92,9 @@ pub(crate) fn init_session_mailbox(session: &Arc<Session>) -> mpsc::Sender<Sessi
 /// A global atomic counter for session command tracing.
 static NEXT_COMMAND_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 
+/// Command envelope metadata.
+/// reserved for future diagnostics/metrics integration.
+#[allow(dead_code)]
 pub(crate) struct CommandMeta {
     pub command_id: u64,
     pub created_at_ms: u64,

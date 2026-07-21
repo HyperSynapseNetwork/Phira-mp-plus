@@ -49,7 +49,7 @@ impl RoomCommandGateway {
         chart_name: &str,
         room_override: Option<Arc<crate::room::Room>>,
     ) -> Result<RoomCommandPayload, String> {
-        let (rid, room) = self.resolve_room(state, room_id, room_override).await?;
+        let (_rid, room) = self.resolve_room(state, room_id, room_override).await?;
         // Validate state
         let room_state = room.state.read().await;
         if !matches!(*room_state, crate::room::InternalRoomState::SelectChart) {
@@ -106,7 +106,7 @@ impl RoomCommandGateway {
         user_id: i32,
         room_override: Option<Arc<crate::room::Room>>,
     ) -> Result<RoomCommandPayload, String> {
-        let (rid, room) = self.resolve_room(state, room_id, room_override).await?;
+        let (_rid, room) = self.resolve_room(state, room_id, room_override).await?;
         {
             let mut guard = room.state.write().await;
             if let crate::room::InternalRoomState::WaitForReady { ref mut started, .. } = *guard {
@@ -155,7 +155,7 @@ impl RoomCommandGateway {
         user_id: i32,
         room_override: Option<Arc<crate::room::Room>>,
     ) -> Result<RoomCommandPayload, String> {
-        let (rid, room) = self.resolve_room(state, room_id, room_override).await?;
+        let (_rid, room) = self.resolve_room(state, room_id, room_override).await?;
         let was_host = {
             // Peek at host outside lock — check_host checks control lock
             let control = room.control_snapshot();
@@ -241,7 +241,7 @@ impl RoomCommandGateway {
         full_combo: bool,
         room_override: Option<Arc<crate::room::Room>>,
     ) -> Result<RoomCommandPayload, String> {
-        let (rid, room) = self.resolve_room(state, room_id, room_override).await?;
+        let (_rid, room) = self.resolve_room(state, room_id, room_override).await?;
         let record = crate::server::Record {
             id: 0,
             player: user_id,

@@ -395,6 +395,7 @@ mod tests {
         assert!(reject_symlink_components(Path::new("/safe/../../../tmp/evil")).is_err());
     }
 
+    #[test]
     fn reject_symlink_components_works() {
         assert!(reject_symlink_components(Path::new("/safe/path")).is_ok());
         assert!(reject_symlink_components(Path::new("/unsafe/../path")).is_err());

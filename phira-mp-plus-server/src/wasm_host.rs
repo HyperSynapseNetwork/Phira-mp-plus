@@ -582,11 +582,6 @@ mod tests {
         })
     }
 
-    /// Load the test WASM component.  Panics on failure (test infrastructure issue).
-    fn load_component() -> WitPluginComponent {
-        try_load_component().expect("WitPluginComponent::from_bytes_ctx should succeed")
-    }
-
     /// Non-panicking version for tests that may run with outdated WIT fixtures.
     fn try_load_component() -> Result<WitPluginComponent, String> {
         let bytes = load_wasm_bytes();
