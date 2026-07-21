@@ -13,6 +13,7 @@
 use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
 use rustls::pki_types::{CertificateDer, PrivateKeyDer, ServerName, UnixTime};
 use rustls::{ClientConfig, DigitallySignedStruct, Error, ServerConfig};
+use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use tokio::io::AsyncReadExt;
@@ -243,15 +244,24 @@ fn extract_dns_name(addr: &str) -> Result<ServerName<'static>, String> {
         .map_err(|e| format!("invalid TLS server name '{host}': {e}"))
 }
 
+fn tls_protocol_versions(min_version: &Option<String>) -> Result<Vec<rustls::ProtocolVersion>, String> {
+    match min_version.as_deref() {
+        None | Some("1.2") => Ok(vec![rustls::ProtocolVersion::TLSv1_2, rustls::ProtocolVersion::TLSv1_3]),
+        Some("1.3") => Ok(vec![rustls::ProtocolVersion::TLSv1_3]),
+        Some(other) => Err(format!("unsupported min TLS version: {other}")),
+    }
+}
+
 fn build_client_tls_config(tls_opts: &FederationTlsOpts) -> Result<Arc<ClientConfig>, String> {
     let root_store = rustls::RootCertStore::from_iter(
         webpki_roots::TLS_SERVER_ROOTS.iter().cloned(),
     );
+    let versions = tls_protocol_versions(&tls_opts.min_tls_version)?;
 
     let builder = ClientConfig::builder_with_provider(
         rustls::crypto::ring::default_provider().into(),
     )
-    .with_safe_default_protocol_versions()
+    .with_protocol_versions(&versions)
     .map_err(|e| format!("protocol versions: {e}"))?
     .with_root_certificates(root_store);
 
@@ -276,6 +286,36 @@ fn build_client_tls_config(tls_opts: &FederationTlsOpts) -> Result<Arc<ClientCon
     Ok(Arc::new(config))
 }
 
+/// Extract peer identity from TLS session: (cert_sha256, ca_sha256).
+fn peer_identity(
+    tls_stream: &tokio_rustls::TlsStream<TcpStream>,
+) -> (String, String) {
+    let peer_certs = tls_stream.get_ref().1.peer_certificates().unwrap_or_default();
+    let cert_id = peer_certs.first().map(|c| {
+        let h = Sha256::digest(&c.0);
+        h.iter().map(|b| format!("{:02x}", b)).collect::<String>()
+    }).unwrap_or_default();
+    let ca_id = if peer_certs.len() > 1 {
+        let h = Sha256::digest(&peer_certs[1].0);
+        h.iter().map(|b| format!("{:02x}", b)).collect::<String>()
+    } else {
+        cert_id.clone()
+    };
+    (cert_id, ca_id)
+}
+
+/// Check that the peer certificate's CA hash is in the expected list.
+fn check_expected_ca(expected_ca_ids: &[String], ca_id: &str) -> Result<(), String> {
+    if expected_ca_ids.is_empty() {
+        return Ok(());
+    }
+    if expected_ca_ids.iter().any(|id| id == ca_id) {
+        Ok(())
+    } else {
+        Err(format!("peer CA {ca_id} not in expected CA list"))
+    }
+}
+
 fn build_server_tls_config(tls_opts: &FederationTlsOpts) -> Result<Arc<ServerConfig>, String> {
     let cert_pem = tls_opts
         .local_cert_chain
@@ -288,10 +328,11 @@ fn build_server_tls_config(tls_opts: &FederationTlsOpts) -> Result<Arc<ServerCon
     let certs = parse_pem_certs(cert_pem)?;
     let key = parse_pem_key(key_pem)?;
 
+    let versions = tls_protocol_versions(&tls_opts.min_tls_version)?;
     let builder = ServerConfig::builder_with_provider(
         rustls::crypto::ring::default_provider().into(),
     )
-    .with_safe_default_protocol_versions()
+    .with_protocol_versions(&versions)
     .map_err(|e| format!("protocol versions: {e}"))?;
 
     let server_config = if tls_opts.verify_peer {
@@ -336,6 +377,10 @@ async fn connect_with_tls(
         .connect(dns_name, stream)
         .await
         .map_err(|e| format!("TLS handshake to {addr}: {e}"))?;
+
+    // Extract peer identity and verify expected CA.
+    let (_cert_id, ca_id) = peer_identity(&tls_stream);
+    check_expected_ca(&tls_opts.expected_ca_ids, &ca_id)?;
 
     let (data_tx, data_rx) = mpsc::channel::<Vec<u8>>(64);
     let (close_tx, close_rx) = oneshot::channel();
@@ -408,6 +453,7 @@ async fn accept_loop(
                         tokio::spawn(async move {
                             match acceptor.accept(stream).await {
                                 Ok(tls_stream) => {
+                                        let (cert_id, ca_id) = peer_identity(&tls_stream);
                                     let (data_tx, data_rx) = mpsc::channel::<Vec<u8>>(64);
                                     let (_close_tx, close_rx) = oneshot::channel::<()>();
 
@@ -417,8 +463,8 @@ async fn accept_loop(
                                         cb("federation:accept".into(), serde_json::json!({
                                             "listener_handle": listener_handle,
                                             "conn_handle": conn_handle,
-                                            "peer_pubkey": "",
-                                            "peer_ca_id": "",
+                                            "peer_pubkey": cert_id,
+                                            "peer_ca_id": ca_id,
                                             "remote_addr": peer,
                                         }));
                                     }
