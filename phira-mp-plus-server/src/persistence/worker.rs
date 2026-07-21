@@ -77,25 +77,27 @@ async fn report_dead_letter_durability_failure(error: String) {
     }
 }
 
+/// Returns true if the event was durably stored (dead-letter written successfully).
 async fn preserve_failed_event(
+    wal_id: uuid::Uuid,
     path: Option<&Path>,
     event: &PersistenceEvent,
     stage: &str,
     error: &str,
     stats: &Arc<RwLock<PersistenceStats>>,
-) {
+) -> bool {
     let kind = event.kind();
     let simulation = event.is_simulation();
     let summary = event.summary();
     let Some(payload) = event.dead_letter_payload() else {
-        return;
+        return false;
     };
     let Some(path) = path else {
         let durability_error =
             "dead-letter journal disabled; failed event was not preserved".to_string();
         record_dead_letter_failed(stats, kind, simulation, summary, durability_error.clone()).await;
         report_dead_letter_durability_failure(durability_error).await;
-        return;
+        return false;
     };
     let timestamp_ms = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -103,7 +105,8 @@ async fn preserve_failed_event(
         .unwrap_or(0);
     let record = json!({
         "schema_version": 1,
-        "dead_letter_id": uuid::Uuid::new_v4().to_string(),
+        "dead_letter_id": wal_id.to_string(),  // reuse wal_id as stable dead_letter_id
+        "wal_id": wal_id.to_string(),
         "failed_at_ms": timestamp_ms,
         "stage": stage,
         "kind": kind,
@@ -115,6 +118,7 @@ async fn preserve_failed_event(
     match append_dead_letter(path, &record).await {
         Ok(()) => {
             record_dead_letter_written(stats, event.kind(), simulation, event.summary()).await;
+            true
         }
         Err(dead_letter_error) => {
             let durability_error =
@@ -128,6 +132,7 @@ async fn preserve_failed_event(
             )
             .await;
             report_dead_letter_durability_failure(durability_error).await;
+            false
         }
     }
 }
@@ -240,14 +245,18 @@ async fn process_worker_loop(
                 .await;
             }
             BenchmarkReportStage::Failed { elapsed_ms, error } => {
-                preserve_failed_event(
+                if preserve_failed_event(
+                    wal_id,
                     worker_dead_letter_path.as_deref(),
                     &event,
                     "benchmark_report",
                     &error,
                     worker_stats,
                 )
-                .await;
+                .await
+                {
+                    durable = true;
+                }
                 record_benchmark_report_persist_skipped(worker_stats).await;
                 record_db_dispatch_failure(
                     worker_stats,
@@ -280,14 +289,18 @@ async fn process_worker_loop(
                         elapsed_ms,
                         error,
                     } => {
-                        preserve_failed_event(
+                        if preserve_failed_event(
+                            wal_id,
                             worker_dead_letter_path.as_deref(),
                             &event,
                             "simulation",
                             &error,
                             worker_stats,
                         )
-                        .await;
+                        .await
+                        {
+                            durable = true;
+                        }
                         record_simulation_persist_request(worker_stats).await;
                         record_db_dispatch_failure(worker_stats, pipeline, elapsed_ms, error).await;
                     }
@@ -300,14 +313,18 @@ async fn process_worker_loop(
                                 record_production_telemetry_staged(worker_stats).await;
                             }
                             ProductionTelemetryStage::Failed(error) => {
-                                preserve_failed_event(
+                                if preserve_failed_event(
+                                    wal_id,
                                     worker_dead_letter_path.as_deref(),
                                     &event,
                                     "telemetry_stage",
                                     &error,
                                     worker_stats,
                                 )
-                                .await;
+                                .await
+                                {
+                                    durable = true;
+                                }
                                 record_production_telemetry_stage_failed(worker_stats, error).await;
                             }
                             ProductionTelemetryStage::NotTelemetry => {
@@ -330,14 +347,18 @@ async fn process_worker_loop(
                                         elapsed_ms,
                                         error,
                                     } => {
-                                        preserve_failed_event(
+                                        if preserve_failed_event(
+                                            wal_id,
                                             worker_dead_letter_path.as_deref(),
                                             &event,
                                             "production",
                                             &error,
                                             worker_stats,
                                         )
-                                        .await;
+                                        .await
+                                        {
+                                            durable = true;
+                                        }
                                         record_production_persist_request(worker_stats).await;
                                         record_db_dispatch_failure(
                                             worker_stats,
