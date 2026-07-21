@@ -70,7 +70,7 @@ EXPOSE 12346 12347
 USER pmp
 WORKDIR /var/lib/pmp
 
-# Health check: the /health/live endpoint responds 200 when the process is alive.
+# Health check: verifies binary runs and config loads.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
     CMD ["/usr/local/bin/phira-mp-plus-server", "--version"]
 
