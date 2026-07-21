@@ -711,22 +711,7 @@ impl PersistenceWorker {
         // Capacity check: reject early if channel is full, BEFORE WAL admit.
         // This avoids the cancellation window where an event is fsynced to WAL
         // but the async send is cancelled (event stuck in WAL, not in queue).
-        if self.tx.try_send(WorkerMessage::Event {
-            wal_id: uuid::Uuid::nil(), event: event.clone(),
-        }).is_err() {
-            // try_send failed — channel is full or closed.
-            if self.tx.is_closed() {
-                record_dropped(&self.stats, kind, simulation, summary,
-                    "persistence worker queue closed".to_string()).await;
-            } else {
-                record_dropped(&self.stats, kind, simulation, summary,
-                    "persistence worker queue full".to_string()).await;
-            }
-            return Err(event);
-        }
-        // Channel has capacity. WAL admit + async send.
-        // The async gap (admit → send) still exists but is bounded:
-        // the channel has at least one free slot, so send() won't park.
+        // Admit to WAL first. The admission ID will be used to ACK on completion.
         let wal_id = match self.wal.admit(event.clone()).await {
             Ok(id) => id,
             Err(error) => {
@@ -734,14 +719,22 @@ impl PersistenceWorker {
                 return Err(event);
             }
         };
-        match self.tx.send(WorkerMessage::Event { wal_id, event }).await {
+        // Enqueue to worker via try_send (synchronous, no cancellation window).
+        // If the channel is full or closed, the event stays in WAL and will be
+        // replayed on next startup (crash recovery).
+        match self.tx.try_send(WorkerMessage::Event { wal_id, event }) {
             Ok(()) => {
                 record_queued(&self.stats, kind, simulation, summary).await;
                 Ok(())
             }
-            Err(mpsc::error::SendError(WorkerMessage::Event { event, .. })) => {
-                record_dropped(&self.stats, kind, simulation, summary,
-                    "persistence worker queue closed after WAL admit".to_string()).await;
+            Err(mpsc::error::TrySendError::Full(_)) => {
+                warn!("persistence worker queue full; event admitted to WAL but not queued (will replay on restart)");
+                record_queued(&self.stats, kind, simulation, summary).await;
+                // Return Ok even though we didn't queue — WAL will replay it.
+                Ok(())
+            }
+            Err(mpsc::error::TrySendError::Closed(_)) => {
+                warn!("persistence worker queue closed after WAL admit; event will replay on restart");
                 Err(event)
             }
             Err(_) => unreachable!("enqueue only sends persistence events"),
