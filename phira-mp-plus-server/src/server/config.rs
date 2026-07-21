@@ -519,6 +519,15 @@ impl PlusConfig {
                 "runtime_v2.persistence_wal_path 不能为空".into(),
             ));
         }
+        // Validate WAL and dead-letter paths do not conflict.
+        if let Err(e) = crate::persistence::wal::PersistenceWal::validate_paths_not_equal(
+            runtime.persistence_dead_letter_path.as_deref().map(std::path::Path::new),
+            std::path::Path::new(&runtime.persistence_wal_path),
+        ) {
+            return Err(AppError::ConfigValidation(format!(
+                "runtime_v2 WAL/dead-letter 路径冲突: {e}"
+            )));
+        }
         let telemetry = &runtime.telemetry_batcher;
         if !(16..=1_000_000).contains(&telemetry.queue_capacity)
             || telemetry.max_items_per_batch == 0

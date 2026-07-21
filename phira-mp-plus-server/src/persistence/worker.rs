@@ -401,6 +401,15 @@ async fn process_worker_loop(
                 "WAL entry not ACKed (non-durable outcome); will replay on restart"
             );
         }
+
+        // Auto-compaction: trigger when ACK ratio drops below threshold.
+        if worker_wal.should_compact() {
+            if let Err(e) = worker_wal.compact().await {
+                tracing::warn!(error = %e, "auto-compaction failed");
+            } else {
+                tracing::debug!("auto-compaction completed");
+            }
+        }
     }
 }
 
