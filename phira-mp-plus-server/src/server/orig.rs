@@ -202,6 +202,9 @@ impl PlusServer {
         let db_url = config.database_url.clone();
         let allow_db_degraded = config.allow_database_degraded_mode;
         let db_manager = crate::db::DbManager::new(config.database_url.as_deref()).await;
+        // Register DB globally BEFORE PersistenceWorker spawns, so that
+        // WAL replay and telemetry batcher can access the database from the start.
+        let _ = crate::internal_hooks::DB.set(db_manager.clone());
         let db_active = db_manager.is_active();
         if db_url.as_deref().is_some_and(|u| !u.trim().is_empty()) && !db_active {
             if matches!(
