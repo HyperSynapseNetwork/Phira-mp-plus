@@ -456,7 +456,7 @@ async fn connection_read_task(
     mut data_rx: mpsc::Receiver<Vec<u8>>,
     mut close_rx: oneshot::Receiver<()>,
     event_cb: Option<Arc<dyn Fn(String, serde_json::Value) + Send + Sync>>,
-    remote_addr: String,
+    _remote_addr: String,
 ) {
     use tokio::io::AsyncWriteExt;
 
@@ -570,9 +570,8 @@ impl ServerCertVerifier for AcceptAllVerifier {
         cert: &CertificateDer<'_>,
         dss: &DigitallySignedStruct,
     ) -> Result<HandshakeSignatureValid, Error> {
-        rustls::crypto::ring::default_provider()
-            .signature_verification_algorithms
-            .verify_tls12_signature(message, cert, dss)
+        let algs = &rustls::crypto::ring::default_provider().signature_verification_algorithms;
+        rustls::crypto::verify_tls12_signature(message, cert, dss, algs)
     }
 
     fn verify_tls13_signature(
@@ -581,8 +580,7 @@ impl ServerCertVerifier for AcceptAllVerifier {
         cert: &CertificateDer<'_>,
         dss: &DigitallySignedStruct,
     ) -> Result<HandshakeSignatureValid, Error> {
-        rustls::crypto::ring::default_provider()
-            .signature_verification_algorithms
-            .verify_tls13_signature(message, cert, dss)
+        let algs = &rustls::crypto::ring::default_provider().signature_verification_algorithms;
+        rustls::crypto::verify_tls13_signature(message, cert, dss, algs)
     }
 }
