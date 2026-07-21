@@ -285,7 +285,6 @@ fn build_client_tls_config(tls_opts: &FederationTlsOpts) -> Result<Arc<ClientCon
 
     Ok(Arc::new(config))
 }
-}
 
 /// Check that the peer certificate's CA hash is in the expected list.
 fn check_expected_ca(expected_ca_ids: &[String], ca_id: &str) -> Result<(), String> {
