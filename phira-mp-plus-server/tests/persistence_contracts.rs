@@ -176,6 +176,7 @@ fn simulation_scope_in_persistence_payload() {
     // but we can verify the enum/struct contract holds.
     let _item = TelemetryItem {
         event_id: "event-test".to_string(),
+        wal_id: None,
         kind: TelemetryKind::Touch,
         room_id: None,
         round_id: None,
