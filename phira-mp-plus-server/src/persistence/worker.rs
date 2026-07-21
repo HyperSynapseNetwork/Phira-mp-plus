@@ -194,6 +194,12 @@ async fn process_worker_loop(
     };
     use tracing::{debug, trace, warn};
 
+    // Pending ACK retry queue. When worker_wal.ack() fails, the wal_id is
+    // queued here for retry on subsequent iterations. Flush/Shutdown drain
+    // this queue before returning.
+    let mut pending_acks: std::collections::VecDeque<(uuid::Uuid, u32)> =
+        std::collections::VecDeque::new();
+
     loop {
         let message = if let Some((wal_id, event)) = replay.pop_front() {
             WorkerMessage::Event { wal_id, event }
@@ -203,9 +209,37 @@ async fn process_worker_loop(
             };
             message
         };
+        // Retry pending WAL ACKs (up to 5 per iteration).
+        for _ in 0..5 {
+            let Some((retry_id, retry_attempt)) = pending_acks.front().copied() else {
+                break;
+            };
+            if retry_attempt > 10 {
+                warn!(wal_id = %retry_id, "ACK retry exhausted; giving up");
+                pending_acks.pop_front();
+                continue;
+            }
+            match worker_wal.ack(retry_id).await {
+                Ok(()) => {
+                    debug!(wal_id = %retry_id, "ACK retry succeeded");
+                    pending_acks.pop_front();
+                }
+                Err(e) => {
+                    trace!(wal_id = %retry_id, attempt = %retry_attempt, error = %e, "ACK retry failed");
+                    // Move to back with incremented attempt count
+                    if let Some(mut entry) = pending_acks.pop_front() {
+                        entry.1 = entry.1.saturating_add(1);
+                        pending_acks.push_back(entry);
+                    }
+                }
+            }
+        }
+
         let (wal_id, event) = match message {
             WorkerMessage::Event { wal_id, event } => (wal_id, event),
             WorkerMessage::Flush { timeout, reply } => {
+                // Drain pending ACKs before flushing telemetry.
+                drain_pending_acks(&worker_wal, &mut pending_acks).await;
                 let result = worker_telemetry.flush(timeout).await;
                 if let Err(error) = &result {
                     warn!(%error, "telemetry flush failed; persistence worker remains active");
@@ -214,6 +248,8 @@ async fn process_worker_loop(
                 continue;
             }
             WorkerMessage::Shutdown { timeout, reply } => {
+                // Drain pending ACKs before shutting down.
+                drain_pending_acks(&worker_wal, &mut pending_acks).await;
                 let result = worker_telemetry.shutdown(timeout).await;
                 let should_stop = result.is_ok();
                 if let Err(error) = &result {
@@ -415,6 +451,7 @@ async fn process_worker_loop(
         if durable {
             if let Err(error) = worker_wal.ack(wal_id).await {
                 crate::supervisor_actor::report_critical_failure("persistence-wal-ack", error).await;
+                pending_acks.push_back((wal_id, 0));
             }
         } else {
             tracing::warn!(
@@ -429,6 +466,28 @@ async fn process_worker_loop(
                 tracing::warn!(error = %e, "auto-compaction failed");
             } else {
                 tracing::debug!("auto-compaction completed");
+            }
+        }
+    }
+}
+
+/// Drain the pending ACK queue, retrying each entry until success or exhausted.
+async fn drain_pending_acks(
+    worker_wal: &Arc<PersistenceWal>,
+    pending_acks: &mut std::collections::VecDeque<(uuid::Uuid, u32)>,
+) {
+    use tracing::{debug, warn};
+    while let Some((id, attempt)) = pending_acks.pop_front() {
+        match worker_wal.ack(id).await {
+            Ok(()) => debug!(wal_id = %id, "pending ACK drained"),
+            Err(e) => {
+                if attempt > 10 {
+                    warn!(wal_id = %id, "pending ACK exhausted during drain");
+                } else {
+                    warn!(wal_id = %id, error = %e, "pending ACK drain failed, will retry");
+                    pending_acks.push_back((id, attempt + 1));
+                    break; // stop draining on failure, retry next iteration
+                }
             }
         }
     }
