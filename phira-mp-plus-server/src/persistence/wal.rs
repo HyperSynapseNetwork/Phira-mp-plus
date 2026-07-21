@@ -304,6 +304,16 @@ impl PersistenceWal {
         let bytes = match tokio::fs::read(&self.path).await {
             Ok(bytes) => bytes,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                // If instance marker exists but WAL is missing, this is a
+                // consistency error (not a first-start scenario).
+                let marker = self.path.with_extension("wal.instance");
+                if marker.exists() {
+                    return Err(format!(
+                        "WAL instance marker exists at {} but WAL file {} is missing",
+                        marker.display(),
+                        self.path.display()
+                    ));
+                }
                 self.replay_succeeded.store(true, Ordering::Release);
                 return Ok(Vec::new());
             }
@@ -313,6 +323,20 @@ impl PersistenceWal {
         let mut admitted = Vec::new();
         let mut acked = HashSet::new();
         let mut has_truncated = false;
+
+        // If the WAL is empty but the instance marker exists, this is a
+        // consistency error (truncation or corruption).
+        if bytes.is_empty() {
+            let marker = self.path.with_extension("wal.instance");
+            if marker.exists() {
+                return Err(format!(
+                    "WAL instance marker exists but WAL file {} is empty",
+                    self.path.display()
+                ));
+            }
+            self.replay_succeeded.store(true, Ordering::Release);
+            return Ok(Vec::new());
+        }
 
         let mut lines: Vec<&[u8]> = bytes.split(|b| *b == b'\n').collect();
         // If the last byte was not a newline, the final segment is a truncated
