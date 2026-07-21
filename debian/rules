@@ -3,7 +3,7 @@
 	dh $@
 
 override_dh_auto_build:
-	cargo build --locked --release --workspace
+	cargo build --release --workspace
 
 override_dh_auto_test:
 	echo "tests skipped during build"
