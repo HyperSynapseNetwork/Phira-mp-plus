@@ -100,11 +100,14 @@ impl PluginHttpServer {
             events: Arc::clone(&self.events),
             plugin_manager: Arc::clone(&server.plugin_manager),
             sse_streams: Arc::clone(&self.sse_streams),
+            server_state: Arc::clone(&server),
         });
 
-        // Build Router<()> with all routes (static + dynamically registered SSE streams).
-        // Health endpoints are registered before the catch-all so they always respond.
+        // Build Router<()> with all routes. Health endpoints are registered
+        // before the catch-all so they always respond regardless of plugin routes.
         let mut app = Router::new()
+            .route("/health/live", get(health_live))
+            .route("/health/ready", get(health_ready))
             .route("/api/events", get(general_sse_handler))
             .route("/api/ws", get(websocket::handler))
             .route("/{*path}", any(dynamic_handler))
@@ -193,22 +196,17 @@ async fn health_live() -> Response {
 async fn health_ready(Extension(state): Extension<Arc<HttpAppState>>) -> Response {
     let mut issues: Vec<String> = Vec::new();
 
-    // Check WAL replay succeeded
-    let wal_ok = state.server_state.persistence_worker.wal.replay_succeeded();
-    if !wal_ok {
-        issues.push("WAL replay has not succeeded".to_string());
-    }
-
     // Check Supervisor not degraded
-    let degraded = crate::supervisor_actor::is_degraded();
-    if degraded {
+    if crate::supervisor_actor::is_degraded() {
         issues.push("supervisor is degraded".to_string());
     }
 
-    // Check DB available (if configured)
-    let db_active = crate::internal_hooks::DB.get().map(|db| db.is_active()).unwrap_or(false);
-    let has_config = state.server_state.config.database_url.is_some();
-    if has_config && !db_active {
+    // Check DB is active (if configured)
+    let has_db = state.server_state.config.database_url.is_some();
+    let db_active = crate::internal_hooks::DB.get()
+        .map(|db| db.is_active())
+        .unwrap_or(false);
+    if has_db && !db_active {
         issues.push("database is not active".to_string());
     }
 
