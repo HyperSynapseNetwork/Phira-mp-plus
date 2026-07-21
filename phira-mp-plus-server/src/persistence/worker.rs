@@ -239,7 +239,7 @@ async fn process_worker_loop(
             WorkerMessage::Event { wal_id, event } => (wal_id, event),
             WorkerMessage::Flush { timeout, reply } => {
                 // Drain pending ACKs before flushing telemetry.
-                drain_pending_acks(&worker_wal, &mut pending_acks).await;
+                drain_pending_acks(worker_wal, &mut pending_acks).await;
                 let result = worker_telemetry.flush(timeout).await;
                 if let Err(error) = &result {
                     warn!(%error, "telemetry flush failed; persistence worker remains active");
@@ -249,7 +249,7 @@ async fn process_worker_loop(
             }
             WorkerMessage::Shutdown { timeout, reply } => {
                 // Drain pending ACKs before shutting down.
-                drain_pending_acks(&worker_wal, &mut pending_acks).await;
+                drain_pending_acks(worker_wal, &mut pending_acks).await;
                 let result = worker_telemetry.shutdown(timeout).await;
                 let should_stop = result.is_ok();
                 if let Err(error) = &result {
