@@ -207,8 +207,10 @@ impl WitPluginComponent {
         let component = wasmtime::component::Component::new(&engine, wasm_bytes)
             .map_err(|e| format!("component compile: {e}"))?;
         let mut linker = wasmtime::component::Linker::<WitHostState>::new(&engine);
-        wit_abi::PhiraPluginV2::add_to_linker(&mut linker, |state| &mut state.host)
-            .map_err(|e| format!("linker setup: {e}"))?;
+        wit_abi::PhiraPluginV2::add_to_linker::<WitHostState, wasmtime::component::HasSelf<crate::wit_host::WitPluginHost>>(
+            &mut linker,
+            |state: &mut WitHostState| &mut state.host,
+        ).map_err(|e| format!("linker setup: {e}"))?;
         let ctx = Self::build_context_from_services(&services, &plugin_name)?;
         Self::new_with_context(engine, component, linker, ctx, plugin_name, runtime)
     }
@@ -237,8 +239,10 @@ impl WitPluginComponent {
         let component = wasmtime::component::Component::new(&engine, wasm_bytes)
             .map_err(|e| format!("component compile: {e}"))?;
         let mut linker = wasmtime::component::Linker::<WitHostState>::new(&engine);
-        wit_abi::PhiraPluginV2::add_to_linker(&mut linker, |state| &mut state.host)
-            .map_err(|e| format!("linker setup: {e}"))?;
+        wit_abi::PhiraPluginV2::add_to_linker::<WitHostState, wasmtime::component::HasSelf<crate::wit_host::WitPluginHost>>(
+            &mut linker,
+            |state: &mut WitHostState| &mut state.host,
+        ).map_err(|e| format!("linker setup: {e}"))?;
         Self::new_with_context(engine, component, linker, ctx, plugin_name, runtime)
     }
 
