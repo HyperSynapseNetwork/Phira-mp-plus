@@ -637,13 +637,17 @@ impl PersistenceWorker {
         crate::supervisor_actor::spawn_critical("persistence-worker", async move {
             // Check WAL instance consistency before replay to detect
             // accidental deletion/truncation of an already-initialized WAL.
+            // If consistency check fails, enter degraded mode instead of replay.
+            let mut replay_ok = true;
             if let Err(e) = worker_wal.check_instance_consistency().await {
                 crate::supervisor_actor::report_critical_failure(
                     "persistence-wal-consistency",
                     e,
                 )
                 .await;
+                replay_ok = false;
             }
+            if replay_ok {
             match worker_wal.replay().await {
                 Ok(events) => {
                     let mut replay: std::collections::VecDeque<(uuid::Uuid, PersistenceEvent)> =
@@ -668,6 +672,10 @@ impl PersistenceWorker {
                     // shutdown/control messages; all events are rejected.
                     process_degraded_worker_loop(&mut rx, &worker_telemetry).await;
                 }
+            }
+            } else {
+                // Instance consistency check failed — enter degraded mode.
+                process_degraded_worker_loop(&mut rx, &worker_telemetry).await;
             }
         });
 
