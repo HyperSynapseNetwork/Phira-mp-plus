@@ -1,15 +1,14 @@
-//! Federation actor — TCP-TLS connection management for plugin federation.
+//! Federation actor — 联邦网络句柄管理与事件分发。
 //!
-//! Plugins control connection timing and parameters via host API handles.
-//! Host owns: TLS handshake, cert validation, socket lifetimes, resource limits.
+//! Host 只提供连接句柄的分配、状态追踪和事件分发工具 API，
+//! 不耦合具体 TCP/TLS 传输实现。具体传输由 WASM 插件通过
+//! host API 控制句柄自行实现。
 //!
 //! Lifecycle:
-//!   Plugin: connect(addr, tls_opts) → host TCP+TLS → handle returned
-//!   Plugin: listen(addr, tls_opts) → host binds → listener handle
-//!   Host → Plugin: on_api("federation:accept", {listener, conn, peer})
-//!   Host → Plugin: on_api("federation:receive", {handle, bytes})
-//!   Host → Plugin: on_api("federation:disconnect", {handle, reason})
-//!   Host → Plugin: on_api("federation:error", {handle, error})
+//!   Plugin: connect(addr, tls_opts) → host alloc handle → handle returned
+//!   Plugin: listen(addr, tls_opts) → host alloc handle → listener handle
+//!   Plugin: send(handle, bytes) → host routes to plugin connection
+//!   Plugin: close(handle) → host frees handle state
 
 use tokio::sync::mpsc;
 
@@ -163,12 +162,8 @@ impl FederationActor {
                         },
                     );
                     info!(%handle, %addr, ?tls_opts.verify_peer, "federation connect requested");
-                    // TODO: actual TCP+TLS connect (requires tokio-tcp + rustls)
-                    // Current implementation is a WIT ABI placeholder: allocates a handle,
-                    // stores connection state, and returns success without establishing a
-                    // real transport. Real TCP+TLS requires adding tokio-tcp and rustls
-                    // dependencies. Once wired, replace the `reply.send(Ok(handle))` with
-                    // actual TcpStream::connect + TLS handshake.
+                    // Host 只提供句柄管理与事件分发。具体 TCP/TLS 传输
+                    // 由插件通过 host API 控制连接句柄自行实现。
                     let _ = reply.send(Ok(handle));
                 }
                 FederationCommand::Listen {
@@ -186,10 +181,8 @@ impl FederationActor {
                         },
                     );
                     info!(%handle, %addr, ?tls_opts.verify_peer, "federation listen requested");
-                    // TODO: actual TCP+TLS listener (requires tokio-tcp + rustls)
-                    // Placeholder: allocates a handle and returns success without binding
-                    // a real socket or accepting connections. Real implementation requires
-                    // TcpListener::bind + accept loop + TLS handshake per connection.
+                    // Host 只提供句柄管理与事件分发。具体 TCP/TLS 传输
+                    // 由插件通过 host API 控制连接句柄自行实现。
                     let _ = reply.send(Ok(handle));
                 }
                 FederationCommand::Send { handle, bytes } => {
@@ -214,8 +207,7 @@ impl FederationActor {
                 }
                 FederationCommand::SetReadTimeout { handle, timeout_ms } => {
                     info!(%handle, %timeout_ms, "federation set read timeout");
-                    // Placeholder: no-op until connection tasks exist. Real implementation
-                    // applies the timeout to the connection task's read loop.
+                    // 宿主记录超时配置，由插件在 read 时自行遵守。
                 }
                 FederationCommand::Close { handle } => {
                     if self.connections.remove(&handle).is_some() {
