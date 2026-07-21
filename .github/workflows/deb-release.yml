@@ -1,0 +1,72 @@
+name: Build .deb packages
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+            arch: amd64
+            artifact: phira-mp-plus-server-jammy-amd64.deb
+          - os: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+            arch: amd64
+            artifact: phira-mp-plus-server-noble-amd64.deb
+          - os: ubuntu-24.04
+            target: aarch64-unknown-linux-gnu
+            arch: arm64
+            artifact: phira-mp-plus-server-noble-arm64.deb
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          target: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: deb-${{ matrix.target }}
+      - name: Install dependencies (arm64 cross)
+        if: matrix.arch == 'arm64'
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq gcc-aarch64-linux-gnu
+          echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc" >> $GITHUB_ENV
+      - name: Build
+        run: cargo build --release --target ${{ matrix.target }}
+      - name: Package .deb
+        run: |
+          mkdir -p pkg/usr/bin pkg/etc/phira-mp-plus pkg/lib/systemd/system
+          cp target/${{ matrix.target }}/release/phira-mp-plus-server pkg/usr/bin/
+          cp server_config.yml pkg/etc/phira-mp-plus/
+          cp deploy/systemd/phira-mp-plus.service pkg/lib/systemd/system/
+          mkdir -p pkg/DEBIAN
+          cat > pkg/DEBIAN/control << EOF
+          Package: phira-mp-plus-server
+          Version: $(cargo metadata --no-deps --format-version 1 | python3 -c "import json,sys; print(json.load(sys.stdin)['packages'][0]['version'])")
+          Section: games
+          Priority: optional
+          Architecture: ${{ matrix.arch }}
+          Maintainer: PMP Dev <dev@phira-mp-plus.dev>
+          Description: Real-time multiplayer game server for Phira+
+           Phira-mp+ (PMP) is the real-time multiplayer game runtime.
+           It handles TCP game protocol, session management, room state
+           machines, game rounds, trusted WASM plugin execution, and
+           reliable event persistence.
+          EOF
+          dpkg-deb --build pkg ${{ matrix.artifact }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: ${{ matrix.artifact }}
+      - name: Upload to Release
+        if: github.event_name == 'release'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release upload ${{ github.event.release.tag_name }} ${{ matrix.artifact }} --clobber
