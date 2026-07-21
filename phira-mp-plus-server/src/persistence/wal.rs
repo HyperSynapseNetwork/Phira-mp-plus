@@ -307,6 +307,13 @@ impl PersistenceWal {
         let bytes = match tokio::fs::read(&self.path).await {
             Ok(bytes) => bytes,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                // Double-check: if marker exists but file doesn't, refuse.
+                if self.path.with_extension("wal.instance").exists() {
+                    return Err(format!(
+                        "WAL file {} missing but instance marker exists",
+                        self.path.display()
+                    ));
+                }
                 self.replay_succeeded.store(true, Ordering::Release);
                 return Ok(Vec::new());
             }
