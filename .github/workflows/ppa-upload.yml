@@ -34,9 +34,11 @@ jobs:
           dpkg-buildpackage -S -d -nc --no-sign
       - name: Sign source package
         run: |
-          # Sign with the imported key
-          debsign -k360EE8752C12B3B1 ../phira-mp-plus-server_*.source.changes
+          changes_file=$(ls ../*.source.changes | head -1)
+          echo "Signing: $changes_file"
+          debsign -k1B92CD21EAC1F4C1401F1F25360EE8752C12B3B1 "$changes_file"
       - name: Upload to PPA
         run: |
           sudo apt-get install -y -qq dput
-          dput ppa:fireflyf09/phira-mp-plus ../*.changes
+          changes_file=$(ls ../*.source.changes | head -1)
+          dput ppa:fireflyf09/phira-mp-plus "$changes_file"
