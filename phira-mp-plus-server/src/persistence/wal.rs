@@ -540,8 +540,10 @@ impl PersistenceWal {
             .collect();
 
         if pending.is_empty() {
-            // Nothing to compact; remove the file.
+            // Nothing to compact; remove the file and instance marker.
             let _ = tokio::fs::remove_file(&self.path).await;
+            let marker = self.path.with_extension("wal.instance");
+            let _ = tokio::fs::remove_file(&marker).await;
             self.total_bytes.store(0, Ordering::Release);
             self.admission_count.store(0, Ordering::Release);
             self.ack_count.store(0, Ordering::Release);
