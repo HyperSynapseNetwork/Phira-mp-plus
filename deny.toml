@@ -1,8 +1,5 @@
 [advisories]
-vulnerability = "deny"
-unmaintained = "transitive"
-notice = "transitive"
-yanked = "warn"
+severity = "deny"
 ignore = [
     # rsa 0.9.10 — Marvin Attack, no fix available (transitive dep)
     "RUSTSEC-2023-0071",
@@ -29,8 +26,6 @@ allow = [
     "Unlicense",
     "Zlib",
 ]
-deny = []
-copyleft = "warn"
 
 [licenses.private]
 ignore = false
