@@ -33,4 +33,5 @@ jobs:
       - name: Upload to PPA
         run: |
           sudo apt-get install -y -qq dput
-          dput ppa:fireflyf09/phira-mp-plus ../phira-mp-plus-server_*.source.changes
+          ls -la ../
+          dput ppa:fireflyf09/phira-mp-plus ../*.changes
