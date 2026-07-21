@@ -329,12 +329,23 @@ impl PersistenceWal {
         let mut has_truncated = false;
 
         let mut lines: Vec<&[u8]> = bytes.split(|b| *b == b'\n').collect();
-        // If the last byte was not a newline, the final segment is a truncated
-        // (incomplete) write — discard it silently.
+        // If the last byte was not a newline, the final segment may be an
+        // incomplete write OR a complete frame whose trailing newline was
+        // not flushed before a crash. Try to parse and verify it first;
+        // only discard if actually corrupt.
         if bytes.last().map(|&b| b != b'\n').unwrap_or(false) {
             if let Some(last) = lines.pop() {
                 if !last.is_empty() {
-                    has_truncated = true;
+                    match serde_json::from_slice::<WalFrame>(last) {
+                        Ok(frame) if frame.verify().is_ok() && frame.ver <= WAL_FORMAT_VERSION => {
+                            // Complete valid frame without trailing newline — keep it.
+                            lines.push(last);
+                        }
+                        _ => {
+                            // Genuinely truncated or corrupt — discard.
+                            has_truncated = true;
+                        }
+                    }
                 }
             }
         }
@@ -478,7 +489,14 @@ impl PersistenceWal {
         if bytes.last().map(|&b| b != b'\n').unwrap_or(false) {
             if let Some(last) = lines.pop() {
                 if !last.is_empty() {
-                    has_truncated = true;
+                    match serde_json::from_slice::<WalFrame>(last) {
+                        Ok(frame) if frame.verify().is_ok() && frame.ver <= WAL_FORMAT_VERSION => {
+                            lines.push(last);
+                        }
+                        _ => {
+                            has_truncated = true;
+                        }
+                    }
                 }
             }
         }
