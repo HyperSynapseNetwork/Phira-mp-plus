@@ -1,6 +1,6 @@
-# Plugin SDK Cookbook
+# 插件 SDK 快速入门
 
-## Quick Start
+## 快速开始
 
 ```rust
 phira_plugin_sdk::wit_bindgen!("phira-plugin-v2");
@@ -21,7 +21,7 @@ impl Guest for MyPlugin {
             name: "my-plugin".into(),
             version: "0.1.0".into(),
             author: "me".into(),
-            description: "My awesome plugin".into(),
+            description: "我的第一个插件".into(),
         }
     }
 
@@ -38,9 +38,9 @@ impl Guest for MyPlugin {
 }
 ```
 
-## Capabilities
+## 权限声明
 
-See `capabilities.json` in the plugin directory:
+在插件 `.wasm` 同目录放置 `{name}.capabilities.json`：
 
 ```json
 {
@@ -52,15 +52,15 @@ See `capabilities.json` in the plugin directory:
 }
 ```
 
-## Host API Methods
+## Host API 方法
 
-### HTTP Routes
+### HTTP 路由
 
 ```rust
 host_api("http.register_route", &[json!({"path": "/api/foo", "plugin": "my-plugin"})])
 ```
 
-### SSE Streams
+### SSE 流
 
 ```rust
 host_api("sse.register_stream", &[json!({
@@ -70,13 +70,13 @@ host_api("sse.register_stream", &[json!({
 })])
 ```
 
-### Crypto
+### 加密
 
 ```rust
 host_api("crypto.sha256", &[json!("data")])
 ```
 
-### Room Operations
+### 房间操作
 
 ```rust
 host_api("rooms.list", &[])
@@ -85,7 +85,7 @@ host_api("auth.visited_count", &[])
 host_api("playtime.leaderboard", &[])
 ```
 
-## Building
+## 构建
 
 ```bash
 cargo build --target wasm32-unknown-unknown --release

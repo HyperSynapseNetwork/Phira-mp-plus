@@ -1,55 +1,48 @@
-# PPB ↔ PMP Internal API Contract
+# PPB ↔ PMP 内部接口契约
 
-## Architecture
+## 架构
 
 ```
-PPB (Public Edge) ──→ PMP (Game Runtime)
+PPB（公网边缘）──→ PMP（游戏运行时）
     │                      │
-    │  Internal HTTP       │  TCP 12346 (game protocol)
-    │  (port 12347)        │  WS  /api/ws
+    │  内部 HTTP           │  TCP 12346（游戏协议）
+    │  （端口 12347）      │  WS /api/ws
     │  SSE /api/events     │  SSE /newapi/rooms/listen
     │  REST /api/*         │
 ```
 
-## Network Boundary
+## 网络边界
 
-- PMP binds to `127.0.0.1` by default (production)
-- PPB must be on the same host or a trusted network
-- No TLS between PPB and PMP (assume private network)
-- All public TLS termination happens at PPB
+- PMP 默认绑定 `127.0.0.1`（生产环境）
+- PPB 须在同一主机或受信网络
+- PPB 与 PMP 之间无 TLS（假定为内网）
+- 所有公网 TLS 终结在 PPB
 
-## Authentication
+## 认证
 
-- (TODO) PPB → PMP: service token via `admin_token` config or `PM_ADMIN_TOKEN` env
-- PMP → PPB: no outbound calls by default
+- （TODO）PPB → PMP：通过 `admin_token` 配置或 `PM_ADMIN_TOKEN` 环境变量的服务令牌
+- PMP → PPB：默认无出站调用
 
-## Endpoints
+## 端点
 
-### Health
+### Stream
 
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/health/live` | GET | Process alive (200) |
-| `/health/ready` | GET | Subsystems ready (200) / degraded (503) |
+| 端点 | 方法 | 说明 |
+|------|------|------|
+| `/api/events` | GET | SSE 实时事件流 |
+| `/api/ws` | GET | WebSocket 实时更新 |
 
-### Event Stream
+### 插件路由
 
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/api/events` | GET | SSE stream of all runtime events |
-| `/api/ws` | GET | WebSocket for real-time updates |
+插件在初始化时通过 `http.register_route` 注册路由：
 
-### Plugin Routes
+- `/api/auth/visited/count` — 访客计数
+- `/api/rooms/info` — 房间列表
+- `/api/rooms/info/:name` — 房间详情
+- `/rankapi/playtime_leaderboard` — 游玩时长排行
+- `/newapi/rooms/listen` — SSE 房间事件
 
-Plugins register routes at init time via `http.register_route`. These follow the pattern:
-
-- `/api/auth/visited/count` — Visitor count
-- `/api/rooms/info` — Room listing
-- `/api/rooms/info/:name` — Room detail by name
-- `/rankapi/playtime_leaderboard` — Playtime ranking
-- `/newapi/rooms/listen` — SSE room events
-
-## SSE Event Format
+## SSE 事件格式
 
 ```json
 {
@@ -58,10 +51,10 @@ Plugins register routes at init time via `http.register_route`. These follow the
 }
 ```
 
-Plugins translate these via `on_api("sse:translate", ...)`.
+插件通过 `on_api("sse:translate", ...)` 转换格式。
 
-## Versioning
+## 版本兼容
 
-- PMP SemVer in `--version` output
-- PPB should check compatibility via version endpoint
-- Breaking protocol changes increment the game protocol version
+- PMP SemVer 在 `--version` 输出
+- PPB 应通过 check-config 检查兼容性
+- 协议变更会递增游戏协议版本号

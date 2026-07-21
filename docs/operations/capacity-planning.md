@@ -1,38 +1,38 @@
-# Capacity Planning
+# 容量规划
 
-## Target Capacity (Single Instance)
+## 单实例目标容量
 
-| Metric | Target | Notes |
-|--------|--------|-------|
-| Concurrent connections | 5,000 | Authenticated sessions |
-| Active rooms | 500 | At any given time |
-| Hot-spot room | 100 | Simultaneous players in one room |
-| Control command p99 | < 100 ms | Without plugin/DB failures |
-| Slow consumer penalty | < 20% | p99 degradation when slow clients present |
-| 24h RSS growth | < 256 MB | With jemalloc |
+| 指标 | 目标 | 说明 |
+|------|------|------|
+| 并发连接 | 5,000 | 已认证会话 |
+| 活跃房间 | 500 | 同时存在 |
+| 热点房间 | 100 | 单房间同时在线 |
+| 控制命令 p99 | < 100 ms | 无插件/DB 故障时 |
+| 慢消费者影响 | < 20% | 慢客户端存在时 p99 劣化不超过 20% |
+| 24h RSS 增长 | < 256 MB | 使用 jemalloc |
 
-## Resource Estimates
+## 资源估算
 
-| Component | Memory | CPU |
-|-----------|--------|-----|
-| Base server | ~50 MB RSS | 1 core |
-| Per 1,000 sessions | ~100 MB | 0.5 core |
-| Per 100 rooms | ~50 MB | 0.5 core |
-| Per WASM plugin | ~64 MB max | per-call fuel-limited |
+| 组件 | 内存 | CPU |
+|------|------|-----|
+| 基础服务 | ~50 MB RSS | 1 核 |
+| 每 1,000 会话 | ~100 MB | 0.5 核 |
+| 每 100 房间 | ~50 MB | 0.5 核 |
+| 每 WASM 插件 | ~64 MB 上限 | 每次调用燃料限制 |
 
-## Bottlenecks
+## 瓶颈
 
-1. **PostgreSQL connection pool**: Each query consumes a pool slot. Ensure `max_connections` is set appropriately.
-2. **WAL I/O**: WAL fsync before queue admission. Disk latency directly affects event throughput.
-3. **Plugin execution**: Plugins run synchronously on the blocking pool. Each plugin call holds a pool thread.
-4. **Broadcast fan-out**: Room state changes are broadcast to all members. O(n) per event.
+1. **PostgreSQL 连接池**：每个查询占用一个池槽位，需合理设置 `max_connections`
+2. **WAL I/O**：入队前 fsync，磁盘延迟直接影响事件吞吐
+3. **插件执行**：插件在 blocking pool 上同步执行，每次调用占用一个线程
+4. **广播放大**：房间状态变更广播给所有成员，事件复杂度 O(n)
 
-## Monitoring Thresholds
+## 监控阈值
 
-| Alert | Threshold | Action |
-|-------|-----------|--------|
-| Session count high | > 80% of max_sessions | Scale out or investigate leak |
-| WAL pending age | > 60 seconds | Check persistence worker |
-| DB error rate | > 1% in 5 min | Check database connectivity |
-| Slow consumer ratio | > 10% of sessions | Tweak send buffer / disconnect policy |
-| Supervisor degraded | any | Check critical task failures |
+| 告警 | 阈值 | 处理 |
+|------|------|------|
+| 会话数过高 | > `max_sessions` 的 80% | 扩容或排查泄漏 |
+| WAL 待处理过期 | > 60 秒 | 检查持久化 worker |
+| DB 错误率 | > 1%（5 分钟内） | 检查数据库连接 |
+| 慢消费者比例 | > 10% 会话 | 调整发送缓冲区/断开策略 |
+| Supervisor degraded | 任何 | 检查关键任务故障 |
