@@ -101,6 +101,12 @@ jobs:
         run: ${{ matrix.setup }}
       - run: cargo build --locked --release --target ${{ matrix.target }}
       - run: cp ${{ matrix.artifact-path }} ${{ matrix.artifact-name }}
+      - name: Smoke test (linux)
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          chmod +x ${{ matrix.artifact-name }}
+          ./${{ matrix.artifact-name }} --version
+          ./${{ matrix.artifact-name }} --help
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact-name }}
@@ -136,6 +142,11 @@ jobs:
         with:
           pattern: phira-*
           merge-multiple: true
+      - name: Generate SBOM (CycloneDX)
+        run: |
+          cargo install cargo-cyclonedx --locked || echo "cargo-cyclonedx install failed"
+          cargo cyclonedx --output-format json 2>/dev/null || echo "SBOM generation skipped"
+          ls -la *.cdx.json 2>/dev/null && echo "SBOM generated" || echo "No SBOM file"
       - name: Release
         uses: softprops/action-gh-release@v2
         with:
