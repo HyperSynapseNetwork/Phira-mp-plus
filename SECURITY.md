@@ -32,5 +32,8 @@ Out of scope: third-party plugins, custom deployments, the Phira web frontend.
 
 ## Data Handling
 
-See [docs/security/data-privacy.md](docs/security/data-privacy.md) for
-information on what data PMP processes and how it is retained.
+PMP processes Phira user IDs, gameplay data (touches, judges, scores),
+and connection metadata (IP addresses, timestamps). Data retention is
+configured via `persistence_retention_days` and `round_data_retention_days`
+in `server_config.yml`. See [docs/configuration.md](docs/configuration.md)
+for configuration details.

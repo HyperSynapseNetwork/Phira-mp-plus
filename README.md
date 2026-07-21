@@ -20,6 +20,7 @@
 - **一致房间控制面** — host/lock/cycle/hidden/endpoint/容量等控制字段共享同一快照和 generation。成员、谱面与轮次的完整 Actor ownership 仍在迁移中
 - **慢消费者隔离** — 会话发送采用有界队列和非阻塞路径；网络读取与业务处理通过有界命令队列解耦
 - **PMP 内部接口** — 保留房间信息 HTTP、SSE、WebSocket 和插件动态路由，供 PPB/受控网络调用，不承担公共边缘安全职责
+- **联邦网络（Experimental）** — 基于 TCP+TLS 的跨 PMP 实例通信，默认关闭且仅限受控网络使用；CA 身份验证、连接限额和证书轮换等生产安全特性尚未完成
 - **jemalloc 分配器** — Linux 下使用 jemalloc 替代 musl malloc，降低长期运行中的 RSS 膨胀风险
 
 ## 文档
@@ -108,7 +109,7 @@ cli_enabled: true
 # 如需使用，请看 docs/benchmark-real.md。
 ```
 
-架构加固的第一阶段范围见 [HARDENING_REPORT.md](HARDENING_REPORT.md)，第二阶段的严格 mailbox、持久化幂等与 dead-letter 修改见 [PHASE2_HARDENING_REPORT.md](PHASE2_HARDENING_REPORT.md)。
+架构加固的详细说明见 audit 报告 [PMP_PRODUCTION_PRODUCTIZATION_AUDIT.md](PMP_PRODUCTION_PRODUCTIZATION_AUDIT.md)。
 
 配置加载规则：默认读取 `server_config.yml`，也可通过 `--config <FILE>` 指定；配置文件缺失时使用内置默认值，配置文件存在但格式、字段名或取值无效时拒绝启动。只有用户显式提供的命令行参数才覆盖 YAML，避免 CLI 默认值意外覆盖配置文件。完整说明见 [docs/configuration.md](docs/configuration.md)。
 
@@ -348,9 +349,7 @@ WASM 插件通过 `phira:host/api` 和 `phira:host/log` 等导入函数与宿主
 
 真实网络压测（`benchmark run real`）是高级兼容性测试，详见 docs/benchmark-real.md。默认压测推荐使用 Simulation，不需要 token。
 
-本轮实用功能可靠性审计、修复范围和回归检查清单见 [docs/functional-reliability-audit.md](docs/functional-reliability-audit.md)。
-
-本轮架构加固的边界、实现、不变量、剩余风险和验收门槛见 [docs/architecture-hardening.md](docs/architecture-hardening.md)。静态验证结果见 [docs/static-verification.md](docs/static-verification.md)。
+功能可靠性审计和生产就绪追踪结果见 [PMP_PRODUCTION_PRODUCTIZATION_AUDIT.md](PMP_PRODUCTION_PRODUCTIZATION_AUDIT.md)。
 
 ## 许可证
 

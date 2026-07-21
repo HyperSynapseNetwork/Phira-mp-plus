@@ -76,9 +76,9 @@ jobs:
       - name: Clippy
         run: cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
       - name: Audit (advisory)
-        run: cargo install cargo-audit --locked && cargo audit --deny warnings || echo "audit warnings found"
+        run: cargo install cargo-audit --locked && cargo audit --deny warnings
       - name: Deny (licenses)
-        run: cargo install cargo-deny --locked && cargo deny check || echo "deny warnings found"
+        run: cargo install cargo-deny --locked && cargo deny check
 
   build:
     needs: [auto-patch, check]
