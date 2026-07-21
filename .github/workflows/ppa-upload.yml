@@ -7,8 +7,6 @@ on:
         description: 版本说明（可选）
         type: string
         default: ""
-  push:
-    branches: [main]
 
 env:
   CARGO_TERM_COLOR: always
@@ -23,15 +21,22 @@ jobs:
         env:
           KEY: ${{ secrets.PPA_GPG_PRIVATE_KEY }}
         run: |
+          # Import private key for signing
           echo "$KEY" | gpg --batch --import
-          gpg --batch --list-keys --with-colons releases@phira-mp-plus.dev || echo "key not found"
+          # Also import the public key from keyserver for verification
+          gpg --keyserver keyserver.ubuntu.com --recv-keys 1B92CD21EAC1F4C1401F1F25360EE8752C12B3B1 || true
+          gpg --list-keys releases@phira-mp-plus.dev
       - name: Build source package
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq devscripts dpkg-dev
-          dpkg-buildpackage -S -d -nc -k"releases@phira-mp-plus.dev"
+          # Build unsigned, then sign separately
+          dpkg-buildpackage -S -d -nc --no-sign
+      - name: Sign source package
+        run: |
+          # Sign with the imported key
+          debsign -k360EE8752C12B3B1 ../phira-mp-plus-server_*.source.changes
       - name: Upload to PPA
         run: |
           sudo apt-get install -y -qq dput
-          ls -la ../
           dput ppa:fireflyf09/phira-mp-plus ../*.changes
