@@ -1,10 +1,8 @@
 //! Phira-mp+ - 增强版 Phira 多人游戏服务端
 //!
 //! 基于 Phira-mp 二次开发，通过受控的 WIT WASM 插件 ABI、管理控制台和扩展 API
-#![allow(dead_code, unused_variables, unused_imports)]
 //! 提供可部署、可观察、可扩展的多人游戏服务。
-// Clippy allows for legacy code that will be cleaned up incrementally.
-// Each group lists a tracking issue or rationale.
+// Clippy allows — each group lists a rationale.
 #![allow(
     clippy::too_many_arguments,        // structural in game protocol handlers
     clippy::type_complexity,           // plugin/actor trait signatures

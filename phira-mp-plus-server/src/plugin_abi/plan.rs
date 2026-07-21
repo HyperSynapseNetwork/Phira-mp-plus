@@ -1,35 +1,17 @@
 use serde::Serialize;
 
+/// Current plugin ABI transport — WIT component model v2.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub enum PluginAbiTransport {
-    JsonMemoryV1,
     WitTypedV2,
 }
 
 impl PluginAbiTransport {
     pub const fn as_str(self) -> &'static str {
         match self {
-            Self::JsonMemoryV1 => "json_memory_v1",
             Self::WitTypedV2 => "wit_typed_v2",
         }
     }
-}
-
-pub fn plugin_abi_plan() -> PluginAbiPlan {
-    PluginAbiPlan {
-        current_transport: PluginAbiTransport::WitTypedV2,
-        target_transport: PluginAbiTransport::WitTypedV2,
-        current_version: "abi-wit-v2",
-        target_version: "abi-wit-v2",
-    }
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct PluginAbiPlan {
-    pub current_transport: PluginAbiTransport,
-    pub target_transport: PluginAbiTransport,
-    pub current_version: &'static str,
-    pub target_version: &'static str,
 }
 
 /// WIT ABI v2 metadata.
@@ -37,7 +19,21 @@ pub mod wit {
     pub const WIT_FILE: &str = "wit/phira-plugin.wit";
     pub const WIT_WORLD: &str = "phira-plugin-v2";
     pub const WIT_VERSION: &str = "abi-wit-v2";
-    pub const MIGRATION_PHASE: u8 = 3;
+    /// Migration phase tracking: 3 = JSON bridge removed, WIT-only component ABI.
+    pub const MIGRATION_PHASE: usize = 3;
+}
+
+pub fn plugin_abi_plan() -> PluginAbiPlan {
+    PluginAbiPlan {
+        current_transport: PluginAbiTransport::WitTypedV2,
+        target_transport: PluginAbiTransport::WitTypedV2,
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct PluginAbiPlan {
+    pub current_transport: PluginAbiTransport,
+    pub target_transport: PluginAbiTransport,
 }
 
 pub fn supported_abi_versions() -> Vec<&'static str> {

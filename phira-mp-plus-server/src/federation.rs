@@ -161,6 +161,11 @@ impl FederationActor {
                     );
                     info!(%handle, %addr, ?tls_opts.verify_peer, "federation connect requested");
                     // TODO: actual TCP+TLS connect (requires tokio-tcp + rustls)
+                    // Current implementation is a WIT ABI placeholder: allocates a handle,
+                    // stores connection state, and returns success without establishing a
+                    // real transport. Real TCP+TLS requires adding tokio-tcp and rustls
+                    // dependencies. Once wired, replace the `reply.send(Ok(handle))` with
+                    // actual TcpStream::connect + TLS handshake.
                     let _ = reply.send(Ok(handle));
                 }
                 FederationCommand::Listen {
@@ -179,6 +184,9 @@ impl FederationActor {
                     );
                     info!(%handle, %addr, ?tls_opts.verify_peer, "federation listen requested");
                     // TODO: actual TCP+TLS listener (requires tokio-tcp + rustls)
+                    // Placeholder: allocates a handle and returns success without binding
+                    // a real socket or accepting connections. Real implementation requires
+                    // TcpListener::bind + accept loop + TLS handshake per connection.
                     let _ = reply.send(Ok(handle));
                 }
                 FederationCommand::Send { handle, bytes } => {
@@ -203,7 +211,8 @@ impl FederationActor {
                 }
                 FederationCommand::SetReadTimeout { handle, timeout_ms } => {
                     info!(%handle, %timeout_ms, "federation set read timeout");
-                    // TODO: implement on the connection task
+                    // Placeholder: no-op until connection tasks exist. Real implementation
+                    // applies the timeout to the connection task's read loop.
                 }
                 FederationCommand::Close { handle } => {
                     if self.connections.remove(&handle).is_some() {

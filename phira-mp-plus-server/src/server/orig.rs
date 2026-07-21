@@ -1979,48 +1979,6 @@ async fn bench_leave_room(stream: &mut tokio::net::TcpStream) -> Result<(), Stri
 }
 
 /// 从房间踢出用户。
-#[allow(dead_code)]
-async fn run_room_kick(
-    state: &PlusServerState,
-    room_id: &str,
-    target_id: i32,
-) -> Result<Value, String> {
-    state
-        .room_commands
-        .kick_user(state, room_id, target_id)
-        .await
-}
-
-/// 设置房主；target_id=None 表示系统 `?` 房主。
-#[allow(dead_code)]
-async fn run_room_set_host(
-    state: &PlusServerState,
-    room_id: &str,
-    target_id: Option<i32>,
-) -> Result<Value, String> {
-    state
-        .room_commands
-        .set_host(state, room_id, target_id)
-        .await
-}
-
-/// 设置房间锁定状态。
-#[allow(dead_code)]
-async fn run_room_set_lock(
-    state: &PlusServerState,
-    room_id: &str,
-    locked: bool,
-) -> Result<Value, String> {
-    state.room_commands.set_lock(state, room_id, locked).await
-}
-
-/// 关闭/解散房间。
-#[allow(dead_code)]
-async fn run_room_close(state: &PlusServerState, room_id: &str) -> Result<Value, String> {
-    state.room_commands.close_room(state, room_id).await
-}
-
-/// 将用户踢出服务器
 pub(crate) async fn run_admin_kick_user(
     state: &PlusServerState,
     target_id: i32,

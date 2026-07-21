@@ -19,15 +19,6 @@ pub(super) struct RoomCommandContext<'a> {
 }
 
 impl<'a> RoomCommandContext<'a> {
-    #[allow(dead_code)]
-    pub(super) fn new(gateway: &'a RoomCommandGateway, state: &'a PlusServerState) -> Self {
-        Self {
-            gateway,
-            state,
-            room: None,
-        }
-    }
-
     /// Create a context with a room reference (used by per-room mailbox).
     pub(super) fn with_room(
         gateway: &'a RoomCommandGateway,

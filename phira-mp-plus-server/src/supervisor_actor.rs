@@ -68,7 +68,6 @@ struct ChildTask {
 }
 
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub(crate) struct SupervisorFailure {
     pub task: String,
     pub critical: bool,
@@ -76,7 +75,6 @@ pub(crate) struct SupervisorFailure {
     pub observed_at_ms: u64,
 }
 
-#[allow(dead_code)]
 pub(crate) enum SupervisorCmd {
     Status {
         reply: oneshot::Sender<SupervisorStatus>,
@@ -100,7 +98,6 @@ pub(crate) enum SupervisorCmd {
 }
 
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub(crate) struct SupervisorStatus {
     pub shutdown_requested: bool,
     pub degraded: bool,
@@ -491,14 +488,6 @@ pub async fn report_critical_failure(task: impl Into<String>, outcome: impl Into
         // signal in the process-wide counter instead of silently discarding it.
         CRITICAL_FAILURES.fetch_add(1, Ordering::AcqRel);
     }
-}
-
-#[allow(dead_code)]
-pub(crate) async fn status() -> Option<SupervisorStatus> {
-    let tx = current_sender()?;
-    let (reply, rx) = oneshot::channel();
-    tx.send(SupervisorCmd::Status { reply }).await.ok()?;
-    rx.await.ok()
 }
 
 /// Stop all registered background tasks and wait for their JoinHandles.

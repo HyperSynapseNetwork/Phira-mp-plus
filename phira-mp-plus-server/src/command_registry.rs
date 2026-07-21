@@ -715,10 +715,9 @@ pub fn runtime_v2_registry() -> CommandRegistry {
         .handler(Arc::new(|state, _args| {
             let rooms = state.rooms.try_read().map(|r| r.len()).unwrap_or(0);
             vec![format!(
-                "  Runtime v2: {} rooms | {} commands | MIGRATION_PHASE={} (WIT component ABI)",
+                "  Runtime v2: {} rooms | {} commands | ABI=WIT component v2",
                 rooms,
-                state.command_registry.iter().count(),
-                crate::plugin_abi::wit::MIGRATION_PHASE
+                state.command_registry.iter().count()
             )]
         })),
         CommandSpec::new(

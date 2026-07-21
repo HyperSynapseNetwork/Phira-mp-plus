@@ -2,48 +2,38 @@
 
 ## 安装方式
 
-### 方式一：APT 包管理器（推荐）
-
-```bash
-sudo add-apt-repository ppa:fireflyf09/phira-mp-plus
-sudo apt update
-sudo apt install phira-mp-plus-server
-```
-
-或手动添加源：
-```bash
-echo "deb http://ppa.launchpad.net/fireflyf09/phira-mp-plus/ubuntu $(lsb_release -cs) main" | sudo tee /etc/apt/sources.list.d/phira-mp-plus.list
-sudo apt-key adv --keyserver keyserver.ubuntu.com --recv-keys 1B92CD21EAC1F4C1401F1F25360EE8752C12B3B1
-sudo apt update
-sudo apt install phira-mp-plus-server
-```
-
-### 方式二：源码构建
+### 源码构建（推荐）
 
 前置条件：
 - Rust 工具链（版本见 `rust-toolchain.toml`）
 - （可选）PostgreSQL 14+
 
-## 构建
-
 ```bash
+# 克隆仓库
+git clone https://github.com/FireflyF09/Phira-mp-plus.git
+cd Phira-mp-plus
+
 # 构建（默认 features：postgres + wit-bindgen）
-cargo build --release --locked
+cargo build --release
 
 # 仅游戏运行（无数据库、无 WASM 插件）
-cargo build --release --locked --no-default-features
+cargo build --release --no-default-features
 
 # 仅 PostgreSQL 持久化（无 WASM）
-cargo build --release --locked --no-default-features --features postgres
+cargo build --release --no-default-features --features postgres
 
 # 仅 WASM 插件（无 PostgreSQL）
-cargo build --release --locked --no-default-features --features wit-bindgen
+cargo build --release --no-default-features --features wit-bindgen
 ```
+
+### 从 GitHub Releases 下载
+
+前往 [Releases 页面](https://github.com/FireflyF09/Phira-mp-plus/releases) 下载对应架构的预编译二进制。
 
 ## 运行
 
 ```bash
-# 使用默认配置（监听 12346 TCP + 127.0.0.1:12347 HTTP）
+# 使用默认配置（监听 12346 TCP）
 cp server_config.yml data/
 ./target/release/phira-mp-plus-server
 
@@ -91,5 +81,5 @@ runtime persistence
 
 ```bash
 # 检查进程是否运行
-curl http://127.0.0.1:12347/api/events
+ps aux | grep phira-mp-plus-server
 ```

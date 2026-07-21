@@ -320,16 +320,6 @@ impl PhiraHttpCounters {
             e.last_status = Some(status);
         }
     }
-    /// Reserved for future diagnostics/metrics integration.
-    #[allow(dead_code)]
-    fn record_endpoint_failure(&self, path: &str, status: Option<u16>) {
-        if let Ok(mut ec) = self.endpoint_counters.write() {
-            let e = ec.entry(path.to_string()).or_default();
-            e.requests += 1;
-            e.failures += 1;
-            e.last_status = status;
-        }
-    }
     fn endpoint_stats(&self) -> Vec<PhiraEndpointStats> {
         self.endpoint_counters
             .read()

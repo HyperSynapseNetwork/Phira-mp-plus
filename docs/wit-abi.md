@@ -1,36 +1,222 @@
 # WIT ABI 规范
 
-> 规范源为 `wit/phira-plugin.wit`。修改后必须运行 `cargo test --test wit_abi_contracts`，并用真实 Component fixture 执行生命周期、capability 与资源限制集成测试。
+> 本文档由 `wit_abi_contracts::generate_wit_docs()` 自动生成规范，请勿手动编辑。
+> 更新方式: 修改 WIT 文件后运行 `cargo test --test wit_abi_contracts` 验证一致性。
 
 ## 当前状态
 
 | 属性 | 值 |
-|---|---|
-| 运行时 ABI | `abi-wit-v2` / Component Model |
-| World | `phira-plugin-v2` |
-| 规范文件 | `wit/phira-plugin.wit` |
-| `MIGRATION_PHASE` | `3`：JSON bridge 已移除，WIT-only |
-| 接口/宿主函数 | 12 个接口、53 个宿主函数 |
-| 生命周期导出 | `init`、`get-info`、`cleanup`、`on-event`、`on-api` |
+|------|-----|
+| **运行时 ABI** | `abi-wit-v2` (WIT / Component Model) |
+| **目标 ABI** | `abi-wit-v2` |
+| **规范 WIT** | `wit/phira-plugin.wit` |
+| **MIGRATION_PHASE** | `3` (JSON bridge removed, WIT-only component ABI) |
+| **接口数量** | `16` |
 
-本轮静态审计确认宿主分发路径已接通。本环境已组装 Rust 1.88 工具链并完成变更 Rust 文件的 rustfmt 校验，但由于 `index.crates.io` DNS 解析失败，依赖无法获取，WIT workspace check/test 尚未在本环境完成；以 CI 的锁文件构建与真实 Component fixture 测试为准。
+## 规范 WIT 接口
 
-## 接口
+WIT 文件定义了以下接口与 world `phira-plugin-v2`:
 
-- `phira-types`：共享类型。
-- `phira-host`：日志、UUID、时间、通用 API、聊天、受限 HTTP。
-- `phira-events`：用户、房间、游戏、触摸、判定与轮次事件。
-- `phira-query`：用户、房间和扩展数据查询。
-- `phira-room-mgmt`：建房、踢出、房主、锁定、隐藏、关闭、房间 endpoint。
-- `phira-user-mgmt`：踢人、封禁、解封与封禁查询。
-- `phira-messaging`：用户、房间和全局消息。
-- `phira-persistence`：事件、房间快照、触摸、判定和游玩时长查询。
-- `phira-admin`：管理员 ID 管理。
-- `phira-config`：逐插件配置读写、重载和版本轮询。
-- `phira-simulation`：Simulation 状态与控制。
-- `phira-runtime`：运行时诊断。
+### `phira-types`
 
-精确签名以 WIT 文件为准，不在本文复制第二份可漂移的接口定义。
+Core data types shared between host and guest.
+
+**导出:**
+
+- `touch-event-point`
+- `judge-event-item`
+- `plugin-info`
+- `http-response`
+- `game-end-record`
+- `json-value`
+- `api-result`
+
+### `phira-host`
+
+Host functions available to WASM plugins.
+
+**导出:**
+
+- `log`
+- `generate-uuid`
+- `current-time-ms`
+- `api-call`
+- `send-chat`
+- `http-request`
+
+### `phira-events`
+
+Events the host sends to plugins.
+
+**导出:**
+
+- `user-connect-info`
+- `user-disconnect-info`
+- `room-user-event`
+- `room-modify-info`
+- `game-end-info`
+- `player-touches-info`
+- `player-judges-info`
+- `round-complete-info`
+- `room-join-info`
+- `federation-accept-info`
+- `federation-receive-info`
+- `federation-disconnect-info`
+- `plugin-event`
+
+### `phira-query`
+
+User and room data query APIs available to plugins.
+
+**导出:**
+
+- `get-user`
+- `get-user-extra`
+- `set-user-extra`
+- `get-room`
+- `get-room-extra`
+- `list-rooms`
+- `list-online-users`
+- `is-user-online`
+
+### `phira-room-mgmt`
+
+Room management operations.
+
+**导出:**
+
+- `create-empty-room`
+- `kick-from-room`
+- `transfer-host`
+- `set-host`
+- `set-room-lock`
+- `set-room-hidden`
+- `close-room`
+- `set-room-phira-api-endpoint`
+
+### `phira-user-mgmt`
+
+User management and moderation.
+
+**导出:**
+
+- `kick-user`
+- `ban-user`
+- `unban-user`
+- `get-ban-list`
+- `is-banned`
+
+### `phira-messaging`
+
+Messaging — send messages and broadcast.
+
+**导出:**
+
+- `send-to-user`
+- `send-to-room`
+- `send-to-all`
+
+### `phira-persistence`
+
+Persistence read API — incremental event/snapshot queries.
+
+**导出:**
+
+- `query-events`
+- `query-room-snapshots`
+- `query-touches`
+- `query-judges`
+- `get-playtime`
+- `top-playtime`
+
+### `phira-admin`
+
+Admin Phira ID configuration.
+
+**导出:**
+
+- `list-admin-ids`
+- `is-admin`
+- `add-admin-id`
+- `remove-admin-id`
+- `set-admin-ids`
+
+### `phira-config`
+
+Plugin configuration (key-value, JSON, per-plugin config.json on disk).
+
+**导出:**
+
+- `get-config`
+- `set-config`
+- `list-config`
+- `reload-config`
+- `poll-config-changes`
+
+### `phira-simulation`
+
+Simulation management.
+
+**导出:**
+
+- `status`
+- `run`
+- `stop`
+- `cleanup`
+
+### `phira-federation-types`
+
+TLS options for federation connections.
+
+**导出:**
+
+- `federation-tls-opts`
+
+### `phira-crypto`
+
+Cryptographic operations (host-side key management).
+
+**导出:**
+
+- `sign`
+- `verify`
+- `sha256`
+- `get-node-public-key`
+
+### `phira-federation`
+
+Federated networking — plugin-controlled TLS connections.
+
+**导出:**
+
+- `connect`
+- `listen`
+- `send`
+- `set-read-timeout`
+- `close`
+
+### `phira-timer`
+
+Non-realtime timer for plugin-internal scheduling.
+
+**导出:**
+
+- `set-timer`
+- `clear-timer`
+
+### `phira-runtime`
+
+Runtime diagnostics.
+
+**导出:**
+
+- `status`
+- `events`
+- `commands`
+
+## World
+
+`phira-plugin-v2` — 导入上述所有接口，导出 `init`、`get-info`、`cleanup`、`on-event`、`on-api`。
 
 ## Capability 边界
 
@@ -71,7 +257,6 @@
 至少执行：
 
 ```bash
-scripts/check-changed-rustfmt.sh
 cargo check --locked --workspace --all-targets
 cargo check --locked -p phira-mp-plus-server --no-default-features --features wit-bindgen
 cargo test --locked --workspace

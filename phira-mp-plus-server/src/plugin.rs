@@ -365,7 +365,6 @@ pub struct PluginManager {
     cli_commands: Arc<Mutex<HashMap<String, CliCommand>>>,
     api_handlers: Arc<Mutex<HashMap<String, api::PluginApiHandler>>>,
     plugins_dir: String,
-    #[allow(dead_code)]
     runtime: WasmRuntimeConfig,
     event_tx: mpsc::Sender<PluginDispatchMessage>,
     event_rx: AsyncMutex<Option<mpsc::Receiver<PluginDispatchMessage>>>,

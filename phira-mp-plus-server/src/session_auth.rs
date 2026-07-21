@@ -43,7 +43,6 @@ pub(crate) async fn authenticate_remote_with_notice(
         .await
 }
 
-#[allow(dead_code)]
 pub(crate) fn ban_rejection_message(language: &str, reason: &str) -> String {
     let language = language.parse::<Language>().unwrap_or_default();
     let mut reason = reason.split_whitespace().collect::<Vec<_>>().join(" ");

@@ -27,7 +27,7 @@ pub struct WasmPluginServices {
     pub api_handlers: Arc<Mutex<HashMap<String, api::PluginApiHandler>>>,
     /// Shared with PluginManager — do not write separately.
     pub cli_commands: Arc<Mutex<HashMap<String, CliCommand>>>,
-    /// WASM-only: HTTP handle set by PluginManager::set_http_handle (now unused by WASM).
+    /// HTTP handle set by PluginManager::set_http_handle. Used by WIT host API.
     pub http_handle: Mutex<Option<api::HttpHandle>>,
     /// WASM-only: state query set by PluginManager::set_default_state.
     pub state_query: Mutex<Option<api::ServerStateQuery>>,

@@ -3,7 +3,6 @@
 //! Extracted from the original `server.rs`. These functions are synchronous —
 //! they use `spawn_on_runtime` for async operations and `read_lock!` for sync reads.
 
-use crate::benchmark_report::BenchmarkMode;
 use crate::server::snapshot::build_snapshot;
 use crate::server::PlusServerState;
 use serde_json::Value;
@@ -73,16 +72,6 @@ fn parse_http_route_registration(args: &[Value]) -> Result<(String, String), Str
         .and_then(Value::as_str)
         .ok_or_else(|| "plugin name required".to_string())?;
     Ok((path.to_string(), plugin.to_string()))
-}
-
-#[allow(dead_code)]
-fn parse_benchmark_mode_arg(value: &str) -> Option<BenchmarkMode> {
-    match value {
-        "simulation" | "sim" => Some(BenchmarkMode::Simulation),
-        "hybrid" => Some(BenchmarkMode::Hybrid),
-        "real" => Some(BenchmarkMode::Real),
-        _ => None,
-    }
 }
 
 pub(crate) fn server_state_query_inner(

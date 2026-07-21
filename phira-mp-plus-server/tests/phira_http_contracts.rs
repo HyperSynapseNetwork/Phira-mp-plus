@@ -19,15 +19,6 @@ fn workspace_root() -> PathBuf {
         .to_path_buf()
 }
 
-// Files that are ALLOWED to contain bare reqwest (with documented reason).
-// - phira_client.rs: unified Phira HTTP client implementation.
-// - wasm_host.rs: plugin sandbox HTTP, not Phira API.
-#[allow(dead_code)]
-const ALLOWED_REQWEST_FILES: &[&str] = &[
-    "phira-mp-plus-server/src/phira_client.rs",
-    "phira-mp-plus-server/src/wasm_host.rs",
-];
-
 // server.rs has migrated all Phira API calls to PhiraRetryClient.
 // No bare-reqwest lines are allowed. Add new patterns here only if
 // a read-only `reqwest::Url::parse(...)` check is needed.
