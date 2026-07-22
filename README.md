@@ -202,7 +202,6 @@ Phira-mp-plus/
 │       ├── room.rs                  #   房间状态机 (InternalRoomState / Room)
 │       ├── backup.rs               #   备份与恢复
 │       ├── crypto.rs               #   HMAC 签名 (sha2)
-│       ├── federation.rs           #   联邦网络 Actor
 │       ├── play_history.rs         #   游玩历史
 │       ├── rbac.rs                 #   基于角色的访问控制
 │       ├── telemetry.rs            #   遥测类型 & CutoverMode

@@ -43,7 +43,6 @@ pub mod benchmark_snapshot;
 pub mod cli;
 pub mod cli_tui;
 pub mod crypto;
-pub mod federation;
 pub mod command_registry;
 pub mod db;
 pub mod error;

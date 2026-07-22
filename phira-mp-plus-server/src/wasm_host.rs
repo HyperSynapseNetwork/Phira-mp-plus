@@ -178,7 +178,6 @@ impl WitPluginComponent {
             http_allow_private_network: server.config.wasm_runtime.allow_private_network,
             node_key: Arc::new(crate::crypto::NodeKey::from_secret(b"pmp-default-node-key")),
             timers: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
-            federation: None,
             timer_callback: None,
         }))
     }
@@ -581,7 +580,6 @@ mod tests {
             http_allow_private_network: false,
             node_key: Arc::new(crate::crypto::NodeKey::from_secret(b"test-node-key")),
             timers: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
-            federation: None,
             timer_callback: None,
         })
     }

@@ -8,7 +8,6 @@
 {
     "http": true,
     "crypto": false,
-    "federation": false,
     "storage": true,
     "send": false,
     "max_concurrent_calls": 1
@@ -19,7 +18,6 @@
 |------|------|
 | `http` | 注册 HTTP 路由 |
 | `crypto` | 调用 sign/verify/sha256 |
-| `federation` | 使用联邦连接 |
 | `storage` | 读写扩展数据 |
 | `send` | 发送聊天消息 |
 | `max_concurrent_calls` | 并发 API 调用数（默认 1） |

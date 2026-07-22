@@ -46,7 +46,6 @@ impl Guest for MyPlugin {
 {
     "http": true,
     "crypto": false,
-    "federation": false,
     "storage": true,
     "send": false
 }

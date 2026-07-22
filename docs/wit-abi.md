@@ -59,9 +59,6 @@ Events the host sends to plugins.
 - `player-judges-info`
 - `round-complete-info`
 - `room-join-info`
-- `federation-accept-info`
-- `federation-receive-info`
-- `federation-disconnect-info`
 - `plugin-event`
 
 ### `phira-query`
@@ -164,13 +161,10 @@ Simulation management.
 - `stop`
 - `cleanup`
 
-### `phira-federation-types`
 
-TLS options for federation connections.
 
 **导出:**
 
-- `federation-tls-opts`
 
 ### `phira-crypto`
 
@@ -183,7 +177,6 @@ Cryptographic operations (host-side key management).
 - `sha256`
 - `get-node-public-key`
 
-### `phira-federation`
 
 Federated networking — plugin-controlled TLS connections.
 

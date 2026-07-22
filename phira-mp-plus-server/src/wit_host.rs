@@ -35,8 +35,6 @@ pub struct WitHostContext {
     pub node_key: Arc<crate::crypto::NodeKey>,
     /// Shared timer registry (plugin_name → timer map).
     pub timers: Arc<Mutex<HashMap<String, HashMap<String, tokio::task::JoinHandle<()>>>>>,
-    /// Federation actor sender for outbound operations.
-    pub federation: Option<tokio::sync::mpsc::Sender<crate::federation::FederationCommand>>,
     /// Host messaging callback. uid=0 means broadcast.
     pub send_chat: Option<Arc<dyn Fn(i32, String) + Send + Sync>>,
     /// Timer fire callback: calls the plugin's on_api("timer:fired", ...).
@@ -987,8 +985,6 @@ mod wit_trait_impls {
         }
     }
 
-    // ── phira-federation-types (data-only, no methods) ──
-    impl wit::phira::plugin::phira_federation_types::Host for WitPluginHost {}
 
     // ── phira-timer ──
     impl wit::phira::plugin::phira_timer::Host for WitPluginHost {
@@ -1046,121 +1042,3 @@ mod wit_trait_impls {
         }
     }
 
-    // ── phira-federation ──
-    impl wit::phira::plugin::phira_federation::Host for WitPluginHost {
-        fn connect(
-            &mut self,
-            addr: String,
-            tls_opts: wit::phira::plugin::phira_federation_types::FederationTlsOpts,
-        ) -> Result<u64, String> {
-            self.require_capability("federation")?;
-            let tx = self.ctx.federation.as_ref().ok_or("federation not available")?;
-            let (reply, mut rx) = tokio::sync::oneshot::channel();
-            tx.try_send(crate::federation::FederationCommand::Connect {
-                addr,
-                tls_opts: crate::federation::FederationTlsOpts {
-                    expected_ca_ids: tls_opts.expected_ca_ids,
-                    verify_peer: tls_opts.verify_peer,
-                    local_cert_chain: tls_opts.local_cert_chain,
-                    local_private_key: tls_opts.local_private_key,
-                    min_tls_version: tls_opts.min_tls_version,
-                    connect_timeout_secs: 10,
-                    handshake_timeout_secs: 10,
-                    read_timeout_secs: 0,
-                },
-                reply,
-            })
-            .map_err(|e| format!("federation connect failed: {e}"))?;
-            rx.try_recv().map_err(|_| "federation connect reply lost".to_string())?
-        }
-
-        fn listen(
-            &mut self,
-            addr: String,
-            tls_opts: wit::phira::plugin::phira_federation_types::FederationTlsOpts,
-        ) -> Result<u64, String> {
-            self.require_capability("federation")?;
-            let tx = self.ctx.federation.as_ref().ok_or("federation not available")?;
-            let (reply, mut rx) = tokio::sync::oneshot::channel();
-            tx.try_send(crate::federation::FederationCommand::Listen {
-                addr,
-                tls_opts: crate::federation::FederationTlsOpts {
-                    expected_ca_ids: tls_opts.expected_ca_ids,
-                    verify_peer: tls_opts.verify_peer,
-                    local_cert_chain: tls_opts.local_cert_chain,
-                    local_private_key: tls_opts.local_private_key,
-                    min_tls_version: tls_opts.min_tls_version,
-                    connect_timeout_secs: 10,
-                    handshake_timeout_secs: 10,
-                    read_timeout_secs: 0,
-                },
-                reply,
-            })
-            .map_err(|e| format!("federation listen failed: {e}"))?;
-            rx.try_recv().map_err(|_| "federation listen reply lost".to_string())?
-        }
-
-        fn send(&mut self, handle: u64, bytes: Vec<u8>) -> Result<(), String> {
-            self.require_capability("federation")?;
-            let tx = self.ctx.federation.as_ref().ok_or("federation not available")?;
-            tx.try_send(crate::federation::FederationCommand::Send { handle, bytes })
-                .map_err(|e| format!("federation send failed: {e}"))
-        }
-
-        fn set_read_timeout(&mut self, handle: u64, timeout_ms: u64) -> Result<(), String> {
-            self.require_capability("federation")?;
-            let tx = self.ctx.federation.as_ref().ok_or("federation not available")?;
-            tx.try_send(crate::federation::FederationCommand::SetReadTimeout { handle, timeout_ms })
-                .map_err(|e| format!("federation set_read_timeout failed: {e}"))
-        }
-
-        fn close(&mut self, handle: u64) -> Result<(), String> {
-            self.require_capability("federation")?;
-            let tx = self.ctx.federation.as_ref().ok_or("federation not available")?;
-            tx.try_send(crate::federation::FederationCommand::Close { handle })
-                .map_err(|e| format!("federation close failed: {e}"))
-        }
-    }
-
-    fn wit_json_to_json(value: &types::JsonValue) -> serde_json::Value {
-        use types::JsonValue;
-        match value {
-            JsonValue::Null => serde_json::Value::Null,
-            JsonValue::Flag(b) => serde_json::Value::Bool(*b),
-            JsonValue::Integer(i) => serde_json::json!(*i),
-            JsonValue::Float(f) => serde_json::json!(*f),
-            JsonValue::Text(s) => serde_json::Value::String(s.clone()),
-            JsonValue::Array(s) | JsonValue::Object(s) => {
-                serde_json::from_str(s).unwrap_or(serde_json::Value::String(s.clone()))
-            }
-        }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn uuid_format_is_valid() {
-        let s = uuid::Uuid::new_v4().to_string();
-        assert_eq!(s.len(), 36);
-        assert_eq!(s.chars().filter(|&c| c == '-').count(), 4);
-    }
-}
-
-#[cfg(all(test, feature = "wit-bindgen"))]
-mod plugin_scoped_api_tests {
-    use super::normalize_plugin_scoped_api_args;
-    use serde_json::json;
-
-    #[test]
-    fn route_registration_uses_calling_plugin_identity() {
-        let args = vec![json!({
-            "path": "/api/hello",
-            "plugin": "spoofed-plugin"
-        })];
-        assert_eq!(
-            normalize_plugin_scoped_api_args("http.register_route", "actual-plugin", args).unwrap(),
-            vec![json!("/api/hello"), json!("actual-plugin")]
-        );
-    }
-}

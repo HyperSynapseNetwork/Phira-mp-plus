@@ -167,25 +167,6 @@ interface phira-events {
         is-monitor: bool,
     }
 
-    /// Payload for federation events.
-    record federation-accept-info {
-        handle: u64,
-        /// Peer's public key (hex-encoded) or empty if anonymous.
-        peer-pubkey: string,
-        /// Remote endpoint address.
-        remote-addr: string,
-    }
-
-    record federation-receive-info {
-        handle: u64,
-        bytes: list<u8>,
-    }
-
-    record federation-disconnect-info {
-        handle: u64,
-        reason: string,
-    }
-
     /// All event types the host can dispatch to plugins.
     variant plugin-event {
         user-connect(user-connect-info),
@@ -199,9 +180,6 @@ interface phira-events {
         player-touches(player-touches-info),
         player-judges(player-judges-info),
         round-complete(round-complete-info),
-        federation-accept(federation-accept-info),
-        federation-receive(federation-receive-info),
-        federation-disconnect(federation-disconnect-info),
     }
 }
 
@@ -379,64 +357,6 @@ interface phira-simulation {
     cleanup: func() -> api-result;
 }
 
-/// TLS options for federation connections.
-interface phira-federation-types {
-    /// TLS configuration for a federated connection.
-    record federation-tls-opts {
-        /// List of expected peer CA identifiers (DN or key hash).
-        /// If empty, any valid certificate is accepted (not recommended).
-        expected-ca-ids: list<string>,
-        /// Whether to verify the peer's certificate chain.
-        verify-peer: bool,
-        /// PEM-encoded local certificate chain (optional).
-        /// If empty, the server's default node cert is used.
-        local-cert-chain: option<string>,
-        /// PEM-encoded local private key (optional).
-        /// If empty, the server's default node key is used.
-        local-private-key: option<string>,
-        /// Minimum TLS version to accept.
-        min-tls-version: option<string>,
-    }
-}
-
-/// Cryptographic operations (host-side key management).
-interface phira-crypto {
-    /// Sign data with the server's node key.
-    /// The private key never leaves the host process.
-    sign: func(payload: list<u8>) -> result<list<u8>, string>;
-
-    /// Verify a signature against a public key.
-    verify: func(pubkey: list<u8>, payload: list<u8>, signature: list<u8>) -> result<bool, string>;
-
-    /// SHA-256 hash of arbitrary data.
-    sha256: func(data: list<u8>) -> result<list<u8>, string>;
-
-    /// Get the server's node public key (for peer verification).
-    get-node-public-key: func() -> result<list<u8>, string>;
-}
-
-/// Federated networking — plugin-controlled TLS connections.
-/// Host manages TCP/TLS; plugin operates on handles.
-interface phira-federation {
-    use phira-federation-types.{federation-tls-opts};
-
-    /// Connect to a remote peer. Host performs TCP + TLS handshake + cert chain validation.
-    /// Returns a connection handle on success.
-    connect: func(addr: string, tls-opts: federation-tls-opts) -> result<u64, string>;
-
-    /// Start a TLS listener. Returns a listener handle.
-    listen: func(addr: string, tls-opts: federation-tls-opts) -> result<u64, string>;
-
-    /// Send raw bytes on an established connection.
-    send: func(handle: u64, bytes: list<u8>) -> result<_, string>;
-
-    /// Set read timeout on a connection (milliseconds). 0 = no timeout.
-    set-read-timeout: func(handle: u64, timeout-ms: u64) -> result<_, string>;
-
-    /// Close a connection or stop a listener by handle.
-    close: func(handle: u64) -> result<_, string>;
-}
-
 /// Non-realtime timer for plugin-internal scheduling.
 interface phira-timer {
     /// Set a one-shot timer. When fired, host calls on-api("timer:fired", [timer-id]).
@@ -477,7 +397,6 @@ world phira-plugin-v2 {
     import phira-config;
     import phira-simulation;
     import phira-crypto;
-    import phira-federation;
     import phira-timer;
     import phira-runtime;
 
