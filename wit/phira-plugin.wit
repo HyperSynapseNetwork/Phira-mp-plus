@@ -358,6 +358,23 @@ interface phira-simulation {
 }
 
 /// Non-realtime timer for plugin-internal scheduling.
+/// Cryptographic operations (host-side key management).
+interface phira-crypto {
+    /// Sign data with the server's node key.
+    /// The private key never leaves the host process.
+    sign: func(payload: list<u8>) -> result<list<u8>, string>;
+
+    /// Verify a signature against a public key.
+    verify: func(pubkey: list<u8>, payload: list<u8>, signature: list<u8>) -> result<bool, string>;
+
+    /// SHA-256 hash of arbitrary data.
+    sha256: func(data: list<u8>) -> result<list<u8>, string>;
+
+    /// Get the server's node public key (for peer verification).
+    get-node-public-key: func() -> result<list<u8>, string>;
+}
+
+
 interface phira-timer {
     /// Set a one-shot timer. When fired, host calls on-api("timer:fired", [timer-id]).
     set-timer: func(delay-ms: u64, timer-id: string) -> result<_, string>;

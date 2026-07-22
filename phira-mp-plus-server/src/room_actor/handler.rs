@@ -13,7 +13,7 @@ use super::{
 };
 use crate::plugin::PluginEvent;
 use phira_mp_common::{Message, PartialRoomData, RoomEvent, ServerCommand};
-use serde_json::json;
+use serde_json::{json, Value};
 
 fn typed_err(msg: &str) -> RoomCommandResult {
     RoomCommandResult::Err {
