@@ -161,6 +161,20 @@ impl RoomCommandGateway {
         .into_untyped()
     }
 
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::super::command::RoomCommandKind;
+
+    #[test]
+    fn typed_payload_serialization_round_trip() {
+        let payloads: Vec<super::RoomCommandPayload> = vec![
+            super::RoomCommandPayload::LockChanged {
+                room_id: "r1".into(),
+                locked: true,
+            },
+            super::RoomCommandPayload::CycleChanged {
                 room_id: "r2".into(),
                 cycle: false,
             },
