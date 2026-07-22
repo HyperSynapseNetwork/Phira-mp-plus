@@ -114,7 +114,7 @@ impl FederationActor {
                     let cm = Arc::clone(&self.conn_map);
 
                     match tcp_connect(&addr, handle, cb, cm).await {
-                        Ok((_data_tx, close_tx)) => {
+                        Ok((_, close_tx)) => {
                             self.connections.insert(
                                 handle,
                                 Connection {
@@ -217,7 +217,7 @@ async fn tcp_connect(
         cm.lock().unwrap().remove(&handle);
     });
 
-    Ok((_data_tx, close_tx))
+    Ok((data_tx, close_tx))
 }
 
 async fn tcp_listen(
