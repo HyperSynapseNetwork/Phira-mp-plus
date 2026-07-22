@@ -139,10 +139,23 @@ async fn append_dead_letter(path: &Path, record: &serde_json::Value) -> Result<(
     let mut file = tokio::fs::OpenOptions::new()
         .create(true)
         .append(true)
-        .mode(0o600) // secure permissions: owner read/write only
         .open(path)
         .await
         .map_err(|error| format!("open {}: {error}", path.display()))?;
+    // Enforce secure permissions (owner read/write only) after creation.
+    // OpenOptions::mode() is Unix-only, so we apply permissions post-hoc.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if let Ok(metadata) = file.metadata().await {
+            let mode = metadata.permissions().mode() & 0o777;
+            if mode & 0o077 != 0 {
+                let mut perms = metadata.permissions();
+                perms.set_mode(perms.mode() & !0o077);
+                let _ = file.set_permissions(perms).await;
+            }
+        }
+    }
     let mut line = serde_json::to_vec(record)
         .map_err(|error| format!("serialize dead-letter record: {error}"))?;
     line.push(b'\n');
