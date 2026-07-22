@@ -271,3 +271,109 @@ fn on_api(method: String, args: Vec<JsonValue>) -> ApiResult {
 
 完整插件示例：[HSNPhira-v2-PMP-plugin](https://github.com/FireflyF09/HSNPhira-v2-PMP-plugin)
 ——HSNPhira v2 前端的 Web API 插件，展示了路由注册、API 处理、JSON 转换等全部模式。
+
+---
+
+## 参考
+
+### 生命周期
+
+PMP 插件状态机：`加载 → 验证 → 启用 → 运行 → 禁用 → 移除`
+
+**加载**：启动时扫描 `plugins_dir/*.wasm`，CLI 命令 `plugin reload` 手动重载。
+
+**资源限制**：
+
+| 限制 | 默认值 | 说明 |
+|------|--------|------|
+| 燃料 | 10,000,000 | 每次调用消耗，耗尽后 trap |
+| 内存 | 64 MB | 线性内存上限 |
+| 超时 | 2000 ms | 同步调用超时 |
+| 并发 | 8 | 同事件内最大并行插件数 |
+
+**故障隔离 (Quarantine)**：连续超时或 trap 后进入隔离状态，不再接收新事件。
+
+### Manifest 与 Capabilities
+
+插件需在 `.wasm` 同级目录放置 `{name}.capabilities.json`：
+
+```json
+{
+    "http": true,
+    "crypto": false,
+    "storage": true,
+    "send": false,
+    "max_concurrent_calls": 1
+}
+```
+
+| 权限 | 说明 |
+|------|------|
+| `http` | 注册 HTTP 路由 |
+| `crypto` | 调用 sign/verify/sha256 |
+| `storage` | 读写扩展数据 |
+| `send` | 发送聊天消息 |
+| `tcp` | 发起 TCP 连接 |
+| `max_concurrent_calls` | 并发 API 调用数（默认 1） |
+
+默认拒绝所有权限。
+
+### 构建与部署
+
+```bash
+cargo build --target wasm32-unknown-unknown --release
+wasm-tools component new \
+  target/wasm32-unknown-unknown/release/my_plugin.wasm \
+  -o my_plugin.component.wasm
+cp my_plugin.component.wasm plugins/
+cp my_plugin.capabilities.json plugins/
+```
+
+热加载：`plugin reload my_plugin`
+
+### 插件配置
+
+服务器可通过 `server_config.yml` 为插件提供全局配置：
+
+```yaml
+wasm_runtime:
+  max_memory_mb: 64
+  fuel_per_call: 10000000
+  http_timeout_secs: 10
+  max_http_response_bytes: 2097152
+  event_queue_capacity: 2048
+```
+
+插件内通过 API 读取配置：
+
+```rust
+let config = self.api_call("config.get".into(), vec![json!("my_key")]);
+```
+
+### 插件管理 CLI
+
+```bash
+plugin list                    # 列出所有插件
+plugin info <name>             # 查看插件详情
+plugin enable <name>           # 启用
+plugin disable <name>          # 禁用
+plugin reload <name>           # 热重载
+plugin remove <name>           # 移除（保留文件）
+plugin purge <name>            # 彻底清理
+```
+
+`remove` 只禁用和卸载，`purge` 才删除文件和数据。建议先 remove 确认无影响后再 purge。
+
+### SDK Cookbook
+
+SDK 宏路径：`phira_plugin_sdk::wit_bindgen!("phira-plugin-v2")`
+
+```rust
+// 原生 SDK 用法（在 PMP 仓库外开发时）
+wit_bindgen::generate!({
+    path: "path/to/wit/phira-plugin.wit",
+    world: "phira-plugin-v2",
+});
+```
+
+完整 host API 列表见 [WIT ABI 规范](wit-abi.md)。
