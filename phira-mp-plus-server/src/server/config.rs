@@ -178,10 +178,11 @@ impl Default for ConfigProfile {
 
 /// Phira-mp+ 增强配置（支持 YAML 文件、环境变量、CLI 参数三层覆盖）
 ///
-/// Note: deny_unknown_fields was removed to allow graceful deprecation of
-/// the rbac section. If a new field needs strict validation, add it back.
+/// deny_unknown_fields ensures config typos are caught at startup.
+/// If a field is removed (like `rbac`), users must remove it from their
+/// config file — serde will produce a clear error message.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 pub struct PlusConfig {
     /// Schema version for config file forward-compatibility.
     /// Current version: 1. Increment when making backward-incompatible changes.
