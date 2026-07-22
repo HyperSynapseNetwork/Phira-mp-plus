@@ -1,6 +1,6 @@
 use super::super::{
     command::{RoomActorCommand, RoomCommandKind},
-    RoomCommandGateway,
+    RoomCommandGateway, RoomCommandPayload,
 };
 use crate::server::PlusServerState;
 use serde_json::Value;

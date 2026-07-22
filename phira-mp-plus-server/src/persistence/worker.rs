@@ -661,7 +661,7 @@ impl PersistenceWorker {
         crate::supervisor_actor::spawn_critical("persistence-wal-ack", async move {
             use crate::telemetry::WalAckMessage;
             use std::collections::VecDeque;
-            use tracing::{debug, error, warn};
+            use tracing::{debug, warn};
 
             let mut retry_queue: VecDeque<(uuid::Uuid, u32)> = VecDeque::new();
 

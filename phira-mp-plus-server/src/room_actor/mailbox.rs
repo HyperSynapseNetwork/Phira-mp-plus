@@ -1,7 +1,7 @@
 //! Mailbox-backed routing for room commands.
 
 use super::{
-    actor::RoomActor, command::RoomActorCommand, context::RoomCommandContext,
+    actor::RoomActor, command::RoomActorCommand,
     RoomCommandGateway, RoomCommandResult,
 };
 use crate::server::PlusServerState;

@@ -12,6 +12,7 @@ use crate::server::PlusServerState;
 use std::sync::Arc;
 
 pub(super) struct RoomCommandContext<'a> {
+    #[allow(dead_code)]
     pub(super) gateway: &'a RoomCommandGateway,
     pub(super) state: &'a PlusServerState,
     /// Room reference set by per-room mailbox worker.
@@ -23,6 +24,7 @@ pub(super) struct RoomCommandContext<'a> {
 
 impl<'a> RoomCommandContext<'a> {
     /// Create a context with a room reference (used by per-room mailbox).
+    #[allow(dead_code)]
     pub(super) fn with_room(
         gateway: &'a RoomCommandGateway,
         state: &'a PlusServerState,

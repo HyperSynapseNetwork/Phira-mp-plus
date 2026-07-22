@@ -12,6 +12,7 @@ use std::sync::Arc;
 
 impl RoomCommandGateway {
     /// Resolve a room, preferring a pre-resolved reference from the context.
+    #[allow(dead_code)]
     pub(super) async fn resolve_room(
         &self,
         state: &PlusServerState,
@@ -36,6 +37,7 @@ impl RoomCommandGateway {
         self.find_room(state, room_id).await
     }
 
+    #[allow(dead_code)]
     pub(super) async fn find_room(
         &self,
         state: &PlusServerState,

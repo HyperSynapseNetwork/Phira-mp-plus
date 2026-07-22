@@ -12,7 +12,7 @@ use super::{
     RoomCommandPayload, RoomCommandResult,
 };
 use crate::plugin::PluginEvent;
-use phira_mp_common::{Message, PartialRoomData, RoomEvent, RoomId, ServerCommand};
+use phira_mp_common::{Message, PartialRoomData, RoomEvent, ServerCommand};
 use serde_json::{json, Value};
 
 /// Helper: build an error result.
@@ -128,7 +128,7 @@ impl RoomCommandHandler {
                 })
             }
 
-            RoomActorCommand::CloseRoom { room_id, .. } => {
+            RoomActorCommand::CloseRoom { room_id: _, .. } => {
                 let r = match room { Some(ref r) => r, None => return err("no room") };
                 r.send(Message::Chat { user: 0, content: "房间已被管理员关闭".to_string() }).await;
                 for user in r.users().await {
@@ -331,7 +331,7 @@ impl RoomCommandHandler {
                 ok(RoomCommandPayload::HostStarted { room_id: room_id.clone().to_string() })
             }
 
-            RoomActorCommand::AddUser { room_id, user_id, user_name, monitor, .. } => {
+            RoomActorCommand::AddUser { room_id, user_id, user_name: _, monitor, .. } => {
                 let as_ = ctx.expect_actor_state();
                 let r = match room { Some(ref r) => r, None => return err("no room") };
                 let current_count = r.users().await.len();
