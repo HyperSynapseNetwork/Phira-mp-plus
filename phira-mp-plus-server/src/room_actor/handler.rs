@@ -51,10 +51,10 @@ impl RoomCommandHandler {
                     r.publish_update(PartialRoomData { lock: Some(*locked), ..Default::default() }).await;
                 }
                 state.dispatch_plugin_event(PluginEvent::RoomModify {
-                    user_id: *actor_user_id, room_id: room_id.clone(),
+                    user_id: *actor_user_id, room_id: room_id.clone().to_string(),
                     data: json!({"action":"lock","value":locked}).to_string(),
                 }).await;
-                ok(RoomCommandPayload::LockChanged { room_id: room_id.clone(), locked: *locked })
+                ok(RoomCommandPayload::LockChanged { room_id: room_id.clone().to_string(), locked: *locked })
             }
 
             RoomActorCommand::SetCycle { room_id, cycle, actor_user_id, .. } => {
@@ -66,10 +66,10 @@ impl RoomCommandHandler {
                     r.publish_update(PartialRoomData { cycle: Some(*cycle), ..Default::default() }).await;
                 }
                 state.dispatch_plugin_event(PluginEvent::RoomModify {
-                    user_id: *actor_user_id, room_id: room_id.clone(),
+                    user_id: *actor_user_id, room_id: room_id.clone().to_string(),
                     data: json!({"action":"cycle","value":cycle}).to_string(),
                 }).await;
-                ok(RoomCommandPayload::CycleChanged { room_id: room_id.clone(), cycle: *cycle })
+                ok(RoomCommandPayload::CycleChanged { room_id: room_id.clone().to_string(), cycle: *cycle })
             }
 
             RoomActorCommand::SetHidden { room_id, hidden, .. } => {
@@ -79,10 +79,10 @@ impl RoomCommandHandler {
                     r.set_hidden(*hidden);
                 }
                 state.dispatch_plugin_event(PluginEvent::RoomModify {
-                    user_id: 0, room_id: room_id.clone(),
+                    user_id: 0, room_id: room_id.clone().to_string(),
                     data: json!({"action":"hidden","value":hidden}).to_string(),
                 }).await;
-                ok(RoomCommandPayload::HiddenChanged { room_id: room_id.clone(), hidden: *hidden })
+                ok(RoomCommandPayload::HiddenChanged { room_id: room_id.clone().to_string(), hidden: *hidden })
             }
 
             RoomActorCommand::SetHost { room_id, target_id, .. } => {
@@ -92,7 +92,14 @@ impl RoomCommandHandler {
                     Some(uid) => {
                         let name = {
                             let users = r.users().await;
-                            users.iter().find(|u| u.id == *uid).map(|u| r.display_name(u).await).unwrap_or_else(|| uid.to_string())
+                            let mut name = uid.to_string();
+                            for u in &users {
+                                if u.id == *uid {
+                                    name = r.display_name(u).await;
+                                    break;
+                                }
+                            }
+                            name
                         };
                         r.send(Message::Chat { user: 0, content: format!("房主已转移给 {name}") }).await;
                         r.set_host(Some(*uid), true).await.map_err(|e| e.to_string()).unwrap_or(());
@@ -107,7 +114,7 @@ impl RoomCommandHandler {
                 as_.state.control.host_id = host_id;
                 as_.state.control.system_host = system_host;
                 ok(RoomCommandPayload::HostChanged {
-                    room_id: room_id.clone(), host: *target_id, host_name, host_is_system: system_host,
+                    room_id: room_id.clone().to_string(), host: *target_id, host_name, host_is_system: system_host,
                 })
             }
 
@@ -118,7 +125,7 @@ impl RoomCommandHandler {
                 r.set_phira_api_endpoint_override(endpoint.clone()).await;
                 as_.state.control.phira_api_endpoint = endpoint.clone();
                 ok(RoomCommandPayload::EndpointChanged {
-                    room_id: room_id.clone(), endpoint, endpoint_override: None, using_room_override: false,
+                    room_id: room_id.clone().to_string(), endpoint, endpoint_override: None, using_room_override: false,
                 })
             }
 
@@ -159,11 +166,11 @@ impl RoomCommandHandler {
                     state.publish_room_event(RoomEvent::LeaveRoom { room: r.id.to_string(), user: *target_id }).await;
                 }
                 state.dispatch_plugin_event(PluginEvent::RoomModify {
-                    user_id: *target_id, room_id: room_id.clone(),
+                    user_id: *target_id, room_id: room_id.clone().to_string(),
                     data: json!({"action":"kicked"}).to_string(),
                 }).await;
                 ok(RoomCommandPayload::UserKicked {
-                    room_id: room_id.clone(), user_id: *target_id,
+                    room_id: room_id.clone().to_string(), user_id: *target_id,
                     user_name: user.name.clone(), room_dropped: should_drop,
                 })
             }
@@ -171,8 +178,8 @@ impl RoomCommandHandler {
             RoomActorCommand::StartRoom { room_id, .. } => {
                 let r = match room { Some(ref r) => r, None => return err("no room") };
                 if let Err(e) = r.begin_admin_start().await { return err(&e.to_string()); }
-                state.dispatch_plugin_event(PluginEvent::GameStart { user_id: 0, room_id: room_id.clone() }).await;
-                ok(RoomCommandPayload::RoomStarted { room_id: room_id.clone() })
+                state.dispatch_plugin_event(PluginEvent::GameStart { user_id: 0, room_id: room_id.clone().to_string() }).await;
+                ok(RoomCommandPayload::RoomStarted { room_id: room_id.clone().to_string() })
             }
 
             RoomActorCommand::CancelStart { room_id, .. } => {
@@ -189,7 +196,7 @@ impl RoomCommandHandler {
                     r.finish_admin_start().await;
                     r.on_state_change().await;
                 }
-                ok(RoomCommandPayload::CancelResult { room_id: room_id.clone(), canceled })
+                ok(RoomCommandPayload::CancelResult { room_id: room_id.clone().to_string(), canceled })
             }
 
             RoomActorCommand::SetChart { room_id, chart_id, chart_name, .. } => {
@@ -203,7 +210,7 @@ impl RoomCommandHandler {
                 r.send(Message::SelectChart { user: 0, name: chart_name.clone(), id: *chart_id }).await;
                 r.on_state_change().await;
                 r.publish_update(phira_mp_common::PartialRoomData { chart: Some(*chart_id), ..Default::default() }).await;
-                ok(RoomCommandPayload::ChartSelected { room_id: room_id.clone(), chart_id: *chart_id })
+                ok(RoomCommandPayload::ChartSelected { room_id: room_id.clone().to_string(), chart_id: *chart_id })
             }
 
             RoomActorCommand::SetReady { room_id, user_id, .. } => {
@@ -221,10 +228,10 @@ impl RoomCommandHandler {
                 }
                 r.send(Message::Ready { user: *user_id }).await;
                 state.publish_runtime_event(crate::event_bus::MpEvent::PlayerReadyChanged {
-                    room_id: room_id.clone(), user_id: *user_id, ready: true,
+                    room_id: room_id.clone().to_string(), user_id: *user_id, ready: true,
                 });
                 r.check_all_ready().await;
-                ok(RoomCommandPayload::UserReady { room_id: room_id.clone(), user_id: *user_id })
+                ok(RoomCommandPayload::UserReady { room_id: room_id.clone().to_string(), user_id: *user_id })
             }
 
             RoomActorCommand::CancelReady { room_id, user_id, .. } => {
@@ -251,9 +258,9 @@ impl RoomCommandHandler {
                     }
                 }
                 state.publish_runtime_event(crate::event_bus::MpEvent::PlayerReadyChanged {
-                    room_id: room_id.clone(), user_id: *user_id, ready: false,
+                    room_id: room_id.clone().to_string(), user_id: *user_id, ready: false,
                 });
-                ok(RoomCommandPayload::UserNotReady { room_id: room_id.clone(), user_id: *user_id })
+                ok(RoomCommandPayload::UserNotReady { room_id: room_id.clone().to_string(), user_id: *user_id })
             }
 
             RoomActorCommand::SubmitResult { room_id, user_id, score, accuracy, perfect, good, bad, miss, max_combo, full_combo, .. } => {
@@ -278,11 +285,11 @@ impl RoomCommandHandler {
                 r.send(Message::Played { user: *user_id, score: *score, accuracy: *accuracy, full_combo: *full_combo }).await;
                 r.check_all_ready().await;
                 state.dispatch_plugin_event(PluginEvent::GameEnd {
-                    user_id: *user_id, user_name: String::new(), room_id: room_id.clone(),
+                    user_id: *user_id, user_name: String::new(), room_id: room_id.clone().to_string(),
                     score: *score, accuracy: *accuracy, perfect: *perfect,
                     good: *good, bad: *bad, miss: *miss, max_combo: *max_combo, full_combo: *full_combo,
                 }).await;
-                ok(RoomCommandPayload::RoundResultSubmitted { room_id: room_id.clone(), user_id: *user_id, score: *score })
+                ok(RoomCommandPayload::RoundResultSubmitted { room_id: room_id.clone().to_string(), user_id: *user_id, score: *score })
             }
 
             RoomActorCommand::AbortRound { room_id, user_id, .. } => {
@@ -301,7 +308,7 @@ impl RoomCommandHandler {
                 }
                 r.send(Message::Abort { user: *user_id }).await;
                 r.check_all_ready().await;
-                ok(RoomCommandPayload::RoundAborted { room_id: room_id.clone(), user_id: *user_id })
+                ok(RoomCommandPayload::RoundAborted { room_id: room_id.clone().to_string(), user_id: *user_id })
             }
 
             RoomActorCommand::HostStart { room_id, user_id, .. } => {
@@ -322,8 +329,8 @@ impl RoomCommandHandler {
                 }
                 r.on_state_change().await;
                 r.check_all_ready().await;
-                state.dispatch_plugin_event(PluginEvent::GameStart { user_id: *user_id, room_id: room_id.clone() }).await;
-                ok(RoomCommandPayload::HostStarted { room_id: room_id.clone() })
+                state.dispatch_plugin_event(PluginEvent::GameStart { user_id: *user_id, room_id: room_id.clone().to_string() }).await;
+                ok(RoomCommandPayload::HostStarted { room_id: room_id.clone().to_string() })
             }
 
             RoomActorCommand::AddUser { room_id, user_id, user_name, monitor, .. } => {
@@ -339,11 +346,11 @@ impl RoomCommandHandler {
                 as_.state.live = true;
                 as_.state.members.users.push(*user_id);
                 state.dispatch_plugin_event(PluginEvent::RoomModify {
-                    user_id: *user_id, room_id: room_id.clone(),
+                    user_id: *user_id, room_id: room_id.clone().to_string(),
                     data: json!({"action": if *monitor { "monitor_join" } else { "join" }}).to_string(),
                 }).await;
                 ok(RoomCommandPayload::UserAdded {
-                    room_id: room_id.clone(), user_id: *user_id,
+                    room_id: room_id.clone().to_string(), user_id: *user_id,
                     monitor: *monitor,
                     room_full: current_count + 1 >= r.control_snapshot().max_users,
                 })
@@ -353,8 +360,9 @@ impl RoomCommandHandler {
                 let r = match room { Some(ref r) => r, None => return err("no room") };
                 let user = {
                     let users = r.users().await;
+                    let monitors = r.monitors().await;
                     users.iter().find(|u| u.id == *user_id).cloned()
-                        .or_else(|| { let m = r.monitors().await; m.iter().find(|u| u.id == *user_id).cloned() })
+                        .or_else(|| monitors.iter().find(|u| u.id == *user_id).cloned())
                 };
                 match user {
                     Some(user) => {
@@ -365,11 +373,11 @@ impl RoomCommandHandler {
                             state.publish_room_event(RoomEvent::LeaveRoom { room: r.id.to_string(), user: *user_id }).await;
                         }
                         state.dispatch_plugin_event(PluginEvent::RoomModify {
-                            user_id: *user_id, room_id: room_id.clone(),
+                            user_id: *user_id, room_id: room_id.clone().to_string(),
                             data: json!({"action": "leave"}).to_string(),
                         }).await;
                         ok(RoomCommandPayload::UserRemoved {
-                            room_id: room_id.clone(), user_id: *user_id, room_dropped: should_drop,
+                            room_id: room_id.clone().to_string(), user_id: *user_id, room_dropped: should_drop,
                         })
                     }
                     None => err("user not found in room"),

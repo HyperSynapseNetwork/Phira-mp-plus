@@ -2,7 +2,7 @@
 
 use super::{
     actor::RoomActor, command::RoomActorCommand, context::RoomCommandContext,
-    handler::RoomCommandHandler, RoomCommandGateway, RoomCommandResult,
+    RoomCommandGateway, RoomCommandResult,
 };
 use crate::server::PlusServerState;
 use std::sync::{atomic::Ordering, Arc, Weak};
@@ -203,23 +203,6 @@ impl RoomCommandGateway {
                 snapshots.remove(room_id);
             }
         }
-    }
-
-    /// Execute a command with a room reference already resolved.
-    /// The context carries the room so handlers can use it directly.
-    #[allow(dead_code)]
-    pub(super) async fn execute_mailbox_command_with_room(
-        &self,
-        state: &PlusServerState,
-        room: Arc<crate::room::Room>,
-        command: RoomActorCommand,
-    ) -> bool {
-        let ctx = RoomCommandContext::with_room(self, state, room);
-        let result = RoomCommandHandler::execute(ctx, &command).await;
-        let should_stop = RoomCommandHandler::should_stop_room_mailbox(&command, &result);
-        self.observe_mailbox_result(&result);
-        command.reply_with(result);
-        should_stop
     }
 
     pub(super) fn observe_mailbox_result(&self, result: &RoomCommandResult) {
