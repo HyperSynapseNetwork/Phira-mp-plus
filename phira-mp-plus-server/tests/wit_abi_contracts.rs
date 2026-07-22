@@ -248,8 +248,8 @@ fn wit_interfaces_are_extracted_correctly() {
     );
     assert_eq!(
         interfaces.len(),
-        16,
-        "WIT should define exactly 16 interfaces"
+        15,
+        "WIT should define exactly 15 interfaces (removed phira-federation + phira-federation-types, added phira-tcp)"
     );
 }
 
