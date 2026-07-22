@@ -1,44 +1,41 @@
-# PMP Guarantees
+# PMP 保证
 
-> Last updated: 2026-07-22
-> Applies to: Phira-mp+ v0.4.x (pre-production hardening candidate)
+> 最后更新：2026-07-22 · 适用于 Phira-mp+ v0.4.x
+> 完整英文版：[Guarantees (English)](guarantees.en.md)
 
-This document lists the guarantees PMP provides, the preconditions required,
-the failure semantics, and the test evidence supporting each claim.
+## 1. 事件持久化
 
----
+| 保证 | 前提 | 失败语义 | 证据 |
+|------|------|----------|------|
+| 已 admission 的事件在进程崩溃后存活 | WAL fsync 成功 | admission 前拒绝，无数据丢失 | WAL replay + ACK compaction 测试 |
+| 已 ACK 的事件不会丢失 | 数据库提交或 dead-letter 写入成功 | 重试直到 durable | `worker.rs` 状态机 |
+| Telemetry batcher 事件崩溃后存活 | 批次尚未提交 | WAL replay 恢复未提交事件 | WAL 集成测试 |
 
-## 1. Event Persistence
+## 2. 房间状态
 
-| Guarantee | Precondition | Failure Semantics | Evidence |
-|-----------|-------------|-------------------|----------|
-| Admitted events survive process crash | WAL fsync succeeds | Event rejected before admission; no data loss | WAL replay + ACK compaction tests |
-| Acknowledged events are durable | DB commit OR dead-letter write succeeds | Retry until durable; admission retained on dual failure | `worker.rs` state machine |
-| Telemetry batcher events survive crash | Batch not yet committed | WAL replay restores uncommitted events | Phase 3 WAL integration test |
+| 保证 | 前提 | 失败语义 | 证据 |
+|------|------|----------|------|
+| 房间命令串行执行 | 所有命令经过 mailbox | mailbox 拒绝保持队列顺序 | Room actor 测试 |
+| 无重复房间代次 | UUID + generation fencing | 延迟命令被拒绝 | Mailbox fencing 测试 |
 
-## 2. Room State
+## 3. 插件隔离
 
-| Guarantee | Precondition | Failure Semantics | Evidence |
-|-----------|-------------|-------------------|----------|
-| Room commands are serialized | All commands go through mailbox | Mailbox reject preserves queue order | Room actor tests |
-| No duplicate room generations | UUID + generation fencing | Late commands rejected | Room mailbox fencing tests |
+| 保证 | 前提 | 失败语义 | 证据 |
+|------|------|----------|------|
+| Fuel 限制执行 | Wasmtime fuel 启用 | 耗尽时 trap | Fuel 测试 |
+| 内存有界分配 | Store limiter 设置 | 分配失败 | WASM 运行时集成测试 |
 
-## 3. Plugin Isolation
+## 4. 关闭
 
-| Guarantee | Precondition | Failure Semantics | Evidence |
-|-----------|-------------|-------------------|----------|
-| Fuel-limited execution | Wasmtime fuel enabled | Trap on exhaustion | Plugin fuel tests |
-| Memory-bounded allocation | Store limiter set | Allocation failure | Wasm runtime integration tests |
+| 保证 | 前提 | 失败语义 | 证据 |
+|------|------|----------|------|
+| 关闭前接受的 events 会被 flush | Flush timeout 被尊重 | 超时事件返回给调用方 | 关闭序列测试 |
+| 关闭时 WAL compaction | Compaction 成功 | WAL 下次启动时增长 | `shutdown()` + compact 测试 |
 
-## 4. Shutdown
+## 5. 已知不保证
 
-| Guarantee | Precondition | Failure Semantics | Evidence |
-|-----------|-------------|-------------------|----------|
-| Events accepted before shutdown are flushed | Flush timeout respected | Excess events returned to caller | Shutdown sequence tests |
-| WAL compaction on shutdown | Compaction succeeds | WAL grows on next start | `shutdown()` + compact tests |
+- 集群级 HA（仅单进程）
+- 跨进程插件隔离（仅进程内 Wasmtime）
+- 多区域复制
 
-## 5. Known Non-Guarantees
-
-- Cluster-level HA (single-process only)
-- Cross-process plugin isolation (in-process Wasmtime only)
-- Multi-region replication
+> 详细英文版：[Guarantees (English)](guarantees.en.md)

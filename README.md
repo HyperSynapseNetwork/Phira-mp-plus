@@ -27,13 +27,13 @@
 
 | 分类 | 文档 |
 |------|------|
-| **产品** | [产品概览](docs/product/overview.md) · [当前保证](docs/guarantees.md) · [兼容矩阵](docs/product/compatibility-matrix.md) |
+| **产品** | [产品概览](docs/product/overview.md) · [当前保证](docs/guarantees.md) · [兼容矩阵 (EN)](docs/product/compatibility-matrix.en.md) |
 | **入门** | [构建与运行](docs/getting-started/quick-start.md) |
 | **配置** | [配置参考](docs/operations/configuration-reference.md) · [JSON Schema](docs/operations/config-schema.json) · [运行时策略](docs/configuration.md) |
 | **运维** | [升级回滚](docs/operations/upgrade-rollback.md) · [容量规划](docs/operations/capacity-planning.md) · [备份恢复](docs/operations/backup-restore.md) · [事故处理](docs/operations/incident-runbooks.md) · [排障指南](docs/operations/troubleshooting.md) |
-| **开发** | [架构](docs/development/architecture.md) · [错误码/CLI](docs/development/error-codes.md) · [测试指南](docs/development/testing.md) · [CLI 手册](docs/cli.md) |
+| **开发** | [架构](docs/development/architecture.md) · [错误码 (EN)](docs/development/error-codes.en.md) · [测试指南](docs/development/testing.md) · [CLI 手册](docs/cli.md) |
 | **插件** | [生命周期](docs/plugins/lifecycle.md) · [SDK cookbook](docs/plugins/sdk-cookbook.md) · [Manifest](docs/plugins/manifest.md) · [WIT ABI](docs/wit-abi.md) · [插件配置](docs/plugin-config.md) · [插件开发](docs/plugin-dev.md) |
-| **安全** | [威胁模型](docs/security/threat-model.md) · [SECURITY](SECURITY.md) |
+| **安全** | [威胁模型](docs/security/threat-model.md) · [安全报告](docs/security/report.md) · [SECURITY (EN)](SECURITY.md) |
 | **API** | [事件 API](docs/api.md) |
 | **仿真** | [Simulation](docs/simulation.md) · [压测](docs/benchmark-real.md) |
 | **其他** | [CHANGELOG](CHANGELOG.md) · [ROADMAP](ROADMAP.md) · [许可信息](#许可) |
