@@ -25,7 +25,7 @@
 //! 5. actor_state ↔ Room 双向同步 ✅（sync_to_room / from_room）
 //! 6. Snapshot 从 actor_state 派生（不再从 Room 独立锁读取）✅
 //! 7. 所有命令写 actor_state 或 Room 后交叉同步 ✅
-//! ❌ 尚未完成：
+//!    ❌ 尚未完成：
 //!    - player_data / display_names 仍是实时流，不在 actor_state 中
 //!    - Room 仍持有可变状态（未降级为纯广播接口）
 //!    - Gateway path 命令仍通过 Room 读写（需逐步迁移到 actor_state 优先）

@@ -260,7 +260,7 @@ async fn process_worker_loop(
                 if let Err(ref error) = telemetry_result {
                     warn!(%error, "telemetry flush failed; persistence worker remains active");
                 }
-                let combined = drain_result.and_then(|_| telemetry_result);
+                let combined = drain_result.and(telemetry_result);
                 let _ = reply.send(combined);
                 continue;
             }
@@ -272,7 +272,7 @@ async fn process_worker_loop(
                 }
                 let telemetry_result = worker_telemetry.shutdown(timeout).await;
                 let should_stop = drain_result.is_ok() && telemetry_result.is_ok();
-                let combined = drain_result.and_then(|_| telemetry_result);
+                let combined = drain_result.and(telemetry_result);
                 if let Err(ref error) = combined {
                     warn!(%error, "persistence shutdown failed; worker remains active");
                 }
