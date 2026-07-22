@@ -1,6 +1,6 @@
 [package]
 name = "phira-mp-plus-server"
-version = "0.4.569"
+version = "0.4.571"
 edition.workspace = true
 license = "AGPL-3.0"
 
