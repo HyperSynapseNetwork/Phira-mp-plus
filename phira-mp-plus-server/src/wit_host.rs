@@ -1043,4 +1043,5 @@ mod wit_trait_impls {
             Ok(self.ctx.node_key.public_key.clone())
         }
     }
+} // mod wit_trait_impls
 
