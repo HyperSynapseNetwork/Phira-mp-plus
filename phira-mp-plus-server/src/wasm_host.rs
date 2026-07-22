@@ -179,6 +179,7 @@ impl WitPluginComponent {
             node_key: Arc::new(crate::crypto::NodeKey::from_secret(b"pmp-default-node-key")),
             timers: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
             timer_callback: None,
+            tcp: None,
         }))
     }
 
@@ -581,6 +582,7 @@ mod tests {
             node_key: Arc::new(crate::crypto::NodeKey::from_secret(b"test-node-key")),
             timers: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
             timer_callback: None,
+            tcp: None,
         })
     }
 

@@ -45,6 +45,8 @@ pub struct WitHostContext {
     pub http_max_body: usize,
     /// Whether plugin HTTP calls may target private/reserved addresses.
     pub http_allow_private_network: bool,
+    /// TCP actor sender for plugin-initiated connections.
+    pub tcp: Option<tokio::sync::mpsc::Sender<crate::federation::FederationCommand>>,
 }
 
 /// Wraps server capabilities to implement WIT host traits.

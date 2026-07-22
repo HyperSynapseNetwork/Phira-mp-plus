@@ -366,6 +366,22 @@ interface phira-timer {
     clear-timer: func(timer-id: string) -> result<_, string>;
 }
 
+
+/// Plain TCP networking — connect/listen/send/close for WASM plugins.
+interface phira-tcp {
+    /// Connect to a remote TCP endpoint. Returns a connection handle.
+    connect: func(addr: string) -> result<u64, string>;
+
+    /// Start a TCP listener. Returns a listener handle.
+    listen: func(addr: string) -> result<u64, string>;
+
+    /// Send raw bytes on an established connection.
+    send: func(handle: u64, bytes: list<u8>) -> result<_, string>;
+
+    /// Close a connection or stop a listener by handle.
+    close: func(handle: u64) -> result<_, string>;
+}
+
 /// Runtime diagnostics.
 interface phira-runtime {
     use phira-types.{api-result};
@@ -397,6 +413,7 @@ world phira-plugin-v2 {
     import phira-config;
     import phira-simulation;
     import phira-crypto;
+    import phira-tcp;
     import phira-timer;
     import phira-runtime;
 
