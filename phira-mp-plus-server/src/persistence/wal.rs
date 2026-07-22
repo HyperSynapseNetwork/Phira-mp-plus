@@ -799,9 +799,19 @@ mod tests {
         wal.ack(id2).await.unwrap();
         wal.ack(id3).await.unwrap();
         assert_eq!(wal.compact().await.unwrap(), 0);
-        assert!(wal.replay().await.unwrap().is_empty());
+        // After compact-to-zero the WAL file is removed but the instance
+        // marker persists (see Issue #5 — marker binds to instance lifecycle).
+        // Verify the marker is still present so accidental future WAL
+        // deletion is detectable after new events are admitted.
+        let marker_path = path.with_extension("wal.instance");
+        assert!(marker_path.exists(), "instance marker must persist after compact-to-zero");
+        // New admissions must still work after compact-to-zero (WAL recreated).
+        let id4 = wal.admit(make_event("event4")).await.unwrap();
+        wal.ack(id4).await.unwrap();
+        assert_eq!(wal.compact().await.unwrap(), 0);
 
-        let _ = tokio::fs::remove_file(path).await;
+        let _ = tokio::fs::remove_file(&marker_path).await;
+        let _ = tokio::fs::remove_file(&path).await;
     }
 
     #[tokio::test]
