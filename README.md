@@ -27,16 +27,12 @@
 
 | 分类 | 文档 |
 |------|------|
-| **入门** | [构建与运行](docs/getting-started/quick-start.md) · [产品概览](docs/product.md) |
 | **配置** | [配置说明](docs/configuration.md) · [JSON Schema](docs/operations/config-schema.json) |
-| **运维** | [运维手册](docs/operations.md)（备份/事故/排障/升级/容量） |
+| **运维** | [运维手册](docs/operations.md) |
+| **插件** | [插件开发指南](docs/plugin-dev.md)（含 WIT ABI、示例） |
 | **开发** | [架构](docs/development/architecture.md) · [CLI 手册](docs/cli.md) · [测试指南](docs/development/testing.md) · [CLI 错误码 (EN)](docs/development/error-codes.en.md) · [产品概览 (EN)](docs/overview.en.md) · [兼容矩阵 (EN)](docs/compatibility-matrix.en.md) |
-| **插件** | [插件开发指南](docs/plugin-dev.md)（含生命周期/Manifest/配置/SDK） · [WIT ABI](docs/wit-abi.md) · [插件示例](docs/plugins/examples.md) |
-| **保证** | [当前保证](docs/guarantees.en.md) |
-| **安全** | [威胁模型](docs/security/threat-model.md) · [安全报告](docs/security/report.md) · [SECURITY (EN)](SECURITY.md) |
 | **API** | [事件 API](docs/api.md) |
-| **仿真** | [Simulation](docs/simulation.md) · [压测](docs/benchmark-real.md) |
-| **其他** | [CHANGELOG](CHANGELOG.md) · [ROADMAP](ROADMAP.md) · [许可信息](#许可) |
+| **仿真** | [仿真与压测](docs/simulation.md) |
 
 ## 许可
 
