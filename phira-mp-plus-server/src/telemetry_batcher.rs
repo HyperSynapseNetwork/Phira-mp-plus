@@ -6,6 +6,6 @@
 
 pub use crate::telemetry::{
     TelemetryBatcher, TelemetryBatcherPolicy, TelemetryBatcherStats, TelemetryCutoverDecision,
-    TelemetryCutoverMode, TelemetryItem, TelemetryKind, TelemetryTraceEntry,
+    TelemetryCutoverMode, TelemetryItem, TelemetryKind, TelemetryTraceEntry, WalAckMessage,
     TELEMETRY_SCHEMA_VERSION,
 };

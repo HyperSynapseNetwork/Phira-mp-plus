@@ -317,8 +317,25 @@ pub struct TelemetryItem {
 
 // ── Batcher actor ────────────────────────────────────────────────────
 
+// ── WAL ACK reliability ─────────────────────────────────────────────
+
+/// Typed message for the WAL ACK channel between the telemetry batcher
+/// and the persistence-wal-ack retry task.
+///
+/// Replaces the raw `uuid::Uuid` sender so the batcher can wait for ACK
+/// durability before declaring flush/shutdown complete.
+#[derive(Debug)]
+pub enum WalAckMessage {
+    /// A single WAL ID to acknowledge.
+    Ack(uuid::Uuid),
+    /// Barrier: process every ACK received before this message, retrying
+    /// as needed, then reply.  The receiver sends `Ok(())` on its oneshot
+    /// once all ACKs are durable (or `Err` if any ACK permanently failed).
+    DrainAndReply(oneshot::Sender<Result<(), String>>),
+}
+
 /// Shared handle for WAL ACK channel, passed to run_batcher.
-type WalAckTx = std::sync::Arc<std::sync::Mutex<Option<mpsc::Sender<uuid::Uuid>>>>;
+type WalAckTx = std::sync::Arc<std::sync::Mutex<Option<mpsc::Sender<WalAckMessage>>>>;
 
 /// Actor-based telemetry batcher.
 ///
@@ -418,8 +435,10 @@ impl TelemetryBatcher {
 
     /// Flush all items accepted before this call.
     /// Set the WAL ACK channel. After each successful database batch commit,
-    /// the batcher sends all WAL IDs from that batch through this channel.
-    pub fn set_wal_ack_tx(&self, tx: mpsc::Sender<uuid::Uuid>) {
+    /// the batcher sends `WalAckMessage::Ack` IDs through this channel and
+    /// follows with `WalAckMessage::DrainAndReply` so the receiver can
+    /// confirm durable WAL fsync before the flush returns success.
+    pub fn set_wal_ack_tx(&self, tx: mpsc::Sender<WalAckMessage>) {
         if let Ok(mut guard) = self.wal_ack_tx.lock() {
             *guard = Some(tx);
         }
@@ -631,12 +650,37 @@ async fn flush_pending(
             // Clone sender outside std::sync::Mutex so MutexGuard is dropped
             // before the async send (MutexGuard is not Send).
             let ack_sender = ack_tx.lock().ok().and_then(|g| g.clone());
-            if let Some(tx) = ack_sender {
+            let needs_barrier = if let Some(tx) = ack_sender {
+                let mut count = 0usize;
                 for item in &flushed {
                     if let Some(wal_id) = item.wal_id {
-                        if let Err(e) = tx.send(wal_id).await {
-                            warn!(wal_id = %wal_id, error = %e, "WAL ACK send failed; channel closed");
+                        if tx.send(WalAckMessage::Ack(wal_id)).await.is_err() {
+                            warn!(wal_id = %wal_id, "WAL ACK channel closed");
+                        } else {
+                            count += 1;
                         }
+                    }
+                }
+                count > 0
+            } else {
+                false
+            };
+
+            // DURABILITY BARRIER: wait for the persistence-wal-ack task to
+            // fsync every ACK sent above before returning.  Without this
+            // barrier, a PostgreSQL commit followed by a crash can lose the
+            // ACK, causing duplicate replay on restart.
+            if needs_barrier {
+                let (barrier_reply, barrier_rx) = oneshot::channel();
+                if let Some(tx) = ack_tx.lock().ok().and_then(|g| g.clone()) {
+                    if let Err(e) = tx.send(WalAckMessage::DrainAndReply(barrier_reply)).await {
+                        warn!(error = %e, "WAL ACK barrier send failed");
+                    } else if let Err(e) = barrier_rx.await {
+                        warn!(error = %e, "WAL ACK barrier reply channel dropped");
+                        // Do NOT return Err here — the DB write already
+                        // succeeded and items were removed from pending.
+                        // A missed barrier means ACK durability is unknown
+                        // but the data is safe (it will replay on restart).
                     }
                 }
             }

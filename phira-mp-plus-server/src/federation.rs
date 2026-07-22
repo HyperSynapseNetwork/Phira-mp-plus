@@ -30,7 +30,16 @@ pub struct FederationTlsOpts {
     pub local_cert_chain: Option<String>,
     pub local_private_key: Option<String>,
     pub min_tls_version: Option<String>,
+    /// Timeout (seconds) for TCP connection establishment. Default 10s.
+    pub connect_timeout_secs: u64,
+    /// Timeout (seconds) for TLS handshake. Default 10s.
+    pub handshake_timeout_secs: u64,
+    /// Timeout (seconds) for idle reads. 0 = disabled (default).
+    pub read_timeout_secs: u64,
 }
+
+const fn default_connect_timeout_secs() -> u64 { 10 }
+const fn default_handshake_timeout_secs() -> u64 { 10 }
 
 /// Commands plugins send to the federation actor.
 #[derive(Debug)]
@@ -77,10 +86,18 @@ pub enum FederationEvent {
 /// Shared connection registry: conn_handle → sender for outgoing data.
 type ConnectionMap = Arc<Mutex<HashMap<u64, mpsc::Sender<Vec<u8>>>>>;
 
+/// Shared close-signal registry: conn_handle → close sender.
+/// Each accepted TLS connection has a close signal that the actor
+/// triggers when the plugin calls Close on the listener-handle.
+type CloseMap = Arc<Mutex<HashMap<u64, oneshot::Sender<()>>>>;
+
 /// Per-connection state tracked by the actor.
 struct Connection {
     remote_addr: String,
     close_tx: Option<oneshot::Sender<()>>,
+    /// Read timeout configured at connection time.
+    /// Updated by SetReadTimeout (takes effect for future reads).
+    read_timeout_secs: u64,
 }
 
 /// Per-listener state.
@@ -96,6 +113,7 @@ pub struct FederationActor {
     listeners: HashMap<u64, Listener>,
     next_handle: u64,
     conn_map: ConnectionMap,
+    close_map: CloseMap,
     event_callback: Option<Arc<dyn Fn(String, serde_json::Value) + Send + Sync>>,
 }
 
@@ -107,6 +125,7 @@ impl FederationActor {
             listeners: HashMap::new(),
             next_handle: 1,
             conn_map: Arc::new(Mutex::new(HashMap::new())),
+            close_map: Arc::new(Mutex::new(HashMap::new())),
             event_callback: None,
         }
     }
@@ -144,6 +163,7 @@ impl FederationActor {
                     let cb = self.event_callback.clone();
                     let cm = Arc::clone(&self.conn_map);
 
+                    let read_timeout_secs = tls_opts.read_timeout_secs;
                     match connect_with_tls(&addr, &tls_opts, handle, cb, cm).await {
                         Ok((_data_tx, close_tx)) => {
                             self.connections.insert(
@@ -151,6 +171,7 @@ impl FederationActor {
                                 Connection {
                                     remote_addr: addr.clone(),
                                     close_tx: Some(close_tx),
+                                    read_timeout_secs,
                                 },
                             );
                             info!(%handle, %addr, "federation connected");
@@ -170,8 +191,9 @@ impl FederationActor {
                     let handle = self.alloc_handle();
                     let cb = self.event_callback.clone();
                     let cm = Arc::clone(&self.conn_map);
+                    let clm = Arc::clone(&self.close_map);
 
-                    match listen_with_tls(&addr, &tls_opts, handle, cb, cm).await {
+                    match listen_with_tls(&addr, &tls_opts, handle, cb, cm, clm).await {
                         Ok(close_tx) => {
                             self.listeners.insert(
                                 handle,
@@ -208,11 +230,21 @@ impl FederationActor {
                     }
                 }
                 FederationCommand::SetReadTimeout { handle, timeout_ms } => {
-                    info!(%handle, %timeout_ms, "federation set read timeout (not yet implemented)");
+                    if let Some(conn) = self.connections.get_mut(&handle) {
+                        let secs = (timeout_ms / 1000).max(1);
+                        conn.read_timeout_secs = secs;
+                        info!(%handle, %timeout_ms, %secs, "federation read timeout updated");
+                    } else {
+                        warn!(%handle, "federation SetReadTimeout on unknown handle");
+                    }
                 }
                 FederationCommand::Close { handle } => {
                     let _ = self.conn_map.lock().unwrap().remove(&handle);
-                    if let Some(conn) = self.connections.remove(&handle) {
+                    // Try close_map first (accepted listener connections).
+                    if let Some(close_tx) = self.close_map.lock().unwrap().remove(&handle) {
+                        let _ = close_tx.send(());
+                        info!(%handle, "federation accepted connection closed");
+                    } else if let Some(conn) = self.connections.remove(&handle) {
                         if let Some(tx) = conn.close_tx {
                             let _ = tx.send(());
                         }
@@ -362,17 +394,23 @@ async fn connect_with_tls(
     event_cb: Option<Arc<dyn Fn(String, serde_json::Value) + Send + Sync>>,
     conn_map: ConnectionMap,
 ) -> Result<(mpsc::Sender<Vec<u8>>, oneshot::Sender<()>), String> {
+    use tokio::time::timeout;
+
+    let connect_timeout = Duration::from_secs(tls_opts.connect_timeout_secs.max(1));
+    let handshake_timeout = Duration::from_secs(tls_opts.handshake_timeout_secs.max(1));
+
     let dns_name = extract_dns_name(addr)?;
     let tls_config = build_client_tls_config(tls_opts)?;
 
-    let stream = TcpStream::connect(addr)
+    let stream = timeout(connect_timeout, TcpStream::connect(addr))
         .await
+        .map_err(|_| format!("TCP connect to {addr} timed out ({}s)", connect_timeout.as_secs()))?
         .map_err(|e| format!("TCP connect to {addr}: {e}"))?;
 
     let connector = TlsConnector::from(tls_config);
-    let tls_stream = connector
-        .connect(dns_name, stream)
+    let tls_stream = timeout(handshake_timeout, connector.connect(dns_name, stream))
         .await
+        .map_err(|_| format!("TLS handshake to {addr} timed out ({}s)", handshake_timeout.as_secs()))?
         .map_err(|e| format!("TLS handshake to {addr}: {e}"))?;
 
     // Extract peer identity and verify expected CA.
@@ -388,9 +426,10 @@ async fn connect_with_tls(
         .insert(handle, data_tx.clone());
 
     let remote = addr.to_string();
+    let read_to = tls_opts.read_timeout_secs;
     let cm = Arc::clone(&conn_map);
     tokio::spawn(async move {
-        connection_read_task(tls_stream, handle, data_rx, close_rx, event_cb, remote).await;
+        connection_read_task(tls_stream, handle, data_rx, close_rx, event_cb, remote, read_to).await;
         cm.lock().unwrap().remove(&handle);
     });
 
@@ -404,6 +443,7 @@ async fn listen_with_tls(
     listener_handle: u64,
     event_cb: Option<Arc<dyn Fn(String, serde_json::Value) + Send + Sync>>,
     conn_map: ConnectionMap,
+    close_map: CloseMap,
 ) -> Result<oneshot::Sender<()>, String> {
     let tls_config = build_server_tls_config(tls_opts)?;
     let listener = TcpListener::bind(addr)
@@ -412,6 +452,7 @@ async fn listen_with_tls(
 
     let (close_tx, close_rx) = oneshot::channel();
     let acceptor = TlsAcceptor::from(tls_config);
+    let read_to = tls_opts.read_timeout_secs;
 
     tokio::spawn(accept_loop(
         listener,
@@ -420,6 +461,8 @@ async fn listen_with_tls(
         close_rx,
         event_cb,
         conn_map,
+        read_to,
+        close_map,
     ));
 
     Ok(close_tx)
@@ -433,6 +476,8 @@ async fn accept_loop(
     mut close_rx: oneshot::Receiver<()>,
     event_cb: Option<Arc<dyn Fn(String, serde_json::Value) + Send + Sync>>,
     conn_map: ConnectionMap,
+    read_timeout_secs: u64,
+    close_map: CloseMap,
 ) {
     let mut next_conn: u64 = 1;
     loop {
@@ -450,11 +495,12 @@ async fn accept_loop(
                         tokio::spawn(async move {
                             match acceptor.accept(stream).await {
                                 Ok(tls_stream) => {
-                                        let (cert_id, ca_id) = peer_identity(tls_stream.get_ref().1.peer_certificates().unwrap_or_default());
+                                    let (cert_id, ca_id) = peer_identity(tls_stream.get_ref().1.peer_certificates().unwrap_or_default());
                                     let (data_tx, data_rx) = mpsc::channel::<Vec<u8>>(64);
-                                    let (_close_tx, close_rx) = oneshot::channel::<()>();
+                                    let (close_tx, close_rx) = oneshot::channel::<()>();
 
                                     cm.lock().unwrap().insert(conn_handle, data_tx);
+                                    close_map.lock().unwrap().insert(conn_handle, close_tx);
 
                                     if let Some(ref cb) = cb {
                                         cb("federation:accept".into(), serde_json::json!({
@@ -467,10 +513,11 @@ async fn accept_loop(
                                     }
 
                                     connection_read_task(
-                                        tls_stream, conn_handle, data_rx, close_rx, cb, peer,
+                                        tls_stream, conn_handle, data_rx, close_rx, cb, peer, read_timeout_secs,
                                     ).await;
 
                                     cm.lock().unwrap().remove(&conn_handle);
+                                    close_map.lock().unwrap().remove(&conn_handle);
                                 }
                                 Err(e) => {
                                     warn!(%peer, error = %e, "TLS accept failed");
@@ -500,6 +547,7 @@ async fn connection_read_task(
     mut close_rx: oneshot::Receiver<()>,
     event_cb: Option<Arc<dyn Fn(String, serde_json::Value) + Send + Sync>>,
     _remote_addr: String,
+    read_timeout_secs: u64,
 ) {
     use tokio::io::AsyncWriteExt;
 
@@ -522,7 +570,18 @@ async fn connection_read_task(
                     None => break,
                 }
             }
-            result = reader.read(&mut buf) => {
+            result = async {
+                if read_timeout_secs > 0 {
+                    tokio::time::timeout(
+                        Duration::from_secs(read_timeout_secs),
+                        reader.read(&mut buf),
+                    )
+                    .await
+                    .map_err(|_| std::io::Error::new(std::io::ErrorKind::TimedOut, "read timeout"))?
+                } else {
+                    reader.read(&mut buf).await
+                }
+            } => {
                 match result {
                     Ok(0) => {
                         cb("federation:disconnect".into(), serde_json::json!({
@@ -534,6 +593,12 @@ async fn connection_read_task(
                         cb("federation:receive".into(), serde_json::json!({
                             "handle": handle, "bytes": buf[..n].to_vec(),
                         }));
+                    }
+                    Err(e) if e.kind() == std::io::ErrorKind::TimedOut => {
+                        cb("federation:error".into(), serde_json::json!({
+                            "handle": handle, "error": "read timed out",
+                        }));
+                        break;
                     }
                     Err(e) => {
                         cb("federation:error".into(), serde_json::json!({

@@ -9,13 +9,17 @@
 use anyhow::Result;
 use serde_json::Value;
 
-/// Create a migrator that reads migration files from the crate's `migrations/`
-/// directory. Uses runtime path resolution via `CARGO_MANIFEST_DIR` so sqlx 0.8
-/// doesn't need compile-time relative path support.
+/// Return the embedded sqlx migrator.
+///
+/// Uses `sqlx::migrate!("migrations")` which embeds migration SQL at compile
+/// time.  The old approach (`env!("CARGO_MANIFEST_DIR")/migrations`) resolved
+/// to a source-tree absolute path that did not exist in Docker runtime images,
+/// causing silent migration failures in production containers.
 #[cfg(feature = "postgres")]
-pub async fn migrator() -> Result<sqlx::migrate::Migrator, sqlx::migrate::MigrateError> {
-    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("migrations");
-    sqlx::migrate::Migrator::new(path).await
+pub fn migrator() -> sqlx::migrate::Migrator {
+    // The path is relative to CARGO_MANIFEST_DIR at compile time, and the
+    // SQL is embedded into the binary — no runtime filesystem access needed.
+    sqlx::migrate!("migrations")
 }
 
 /// Unix 毫秒时间戳。
@@ -214,7 +218,7 @@ pub(crate) async fn append_event_pg(
 #[cfg(feature = "postgres")]
 async fn init_tables(pool: &sqlx::PgPool) -> Result<()> {
     // Apply managed schema migrations via sqlx.
-    migrator().await?.run(pool).await?;
+    migrator().run(pool).await?;
 
     let now = now_ms();
     sqlx::query(
@@ -315,29 +319,38 @@ async fn init_tables(pool: &sqlx::PgPool) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    /// Verify the migrator resolves and finds the expected migration files.
+    /// Verify the migrator resolves and finds migration files.
+    ///
+    /// SAFE EVOLUTION: this test accepts ≥1 migration so that new versioned
+    /// migrations can be added without updating this assertion.  Each new
+    /// migration file must be immutable once deployed — never modify an
+    /// already-deployed migration.  Add a new file with a higher version
+    /// number (e.g. 20260722000001_add_something.sql) instead.
     #[cfg(feature = "postgres")]
-    #[tokio::test]
-    async fn migration_macro_compiles_and_has_expected_count() {
-        let migrator = crate::db::migrator().await.unwrap();
+    #[test]
+    fn migration_macro_compiles_and_has_expected_count() {
+        let migrator = crate::db::migrator();
         assert!(
             !migrator.migrations.is_empty(),
             "must have at least one migration"
         );
-        // Expect exactly 1 migration: 20260721000001_initial_schema.sql
-        assert_eq!(
-            migrator.migrations.len(),
-            1,
-            "unexpected number of migration files; if adding a new migration update this assertion"
+        // Accept ≥1 migration so schema evolution is not blocked by a
+        // hard-coded count.  The initial migration is expected to be
+        // 20260721000001_initial_schema.sql; subsequent migrations add
+        // irreversible DDL with higher version timestamps.
+        assert!(
+            migrator.migrations.len() >= 1,
+            "expected at least 1 migration, found {}",
+            migrator.migrations.len()
         );
         let m = &migrator.migrations[0];
         assert_eq!(
             m.version, 20260721000001,
-            "unexpected migration version"
+            "unexpected base migration version"
         );
         assert!(
             m.description.contains("initial schema"),
-            "migration description mismatch: {}",
+            "base migration description mismatch: {}",
             m.description
         );
     }
@@ -423,5 +436,29 @@ mod tests {
             content.contains("ALTER TABLE mp_users ADD COLUMN IF NOT EXISTS ip TEXT"),
             "migration must include backwards-compat ALTER for mp_users.ip"
         );
+    }
+
+    /// Ensure migration files use valid version timestamps and are
+    /// strictly forward-only (no edits to deployed files).
+    #[cfg(feature = "postgres")]
+    #[test]
+    fn migration_evolution_is_strictly_versioned() {
+        let migrator = crate::db::migrator();
+        let mut prev_version = 0i64;
+        for (i, m) in migrator.migrations.iter().enumerate() {
+            // Version must be a valid UTC timestamp in YYYYMMDDHHMMSS format.
+            assert!(
+                m.version >= 20260000000000,
+                "migration[{}] version {} is not a valid UTC timestamp",
+                i, m.version
+            );
+            // Versions must be strictly increasing.
+            assert!(
+                m.version > prev_version,
+                "migration[{}] version {} <= previous {}",
+                i, m.version, prev_version
+            );
+            prev_version = m.version;
+        }
     }
 }

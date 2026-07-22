@@ -341,6 +341,9 @@ impl PersistenceWal {
         let mut admitted = Vec::new();
         let mut acked = HashSet::new();
         let mut has_truncated = false;
+        // Byte offset at which the truncated tail begins (0 if no truncation).
+        // Used to physically truncate the file after replay.
+        let mut truncated_at: usize = 0;
 
         let mut lines: Vec<&[u8]> = bytes.split(|b| *b == b'\n').collect();
         // If the last byte was not a newline, the final segment may be an
@@ -358,6 +361,7 @@ impl PersistenceWal {
                         _ => {
                             // Genuinely truncated or corrupt — discard.
                             has_truncated = true;
+                            truncated_at = bytes.len().saturating_sub(last.len());
                         }
                     }
                 }
@@ -418,6 +422,30 @@ impl PersistenceWal {
                 self.path.display(),
                 self.truncated_frames.load(Ordering::Acquire),
             );
+            // Physically truncate the file at the last valid offset.
+            // Without this, new frames may be appended after the corrupted
+            // tail, causing the next restart to encounter a complete bad
+            // line and fail-closed.
+            if truncated_at > 0 && truncated_at < bytes.len() {
+                let removed = bytes.len().saturating_sub(truncated_at);
+                match truncate_wal_file(&self.path, truncated_at).await {
+                    Ok(new_len) => {
+                        bytes.truncate(truncated_at);
+                        self.total_bytes.store(new_len as u64, Ordering::Release);
+                        warn!(
+                            "WAL {} truncated to {} bytes (removed {removed} corrupted bytes)",
+                            self.path.display(),
+                            truncated_at,
+                        );
+                    }
+                    Err(e) => {
+                        warn!(
+                            "WAL {} truncation failed: {e}; file may contain corrupted tail",
+                            self.path.display(),
+                        );
+                    }
+                }
+            }
         }
 
         // Record that this WAL instance has been initialized.
@@ -534,21 +562,24 @@ impl PersistenceWal {
                     frame.ver
                 ));
             }
-            // During compact we silently skip checksum errors on known ACK
-            // records (the original data is recoverable from the live state).
-            // Admission records MUST pass checksum.
+            // All frames (both Admission and Ack) MUST pass checksum verification.
+            // Skipping ACK checksum opens a data-loss path: a corrupted ACK can
+            // cause a real admission to be treated as acknowledged and then
+            // permanently deleted during compaction.
+            frame.verify().map_err(|e| {
+                format!(
+                    "corrupt WAL {} line {} ({}): {e}",
+                    self.path.display(),
+                    index + 1,
+                    match &frame.record {
+                        WalRecord::Admission { .. } => "admission",
+                        WalRecord::Ack { .. } => "ack",
+                    },
+                )
+            })?;
             match &frame.record {
-                WalRecord::Admission { .. } => {
-                    frame.verify().map_err(|e| {
-                        format!(
-                            "corrupt WAL {} line {} admission record: {e}",
-                            self.path.display(),
-                            index + 1
-                        )
-                    })?;
-                    if let WalRecord::Admission { id, event } = &frame.record {
-                        admitted.push((*id, event.clone()));
-                    }
+                WalRecord::Admission { id, event } => {
+                    admitted.push((*id, event.clone()));
                 }
                 WalRecord::Ack { id } => {
                     acked.insert(*id);
@@ -562,10 +593,13 @@ impl PersistenceWal {
             .collect();
 
         if pending.is_empty() {
-            // Nothing to compact; remove the file and instance marker.
+            // Nothing to compact; remove only the WAL file.
+            // Instance marker MUST be preserved: it binds to the entire
+            // instance lifecycle so that accidental WAL deletion or zeroing
+            // is detected even when all ACKs have been processed. If the
+            // marker were deleted here, a subsequent WAL admission followed
+            // by WAL deletion would be misidentified as a first boot.
             let _ = tokio::fs::remove_file(&self.path).await;
-            let marker = self.path.with_extension("wal.instance");
-            let _ = tokio::fs::remove_file(&marker).await;
             self.total_bytes.store(0, Ordering::Release);
             self.admission_count.store(0, Ordering::Release);
             self.ack_count.store(0, Ordering::Release);
@@ -663,6 +697,30 @@ impl PersistenceWal {
         }
         false
     }
+}
+
+/// Truncate a WAL file at the given byte offset.
+/// Opens the file in write mode, truncates, then syncs.
+async fn truncate_wal_file(path: &std::path::Path, offset: usize) -> Result<u64, String> {
+    let file = tokio::fs::OpenOptions::new()
+        .write(true)
+        .open(path)
+        .await
+        .map_err(|e| format!("open WAL for truncation {}: {e}", path.display()))?;
+    file.set_len(offset as u64)
+        .await
+        .map_err(|e| format!("truncate WAL {}: {e}", path.display()))?;
+    file.sync_all()
+        .await
+        .map_err(|e| format!("sync WAL after truncation {}: {e}", path.display()))?;
+    drop(file);
+    // Sync parent directory so metadata is durable.
+    if let Some(parent) = path.parent() {
+        if let Ok(dir) = tokio::fs::File::open(parent).await {
+            let _ = dir.sync_all().await;
+        }
+    }
+    Ok(offset as u64)
 }
 
 #[cfg(test)]
