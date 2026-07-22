@@ -37,7 +37,7 @@ impl RoomCommandHandler {
         command: &RoomActorCommand,
     ) -> RoomCommandResult {
         let state = ctx.state;
-        let room = &ctx.room;
+        let room = ctx.room.clone();
 
 
         match command {
