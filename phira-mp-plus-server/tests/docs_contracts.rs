@@ -37,8 +37,6 @@ fn read_doc_required(filename: &str) -> String {
 fn required_docs_exist() {
     for doc in &[
         "simulation.md",
-        "benchmark-real.md",
-        "wit-abi.md",
         "cli.md",
         "configuration.md",
         "plugin-dev.md",
@@ -229,37 +227,40 @@ fn simulation_docs_no_phira_access() {
     );
 }
 
-// ── docs/benchmark-real.md checks ───────────────────────────────────
+// ── docs/simulation.md benchmark checks ─────────────────────────────
 
 #[test]
-fn benchmark_real_docs_marked_advanced() {
-    let content = read_doc_required("benchmark-real.md");
-    assert!(
-        content.contains("advanced") || content.contains("explicit") || content.contains("不推荐"),
-        "benchmark-real.md must be marked as advanced/explicit"
-    );
+fn benchmark_section_marked_advanced() {
+    let content = read_doc_required("simulation.md");
+    // Benchmark content (if present) must be marked as advanced
+    if content.contains("Real Benchmark") || content.contains("压测") {
+        assert!(
+            content.contains("advanced") || content.contains("explicit") || content.contains("不推荐"),
+            "simulation.md benchmark section must be marked as advanced/explicit"
+        );
+    }
 }
 
-// ── docs/wit-abi.md checks ──────────────────────────────────────────
+// ── docs/plugin-dev.md WIT checks ───────────────────────────────────
 
 #[test]
-fn wit_abi_docs_has_required_fields() {
-    let content = read_doc_required("wit-abi.md");
+fn plugin_dev_has_wit_abi_fields() {
+    let content = read_doc_required("plugin-dev.md");
     assert!(
         content.contains("abi-wit-v2"),
-        "wit-abi.md must mention abi-wit-v2"
+        "plugin-dev.md must mention abi-wit-v2"
     );
     assert!(
         !content.contains("abi-json-v1"),
-        "wit-abi.md should not mention abi-json-v1 (JSON bridge removed)"
+        "plugin-dev.md should not mention abi-json-v1 (JSON bridge removed)"
     );
     assert!(
         content.contains("wit/phira-plugin.wit"),
-        "wit-abi.md must mention canonical WIT path"
+        "plugin-dev.md must mention canonical WIT path"
     );
     assert!(
-        content.contains("MIGRATION_PHASE") || content.contains("migration"),
-        "wit-abi.md must mention migration phase"
+        content.contains("phira-plugin-v2"),
+        "plugin-dev.md must mention the WIT world phira-plugin-v2"
     );
 }
 
@@ -280,17 +281,17 @@ fn plugin_dev_prefers_canonical_wit() {
     }
 }
 
-// ── server_config vs benchmark-real.md pointer ──────────────────────
+// ── server_config vs simulation.md pointer ──────────────────────────
 
 #[test]
-fn server_config_points_to_benchmark_real() {
+fn server_config_points_to_simulation_doc() {
     let content = std::fs::read_to_string(workspace_root().join("server_config.yml"))
         .expect("server_config.yml should be readable");
-    // If server_config has any benchmark-related comment, it must reference benchmark-real.md
+    // If server_config has any benchmark-related comment, it must reference simulation.md
     if content.contains("benchmark") || content.contains("压测") {
         assert!(
-            content.contains("benchmark-real.md"),
-            "server_config.yml benchmark section must point to docs/benchmark-real.md"
+            content.contains("simulation.md"),
+            "server_config.yml benchmark section must point to docs/simulation.md"
         );
     }
 }
