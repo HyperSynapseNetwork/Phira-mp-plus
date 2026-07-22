@@ -33,7 +33,6 @@
 | **开发** | [架构](docs/development/architecture.md) · [CLI 手册](docs/cli.md) · [测试指南](docs/development/testing.md) · [CLI 错误码 (EN)](docs/development/error-codes.en.md) · [产品概览 (EN)](docs/overview.en.md) · [兼容矩阵 (EN)](docs/compatibility-matrix.en.md) |
 | **API** | [事件 API](docs/api.md) |
 | **仿真** | [仿真与压测](docs/simulation.md) |
-| **其他** | [CONTRIBUTING](CONTRIBUTING.md) · [SUPPORT](SUPPORT.md) |
 
 ## 许可
 
