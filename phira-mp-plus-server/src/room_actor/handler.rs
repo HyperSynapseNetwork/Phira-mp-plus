@@ -24,6 +24,7 @@ fn typed_err(msg: &str) -> RoomCommandResult {
 
 pub(super) struct RoomCommandHandler;
 
+impl RoomCommandHandler {
     /// Execute a command against actor-owned state.
     /// Each handler writes actor_state first, then broadcasts via Room,
     /// then returns the typed payload.  The caller (execute_command)
