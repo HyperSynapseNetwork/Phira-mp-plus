@@ -11,7 +11,7 @@
 | **目标 ABI** | `abi-wit-v2` |
 | **规范 WIT** | `wit/phira-plugin.wit` |
 | **MIGRATION_PHASE** | `3` (JSON bridge removed, WIT-only component ABI) |
-| **接口数量** | `16` |
+| **接口数量** | `15` |
 
 ## 规范 WIT 接口
 

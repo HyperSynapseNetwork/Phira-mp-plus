@@ -9,7 +9,7 @@
 
 **Phira-mp+（PMP）** 是 [phira-mp](https://github.com/HyperSynapseNetwork/phira-mp) 的增强版多人游戏服务端。在 Phira+ 架构中，PMP 负责游戏协议、房间运行时、WASM 插件与游戏数据持久化；**Phira+ Backend（PPB）负责公共 Web API、认证、限流、网关与边缘暴露**。因此 PMP 保留的 HTTP/SSE/WebSocket 仅用于受控网络中的兼容、诊断和内部集成，不作为公网边缘接口。
 
-> **当前状态：预生产加固候选版本（v0.4.x）** — 已完成多项 P0/P1 加固，适合受控测试和内部灰度部署。完整生产就绪状态追踪见 [`PMP_PRODUCTION_PRODUCTIZATION_AUDIT.md`](PMP_PRODUCTION_PRODUCTIZATION_AUDIT.md)。
+> **当前状态：预生产加固候选版本（v0.4.x）** — P0/P1 全部加固完成，房间状态 Actor ownership 已落地，WAL/ACK 可靠性已闭环。适合受控测试和内部灰度部署。
 
 ### 核心特性
 
@@ -17,10 +17,10 @@
 - **WASM 插件边界** — 基于 wasmtime 组件模型（WIT ABI v2），逐插件 capability、fuel、线性内存/实例/表限制、有界事件队列与超时 quarantine 已接线
 - **可靠生命周期** — 插件事件和持久化使用有界队列；Flush/Shutdown 带确认；数据库重试耗尽后写入本地 dead-letter；后台任务由 Supervisor 统一跟踪并在关闭时取消和等待
 - **严格命令入口** — Session 与 Room 管理命令只经 mailbox 执行；mailbox 缺失、关闭、拥塞或结果不确定时显式失败，不再切换到直接处理路径
-- **一致房间控制面** — host/lock/cycle/hidden/endpoint/容量等控制字段共享同一快照和 generation。成员、谱面与轮次的完整 Actor ownership 仍在迁移中
+- **一致房间控制面** — host/lock/cycle/hidden/endpoint/容量等控制字段共享同一快照和 generation。ActorState 已是快照权威来源，全部 17 个命令走 actor_state
 - **慢消费者隔离** — 会话发送采用有界队列和非阻塞路径；网络读取与业务处理通过有界命令队列解耦
 - **PMP 内部接口** — 保留房间信息 HTTP、SSE、WebSocket 和插件动态路由，供 PPB/受控网络调用，不承担公共边缘安全职责
-- **插件 TCP/TLS 连接 API（Experimental）** — 供 WASM 插件通过句柄建立和管理 TLS 连接；默认关闭，CA 验证和连接限额等尚未完成
+- **插件 TCP 连接 API** — 供 WASM 插件通过句柄建立和管理 TCP 连接（connect/listen/send/close），纯明文，无 TLS
 - **jemalloc 分配器** — Linux 下使用 jemalloc 替代 musl malloc，降低长期运行中的 RSS 膨胀风险
 
 ## 文档
@@ -36,7 +36,7 @@
 | **安全** | [威胁模型](docs/security/threat-model.md) · [SECURITY](SECURITY.md) |
 | **API** | [PPB 接口契约](docs/api/ppb-contract.md) · [事件 API](docs/api.md) |
 | **仿真** | [Simulation](docs/simulation.md) · [压测](docs/benchmark-real.md) |
-| **其他** | [CHANGELOG](CHANGELOG.md) · [审计报告](PMP_PRODUCTION_PRODUCTIZATION_AUDIT.md) · [许可信息](#许可) |
+| **其他** | [CHANGELOG](CHANGELOG.md) · [ROADMAP](ROADMAP.md) · [许可信息](#许可) |
 
 ## 许可
 
@@ -144,7 +144,7 @@ Phira-mp-plus/
 ├── README.md
 ├── server_config.yml                # YAML 配置文件
 ├── wit/                             # WIT 接口定义
-│   └── phira-plugin.wit             #   Plugin ABI v2 WIT (16 interfaces)
+│   └── phira-plugin.wit             #   Plugin ABI v2 WIT (15 interfaces)
 │
 ├── data/                            # 运行时数据目录
 │   ├── extensions.json              #   插件扩展数据
@@ -202,8 +202,8 @@ Phira-mp-plus/
 │       ├── room.rs                  #   房间状态机 (InternalRoomState / Room)
 │       ├── backup.rs               #   备份与恢复
 │       ├── crypto.rs               #   HMAC 签名 (sha2)
+│       ├── federation.rs           #   插件 TCP 连接 Actor
 │       ├── play_history.rs         #   游玩历史
-│       ├── rbac.rs                 #   基于角色的访问控制
 │       ├── telemetry.rs            #   遥测类型 & CutoverMode
 │       ├── room_actor/              #   Room Actor 命令网关
 │       │   ├── mod.rs, actor.rs, mailbox.rs, command.rs, handler.rs

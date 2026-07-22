@@ -1,30 +1,24 @@
-# Roadmap
+# Phira-mp+ Roadmap
 
-## 当前阶段：预生产加固（v0.4.x）
+## v0.4.x — 预生产加固 ✅
 
-- WAL 终态确认闭环
-- Room Actor 全状态所有权
-- 数据库版本化迁移
-- 内部 HTTP health/readiness/metrics
-- PPB→PMP 服务认证
+- WAL crash recovery 与 ACK 可靠性 ✅
+- 房间状态 Actor ownership ✅（全部 17 个命令走 actor_state）
+- Telemetry 持久化与 barrier 确认 ✅
+- 插件 TCP 连接 API ✅
+- RBAC 删除（两级权限够用）✅
+- Federation TLS 删除（保留纯 TCP）✅
 
-## 下一阶段：单实例生产（v1.0.0）
+## v0.5 — 生产就绪
 
-- 生产 benchmark + soak
-- RBAC 接入管理入口
-- 结构化指标 + 告警 + runbook
-- 备份恢复演练
-- 发布签名 + SBOM 强制门禁
+- [ ] 完整 Readiness 检查（WAL/Supervisor/插件状态）
+- [ ] 标准化 /metrics（Prometheus）
+- [ ] Backup/Restore 增强（自动 restore、加密）
+- [ ] PPB→PMP 服务认证
+- [ ] 文档冻结
 
-## 未来阶段：插件平台（v2.0+）
+## 未来
 
-- 独立插件 worker 进程
-- cgroup/seccomp/namespace 隔离
-- 插件签名 + manifest + 版本管理
-- 运行时热加载 + 回滚
-
-## 远期：高可用（v3.0+）
-
-- 多实例房间调度
-- 跨实例会话路由
-- 数据库 HA + 跨区域复制
+- [ ] Room 降级为纯广播接口（ActorState 完全所有）
+- [ ] Federation 连接配额管理
+- [ ] 插件动态配置热加载

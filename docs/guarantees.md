@@ -1,6 +1,6 @@
 # PMP Guarantees
 
-> Last updated: 2026-07-19
+> Last updated: 2026-07-22
 > Applies to: Phira-mp+ v0.4.x (pre-production hardening candidate)
 
 This document lists the guarantees PMP provides, the preconditions required,
