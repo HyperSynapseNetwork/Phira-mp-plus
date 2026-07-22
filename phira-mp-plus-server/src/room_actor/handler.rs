@@ -32,6 +32,17 @@ fn typed_or_err(
 
 pub(super) struct RoomCommandHandler;
 
+/// Returns true for commands that mutate actor_state directly
+/// (instead of going through the gateway → Room path).
+pub fn is_direct_state_command(command: &RoomActorCommand) -> bool {
+    matches!(
+        command,
+        RoomActorCommand::SetLock { .. }
+            | RoomActorCommand::SetCycle { .. }
+            | RoomActorCommand::SetHidden { .. }
+    )
+}
+
 impl RoomCommandHandler {
     /// Execute a command using the existing gateway path (legacy).
     /// Commands go through `resolve_room` → `Room` object methods.

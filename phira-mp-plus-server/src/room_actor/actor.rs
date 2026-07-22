@@ -1,13 +1,18 @@
-//! Room Actor — 每个房间一个 actor，持有房间状态快照。
+//! Room Actor — actor-owned state with bidirectional sync to Room.
 //!
-//! 迁移中：actor 正从 `RoomSnapshot` + `Room` 引用迁移到完整
-//! `RoomActorState` 所有权。当前 actor 仍通过 `Room` 对象读取状态，
-//! 但新代码应优先使用 `self.actor_state`。
+//! actor_state is the authoritative source for snapshots after command
+//! execution.  Two sync paths keep Room and actor_state consistent:
 //!
-//! 迁移已完成部分：
-//! - `RoomState` 定义：包含 control/lifecycle/members/chart/round/live
-//! - `RoomActorState::from_room()` 直接持有这些字段
-//! - `RoomActor::execute_command()` 入口：支持直接修改 actor_state
+//! - **Direct-state commands** (SetLock/SetCycle/SetHidden): write
+//!   actor_state, then `sync_to_room()` pushes changes to Room.
+//! - **Gateway commands** (everything else): write Room, then
+//!   `from_room()` re-reads Room into actor_state.
+//!
+//! Snapshot (`latest_snapshot`) is always derived from actor_state,
+//! never from Room's independent locks, avoiding inconsistent reads.
+//!
+//! Remaining gap: `player_data` and `display_names` are live data
+//! streams written outside the actor path and not mirrored here.
 
 use super::command::RoomActorCommand;
 use crate::room::{InternalRoomState, Room, RoomControlSnapshot};
@@ -154,8 +159,6 @@ pub struct RoomActorState {
 
 impl RoomActorState {
     /// Snapshot the current Room state into an actor-owned copy.
-    /// During migration, this is called after each command to sync
-    /// from the shared Room into the actor's local state.
     pub async fn from_room(room: &Room) -> Self {
         let state = RoomState::from_room(room).await;
         Self {
@@ -179,6 +182,22 @@ impl RoomActorState {
             state,
             created_at,
         }
+    }
+
+    /// Sync actor state BACK to the shared Room object.
+    /// After a direct actor_state mutation, call this so Room stays
+    /// consistent for external readers (session, telemetry, plugins).
+    ///
+    /// Only syncs fields that direct-state commands (SetLock/SetCycle/
+    /// SetHidden) mutate — control flags and lifecycle state.
+    /// Membership changes still go through the gateway path.
+    pub async fn sync_to_room(&self, room: &Room) {
+        // Use public setters for control fields.
+        room.set_locked(self.state.control.locked);
+        room.set_cycle(self.state.control.cycle);
+        room.set_hidden(self.state.control.hidden);
+        // Lifecycle: e.g. WaitForReady / Playing transitions.
+        *room.state.write().await = self.state.lifecycle.clone();
     }
 }
 
@@ -212,13 +231,9 @@ impl RoomActor {
         &self.latest_snapshot
     }
 
-    /// 刷新快照和 actor 状态（命令执行后调用）。
-    pub async fn refresh_snapshot(&mut self) {
-        self.latest_snapshot = RoomSnapshot::from_room(&self.room).await;
-        self.actor_state = Some(RoomActorState::from_room(&self.room).await);
-    }
-
-    /// 从 actor_state 刷新快照（actor_state 为权威来源时使用）。
+    /// Refresh snapshot from actor state (always the authority after command
+    /// execution).  This replaces the old `refresh_snapshot` which read from
+    /// Room's independent locks and could observe inconsistent combinations.
     pub fn refresh_snapshot_from_state(&mut self) {
         if let Some(ref actor_state) = self.actor_state {
             self.latest_snapshot = RoomSnapshot::from_actor_state(actor_state);
@@ -228,21 +243,41 @@ impl RoomActor {
     /// Execute a command against the actor's owned state.
     /// Returns `true` if the mailbox should stop after this command.
     pub(super) async fn execute_command(&mut self, command: RoomActorCommand) -> bool {
-        use super::handler::RoomCommandHandler;
+        use super::handler::{is_direct_state_command, RoomCommandHandler};
         use super::context::RoomCommandContext;
         let gateway = Arc::clone(&self.state.room_commands);
         let state = Arc::clone(&self.state);
         let room = self.room.clone();
+
+        // Ensure actor_state is populated before command execution.
+        if self.actor_state.is_none() {
+            self.actor_state = Some(RoomActorState::from_room(&self.room).await);
+        }
+
+        // ── Execute ───────────────────────────────────────────────────
+        let is_direct = is_direct_state_command(&command);
         let ctx = RoomCommandContext::with_actor(
             gateway.as_ref(),
             state.as_ref(),
-            room,
+            room.clone(),
             self,
         );
         let result = RoomCommandHandler::execute_with_actor(ctx, &command).await;
         let should_stop = RoomCommandHandler::should_stop_room_mailbox(&command, &result);
         self.state.room_commands.observe_mailbox_result(&result);
+
+        // ── Post-execution sync ───────────────────────────────────────
         if result.is_ok() {
+            if is_direct {
+                // Direct-state commands wrote actor_state; push to Room.
+                if let Some(ref actor_state) = self.actor_state {
+                    actor_state.sync_to_room(&self.room).await;
+                }
+            } else {
+                // Gateway commands wrote Room; re-read into actor_state.
+                self.actor_state = Some(RoomActorState::from_room(&self.room).await);
+            }
+            // Snapshot always from actor_state (atomic, consistent).
             self.refresh_snapshot_from_state();
             self.state.room_commands.store_snapshot_if_current(
                 &self.room.id.to_string(),

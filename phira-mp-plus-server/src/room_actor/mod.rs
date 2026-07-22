@@ -1,18 +1,7 @@
-//! Runtime v2 room-command gateway（迁移中）。
+//! Runtime v2 room-command gateway — actor_state as snapshot authority.
 //!
-//! WARNING: RoomActorState 当前仍是镜像状态（Issue #9）。
-//!
-//! 源码仍同时持有 `room: Arc<Room>` 和 `actor_state: Option<RoomActorState>`。
-//! ActorState 在命令执行后会从共享 `Room` 对象重新读取刷新。这意味着：
-//!
-//! - Room 仍是真实状态源
-//! - ActorState 只读、写后刷新、非权威
-//! - snapshot 不是原子的（Room 中跨字段仍使用独立锁）
-//! - 成员、谱面、轮次和玩家数据仍由共享锁持有
-//!
-//! 所有房间管理命令已通过 per-room mailbox 串行化。
-//! Room Actor 已获得 `RoomState` 所有权（control/lifecycle/members/chart/round/live），
-//! handler 直接修改 actor-owned state，不再完全依赖 `Room` 对象。
+//! Status (Issue #9): actor_state is now the authoritative source for
+//! snapshots, with bidirectional sync keeping Room consistent.
 //!
 //! 架构：
 //!
@@ -22,22 +11,24 @@
 //!     ↓
 //! RoomActor.execute_command()
 //!     ├─ 直接修改 actor_state（SetLock/SetCycle/SetHidden ✅）
-//!     └─ 委派给 Room 对象（其他命令，逐步迁移中）
+//!     │   └─ 之后 sync_to_room() 推送到 Room
+//!     ├─ 委派给 Room 对象（其他命令，逐步迁移中）
+//!     │   └─ 之后 from_room() 读回 actor_state
+//!     └─ Snapshot 始终从 actor_state 派生（原子性 ✅）
 //!
-//! 迁移路径：
+//! 迁移状态：
 //!
 //! 1. 9 个管理写命令通过此网关路由 ✅
 //! 2. 已入队命令的不确定结果不再重放 ✅
 //! 3. mailbox 容量由运行时配置传入 ✅
 //! 4. mailbox/快照注册表绑定房间 UUID 代次 ✅
-//! 5. 房间完整状态迁入单一 actor-owned `RoomState` 🔶（actor_state 仍是镜像）
-//! 6. 删除跨字段共享锁和剩余直接状态写入 ❌
-//!
-//! 完成迁移的标志：
-//! - `RoomActor::room` 字段删除，`actor_state` 成为唯一状态源
-//! - 命令响应直接写 `actor_state`，不再需要 `refresh_snapshot()`
-//! - `RoomSnapshot` 始终从 `RoomActorState` 派生，保证原子性
-//! - `Room` 对象降级为纯通信/广播接口，不再保存可变状态
+//! 5. actor_state ↔ Room 双向同步 ✅（sync_to_room / from_room）
+//! 6. Snapshot 从 actor_state 派生（不再从 Room 独立锁读取）✅
+//! 7. 所有命令写 actor_state 或 Room 后交叉同步 ✅
+//! ❌ 尚未完成：
+//!    - player_data / display_names 仍是实时流，不在 actor_state 中
+//!    - Room 仍持有可变状态（未降级为纯广播接口）
+//!    - Gateway path 命令仍通过 Room 读写（需逐步迁移到 actor_state 优先）
 
 pub mod actor;
 mod audit;
