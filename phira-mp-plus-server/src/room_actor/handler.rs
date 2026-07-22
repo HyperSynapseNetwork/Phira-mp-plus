@@ -12,7 +12,7 @@ use super::{
     RoomCommandPayload, RoomCommandResult,
 };
 use crate::plugin::PluginEvent;
-use phira_mp_common::{Message, PartialRoomData, RoomEvent, ServerCommand};
+use phira_mp_common::{Message, PartialRoomData, RoomEvent, RoomId, ServerCommand};
 use serde_json::{json, Value};
 
 /// Helper: build an error result.
@@ -226,7 +226,7 @@ impl RoomCommandHandler {
                 }
                 r.send(Message::Ready { user: *user_id }).await;
                 state.publish_runtime_event(crate::event_bus::MpEvent::PlayerReadyChanged {
-                    room_id: room_id.clone(), user_id: *user_id, ready: true,
+                    room_id: room_id.clone().try_into().unwrap(), user_id: *user_id, ready: true,
                 });
                 r.check_all_ready().await;
                 ok(RoomCommandPayload::UserReady { room_id: room_id.clone().to_string(), user_id: *user_id })
@@ -256,7 +256,7 @@ impl RoomCommandHandler {
                     }
                 }
                 state.publish_runtime_event(crate::event_bus::MpEvent::PlayerReadyChanged {
-                    room_id: room_id.clone(), user_id: *user_id, ready: false,
+                    room_id: room_id.clone().try_into().unwrap(), user_id: *user_id, ready: false,
                 });
                 ok(RoomCommandPayload::UserNotReady { room_id: room_id.clone().to_string(), user_id: *user_id })
             }
