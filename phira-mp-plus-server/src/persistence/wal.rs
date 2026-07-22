@@ -428,7 +428,10 @@ impl PersistenceWal {
             // Without this, new frames may be appended after the corrupted
             // tail, causing the next restart to encounter a complete bad
             // line and fail-closed.
-            if truncated_at > 0 && truncated_at < bytes.len() {
+            //
+            // `truncated_at` may be 0 when the file consists entirely of a
+            // single truncated line — we still truncate to 0 bytes.
+            if truncated_at < bytes.len() {
                 let removed = bytes.len().saturating_sub(truncated_at);
                 match truncate_wal_file(&self.path, truncated_at).await {
                     Ok(new_len) => {
@@ -441,10 +444,11 @@ impl PersistenceWal {
                         );
                     }
                     Err(e) => {
-                        warn!(
-                            "WAL {} truncation failed: {e}; file may contain corrupted tail",
+                        // Truncation is required for data safety — fail-closed.
+                        return Err(format!(
+                            "WAL {} truncation failed after detecting corrupted tail: {e}",
                             self.path.display(),
-                        );
+                        ));
                     }
                 }
             }

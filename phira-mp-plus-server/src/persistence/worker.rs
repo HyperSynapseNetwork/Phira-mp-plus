@@ -250,39 +250,31 @@ async fn process_worker_loop(
             WorkerMessage::Event { wal_id, event } => (wal_id, event),
             WorkerMessage::Flush { timeout, reply } => {
                 // Drain pending ACKs before flushing telemetry.
-                drain_pending_acks(worker_wal, &mut pending_acks).await;
-                let result = worker_telemetry.flush(timeout).await;
-                if let Err(error) = &result {
+                // drain_pending_acks now returns Err(...) if any entries
+                // were abandoned after exhausting retries.
+                let drain_result = drain_pending_acks(worker_wal, &mut pending_acks).await;
+                if let Err(ref e) = drain_result {
+                    warn!(error = %e, "pending ACK drain failed");
+                }
+                let telemetry_result = worker_telemetry.flush(timeout).await;
+                if let Err(ref error) = telemetry_result {
                     warn!(%error, "telemetry flush failed; persistence worker remains active");
                 }
-                // Report error if pending ACKs remain after drain.
-                let ack_pending = pending_acks.len();
-                let combined = if ack_pending > 0 {
-                    Err(format!("{ack_pending} WAL ACKs still pending after drain"))
-                } else {
-                    result
-                };
+                let combined = drain_result.and_then(|_| telemetry_result);
                 let _ = reply.send(combined);
                 continue;
             }
             WorkerMessage::Shutdown { timeout, reply } => {
                 // Drain pending ACKs before shutting down.
-                drain_pending_acks(worker_wal, &mut pending_acks).await;
-                let result = worker_telemetry.shutdown(timeout).await;
-                let ack_pending = pending_acks.len();
-                let should_stop = ack_pending == 0 && result.is_ok();
-                // Merge telemetry shutdown result and pending ACK result.
-                // If ACKs remain pending, return error instead of Ok.
-                let combined = if ack_pending > 0 {
-                    Err(format!("{ack_pending} WAL ACKs still pending after drain"))
-                } else {
-                    result
-                };
-                if let Err(error) = &combined {
-                    warn!(%error, "telemetry shutdown failed; persistence worker remains active");
+                let drain_result = drain_pending_acks(worker_wal, &mut pending_acks).await;
+                if let Err(ref e) = drain_result {
+                    warn!(error = %e, "pending ACK drain failed");
                 }
-                if ack_pending > 0 {
-                    warn!(count = ack_pending, "WAL ACKs still pending during shutdown");
+                let telemetry_result = worker_telemetry.shutdown(timeout).await;
+                let should_stop = drain_result.is_ok() && telemetry_result.is_ok();
+                let combined = drain_result.and_then(|_| telemetry_result);
+                if let Err(ref error) = combined {
+                    warn!(%error, "persistence shutdown failed; worker remains active");
                 }
                 let _ = reply.send(combined);
                 if should_stop {
@@ -507,17 +499,18 @@ async fn process_worker_loop(
 /// on failure.  This is called during Flush/Shutdown and must make
 /// progress; it will not block indefinitely (max 60 retries, 100ms each).
 ///
-/// Entries that fail after all retries are abandoned — they will replay
-/// on restart.  This is safe because the data they protect (a committed
-/// database write) is already durable.
+/// Returns an error if any entries were abandoned after exhausting retries.
+/// The caller (Flush/Shutdown handler) uses this to decide whether to
+/// report the shutdown as incomplete.
 async fn drain_pending_acks(
     worker_wal: &Arc<PersistenceWal>,
     pending_acks: &mut std::collections::VecDeque<(uuid::Uuid, u32)>,
-) {
+) -> Result<(), String> {
     use tracing::{debug, warn};
     let mut retries = 0;
     let max_retries = 60; // ~6 seconds total at 100ms per retry
     let initial_count = pending_acks.len();
+    let mut abandoned: Vec<uuid::Uuid> = Vec::new();
 
     while !pending_acks.is_empty() && retries < max_retries {
         if let Some((id, attempt)) = pending_acks.pop_front() {
@@ -533,7 +526,8 @@ async fn drain_pending_acks(
                             wal_id = %id, error = %e,
                             "pending ACK drain failed after {max_retries} retries; WAL record will replay on restart"
                         );
-                        // Do NOT re-queue — abandoned.
+                        abandoned.push(id);
+                        // Do NOT re-queue — exhausted retries.
                     } else {
                         pending_acks.push_back((id, attempt.saturating_add(1)));
                         tokio::time::sleep(Duration::from_millis(100)).await;
@@ -544,12 +538,15 @@ async fn drain_pending_acks(
         retries += 1;
     }
 
-    if !pending_acks.is_empty() {
-        warn!(
-            remaining = pending_acks.len(),
-            drained = initial_count.saturating_sub(pending_acks.len()),
-            "ACK drain finished with remaining entries; some WAL records will replay on restart"
-        );
+    if !abandoned.is_empty() {
+        let drained = initial_count.saturating_sub(pending_acks.len());
+        Err(format!(
+            "ACK drain abandoned {} WAL record(s) after {max_retries} retries ({drained} drained, {} remaining)",
+            abandoned.len(),
+            pending_acks.len(),
+        ))
+    } else {
+        Ok(())
     }
 }
 
@@ -642,7 +639,6 @@ impl PersistenceWorker {
         // Wire WAL ACK channel: TelemetryBatcher will ACK WAL IDs after DB commit.
         let (wal_ack_tx, mut wal_ack_rx) = mpsc::channel::<crate::telemetry::WalAckMessage>(1024);
         telemetry_batcher.set_wal_ack_tx(wal_ack_tx);
-        let _telemetry_cutover_mode = Arc::new(RwLock::new(initial_cutover));
         let telemetry_cutover_mode = Arc::new(RwLock::new(initial_cutover));
         let stats = Arc::new(RwLock::new(PersistenceStats {
             capacity,
@@ -671,7 +667,10 @@ impl PersistenceWorker {
 
             /// Attempt one pass through the retry queue, removing entries
             /// that succeed and keeping those that fail (with incrementing
-            /// attempt counter).
+            /// attempt counter).  Entries are NEVER abandoned — the retry
+            /// contract guarantees "retry until durable".  If the WAL is
+            /// permanently degraded the queue drains on the barrier path
+            /// (drain_ack_queue) which has its own time-bounded cap.
             async fn try_ack_queue(
                 wal: &PersistenceWal,
                 queue: &mut VecDeque<(uuid::Uuid, u32)>,
@@ -687,21 +686,12 @@ impl PersistenceWorker {
                             Err(e) => {
                                 wal.set_degraded(true);
                                 let next = attempt.saturating_add(1);
-                                if next > 10 {
-                                    error!(
-                                        wal_id = %id, attempt = %next, error = %e,
-                                        "WAL ACK from batcher failed after 10+ attempts; abandoning"
-                                    );
-                                    // Do NOT re-queue — the record will
-                                    // replay on restart if it was never
-                                    // acknowledged.
-                                } else {
-                                    warn!(
-                                        wal_id = %id, attempt = %next, error = %e,
-                                        "WAL ACK from batcher failed, queued for retry"
-                                    );
-                                    queue.push_back((id, next));
-                                }
+                                // Always re-queue — retry until durable.
+                                warn!(
+                                    wal_id = %id, attempt = %next, error = %e,
+                                    "WAL ACK from batcher failed, queued for retry"
+                                );
+                                queue.push_back((id, next));
                             }
                         }
                     }
