@@ -130,12 +130,11 @@ impl RoomCommandHandler {
 
             RoomActorCommand::CloseRoom { room_id, .. } => {
                 let r = match room { Some(ref r) => r, None => return err("no room") };
-                let rid_s = r.id.to_string();
                 r.send(Message::Chat { user: 0, content: "房间已被管理员关闭".to_string() }).await;
                 for user in r.users().await {
                     *user.room.write().await = None;
                     user.try_send(ServerCommand::LeaveRoom(Ok(()))).await;
-                    state.publish_room_event(RoomEvent::LeaveRoom { room: rid_s.clone(), user: user.id }).await;
+                    state.publish_room_event(RoomEvent::LeaveRoom { room: r.id.clone(), user: user.id }).await;
                 }
                 for monitor in r.monitors().await {
                     *monitor.room.write().await = None;
@@ -143,10 +142,10 @@ impl RoomCommandHandler {
                 }
                 state.rooms.write().await.remove(&r.id);
                 state.dispatch_plugin_event(PluginEvent::RoomModify {
-                    user_id: 0, room_id: rid_s.clone(),
+                    user_id: 0, room_id: r.id.to_string(),
                     data: json!({"action":"closed"}).to_string(),
                 }).await;
-                ok(RoomCommandPayload::RoomClosed { room_id: rid_s })
+                ok(RoomCommandPayload::RoomClosed { room_id: r.id.to_string() })
             }
 
             RoomActorCommand::KickUser { room_id, target_id, .. } => {
@@ -162,7 +161,7 @@ impl RoomCommandHandler {
                 user.try_send(ServerCommand::LeaveRoom(Ok(()))).await;
                 if should_drop { state.rooms.write().await.remove(&r.id); }
                 if !was_monitor {
-                    state.publish_room_event(RoomEvent::LeaveRoom { room: r.id.to_string(), user: *target_id }).await;
+                    state.publish_room_event(RoomEvent::LeaveRoom { room: r.id.clone(), user: *target_id }).await;
                 }
                 state.dispatch_plugin_event(PluginEvent::RoomModify {
                     user_id: *target_id, room_id: room_id.clone().to_string(),
@@ -227,7 +226,7 @@ impl RoomCommandHandler {
                 }
                 r.send(Message::Ready { user: *user_id }).await;
                 state.publish_runtime_event(crate::event_bus::MpEvent::PlayerReadyChanged {
-                    room_id: room_id.clone().to_string(), user_id: *user_id, ready: true,
+                    room_id: room_id.clone(), user_id: *user_id, ready: true,
                 });
                 r.check_all_ready().await;
                 ok(RoomCommandPayload::UserReady { room_id: room_id.clone().to_string(), user_id: *user_id })
@@ -257,7 +256,7 @@ impl RoomCommandHandler {
                     }
                 }
                 state.publish_runtime_event(crate::event_bus::MpEvent::PlayerReadyChanged {
-                    room_id: room_id.clone().to_string(), user_id: *user_id, ready: false,
+                    room_id: room_id.clone(), user_id: *user_id, ready: false,
                 });
                 ok(RoomCommandPayload::UserNotReady { room_id: room_id.clone().to_string(), user_id: *user_id })
             }
@@ -369,7 +368,7 @@ impl RoomCommandHandler {
                         let should_drop = r.on_user_leave(&user).await;
                         if should_drop { state.rooms.write().await.remove(&r.id); }
                         if !was_monitor {
-                            state.publish_room_event(RoomEvent::LeaveRoom { room: r.id.to_string(), user: *user_id }).await;
+                            state.publish_room_event(RoomEvent::LeaveRoom { room: r.id.clone(), user: *user_id }).await;
                         }
                         state.dispatch_plugin_event(PluginEvent::RoomModify {
                             user_id: *user_id, room_id: room_id.clone().to_string(),
