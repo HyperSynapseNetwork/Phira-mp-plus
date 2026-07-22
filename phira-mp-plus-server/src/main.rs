@@ -2,7 +2,7 @@
 #[global_allocator]
 static ALLOC: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
 
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use clap::Parser;
 use phira_mp_plus_server::cli::CliHandler;
 use phira_mp_plus_server::server::{PlusConfig, PlusConfigCli, PlusServer};
@@ -342,16 +342,19 @@ async fn main() -> Result<()> {
         }
     }
 
+    let mut persistence_ok = true;
     let budget = remaining();
     if !budget.is_zero() {
         if let Err(error) = server.state.persistence_worker.flush(budget).await {
             warn!(%error, "persistence flush failed during shutdown");
+            persistence_ok = false;
         }
     }
     let budget = remaining();
     if !budget.is_zero() {
         if let Err(error) = server.state.persistence_worker.shutdown(budget).await {
             warn!(%error, "persistence shutdown failed");
+            persistence_ok = false;
         }
     }
 
@@ -364,8 +367,21 @@ async fn main() -> Result<()> {
     info!(stopped_tasks = stopped, "background tasks stopped");
 
     drop(console_handle);
-    info!("server stopped");
-    Ok(())
+
+    if persistence_ok {
+        info!("server stopped gracefully");
+        Ok(())
+    } else {
+        // Persistence flush or shutdown did not complete within the graceful
+        // shutdown timeout.  Return a non-zero exit code so systemd, Docker,
+        // and container orchestrators can distinguish an incomplete shutdown
+        // from a clean one.  The server binary still exits; the operator may
+        // configure a higher graceful_shutdown_timeout_secs if this is a
+        // recurring issue.
+        Err(anyhow!(
+            "server stopped with persistence errors — data may not be fully durable"
+        ))
+    }
 }
 
 fn optional_channel<T>(enabled: bool) -> (Option<mpsc::Sender<T>>, Option<mpsc::Receiver<T>>) {

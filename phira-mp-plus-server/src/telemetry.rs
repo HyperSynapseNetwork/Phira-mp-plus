@@ -670,19 +670,40 @@ async fn flush_pending(
             // fsync every ACK sent above before returning.  Without this
             // barrier, a PostgreSQL commit followed by a crash can lose the
             // ACK, causing duplicate replay on restart.
+            let mut ack_barrier_error: Option<String> = None;
             if needs_barrier {
                 let (barrier_reply, barrier_rx) = oneshot::channel();
                 if let Some(tx) = ack_tx.lock().ok().and_then(|g| g.clone()) {
-                    if let Err(e) = tx.send(WalAckMessage::DrainAndReply(barrier_reply)).await {
-                        warn!(error = %e, "WAL ACK barrier send failed");
-                    } else if let Err(e) = barrier_rx.await {
-                        warn!(error = %e, "WAL ACK barrier reply channel dropped");
-                        // Do NOT return Err here — the DB write already
-                        // succeeded and items were removed from pending.
-                        // A missed barrier means ACK durability is unknown
-                        // but the data is safe (it will replay on restart).
+                    match tx.send(WalAckMessage::DrainAndReply(barrier_reply)).await {
+                        Err(e) => {
+                            warn!(error = %e, "WAL ACK barrier send failed");
+                            ack_barrier_error = Some(format!("barrier send: {e}"));
+                        }
+                        Ok(()) => match barrier_rx.await {
+                            Ok(Ok(())) => { /* all ACKs durable */ }
+                            Ok(Err(e)) => {
+                                // ACK worker explicitly reported failure
+                                // (e.g. disk I/O error after 20 retries).
+                                // Log and continue — the DB write already
+                                // succeeded so the data is safe; the missing
+                                // ACK means the event will replay on restart
+                                // which is a no-op duplicate write.
+                                warn!(error = %e, "WAL ACK barrier: some ACKs were not durable");
+                                ack_barrier_error = Some(e);
+                            }
+                            Err(_) => {
+                                warn!("WAL ACK barrier reply channel dropped (task may have panicked)");
+                                ack_barrier_error = Some("ACK task dropped".to_string());
+                            }
+                        },
                     }
                 }
+            }
+            // If the ACK barrier failed, record the error in stats for
+            // observability but do NOT fail the flush — the DB write
+            // succeeded and items are already removed from pending.
+            if let Some(ref err) = ack_barrier_error {
+                stats.last_error = Some(err.clone());
             }
             "db_flush"
         }

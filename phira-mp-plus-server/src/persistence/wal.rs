@@ -293,6 +293,9 @@ impl PersistenceWal {
         let frame = WalFrame::new(WalRecord::Admission { id, event })?;
         self.append_frame(&frame).await?;
         self.admission_count.fetch_add(1, Ordering::Release);
+        // Mark marker as active (not clean) so accidental WAL deletion is
+        // detectable even after a compact-to-zero followed by new admissions.
+        let _ = self.mark_marker_active().await;
         Ok(id)
     }
 
@@ -319,21 +322,18 @@ impl PersistenceWal {
     pub async fn replay(&self) -> Result<Vec<(uuid::Uuid, PersistenceEvent)>, String> {
         let _guard = self.io_gate.lock().await;
         // Check instance consistency first: if marker exists but WAL is gone
-        // or empty, refuse to replay (fail-closed).
+        // or empty, refuse to replay (fail-closed) UNLESS the marker is
+        // marked as clean (intentional compact-to-zero).
         self.check_instance_consistency().await?;
         let mut bytes = match tokio::fs::read(&self.path).await {
             Ok(bytes) => bytes,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                // Double-check: if marker exists but file doesn't, refuse.
-                if self.path.with_extension("wal.instance").exists() {
-                    return Err(format!(
-                        "WAL file {} missing but instance marker exists",
-                        self.path.display()
-                    ));
+                // Consistency check passed — WAL legitimately doesn't exist
+                // (either first boot or clean post-compact state).
+                // Ensure marker exists for future accidental-deletion detection.
+                if !self.path.with_extension("wal.instance").exists() {
+                    self.write_instance_marker().await?;
                 }
-                // First start with no WAL — write the marker so future
-                // tampering (deletion/zeroing) is detected.
-                self.write_instance_marker().await?;
                 self.replay_succeeded.store(true, Ordering::Release);
                 return Ok(Vec::new());
             }
@@ -468,6 +468,11 @@ impl PersistenceWal {
         if marker_path.exists() {
             return Ok(()); // already initialized
         }
+        self.write_marker_inner(&marker_path, false).await
+    }
+
+    /// Write or overwrite the marker with the given clean state.
+    async fn write_marker_inner(&self, marker_path: &std::path::Path, clean: bool) -> Result<(), String> {
         let marker = serde_json::json!({
             "version": 1,
             "created_at_ms": std::time::SystemTime::now()
@@ -475,22 +480,61 @@ impl PersistenceWal {
                 .map(|d| d.as_millis() as u64)
                 .unwrap_or(0),
             "wal_path": self.path.to_string_lossy(),
+            "clean": clean,
         });
-        tokio::fs::write(&marker_path, serde_json::to_vec(&marker).map_err(|e| format!("serialize instance marker: {e}"))?)
+        tokio::fs::write(marker_path, serde_json::to_vec(&marker).map_err(|e| format!("serialize instance marker: {e}"))?)
             .await
             .map_err(|e| format!("write instance marker: {e}"))?;
         Ok(())
     }
 
+    /// Update the marker to active state (WAL intentionally exists).
+    /// Called after admission/ACK when the marker was previously clean.
+    async fn mark_marker_active(&self) -> Result<(), String> {
+        let marker_path = self.path.with_extension("wal.instance");
+        if !marker_path.exists() {
+            return Ok(()); // no marker yet, will be created on first write
+        }
+        // Only rewrite if currently clean — avoids unnecessary I/O.
+        let content = tokio::fs::read_to_string(&marker_path)
+            .await
+            .map_err(|e| format!("read marker: {e}"))?;
+        if let Ok(val) = serde_json::from_str::<serde_json::Value>(&content) {
+            if val.get("clean").and_then(|c| c.as_bool()).unwrap_or(false) {
+                return self.write_marker_inner(&marker_path, false).await;
+            }
+        }
+        Ok(())
+    }
+
     /// Check if the instance marker exists but the WAL file is gone or empty.
-    /// This indicates accidental WAL deletion after first use.
+    /// This indicates accidental WAL deletion after first use, UNLESS the
+    /// marker has `"clean": true` which means compaction intentionally removed
+    /// the WAL after all ACKs were confirmed.
     pub async fn check_instance_consistency(&self) -> Result<(), String> {
         let marker_path = self.path.with_extension("wal.instance");
         if !marker_path.exists() {
             return Ok(()); // first start, no instance yet
         }
+
+        // Read the marker to check clean flag.
+        let marker_content = tokio::fs::read_to_string(&marker_path)
+            .await
+            .map_err(|e| format!("read marker {}: {e}", marker_path.display()))?;
+        let marker: serde_json::Value = serde_json::from_str(&marker_content)
+            .map_err(|e| format!("parse marker {}: {e}", marker_path.display()))?;
+        let is_clean = marker.get("clean").and_then(|c| c.as_bool()).unwrap_or(false);
+
         let wal_exists = tokio::fs::try_exists(&self.path).await.unwrap_or(false);
         if !wal_exists {
+            if is_clean {
+                // Compact-to-zero left the marker as clean.  Re-write it as
+                // active so the next accidental deletion IS detected.
+                self.write_marker_inner(&marker_path, false).await?;
+                return Ok(());
+            }
+            // Also accept markers created before the "clean" field existed
+            // (backward compat: old markers simply have no clean field).
             return Err(format!(
                 "WAL instance marker exists at {} but WAL file {} is missing. Remove the marker file manually to reinitialize.",
                 marker_path.display(),
@@ -595,13 +639,18 @@ impl PersistenceWal {
             .collect();
 
         if pending.is_empty() {
-            // Nothing to compact; remove only the WAL file.
-            // Instance marker MUST be preserved: it binds to the entire
-            // instance lifecycle so that accidental WAL deletion or zeroing
-            // is detected even when all ACKs have been processed. If the
-            // marker were deleted here, a subsequent WAL admission followed
-            // by WAL deletion would be misidentified as a first boot.
+            // Nothing to compact; remove the WAL file and record a clean
+            // marker so that the next startup does not treat the missing
+            // WAL as accidental deletion (Issue #5 / P0 regression).
             let _ = tokio::fs::remove_file(&self.path).await;
+            let marker_path = self.path.with_extension("wal.instance");
+            if marker_path.exists() {
+                // Overwrite with clean marker.
+                self.write_marker_inner(&marker_path, true).await?;
+            } else {
+                // First compact before any marker was written.
+                self.write_marker_inner(&marker_path, true).await?;
+            }
             self.total_bytes.store(0, Ordering::Release);
             self.admission_count.store(0, Ordering::Release);
             self.ack_count.store(0, Ordering::Release);
@@ -801,17 +850,15 @@ mod tests {
         wal.ack(id2).await.unwrap();
         wal.ack(id3).await.unwrap();
         assert_eq!(wal.compact().await.unwrap(), 0);
-        // After compact-to-zero the WAL file is removed but the instance
-        // marker persists (see Issue #5 — marker binds to instance lifecycle).
-        // Verify the marker is still present so accidental future WAL
-        // deletion is detectable after new events are admitted.
-        let marker_path = path.with_extension("wal.instance");
-        assert!(marker_path.exists(), "instance marker must persist after compact-to-zero");
+        // After compact-to-zero the marker records clean=true so that
+        // replay succeeds (the missing WAL is expected, not accidental).
+        assert!(wal.replay().await.unwrap().is_empty());
         // New admissions must still work after compact-to-zero (WAL recreated).
         let id4 = wal.admit(make_event("event4")).await.unwrap();
         wal.ack(id4).await.unwrap();
         assert_eq!(wal.compact().await.unwrap(), 0);
 
+        let marker_path = path.with_extension("wal.instance");
         let _ = tokio::fs::remove_file(&marker_path).await;
         let _ = tokio::fs::remove_file(&path).await;
     }

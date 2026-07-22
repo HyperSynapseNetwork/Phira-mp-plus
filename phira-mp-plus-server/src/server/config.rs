@@ -177,8 +177,11 @@ impl Default for ConfigProfile {
 }
 
 /// Phira-mp+ 增强配置（支持 YAML 文件、环境变量、CLI 参数三层覆盖）
+///
+/// Note: deny_unknown_fields was removed to allow graceful deprecation of
+/// the rbac section. If a new field needs strict validation, add it back.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(default, deny_unknown_fields)]
+#[serde(default)]
 pub struct PlusConfig {
     /// Schema version for config file forward-compatibility.
     /// Current version: 1. Increment when making backward-incompatible changes.
@@ -257,9 +260,6 @@ pub struct PlusConfig {
     pub wasm_runtime: WasmRuntimeConfig,
     #[serde(default)]
     pub runtime_v2: RuntimeV2Config,
-    /// Role-based access control configuration.
-    #[serde(default)]
-    pub rbac: crate::rbac::RbacConfig,
     /// Idle mode configuration.
     #[serde(default)]
     pub idle: crate::idle::IdleConfig,
@@ -299,7 +299,6 @@ impl Default for PlusConfig {
             benchmark_phira_tokens: Vec::new(),
             wasm_runtime: WasmRuntimeConfig::default(),
             runtime_v2: RuntimeV2Config::default(),
-            rbac: crate::rbac::RbacConfig::default(),
             idle: crate::idle::IdleConfig::default(),
             proxy_protocol_port: 0,
         }
