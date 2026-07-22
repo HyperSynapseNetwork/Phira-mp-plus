@@ -28,6 +28,8 @@ use tracing::warn;
 const WAL_FORMAT_VERSION: u8 = 1;
 
 /// Minimum free disk space (bytes) below which admissions are rejected.
+/// Only checked on Unix (statvfs); unused on Windows.
+#[cfg(unix)]
 const MIN_DISK_SPACE_BYTES: u64 = 64 * 1024 * 1024; // 64 MiB
 
 /// Default compaction trigger: compact when pending ACKs drop below this ratio
