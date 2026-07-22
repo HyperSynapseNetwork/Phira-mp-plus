@@ -39,7 +39,6 @@ impl RoomCommandHandler {
         let state = ctx.state;
         let room = &ctx.room;
 
-        macro_rules! rid { ($cmd:ident) => { $cmd.room_id.clone() }; }
 
         match command {
             RoomActorCommand::SetLock { room_id, locked, actor_user_id, .. } => {
@@ -125,7 +124,7 @@ impl RoomCommandHandler {
                 r.set_phira_api_endpoint_override(endpoint.clone()).await;
                 as_.state.control.phira_api_endpoint = endpoint.clone();
                 ok(RoomCommandPayload::EndpointChanged {
-                    room_id: room_id.clone().to_string(), endpoint, endpoint_override: None, using_room_override: false,
+                    room_id: room_id.clone().to_string(), endpoint: endpoint.clone().unwrap_or_default(), endpoint_override: endpoint.clone(), using_room_override: false,
                 })
             }
 
@@ -142,7 +141,7 @@ impl RoomCommandHandler {
                     *monitor.room.write().await = None;
                     monitor.try_send(ServerCommand::LeaveRoom(Ok(()))).await;
                 }
-                state.rooms.write().await.remove(&rid_s);
+                state.rooms.write().await.remove(&r.id);
                 state.dispatch_plugin_event(PluginEvent::RoomModify {
                     user_id: 0, room_id: rid_s.clone(),
                     data: json!({"action":"closed"}).to_string(),
@@ -161,7 +160,7 @@ impl RoomCommandHandler {
                 let was_monitor = user.monitor.load(std::sync::atomic::Ordering::SeqCst);
                 let should_drop = r.on_user_leave(&user).await;
                 user.try_send(ServerCommand::LeaveRoom(Ok(()))).await;
-                if should_drop { state.rooms.write().await.remove(&r.id.to_string()); }
+                if should_drop { state.rooms.write().await.remove(&r.id); }
                 if !was_monitor {
                     state.publish_room_event(RoomEvent::LeaveRoom { room: r.id.to_string(), user: *target_id }).await;
                 }
@@ -368,7 +367,7 @@ impl RoomCommandHandler {
                     Some(user) => {
                         let was_monitor = user.monitor.load(std::sync::atomic::Ordering::SeqCst);
                         let should_drop = r.on_user_leave(&user).await;
-                        if should_drop { state.rooms.write().await.remove(&r.id.to_string()); }
+                        if should_drop { state.rooms.write().await.remove(&r.id); }
                         if !was_monitor {
                             state.publish_room_event(RoomEvent::LeaveRoom { room: r.id.to_string(), user: *user_id }).await;
                         }
