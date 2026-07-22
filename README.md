@@ -33,6 +33,7 @@
 | **开发** | [架构](docs/development/architecture.md) · [CLI 手册](docs/cli.md) · [测试指南](docs/development/testing.md) · [CLI 错误码 (EN)](docs/development/error-codes.en.md) · [产品概览 (EN)](docs/overview.en.md) · [兼容矩阵 (EN)](docs/compatibility-matrix.en.md) |
 | **API** | [事件 API](docs/api.md) |
 | **仿真** | [仿真与压测](docs/simulation.md) |
+| **其他** | [CONTRIBUTING](CONTRIBUTING.md) · [SUPPORT](SUPPORT.md) |
 
 ## 许可
 
@@ -154,7 +155,6 @@ Phira-mp-plus/
 │   ├── wit-abi.md                   #   WIT ABI 规范
 │   ├── api.md                       #   HTTP API 参考
 │   ├── simulation.md                #   Simulation 架构
-│   ├── benchmark-real.md            #   真实压测说明
 │   ├── operations.md                #   运维手册（备份/事故/排障/升级/容量）
 │   ├── product.md                   #   产品概览 + 兼容矩阵
 │   └── plugins/                     #   插件示例
@@ -280,69 +280,7 @@ Phira-mp-plus/
 
 启动时会检测 stdin/stdout、`TERM`、`STY` 与 `TMUX`。GNU Screen、Linux console、`ansi`/`cons25` 等环境使用保守 TUI：禁用备用屏幕、鼠标捕获和 Bracketed Paste，并修正 Ctrl+H Backspace；如果 TUI 初始化失败，会自动降级到逐行兼容控制台。tmux、xterm、WezTerm、iTerm、Kitty 等普通终端继续使用完整 TUI。项目遵循 `NO_COLOR`，逐行输出会再次过滤残留控制序列；非交互环境同样使用逐行控制台。
 
-## PMP 内部 SSE 房间事件
-
-`GET /rooms/listen` 建立连接后先发送 `ready`，随后以 `update_room` 补发当前房间快照，再持续推送 `create_room`、`update_room`、`join_room`、`leave_room` 和 `new_round`。可用下列命令直接检查数据流：
-
-```bash
-curl -N http://127.0.0.1:12347/rooms/listen
-```
-
-## CLI 命令
-
-详细文档见 [docs/cli.md](docs/cli.md)。快速概览：
-
-| 分组 | 命令 | 说明 |
-|------|------|------|
-| 通用 | `help`, `exit`, `status` | 帮助/退出/状态 |
-| 诊断/压测 | `benchmark`, `simulation` | 真实网络压测（默认路径：simulation） |
-| WASM 插件 | `plugin list/enable/disable/info/reload` | 插件管理 |
-| 用户 | `users`, `kick`, `broadcast` | 用户管理和消息 |
-| 房间 | `rooms`, `room info/start/force-start/cancel/kick/host/force-move/hide/set/close/history` | 房间管理子命令 |
-| 黑名单 | `ban`, `unban`, `banlist`, `room ban/unban/banlist` | 全局与房间封禁管理 |
-
-## WASM 插件开发
-
-详细文档见 [docs/plugin-dev.md](docs/plugin-dev.md)。
-
-WASM 插件通过 `phira:host/api` 和 `phira:host/log` 等导入函数与宿主通信。
-
-## 配置参考
-
-完整的配置项见 `server_config.yml` 与 [docs/configuration.md](docs/configuration.md)。常用项如下：
-
-| 配置项 | 类型 | 默认值 | 说明 |
-|--------|------|--------|------|
-| `port` | u16 | `12346` | TCP 监听端口 |
 | `http_port` | u16 | `12347` | PMP HTTP/SSE/WebSocket 端口 |
-| `proxy_protocol_port` | u16 | `0` | 可信 X-Forwarded-For 兼容监听端口；不是 PROXY v1/v2 |
-| `monitors` | Vec<i32> | `[2]` | 允许旁观的用户 ID |
-| `phira_api_endpoint` | String | `https://phira.5wyxi.com` | 全局 Phira API 端点；房间可临时覆盖 |
-| `plugins_dir` | String | `plugins` | WASM 插件目录 |
-| `database_url` | String | — | PostgreSQL 统一持久化连接串 |
-| `persistence_retention_days` | u32 | 30 | PG 历史数据保留天数，0 为不清理 |
-| `touch_judge_retention_days` | u32? | 未设置 | Touches/Judges 高频遥测独立保留天数；未设置时遵循 `persistence_retention_days`，0 为不清理 |
-| `runtime_v2.persistence_dead_letter_path` | String? | `data/persistence-dead-letter.jsonl` | 数据库重试耗尽后的失败事件 JSONL；`null` 禁用，但不等同于 WAL |
-| `runtime_v2.telemetry_cutover_mode` | enum | `direct_only` | `direct_only`、`worker_preferred` 或显式前置校验后的 `worker_authoritative` |
-
-`worker_preferred` 会先执行直写：直写成功时 Worker 记录为迁移镜像；直写失败但 Worker 队列接受时，该批次由 Worker 作为权威补偿路径。Worker 入队只表示持久化管线已接收，不等同于 PostgreSQL commit；最终结果以 batcher/DB ACK、重试与 dead-letter 指标为准。
-| `admin_phira_ids` | Vec<i32> | [] | 游戏内管理员 ID，可使用 `_命令` 入口 |
-| `chat_enabled` | bool | `true` | 聊天功能开关 |
-| `cli_enabled` | bool | `true` | TUI/CLI 控制台开关 |
-| `connection_rate_limit` | u32 | `30` | 连接速率限制（窗口内允许次数） |
-| `connection_rate_window` | u32 | `10` | 连接速率统计窗口（秒） |
-| `max_rooms` | usize | — | 最大房间数（未设置为不限制） |
-| `max_users_per_room` | usize | `100` | 每房间最大玩家数 |
-| `max_sessions` | usize | `4096` | 在线/已注册会话硬上限 |
-| `max_pending_auth` | usize | `256` | 并发认证握手上限，且不得超过 `max_sessions` |
-| `graceful_shutdown_timeout_secs` | u64 | `15` | 有序关闭共享总时限 |
-| `round_data_retention_days` | u32 | `7` | 轮次 Touches/Judges 保留天数（0=不保留） |
-| `server_name` | String | — | 服务器名称 |
-| `wasm_runtime.*` | object | 见文档 | WASM 插件 fuel、内存、事件队列、并发和调用期限 |
-
-真实网络压测（`benchmark run real`）是高级兼容性测试，详见 docs/benchmark-real.md。默认压测推荐使用 Simulation，不需要 token。
-
-功能可靠性审计和生产就绪追踪结果见 [PMP_PRODUCTION_PRODUCTIZATION_AUDIT.md](PMP_PRODUCTION_PRODUCTIZATION_AUDIT.md)。
 
 ## 许可证
 
@@ -357,6 +295,3 @@ Phira-mp+ 整体采用 **GNU Affero General Public License v3.0** — 详见 [LI
 
 感谢 [TeamFlos](https://github.com/TeamFlos) 开发和维护 Phira、phira-mp 项目，以及 [tphira-mp](https://github.com/Pimeng/tphira-mp) 与 [jphira-mp](https://github.com/lRENyaaa/jphira-mp) 提供的实现思路，还有所有支持本项目的用户。详见 [NOTICE](NOTICE)。
 
-### Persistence crash recovery
-
-Runtime v2 now includes an fsync-before-admission PersistenceWorker WAL (`runtime_v2.persistence_wal_path`). Unacknowledged ordinary events are replayed on restart, and graceful flush/shutdown compacts the journal. This closes the previous in-memory-queue crash window for ordinary worker events. Touch/Judge telemetry still requires batch commit acknowledgements for a full end-to-end commit guarantee.
