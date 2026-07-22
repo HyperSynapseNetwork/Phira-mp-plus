@@ -10,8 +10,6 @@ persistence.
 ## What it is not
 
 PMP is **not** a public-facing web gateway. The following responsibilities
-belong to Phira+ Backend (PPB):
-
 - Public user accounts and OAuth
 - Web API gateway
 - TLS termination and rate limiting
@@ -21,13 +19,12 @@ belong to Phira+ Backend (PPB):
 ## Architecture context
 
 ```
-Internet → PPB (auth/gateway/TLS) → PMP (game runtime) → PostgreSQL
+PMP (game runtime) → PostgreSQL
                                         ↑
                                     WASM plugins
 ```
 
-PMP operates on a trusted internal network behind PPB. All public traffic
-flows through PPB; PMP only serves internal, authenticated requests.
+PMP operates on a trusted internal network with its built-in HTTP/SSE/WS interfaces.
 
 ## Target audience
 

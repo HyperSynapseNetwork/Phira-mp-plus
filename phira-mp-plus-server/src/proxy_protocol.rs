@@ -26,7 +26,7 @@ pub struct RealClientIp(pub IpAddr);
 /// Tower layer that trusts `X-Forwarded-For` headers and injects
 /// [`RealClientIp`] into request extensions.
 ///
-/// Only apply this layer on a listener reachable exclusively through PPB/a trusted proxy.
+/// Only apply this layer on a listener reachable exclusively through a trusted proxy.
 #[derive(Clone)]
 pub struct TrustForwardedForLayer;
 

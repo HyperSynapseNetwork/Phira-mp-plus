@@ -4,7 +4,7 @@
 
 > **编译特性**：当前默认特性为 `postgres` 和 `wit-bindgen`，常规 `cargo build --release` 已包含 PostgreSQL 与完整 WIT 插件系统。需要裁剪功能时再使用 `--no-default-features`。
 
-> **PP 架构边界**：PMP 是受控游戏服务端；PPB 统一提供公网 Web API、认证、限流、网关和边缘安全。`http_port` 仅用于 PPB/受控网络兼容与诊断，不应直接暴露到公网。
+> **注意**：`http_port` 是内部 HTTP/SSE/WebSocket 端口，不应直接暴露到公网。
 
 ## 配置加载规则
 
@@ -97,8 +97,8 @@ wasm_runtime:
 | 配置项 | 类型 | 默认值 | 说明 |
 |---|---:|---:|---|
 | `port` | `u16` | `12346` | TCP 游戏协议监听端口。Phira 客户端连接这个端口。 |
-| `http_port` | `u16` | `12347` | PMP 内部 HTTP/SSE/WebSocket 兼容端口；公共接口由 PPB 提供。 |
-| `proxy_protocol_port` | `u16` | `0` | 可信转发头兼容监听端口。读取 `X-Forwarded-For`，不是 HAProxy PROXY protocol v1/v2；只能放在 PPB/可信代理之后。 |
+| `http_port` | `u16` | `12347` | PMP HTTP/SSE/WebSocket 端口 |
+| `proxy_protocol_port` | `u16` | `0` | 可信转发头兼容监听端口。读取 `X-Forwarded-For`，不是 HAProxy PROXY protocol v1/v2；只能放在可信代理之后。 |
 | `monitors` | `Vec<i32>` | `[2]` | 允许用 room monitor 协议旁观的 Phira 用户 ID。 |
 | `phira_api_endpoint` | `String` | `https://phira.5wyxi.com` | 全局 Phira API 地址。认证默认访问它；房间未配置覆盖时，查谱面、查成绩也访问它。 |
 | `plugins_dir` | `String` | `plugins` | WASM 插件目录。服务端启动时会自动创建。 |
@@ -119,7 +119,7 @@ wasm_runtime:
 | `runtime_v2` | `object` | 见下文 | Runtime v2 内部策略。用于配置 PersistenceWorker、TelemetryBatcher 和启动 cutover 模式，避免继续膨胀管理命令。 |
 | `idle` | `object` | 见下文 | 空载调度提示。不得暂停或丢弃权威持久化与可靠插件事件；只允许降低非关键后台活动。 |
 | `server_name` | `String?` | 未设置 | 服务器展示名称，可用于欢迎语等场景。 |
-| `admin_token` | `String?` | 未设置 | 预留字段；当前 PMP 内部 HTTP 不把它作为统一认证边界，公共认证由 PPB 负责。 |
+| `admin_token` | `String?` | 未设置 | 预留字段 |
 | `admin_phira_ids` | `Vec<i32>` | `[]` | 游戏内管理员 Phira ID。管理员可在创建房间弹窗输入 `_命令` 执行 CLI 命令。 |
 | `wasm_runtime` | `object` | 见下表 | WASM 插件运行时资源限制。 |
 

@@ -9,16 +9,15 @@
 # TCP 监听端口（游戏客户端直连）
 port: 12346
 
-# PMP 内部 HTTP/SSE/WebSocket 兼容端口。PP 架构中公共 Web API、认证、限流与边缘暴露由 PPB 统一提供；
-# PMP 端口仅应位于受控网络，不作为公网边缘接口。
+# PMP HTTP/SSE/WebSocket 端口。仅应位于受控网络，不直接暴露公网。
 http_port: 12347
 
 # HTTP/SSE 监听地址。生产环境中应绑定到 loopback (127.0.0.1)，
-# 仅在 PPB 或反向代理以受控网络方式连接时才改为 0.0.0.0。
+# 仅在反向代理以受控网络方式连接时才改为 0.0.0.0。
 # http_bind_address: "127.0.0.1"
 
 # 可信转发头兼容监听端口。该端口读取 X-Forwarded-For；它不是 HAProxy PROXY protocol v1/v2。
-# 只能放在 PPB/可信反向代理之后，禁止直接暴露给不可信客户端。设为 0 禁用。
+# 只能放在可信反向代理之后，禁止直接暴露给不可信客户端。设为 0 禁用。
 # proxy_protocol_port: 12344
 
 # 认证完成前与在线会话容量。认证任务通过有界并发执行，避免慢认证阻塞 TCP accept。
@@ -143,7 +142,7 @@ round_data_retention_days: 7
 # 服务器名称（显示在欢迎语等位置）
 # server_name: "My Phira Server"
 
-# 管理员 API 令牌（预留字段；当前 PMP 内部 HTTP 不把它作为统一认证边界，公共认证由 PPB 负责）
+# 管理员 API 令牌（预留字段）
 # admin_token: "your-secret-token"
 
 # 游戏内管理员 Phira ID。管理员在创建房间弹窗输入 _<CLI命令> 时不会创建房间，

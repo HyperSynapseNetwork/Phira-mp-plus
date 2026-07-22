@@ -10,7 +10,7 @@
 //! | Plugin Actor | 有界事件分发、capability、fuel/Store limiter 与超时隔离/单执行闸门已接入；仍为进程内隔离 |
 //! | CLI Actor | 顶层派发已拆分，具体命令体仍保留在现有处理器 |
 //!
-//! PMP 的公网 Web API 属于 PPB；PMP 内部 HTTP 仅作为受控网络中的兼容、诊断和插件接口。
+//! PMP 内部 HTTP 仅作为受控网络中的兼容、诊断和插件接口。
 //! 迁移原则：先建立单一写边界与可观测故障语义，再删除共享状态和兼容路径。
 
 use serde::{Deserialize, Serialize};

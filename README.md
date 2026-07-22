@@ -7,7 +7,7 @@
 
 ## 简介
 
-**Phira-mp+（PMP）** 是 [phira-mp](https://github.com/HyperSynapseNetwork/phira-mp) 的增强版多人游戏服务端。在 Phira+ 架构中，PMP 负责游戏协议、房间运行时、WASM 插件与游戏数据持久化；**Phira+ Backend（PPB）负责公共 Web API、认证、限流、网关与边缘暴露**。因此 PMP 保留的 HTTP/SSE/WebSocket 仅用于受控网络中的兼容、诊断和内部集成，不作为公网边缘接口。
+**Phira-mp+（PMP）** 是 [phira-mp](https://github.com/HyperSynapseNetwork/phira-mp) 的增强版多人游戏服务端。在 Phira+ 架构中，PMP 负责游戏协议、房间运行时、WASM 插件与游戏数据持久化；PMP 提供游戏协议、房间运行时、WASM 插件与游戏数据持久化。HTTP/SSE/WebSocket 端口用于兼容、诊断和内部集成。
 
 > **当前状态：预生产加固候选版本（v0.4.x）** — P0/P1 全部加固完成，房间状态 Actor ownership 已落地，WAL/ACK 可靠性已闭环。适合受控测试和内部灰度部署。
 
@@ -19,7 +19,7 @@
 - **严格命令入口** — Session 与 Room 管理命令只经 mailbox 执行；mailbox 缺失、关闭、拥塞或结果不确定时显式失败，不再切换到直接处理路径
 - **一致房间控制面** — host/lock/cycle/hidden/endpoint/容量等控制字段共享同一快照和 generation。ActorState 已是快照权威来源，全部 17 个命令走 actor_state
 - **慢消费者隔离** — 会话发送采用有界队列和非阻塞路径；网络读取与业务处理通过有界命令队列解耦
-- **PMP 内部接口** — 保留房间信息 HTTP、SSE、WebSocket 和插件动态路由，供 PPB/受控网络调用，不承担公共边缘安全职责
+- **内部接口** — 房间信息 HTTP、SSE、WebSocket 和插件动态路由
 - **插件 TCP 连接 API** — 供 WASM 插件通过句柄建立和管理 TCP 连接（connect/listen/send/close），纯明文，无 TLS
 - **jemalloc 分配器** — Linux 下使用 jemalloc 替代 musl malloc，降低长期运行中的 RSS 膨胀风险
 
@@ -34,7 +34,7 @@
 | **开发** | [架构](docs/development/architecture.md) · [错误码/CLI](docs/development/error-codes.md) · [测试指南](docs/development/testing.md) · [CLI 手册](docs/cli.md) |
 | **插件** | [生命周期](docs/plugins/lifecycle.md) · [SDK cookbook](docs/plugins/sdk-cookbook.md) · [Manifest](docs/plugins/manifest.md) · [WIT ABI](docs/wit-abi.md) · [插件配置](docs/plugin-config.md) · [插件开发](docs/plugin-dev.md) |
 | **安全** | [威胁模型](docs/security/threat-model.md) · [SECURITY](SECURITY.md) |
-| **API** | [PPB 接口契约](docs/api/ppb-contract.md) · [事件 API](docs/api.md) |
+| **API** | [事件 API](docs/api.md) |
 | **仿真** | [Simulation](docs/simulation.md) · [压测](docs/benchmark-real.md) |
 | **其他** | [CHANGELOG](CHANGELOG.md) · [ROADMAP](ROADMAP.md) · [许可信息](#许可) |
 
@@ -286,8 +286,6 @@ Phira-mp-plus/
 
 ## PMP 内部 SSE 房间事件
 
-> 该接口面向 PPB 或受控运维网络。公网 Web API 由 PPB 提供。
-
 `GET /rooms/listen` 建立连接后先发送 `ready`，随后以 `update_room` 补发当前房间快照，再持续推送 `create_room`、`update_room`、`join_room`、`leave_room` 和 `new_round`。可用下列命令直接检查数据流：
 
 ```bash
@@ -320,7 +318,7 @@ WASM 插件通过 `phira:host/api` 和 `phira:host/log` 等导入函数与宿主
 | 配置项 | 类型 | 默认值 | 说明 |
 |--------|------|--------|------|
 | `port` | u16 | `12346` | TCP 监听端口 |
-| `http_port` | u16 | `12347` | PMP 内部 HTTP/SSE/WebSocket 兼容端口；公共接口由 PPB 提供 |
+| `http_port` | u16 | `12347` | PMP HTTP/SSE/WebSocket 端口 |
 | `proxy_protocol_port` | u16 | `0` | 可信 X-Forwarded-For 兼容监听端口；不是 PROXY v1/v2 |
 | `monitors` | Vec<i32> | `[2]` | 允许旁观的用户 ID |
 | `phira_api_endpoint` | String | `https://phira.5wyxi.com` | 全局 Phira API 端点；房间可临时覆盖 |

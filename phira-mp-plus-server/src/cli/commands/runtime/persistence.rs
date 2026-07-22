@@ -201,7 +201,7 @@ impl CliHandler {
             "  {} Touch/Judge 持久化不依赖 active monitor；active monitor 只控制实时 monitor 广播",
             c::dim("▸")
         ));
-        self.out(format!("  {} BenchmarkReport 通过 PersistenceWorker 幂等写入 mp_runtime_benchmark_reports，供 CLI/PPB 内部查询读取", c::dim("▸")));
+        self.out(format!("  {} BenchmarkReport 通过 PersistenceWorker 幂等写入 mp_runtime_benchmark_reports，供 CLI 内部查询读取", c::dim("▸")));
         self.out(format!("  {} PersistenceWorker 对普通事件施加有界背压；数据库重试耗尽后进入 dead-letter，dead-letter 再失败会触发 degraded", c::dim("▸")));
         self.out(format!("  {} TelemetryBatcher 的 Flush/Shutdown 返回真实数据库结果；worker_authoritative 仅在前置条件满足时允许启用", c::dim("▸")));
     }

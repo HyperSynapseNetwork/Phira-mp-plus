@@ -3,12 +3,12 @@
 ## 系统边界
 
 ```
-Internet → PPB (auth/TLS/限流) → PMP (游戏运行时) → PostgreSQL
+PMP (游戏运行时) → PostgreSQL
                                        ↑
                                    WASM 插件
 ```
 
-- **PPB** (Phira+ Backend): 公共 Web API、OAuth、网关、TLS
+
 - **PMP** (Phira-mp+): TCP 游戏协议、房间状态机、WASM 插件执行、事件持久化
 
 ## 核心组件

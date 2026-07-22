@@ -194,7 +194,7 @@ pub struct PlusConfig {
     #[serde(default = "default_http_port")]
     pub http_port: u16,
     /// HTTP/SSE listener bind address. Defaults to loopback for production
-    /// safety; change to "0.0.0.0" only when PPB or a reverse proxy requires
+    /// safety; change to "0.0.0.0" only when a reverse proxy requires
     /// it and the network boundary is explicitly controlled.
     #[serde(default = "default_http_bind_address")]
     pub http_bind_address: String,

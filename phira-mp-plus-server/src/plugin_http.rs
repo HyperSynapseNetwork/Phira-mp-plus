@@ -130,7 +130,7 @@ impl PluginHttpServer {
         info!(%address, "HTTP server started (direct)");
 
         // Trusted-forwarded-header compatibility port. This is not HAProxy
-        // PROXY v1/v2; it trusts X-Forwarded-For only behind PPB/a trusted proxy.
+        // PROXY v1/v2; it trusts X-Forwarded-For only behind a trusted proxy.
         if self.proxy_port > 0 && self.proxy_port != self.port {
             let proxy_addr = format!("{}:{}", self.bind_address, self.proxy_port);
             let proxy_listener = tokio::net::TcpListener::bind(&proxy_addr)

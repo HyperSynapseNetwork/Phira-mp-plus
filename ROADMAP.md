@@ -14,7 +14,6 @@
 - [ ] 完整 Readiness 检查（WAL/Supervisor/插件状态）
 - [ ] 标准化 /metrics（Prometheus）
 - [ ] Backup/Restore 增强（自动 restore、加密）
-- [ ] PPB→PMP 服务认证
 - [ ] 文档冻结
 
 ## 未来
