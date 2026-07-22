@@ -246,16 +246,13 @@ impl RoomActor {
     pub(super) async fn execute_command(&mut self, command: RoomActorCommand) -> bool {
         use super::handler::RoomCommandHandler;
         use super::context::RoomCommandContext;
-        let gateway = Arc::clone(&self.state.room_commands);
-        let state = Arc::clone(&self.state);
 
         if self.actor_state.is_none() {
             self.actor_state = Some(RoomActorState::from_room(&self.room).await);
         }
 
         let ctx = RoomCommandContext::with_actor(
-            gateway.as_ref(),
-            state.as_ref(),
+            &self.state,
             self.room.clone(),
             self,
         );
