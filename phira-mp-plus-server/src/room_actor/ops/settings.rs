@@ -161,7 +161,7 @@ impl RoomCommandGateway {
 
 #[cfg(test)]
 mod tests {
-    use super::super::RoomCommandPayload;
+    use crate::room_actor::RoomCommandPayload;
     use super::super::super::command::RoomCommandKind;
 
     #[test]
