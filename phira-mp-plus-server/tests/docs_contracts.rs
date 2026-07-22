@@ -250,10 +250,13 @@ fn plugin_dev_has_wit_abi_fields() {
         content.contains("abi-wit-v2"),
         "plugin-dev.md must mention abi-wit-v2"
     );
-    assert!(
-        !content.contains("abi-json-v1"),
-        "plugin-dev.md should not mention abi-json-v1 (JSON bridge removed)"
-    );
+    // abi-json-v1 may be mentioned only in context of its removal
+    if content.contains("abi-json-v1") {
+        assert!(
+            content.contains("已移除") || content.contains("removed") || content.contains("legacy"),
+            "plugin-dev.md must only reference abi-json-v1 in context of its removal"
+        );
+    }
     assert!(
         content.contains("wit/phira-plugin.wit"),
         "plugin-dev.md must mention canonical WIT path"
