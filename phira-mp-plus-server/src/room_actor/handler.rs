@@ -54,41 +54,11 @@ impl RoomCommandHandler {
         let state = ctx.state;
         let room = ctx.room.clone();
         match command {
-            RoomActorCommand::SetLock {
-                room_id,
-                locked,
-                actor_user_id,
-                ..
-            } => typed_or_err(
-                gateway
-                    .set_lock_in_actor(state, room_id, *locked, *actor_user_id, room.clone())
-                    .await,
-                RoomCommandDelivery::PerRoomMailbox,
-            ),
-            RoomActorCommand::SetCycle {
-                room_id,
-                cycle,
-                actor_user_id,
-                ..
-            } => typed_or_err(
-                gateway
-                    .set_cycle_in_actor(state, room_id, *cycle, *actor_user_id, room.clone())
-                    .await,
-                RoomCommandDelivery::PerRoomMailbox,
-            ),
             RoomActorCommand::SetHost {
                 room_id, target_id, ..
             } => typed_or_err(
                 gateway
                     .set_host_in_actor(state, room_id, *target_id, room.clone())
-                    .await,
-                RoomCommandDelivery::PerRoomMailbox,
-            ),
-            RoomActorCommand::SetHidden {
-                room_id, hidden, ..
-            } => typed_or_err(
-                gateway
-                    .set_hidden_in_actor(state, room_id, *hidden, room.clone())
                     .await,
                 RoomCommandDelivery::PerRoomMailbox,
             ),

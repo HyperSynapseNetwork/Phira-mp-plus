@@ -122,34 +122,6 @@ impl RoomCommandGateway {
         .into_untyped()
     }
 
-    pub(in crate::room_actor) async fn set_lock_in_actor(
-        &self,
-        state: &PlusServerState,
-        room_id: &str,
-        locked: bool,
-        actor_user_id: i32,
-        room_override: Option<Arc<crate::room::Room>>,
-    ) -> Result<RoomCommandPayload, String> {
-        let (_rid, room) = self.resolve_room(state, room_id, room_override).await?;
-        room.set_locked(locked);
-        room.send(Message::LockRoom { lock: locked }).await;
-        room.publish_update(PartialRoomData {
-            lock: Some(locked),
-            ..Default::default()
-        })
-        .await;
-        state
-            .dispatch_plugin_event(PluginEvent::RoomModify {
-                user_id: actor_user_id,
-                room_id: room_id.to_string(),
-                data: serde_json::json!({"action":"lock","value":locked}).to_string(),
-            })
-            .await;
-        Ok(RoomCommandPayload::LockChanged {
-            room_id: room_id.to_string(),
-            locked,
-        })
-    }
 
     pub async fn set_cycle(
         &self,
@@ -187,35 +159,6 @@ impl RoomCommandGateway {
         .into_untyped()
     }
 
-    pub(in crate::room_actor) async fn set_cycle_in_actor(
-        &self,
-        state: &PlusServerState,
-        room_id: &str,
-        cycle: bool,
-        actor_user_id: i32,
-        room_override: Option<Arc<crate::room::Room>>,
-    ) -> Result<RoomCommandPayload, String> {
-        let (_rid, room) = self.resolve_room(state, room_id, room_override).await?;
-        room.set_cycle(cycle);
-        room.send(Message::CycleRoom { cycle }).await;
-        room.publish_update(PartialRoomData {
-            cycle: Some(cycle),
-            ..Default::default()
-        })
-        .await;
-        state
-            .dispatch_plugin_event(PluginEvent::RoomModify {
-                user_id: actor_user_id,
-                room_id: room_id.to_string(),
-                data: serde_json::json!({"action":"cycle","value":cycle}).to_string(),
-            })
-            .await;
-        Ok(RoomCommandPayload::CycleChanged {
-            room_id: room_id.to_string(),
-            cycle,
-        })
-    }
-
     pub async fn set_hidden(
         &self,
         state: &PlusServerState,
@@ -239,28 +182,6 @@ impl RoomCommandGateway {
             result,
         )
         .into_untyped()
-    }
-
-    pub(in crate::room_actor) async fn set_hidden_in_actor(
-        &self,
-        state: &PlusServerState,
-        room_id: &str,
-        hidden: bool,
-        room_override: Option<Arc<crate::room::Room>>,
-    ) -> Result<RoomCommandPayload, String> {
-        let (_rid, room) = self.resolve_room(state, room_id, room_override).await?;
-        room.set_hidden(hidden);
-        state
-            .dispatch_plugin_event(PluginEvent::RoomModify {
-                user_id: 0,
-                room_id: room_id.to_string(),
-                data: serde_json::json!({"action":"hidden","value":hidden}).to_string(),
-            })
-            .await;
-        Ok(RoomCommandPayload::HiddenChanged {
-            room_id: room_id.to_string(),
-            hidden,
-        })
     }
 
     pub async fn set_phira_api_endpoint(
