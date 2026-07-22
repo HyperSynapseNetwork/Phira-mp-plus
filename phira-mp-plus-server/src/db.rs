@@ -339,7 +339,7 @@ mod tests {
         // 20260721000001_initial_schema.sql; subsequent migrations add
         // irreversible DDL with higher version timestamps.
         assert!(
-            migrator.migrations.len() >= 1,
+            !migrator.migrations.is_empty(),
             "expected at least 1 migration, found {}",
             migrator.migrations.len()
         );

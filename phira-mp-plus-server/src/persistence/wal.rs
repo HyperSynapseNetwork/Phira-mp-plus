@@ -431,7 +431,7 @@ impl PersistenceWal {
                 match truncate_wal_file(&self.path, truncated_at).await {
                     Ok(new_len) => {
                         bytes.truncate(truncated_at);
-                        self.total_bytes.store(new_len as u64, Ordering::Release);
+                        self.total_bytes.store(new_len, Ordering::Release);
                         warn!(
                             "WAL {} truncated to {} bytes (removed {removed} corrupted bytes)",
                             self.path.display(),
