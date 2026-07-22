@@ -988,6 +988,41 @@ mod wit_trait_impls {
     }
 
 
+    // ── phira-tcp (plain TCP, no TLS) ──
+    impl wit::phira::plugin::phira_tcp::Host for WitPluginHost {
+        fn connect(&mut self, addr: String) -> Result<u64, String> {
+            self.require_capability("tcp")?;
+            let tx = self.ctx.tcp.as_ref().ok_or("tcp not available")?;
+            let (reply, mut rx) = tokio::sync::oneshot::channel();
+            tx.try_send(crate::federation::FederationCommand::Connect { addr, reply })
+                .map_err(|e| format!("tcp connect failed: {e}"))?;
+            rx.try_recv().map_err(|_| "tcp connect reply lost".to_string())?
+        }
+
+        fn listen(&mut self, addr: String) -> Result<u64, String> {
+            self.require_capability("tcp")?;
+            let tx = self.ctx.tcp.as_ref().ok_or("tcp not available")?;
+            let (reply, mut rx) = tokio::sync::oneshot::channel();
+            tx.try_send(crate::federation::FederationCommand::Listen { addr, reply })
+                .map_err(|e| format!("tcp listen failed: {e}"))?;
+            rx.try_recv().map_err(|_| "tcp listen reply lost".to_string())?
+        }
+
+        fn send(&mut self, handle: u64, bytes: Vec<u8>) -> Result<(), String> {
+            self.require_capability("tcp")?;
+            let tx = self.ctx.tcp.as_ref().ok_or("tcp not available")?;
+            tx.try_send(crate::federation::FederationCommand::Send { handle, bytes })
+                .map_err(|e| format!("tcp send failed: {e}"))
+        }
+
+        fn close(&mut self, handle: u64) -> Result<(), String> {
+            self.require_capability("tcp")?;
+            let tx = self.ctx.tcp.as_ref().ok_or("tcp not available")?;
+            tx.try_send(crate::federation::FederationCommand::Close { handle })
+                .map_err(|e| format!("tcp close failed: {e}"))
+        }
+    }
+
     // ── phira-timer ──
     impl wit::phira::plugin::phira_timer::Host for WitPluginHost {
         fn set_timer(&mut self, delay_ms: u64, timer_id: String) -> Result<(), String> {
