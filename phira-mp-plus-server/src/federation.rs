@@ -39,8 +39,20 @@ pub struct FederationTlsOpts {
     pub read_timeout_secs: u64,
 }
 
-const fn default_connect_timeout_secs() -> u64 { 10 }
-const fn default_handshake_timeout_secs() -> u64 { 10 }
+impl Default for FederationTlsOpts {
+    fn default() -> Self {
+        Self {
+            expected_ca_ids: Vec::new(),
+            verify_peer: false,
+            local_cert_chain: None,
+            local_private_key: None,
+            min_tls_version: None,
+            connect_timeout_secs: 10,
+            handshake_timeout_secs: 10,
+            read_timeout_secs: 0,
+        }
+    }
+}
 
 /// Commands plugins send to the federation actor.
 #[derive(Debug)]
