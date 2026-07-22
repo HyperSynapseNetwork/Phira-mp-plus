@@ -45,7 +45,6 @@ impl RoomCommandHandler {
                 let as_ = ctx.expect_actor_state();
                 as_.state.set_locked(*locked);
                 if let Some(ref r) = room {
-                    r.set_locked(*locked);
                     r.send(Message::LockRoom { lock: *locked }).await;
                     r.publish_update(PartialRoomData { lock: Some(*locked), ..Default::default() }).await;
                 }
@@ -60,7 +59,6 @@ impl RoomCommandHandler {
                 let as_ = ctx.expect_actor_state();
                 as_.state.set_cycle(*cycle);
                 if let Some(ref r) = room {
-                    r.set_cycle(*cycle);
                     r.send(Message::CycleRoom { cycle: *cycle }).await;
                     r.publish_update(PartialRoomData { cycle: Some(*cycle), ..Default::default() }).await;
                 }
@@ -74,9 +72,6 @@ impl RoomCommandHandler {
             RoomActorCommand::SetHidden { room_id, hidden, .. } => {
                 let as_ = ctx.expect_actor_state();
                 as_.state.set_hidden(*hidden);
-                if let Some(ref r) = room {
-                    r.set_hidden(*hidden);
-                }
                 state.dispatch_plugin_event(PluginEvent::RoomModify {
                     user_id: 0, room_id: room_id.clone().to_string(),
                     data: json!({"action":"hidden","value":hidden}).to_string(),
