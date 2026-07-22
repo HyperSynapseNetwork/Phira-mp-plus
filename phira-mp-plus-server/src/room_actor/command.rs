@@ -80,6 +80,7 @@ pub(super) enum RoomActorCommand {
         endpoint: Option<String>,
         reply: oneshot::Sender<RoomCommandResult>,
     },
+    #[allow(dead_code)]
     CloseRoom {
         room_id: String,
         reply: oneshot::Sender<RoomCommandResult>,
@@ -136,6 +137,7 @@ pub(super) enum RoomActorCommand {
         user_id: i32,
         reply: oneshot::Sender<RoomCommandResult>,
     },
+    #[allow(dead_code)]
     AddUser {
         room_id: String,
         user_id: i32,

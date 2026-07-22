@@ -1,10 +1,9 @@
 use super::super::{
     command::{RoomActorCommand, RoomCommandKind},
-    RoomCommandGateway, RoomCommandPayload,
+    RoomCommandGateway,
 };
 use crate::server::PlusServerState;
 use serde_json::Value;
-use std::sync::Arc;
 use std::time::Instant;
 
 impl RoomCommandGateway {
@@ -162,20 +161,21 @@ impl RoomCommandGateway {
 
 #[cfg(test)]
 mod tests {
+    use super::super::RoomCommandPayload;
     use super::super::super::command::RoomCommandKind;
 
     #[test]
     fn typed_payload_serialization_round_trip() {
-        let payloads: Vec<super::RoomCommandPayload> = vec![
-            super::RoomCommandPayload::LockChanged {
+        let payloads: Vec<RoomCommandPayload> = vec![
+            RoomCommandPayload::LockChanged {
                 room_id: "r1".into(),
                 locked: true,
             },
-            super::RoomCommandPayload::CycleChanged {
+            RoomCommandPayload::CycleChanged {
                 room_id: "r2".into(),
                 cycle: false,
             },
-            super::RoomCommandPayload::HostChanged {
+            RoomCommandPayload::HostChanged {
                 room_id: "r3".into(),
                 host: Some(42),
                 host_name: "admin".into(),
