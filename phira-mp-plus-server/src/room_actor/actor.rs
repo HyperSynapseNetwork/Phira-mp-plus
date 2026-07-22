@@ -241,43 +241,32 @@ impl RoomActor {
     }
 
     /// Execute a command against the actor's owned state.
-    /// Returns `true` if the mailbox should stop after this command.
+    /// All commands go through execute_with_actor which writes actor_state
+    /// first; sync_to_room pushes changes to Room afterward.
     pub(super) async fn execute_command(&mut self, command: RoomActorCommand) -> bool {
-        use super::handler::{is_direct_state_command, RoomCommandHandler};
+        use super::handler::RoomCommandHandler;
         use super::context::RoomCommandContext;
         let gateway = Arc::clone(&self.state.room_commands);
         let state = Arc::clone(&self.state);
-        let room = self.room.clone();
 
-        // Ensure actor_state is populated before command execution.
         if self.actor_state.is_none() {
             self.actor_state = Some(RoomActorState::from_room(&self.room).await);
         }
 
-        // ── Execute ───────────────────────────────────────────────────
-        let is_direct = is_direct_state_command(&command);
         let ctx = RoomCommandContext::with_actor(
             gateway.as_ref(),
             state.as_ref(),
-            room.clone(),
+            self.room.clone(),
             self,
         );
         let result = RoomCommandHandler::execute_with_actor(ctx, &command).await;
         let should_stop = RoomCommandHandler::should_stop_room_mailbox(&command, &result);
         self.state.room_commands.observe_mailbox_result(&result);
 
-        // ── Post-execution sync ───────────────────────────────────────
         if result.is_ok() {
-            if is_direct {
-                // Direct-state commands wrote actor_state; push to Room.
-                if let Some(ref actor_state) = self.actor_state {
-                    actor_state.sync_to_room(&self.room).await;
-                }
-            } else {
-                // Gateway commands wrote Room; re-read into actor_state.
-                self.actor_state = Some(RoomActorState::from_room(&self.room).await);
+            if let Some(ref actor_state) = self.actor_state {
+                actor_state.sync_to_room(&self.room).await;
             }
-            // Snapshot always from actor_state (atomic, consistent).
             self.refresh_snapshot_from_state();
             self.state.room_commands.store_snapshot_if_current(
                 &self.room.id.to_string(),

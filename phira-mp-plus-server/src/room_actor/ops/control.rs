@@ -40,24 +40,6 @@ impl RoomCommandGateway {
         .into_untyped()
     }
 
-    pub(in crate::room_actor) async fn start_room_in_actor(
-        &self,
-        state: &PlusServerState,
-        room_id: &str,
-        room_override: Option<Arc<crate::room::Room>>,
-    ) -> Result<RoomCommandPayload, String> {
-        let (_rid, room) = self.resolve_room(state, room_id, room_override).await?;
-        room.begin_admin_start().await.map_err(|e| e.to_string())?;
-        state
-            .dispatch_plugin_event(PluginEvent::GameStart {
-                user_id: 0,
-                room_id: room_id.to_string(),
-            })
-            .await;
-        Ok(RoomCommandPayload::RoomStarted {
-            room_id: room_id.to_string(),
-        })
-    }
 
     /// Cancel a pending admin-start wait state.
     ///
@@ -88,35 +70,6 @@ impl RoomCommandGateway {
         .into_untyped()
     }
 
-    pub(in crate::room_actor) async fn cancel_start_in_actor(
-        &self,
-        state: &PlusServerState,
-        room_id: &str,
-        room_override: Option<Arc<crate::room::Room>>,
-    ) -> Result<RoomCommandPayload, String> {
-        let (_rid, room) = self.resolve_room(state, room_id, room_override).await?;
-        let canceled = {
-            let mut room_state = room.state.write().await;
-            if matches!(
-                &*room_state,
-                crate::room::InternalRoomState::WaitForReady { .. }
-            ) {
-                *room_state = crate::room::InternalRoomState::SelectChart;
-                true
-            } else {
-                false
-            }
-        };
-        if canceled {
-            room.send(Message::CancelGame { user: 0 }).await;
-            room.finish_admin_start().await;
-            room.on_state_change().await;
-        }
-        Ok(RoomCommandPayload::CancelResult {
-            room_id: room_id.to_string(),
-            canceled,
-        })
-    }
 
     // ── HostStart ─────────────────────────────────────────────────────────
 
@@ -146,47 +99,4 @@ impl RoomCommandGateway {
         .into_untyped()
     }
 
-    pub(in crate::room_actor) async fn host_start_in_actor(
-        &self,
-        state: &PlusServerState,
-        room_id: &str,
-        user_id: i32,
-        room_override: Option<Arc<crate::room::Room>>,
-    ) -> Result<RoomCommandPayload, String> {
-        let (_rid, room) = self.resolve_room(state, room_id, room_override).await?;
-        // Validate state
-        if !matches!(
-            &*room.state.read().await,
-            crate::room::InternalRoomState::SelectChart
-        ) {
-            return Err("room is not selecting a chart".to_string());
-        }
-        if room.admin_start_pending() {
-            return Err("administrative start is already in progress".to_string());
-        }
-        if room.chart.read().await.is_none() {
-            return Err("no chart selected".to_string());
-        }
-
-        room.finish_admin_start().await;
-        room.reset_game_time().await;
-        room.send(Message::GameStart { user: user_id }).await;
-        *room.state.write().await = crate::room::InternalRoomState::WaitForReady {
-            started: std::iter::once(user_id).collect(),
-            admin_started: false,
-        };
-        room.on_state_change().await;
-        room.check_all_ready().await;
-
-        state
-            .dispatch_plugin_event(PluginEvent::GameStart {
-                user_id,
-                room_id: room_id.to_string(),
-            })
-            .await;
-
-        Ok(RoomCommandPayload::HostStarted {
-            room_id: room_id.to_string(),
-        })
-    }
 }

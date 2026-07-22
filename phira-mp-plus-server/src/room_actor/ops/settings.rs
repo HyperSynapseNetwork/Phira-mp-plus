@@ -37,54 +37,6 @@ impl RoomCommandGateway {
         .into_untyped()
     }
 
-    pub(in crate::room_actor) async fn set_host_in_actor(
-        &self,
-        state: &PlusServerState,
-        room_id: &str,
-        target_id: Option<i32>,
-        room_override: Option<Arc<crate::room::Room>>,
-    ) -> Result<RoomCommandPayload, String> {
-        let (_rid, room) = self.resolve_room(state, room_id, room_override).await?;
-        match target_id {
-            Some(user_id) => {
-                let mut user_name = user_id.to_string();
-                for user in room.users().await {
-                    if user.id == user_id {
-                        user_name = room.display_name(&user).await;
-                        break;
-                    }
-                }
-                room.send(Message::Chat {
-                    user: 0,
-                    content: format!("房主已转移给 {}", user_name),
-                })
-                .await;
-                room.set_host(Some(user_id), true)
-                    .await
-                    .map_err(|e| e.to_string())?;
-                Ok(RoomCommandPayload::HostChanged {
-                    room_id: room_id.to_string(),
-                    host: Some(user_id),
-                    host_name: user_name,
-                    host_is_system: false,
-                })
-            }
-            None => {
-                room.send(Message::Chat {
-                    user: 0,
-                    content: "房主已设为系统 ?".to_string(),
-                })
-                .await;
-                room.set_host(None, true).await.map_err(|e| e.to_string())?;
-                Ok(RoomCommandPayload::HostChanged {
-                    room_id: room_id.to_string(),
-                    host: None,
-                    host_name: "?".to_string(),
-                    host_is_system: true,
-                })
-            }
-        }
-    }
 
     pub async fn set_lock(
         &self,
@@ -209,58 +161,6 @@ impl RoomCommandGateway {
         .into_untyped()
     }
 
-    pub(in crate::room_actor) async fn set_endpoint_in_actor(
-        &self,
-        state: &PlusServerState,
-        room_id: &str,
-        endpoint: Option<String>,
-        room_override: Option<Arc<crate::room::Room>>,
-    ) -> Result<RoomCommandPayload, String> {
-        let (_rid, room) = self.resolve_room(state, room_id, room_override).await?;
-        let normalized = match endpoint {
-            Some(value) => Some(crate::server::normalize_phira_api_endpoint(&value)?),
-            None => None,
-        };
-        room.set_phira_api_endpoint_override(normalized.clone())
-            .await;
-        state.refresh_room_display_metadata_background(&room);
-        let using_room_override = normalized.is_some();
-        let effective = normalized
-            .clone()
-            .unwrap_or_else(|| state.config.phira_api_endpoint.clone());
-        state
-            .dispatch_plugin_event(PluginEvent::RoomModify {
-                user_id: 0,
-                room_id: room_id.to_string(),
-                data: serde_json::json!({
-                    "action": "phira_api_endpoint",
-                    "value": normalized.clone(),
-                    "effective": effective.clone(),
-                })
-                .to_string(),
-            })
-            .await;
-        Ok(RoomCommandPayload::EndpointChanged {
-            room_id: room_id.to_string(),
-            endpoint: effective,
-            endpoint_override: normalized,
-            using_room_override,
-        })
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::super::super::command::RoomCommandKind;
-
-    #[test]
-    fn typed_payload_serialization_round_trip() {
-        let payloads: Vec<super::RoomCommandPayload> = vec![
-            super::RoomCommandPayload::LockChanged {
-                room_id: "r1".into(),
-                locked: true,
-            },
-            super::RoomCommandPayload::CycleChanged {
                 room_id: "r2".into(),
                 cycle: false,
             },
