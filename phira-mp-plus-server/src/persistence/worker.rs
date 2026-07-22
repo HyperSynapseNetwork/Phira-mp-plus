@@ -629,7 +629,7 @@ impl PersistenceWorker {
         // Wire WAL ACK channel: TelemetryBatcher will ACK WAL IDs after DB commit.
         let (wal_ack_tx, mut wal_ack_rx) = mpsc::channel::<crate::telemetry::WalAckMessage>(1024);
         telemetry_batcher.set_wal_ack_tx(wal_ack_tx);
-        let telemetry_cutover_mode = Arc::new(RwLock::new(initial_cutover));
+        let _telemetry_cutover_mode = Arc::new(RwLock::new(initial_cutover));
         let telemetry_cutover_mode = Arc::new(RwLock::new(initial_cutover));
         let stats = Arc::new(RwLock::new(PersistenceStats {
             capacity,
@@ -701,7 +701,6 @@ impl PersistenceWorker {
                 wal: &PersistenceWal,
                 queue: &mut VecDeque<(uuid::Uuid, u32)>,
             ) -> Result<(), String> {
-                let mut last_error = String::new();
                 let mut retries = 0;
                 while !queue.is_empty() {
                     let (id, attempt) = queue.pop_front().unwrap();
@@ -712,11 +711,10 @@ impl PersistenceWorker {
                         }
                         Err(e) => {
                             wal.set_degraded(true);
-                            last_error = e;
                             retries += 1;
                             if retries > 20 {
                                 return Err(format!(
-                                    "WAL ACK drain failed after {retries} retries: {last_error}"
+                                    "WAL ACK drain failed after {retries} retries: {e}"
                                 ));
                             }
                             queue.push_back((id, attempt.saturating_add(1)));

@@ -1064,6 +1064,9 @@ mod wit_trait_impls {
                     local_cert_chain: tls_opts.local_cert_chain,
                     local_private_key: tls_opts.local_private_key,
                     min_tls_version: tls_opts.min_tls_version,
+                    connect_timeout_secs: 10,
+                    handshake_timeout_secs: 10,
+                    read_timeout_secs: 0,
                 },
                 reply,
             })
@@ -1087,6 +1090,9 @@ mod wit_trait_impls {
                     local_cert_chain: tls_opts.local_cert_chain,
                     local_private_key: tls_opts.local_private_key,
                     min_tls_version: tls_opts.min_tls_version,
+                    connect_timeout_secs: 10,
+                    handshake_timeout_secs: 10,
+                    read_timeout_secs: 0,
                 },
                 reply,
             })

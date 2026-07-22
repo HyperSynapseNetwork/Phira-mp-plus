@@ -17,9 +17,11 @@ use serde_json::Value;
 /// causing silent migration failures in production containers.
 #[cfg(feature = "postgres")]
 pub fn migrator() -> sqlx::migrate::Migrator {
-    // The path is relative to CARGO_MANIFEST_DIR at compile time, and the
-    // SQL is embedded into the binary — no runtime filesystem access needed.
-    sqlx::migrate!("migrations")
+    // Path relative to this source file (sqlx 0.8 resolves from file!() dir).
+    // At compile time this embeds the SQL into the binary, so no runtime
+    // filesystem access is needed — it works in Docker runtime images without
+    // the source tree.
+    sqlx::migrate!("../migrations")
 }
 
 /// Unix 毫秒时间戳。

@@ -319,7 +319,7 @@ impl PersistenceWal {
         // Check instance consistency first: if marker exists but WAL is gone
         // or empty, refuse to replay (fail-closed).
         self.check_instance_consistency().await?;
-        let bytes = match tokio::fs::read(&self.path).await {
+        let mut bytes = match tokio::fs::read(&self.path).await {
             Ok(bytes) => bytes,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
                 // Double-check: if marker exists but file doesn't, refuse.

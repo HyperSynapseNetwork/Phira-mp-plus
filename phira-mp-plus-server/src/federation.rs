@@ -16,6 +16,7 @@ use rustls::{ClientConfig, DigitallySignedStruct, Error, ServerConfig};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 use tokio::io::AsyncReadExt;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{mpsc, oneshot};
@@ -492,6 +493,8 @@ async fn accept_loop(
                         let cb = event_cb.clone();
                         let cm = Arc::clone(&conn_map);
 
+                        let cm_handle = cm.clone();
+                        let clm_handle = close_map.clone();
                         tokio::spawn(async move {
                             match acceptor.accept(stream).await {
                                 Ok(tls_stream) => {
@@ -499,8 +502,8 @@ async fn accept_loop(
                                     let (data_tx, data_rx) = mpsc::channel::<Vec<u8>>(64);
                                     let (close_tx, close_rx) = oneshot::channel::<()>();
 
-                                    cm.lock().unwrap().insert(conn_handle, data_tx);
-                                    close_map.lock().unwrap().insert(conn_handle, close_tx);
+                                    cm_handle.lock().unwrap().insert(conn_handle, data_tx);
+                                    clm_handle.lock().unwrap().insert(conn_handle, close_tx);
 
                                     if let Some(ref cb) = cb {
                                         cb("federation:accept".into(), serde_json::json!({
@@ -516,8 +519,8 @@ async fn accept_loop(
                                         tls_stream, conn_handle, data_rx, close_rx, cb, peer, read_timeout_secs,
                                     ).await;
 
-                                    cm.lock().unwrap().remove(&conn_handle);
-                                    close_map.lock().unwrap().remove(&conn_handle);
+                                    cm_handle.lock().unwrap().remove(&conn_handle);
+                                    clm_handle.lock().unwrap().remove(&conn_handle);
                                 }
                                 Err(e) => {
                                     warn!(%peer, error = %e, "TLS accept failed");
