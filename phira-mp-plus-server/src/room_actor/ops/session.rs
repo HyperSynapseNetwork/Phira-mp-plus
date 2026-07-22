@@ -1,16 +1,8 @@
-//! Session-driven room operations behind the Runtime v2 gateway.
-//!
-//! Migration Step: route all gameplay state mutations through the per-room
-//! mailbox. Each _in_actor method implements the state transition + side
-//! effects (broadcasts, plugin events, round store) in one critical section.
-
 use super::super::{
     command::{RoomActorCommand, RoomCommandKind},
-    RoomCommandGateway, RoomCommandPayload,
+    RoomCommandGateway,
 };
-use crate::plugin::PluginEvent;
 use crate::server::PlusServerState;
-use phira_mp_common::Message;
 use serde_json::Value;
 use std::sync::Arc;
 use std::time::Instant;
