@@ -4,10 +4,23 @@
 //! built from control_snapshot() (sync, reads actor cache) and the actor
 //! RoomSnapshot from room_snapshot().
 
-use crate::server::PlusServerState;
+use crate::server::state::PlusServerState;
 use serde::Serialize;
 use serde_json::Value;
 use std::sync::atomic::Ordering;
+
+// ── PlusServerState snapshot helper ──────────────────────────────────
+
+impl PlusServerState {
+    /// Get the latest RoomActor snapshot for a room, if available.
+    /// Falls back to None if the room has no actor yet.
+    pub fn room_snapshot(
+        &self,
+        room_id: &str,
+    ) -> Option<crate::room_actor::actor::RoomSnapshot> {
+        self.room_commands.room_snapshot(room_id)
+    }
+}
 
 // ── Snapshot types ─────────────────────────────────────────────────
 

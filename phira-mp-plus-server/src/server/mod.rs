@@ -1,38 +1,45 @@
 //! Phira-mp+ server — orchestration layer and public re-exports.
 //!
 //! This module has been decomposed from the original 4351-line `server.rs`
-//! into focused sub-modules.  The legacy `orig` module still holds code that
-//! hasn't been moved yet (room management, benchmark, state query dispatch,
-//! PlusServer::new).
+//! into focused sub-modules.
 //!
 //! **Current layout:**
 //!
 //! | Module        | Responsibility                              |
 //! |---------------|---------------------------------------------|
-//! | `benchmark`   | BenchRequest, HybridBenchmarkConfig, token helpers |
+//! | `accept`      | PlusServer::accept() — TCP listener accept  |
+//! | `benchmark`   | BenchRequest, HybridBenchmarkConfig, token helpers, benchmark execution |
 //! | `config`      | PlusConfig, LiveConfig, RuntimeConfig, … |
-//! | `events`      | Event subscribers (runtime/plugin observer) |
+//! | `disconnect`  | disconnect_banned_user, run_admin_kick_user |
+//! | `events`      | Event subscribers, publishers, monitor routing |
+//! | `init`        | PlusServer::new() — full server initialization |
 //! | `query`       | State query dispatch (sync engine for CLI/WIT/Web) |
-//! | `snapshot`    | RoomSnapshot, UserSnapshot, build_snapshot  |
-//! | `state`       | PlusServerState struct definition           |
-//! | `orig`        | ~1980 lines remaining (PlusServer::new, room_ops) |
+//! | `rooms`       | Room management methods on PlusServerState  |
+//! | `snapshot`    | RoomSnapshot, UserSnapshot, build_snapshot, room_snapshot |
+//! | `state`       | PlusServerState, PlusServer, ServerStats struct definitions |
 //!
-//! **Compatibility:** All `crate::server::*` items are re-exported via
-//! `pub use config::*; pub use orig::*;` so existing callers keep working
-//! unchanged during the migration.
+//! **Compatibility:** All `crate::server::*` items are re-exported so
+//! existing callers keep working unchanged during the migration.
 
+pub mod accept;
 pub mod benchmark;
 pub mod config;
+pub mod disconnect;
 pub mod events;
+pub mod init;
 pub mod query;
+pub mod rooms;
 pub mod snapshot;
 pub mod state;
 
-// Legacy — content that hasn't been moved yet
-mod orig;
-
 // ── Re-exports for backward compatibility ──
+pub use accept::*;
 pub use benchmark::*;
 pub use config::*;
-pub use orig::*;
+pub use disconnect::*;
+pub use events::*;
+pub use init::*;
 pub use query::*;
+pub use rooms::*;
+pub use snapshot::*;
+pub use state::*;
