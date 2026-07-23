@@ -116,7 +116,7 @@ wasm_runtime:
 | `database_url` | `String?` | `""` | PostgreSQL 连接串，格式 `postgres://user:password@host:port/dbname`。留空时默认尝试 `postgres://postgres:postgres@localhost:5432/phira_mp_plus`。数据库不存在时会自动创建。 |
 | `persistence_retention_days` | `u32` | `30` | PostgreSQL 统一持久化历史数据保留天数，`0` 表示不自动清理。 |
 | `touch_judge_retention_days` | `u32?` | 未设置 | Touches/Judges 高频遥测独立保留天数；未设置时遵循 `persistence_retention_days`，`0` 表示不自动清理遥测。 |
-| `runtime_v2` | `object` | 见下文 | 持久化内部策略。用于配置 PersistenceWorker、TelemetryBatcher 和启动 cutover 模式，避免继续膨胀管理命令。 |
+| `runtime` | `object` | 见下文 | 持久化内部策略。用于配置 PersistenceWorker、TelemetryBatcher。 |
 | `idle` | `object` | 见下文 | 空载调度提示。不得暂停或丢弃权威持久化与可靠插件事件；只允许降低非关键后台活动。 |
 | `server_name` | `String?` | 未设置 | 服务器展示名称，可用于欢迎语等场景。 |
 | `admin_token` | `String?` | 未设置 | 预留字段 |
@@ -161,7 +161,7 @@ config reload
 
 ## 统一 PostgreSQL 持久化
 
-配置 `database_url` 后，服务端会自动创建统一持久化表。所有结构化数据统一写入 PostgreSQL。
+PMP 需要 PostgreSQL，`database_url` 留空时自动尝试连接本地 PostgreSQL（Unix socket peer auth，无需密码）。数据库不存在时自动创建。所有结构化数据统一写入 PostgreSQL。
 
 当前会保存的主要信息：
 
