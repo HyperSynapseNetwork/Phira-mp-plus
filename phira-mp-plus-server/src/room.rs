@@ -548,6 +548,9 @@ impl Room {
                     data,
                 })
                 .await;
+            server.publish_runtime_event(crate::event_bus::MpEvent::RoomUpdated {
+                room_id: self.id.clone(),
+            });
         }
     }
 
@@ -555,11 +558,22 @@ impl Room {
         self.broadcast(ServerCommand::ChangeState(self.client_room_state().await))
             .await;
         let state = self.state.read().await.stripped();
+        let state_desc = match state {
+            StrippedRoomState::SelectingChart => "selecting_chart",
+            StrippedRoomState::WaitingForReady => "waiting_for_ready",
+            StrippedRoomState::Playing => "playing",
+        };
         self.publish_update(PartialRoomData {
             state: Some(state),
             ..Default::default()
         })
         .await;
+        if let Some(server) = self.server.upgrade() {
+            server.publish_runtime_event(crate::event_bus::MpEvent::RoomStateChanged {
+                room_id: self.id.clone(),
+                state: state_desc.to_string(),
+            });
+        }
     }
 
     /// 存储玩家的触控帧数据（供 WASM 插件 host API 查询）
@@ -1172,6 +1186,16 @@ impl Room {
                             chart_name: cn,
                         })
                         .await;
+                    }
+
+                    // Domain event for round completion
+                    if let Some(server) = self.server.upgrade() {
+                        if let Some(round_uuid) = rid {
+                            server.publish_runtime_event(crate::event_bus::MpEvent::RoundCompleted {
+                                room_id: self.id.clone(),
+                                round_id: round_uuid.to_string(),
+                            });
+                        }
                     }
 
                     // 发送结算排行

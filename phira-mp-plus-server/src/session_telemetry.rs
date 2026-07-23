@@ -14,14 +14,26 @@ use phira_mp_common::{JudgeEvent, ServerCommand, TouchFrame};
 use std::sync::Arc;
 use tracing::{debug, trace, warn};
 
-/// Persist a touch batch via the unified PersistenceWorker path.
+/// Cache a touch batch via the actor mailbox, then persist via the unified
+/// PersistenceWorker path.
 async fn persist_touches(
     user: &Arc<User>,
     room: &Arc<Room>,
     touch_data: &[crate::plugin::TouchEventPoint],
     has_active_monitors: bool,
 ) {
-    room.store_player_touches(user.id, touch_data).await;
+    // Route touch caching through the per-room actor mailbox.
+    if let Err(e) = user
+        .server
+        .room_commands
+        .add_touches(&user.server, &room.id.to_string(), user.id, touch_data)
+        .await
+    {
+        trace!(
+            room = %room.id, user_id = user.id,
+            "failed to cache touches via actor mailbox: {e}"
+        );
+    }
     let round_id = room
         .current_round_id
         .read()
@@ -63,14 +75,26 @@ async fn persist_touches(
     }
 }
 
-/// Persist a judge batch via the unified PersistenceWorker path.
+/// Cache a judge batch via the actor mailbox, then persist via the unified
+/// PersistenceWorker path.
 async fn persist_judges(
     user: &Arc<User>,
     room: &Arc<Room>,
     judge_data: &[crate::plugin::JudgeEventItem],
     has_active_monitors: bool,
 ) {
-    room.store_player_judges(user.id, judge_data).await;
+    // Route judge caching through the per-room actor mailbox.
+    if let Err(e) = user
+        .server
+        .room_commands
+        .add_judges(&user.server, &room.id.to_string(), user.id, judge_data)
+        .await
+    {
+        trace!(
+            room = %room.id, user_id = user.id,
+            "failed to cache judges via actor mailbox: {e}"
+        );
+    }
     let round_id = room
         .current_round_id
         .read()

@@ -4,5 +4,6 @@ mod control;
 mod membership;
 mod session;
 mod settings;
+mod telemetry;
 
 impl RoomCommandGateway {}

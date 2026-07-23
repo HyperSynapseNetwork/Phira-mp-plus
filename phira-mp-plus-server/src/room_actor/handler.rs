@@ -52,6 +52,10 @@ impl RoomCommandHandler {
                     user_id: *actor_user_id, room_id: room_id.clone().to_string(),
                     data: json!({"action":"lock","value":locked}).to_string(),
                 }).await;
+                state.publish_runtime_event(crate::event_bus::MpEvent::RoomLocked {
+                    room_id: room_id.clone().try_into().unwrap(),
+                    locked: *locked,
+                });
                 ok(RoomCommandPayload::LockChanged { room_id: room_id.clone().to_string(), locked: *locked })
             }
 
@@ -66,6 +70,10 @@ impl RoomCommandHandler {
                     user_id: *actor_user_id, room_id: room_id.clone().to_string(),
                     data: json!({"action":"cycle","value":cycle}).to_string(),
                 }).await;
+                state.publish_runtime_event(crate::event_bus::MpEvent::RoomCycled {
+                    room_id: room_id.clone().try_into().unwrap(),
+                    cycle: *cycle,
+                });
                 ok(RoomCommandPayload::CycleChanged { room_id: room_id.clone().to_string(), cycle: *cycle })
             }
 
@@ -107,6 +115,10 @@ impl RoomCommandHandler {
                 };
                 as_.state.control.host_id = host_id;
                 as_.state.control.system_host = system_host;
+                state.publish_runtime_event(crate::event_bus::MpEvent::HostChanged {
+                    room_id: room_id.clone().try_into().unwrap(),
+                    host: *target_id,
+                });
                 ok(RoomCommandPayload::HostChanged {
                     room_id: room_id.clone().to_string(), host: *target_id, host_name, host_is_system: system_host,
                 })
@@ -203,6 +215,10 @@ impl RoomCommandHandler {
                 r.send(Message::SelectChart { user: 0, name: chart_name.clone(), id: *chart_id }).await;
                 r.on_state_change().await;
                 r.publish_update(phira_mp_common::PartialRoomData { chart: Some(*chart_id), ..Default::default() }).await;
+                state.publish_runtime_event(crate::event_bus::MpEvent::ChartSelected {
+                    room_id: room_id.clone().try_into().unwrap(),
+                    chart_id: *chart_id,
+                });
                 ok(RoomCommandPayload::ChartSelected { room_id: room_id.clone().to_string(), chart_id: *chart_id })
             }
 

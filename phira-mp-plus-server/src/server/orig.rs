@@ -812,6 +812,11 @@ impl PlusServerState {
     }
 
     /// 创建无人持久空房间。该房间没有初始房主，首个加入的普通玩家会静默成为房主。
+    ///
+    /// TODO(Phase2-WorkD): This method bypasses RoomCommandGateway — it creates
+    /// the Room struct directly and inserts it into state.rooms. No mailbox
+    /// command exists for room creation. A future RoomActorCommand::CreateRoom
+    /// variant could unify this path with the actor lifecycle.
     pub async fn create_empty_room(
         self: &Arc<Self>,
         room_id: &str,
@@ -870,6 +875,9 @@ impl PlusServerState {
         }))
     }
 
+    /// TODO(Phase2-WorkD): Direct room mutation bypassing gateway. No
+    /// RoomActorCommand::SetPersistentEmpty variant exists yet. Consider adding
+    /// one so this operation goes through the per-room mailbox.
     pub async fn set_room_persistent_empty(
         &self,
         room_id: &str,
@@ -1433,6 +1441,10 @@ impl PlusServerState {
     }
 
     /// 管理员强制把用户迁移到指定房间，绕过房间人数、锁定、进行中等普通加入限制。
+    // TODO(Phase2-WorkD): Direct room/user mutation bypassing gateway. This
+    // multi-step operation (leave old room → join new room) should be routed
+    // through RoomCommandGateway mailbox commands (RemoveUser + AddUser) for
+    // serialized actor state transitions.
     pub async fn force_move_user_to_room(
         &self,
         room_id: &str,

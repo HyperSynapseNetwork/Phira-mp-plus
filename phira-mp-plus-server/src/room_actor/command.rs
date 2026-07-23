@@ -1,5 +1,6 @@
 //! Room actor command envelope types.
 
+use crate::plugin::{JudgeEventItem, TouchEventPoint};
 use super::RoomCommandResult;
 use tokio::sync::oneshot;
 
@@ -22,6 +23,9 @@ pub(super) enum RoomCommandKind {
     AbortRound,
     AddUser,
     RemoveUser,
+    AddTouches,
+    AddJudges,
+    SetDisplayName,
 }
 
 impl RoomCommandKind {
@@ -44,6 +48,9 @@ impl RoomCommandKind {
             Self::AbortRound => "abort_round",
             Self::AddUser => "add_user",
             Self::RemoveUser => "remove_user",
+            Self::AddTouches => "add_touches",
+            Self::AddJudges => "add_judges",
+            Self::SetDisplayName => "set_display_name",
         }
     }
 
@@ -150,6 +157,24 @@ pub(super) enum RoomActorCommand {
         user_id: i32,
         reply: oneshot::Sender<RoomCommandResult>,
     },
+    AddTouches {
+        room_id: String,
+        user_id: i32,
+        touches: Vec<TouchEventPoint>,
+        reply: oneshot::Sender<RoomCommandResult>,
+    },
+    AddJudges {
+        room_id: String,
+        user_id: i32,
+        judges: Vec<JudgeEventItem>,
+        reply: oneshot::Sender<RoomCommandResult>,
+    },
+    SetDisplayName {
+        room_id: String,
+        user_id: i32,
+        name: String,
+        reply: oneshot::Sender<RoomCommandResult>,
+    },
 }
 
 impl RoomActorCommand {
@@ -172,6 +197,9 @@ impl RoomActorCommand {
             Self::AbortRound { .. } => RoomCommandKind::AbortRound,
             Self::AddUser { .. } => RoomCommandKind::AddUser,
             Self::RemoveUser { .. } => RoomCommandKind::RemoveUser,
+            Self::AddTouches { .. } => RoomCommandKind::AddTouches,
+            Self::AddJudges { .. } => RoomCommandKind::AddJudges,
+            Self::SetDisplayName { .. } => RoomCommandKind::SetDisplayName,
         }
     }
 
@@ -193,7 +221,10 @@ impl RoomActorCommand {
             | Self::SubmitResult { reply, .. }
             | Self::AbortRound { reply, .. }
             | Self::AddUser { reply, .. }
-            | Self::RemoveUser { reply, .. } => {
+            | Self::RemoveUser { reply, .. }
+            | Self::AddTouches { reply, .. }
+            | Self::AddJudges { reply, .. }
+            | Self::SetDisplayName { reply, .. } => {
                 let _ = reply.send(result);
             }
         }

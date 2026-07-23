@@ -22,6 +22,12 @@ pub struct WitHostContext {
     /// Extension manager for user/room extra data.
     pub extensions: Arc<crate::extensions::ExtensionManager>,
     /// Room command gateway.
+    ///
+    /// NOTE(Phase2-WorkD): Currently unused by the WIT host implementation.
+    /// Room mutations are dispatched through `state_query` →
+    /// `server_state_query_dispatch` → `s.room_commands.*` (gateway).  The
+    /// `room_commands` field is included here for future direct use when the
+    /// gateway is refactored to not require PlusServerState as a parameter.
     pub room_commands: Arc<crate::room_actor::RoomCommandGateway>,
     /// Ban manager.
     pub ban_manager: Arc<crate::ban::BanManager>,

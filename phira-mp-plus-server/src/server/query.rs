@@ -436,6 +436,12 @@ fn server_state_query_dispatch(
             rx.recv_timeout(runtime_state_query_timeout())
                 .unwrap_or(Err("playtime.leaderboard timeout".to_string()))
         }
+        // TODO(Phase2-WorkD): send_room_chat bypasses mailbox — directly
+        // reads state.rooms and calls room.send(). This is a message broadcast
+        // rather than a state mutation, so routing through RoomActorCommand is
+        // not strictly required, but mailbox serialization would improve lock
+        // ordering. Consider adding a mailbox-based chat dispatch or deprecating
+        // this method in favor of plugin-level send_chat.
         "send_room_chat" => {
             let room_id = args
                 .first()
@@ -658,6 +664,11 @@ fn server_state_query_dispatch(
             rx.recv_timeout(runtime_state_query_timeout())
                 .unwrap_or(Err("room.close timeout".to_string()))
         }
+        // TODO(Phase2-WorkD): room.create_empty bypasses gateway — calls
+        // s.create_empty_room() directly. No RoomActorCommand::CreateRoom
+        // variant exists yet; room creation is fundamentally different from
+        // room mutation. Consider adding a mailbox-based create flow once
+        // the actor owns the full room lifecycle.
         "room.create_empty" => {
             let room_id = args
                 .first()

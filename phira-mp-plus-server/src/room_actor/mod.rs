@@ -29,6 +29,40 @@
 //!    - player_data / display_names 仍是实时流，不在 actor_state 中
 //!    - Room 仍持有可变状态（未降级为纯广播接口）
 //!    - Gateway path 命令仍通过 Room 读写（需逐步迁移到 actor_state 优先）
+//!
+//! ## Phase 2, Work D — Gateway unification audit (2026-07-23)
+//!
+//! All entry points audited for direct room mutation bypasses:
+//!
+//! ### Already unified (route through RoomCommandGateway)
+//! - **WIT plugin path** (wit_host.rs): All room mgmt methods call
+//!   `query_api_result` → `state_query.call()` → `server_state_query_dispatch`
+//!   → `s.room_commands.*` → mailbox.  No direct `state.rooms` access.
+//! - **HTTP plugin path** (plugin_http.rs): Handlers call `pm.call_plugin_api()`
+//!   → plugin `on_api` → same WIT path above.
+//! - **Session path** (session_room.rs): lock/cycle/select_chart/start/ready/
+//!   cancel_ready/played/abort all use `user.server.room_commands.*`.
+//! - **CLI path**: All room mutations except chart-id use
+//!   `state.room_commands.*`.
+//! - **State query dispatch** (server/query.rs): All room mutation methods
+//!   route through `s.room_commands.*`.
+//!
+//! ### Fixed in this audit
+//! - **CLI `room set chart-id`** (cli/commands/room.rs): Now uses
+//!   `room_commands.set_chart()` instead of directly writing `room.chart`
+//!   and calling `room.send()` / `room.on_state_change()` /
+//!   `room.publish_update()`.
+//!
+//! ### Bypasses without a gateway equivalent (TODO)
+//! - `room.create_empty` in state query dispatch: Calls `s.create_empty_room()`
+//!   directly.  No `RoomActorCommand::CreateRoom` variant exists.
+//! - `set_room_persistent_empty` in PlusServer (orig.rs): Calls
+//!   `room.set_persistent_empty()` directly.  No gateway command variant.
+//! - `send_room_chat` in state query dispatch: Calls `room.send()` directly.
+//!   Read-only w.r.t. room state (message broadcast), but bypasses mailbox.
+//! - `create_empty_room` / `force_move_user_to_room` / `assign_room_host_if_missing`
+//!   in PlusServer (orig.rs): Direct Room manipulation without a gateway path.
+//!   These are complex multi-step operations that may need new command variants.
 
 pub mod actor;
 mod audit;

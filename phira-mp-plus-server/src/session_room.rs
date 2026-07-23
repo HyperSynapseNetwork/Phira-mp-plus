@@ -167,6 +167,12 @@ pub async fn create_room(user: Arc<User>, id: RoomId) -> Result<()> {
         })
         .await;
 
+    user.server
+        .publish_runtime_event(crate::event_bus::MpEvent::RoomCreated {
+            room_id: id.clone(),
+            room_uuid,
+        });
+
     Ok(())
 }
 
@@ -295,6 +301,11 @@ pub async fn join_room(
                 is_monitor: monitor,
             })
             .await;
+        user.server
+            .publish_runtime_event(crate::event_bus::MpEvent::RoomJoined {
+                room_id: room.id.clone(),
+                user_id: user.id,
+            });
     }
 
     let mut users = room.users().await;
@@ -343,6 +354,11 @@ pub async fn leave_room(user: Arc<User>, category: SessionCategory) -> Result<()
                 room_id: room_id.to_string(),
             })
             .await;
+        user.server
+            .publish_runtime_event(crate::event_bus::MpEvent::RoomLeft {
+                room_id: room.id.clone(),
+                user_id: user.id,
+            });
     }
 
     Ok(())

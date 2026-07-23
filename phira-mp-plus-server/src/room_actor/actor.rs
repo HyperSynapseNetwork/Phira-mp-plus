@@ -11,13 +11,15 @@
 //! Snapshot (`latest_snapshot`) is always derived from actor_state,
 //! never from Room's independent locks, avoiding inconsistent reads.
 //!
-//! Remaining gap: `player_data` and `display_names` are live data
-//! streams written outside the actor path and not mirrored here.
+//! `player_data` and `display_names` are now actor-owned. Writes go
+//! through the actor mailbox (AddTouches/AddJudges/SetDisplayName
+//! commands), and handlers mirror data back to Room directly.
 
 use super::command::RoomActorCommand;
-use crate::room::{InternalRoomState, Room, RoomControlSnapshot};
+use crate::room::{InternalRoomState, PlayerLiveData, Room, RoomControlSnapshot};
 use crate::server::PlusServerState;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::sync::Arc;
 
 /// 房间状态的只读快照。
@@ -155,17 +157,25 @@ pub struct RoomActorState {
     pub room_uuid: String,
     pub state: RoomState,
     pub created_at: i64,
+    /// 各玩家实时触控/判定数据缓存（actor-authoritative）
+    pub player_data: HashMap<i32, PlayerLiveData>,
+    /// 各玩家展示名（actor-authoritative）
+    pub display_names: HashMap<i32, String>,
 }
 
 impl RoomActorState {
     /// Snapshot the current Room state into an actor-owned copy.
     pub async fn from_room(room: &Room) -> Self {
         let state = RoomState::from_room(room).await;
+        let player_data = room.player_data.read().await.clone();
+        let display_names = room.display_names.read().await.clone();
         Self {
             room_id: room.id.to_string(),
             room_uuid: room.uuid.to_string(),
             state,
             created_at: room.created_at,
+            player_data,
+            display_names,
         }
     }
 
@@ -181,6 +191,8 @@ impl RoomActorState {
             room_uuid,
             state,
             created_at,
+            player_data: HashMap::new(),
+            display_names: HashMap::new(),
         }
     }
 
@@ -191,6 +203,11 @@ impl RoomActorState {
     /// Only syncs fields that direct-state commands (SetLock/SetCycle/
     /// SetHidden) mutate — control flags and lifecycle state.
     /// Membership changes still go through the gateway path.
+    ///
+    /// NOTE: `player_data` and `display_names` are synced here for
+    /// consistency after any command, but the AddTouches/AddJudges/
+    /// SetDisplayName handlers also write directly to Room, making
+    /// this clone redundant for those hot paths.
     pub async fn sync_to_room(&self, room: &Room) {
         // Use public setters for control fields.
         room.set_locked(self.state.control.locked);
@@ -198,6 +215,9 @@ impl RoomActorState {
         room.set_hidden(self.state.control.hidden);
         // Lifecycle: e.g. WaitForReady / Playing transitions.
         *room.state.write().await = self.state.lifecycle.clone();
+        // Sync live data back to Room for external readers (plugins, etc.)
+        *room.player_data.write().await = self.player_data.clone();
+        *room.display_names.write().await = self.display_names.clone();
     }
 }
 
