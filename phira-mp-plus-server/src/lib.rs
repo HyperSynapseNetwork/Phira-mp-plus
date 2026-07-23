@@ -36,7 +36,7 @@
 )]
 
 pub mod actor_runtime;
-pub mod backup;
+// backup module not part of server runtime — see src/bin/pmp-admin.rs
 pub mod ban;
 pub mod benchmark_report;
 pub mod benchmark_snapshot;

@@ -5,7 +5,11 @@
 //! - WAL + dead-letter journals
 //! - Extension data
 //! - A SHA-256 manifest for integrity verification
+//!
+//! This module is NOT part of the server runtime. It is only used by the
+//! standalone `pmp-admin` binary (`src/bin/pmp-admin.rs`).
 
+use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -17,7 +21,7 @@ pub struct VerifyReport {
 }
 
 /// Create a file-level backup in a timestamped directory.
-pub fn create_backup(state: &crate::server::PlusServerState, output_dir: &str) -> Result<String, String> {
+pub fn create_backup(config_path: &str, output_dir: &str) -> Result<String, String> {
     use std::fs;
     use std::io::Write;
 
@@ -31,7 +35,7 @@ pub fn create_backup(state: &crate::server::PlusServerState, output_dir: &str) -
     fs::create_dir_all(&data_dir).map_err(|e| format!("create backup dir: {e}"))?;
 
     // Copy config file
-    let config_path = &state.config.config_path;
+    let config_path = config_path;
     if Path::new(config_path).exists() {
         fs::copy(config_path, backup_dir.join("server_config.yml"))
             .map_err(|e| format!("copy config: {e}"))?;
@@ -63,7 +67,7 @@ pub fn create_backup(state: &crate::server::PlusServerState, output_dir: &str) -
         }
         let relative = entry_path.strip_prefix(&backup_dir).unwrap();
         let data = fs::read(&entry_path).map_err(|e| format!("read {}: {e}", entry_path.display()))?;
-        let hash = crate::crypto::sha256(&data);
+        let hash = sha256(&data);
         let hex_hash: String = hash.iter().map(|b| format!("{b:02x}")).collect();
         writeln!(manifest, "{hex_hash}  {}", relative.display())
             .map_err(|e| format!("write manifest: {e}"))?;
@@ -71,11 +75,11 @@ pub fn create_backup(state: &crate::server::PlusServerState, output_dir: &str) -
         total_size += data.len() as u64;
     }
 
-    tracing::info!(
-        backup_dir = %backup_dir.display(),
+    eprintln!(
+        "backup created: {} ({} files, {} bytes)",
+        backup_dir.display(),
         file_count,
         total_size,
-        "backup created"
     );
 
     Ok(backup_dir.to_string_lossy().to_string())
@@ -118,7 +122,7 @@ pub fn verify_backup(path: &str) -> Result<VerifyReport, String> {
         }
 
         let data = fs::read(&full_path).map_err(|e| format!("read {relative_path}: {e}"))?;
-        let actual_hash: String = crate::crypto::sha256(&data)
+        let actual_hash: String = sha256(&data)
             .iter()
             .map(|b| format!("{b:02x}"))
             .collect();
@@ -142,6 +146,13 @@ pub fn verify_backup(path: &str) -> Result<VerifyReport, String> {
         total_size,
         manifest_entries,
     })
+}
+
+/// Compute SHA-256 hash.
+fn sha256(data: &[u8]) -> Vec<u8> {
+    let mut hasher = Sha256::new();
+    hasher.update(data);
+    hasher.finalize().to_vec()
 }
 
 /// Simple recursive directory walker (no external dep).
@@ -170,7 +181,6 @@ fn walkdir(dir: &Path, base: &Path) -> Vec<Result<PathBuf, String>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::crypto::sha256;
     use std::fs;
 
     #[test]
