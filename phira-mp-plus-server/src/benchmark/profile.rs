@@ -137,7 +137,7 @@ impl Profiler {
                 {
                     Err(
                         "CPU profiling requires the 'pprof' Cargo feature".to_string(),
-                    );
+                    )
                 }
             }
             ProfileKind::Heap => {
@@ -180,7 +180,7 @@ impl Profiler {
                 {
                     Err(
                         "Heap profiling requires Linux + jemalloc-prof feature".to_string(),
-                    );
+                    )
                 }
             }
         }
@@ -260,7 +260,7 @@ impl Profiler {
                     let _ = timestamp;
                     Err(
                         "CPU profiling requires the 'pprof' Cargo feature".to_string(),
-                    );
+                    )
                 }
             }
             ProfileKind::Heap => {
@@ -317,7 +317,7 @@ impl Profiler {
                     Err(
                         "Heap profiling requires Linux + jemalloc-prof feature"
                             .to_string(),
-                    );
+                    )
                 }
             }
         }
