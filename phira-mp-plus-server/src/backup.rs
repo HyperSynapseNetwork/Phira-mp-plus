@@ -35,7 +35,6 @@ pub fn create_backup(config_path: &str, output_dir: &str) -> Result<String, Stri
     fs::create_dir_all(&data_dir).map_err(|e| format!("create backup dir: {e}"))?;
 
     // Copy config file
-    let config_path = config_path;
     if Path::new(config_path).exists() {
         fs::copy(config_path, backup_dir.join("server_config.yml"))
             .map_err(|e| format!("copy config: {e}"))?;
