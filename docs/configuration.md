@@ -116,7 +116,7 @@ wasm_runtime:
 | `database_url` | `String?` | 未设置 | PostgreSQL 连接串；配置后启用统一结构化持久化。未设置时保留旧 JSON/文件回退。 |
 | `persistence_retention_days` | `u32` | `30` | PostgreSQL 统一持久化历史数据保留天数，`0` 表示不自动清理。 |
 | `touch_judge_retention_days` | `u32?` | 未设置 | Touches/Judges 高频遥测独立保留天数；未设置时遵循 `persistence_retention_days`，`0` 表示不自动清理遥测。 |
-| `runtime_v2` | `object` | 见下文 | Runtime v2 内部策略。用于配置 PersistenceWorker、TelemetryBatcher 和启动 cutover 模式，避免继续膨胀管理命令。 |
+| `runtime_v2` | `object` | 见下文 | 持久化内部策略。用于配置 PersistenceWorker、TelemetryBatcher 和启动 cutover 模式，避免继续膨胀管理命令。 |
 | `idle` | `object` | 见下文 | 空载调度提示。不得暂停或丢弃权威持久化与可靠插件事件；只允许降低非关键后台活动。 |
 | `server_name` | `String?` | 未设置 | 服务器展示名称，可用于欢迎语等场景。 |
 | `admin_token` | `String?` | 未设置 | 预留字段 |
@@ -151,7 +151,7 @@ config reload
 
 命令会重新读取启动时 `--config` 指定的同一文件，而不是固定读取当前目录下的 `server_config.yml`。聊天开关和 monitor 列表可立即生效；YAML 或对应持久化文件明确提供的管理员/压测凭据也会同步。显式 `--monitor` 仍保持最高优先级，未由 YAML 或持久化源声明的数据库/运行时动态列表不会被误清空。
 
-端口、目录、数据库、连接限流以及 Runtime v2 内部策略需要重启服务端。配置或相关持久化列表读取、解析、未知字段或校验失败时保留当前运行配置并返回明确错误，不会用空列表覆盖现有状态。
+端口、目录、数据库、连接限流以及持久化内部策略需要重启服务端。配置或相关持久化列表读取、解析、未知字段或校验失败时保留当前运行配置并返回明确错误，不会用空列表覆盖现有状态。
 
 ## 有序关闭语义
 
@@ -187,9 +187,9 @@ persistence_retention_days: 30      # 0 = 不自动清理 PG 历史数据
 # touch_judge_retention_days: 7     # 未设置 = 使用 persistence_retention_days；0 = 不清理遥测
 ```
 
-### Runtime v2 内部策略
+### 持久化内部策略（配置键 `runtime_v2`）
 
-Runtime v2 的内部策略优先放在配置文件中，避免继续新增过多管理命令。测试阶段可直接修改这些值并重启服务。
+持久化内部策略优先放在配置文件中，避免继续新增过多管理命令。测试阶段可直接修改这些值并重启服务。
 
 ```yaml
 runtime_v2:
@@ -223,7 +223,7 @@ runtime_v2:
 
 `worker_authoritative` 不是自动升级模式。它要求 `database_url` 非空、PostgreSQL 实际初始化成功、`telemetry_batcher.enabled=true` 且 `dry_run=false`；任一条件不满足时拒绝启动或拒绝运行时切换，不会静默降级。
 
-`worker_preferred` 中，Worker payload 只有在直写已经确认成功时才标记为 mirror；若直写失败而 Worker 队列接收成功，同一事件 ID 由 Worker 更新权威轮次表并写 Runtime v2 明细。CLI 的 `direct_failed` 与 `path_accepted`/`unaccepted` 指标描述的是“至少一个持久化入口接收了批次”，Worker 入队并不等于数据库已经 commit，最终结果必须结合 batcher DB ACK、重试和 dead-letter 指标判断。
+`worker_preferred` 中，Worker payload 只有在直写已经确认成功时才标记为 mirror；若直写失败而 Worker 队列接收成功，同一事件 ID 由 Worker 更新权威轮次表并写入持久化明细。CLI 的 `direct_failed` 与 `path_accepted`/`unaccepted` 指标描述的是“至少一个持久化入口接收了批次”，Worker 入队并不等于数据库已经 commit，最终结果必须结合 batcher DB ACK、重试和 dead-letter 指标判断。
 
 普通事件与遥测的数据库写入使用有限重试和稳定幂等键。重试耗尽后，能序列化的失败事件写入 `persistence_dead_letter_path` 指定的 JSONL，并执行 `flush + sync_data`。设置为 `null` 可禁用 dead-letter；此时数据库最终失败会使 Supervisor 进入 degraded。dead-letter 只保全已经完成数据库尝试的失败事件，不是 enqueue-before WAL，无法保证 `kill -9`、进程崩溃或主机掉电时内存队列零丢失，也不会自动 replay。
 
@@ -399,18 +399,18 @@ MALLOC_CONF=background_thread:true,dirty_decay_ms:3000,muzzy_decay_ms:3000,stats
 | `log/` | 运行日志目录。 |
 | `NOTICE` | 版权归属与第三方依赖许可证声明。 |
 
-### Persistence admission WAL
+### 持久化 WAL（预写日志）
 
-`runtime.persistence_wal_path` configures the local write-ahead journal used before PersistenceWorker queue admission. The default is `data/persistence-worker.wal.jsonl`.
+`runtime.persistence_wal_path` 配置 PersistenceWorker 队列准入前的本地预写日志。默认路径为 `data/persistence-worker.wal.jsonl`。
 
-For each accepted event PMP performs:
+PMP 对每个被接受的事件执行：
 
 ```text
-serialize admission → append WAL → flush → sync_data → enqueue
+序列化准入 → 追加 WAL → flush → sync_data → 入队
 ```
 
-At startup the worker scans the journal and replays every admission without a matching ACK. After terminal handling it appends an ACK. Explicit `runtime flush` and graceful shutdown compact the file by atomically rewriting only outstanding admissions.
+启动时 Worker 扫描日志并重放所有没有匹配 ACK 的准入项。终态处理后追加 ACK。显式 `runtime flush` 和优雅关闭会通过原子重写仅保留未完成的准入项来压缩文件。
 
-The WAL is local-node durability, not replication. It does not survive loss of the host filesystem. A corrupt record stops trusted replay and marks the persistence subsystem degraded; PMP does not silently discard the damaged suffix.
+WAL 提供本地节点持久性，不是复制。它无法在宿主机文件系统丢失后幸存。损坏的记录会停止可信重放并将持久化子系统标记为降级；PMP 不会静默丢弃损坏后缀。
 
-For low-frequency ordinary events, ACK follows successful persistence, an explicit no-database terminal policy, or successful dead-letter preservation. Touch/Judge currently ACK after TelemetryBatcher accepts the event; therefore the WAL does not yet prove PostgreSQL commit for telemetry batches.
+对于低频普通事件，ACK 在成功持久化、显式无数据库终态策略或成功 dead-letter 保存后发出。Touch/Judge 目前在 TelemetryBatcher 接受事件后发送 ACK；因此 WAL 尚不能证明遥测批处理的 PostgreSQL 已提交。
