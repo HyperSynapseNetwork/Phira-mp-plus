@@ -350,9 +350,9 @@ impl CommandRegistry {
             }),
         );
 
-        // Simulation preset completer: simulation run <preset>
+        // Simulation preset completer: benchmark simulation run <preset>
         self.set_arg_completer(
-            "simulation run",
+            "benchmark simulation run",
             Arc::new(|_cmd, prefix| {
                 vec!["baseline", "small", "medium", "large", "custom"]
                     .into_iter()
@@ -362,9 +362,9 @@ impl CommandRegistry {
             }),
         );
 
-        // Simulation suite completer: simulation suite <name>
+        // Simulation suite completer: benchmark simulation suite <name>
         self.set_arg_completer(
-            "simulation suite",
+            "benchmark simulation suite",
             Arc::new(|_cmd, prefix| {
                 vec!["smoke", "mixed", "stress"]
                     .into_iter()
@@ -891,50 +891,50 @@ pub fn runtime_registry() -> CommandRegistry {
     }
 
     for spec in [
-        CommandSpec::new("simulation status", "simulation", "查看 Simulation 状态。", "simulation status")
+        CommandSpec::new("benchmark simulation status", "benchmark", "查看 Simulation 状态。", "benchmark simulation status")
             .handler(Arc::new(|_state, _args| {
                 // Use the SimulationManager's status; if not available, return basic info
-                vec!["  Simulation status (CLI: use `simulation status` in console)".to_string()]
+                vec!["  Simulation status (CLI: use `benchmark simulation status` in console)".to_string()]
             })),
         CommandSpec::new(
-            "simulation run",
-            "simulation",
+            "benchmark simulation run",
+            "benchmark",
             "启动隔离本地压测；默认自动 tick，到达 duration 后自动停止。",
-            "simulation run <baseline|small|medium|large|custom> [scenario=balanced|chat_storm|ready_storm|round_storm|touch_judge_burst|idle] [users=N] [rooms=N] [duration=N] [tick_ms=N] [auto=true] [persist_every=N] [touch=true] [judge=true]",
+            "benchmark simulation run <baseline|small|medium|large|custom> [scenario=balanced|ready_storm|round_storm|touch_judge_burst|idle] [users=N] [rooms=N] [duration=N] [tick_ms=N] [auto=true] [persist_every=N] [touch=true] [judge=true]",
         )
-        .example("simulation run baseline")
-        .example("simulation run custom users=500 rooms=50 duration=300 scenario=touch_judge_burst tick_ms=1000 persist_every=30")
-        .example("simulation run small auto=false"),
-        CommandSpec::new("simulation scenarios", "simulation", "列出可用 Simulation workload scenario/profile。", "simulation scenarios").advanced()
-            .example("simulation scenarios"),
+        .example("benchmark simulation run baseline")
+        .example("benchmark simulation run custom users=500 rooms=50 duration=300 scenario=touch_judge_burst tick_ms=1000 persist_every=30")
+        .example("benchmark simulation run small auto=false"),
+        CommandSpec::new("benchmark simulation scenarios", "benchmark", "列出可用 Simulation workload scenario/profile。", "benchmark simulation scenarios").advanced()
+            .example("benchmark simulation scenarios"),
         CommandSpec::new(
-            "simulation suite",
-            "simulation",
+            "benchmark simulation suite",
+            "benchmark",
             "按顺序运行多个 Simulation scenario，用于一次性比较不同压力形状。",
-            "simulation suite <smoke|mixed|stress> [duration=N] [tick_ms=N] [persist_every=N] [users=N] [rooms=N]",
+            "benchmark simulation suite <smoke|mixed|stress> [duration=N] [tick_ms=N] [persist_every=N] [users=N] [rooms=N]",
         ).advanced()
-        .example("simulation suite smoke")
-        .example("simulation suite mixed duration=15 tick_ms=500 persist_every=5")
-        .example("simulation suite stress users=800 rooms=80"),
+        .example("benchmark simulation suite smoke")
+        .example("benchmark simulation suite mixed duration=15 tick_ms=500 persist_every=5")
+        .example("benchmark simulation suite stress users=800 rooms=80"),
         CommandSpec::new(
-            "simulation report",
-            "simulation",
+            "benchmark simulation report",
+            "benchmark",
             "查看最近一次 Simulation suite 汇总报告，并输出统一 BenchmarkReport [simulation] 摘要。",
-            "simulation report [latest|list|clear]",
+            "benchmark simulation report [latest|list|clear]",
         ).advanced()
-        .example("simulation report")
-        .example("simulation report list 8")
-        .example("simulation report clear"),
-        CommandSpec::new("simulation tick", "simulation", "手动推进 Simulation tick。", "simulation tick [count]").developer()
-            .example("simulation tick 10"),
-        CommandSpec::new("simulation inspect", "simulation", "查看 shadow users/rooms/rounds/recent events 样本。", "simulation inspect [limit]").developer()
-            .example("simulation inspect 20"),
-        CommandSpec::new("simulation stop", "simulation", "停止当前 Simulation 运行状态并广播结束提示。", "simulation stop"),
-        CommandSpec::new("simulation seed", "simulation", "设置 deterministic simulation seed。", "simulation seed <value>").developer(),
-        CommandSpec::new("simulation cleanup", "simulation", "清理 Simulation 数据。", "simulation cleanup"),
-        CommandSpec::new("simulation persist", "simulation", "发送 Simulation 快照到持久化 Worker。", "simulation persist").developer()
-            .example("simulation persist"),
-        CommandSpec::new("simulation sample", "simulation", "查看 deterministic touches/judges 示例数据规模。", "simulation sample").developer(),
+        .example("benchmark simulation report")
+        .example("benchmark simulation report list 8")
+        .example("benchmark simulation report clear"),
+        CommandSpec::new("benchmark simulation tick", "benchmark", "手动推进 Simulation tick。", "benchmark simulation tick [count]").developer()
+            .example("benchmark simulation tick 10"),
+        CommandSpec::new("benchmark simulation inspect", "benchmark", "查看 shadow users/rooms/rounds/recent events 样本。", "benchmark simulation inspect [limit]").developer()
+            .example("benchmark simulation inspect 20"),
+        CommandSpec::new("benchmark simulation stop", "benchmark", "停止当前 Simulation 运行状态并广播结束提示。", "benchmark simulation stop"),
+        CommandSpec::new("benchmark simulation seed", "benchmark", "设置 deterministic simulation seed。", "benchmark simulation seed <value>").developer(),
+        CommandSpec::new("benchmark simulation cleanup", "benchmark", "清理 Simulation 数据。", "benchmark simulation cleanup"),
+        CommandSpec::new("benchmark simulation persist", "benchmark", "发送 Simulation 快照到持久化 Worker。", "benchmark simulation persist").developer()
+            .example("benchmark simulation persist"),
+        CommandSpec::new("benchmark simulation sample", "benchmark", "查看 deterministic touches/judges 示例数据规模。", "benchmark simulation sample").developer(),
     ] {
         register(&mut registry, spec);
     }
@@ -1388,7 +1388,7 @@ mod tests {
             "room info should be indexed as child of room"
         );
         assert!(registry
-            .complete_line("simulation ")
+            .complete_line("benchmark simulation ")
             .contains(&"status".to_string()));
         assert!(registry
             .complete_line("room f")

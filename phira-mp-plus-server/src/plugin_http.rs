@@ -201,15 +201,6 @@ async fn health_ready(Extension(state): Extension<Arc<HttpAppState>>) -> Respons
         issues.push("supervisor is degraded".to_string());
     }
 
-    // Check DB is active (if configured)
-    let has_db = state.server_state.config.database_url.is_some();
-    let db_active = crate::internal_hooks::DB.get()
-        .map(|db| db.is_active())
-        .unwrap_or(false);
-    if has_db && !db_active {
-        issues.push("database is not active".to_string());
-    }
-
     if issues.is_empty() {
         (StatusCode::OK, Json(serde_json::json!({"status": "ready"}))).into_response()
     } else {

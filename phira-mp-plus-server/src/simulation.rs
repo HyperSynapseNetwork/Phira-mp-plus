@@ -40,7 +40,6 @@ pub enum SimulationPreset {
 #[serde(rename_all = "snake_case")]
 pub enum SimulationScenario {
     Balanced,
-    ChatStorm,
     ReadyStorm,
     RoundStorm,
     TouchJudgeBurst,
@@ -51,7 +50,6 @@ impl SimulationScenario {
     pub fn parse(value: &str) -> Option<Self> {
         match value.trim().to_ascii_lowercase().replace('-', "_").as_str() {
             "balanced" | "balance" | "default" | "normal" | "mixed" => Some(Self::Balanced),
-            "chat" | "chat_storm" | "chatstorm" => Some(Self::ChatStorm),
             "ready" | "ready_storm" | "readystorm" => Some(Self::ReadyStorm),
             "round" | "rounds" | "round_storm" | "roundstorm" => Some(Self::RoundStorm),
             "touch" | "judge" | "touch_judge" | "touch_judge_burst" | "touchjudgeburst"
@@ -64,7 +62,6 @@ impl SimulationScenario {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Balanced => "balanced",
-            Self::ChatStorm => "chat_storm",
             Self::ReadyStorm => "ready_storm",
             Self::RoundStorm => "round_storm",
             Self::TouchJudgeBurst => "touch_judge_burst",
@@ -75,7 +72,6 @@ impl SimulationScenario {
     pub fn description(self) -> &'static str {
         match self {
             Self::Balanced => "mixed chat/ready/round/touch/judge load",
-            Self::ChatStorm => "chat-heavy workload with smaller gameplay pressure",
             Self::ReadyStorm => "ready/cancel-ready toggle storm",
             Self::RoundStorm => "frequent room state and round completion pressure",
             Self::TouchJudgeBurst => "touch/judge batch-heavy pressure path",
@@ -86,7 +82,6 @@ impl SimulationScenario {
     pub fn all() -> &'static [Self] {
         &[
             Self::Balanced,
-            Self::ChatStorm,
             Self::ReadyStorm,
             Self::RoundStorm,
             Self::TouchJudgeBurst,
@@ -165,9 +160,9 @@ impl SimulationSuite {
             ],
             Self::Mixed => vec![
                 suite_step(
-                    "mixed-chat",
+                    "mixed-balanced",
                     SimulationPreset::Small,
-                    SimulationScenario::ChatStorm,
+                    SimulationScenario::Balanced,
                     seed,
                     20,
                     500,
@@ -203,9 +198,9 @@ impl SimulationSuite {
             ],
             Self::Stress => vec![
                 suite_step(
-                    "stress-chat",
+                    "stress-balanced",
                     SimulationPreset::Medium,
-                    SimulationScenario::ChatStorm,
+                    SimulationScenario::Balanced,
                     seed,
                     45,
                     250,
@@ -1036,13 +1031,6 @@ fn workload_deltas(config: &SimulationConfig) -> WorkloadDeltas {
     let rooms = config.rooms.max(1) as u64;
     let (chat_base, ready_base, touch_base, judge_base, round_base) = match config.scenario {
         SimulationScenario::Balanced => ((users / 10).max(1), users, rooms, rooms, rooms),
-        SimulationScenario::ChatStorm => (
-            (users / 2).max(1),
-            (users / 10).max(1),
-            (rooms / 4).max(1),
-            (rooms / 4).max(1),
-            (rooms / 5).max(1),
-        ),
         SimulationScenario::ReadyStorm => (
             (users / 20).max(1),
             users.saturating_mul(3),
@@ -1470,10 +1458,10 @@ mod tests {
         config.apply_kv("auto", "false").unwrap();
         config.apply_kv("tick_ms", "250").unwrap();
         config.apply_kv("persist_every", "5").unwrap();
-        config.apply_kv("scenario", "chat-storm").unwrap();
+        config.apply_kv("scenario", "touch_judge_burst").unwrap();
         assert_eq!(config.preset, SimulationPreset::Custom);
         assert_eq!(config.users, 123);
-        assert_eq!(config.scenario, SimulationScenario::ChatStorm);
+        assert_eq!(config.scenario, SimulationScenario::TouchJudgeBurst);
         assert!(!config.touch);
         assert!(!config.auto_tick);
         assert_eq!(config.tick_interval_ms, 250);
@@ -1482,13 +1470,13 @@ mod tests {
 
     #[test]
     fn scenario_changes_workload_shape() {
-        let mut chat = SimulationPreset::Baseline.defaults(1);
-        chat.scenario = SimulationScenario::ChatStorm;
+        let mut ready = SimulationPreset::Baseline.defaults(1);
+        ready.scenario = SimulationScenario::ReadyStorm;
         let mut touch = SimulationPreset::Baseline.defaults(1);
         touch.scenario = SimulationScenario::TouchJudgeBurst;
         assert!(
-            workload_deltas(&chat).chat_messages
-                > workload_deltas(&SimulationPreset::Baseline.defaults(1)).chat_messages
+            workload_deltas(&ready).ready_events
+                > workload_deltas(&SimulationPreset::Baseline.defaults(1)).ready_events
         );
         assert!(
             workload_deltas(&touch).touch_batches

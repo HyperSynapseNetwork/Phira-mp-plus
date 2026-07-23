@@ -763,8 +763,8 @@ async fn write_runtime_telemetry_batch(
     items: &[TelemetryItem],
     reason: &str,
 ) -> Result<usize, String> {
-    let Some(db) = crate::internal_hooks::DB.get().filter(|db| db.is_active()) else {
-        return Err("database is not active".to_string());
+    let Some(db) = crate::internal_hooks::DB.get() else {
+        return Err("database not initialized".to_string());
     };
     let item_rows: usize = items.iter().map(|i| i.item_count).sum();
     let records: Vec<crate::db::RuntimeTelemetryBatchRecord> = items

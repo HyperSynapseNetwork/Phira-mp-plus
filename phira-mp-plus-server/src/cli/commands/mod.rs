@@ -6,8 +6,8 @@
 
 pub(super) mod admin;
 pub(super) mod benchmark;
+pub(super) mod benchmark_simulation;
 pub(super) mod broadcast;
 pub(super) mod plugin;
 pub(super) mod room;
 pub(super) mod runtime;
-pub(super) mod simulation;

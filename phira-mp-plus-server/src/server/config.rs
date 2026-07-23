@@ -243,12 +243,6 @@ pub struct PlusConfig {
     pub round_data_retention_days: u32,
     #[serde(default)]
     pub database_url: Option<String>,
-    /// When set, database initialization failure is tolerated even when
-    /// `database_url` is explicitly configured. The server will start without
-    /// structured persistence (readiness reports degraded).
-    /// This is intended for development/staging only.
-    #[serde(default)]
-    pub allow_database_degraded_mode: bool,
     #[serde(default = "default_persistence_retention_days")]
     pub persistence_retention_days: u32,
     #[serde(default)]
@@ -293,7 +287,6 @@ impl Default for PlusConfig {
             chat_enabled: true,
             round_data_retention_days: 7,
             database_url: None,
-            allow_database_degraded_mode: false,
             persistence_retention_days: 30,
             touch_judge_retention_days: None,
             admin_phira_ids: Vec::new(),
@@ -430,16 +423,11 @@ impl PlusConfig {
                         + "set profile=development to bind externally",
                 ));
             }
-            if self.allow_database_degraded_mode {
-                return Err(AppError::ConfigValidation(
-                    "allow_database_degraded_mode is incompatible with production profile".into(),
-                ));
-            }
-            if self.database_url.is_none() {
-                return Err(AppError::ConfigValidation(
-                    "production profile requires database_url".into(),
-                ));
-            }
+        }
+        if self.database_url.as_deref().is_none_or(|u| u.trim().is_empty()) {
+            return Err(AppError::ConfigValidation(
+                "PostgreSQL is required infrastructure — set database_url".into(),
+            ));
         }
         if self.max_users_per_room == Some(0) {
             return Err(AppError::ConfigValidation(
@@ -829,7 +817,10 @@ mod tests {
 
     #[test]
     fn rejects_empty_dead_letter_path_but_allows_explicit_disable() {
-        let mut config = PlusConfig::default();
+        let mut config = PlusConfig {
+            database_url: Some("postgres://localhost/phira".to_string()),
+            ..PlusConfig::default()
+        };
         config.runtime.persistence_dead_letter_path = Some("   ".to_string());
         assert!(config.validate().is_err());
 

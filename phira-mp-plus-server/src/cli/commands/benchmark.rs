@@ -2,6 +2,27 @@ use super::super::*;
 
 impl CliHandler {
     pub(in crate::cli) async fn dispatch_benchmark_command(&self, args: &[&str]) {
+        // Simulation sub-commands are now under benchmark
+        if matches!(args.first().copied(), Some("simulation") | Some("sim"))
+            || (matches!(args.first().copied(), Some("run"))
+                && matches!(args.get(1).copied(), Some("simulation") | Some("sim")))
+            || (matches!(args.first().copied(), Some("run"))
+                && matches!(args.get(1).copied(), Some("--mode"))
+                && matches!(args.get(2).copied(), Some("simulation") | Some("sim")))
+        {
+            let sim_args = if matches!(args.first().copied(), Some("run"))
+                && matches!(args.get(1).copied(), Some("--mode"))
+            {
+                &args[3..]
+            } else if matches!(args.first().copied(), Some("run")) {
+                &args[2..]
+            } else {
+                &args[1..]
+            };
+            self.dispatch_benchmark_simulation_command(sim_args).await;
+            return;
+        }
+
         if matches!(args.first().copied(), Some("token")) {
             // benchmark token bind <token...>
             let token_args = if args.len() > 2 { &args[2..] } else { &[] };
@@ -300,8 +321,8 @@ impl CliHandler {
         self.out(format!("  {} hybrid      显式 Phira probe：authenticate/chart_lookup/record_lookup/upload_record 独立开关，默认全关，输出统一 BenchmarkReport", c::dim("│")));
         self.out(format!("  {} real        当前 benchmark 命令：真实 TCP + 真实认证 + 真实 Phira token，输出统一 BenchmarkReport", c::dim("│")));
         self.out(format!("  {} examples", c::cyan("▸")));
-        self.out("    simulation suite smoke".to_string());
-        self.out("    simulation run medium scenario=touch_judge_burst duration=30".to_string());
+        self.out("    benchmark simulation suite smoke".to_string());
+        self.out("    benchmark simulation run medium scenario=touch_judge_burst duration=30".to_string());
         self.out("    benchmark run hybrid".to_string());
         self.out(
             "    benchmark run hybrid authenticate=true chart_lookup=1 record_lookup=1".to_string(),

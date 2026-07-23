@@ -3,9 +3,14 @@
 //! 实时 Touch/Judge 游戏操作场景。模拟客户端在游戏过程中的
 //! Touch（触摸）和 Judge（判定）事件，以真实速率发送。
 //! 测试服务端在高频 Touch/Judge 下的吞吐和延迟。
+//!
+//! Implementation: uses `SimulationManager` with `TouchJudgeBurst` workload,
+//! enabling only touch and judge event generation (chat, ready, rounds
+//! disabled) to focus purely on gameplay event throughput.
 
 use crate::benchmark::config::BenchmarkConfig;
 use crate::benchmark::metrics::BenchmarkMetrics;
+use crate::simulation::SimulationScenario;
 
 /// Touch 事件参数
 #[derive(Debug, Clone)]
@@ -67,12 +72,21 @@ impl Default for GameplayParams {
 
 /// 执行游戏操作场景
 ///
-/// TODO: 模拟多个房间同时进行游戏，每个房间中的虚拟玩家
-/// 按真实速率发送 Touch 和 Judge 事件。
+/// Uses `SimulationManager` with `TouchJudgeBurst` workload.
+/// Touch and judge batches are generated at the maximum rate the
+/// shadow-world tick system supports; chat, ready, and round lifecycle
+/// events are disabled.
 pub async fn run_gameplay(
-    _config: &BenchmarkConfig,
+    config: &BenchmarkConfig,
     _params: GameplayParams,
 ) -> Result<BenchmarkMetrics, String> {
-    // TODO: 实现游戏场景
-    Err("gameplay scenario not yet implemented".to_string())
+    super::common::run_simulation(config, |sc| {
+        sc.chat = false;
+        sc.ready = false;
+        sc.rounds = false;
+        sc.touch = true;
+        sc.judge = true;
+        sc.scenario = SimulationScenario::TouchJudgeBurst;
+    })
+    .await
 }

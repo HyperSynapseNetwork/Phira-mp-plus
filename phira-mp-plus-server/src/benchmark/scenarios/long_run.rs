@@ -3,9 +3,15 @@
 //! 长时间运行稳定性测试场景。支持 6 / 24 / 72 小时运行，
 //! 定期检查服务端健康状况和资源泄漏情况。
 //! 适用于发现内存泄漏、连接泄漏、协程泄漏等稳定性问题。
+//!
+//! Implementation: uses `SimulationManager` with `Balanced` workload and
+//! a slow tick interval (500ms) to keep load manageable over extended
+//! durations.  All event types are enabled at a moderate rate so the
+//! system is under continuous but not maxed-out load.
 
 use crate::benchmark::config::BenchmarkConfig;
 use crate::benchmark::metrics::BenchmarkMetrics;
+use crate::simulation::SimulationScenario;
 
 /// 长时间运行时长
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -105,12 +111,24 @@ pub struct LongRunSummary {
 
 /// 执行长时间运行场景
 ///
-/// TODO: 维持稳定负载运行指定时长，定期执行健康检查和资源快照。
-/// 监控 RSS、连接数、协程数等指标的变化趋势。
+/// Uses `SimulationManager` with `Balanced` workload and a 500 ms tick
+/// interval.  All event types are enabled at moderate levels, producing
+/// continuous background load suitable for long-duration stability
+/// testing.  The returned `BenchmarkMetrics` includes cumulative event
+/// counts and elapsed time; external profiling or monitoring tools can
+/// attach to the process to track memory, CPU, and connection trends.
 pub async fn run_long_run(
-    _config: &BenchmarkConfig,
+    config: &BenchmarkConfig,
     _params: LongRunParams,
 ) -> Result<BenchmarkMetrics, String> {
-    // TODO: 实现长时间运行场景
-    Err("long_run scenario not yet implemented".to_string())
+    super::common::run_simulation(config, |sc| {
+        sc.tick_interval_ms = 500; // slow ticks for long runs
+        sc.chat = true;
+        sc.ready = true;
+        sc.rounds = true;
+        sc.touch = true;
+        sc.judge = true;
+        sc.scenario = SimulationScenario::Balanced;
+    })
+    .await
 }

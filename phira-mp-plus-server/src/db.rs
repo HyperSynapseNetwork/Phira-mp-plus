@@ -1,10 +1,9 @@
 //! Unified PostgreSQL persistence for Phira-mp+.
 //!
-//! PostgreSQL is the single structured persistence backend. When `database_url`
-//! is not configured the manager becomes `None` and callers keep their direct
-//! in-memory/file fallback so test deployments still boot. Every mutable entity
-//! written here has either `created_at`/`updated_at` or an append-only `sequence`
-//! so plugins and dashboards can reconstruct modification time and order.
+//! PostgreSQL is required infrastructure. The server refuses to start if the
+//! database connection or migration fails. Every mutable entity written here
+//! has either `created_at`/`updated_at` or an append-only `sequence` so
+//! plugins and dashboards can reconstruct modification time and order.
 
 use anyhow::Result;
 use serde_json::Value;
@@ -64,84 +63,74 @@ pub struct RuntimeTelemetryBatchRecord {
 #[derive(Debug, Clone)]
 pub enum DbManager {
     /// PostgreSQL 已连接
-    #[cfg(feature = "postgres")]
     Pg(sqlx::PgPool),
-    /// 未配置数据库（调用方保留旧回退行为）
-    None,
 }
 
 impl DbManager {
-    /// 根据配置初始化数据库连接（自动创建数据库）
-    pub async fn new(database_url: Option<&str>) -> Self {
-        match database_url {
-            Some(url) if !url.trim().is_empty() => {
-                #[cfg(feature = "postgres")]
-                {
-                    match sqlx::PgPool::connect(url).await {
-                        Ok(pool) => {
-                            tracing::info!("PostgreSQL 已连接");
-                            if let Err(e) = init_tables(&pool).await {
-                                tracing::warn!("数据库建表失败: {e:?}，禁用 PostgreSQL 持久化");
-                                return Self::None;
-                            }
-                            return Self::Pg(pool);
-                        }
-                        Err(e) => {
-                            let err_str = e.to_string();
-                            if err_str.contains("does not exist")
-                                || err_str.contains("database") && err_str.contains("not found")
-                            {
-                                tracing::info!("数据库不存在，尝试自动创建...");
-                                let pieces = url.rsplitn(2, '/').collect::<Vec<_>>();
-                                let base = pieces
-                                    .get(1)
-                                    .copied()
-                                    .unwrap_or("postgres://postgres:postgres@localhost:5432");
-                                let admin_url = format!("{base}/postgres");
-                                if let Ok(admin_pool) = sqlx::PgPool::connect(&admin_url).await {
-                                    let db_name =
-                                        pieces.first().copied().unwrap_or("phira_mp_plus");
-                                    let safe_name = db_name.replace('"', "");
-                                    let _ =
-                                        sqlx::query(&format!("CREATE DATABASE \"{}\"", safe_name))
-                                            .execute(&admin_pool)
-                                            .await;
-                                    admin_pool.close().await;
-                                    if let Ok(new_pool) = sqlx::PgPool::connect(url).await {
-                                        if let Err(e) = init_tables(&new_pool).await {
-                                            tracing::warn!(
-                                                "数据库建表失败: {e:?}，禁用 PostgreSQL 持久化"
-                                            );
-                                            return Self::None;
-                                        }
-                                        tracing::info!("PostgreSQL 已连接（自动建库）");
-                                        return Self::Pg(new_pool);
-                                    }
+    /// 根据配置初始化数据库连接，连接或迁移失败直接返回错误。
+    pub async fn new(database_url: &str) -> anyhow::Result<Self> {
+        let url = database_url.trim();
+        if url.is_empty() {
+            anyhow::bail!("database_url 不能为空");
+        }
+
+        #[cfg(feature = "postgres")]
+        {
+            match sqlx::PgPool::connect(url).await {
+                Ok(pool) => {
+                    tracing::info!("PostgreSQL 已连接");
+                    if let Err(e) = init_tables(&pool).await {
+                        anyhow::bail!("数据库建表失败: {e:?}");
+                    }
+                    return Ok(Self::Pg(pool));
+                }
+                Err(e) => {
+                    let err_str = e.to_string();
+                    if err_str.contains("does not exist")
+                        || err_str.contains("database") && err_str.contains("not found")
+                    {
+                        tracing::info!("数据库不存在，尝试自动创建...");
+                        let pieces = url.rsplitn(2, '/').collect::<Vec<_>>();
+                        let base = pieces
+                            .get(1)
+                            .copied()
+                            .unwrap_or("postgres://postgres:postgres@localhost:5432");
+                        let admin_url = format!("{base}/postgres");
+                        if let Ok(admin_pool) = sqlx::PgPool::connect(&admin_url).await {
+                            let db_name =
+                                pieces.first().copied().unwrap_or("phira_mp_plus");
+                            let safe_name = db_name.replace('"', "");
+                            let _ =
+                                sqlx::query(&format!("CREATE DATABASE \"{}\"", safe_name))
+                                    .execute(&admin_pool)
+                                    .await;
+                            admin_pool.close().await;
+                            if let Ok(new_pool) = sqlx::PgPool::connect(url).await {
+                                if let Err(e) = init_tables(&new_pool).await {
+                                    anyhow::bail!("数据库建表失败: {e:?}");
                                 }
+                                tracing::info!("PostgreSQL 已连接（自动建库）");
+                                return Ok(Self::Pg(new_pool));
                             }
-                            tracing::warn!("PostgreSQL 连接失败: {e:?}，禁用 PostgreSQL 持久化");
                         }
                     }
+                    anyhow::bail!("PostgreSQL 连接失败: {e:?}");
                 }
-                #[cfg(not(feature = "postgres"))]
-                tracing::warn!("未启用 postgres feature，禁用 PostgreSQL 持久化");
-                Self::None
             }
-            _ => Self::None,
+        }
+
+        #[cfg(not(feature = "postgres"))]
+        {
+            anyhow::bail!("postgres feature 未启用，无法启动");
         }
     }
 
-    /// 是否使用 PostgreSQL
+    /// 是否使用 PostgreSQL（始终有效，因 None 变体已移除）
     pub fn is_active(&self) -> bool {
-        #[cfg(feature = "postgres")]
-        if matches!(self, Self::Pg(_)) {
-            return true;
-        }
-        false
+        true
     }
 
     pub async fn cleanup_expired(&self, retention_days: u32, touch_judge_retention_days: u32) {
-        #[cfg(feature = "postgres")]
         if let Self::Pg(pool) = self {
             let now = || {
                 std::time::SystemTime::now()

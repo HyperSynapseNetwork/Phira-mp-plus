@@ -64,10 +64,6 @@ impl CliHandler {
                 self.dispatch_benchmark_command(args).await;
                 true
             }
-            "simulation" => {
-                self.dispatch_simulation_command(args).await;
-                true
-            }
             "runtime" => {
                 self.dispatch_runtime_command(args).await;
                 true

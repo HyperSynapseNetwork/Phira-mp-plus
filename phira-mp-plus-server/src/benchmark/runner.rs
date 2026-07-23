@@ -102,11 +102,11 @@ impl BenchmarkRunner {
 
     /// 仿真模式运行
     ///
-    /// TODO: 委托到 `crate::simulation::SimulationManager` 或
-    /// `modes::simulation::run_simulation_scenario()`。
+    /// 委托到 `modes::simulation::run_simulation()`，后者根据
+    /// `config.scenario` 派发到对应的场景实现。
     async fn run_simulation(&self) -> Result<BenchmarkReport, String> {
-        // TODO: 实现仿真模式运行
-        Err("Simulation mode runner not yet implemented".to_string())
+        let result = crate::benchmark::modes::simulation::run_simulation(self.config.clone()).await?;
+        Ok(result.report)
     }
 
     /// 真实模式运行

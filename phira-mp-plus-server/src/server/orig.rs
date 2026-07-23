@@ -195,40 +195,17 @@ impl PlusServer {
             tokio::sync::mpsc::channel::<BenchRequest>(BENCHMARK_QUEUE_CAPACITY);
 
         let runtime = config.runtime.clone();
-        // Database is verified at startup: an explicitly configured database
-        // URL must result in a working connection. The only exception is
-        // `allow_database_degraded_mode`, which tolerates a failed init for
-        // development/troubleshooting (readiness will report degraded).
-        let db_url = config.database_url.clone();
-        let allow_db_degraded = config.allow_database_degraded_mode;
-        let db_manager = crate::db::DbManager::new(config.database_url.as_deref()).await;
+        // PostgreSQL is required infrastructure — the server refuses to start if
+        // the connection or migration fails.
+        let db_url = config.database_url.clone().unwrap_or_default();
+        let db_manager = crate::db::DbManager::new(&db_url).await.map_err(|e| {
+            crate::error::AppError::Database(format!(
+                "PostgreSQL init failed: {e}; PMP requires PostgreSQL and will not start without it."
+            ))
+        })?;
         // Register DB globally BEFORE PersistenceWorker spawns, so that
         // WAL replay and telemetry batcher can access the database from the start.
         let _ = crate::internal_hooks::DB.set(db_manager.clone());
-        let db_active = db_manager.is_active();
-        if db_url.as_deref().is_some_and(|u| !u.trim().is_empty()) && !db_active {
-            if matches!(
-                runtime.telemetry_cutover_mode,
-                crate::telemetry::TelemetryCutoverMode::WorkerAuthoritative
-            ) {
-                return Err(crate::error::AppError::Database(
-                    "worker_authoritative was requested but PostgreSQL initialization failed"
-                        .to_string(),
-                )
-                .into());
-            }
-            if !allow_db_degraded {
-                return Err(crate::error::AppError::Database(
-                    "database_url is configured but PostgreSQL connection failed. "
-                        .to_string()
-                        + "Set allow_database_degraded_mode: true to bypass (readiness will be degraded).",
-                )
-                .into());
-            }
-            tracing::warn!(
-                "database_url configured but connection failed; allow_database_degraded_mode=true, continuing with degraded persistence"
-            );
-        }
         let command_registry = Arc::new(crate::command_registry::runtime_registry());
         let event_bus = Arc::new(crate::event_bus::EventBus::new_with_trace(
             crate::runtime_diagnostics::EVENT_BUS_CHANNEL_CAPACITY,

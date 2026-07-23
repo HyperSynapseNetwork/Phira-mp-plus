@@ -42,17 +42,17 @@ impl BenchmarkPresetParams {
 
     /// Quick 预设：短时验证，适合 CI
     ///
-    /// - 20 客户端，5 房间
-    /// - 60 秒运行，5 秒预热
+    /// - 50 客户端，5 房间
+    /// - 30 秒运行，5 秒预热
     /// - 500ms tick 间隔
     /// - 不启用 profiling
     fn quick() -> Self {
         Self {
             preset: BenchmarkPreset::Quick,
-            clients: 20,
+            clients: 50,
             rooms: 5,
             members_per_room: 8,
-            duration: Duration::from_secs(60),
+            duration: Duration::from_secs(30),
             warmup: Duration::from_secs(5),
             tick_interval_ms: 500,
             profile: false,
@@ -61,17 +61,17 @@ impl BenchmarkPresetParams {
 
     /// Standard 预设：中等负载，适合开发环境
     ///
-    /// - 200 客户端，20 房间
-    /// - 300 秒运行，30 秒预热
+    /// - 1000 客户端，100 房间
+    /// - 600 秒（10 分钟）运行，30 秒预热
     /// - 200ms tick 间隔
     /// - 不启用 profiling
     fn standard() -> Self {
         Self {
             preset: BenchmarkPreset::Standard,
-            clients: 200,
-            rooms: 20,
+            clients: 1000,
+            rooms: 100,
             members_per_room: 8,
-            duration: Duration::from_secs(300),
+            duration: Duration::from_secs(600),
             warmup: Duration::from_secs(30),
             tick_interval_ms: 200,
             profile: false,
@@ -80,15 +80,15 @@ impl BenchmarkPresetParams {
 
     /// Stress 预设：高负载，用于容量评估
     ///
-    /// - 1000 客户端，100 房间
+    /// - 2000 客户端，200 房间
     /// - 600 秒运行，60 秒预热
     /// - 100ms tick 间隔
     /// - 启用 profiling
     fn stress() -> Self {
         Self {
             preset: BenchmarkPreset::Stress,
-            clients: 1000,
-            rooms: 100,
+            clients: 2000,
+            rooms: 200,
             members_per_room: 16,
             duration: Duration::from_secs(600),
             warmup: Duration::from_secs(60),
@@ -100,7 +100,7 @@ impl BenchmarkPresetParams {
     /// Soak 预设：长时间运行，用于稳定性测试
     ///
     /// - 500 客户端，50 房间
-    /// - 6 小时运行（可扩展至 24/72 小时），120 秒预热
+    /// - 24 小时运行，120 秒预热
     /// - 500ms tick 间隔
     /// - 启用 profiling（仅在开始和结束阶段）
     fn soak() -> Self {
@@ -109,7 +109,7 @@ impl BenchmarkPresetParams {
             clients: 500,
             rooms: 50,
             members_per_room: 8,
-            duration: Duration::from_secs(6 * 3600), // 6 小时，可被扩展
+            duration: Duration::from_secs(24 * 3600), // 24 小时
             warmup: Duration::from_secs(120),
             tick_interval_ms: 500,
             profile: true,
@@ -119,10 +119,10 @@ impl BenchmarkPresetParams {
     /// 返回预设的中文描述
     pub fn description(&self) -> &'static str {
         match self.preset {
-            BenchmarkPreset::Quick => "快速验证：20客户端/5房间/60秒，适合 CI 和烟雾测试",
-            BenchmarkPreset::Standard => "标准负载：200客户端/20房间/300秒，适合开发环境评估",
-            BenchmarkPreset::Stress => "压力测试：1000客户端/100房间/600秒，用于容量评估",
-            BenchmarkPreset::Soak => "浸泡测试：500客户端/50房间/6小时，用于稳定性评估",
+            BenchmarkPreset::Quick => "快速验证：50客户端/5房间/30秒，适合 CI 和烟雾测试",
+            BenchmarkPreset::Standard => "标准负载：1000客户端/100房间/10分钟，适合开发环境评估",
+            BenchmarkPreset::Stress => "压力测试：2000客户端/200房间/10分钟，用于容量评估",
+            BenchmarkPreset::Soak => "浸泡测试：500客户端/50房间/24小时，用于稳定性评估",
             BenchmarkPreset::Custom => "自定义参数：由用户指定所有运行时参数",
         }
     }

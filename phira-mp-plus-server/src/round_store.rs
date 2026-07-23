@@ -100,7 +100,7 @@ impl RoundStore {
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
         tokio::fs::write(self.meta_path(&meta.round_uuid), json).await?;
 
-        if let Some(db) = crate::internal_hooks::DB.get().filter(|db| db.is_active()) {
+        if let Some(db) = crate::internal_hooks::DB.get() {
             if !db.open_round(meta).await {
                 return Err(std::io::Error::new(
                     std::io::ErrorKind::Other,
@@ -140,7 +140,7 @@ impl RoundStore {
             .write()
             .await
             .insert(round_uuid.to_string(), false);
-        if let Some(db) = crate::internal_hooks::DB.get().filter(|db| db.is_active()) {
+        if let Some(db) = crate::internal_hooks::DB.get() {
             if !db.close_round(round_uuid).await {
                 tracing::warn!(round_uuid, "PostgreSQL round-close transaction failed");
             }
@@ -164,7 +164,7 @@ impl RoundStore {
         if data.is_empty() {
             return true;
         }
-        if let Some(db) = crate::internal_hooks::DB.get().filter(|db| db.is_active()) {
+        if let Some(db) = crate::internal_hooks::DB.get() {
             return db.append_touches(round_uuid, player_id, data).await;
         } else {
             let path = self.touches_path(round_uuid, player_id);
@@ -213,7 +213,7 @@ impl RoundStore {
         if data.is_empty() {
             return true;
         }
-        if let Some(db) = crate::internal_hooks::DB.get().filter(|db| db.is_active()) {
+        if let Some(db) = crate::internal_hooks::DB.get() {
             return db.append_judges(round_uuid, player_id, data).await;
         } else {
             let path = self.judges_path(round_uuid, player_id);
@@ -263,7 +263,7 @@ impl RoundStore {
         round_uuid: &str,
         player_id: i32,
     ) -> Option<RoundPlayerData> {
-        if let Some(db) = crate::internal_hooks::DB.get().filter(|db| db.is_active()) {
+        if let Some(db) = crate::internal_hooks::DB.get() {
             if let Some(data) = db.read_round_player_data(round_uuid, player_id).await {
                 return Some(data);
             }
@@ -293,7 +293,7 @@ impl RoundStore {
 
     /// 列出所有已记录的轮次
     pub async fn list_rounds(&self) -> Vec<RoundMeta> {
-        if let Some(db) = crate::internal_hooks::DB.get().filter(|db| db.is_active()) {
+        if let Some(db) = crate::internal_hooks::DB.get() {
             let rows = db.list_rounds(1000).await;
             if !rows.is_empty() {
                 return rows;

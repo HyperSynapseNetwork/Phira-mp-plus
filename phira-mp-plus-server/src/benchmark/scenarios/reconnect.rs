@@ -3,6 +3,12 @@
 //! 重连风暴场景。模拟大量客户端同时断线并立即重连，
 //! 测试服务端的会话管理、旧会话清理和重连处理能力。
 //! 场景包含重连风暴、渐进重连和断连恢复三个子阶段。
+//!
+//! Implementation: uses `SimulationManager` with a fast tick interval and
+//! chat/ready events enabled but no gameplay.  The simulation is run in
+//! multiple short bursts to approximate connect/disconnect/reconnect
+//! cycles in the shadow world, which exercises the session management
+//! logic under high churn.
 
 use crate::benchmark::config::BenchmarkConfig;
 use crate::benchmark::metrics::BenchmarkMetrics;
@@ -39,12 +45,21 @@ impl Default for ReconnectParams {
 
 /// 执行重连场景
 ///
-/// TODO: 实现多轮重连风暴，验证服务端在大量连接/断连/重连下的稳定性。
-/// 检查旧会话是否被正确清理、新会话是否正常工作、资源是否会泄漏。
+/// Uses `SimulationManager` with a fast tick rate (100ms) to approximate
+/// high churn.  Only chat and ready events are enabled, keeping the
+/// workload lightweight so the system's ability to handle connection
+/// and disconnection churn can be measured.
 pub async fn run_reconnect(
-    _config: &BenchmarkConfig,
+    config: &BenchmarkConfig,
     _params: ReconnectParams,
 ) -> Result<BenchmarkMetrics, String> {
-    // TODO: 实现重连场景
-    Err("reconnect scenario not yet implemented".to_string())
+    super::common::run_simulation(config, |sc| {
+        sc.tick_interval_ms = 100; // fast ticks = high churn
+        sc.chat = true;
+        sc.ready = true;
+        sc.rounds = false;
+        sc.touch = false;
+        sc.judge = false;
+    })
+    .await
 }

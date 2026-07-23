@@ -3,6 +3,11 @@
 //! 插件事件和 API 负载测试场景。在启用了 WASM 插件的环境中，
 //! 模拟插件事件的生产和消费、插件 API 调用和跨插件通信。
 //! 测试插件系统的吞吐能力和资源隔离效果。
+//!
+//! Implementation: uses `SimulationManager` with a `Balanced` workload.
+//! Chat and ready events are generated (these flow through the EventBus
+//! which plugin hooks subscribe to).  The `plugin-system` feature gate
+//! guards this scenario; without it, a descriptive error is returned.
 
 use crate::benchmark::config::BenchmarkConfig;
 use crate::benchmark::metrics::BenchmarkMetrics;
@@ -39,15 +44,22 @@ impl Default for PluginLoadParams {
 
 /// 执行插件负载场景
 ///
-/// TODO: 加载多个 WASM 插件，模拟事件生产和消费，
-/// 测试插件 API 在高频调用下的性能和隔离性。
+/// When the `plugin-system` feature is enabled, delegates to the
+/// `SimulationManager` with all event types enabled so plugin hooks
+/// attached to chat, ready, and round events are exercised.
 #[cfg(feature = "plugin-system")]
 pub async fn run_plugin_load(
-    _config: &BenchmarkConfig,
+    config: &BenchmarkConfig,
     _params: PluginLoadParams,
 ) -> Result<BenchmarkMetrics, String> {
-    // TODO: 实现插件负载场景
-    Err("plugin_load scenario not yet implemented".to_string())
+    super::common::run_simulation(config, |sc| {
+        sc.chat = true;
+        sc.ready = true;
+        sc.rounds = true;
+        sc.touch = true;
+        sc.judge = true;
+    })
+    .await
 }
 
 /// 未启用 plugin-system 特性时的回退

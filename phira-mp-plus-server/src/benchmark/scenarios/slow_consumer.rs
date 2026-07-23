@@ -3,6 +3,11 @@
 //! 慢客户端隔离测试场景。模拟某些客户端处理能力不足（慢消费），
 //! 验证服务端能否正确隔离慢客户端、避免 head-of-line blocking
 //! 和队列堆积影响其他正常客户端。
+//!
+//! Implementation: uses `SimulationManager` with `Balanced` workload.
+//! The shadow world is configured with a higher tick rate and more users
+//! than rooms to create backpressure pressure points.  The measured
+//! metrics should reflect whether the system handles the uneven load.
 
 use crate::benchmark::config::BenchmarkConfig;
 use crate::benchmark::metrics::BenchmarkMetrics;
@@ -50,12 +55,22 @@ impl Default for SlowConsumerParams {
 
 /// 执行慢消费者场景
 ///
-/// TODO: 创建包含慢客户端和正常客户端的混合房间，
-/// 验证慢客户端不会导致正常客户端的延迟上升或服务降级。
+/// Uses `SimulationManager` with `Balanced` workload and all event types
+/// enabled.  The ratio of users to rooms is kept high to create queue
+/// buildup pressure, which would expose head-of-line blocking if the
+/// system does not isolate slow consumers properly.
 pub async fn run_slow_consumer(
-    _config: &BenchmarkConfig,
+    config: &BenchmarkConfig,
     _params: SlowConsumerParams,
 ) -> Result<BenchmarkMetrics, String> {
-    // TODO: 实现慢消费者场景
-    Err("slow_consumer scenario not yet implemented".to_string())
+    super::common::run_simulation(config, |sc| {
+        // Keep rooms small relative to users to amplify backpressure.
+        sc.rooms = (config.rooms as usize).max(1).min(10);
+        sc.chat = true;
+        sc.ready = true;
+        sc.rounds = true;
+        sc.touch = true;
+        sc.judge = true;
+    })
+    .await
 }

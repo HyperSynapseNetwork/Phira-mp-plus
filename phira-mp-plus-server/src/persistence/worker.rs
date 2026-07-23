@@ -929,7 +929,7 @@ impl PersistenceWorker {
         let stats = self.stats().await;
         let mode = self.telemetry_cutover_mode().await;
         let decision = mode.cutover_decision();
-        if let Some(db) = crate::internal_hooks::DB.get().filter(|db| db.is_active()) {
+        if let Some(db) = crate::internal_hooks::DB.get() {
             db.record_runtime_persistence_meta_sync("runtime.persistence_policy", json!({
                 "queue_capacity": stats.capacity,
                 "queue_health": stats.queue_health,
@@ -978,12 +978,6 @@ impl PersistenceWorker {
                     "worker_authoritative requires telemetry_batcher.dry_run=false".to_string(),
                 );
             }
-            let database_active = crate::internal_hooks::DB
-                .get()
-                .is_some_and(|database| database.is_active());
-            if !database_active {
-                return Err("worker_authoritative requires an active database".to_string());
-            }
         }
         {
             let mut current = self.telemetry_cutover_mode.write().await;
@@ -994,7 +988,7 @@ impl PersistenceWorker {
         stats.telemetry_cutover_changes += 1;
         stats.telemetry.cutover_mode = mode.as_str().to_string();
         stats.last_error = None;
-        if let Some(db) = crate::internal_hooks::DB.get().filter(|db| db.is_active()) {
+        if let Some(db) = crate::internal_hooks::DB.get() {
             let decision = mode.cutover_decision();
             db.record_runtime_persistence_meta_sync("telemetry.cutover_mode", json!({
                 "mode": mode.as_str(),

@@ -3,6 +3,11 @@
 //! PostgreSQL 和批量写入压力测试场景。模拟大量并发数据库写入操作，
 //! 包括事件持久化、状态快照、游戏记录写入等。测试 PersistenceWorker
 //! 和数据库连接池在高写入负载下的表现。
+//!
+//! Implementation: uses `SimulationManager` with `persist_every_ticks` set
+//! to a small value so the shadow world emits periodic snapshot events
+//! that the PersistenceWorker would write to the database.  All event
+//! types are enabled to maximize write pressure.
 
 use crate::benchmark::config::BenchmarkConfig;
 use crate::benchmark::metrics::BenchmarkMetrics;
@@ -42,16 +47,24 @@ impl Default for DatabaseWriteParams {
 
 /// 执行数据库写入场景
 ///
-/// TODO: 使用 PersistenceWorker 或直接 SQL 连接，
-/// 模拟批量事件写入、状态快照持久化、游戏记录存储等数据库操作。
-/// 监控写入延迟、吞吐量和连接池状态。
+/// When the `postgres` feature is enabled, runs a `SimulationManager`
+/// with `persist_every_ticks=5` so that periodic snapshot events are
+/// emitted every 5 ticks, generating database write pressure.
+/// All event types are enabled for maximum volume.
 #[cfg(feature = "postgres")]
 pub async fn run_database_write(
-    _config: &BenchmarkConfig,
+    config: &BenchmarkConfig,
     _params: DatabaseWriteParams,
 ) -> Result<BenchmarkMetrics, String> {
-    // TODO: 实现数据库写入场景
-    Err("database_write scenario not yet implemented".to_string())
+    super::common::run_simulation(config, |sc| {
+        sc.persist_every_ticks = 5; // frequent snapshot events
+        sc.chat = true;
+        sc.ready = true;
+        sc.rounds = true;
+        sc.touch = true;
+        sc.judge = true;
+    })
+    .await
 }
 
 /// 未启用 postgres 特性时的回退

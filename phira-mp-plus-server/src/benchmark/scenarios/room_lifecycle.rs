@@ -2,9 +2,15 @@
 //!
 //! 房间全生命周期场景：创建房间、加入房间、选择歌曲、准备、开始游戏、
 //! 游戏结束、离开房间。完整模拟一个房间从创建到解散的全过程。
+//!
+//! Implementation: delegates to the `SimulationManager` shadow world with
+//! `RoundStorm` workload, enabling ready/round lifecycle events while
+//! disabling chat, touch, and judge so the test focuses purely on room
+//! and round lifecycle overhead.
 
 use crate::benchmark::config::BenchmarkConfig;
 use crate::benchmark::metrics::BenchmarkMetrics;
+use crate::simulation::SimulationScenario;
 
 /// 房间生命周期阶段
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -48,12 +54,21 @@ impl Default for RoomLifecycleParams {
 
 /// 执行房间生命周期场景
 ///
-/// TODO: 实现完整的房间生命周期循环：
-/// 每个虚拟客户端依次执行创建、加入、选曲、准备、开始、结束、离开操作。
+/// Uses the `SimulationManager` shadow world with a `RoundStorm` workload
+/// profile.  Ready events and round completion are enabled; chat, touch,
+/// and judge are disabled so the test focuses purely on room/round lifecycle
+/// overhead.
 pub async fn run_room_lifecycle(
-    _config: &BenchmarkConfig,
+    config: &BenchmarkConfig,
     _params: RoomLifecycleParams,
 ) -> Result<BenchmarkMetrics, String> {
-    // TODO: 实现房间生命周期场景
-    Err("room_lifecycle scenario not yet implemented".to_string())
+    super::common::run_simulation(config, |sc| {
+        sc.chat = false;
+        sc.touch = false;
+        sc.judge = false;
+        sc.ready = true;
+        sc.rounds = true;
+        sc.scenario = SimulationScenario::RoundStorm;
+    })
+    .await
 }

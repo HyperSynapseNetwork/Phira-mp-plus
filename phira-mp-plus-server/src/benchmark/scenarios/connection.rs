@@ -2,6 +2,12 @@
 //!
 //! TCP 连接和认证场景。模拟客户端建立 TCP 连接、进行 HTTP 认证、
 //! 发送心跳 ping 和意外断线重连。测试服务端在高频连接/断连下的稳定性。
+//!
+//! Implementation: uses `SimulationManager` with `Balanced` workload.
+//! The shadow-world tick system simulates chat messages (representing
+//! keep-alive / ping traffic) and ready toggles (representing auth and
+//! session establishment).  No gameplay or round lifecycle events are
+//! generated so the focus stays on connection-level throughput.
 
 use crate::benchmark::config::BenchmarkConfig;
 use crate::benchmark::metrics::BenchmarkMetrics;
@@ -38,11 +44,20 @@ impl Default for ConnectionParams {
 
 /// 执行连接场景
 ///
-/// TODO: 模拟大量客户端并发建立连接、认证、发送 ping、断开和重连。
+/// Uses `SimulationManager` with chat and ready events enabled, targeting
+/// connection-style throughput.  Touch/judge/rounds are disabled so the
+/// simulated load consists of lightweight message and state transitions
+/// that approximate connect/auth/ping/disconnect cycles.
 pub async fn run_connection(
-    _config: &BenchmarkConfig,
+    config: &BenchmarkConfig,
     _params: ConnectionParams,
 ) -> Result<BenchmarkMetrics, String> {
-    // TODO: 实现连接场景
-    Err("connection scenario not yet implemented".to_string())
+    super::common::run_simulation(config, |sc| {
+        sc.chat = true;
+        sc.ready = true;
+        sc.rounds = false;
+        sc.touch = false;
+        sc.judge = false;
+    })
+    .await
 }

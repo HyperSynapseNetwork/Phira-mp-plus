@@ -418,9 +418,6 @@ pub fn playtime_disconnect(user_id: i32) {
 }
 
 fn prune_playtime_cache(data: &mut HashMap<i32, PlaytimeEntry>, keep_user_id: i32) {
-    if !DB.get().is_some_and(|db| db.is_active()) {
-        return;
-    }
     while data.len() > PLAYTIME_CACHE_MAX_ENTRIES {
         let Some(remove_id) = data
             .iter()
