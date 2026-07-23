@@ -133,7 +133,7 @@ impl DbManager {
                                 anyhow::bail!("数据库建表失败: {e:?}");
                             }
                             tracing::info!("PostgreSQL 已连接（Unix socket）");
-                            return Ok(Self::Pg(pool));
+                            Ok(Self::Pg(pool))
                         }
                         Err(socket_e) => {
                             anyhow::bail!("PostgreSQL 连接失败（TCP: {e}，Unix socket: {socket_e}）");
