@@ -3,9 +3,8 @@
 //! These tests verify persistence semantics and event type contracts.
 
 #[test]
-fn dual_write_field_exists_as_schema_legacy() {
-    // RuntimeTelemetryBatchRecord.dual_write is a legacy schema field.
-    // Its presence is intentional for backward compatibility.
+fn runtime_telemetry_batch_record_constructs() {
+    // Verify that RuntimeTelemetryBatchRecord constructs without dual_write.
     let _ = phira_mp_plus_server::db::RuntimeTelemetryBatchRecord {
         event_id: "event-test".to_string(),
         batch_uuid: "test".to_string(),
@@ -15,7 +14,6 @@ fn dual_write_field_exists_as_schema_legacy() {
         source: "test".to_string(),
         flush_reason: "test".to_string(),
         schema_version: 1,
-        dual_write: false,
         kind: "touch".to_string(),
         room_id: None,
         round_uuid: None,

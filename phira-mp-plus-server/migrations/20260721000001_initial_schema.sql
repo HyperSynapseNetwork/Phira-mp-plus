@@ -148,7 +148,7 @@ CREATE TABLE IF NOT EXISTS mp_runtime_telemetry_batches (
     payload JSONB NOT NULL,
     created_at BIGINT NOT NULL,
     source TEXT NOT NULL DEFAULT 'telemetry_batcher',
-    dual_write BOOLEAN NOT NULL DEFAULT TRUE,
+    -- dual_write column removed in v2 (was BOOLEAN NOT NULL DEFAULT TRUE)
     schema_version INTEGER NOT NULL DEFAULT 3,
     flush_reason TEXT NOT NULL DEFAULT 'unknown'
 );
@@ -244,7 +244,8 @@ ALTER TABLE mp_sim_events ADD COLUMN IF NOT EXISTS event_id TEXT;
 ALTER TABLE mp_round_player_data ADD COLUMN IF NOT EXISTS sequence BIGINT NOT NULL DEFAULT nextval('mp_persist_sequence');
 ALTER TABLE mp_runtime_telemetry_batches ADD COLUMN IF NOT EXISTS event_id TEXT;
 ALTER TABLE mp_runtime_benchmark_reports ADD COLUMN IF NOT EXISTS report_id TEXT;
-ALTER TABLE mp_runtime_telemetry_batches ADD COLUMN IF NOT EXISTS dual_write BOOLEAN NOT NULL DEFAULT TRUE;
+-- dual_write column removed — drop for databases created by earlier schema versions
+ALTER TABLE mp_runtime_telemetry_batches DROP COLUMN IF EXISTS dual_write;
 ALTER TABLE mp_runtime_telemetry_batches ADD COLUMN IF NOT EXISTS source TEXT NOT NULL DEFAULT 'telemetry_batcher';
 ALTER TABLE mp_runtime_telemetry_items ADD COLUMN IF NOT EXISTS event_id TEXT;
 ALTER TABLE mp_runtime_telemetry_batches ADD COLUMN IF NOT EXISTS batch_uuid TEXT;

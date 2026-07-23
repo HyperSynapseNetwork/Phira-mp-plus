@@ -47,8 +47,8 @@ impl DbManager {
                 let header_insert = sqlx::query(
                     "INSERT INTO mp_runtime_telemetry_batches
                        (event_id, batch_uuid, run_id, scope, pipeline, kind, room_id, round_uuid, player_id, item_count,
-                        payload, created_at, source, dual_write, schema_version, flush_reason)
-                     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
+                        payload, created_at, source, schema_version, flush_reason)
+                     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
                      ON CONFLICT (event_id) DO NOTHING"
                 )
                 .bind(&record.event_id)
@@ -64,7 +64,6 @@ impl DbManager {
                 .bind(&record.payload)
                 .bind(now)
                 .bind(&record.source)
-                .bind(record.dual_write)
                 .bind(record.schema_version)
                 .bind(&record.flush_reason)
                 .execute(&mut *transaction)
@@ -80,10 +79,8 @@ impl DbManager {
                 }
 
                 // The Runtime v2 worker must also update the canonical round
-                // tables used by existing read APIs. Mirror records
-                // (`dual_write=true`) skip this block because the direct path
-                // already committed the same payload.
-                if !record.dual_write && record.scope == "production" {
+                // tables used by existing read APIs.
+                if record.scope == "production" {
                     let Some(round_uuid) = record.round_uuid.as_deref() else {
                         return false;
                     };

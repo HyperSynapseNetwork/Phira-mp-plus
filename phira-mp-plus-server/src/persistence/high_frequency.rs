@@ -395,7 +395,7 @@ async fn try_copy_write_inner(
         // Batch row (omitting auto-generated `sequence` column)
         let _ = writeln!(
             batch_csv,
-            "{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}",
+            "{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}",
             csv_opt_str(&record.event_id),
             csv_quote(&record.batch_uuid),
             csv_opt_str(&record.run_id),
@@ -409,7 +409,6 @@ async fn try_copy_write_inner(
             csv_json(&record.payload),
             now,
             csv_quote(&record.source),
-            if record.dual_write { 't' } else { 'f' },
             record.schema_version,
             csv_quote(&record.flush_reason),
         );
@@ -447,7 +446,7 @@ async fn try_copy_write_inner(
                 "COPY mp_runtime_telemetry_batches \
                  (event_id, batch_uuid, run_id, scope, pipeline, kind, \
                   room_id, round_uuid, player_id, item_count, payload, \
-                  created_at, source, dual_write, schema_version, flush_reason) \
+                  created_at, source, schema_version, flush_reason) \
                  FROM STDIN WITH (FORMAT CSV)",
             )
             .await
@@ -483,7 +482,7 @@ async fn try_copy_write_inner(
 
     // ── Canonical table updates ─────────────────────────────────────────
     for record in records {
-        if record.dual_write || record.scope != "production" {
+        if record.scope != "production" {
             continue;
         }
         let Some(round_uuid) = record.round_uuid.as_deref() else {
@@ -587,7 +586,6 @@ fn extract_runtime_records(
                 source: "high_frequency_writer".to_string(),
                 flush_reason: "batch".to_string(),
                 schema_version: HF_SCHEMA_VERSION,
-                dual_write: false,
                 kind: item.kind.as_str().to_string(),
                 room_id: item.room_id(),
                 round_uuid: Some(item.round_id.clone()),

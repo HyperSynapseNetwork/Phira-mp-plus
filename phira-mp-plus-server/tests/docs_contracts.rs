@@ -172,8 +172,8 @@ fn server_config_no_benchmark_token_examples() {
 fn configuration_no_unsupported_telemetry_modes() {
     let content = read_doc_required("configuration.md");
     assert!(
-        !content.contains("dual_write") || content.contains("legacy"),
-        "configuration.md must not recommend dual_write without legacy marker"
+        !content.contains("dual_write"),
+        "configuration.md must not contain dual_write (removed from codebase)"
     );
     assert!(
         !content.contains("fallback_only") || content.contains("legacy"),

@@ -49,9 +49,6 @@ pub struct RuntimeTelemetryBatchRecord {
     pub source: String,
     pub flush_reason: String,
     pub schema_version: i32,
-    /// Historical schema field (runtime_dual_write metadata).
-    /// Not a current telemetry mode — retained for backward-compatible reads.
-    pub dual_write: bool,
     pub kind: String,
     pub room_id: Option<String>,
     pub round_uuid: Option<String>,

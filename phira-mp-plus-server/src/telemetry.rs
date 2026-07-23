@@ -719,7 +719,6 @@ async fn write_runtime_telemetry_batch(
             source: "telemetry_batcher_authoritative".to_string(),
             flush_reason: reason.to_string(),
             schema_version: TELEMETRY_SCHEMA_VERSION,
-            dual_write: false,
             kind: item.kind.as_str().to_string(),
             room_id: item.room_id.clone(),
             round_uuid: item.round_id.clone(),
