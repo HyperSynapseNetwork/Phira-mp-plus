@@ -49,7 +49,7 @@
 
 | Command | Description |
 |---------|-------------|
-| `runtime status` | Runtime v2 summary |
+| `runtime status` | Runtime diagnostics summary |
 | `runtime events` | EventBus stats |
 | `runtime persistence` | WAL + DB stats |
 | `runtime commands` | Command registry stats |

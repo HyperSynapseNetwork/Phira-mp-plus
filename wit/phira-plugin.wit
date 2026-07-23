@@ -1,10 +1,9 @@
 // Phira-mp+ Plugin ABI v2 — WIT / Component Model
 //
-// This is the typed replacement for the current JSON-memory bridge (abi-json-v1).
-// Target: abi-wit-v2
+// This WIT file defines the plugin world `phira-plugin-v2`, the only supported
+// plugin ABI. All host interfaces and guest exports are fully implemented.
 //
 // Status:
-//   - abi-json-v1 has been removed; this WIT world is the only supported ABI.
 //   - Host capability and resource boundaries are implemented in the server.
 //   - Release readiness still depends on workspace tests and real component fixtures.
 

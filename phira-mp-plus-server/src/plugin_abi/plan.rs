@@ -19,7 +19,7 @@ pub mod wit {
     pub const WIT_FILE: &str = "wit/phira-plugin.wit";
     pub const WIT_WORLD: &str = "phira-plugin-v2";
     pub const WIT_VERSION: &str = "abi-wit-v2";
-    /// Migration phase tracking: 3 = JSON bridge removed, WIT-only component ABI.
+    /// Stable ABI state: JSON bridge removed, WIT-only component ABI (no longer a migration).
     pub const MIGRATION_PHASE: usize = 3;
 }
 

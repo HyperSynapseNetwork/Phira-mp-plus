@@ -219,7 +219,7 @@ Phira-mp-plus/
 │       ├── plugin.rs                #   插件管理器 (PluginManager / PluginHost)
 │       ├── plugin_abi/              #   Plugin ABI 边界
 │       │   ├── mod.rs               #   导出 / wit_abi bindgen
-│       │   └── plan.rs              #   ABI 版本常量 / MIGRATION_PHASE
+│       │   └── plan.rs              #   ABI 版本常量（稳定）
 │       ├── plugin_http/             #   HTTP 动态路由
 │       │   ├── mod.rs               #   模块入口
 │       │   ├── router.rs            #   DynamicRouter (支持 :param)

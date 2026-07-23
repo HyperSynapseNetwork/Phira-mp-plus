@@ -391,7 +391,7 @@ wit_bindgen::generate!({
 | **运行时 ABI** | `abi-wit-v2` (WIT / Component Model) |
 | **目标 ABI** | `abi-wit-v2` |
 | **规范 WIT** | `wit/phira-plugin.wit` |
-| **MIGRATION_PHASE** | `3` (JSON bridge removed, WIT-only component ABI) |
+| **MIGRATION_PHASE** | `3` (Stable: JSON bridge removed, WIT-only component ABI) |
 | **接口数量** | `15` |
 
 ## 规范 WIT 接口
