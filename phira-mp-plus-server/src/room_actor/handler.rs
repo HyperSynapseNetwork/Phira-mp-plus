@@ -178,7 +178,7 @@ async fn save_round_history(
 async fn check_all_ready(
     r: &crate::room::Room,
     as_: &mut crate::room_actor::actor::RoomActorState,
-    _state:     state: &crate::server::PlusServerState,crate::server::PlusServerState,
+    _state: &crate::server::PlusServerState,
 ) {
     // Clone the lifecycle to check state
     let lifecycle = as_.state.lifecycle.clone();

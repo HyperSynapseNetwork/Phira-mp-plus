@@ -38,3 +38,4 @@ pub use config::*;
 pub use events::*;
 pub use query::*;
 pub use state::*;
+pub(crate) use disconnect::*;
