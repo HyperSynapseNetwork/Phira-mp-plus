@@ -135,7 +135,7 @@ impl Profiler {
                 }
                 #[cfg(not(feature = "pprof"))]
                 {
-                    return Err(
+                    Err(
                         "CPU profiling requires the 'pprof' Cargo feature".to_string(),
                     );
                 }
@@ -178,7 +178,7 @@ impl Profiler {
                 }
                 #[cfg(not(all(target_os = "linux", feature = "jemalloc-prof")))]
                 {
-                    return Err(
+                    Err(
                         "Heap profiling requires Linux + jemalloc-prof feature".to_string(),
                     );
                 }
@@ -258,7 +258,7 @@ impl Profiler {
                 #[cfg(not(feature = "pprof"))]
                 {
                     let _ = timestamp;
-                    return Err(
+                    Err(
                         "CPU profiling requires the 'pprof' Cargo feature".to_string(),
                     );
                 }
@@ -314,7 +314,7 @@ impl Profiler {
                 #[cfg(not(all(target_os = "linux", feature = "jemalloc-prof")))]
                 {
                     let _ = timestamp;
-                    return Err(
+                    Err(
                         "Heap profiling requires Linux + jemalloc-prof feature"
                             .to_string(),
                     );
