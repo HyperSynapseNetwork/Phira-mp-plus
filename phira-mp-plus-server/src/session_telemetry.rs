@@ -36,12 +36,11 @@ async fn persist_touches(
             "failed to cache touches via actor mailbox: {e}"
         );
     }
-    let round_id = room
-        .current_round_id
-        .read()
-        .await
-        .as_ref()
-        .map(|rid| rid.to_string());
+    let round_id = user
+        .server
+        .room_commands
+        .room_snapshot(&room.id.to_string())
+        .and_then(|snap| snap.round_id.map(|rid| rid.to_string()));
     if !should_persist_round_telemetry(touch_data.len(), round_id.is_some(), has_active_monitors) {
         debug!(room = %room.id, user_id = user.id, "touch data received without current round; cached only");
         return;
@@ -105,12 +104,11 @@ async fn persist_judges(
             "failed to cache judges via actor mailbox: {e}"
         );
     }
-    let round_id = room
-        .current_round_id
-        .read()
-        .await
-        .as_ref()
-        .map(|rid| rid.to_string());
+    let round_id = user
+        .server
+        .room_commands
+        .room_snapshot(&room.id.to_string())
+        .and_then(|snap| snap.round_id.map(|rid| rid.to_string()));
     if !should_persist_round_telemetry(judge_data.len(), round_id.is_some(), has_active_monitors) {
         debug!(room = %room.id, user_id = user.id, "judge data received without current round; cached only");
         return;
