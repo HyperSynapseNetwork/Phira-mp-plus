@@ -184,6 +184,7 @@ pub(super) struct HttpAppState {
     plugin_manager: Arc<PluginManager>,
     sse_streams: Arc<RwLock<HashMap<String, SseStreamConfig>>>,
     /// Server state for health checks and diagnostics.
+    #[allow(dead_code)]
     server_state: Arc<PlusServerState>,
 }
 

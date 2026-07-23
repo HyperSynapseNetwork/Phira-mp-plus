@@ -322,6 +322,7 @@ mod tests {
             created_at: 0,
             chart: None,
             stripped: phira_mp_common::StrippedRoomState::SelectingChart,
+            round_id: None,
         };
 
         gateway

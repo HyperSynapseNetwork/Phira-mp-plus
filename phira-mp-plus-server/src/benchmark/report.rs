@@ -22,7 +22,7 @@
 use crate::benchmark::config::BenchmarkConfig;
 use crate::benchmark::environment::EnvironmentSnapshot;
 use crate::benchmark::metrics::{
-    BenchmarkMetrics, CpuMetrics, DatabaseMetrics, LatencyPercentiles, TouchJudgeMetrics,
+    BenchmarkMetrics, CpuMetrics, LatencyPercentiles, TouchJudgeMetrics,
 };
 use crate::benchmark::profile::ProfileReport;
 use serde::{Deserialize, Serialize};
@@ -899,7 +899,7 @@ impl BenchmarkReport {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::benchmark::command::{BenchmarkPreset, BenchmarkRunMode, BenchmarkScenario};
+    use crate::benchmark::command::BenchmarkPreset;
     use crate::benchmark::config::BenchmarkConfig;
     use crate::benchmark::environment::EnvironmentSnapshot;
 

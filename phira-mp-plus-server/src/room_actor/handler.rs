@@ -38,7 +38,6 @@ fn ok(payload: RoomCommandPayload) -> RoomCommandResult {
 
 /// Helper: broadcast a state change via `on_state_change`.
 async fn broadcast_state_change(r: &crate::room::Room, state: &InternalRoomState, chart: Option<i32>) {
-    use phira_mp_common::RoomState;
     let room_state = state.to_client(chart);
     r.broadcast(ServerCommand::ChangeState(room_state)).await;
     let stripped = state.stripped();
@@ -179,7 +178,7 @@ async fn save_round_history(
 async fn check_all_ready(
     r: &crate::room::Room,
     as_: &mut crate::room_actor::actor::RoomActorState,
-    state: &crate::server::PlusServerState,
+    _state:     state: &crate::server::PlusServerState,crate::server::PlusServerState,
 ) {
     // Clone the lifecycle to check state
     let lifecycle = as_.state.lifecycle.clone();
@@ -427,7 +426,7 @@ impl RoomCommandHandler {
                 let as_ = ctx.expect_actor_state();
                 let r = match room { Some(ref r) => r, None => return err("no room") };
                 // Find the target user (if any) and get display name from actor_state
-                let (host_id, host_name, system_host) = match target_id {
+                let (_host_id, host_name, system_host) = match target_id {
                     Some(uid) => {
                         let fallback_name = {
                             let users = r.users().await;

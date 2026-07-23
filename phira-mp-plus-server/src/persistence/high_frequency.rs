@@ -21,7 +21,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::sync::{mpsc, oneshot, Mutex};
-use tracing::{debug, error, trace, warn};
+use tracing::{debug, error, warn};
 
 // ── Defaults ───────────────────────────────────────────────────────────
 const DEFAULT_CHANNEL_CAPACITY: usize = 4096;
