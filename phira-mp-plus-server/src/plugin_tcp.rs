@@ -12,7 +12,7 @@ use tracing::{error, info, warn};
 
 /// Commands plugins send to the TCP actor.
 #[derive(Debug)]
-pub enum FederationCommand {
+pub enum PluginTcpCommand {
     Connect {
         addr: String,
         reply: oneshot::Sender<Result<u64, String>>,
@@ -27,7 +27,7 @@ pub enum FederationCommand {
 
 /// Events from the TCP actor back to the plugin system.
 #[derive(Debug, Clone)]
-pub enum FederationEvent {
+pub enum PluginTcpEvent {
     Accepted {
         listener_handle: u64,
         conn_handle: u64,
@@ -61,8 +61,8 @@ struct Listener {
 }
 
 /// TCP actor managing connection and listener handles.
-pub struct FederationActor {
-    rx: mpsc::Receiver<FederationCommand>,
+pub struct PluginTcpActor {
+    rx: mpsc::Receiver<PluginTcpCommand>,
     connections: HashMap<u64, Connection>,
     listeners: HashMap<u64, Listener>,
     next_handle: u64,
@@ -71,8 +71,8 @@ pub struct FederationActor {
     event_callback: Option<Arc<dyn Fn(String, serde_json::Value) + Send + Sync>>,
 }
 
-impl FederationActor {
-    pub fn new(rx: mpsc::Receiver<FederationCommand>) -> Self {
+impl PluginTcpActor {
+    pub fn new(rx: mpsc::Receiver<PluginTcpCommand>) -> Self {
         Self {
             rx,
             connections: HashMap::new(),
@@ -108,7 +108,7 @@ impl FederationActor {
 
         while let Some(cmd) = self.rx.recv().await {
             match cmd {
-                FederationCommand::Connect { addr, reply } => {
+                PluginTcpCommand::Connect { addr, reply } => {
                     let handle = self.alloc_handle();
                     let cb = self.event_callback.clone();
                     let cm = Arc::clone(&self.conn_map);
@@ -131,7 +131,7 @@ impl FederationActor {
                         }
                     }
                 }
-                FederationCommand::Listen { addr, reply } => {
+                PluginTcpCommand::Listen { addr, reply } => {
                     let handle = self.alloc_handle();
                     let cb = self.event_callback.clone();
                     let cm = Arc::clone(&self.conn_map);
@@ -155,7 +155,7 @@ impl FederationActor {
                         }
                     }
                 }
-                FederationCommand::Send { handle, bytes } => {
+                PluginTcpCommand::Send { handle, bytes } => {
                     let map = self.conn_map.lock().unwrap();
                     if let Some(tx) = map.get(&handle) {
                         if let Err(e) = tx.try_send(bytes) {
@@ -169,7 +169,7 @@ impl FederationActor {
                             serde_json::json!({"handle": handle, "error": "unknown handle"}));
                     }
                 }
-                FederationCommand::Close { handle } => {
+                PluginTcpCommand::Close { handle } => {
                     let _ = self.conn_map.lock().unwrap().remove(&handle);
                     if let Some(close_tx) = self.close_map.lock().unwrap().remove(&handle) {
                         let _ = close_tx.send(());

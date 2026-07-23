@@ -46,7 +46,7 @@ pub struct WitHostContext {
     /// Whether plugin HTTP calls may target private/reserved addresses.
     pub http_allow_private_network: bool,
     /// TCP actor sender for plugin-initiated connections.
-    pub tcp: Option<tokio::sync::mpsc::Sender<crate::federation::FederationCommand>>,
+    pub tcp: Option<tokio::sync::mpsc::Sender<crate::plugin_tcp::PluginTcpCommand>>,
 }
 
 /// Wraps server capabilities to implement WIT host traits.
@@ -994,7 +994,7 @@ mod wit_trait_impls {
             self.require_capability("tcp")?;
             let tx = self.ctx.tcp.as_ref().ok_or("tcp not available")?;
             let (reply, mut rx) = tokio::sync::oneshot::channel();
-            tx.try_send(crate::federation::FederationCommand::Connect { addr, reply })
+            tx.try_send(crate::plugin_tcp::PluginTcpCommand::Connect { addr, reply })
                 .map_err(|e| format!("tcp connect failed: {e}"))?;
             rx.try_recv().map_err(|_| "tcp connect reply lost".to_string())?
         }
@@ -1003,7 +1003,7 @@ mod wit_trait_impls {
             self.require_capability("tcp")?;
             let tx = self.ctx.tcp.as_ref().ok_or("tcp not available")?;
             let (reply, mut rx) = tokio::sync::oneshot::channel();
-            tx.try_send(crate::federation::FederationCommand::Listen { addr, reply })
+            tx.try_send(crate::plugin_tcp::PluginTcpCommand::Listen { addr, reply })
                 .map_err(|e| format!("tcp listen failed: {e}"))?;
             rx.try_recv().map_err(|_| "tcp listen reply lost".to_string())?
         }
@@ -1011,14 +1011,14 @@ mod wit_trait_impls {
         fn send(&mut self, handle: u64, bytes: Vec<u8>) -> Result<(), String> {
             self.require_capability("tcp")?;
             let tx = self.ctx.tcp.as_ref().ok_or("tcp not available")?;
-            tx.try_send(crate::federation::FederationCommand::Send { handle, bytes })
+            tx.try_send(crate::plugin_tcp::PluginTcpCommand::Send { handle, bytes })
                 .map_err(|e| format!("tcp send failed: {e}"))
         }
 
         fn close(&mut self, handle: u64) -> Result<(), String> {
             self.require_capability("tcp")?;
             let tx = self.ctx.tcp.as_ref().ok_or("tcp not available")?;
-            tx.try_send(crate::federation::FederationCommand::Close { handle })
+            tx.try_send(crate::plugin_tcp::PluginTcpCommand::Close { handle })
                 .map_err(|e| format!("tcp close failed: {e}"))
         }
     }

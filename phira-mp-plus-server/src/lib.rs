@@ -48,7 +48,7 @@ pub mod db;
 pub mod error;
 pub mod event_bus;
 pub mod extensions;
-pub mod federation;
+pub mod plugin_tcp;
 pub(crate) mod idle;
 pub mod internal_hooks;
 pub mod l10n;
