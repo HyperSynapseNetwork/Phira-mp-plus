@@ -67,9 +67,13 @@ impl DbManager {
     /// 根据配置初始化数据库连接，连接或迁移失败直接返回错误。
     pub async fn new(database_url: &str) -> anyhow::Result<Self> {
         let url = database_url.trim();
-        if url.is_empty() {
-            anyhow::bail!("database_url 不能为空");
-        }
+        let url = if url.is_empty() {
+            // 未配置 database_url 时依次尝试常见本地默认连接
+            tracing::info!("database_url 未设置，尝试本地默认连接");
+            "postgres://postgres:postgres@localhost:5432/phira_mp_plus"
+        } else {
+            url
+        };
 
         #[cfg(feature = "postgres")]
         {

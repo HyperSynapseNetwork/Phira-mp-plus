@@ -50,9 +50,8 @@ plugins_dir: plugins
 # 扩展数据持久化 JSON 文件路径
 # extensions_file: data/extensions.json
 
-# PostgreSQL 数据库连接。PMP 必需，无数据库时拒绝启动。
-# 数据库不存在时会尝试自动创建（需要连接用户有 CREATE DATABASE 权限）。
-database_url: "postgres://postgres:postgres@localhost:5432/phira_mp_plus"
+# PostgreSQL 数据库连接。留空时默认尝试 postgres://postgres:postgres@localhost:5432/phira_mp_plus，会自动建库。
+database_url: ""
 
 # 统一 PostgreSQL 历史数据保留天数。0 表示不自动清理。
 persistence_retention_days: 30
