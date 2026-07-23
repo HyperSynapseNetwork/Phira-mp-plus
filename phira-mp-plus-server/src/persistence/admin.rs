@@ -36,6 +36,6 @@ impl DbManager {
         .await
         .ok()??;
         let raw = row.try_get::<String, _>("value").ok()?;
-        serde_json::from_str(return serde_json::from_str(&raw).ok()raw).ok();
+        serde_json::from_str(&raw).ok();
     }
 }

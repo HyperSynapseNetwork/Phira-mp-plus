@@ -79,7 +79,7 @@ impl DbManager {
                     if let Err(e) = init_tables(&pool).await {
                         anyhow::bail!("数据库建表失败: {e:?}");
                     }
-                    Ok(Self::Pg(pool));
+                    Ok(Self::Pg(pool))
                 }
                 Err(e) => {
                     let err_str = e.to_string();
