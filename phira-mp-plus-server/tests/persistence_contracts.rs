@@ -1,8 +1,7 @@
 //! Persistence layer contract tests.
 //!
 //! These tests verify persistence semantics, cutover-mode telemetry integration,
-//! and event type contracts. Pure cutover-mode tests live in
-//! `telemetry_cutover_contracts.rs`.
+//! and event type contracts.
 
 use phira_mp_plus_server::telemetry::TelemetryCutoverMode;
 

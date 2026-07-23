@@ -96,7 +96,7 @@ pub(crate) fn server_state_query_inner(
                     .benchmark_reports
                     .snapshot(crate::runtime_diagnostics::BENCHMARK_REPORT_RECENT_DEFAULT);
                 let _ = tx.send(Ok(serde_json::json!({
-                    "runtime_v2": true,
+                    "runtime": true,
                     "note": "Runtime hardening is active: Session and Room management commands are mailbox-only, Room control state has coherent snapshots, and failed database writes are preserved in a local dead-letter journal. Full Room state ownership and enqueue-before crash-consistent WAL remain migration items.",
                     "commands": {"registered": commands},
                     "event_bus": events, "simulation": simulation,

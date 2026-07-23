@@ -4,6 +4,6 @@
 //! infrastructure can evolve without growing a single root module.
 
 pub use crate::persistence::{
-    spawn_event_bus_mirror, PersistenceEvent, PersistenceStats, PersistenceTraceEntry,
+    PersistenceEvent, PersistenceStats, PersistenceTraceEntry,
     PersistenceWorker,
 };

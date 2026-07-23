@@ -6,7 +6,7 @@
 use crate::error::AppError;
 use crate::phira_client::PhiraHttpPolicyConfig;
 use crate::plugin::WasmRuntimeConfig;
-use crate::telemetry_batcher::{TelemetryBatcherPolicy, TelemetryCutoverMode};
+use crate::telemetry::{TelemetryBatcherPolicy, TelemetryCutoverMode};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use tokio::sync::RwLock;
@@ -76,7 +76,7 @@ pub(crate) fn parse_room_endpoint_value(value: &str) -> Result<Option<String>, S
 // ── Configuration types ────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct RuntimeV2Config {
+pub struct RuntimeConfig {
     /// Bounded queue size for Runtime v2 PersistenceWorker.
     #[serde(default = "default_runtime_persistence_queue_capacity")]
     pub persistence_queue_capacity: usize,
@@ -90,7 +90,7 @@ pub struct RuntimeV2Config {
     pub persistence_wal_path: String,
     /// Batcher policy for production Touch/Judge telemetry.
     #[serde(default)]
-    pub telemetry_batcher: TelemetryBatcherPolicy,
+    pub telemetry: TelemetryBatcherPolicy,
     /// Startup cutover mode for production Touch/Judge persistence.
     #[serde(default)]
     pub telemetry_cutover_mode: TelemetryCutoverMode,
@@ -99,13 +99,13 @@ pub struct RuntimeV2Config {
     pub phira_http: PhiraHttpPolicyConfig,
 }
 
-impl Default for RuntimeV2Config {
+impl Default for RuntimeConfig {
     fn default() -> Self {
         Self {
             persistence_queue_capacity: default_runtime_persistence_queue_capacity(),
             persistence_dead_letter_path: default_persistence_dead_letter_path(),
             persistence_wal_path: default_persistence_wal_path(),
-            telemetry_batcher: TelemetryBatcherPolicy::default(),
+            telemetry: TelemetryBatcherPolicy::default(),
             telemetry_cutover_mode: TelemetryCutoverMode::default(),
             phira_http: PhiraHttpPolicyConfig::default(),
         }
@@ -139,9 +139,9 @@ pub struct LiveConfig {
     /// Rate limit window in seconds.
     #[serde(default = "default_rate_window")]
     pub connection_rate_window: u32,
-    /// Runtime v2 internal policy.
+    /// Runtime internal policy.
     #[serde(default)]
-    pub runtime_v2: RuntimeV2Config,
+    pub runtime: RuntimeConfig,
 }
 
 impl LiveConfig {
@@ -155,7 +155,7 @@ impl LiveConfig {
             benchmark_phira_tokens: config.benchmark_phira_tokens.clone(),
             connection_rate_limit: config.connection_rate_limit,
             connection_rate_window: config.connection_rate_window,
-            runtime_v2: config.runtime_v2.clone(),
+            runtime: config.runtime.clone(),
         }
     }
 }
@@ -260,7 +260,7 @@ pub struct PlusConfig {
     #[serde(default)]
     pub wasm_runtime: WasmRuntimeConfig,
     #[serde(default)]
-    pub runtime_v2: RuntimeV2Config,
+    pub runtime: RuntimeConfig,
     /// Idle mode configuration.
     #[serde(default)]
     pub idle: crate::idle::IdleConfig,
@@ -299,7 +299,7 @@ impl Default for PlusConfig {
             admin_phira_ids: Vec::new(),
             benchmark_phira_tokens: Vec::new(),
             wasm_runtime: WasmRuntimeConfig::default(),
-            runtime_v2: RuntimeV2Config::default(),
+            runtime: RuntimeConfig::default(),
             idle: crate::idle::IdleConfig::default(),
             proxy_protocol_port: 0,
         }
@@ -498,10 +498,10 @@ impl PlusConfig {
                 "wasm_runtime 的超时、大小、并发或队列限制超出安全范围".into(),
             ));
         }
-        let runtime = &self.runtime_v2;
+        let runtime = &self.runtime;
         if !(16..=1_000_000).contains(&runtime.persistence_queue_capacity) {
             return Err(AppError::ConfigValidation(
-                "runtime_v2.persistence_queue_capacity 必须在 16..=1000000 范围内".into(),
+                "runtime.persistence_queue_capacity 必须在 16..=1000000 范围内".into(),
             ));
         }
         if runtime
@@ -510,13 +510,13 @@ impl PlusConfig {
             .is_some_and(|path| path.trim().is_empty())
         {
             return Err(AppError::ConfigValidation(
-                "runtime_v2.persistence_dead_letter_path 不能是空字符串；使用 null 可显式禁用"
+                "runtime.persistence_dead_letter_path 不能是空字符串；使用 null 可显式禁用"
                     .into(),
             ));
         }
         if runtime.persistence_wal_path.trim().is_empty() {
             return Err(AppError::ConfigValidation(
-                "runtime_v2.persistence_wal_path 不能为空".into(),
+                "runtime.persistence_wal_path 不能为空".into(),
             ));
         }
         // Validate WAL and dead-letter paths do not conflict.
@@ -525,17 +525,17 @@ impl PlusConfig {
             std::path::Path::new(&runtime.persistence_wal_path),
         ) {
             return Err(AppError::ConfigValidation(format!(
-                "runtime_v2 WAL/dead-letter 路径冲突: {e}"
+                "runtime WAL/dead-letter 路径冲突: {e}"
             )));
         }
-        let telemetry = &runtime.telemetry_batcher;
+        let telemetry = &runtime.telemetry;
         if !(16..=1_000_000).contains(&telemetry.queue_capacity)
             || telemetry.max_items_per_batch == 0
             || telemetry.max_items_per_batch > telemetry.queue_capacity
             || !(50..=60_000).contains(&telemetry.flush_interval_ms)
         {
             return Err(AppError::ConfigValidation(
-                "runtime_v2.telemetry_batcher 的队列、批量或刷新间隔无效".into(),
+                "runtime.telemetry_batcher 的队列、批量或刷新间隔无效".into(),
             ));
         }
         if matches!(
@@ -803,26 +803,26 @@ mod tests {
     }
 
     #[test]
-    fn rejects_invalid_runtime_v2_batching_contract() {
+    fn rejects_invalid_runtime_batching_contract() {
         let mut config = PlusConfig::default();
-        config.runtime_v2.persistence_queue_capacity = 0;
+        config.runtime.persistence_queue_capacity = 0;
         assert!(config.validate().is_err());
 
         let mut config = PlusConfig::default();
-        config.runtime_v2.telemetry_batcher.max_items_per_batch =
-            config.runtime_v2.telemetry_batcher.queue_capacity + 1;
+        config.runtime.telemetry.max_items_per_batch =
+            config.runtime.telemetry.queue_capacity + 1;
         assert!(config.validate().is_err());
 
         let mut config = PlusConfig::default();
-        config.runtime_v2.telemetry_batcher.flush_interval_ms = 0;
+        config.runtime.telemetry.flush_interval_ms = 0;
         assert!(config.validate().is_err());
     }
 
     #[test]
-    fn default_runtime_v2_enables_dead_letter_journal() {
+    fn default_runtime_enables_dead_letter_journal() {
         let config = PlusConfig::default();
         assert_eq!(
-            config.runtime_v2.persistence_dead_letter_path.as_deref(),
+            config.runtime.persistence_dead_letter_path.as_deref(),
             Some("data/persistence-dead-letter.jsonl")
         );
     }
@@ -830,23 +830,23 @@ mod tests {
     #[test]
     fn rejects_empty_dead_letter_path_but_allows_explicit_disable() {
         let mut config = PlusConfig::default();
-        config.runtime_v2.persistence_dead_letter_path = Some("   ".to_string());
+        config.runtime.persistence_dead_letter_path = Some("   ".to_string());
         assert!(config.validate().is_err());
 
-        config.runtime_v2.persistence_dead_letter_path = None;
+        config.runtime.persistence_dead_letter_path = None;
         assert!(config.validate().is_ok());
     }
 
     #[test]
     fn worker_authoritative_requires_real_database_and_active_batcher() {
         let mut config = PlusConfig::default();
-        config.runtime_v2.telemetry_cutover_mode = TelemetryCutoverMode::WorkerAuthoritative;
+        config.runtime.telemetry_cutover_mode = TelemetryCutoverMode::WorkerAuthoritative;
         assert!(config.validate().is_err());
 
         config.database_url = Some("postgres://localhost/phira".to_string());
         assert!(config.validate().is_ok());
 
-        config.runtime_v2.telemetry_batcher.dry_run = true;
+        config.runtime.telemetry.dry_run = true;
         assert!(config.validate().is_err());
     }
 

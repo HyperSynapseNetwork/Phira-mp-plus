@@ -232,14 +232,14 @@ async fn persist_touches(
     if decision.enqueue_worker {
         let event_id = uuid::Uuid::new_v4().to_string();
         let payload = serde_json::json!({
-            "runtime_v2_event_id": event_id,
+            "event_id": event_id,
             "room_id": room.id.to_string(),
             "round_id": rid,
             "user_id": user.id,
             "count": touch_data.len(),
             "data": touch_data,
-            "runtime_v2_dual_write": worker_event_is_mirror(mode, direct_written),
-            "runtime_v2_persistence_mode": mode.as_str(),
+            "dual_write": worker_event_is_mirror(mode, direct_written),
+            "persistence_mode": mode.as_str(),
         });
         let started = Instant::now();
         worker_enqueued = user
@@ -353,14 +353,14 @@ async fn persist_judges(
     if decision.enqueue_worker {
         let event_id = uuid::Uuid::new_v4().to_string();
         let payload = serde_json::json!({
-            "runtime_v2_event_id": event_id,
+            "event_id": event_id,
             "room_id": room.id.to_string(),
             "round_id": rid,
             "user_id": user.id,
             "count": judge_data.len(),
             "data": judge_data,
-            "runtime_v2_dual_write": worker_event_is_mirror(mode, direct_written),
-            "runtime_v2_persistence_mode": mode.as_str(),
+            "dual_write": worker_event_is_mirror(mode, direct_written),
+            "persistence_mode": mode.as_str(),
         });
         let started = Instant::now();
         worker_enqueued = user

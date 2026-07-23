@@ -139,7 +139,7 @@ CREATE TABLE IF NOT EXISTS mp_runtime_telemetry_batches (
     batch_uuid TEXT NOT NULL,
     run_id TEXT,
     scope TEXT NOT NULL DEFAULT 'production',
-    pipeline TEXT NOT NULL DEFAULT 'runtime_v2.telemetry_batcher',
+    pipeline TEXT NOT NULL DEFAULT 'runtime.telemetry_batcher',
     kind TEXT NOT NULL,
     room_id TEXT,
     round_uuid TEXT,
@@ -250,7 +250,7 @@ ALTER TABLE mp_runtime_telemetry_items ADD COLUMN IF NOT EXISTS event_id TEXT;
 ALTER TABLE mp_runtime_telemetry_batches ADD COLUMN IF NOT EXISTS batch_uuid TEXT;
 ALTER TABLE mp_runtime_telemetry_batches ADD COLUMN IF NOT EXISTS run_id TEXT;
 ALTER TABLE mp_runtime_telemetry_batches ADD COLUMN IF NOT EXISTS scope TEXT NOT NULL DEFAULT 'production';
-ALTER TABLE mp_runtime_telemetry_batches ADD COLUMN IF NOT EXISTS pipeline TEXT NOT NULL DEFAULT 'runtime_v2.telemetry_batcher';
+ALTER TABLE mp_runtime_telemetry_batches ADD COLUMN IF NOT EXISTS pipeline TEXT NOT NULL DEFAULT 'runtime.telemetry_batcher';
 ALTER TABLE mp_runtime_telemetry_batches ADD COLUMN IF NOT EXISTS schema_version INTEGER NOT NULL DEFAULT 3;
 ALTER TABLE mp_runtime_telemetry_batches ALTER COLUMN schema_version SET DEFAULT 3;
 ALTER TABLE mp_runtime_telemetry_items ALTER COLUMN schema_version SET DEFAULT 3;

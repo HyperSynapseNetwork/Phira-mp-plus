@@ -133,7 +133,7 @@ impl DbManager {
         #[cfg(feature = "postgres")]
         if let Self::Pg(pool) = self {
             let event_id = payload
-                .get("runtime_v2_event_id")
+                .get("event_id")
                 .and_then(Value::as_str)
                 .filter(|value| !value.is_empty())
                 .map(ToString::to_string);

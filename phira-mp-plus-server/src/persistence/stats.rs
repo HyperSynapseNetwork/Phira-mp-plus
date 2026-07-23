@@ -1,7 +1,7 @@
 //! Low-overhead PersistenceWorker stats and trace helpers.
 
 use crate::persistence::{PersistencePipeline, PersistenceQueueHealth};
-use crate::telemetry_batcher::TelemetryBatcherStats;
+use crate::telemetry::TelemetryBatcherStats;
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeMap, sync::Arc};
 use tokio::sync::RwLock;
@@ -186,9 +186,6 @@ pub struct PersistenceStats {
     pub pending_ratio_percent: u8,
     pub queue_health: String,
     pub backpressure_advice: String,
-    pub mirrored_from_event_bus: u64,
-    pub skipped_event_bus_events: u64,
-    pub bridge_lagged: u64,
     pub simulation_persist_requests: u64,
     pub production_persist_requests: u64,
     pub production_persist_skipped: u64,
@@ -204,7 +201,6 @@ pub struct PersistenceStats {
     pub telemetry_cutover: TelemetryCutoverStats,
     pub db_dispatch: BTreeMap<String, PersistenceLatencyStats>,
     pub db_dispatch_failures: BTreeMap<String, u64>,
-    pub db_dispatch_skipped_no_database: BTreeMap<String, u64>,
     pub benchmark_report_persist_requests: u64,
     pub benchmark_report_persist_skipped: u64,
     pub telemetry_cutover_mode: String,
@@ -352,17 +348,6 @@ pub async fn record_db_dispatch_failure(
         .entry(pipeline.as_str().to_string())
         .or_insert(0) += 1;
     stats.last_error = Some(error);
-}
-
-pub async fn record_db_dispatch_skipped_no_database(
-    stats: &Arc<RwLock<PersistenceStats>>,
-    pipeline: PersistencePipeline,
-) {
-    let mut stats = stats.write().await;
-    *stats
-        .db_dispatch_skipped_no_database
-        .entry(pipeline.as_str().to_string())
-        .or_insert(0) += 1;
 }
 
 pub async fn record_queued(

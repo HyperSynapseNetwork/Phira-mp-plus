@@ -16,7 +16,7 @@ use crate::persistence::stats::{
     record_telemetry_cutover_observation, PersistenceStats, TelemetryCutoverObservation,
 };
 use crate::persistence::wal::PersistenceWal;
-use crate::telemetry_batcher::{
+use crate::telemetry::{
     TelemetryBatcher, TelemetryBatcherPolicy, TelemetryBatcherStats, TelemetryCutoverMode,
 };
 use serde_json::json;
@@ -198,7 +198,7 @@ async fn process_worker_loop(
     };
     use crate::persistence::stats::{
         record_benchmark_report_persist_request, record_benchmark_report_persist_skipped,
-        record_db_dispatch_failure, record_db_dispatch_skipped_no_database,
+        record_db_dispatch_failure,
         record_db_dispatch_success, record_processed, record_production_persist_request,
         record_production_persist_skipped, record_production_telemetry_stage_failed,
         record_production_telemetry_staged, record_simulation_persist_request,
@@ -323,14 +323,6 @@ async fn process_worker_loop(
                 )
                 .await;
             }
-            BenchmarkReportStage::SkippedNoDatabase => {
-                record_benchmark_report_persist_skipped(worker_stats).await;
-                record_db_dispatch_skipped_no_database(
-                    worker_stats,
-                    crate::persistence::PersistencePipeline::BenchmarkReport,
-                )
-                .await;
-            }
             BenchmarkReportStage::NotBenchmark => {
                 match persist_simulation_event_if_needed(&event).await {
                     PersistenceWriteStage::Acknowledged {
@@ -360,9 +352,6 @@ async fn process_worker_loop(
                         }
                         record_simulation_persist_request(worker_stats).await;
                         record_db_dispatch_failure(worker_stats, pipeline, elapsed_ms, error).await;
-                    }
-                    PersistenceWriteStage::SkippedNoDatabase { pipeline } => {
-                        record_db_dispatch_skipped_no_database(worker_stats, pipeline).await;
                     }
                     PersistenceWriteStage::NotApplicable => {
                         match stage_production_telemetry_if_needed(wal_id, &event, worker_telemetry).await {
@@ -425,13 +414,6 @@ async fn process_worker_loop(
                                         )
                                         .await;
                                     }
-                                    PersistenceWriteStage::SkippedNoDatabase { pipeline } => {
-                                        record_db_dispatch_skipped_no_database(
-                                            worker_stats,
-                                            pipeline,
-                                        )
-                                        .await;
-                                    }
                                     PersistenceWriteStage::NotApplicable => {
                                         if !event.is_simulation()
                                             && !matches!(
@@ -460,9 +442,7 @@ async fn process_worker_loop(
             PersistenceEvent::Flush => {
                 debug!(kind = %kind, "persistence worker flush marker received");
             }
-            other => {
-                trace!(?other, "persistence worker consumed mirrored event");
-            }
+            _ => {}
         }
         record_processed(worker_stats, kind.clone(), simulation, summary).await;
 
@@ -950,7 +930,7 @@ impl PersistenceWorker {
         let mode = self.telemetry_cutover_mode().await;
         let decision = mode.cutover_decision();
         if let Some(db) = crate::internal_hooks::DB.get().filter(|db| db.is_active()) {
-            db.record_runtime_persistence_meta_sync("runtime_v2.persistence_policy", json!({
+            db.record_runtime_persistence_meta_sync("runtime.persistence_policy", json!({
                 "queue_capacity": stats.capacity,
                 "queue_health": stats.queue_health,
                 "pending_ratio_percent": stats.pending_ratio_percent,
@@ -977,7 +957,7 @@ impl PersistenceWorker {
                     "worker_dry_run_success_ratio_percent": stats.telemetry_cutover.worker_dry_run_success_ratio_percent,
                     "readiness": stats.telemetry_cutover.readiness
                 },
-                "source": "server_config.runtime_v2"
+                "source": "server_config.runtime"
             }));
         }
     }
@@ -1025,7 +1005,7 @@ impl PersistenceWorker {
                     "fallback_direct_when_worker_rejects": decision.fallback_direct_when_worker_rejects,
                 },
                 "available_modes": TelemetryCutoverMode::variants().iter().map(|mode| mode.as_str()).collect::<Vec<_>>(),
-                "updated_by": "runtime_v2.persistence_worker"
+                "updated_by": "runtime.persistence_worker"
             }));
         }
         Ok(mode)
@@ -1045,19 +1025,4 @@ impl PersistenceWorker {
         self.telemetry_cutover_mode().await.should_enqueue_worker()
     }
 
-    pub(crate) async fn record_mirrored_from_event_bus(&self) {
-        self.stats.write().await.mirrored_from_event_bus += 1;
-    }
-
-    pub(crate) async fn record_skipped_event_bus_event(&self) {
-        self.stats.write().await.skipped_event_bus_events += 1;
-    }
-
-    pub(crate) async fn record_bridge_lagged(&self, skipped: u64) {
-        let mut stats = self.stats.write().await;
-        stats.bridge_lagged += skipped;
-        stats.last_error = Some(format!(
-            "persistence event-bus mirror lagged by {skipped} event(s)"
-        ));
-    }
 }

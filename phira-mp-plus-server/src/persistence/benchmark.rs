@@ -53,11 +53,11 @@ impl BenchmarkReportPersistenceRecord {
         let mut payload = serde_json::to_value(&self.report)
             .unwrap_or_else(|err| serde_json::json!({"serialize_error": err.to_string()}));
         if let Some(obj) = payload.as_object_mut() {
-            obj.entry("runtime_v2_report_id".to_string())
+            obj.entry("report_id".to_string())
                 .or_insert_with(|| serde_json::json!(self.report_id.clone()));
-            obj.entry("runtime_v2_schema_version".to_string())
+            obj.entry("schema_version".to_string())
                 .or_insert_with(|| serde_json::json!(self.schema_version));
-            obj.entry("runtime_v2_storage".to_string())
+            obj.entry("storage".to_string())
                 .or_insert_with(|| {
                     serde_json::json!(crate::persistence::schema::RUNTIME_BENCHMARK_REPORTS_TABLE)
                 });
@@ -121,15 +121,15 @@ mod tests {
         let second_payload = record.payload();
         assert!(!record.report_id.is_empty());
         assert_eq!(
-            first_payload["runtime_v2_report_id"].as_str(),
+            first_payload["report_id"].as_str(),
             Some(record.report_id.as_str())
         );
         assert_eq!(
-            second_payload["runtime_v2_report_id"].as_str(),
+            second_payload["report_id"].as_str(),
             Some(record.report_id.as_str())
         );
         assert_eq!(
-            first_payload["runtime_v2_storage"].as_str(),
+            first_payload["storage"].as_str(),
             Some(crate::persistence::schema::RUNTIME_BENCHMARK_REPORTS_TABLE)
         );
     }

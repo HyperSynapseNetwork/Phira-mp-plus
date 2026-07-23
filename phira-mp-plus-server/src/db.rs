@@ -50,7 +50,7 @@ pub struct RuntimeTelemetryBatchRecord {
     pub source: String,
     pub flush_reason: String,
     pub schema_version: i32,
-    /// Historical schema field (runtime_v2_dual_write metadata).
+    /// Historical schema field (runtime_dual_write metadata).
     /// Not a current telemetry mode — retained for backward-compatible reads.
     pub dual_write: bool,
     pub kind: String,
@@ -247,7 +247,7 @@ async fn init_tables(pool: &sqlx::PgPool) -> Result<()> {
         "mode": "direct_only",
         "description": "direct RoundStore/db.rs only (safe default). WorkerPreferred = direct first; Worker mirror after direct ACK or canonical compensation after direct failure.",
         "available_modes": ["direct_only", "worker_preferred", "worker_authoritative"],
-        "updated_by": "runtime_v2.bootstrap"
+        "updated_by": "runtime.bootstrap"
     }))
     .bind(now)
     .execute(pool)

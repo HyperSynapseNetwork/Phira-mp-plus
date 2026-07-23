@@ -10,7 +10,7 @@
 //! | Module        | Responsibility                              |
 //! |---------------|---------------------------------------------|
 //! | `benchmark`   | BenchRequest, HybridBenchmarkConfig, token helpers |
-//! | `config`      | PlusConfig, LiveConfig, RuntimeV2Config, … |
+//! | `config`      | PlusConfig, LiveConfig, RuntimeConfig, … |
 //! | `events`      | Event subscribers (runtime/plugin observer) |
 //! | `query`       | State query dispatch (sync engine for CLI/WIT/Web) |
 //! | `snapshot`    | RoomSnapshot, UserSnapshot, build_snapshot  |

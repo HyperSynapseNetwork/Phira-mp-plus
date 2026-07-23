@@ -401,7 +401,7 @@ MALLOC_CONF=background_thread:true,dirty_decay_ms:3000,muzzy_decay_ms:3000,stats
 
 ### Persistence admission WAL
 
-`runtime_v2.persistence_wal_path` configures the local write-ahead journal used before PersistenceWorker queue admission. The default is `data/persistence-worker.wal.jsonl`.
+`runtime.persistence_wal_path` configures the local write-ahead journal used before PersistenceWorker queue admission. The default is `data/persistence-worker.wal.jsonl`.
 
 For each accepted event PMP performs:
 

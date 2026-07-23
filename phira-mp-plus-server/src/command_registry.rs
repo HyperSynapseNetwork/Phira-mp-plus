@@ -334,7 +334,7 @@ impl CommandRegistry {
         out
     }
 
-    /// Install argument completers. Called from `runtime_v2_registry()`.
+    /// Install argument completers. Called from `runtime_registry()`.
     /// Dynamic completers (room IDs, user IDs) reference server state via
     /// `Weak` and are only active while the server is running.
     pub fn init_completers(&self) {
@@ -673,7 +673,7 @@ fn register(registry: &mut CommandRegistry, spec: CommandSpec) {
         .unwrap_or_else(|err| panic!("failed to register command `{name}`: {err}"));
 }
 
-pub fn runtime_v2_registry() -> CommandRegistry {
+pub fn runtime_registry() -> CommandRegistry {
     let mut registry = CommandRegistry::new();
 
     register(
@@ -708,7 +708,7 @@ pub fn runtime_v2_registry() -> CommandRegistry {
     for spec in [
         CommandSpec::new(
             "runtime status",
-            "runtime-v2",
+            "runtime",
             "查看 Runtime v2 诊断信息。",
             "runtime status",
         )
@@ -722,7 +722,7 @@ pub fn runtime_v2_registry() -> CommandRegistry {
         })),
         CommandSpec::new(
             "runtime commands",
-            "runtime-v2",
+            "runtime",
             "查看 Command Registry 统计。",
             "runtime commands",
         )
@@ -733,35 +733,35 @@ pub fn runtime_v2_registry() -> CommandRegistry {
         })),
         CommandSpec::new(
             "runtime roadmap",
-            "runtime-v2",
+            "runtime",
             "查看 Runtime v2 总目标工作板。",
             "runtime roadmap",
         )
         .developer(),
         CommandSpec::new(
             "runtime phira",
-            "runtime-v2",
+            "runtime",
             "查看统一 Phira HTTP RetryClient 统计和策略。",
             "runtime phira",
         )
         .developer(),
         CommandSpec::new(
             "runtime events",
-            "runtime-v2",
+            "runtime",
             "查看事件总线统计与最近事件。",
             "runtime events",
         )
         .developer(),
         CommandSpec::new(
             "runtime persistence",
-            "runtime-v2",
+            "runtime",
             "查看持久化 Worker 与遥测批处理器统计。",
             "runtime persistence",
         )
         .advanced(),
         CommandSpec::new(
             "config reload",
-            "runtime-v2",
+            "runtime",
             "重新加载启动时指定的 YAML 并热更新运行时配置。",
             "config reload",
         )
@@ -866,35 +866,22 @@ pub fn runtime_v2_registry() -> CommandRegistry {
             ]
         })),
         CommandSpec::new(
-            "runtime cutover",
-            "runtime-v2",
-            "查看或切换 Touch/Judge 持久化 cutover 模式。",
-            "runtime cutover [direct_only|worker_preferred|worker_authoritative]",
-        )
-        .advanced()
-        .arg(CommandArgSpec::optional(
-            "mode",
-            "direct_only、worker_preferred 或 worker_authoritative",
-        ))
-        .example("runtime cutover")
-        .example("runtime cutover worker_preferred"),
-        CommandSpec::new(
             "runtime schema",
-            "runtime-v2",
+            "runtime",
             "查看持久化 schema 说明。",
             "runtime schema",
         )
         .developer(),
         CommandSpec::new(
             "runtime rooms",
-            "runtime-v2",
+            "runtime",
             "查看房间命令通道与 Actor 迁移状态。",
             "runtime rooms",
         )
         .developer(),
         CommandSpec::new(
             "runtime actors",
-            "runtime-v2",
+            "runtime",
             "查看 Actor 模型迁移蓝图。",
             "runtime actors",
         )
@@ -1265,7 +1252,7 @@ pub fn runtime_v2_registry() -> CommandRegistry {
         CommandSpec::new("wal inspect", "ops", "查看 WAL 状态统计。", "wal inspect")
             .handler(Arc::new(|state, _args| {
                 let mut lines = vec![];
-                let wal_path = &state.config.runtime_v2.persistence_wal_path;
+                let wal_path = &state.config.runtime.persistence_wal_path;
                 lines.push(format!("  ◆ WAL 路径: {wal_path}"));
                 if let Ok(meta) = std::fs::metadata(wal_path) {
                     lines.push(format!("  ◆ 文件大小: {} 字节", meta.len()));
@@ -1276,7 +1263,7 @@ pub fn runtime_v2_registry() -> CommandRegistry {
             .handler(Arc::new(|state, args| {
                 let limit = args.first().and_then(|v| v.parse::<usize>().ok()).unwrap_or(10);
                 let mut lines = vec![format!("  ◆ dead-letter 最近 {limit} 条")];
-                if let Some(path) = &state.config.runtime_v2.persistence_dead_letter_path {
+                if let Some(path) = &state.config.runtime.persistence_dead_letter_path {
                     if let Ok(content) = std::fs::read_to_string(path) {
                         let count = content.lines().filter(|l| !l.trim().is_empty()).count();
                         lines.push(format!("  ◆ 总记录数: {count}"));
@@ -1299,7 +1286,7 @@ pub fn runtime_v2_registry() -> CommandRegistry {
         CommandSpec::new("dead-letter replay", "ops", "重放 dead-letter 事件到持久化队列。", "dead-letter replay")
             .handler(Arc::new(|state, _args| {
                 let mut lines = vec!["  ◆ dead-letter replay...".to_string()];
-                let path = &state.config.runtime_v2.persistence_dead_letter_path.clone();
+                let path = &state.config.runtime.persistence_dead_letter_path.clone();
                 let Some(path) = path else {
                     lines.push("  ○ dead-letter 未配置".to_string());
                     return lines;
@@ -1388,7 +1375,7 @@ mod tests {
 
     #[test]
     fn registry_indexes_canonical_children() {
-        let registry = runtime_v2_registry();
+        let registry = runtime_registry();
         assert!(registry.get("help").is_some());
         assert!(
             registry.get("h").is_none(),
@@ -1413,7 +1400,7 @@ mod tests {
 
     #[test]
     fn help_uses_structured_sections() {
-        let registry = runtime_v2_registry();
+        let registry = runtime_registry();
         let help = registry.format_help("rooms").expect("rooms help");
         assert!(help.contains("NAME"));
         assert!(help.contains("USAGE"));
@@ -1423,7 +1410,7 @@ mod tests {
 
     #[test]
     fn overview_has_no_compatibility_surface() {
-        let registry = runtime_v2_registry();
+        let registry = runtime_registry();
         let overview = registry.format_overview();
         assert!(!overview.contains("plug-enable"));
         assert!(registry.get("plug-enable").is_none());
@@ -1432,14 +1419,14 @@ mod tests {
 
     #[test]
     fn canonical_rooms_command_exists() {
-        let registry = runtime_v2_registry();
+        let registry = runtime_registry();
         let spec = registry.get("rooms").expect("rooms should exist");
         assert_eq!(spec.name, "rooms");
     }
 
     #[test]
     fn primary_count_is_within_limit() {
-        let registry = runtime_v2_registry();
+        let registry = runtime_registry();
         let (primary, _advanced, _dev) = registry.command_surface_counts();
         assert!(primary <= 40, "primary count {} exceeds 40 limit", primary);
         assert!(primary > 0);
@@ -1447,7 +1434,7 @@ mod tests {
 
     #[test]
     fn audience_methods_produce_distinct_output() {
-        let registry = runtime_v2_registry();
+        let registry = runtime_registry();
         assert!(!registry.format_advanced().is_empty());
         assert!(!registry.format_dev().is_empty());
     }

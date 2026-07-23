@@ -64,7 +64,7 @@ macro_rules! read_lock {
     }};
 }
 
-// Configuration types (LiveConfig, PlusConfig, PlusConfigCli, RuntimeV2Config,
+// Configuration types (LiveConfig, PlusConfig, PlusConfigCli, RuntimeConfig,
 // and default-value helpers) moved to super::config.
 use super::config::{LiveConfig, PlusConfig};
 
@@ -194,7 +194,7 @@ impl PlusServer {
         let (bench_tx, bench_rx) =
             tokio::sync::mpsc::channel::<BenchRequest>(BENCHMARK_QUEUE_CAPACITY);
 
-        let runtime_v2 = config.runtime_v2.clone();
+        let runtime = config.runtime.clone();
         // Database is verified at startup: an explicitly configured database
         // URL must result in a working connection. The only exception is
         // `allow_database_degraded_mode`, which tolerates a failed init for
@@ -208,7 +208,7 @@ impl PlusServer {
         let db_active = db_manager.is_active();
         if db_url.as_deref().is_some_and(|u| !u.trim().is_empty()) && !db_active {
             if matches!(
-                runtime_v2.telemetry_cutover_mode,
+                runtime.telemetry_cutover_mode,
                 crate::telemetry::TelemetryCutoverMode::WorkerAuthoritative
             ) {
                 return Err(crate::error::AppError::Database(
@@ -229,7 +229,7 @@ impl PlusServer {
                 "database_url configured but connection failed; allow_database_degraded_mode=true, continuing with degraded persistence"
             );
         }
-        let command_registry = Arc::new(crate::command_registry::runtime_v2_registry());
+        let command_registry = Arc::new(crate::command_registry::runtime_registry());
         let event_bus = Arc::new(crate::event_bus::EventBus::new_with_trace(
             crate::runtime_diagnostics::EVENT_BUS_CHANNEL_CAPACITY,
             crate::runtime_diagnostics::EVENT_TRACE_WINDOW,
@@ -241,20 +241,16 @@ impl PlusServer {
         let simulation = Arc::new(crate::simulation::SimulationManager::new());
         let persistence_worker =
             crate::persistence_worker::PersistenceWorker::spawn_with_policy_and_journals(
-                runtime_v2.persistence_queue_capacity,
-                runtime_v2.telemetry_batcher.clone(),
-                runtime_v2.telemetry_cutover_mode,
-                runtime_v2.persistence_dead_letter_path.clone(),
-                runtime_v2.persistence_wal_path.clone(),
+                runtime.persistence_queue_capacity,
+                runtime.telemetry.clone(),
+                runtime.telemetry_cutover_mode,
+                runtime.persistence_dead_letter_path.clone(),
+                runtime.persistence_wal_path.clone(),
             );
-        crate::persistence_worker::spawn_event_bus_mirror(
-            Arc::clone(&event_bus),
-            Arc::clone(&persistence_worker),
-        );
         let actor_runtime = Arc::new(crate::actor_runtime::ActorRuntime::new_blueprint());
         let room_commands = Arc::new(crate::room_actor::RoomCommandGateway::new());
         let phira_client = Arc::new(crate::phira_client::PhiraRetryClient::new(
-            runtime_v2.phira_http.clone().into_policy(),
+            runtime.phira_http.clone().into_policy(),
         )?);
         let events = Arc::new(SseHub::new());
         // Capture config fields before config is consumed by state
@@ -798,94 +794,6 @@ impl PlusServerState {
         sent
     }
 
-    async fn mirror_room_event_to_runtime_bus(&self, event: &RoomEvent) {
-        match event {
-            RoomEvent::CreateRoom { room, .. } => {
-                let room_uuid = self
-                    .rooms
-                    .read()
-                    .await
-                    .get(room)
-                    .map(|room| room.uuid)
-                    .unwrap_or_else(Uuid::nil);
-                self.publish_runtime_event(crate::event_bus::MpEvent::RoomCreated {
-                    room_id: room.clone(),
-                    room_uuid,
-                });
-                self.publish_runtime_event(crate::event_bus::MpEvent::RoomUpdated {
-                    room_id: room.clone(),
-                });
-            }
-            RoomEvent::UpdateRoom { room, data } => {
-                self.publish_runtime_event(crate::event_bus::MpEvent::RoomUpdated {
-                    room_id: room.clone(),
-                });
-                if let Some(host) = data.host {
-                    self.publish_runtime_event(crate::event_bus::MpEvent::HostChanged {
-                        room_id: room.clone(),
-                        host: Some(host),
-                    });
-                }
-                if let Some(lock) = data.lock {
-                    self.publish_runtime_event(crate::event_bus::MpEvent::RoomLocked {
-                        room_id: room.clone(),
-                        locked: lock,
-                    });
-                }
-                if let Some(cycle) = data.cycle {
-                    self.publish_runtime_event(crate::event_bus::MpEvent::RoomCycled {
-                        room_id: room.clone(),
-                        cycle,
-                    });
-                }
-                if let Some(chart_id) = data.chart {
-                    self.publish_runtime_event(crate::event_bus::MpEvent::ChartSelected {
-                        room_id: room.clone(),
-                        chart_id,
-                    });
-                }
-                if let Some(state) = data.state {
-                    self.publish_runtime_event(crate::event_bus::MpEvent::RoomStateChanged {
-                        room_id: room.clone(),
-                        state: format!("{state:?}"),
-                    });
-                }
-            }
-            RoomEvent::JoinRoom { room, user } => {
-                self.publish_runtime_event(crate::event_bus::MpEvent::RoomJoined {
-                    room_id: room.clone(),
-                    user_id: *user,
-                });
-            }
-            RoomEvent::LeaveRoom { room, user } => {
-                self.publish_runtime_event(crate::event_bus::MpEvent::RoomLeft {
-                    room_id: room.clone(),
-                    user_id: *user,
-                });
-            }
-            RoomEvent::NewRound { room, .. } => {
-                let room_ref = {
-                    let rooms = self.rooms.read().await;
-                    rooms.get(room).map(Arc::clone)
-                };
-                let round_id = if let Some(room_ref) = room_ref {
-                    room_ref
-                        .current_round_id
-                        .read()
-                        .await
-                        .map(|round_id| round_id.to_string())
-                        .unwrap_or_else(|| "unknown".to_string())
-                } else {
-                    "unknown".to_string()
-                };
-                self.publish_runtime_event(crate::event_bus::MpEvent::RoundCompleted {
-                    room_id: room.clone(),
-                    round_id,
-                });
-            }
-        }
-    }
-
     /// 获取房间 monitor 会话
     pub async fn get_room_monitor(&self) -> Option<Arc<crate::session::Session>> {
         self.room_monitor
@@ -912,7 +820,6 @@ impl PlusServerState {
     }
 
     pub async fn publish_room_event(&self, event: RoomEvent) {
-        self.mirror_room_event_to_runtime_bus(&event).await;
         // Enqueue to PersistenceWorker (exclusive — no direct DB fallback)
         let _ = self
             .persistence_worker

@@ -1,6 +1,6 @@
 //! Interactive administrative console.
 
-use crate::command_registry::runtime_v2_registry;
+use crate::command_registry::runtime_registry;
 use crate::terminal::{sanitize_paste, strip_ansi, EraseKeyGuard, TuiCapabilities};
 use crossterm::{
     cursor::{Hide, MoveTo, Show},
@@ -493,7 +493,7 @@ impl TuiApp {
         let before_cursor = self.input.chars().take(self.cursor_pos).collect::<String>();
         let trimmed_start = before_cursor.trim_start();
         let prefix = completion_prefix(trimmed_start);
-        let registry = runtime_v2_registry();
+        let registry = runtime_registry();
         let matches = registry.complete_line(trimmed_start);
         match matches.as_slice() {
             [] => self.add_output(format!("  无补全候选: {prefix}")),

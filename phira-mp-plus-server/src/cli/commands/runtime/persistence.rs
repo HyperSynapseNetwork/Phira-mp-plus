@@ -23,21 +23,6 @@ impl CliHandler {
         ));
         self.out(format!("  {} dropped:   {}", c::dim("│"), stats.dropped));
         self.out(format!(
-            "  {} mirrored:  {}",
-            c::dim("│"),
-            stats.mirrored_from_event_bus
-        ));
-        self.out(format!(
-            "  {} skipped:   {}",
-            c::dim("│"),
-            stats.skipped_event_bus_events
-        ));
-        self.out(format!(
-            "  {} lagged:    {}",
-            c::dim("│"),
-            stats.bridge_lagged
-        ));
-        self.out(format!(
             "  {} sim_db_req:{}",
             c::dim("│"),
             stats.simulation_persist_requests
@@ -169,14 +154,9 @@ impl CliHandler {
                     .get(pipeline)
                     .copied()
                     .unwrap_or(0);
-                let skipped = stats
-                    .db_dispatch_skipped_no_database
-                    .get(pipeline)
-                    .copied()
-                    .unwrap_or(0);
                 self.out(format!(
-                    "    {:<22} samples={} avg={}ms max={}ms last={}ms failures={} skipped_no_db={}",
-                    pipeline, latency.samples, latency.avg_ms, latency.max_ms, latency.last_ms, failures, skipped
+                    "    {:<22} samples={} avg={}ms max={}ms last={}ms failures={}",
+                    pipeline, latency.samples, latency.avg_ms, latency.max_ms, latency.last_ms, failures
                 ));
             }
         }

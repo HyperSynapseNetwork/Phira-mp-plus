@@ -102,7 +102,7 @@ impl TelemetryCutoverMode {
 
     pub fn parse(value: &str) -> Option<Self> {
         match value.trim().to_ascii_lowercase().as_str() {
-            "direct" | "direct_only" | "direct-only" => Some(Self::DirectOnly),
+            "direct_only" | "direct-only" => Some(Self::DirectOnly),
             "worker_preferred" | "worker-preferred" => Some(Self::WorkerPreferred),
             "worker_authoritative" | "worker-authoritative" => Some(Self::WorkerAuthoritative),
             _ => None,
@@ -774,7 +774,7 @@ async fn write_runtime_telemetry_batch(
             batch_uuid: batch_uuid.to_string(),
             run_id: extract_run_id(&item.payload),
             scope: "production".to_string(),
-            pipeline: format!("runtime_v2.telemetry_batcher.{}", item.persistence_mode),
+            pipeline: format!("runtime.telemetry_batcher.{}", item.persistence_mode),
             source: if item.dual_write {
                 "telemetry_batcher_mirror".to_string()
             } else {

@@ -61,6 +61,6 @@ impl CliHandler {
             stats.circuit_breaker.failure_threshold, stats.circuit_breaker.open_duration_ms,
             stats.circuit_breaker.remaining_open_ms
         ));
-        self.out(format!("  {} Phira HTTP 策略来自 server_config.yml 的 runtime_v2.phira_http；Simulation 默认不访问 Phira", c::dim("▸")));
+        self.out(format!("  {} Phira HTTP 策略来自 server_config.yml 的 runtime.phira_http；Simulation 默认不访问 Phira", c::dim("▸")));
     }
 }
