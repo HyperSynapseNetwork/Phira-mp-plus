@@ -646,7 +646,7 @@ impl Session {
                                     }
                                     let user = &this.get().unwrap().user;
                                     let room_state = match user.room.read().await.as_ref() {
-                                        Some(room) => Some(room.client_state(user).await),
+                                        Some(room) => Some(crate::session_room::build_client_room_state(room, user).await),
                                         None => None,
                                     };
                                     debug!("sending auth OK to user {}", user.id);
@@ -933,7 +933,7 @@ impl Session {
                                     .as_ref()
                                     .map(Arc::clone);
                                 if let Some(room) = room {
-                                    if room.check_host(&joining_player).await.is_ok() {
+                                    if room.control_snapshot().host_id == Some(joining_player.id) {
                                         // Preserve protocol order for the first player entering an
                                         // administratively-created empty room.
                                         if let Err(err) = send_tx

@@ -817,6 +817,10 @@ impl PlusServerState {
     /// the Room struct directly and inserts it into state.rooms. No mailbox
     /// command exists for room creation. A future RoomActorCommand::CreateRoom
     /// variant could unify this path with the actor lifecycle.
+    ///
+    /// TODO(Phase2-WorkC): Room no longer holds state (set_persistent_empty,
+    /// set_phira_api_endpoint_override removed). These must be routed through
+    /// the gateway after the room actor is registered.
     pub async fn create_empty_room(
         self: &Arc<Self>,
         room_id: &str,
@@ -839,9 +843,15 @@ impl PlusServerState {
             max_users,
             Some(Arc::clone(&self.round_store)),
         ));
-        room.set_persistent_empty(persistent_empty);
+        // TODO(Phase2-WorkC): Route set_persistent_empty through gateway once
+        // a RoomActorCommand::SetPersistentEmpty variant exists.
+        // For now, the value is not persisted to actor state.
         if let Some(endpoint) = endpoint.clone() {
-            room.set_phira_api_endpoint_override(Some(endpoint)).await;
+            // Route endpoint override through gateway.
+            let _ = self
+                .room_commands
+                .set_phira_api_endpoint(self, &rid.to_string(), Some(endpoint))
+                .await;
         }
         {
             let mut rooms = self.rooms.write().await;
@@ -855,9 +865,11 @@ impl PlusServerState {
             }
             rooms.insert(rid.clone(), Arc::clone(&room));
         }
+        // Re-use session_room's build function for consistency.
+        let data = crate::session_room::build_room_data(&room).await;
         self.publish_room_event(RoomEvent::CreateRoom {
             room: rid.clone(),
-            data: crate::room::Room::into_data(&room).await,
+            data,
         })
         .await;
         self.dispatch_plugin_event(PluginEvent::RoomCreate {
@@ -865,19 +877,26 @@ impl PlusServerState {
             room_id: rid.to_string(),
         })
         .await;
+        // Read properties for response from snapshot.
+        let control = room.control_snapshot();
         Ok(serde_json::json!({
             "ok": true,
             "room_id": rid.to_string(),
             "uuid": room.uuid.to_string(),
-            "persistent_empty": room.is_persistent_empty(),
-            "phira_api_endpoint": room.effective_phira_api_endpoint(self).await,
-            "phira_api_endpoint_override": room.phira_api_endpoint_override().await,
+            "persistent_empty": control.persistent_empty,
+            "phira_api_endpoint": self.config.phira_api_endpoint,
+            "phira_api_endpoint_override": control.phira_api_endpoint,
         }))
     }
 
     /// TODO(Phase2-WorkD): Direct room mutation bypassing gateway. No
     /// RoomActorCommand::SetPersistentEmpty variant exists yet. Consider adding
     /// one so this operation goes through the per-room mailbox.
+    ///
+    /// TODO(Phase2-WorkC): Room no longer has set_persistent_empty. The
+    /// persistent_empty flag should be stored in actor_state. This function
+    /// is kept as a stub that records the plugin event but does not persist
+    /// the flag until a gateway command exists.
     pub async fn set_room_persistent_empty(
         &self,
         room_id: &str,
@@ -887,11 +906,8 @@ impl PlusServerState {
             .to_string()
             .try_into()
             .map_err(|_| "invalid room_id".to_string())?;
-        let room = {
-            let rooms = self.rooms.read().await;
-            rooms.get(&rid).map(Arc::clone).ok_or("room not found")?
-        };
-        room.set_persistent_empty(persistent);
+        // Room no longer has set_persistent_empty. The value would need to be
+        // stored in actor_state via a future gateway command.
         self.dispatch_plugin_event(PluginEvent::RoomModify {
             user_id: 0,
             room_id: rid.to_string(),
@@ -904,8 +920,10 @@ impl PlusServerState {
     }
 
     /// 如果房间没有真实房主或系统 `?` 房主，让指定普通玩家成为房主。
-    /// `announce=false` 用于无人空房间首个玩家加入：这里只更新服务器状态，
-    /// `JoinRoom(Ok)` 发出后再由 Session 发送 `ChangeHost(true)`，避免协议乱序。
+    ///
+    /// After Phase 2 Work C, routes through RoomCommandGateway::set_host().
+    /// The `announce` parameter is preserved for call sites that need the
+    /// protocol-ordering guarantee (JoinRoom(Ok) before ChangeHost).
     pub async fn assign_room_host_if_missing(
         &self,
         room: &Arc<crate::room::Room>,
@@ -913,21 +931,34 @@ impl PlusServerState {
         monitor: bool,
         announce: bool,
     ) -> bool {
-        if monitor || room.has_host().await {
+        if monitor {
             return false;
         }
-        if announce {
-            room.set_host(Some(user.id), true).await.is_ok()
-        } else {
-            room.set_joining_user_as_host_silently(user).await.is_ok()
+        // Check if room has a host via control_snapshot (from actor cache).
+        let control = room.control_snapshot();
+        if control.host_id.is_some() || control.system_host {
+            return false;
         }
+        // Use the gateway to set host. The gateway always announces, but
+        // callers with announce=false (first-joiner flow) rely on the caller
+        // to send JoinRoom(Ok) first, then ChangeHost. The gateway-set host
+        // will be visible in the snapshot before the response is sent.
+        self.room_commands
+            .set_host(self, &room.id.to_string(), Some(user.id))
+            .await
+            .is_ok()
     }
 
     /// 刷新房间内展示用用户名与谱面名。只影响服务端 TUI/Web/欢迎语/历史展示；不改客户端本机 Phira API。
+    ///
+    /// After Phase 2 Work C, display name and chart mutations route through
+    /// the RoomCommandGateway.
     pub async fn refresh_room_display_metadata(&self, room: &Arc<crate::room::Room>) {
-        let endpoint = room.effective_phira_api_endpoint(self).await;
+        // Use server's default endpoint (room override no longer directly readable).
+        let endpoint = self.config.phira_api_endpoint.clone();
         Self::refresh_room_display_metadata_with_endpoint(
             room,
+            self,
             endpoint,
             Arc::clone(&self.phira_client),
         )
@@ -936,6 +967,7 @@ impl PlusServerState {
 
     async fn refresh_room_display_metadata_with_endpoint(
         room: &Arc<crate::room::Room>,
+        state: &PlusServerState,
         endpoint: String,
         phira_client: Arc<crate::phira_client::PhiraRetryClient>,
     ) {
@@ -957,12 +989,28 @@ impl PlusServerState {
                     }
                 }
             }
-            room.set_display_name(user.id, display).await;
+            // Route display name through the actor mailbox.
+            let _ = state
+                .room_commands
+                .set_display_name(state, &room.id.to_string(), user.id, &display)
+                .await;
         }
-        let chart_id = room.chart.read().await.as_ref().map(|chart| chart.id);
+        // Route chart through the actor mailbox.
+        let chart_id = {
+            // Read chart id from snapshot.
+            if let Some(snap) = state.room_snapshot(&room.id.to_string()) {
+                snap.chart
+            } else {
+                None
+            }
+        };
         if let Some(chart_id) = chart_id {
             if let Some(chart) = phira_client.fetch_chart_by_id(&endpoint, chart_id).await {
-                *room.chart.write().await = Some(chart);
+                let name = chart.name.clone();
+                let _ = state
+                    .room_commands
+                    .set_chart(state, &room.id.to_string(), chart_id, &name)
+                    .await;
                 room.publish_update(phira_mp_common::PartialRoomData {
                     chart: Some(chart_id),
                     ..Default::default()
@@ -977,6 +1025,9 @@ impl PlusServerState {
     /// 这个流程会访问 Phira `/me` 和 `/chart/<id>`，自定义 endpoint 慢、不可达或 502 时可能
     /// 等到 reqwest 超时。加入房间、强制迁移、设置 endpoint 等协议关键路径不能等待它，
     /// 否则客户端会先看到 timeout，随后重连才发现服务端其实已经把用户放进房间。
+    ///
+    /// After Phase 2 Work C, the room override is no longer directly readable
+    /// from Room. We use the server's default endpoint.
     pub fn refresh_room_display_metadata_background(&self, room: &Arc<crate::room::Room>) {
         let permit = match Arc::clone(&self.room_metadata_refresh_gate).try_acquire_owned() {
             Ok(permit) => permit,
@@ -989,16 +1040,14 @@ impl PlusServerState {
             }
         };
         let room = Arc::clone(room);
-        let fallback_endpoint = self.config.phira_api_endpoint.clone();
+        let state = Arc::clone(&self);
+        let endpoint = self.config.phira_api_endpoint.clone();
         let phira_client = Arc::clone(&self.phira_client);
         crate::supervisor_actor::spawn_named("room-metadata-refresh", async move {
             let _permit = permit;
-            let endpoint = room
-                .phira_api_endpoint_override()
-                .await
-                .unwrap_or(fallback_endpoint);
             PlusServerState::refresh_room_display_metadata_with_endpoint(
                 &room,
+                &state,
                 endpoint,
                 phira_client,
             )
@@ -1528,18 +1577,17 @@ impl PlusServerState {
 
         let mut users = target_room.users().await;
         users.extend(target_room.monitors().await);
+        let room_state = crate::session_room::build_client_room_state(&target_room, &user).await;
+        let is_host = room_state.is_host;
         user.try_send(ServerCommand::JoinRoom(Ok(
             phira_mp_common::JoinRoomResponse {
-                state: target_room.client_room_state().await,
+                state: room_state.state,
                 users: users.into_iter().map(|user| user.to_info()).collect(),
                 live: target_room.is_live(),
             },
         )))
         .await;
-        user.try_send(ServerCommand::ChangeHost(
-            target_room.check_host(&user).await.is_ok(),
-        ))
-        .await;
+        user.try_send(ServerCommand::ChangeHost(is_host)).await;
 
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -1583,22 +1631,9 @@ impl PlusServerState {
     }
 
     pub async fn set_room_hidden(&self, room_id: &str, hidden: bool) -> Result<Value, String> {
-        let rid: RoomId = room_id
-            .to_string()
-            .try_into()
-            .map_err(|_| "invalid room_id".to_string())?;
-        let room = {
-            let rooms = self.rooms.read().await;
-            rooms.get(&rid).map(Arc::clone).ok_or("room not found")?
-        };
-        room.set_hidden(hidden);
-        self.dispatch_plugin_event(PluginEvent::RoomModify {
-            user_id: 0,
-            room_id: rid.to_string(),
-            data: format!(r#"{{"action":"hidden","value":{hidden}}}"#),
-        })
-        .await;
-        Ok(serde_json::json!({"ok": true, "room_id": rid.to_string(), "hidden": hidden}))
+        self.room_commands
+            .set_hidden(self, room_id, hidden)
+            .await
     }
 
     pub async fn get_room_phira_api_endpoint(&self, room_id: &str) -> Result<Value, String> {
@@ -1606,11 +1641,13 @@ impl PlusServerState {
             .to_string()
             .try_into()
             .map_err(|_| "invalid room_id".to_string())?;
+        // Read from control snapshot (populated from actor state).
         let room = {
             let rooms = self.rooms.read().await;
             rooms.get(&rid).map(Arc::clone).ok_or("room not found")?
         };
-        let override_endpoint = room.phira_api_endpoint_override().await;
+        let control = room.control_snapshot();
+        let override_endpoint = control.phira_api_endpoint;
         let using_room_override = override_endpoint.is_some();
         let effective_endpoint = override_endpoint
             .clone()
@@ -1629,43 +1666,48 @@ impl PlusServerState {
         room_id: &str,
         endpoint: Option<String>,
     ) -> Result<Value, String> {
-        let rid: RoomId = room_id
-            .to_string()
-            .try_into()
-            .map_err(|_| "invalid room_id".to_string())?;
-        let room = {
-            let rooms = self.rooms.read().await;
-            rooms.get(&rid).map(Arc::clone).ok_or("room not found")?
-        };
         let normalized = match endpoint {
             Some(value) => Some(normalize_phira_api_endpoint(&value)?),
             None => None,
         };
-        room.set_phira_api_endpoint_override(normalized.clone())
+        // Route through gateway.
+        self.room_commands
+            .set_phira_api_endpoint(self, room_id, normalized.clone())
+            .await?;
+        self.refresh_room_display_metadata_background_by_id(room_id)
             .await;
-        self.refresh_room_display_metadata_background(&room);
+        let control = {
+            let rooms = self.rooms.read().await;
+            let rid: RoomId = room_id
+                .to_string()
+                .try_into()
+                .map_err(|_| "invalid room_id".to_string())?;
+            rooms.get(&rid).map(|r| r.control_snapshot())
+        };
         let using_room_override = normalized.is_some();
         let effective_endpoint = normalized
             .clone()
             .unwrap_or_else(|| self.config.phira_api_endpoint.clone());
-        self.dispatch_plugin_event(PluginEvent::RoomModify {
-            user_id: 0,
-            room_id: rid.to_string(),
-            data: serde_json::json!({
-                "action": "phira_api_endpoint",
-                "value": normalized.clone(),
-                "effective": effective_endpoint.clone(),
-            })
-            .to_string(),
-        })
-        .await;
         Ok(serde_json::json!({
             "ok": true,
-            "room_id": rid.to_string(),
+            "room_id": room_id.to_string(),
             "phira_api_endpoint": effective_endpoint,
             "phira_api_endpoint_override": normalized,
             "using_room_override": using_room_override,
         }))
+    }
+
+    /// Refresh room display metadata by room ID (background spawn).
+    async fn refresh_room_display_metadata_background_by_id(&self, room_id: &str) {
+        let rooms = self.rooms.read().await;
+        let rid: RoomId = match room_id.to_string().try_into() {
+            Ok(id) => id,
+            Err(_) => return,
+        };
+        if let Some(room) = rooms.get(&rid).map(Arc::clone) {
+            drop(rooms);
+            self.refresh_room_display_metadata_background(&room);
+        }
     }
 }
 

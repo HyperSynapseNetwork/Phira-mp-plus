@@ -477,22 +477,28 @@ impl CliHandler {
             let users_in_room = room.users().await;
             let monitors_in_room = room.monitors().await;
 
-            let state_str = match &*room.state.read().await {
-                crate::room::InternalRoomState::SelectChart => "SelectChart",
-                crate::room::InternalRoomState::WaitForReady { .. } => "WaitForReady",
-                crate::room::InternalRoomState::Playing { .. } => "Playing",
+            let control = room.control_snapshot();
+            let snap = if let Some(server) = room.server.upgrade() {
+                server.room_snapshot(&room.id.to_string())
+            } else {
+                None
             };
-            let locked = if room.is_locked() {
+            let state_str = match snap.as_ref().map(|s| s.stripped) {
+                Some(phira_mp_common::StrippedRoomState::SelectingChart) | None => "SelectChart",
+                Some(phira_mp_common::StrippedRoomState::WaitingForReady) => "WaitForReady",
+                Some(phira_mp_common::StrippedRoomState::Playing) => "Playing",
+            };
+            let locked = if control.locked {
                 c::yellow("锁定")
             } else {
                 c::dim("未锁定")
             };
-            let cycling = if room.is_cycle() {
+            let cycling = if control.cycle {
                 c::cyan("轮换")
             } else {
                 c::dim("不轮换")
             };
-            let hidden = if room.is_hidden() {
+            let hidden = if control.hidden {
                 c::magenta("隐藏")
             } else {
                 c::dim("公开")
@@ -524,7 +530,7 @@ impl CliHandler {
                 for u in &users_in_room {
                     labels.push(format!(
                         "{}({})",
-                        c::bold(&room.display_name(u).await),
+                        c::bold(&u.name.clone()),
                         u.id
                     ));
                 }
@@ -535,7 +541,7 @@ impl CliHandler {
                 for u in &monitors_in_room {
                     labels.push(format!(
                         "{}({})",
-                        c::bold(&room.display_name(u).await),
+                        c::bold(&u.name.clone()),
                         u.id
                     ));
                 }

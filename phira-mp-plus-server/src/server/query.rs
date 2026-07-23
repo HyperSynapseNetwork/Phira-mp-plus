@@ -351,7 +351,7 @@ fn server_state_query_dispatch(
             let rooms = crate::read_lock!(state.rooms);
             let list: Vec<Value> = rooms
                 .iter()
-                .filter(|(_, room)| !room.is_hidden())
+                .filter(|(_, room)| !room.control_snapshot().hidden)
                 .map(|(rid, room)| {
                     let ss = build_snapshot(state, &rid.to_string(), room);
                     serde_json::to_value(ss).unwrap_or_default()

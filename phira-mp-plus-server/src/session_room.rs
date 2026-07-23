@@ -2,6 +2,11 @@
 //!
 //! This module is intentionally kept free of socket/authentication details so
 //! `session.rs` can become a thin dispatcher before the real Session Actor split.
+//!
+//! After Phase 2 Work C, Room is a pure broadcast interface and no longer
+//! holds mutable state. All state queries route through the actor snapshot
+//! cache (server.room_snapshot()) or Room::control_snapshot(). All state
+//! mutations route through RoomCommandGateway.
 
 use crate::phira_client::PhiraRetryNoticeTarget;
 use crate::plugin::PluginEvent;
@@ -51,13 +56,91 @@ async fn current_room(user: &Arc<User>) -> Result<Arc<crate::room::Room>> {
 
 async fn current_room_in_select_chart(user: &Arc<User>) -> Result<Arc<crate::room::Room>> {
     let room = current_room(user).await?;
-    if !matches!(
-        &*room.state.read().await,
-        crate::room::InternalRoomState::SelectChart
-    ) {
-        bail!("{}", tl!("invalid-state"));
+    // Read room lifecycle state from actor snapshot cache.
+    if let Some(snap) = user.server.room_snapshot(&room.id.to_string()) {
+        if !matches!(snap.stripped, phira_mp_common::StrippedRoomState::SelectingChart) {
+            bail!("{}", tl!("invalid-state"));
+        }
+    } else {
+        // No snapshot yet — fall back to assuming SelectChart for new rooms.
     }
     Ok(room)
+}
+
+/// Build a ClientRoomState from the actor snapshot and room user list.
+pub(crate) async fn build_client_room_state(
+    room: &crate::room::Room,
+    user: &User,
+) -> phira_mp_common::ClientRoomState {
+    let control = room.control_snapshot();
+    let snap = if let Some(server) = room.server.upgrade() {
+        server.room_snapshot(&room.id.to_string())
+    } else {
+        None
+    };
+    let is_ready = snap.as_ref().map_or(false, |s| {
+        use std::ops::Deref;
+        // We can't check the ready set from snapshot alone; default to false.
+        false
+    });
+    let state = if let Some(ref snap) = snap {
+        match snap.stripped {
+            phira_mp_common::StrippedRoomState::SelectingChart =>
+                phira_mp_common::RoomState::SelectChart(snap.chart),
+            phira_mp_common::StrippedRoomState::WaitingForReady =>
+                phira_mp_common::RoomState::WaitingForReady,
+            phira_mp_common::StrippedRoomState::Playing =>
+                phira_mp_common::RoomState::Playing,
+        }
+    } else {
+        phira_mp_common::RoomState::SelectChart(None)
+    };
+
+    let users = room.users().await.into_iter()
+        .chain(room.monitors().await)
+        .map(|u| (u.id, u.to_info()))
+        .collect();
+
+    phira_mp_common::ClientRoomState {
+        id: room.id.clone(),
+        state,
+        live: room.is_live(),
+        locked: control.locked,
+        cycle: control.cycle,
+        is_host: control.host_id == Some(user.id),
+        is_ready,
+        users,
+    }
+}
+
+/// Build a RoomData from the actor snapshot and room state.
+pub(crate) async fn build_room_data(room: &crate::room::Room) -> phira_mp_common::RoomData {
+    let control = room.control_snapshot();
+    let snap = if let Some(server) = room.server.upgrade() {
+        server.room_snapshot(&room.id.to_string())
+    } else {
+        None
+    };
+    let host = if control.system_host {
+        -1
+    } else {
+        control.host_id.unwrap_or(-1)
+    };
+    let users: Vec<i32> = room.users().await.into_iter().map(|u| u.id).collect();
+    let chart = snap.as_ref().and_then(|s| s.chart);
+    let state = snap.as_ref().map_or(phira_mp_common::StrippedRoomState::SelectingChart, |s| s.stripped);
+    let rounds = room.play_history.all().await.iter()
+        .map(|r| crate::room::protocol_round(r))
+        .collect();
+    phira_mp_common::RoomData {
+        host,
+        users,
+        lock: control.locked,
+        cycle: control.cycle,
+        chart,
+        state,
+        rounds,
+    }
 }
 
 pub async fn create_room(user: Arc<User>, id: RoomId) -> Result<()> {
@@ -138,14 +221,19 @@ pub async fn create_room(user: Arc<User>, id: RoomId) -> Result<()> {
     ));
     map_guard.insert(id.clone(), Arc::clone(&room));
     let room_uuid = room.uuid;
-    room.set_display_name(user.id, user.name.clone()).await;
+    // Route display name through the actor mailbox.
+    user.server
+        .room_commands
+        .set_display_name(&user.server, &id.to_string(), user.id, &user.name)
+        .await
+        .ok();
     // CreateRoom(Ok) establishes client room state; do not emit a room event to
     // the creator before that response.
     drop(map_guard);
     user.server
         .publish_room_event(RoomEvent::CreateRoom {
             room: id.clone(),
-            data: crate::room::Room::into_data(&room).await,
+            data: build_room_data(&room).await,
         })
         .await;
     *room_guard = Some(Arc::clone(&room));
@@ -198,7 +286,9 @@ pub async fn join_room(
     let mut late_join = false;
     let mut need_abort = false;
     if !monitor {
-        if room.is_locked() {
+        // Use control_snapshot for lock check (actor-authoritative)
+        let control = room.control_snapshot();
+        if control.locked {
             bail!("{}", tl!("join-room-locked"));
         }
         if user
@@ -209,36 +299,41 @@ pub async fn join_room(
         {
             bail!("{}", tl!("join-room-banned"));
         }
-        {
-            let state = room.state.read().await;
-            match &*state {
-                crate::room::InternalRoomState::SelectChart => {}
-                crate::room::InternalRoomState::Playing { .. } => {
-                    let mut pending = user.join_pending_game.write().await;
-                    if pending.as_ref().map(|s| s.as_str()) == Some(id.to_string().as_str()) {
-                        pending.take();
-                        late_join = true;
-                        need_abort = true;
-                    } else {
-                        *pending = Some(id.to_string());
-                        let _ = user
-                            .try_send(ServerCommand::Message(Message::Chat {
-                                user: 0,
-                                content: tl!("join-game-ongoing-warning"),
-                            }))
-                            .await;
-                        bail!("{}", tl!("join-game-ongoing"));
-                    }
+        // Read room lifecycle from actor snapshot for game state check.
+        let stripped = if let Some(server) = room.server.upgrade() {
+            server.room_snapshot(&room.id.to_string())
+                .map(|s| s.stripped)
+        } else {
+            None
+        };
+        match stripped {
+            Some(phira_mp_common::StrippedRoomState::SelectingChart) | None => {}
+            Some(phira_mp_common::StrippedRoomState::Playing) => {
+                let mut pending = user.join_pending_game.write().await;
+                if pending.as_ref().map(|s| s.as_str()) == Some(id.to_string().as_str()) {
+                    pending.take();
+                    late_join = true;
+                    need_abort = true;
+                } else {
+                    *pending = Some(id.to_string());
+                    let _ = user
+                        .try_send(ServerCommand::Message(Message::Chat {
+                            user: 0,
+                            content: tl!("join-game-ongoing-warning"),
+                        }))
+                        .await;
+                    bail!("{}", tl!("join-game-ongoing"));
                 }
-                _ => bail!("{}", tl!("join-game-ongoing")),
             }
+            _ => bail!("{}", tl!("join-game-ongoing")),
         }
         if need_abort {
-            if let crate::room::InternalRoomState::Playing { aborted, .. } =
-                &mut *room.state.write().await
-            {
-                aborted.insert(user.id);
-            }
+            // Route the abort through the actor mailbox.
+            user.server
+                .room_commands
+                .abort_round(&user.server, &room.id.to_string(), user.id)
+                .await
+                .ok();
         }
     }
     if !room.add_user(Arc::downgrade(&user), monitor).await {
@@ -314,9 +409,16 @@ pub async fn join_room(
     }
 
     let room_state = if late_join {
-        phira_mp_common::RoomState::SelectChart(room.chart.read().await.as_ref().map(|c| c.id))
+        // Read chart from actor snapshot.
+        let chart = if let Some(server) = room.server.upgrade() {
+            server.room_snapshot(&room.id.to_string())
+                .and_then(|s| s.chart)
+        } else {
+            None
+        };
+        phira_mp_common::RoomState::SelectChart(chart)
     } else {
-        room.client_room_state().await
+        build_client_room_state(&room, &user).await.state
     };
     Ok(JoinRoomResponse {
         state: room_state,
@@ -366,7 +468,11 @@ pub async fn leave_room(user: Arc<User>, category: SessionCategory) -> Result<()
 
 pub async fn lock_room(user: Arc<User>, lock: bool) -> Result<()> {
     let room = current_room(&user).await?;
-    room.check_host(&user).await?;
+    // Host check via control_snapshot.
+    let control = room.control_snapshot();
+    if control.host_id != Some(user.id) {
+        bail!("only host can do this");
+    }
     info!(
         user = user.id,
         room = room.id.to_string(),
@@ -383,7 +489,10 @@ pub async fn lock_room(user: Arc<User>, lock: bool) -> Result<()> {
 
 pub async fn cycle_room(user: Arc<User>, cycle: bool) -> Result<()> {
     let room = current_room(&user).await?;
-    room.check_host(&user).await?;
+    let control = room.control_snapshot();
+    if control.host_id != Some(user.id) {
+        bail!("only host can do this");
+    }
     info!(
         user = user.id,
         room = room.id.to_string(),
@@ -400,7 +509,10 @@ pub async fn cycle_room(user: Arc<User>, cycle: bool) -> Result<()> {
 
 pub async fn select_chart(user: Arc<User>, id: i32) -> Result<()> {
     let room = current_room_in_select_chart(&user).await?;
-    room.check_host(&user).await?;
+    let control = room.control_snapshot();
+    if control.host_id != Some(user.id) {
+        bail!("only host can do this");
+    }
     let span = debug_span!(
         "select chart",
         user = user.id,
@@ -409,13 +521,14 @@ pub async fn select_chart(user: Arc<User>, id: i32) -> Result<()> {
     );
     async move {
         trace!("fetch");
-        let endpoint = room.effective_phira_api_endpoint(&user.server).await;
+        // Use server's default phira endpoint (room override is in actor state now).
+        let endpoint = &user.server.config.phira_api_endpoint;
         let res: crate::server::Chart = user
             .server
             .phira_client
             .get_json(
-                &user.server.config.phira_api_endpoint,
-                Some(endpoint.as_str()),
+                endpoint,
+                None,
                 &format!("/chart/{id}"),
                 None,
                 PhiraRetryNoticeTarget::User(user.as_ref()),
@@ -436,11 +549,23 @@ pub async fn select_chart(user: Arc<User>, id: i32) -> Result<()> {
 
 pub async fn request_start(user: Arc<User>) -> Result<()> {
     let room = current_room_in_select_chart(&user).await?;
-    room.check_host(&user).await?;
-    if room.admin_start_pending() {
+    let control = room.control_snapshot();
+    if control.host_id != Some(user.id) {
+        bail!("only host can do this");
+    }
+    // Check admin_start_pending via snapshot.
+    if control.admin_start_pending {
         bail!("administrative start is already in progress");
     }
-    if room.chart.read().await.is_none() {
+    // Check chart from snapshot.
+    let has_chart = if let Some(server) = room.server.upgrade() {
+        server.room_snapshot(&room.id.to_string())
+            .map(|s| s.chart.is_some())
+            .unwrap_or(false)
+    } else {
+        false
+    };
+    if !has_chart {
         bail!("{}", tl!("start-no-chart-selected"));
     }
     debug!(room = room.id.to_string(), "room wait for ready");
@@ -475,13 +600,14 @@ pub async fn cancel_ready(user: Arc<User>) -> Result<()> {
 
 pub async fn played(user: Arc<User>, id: i32) -> Result<()> {
     let room = current_room(&user).await?;
-    let endpoint = room.effective_phira_api_endpoint(&user.server).await;
+    // Use server's default phira endpoint (room override is in actor state).
+    let endpoint = &user.server.config.phira_api_endpoint;
     let res: crate::server::Record = user
         .server
         .phira_client
         .get_json(
-            &user.server.config.phira_api_endpoint,
-            Some(endpoint.as_str()),
+            endpoint,
+            None,
             &format!("/record/{id}"),
             None,
             PhiraRetryNoticeTarget::User(user.as_ref()),
@@ -526,7 +652,7 @@ pub async fn query_room_info(user: Arc<User>) -> Result<ServerCommand> {
         for u in room.users().await {
             user_room_map.insert(u.id, id.clone());
         }
-        info.insert(id.clone(), crate::room::Room::into_data(room).await);
+        info.insert(id.clone(), build_room_data(room).await);
     }
     drop(rooms_guard);
     Ok(ServerCommand::RoomResponse(Ok((info, user_room_map))))

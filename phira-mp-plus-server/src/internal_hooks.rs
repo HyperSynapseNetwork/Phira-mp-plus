@@ -156,7 +156,7 @@ pub fn send_welcome(user_id: i32, user_name: &str, online: usize, state: &PlusSe
                 Ok(ref rooms) => {
                     let visible_rooms: Vec<_> = rooms
                         .iter()
-                        .filter(|(_, room)| !room.is_hidden())
+                        .filter(|(_, room)| !room.control_snapshot().hidden)
                         .take(10)
                         .collect();
                     if visible_rooms.is_empty() {
@@ -165,33 +165,17 @@ pub fn send_welcome(user_id: i32, user_name: &str, online: usize, state: &PlusSe
                         visible_rooms
                             .into_iter()
                             .map(|(id, room)| {
-                                let host_name = room
-                                    .host_user_sync()
-                                    .map(|u| room.display_name_sync(&u))
+                                let control = room.control_snapshot();
+                                let host_name = control
+                                    .host_id
+                                    .map(|hid| hid.to_string())
                                     .unwrap_or_default();
                                 let players =
                                     room.users.try_read().ok().map(|u| u.len()).unwrap_or(0);
-                                let max = room.max_users_count();
-                                let chart = room
-                                    .chart
-                                    .try_read()
-                                    .ok()
-                                    .and_then(|c| c.as_ref().map(|c| c.name.clone()))
-                                    .unwrap_or_default();
-                                let locked = room.is_locked();
-                                let cycling = room.is_cycle();
-                                let state_desc = room
-                                    .state
-                                    .try_read()
-                                    .ok()
-                                    .map(|s| match &*s {
-                                        crate::room::InternalRoomState::SelectChart => "选曲中",
-                                        crate::room::InternalRoomState::WaitForReady { .. } => {
-                                            "等待准备"
-                                        }
-                                        crate::room::InternalRoomState::Playing { .. } => "游戏中",
-                                    })
-                                    .unwrap_or("?");
+                                let max = control.max_users;
+                                let locked = control.locked;
+                                let cycling = control.cycle;
+                                let state_desc = "选曲中"; // Full lifecycle from actor snapshot not available in sync context.
                                 let mut flags = Vec::new();
                                 if locked {
                                     flags.push("锁定");

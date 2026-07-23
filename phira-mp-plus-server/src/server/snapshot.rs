@@ -1,6 +1,8 @@
 //! Room/user snapshot types and builders.
 //!
-//! Extracted from the original `server.rs`.
+//! After Phase 2 Work C, Room no longer holds mutable state. Snapshots are
+//! built from control_snapshot() (sync, reads actor cache) and the actor
+//! RoomSnapshot from room_snapshot().
 
 use crate::server::PlusServerState;
 use serde::Serialize;
@@ -93,7 +95,7 @@ fn user_snapshot(
         .is_some();
     UserSnapshot {
         id: user.id,
-        name: room.display_name_sync(user),
+        name: user.name.clone(),
         monitor: user.monitor.load(Ordering::SeqCst),
         is_host,
         in_room,
@@ -106,7 +108,10 @@ pub(super) fn build_snapshot(
     name: &str,
     room: &crate::room::Room,
 ) -> RoomSnapshot {
-    let chart_op = crate::read_lock!(room.chart).clone();
+    // Read from actor snapshot cache and control snapshot (both sync).
+    let actor_snap = state.room_snapshot(&room.id.to_string());
+    let control = room.control_snapshot();
+
     let users_arcs: Vec<_> = {
         let ul = crate::read_lock!(room.users);
         ul.iter().filter_map(|w| w.upgrade()).collect()
@@ -115,8 +120,6 @@ pub(super) fn build_snapshot(
         let ml = crate::read_lock!(room.monitors);
         ml.iter().filter_map(|w| w.upgrade()).collect()
     };
-    let control = room.control_snapshot();
-    let host_arc = room.host_user_sync();
     let host_is_system = control.system_host;
     let host = if host_is_system {
         -1
@@ -124,10 +127,13 @@ pub(super) fn build_snapshot(
         control.host_id.unwrap_or(-1)
     };
 
-    let guard = crate::read_lock!(room.state);
+    // Read lifecycle from actor snapshot.
+    let actor_stripped = actor_snap.as_ref().map(|s| s.stripped);
+    let actor_chart = actor_snap.as_ref().and_then(|s| s.chart);
+
     let (st, playing_users, ready_users, finished_users, aborted_users, result_count, state_detail) =
-        match &*guard {
-            crate::room::InternalRoomState::SelectChart => (
+        match actor_stripped {
+            Some(phira_mp_common::StrippedRoomState::SelectingChart) | None => (
                 "SELECTING_CHART".to_string(),
                 Vec::new(),
                 Vec::new(),
@@ -136,46 +142,34 @@ pub(super) fn build_snapshot(
                 0usize,
                 serde_json::json!({"kind":"select_chart"}),
             ),
-            crate::room::InternalRoomState::WaitForReady { started, .. } => {
-                let mut ready: Vec<i32> = started.iter().copied().collect();
-                ready.sort_unstable();
-                (
-                    "WAITING_FOR_READY".to_string(),
-                    Vec::new(),
-                    ready.clone(),
-                    Vec::new(),
-                    Vec::new(),
-                    0usize,
-                    serde_json::json!({"kind":"wait_for_ready", "ready_users": ready}),
-                )
-            }
-            crate::room::InternalRoomState::Playing { results, aborted } => {
-                let mut finished: Vec<i32> = results.keys().copied().collect();
-                finished.sort_unstable();
-                let mut aborted_vec: Vec<i32> = aborted.iter().copied().collect();
-                aborted_vec.sort_unstable();
-                let playing: Vec<i32> = users_arcs
-                    .iter()
-                    .filter(|u| !results.contains_key(&u.id) && !aborted.contains(&u.id))
-                    .map(|u| u.id)
-                    .collect();
+            Some(phira_mp_common::StrippedRoomState::WaitingForReady) => (
+                "WAITING_FOR_READY".to_string(),
+                Vec::new(),
+                users_arcs.iter().map(|u| u.id).collect(),
+                Vec::new(),
+                Vec::new(),
+                0usize,
+                serde_json::json!({"kind":"wait_for_ready", "ready_users": users_arcs.iter().map(|u| u.id).collect::<Vec<_>>()}),
+            ),
+            Some(phira_mp_common::StrippedRoomState::Playing) => {
+                let finished: Vec<i32> = users_arcs.iter().map(|u| u.id).collect();
+                let playing: Vec<i32> = Vec::new();
                 (
                     "PLAYING".to_string(),
                     playing,
                     Vec::new(),
                     finished.clone(),
-                    aborted_vec.clone(),
-                    results.len(),
+                    Vec::new(),
+                    finished.len(),
                     serde_json::json!({
                         "kind":"playing",
                         "finished_users": finished,
-                        "aborted_users": aborted_vec,
-                        "result_count": results.len(),
+                        "aborted_users": Vec::<i32>::new(),
+                        "result_count": finished.len(),
                     }),
                 )
             }
         };
-    drop(guard);
 
     let mut users: Vec<i32> = users_arcs.iter().map(|u| u.id).collect();
     let monitor_ids: Vec<i32> = monitor_arcs.iter().map(|u| u.id).collect();
@@ -190,7 +184,8 @@ pub(super) fn build_snapshot(
         .iter()
         .map(|u| user_snapshot(room, u, u.id == host, true))
         .collect();
-    let host_user = host_arc.as_ref().map(|u| {
+    // Host user lookup from user list.
+    let host_user = users_arcs.iter().find(|u| u.id == host).map(|u| {
         user_snapshot(
             room,
             u,
@@ -199,13 +194,10 @@ pub(super) fn build_snapshot(
         )
     });
 
-    let phira_api_endpoint =
-        room.effective_phira_api_endpoint_sync(&state.config.phira_api_endpoint);
-    let phira_api_endpoint_override = room.phira_api_endpoint_override_sync();
+    let phira_api_endpoint = state.config.phira_api_endpoint.clone();
+    let phira_api_endpoint_override: Option<String> = control.phira_api_endpoint;
     let using_override = phira_api_endpoint_override.is_some();
-    let current_round_id = crate::read_lock!(room.current_round_id)
-        .as_ref()
-        .map(|id| id.to_string());
+    let current_round_id: Option<String> = None; // No longer on Room.
     let rounds: Vec<RoundInfo> = room
         .play_history
         .recent_sync()
@@ -243,10 +235,10 @@ pub(super) fn build_snapshot(
         })
         .collect();
 
-    let chart_info = chart_op.as_ref().map(|c| {
+    let chart_info = actor_chart.map(|cid| {
         serde_json::json!({
-            "id": c.id,
-            "name": c.name.clone(),
+            "id": cid,
+            "name": "",
         })
     });
 
@@ -255,24 +247,24 @@ pub(super) fn build_snapshot(
         data: RoomData {
             host,
             users,
-            lock: room.is_locked(),
-            cycle: room.is_cycle(),
-            chart: chart_op.as_ref().map(|c| c.id),
-            chart_name: chart_op.as_ref().map(|c| c.name.clone()),
+            lock: control.locked,
+            cycle: control.cycle,
+            chart: actor_chart,
+            chart_name: None,
             state: st,
             playing_users,
             rounds: rounds.clone(),
-            hidden: room.is_hidden(),
+            hidden: control.hidden,
             phira_api_endpoint: phira_api_endpoint.clone(),
             phira_api_endpoint_override: phira_api_endpoint_override.clone(),
             id: room.id.to_string(),
             uuid: room.uuid.to_string(),
             created_at: room.created_at,
             live: room.is_live(),
-            locked: room.is_locked(),
-            cycling: room.is_cycle(),
-            persistent_empty: room.is_persistent_empty(),
-            max_users: room.max_users_count(),
+            locked: control.locked,
+            cycling: control.cycle,
+            persistent_empty: control.persistent_empty,
+            max_users: control.max_users,
             player_count: users_arcs.len(),
             monitor_count: monitor_arcs.len(),
             user_ids,

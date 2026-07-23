@@ -1,19 +1,13 @@
-//! Room Actor — actor-owned state with bidirectional sync to Room.
+//! Room Actor — actor-owned state with Room as pure broadcast bus.
 //!
-//! actor_state is the authoritative source for snapshots after command
-//! execution.  Two sync paths keep Room and actor_state consistent:
+//! After Phase 2 Work C, Room no longer holds any mutable state. All room
+//! state (control flags, lifecycle, chart, round meta, player data, display
+//! names) is actor-owned. Room is used exclusively for broadcast/send and
+//! user/monitor reference management.
 //!
-//! - **Direct-state commands** (SetLock/SetCycle/SetHidden): write
-//!   actor_state, then `sync_to_room()` pushes changes to Room.
-//! - **Gateway commands** (everything else): write Room, then
-//!   `from_room()` re-reads Room into actor_state.
-//!
-//! Snapshot (`latest_snapshot`) is always derived from actor_state,
-//! never from Room's independent locks, avoiding inconsistent reads.
-//!
-//! `player_data` and `display_names` are now actor-owned. Writes go
-//! through the actor mailbox (AddTouches/AddJudges/SetDisplayName
-//! commands), and handlers mirror data back to Room directly.
+//! `sync_to_room()` has been removed — Room has no state fields to sync to.
+//! The actor updates its `latest_snapshot` after every command and stores it
+//! in the gateway's snapshot cache for external readers.
 
 use super::command::RoomActorCommand;
 use crate::room::{InternalRoomState, PlayerLiveData, Room, RoomControlSnapshot};
@@ -34,13 +28,17 @@ pub struct RoomSnapshot {
     pub hidden: bool,
     pub live: bool,
     pub created_at: i64,
+    /// Chart id, if one is selected (actor-authoritative).
+    pub chart: Option<i32>,
+    /// The room lifecycle state as a stripped enum (actor-authoritative).
+    pub stripped: phira_mp_common::StrippedRoomState,
 }
 
 impl RoomSnapshot {
     /// 从 Room 对象构建快照。
     pub async fn from_room(room: &Room) -> Self {
         let control = room.control_snapshot();
-        Self {
+        RoomSnapshot {
             room_id: room.id.to_string(),
             room_uuid: room.uuid.to_string(),
             locked: control.locked,
@@ -49,6 +47,8 @@ impl RoomSnapshot {
             hidden: control.hidden,
             live: room.is_live(),
             created_at: room.created_at,
+            chart: None, // not available from control snapshot alone
+            stripped: phira_mp_common::StrippedRoomState::SelectingChart,
         }
     }
 
@@ -63,6 +63,8 @@ impl RoomSnapshot {
             hidden: state.state.control.hidden,
             live: state.state.live,
             created_at: state.created_at,
+            chart: state.state.chart,
+            stripped: state.state.lifecycle.stripped(),
         }
     }
 }
@@ -101,20 +103,21 @@ pub struct RoomState {
 
 impl RoomState {
     /// 从共享 Room 对象填充自身（迁移过渡用）。
+    ///
+    /// After Phase 2 Work C, Room no longer holds state/chart/round_id.
+    /// We read control from the actor snapshot cache, lifecycle defaults
+    /// to SelectChart, and members from Room's user/monitor lists.
     pub async fn from_room(room: &Room) -> Self {
         let control = room.control_snapshot();
-        let lifecycle = room.state.read().await.clone();
         let users = room.users().await.iter().map(|u| u.id).collect();
         let monitors = room.monitors().await.iter().map(|u| u.id).collect();
-        let chart = room.chart.read().await.as_ref().map(|c| c.id);
-        let round_id = *room.current_round_id.read().await;
         Self {
             control,
-            lifecycle,
+            lifecycle: InternalRoomState::SelectChart,
             members: RoomMembers { users, monitors },
-            chart,
+            chart: None,
             round: RoundInfo {
-                round_id,
+                round_id: None,
                 round_uuid: None,
             },
             live: room.is_live(),
@@ -122,8 +125,8 @@ impl RoomState {
     }
 
     /// 构建 RoomSnapshot（供外部只读路径使用）。
-    pub fn to_snapshot(&self, room_id: &str, room_uuid: &str, created_at: i64) -> RoomSnapshot {
-        RoomSnapshot {
+    pub fn to_snapshot(&self, room_id: &str, room_uuid: &str, created_at: i64) -> crate::room_actor::actor::RoomSnapshot {
+        crate::room_actor::actor::RoomSnapshot {
             room_id: room_id.to_string(),
             room_uuid: room_uuid.to_string(),
             locked: self.control.locked,
@@ -132,6 +135,8 @@ impl RoomState {
             hidden: self.control.hidden,
             live: self.live,
             created_at,
+            chart: self.chart,
+            stripped: self.lifecycle.stripped(),
         }
     }
 
@@ -165,17 +170,19 @@ pub struct RoomActorState {
 
 impl RoomActorState {
     /// Snapshot the current Room state into an actor-owned copy.
+    ///
+    /// After Phase 2 Work C, Room no longer holds player_data or
+    /// display_names, so these are initialized as empty. The actor will
+    /// populate them as commands arrive.
     pub async fn from_room(room: &Room) -> Self {
         let state = RoomState::from_room(room).await;
-        let player_data = room.player_data.read().await.clone();
-        let display_names = room.display_names.read().await.clone();
         Self {
             room_id: room.id.to_string(),
             room_uuid: room.uuid.to_string(),
             state,
             created_at: room.created_at,
-            player_data,
-            display_names,
+            player_data: HashMap::new(),
+            display_names: HashMap::new(),
         }
     }
 
@@ -196,29 +203,11 @@ impl RoomActorState {
         }
     }
 
-    /// Sync actor state BACK to the shared Room object.
-    /// After a direct actor_state mutation, call this so Room stays
-    /// consistent for external readers (session, telemetry, plugins).
-    ///
-    /// Only syncs fields that direct-state commands (SetLock/SetCycle/
-    /// SetHidden) mutate — control flags and lifecycle state.
-    /// Membership changes still go through the gateway path.
-    ///
-    /// NOTE: `player_data` and `display_names` are synced here for
-    /// consistency after any command, but the AddTouches/AddJudges/
-    /// SetDisplayName handlers also write directly to Room, making
-    /// this clone redundant for those hot paths.
-    pub async fn sync_to_room(&self, room: &Room) {
-        // Use public setters for control fields.
-        room.set_locked(self.state.control.locked);
-        room.set_cycle(self.state.control.cycle);
-        room.set_hidden(self.state.control.hidden);
-        // Lifecycle: e.g. WaitForReady / Playing transitions.
-        *room.state.write().await = self.state.lifecycle.clone();
-        // Sync live data back to Room for external readers (plugins, etc.)
-        *room.player_data.write().await = self.player_data.clone();
-        *room.display_names.write().await = self.display_names.clone();
-    }
+    /// (Removed) Room no longer holds mutable state, so there is nothing to
+    /// sync to. This method is intentionally omitted. The actor updates its
+    /// own `latest_snapshot` and stores it in the gateway cache after every
+    /// command. External readers (snapshots, queries) use
+    /// `RoomCommandGateway::room_snapshot()` instead of reading from Room.
 }
 
 /// Room Actor — 每个房间一个，持有状态并处理命令。
@@ -233,6 +222,9 @@ pub struct RoomActor {
 
 impl RoomActor {
     pub async fn new(room: Arc<Room>, state: Arc<PlusServerState>) -> Self {
+        // Note: control_snapshot() reads from the actor snapshot cache which
+        // may not have an entry for this room yet. It falls back to sensible
+        // defaults until the first command populates the actor state.
         let snapshot = RoomSnapshot::from_room(&room).await;
         let actor_state = Some(RoomActorState::from_room(&room).await);
         Self {
@@ -261,8 +253,9 @@ impl RoomActor {
     }
 
     /// Execute a command against the actor's owned state.
-    /// All commands go through execute_with_actor which writes actor_state
-    /// first; sync_to_room pushes changes to Room afterward.
+    /// All commands go through execute_with_actor which writes actor_state.
+    /// After Phase 2 Work C, Room no longer holds state, so sync_to_room
+    /// is removed. The snapshot cache is updated directly.
     pub(super) async fn execute_command(&mut self, command: RoomActorCommand) -> bool {
         use super::handler::RoomCommandHandler;
         use super::context::RoomCommandContext;
@@ -281,9 +274,6 @@ impl RoomActor {
         self.state.room_commands.observe_mailbox_result(&result);
 
         if result.is_ok() {
-            if let Some(ref actor_state) = self.actor_state {
-                actor_state.sync_to_room(&self.room).await;
-            }
             self.refresh_snapshot_from_state();
             self.state.room_commands.store_snapshot_if_current(
                 &self.room.id.to_string(),

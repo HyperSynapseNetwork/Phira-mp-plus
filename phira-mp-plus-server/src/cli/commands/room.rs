@@ -428,53 +428,46 @@ impl CliHandler {
         self.state.refresh_room_display_metadata(&room).await;
         let users = room.users().await;
         let monitors = room.monitors().await;
-        let state_str = match &*room.state.read().await {
-            crate::room::InternalRoomState::SelectChart => "SelectChart",
-            crate::room::InternalRoomState::WaitForReady { .. } => "WaitForReady",
-            crate::room::InternalRoomState::Playing { .. } => "Playing",
-        };
-        let locked = if room.is_locked() {
-            c::yellow("锁定")
+        let control = room.control_snapshot();
+        let snap = if let Some(server) = room.server.upgrade() {
+            server.room_snapshot(&room.id.to_string())
         } else {
-            c::dim("未锁定")
+            None
         };
-        let cycling = if room.is_cycle() {
-            c::cyan("轮换")
-        } else {
-            c::dim("不轮换")
+        let state_str = match snap.as_ref().map(|s| s.stripped) {
+            Some(phira_mp_common::StrippedRoomState::SelectingChart) | None => "SelectChart",
+            Some(phira_mp_common::StrippedRoomState::WaitingForReady) => "WaitForReady",
+            Some(phira_mp_common::StrippedRoomState::Playing) => "Playing",
         };
-        let hidden = if room.is_hidden() {
-            c::magenta("隐藏")
-        } else {
-            c::dim("公开")
-        };
-        let chart_info = match room.chart.read().await.as_ref() {
-            Some(c) => format!("{} (id={})", c.name, c.id),
+        let locked = if control.locked { c::yellow("锁定") } else { c::dim("未锁定") };
+        let cycling = if control.cycle { c::cyan("轮换") } else { c::dim("不轮换") };
+        let hidden = if control.hidden { c::magenta("隐藏") } else { c::dim("公开") };
+        let chart_info = match snap.as_ref().and_then(|s| s.chart) {
+            Some(cid) => format!("id={}", cid),
             None => "未选择".to_string(),
         };
-        let endpoint_override = room.phira_api_endpoint_override().await;
+        let endpoint_override = control.phira_api_endpoint.clone();
         let endpoint_info = endpoint_override
-            .clone()
             .unwrap_or_else(|| self.state.config.phira_api_endpoint.clone());
-        let endpoint_mode = if endpoint_override.is_some() {
+        let endpoint_mode = if control.phira_api_endpoint.is_some() {
             "房间覆盖"
         } else {
             "全局默认"
         };
-        let host_name = match room.host_id().await {
+        let host_name = match control.host_id {
             Some(hid) => {
                 let user = users.iter().chain(monitors.iter()).find(|u| u.id == hid);
                 match user {
-                    Some(user) => room.display_name(user).await,
+                    Some(user) => user.name.clone(),
                     None => hid.to_string(),
                 }
             }
-            None if room.is_system_host() => "?（系统房主）".to_string(),
+            None if control.system_host => "?（系统房主）".to_string(),
             None => "无（等待首个玩家）".to_string(),
         };
 
         self.out(format!("  {} 房间: {}", c::green("◆"), c::bold(room_id)));
-        let persistent = if room.is_persistent_empty() {
+        let persistent = if control.persistent_empty {
             c::cyan("无人保留")
         } else {
             c::dim("无人清除")
@@ -498,7 +491,7 @@ impl CliHandler {
         ));
         let mut user_labels = Vec::new();
         for u in &users {
-            user_labels.push(format!("{}({})", room.display_name(u).await, u.id));
+            user_labels.push(format!("{}({})", u.name, u.id));
         }
         self.out(format!(
             "  {} 玩家: {}",
@@ -508,7 +501,7 @@ impl CliHandler {
         if !monitors.is_empty() {
             let mut monitor_labels = Vec::new();
             for u in &monitors {
-                monitor_labels.push(format!("{}({})", room.display_name(u).await, u.id));
+                monitor_labels.push(format!("{}({})", u.name, u.id));
             }
             self.out(format!(
                 "  {} 旁观: {}",
@@ -781,10 +774,13 @@ impl CliHandler {
                 self.room_set_host(room_id, target).await;
             }
             "chart-id" => {
-                if !matches!(
-                    *room.state.read().await,
-                    crate::room::InternalRoomState::SelectChart
-                ) {
+                let room_state = if let Some(server) = room.server.upgrade() {
+                    server.room_snapshot(&room.id.to_string())
+                        .map(|s| s.stripped)
+                } else {
+                    None
+                };
+                if !matches!(room_state, Some(phira_mp_common::StrippedRoomState::SelectingChart) | None) {
                     self.out(format!("  {} 只能在选曲阶段更换谱面", c::yellow("!")));
                     return;
                 }
@@ -795,47 +791,27 @@ impl CliHandler {
                         return;
                     }
                 };
-                let endpoint = room.effective_phira_api_endpoint(&self.state).await;
-                let chart = match self
+                let chart_name = match self
                     .state
                     .phira_client
                     .get_json::<crate::server::Chart>(
                         &self.state.config.phira_api_endpoint,
-                        Some(endpoint.as_str()),
+                        None,
                         &format!("/chart/{cid}"),
                         None,
                         crate::phira_client::PhiraRetryNoticeTarget::Silent,
                     )
                     .await
                 {
-                    Ok(chart) => chart,
-                    Err(_) => crate::server::Chart {
-                        id: cid,
-                        name: format!("chart_{cid}"),
-                    },
+                    Ok(chart) => chart.name,
+                    Err(_) => format!("chart_{cid}"),
                 };
-                room.send(phira_mp_common::Message::SelectChart {
-                    user: 0,
-                    name: chart.name.clone(),
-                    id: chart.id,
-                })
-                .await;
-                room.chart.write().await.replace(chart);
-                // The client derives its active chart id from ChangeState, not from the
-                // human-readable SelectChart message. Keep both protocol paths in sync.
-                room.on_state_change().await;
-                room.publish_update(phira_mp_common::PartialRoomData {
-                    chart: Some(cid),
-                    ..Default::default()
-                })
-                .await;
+                // Route chart selection through the gateway.
                 self.state
-                    .dispatch_plugin_event(PluginEvent::RoomModify {
-                        user_id: 0,
-                        room_id: room_id.to_string(),
-                        data: format!(r#"{{"action":"select-chart","chart-id":{cid}}}"#),
-                    })
-                    .await;
+                    .room_commands
+                    .set_chart(&self.state, room_id, cid, &chart_name)
+                    .await
+                    .ok();
                 self.out(format!("  {} 谱面已切换为 ID {}", c::green("✓"), cid));
             }
             _ => {

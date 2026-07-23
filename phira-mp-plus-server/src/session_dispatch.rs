@@ -41,7 +41,7 @@ pub(crate) async fn process(
                 .as_ref()
                 .map(Arc::clone)
                 .ok_or_else(|| anyhow!("{}", tl!("no-room")))?;
-            if !matches!(&*$d.state.read().await, $($pt)*) {
+            if !matches!(&*$d.cached_state.read().await, $($pt)*) {
                 bail!("{}", tl!("invalid-state"));
             }
         };
