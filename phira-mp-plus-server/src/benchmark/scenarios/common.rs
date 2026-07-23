@@ -105,7 +105,7 @@ pub fn status_to_metrics(status: &crate::simulation::SimulationStatus) -> Benchm
         allocated_bytes: 0,
         gc_pause_ms: 0.0,
         captured_at_ms: now_ms(),
-        connect_latency_ms: 0,
+        connect_latency_ms: 0.0,
         cpu: crate::benchmark::metrics::CpuMetrics::default(),
         gc_pauses: 0,
         session_command_queue_depth: 0,

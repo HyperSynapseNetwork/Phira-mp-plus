@@ -393,7 +393,7 @@ async fn try_copy_write_inner(
         let _ = writeln!(
             batch_csv,
             "{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}",
-            csv_opt_str(&record.event_id),
+            csv_quote(&record.event_id),
             csv_quote(&record.batch_uuid),
             csv_opt_str(&record.run_id),
             csv_quote(&record.scope),
@@ -422,7 +422,7 @@ async fn try_copy_write_inner(
             let _ = writeln!(
                 items_csv,
                 "{},{},{},{},{},{},{},{},{},{}",
-                csv_opt_str(&record.event_id),
+                csv_quote(&record.event_id),
                 csv_quote(&record.batch_uuid),
                 ordinal,
                 csv_quote(&record.kind),
