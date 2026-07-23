@@ -31,6 +31,9 @@ enum WorkerMessage {
     Event {
         wal_id: uuid::Uuid,
         event: PersistenceEvent,
+        /// Production Touch/Judge (B-class) bypass WAL admit/ACK;
+        /// only A-class events and simulation Touch/Judge use WAL.
+        needs_wal_ack: bool,
     },
     Flush {
         timeout: Duration,
@@ -209,7 +212,7 @@ async fn process_worker_loop(
 
     loop {
         let message = if let Some((wal_id, event)) = replay.pop_front() {
-            WorkerMessage::Event { wal_id, event }
+            WorkerMessage::Event { wal_id, event, needs_wal_ack: true }
         } else {
             let Some(message) = rx.recv().await else {
                 break;
@@ -242,8 +245,8 @@ async fn process_worker_loop(
             }
         }
 
-        let (wal_id, event) = match message {
-            WorkerMessage::Event { wal_id, event } => (wal_id, event),
+        let (wal_id, event, needs_wal_ack) = match message {
+            WorkerMessage::Event { wal_id, event, needs_wal_ack } => (wal_id, event, needs_wal_ack),
             WorkerMessage::Flush { timeout, reply } => {
                 // Drain pending ACKs before flushing telemetry.
                 // drain_pending_acks now returns Err(...) if any entries
@@ -442,23 +445,26 @@ async fn process_worker_loop(
         }
         record_processed(worker_stats, kind.clone(), simulation, summary).await;
 
-        // Only ACK events that reached a durable terminal state.
+        // Only ACK events that reached a durable terminal state AND used WAL.
         // DatabaseCommitted / DurableDeadLetterStored → ACK
         // TelemetryStaged / DeadLetterFailed / SkippedNoDB → retain in WAL
-        if durable {
-            if let Err(error) = worker_wal.ack(wal_id).await {
-                worker_wal.set_degraded(true);
-                crate::supervisor_actor::report_critical_failure("persistence-wal-ack", error).await;
-                pending_acks.push_back((wal_id, 0));
+        // Production Touch/Judge (B-class) bypassed WAL entirely.
+        if needs_wal_ack {
+            if durable {
+                if let Err(error) = worker_wal.ack(wal_id).await {
+                    worker_wal.set_degraded(true);
+                    crate::supervisor_actor::report_critical_failure("persistence-wal-ack", error).await;
+                    pending_acks.push_back((wal_id, 0));
+                } else {
+                    worker_wal.set_degraded(false);
+                    record_wal_committed(worker_stats).await;
+                }
             } else {
-                worker_wal.set_degraded(false);
-                record_wal_committed(worker_stats).await;
+                tracing::warn!(
+                    wal_id = %wal_id, kind = %kind,
+                    "WAL entry not ACKed (non-durable outcome); will replay on restart"
+                );
             }
-        } else {
-            tracing::warn!(
-                wal_id = %wal_id, kind = %kind,
-                "WAL entry not ACKed (non-durable outcome); will replay on restart"
-            );
         }
 
         // Auto-compaction: trigger when ACK ratio drops below threshold.
@@ -548,7 +554,7 @@ async fn process_degraded_worker_loop(
             break;
         };
         match message {
-            WorkerMessage::Event { wal_id, .. } => {
+            WorkerMessage::Event { wal_id, needs_wal_ack: _, .. } => {
                 warn!(wal_id = %wal_id, "dropping event in degraded persistence worker");
                 continue;
             }
@@ -827,20 +833,36 @@ impl PersistenceWorker {
                 return Err(event);
             }
         };
-        // Queue capacity is reserved — WAL admit is now safe.
-        let wal_id = match self.wal.admit(event.clone()).await {
-            Ok(id) => {
-                // Record WAL admission.
-                record_wal_received(&self.stats).await;
-                id
+        // Determine whether this event needs WAL admit/ACK.
+        // Production Touch/Judge (B-class) bypass WAL; only A-class events
+        // and simulation Touch/Judge trace through WAL for crash recovery.
+        let needs_wal = match &event {
+            PersistenceEvent::TouchBatch { simulation, .. }
+            | PersistenceEvent::JudgeBatch { simulation, .. } => {
+                *simulation // simulation traces through WAL; production bypasses
             }
-            Err(error) => {
-                record_dropped(&self.stats, kind, simulation, summary, error).await;
-                return Err(event);
+            _ => true, // A-class events always go through WAL
+        };
+
+        // Queue capacity is reserved — WAL admit is now safe (if needed).
+        let (wal_id, needs_wal_ack) = if needs_wal {
+            match self.wal.admit(event.clone()).await {
+                Ok(id) => {
+                    // Record WAL admission.
+                    record_wal_received(&self.stats).await;
+                    (id, true)
+                }
+                Err(error) => {
+                    record_dropped(&self.stats, kind, simulation, summary, error).await;
+                    return Err(event);
+                }
             }
+        } else {
+            // Production Touch/Judge bypasses WAL entirely; use nil UUID.
+            (uuid::Uuid::nil(), false)
         };
         // Send using the reserved permit (infallible).
-        permit.send(WorkerMessage::Event { wal_id, event });
+        permit.send(WorkerMessage::Event { wal_id, event, needs_wal_ack });
         record_queued(&self.stats, kind, simulation, summary).await;
         // Record per-type received for touch/judge telemetry.
         match kind.as_str() {
