@@ -776,6 +776,32 @@ impl RoomCommandHandler {
                     None => err("user not found in room"),
                 }
             }
+
+            RoomActorCommand::AddTouches { room_id, user_id, touches, .. } => {
+                let as_ = ctx.expect_actor_state();
+                let entry = as_.player_data.entry(*user_id).or_default();
+                entry.push_touches(touches);
+                ok(RoomCommandPayload::TouchesCached {
+                    room_id: room_id.clone().to_string(), user_id: *user_id,
+                })
+            }
+
+            RoomActorCommand::AddJudges { room_id, user_id, judges, .. } => {
+                let as_ = ctx.expect_actor_state();
+                let entry = as_.player_data.entry(*user_id).or_default();
+                entry.push_judges(judges);
+                ok(RoomCommandPayload::JudgesCached {
+                    room_id: room_id.clone().to_string(), user_id: *user_id,
+                })
+            }
+
+            RoomActorCommand::SetDisplayName { room_id, user_id, name, .. } => {
+                let as_ = ctx.expect_actor_state();
+                as_.display_names.insert(*user_id, name.clone());
+                ok(RoomCommandPayload::DisplayNameSet {
+                    room_id: room_id.clone().to_string(), user_id: *user_id, name: name.clone(),
+                })
+            }
         }
     }
 

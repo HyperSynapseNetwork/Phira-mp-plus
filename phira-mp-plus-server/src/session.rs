@@ -184,7 +184,7 @@ impl User {
         if let Some(room) = room.as_ref() {
             let playing = room.server.upgrade()
                 .and_then(|s| s.room_snapshot(&room.id.to_string()))
-                .map(|snap| snap.stripped == phira_mp_common::StrippedRoomState::Playing)
+                .map(|snap| matches!(snap.stripped, phira_mp_common::StrippedRoomState::Playing))
                 .unwrap_or(false);
             if playing {
                 warn!(
