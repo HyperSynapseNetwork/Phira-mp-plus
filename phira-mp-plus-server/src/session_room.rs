@@ -220,6 +220,8 @@ pub async fn create_room(user: Arc<User>, id: RoomId) -> Result<()> {
     ));
     map_guard.insert(id.clone(), Arc::clone(&room));
     let room_uuid = room.uuid;
+    // Drop write lock before routing through room mailbox (avoids deadlock).
+    drop(map_guard);
     // Route display name through the actor mailbox.
     user.server
         .room_commands
@@ -228,7 +230,6 @@ pub async fn create_room(user: Arc<User>, id: RoomId) -> Result<()> {
         .ok();
     // CreateRoom(Ok) establishes client room state; do not emit a room event to
     // the creator before that response.
-    drop(map_guard);
     user.server
         .publish_room_event(RoomEvent::CreateRoom {
             room: id.clone(),
