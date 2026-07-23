@@ -59,7 +59,7 @@ pub async fn run_hot_room(
         sc.rounds = false;
         sc.touch = false;
         sc.judge = false;
-        sc.scenario = SimulationScenario::ChatStorm;
+        sc.scenario = SimulationScenario::Balanced;
     })
     .await
 }

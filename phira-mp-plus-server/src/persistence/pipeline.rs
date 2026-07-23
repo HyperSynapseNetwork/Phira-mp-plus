@@ -5,7 +5,7 @@
 //! write acknowledgement instead of only `tokio::spawn` dispatch cost.
 
 use crate::persistence::{PersistenceEvent, PersistencePipeline};
-use crate::telemetry_batcher::TelemetryBatcher;
+use crate::telemetry::TelemetryBatcher;
 use serde_json::Value;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -189,15 +189,6 @@ pub async fn stage_production_telemetry_if_needed(
             round_id: Some(round_id.clone()),
             user_id: *user_id,
             item_count: crate::persistence::telemetry::telemetry_point_count(payload),
-            dual_write: payload
-                .get("dual_write")
-                .and_then(Value::as_bool)
-                .unwrap_or(false),
-            persistence_mode: payload
-                .get("persistence_mode")
-                .and_then(Value::as_str)
-                .unwrap_or("worker_authoritative")
-                .to_string(),
             payload: (**payload).clone(),
         },
         PersistenceEvent::JudgeBatch {
@@ -218,15 +209,6 @@ pub async fn stage_production_telemetry_if_needed(
             round_id: Some(round_id.clone()),
             user_id: *user_id,
             item_count: crate::persistence::telemetry::telemetry_point_count(payload),
-            dual_write: payload
-                .get("dual_write")
-                .and_then(Value::as_bool)
-                .unwrap_or(false),
-            persistence_mode: payload
-                .get("persistence_mode")
-                .and_then(Value::as_str)
-                .unwrap_or("worker_authoritative")
-                .to_string(),
             payload: (**payload).clone(),
         },
         _ => return ProductionTelemetryStage::NotTelemetry,
@@ -404,10 +386,6 @@ fn with_persistence_meta(mut payload: Value, event_id: Option<&str>) -> Value {
         }
         obj.entry("source".to_string())
             .or_insert_with(|| serde_json::json!("persistence_worker"));
-        obj.entry("dual_write".to_string())
-            .or_insert_with(|| serde_json::json!(false));
-        obj.entry("persistence_mode".to_string())
-            .or_insert_with(|| serde_json::json!("worker_exclusive"));
     }
     payload
 }

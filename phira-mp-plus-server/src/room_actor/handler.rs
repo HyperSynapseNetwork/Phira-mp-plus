@@ -18,11 +18,9 @@ use super::{
 use crate::plugin::PluginEvent;
 use crate::room::InternalRoomState;
 use phira_mp_common::{Message, PartialRoomData, RoomEvent, ServerCommand};
-use rand::seq::IndexedRandom;
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::Ordering;
-use std::ops::Deref;
 use tracing::{debug, info, warn};
 
 /// Helper: build an error result.
@@ -433,9 +431,9 @@ impl RoomCommandHandler {
                     Some(uid) => {
                         let name = as_.display_names.get(uid)
                             .cloned()
-                            .or_else(|| {
+                            .or_else(|| async {
                                 r.users().await.iter().find(|u| u.id == *uid).map(|u| u.name.clone())
-                            })
+                            }.await)
                             .unwrap_or_else(|| uid.to_string());
                         // Send messages directly via Room broadcast
                         r.send(Message::Chat { user: 0, content: format!("房主已转移给 {name}") }).await;

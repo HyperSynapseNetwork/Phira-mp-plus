@@ -33,13 +33,13 @@ pub mod snapshot;
 pub mod state;
 
 // ── Re-exports for backward compatibility ──
-pub use accept::*;
+pub(crate) use accept::*;
 pub use benchmark::*;
 pub use config::*;
-pub use disconnect::*;
+pub(crate) use disconnect::*;
 pub use events::*;
-pub use init::*;
+pub(crate) use init::*;
 pub use query::*;
-pub use rooms::*;
-pub use snapshot::*;
+pub(crate) use rooms::*;
+pub(crate) use snapshot::*;
 pub use state::*;

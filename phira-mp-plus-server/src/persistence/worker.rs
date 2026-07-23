@@ -14,7 +14,7 @@ use crate::persistence::stats::{
 };
 use crate::persistence::wal::PersistenceWal;
 use crate::telemetry::{
-    TelemetryBatcher, TelemetryBatcherPolicy, TelemetryBatcherStats,
+    TelemetryBatcher, TelemetryBatcherPolicy,
 };
 use serde_json::json;
 use std::path::{Path, PathBuf};
@@ -863,7 +863,7 @@ impl PersistenceWorker {
         };
         // Send using the reserved permit (infallible).
         permit.send(WorkerMessage::Event { wal_id, event, needs_wal_ack });
-        record_queued(&self.stats, kind, simulation, summary).await;
+        record_queued(&self.stats, kind.clone(), simulation, summary).await;
         // Record per-type received for touch/judge telemetry.
         match kind.as_str() {
             "touch_batch" => {

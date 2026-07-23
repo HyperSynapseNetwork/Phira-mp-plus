@@ -183,7 +183,7 @@ impl User {
 
         if let Some(room) = room.as_ref() {
             let playing = matches!(
-                *room.state.read().await,
+                room.cached_state.read().await.clone(),
                 crate::room::InternalRoomState::Playing { .. }
             );
             if playing {

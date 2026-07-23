@@ -264,9 +264,12 @@ impl RoomActor {
             self.actor_state = Some(RoomActorState::from_room(&self.room).await);
         }
 
+        let state_arc = Arc::clone(&self.state);
+        let state: &crate::server::PlusServerState = &state_arc;
+        let room = Arc::clone(&self.room);
         let ctx = RoomCommandContext::with_actor(
-            &self.state,
-            self.room.clone(),
+            state,
+            room,
             self,
         );
         let result = RoomCommandHandler::execute_with_actor(ctx, &command).await;

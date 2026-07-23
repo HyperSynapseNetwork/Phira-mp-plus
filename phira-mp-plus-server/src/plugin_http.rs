@@ -193,7 +193,7 @@ async fn health_live() -> Response {
 }
 
 /// GET /health/ready — true readiness check with dependency verification.
-async fn health_ready(Extension(state): Extension<Arc<HttpAppState>>) -> Response {
+async fn health_ready(Extension(_state): Extension<Arc<HttpAppState>>) -> Response {
     let mut issues: Vec<String> = Vec::new();
 
     // Check Supervisor not degraded

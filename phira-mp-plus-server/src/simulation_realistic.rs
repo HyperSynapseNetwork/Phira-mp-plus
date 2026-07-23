@@ -141,7 +141,7 @@ impl RealisticSimulationRunner {
     /// Uses deterministic data from `SimulationManager::sample_*` so same
     /// seed produces the same activity pattern.
     /// Records all events to `mp_sim_events` when PG is configured.
-    pub async fn tick(&self, state: &Arc<PlusServerState>, seed: u64) -> SimulationCounters {
+    pub async fn tick(&self, state: &Arc<PlusServerState>, _seed: u64) -> SimulationCounters {
         let mut counters = SimulationCounters::default();
         let mut counts_by_room: Vec<(usize, usize)> = Vec::new();
         for room in &self.rooms {

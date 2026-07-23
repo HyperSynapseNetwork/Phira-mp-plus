@@ -1,4 +1,5 @@
 //! CPU and heap profiling integration
+#![allow(unexpected_cfgs)]
 //!
 //! CPU 和堆内存性能分析（profiling）集成。
 //! 通过 `pprof` 进行 CPU profiling，通过 `tikv-jemallocator` 进行堆分析。
@@ -19,7 +20,7 @@
 //! - `jemalloc-prof` 特性 + Linux + tikv-jemallocator 启用堆分析
 
 use serde::{Deserialize, Serialize};
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 /// 分析器状态
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -198,7 +199,7 @@ impl Profiler {
         }
 
         let started = self.started_at.ok_or("started_at not set")?;
-        let duration = started.elapsed();
+        let _duration = started.elapsed();
         let timestamp = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_secs())

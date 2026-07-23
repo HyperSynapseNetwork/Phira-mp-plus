@@ -120,7 +120,7 @@ pub struct BenchmarkReport {
 }
 
 /// 报告总体统计
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ReportSummary {
     /// 运行总时长（秒）
     pub duration_secs: u64,

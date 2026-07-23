@@ -27,9 +27,8 @@ impl DbManager {
         room_uuid: &str,
         joined_at: i64,
     ) -> bool {
-        #[cfg(feature = "postgres")]
-        if let Self::Pg(pool) = self {
-            let Ok(mut transaction) = pool.begin().await else {
+        let Self::Pg(pool) = self;
+        let Ok(mut transaction) = pool.begin().await else {
                 return false;
             };
             let compatibility_insert = sqlx::query(
@@ -87,8 +86,6 @@ impl DbManager {
                 return false;
             }
             return transaction.commit().await.is_ok();
-        }
-        false
     }
 
     /// Upsert the canonical room snapshot and append its audit event in one
@@ -99,27 +96,20 @@ impl DbManager {
         room_uuid: &str,
         payload: Value,
     ) -> bool {
-        #[cfg(feature = "postgres")]
-        if let Self::Pg(pool) = self {
-            return record_room_snapshot_pg(pool, room_id, room_uuid, payload)
-                .await
-                .is_ok();
-        }
-        #[cfg(not(feature = "postgres"))]
-        let _ = (room_id, room_uuid, payload);
-        false
+        let Self::Pg(pool) = self;
+        record_room_snapshot_pg(pool, room_id, room_uuid, payload)
+            .await
+            .is_ok()
     }
 
     /// Record a room snapshot via spawn-and-forget compatibility adapter.
     /// New production paths should enqueue a typed `PersistenceEvent` instead.
     pub fn record_room_snapshot_sync(&self, room_id: String, room_uuid: String, payload: Value) {
-        #[cfg(feature = "postgres")]
-        if let Self::Pg(pool) = self {
-            let pool = pool.clone();
-            tokio::spawn(async move {
-                let _ = record_room_snapshot_pg(&pool, &room_id, &room_uuid, payload).await;
-            });
-        }
+        let Self::Pg(pool) = self;
+        let pool = pool.clone();
+        tokio::spawn(async move {
+            let _ = record_room_snapshot_pg(&pool, &room_id, &room_uuid, payload).await;
+        });
     }
 
     /// Record a room event and return PostgreSQL acknowledgement.
@@ -130,27 +120,22 @@ impl DbManager {
         user_id: Option<i32>,
         payload: Value,
     ) -> bool {
-        #[cfg(feature = "postgres")]
-        if let Self::Pg(pool) = self {
-            let event_id = payload
-                .get("event_id")
-                .and_then(Value::as_str)
-                .filter(|value| !value.is_empty())
-                .map(ToString::to_string);
-            return crate::db::append_event_pg(
-                pool,
-                event_id.as_deref(),
-                kind,
-                room_id.as_deref(),
-                user_id,
-                payload,
-            )
-            .await
-            .is_ok();
-        }
-        #[cfg(not(feature = "postgres"))]
-        let _ = (kind, room_id, user_id, payload);
-        false
+        let Self::Pg(pool) = self;
+        let event_id = payload
+            .get("event_id")
+            .and_then(Value::as_str)
+            .filter(|value| !value.is_empty())
+            .map(ToString::to_string);
+        crate::db::append_event_pg(
+            pool,
+            event_id.as_deref(),
+            kind,
+            room_id.as_deref(),
+            user_id,
+            payload,
+        )
+        .await
+        .is_ok()
     }
 
     /// Synchronous compatibility adapter for a room event.
@@ -161,17 +146,13 @@ impl DbManager {
         user_id: Option<i32>,
         payload: Value,
     ) {
-        #[cfg(feature = "postgres")]
-        if let Self::Pg(pool) = self {
-            let pool = pool.clone();
-            let kind = kind.to_string();
-            tokio::spawn(async move {
-                let db = DbManager::Pg(pool);
-                let _ = db.record_room_event(&kind, room_id, user_id, payload).await;
-            });
-        }
-        #[cfg(not(feature = "postgres"))]
-        let _ = (kind, room_id, user_id, payload);
+        let Self::Pg(pool) = self;
+        let pool = pool.clone();
+        let kind = kind.to_string();
+        tokio::spawn(async move {
+            let db = DbManager::Pg(pool);
+            let _ = db.record_room_event(&kind, room_id, user_id, payload).await;
+        });
     }
 
     /// Compatibility adapter for room join history. It delegates to the same
@@ -183,15 +164,13 @@ impl DbManager {
         room_uuid: String,
         joined_at: i64,
     ) {
-        #[cfg(feature = "postgres")]
-        if let Self::Pg(pool) = self {
-            let db = DbManager::Pg(pool.clone());
-            tokio::spawn(async move {
-                let _ = db
-                    .record_user_room_history(user_id, &room_id, &room_uuid, joined_at)
-                    .await;
-            });
-        }
+        let Self::Pg(pool) = self;
+        let db = DbManager::Pg(pool.clone());
+        tokio::spawn(async move {
+            let _ = db
+                .record_user_room_history(user_id, &room_id, &room_uuid, joined_at)
+                .await;
+        });
     }
 }
 

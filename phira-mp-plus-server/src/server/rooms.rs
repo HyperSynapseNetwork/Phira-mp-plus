@@ -55,7 +55,7 @@ impl PlusServerState {
         self: &Arc<Self>,
         room_id: &str,
         endpoint: Option<String>,
-        persistent_empty: bool,
+        _persistent_empty: bool,
     ) -> Result<Value, String> {
         let rid: RoomId = room_id
             .to_string()
@@ -161,7 +161,7 @@ impl PlusServerState {
         room: &Arc<crate::room::Room>,
         user: &Arc<crate::session::User>,
         monitor: bool,
-        announce: bool,
+        _announce: bool,
     ) -> bool {
         if monitor {
             return false;
@@ -535,7 +535,7 @@ impl PlusServerState {
             .await?;
         self.refresh_room_display_metadata_background_by_id(room_id)
             .await;
-        let control = {
+        let _control = {
             let rooms = self.rooms.read().await;
             let rid: RoomId = room_id
                 .to_string()

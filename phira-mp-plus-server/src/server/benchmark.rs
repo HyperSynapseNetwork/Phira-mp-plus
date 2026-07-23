@@ -204,8 +204,6 @@ pub(crate) fn save_benchmark_tokens(tokens: &[String]) -> Result<(), String> {
 use super::config::{Chart, Record};
 use super::state::PlusServerState;
 use crate::benchmark_report::{BenchmarkMode, BenchmarkReport};
-use crate::plugin::PluginEvent;
-use std::sync::Arc;
 
 impl PlusServerState {
     fn append_benchmark_report(&self, out: &mut String, report: BenchmarkReport) {

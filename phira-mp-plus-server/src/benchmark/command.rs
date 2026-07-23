@@ -107,7 +107,7 @@ impl BenchmarkScenario {
             "room_lifecycle" | "room" | "lifecycle" => Some(Self::RoomLifecycle),
             "gameplay" | "game" | "play" => Some(Self::Gameplay),
             "connection" | "conn" | "connect" => Some(Self::Connection),
-            "steady_state" | "steady" | "steady_state" => Some(Self::SteadyState),
+            "steady_state" | "steady" => Some(Self::SteadyState),
             "hot_room" | "hot" => Some(Self::HotRoom),
             "slow_consumer" | "slow" => Some(Self::SlowConsumer),
             "reconnect" | "reconn" => Some(Self::Reconnect),
@@ -164,7 +164,7 @@ impl BenchmarkPreset {
 /// 基准测试运行参数
 ///
 /// 由 CLI 解析后传给 `BenchmarkRunner`。
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BenchmarkRunArgs {
     /// 运行模式：Simulation（默认）或 Real
     pub mode: BenchmarkRunMode,

@@ -95,7 +95,7 @@ pub(super) struct RoundInfo {
 // ── Builders ────────────────────────────────────────────────────────
 
 fn user_snapshot(
-    room: &crate::room::Room,
+    _room: &crate::room::Room,
     user: &crate::session::User,
     is_host: bool,
     in_room: bool,

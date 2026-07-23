@@ -1160,7 +1160,7 @@ impl CliHandler {
             "New".to_string(),
             "Change".to_string(),
         ));
-        self.out(format!("  {}", c::dim("─".repeat(64))));
+        self.out(format!("  {}", c::dim(&"─".repeat(64))));
 
         // Throughput
         self.out(hdr_format(
@@ -1268,7 +1268,7 @@ impl CliHandler {
             ),
         ));
 
-        self.out(format!("  {}", c::dim("─".repeat(64))));
+        self.out(format!("  {}", c::dim(&"─".repeat(64))));
         if new_report.errors_total > old_report.errors_total {
             self.out(format!(
                 "  {} Errors increased by {} ({} → {})",

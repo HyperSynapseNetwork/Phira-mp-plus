@@ -11,7 +11,6 @@
 
 use crate::benchmark::config::BenchmarkConfig;
 use crate::benchmark::report::BenchmarkReport;
-use std::sync::Arc;
 
 /// 真实模式运行结果
 pub struct RealRunResult {

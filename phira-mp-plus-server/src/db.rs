@@ -128,44 +128,43 @@ impl DbManager {
     }
 
     pub async fn cleanup_expired(&self, retention_days: u32, touch_judge_retention_days: u32) {
-        if let Self::Pg(pool) = self {
-            let now = || {
-                std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map(|d| d.as_millis() as i64)
-                    .unwrap_or(0)
-            };
-            if retention_days > 0 {
-                let cutoff = now().saturating_sub(retention_days as i64 * 86_400_000);
-                for sql in [
-                    "DELETE FROM mp_events WHERE created_at < $1",
-                    "DELETE FROM mp_user_room_history WHERE created_at < $1",
-                    "DELETE FROM mp_round_results WHERE updated_at < $1",
-                ] {
-                    let _ = sqlx::query(sql).bind(cutoff).execute(pool).await;
-                }
+        let Self::Pg(pool) = self;
+        let now = || {
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis() as i64)
+                .unwrap_or(0)
+        };
+        if retention_days > 0 {
+            let cutoff = now().saturating_sub(retention_days as i64 * 86_400_000);
+            for sql in [
+                "DELETE FROM mp_events WHERE created_at < $1",
+                "DELETE FROM mp_user_room_history WHERE created_at < $1",
+                "DELETE FROM mp_round_results WHERE updated_at < $1",
+            ] {
+                let _ = sqlx::query(sql).bind(cutoff).execute(pool).await;
             }
-            if touch_judge_retention_days > 0 {
-                let cutoff = now().saturating_sub(touch_judge_retention_days as i64 * 86_400_000);
-                for sql in [
-                    "DELETE FROM mp_round_player_data WHERE updated_at < $1",
-                    "DELETE FROM mp_round_touch_batches WHERE created_at < $1",
-                    "DELETE FROM mp_round_judge_batches WHERE created_at < $1",
-                ] {
-                    let _ = sqlx::query(sql).bind(cutoff).execute(pool).await;
-                }
+        }
+        if touch_judge_retention_days > 0 {
+            let cutoff = now().saturating_sub(touch_judge_retention_days as i64 * 86_400_000);
+            for sql in [
+                "DELETE FROM mp_round_player_data WHERE updated_at < $1",
+                "DELETE FROM mp_round_touch_batches WHERE created_at < $1",
+                "DELETE FROM mp_round_judge_batches WHERE created_at < $1",
+            ] {
+                let _ = sqlx::query(sql).bind(cutoff).execute(pool).await;
             }
-            let round_meta_retention_days = match (retention_days, touch_judge_retention_days) {
-                (0, _) | (_, 0) => 0,
-                (a, b) => a.max(b),
-            };
-            if round_meta_retention_days > 0 {
-                let cutoff = now().saturating_sub(round_meta_retention_days as i64 * 86_400_000);
-                let _ = sqlx::query("DELETE FROM mp_rounds WHERE updated_at < $1")
-                    .bind(cutoff)
-                    .execute(pool)
-                    .await;
-            }
+        }
+        let round_meta_retention_days = match (retention_days, touch_judge_retention_days) {
+            (0, _) | (_, 0) => 0,
+            (a, b) => a.max(b),
+        };
+        if round_meta_retention_days > 0 {
+            let cutoff = now().saturating_sub(round_meta_retention_days as i64 * 86_400_000);
+            let _ = sqlx::query("DELETE FROM mp_rounds WHERE updated_at < $1")
+                .bind(cutoff)
+                .execute(pool)
+                .await;
         }
     }
 }

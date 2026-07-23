@@ -29,10 +29,6 @@ pub async fn init_internal_hooks(
             guard.insert(id);
         }
     }
-    state
-        .persistence_worker
-        .record_runtime_config_snapshot()
-        .await;
 
     init_welcome(state, pm).await;
     init_player_tracker(state, http, pm).await;

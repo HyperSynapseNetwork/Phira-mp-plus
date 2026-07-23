@@ -440,7 +440,7 @@ impl CliHandler {
             for room in rooms.values() {
                 let users_count = room.users().await.len();
                 let monitors_count = room.monitors().await.len();
-                let state_str = match &*room.state.read().await {
+                let state_str = match &room.cached_state.read().await {
                     crate::room::InternalRoomState::SelectChart => c::cyan("选曲中"),
                     crate::room::InternalRoomState::WaitForReady { .. } => c::yellow("等待准备"),
                     crate::room::InternalRoomState::Playing { .. } => c::magenta("游戏中"),

@@ -320,6 +320,8 @@ mod tests {
             hidden: false,
             live: false,
             created_at: 0,
+            chart: None,
+            stripped: phira_mp_common::StrippedRoomState::SelectingChart,
         };
 
         gateway

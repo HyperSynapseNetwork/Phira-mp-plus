@@ -78,8 +78,7 @@ pub(crate) async fn build_client_room_state(
     } else {
         None
     };
-    let is_ready = snap.as_ref().map_or(false, |s| {
-        use std::ops::Deref;
+    let is_ready = snap.as_ref().map_or(false, |_| {
         // We can't check the ready set from snapshot alone; default to false.
         false
     });

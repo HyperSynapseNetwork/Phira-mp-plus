@@ -6,10 +6,8 @@
 use crate::benchmark::command::BenchmarkRunArgs;
 use crate::benchmark::config::BenchmarkConfig;
 use crate::benchmark::environment::EnvironmentSnapshot;
-use crate::benchmark::metrics::BenchmarkMetrics;
 use crate::benchmark::report::BenchmarkReport;
 use serde::{Deserialize, Serialize};
-use std::sync::Arc;
 
 /// 基准测试运行器状态
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -85,7 +83,7 @@ impl BenchmarkRunner {
         self.state = RunnerState::Running;
 
         // 采集环境快照
-        let environment = EnvironmentSnapshot::capture().await;
+        let _environment = EnvironmentSnapshot::capture().await;
 
         let report = match self.config.mode {
             crate::benchmark::command::BenchmarkRunMode::Simulation => {

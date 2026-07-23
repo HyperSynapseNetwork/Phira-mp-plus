@@ -9,15 +9,14 @@ use crate::plugin_http::{PluginHttpServer, SseHub};
 use anyhow::Result;
 use phira_mp_plus_server_api as api;
 use serde_json::Value;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 use tokio::net::TcpListener;
 use tokio::sync::{mpsc, Mutex, Notify, RwLock, Semaphore};
-use tracing::{error, info, trace, warn};
-use uuid::Uuid;
+use tracing::{error, info, warn};
 
 use super::benchmark::{
-    load_benchmark_tokens, BenchRequest, BenchRequestKind, HybridBenchmarkConfig,
+    load_benchmark_tokens, BenchRequest, BenchRequestKind,
 };
 use super::config::{IdMap, LiveConfig, PlusConfig, SafeMap};
 use super::events::{spawn_event_subscribers, spawn_runtime_event_observer};

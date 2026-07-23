@@ -7,7 +7,7 @@ use crate::benchmark_snapshot::BenchmarkReportStore;
 use crate::extensions::ExtensionManager;
 use crate::plugin::PluginManager;
 use crate::plugin_http::SseHub;
-use phira_mp_common::{generate_secret_key, RoomId};
+use phira_mp_common::RoomId;
 use std::collections::HashSet;
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Weak};

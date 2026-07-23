@@ -25,7 +25,7 @@ use std::sync::{
     Arc, Weak,
 };
 use tokio::sync::RwLock;
-use tracing::{debug, info, warn};
+use tracing::{debug, info};
 
 #[derive(Default, Debug, Clone)]
 pub enum InternalRoomState {
@@ -201,7 +201,7 @@ impl Room {
         host: Weak<super::session::User>,
         plugin_manager: Option<Arc<PluginManager>>,
         server: Weak<crate::server::PlusServerState>,
-        max_users: usize,
+        _max_users: usize,
         round_store: Option<Arc<crate::round_store::RoundStore>>,
     ) -> Self {
         let now = std::time::SystemTime::now()
@@ -460,7 +460,6 @@ impl Room {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
 
     #[test]
     fn default_snapshot_fallback() {

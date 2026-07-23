@@ -44,7 +44,7 @@ pub struct SimulationRunResult {
 /// | Mixed | Balanced | all |
 /// | LongRun | Balanced | all (slow tick) |
 pub async fn run_simulation(config: BenchmarkConfig) -> Result<SimulationRunResult, String> {
-    let started_at_ms = now_ms();
+    let _started_at_ms = now_ms();
 
     // Dispatch to the correct scenario implementation
     let metrics = match config.scenario {

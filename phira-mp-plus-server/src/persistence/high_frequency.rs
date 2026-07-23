@@ -368,11 +368,8 @@ async fn try_copy_write(
     db: &DbManager,
     records: &[RuntimeTelemetryBatchRecord],
 ) -> Result<(), String> {
-    #[cfg(feature = "postgres")]
-    if let DbManager::Pg(pool) = db {
-        return try_copy_write_inner(pool, records).await;
-    }
-    Err("postgres feature not enabled".into())
+    let DbManager::Pg(pool) = db;
+    try_copy_write_inner(pool, records).await
 }
 
 #[cfg(feature = "postgres")]
