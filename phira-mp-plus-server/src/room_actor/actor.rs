@@ -32,6 +32,8 @@ pub struct RoomSnapshot {
     pub chart: Option<i32>,
     /// The room lifecycle state as a stripped enum (actor-authoritative).
     pub stripped: phira_mp_common::StrippedRoomState,
+    /// Current round id, if a round is active (actor-authoritative).
+    pub round_id: Option<uuid::Uuid>,
 }
 
 impl RoomSnapshot {
@@ -49,6 +51,7 @@ impl RoomSnapshot {
             created_at: room.created_at,
             chart: None, // not available from control snapshot alone
             stripped: phira_mp_common::StrippedRoomState::SelectingChart,
+            round_id: None,
         }
     }
 
@@ -65,6 +68,7 @@ impl RoomSnapshot {
             created_at: state.created_at,
             chart: state.state.chart,
             stripped: state.state.lifecycle.stripped(),
+            round_id: state.state.round.round_id,
         }
     }
 }
@@ -137,6 +141,7 @@ impl RoomState {
             created_at,
             chart: self.chart,
             stripped: self.lifecycle.stripped(),
+            round_id: self.round.round_id,
         }
     }
 
@@ -203,11 +208,11 @@ impl RoomActorState {
         }
     }
 
-    /// (Removed) Room no longer holds mutable state, so there is nothing to
-    /// sync to. This method is intentionally omitted. The actor updates its
-    /// own `latest_snapshot` and stores it in the gateway cache after every
-    /// command. External readers (snapshots, queries) use
-    /// `RoomCommandGateway::room_snapshot()` instead of reading from Room.
+    // (Removed) Room no longer holds mutable state, so there is nothing to
+    // sync to. This method is intentionally omitted. The actor updates its
+    // own `latest_snapshot` and stores it in the gateway cache after every
+    // command. External readers (snapshots, queries) use
+    // `RoomCommandGateway::room_snapshot()` instead of reading from Room.
 }
 
 /// Room Actor — 每个房间一个，持有状态并处理命令。

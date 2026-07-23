@@ -112,8 +112,6 @@ pub fn status_to_metrics(status: &crate::simulation::SimulationStatus) -> Benchm
         room_mailbox_depth: 0,
         plugin_event_queue_depth: 0,
         telemetry_queue_depth: 0,
-        pg_transactions_per_sec: 0.0,
-        retries: 0,
         elapsed_secs: status.elapsed_secs,
     }
 }

@@ -9,6 +9,7 @@ use crate::plugin::PluginManager;
 use crate::plugin_http::SseHub;
 use phira_mp_common::RoomId;
 use std::collections::HashSet;
+use uuid::Uuid;
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Weak};
 use tokio::net::TcpListener;

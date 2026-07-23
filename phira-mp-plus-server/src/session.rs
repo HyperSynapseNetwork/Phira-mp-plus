@@ -182,10 +182,10 @@ impl User {
         }
 
         if let Some(room) = room.as_ref() {
-            let playing = matches!(
-                room.cached_state.read().await.clone(),
-                crate::room::InternalRoomState::Playing { .. }
-            );
+            let playing = room.server.upgrade()
+                .and_then(|s| s.room_snapshot(&room.id.to_string()))
+                .map(|snap| snap.stripped == phira_mp_common::StrippedRoomState::Playing)
+                .unwrap_or(false);
             if playing {
                 warn!(
                     user = self.id,

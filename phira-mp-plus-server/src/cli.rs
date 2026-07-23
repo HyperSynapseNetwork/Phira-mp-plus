@@ -440,10 +440,13 @@ impl CliHandler {
             for room in rooms.values() {
                 let users_count = room.users().await.len();
                 let monitors_count = room.monitors().await.len();
-                let state_str = match &room.cached_state.read().await {
-                    crate::room::InternalRoomState::SelectChart => c::cyan("选曲中"),
-                    crate::room::InternalRoomState::WaitForReady { .. } => c::yellow("等待准备"),
-                    crate::room::InternalRoomState::Playing { .. } => c::magenta("游戏中"),
+                let state_str = match room.server.upgrade()
+                    .and_then(|s| s.room_snapshot(&room.id.to_string()))
+                    .map(|snap| snap.stripped)
+                {
+                    Some(phira_mp_common::StrippedRoomState::SelectingChart) | None => c::cyan("选曲中"),
+                    Some(phira_mp_common::StrippedRoomState::WaitingForReady) => c::yellow("等待准备"),
+                    Some(phira_mp_common::StrippedRoomState::Playing) => c::magenta("游戏中"),
                 };
                 self.out(format!(
                     "  {} {:<15}  {}  {}+{} 人",

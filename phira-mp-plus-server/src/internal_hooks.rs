@@ -184,6 +184,10 @@ pub fn send_welcome(user_id: i32, user_name: &str, online: usize, state: &PlusSe
                                 } else {
                                     format!(" [{}]", flags.join(","))
                                 };
+                                let chart_str = room.server.upgrade()
+                                    .and_then(|s| s.room_snapshot(&room.id.to_string()))
+                                    .and_then(|snap| snap.chart.map(|c| c.to_string()))
+                                    .unwrap_or_default();
                                 format!(
                                     "房间:{}{} 房主:{} [{}/{}] {}{}",
                                     id,
@@ -192,10 +196,10 @@ pub fn send_welcome(user_id: i32, user_name: &str, online: usize, state: &PlusSe
                                     players,
                                     max,
                                     state_desc,
-                                    if chart.is_empty() {
+                                    if chart_str.is_empty() {
                                         String::new()
                                     } else {
-                                        format!(" | {}", chart)
+                                        format!(" | {}", chart_str)
                                     }
                                 )
                             })

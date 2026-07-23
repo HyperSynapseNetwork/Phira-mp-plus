@@ -322,6 +322,9 @@ async fn process_worker_loop(
                 )
                 .await;
             }
+            BenchmarkReportStage::SkippedNoDatabase => {
+                record_benchmark_report_persist_skipped(worker_stats).await;
+            }
             BenchmarkReportStage::NotBenchmark => {
                 match persist_simulation_event_if_needed(&event).await {
                     PersistenceWriteStage::Acknowledged {
@@ -351,6 +354,9 @@ async fn process_worker_loop(
                         }
                         record_simulation_persist_request(worker_stats).await;
                         record_db_dispatch_failure(worker_stats, pipeline, elapsed_ms, error).await;
+                    }
+                    PersistenceWriteStage::SkippedNoDatabase { .. } => {
+                        record_simulation_persist_request(worker_stats).await;
                     }
                     PersistenceWriteStage::NotApplicable => {
                         match stage_production_telemetry_if_needed(wal_id, &event, worker_telemetry).await {
@@ -412,6 +418,9 @@ async fn process_worker_loop(
                                             error,
                                         )
                                         .await;
+                                    }
+                                    PersistenceWriteStage::SkippedNoDatabase { .. } => {
+                                        record_production_persist_request(worker_stats).await;
                                     }
                                     PersistenceWriteStage::NotApplicable => {
                                         if !event.is_simulation()

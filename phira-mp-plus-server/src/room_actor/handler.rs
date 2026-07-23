@@ -80,7 +80,7 @@ async fn save_round_history(
 ) -> Option<phira_mp_common::RoundData> {
     let round_id = current_round_id.unwrap_or(uuid::Uuid::nil());
     let (chart_id, chart_name_str, results, aborted) = {
-        match lifecycle.deref() {
+        match &*lifecycle {
             InternalRoomState::Playing { results, aborted } => {
                 let (cid, cn) = match chart {
                     Some(cid) => (cid, chart_name.unwrap_or("?").to_string()),
@@ -429,11 +429,13 @@ impl RoomCommandHandler {
                 // Find the target user (if any) and get display name from actor_state
                 let (host_id, host_name, system_host) = match target_id {
                     Some(uid) => {
+                        let fallback_name = {
+                            let users = r.users().await;
+                            users.iter().find(|u| u.id == *uid).map(|u| u.name.clone())
+                        };
                         let name = as_.display_names.get(uid)
                             .cloned()
-                            .or_else(|| async {
-                                r.users().await.iter().find(|u| u.id == *uid).map(|u| u.name.clone())
-                            }.await)
+                            .or_else(|| fallback_name)
                             .unwrap_or_else(|| uid.to_string());
                         // Send messages directly via Room broadcast
                         r.send(Message::Chat { user: 0, content: format!("房主已转移给 {name}") }).await;
