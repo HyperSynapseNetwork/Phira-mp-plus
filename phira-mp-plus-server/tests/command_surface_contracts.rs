@@ -83,9 +83,9 @@ fn default_overview_omits_developer_commands() {
         "runtime actors",
         "runtime rooms",
         "runtime events",
-        "simulation tick",
-        "simulation persist",
-        "simulation seed",
+        "benchmark simulation tick",
+        "benchmark simulation persist",
+        "benchmark simulation seed",
     ] {
         assert!(
             !overview.contains(cmd_name),
@@ -135,8 +135,8 @@ fn help_dev_shows_developer_commands() {
         "dev view should show runtime roadmap"
     );
     assert!(
-        dev.contains("simulation tick"),
-        "dev view should show simulation tick"
+        dev.contains("benchmark simulation tick"),
+        "dev view should show benchmark simulation tick"
     );
 }
 
@@ -194,7 +194,7 @@ fn canonical_exit_is_command() {
 #[test]
 fn canonical_namespaces_exist() {
     let registry = runtime_registry();
-    for name in &["room", "plugin", "runtime", "simulation"] {
+    for name in &["room", "plugin", "runtime"] {
         assert!(
             registry.get(name).is_none(),
             "'{name}' as a direct command should not exist (it's a namespace)"
@@ -222,8 +222,8 @@ fn developer_commands_have_developer_audience() {
     for name in &[
         "runtime roadmap",
         "runtime schema",
-        "simulation tick",
-        "simulation persist",
+        "benchmark simulation tick",
+        "benchmark simulation persist",
     ] {
         let spec = registry.get(name).expect("{name} should be in registry");
         assert_eq!(
