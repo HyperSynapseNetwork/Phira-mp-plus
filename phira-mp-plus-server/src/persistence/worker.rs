@@ -9,7 +9,8 @@
 use crate::persistence::message::PersistenceEvent;
 use crate::persistence::stats::{
     record_dead_letter_failed, record_dead_letter_written, record_dropped, record_queued,
-    PersistenceStats,
+    record_touch_received, record_judge_received, record_wal_committed, record_wal_compaction,
+    record_wal_received, PersistenceStats,
 };
 use crate::persistence::wal::PersistenceWal;
 use crate::telemetry::{
@@ -451,6 +452,7 @@ async fn process_worker_loop(
                 pending_acks.push_back((wal_id, 0));
             } else {
                 worker_wal.set_degraded(false);
+                record_wal_committed(worker_stats).await;
             }
         } else {
             tracing::warn!(
@@ -461,10 +463,15 @@ async fn process_worker_loop(
 
         // Auto-compaction: trigger when ACK ratio drops below threshold.
         if worker_wal.should_compact() {
-            if let Err(e) = worker_wal.compact().await {
-                tracing::warn!(error = %e, "auto-compaction failed");
-            } else {
-                tracing::debug!("auto-compaction completed");
+            match worker_wal.compact().await {
+                Err(e) => {
+                    tracing::warn!(error = %e, "auto-compaction failed");
+                }
+                Ok(_pending) => {
+                    tracing::debug!("auto-compaction completed");
+                    let wal_bytes = worker_wal.total_bytes();
+                    record_wal_compaction(worker_stats, wal_bytes).await;
+                }
             }
         }
     }
@@ -822,7 +829,11 @@ impl PersistenceWorker {
         };
         // Queue capacity is reserved — WAL admit is now safe.
         let wal_id = match self.wal.admit(event.clone()).await {
-            Ok(id) => id,
+            Ok(id) => {
+                // Record WAL admission.
+                record_wal_received(&self.stats).await;
+                id
+            }
             Err(error) => {
                 record_dropped(&self.stats, kind, simulation, summary, error).await;
                 return Err(event);
@@ -831,6 +842,16 @@ impl PersistenceWorker {
         // Send using the reserved permit (infallible).
         permit.send(WorkerMessage::Event { wal_id, event });
         record_queued(&self.stats, kind, simulation, summary).await;
+        // Record per-type received for touch/judge telemetry.
+        match kind.as_str() {
+            "touch_batch" => {
+                record_touch_received(&self.stats).await;
+            }
+            "judge_batch" => {
+                record_judge_received(&self.stats).await;
+            }
+            _ => {}
+        }
         Ok(())
     }
 
@@ -890,8 +911,29 @@ impl PersistenceWorker {
 
     pub async fn stats(&self) -> PersistenceStats {
         let mut stats = self.stats.read().await.clone();
-        stats.refresh_derived();
         stats.telemetry = self.telemetry_batcher.stats().await;
+
+        // Populate high-frequency metrics from TelemetryBatcher.
+        stats.high_frequency_received = stats.telemetry.accepted;
+        stats.high_frequency_committed = stats.telemetry.flushed_items;
+        stats.high_frequency_dropped = stats.telemetry.dropped;
+        stats.high_frequency_retrying = stats.telemetry.write_errors;
+        stats.high_frequency_oldest_batch_age_ms = stats.telemetry.flush_interval_ms;
+
+        // Per-type committed/dropped from batcher per-kind tracking.
+        stats.touch_committed = stats.telemetry.touch_committed;
+        stats.judge_committed = stats.telemetry.judge_committed;
+        stats.touch_dropped = stats.telemetry.touch_dropped;
+        stats.judge_dropped = stats.telemetry.judge_dropped;
+
+        // Batch metrics from TelemetryBatcher config and tracking.
+        stats.batch_size_current = stats.telemetry.pending;
+        stats.batch_size_max = stats.telemetry.batch_size_max;
+        stats.flush_interval_ms = stats.telemetry.flush_interval_ms;
+        stats.batch_size_total = stats.telemetry.batch_size_total;
+        stats.batch_size_samples = stats.telemetry.batch_size_samples;
+
+        stats.refresh_derived();
         stats
     }
 

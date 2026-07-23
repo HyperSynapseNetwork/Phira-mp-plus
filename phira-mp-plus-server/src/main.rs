@@ -342,6 +342,21 @@ async fn main() -> Result<()> {
         }
     }
 
+    // Flush and shutdown the high-frequency writer before the PersistenceWorker
+    // so pending Touch/Judge batches are committed to PostgreSQL.
+    let budget = remaining();
+    if !budget.is_zero() {
+        if let Err(e) = server.state.high_frequency_writer.flush().await {
+            warn!(%e, "high frequency writer flush failed during shutdown");
+        }
+    }
+    let budget = remaining();
+    if !budget.is_zero() {
+        if let Err(e) = server.state.high_frequency_writer.shutdown().await {
+            warn!(%e, "high frequency writer shutdown failed");
+        }
+    }
+
     let mut persistence_ok = true;
     let budget = remaining();
     if !budget.is_zero() {

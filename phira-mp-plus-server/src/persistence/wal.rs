@@ -733,6 +733,11 @@ impl PersistenceWal {
         self.truncated_frames.load(Ordering::Acquire)
     }
 
+    /// Estimated total bytes in the WAL file (updated on admission/ACK/compact).
+    pub fn total_bytes(&self) -> u64 {
+        self.total_bytes.load(Ordering::Acquire)
+    }
+
     /// Check whether auto-compaction is worth running based on admission/ACK ratio.
     pub fn should_compact(&self) -> bool {
         let admitted = self.admission_count.load(Ordering::Acquire);

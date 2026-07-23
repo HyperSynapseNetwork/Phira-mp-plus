@@ -4,9 +4,11 @@
 //! high-frequency and coordinates persistence, EventBus, plugins and monitor
 //! broadcast.
 //!
-//! All production Touch/Judge telemetry uniformly goes through the
-//! PersistenceWorker/TelemetryBatcher path — the single unified persistence path.
+//! Production Touch/Judge telemetry goes through the HighFrequencyWriter which
+//! bypasses WAL for maximum throughput.  Simulation-mode touch/judge still use
+//! the PersistenceWorker/TelemetryBatcher path.
 
+use crate::persistence::high_frequency::{HighFrequencyItem, HighFrequencyKind};
 use crate::plugin::PluginEvent;
 use crate::room::Room;
 use crate::session::User;
@@ -14,8 +16,8 @@ use phira_mp_common::{JudgeEvent, ServerCommand, TouchFrame};
 use std::sync::Arc;
 use tracing::{debug, trace, warn};
 
-/// Cache a touch batch via the actor mailbox, then persist via the unified
-/// PersistenceWorker path.
+/// Cache a touch batch via the actor mailbox, then persist via
+/// HighFrequencyWriter (bypassing WAL for maximum throughput).
 async fn persist_touches(
     user: &Arc<User>,
     room: &Arc<Room>,
@@ -55,28 +57,36 @@ async fn persist_touches(
         "data": touch_data,
     });
 
+    let created_at_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0);
+
+    let item = HighFrequencyItem {
+        kind: HighFrequencyKind::Touch,
+        round_id: rid.to_string(),
+        user_id: user.id,
+        payload,
+        created_at_ms,
+    };
+
     match user
         .server
-        .persistence_worker
-        .enqueue(crate::persistence_worker::PersistenceEvent::TouchBatch {
-            round_id: rid.to_string(),
-            user_id: user.id,
-            payload: Arc::new(payload),
-            simulation: false,
-        })
+        .high_frequency_writer
+        .enqueue(item)
         .await
     {
         Ok(()) => {
-            trace!(room = %room.id, user_id = user.id, "touch batch enqueued to persistence worker");
+            trace!(room = %room.id, user_id = user.id, "touch batch enqueued to high frequency writer");
         }
-        Err(_) => {
-            warn!(room = %room.id, user_id = user.id, "touch batch could not be enqueued to persistence worker");
+        Err(e) => {
+            warn!(room = %room.id, user_id = user.id, "touch batch could not be enqueued to high frequency writer: {e}");
         }
     }
 }
 
-/// Cache a judge batch via the actor mailbox, then persist via the unified
-/// PersistenceWorker path.
+/// Cache a judge batch via the actor mailbox, then persist via
+/// HighFrequencyWriter (bypassing WAL for maximum throughput).
 async fn persist_judges(
     user: &Arc<User>,
     room: &Arc<Room>,
@@ -116,22 +126,30 @@ async fn persist_judges(
         "data": judge_data,
     });
 
+    let created_at_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0);
+
+    let item = HighFrequencyItem {
+        kind: HighFrequencyKind::Judge,
+        round_id: rid.to_string(),
+        user_id: user.id,
+        payload,
+        created_at_ms,
+    };
+
     match user
         .server
-        .persistence_worker
-        .enqueue(crate::persistence_worker::PersistenceEvent::JudgeBatch {
-            round_id: rid.to_string(),
-            user_id: user.id,
-            payload: Arc::new(payload),
-            simulation: false,
-        })
+        .high_frequency_writer
+        .enqueue(item)
         .await
     {
         Ok(()) => {
-            trace!(room = %room.id, user_id = user.id, "judge batch enqueued to persistence worker");
+            trace!(room = %room.id, user_id = user.id, "judge batch enqueued to high frequency writer");
         }
-        Err(_) => {
-            warn!(room = %room.id, user_id = user.id, "judge batch could not be enqueued to persistence worker");
+        Err(e) => {
+            warn!(room = %room.id, user_id = user.id, "judge batch could not be enqueued to high frequency writer: {e}");
         }
     }
 }

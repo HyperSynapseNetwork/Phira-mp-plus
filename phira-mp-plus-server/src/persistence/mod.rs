@@ -7,6 +7,7 @@ pub mod admin;
 pub mod benchmark;
 pub mod diagnostics;
 pub mod events;
+pub mod high_frequency;
 pub mod message;
 pub mod queries;
 pub mod rounds;

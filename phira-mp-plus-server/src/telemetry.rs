@@ -105,6 +105,26 @@ pub struct TelemetryBatcherStats {
     pub pending: usize,
     pub last_error: Option<String>,
     pub recent: Vec<TelemetryTraceEntry>,
+
+    // ── Per-kind drop tracking ─────────────────────────────────────────
+    #[serde(default)]
+    pub touch_dropped: u64,
+    #[serde(default)]
+    pub judge_dropped: u64,
+    #[serde(default)]
+    pub touch_committed: u64,
+    #[serde(default)]
+    pub judge_committed: u64,
+
+    // ── Batch-size tracking ────────────────────────────────────────────
+    #[serde(default)]
+    pub batch_size_total: u64,
+    #[serde(default)]
+    pub batch_size_samples: u64,
+    #[serde(default)]
+    pub batch_size_avg: f64,
+    #[serde(default)]
+    pub batch_size_max: usize,
 }
 
 impl Default for TelemetryBatcherStats {
@@ -148,7 +168,26 @@ impl TelemetryBatcherStats {
             pending: 0,
             last_error: None,
             recent: Vec::new(),
+            touch_dropped: 0,
+            judge_dropped: 0,
+            touch_committed: 0,
+            judge_committed: 0,
+            batch_size_total: 0,
+            batch_size_samples: 0,
+            batch_size_avg: 0.0,
+            batch_size_max: 0,
         }
+    }
+
+    pub fn record_batch_size(&mut self, size: usize) {
+        self.batch_size_total = self.batch_size_total.saturating_add(size as u64);
+        self.batch_size_samples = self.batch_size_samples.saturating_add(1);
+        self.batch_size_max = self.batch_size_max.max(size);
+        self.batch_size_avg = if self.batch_size_samples == 0 {
+            0.0
+        } else {
+            self.batch_size_total as f64 / self.batch_size_samples as f64
+        };
     }
 }
 
@@ -282,6 +321,10 @@ impl TelemetryBatcher {
         if self.closed.load(Ordering::Acquire) {
             let mut stats = self.stats.write().await;
             stats.dropped += 1;
+            match item.kind {
+                TelemetryKind::Touch => stats.touch_dropped += item.item_count as u64,
+                TelemetryKind::Judge => stats.judge_dropped += item.item_count as u64,
+            }
             stats.last_error = Some("telemetry batcher is shutting down".to_string());
             push_trace(
                 &mut stats, "rejected", kind, room_id, user_id, item_count, None,
@@ -300,6 +343,10 @@ impl TelemetryBatcher {
             Err(mpsc::error::SendError(TelemetryMessage::Item(item))) => {
                 let mut stats = self.stats.write().await;
                 stats.dropped += 1;
+                match item.kind {
+                    TelemetryKind::Touch => stats.touch_dropped += item.item_count as u64,
+                    TelemetryKind::Judge => stats.judge_dropped += item.item_count as u64,
+                }
                 stats.last_error = Some("telemetry batcher queue is closed".to_string());
                 push_trace(
                     &mut stats, "rejected", kind, room_id, user_id, item_count, None,
@@ -414,6 +461,10 @@ async fn run_batcher(
                     Some(TelemetryMessage::Item(item)) => {
                         let mut state = stats.write().await;
                         state.dropped += 1;
+                        match item.kind {
+                            TelemetryKind::Touch => state.touch_dropped += item.item_count as u64,
+                            TelemetryKind::Judge => state.judge_dropped += item.item_count as u64,
+                        }
                         state.last_error = Some("telemetry batcher disabled".to_string());
                         push_trace(
                             &mut state,
@@ -515,6 +566,7 @@ async fn flush_pending(
     let write_elapsed_ms = elapsed_ms(write_started);
 
     let mut stats = stats.write().await;
+    stats.record_batch_size(items);
     stats.flushed_batches += 1;
     if !policy.dry_run {
         record_db_dispatch_latency(&mut stats, write_elapsed_ms);
@@ -522,6 +574,13 @@ async fn flush_pending(
 
     let action = match write_result {
         Ok((true, item_rows)) => {
+            // Record per-kind committed items.
+            for item in &flushed {
+                match item.kind {
+                    TelemetryKind::Touch => stats.touch_committed += item.item_count as u64,
+                    TelemetryKind::Judge => stats.judge_committed += item.item_count as u64,
+                }
+            }
             stats.flushed_items += telemetry_points as u64;
             stats.write_batches += 1;
             stats.write_items += telemetry_points as u64;

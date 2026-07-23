@@ -96,6 +96,9 @@ pub struct PlusServerState {
     /// Bounded persistence worker with retry and acknowledged flush/shutdown.
     /// Touch/Judge high-frequency rows retain their explicit telemetry path.
     pub persistence_worker: Arc<crate::persistence_worker::PersistenceWorker>,
+    /// High-frequency telemetry writer — bypasses WAL for Touch/Judge data.
+    /// Spawned during `PlusServer::new()`; always present in production.
+    pub high_frequency_writer: Arc<crate::persistence::high_frequency::HighFrequencyWriter>,
     /// Actor-boundary diagnostics. Full RoomState ownership is still migrating.
     pub actor_runtime: Arc<crate::actor_runtime::ActorRuntime>,
     /// Runtime v2 Room command gateway. Admin/StateQuery room writes route through this facade while the gateway gradually moves commands into per-room mailboxes.

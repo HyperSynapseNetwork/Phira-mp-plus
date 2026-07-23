@@ -71,6 +71,61 @@ pub struct PersistenceStats {
     pub recent: Vec<PersistenceTraceEntry>,
     pub telemetry: TelemetryBatcherStats,
     pub last_error: Option<String>,
+
+    // ── High-frequency (TelemetryBatcher) tracking ──────────────────────
+    #[serde(default)]
+    pub high_frequency_received: u64,
+    #[serde(default)]
+    pub high_frequency_committed: u64,
+    #[serde(default)]
+    pub high_frequency_retrying: u64,
+    #[serde(default)]
+    pub high_frequency_dropped: u64,
+    /// Age of the oldest un-committed high-frequency batch, in milliseconds.
+    #[serde(default)]
+    pub high_frequency_oldest_batch_age_ms: u64,
+
+    // ── Per-type (Touch/Judge) breakdowns ───────────────────────────────
+    #[serde(default)]
+    pub touch_received: u64,
+    #[serde(default)]
+    pub touch_committed: u64,
+    #[serde(default)]
+    pub touch_dropped: u64,
+    #[serde(default)]
+    pub judge_received: u64,
+    #[serde(default)]
+    pub judge_committed: u64,
+    #[serde(default)]
+    pub judge_dropped: u64,
+
+    // ── WAL-specific metrics ────────────────────────────────────────────
+    #[serde(default)]
+    pub wal_received: u64,
+    #[serde(default)]
+    pub wal_committed: u64,
+    #[serde(default)]
+    pub wal_compactions: u64,
+    /// Total bytes processed during WAL compactions.
+    #[serde(default)]
+    pub wal_bytes: u64,
+
+    // ── Batch metrics (snapshot values, populated from TelemetryBatcher) ─
+    #[serde(default)]
+    pub batch_size_current: usize,
+    #[serde(default)]
+    pub batch_size_avg: f64,
+    #[serde(default)]
+    pub batch_size_max: usize,
+    #[serde(default)]
+    pub flush_interval_ms: u64,
+    /// Accumulated total of batch sizes across all recorded batches (for
+    /// computing the running average in `refresh_derived`).
+    #[serde(default)]
+    pub batch_size_total: u64,
+    /// Number of batch-size samples recorded.
+    #[serde(default)]
+    pub batch_size_samples: u64,
 }
 
 impl PersistenceStats {
@@ -91,6 +146,80 @@ impl PersistenceStats {
                 "dropping; fix downstream persistence pressure before adding features".to_string()
             }
         };
+        // Compute running batch-size average from accumulated tracking data.
+        self.batch_size_avg = if self.batch_size_samples == 0 {
+            0.0
+        } else {
+            self.batch_size_total as f64 / self.batch_size_samples as f64
+        };
+    }
+
+    // ── High-frequency recording helpers ───────────────────────────────
+
+    pub fn record_high_frequency_received(&mut self) {
+        self.high_frequency_received += 1;
+    }
+
+    pub fn record_high_frequency_committed(&mut self, count: u64) {
+        self.high_frequency_committed += count;
+    }
+
+    pub fn record_high_frequency_retrying(&mut self) {
+        self.high_frequency_retrying += 1;
+    }
+
+    pub fn record_high_frequency_dropped(&mut self, count: u64) {
+        self.high_frequency_dropped += count;
+    }
+
+    // ── Per-type breakdown helpers ─────────────────────────────────────
+
+    pub fn record_touch_received(&mut self) {
+        self.touch_received += 1;
+    }
+
+    pub fn record_touch_committed(&mut self) {
+        self.touch_committed += 1;
+    }
+
+    pub fn record_touch_dropped(&mut self) {
+        self.touch_dropped += 1;
+    }
+
+    pub fn record_judge_received(&mut self) {
+        self.judge_received += 1;
+    }
+
+    pub fn record_judge_committed(&mut self) {
+        self.judge_committed += 1;
+    }
+
+    pub fn record_judge_dropped(&mut self) {
+        self.judge_dropped += 1;
+    }
+
+    // ── WAL helpers ────────────────────────────────────────────────────
+
+    pub fn record_wal_received(&mut self) {
+        self.wal_received += 1;
+    }
+
+    pub fn record_wal_committed(&mut self) {
+        self.wal_committed += 1;
+    }
+
+    pub fn record_wal_compaction(&mut self, bytes: u64) {
+        self.wal_compactions += 1;
+        self.wal_bytes += bytes;
+    }
+
+    // ── Batch metrics ──────────────────────────────────────────────────
+
+    pub fn record_batch_size(&mut self, size: usize) {
+        self.batch_size_current = size;
+        self.batch_size_total = self.batch_size_total.saturating_add(size as u64);
+        self.batch_size_samples = self.batch_size_samples.saturating_add(1);
+        self.batch_size_max = self.batch_size_max.max(size);
     }
 }
 
@@ -217,6 +346,74 @@ pub async fn record_dropped(
     stats.dropped += 1;
     stats.last_error = Some(error);
     push_trace(&mut stats, "dropped", kind, simulation, summary);
+}
+
+// ── Async high-frequency / per-type recording helpers ─────────────────
+
+pub async fn record_high_frequency_received(stats: &Arc<RwLock<PersistenceStats>>) {
+    stats.write().await.high_frequency_received += 1;
+}
+
+pub async fn record_high_frequency_committed(
+    stats: &Arc<RwLock<PersistenceStats>>,
+    count: u64,
+) {
+    let mut s = stats.write().await;
+    s.high_frequency_committed = s.high_frequency_committed.saturating_add(count);
+}
+
+pub async fn record_high_frequency_dropped(
+    stats: &Arc<RwLock<PersistenceStats>>,
+    count: u64,
+) {
+    let mut s = stats.write().await;
+    s.high_frequency_dropped = s.high_frequency_dropped.saturating_add(count);
+}
+
+pub async fn record_touch_received(stats: &Arc<RwLock<PersistenceStats>>) {
+    stats.write().await.touch_received += 1;
+}
+
+pub async fn record_touch_dropped(stats: &Arc<RwLock<PersistenceStats>>) {
+    stats.write().await.touch_dropped += 1;
+}
+
+pub async fn record_judge_received(stats: &Arc<RwLock<PersistenceStats>>) {
+    stats.write().await.judge_received += 1;
+}
+
+pub async fn record_judge_dropped(stats: &Arc<RwLock<PersistenceStats>>) {
+    stats.write().await.judge_dropped += 1;
+}
+
+// ── Async WAL recording helpers ──────────────────────────────────────
+
+pub async fn record_wal_received(stats: &Arc<RwLock<PersistenceStats>>) {
+    stats.write().await.wal_received += 1;
+}
+
+pub async fn record_wal_committed(stats: &Arc<RwLock<PersistenceStats>>) {
+    stats.write().await.wal_committed += 1;
+}
+
+pub async fn record_wal_compaction(
+    stats: &Arc<RwLock<PersistenceStats>>,
+    bytes: u64,
+) {
+    let mut s = stats.write().await;
+    s.wal_compactions += 1;
+    s.wal_bytes += bytes;
+}
+
+pub async fn record_batch_size(
+    stats: &Arc<RwLock<PersistenceStats>>,
+    size: usize,
+) {
+    let mut s = stats.write().await;
+    s.batch_size_current = size;
+    s.batch_size_total = s.batch_size_total.saturating_add(size as u64);
+    s.batch_size_samples = s.batch_size_samples.saturating_add(1);
+    s.batch_size_max = s.batch_size_max.max(size);
 }
 
 fn push_trace(

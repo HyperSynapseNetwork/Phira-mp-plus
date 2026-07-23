@@ -60,6 +60,22 @@ impl CliHandler {
             stats.benchmark_report_persist_requests,
             stats.benchmark_report_persist_skipped
         ));
+        self.out(format!(
+            "  {} wal: received={} committed={} compactions={} bytes={}",
+            c::dim("│"),
+            stats.wal_received,
+            stats.wal_committed,
+            stats.wal_compactions,
+            stats.wal_bytes,
+        ));
+        self.out(format!(
+            "  {} batch: current={} avg={:.1} max={} flush_interval={}ms",
+            c::dim("│"),
+            stats.batch_size_current,
+            stats.batch_size_avg,
+            stats.batch_size_max,
+            stats.flush_interval_ms,
+        ));
         self.out(format!("  {} telemetry batcher", c::cyan("▸")));
         self.out(format!(
             "    enabled={} dry_run={} queued={} accepted={} dropped={} pending={} flushes={} flushed_items={}",
@@ -97,6 +113,24 @@ impl CliHandler {
             stats.telemetry.max_items_per_batch, stats.telemetry.flush_interval_ms
         ));
         self.out(format!(
+            "    batch_size_tracking: samples={} avg={:.1} max={}",
+            stats.telemetry.batch_size_samples,
+            stats.telemetry.batch_size_avg,
+            stats.telemetry.batch_size_max,
+        ));
+        self.out(format!(
+            "    per_kind(touch): accepted={} committed={} dropped={}",
+            stats.telemetry.touch_items,
+            stats.telemetry.touch_committed,
+            stats.telemetry.touch_dropped,
+        ));
+        self.out(format!(
+            "    per_kind(judge): accepted={} committed={} dropped={}",
+            stats.telemetry.judge_items,
+            stats.telemetry.judge_committed,
+            stats.telemetry.judge_dropped,
+        ));
+        self.out(format!(
             "    telemetry_last_err={}",
             stats
                 .telemetry
@@ -108,6 +142,24 @@ impl CliHandler {
             "  {} last_err:  {}",
             c::dim("│"),
             stats.last_error.clone().unwrap_or_else(|| "-".to_string())
+        ));
+        self.out(format!("  {} high_frequency telemetry", c::cyan("▸")));
+        self.out(format!(
+            "    received={} committed={} dropped={} retrying={} oldest_batch_age={}s",
+            stats.high_frequency_received,
+            stats.high_frequency_committed,
+            stats.high_frequency_dropped,
+            stats.high_frequency_retrying,
+            stats.high_frequency_oldest_batch_age_ms / 1000,
+        ));
+        self.out(format!("  {} per-type breakdown", c::cyan("▸")));
+        self.out(format!(
+            "    touch: received={} committed={} dropped={}",
+            stats.touch_received, stats.touch_committed, stats.touch_dropped,
+        ));
+        self.out(format!(
+            "    judge: received={} committed={} dropped={}",
+            stats.judge_received, stats.judge_committed, stats.judge_dropped,
         ));
         if !stats.db_dispatch.is_empty() {
             self.out(format!("  {} db ack latency by pipeline", c::cyan("▸")));

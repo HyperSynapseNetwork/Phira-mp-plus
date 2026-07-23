@@ -3,6 +3,10 @@
 //! The implementation lives under `crate::persistence::*` so persistence
 //! infrastructure can evolve without growing a single root module.
 
+pub use crate::persistence::high_frequency::{
+    HighFrequencyConfig, HighFrequencyItem, HighFrequencyKind, HighFrequencyStats,
+    HighFrequencyWriter,
+};
 pub use crate::persistence::{
     PersistenceEvent, PersistenceStats, PersistenceTraceEntry,
     PersistenceWorker,

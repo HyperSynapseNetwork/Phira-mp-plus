@@ -102,6 +102,12 @@ impl PlusServer {
                 runtime.persistence_dead_letter_path.clone(),
                 runtime.persistence_wal_path.clone(),
             );
+        let high_frequency_writer = Arc::new(
+            crate::persistence::high_frequency::HighFrequencyWriter::spawn(
+                crate::persistence::high_frequency::HighFrequencyConfig::default(),
+                Arc::new(db_manager.clone()),
+            ),
+        );
         let actor_runtime = Arc::new(crate::actor_runtime::ActorRuntime::new_blueprint());
         let room_commands = Arc::new(crate::room_actor::RoomCommandGateway::new());
         let phira_client = Arc::new(crate::phira_client::PhiraRetryClient::new(
@@ -149,6 +155,7 @@ impl PlusServer {
             benchmark_reports,
             simulation,
             persistence_worker,
+            high_frequency_writer,
             actor_runtime,
             room_commands,
             phira_client,
