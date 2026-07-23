@@ -63,7 +63,7 @@ impl CliHandler {
         self.out(format!("  {} telemetry batcher", c::cyan("▸")));
         self.out(format!(
             "    enabled={} dry_run={} queued={} accepted={} dropped={} pending={} flushes={} flushed_items={}",
-            stats.telemetry.enabled, stats.telemetry.dry_run, stats.telemetry.cutover_mode, stats.telemetry.queued,
+            stats.telemetry.enabled, stats.telemetry.dry_run, stats.telemetry.queued,
             stats.telemetry.accepted, stats.telemetry.dropped, stats.telemetry.pending,
             stats.telemetry.flushed_batches, stats.telemetry.flushed_items
         ));

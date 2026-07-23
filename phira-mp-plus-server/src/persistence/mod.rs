@@ -24,7 +24,6 @@ pub use benchmark::{
 pub use diagnostics::{PersistencePipeline, PersistenceQueueHealth};
 pub use message::PersistenceEvent;
 pub use stats::{
-    PersistenceLatencyStats, PersistenceStats, PersistenceTraceEntry, TelemetryCutoverObservation,
-    TelemetryCutoverStats,
+    PersistenceLatencyStats, PersistenceStats, PersistenceTraceEntry,
 };
 pub use worker::PersistenceWorker;

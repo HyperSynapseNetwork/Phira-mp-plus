@@ -220,7 +220,6 @@ impl PlusServer {
             crate::persistence_worker::PersistenceWorker::spawn_with_policy_and_journals(
                 runtime.persistence_queue_capacity,
                 runtime.telemetry.clone(),
-                runtime.telemetry_cutover_mode,
                 runtime.persistence_dead_letter_path.clone(),
                 runtime.persistence_wal_path.clone(),
             );

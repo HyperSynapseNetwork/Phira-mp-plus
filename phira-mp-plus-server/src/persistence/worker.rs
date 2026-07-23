@@ -2,22 +2,18 @@
 //!
 //! Ordinary persistence events use bounded backpressure instead of queue-full
 //! loss. Flush and shutdown are ordered control messages with acknowledgements,
-//! so accepted work can be drained before process termination. Production
-//! Touch/Judge telemetry supports three explicit cutover modes. The default
-//! remains direct-only; worker-preferred mirrors direct writes; and the guarded
-//! worker-authoritative mode makes the batcher the normal-operation single
-//! writer while retaining a direct fallback only when enqueue is rejected.
-//! Accepted telemetry batches are retained in memory after database failure,
-//! ordinary events now use an fsync-before-admission WAL with startup replay and ACK compaction. Touch/Judge durability still terminates at TelemetryBatcher admission until batch commit acknowledgements are wired end-to-end.
+//! so accepted work can be drained before process termination. All production
+//! Touch/Judge telemetry uniformly goes through the
+//! PersistenceWorker/TelemetryBatcher — the single unified persistence path.
 
 use crate::persistence::message::PersistenceEvent;
 use crate::persistence::stats::{
     record_dead_letter_failed, record_dead_letter_written, record_dropped, record_queued,
-    record_telemetry_cutover_observation, PersistenceStats, TelemetryCutoverObservation,
+    PersistenceStats,
 };
 use crate::persistence::wal::PersistenceWal;
 use crate::telemetry::{
-    TelemetryBatcher, TelemetryBatcherPolicy, TelemetryBatcherStats, TelemetryCutoverMode,
+    TelemetryBatcher, TelemetryBatcherPolicy, TelemetryBatcherStats,
 };
 use serde_json::json;
 use std::path::{Path, PathBuf};
@@ -57,7 +53,6 @@ pub struct PersistenceWorker {
     closed: AtomicBool,
     stats: Arc<RwLock<PersistenceStats>>,
     telemetry_batcher: Arc<TelemetryBatcher>,
-    telemetry_cutover_mode: Arc<RwLock<TelemetryCutoverMode>>,
     wal: Arc<PersistenceWal>,
 }
 
@@ -570,19 +565,16 @@ impl PersistenceWorker {
         Self::spawn_with_policy(
             queue_capacity,
             TelemetryBatcherPolicy::default(),
-            TelemetryCutoverMode::default(),
         )
     }
 
     pub fn spawn_with_policy(
         queue_capacity: usize,
         telemetry_policy: TelemetryBatcherPolicy,
-        telemetry_cutover_mode: TelemetryCutoverMode,
     ) -> Arc<Self> {
         Self::spawn_with_policy_and_dead_letter(
             queue_capacity,
             telemetry_policy,
-            telemetry_cutover_mode,
             Some("data/persistence-dead-letter.jsonl".to_string()),
         )
     }
@@ -590,13 +582,11 @@ impl PersistenceWorker {
     pub fn spawn_with_policy_and_dead_letter(
         queue_capacity: usize,
         telemetry_policy: TelemetryBatcherPolicy,
-        telemetry_cutover_mode: TelemetryCutoverMode,
         dead_letter_path: Option<String>,
     ) -> Arc<Self> {
         Self::spawn_with_policy_and_journals(
             queue_capacity,
             telemetry_policy,
-            telemetry_cutover_mode,
             dead_letter_path,
             "data/persistence-worker.wal.jsonl".to_string(),
         )
@@ -605,7 +595,6 @@ impl PersistenceWorker {
     pub fn spawn_with_policy_and_journals(
         queue_capacity: usize,
         telemetry_policy: TelemetryBatcherPolicy,
-        telemetry_cutover_mode: TelemetryCutoverMode,
         dead_letter_path: Option<String>,
         wal_path: String,
     ) -> Arc<Self> {
@@ -614,17 +603,13 @@ impl PersistenceWorker {
             .map(|path| path.trim().to_string())
             .filter(|path| !path.is_empty());
         let (tx, mut rx) = mpsc::channel::<WorkerMessage>(capacity);
-        let initial_cutover = telemetry_cutover_mode;
         let telemetry_batcher = TelemetryBatcher::spawn(telemetry_policy.clone());
         // Wire WAL ACK channel: TelemetryBatcher will ACK WAL IDs after DB commit.
         let (wal_ack_tx, mut wal_ack_rx) = mpsc::channel::<crate::telemetry::WalAckMessage>(1024);
         telemetry_batcher.set_wal_ack_tx(wal_ack_tx);
-        let telemetry_cutover_mode = Arc::new(RwLock::new(initial_cutover));
         let stats = Arc::new(RwLock::new(PersistenceStats {
             capacity,
             dead_letter_path: dead_letter_path.clone(),
-            telemetry_cutover_mode: initial_cutover.as_str().to_string(),
-            telemetry: TelemetryBatcherStats::from_policy(&telemetry_policy),
             ..PersistenceStats::default()
         }));
         let worker_stats = Arc::clone(&stats);
@@ -787,7 +772,6 @@ impl PersistenceWorker {
             send_gate: Mutex::new(()),
             stats,
             telemetry_batcher,
-            telemetry_cutover_mode,
             wal,
             suspended: AtomicBool::new(false),
             closed: AtomicBool::new(false),
@@ -908,115 +892,13 @@ impl PersistenceWorker {
         let mut stats = self.stats.read().await.clone();
         stats.refresh_derived();
         stats.telemetry = self.telemetry_batcher.stats().await;
-        let mode = *self.telemetry_cutover_mode.read().await;
-        stats.telemetry_cutover_mode = mode.as_str().to_string();
-        stats.telemetry.cutover_mode = mode.as_str().to_string();
         stats
-    }
-
-    pub async fn record_telemetry_cutover_observation(
-        &self,
-        observation: TelemetryCutoverObservation,
-    ) {
-        record_telemetry_cutover_observation(&self.stats, observation).await;
-    }
-
-    pub async fn telemetry_cutover_mode(&self) -> TelemetryCutoverMode {
-        *self.telemetry_cutover_mode.read().await
-    }
-
-    pub async fn record_runtime_config_snapshot(&self) {
-        let stats = self.stats().await;
-        let mode = self.telemetry_cutover_mode().await;
-        let decision = mode.cutover_decision();
-        if let Some(db) = crate::internal_hooks::DB.get() {
-            db.record_runtime_persistence_meta_sync("runtime.persistence_policy", json!({
-                "queue_capacity": stats.capacity,
-                "queue_health": stats.queue_health,
-                "pending_ratio_percent": stats.pending_ratio_percent,
-                "dead_letter_path": stats.dead_letter_path,
-                "dead_letter_written": stats.dead_letter_written,
-                "dead_letter_failed": stats.dead_letter_failed,
-                "telemetry_cutover_mode": stats.telemetry_cutover_mode,
-                "telemetry_cutover_decision": {
-                    "enqueue_worker": decision.enqueue_worker,
-                    "write_direct_before_worker_result": decision.write_direct_before_worker_result,
-                    "fallback_direct_when_worker_rejects": decision.fallback_direct_when_worker_rejects,
-                },
-                "telemetry": {
-                    "enabled": stats.telemetry.enabled,
-                    "dry_run": stats.telemetry.dry_run,
-                    "queue_capacity": stats.telemetry.queue_capacity,
-                    "max_items_per_batch": stats.telemetry.max_items_per_batch,
-                    "flush_interval_ms": stats.telemetry.flush_interval_ms,
-                    "schema_version": stats.telemetry.schema_version
-                },
-                "telemetry_cutover_observation": {
-                    "observed_batches": stats.telemetry_cutover.observed_batches,
-                    "worker_enqueue_success_ratio_percent": stats.telemetry_cutover.worker_enqueue_success_ratio_percent,
-                    "worker_dry_run_success_ratio_percent": stats.telemetry_cutover.worker_dry_run_success_ratio_percent,
-                    "readiness": stats.telemetry_cutover.readiness
-                },
-                "source": "server_config.runtime"
-            }));
-        }
-    }
-
-    pub async fn set_telemetry_cutover_mode(
-        &self,
-        mode: TelemetryCutoverMode,
-    ) -> Result<TelemetryCutoverMode, String> {
-        if matches!(mode, TelemetryCutoverMode::WorkerAuthoritative) {
-            let telemetry = self.telemetry_batcher.stats().await;
-            if !telemetry.enabled {
-                return Err(
-                    "worker_authoritative requires telemetry_batcher.enabled=true".to_string(),
-                );
-            }
-            if telemetry.dry_run {
-                return Err(
-                    "worker_authoritative requires telemetry_batcher.dry_run=false".to_string(),
-                );
-            }
-        }
-        {
-            let mut current = self.telemetry_cutover_mode.write().await;
-            *current = mode;
-        }
-        let mut stats = self.stats.write().await;
-        stats.telemetry_cutover_mode = mode.as_str().to_string();
-        stats.telemetry_cutover_changes += 1;
-        stats.telemetry.cutover_mode = mode.as_str().to_string();
-        stats.last_error = None;
-        if let Some(db) = crate::internal_hooks::DB.get() {
-            let decision = mode.cutover_decision();
-            db.record_runtime_persistence_meta_sync("telemetry.cutover_mode", json!({
-                "mode": mode.as_str(),
-                "description": mode.description(),
-                "decision": {
-                    "enqueue_worker": decision.enqueue_worker,
-                    "write_direct_before_worker_result": decision.write_direct_before_worker_result,
-                    "fallback_direct_when_worker_rejects": decision.fallback_direct_when_worker_rejects,
-                },
-                "available_modes": TelemetryCutoverMode::variants().iter().map(|mode| mode.as_str()).collect::<Vec<_>>(),
-                "updated_by": "runtime.persistence_worker"
-            }));
-        }
-        Ok(mode)
     }
 
     pub async fn is_healthy(&self) -> bool {
         self.wal.replay_succeeded()
             && !self.wal.is_degraded()
             && !self.closed.load(Ordering::Acquire)
-    }
-
-    pub async fn telemetry_should_write_direct(&self) -> bool {
-        self.telemetry_cutover_mode().await.should_write_direct()
-    }
-
-    pub async fn telemetry_should_enqueue_worker(&self) -> bool {
-        self.telemetry_cutover_mode().await.should_enqueue_worker()
     }
 
 }

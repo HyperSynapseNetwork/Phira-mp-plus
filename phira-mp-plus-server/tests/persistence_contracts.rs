@@ -1,21 +1,6 @@
 //! Persistence layer contract tests.
 //!
-//! These tests verify persistence semantics, cutover-mode telemetry integration,
-//! and event type contracts.
-
-use phira_mp_plus_server::telemetry::TelemetryCutoverMode;
-
-// ── Telemetry batcher integration ─────────────────────────────────────
-
-#[test]
-fn telemetry_batcher_stats_has_cutover_mode() {
-    let stats = phira_mp_plus_server::telemetry::TelemetryBatcherStats::default();
-    assert_eq!(
-        stats.cutover_mode,
-        TelemetryCutoverMode::default().as_str(),
-        "TelemetryBatcherStats should default to the safe mode"
-    );
-}
+//! These tests verify persistence semantics and event type contracts.
 
 #[test]
 fn dual_write_field_exists_as_schema_legacy() {
@@ -51,24 +36,11 @@ fn simulation_scope_in_persistence_payload() {
         round_id: None,
         user_id: 1,
         item_count: 1,
-        dual_write: false,
-        persistence_mode: "worker_authoritative".to_string(),
         payload: serde_json::json!({"run_id": "sim-123"}),
     };
 }
 
 // ── PersistenceWorker ─────────────────────────────────────────────────
-
-#[tokio::test]
-async fn persistence_worker_spawns_with_default_mode() {
-    let worker = phira_mp_plus_server::persistence_worker::PersistenceWorker::spawn(64);
-    let stats = worker.stats().await;
-    assert_eq!(
-        stats.telemetry.cutover_mode,
-        TelemetryCutoverMode::default().as_str(),
-        "worker should default to DirectOnly"
-    );
-}
 
 #[test]
 fn persistence_worker_simulation_isolation() {

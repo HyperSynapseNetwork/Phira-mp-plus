@@ -1,8 +1,7 @@
 //! Runtime v2 telemetry persistence — production Touch/Judge batch writes.
 //!
 //! Extracted from db.rs to keep the batch INSERT logic separate from
-//! general-purpose database helpers.  TelemetryCutoverMode is in
-//! crate::telemetry; this module owns the SQL writing side.
+//! general-purpose database helpers.
 
 use crate::db::DbManager;
 use serde_json::Value;
@@ -80,10 +79,10 @@ impl DbManager {
                     continue;
                 }
 
-                // In worker_authoritative mode the Runtime v2 worker must also
-                // update the canonical round tables used by existing read APIs.
-                // Mirror records (`dual_write=true`) skip this block because the
-                // direct path already committed the same payload.
+                // The Runtime v2 worker must also update the canonical round
+                // tables used by existing read APIs. Mirror records
+                // (`dual_write=true`) skip this block because the direct path
+                // already committed the same payload.
                 if !record.dual_write && record.scope == "production" {
                     let Some(round_uuid) = record.round_uuid.as_deref() else {
                         return false;

@@ -179,22 +179,6 @@ fn configuration_no_unsupported_telemetry_modes() {
         !content.contains("fallback_only") || content.contains("legacy"),
         "configuration.md must not recommend fallback_only without legacy marker"
     );
-    let section = content
-        .find("telemetry_cutover_mode")
-        .map(|pos| {
-            let end = content[pos..]
-                .find("\n\n")
-                .map(|p| pos + p)
-                .unwrap_or(content.len());
-            &content[pos..end]
-        })
-        .unwrap_or("");
-    if !section.is_empty() {
-        assert!(
-            section.contains("direct_only") || section.contains("worker_preferred"),
-            "configuration.md telemetry_cutover_mode must mention valid modes"
-        );
-    }
 }
 
 #[test]

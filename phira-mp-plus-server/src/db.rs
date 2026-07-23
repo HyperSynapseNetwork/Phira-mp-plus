@@ -219,24 +219,7 @@ async fn init_tables(pool: &sqlx::PgPool) -> Result<()> {
         "schema_version": 3,
         "batch_table": "mp_runtime_telemetry_batches",
         "item_table": "mp_runtime_telemetry_items",
-        "mode": "direct_only",
-        "available_modes": ["direct_only", "worker_preferred", "worker_authoritative"],
-        "notes": "Runtime v2 telemetry schema normalizes batch headers and raw telemetry items. Modes: direct_only, worker_preferred, worker_authoritative."
-    }))
-    .bind(now)
-    .execute(pool)
-    .await?;
-
-    sqlx::query(
-        "INSERT INTO mp_runtime_persistence_meta (key, value, updated_at)
-         VALUES ('telemetry.cutover_mode', $1, $2)
-         ON CONFLICT (key) DO NOTHING"
-    )
-    .bind(serde_json::json!({
-        "mode": "direct_only",
-        "description": "direct RoundStore/db.rs only (safe default). WorkerPreferred = direct first; Worker mirror after direct ACK or canonical compensation after direct failure.",
-        "available_modes": ["direct_only", "worker_preferred", "worker_authoritative"],
-        "updated_by": "runtime.bootstrap"
+        "notes": "Runtime v2 telemetry schema normalizes batch headers and raw telemetry items."
     }))
     .bind(now)
     .execute(pool)
