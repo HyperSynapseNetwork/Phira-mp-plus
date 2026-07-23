@@ -106,6 +106,9 @@ pub fn load_manifest_capabilities(plugin_path: &str) -> Result<HashSet<String>, 
         "room.manage",
         "admin",
         "simulation",
+        "crypto",
+        "timer",
+        "tcp",
     ]
     .into_iter()
     .collect();
@@ -200,7 +203,10 @@ pub fn required_capability(method: &str) -> Option<&'static str> {
         "file.write" => Some("file.write"),
         "plugin.api_call" => Some("plugin.call"),
         "plugin.api_register" => Some("plugin.register"),
-        _ => Some("unknown"),
+        value if value.starts_with("crypto.") => Some("crypto"),
+        value if value.starts_with("timer.") => Some("timer"),
+        value if value.starts_with("tcp.") => Some("tcp"),
+        _ => None, // No capability required (public API)
     }
 }
 
@@ -478,7 +484,7 @@ mod tests {
         assert_eq!(required_capability("simulation.start"), Some("simulation"));
         assert_eq!(required_capability("ban.check"), Some("admin"));
         assert_eq!(required_capability("runtime.status"), Some("state.read"));
-        assert_eq!(required_capability("not.a.real.method"), Some("unknown"));
+        assert_eq!(required_capability("not.a.real.method"), None);
     }
 
     #[test]

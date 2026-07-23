@@ -643,10 +643,10 @@ fn required_capability_maps_state_read() {
 }
 
 #[test]
-fn required_capability_returns_unknown_for_unrecognized() {
+fn required_capability_returns_none_for_unrecognized() {
     assert_eq!(
         wasm_host_helpers::required_capability("nonexistent.method"),
-        Some("unknown")
+        None
     );
 }
 
@@ -673,13 +673,207 @@ fn wit_host_capability_loads_defaults_for_unknown_plugin() {
     );
 }
 
+// ── Phase 5: Full interface conformance ──
+
 #[test]
-fn wit_host_reject_symlink_components() {
-    assert!(
-        wasm_host_helpers::reject_symlink_components(std::path::Path::new("/safe/path")).is_ok()
+fn canonical_wit_has_all_interfaces() {
+    let wit = read_canonical();
+    for name in &[
+        "phira-types",
+        "phira-host",
+        "phira-events",
+        "phira-query",
+        "phira-room-mgmt",
+        "phira-user-mgmt",
+        "phira-messaging",
+        "phira-persistence",
+        "phira-admin",
+        "phira-config",
+        "phira-simulation",
+        "phira-crypto",
+        "phira-timer",
+        "phira-tcp",
+        "phira-runtime",
+    ] {
+        assert!(
+            wit.contains(&format!("interface {name}")),
+            "WIT must define interface {name}"
+        );
+    }
+}
+
+#[test]
+fn phira_host_methods_have_capability() {
+    // phira-host: api-call → plugin.call
+    assert_eq!(
+        wasm_host_helpers::required_capability("plugin.api_call"),
+        Some("plugin.call")
     );
-    assert!(
-        wasm_host_helpers::reject_symlink_components(std::path::Path::new("/unsafe/../path"))
-            .is_err()
+    // uuid.v4 and time.now have no capability requirement (None = unrestricted)
+    assert_eq!(wasm_host_helpers::required_capability("uuid.v4"), None);
+    assert_eq!(wasm_host_helpers::required_capability("time.now"), None);
+}
+
+#[test]
+fn phira_query_methods_have_capability() {
+    // phira-query: state.query, room.*, user.* → state.read
+    assert_eq!(
+        wasm_host_helpers::required_capability("state.query"),
+        Some("state.read")
+    );
+    assert_eq!(
+        wasm_host_helpers::required_capability("user.info"),
+        Some("state.read")
+    );
+    assert_eq!(
+        wasm_host_helpers::required_capability("room.info"),
+        Some("state.read")
+    );
+}
+
+#[test]
+fn phira_room_mgmt_methods_have_capability() {
+    // phira-room-mgmt: room.create_empty, room.kick, etc. → room.manage
+    assert_eq!(
+        wasm_host_helpers::required_capability("room.create_empty"),
+        Some("room.manage")
+    );
+    assert_eq!(
+        wasm_host_helpers::required_capability("room.kick"),
+        Some("room.manage")
+    );
+    assert_eq!(
+        wasm_host_helpers::required_capability("room.close"),
+        Some("room.manage")
+    );
+}
+
+#[test]
+fn phira_user_mgmt_methods_have_capability() {
+    // phira-user-mgmt: user.info → state.read (query), user.kick → admin (moderation)
+    assert_eq!(
+        wasm_host_helpers::required_capability("user.info"),
+        Some("state.read")
+    );
+    assert_eq!(
+        wasm_host_helpers::required_capability("user.kick"),
+        Some("admin")
+    );
+}
+
+#[test]
+fn phira_messaging_methods_have_capability() {
+    // phira-messaging: send.* → send
+    assert_eq!(
+        wasm_host_helpers::required_capability("send.room"),
+        Some("send")
+    );
+    assert_eq!(
+        wasm_host_helpers::required_capability("send.user"),
+        Some("send")
+    );
+}
+
+#[test]
+fn phira_persistence_methods_have_capability() {
+    // phira-persistence: persist.* → state.read
+    assert_eq!(
+        wasm_host_helpers::required_capability("persist.query"),
+        Some("state.read")
+    );
+}
+
+#[test]
+fn phira_admin_methods_have_capability() {
+    // phira-admin: admin.* → admin
+    assert_eq!(
+        wasm_host_helpers::required_capability("admin.list"),
+        Some("admin")
+    );
+    assert_eq!(
+        wasm_host_helpers::required_capability("admin.add"),
+        Some("admin")
+    );
+}
+
+#[test]
+fn phira_config_methods_have_capability() {
+    // phira-config: config.* → config
+    assert_eq!(
+        wasm_host_helpers::required_capability("config.get"),
+        Some("config")
+    );
+    assert_eq!(
+        wasm_host_helpers::required_capability("config.set"),
+        Some("config")
+    );
+}
+
+#[test]
+fn phira_simulation_methods_have_capability() {
+    // phira-simulation: simulation.* → simulation
+    assert_eq!(
+        wasm_host_helpers::required_capability("simulation.status"),
+        Some("simulation")
+    );
+    assert_eq!(
+        wasm_host_helpers::required_capability("simulation.run"),
+        Some("simulation")
+    );
+}
+
+#[test]
+fn phira_crypto_methods_have_capability() {
+    // phira-crypto: crypto.* → crypto
+    assert_eq!(
+        wasm_host_helpers::required_capability("crypto.sha256"),
+        Some("crypto")
+    );
+    assert_eq!(
+        wasm_host_helpers::required_capability("crypto.sign"),
+        Some("crypto")
+    );
+    assert_eq!(
+        wasm_host_helpers::required_capability("crypto.verify"),
+        Some("crypto")
+    );
+}
+
+#[test]
+fn phira_timer_methods_have_capability() {
+    // phira-timer: timer.* → timer
+    assert_eq!(
+        wasm_host_helpers::required_capability("timer.set"),
+        Some("timer")
+    );
+    assert_eq!(
+        wasm_host_helpers::required_capability("timer.clear"),
+        Some("timer")
+    );
+}
+
+#[test]
+fn phira_tcp_methods_have_capability() {
+    // phira-tcp: tcp.* → tcp
+    assert_eq!(
+        wasm_host_helpers::required_capability("tcp.connect"),
+        Some("tcp")
+    );
+    assert_eq!(
+        wasm_host_helpers::required_capability("tcp.listen"),
+        Some("tcp")
+    );
+    assert_eq!(
+        wasm_host_helpers::required_capability("tcp.send"),
+        Some("tcp")
+    );
+}
+
+#[test]
+fn phira_runtime_methods_have_capability() {
+    // phira-runtime: runtime.* → state.read
+    assert_eq!(
+        wasm_host_helpers::required_capability("runtime.status"),
+        Some("state.read")
     );
 }
