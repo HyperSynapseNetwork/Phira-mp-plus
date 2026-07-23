@@ -79,7 +79,6 @@ pub mod simulation;
 pub mod simulation_realistic;
 pub mod supervisor_actor;
 pub mod telemetry;
-pub mod telemetry_batcher;
 pub use session_room::decode_admin_room_command;
 pub mod terminal;
 #[cfg(feature = "plugin-system")]

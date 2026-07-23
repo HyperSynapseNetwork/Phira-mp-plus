@@ -5,7 +5,6 @@
 
 mod actors;
 mod commands;
-mod cutover;
 mod events;
 mod persistence;
 mod phira;
@@ -29,7 +28,6 @@ impl CliHandler {
             "events" => self.print_runtime_events(),
             "rooms" => self.print_runtime_rooms(),
             "actors" => self.print_runtime_actors().await,
-            "cutover" => self.runtime_cutover(args).await,
             "schema" => self.print_runtime_schema().await,
             "persistence" => self.print_runtime_persistence().await,
             _ => {
@@ -38,7 +36,7 @@ impl CliHandler {
                     c::red("✗"),
                     c::yellow(sub)
                 ));
-                self.out(format!("  {} 可用: runtime status | phira | commands | events | persistence | schema | cutover | actors | rooms", c::dim("▸")));
+                self.out(format!("  {} 可用: runtime status | phira | commands | events | persistence | schema | actors | rooms", c::dim("▸")));
             }
         }
     }
