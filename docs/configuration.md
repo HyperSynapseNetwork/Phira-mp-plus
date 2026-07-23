@@ -113,7 +113,7 @@ wasm_runtime:
 | `connection_rate_limit` | `u32` | `30` | 每个统计窗口内允许的连接次数。 |
 | `connection_rate_window` | `u32` | `10` | 连接限速窗口，单位秒。 |
 | `round_data_retention_days` | `u32` | `7` | Touches/Judges 轮次文件保留天数，`0` 表示不清理轮次文件。 |
-| `database_url` | `String?` | 未设置 | PostgreSQL 连接串；配置后启用统一结构化持久化。未设置时保留旧 JSON/文件回退。 |
+| `database_url` | `String?` | `""` | PostgreSQL 连接串，格式 `postgres://user:password@host:port/dbname`。留空时默认尝试 `postgres://postgres:postgres@localhost:5432/phira_mp_plus`。数据库不存在时会自动创建。 |
 | `persistence_retention_days` | `u32` | `30` | PostgreSQL 统一持久化历史数据保留天数，`0` 表示不自动清理。 |
 | `touch_judge_retention_days` | `u32?` | 未设置 | Touches/Judges 高频遥测独立保留天数；未设置时遵循 `persistence_retention_days`，`0` 表示不自动清理遥测。 |
 | `runtime_v2` | `object` | 见下文 | 持久化内部策略。用于配置 PersistenceWorker、TelemetryBatcher 和启动 cutover 模式，避免继续膨胀管理命令。 |

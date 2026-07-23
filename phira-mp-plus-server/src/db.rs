@@ -70,7 +70,7 @@ impl DbManager {
         let url = if url.is_empty() {
             // 未配置 database_url 时依次尝试常见本地默认连接
             tracing::info!("database_url 未设置，尝试本地默认连接");
-            "postgres://postgres:postgres@localhost:5432/phira_mp_plus"
+            "postgres://postgres@localhost:5432/phira_mp_plus"
         } else {
             url
         };
@@ -97,7 +97,16 @@ impl DbManager {
                             .copied()
                             .unwrap_or("postgres://postgres:postgres@localhost:5432");
                         let admin_url = format!("{base}/postgres");
-                        if let Ok(admin_pool) = sqlx::PgPool::connect(&admin_url).await {
+                        let admin_pool = match sqlx::PgPool::connect(&admin_url).await {
+                            Ok(pool) => Some(pool),
+                            Err(_) => {
+                                tracing::info!("admin TCP 连接失败，尝试 Unix socket...");
+                                sqlx::PgPool::connect(
+                                    "postgres://postgres@/postgres?host=/var/run/postgresql"
+                                ).await.ok()
+                            }
+                        };
+                        if let Some(admin_pool) = admin_pool {
                             let db_name =
                                 pieces.first().copied().unwrap_or("phira_mp_plus");
                             let safe_name = db_name.replace('"', "");
@@ -115,7 +124,21 @@ impl DbManager {
                             }
                         }
                     }
-                    anyhow::bail!("PostgreSQL 连接失败: {e:?}");
+                    // TCP 连接失败时尝试 Unix socket (peer auth, 无需密码)
+                    tracing::info!("TCP 连接失败，尝试 Unix socket...");
+                    let socket_url = "postgres://postgres@/phira_mp_plus?host=/var/run/postgresql";
+                    match sqlx::PgPool::connect(socket_url).await {
+                        Ok(pool) => {
+                            if let Err(e) = init_tables(&pool).await {
+                                anyhow::bail!("数据库建表失败: {e:?}");
+                            }
+                            tracing::info!("PostgreSQL 已连接（Unix socket）");
+                            return Ok(Self::Pg(pool));
+                        }
+                        Err(socket_e) => {
+                            anyhow::bail!("PostgreSQL 连接失败（TCP: {e}，Unix socket: {socket_e}）");
+                        }
+                    }
                 }
             }
         }
