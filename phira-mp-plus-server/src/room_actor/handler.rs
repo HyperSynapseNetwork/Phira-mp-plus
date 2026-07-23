@@ -434,7 +434,7 @@ impl RoomCommandHandler {
                         };
                         let name = as_.display_names.get(uid)
                             .cloned()
-                            .or_else(|| fallback_name)
+                            .or(fallback_name)
                             .unwrap_or_else(|| uid.to_string());
                         // Send messages directly via Room broadcast
                         r.send(Message::Chat { user: 0, content: format!("房主已转移给 {name}") }).await;

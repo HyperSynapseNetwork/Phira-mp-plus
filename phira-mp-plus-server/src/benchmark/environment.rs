@@ -85,8 +85,8 @@ impl EnvironmentSnapshot {
     /// 或回退到从 .git/HEAD 读取。
     fn detect_git_commit() -> String {
         option_env!("VERGEN_GIT_SHA")
-            .or_else(|| option_env!("GIT_COMMIT"))
-            .or_else(|| option_env!("BUILD_GIT_HASH"))
+            .or(option_env!("GIT_COMMIT"))
+            .or(option_env!("BUILD_GIT_HASH"))
             .map(|s| s.to_string())
             .unwrap_or_else(|| {
                 Self::read_git_head().unwrap_or_else(|| "unknown".to_string())
@@ -168,7 +168,7 @@ impl EnvironmentSnapshot {
             if let Ok(content) = std::fs::read_to_string("/proc/meminfo") {
                 for line in content.lines() {
                     if let Some(rest) = line.strip_prefix("MemTotal:") {
-                        let parts: Vec<&str> = rest.trim().split_whitespace().collect();
+                        let parts: Vec<&str> = rest.split_whitespace().collect();
                         if let Some(kb_str) = parts.first() {
                             if let Ok(kb) = kb_str.parse::<u64>() {
                                 return kb.saturating_mul(1024);
@@ -202,7 +202,7 @@ impl EnvironmentSnapshot {
             if let Ok(content) = std::fs::read_to_string("/proc/meminfo") {
                 for line in content.lines() {
                     if let Some(rest) = line.strip_prefix("MemAvailable:") {
-                        let parts: Vec<&str> = rest.trim().split_whitespace().collect();
+                        let parts: Vec<&str> = rest.split_whitespace().collect();
                         if let Some(kb_str) = parts.first() {
                             if let Ok(kb) = kb_str.parse::<u64>() {
                                 return kb.saturating_mul(1024);

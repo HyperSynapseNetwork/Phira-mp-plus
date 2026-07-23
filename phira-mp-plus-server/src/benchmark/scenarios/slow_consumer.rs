@@ -65,7 +65,7 @@ pub async fn run_slow_consumer(
 ) -> Result<BenchmarkMetrics, String> {
     super::common::run_simulation(config, |sc| {
         // Keep rooms small relative to users to amplify backpressure.
-        sc.rooms = (config.rooms as usize).max(1).min(10);
+        sc.rooms = (config.rooms as usize).clamp(1, 10);
         sc.chat = true;
         sc.ready = true;
         sc.rounds = true;

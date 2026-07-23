@@ -53,7 +53,7 @@ pub async fn run_hot_room(
 ) -> Result<BenchmarkMetrics, String> {
     super::common::run_simulation(config, |sc| {
         // Keep rooms small so clients concentrate — hot room effect.
-        sc.rooms = sc.rooms.min(5).max(1);
+        sc.rooms = sc.rooms.clamp(1, 5);
         sc.chat = true;
         sc.ready = false;
         sc.rounds = false;
