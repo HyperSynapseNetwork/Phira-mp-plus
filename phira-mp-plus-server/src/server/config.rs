@@ -6,7 +6,7 @@
 use crate::error::AppError;
 use crate::phira_client::PhiraHttpPolicyConfig;
 use crate::plugin::WasmRuntimeConfig;
-use crate::telemetry::{TelemetryBatcherPolicy, TelemetryCutoverMode};
+use crate::telemetry::TelemetryBatcherPolicy;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use tokio::sync::RwLock;
@@ -91,9 +91,6 @@ pub struct RuntimeConfig {
     /// Batcher policy for production Touch/Judge telemetry.
     #[serde(default)]
     pub telemetry: TelemetryBatcherPolicy,
-    /// Startup cutover mode for production Touch/Judge persistence.
-    #[serde(default)]
-    pub telemetry_cutover_mode: TelemetryCutoverMode,
     /// Unified Phira HTTP retry/timeout/circuit-breaker policy.
     #[serde(default)]
     pub phira_http: PhiraHttpPolicyConfig,
@@ -106,7 +103,6 @@ impl Default for RuntimeConfig {
             persistence_dead_letter_path: default_persistence_dead_letter_path(),
             persistence_wal_path: default_persistence_wal_path(),
             telemetry: TelemetryBatcherPolicy::default(),
-            telemetry_cutover_mode: TelemetryCutoverMode::default(),
             phira_http: PhiraHttpPolicyConfig::default(),
         }
     }
@@ -243,6 +239,12 @@ pub struct PlusConfig {
     pub round_data_retention_days: u32,
     #[serde(default)]
     pub database_url: Option<String>,
+    /// When set, database initialization failure is tolerated even when
+    /// `database_url` is explicitly configured. The server will start without
+    /// structured persistence (readiness reports degraded).
+    /// This is intended for development/staging only.
+    #[serde(default)]
+    pub allow_database_degraded_mode: bool,
     #[serde(default = "default_persistence_retention_days")]
     pub persistence_retention_days: u32,
     #[serde(default)]
@@ -287,6 +289,7 @@ impl Default for PlusConfig {
             chat_enabled: true,
             round_data_retention_days: 7,
             database_url: None,
+            allow_database_degraded_mode: false,
             persistence_retention_days: 30,
             touch_judge_retention_days: None,
             admin_phira_ids: Vec::new(),
@@ -423,11 +426,16 @@ impl PlusConfig {
                         + "set profile=development to bind externally",
                 ));
             }
-        }
-        if self.database_url.as_deref().is_none_or(|u| u.trim().is_empty()) {
-            return Err(AppError::ConfigValidation(
-                "PostgreSQL is required infrastructure — set database_url".into(),
-            ));
+            if self.allow_database_degraded_mode {
+                return Err(AppError::ConfigValidation(
+                    "allow_database_degraded_mode is incompatible with production profile".into(),
+                ));
+            }
+            if self.database_url.is_none() {
+                return Err(AppError::ConfigValidation(
+                    "production profile requires database_url".into(),
+                ));
+            }
         }
         if self.max_users_per_room == Some(0) {
             return Err(AppError::ConfigValidation(
@@ -525,26 +533,6 @@ impl PlusConfig {
             return Err(AppError::ConfigValidation(
                 "runtime.telemetry_batcher 的队列、批量或刷新间隔无效".into(),
             ));
-        }
-        if matches!(
-            runtime.telemetry_cutover_mode,
-            TelemetryCutoverMode::WorkerAuthoritative
-        ) {
-            if !telemetry.enabled || telemetry.dry_run {
-                return Err(AppError::ConfigValidation(
-                    "worker_authoritative 要求 telemetry_batcher.enabled=true 且 dry_run=false"
-                        .into(),
-                ));
-            }
-            if self
-                .database_url
-                .as_deref()
-                .map_or(true, |database_url| database_url.trim().is_empty())
-            {
-                return Err(AppError::ConfigValidation(
-                    "worker_authoritative 要求配置非空 database_url".into(),
-                ));
-            }
         }
         if self
             .database_url
@@ -676,7 +664,7 @@ fn default_graceful_shutdown_timeout_secs() -> u64 {
 
 #[cfg(test)]
 mod tests {
-    use super::{PlusConfig, PlusConfigCli, TelemetryCutoverMode};
+    use super::{PlusConfig, PlusConfigCli};
 
     #[test]
     fn partial_yaml_uses_runtime_defaults() {
@@ -817,28 +805,12 @@ mod tests {
 
     #[test]
     fn rejects_empty_dead_letter_path_but_allows_explicit_disable() {
-        let mut config = PlusConfig {
-            database_url: Some("postgres://localhost/phira".to_string()),
-            ..PlusConfig::default()
-        };
+        let mut config = PlusConfig::default();
         config.runtime.persistence_dead_letter_path = Some("   ".to_string());
         assert!(config.validate().is_err());
 
         config.runtime.persistence_dead_letter_path = None;
         assert!(config.validate().is_ok());
-    }
-
-    #[test]
-    fn worker_authoritative_requires_real_database_and_active_batcher() {
-        let mut config = PlusConfig::default();
-        config.runtime.telemetry_cutover_mode = TelemetryCutoverMode::WorkerAuthoritative;
-        assert!(config.validate().is_err());
-
-        config.database_url = Some("postgres://localhost/phira".to_string());
-        assert!(config.validate().is_ok());
-
-        config.runtime.telemetry.dry_run = true;
-        assert!(config.validate().is_err());
     }
 
     #[test]

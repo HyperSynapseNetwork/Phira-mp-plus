@@ -54,52 +54,15 @@ impl CliHandler {
             stats.dead_letter_written,
             stats.dead_letter_failed
         ));
-        self.out(format!("  {} telemetry cutover", c::cyan("▸")));
-        self.out(format!(
-            "    observed_batches={} items={} worker_attempted={} worker_ok={} worker_failed={} enqueue_ok={}%% readiness={}",
-            stats.telemetry_cutover.observed_batches,
-            stats.telemetry_cutover.observed_items,
-            stats.telemetry_cutover.worker_attempted_batches,
-            stats.telemetry_cutover.worker_enqueued_batches,
-            stats.telemetry_cutover.worker_failed_batches,
-            stats.telemetry_cutover.worker_enqueue_success_ratio_percent,
-            stats.telemetry_cutover.readiness
-        ));
-        self.out(format!(
-            "    direct_attempted={} direct_written={} direct_failed={} direct_skipped={} fallback_direct={} worker_canonical_fallback={} unaccepted={} dry_run_ok={}%%",
-            stats.telemetry_cutover.direct_attempted_batches,
-            stats.telemetry_cutover.direct_written_batches,
-            stats.telemetry_cutover.direct_failed_batches,
-            stats.telemetry_cutover.direct_skipped_batches,
-            stats.telemetry_cutover.fallback_direct_batches,
-            stats.telemetry_cutover.worker_canonical_fallback_batches,
-            stats.telemetry_cutover.unaccepted_batches,
-            stats.telemetry_cutover.worker_dry_run_success_ratio_percent
-        ));
-        self.out(format!(
-            "    enqueue_ms(avg/max/last)={}/{}/{} direct_ms(avg/max/last)={}/{}/{}",
-            stats.telemetry_cutover.worker_enqueue_latency.avg_ms,
-            stats.telemetry_cutover.worker_enqueue_latency.max_ms,
-            stats.telemetry_cutover.worker_enqueue_latency.last_ms,
-            stats.telemetry_cutover.direct_write_latency.avg_ms,
-            stats.telemetry_cutover.direct_write_latency.max_ms,
-            stats.telemetry_cutover.direct_write_latency.last_ms
-        ));
         self.out(format!(
             "  {} benchmark_reports: queued={} skipped_no_db={}",
             c::dim("│"),
             stats.benchmark_report_persist_requests,
             stats.benchmark_report_persist_skipped
         ));
-        self.out(format!(
-            "  {} telemetry_mode:   {} (changes={})",
-            c::dim("│"),
-            stats.telemetry_cutover_mode,
-            stats.telemetry_cutover_changes
-        ));
         self.out(format!("  {} telemetry batcher", c::cyan("▸")));
         self.out(format!(
-            "    enabled={} dry_run={} cutover={} queued={} accepted={} dropped={} pending={} flushes={} flushed_items={}",
+            "    enabled={} dry_run={} queued={} accepted={} dropped={} pending={} flushes={} flushed_items={}",
             stats.telemetry.enabled, stats.telemetry.dry_run, stats.telemetry.cutover_mode, stats.telemetry.queued,
             stats.telemetry.accepted, stats.telemetry.dropped, stats.telemetry.pending,
             stats.telemetry.flushed_batches, stats.telemetry.flushed_items
@@ -176,13 +139,13 @@ impl CliHandler {
             }
         }
         self.out(format!("  {} 低频生产事件由 PersistenceWorker 写入；数据库重试耗尽后写入本地 JSONL dead-letter，不再静默丢弃", c::dim("▸")));
-        self.out(format!("  {} 生产 Touch/Judge cutover={}；EventBus 只保留计数观测，完整 payload 走 Session → Worker", c::dim("▸"), stats.telemetry_cutover_mode));
+        self.out(format!("  {} Touch/Judge 统一通过 TelemetryBatcher 路径写入, EventBus 只保留计数观测，完整 payload 走 Session → Worker", c::dim("▸")));
         self.out(format!(
             "  {} Touch/Judge 持久化不依赖 active monitor；active monitor 只控制实时 monitor 广播",
             c::dim("▸")
         ));
         self.out(format!("  {} BenchmarkReport 通过 PersistenceWorker 幂等写入 mp_runtime_benchmark_reports，供 CLI 内部查询读取", c::dim("▸")));
         self.out(format!("  {} PersistenceWorker 对普通事件施加有界背压；数据库重试耗尽后进入 dead-letter，dead-letter 再失败会触发 degraded", c::dim("▸")));
-        self.out(format!("  {} TelemetryBatcher 的 Flush/Shutdown 返回真实数据库结果；worker_authoritative 仅在前置条件满足时允许启用", c::dim("▸")));
+        self.out(format!("  {} TelemetryBatcher 的 Flush/Shutdown 返回真实数据库结果", c::dim("▸")));
     }
 }

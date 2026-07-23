@@ -41,9 +41,8 @@ impl CliHandler {
             persistence.pending_ratio_percent
         ));
         self.out(format!(
-            "  {} telemetry cutover:  {}",
+            "  {} telemetry path: unified (PersistenceWorker/TelemetryBatcher)",
             c::dim("│"),
-            persistence.telemetry_cutover_mode
         ));
         let phira = self.state.phira_client.stats();
         self.out(format!(

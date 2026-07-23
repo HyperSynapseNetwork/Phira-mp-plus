@@ -1,15 +1,7 @@
 //! Runtime v2 高频遥测基础设施。
 //!
-//! 生产 Touch/Judge 支持三种显式切换模式：
-//!
-//! - **DirectOnly**：只通过 `RoundStore`/`db.rs` 直写（安全默认值）
-//! - **WorkerPreferred**：先直写；直写成功时 Worker 是迁移镜像，直写失败但
-//!   Worker 接收时由 Worker 作为该批次的权威补偿路径
-//! - **WorkerAuthoritative**：只把数据送入有界 PersistenceWorker/TelemetryBatcher；
-//!   仅在 Worker 明确拒收、能够确认命令未入队时回退直写
-//!
-//! Worker 路径提供有界背压、批处理、数据库有限重试以及可确认的 flush。
-//! 它仍没有磁盘 WAL，因此不能承诺进程崩溃或主机掉电时零数据丢失。
+//! 所有生产 Touch/Judge 统一通过 PersistenceWorker/TelemetryBatcher 路径写入，
+//! 提供有界背压、批处理、数据库有限重试以及可确认的 flush。
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -28,119 +20,11 @@ const MAX_TELEMETRY_TRACE: usize = 64;
 pub const TELEMETRY_SCHEMA_VERSION: i32 = 3;
 static TELEMETRY_BATCH_SEQ: AtomicU64 = AtomicU64::new(1);
 
-// ── Cutover mode & decision ──────────────────────────────────────────
-
-/// Cutover mode controlling how production Touch/Judge telemetry is persisted.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum TelemetryCutoverMode {
-    /// Only the direct RoundStore/db.rs path writes production Touch/Judge data.
-    DirectOnly,
-    /// Direct write is attempted first. The Worker is a mirror only after direct
-    /// acknowledgement; after direct failure it may be the canonical compensation path.
-    WorkerPreferred,
-    /// PersistenceWorker/TelemetryBatcher is the normal-operation single writer.
-    /// A direct fallback is permitted only when enqueue is explicitly rejected.
-    WorkerAuthoritative,
-}
-
-/// Structured decision derived from a [`TelemetryCutoverMode`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub struct TelemetryCutoverDecision {
-    pub mode: TelemetryCutoverMode,
-    pub enqueue_worker: bool,
-    pub write_direct_before_worker_result: bool,
-    pub fallback_direct_when_worker_rejects: bool,
-}
-
-impl TelemetryCutoverDecision {
-    pub fn from_mode(mode: TelemetryCutoverMode) -> Self {
-        match mode {
-            TelemetryCutoverMode::DirectOnly => Self {
-                mode,
-                enqueue_worker: false,
-                write_direct_before_worker_result: true,
-                fallback_direct_when_worker_rejects: true,
-            },
-            TelemetryCutoverMode::WorkerPreferred => Self {
-                mode,
-                enqueue_worker: true,
-                write_direct_before_worker_result: true,
-                fallback_direct_when_worker_rejects: true,
-            },
-            TelemetryCutoverMode::WorkerAuthoritative => Self {
-                mode,
-                enqueue_worker: true,
-                write_direct_before_worker_result: false,
-                fallback_direct_when_worker_rejects: true,
-            },
-        }
-    }
-
-    pub fn should_write_direct_after_worker_enqueue(self, worker_enqueue_ok: bool) -> bool {
-        self.write_direct_before_worker_result
-            || (!worker_enqueue_ok && self.fallback_direct_when_worker_rejects)
-    }
-}
-
-impl Default for TelemetryCutoverMode {
-    fn default() -> Self {
-        // Safety: DirectOnly ensures Touches/Judges never silently drop.
-        // WorkerPreferred must be explicitly opted into by the operator.
-        Self::DirectOnly
-    }
-}
-
-impl TelemetryCutoverMode {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::DirectOnly => "direct_only",
-            Self::WorkerPreferred => "worker_preferred",
-            Self::WorkerAuthoritative => "worker_authoritative",
-        }
-    }
-
-    pub fn parse(value: &str) -> Option<Self> {
-        match value.trim().to_ascii_lowercase().as_str() {
-            "direct_only" | "direct-only" => Some(Self::DirectOnly),
-            "worker_preferred" | "worker-preferred" => Some(Self::WorkerPreferred),
-            "worker_authoritative" | "worker-authoritative" => Some(Self::WorkerAuthoritative),
-            _ => None,
-        }
-    }
-
-    pub fn should_write_direct(self) -> bool {
-        self.cutover_decision().write_direct_before_worker_result
-    }
-
-    pub fn should_enqueue_worker(self) -> bool {
-        self.cutover_decision().enqueue_worker
-    }
-
-    pub fn cutover_decision(self) -> TelemetryCutoverDecision {
-        TelemetryCutoverDecision::from_mode(self)
-    }
-
-    pub fn description(self) -> &'static str {
-        match self {
-            Self::DirectOnly => "direct RoundStore/db.rs only; Runtime v2 batcher is bypassed",
-            Self::WorkerPreferred => {
-                "direct first; Worker mirrors acknowledged writes and compensates direct failures"
-            }
-            Self::WorkerAuthoritative => {
-                "Worker is the normal-operation single writer; direct fallback only on explicit enqueue rejection"
-            }
-        }
-    }
-
-    pub fn variants() -> &'static [TelemetryCutoverMode] {
-        &[
-            Self::DirectOnly,
-            Self::WorkerPreferred,
-            Self::WorkerAuthoritative,
-        ]
-    }
-}
+// ── Cutover mode & decision (removed) ─────────────────────────────────
+//
+// TelemetryCutoverMode and TelemetryCutoverDecision have been removed.
+// All production Touch/Judge telemetry now uniformly goes through
+// PersistenceWorker/TelemetryBatcher — the single unified persistence path.
 
 // ── Policy ───────────────────────────────────────────────────────────
 
@@ -234,7 +118,7 @@ impl TelemetryBatcherStats {
         Self {
             enabled: policy.enabled,
             dry_run: policy.dry_run,
-            cutover_mode: TelemetryCutoverMode::default().as_str().to_string(),
+            cutover_mode: String::new(),
             queue_capacity: policy.queue_capacity,
             max_items_per_batch: policy.max_items_per_batch,
             flush_interval_ms: policy.flush_interval_ms,
@@ -310,8 +194,6 @@ pub struct TelemetryItem {
     pub round_id: Option<String>,
     pub user_id: i32,
     pub item_count: usize,
-    pub dual_write: bool,
-    pub persistence_mode: String,
     pub payload: Value,
 }
 
@@ -763,8 +645,8 @@ async fn write_runtime_telemetry_batch(
     items: &[TelemetryItem],
     reason: &str,
 ) -> Result<usize, String> {
-    let Some(db) = crate::internal_hooks::DB.get() else {
-        return Err("database not initialized".to_string());
+    let Some(db) = crate::internal_hooks::DB.get().filter(|db| db.is_active()) else {
+        return Err("database is not active".to_string());
     };
     let item_rows: usize = items.iter().map(|i| i.item_count).sum();
     let records: Vec<crate::db::RuntimeTelemetryBatchRecord> = items
@@ -774,15 +656,11 @@ async fn write_runtime_telemetry_batch(
             batch_uuid: batch_uuid.to_string(),
             run_id: extract_run_id(&item.payload),
             scope: "production".to_string(),
-            pipeline: format!("runtime.telemetry_batcher.{}", item.persistence_mode),
-            source: if item.dual_write {
-                "telemetry_batcher_mirror".to_string()
-            } else {
-                "telemetry_batcher_authoritative".to_string()
-            },
+            pipeline: "runtime.telemetry_batcher.worker".to_string(),
+            source: "telemetry_batcher_authoritative".to_string(),
             flush_reason: reason.to_string(),
             schema_version: TELEMETRY_SCHEMA_VERSION,
-            dual_write: item.dual_write,
+            dual_write: false,
             kind: item.kind.as_str().to_string(),
             room_id: item.room_id.clone(),
             round_uuid: item.round_id.clone(),
@@ -850,36 +728,6 @@ fn extract_run_id(payload: &Value) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn cutover_decisions_match_mode_contract() {
-        let direct = TelemetryCutoverMode::DirectOnly.cutover_decision();
-        assert!(!direct.enqueue_worker);
-        assert!(direct.should_write_direct_after_worker_enqueue(false));
-        assert!(direct.should_write_direct_after_worker_enqueue(true));
-
-        let worker = TelemetryCutoverMode::WorkerPreferred.cutover_decision();
-        assert!(worker.enqueue_worker);
-        assert!(worker.should_write_direct_after_worker_enqueue(false));
-        assert!(worker.should_write_direct_after_worker_enqueue(true));
-
-        let authoritative = TelemetryCutoverMode::WorkerAuthoritative.cutover_decision();
-        assert!(authoritative.enqueue_worker);
-        assert!(authoritative.should_write_direct_after_worker_enqueue(false));
-        assert!(!authoritative.should_write_direct_after_worker_enqueue(true));
-    }
-
-    #[test]
-    fn cutover_helpers_delegate_to_decision_contract() {
-        for &mode in TelemetryCutoverMode::variants() {
-            let decision = mode.cutover_decision();
-            assert_eq!(mode.should_enqueue_worker(), decision.enqueue_worker);
-            assert_eq!(
-                mode.should_write_direct(),
-                decision.write_direct_before_worker_result
-            );
-        }
-    }
 
     #[test]
     fn db_dispatch_latency_uses_constant_size_aggregates() {

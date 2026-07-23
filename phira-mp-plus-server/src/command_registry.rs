@@ -338,15 +338,24 @@ impl CommandRegistry {
     /// Dynamic completers (room IDs, user IDs) reference server state via
     /// `Weak` and are only active while the server is running.
     pub fn init_completers(&self) {
-        // Benchmark mode completer: benchmark run <real|hybrid>
+        // Benchmark mode completer: benchmark run <mode|flags>
         self.set_arg_completer(
             "benchmark run",
             Arc::new(|_cmd, prefix| {
-                vec!["real", "hybrid"]
-                    .into_iter()
-                    .filter(|m| m.starts_with(prefix))
-                    .map(|s| s.to_string())
-                    .collect()
+                let mut candidates: Vec<&str> = vec![
+                    "real",
+                    "hybrid",
+                    "--mode",
+                    "--scenario",
+                    "--preset",
+                    "--clients",
+                    "--rooms",
+                    "--duration",
+                    "--seed",
+                    "--output",
+                ];
+                candidates.retain(|c| c.starts_with(prefix));
+                candidates.into_iter().map(|s| s.to_string()).collect()
             }),
         );
 
@@ -367,6 +376,18 @@ impl CommandRegistry {
             "benchmark simulation suite",
             Arc::new(|_cmd, prefix| {
                 vec!["smoke", "mixed", "stress"]
+                    .into_iter()
+                    .filter(|s| s.starts_with(prefix))
+                    .map(|s| s.to_string())
+                    .collect()
+            }),
+        );
+
+        // Benchmark suite preset completer
+        self.set_arg_completer(
+            "benchmark suite",
+            Arc::new(|_cmd, prefix| {
+                vec!["--preset"]
                     .into_iter()
                     .filter(|s| s.starts_with(prefix))
                     .map(|s| s.to_string())
@@ -935,6 +956,53 @@ pub fn runtime_registry() -> CommandRegistry {
         CommandSpec::new("benchmark simulation persist", "benchmark", "发送 Simulation 快照到持久化 Worker。", "benchmark simulation persist").developer()
             .example("benchmark simulation persist"),
         CommandSpec::new("benchmark simulation sample", "benchmark", "查看 deterministic touches/judges 示例数据规模。", "benchmark simulation sample").developer(),
+        // ── Phase 4.4: New benchmark commands ──
+        CommandSpec::new(
+            "benchmark list",
+            "benchmark",
+            "列出可用场景（scenarios）和预设（presets）。",
+            "benchmark list",
+        )
+        .advanced()
+        .example("benchmark list"),
+        CommandSpec::new(
+            "benchmark run",
+            "benchmark",
+            "运行基准测试，支持 simulation（默认）和 real 两种模式。",
+            "benchmark run --mode simulation|real --scenario <name> --preset <name> [options]",
+        )
+        .advanced()
+        .arg(CommandArgSpec::optional("--mode", "运行模式：simulation（默认）|real"))
+        .arg(CommandArgSpec::optional("--scenario", "负载场景名（见 benchmark list）"))
+        .arg(CommandArgSpec::optional("--preset", "预设参数集：quick|standard|stress|soak"))
+        .arg(CommandArgSpec::optional("--clients", "模拟客户端数"))
+        .arg(CommandArgSpec::optional("--rooms", "模拟房间数"))
+        .arg(CommandArgSpec::optional("--duration", "运行时长，如 30（秒）/ 10m / 2h"))
+        .arg(CommandArgSpec::optional("--seed", "随机种子（用于可复现性）"))
+        .arg(CommandArgSpec::optional("--output", "输出格式：text（默认）|json|markdown"))
+        .example("benchmark run --mode simulation --scenario gameplay --preset standard")
+        .example("benchmark run --scenario room-lifecycle --clients 50 --rooms 5 --duration 30")
+        .example("benchmark run --mode real --scenario hot-room --clients 100 --duration 10m"),
+        CommandSpec::new(
+            "benchmark suite",
+            "benchmark",
+            "按预设参数顺序运行所有场景，汇总输出。",
+            "benchmark suite --preset <name>",
+        )
+        .advanced()
+        .arg(CommandArgSpec::optional("--preset", "预设参数集：quick|standard（默认）|stress|soak"))
+        .example("benchmark suite --preset standard")
+        .example("benchmark suite --preset quick"),
+        CommandSpec::new(
+            "benchmark compare",
+            "benchmark",
+            "比较两份基准测试报告（JSON 文件）的差异。",
+            "benchmark compare <old.json> <new.json>",
+        )
+        .advanced()
+        .arg(CommandArgSpec::required("old.json", "原始基准测试报告 JSON 文件"))
+        .arg(CommandArgSpec::required("new.json", "新基准测试报告 JSON 文件"))
+        .example("benchmark compare old.json new.json"),
     ] {
         register(&mut registry, spec);
     }
