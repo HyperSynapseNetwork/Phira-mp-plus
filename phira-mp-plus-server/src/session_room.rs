@@ -229,8 +229,10 @@ pub async fn create_room(user: Arc<User>, id: RoomId) -> Result<()> {
     let room_uuid = room.uuid;
     // Drop write lock so subsequent reads don't hang.
     drop(map_guard);
-    // Add creator to room immediately (no mailbox round-trip).
-    room.add_user(Arc::downgrade(&user), false).await;
+    // NOTE: Room::new() already adds the creator as a user (users: vec![host]).
+    // Do NOT call room.add_user() here or the creator will be double-counted
+    // in room.users(), causing a 2-person room to appear as 3 or the welcome
+    // message to report 2 users when there is only 1.
     *room_guard = Some(Arc::clone(&room));
     // Host is assigned by join_room → assign_room_host_if_missing.
     // is_host_for_room() fallback covers the window before that happens.
@@ -242,7 +244,6 @@ pub async fn create_room(user: Arc<User>, id: RoomId) -> Result<()> {
             data: build_room_data(&room).await,
         })
         .await;
-    *room_guard = Some(Arc::clone(&room));
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as i64)
@@ -488,8 +489,11 @@ pub async fn lock_room(user: Arc<User>, lock: bool) -> Result<()> {
         .set_lock_as(&user.server, &room.id.to_string(), lock, user.id)
         .await
         .map_err(anyhow::Error::msg)?;
-    // Broadcast to other users (sender receives command response only).
-    room.send_except(user.id, Message::LockRoom { lock }).await;
+    // Broadcast to all users including the sender (host). The host's client
+    // needs Message::LockRoom to update its local lock state in the UI.
+    // The old send_except approach (recent commit) broke this: the host saw
+    // the command succeed but the lock icon never changed in their own client.
+    room.send(Message::LockRoom { lock }).await;
     Ok(())
 }
 
@@ -509,7 +513,8 @@ pub async fn cycle_room(user: Arc<User>, cycle: bool) -> Result<()> {
         .set_cycle_as(&user.server, &room.id.to_string(), cycle, user.id)
         .await
         .map_err(anyhow::Error::msg)?;
-    room.send_except(user.id, Message::CycleRoom { cycle }).await;
+    // See lock_room comment — the host's client needs the event too.
+    room.send(Message::CycleRoom { cycle }).await;
     Ok(())
 }
 

@@ -882,11 +882,6 @@ impl Session {
                             }
                         }
 
-                        let joining_player = matches!(
-                            &cmd,
-                            ClientCommand::JoinRoom { monitor: false, .. }
-                        )
-                        .then(|| Arc::clone(&user));
                         let creating_player = matches!(&cmd, ClientCommand::CreateRoom { .. })
                             .then(|| Arc::clone(&user));
                         let result = LANGUAGE
@@ -900,8 +895,6 @@ impl Session {
                             )
                             .await;
                         if let Some(resp) = result {
-                            let joined_room = joining_player.is_some()
-                                && matches!(&resp, ServerCommand::JoinRoom(Ok(_)));
                             let created_room = creating_player.is_some()
                                 && matches!(&resp, ServerCommand::CreateRoom(Ok(())));
                             if let Err(err) = send_tx.send(resp).await {
@@ -924,29 +917,12 @@ impl Session {
                                         "failed to deliver post-create room event to {id}: {err:?}"
                                     );
                                 }
-                            } else if joined_room {
-                                let joining_player = joining_player.expect("checked above");
-                                let room = joining_player
-                                    .room
-                                    .read()
-                                    .await
-                                    .as_ref()
-                                    .map(Arc::clone);
-                                if let Some(room) = room {
-                                    if room.control_snapshot().host_id == Some(joining_player.id) {
-                                        // Preserve protocol order for the first player entering an
-                                        // administratively-created empty room.
-                                        if let Err(err) = send_tx
-                                            .send(ServerCommand::ChangeHost(true))
-                                            .await
-                                        {
-                                            error!(
-                                                "failed to deliver post-join host state to {id}: {err:?}"
-                                            );
-                                        }
-                                    }
-                                }
                             }
+                            // NOTE: Do NOT send ChangeHost(true) after JoinRoom(Ok) here.
+                            // assign_room_host_if_missing() in join_room already broadcasts
+                            // ChangeHost through the room mailbox SetHost handler. Sending it
+                            // again here duplicates the message and can arrive out of order
+                            // (before JoinRoom(Ok)), confusing the client.
                         }
                     }
                 }
