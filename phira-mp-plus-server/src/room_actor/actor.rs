@@ -130,6 +130,7 @@ impl RoomState {
             lifecycle: InternalRoomState::SelectChart,
             members: RoomMembers { users, monitors },
             chart: None,
+            chart_name: None,
             round: RoundInfo {
                 round_id: None,
                 round_uuid: None,
