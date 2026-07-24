@@ -226,8 +226,8 @@ pub async fn create_room(user: Arc<User>, id: RoomId) -> Result<()> {
         Arc::downgrade(&user.server),
         max_users,
         Some(Arc::clone(&user.server.round_store)),
+        Some(user.id),
     ));
-    room.creator_id = Some(user.id);
     map_guard.insert(id.clone(), Arc::clone(&room));
     let room_uuid = room.uuid;
     // Drop write lock so subsequent reads don't hang.

@@ -207,6 +207,7 @@ impl Room {
         server: Weak<crate::server::PlusServerState>,
         _max_users: usize,
         round_store: Option<Arc<crate::round_store::RoundStore>>,
+        creator_id: Option<i32>,
     ) -> Self {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -215,7 +216,7 @@ impl Room {
         Self {
             id,
             uuid: uuid::Uuid::new_v4(),
-            creator_id: None,
+            creator_id,
             plugin_manager,
             server,
             live: AtomicBool::new(false),
