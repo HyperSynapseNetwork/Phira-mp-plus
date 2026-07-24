@@ -155,11 +155,29 @@ impl DbManager {
                             Err(e) => socket_error = format!("{socket_error}{distro} parse: {e}; "),
                         }
                     }
-                    let hint = "\n      请确保 PostgreSQL 已安装且正在运行：
-      Ubuntu/Debian: sudo apt install postgresql && sudo systemctl start postgresql
-      macOS: brew install postgresql && brew services start postgresql
+                    let install_hint = match std::env::consts::OS {
+                        "linux" => {
+                            if std::path::Path::new("/etc/debian_version").exists() {
+                                "sudo apt install postgresql && sudo systemctl start postgresql"
+                            } else if std::path::Path::new("/etc/redhat-release").exists() {
+                                "sudo dnf install postgresql-server && sudo systemctl enable --now postgresql"
+                            } else {
+                                "sudo apt install postgresql  # 或使用你的发行版的包管理器"
+                            }
+                        }
+                        "macos" => "brew install postgresql && brew services start postgresql",
+                        "windows" => "winget install PostgreSQL.PostgreSQL  # 或从 https://www.postgresql.org/download/ 下载",
+                        _ => "请安装 PostgreSQL（https://www.postgresql.org/download/）",
+                    };
+                    let hint = format!(
+                        "\n      请确保 PostgreSQL 已安装且正在运行：
+      检测到系统: {}
+      安装命令: {}
       Docker: docker compose up -d postgres
-      配置 database_url 或留空自动连接本地 Unix socket";
+      配置 database_url 或留空自动连接本地 Unix socket",
+                        std::env::consts::OS,
+                        install_hint,
+                    );
                     anyhow::bail!("PostgreSQL 连接失败（TCP: {e}；{socket_error}）{hint}");
                 }
             }
