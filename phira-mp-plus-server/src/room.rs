@@ -290,6 +290,16 @@ impl Room {
         self.broadcast(ServerCommand::Message(msg)).await;
     }
 
+    /// Send a message to all users EXCEPT the one with `excluded_user_id`.
+    pub async fn send_except(&self, excluded_user_id: i32, msg: Message) {
+        let cmd = ServerCommand::Message(msg);
+        for session in self.users().await.into_iter().chain(self.monitors().await) {
+            if session.user.id != excluded_user_id {
+                session.try_send(cmd.clone()).await;
+            }
+        }
+    }
+
     pub async fn broadcast(&self, cmd: ServerCommand) {
         debug!("broadcast {cmd:?}");
         for session in self.users().await.into_iter().chain(self.monitors().await) {
