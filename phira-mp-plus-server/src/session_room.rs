@@ -16,7 +16,6 @@ use anyhow::{anyhow, bail, Result};
 use phira_mp_common::{
     JoinRoomResponse, Message, RoomEvent, RoomId, ServerCommand,
 };
-use rand::seq::IndexedRandom;
 use std::{
     collections::HashMap,
     sync::{atomic::Ordering, Arc},
@@ -460,7 +459,7 @@ pub async fn leave_room(user: Arc<User>, category: SessionCategory) -> Result<()
     } else if !was_monitor {
         // Reassign host to a random remaining user if host leaves.
         let remaining = room.users().await;
-        let idx = rand::random::<usize>() % remaining.len();
+        let idx = (std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos() as usize) % remaining.len();
         if let Some(next) = remaining.get(idx).cloned() {
             user.server.assign_room_host_if_missing(&room, &next, false, false).await;
         }
