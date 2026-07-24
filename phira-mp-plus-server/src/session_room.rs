@@ -45,11 +45,9 @@ pub fn decode_admin_room_command(input: &str) -> String {
     out.trim().to_string()
 }
 
-/// Check if `user` is the room's host (via snapshot or implicit first-user rule).
+/// Check if `user` is the room's host (via actor snapshot).
 async fn is_host_for_room(room: &Arc<crate::room::Room>, user: &User) -> bool {
-    let control = room.control_snapshot();
-    control.host_id == Some(user.id)
-        || (control.host_id.is_none() && room.users().await.first().map(|u| u.id) == Some(user.id))
+    room.control_snapshot().host_id == Some(user.id)
 }
 
 async fn current_room(user: &Arc<User>) -> Result<Arc<crate::room::Room>> {
