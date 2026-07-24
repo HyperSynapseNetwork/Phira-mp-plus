@@ -220,25 +220,13 @@ pub async fn create_room(user: Arc<User>, id: RoomId) -> Result<()> {
     ));
     map_guard.insert(id.clone(), Arc::clone(&room));
     let room_uuid = room.uuid;
-    // Drop write lock before routing through room mailbox (avoids deadlock).
+    // Drop write lock so subsequent reads don't hang.
     drop(map_guard);
-    debug!(room = %id, user = user.id, "create_room: mailbox init + set_display_name");
-    user.server
-        .room_commands
-        .set_display_name(&user.server, &id.to_string(), user.id, &user.name)
-        .await
-        .ok();
-    debug!(room = %id, user = user.id, "create_room: set_display_name done, setting host via gateway");
-    // Creator becomes host via the mailbox (updates actor snapshot).
-    user.server
-        .room_commands
-        .set_host(&user.server, &id.to_string(), Some(user.id))
-        .await
-        .ok();
-    debug!(room = %id, user = user.id, "create_room: host set, adding creator to room");
-    // Add creator to room so client can resolve host ID → name.
+    // Add creator to room immediately (no mailbox round-trip).
     room.add_user(Arc::downgrade(&user), false).await;
     *room_guard = Some(Arc::clone(&room));
+    // Display name and host are set asynchronously after response is sent
+    // (via the join/assign_room_host_if_missing path or background refresh).
     // CreateRoom(Ok) establishes client room state; do not emit a room event to
     // the creator before that response.
     user.server
