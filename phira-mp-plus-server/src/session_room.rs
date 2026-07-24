@@ -238,6 +238,9 @@ pub async fn create_room(user: Arc<User>, id: RoomId) -> Result<()> {
         .await
         .ok();
     debug!(room = %id, user = user.id, "create_room: set_host done");
+    // Add creator to room so client can resolve host ID → name.
+    room.add_user(Arc::downgrade(&user), false).await;
+    *room_guard = Some(Arc::clone(&room));
     // CreateRoom(Ok) establishes client room state; do not emit a room event to
     // the creator before that response.
     user.server
