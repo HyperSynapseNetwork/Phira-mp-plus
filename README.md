@@ -9,8 +9,6 @@
 
 **Phira-mp+（PMP）** 是 [phira-mp](https://github.com/HyperSynapseNetwork/phira-mp) 的增强版多人游戏服务端。在 Phira+ 架构中，PMP 负责游戏协议、房间运行时、WASM 插件与游戏数据持久化。HTTP/SSE/WebSocket 端口用于兼容、诊断和内部集成。
 
-> **当前状态：基线版本（v0.4.x）** — Playout Infrastructure 已完成。所有迁移遗留清理（mirror/pipeline/runtime_v2/cutover/DbManager::None）、核心状态收敛（Room Actor 独占状态）、持久化定型（HighFrequencyWriter、WAL 简化为 A 类事件、PostgreSQL COPY）以及 Benchmark 重做（Simulation 降级、Mock Phira、11 场景、CLI 命令）均已落地。
-
 ### 核心特性
 
 - **有界连接接入** — TCP accept 与认证解耦，认证并发和在线会话由信号量预留，慢认证连接不会串行阻塞全局 accept
