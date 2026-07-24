@@ -16,6 +16,7 @@ use anyhow::{anyhow, bail, Result};
 use phira_mp_common::{
     JoinRoomResponse, Message, RoomEvent, RoomId, ServerCommand,
 };
+use rand::seq::IndexedRandom;
 use std::{
     collections::HashMap,
     sync::{atomic::Ordering, Arc},
@@ -654,6 +655,7 @@ pub async fn played(user: Arc<User>, id: i32) -> Result<()> {
             &user.server, &room.id.to_string(), user.id,
             res.score, res.accuracy, res.perfect, res.good,
             res.bad, res.miss, res.max_combo, res.full_combo,
+            res.std, res.std_score,
         )
         .await
         .map_err(|e| anyhow!("submit result failed: {e}"))?;

@@ -171,7 +171,6 @@ pub fn send_welcome(user_id: i32, user_name: &str, online: usize, state: &PlusSe
                                 let max = control.max_users;
                                 let locked = control.locked;
                                 let cycling = control.cycle;
-                                let state_desc = "选曲中"; // Full lifecycle from actor snapshot not available in sync context.
                                 let mut flags = Vec::new();
                                 if locked {
                                     flags.push("锁定");
@@ -184,23 +183,9 @@ pub fn send_welcome(user_id: i32, user_name: &str, online: usize, state: &PlusSe
                                 } else {
                                     format!(" [{}]", flags.join(","))
                                 };
-                                let chart_str = room.server.upgrade()
-                                    .and_then(|s| s.room_snapshot(&room.id.to_string()))
-                                    .and_then(|snap| snap.chart.map(|c| c.to_string()))
-                                    .unwrap_or_default();
                                 format!(
-                                    "房间:{}{} 房主:{} [{}/{}] {}{}",
-                                    id,
-                                    flag_str,
-                                    host_name,
-                                    players,
-                                    max,
-                                    state_desc,
-                                    if chart_str.is_empty() {
-                                        String::new()
-                                    } else {
-                                        format!(" | {}", chart_str)
-                                    }
+                                    "{}{}(房主:{} [{}/{}])",
+                                    id, flag_str, host_name, players, max,
                                 )
                             })
                             .collect()
@@ -208,7 +193,7 @@ pub fn send_welcome(user_id: i32, user_name: &str, online: usize, state: &PlusSe
                 }
                 _ => vec!["暂无房间".into()],
             };
-            text = text.replace("[active_rooms]", &room_list.join(" | "));
+            text = text.replace("[active_rooms]", &room_list.join("; "));
         }
         // [top_playtime] → 游玩时间排行榜（取前 10）
         if text.contains("[top_playtime]") {

@@ -117,6 +117,7 @@ async fn save_round_history(
             max_combo: rec.max_combo,
             full_combo: rec.full_combo,
             aborted: false,
+            std: rec.std,
             std_score: rec.std_score,
         });
     }
@@ -137,6 +138,7 @@ async fn save_round_history(
                 max_combo: 0,
                 full_combo: false,
                 aborted: true,
+                std: 0.0,
                 std_score: 0.0,
             });
         }
@@ -295,12 +297,12 @@ async fn check_all_ready(
                             let status = if rr.aborted { " 放弃" } else { "" };
                             let fc = if rr.full_combo { " FC" } else { "" };
                             lines.push(format!(
-                                "#{}. {:<12} {:>8}分  准确率 {:.2}%  误差 ±{:.2}{}{}",
+                                "#{}. {:<12} {:>8}分  准确率 {:.2}%  ±{:.1}ms{}{}",
                                 i + 1,
                                 rr.user_name,
                                 rr.score,
                                 rr.accuracy * 100.0,
-                                rr.std_score,
+                                rr.std * 1000.0,
                                 fc,
                                 status
                             ));
@@ -668,13 +670,13 @@ impl RoomCommandHandler {
                 ok(RoomCommandPayload::UserNotReady { room_id: room_id.clone().to_string(), user_id: *user_id })
             }
 
-            RoomActorCommand::SubmitResult { room_id, user_id, score, accuracy, perfect, good, bad, miss, max_combo, full_combo, .. } => {
+            RoomActorCommand::SubmitResult { room_id, user_id, score, accuracy, perfect, good, bad, miss, max_combo, full_combo, std, std_score, .. } => {
                 let as_ = ctx.expect_actor_state();
                 let r = match room { Some(ref r) => r, None => return err("no room") };
                 let record = crate::server::Record {
                     id: 0, player: *user_id, score: *score, perfect: *perfect,
                     good: *good, bad: *bad, miss: *miss, max_combo: *max_combo,
-                    accuracy: *accuracy, full_combo: *full_combo, std: 0.0, std_score: 0.0,
+                    accuracy: *accuracy, full_combo: *full_combo, std: *std, std_score: *std_score,
                 };
                 match &mut as_.state.lifecycle {
                     InternalRoomState::Playing { results, aborted } => {

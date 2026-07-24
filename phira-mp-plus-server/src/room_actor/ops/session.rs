@@ -94,6 +94,8 @@ impl RoomCommandGateway {
         miss: i32,
         max_combo: i32,
         full_combo: bool,
+        std: f32,
+        std_score: f32,
     ) -> Result<Value, String> {
         let started = Instant::now();
         let rid = room_id.to_string();
@@ -109,6 +111,8 @@ impl RoomCommandGateway {
                 miss,
                 max_combo,
                 full_combo,
+                std,
+                std_score,
                 reply,
             })
             .await;

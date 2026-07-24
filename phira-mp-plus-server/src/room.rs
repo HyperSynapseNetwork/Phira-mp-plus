@@ -113,6 +113,9 @@ pub struct PlayResult {
     pub max_combo: i32,
     pub full_combo: bool,
     pub aborted: bool,
+    #[serde(default)]
+    pub std: f32,
+    #[serde(default)]
     pub std_score: f32,
 }
 
@@ -133,7 +136,7 @@ pub fn protocol_round(round: &PlayRound) -> RoundData {
                 max_combo: result.max_combo,
                 accuracy: result.accuracy,
                 full_combo: result.full_combo,
-                std: 0.0,
+                std: result.std,
                 std_score: result.std_score,
             })
             .collect(),

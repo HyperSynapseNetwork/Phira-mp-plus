@@ -138,6 +138,8 @@ pub(super) enum RoomActorCommand {
         miss: i32,
         max_combo: i32,
         full_combo: bool,
+        std: f32,
+        std_score: f32,
         reply: oneshot::Sender<RoomCommandResult>,
     },
     AbortRound {
