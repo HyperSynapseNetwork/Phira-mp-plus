@@ -294,7 +294,7 @@ impl Room {
     pub async fn send_except(&self, excluded_user_id: i32, msg: Message) {
         let cmd = ServerCommand::Message(msg);
         for session in self.users().await.into_iter().chain(self.monitors().await) {
-            if session.user.id != excluded_user_id {
+            if session.id != excluded_user_id {
                 session.try_send(cmd.clone()).await;
             }
         }

@@ -611,7 +611,7 @@ impl RoomCommandHandler {
                     return err("cannot set chart outside SelectChart state");
                 }
                 as_.state.chart = Some(*chart_id);
-                r.send_except(*actor_user_id, Message::SelectChart { user: 0, name: chart_name.clone(), id: *chart_id }).await;
+                r.send(Message::SelectChart { user: 0, name: chart_name.clone(), id: *chart_id }).await;
                 broadcast_state_change(r, &as_.state.lifecycle, as_.state.chart).await;
                 r.publish_update(phira_mp_common::PartialRoomData { chart: Some(*chart_id), ..Default::default() }).await;
                 state.publish_runtime_event(crate::event_bus::MpEvent::ChartSelected {
@@ -630,7 +630,7 @@ impl RoomCommandHandler {
                     }
                     _ => return err("not in WaitForReady state"),
                 }
-                r.send_except(*actor_user_id, Message::Ready { user: *user_id }).await;
+                r.send(Message::Ready { user: *user_id }).await;
                 state.publish_runtime_event(crate::event_bus::MpEvent::PlayerReadyChanged {
                     room_id: room_id.clone().try_into().unwrap(), user_id: *user_id, ready: true,
                 });
