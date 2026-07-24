@@ -45,6 +45,13 @@ pub fn decode_admin_room_command(input: &str) -> String {
     out.trim().to_string()
 }
 
+/// Check if `user` is the room's host (via snapshot or implicit first-user rule).
+async fn is_host_for_room(room: &Arc<crate::room::Room>, user: &User) -> bool {
+    let control = room.control_snapshot();
+    control.host_id == Some(user.id)
+        || (control.host_id.is_none() && room.users().await.first().map(|u| u.id) == Some(user.id))
+}
+
 async fn current_room(user: &Arc<User>) -> Result<Arc<crate::room::Room>> {
     user.room
         .read()
@@ -225,8 +232,17 @@ pub async fn create_room(user: Arc<User>, id: RoomId) -> Result<()> {
     // Add creator to room immediately (no mailbox round-trip).
     room.add_user(Arc::downgrade(&user), false).await;
     *room_guard = Some(Arc::clone(&room));
-    // Display name and host are set asynchronously after response is sent
-    // (via the join/assign_room_host_if_missing path or background refresh).
+    // Set host and display name asynchronously (fire-and-forget via mailbox).
+    // These MUST NOT block the CreateRoom response — the mailbox takes ~30s
+    // for reasons not yet identified.
+    let bg_state = Arc::clone(&user.server);
+    let bg_rid = id_text.clone();
+    let bg_uid = user.id;
+    let bg_name = user.name.clone();
+    tokio::spawn(async move {
+        bg_state.room_commands.set_display_name(&bg_state, &bg_rid, bg_uid, &bg_name).await.ok();
+        bg_state.room_commands.set_host(&bg_state, &bg_rid, Some(bg_uid)).await.ok();
+    });
     // CreateRoom(Ok) establishes client room state; do not emit a room event to
     // the creator before that response.
     user.server
@@ -467,13 +483,7 @@ pub async fn leave_room(user: Arc<User>, category: SessionCategory) -> Result<()
 
 pub async fn lock_room(user: Arc<User>, lock: bool) -> Result<()> {
     let room = current_room(&user).await?;
-    // Host check via control_snapshot.
-    let control = room.control_snapshot();
-    if control.host_id != Some(user.id) {
-        warn!(
-            user = user.id, host = ?control.host_id, room = ?room.id,
-            "host check failed"
-        );
+    if !is_host_for_room(&room, &user).await {
         bail!("only host can do this");
     }
     info!(
@@ -492,8 +502,7 @@ pub async fn lock_room(user: Arc<User>, lock: bool) -> Result<()> {
 
 pub async fn cycle_room(user: Arc<User>, cycle: bool) -> Result<()> {
     let room = current_room(&user).await?;
-    let control = room.control_snapshot();
-    if control.host_id != Some(user.id) {
+    if !is_host_for_room(&room, &user).await {
         bail!("only host can do this");
     }
     info!(
@@ -512,8 +521,7 @@ pub async fn cycle_room(user: Arc<User>, cycle: bool) -> Result<()> {
 
 pub async fn select_chart(user: Arc<User>, id: i32) -> Result<()> {
     let room = current_room_in_select_chart(&user).await?;
-    let control = room.control_snapshot();
-    if control.host_id != Some(user.id) {
+    if !is_host_for_room(&room, &user).await {
         bail!("only host can do this");
     }
     let span = debug_span!(
@@ -552,8 +560,7 @@ pub async fn select_chart(user: Arc<User>, id: i32) -> Result<()> {
 
 pub async fn request_start(user: Arc<User>) -> Result<()> {
     let room = current_room_in_select_chart(&user).await?;
-    let control = room.control_snapshot();
-    if control.host_id != Some(user.id) {
+    if !is_host_for_room(&room, &user).await {
         bail!("only host can do this");
     }
     // Check admin_start_pending via snapshot.
