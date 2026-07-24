@@ -12,6 +12,11 @@ members = [
 edition = "2021"
 license = "AGPL-3.0"
 
+[profile.release]
+lto = true
+codegen-units = 1
+strip = "symbols"
+
 [workspace.dependencies]
 anyhow = "1.0"
 chrono = "0.4"
