@@ -86,6 +86,10 @@ impl DbManager {
                     Ok(Self::Pg(pool))
                 }
                 Err(e) => {
+                    // Provide a helpful hint for common connection issues.
+                    if e.to_string().contains("Connection refused") {
+                        tracing::warn!("PostgreSQL 未运行或端口不可达，尝试 Unix socket...");
+                    }
                     let err_str = e.to_string();
                     if err_str.contains("does not exist")
                         || err_str.contains("database") && err_str.contains("not found")
@@ -151,7 +155,12 @@ impl DbManager {
                             Err(e) => socket_error = format!("{socket_error}{distro} parse: {e}; "),
                         }
                     }
-                    anyhow::bail!("PostgreSQL 连接失败（TCP: {e}；{socket_error}）");
+                    let hint = "\n      请确保 PostgreSQL 已安装且正在运行：
+      Ubuntu/Debian: sudo apt install postgresql && sudo systemctl start postgresql
+      macOS: brew install postgresql && brew services start postgresql
+      Docker: docker compose up -d postgres
+      配置 database_url 或留空自动连接本地 Unix socket";
+                    anyhow::bail!("PostgreSQL 连接失败（TCP: {e}；{socket_error}）{hint}");
                 }
             }
         }
