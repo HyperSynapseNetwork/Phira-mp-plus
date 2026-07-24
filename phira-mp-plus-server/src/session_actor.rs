@@ -300,10 +300,11 @@ pub(crate) async fn route_chat(
 // ── Lock / Cycle ──────────────────────────────────────────────────
 
 async fn handle_lock(user: Arc<User>, lock: bool) -> Option<ServerCommand> {
-    if let Err(e) = crate::session_room::lock_room(user, lock).await {
-        tracing::warn!(error = %e, "lock room failed");
-    }
-    None
+    Some(ServerCommand::LockRoom(
+        crate::session_room::lock_room(user, lock)
+            .await
+            .map_err(|e| e.to_string()),
+    ))
 }
 
 pub(crate) async fn route_lock(user: Arc<User>, lock: bool) -> Option<ServerCommand> {
@@ -317,10 +318,11 @@ pub(crate) async fn route_lock(user: Arc<User>, lock: bool) -> Option<ServerComm
 }
 
 async fn handle_cycle(user: Arc<User>, cycle: bool) -> Option<ServerCommand> {
-    if let Err(e) = crate::session_room::cycle_room(user, cycle).await {
-        tracing::warn!(error = %e, "cycle room failed");
-    }
-    None
+    Some(ServerCommand::CycleRoom(
+        crate::session_room::cycle_room(user, cycle)
+            .await
+            .map_err(|e| e.to_string()),
+    ))
 }
 
 pub(crate) async fn route_cycle(user: Arc<User>, cycle: bool) -> Option<ServerCommand> {
