@@ -228,6 +228,13 @@ pub async fn create_room(user: Arc<User>, id: RoomId) -> Result<()> {
         .set_display_name(&user.server, &id.to_string(), user.id, &user.name)
         .await
         .ok();
+    // Creator becomes host. This goes through the actor mailbox too, so the
+    // snapshot is updated before the client sends any subsequent commands.
+    user.server
+        .room_commands
+        .set_host(&user.server, &id.to_string(), Some(user.id))
+        .await
+        .ok();
     // CreateRoom(Ok) establishes client room state; do not emit a room event to
     // the creator before that response.
     user.server
