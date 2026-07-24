@@ -488,6 +488,8 @@ pub async fn lock_room(user: Arc<User>, lock: bool) -> Result<()> {
         .set_lock_as(&user.server, &room.id.to_string(), lock, user.id)
         .await
         .map_err(anyhow::Error::msg)?;
+    // Broadcast to other users (sender receives command response only).
+    room.send_except(user.id, Message::LockRoom { lock }).await;
     Ok(())
 }
 
@@ -507,6 +509,7 @@ pub async fn cycle_room(user: Arc<User>, cycle: bool) -> Result<()> {
         .set_cycle_as(&user.server, &room.id.to_string(), cycle, user.id)
         .await
         .map_err(anyhow::Error::msg)?;
+    room.send_except(user.id, Message::CycleRoom { cycle }).await;
     Ok(())
 }
 
