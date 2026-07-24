@@ -564,6 +564,7 @@ pub async fn request_start(user: Arc<User>) -> Result<()> {
         bail!("only host can do this");
     }
     // Check admin_start_pending via snapshot.
+    let control = room.control_snapshot();
     if control.admin_start_pending {
         bail!("administrative start is already in progress");
     }
