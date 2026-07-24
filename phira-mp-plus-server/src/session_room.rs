@@ -45,9 +45,14 @@ pub fn decode_admin_room_command(input: &str) -> String {
     out.trim().to_string()
 }
 
-/// Check if `user` is the room's host (via actor snapshot).
+/// Check if `user` is the room's host (via actor snapshot, with creator fallback).
+///
+/// The actor snapshot may not be populated yet for newly created rooms
+/// (mailbox commands have ~30s latency). `room.creator_id` provides a
+/// synchronous fallback so the creator is immediately recognized as host.
 async fn is_host_for_room(room: &Arc<crate::room::Room>, user: &User) -> bool {
-    room.control_snapshot().host_id == Some(user.id)
+    let host = room.control_snapshot().host_id;
+    host == Some(user.id) || room.creator_id == Some(user.id)
 }
 
 async fn current_room(user: &Arc<User>) -> Result<Arc<crate::room::Room>> {
@@ -110,7 +115,7 @@ pub(crate) async fn build_client_room_state(
         live: room.is_live(),
         locked: control.locked,
         cycle: control.cycle,
-        is_host: control.host_id == Some(user.id),
+        is_host: control.host_id == Some(user.id) || room.creator_id == Some(user.id),
         is_ready,
         users,
     }
@@ -127,7 +132,7 @@ pub(crate) async fn build_room_data(room: &crate::room::Room) -> phira_mp_common
     let host = if control.system_host {
         -1
     } else {
-        control.host_id.unwrap_or(-1)
+        control.host_id.or(room.creator_id).unwrap_or(-1)
     };
     let users: Vec<i32> = room.users().await.into_iter().map(|u| u.id).collect();
     let chart = snap.as_ref().and_then(|s| s.chart);
@@ -222,6 +227,7 @@ pub async fn create_room(user: Arc<User>, id: RoomId) -> Result<()> {
         max_users,
         Some(Arc::clone(&user.server.round_store)),
     ));
+    room.creator_id = Some(user.id);
     map_guard.insert(id.clone(), Arc::clone(&room));
     let room_uuid = room.uuid;
     // Drop write lock so subsequent reads don't hang.

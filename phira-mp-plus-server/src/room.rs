@@ -168,6 +168,10 @@ pub struct Room {
     pub id: RoomId,
     /// 房间唯一标识符
     pub uuid: uuid::Uuid,
+    /// The user ID of the room creator (set once in create_room).
+    /// Used as a fallback host identifier until the actor snapshot is populated,
+    /// preventing multiple joiners from all being assigned as host.
+    pub creator_id: Option<i32>,
     /// 用于触发 RoomComplete 等插件事件的插件管理器
     pub plugin_manager: Option<Arc<PluginManager>>,
     /// Reference to the server state (crate-visible for handler broadcasts).
@@ -211,6 +215,7 @@ impl Room {
         Self {
             id,
             uuid: uuid::Uuid::new_v4(),
+            creator_id: None,
             plugin_manager,
             server,
             live: AtomicBool::new(false),

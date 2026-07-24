@@ -156,6 +156,11 @@ impl PlusServerState {
     /// After Phase 2 Work C, routes through RoomCommandGateway::set_host().
     /// The `announce` parameter is preserved for call sites that need the
     /// protocol-ordering guarantee (JoinRoom(Ok) before ChangeHost).
+    ///
+    /// Also checks `room.creator_id` — if the room was created by a normal user
+    /// (rather than via create_empty_room), the creator is the implicit host and
+    /// no assignment is needed. This avoids a race where the actor snapshot
+    /// hasn't been populated yet and multiple joiners all see host_id == None.
     pub async fn assign_room_host_if_missing(
         &self,
         room: &Arc<crate::room::Room>,
@@ -166,12 +171,12 @@ impl PlusServerState {
         if monitor {
             return false;
         }
-        // Check if room has a host via control_snapshot (from actor cache).
+        // Check if room already has a host or a creator (creator is implicit host).
         let control = room.control_snapshot();
-        if control.host_id.is_some() || control.system_host {
+        if control.host_id.is_some() || control.system_host || room.creator_id.is_some() {
             tracing::trace!(
-                user = user.id, room = %room.id, host = ?control.host_id,
-                "room already has host, skipping assign"
+                user = user.id, room = %room.id, host = ?control.host_id, creator = ?room.creator_id,
+                "room already has host or creator, skipping assign"
             );
             return false;
         }
