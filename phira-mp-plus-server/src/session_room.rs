@@ -457,8 +457,9 @@ pub async fn leave_room(user: Arc<User>, category: SessionCategory) -> Result<()
     if room_empty {
         user.server.rooms.write().await.remove(&room.id);
     } else if !was_monitor {
-        // Reassign host if the leaving user was host.
-        if let Some(next) = room.users().await.first().map(Arc::clone) {
+        // Reassign host to a random remaining user if host leaves.
+        let remaining = room.users().await;
+        if let Some(next) = remaining.choose(&mut rand::rng()).cloned() {
             user.server.assign_room_host_if_missing(&room, &next, false, false).await;
         }
     }
