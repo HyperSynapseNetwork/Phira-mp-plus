@@ -105,12 +105,12 @@ impl DbManager {
                             Ok(pool) => Some(pool),
                             Err(_) => {
                                 tracing::info!("admin TCP 连接失败，尝试 Unix socket...");
-                                // Try key-value format for Unix socket
-                                if let Ok(opts) = "host=/var/run/postgresql dbname=postgres user=postgres".parse::<sqlx::postgres::PgConnectOptions>() {
-                                    sqlx::PgPool::connect_with(opts).await.ok()
-                                } else {
-                                    None
-                                }
+                                // Try Unix socket for admin connection
+                                let opts = sqlx::postgres::PgConnectOptions::new()
+                                    .host("/var/run/postgresql")
+                                    .database("postgres")
+                                    .username("postgres");
+                                sqlx::PgPool::connect_with(opts).await.ok()
                             }
                         };
                         if let Some(admin_pool) = admin_pool {
@@ -134,25 +134,25 @@ impl DbManager {
                     // TCP 连接失败时尝试 Unix socket (peer auth, 无需密码)
                     tracing::info!("TCP 连接失败，尝试 Unix socket...");
                     use sqlx::postgres::PgConnectOptions;
-                    let socket_dirs = [
+                    let socket_dirs: &[(&str, &str)] = &[
                         ("/var/run/postgresql", "Debian/Ubuntu"),
                         ("/tmp", "macOS/Homebrew"),
                     ];
                     let mut socket_error = String::new();
-                    for (socket_dir, distro) in &socket_dirs {
-                        let opts_str = format!("host={socket_dir} dbname=phira_mp_plus user=postgres");
-                        match opts_str.parse::<PgConnectOptions>() {
-                            Ok(opts) => match sqlx::PgPool::connect_with(opts).await {
-                                Ok(pool) => {
-                                    if let Err(e) = init_tables(&pool).await {
-                                        anyhow::bail!("数据库建表失败: {e:?}");
-                                    }
-                                    tracing::info!("PostgreSQL 已连接（Unix socket, {distro}）");
-                                    return Ok(Self::Pg(pool));
+                    for (socket_dir, distro) in socket_dirs {
+                        let opts = PgConnectOptions::new()
+                            .host(socket_dir)
+                            .database("phira_mp_plus")
+                            .username("postgres");
+                        match sqlx::PgPool::connect_with(opts).await {
+                            Ok(pool) => {
+                                if let Err(e) = init_tables(&pool).await {
+                                    anyhow::bail!("数据库建表失败: {e:?}");
                                 }
-                                Err(e) => socket_error = format!("{socket_error}{distro} socket: {e}; "),
-                            },
-                            Err(e) => socket_error = format!("{socket_error}{distro} parse: {e}; "),
+                                tracing::info!("PostgreSQL 已连接（Unix socket, {distro}）");
+                                return Ok(Self::Pg(pool));
+                            }
+                            Err(e) => socket_error = format!("{socket_error}{distro} socket: {e}; "),
                         }
                     }
                     let install_hint = match std::env::consts::OS {
