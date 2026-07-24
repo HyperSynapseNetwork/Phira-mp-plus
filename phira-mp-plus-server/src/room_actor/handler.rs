@@ -244,7 +244,7 @@ async fn check_all_ready(
                     &mut as_.state.lifecycle,
                     &mut as_.state.round.round_id,
                     as_.state.chart,
-                    None,
+                    as_.state.chart_name.as_deref(),
                     &as_.display_names,
                 ).await;
                 if let (Some(server), Some(round)) = (r.server.upgrade(), completed_round) {
@@ -608,6 +608,7 @@ impl RoomCommandHandler {
                     return err("cannot set chart outside SelectChart state");
                 }
                 as_.state.chart = Some(*chart_id);
+                as_.state.chart_name = Some(chart_name.clone());
                 r.send(Message::SelectChart { user: 0, name: chart_name.clone(), id: *chart_id }).await;
                 broadcast_state_change(r, &as_.state.lifecycle, as_.state.chart).await;
                 r.publish_update(phira_mp_common::PartialRoomData { chart: Some(*chart_id), ..Default::default() }).await;

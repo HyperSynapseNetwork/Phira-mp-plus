@@ -52,6 +52,7 @@ impl RoomSnapshot {
             live: room.is_live(),
             created_at: room.created_at,
             chart: None, // not available from control snapshot alone
+            chart_name: None,
             stripped: phira_mp_common::StrippedRoomState::SelectingChart,
             round_id: None,
             ready_set: None,
@@ -110,6 +111,7 @@ pub struct RoomState {
     pub lifecycle: InternalRoomState,
     pub members: RoomMembers,
     pub chart: Option<i32>,
+    pub chart_name: Option<String>,
     pub round: RoundInfo,
     pub live: bool,
 }

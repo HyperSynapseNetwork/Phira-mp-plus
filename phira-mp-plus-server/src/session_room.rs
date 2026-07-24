@@ -359,6 +359,12 @@ pub async fn join_room(
     if monitor && !room.live.fetch_or(true, Ordering::SeqCst) {
         info!(room = id.to_string(), "room goes live");
     }
+    // Register display name so result screens show names, not IDs.
+    user.server
+        .room_commands
+        .set_display_name(&user.server, &id.to_string(), user.id, &user.name)
+        .await
+        .ok();
     user.server
         .assign_room_host_if_missing(&room, &user, monitor, false)
         .await;
