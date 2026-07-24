@@ -256,7 +256,7 @@ impl PlusServerState {
                 let name = chart.name.clone();
                 let _ = state
                     .room_commands
-                    .set_chart(state, &room.id.to_string(), chart_id, &name)
+                    .set_chart(state, &room.id.to_string(), chart_id, &name, 0)
                     .await;
                 room.publish_update(phira_mp_common::PartialRoomData {
                     chart: Some(chart_id),

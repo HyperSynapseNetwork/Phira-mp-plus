@@ -114,6 +114,7 @@ pub(super) enum RoomActorCommand {
         room_id: String,
         chart_id: i32,
         chart_name: String,
+        actor_user_id: i32,
         reply: oneshot::Sender<RoomCommandResult>,
     },
     SetReady {

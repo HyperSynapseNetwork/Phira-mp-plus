@@ -809,7 +809,7 @@ impl CliHandler {
                 // Route chart selection through the gateway.
                 self.state
                     .room_commands
-                    .set_chart(&self.state, room_id, cid, &chart_name)
+                    .set_chart(&self.state, room_id, cid, &chart_name, 0)
                     .await
                     .ok();
                 self.out(format!("  {} 谱面已切换为 ID {}", c::green("✓"), cid));

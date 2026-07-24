@@ -563,7 +563,7 @@ pub async fn select_chart(user: Arc<User>, id: i32) -> Result<()> {
         // Route state mutation through RoomActor mailbox for serialized access.
         user.server
             .room_commands
-            .set_chart(&user.server, &room.id.to_string(), id, &res.name)
+            .set_chart(&user.server, &room.id.to_string(), id, &res.name, user.id)
             .await
             .map_err(|e| anyhow!("set chart failed: {e}"))?;
         Ok(())

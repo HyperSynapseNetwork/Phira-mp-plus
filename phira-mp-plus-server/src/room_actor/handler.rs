@@ -601,7 +601,7 @@ impl RoomCommandHandler {
                 ok(RoomCommandPayload::CancelResult { room_id: room_id.clone().to_string(), canceled })
             }
 
-            RoomActorCommand::SetChart { room_id, chart_id, chart_name, .. } => {
+            RoomActorCommand::SetChart { room_id, chart_id, chart_name, actor_user_id, .. } => {
                 let as_ = ctx.expect_actor_state();
                 let r = match room { Some(ref r) => r, None => return err("no room") };
                 if !matches!(&as_.state.lifecycle, InternalRoomState::SelectChart) {
@@ -609,7 +609,7 @@ impl RoomCommandHandler {
                 }
                 as_.state.chart = Some(*chart_id);
                 as_.state.chart_name = Some(chart_name.clone());
-                r.send(Message::SelectChart { user: 0, name: chart_name.clone(), id: *chart_id }).await;
+                r.send(Message::SelectChart { user: *actor_user_id, name: chart_name.clone(), id: *chart_id }).await;
                 broadcast_state_change(r, &as_.state.lifecycle, as_.state.chart).await;
                 r.publish_update(phira_mp_common::PartialRoomData { chart: Some(*chart_id), ..Default::default() }).await;
                 state.publish_runtime_event(crate::event_bus::MpEvent::ChartSelected {
@@ -683,7 +683,7 @@ impl RoomCommandHandler {
                     }
                     _ => return err("not in Playing state"),
                 }
-                r.send(Message::Played { user: *user_id, score: *score, accuracy: *accuracy, full_combo: *full_combo }).await;
+                r.send(Message::Played { user: *user_id, score: *score, accuracy: *accuracy, full_combo: *full_combo, perfect: *perfect, good: *good, bad: *bad, miss: *miss, max_combo: *max_combo }).await;
                 check_all_ready(r, as_, state).await;
                 state.dispatch_plugin_event(PluginEvent::GameEnd {
                     user_id: *user_id, user_name: String::new(), room_id: room_id.clone().to_string(),

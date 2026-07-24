@@ -251,6 +251,11 @@ pub enum Message {
         score: i32,
         accuracy: f32,
         full_combo: bool,
+        perfect: i32,
+        good: i32,
+        bad: i32,
+        miss: i32,
+        max_combo: i32,
     },
     GameEnd,
     Abort {

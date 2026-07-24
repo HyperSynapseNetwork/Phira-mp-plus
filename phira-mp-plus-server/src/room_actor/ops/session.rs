@@ -16,6 +16,7 @@ impl RoomCommandGateway {
         room_id: &str,
         chart_id: i32,
         chart_name: &str,
+        actor_user_id: i32,
     ) -> Result<Value, String> {
         let started = Instant::now();
         let rid = room_id.to_string();
@@ -25,6 +26,7 @@ impl RoomCommandGateway {
                 room_id: rid.clone(),
                 chart_id,
                 chart_name: cname,
+                actor_user_id,
                 reply,
             })
             .await;
