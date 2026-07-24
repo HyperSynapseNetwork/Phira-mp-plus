@@ -773,6 +773,10 @@ impl RoomCommandHandler {
                             user_id: *user_id, room_id: room_id.clone().to_string(),
                             data: json!({"action": "leave"}).to_string(),
                         }).await;
+                        // Trigger check_all_ready in case the leaving user was in-game.
+                        if let Some(as_) = ctx.actor_state() {
+                            check_all_ready(r, as_, state).await;
+                        }
                         ok(RoomCommandPayload::UserRemoved {
                             room_id: room_id.clone().to_string(), user_id: *user_id, room_dropped: should_drop,
                         })
