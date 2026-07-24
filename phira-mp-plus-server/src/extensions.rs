@@ -10,6 +10,11 @@ use std::sync::{Arc, Weak};
 use tokio::sync::RwLock;
 use tracing::warn;
 
+/// Maximum number of entries in the auth cache. When exceeded, the oldest
+/// entries (by cached_at) are evicted on each insertion. This prevents
+/// unbounded growth from distinct tokens authenticating over time.
+const MAX_AUTH_CACHE_ENTRIES: usize = 4096;
+
 /// 扩展字段注册信息
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExtensionField {
@@ -462,10 +467,22 @@ impl ExtensionManager {
     }
 
     pub async fn update_auth_cache(&self, token_hash: String, entry: AuthCacheEntry) {
-        self.store
-            .write()
-            .await
-            .auth_cache
-            .insert(token_hash, entry);
+        let mut guard = self.store.write().await;
+        guard.auth_cache.insert(token_hash, entry);
+        // Evict oldest entries when the cache exceeds the configured maximum.
+        // This prevents unbounded growth from distinct tokens authenticating
+        // over time. We evict the entries with the oldest cached_at timestamps.
+        if guard.auth_cache.len() > MAX_AUTH_CACHE_ENTRIES {
+            let excess = guard.auth_cache.len() - MAX_AUTH_CACHE_ENTRIES;
+            let mut entries: Vec<(String, i64)> = guard
+                .auth_cache
+                .iter()
+                .map(|(k, v)| (k.clone(), v.cached_at))
+                .collect();
+            entries.sort_by_key(|(_, ts)| *ts);
+            for (key, _) in entries.iter().take(excess) {
+                guard.auth_cache.remove(key);
+            }
+        }
     }
 }

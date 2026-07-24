@@ -140,6 +140,20 @@ impl RoomCommandGateway {
                             if !generation_is_current {
                                 break;
                             }
+                            // Prune stale player_data and display_names entries for users no
+                            // longer in this room. Users may leave through direct paths (dangle/
+                            // leave_room) that bypass the actor mailbox, so periodic cleanup is
+                            // necessary to prevent unbounded HashMap growth over time.
+                            if let Some(ref mut actor_state) = actor.actor_state {
+                                let room_obj = actor.room();
+                                let current_ids: std::collections::HashSet<i32> = {
+                                    let users = room_obj.users().await;
+                                    let monitors = room_obj.monitors().await;
+                                    users.into_iter().chain(monitors.into_iter()).map(|u| u.id).collect()
+                                };
+                                actor_state.player_data.retain(|&k, _| current_ids.contains(&k));
+                                actor_state.display_names.retain(|&k, _| current_ids.contains(&k));
+                            }
                         }
                     }
                 }

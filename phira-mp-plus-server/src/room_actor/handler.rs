@@ -221,7 +221,7 @@ async fn check_all_ready(
                     let meta = crate::round_store::RoundMeta {
                         round_uuid: rid,
                         chart_id: cid,
-                        chart_name: as_.state.control.phira_api_endpoint.clone().unwrap_or_default(),
+                        chart_name: as_.state.chart_name.clone().unwrap_or_default(),
                         room_id: r.id.to_string(),
                         players: players.clone(),
                         started_at: std::time::SystemTime::now()
@@ -271,7 +271,7 @@ async fn check_all_ready(
                     pm.dispatch_event(PluginEvent::RoundComplete {
                         room_id: r.id.to_string(),
                         chart_id: as_.state.chart.unwrap_or(0),
-                        chart_name: as_.state.control.phira_api_endpoint.clone().unwrap_or_default(),
+                        chart_name: as_.state.chart_name.clone().unwrap_or_default(),
                     })
                     .await;
                 }
@@ -534,6 +534,11 @@ impl RoomCommandHandler {
                 if !was_monitor {
                     state.publish_room_event(RoomEvent::LeaveRoom { room: r.id.clone(), user: *target_id }).await;
                 }
+                // Clean up cached player data and display names for the kicked user.
+                if let Some(as_) = ctx.actor_state() {
+                    as_.player_data.remove(target_id);
+                    as_.display_names.remove(target_id);
+                }
                 state.dispatch_plugin_event(PluginEvent::RoomModify {
                     user_id: *target_id, room_id: room_id.clone().to_string(),
                     data: json!({"action":"kicked"}).to_string(),
@@ -771,6 +776,11 @@ impl RoomCommandHandler {
                         if should_drop { state.rooms.write().await.remove(&r.id); }
                         if !was_monitor {
                             state.publish_room_event(RoomEvent::LeaveRoom { room: r.id.clone(), user: *user_id }).await;
+                        }
+                        // Clean up cached player data and display names for the removed user.
+                        if let Some(as_) = ctx.actor_state() {
+                            as_.player_data.remove(user_id);
+                            as_.display_names.remove(user_id);
                         }
                         state.dispatch_plugin_event(PluginEvent::RoomModify {
                             user_id: *user_id, room_id: room_id.clone().to_string(),
