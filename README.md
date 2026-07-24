@@ -57,13 +57,7 @@ PMP 服务端采用 [AGPL-3.0](LICENSE) 开源。
 
 ### 下载发行版（推荐）
 
-从 [Releases](https://github.com/HyperSynapseNetwork/Phira-mp-plus/releases) 或 CI 构建产物下载最新二进制：
-
-| 文件 | 说明 | 运行时内存 |
-|------|------|-----------|
-| `*-linux-glibc` | 动态链接（推荐） | ~4 MB |
-| `*-linux` | 静态链接（musl） | ~21 MB |
-| `*-windows` | Windows | - |
+从 [Releases](https://github.com/HyperSynapseNetwork/Phira-mp-plus/releases) 或 CI 构建产物下载 `phira-mp-plus-server-linux-glibc`（Linux）或 `phira-mp-plus-server-windows`（Windows）。
 
 **环境配置：**
 
