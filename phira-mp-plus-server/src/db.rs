@@ -163,6 +163,21 @@ impl DbManager {
                         }
                     }
                     }
+                    // Socket 连接全部失败时，尝试 TCP + 常见开发密码
+                    tracing::info!("Unix socket 连接失败，尝试 TCP + 常见密码...");
+                    for (user, pass) in &[("postgres", "postgres"), ("pmp", "pmp_pass")] {
+                        let url = format!("postgres://{user}:{pass}@localhost:5432/phira_mp_plus");
+                        match sqlx::PgPool::connect(&url).await {
+                            Ok(pool) => {
+                                if let Err(e) = init_tables(&pool).await {
+                                    anyhow::bail!("数据库建表失败: {e:?}");
+                                }
+                                tracing::info!("PostgreSQL 已连接（TCP + 密码）");
+                                return Ok(Self::Pg(pool));
+                            }
+                            Err(_) => continue,
+                        }
+                    }
                     let install_hint = match std::env::consts::OS {
                         "linux" => {
                             if std::path::Path::new("/etc/debian_version").exists() {
