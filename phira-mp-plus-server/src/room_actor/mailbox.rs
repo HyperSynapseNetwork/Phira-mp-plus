@@ -144,7 +144,7 @@ impl RoomCommandGateway {
                             // longer in this room. Users may leave through direct paths (dangle/
                             // leave_room) that bypass the actor mailbox, so periodic cleanup is
                             // necessary to prevent unbounded HashMap growth over time.
-                            let room_obj = actor.room();
+                            let room_obj = Arc::clone(actor.room());
                             if let Some(ref mut actor_state) = actor.actor_state {
                                 let current_ids: std::collections::HashSet<i32> = {
                                     let users = room_obj.users().await;
