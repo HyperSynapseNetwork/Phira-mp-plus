@@ -106,10 +106,11 @@ impl DbManager {
                             Err(_) => {
                                 tracing::info!("admin TCP 连接失败，尝试 Unix socket...");
                                 // Try key-value format for Unix socket
-                                use sqlx::postgres::PgConnectOptions;
-                                use sqlx::ConnectOptions;
-                                let opts: PgConnectOptions = "host=/var/run/postgresql dbname=postgres user=postgres".parse().ok()?;
-                                sqlx::PgPool::connect_with(opts).await.ok()
+                                if let Ok(opts) = "host=/var/run/postgresql dbname=postgres user=postgres".parse::<sqlx::postgres::PgConnectOptions>() {
+                                    sqlx::PgPool::connect_with(opts).await.ok()
+                                } else {
+                                    None
+                                }
                             }
                         };
                         if let Some(admin_pool) = admin_pool {
@@ -133,7 +134,6 @@ impl DbManager {
                     // TCP 连接失败时尝试 Unix socket (peer auth, 无需密码)
                     tracing::info!("TCP 连接失败，尝试 Unix socket...");
                     use sqlx::postgres::PgConnectOptions;
-                    use sqlx::ConnectOptions;
                     let socket_dirs = [
                         ("/var/run/postgresql", "Debian/Ubuntu"),
                         ("/tmp", "macOS/Homebrew"),
