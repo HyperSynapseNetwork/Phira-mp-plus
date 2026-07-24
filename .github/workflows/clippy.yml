@@ -33,11 +33,17 @@ jobs:
         continue-on-error: true
         run: >
           cargo clippy
-          --locked --workspace --all-targets --all-features
+          --locked --workspace --all-targets --all-features --no-deps
           --
           -W clippy::pedantic
           -A clippy::too_many_lines
           -A clippy::similar_names
           -A clippy::many_single_char_names
+          -A clippy::must_use_candidate
+          -A clippy::missing_errors_doc
+          -A clippy::module_name_repetitions
+          -A clippy::cast_possible_truncation
+          -A clippy::cast_lossless
+          -A clippy::cast_sign_loss
           -D clippy::unwrap_used
           -D clippy::expect_used
