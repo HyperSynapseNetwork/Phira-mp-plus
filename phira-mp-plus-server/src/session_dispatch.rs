@@ -33,18 +33,6 @@ pub(crate) async fn process(
                 .map(Arc::clone)
                 .ok_or_else(|| anyhow!("{}", tl!("no-room")))?;
         };
-        ($d:ident, $($pt:tt)*) => {
-            let $d = user
-                .room
-                .read()
-                .await
-                .as_ref()
-                .map(Arc::clone)
-                .ok_or_else(|| anyhow!("{}", tl!("no-room")))?;
-            if !matches!(&*$d.cached_state.read().await, $($pt)*) {
-                bail!("{}", tl!("invalid-state"));
-            }
-        };
     }
     let permitted = crate::session_permissions::is_command_permitted(category, &cmd);
     if !permitted {

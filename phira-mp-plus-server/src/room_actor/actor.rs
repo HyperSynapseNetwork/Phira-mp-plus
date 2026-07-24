@@ -34,6 +34,8 @@ pub struct RoomSnapshot {
     pub stripped: phira_mp_common::StrippedRoomState,
     /// Current round id, if a round is active (actor-authoritative).
     pub round_id: Option<uuid::Uuid>,
+    /// IDs of users who have readied up (actor-authoritative, only meaningful in WaitForReady).
+    pub ready_set: Option<Vec<i32>>,
 }
 
 impl RoomSnapshot {
@@ -52,6 +54,7 @@ impl RoomSnapshot {
             chart: None, // not available from control snapshot alone
             stripped: phira_mp_common::StrippedRoomState::SelectingChart,
             round_id: None,
+            ready_set: None,
         }
     }
 
@@ -69,6 +72,12 @@ impl RoomSnapshot {
             chart: state.state.chart,
             stripped: state.state.lifecycle.stripped(),
             round_id: state.state.round.round_id,
+            ready_set: match &state.state.lifecycle {
+                InternalRoomState::WaitForReady { started, .. } => {
+                    Some(started.iter().copied().collect())
+                }
+                _ => None,
+            },
         }
     }
 }
@@ -142,6 +151,12 @@ impl RoomState {
             chart: self.chart,
             stripped: self.lifecycle.stripped(),
             round_id: self.round.round_id,
+            ready_set: match &self.lifecycle {
+                InternalRoomState::WaitForReady { started, .. } => {
+                    Some(started.iter().copied().collect())
+                }
+                _ => None,
+            },
         }
     }
 

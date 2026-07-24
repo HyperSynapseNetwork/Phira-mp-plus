@@ -85,10 +85,9 @@ pub(crate) async fn build_client_room_state(
     } else {
         None
     };
-    let is_ready = snap.as_ref().map_or(false, |_| {
-        // We can't check the ready set from snapshot alone; default to false.
-        false
-    });
+    let is_ready = snap.as_ref().and_then(|s| {
+        s.ready_set.as_ref().map(|ready| ready.contains(&user.id))
+    }).unwrap_or(false);
     let state = if let Some(ref snap) = snap {
         match snap.stripped {
             phira_mp_common::StrippedRoomState::SelectingChart =>
