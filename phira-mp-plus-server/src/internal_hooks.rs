@@ -74,7 +74,7 @@ static WELCOME: once_cell::sync::Lazy<Arc<Mutex<WelcomeConfig>>> =
         Arc::new(Mutex::new(cfg))
     });
 
-pub async fn send_welcome(user_id: i32, user_name: &str, online: usize, state: &PlusServerState) {
+pub fn send_welcome(user_id: i32, user_name: &str, online: usize, state: &PlusServerState) {
     use std::time::{SystemTime, UNIX_EPOCH};
     let cfg = WELCOME.lock().unwrap();
     let mut texts: Vec<String> = Vec::with_capacity(cfg.messages.len());
@@ -218,8 +218,7 @@ pub async fn send_welcome(user_id: i32, user_name: &str, online: usize, state: &
                 .map(|d| d.as_secs())
                 .unwrap_or(0);
             let pt = PLAYTIME_DATA.lock().unwrap();
-            #[allow(unused_must_use)]
-            let users_guard = { state.users.read().await };
+            let users_guard = state.users.try_read();
             let mut ranking: Vec<(i32, u64)> = pt
                 .iter()
                 .map(|(&uid, entry)| {
@@ -238,7 +237,9 @@ pub async fn send_welcome(user_id: i32, user_name: &str, online: usize, state: &
                 .enumerate()
                 .map(|(i, (uid, secs))| {
                     let name = users_guard
-                        .get(uid)
+                        .as_ref()
+                        .ok()
+                        .and_then(|g| g.get(uid))
                         .map(|u| u.name.clone())
                         .unwrap_or_else(|| uid.to_string());
                     format!("#{} {}: {:.1}h", i + 1, name, *secs as f64 / 3600.0)

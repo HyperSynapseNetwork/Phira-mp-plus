@@ -678,7 +678,7 @@ impl Session {
                                         &user.name,
                                         online,
                                         &server,
-                                    ).await;
+                                    );
                                     // 通知 room monitor 新用户
                                     let uid = user.id;
                                     crate::supervisor_actor::spawn_named(
