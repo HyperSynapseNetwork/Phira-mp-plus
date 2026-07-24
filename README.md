@@ -77,7 +77,6 @@ chmod +x phira-mp-plus-server-linux-glibc
 # PM_DATABASE_URL="postgres://user:pass@host:5432/phira_mp_plus" ./phira-mp-plus-server-linux-glibc
 ```
 
-> glibc 版本仅需系统标准 C 库，无需额外安装依赖。
 > PostgreSQL 默认使用 Unix socket peer auth（无需密码），数据库不存在时自动创建。
 
 ### Docker 部署（推荐）
