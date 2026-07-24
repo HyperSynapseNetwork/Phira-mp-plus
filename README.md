@@ -88,7 +88,29 @@ cargo build --release --target x86_64-unknown-linux-musl
 
 > **数据库说明**：PMP 需要 PostgreSQL，`database_url` 留空时会自动尝试连接本地 PostgreSQL（Unix socket peer auth，无需密码）。数据库不存在时会自动创建。`server_config.yml` 中可自定义连接串。
 
-### 自定义配置
+### Docker 部署（推荐）
+
+需要 Docker 和 Docker Compose：
+
+```bash
+# 克隆仓库
+git clone https://github.com/HyperSynapseNetwork/Phira-mp-plus.git
+cd Phira-mp-plus
+
+# Docker Compose 会自动配置 database_url，默认配置即可
+# 一键启动（PostgreSQL + PMP）
+docker compose up -d
+
+# 查看日志
+docker compose logs -f phira-mp-plus
+
+# 停止
+docker compose down
+```
+
+Docker Compose 会自动创建 PostgreSQL 容器并初始化数据库。配置文件通过 `server_config.yml` 挂载，数据持久化在 Docker volumes 中。
+
+### 手动部署（从源码编译）
 
 创建或修改 `server_config.yml`（见项目根目录的示例文件）：
 
