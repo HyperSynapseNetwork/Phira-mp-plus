@@ -20,7 +20,7 @@ use std::{
     collections::HashMap,
     sync::{atomic::Ordering, Arc},
 };
-use tracing::{debug, debug_span, info, trace, Instrument};
+use tracing::{debug, debug_span, info, trace, warn, Instrument};
 
 pub fn decode_admin_room_command(input: &str) -> String {
     // Phira's room-name input box may not allow spaces. For the in-game admin
@@ -471,6 +471,10 @@ pub async fn lock_room(user: Arc<User>, lock: bool) -> Result<()> {
     // Host check via control_snapshot.
     let control = room.control_snapshot();
     if control.host_id != Some(user.id) {
+        warn!(
+            user = user.id, host = ?control.host_id, room = ?room.id,
+            "host check failed"
+        );
         bail!("only host can do this");
     }
     info!(

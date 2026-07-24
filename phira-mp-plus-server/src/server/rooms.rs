@@ -169,8 +169,16 @@ impl PlusServerState {
         // Check if room has a host via control_snapshot (from actor cache).
         let control = room.control_snapshot();
         if control.host_id.is_some() || control.system_host {
+            tracing::trace!(
+                user = user.id, room = %room.id, host = ?control.host_id,
+                "room already has host, skipping assign"
+            );
             return false;
         }
+        tracing::info!(
+            user = user.id, room = %room.id,
+            "assigning host to first joiner"
+        );
         // Use the gateway to set host. The gateway always announces, but
         // callers with announce=false (first-joiner flow) rely on the caller
         // to send JoinRoom(Ok) first, then ChangeHost. The gateway-set host
