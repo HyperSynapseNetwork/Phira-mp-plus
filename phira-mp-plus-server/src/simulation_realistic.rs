@@ -100,7 +100,8 @@ impl RealisticSimulationRunner {
                 Arc::downgrade(&host),
                 Some(Arc::clone(&state.plugin_manager)),
                 Arc::downgrade(state),
-                state.config.max_users_per_room.unwrap_or(8),                Some(host.id),
+                state.config.max_users_per_room.unwrap_or(8),
+                Some(host.id),
             ));
             // TODO(Phase2-WorkC): Set hidden through gateway once the room
             // mailbox is registered. The hidden flag is now actor-owned.
