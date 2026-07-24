@@ -101,6 +101,7 @@ impl RealisticSimulationRunner {
                 Some(Arc::clone(&state.plugin_manager)),
                 Arc::downgrade(state),
                 state.config.max_users_per_room.unwrap_or(8),
+                Some(Arc::clone(&state.round_store)),
                 Some(host.id),
             ));
             // TODO(Phase2-WorkC): Set hidden through gateway once the room
