@@ -48,15 +48,21 @@ task_local! {
     pub static LANGUAGE: Arc<Language>;
 }
 
+/// Safely get the current language, falling back to a default if not in a scope.
+pub fn current_language() -> Arc<Language> {
+    let result = std::panic::catch_unwind(|| LANGUAGE.get());
+    result.unwrap_or_else(|_| Arc::new(Language::default()))
+}
+
 #[macro_export]
 macro_rules! tl {
     ($id:expr) => {{
-        let lang = $crate::l10n::LANGUAGE.get();
+        let lang = $crate::l10n::current_language();
         let id: &str = $id;
         $crate::l10n::try_translate(&lang.0, id)
     }};
     ($id:expr, $($key:ident => $value:expr),* $(,)?) => {{
-        let lang = $crate::l10n::LANGUAGE.get();
+        let lang = $crate::l10n::current_language();
         let id: &str = $id;
         let mut args = fluent::FluentArgs::new();
         $(

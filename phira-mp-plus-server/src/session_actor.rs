@@ -7,7 +7,6 @@
 //! 迁移状态：WriteRouted（Ping、Authenticate、Touches/Judges、
 //! QueryRoomInfo 属于协议快路径，不进入业务命令邮箱）。
 
-use crate::l10n::LANGUAGE;
 use crate::session::{Session, SessionCategory, User};
 use phira_mp_common::{RoomId, ServerCommand};
 use std::sync::{Arc, Weak};
@@ -56,10 +55,7 @@ pub(crate) fn init_session_mailbox(session: &Arc<Session>) -> mpsc::Sender<Sessi
                 }
                 SessionActorCmd::Join { meta, user, category, id, monitor, reply } => {
                     tracing::trace!(cmd_id = meta.command_id, "session actor: join");
-                    let lang = Arc::new(user.lang.clone());
-                    let _ = reply.send(
-                        LANGUAGE.scope(lang, handle_join(user, category, id, monitor)).await
-                    );
+                    let _ = reply.send(handle_join(user, category, id, monitor).await);
                 }
                 SessionActorCmd::SelectChart { meta, user, id, reply } => {
                     tracing::trace!(cmd_id = meta.command_id, "session actor: select_chart");
