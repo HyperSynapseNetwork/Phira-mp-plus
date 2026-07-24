@@ -158,13 +158,20 @@ pub fn send_welcome(user_id: i32, user_name: &str, online: usize, state: &PlusSe
                     if visible_rooms.is_empty() {
                         vec!["暂无房间".into()]
                     } else {
+                        let users_guard = state.users.try_read();
                         visible_rooms
                             .into_iter()
                             .map(|(id, room)| {
                                 let control = room.control_snapshot();
-                                let host_name = control
+                                let host_name: String = control
                                     .host_id
-                                    .map(|hid| hid.to_string())
+                                    .and_then(|hid| {
+                                        users_guard
+                                            .as_ref()
+                                            .ok()
+                                            .and_then(|g| g.get(&hid))
+                                            .map(|u| u.name.clone())
+                                    })
                                     .unwrap_or_default();
                                 let players =
                                     room.users.try_read().ok().map(|u| u.len()).unwrap_or(0);
