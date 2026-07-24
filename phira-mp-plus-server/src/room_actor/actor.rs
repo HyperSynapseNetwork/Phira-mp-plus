@@ -52,7 +52,6 @@ impl RoomSnapshot {
             live: room.is_live(),
             created_at: room.created_at,
             chart: None, // not available from control snapshot alone
-            chart_name: None,
             stripped: phira_mp_common::StrippedRoomState::SelectingChart,
             round_id: None,
             ready_set: None,
