@@ -380,7 +380,7 @@ impl RoomCommandHandler {
                 let as_ = ctx.expect_actor_state();
                 as_.state.set_locked(*locked);
                 if let Some(ref r) = room {
-                    r.send_except(*actor_user_id, Message::LockRoom { lock: *locked }).await;
+                    r.send(Message::LockRoom { lock: *locked }).await;
                     r.publish_update(PartialRoomData { lock: Some(*locked), ..Default::default() }).await;
                 }
                 state.dispatch_plugin_event(PluginEvent::RoomModify {
@@ -398,7 +398,7 @@ impl RoomCommandHandler {
                 let as_ = ctx.expect_actor_state();
                 as_.state.set_cycle(*cycle);
                 if let Some(ref r) = room {
-                    r.send_except(*actor_user_id, Message::CycleRoom { cycle: *cycle }).await;
+                    r.send(Message::CycleRoom { cycle: *cycle }).await;
                     r.publish_update(PartialRoomData { cycle: Some(*cycle), ..Default::default() }).await;
                 }
                 state.dispatch_plugin_event(PluginEvent::RoomModify {
