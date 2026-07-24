@@ -232,17 +232,8 @@ pub async fn create_room(user: Arc<User>, id: RoomId) -> Result<()> {
     // Add creator to room immediately (no mailbox round-trip).
     room.add_user(Arc::downgrade(&user), false).await;
     *room_guard = Some(Arc::clone(&room));
-    // Set host and display name asynchronously (fire-and-forget via mailbox).
-    // These MUST NOT block the CreateRoom response — the mailbox takes ~30s
-    // for reasons not yet identified.
-    let bg_state = Arc::clone(&user.server);
-    let bg_rid = id_text.clone();
-    let bg_uid = user.id;
-    let bg_name = user.name.clone();
-    tokio::spawn(async move {
-        bg_state.room_commands.set_display_name(&bg_state, &bg_rid, bg_uid, &bg_name).await.ok();
-        bg_state.room_commands.set_host(&bg_state, &bg_rid, Some(bg_uid)).await.ok();
-    });
+    // Host is assigned by join_room → assign_room_host_if_missing.
+    // is_host_for_room() fallback covers the window before that happens.
     // CreateRoom(Ok) establishes client room state; do not emit a room event to
     // the creator before that response.
     user.server
