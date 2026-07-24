@@ -242,6 +242,7 @@ impl Room {
             server,
             max_users,
             round_store,
+            None,
         );
         room.users = Vec::new().into();
         room
