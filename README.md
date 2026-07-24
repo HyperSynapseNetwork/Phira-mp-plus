@@ -55,36 +55,29 @@ PMP 服务端采用 [AGPL-3.0](LICENSE) 开源。
 
 ## 快速开始
 
+### 下载发行版（推荐）
 
-确保已安装当前稳定版 Rust 工具链，并确保 PostgreSQL 正在运行：
+从 [Releases](https://github.com/HyperSynapseNetwork/Phira-mp-plus/releases) 或 CI 构建产物下载最新二进制：
+
+| 文件 | 说明 | 运行时内存 |
+|------|------|-----------|
+| `*-linux-glibc` | 动态链接（推荐） | ~4 MB |
+| `*-linux` | 静态链接（musl） | ~21 MB |
+| `*-windows` | Windows | - |
+
+**环境配置：**
 
 ```bash
-# 安装/更新 Rust
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
-rustup update stable
-
-# 安装 PostgreSQL（Ubuntu/Debian）
+# 1. 安装 PostgreSQL（Ubuntu/Debian）
 sudo apt update && sudo apt install -y postgresql
 sudo systemctl start postgresql
 
-# 添加 musl 目标平台并安装链接器（Ubuntu/Debian）
-rustup target add x86_64-unknown-linux-musl
-sudo apt update && sudo apt install -y musl-tools
-
-# 克隆仓库后进入目录
-cd phira-mp-plus
-
-# 构建静态链接二进制文件（首次编译约需 5-10 分钟）
-cargo build --release --target x86_64-unknown-linux-musl
-
-# 使用默认配置启动（database_url 留空时自动连本地 PostgreSQL）
-./target/x86_64-unknown-linux-musl/release/phira-mp-plus-server
-
-# 指定自定义配置文件启动
-./target/x86_64-unknown-linux-musl/release/phira-mp-plus-server --config my_config.yml
+# 2. 运行 PMP（database_url 留空时自动连本地 PostgreSQL）
+chmod +x phira-mp-plus-server-linux-glibc
+./phira-mp-plus-server-linux-glibc
 ```
 
-> **数据库说明**：PMP 需要 PostgreSQL，`database_url` 留空时会自动尝试连接本地 PostgreSQL（Unix socket peer auth，无需密码）。数据库不存在时会自动创建。`server_config.yml` 中可自定义连接串。
+> PostgreSQL 默认使用 Unix socket peer auth（无需密码），数据库不存在时自动创建。
 
 ### Docker 部署（推荐）
 
