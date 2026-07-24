@@ -437,7 +437,11 @@ impl RoomCommandHandler {
                             .or(fallback_name)
                             .unwrap_or_else(|| uid.to_string());
                         // Send messages directly via Room broadcast
-                        r.send(Message::Chat { user: 0, content: format!("房主已转移给 {name}") }).await;
+                        if as_.state.control.host_id.is_some() {
+                            r.send(Message::Chat { user: 0, content: format!("房主已转移给 {name}") }).await;
+                        } else {
+                            r.send(Message::Chat { user: 0, content: format!("{name} 成为了房主") }).await;
+                        }
                         // Notify old host
                         if let Some(old_uid) = as_.state.control.host_id {
                             if old_uid != *uid {
