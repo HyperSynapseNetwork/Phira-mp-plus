@@ -222,19 +222,22 @@ pub async fn create_room(user: Arc<User>, id: RoomId) -> Result<()> {
     let room_uuid = room.uuid;
     // Drop write lock before routing through room mailbox (avoids deadlock).
     drop(map_guard);
-    // Route display name through the actor mailbox.
+    debug!(room = %id, user = user.id, "create_room: starting set_display_name");
     user.server
         .room_commands
         .set_display_name(&user.server, &id.to_string(), user.id, &user.name)
         .await
         .ok();
+    debug!(room = %id, user = user.id, "create_room: set_display_name done");
     // Creator becomes host. This goes through the actor mailbox too, so the
     // snapshot is updated before the client sends any subsequent commands.
+    debug!(room = %id, user = user.id, "create_room: starting set_host");
     user.server
         .room_commands
         .set_host(&user.server, &id.to_string(), Some(user.id))
         .await
         .ok();
+    debug!(room = %id, user = user.id, "create_room: set_host done");
     // CreateRoom(Ok) establishes client room state; do not emit a room event to
     // the creator before that response.
     user.server
