@@ -139,11 +139,18 @@ impl DbManager {
                         ("/tmp", "macOS/Homebrew"),
                     ];
                     let mut socket_error = String::new();
-                    for (socket_dir, distro) in socket_dirs {
-                        let opts = PgConnectOptions::new()
-                            .host(socket_dir)
-                            .database("phira_mp_plus")
-                            .username("postgres");
+                    // Try connecting as the current OS user first (peer auth),
+                    // then fall back to 'postgres' user.
+                    let os_user = std::env::var("USER").or_else(|_| std::env::var("USERNAME")).unwrap_or_default();
+                    for user in [os_user.as_str(), "postgres", "pmp"] {
+                        if user.is_empty() {
+                            continue;
+                        }
+                        for (socket_dir, distro) in socket_dirs {
+                            let opts = PgConnectOptions::new()
+                                .host(socket_dir)
+                                .database("phira_mp_plus")
+                                .username(user);
                         match sqlx::PgPool::connect_with(opts).await {
                             Ok(pool) => {
                                 if let Err(e) = init_tables(&pool).await {
@@ -152,8 +159,9 @@ impl DbManager {
                                 tracing::info!("PostgreSQL 已连接（Unix socket, {distro}）");
                                 return Ok(Self::Pg(pool));
                             }
-                            Err(e) => socket_error = format!("{socket_error}{distro} socket: {e}; "),
+                            Err(e) => socket_error = format!("{socket_error}{distro} socket({user}): {e}; "),
                         }
+                    }
                     }
                     let install_hint = match std::env::consts::OS {
                         "linux" => {
