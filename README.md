@@ -66,11 +66,18 @@ PMP 服务端采用 [AGPL-3.0](LICENSE) 开源。
 sudo apt update && sudo apt install -y postgresql
 sudo systemctl start postgresql
 
-# 2. 运行 PMP（database_url 留空时自动连本地 PostgreSQL）
+# 2. 下载 phira-mp-plus-server-linux-glibc 并赋予执行权限
 chmod +x phira-mp-plus-server-linux-glibc
+
+# 3. 启动（database_url 留空时自动连本地 PostgreSQL）
 ./phira-mp-plus-server-linux-glibc
+
+# 也可指定配置文件和数据库连接串：
+# ./phira-mp-plus-server-linux-glibc --config my_config.yml
+# PM_DATABASE_URL="postgres://user:pass@host:5432/phira_mp_plus" ./phira-mp-plus-server-linux-glibc
 ```
 
+> glibc 版本仅需系统标准 C 库，无需额外安装依赖。
 > PostgreSQL 默认使用 Unix socket peer auth（无需密码），数据库不存在时自动创建。
 
 ### Docker 部署（推荐）
