@@ -10,6 +10,7 @@
 //! configured `proxy_allow_cidr`.  It uses `std::net::TcpStream::peek` so
 //! that non-PROXY connections from the same CIDR range are **not** corrupted.
 
+use std::io::Read;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use tokio::net::TcpStream;
 use tracing::warn;
