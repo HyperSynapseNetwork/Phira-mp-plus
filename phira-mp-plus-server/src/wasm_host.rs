@@ -307,6 +307,7 @@ impl WitPluginComponent {
     }
 
     pub fn call_init(&mut self) -> Result<(), String> {
+        tracing::info!(plugin = %self.info.name, "call_init");
         self.reset_fuel()?;
         let result = self
             .component
