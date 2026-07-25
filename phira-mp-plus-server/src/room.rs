@@ -19,7 +19,7 @@ use phira_mp_common::{
     Message, PartialRoomData, RoomEvent, RoomId, RoundData, ServerCommand,
 };
 use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::{
     atomic::Ordering,
     Arc, Weak,
@@ -192,6 +192,9 @@ pub struct Room {
 
     /// 房间创建时间戳（Unix 毫秒）
     pub created_at: i64,
+
+    /// 最近 N 条聊天消息缓冲区，新人加入时同步
+    pub message_buffer: RwLock<VecDeque<ServerCommand>>,
 }
 
 /// 房间名以前缀 `-` 开头时默认隐藏。
@@ -224,6 +227,7 @@ impl Room {
             play_history: crate::play_history::PlayHistoryStore::new(),
             round_store,
             created_at: now,
+            message_buffer: RwLock::new(VecDeque::new()),
         }
     }
 
@@ -314,12 +318,26 @@ impl Room {
 
     pub async fn broadcast(&self, cmd: ServerCommand) {
         debug!("broadcast {cmd:?}");
+        if matches!(&cmd, ServerCommand::Message(..)) {
+            let mut buf = self.message_buffer.write().await;
+            if buf.len() >= 50 {
+                buf.pop_front();
+            }
+            buf.push_back(cmd.clone());
+        }
         for session in self.users().await.into_iter().chain(self.monitors().await) {
             session.try_send(cmd.clone()).await;
         }
     }
 
     pub async fn broadcast_except(&self, excluded_user_id: i32, cmd: ServerCommand) {
+        if matches!(&cmd, ServerCommand::Message(..)) {
+            let mut buf = self.message_buffer.write().await;
+            if buf.len() >= 50 {
+                buf.pop_front();
+            }
+            buf.push_back(cmd.clone());
+        }
         for session in self.users().await.into_iter().chain(self.monitors().await) {
             if session.id != excluded_user_id {
                 session.try_send(cmd.clone()).await;

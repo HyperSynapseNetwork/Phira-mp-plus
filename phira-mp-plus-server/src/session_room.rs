@@ -449,6 +449,14 @@ pub async fn join_room(
     } else {
         build_client_room_state(&room, &user).await.state
     };
+
+    // 发送房间最近的消息缓冲区给新加入用户
+    let buf = room.message_buffer.read().await;
+    for cmd in buf.iter() {
+        user.try_send(cmd.clone()).await;
+    }
+    drop(buf);
+
     Ok(JoinRoomResponse {
         state: room_state,
         users: users.into_iter().map(|user| user.to_info()).collect(),
