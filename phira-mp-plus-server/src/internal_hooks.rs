@@ -352,13 +352,15 @@ pub fn send_welcome(user_id: i32, user_name: &str, online: usize, state: &PlusSe
                         let client = Arc::clone(&state.phira_client);
                         let endpoint = state.config.phira_api_endpoint.clone();
                         handle.spawn(async move {
-                            let pt = PLAYTIME_DATA.lock().unwrap();
-                            let uids: Vec<i32> = pt.keys().copied().take(50).collect();
-                            drop(pt);
+                            let uids: Vec<i32> = {
+                                let pt = PLAYTIME_DATA.lock().unwrap();
+                                pt.keys().copied().take(50).collect()
+                            };
                             for uid in uids {
-                                let mut guard = PLAYERS.lock().unwrap();
-                                if guard.contains_key(&uid) { continue; }
-                                drop(guard);
+                                {
+                                    let guard = PLAYERS.lock().unwrap();
+                                    if guard.contains_key(&uid) { continue; }
+                                }
                                 if let Some(name) = client.fetch_user_by_id(&endpoint, uid).await {
                                     track_player(uid, &name);
                                 }

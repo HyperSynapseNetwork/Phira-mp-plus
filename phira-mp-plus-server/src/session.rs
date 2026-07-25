@@ -13,13 +13,13 @@ use phira_mp_common::{ClientCommand, Message, ServerCommand, Stream};
 use std::{
     sync::{
         atomic::{AtomicBool, Ordering},
-        Arc, OnceLock, Weak,
+        Arc, OnceLock,
     },
     time::{Duration, Instant},
 };
 use tokio::{
     net::TcpStream,
-    sync::{mpsc, Mutex, Notify, OnceCell, OwnedSemaphorePermit, RwLock},
+    sync::{mpsc, Mutex, Notify, OnceCell, OwnedSemaphorePermit},
     task::JoinHandle,
     time,
 };
