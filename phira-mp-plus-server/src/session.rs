@@ -395,7 +395,7 @@ impl Session {
                                             async move {
                                                 let Some(weak_self) = weak_self else { return };
                                                 let mut was_in_room = welcome_user.room.read().await.is_some();
-                                                let mut interval_secs = 1u64;
+                                                let mut interval_secs = 10u64;
 
                                                 loop {
                                                     tokio::time::sleep(Duration::from_secs(interval_secs)).await;
@@ -445,7 +445,7 @@ impl Session {
                                                             }
                                                         }
 
-                                                        interval_secs = if lines > 24 { 10 } else { 1 };
+                                                        interval_secs = 10;
                                                         was_in_room = false;
                                                     } else if !in_room && was_in_room {
                                                         // 刚离开房间：重置状态，下一轮开始重新发送欢迎语
