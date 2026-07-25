@@ -467,19 +467,13 @@ fn ip_matches_single_cidr(ip: &IpAddr, cidr: &str) -> bool {
 
     match (ip, network) {
         (IpAddr::V4(ip), IpAddr::V4(net)) => {
-            let mask = if prefix >= 32 {
-                u32::MAX
-            } else {
-                u32::MAX << (32 - prefix)
-            };
+            let shift = 32u32.saturating_sub(prefix as u32);
+            let mask = u32::MAX.checked_shl(shift).unwrap_or(0);
             (u32::from(*ip) & mask) == (u32::from(net) & mask)
         }
         (IpAddr::V6(ip), IpAddr::V6(net)) => {
-            let mask = if prefix >= 128 {
-                u128::MAX
-            } else {
-                u128::MAX << (128 - prefix)
-            };
+            let shift = 128u32.saturating_sub(prefix as u32);
+            let mask = u128::MAX.checked_shl(shift).unwrap_or(0);
             (u128::from(*ip) & mask) == (u128::from(net) & mask)
         }
         _ => false, // address family mismatch
