@@ -3,6 +3,8 @@
 //! Extracted from session.rs to keep the session lifecycle separate from
 //! the ClientCommand match dispatch.
 
+#![allow(clippy::too_many_arguments)]
+
 use crate::session::{SessionCategory, User};
 use crate::tl;
 use phira_mp_common::{ClientCommand, ServerCommand};

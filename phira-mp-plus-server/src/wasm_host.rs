@@ -11,6 +11,8 @@
 //! - `on-event(event: plugin-event) -> result<bool, string>`
 //! - `on-api(method: string, args: list<json-value>) -> api-result`
 
+#![allow(clippy::type_complexity)]
+
 use crate::extensions::ExtensionManager;
 use crate::plugin::{CliCommand, PluginEvent, PluginInfo, WasmRuntimeConfig};
 use phira_mp_plus_server_api as api;

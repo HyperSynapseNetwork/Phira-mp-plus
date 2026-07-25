@@ -7,6 +7,8 @@
 //! The core `WitPluginHost` skeleton is available with `plugin-system`.
 //! The generated trait impls require `wit-bindgen` (default feature).
 
+#![allow(clippy::type_complexity)]
+
 use phira_mp_plus_server_api as api;
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};

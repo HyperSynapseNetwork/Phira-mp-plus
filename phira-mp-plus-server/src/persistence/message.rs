@@ -1,5 +1,7 @@
 //! Typed PersistenceWorker message envelope.
 
+#![allow(clippy::large_enum_variant)]
+
 use crate::benchmark_report::{BenchmarkMode, BenchmarkReport};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};

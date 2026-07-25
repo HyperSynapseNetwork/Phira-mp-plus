@@ -3,6 +3,8 @@
 //! Guest execution is moved off Tokio worker threads and serialized per plugin.
 //! The async plugin-list lock is never held while guest code is running.
 
+#![allow(clippy::type_complexity)]
+
 use crate::extensions::ExtensionManager;
 use phira_mp_plus_server_api as api;
 use serde::{Deserialize, Serialize};

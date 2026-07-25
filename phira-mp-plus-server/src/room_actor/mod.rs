@@ -59,6 +59,8 @@
 //!   in PlusServer: Direct Room manipulation without a gateway path.
 //!   These are complex multi-step operations that may need new command variants.
 
+#![allow(clippy::too_many_arguments, clippy::type_complexity)]
+
 pub mod actor;
 mod audit;
 mod command;

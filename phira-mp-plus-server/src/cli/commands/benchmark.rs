@@ -122,18 +122,6 @@ impl CliHandler {
         ));
     }
 
-    #[allow(dead_code)]
-    async fn start_hybrid_benchmark(&self, _args: &[&str]) {
-        self.out(format!(
-            "  {} Hybrid benchmark mode is removed. Use `benchmark run --mode simulation` instead.",
-            c::yellow("!")
-        ));
-        self.out(format!(
-            "  {} See `benchmark list` for available scenarios and presets.",
-            c::dim("▸")
-        ));
-    }
-
     fn print_benchmark_modes(&self) {
         self.out(format!("  {} Benchmark modes", c::green("◆")));
         self.out(format!("  {} simulation  默认压测路径：不访问 Phira，不需要真实账号，suite/report 输出统一 BenchmarkReport", c::dim("│")));
