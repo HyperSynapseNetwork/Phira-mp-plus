@@ -541,30 +541,15 @@ impl Session {
                                     panicked.store(true, Ordering::SeqCst);
                                     return;
                                 }
-                                let token_str = String::from_utf8_lossy(key);
-                                match authenticate_remote_with_notice(
-                                    &server,
-                                    &token_str,
-                                    PhiraRetryNoticeTarget::Stream(send_tx.as_ref()),
-                                )
-                                .await
-                                {
-                                    Ok(info) => {
-                                        if !server.config.monitors.contains(&info.id) {
-                                            send_auth_rejection(
-                                                &send_tx,
-                                                format!("user {} is not in the monitor whitelist", info.id),
-                                            )
-                                            .await;
-                                            let _ = tx.send(AuthenticationOutcome::Rejected);
-                                            panicked.store(true, Ordering::SeqCst);
-                                            return;
-                                        }
-                                        info!("new room monitor connected");
+                                // Authenticate via shared key derived from HSN_SECRET_KEY.
+                                let expected = phira_mp_common::generate_secret_key("room_monitor", 64);
+                                match expected {
+                                    Ok(expected_key) if expected_key.as_slice() == key.as_ref() => {
+                                        info!("room monitor authenticated");
                                         let user = Arc::new(User::new(
-                                            info.id,
-                                            format!("{} (room monitor)", info.name),
-                                            info.language.parse().map(Language).unwrap_or_default(),
+                                            -1,
+                                            "$server_room_monitor".into(),
+                                            Language::default(),
                                             Arc::clone(&server),
                                             None,
                                         ));
@@ -574,7 +559,6 @@ impl Session {
                                         ));
                                         this_inited.notified().await;
                                         user.set_session(Arc::downgrade(this.get().unwrap())).await;
-                                        // Initialize per-session mailbox for command routing
                                         if let Some(session) = this.get() {
                                             let tx = crate::session_actor::init_session_mailbox(session);
                                             let _ = session.actor_tx.set(tx);
@@ -586,47 +570,15 @@ impl Session {
                                             .await;
                                         waiting_for_authenticate.store(false, Ordering::SeqCst);
                                     }
-                                    Err(_) => {
-                                        // Fallback: try shared key auth (HSN_SECRET_KEY derived).
-                                        let expected = phira_mp_common::generate_secret_key("room_monitor", 64);
-                                        match expected {
-                                            Ok(expected_key) if expected_key.as_slice() == key.as_ref() => {
-                                                info!("room monitor authenticated via shared key");
-                                                let user = Arc::new(User::new(
-                                                    -1,
-                                                    "$server_room_monitor".into(),
-                                                    Language::default(),
-                                                    Arc::clone(&server),
-                                                    None,
-                                                ));
-                                                let _ = tx.send(AuthenticationOutcome::Accepted(
-                                                    Arc::clone(&user),
-                                                    SessionCategory::RoomMonitor,
-                                                ));
-                                                this_inited.notified().await;
-                                                user.set_session(Arc::downgrade(this.get().unwrap())).await;
-                                                if let Some(session) = this.get() {
-                                                    let tx = crate::session_actor::init_session_mailbox(session);
-                                                    let _ = session.actor_tx.set(tx);
-                                                }
-                                                *server.room_monitor.write().await =
-                                                    Some(Arc::downgrade(this.get().unwrap()));
-                                                let _ = send_tx
-                                                    .send(ServerCommand::Authenticate(Ok((user.to_info(), None))))
-                                                    .await;
-                                                waiting_for_authenticate.store(false, Ordering::SeqCst);
-                                            }
-                                            _ => {
-                                                warn!("room monitor authentication failed (API + shared key)");
-                                                send_auth_rejection(
-                                                    &send_tx,
-                                                    "room monitor authentication failed".into(),
-                                                )
-                                                .await;
-                                                let _ = tx.send(AuthenticationOutcome::Rejected);
-                                                panicked.store(true, Ordering::SeqCst);
-                                            }
-                                        }
+                                    _ => {
+                                        warn!("room monitor authentication failed (shared key mismatch)");
+                                        send_auth_rejection(
+                                            &send_tx,
+                                            "room monitor authentication failed".into(),
+                                        )
+                                        .await;
+                                        let _ = tx.send(AuthenticationOutcome::Rejected);
+                                        panicked.store(true, Ordering::SeqCst);
                                     }
                                 }
                                 return;
