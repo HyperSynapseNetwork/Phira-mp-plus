@@ -123,8 +123,12 @@ pub async fn execute_cli_once(state: Arc<PlusServerState>, line: String) -> Vec<
     let (out_tx, mut out_rx) = mpsc::channel::<String>(256);
     let (cmd_tx, cmd_rx) = mpsc::channel::<String>(16);
     let handler = CliHandler::new(state, out_tx);
-    let task = tokio::spawn(async move {
-        handler.start(cmd_rx).await;
+    tokio::task::spawn_blocking(move || {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("build temp runtime for CLI");
+        rt.block_on(handler.start(cmd_rx));
     });
     let _ = cmd_tx.try_send(line);
     drop(cmd_tx);

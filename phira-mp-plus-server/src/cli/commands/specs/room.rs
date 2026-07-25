@@ -3,7 +3,7 @@
 use crate::command_registry::CommandSpec;
 
 pub fn specs() -> Vec<CommandSpec> {
-    let mut out = vec![
+    let out = vec![
         CommandSpec::new("rooms", "rooms", "查看活跃房间。", "rooms"),
         CommandSpec::new(
             "room create-empty",
