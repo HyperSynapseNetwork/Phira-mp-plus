@@ -261,7 +261,7 @@ impl Room {
         if let Some(server) = self.server.upgrade() {
             if let Some(snap) = server.room_snapshot(&self.id.to_string()) {
                 return RoomControlSnapshot {
-                    host_id: snap.host,
+                    host_id: snap.host.or(self.creator_id),
                     locked: snap.locked,
                     cycle: snap.cycle,
                     hidden: snap.hidden,

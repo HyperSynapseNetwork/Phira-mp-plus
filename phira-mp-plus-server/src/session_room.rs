@@ -36,7 +36,6 @@ use phira_mp_common::{
 use std::{
     collections::HashMap,
     sync::{atomic::Ordering, Arc},
-    time::Instant,
 };
 use tracing::{debug, debug_span, info, trace, Instrument};
 
@@ -398,7 +397,6 @@ pub async fn join_room(
         .assign_room_host_if_missing(&room, &user, monitor, false)
         .await;
     *room_guard = Some(Arc::clone(&room));
-    *user.room_enter_time.write().await = Some(Instant::now());
     // 清除进行中游戏加入确认标记
     user.join_pending_game.write().await.take();
     let joined_at = std::time::SystemTime::now()
@@ -484,7 +482,6 @@ pub async fn join_room(
 pub async fn leave_room(user: Arc<User>, category: SessionCategory) -> Result<()> {
     crate::internal_hooks::playtime_room_leave(user.id);
     user.join_pending_game.write().await.take();
-    *user.room_enter_time.write().await = None;
     let room = current_room(&user).await?;
     let room_id = room.id.clone();
     info!(

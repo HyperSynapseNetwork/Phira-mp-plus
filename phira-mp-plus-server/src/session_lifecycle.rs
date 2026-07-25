@@ -4,7 +4,7 @@ use crate::session::Session;
 use phira_mp_common::{RoomEvent, ServerCommand, UserInfo};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Weak};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 use tokio::sync::{Mutex, RwLock};
 use tokio::time;
 use tracing::{debug, warn};
@@ -28,8 +28,6 @@ pub struct User {
     /// 用户确认加入进行中游戏的房间 ID（第一次请求时设置，第二次直接加入）。
     pub join_pending_game: RwLock<Option<String>>,
     /// 用户进入房间的时间戳（用于欢迎语刷新逻辑判断刚进入房间）。
-    pub room_enter_time: RwLock<Option<Instant>>,
-}
 
 impl User {
     pub fn new(
@@ -55,7 +53,6 @@ impl User {
             dangle_mark: Mutex::default(),
             admin_cli_pending: Mutex::default(),
             join_pending_game: RwLock::default(),
-            room_enter_time: RwLock::default(),
         }
     }
 
