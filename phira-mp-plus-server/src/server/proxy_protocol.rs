@@ -140,11 +140,11 @@ pub async fn maybe_read_proxy_header(
     use std::time::Duration;
 
     // Convert to std stream so we can use `peek` (non-consuming read).
-    let std_stream = match stream.into_std() {
+    let std_stream = match stream.try_into_std() {
         Ok(s) => s,
-        Err(e) => {
+        Err((s, e)) => {
             warn!("maybe_read_proxy_header: into_std failed: {e}");
-            return (stream, None);
+            return (s, None);
         }
     };
 
@@ -159,7 +159,7 @@ pub async fn maybe_read_proxy_header(
     let proxy_addr = match peek_result {
         // ── v1: "PROXY …\r\n" ────────────────────────────────────
         Ok(n) if n >= 6 && peek_buf.starts_with(b"PROXY ") => {
-            match read_proxy_v1(&std_stream) {
+            match read_proxy_v1(&mut std_stream) {
                 Ok(h) => proxy_source_addr(&h),
                 Err(e) => {
                     warn!("PROXY v1 header read failed: {e}");
@@ -170,7 +170,7 @@ pub async fn maybe_read_proxy_header(
 
         // ── v2: 12-byte signature ────────────────────────────────
         Ok(n) if n >= 12 && &peek_buf[..12] == &PROXY_V2_SIG => {
-            match read_proxy_v2(&std_stream) {
+            match read_proxy_v2(&mut std_stream) {
                 Ok(h) => proxy_source_addr(&h),
                 Err(e) => {
                     warn!("PROXY v2 header read failed: {e}");
@@ -217,7 +217,7 @@ pub async fn maybe_read_proxy_header(
 ///
 /// The caller **must** have confirmed via peek that the stream starts with
 /// `b"PROXY "` before calling this.
-fn read_proxy_v1(stream: &std::net::TcpStream) -> Result<ProxyHeader, String> {
+fn read_proxy_v1(stream: &mut std::net::TcpStream) -> Result<ProxyHeader, String> {
     use std::io::Read;
 
     let mut header = Vec::with_capacity(107);
@@ -247,7 +247,7 @@ fn read_proxy_v1(stream: &std::net::TcpStream) -> Result<ProxyHeader, String> {
 ///
 /// The caller **must** have confirmed via peek that the stream starts with
 /// `PROXY_V2_SIG` before calling this.
-fn read_proxy_v2(stream: &std::net::TcpStream) -> Result<ProxyHeader, String> {
+fn read_proxy_v2(stream: &mut std::net::TcpStream) -> Result<ProxyHeader, String> {
     use std::io::Read;
 
     // Read the 4-byte header that follows the 12-byte signature.

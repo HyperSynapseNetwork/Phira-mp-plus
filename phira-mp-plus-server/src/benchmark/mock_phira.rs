@@ -135,7 +135,7 @@ impl MockPhiraServer {
     ///
     /// 仅在 `start()` 成功后返回 `Some(port)`。
     pub fn port(&self) -> Option<u16> {
-        self.port.read().ok().copied().flatten()
+        self.port.read().ok().and_then(|g| *g)
     }
 
     /// 返回服务器当前监听地址（含端口）

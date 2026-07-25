@@ -10,4 +10,4 @@ pub(super) mod broadcast;
 pub(super) mod plugin;
 pub(super) mod room;
 pub(super) mod runtime;
-pub(super) mod specs;
+pub mod specs;

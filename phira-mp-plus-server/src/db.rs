@@ -79,7 +79,7 @@ impl DbManager {
         {
             let pool = if url.is_empty() {
                 tracing::info!("database_url 未设置，尝试本地默认连接");
-                try_connect_dev().await?
+                Self::try_connect_dev().await?
             } else {
                 sqlx::PgPool::connect(url).await.map_err(|e| {
                     anyhow::anyhow!(
