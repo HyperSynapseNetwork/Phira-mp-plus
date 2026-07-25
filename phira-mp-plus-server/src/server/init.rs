@@ -105,7 +105,6 @@ impl PlusServer {
         // Capture config fields before config is consumed by state
         let proxy_protocol_port = config.proxy_protocol_port;
         let http_bind_address = config.http_bind_address.clone();
-        let idle_config = config.idle.clone();
         let max_pending_auth = config.max_pending_auth;
         let max_sessions = config.max_sessions;
         let live_config = Arc::new(RwLock::new(LiveConfig::from_full(&config)));
@@ -145,7 +144,6 @@ impl PlusServer {
             room_monitor: RwLock::new(None),
             game_monitors: SafeMap::default(),
             events,
-            idle_monitor: crate::idle::IdleMonitor::new(idle_config),
             db_manager,
         });
         // Wire PersistenceWorker into ExtensionManager for mirrored writes
@@ -157,7 +155,6 @@ impl PlusServer {
         spawn_event_subscribers(&state);
         state.room_commands.start_mailbox(Arc::clone(&state), 1024);
         // 启动 IdleMonitor 主循环（定期检查空闲条件，挂起/恢复重服务）
-        state.idle_monitor.start_loop(&state);
 
         let lost_con_state = Arc::clone(&state);
         crate::supervisor_actor::spawn_critical("lost-connection-worker", async move {

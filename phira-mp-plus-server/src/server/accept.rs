@@ -42,7 +42,6 @@ impl PlusServer {
             }
         };
 
-        self.state.idle_monitor.mark_activity();
         let id = Uuid::new_v4();
         let auth_timeout = self.state.config.idle.auth_timeout_secs.max(5);
         let state = Arc::clone(&self.state);

@@ -254,7 +254,7 @@ pub struct PlusConfig {
     pub runtime: RuntimeConfig,
     /// Idle mode configuration.
     #[serde(default)]
-    pub idle: crate::idle::IdleConfig,
+    pub idle: IdleConfig,
 }
 
 impl Default for PlusConfig {
@@ -291,7 +291,7 @@ impl Default for PlusConfig {
             benchmark_phira_tokens: Vec::new(),
             wasm_runtime: WasmRuntimeConfig::default(),
             runtime: RuntimeConfig::default(),
-            idle: crate::idle::IdleConfig::default(),
+            idle: IdleConfig::default(),
             proxy_protocol_port: 0,
         }
     }
@@ -612,6 +612,34 @@ fn default_rate_limit() -> u32 {
 fn default_rate_window() -> u32 {
     10
 }
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IdleConfig {
+    #[serde(default = "default_idle_after_secs")]
+    pub idle_after_secs: u64,
+    #[serde(default = "default_check_interval_secs")]
+    pub check_interval_secs: u64,
+    #[serde(default = "default_heartbeat_timeout")]
+    pub heartbeat_timeout_secs: u64,
+    #[serde(default = "default_auth_timeout")]
+    pub auth_timeout_secs: u64,
+}
+
+impl Default for IdleConfig {
+    fn default() -> Self {
+        Self {
+            idle_after_secs: default_idle_after_secs(),
+            check_interval_secs: default_check_interval_secs(),
+            heartbeat_timeout_secs: default_heartbeat_timeout(),
+            auth_timeout_secs: default_auth_timeout(),
+        }
+    }
+}
+
+fn default_idle_after_secs() -> u64 { 300 }
+fn default_check_interval_secs() -> u64 { 15 }
+fn default_heartbeat_timeout() -> u64 { 15 }
+fn default_auth_timeout() -> u64 { 15 }
+
 fn default_phira_api() -> String {
     "https://phira.5wyxi.com".to_string()
 }

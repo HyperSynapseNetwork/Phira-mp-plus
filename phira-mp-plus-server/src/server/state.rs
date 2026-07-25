@@ -109,8 +109,6 @@ pub struct PlusServerState {
     pub game_monitors: SafeMap<i32, Weak<crate::session::Session>>,
     /// PostgreSQL 数据库管理器。
     pub db_manager: crate::db::DbManager,
-    /// Idle mode monitor — tracks activity and controls service suspension.
-    pub idle_monitor: Arc<crate::idle::IdleMonitor>,
 }
 
 /// Phira-mp+ 服务器
