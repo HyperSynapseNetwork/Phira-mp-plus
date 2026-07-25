@@ -31,6 +31,7 @@
     clippy::redundant_async_block,
     clippy::manual_try_fold,
     clippy::while_let_on_iterator,
+    clippy::useless_vec,
 )]
 
 // backup module not part of server runtime — see src/bin/pmp-admin.rs

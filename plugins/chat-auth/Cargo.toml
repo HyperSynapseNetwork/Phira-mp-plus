@@ -1,0 +1,17 @@
+[package]
+name = "chat-auth"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+phira-plugin-sdk = { path = "../../phira-plugin-sdk" }
+serde_json = "1.0"
+wit-bindgen = "0.58"
+sha2 = "0.10"
+hex = "0.4"
+
+[features]
+default = ["wit-bindgen"]
