@@ -69,8 +69,8 @@ pub async fn run_real(
         let mock_url = format!("http://127.0.0.1:{}", port);
         let mut lc = state.live_config.write().await;
         let orig = lc.phira_api_endpoint.clone();
-        lc.phira_api_endpoint = mock_url;
         info!("Set phira_api_endpoint to {mock_url} (original: {orig})");
+        lc.phira_api_endpoint = mock_url;
         Some(orig)
     } else {
         None
