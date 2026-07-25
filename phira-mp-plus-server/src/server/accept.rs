@@ -45,11 +45,58 @@ impl PlusServer {
         let id = Uuid::new_v4();
         let auth_timeout = self.state.config.idle.auth_timeout_secs.max(5);
         let state = Arc::clone(&self.state);
+
+        // Check whether the connection originates from a CIDR range that
+        // is configured for PROXY protocol.
+        let proxy_enabled = state
+            .config
+            .proxy_allow_cidr
+            .as_ref()
+            .map_or(false, |cidr| {
+                crate::server::proxy_protocol::ip_matches_any_cidr(&addr.ip(), cidr)
+            });
+
         crate::supervisor_actor::spawn_named(format!("pre-auth-{id}"), async move {
             let _permit = permit;
+
+            // ── PROXY protocol header parsing ─────────────────────
+            // If the peer is from a trusted PROXY source, attempt to
+            // read the PROXY header and substitute the real client
+            // address.  Non-PROXY connections from the same CIDR are
+            // rejected (the admin has explicitly opted in).
+            let (stream, addr) = if proxy_enabled {
+                let (s, proxy_addr) =
+                    crate::server::proxy_protocol::maybe_read_proxy_header(stream).await;
+                match proxy_addr {
+                    Some(forwarded) => {
+                        trace!(
+                            peer = %ip,
+                            forwarded = %forwarded.ip(),
+                            "PROXY protocol forwarded connection"
+                        );
+                        (s, forwarded)
+                    }
+                    None => {
+                        warn!(
+                            %ip,
+                            "PROXY source without valid PROXY header; closing connection"
+                        );
+                        return;
+                    }
+                }
+            } else {
+                (stream, addr)
+            };
+
             let session = match tokio::time::timeout(
                 std::time::Duration::from_secs(auth_timeout),
-                crate::session::Session::new(id, addr, stream, Arc::clone(&state), session_permit),
+                crate::session::Session::new(
+                    id,
+                    addr,
+                    stream,
+                    Arc::clone(&state),
+                    session_permit,
+                ),
             )
             .await
             {

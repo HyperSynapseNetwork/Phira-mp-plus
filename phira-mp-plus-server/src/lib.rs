@@ -58,7 +58,7 @@ pub mod play_history;
 pub mod plugin;
 pub mod plugin_abi;
 pub mod plugin_http;
-pub mod proxy_protocol;
+pub mod trusted_forwarded_http;
 pub mod rate_limiter;
 pub mod room;
 pub mod room_actor;

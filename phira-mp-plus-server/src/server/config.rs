@@ -218,6 +218,16 @@ pub struct PlusConfig {
     /// Port for the optional forwarded-header compatibility listener.
     #[serde(default = "default_proxy_protocol_port")]
     pub proxy_protocol_port: u16,
+    /// Comma-separated CIDR allowlist for HAProxy PROXY protocol v1/v2.
+    ///
+    /// When set, connections whose peer IP matches an entry in this list
+    /// are inspected for a PROXY protocol header.  The real client address
+    /// from that header replaces the socket peer address for authentication
+    /// and rate-limiting.
+    ///
+    /// Example: `"10.0.0.0/8,192.168.0.0/16"`
+    #[serde(default)]
+    pub proxy_allow_cidr: Option<String>,
     #[serde(default = "default_rate_limit")]
     pub connection_rate_limit: u32,
     #[serde(default = "default_rate_window")]
@@ -293,6 +303,7 @@ impl Default for PlusConfig {
             runtime: RuntimeConfig::default(),
             idle: IdleConfig::default(),
             proxy_protocol_port: 0,
+            proxy_allow_cidr: None,
         }
     }
 }
@@ -538,6 +549,13 @@ impl PlusConfig {
             return Err(AppError::ConfigValidation(
                 "idle.check_interval_secs 必须大于 0".into(),
             ));
+        }
+        if let Some(ref cidr) = self.proxy_allow_cidr {
+            if let Err(e) = super::proxy_protocol::validate_cidr_list(cidr) {
+                return Err(AppError::ConfigValidation(format!(
+                    "proxy_allow_cidr 无效: {e}"
+                )));
+            }
         }
         Ok(())
     }

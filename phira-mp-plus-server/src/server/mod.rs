@@ -27,6 +27,7 @@ pub mod events;
 pub mod init;
 pub mod query;
 pub mod rooms;
+pub mod proxy_protocol;
 pub mod snapshot;
 pub mod state;
 

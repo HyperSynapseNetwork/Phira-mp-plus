@@ -142,7 +142,7 @@ impl PluginHttpServer {
                 })?;
             let proxy_app = app
                 .clone()
-                .layer(crate::proxy_protocol::TrustForwardedForLayer);
+                .layer(crate::trusted_forwarded_http::TrustForwardedForLayer);
             tokio::spawn(async move {
                 info!(%proxy_addr, "HTTP server started (trusted X-Forwarded-For compatibility port)");
                 if let Err(err) = axum::serve(proxy_listener, proxy_app.into_make_service()).await {

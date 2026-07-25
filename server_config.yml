@@ -20,6 +20,17 @@ http_port: 12347
 # 只能放在可信反向代理之后，禁止直接暴露给不可信客户端。设为 0 禁用。
 # proxy_protocol_port: 12344
 
+# HAProxy PROXY protocol v1/v2 来源 CIDR 白名单。
+# 启用后，从这些 CIDR 来源的连接会先读取 PROXY protocol 头部并用其中转发的
+# 客户端地址替代 socket peer 地址进行认证与限速。
+# 必须在可信网络内部署（如负载均衡器->后端服务器）。
+#
+# 示例：
+#   proxy_allow_cidr: "10.0.0.0/8"
+#   proxy_allow_cidr: "10.0.0.0/8,192.168.0.0/16"
+# 设为空或注释掉即禁用。
+# proxy_allow_cidr: "10.0.0.0/8"
+
 # 认证完成前与在线会话容量。认证任务通过有界并发执行，避免慢认证阻塞 TCP accept。
 max_sessions: 4096
 max_pending_auth: 256
