@@ -474,7 +474,7 @@ impl Session {
                                 // Authenticate via shared key derived from HSN_SECRET_KEY.
                                 let expected = phira_mp_common::generate_secret_key("room_monitor", 64);
                                 match expected {
-                                    Ok(expected_key) if expected_key.as_slice() == key.as_ref() => {
+                                    Ok(ref expected_key) if expected_key.as_slice() == key.as_slice() => {
                                         info!("room monitor authenticated");
                                         let user = Arc::new(User::new(
                                             -1,
