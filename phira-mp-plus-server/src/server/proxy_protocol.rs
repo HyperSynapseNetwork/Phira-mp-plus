@@ -142,7 +142,7 @@ pub async fn maybe_read_proxy_header(
     // Convert to std stream so we can use `peek` (non-consuming read).
     // `into_std` consumes the tokio stream — on error we can't recover it,
     // but that shouldn't happen in practice.
-    let std_stream = match stream.into_std() {
+    let mut std_stream = match stream.into_std() {
         Ok(s) => s,
         Err(e) => {
             warn!("maybe_read_proxy_header: into_std failed: {e}");
