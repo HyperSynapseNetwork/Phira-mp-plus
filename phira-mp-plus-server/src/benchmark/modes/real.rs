@@ -80,7 +80,7 @@ pub async fn run_real(
     let server_addr = config
         .listen_addr
         .clone()
-        .unwrap_or_else(|| "127.0.0.1:12346".to_string());
+        .unwrap_or_else(|| format!("127.0.0.1:{}", state.config.port));
 
     info!("Connecting to PMP server at {}", server_addr);
     let connect_start = Instant::now();
