@@ -1,7 +1,6 @@
 //! Ops / WAL / dead-letter command specifications.
 
 use crate::command_registry::CommandSpec;
-use crate::server::PlusServerState;
 use std::sync::Arc;
 
 pub fn specs() -> Vec<CommandSpec> {

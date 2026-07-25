@@ -136,7 +136,6 @@ pub fn validate_cidr_list(value: &str) -> Result<(), String> {
 pub async fn maybe_read_proxy_header(
     stream: TcpStream,
 ) -> (TcpStream, Option<SocketAddr>) {
-    use std::io::Read;
     use std::time::Duration;
 
     // Convert to std stream so we can use `peek` (non-consuming read).
@@ -223,7 +222,6 @@ pub async fn maybe_read_proxy_header(
 /// The caller **must** have confirmed via peek that the stream starts with
 /// `b"PROXY "` before calling this.
 fn read_proxy_v1(stream: &mut std::net::TcpStream) -> Result<ProxyHeader, String> {
-    use std::io::Read;
 
     let mut header = Vec::with_capacity(107);
     // push the prefix already confirmed by peek
@@ -253,7 +251,6 @@ fn read_proxy_v1(stream: &mut std::net::TcpStream) -> Result<ProxyHeader, String
 /// The caller **must** have confirmed via peek that the stream starts with
 /// `PROXY_V2_SIG` before calling this.
 fn read_proxy_v2(stream: &mut std::net::TcpStream) -> Result<ProxyHeader, String> {
-    use std::io::Read;
 
     // Read the 4-byte header that follows the 12-byte signature.
     let mut buf = [0u8; 16]; // sig(12) + ver_cmd(1) + fam(1) + addr_len(2)
@@ -267,7 +264,7 @@ fn read_proxy_v2(stream: &mut std::net::TcpStream) -> Result<ProxyHeader, String
     }
 
     let _ver_cmd = buf[12];
-    let fam = buf[13];
+    let _fam = buf[13];
     let addr_len = u16::from_be_bytes([buf[14], buf[15]]) as usize;
 
     // Read the variable-length address data.
@@ -507,7 +504,7 @@ mod tests {
         let (hdr, n) = parse_proxy_header(raw).unwrap().unwrap();
         assert_eq!(n, raw.len());
         match hdr {
-            ProxyHeader::Tcp6 { src, dst } => {
+            ProxyHeader::Tcp6 { src, dst: _ } => {
                 assert_eq!(src, "[::1]:65535".parse::<SocketAddr>().unwrap());
             }
             _ => panic!("expected Tcp6"),

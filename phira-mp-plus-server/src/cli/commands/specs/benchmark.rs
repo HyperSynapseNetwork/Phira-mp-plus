@@ -4,7 +4,6 @@
 //! legacy diagnostics-group aliases.
 
 use crate::command_registry::{CommandArgSpec, CommandSpec};
-use crate::server::PlusServerState;
 use std::sync::Arc;
 
 pub fn specs() -> Vec<CommandSpec> {

@@ -306,7 +306,6 @@ pub fn send_welcome(user_id: i32, user_name: &str, online: usize, state: &PlusSe
                         })
                         .collect();
                     ranking.sort_by(|a, b| b.1.cmp(&a.1));
-                    let endpoint = state.config.phira_api_endpoint.clone();
                     let top: Vec<String> = ranking
                         .iter()
                         .take(10)

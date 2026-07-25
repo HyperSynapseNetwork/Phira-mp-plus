@@ -9,10 +9,10 @@ use crate::session_auth::{
     authenticate_remote_with_notice, ban_rejection_message, send_auth_rejection, AuthUserInfo,
 };
 use anyhow::{anyhow, bail, Result};
-use phira_mp_common::{ClientCommand, Message, RoomEvent, ServerCommand, Stream, UserInfo};
+use phira_mp_common::{ClientCommand, Message, ServerCommand, Stream};
 use std::{
     sync::{
-        atomic::{AtomicBool, AtomicU32, Ordering},
+        atomic::{AtomicBool, Ordering},
         Arc, OnceLock, Weak,
     },
     time::{Duration, Instant},

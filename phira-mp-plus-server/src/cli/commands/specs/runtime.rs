@@ -3,7 +3,6 @@
 //! These provide status and diagnostic views into the Runtime system.
 
 use crate::command_registry::CommandSpec;
-use crate::server::PlusServerState;
 use std::sync::Arc;
 
 pub fn specs() -> Vec<CommandSpec> {

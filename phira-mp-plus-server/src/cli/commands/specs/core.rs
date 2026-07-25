@@ -3,7 +3,6 @@
 //! These are the day-to-day administrative commands.
 
 use crate::command_registry::{CommandArgSpec, CommandSpec};
-use crate::server::PlusServerState;
 use std::sync::Arc;
 
 pub fn specs() -> Vec<CommandSpec> {
