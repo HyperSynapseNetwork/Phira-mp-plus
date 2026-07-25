@@ -591,7 +591,7 @@ pub async fn select_chart(user: Arc<User>, id: i32) -> Result<()> {
         {
             Ok(chart) => chart.name,
             Err(_) => {
-                warn!("failed to fetch chart {id} from Phira API; using ID as name");
+                tracing::warn!("failed to fetch chart {id} from Phira API; using ID as name");
                 format!("#{id}")
             }
         };
