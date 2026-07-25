@@ -117,17 +117,19 @@ impl MockPhiraServer {
     ///
     /// 发送 shutdown 信号并等待服务器任务退出。
     pub async fn stop(&self) -> Result<(), String> {
-        // 发送 shutdown 信号
-        if let Some(tx) = self.shutdown_tx.write().map_err(|_| "lock error")?.take() {
+        // 发送 shutdown 信号 — release lock before any await
+        let tx = self.shutdown_tx.write().map_err(|_| "lock error")?.take();
+        if let Some(tx) = tx {
             let _ = tx.send(());
         }
 
-        // 等待任务完成
-        if let Some(handle) = self.handle.write().map_err(|_| "lock error")?.take() {
+        // Take handle while holding lock, then drop lock before await
+        let handle = { self.handle.write().map_err(|_| "lock error")?.take() };
+        self.port.write().map_err(|_| "lock error")?.take();
+
+        if let Some(handle) = handle {
             let _ = handle.await;
         }
-
-        self.port.write().map_err(|_| "lock error")?.take();
         Ok(())
     }
 
