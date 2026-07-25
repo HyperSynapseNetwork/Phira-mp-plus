@@ -32,6 +32,11 @@
     clippy::manual_try_fold,
     clippy::while_let_on_iterator,
     clippy::useless_vec,
+    clippy::manual_checked_ops,
+    clippy::useless_conversion,
+    clippy::iter_kv_map,
+    clippy::op_ref,
+    clippy::manual_is_multiple_of,
 )]
 
 // backup module not part of server runtime — see src/bin/pmp-admin.rs
