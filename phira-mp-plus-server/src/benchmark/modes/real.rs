@@ -41,7 +41,9 @@ pub struct RealRunResult {
 /// 4. 依次发送 CreateRoom → SelectChart → Played 命令
 /// 5. 测量每条命令的往返延迟
 /// 6. 生成并返回基准测试报告
-pub async fn run_real(config: BenchmarkConfig) -> Result<RealRunResult, String> {
+pub async fn run_real(_config: BenchmarkConfig) -> Result<RealRunResult, String> {
+    Err("Real mode has been removed — use --mode simulation".to_string())
+}
     let started_at = Instant::now();
     let environment = EnvironmentSnapshot::capture().await;
     let mut report = BenchmarkReport::new("Real Mode Benchmark", environment, config.clone());

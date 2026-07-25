@@ -45,7 +45,7 @@ impl CliHandler {
             && matches!(args.get(1).copied(), Some("--mode"))
             && matches!(args.get(2).copied(), Some("real"))
         {
-            self.out(format!("  {} Real mode runner not yet implemented", c::yellow("?")));
+            self.out(format!("  {} Real mode removed — use --mode simulation", c::yellow("!")));
             self.out(format!(
                 "  {} This mode requires starting a real PMP server, connecting mock clients over real TCP, and requires PostgreSQL and optionally mock Phira HTTP",
                 c::dim("▸")
@@ -535,7 +535,7 @@ impl CliHandler {
         // If mode is real, return clean "not yet implemented" error
         if run_args.mode == crate::benchmark::command::BenchmarkRunMode::Real {
             self.out(format!(
-                "  {} Real mode benchmark is not yet implemented",
+                "  {} Real mode has been removed — use --mode simulation",
                 c::yellow("?")
             ));
             self.out(format!(
