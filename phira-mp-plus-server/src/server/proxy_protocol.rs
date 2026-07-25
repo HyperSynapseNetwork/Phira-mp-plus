@@ -106,13 +106,22 @@ pub fn validate_cidr_list(value: &str) -> Result<(), String> {
         let (net_str, pre_str) = cidr
             .split_once('/')
             .ok_or_else(|| format!("invalid CIDR \"{cidr}\": missing prefix length"))?;
-        let _prefix: u8 = pre_str
+        let prefix: u8 = pre_str
             .parse()
             .map_err(|_| format!("invalid prefix length in CIDR \"{cidr}\""))?;
-        let _network: IpAddr = net_str
+        let network: IpAddr = net_str
             .trim()
             .parse()
             .map_err(|_| format!("invalid network address in CIDR \"{cidr}\""))?;
+        let max_prefix = match network {
+            IpAddr::V4(_) => 32u8,
+            IpAddr::V6(_) => 128u8,
+        };
+        if prefix > max_prefix {
+            return Err(format!(
+                "prefix length {prefix} exceeds maximum {max_prefix} for CIDR \"{cidr}\""
+            ));
+        }
     }
     Ok(())
 }
