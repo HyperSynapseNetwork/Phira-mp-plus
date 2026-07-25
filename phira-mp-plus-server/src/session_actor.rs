@@ -260,7 +260,7 @@ async fn handle_chat(
 ) -> Option<ServerCommand> {
     use anyhow::Result;
     if !user.server.live_config.read().await.chat_enabled {
-        return Some(ServerCommand::Chat(Err("chat is disabled".to_string())));
+        return Some(ServerCommand::Chat(Err(crate::tl!("chat-disabled"))));
     }
     let res: Result<()> = async {
         let room = user.room.read().await.as_ref().map(Arc::clone)

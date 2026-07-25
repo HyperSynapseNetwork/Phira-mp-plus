@@ -89,7 +89,7 @@ pub(crate) async fn process(
         ClientCommand::RoomMonitorAuthenticate { .. }
         | ClientCommand::GameMonitorAuthenticate { .. }
         | ClientCommand::ConsoleAuthenticate { .. } => Some(ServerCommand::Authenticate(Err(
-            "already authenticated".into(),
+            tl!("already-authenticated"),
         ))),
     }
 }

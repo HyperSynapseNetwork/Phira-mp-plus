@@ -47,3 +47,7 @@ server-stats = Users: { $users } | Rooms: { $rooms } | Sessions: { $sessions } |
 join-room-banned = You are banned from this room
 
 join-game-ongoing-warning = This room is in-game. Confirm again to join.
+server-room-limit-reached = Server room limit reached (max { $limit })
+admin-start-in-progress = Administrative start is already in progress
+chat-disabled = Chat is disabled
+already-authenticated = Already authenticated

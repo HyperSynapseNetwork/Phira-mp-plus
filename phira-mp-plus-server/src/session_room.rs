@@ -13,6 +13,23 @@ use crate::plugin::PluginEvent;
 use crate::session::{SessionCategory, User};
 use crate::tl;
 use anyhow::{anyhow, bail, Result};
+
+/// Translate known English error strings from room command results.
+fn tr(e: String) -> String {
+    match e.as_str() {
+        "already ready" => tl!("already-ready"),
+        "already uploaded" => tl!("already-uploaded"),
+        "not ready" => tl!("not-ready"),
+        "user aborted" => tl!("aborted"),
+        "no chart selected" => tl!("start-no-chart-selected"),
+        "room is full" => tl!("join-room-full"),
+        "administrative start is already in progress" => tl!("admin-start-in-progress"),
+        "room is not selecting a chart" | "cannot set chart outside SelectChart state" => tl!("invalid-state"),
+        "not in WaitForReady state" => tl!("invalid-state"),
+        "not in Playing state" => tl!("invalid-state"),
+        _ => e,
+    }
+}
 use phira_mp_common::{
     JoinRoomResponse, Message, RoomEvent, RoomId, ServerCommand,
 };
@@ -212,7 +229,7 @@ pub async fn create_room(user: Arc<User>, id: RoomId) -> Result<()> {
     }
     if let Some(limit) = user.server.config.max_rooms {
         if map_guard.len() >= limit {
-            bail!("server room limit reached (max {limit})");
+            bail!("{}", tl!("server-room-limit-reached", limit => limit.to_string()));
         }
     }
     let max_users = user.server.config.max_users_per_room.unwrap_or(100);
@@ -351,7 +368,7 @@ pub async fn join_room(
             .room_commands
             .add_user(&user.server, &id.to_string(), user.id, &user.name, true)
             .await
-            .map_err(|e| anyhow!("{e}"))?;
+            .map_err(|e| anyhow!("{}", tr(e)))?;
         // Also add to Room connection mapping (immediate, direct).
         if !room.add_user(Arc::downgrade(&user), true).await {
             bail!("{}", tl!("join-room-full"));
@@ -531,7 +548,7 @@ pub async fn leave_room(user: Arc<User>, category: SessionCategory) -> Result<()
 pub async fn lock_room(user: Arc<User>, lock: bool) -> Result<()> {
     let room = current_room(&user).await?;
     if !is_host_for_room(&room, &user).await {
-        bail!("only host can do this");
+        bail!("{}", tl!("only-host-can-do"));
     }
     info!(
         user = user.id,
@@ -543,7 +560,7 @@ pub async fn lock_room(user: Arc<User>, lock: bool) -> Result<()> {
         .room_commands
         .set_lock_as(&user.server, &room.id.to_string(), lock, user.id)
         .await
-        .map_err(anyhow::Error::msg)?;
+        .map_err(|e| anyhow!("{}", tr(e)))?;
     // Broadcast to all users including the sender (host). The host's client
     // needs Message::LockRoom to update its local lock state in the UI.
     // The old send_except approach (recent commit) broke this: the host saw
@@ -555,7 +572,7 @@ pub async fn lock_room(user: Arc<User>, lock: bool) -> Result<()> {
 pub async fn cycle_room(user: Arc<User>, cycle: bool) -> Result<()> {
     let room = current_room(&user).await?;
     if !is_host_for_room(&room, &user).await {
-        bail!("only host can do this");
+        bail!("{}", tl!("only-host-can-do"));
     }
     info!(
         user = user.id,
@@ -567,7 +584,7 @@ pub async fn cycle_room(user: Arc<User>, cycle: bool) -> Result<()> {
         .room_commands
         .set_cycle_as(&user.server, &room.id.to_string(), cycle, user.id)
         .await
-        .map_err(anyhow::Error::msg)?;
+        .map_err(|e| anyhow!("{}", tr(e)))?;
     // See lock_room comment — the host's client needs the event too.
     room.send(Message::CycleRoom { cycle }).await;
     Ok(())
@@ -576,7 +593,7 @@ pub async fn cycle_room(user: Arc<User>, cycle: bool) -> Result<()> {
 pub async fn select_chart(user: Arc<User>, id: i32) -> Result<()> {
     let room = current_room_in_select_chart(&user).await?;
     if !is_host_for_room(&room, &user).await {
-        bail!("only host can do this");
+        bail!("{}", tl!("only-host-can-do"));
     }
     let span = debug_span!(
         "select chart",
@@ -612,7 +629,7 @@ pub async fn select_chart(user: Arc<User>, id: i32) -> Result<()> {
             .room_commands
             .set_chart(&user.server, &room.id.to_string(), id, &chart_name, user.id)
             .await
-            .map_err(|e| anyhow!("set chart failed: {e}"))?;
+            .map_err(|e| anyhow!("{}", tr(e)))?;
         Ok(())
     }
     .instrument(span)
@@ -622,12 +639,12 @@ pub async fn select_chart(user: Arc<User>, id: i32) -> Result<()> {
 pub async fn request_start(user: Arc<User>) -> Result<()> {
     let room = current_room_in_select_chart(&user).await?;
     if !is_host_for_room(&room, &user).await {
-        bail!("only host can do this");
+        bail!("{}", tl!("only-host-can-do"));
     }
     // Check admin_start_pending via snapshot.
     let control = room.control_snapshot();
     if control.admin_start_pending {
-        bail!("administrative start is already in progress");
+        bail!("{}", tl!("admin-start-in-progress"));
     }
     // Check chart from snapshot.
     let has_chart = if let Some(server) = room.server.upgrade() {
@@ -646,7 +663,7 @@ pub async fn request_start(user: Arc<User>) -> Result<()> {
         .room_commands
         .host_start(&user.server, &room.id.to_string(), user.id)
         .await
-        .map_err(|e| anyhow!("host start failed: {e}"))?;
+        .map_err(|e| anyhow!("{}", tr(e)))?;
     Ok(())
 }
 
@@ -656,7 +673,7 @@ pub async fn ready(user: Arc<User>) -> Result<()> {
         .room_commands
         .set_ready(&user.server, &room.id.to_string(), user.id)
         .await
-        .map_err(|e| anyhow!("ready failed: {e}"))?;
+        .map_err(|e| anyhow!("{}", tr(e)))?;
     Ok(())
 }
 
@@ -666,7 +683,7 @@ pub async fn cancel_ready(user: Arc<User>) -> Result<()> {
         .room_commands
         .cancel_ready(&user.server, &room.id.to_string(), user.id)
         .await
-        .map_err(|e| anyhow!("cancel ready failed: {e}"))?;
+        .map_err(|e| anyhow!("{}", tr(e)))?;
     Ok(())
 }
 
@@ -703,7 +720,7 @@ pub async fn played(user: Arc<User>, id: i32) -> Result<()> {
             res.std, res.std_score,
         )
         .await
-        .map_err(|e| anyhow!("submit result failed: {e}"))?;
+        .map_err(|e| anyhow!("{}", tr(e)))?;
     Ok(())
 }
 
@@ -713,7 +730,7 @@ pub async fn abort(user: Arc<User>) -> Result<()> {
         .room_commands
         .abort_round(&user.server, &room.id.to_string(), user.id)
         .await
-        .map_err(|e| anyhow!("abort failed: {e}"))?;
+        .map_err(|e| anyhow!("{}", tr(e)))?;
     Ok(())
 }
 

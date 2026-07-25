@@ -47,3 +47,7 @@ server-stats = 用户：{ $users } | 房间：{ $rooms } | 会话：{ $sessions 
 join-room-banned = 你已被此房间封禁
 
 join-game-ongoing-warning = 该房间游戏进行中，请再次确认以加入
+server-room-limit-reached = 服务器房间数已达上限（最多 { $limit }）
+admin-start-in-progress = 管理员发起游戏正在进行中
+chat-disabled = 聊天功能已禁用
+already-authenticated = 已经认证过了
