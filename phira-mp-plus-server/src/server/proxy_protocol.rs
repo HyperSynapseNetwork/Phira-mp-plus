@@ -140,11 +140,14 @@ pub async fn maybe_read_proxy_header(
     use std::time::Duration;
 
     // Convert to std stream so we can use `peek` (non-consuming read).
-    let std_stream = match stream.try_into_std() {
+    // `into_std` consumes the tokio stream — on error we can't recover it,
+    // but that shouldn't happen in practice.
+    let std_stream = match stream.into_std() {
         Ok(s) => s,
-        Err((s, e)) => {
+        Err(e) => {
             warn!("maybe_read_proxy_header: into_std failed: {e}");
-            return (s, None);
+            return (TcpStream::from_std(std::net::TcpStream::connect("127.0.0.1:1")
+                .expect("fallback connect for error path")), None);
         }
     };
 
