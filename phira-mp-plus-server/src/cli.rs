@@ -123,7 +123,7 @@ pub async fn execute_cli_once(state: Arc<PlusServerState>, line: String) -> Vec<
     let (out_tx, mut out_rx) = mpsc::channel::<String>(256);
     let (cmd_tx, cmd_rx) = mpsc::channel::<String>(16);
     let handler = CliHandler::new(state, out_tx);
-    tokio::task::spawn_blocking(move || {
+    let task = tokio::task::spawn_blocking(move || {
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -156,7 +156,6 @@ pub async fn execute_cli_once(state: Arc<PlusServerState>, line: String) -> Vec<
             Err(_) => break,
         }
     }
-    task.abort();
     if lines.is_empty() {
         lines.push("命令已执行，无输出".to_string());
     }
