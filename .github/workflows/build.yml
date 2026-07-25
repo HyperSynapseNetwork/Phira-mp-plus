@@ -1,0 +1,129 @@
+name: Build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  CARGO_TERM_COLOR: always
+
+concurrency:
+  group: build-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  auto-patch:
+    runs-on: ubuntu-latest
+    outputs:
+      build_ref: ${{ steps.patch.outputs.build_ref }}
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: 自动更新 C 版本号
+        id: patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          FULL_VERSION=$(grep '^version = ' phira-mp-plus-server/Cargo.toml | sed 's/.*"\(.*\)"/\1/')
+          MAJOR=$(echo "$FULL_VERSION" | cut -d. -f1)
+          MINOR=$(echo "$FULL_VERSION" | cut -d. -f2)
+          TAG_PREFIX="v${MAJOR}.${MINOR}.0"
+          if git rev-parse "$TAG_PREFIX" >/dev/null 2>&1; then
+            PATCH=$(git rev-list --count "$TAG_PREFIX"..HEAD)
+          else
+            PATCH=$(git rev-list --count HEAD)
+          fi
+          NEW_VERSION="${MAJOR}.${MINOR}.${PATCH}"
+          CURRENT_C=$(echo "$FULL_VERSION" | cut -d. -f3)
+          echo "current=$CURRENT_C computed=$PATCH"
+          if [[ "$CURRENT_C" != "$PATCH" && "${{ github.ref }}" == "refs/heads/main" && "${{ github.event_name }}" == "push" ]]; then
+            python scripts/sync-workspace-version.py "$NEW_VERSION"
+            git config user.name "github-actions"
+            git config user.email "actions@github.com"
+            git add phira-mp-plus-server/Cargo.toml phira-plugin-sdk/Cargo.toml Cargo.lock
+            git commit -m "chore: auto bump patch to $NEW_VERSION [skip ci]"
+            git push
+          fi
+          echo "build_ref=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+  check:
+    needs: auto-patch
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.auto-patch.outputs.build_ref }}
+          fetch-depth: 0
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+      - name: Workspace version consistency
+        run: python scripts/sync-workspace-version.py --check
+      - name: Check
+        run: cargo check --locked --workspace --all-targets --all-features
+      - name: Tests
+        run: cargo test --locked --workspace --all-features
+      - name: Clippy
+        run: cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
+      - name: Audit (advisory)
+        run: cargo install cargo-audit --locked && cargo audit --deny warnings || echo "cargo audit 存在已知 advisory（rsa/no-fix, fxhash/paste/rustls-pemfile 不再维护, lru unsound）"
+
+  build:
+    needs: [auto-patch, check]
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-musl
+            artifact: phira-mp-plus-server-linux
+            artifact-path: target/x86_64-unknown-linux-musl/release/phira-mp-plus-server
+            setup: sudo apt-get update && sudo apt-get install -y musl-tools
+            env:
+              CC_x86_64_unknown_linux_musl: musl-gcc
+              CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER: musl-gcc
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            artifact: phira-mp-plus-server-linux-glibc
+            artifact-path: target/x86_64-unknown-linux-gnu/release/phira-mp-plus-server
+            env: {}
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            artifact: phira-mp-plus-server-windows
+            artifact-path: target/x86_64-pc-windows-msvc/release/phira-mp-plus-server.exe
+            env: {}
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
+    env: ${{ matrix.env }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.auto-patch.outputs.build_ref }}
+          fetch-depth: 0
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          target: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: build-${{ matrix.target }}
+          cache-on-failure: true
+      - if: matrix.setup
+        name: Setup System
+        run: ${{ matrix.setup }}
+      - name: cargo build
+        run: cargo build --locked --release --target ${{ matrix.target }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: ${{ matrix.artifact-path }}
+          if-no-files-found: error

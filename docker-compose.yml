@@ -1,0 +1,37 @@
+version: "3.8"
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: phira_mp_plus
+      POSTGRES_USER: pmp
+      POSTGRES_PASSWORD: pmp_pass
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U pmp -d phira_mp_plus"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  phira-mp-plus:
+    build: .
+    ports:
+      - "12346:12346"
+      - "12347:12347"
+    environment:
+      PM_DATABASE_URL: "postgres://pmp:pmp_pass@postgres:5432/phira_mp_plus"
+      RUST_LOG: info
+    volumes:
+      - ./server_config.yml:/etc/pmp/server_config.yml:ro
+      - ./data:/var/lib/pmp/data
+      - ./plugins:/var/lib/pmp/plugins
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  pgdata:

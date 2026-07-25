@@ -1,0 +1,745 @@
+//! Runtime PersistenceWorker.
+//!
+//! Ordinary persistence events use bounded backpressure instead of queue-full
+//! loss. Flush and shutdown are ordered control messages with acknowledgements,
+//! so accepted work can be drained before process termination. All production
+//! Touch/Judge telemetry goes through the HighFrequencyWriter — the single
+//! unified high-frequency persistence path.
+
+use crate::persistence::message::PersistenceEvent;
+use crate::persistence::stats::{
+    record_dead_letter_failed, record_dead_letter_written, record_dropped, record_queued,
+    record_wal_committed, record_wal_compaction,
+    record_wal_received, PersistenceStats,
+};
+use crate::persistence::wal::PersistenceWal;
+use serde_json::json;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use tokio::io::AsyncWriteExt;
+use tokio::sync::{mpsc, oneshot, Mutex, RwLock};
+use tracing::info;
+
+static DEAD_LETTER_FAILURE_REPORTED: AtomicBool = AtomicBool::new(false);
+
+enum WorkerMessage {
+    Event {
+        wal_id: uuid::Uuid,
+        event: PersistenceEvent,
+        needs_wal_ack: bool,
+    },
+    Flush {
+        reply: oneshot::Sender<Result<(), String>>,
+    },
+    Shutdown {
+        reply: oneshot::Sender<Result<(), String>>,
+    },
+}
+
+#[derive(Debug)]
+pub struct PersistenceWorker {
+    tx: mpsc::Sender<WorkerMessage>,
+    /// Serializes event/control insertion so nothing can be accepted behind a
+    /// Shutdown marker and then remain unprocessed.
+    send_gate: Mutex<()>,
+    /// Idle-mode diagnostic hint. Persistence remains active while idle so
+    /// accepted events are never discarded merely because gameplay is quiet.
+    suspended: AtomicBool,
+    closed: AtomicBool,
+    stats: Arc<RwLock<PersistenceStats>>,
+    wal: Arc<PersistenceWal>,
+}
+
+async fn report_dead_letter_durability_failure(error: String) {
+    if !DEAD_LETTER_FAILURE_REPORTED.swap(true, Ordering::AcqRel) {
+        crate::supervisor_actor::report_critical_failure("persistence-dead-letter", error).await;
+    }
+}
+
+/// Returns true if the event was durably stored (dead-letter written successfully).
+async fn preserve_failed_event(
+    wal_id: uuid::Uuid,
+    path: Option<&Path>,
+    event: &PersistenceEvent,
+    stage: &str,
+    error: &str,
+    stats: &Arc<RwLock<PersistenceStats>>,
+) -> bool {
+    let kind = event.kind();
+    let simulation = event.is_simulation();
+    let summary = event.summary();
+    let Some(payload) = event.dead_letter_payload() else {
+        return false;
+    };
+    let Some(path) = path else {
+        let durability_error =
+            "dead-letter journal disabled; failed event was not preserved".to_string();
+        record_dead_letter_failed(stats, kind, simulation, summary, durability_error.clone()).await;
+        report_dead_letter_durability_failure(durability_error).await;
+        return false;
+    };
+    let timestamp_ms = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis() as u64)
+        .unwrap_or(0);
+    let record = json!({
+        "schema_version": 1,
+        "dead_letter_id": wal_id.to_string(),  // reuse wal_id as stable dead_letter_id
+        "wal_id": wal_id.to_string(),
+        "failed_at_ms": timestamp_ms,
+        "stage": stage,
+        "kind": kind,
+        "simulation": simulation,
+        "summary": summary,
+        "error": error,
+        "event": payload,
+    });
+    match append_dead_letter(path, &record).await {
+        Ok(()) => {
+            record_dead_letter_written(stats, event.kind(), simulation, event.summary()).await;
+            true
+        }
+        Err(dead_letter_error) => {
+            let durability_error =
+                format!("failed to persist dead-letter record: {dead_letter_error}");
+            record_dead_letter_failed(
+                stats,
+                event.kind(),
+                simulation,
+                event.summary(),
+                durability_error.clone(),
+            )
+            .await;
+            report_dead_letter_durability_failure(durability_error).await;
+            false
+        }
+    }
+}
+
+async fn append_dead_letter(path: &Path, record: &serde_json::Value) -> Result<(), String> {
+    if let Some(parent) = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+    {
+        tokio::fs::create_dir_all(parent)
+            .await
+            .map_err(|error| format!("create {}: {error}", parent.display()))?;
+    }
+    let mut file = tokio::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+        .await
+        .map_err(|error| format!("open {}: {error}", path.display()))?;
+    // Enforce secure permissions (owner read/write only) after creation.
+    // OpenOptions::mode() is Unix-only, so we apply permissions post-hoc.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if let Ok(metadata) = file.metadata().await {
+            let mode = metadata.permissions().mode() & 0o777;
+            if mode & 0o077 != 0 {
+                let mut perms = metadata.permissions();
+                perms.set_mode(perms.mode() & !0o077);
+                let _ = file.set_permissions(perms).await;
+            }
+        }
+    }
+    let mut line = serde_json::to_vec(record)
+        .map_err(|error| format!("serialize dead-letter record: {error}"))?;
+    line.push(b'\n');
+    file.write_all(&line)
+        .await
+        .map_err(|error| format!("append {}: {error}", path.display()))?;
+    file.flush()
+        .await
+        .map_err(|error| format!("flush {}: {error}", path.display()))?;
+    file.sync_data()
+        .await
+        .map_err(|error| format!("sync {}: {error}", path.display()))?;
+    drop(file);
+    // Sync parent directory so the dead-letter entry survives a rename.
+    if let Some(parent) = path.parent().filter(|p| p.as_os_str() != "") {
+        if let Ok(dir) = tokio::fs::File::open(parent).await {
+            dir.sync_all().await.map_err(|error| {
+                format!("sync parent directory {}: {error}", parent.display())
+            })?;
+        }
+    }
+    Ok(())
+}
+
+/// Normal worker loop: processes replayed events first, then new admissions
+/// from the channel, dispatching each through the persistence pipeline and
+/// ACKing the WAL on completion.
+async fn process_worker_loop(
+    rx: &mut mpsc::Receiver<WorkerMessage>,
+    replay: &mut std::collections::VecDeque<(uuid::Uuid, PersistenceEvent)>,
+    worker_stats: &Arc<RwLock<PersistenceStats>>,
+    worker_dead_letter_path: &Option<std::path::PathBuf>,
+    worker_wal: &Arc<PersistenceWal>,
+) {
+    use crate::persistence::pipeline::{
+        persist_benchmark_report_if_needed, persist_production_event_if_needed,
+        persist_simulation_event_if_needed,
+        BenchmarkReportStage, PersistenceWriteStage,
+    };
+    use crate::persistence::stats::{
+        record_benchmark_report_persist_request, record_benchmark_report_persist_skipped,
+        record_db_dispatch_failure,
+        record_db_dispatch_success, record_processed, record_production_persist_request,
+        record_production_persist_skipped, record_simulation_persist_request,
+    };
+    use tracing::{debug, trace, warn};
+
+    // Pending ACK retry queue. When worker_wal.ack() fails, the wal_id is
+    // queued here for retry on subsequent iterations. Flush/Shutdown drain
+    // this queue before returning.
+    let mut pending_acks: std::collections::VecDeque<(uuid::Uuid, u32)> =
+        std::collections::VecDeque::new();
+
+    loop {
+        let message = if let Some((wal_id, event)) = replay.pop_front() {
+            WorkerMessage::Event { wal_id, event, needs_wal_ack: true }
+        } else {
+            let Some(message) = rx.recv().await else {
+                break;
+            };
+            message
+        };
+        // Retry pending WAL ACKs — one attempt per iteration, no blocking
+        // sleeps.  The queue is naturally retried on each subsequent event,
+        // and drain_pending_acks (called by Flush/Shutdown) uses short sleeps
+        // with a cap.  This avoids blocking the persistence pipeline for up
+        // to 60s per ACK retry (the old exponential-backoff approach).
+        if let Some((retry_id, retry_attempt)) = pending_acks.front().copied() {
+            match worker_wal.ack(retry_id).await {
+                Ok(()) => {
+                    worker_wal.set_degraded(false);
+                    debug!(wal_id = %retry_id, "ACK retry succeeded");
+                    pending_acks.pop_front();
+                }
+                Err(e) => {
+                    worker_wal.set_degraded(true);
+                    trace!(
+                        wal_id = %retry_id, attempt = %retry_attempt, error = %e,
+                        "ACK retry failed, will retry on next iteration"
+                    );
+                    if let Some(mut entry) = pending_acks.pop_front() {
+                        entry.1 = entry.1.saturating_add(1);
+                        pending_acks.push_back(entry);
+                    }
+                }
+            }
+        }
+
+        let (wal_id, event, needs_wal_ack) = match message {
+            WorkerMessage::Event { wal_id, event, needs_wal_ack } => (wal_id, event, needs_wal_ack),
+            WorkerMessage::Flush { reply } => {
+                let drain_result = drain_pending_acks(worker_wal, &mut pending_acks).await;
+                if let Err(ref e) = drain_result {
+                    warn!(error = %e, "pending ACK drain failed");
+                }
+                let _ = reply.send(drain_result);
+                continue;
+            }
+            WorkerMessage::Shutdown { reply } => {
+                let drain_result = drain_pending_acks(worker_wal, &mut pending_acks).await;
+                if let Err(ref e) = drain_result {
+                    warn!(error = %e, "pending ACK drain failed");
+                }
+                let should_stop = drain_result.is_ok();
+                let _ = reply.send(drain_result);
+                if should_stop {
+                    break;
+                }
+                continue;
+            }
+        };
+        let kind = event.kind();
+        let simulation = event.is_simulation();
+        let summary = event.summary();
+        // Track whether this event reached a durable terminal state.
+        // Only durable events get WAL ACKed; non-durable entries remain
+        // in the WAL for replay on restart (crash recovery).
+        let mut durable = false;
+        match persist_benchmark_report_if_needed(&event).await {
+            BenchmarkReportStage::Acknowledged { elapsed_ms } => {
+                durable = true;
+                record_benchmark_report_persist_request(worker_stats).await;
+                record_db_dispatch_success(
+                    worker_stats,
+                    crate::persistence::PersistencePipeline::BenchmarkReport,
+                    elapsed_ms,
+                )
+                .await;
+            }
+            BenchmarkReportStage::Failed { elapsed_ms, error } => {
+                if preserve_failed_event(
+                    wal_id,
+                    worker_dead_letter_path.as_deref(),
+                    &event,
+                    "benchmark_report",
+                    &error,
+                    worker_stats,
+                )
+                .await
+                {
+                    durable = true;
+                }
+                record_benchmark_report_persist_skipped(worker_stats).await;
+                record_db_dispatch_failure(
+                    worker_stats,
+                    crate::persistence::PersistencePipeline::BenchmarkReport,
+                    elapsed_ms,
+                    error,
+                )
+                .await;
+            }
+            BenchmarkReportStage::SkippedNoDatabase => {
+                record_benchmark_report_persist_skipped(worker_stats).await;
+            }
+            BenchmarkReportStage::NotBenchmark => {
+                match persist_simulation_event_if_needed(&event).await {
+                    PersistenceWriteStage::Acknowledged {
+                        pipeline,
+                        elapsed_ms,
+                    } => {
+                        durable = true;
+                        record_simulation_persist_request(worker_stats).await;
+                        record_db_dispatch_success(worker_stats, pipeline, elapsed_ms).await;
+                    }
+                    PersistenceWriteStage::Failed {
+                        pipeline,
+                        elapsed_ms,
+                        error,
+                    } => {
+                        if preserve_failed_event(
+                            wal_id,
+                            worker_dead_letter_path.as_deref(),
+                            &event,
+                            "simulation",
+                            &error,
+                            worker_stats,
+                        )
+                        .await
+                        {
+                            durable = true;
+                        }
+                        record_simulation_persist_request(worker_stats).await;
+                        record_db_dispatch_failure(worker_stats, pipeline, elapsed_ms, error).await;
+                    }
+                    PersistenceWriteStage::SkippedNoDatabase { .. } => {
+                        record_simulation_persist_request(worker_stats).await;
+                    }
+                    PersistenceWriteStage::NotApplicable => {
+                        match persist_production_event_if_needed(&event).await {
+                            PersistenceWriteStage::Acknowledged {
+                                pipeline,
+                                elapsed_ms,
+                            } => {
+                                durable = true;
+                                record_production_persist_request(worker_stats).await;
+                                record_db_dispatch_success(
+                                    worker_stats,
+                                    pipeline,
+                                    elapsed_ms,
+                                )
+                                .await;
+                            }
+                            PersistenceWriteStage::Failed {
+                                pipeline,
+                                elapsed_ms,
+                                error,
+                            } => {
+                                if preserve_failed_event(
+                                    wal_id,
+                                    worker_dead_letter_path.as_deref(),
+                                    &event,
+                                    "production",
+                                    &error,
+                                    worker_stats,
+                                )
+                                .await
+                                {
+                                    durable = true;
+                                }
+                                record_production_persist_request(worker_stats).await;
+                                record_db_dispatch_failure(
+                                    worker_stats,
+                                    pipeline,
+                                    elapsed_ms,
+                                    error,
+                                )
+                                .await;
+                            }
+                            PersistenceWriteStage::SkippedNoDatabase { .. } => {
+                                record_production_persist_request(worker_stats).await;
+                            }
+                            PersistenceWriteStage::NotApplicable => {
+                                if !event.is_simulation()
+                                    && !matches!(
+                                        &event,
+                                        PersistenceEvent::Flush
+                                            | PersistenceEvent::Shutdown
+                                    )
+                                {
+                                    record_production_persist_skipped(worker_stats).await;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        match event {
+            PersistenceEvent::Shutdown => {
+                debug!(kind = %kind, "persistence worker shutdown requested");
+                record_processed(worker_stats, kind, simulation, summary).await;
+                break;
+            }
+            PersistenceEvent::Flush => {
+                debug!(kind = %kind, "persistence worker flush marker received");
+            }
+            _ => {}
+        }
+        record_processed(worker_stats, kind.clone(), simulation, summary).await;
+
+        // Only ACK events that reached a durable terminal state AND used WAL.
+        // DatabaseCommitted / DurableDeadLetterStored → ACK
+        // TelemetryStaged / DeadLetterFailed / SkippedNoDB → retain in WAL
+        // Production Touch/Judge (B-class) bypassed WAL entirely.
+        if needs_wal_ack {
+            if durable {
+                if let Err(error) = worker_wal.ack(wal_id).await {
+                    worker_wal.set_degraded(true);
+                    crate::supervisor_actor::report_critical_failure("persistence-wal-ack", error).await;
+                    pending_acks.push_back((wal_id, 0));
+                } else {
+                    worker_wal.set_degraded(false);
+                    record_wal_committed(worker_stats).await;
+                }
+            } else {
+                tracing::warn!(
+                    wal_id = %wal_id, kind = %kind,
+                    "WAL entry not ACKed (non-durable outcome); will replay on restart"
+                );
+            }
+        }
+
+        // Auto-compaction: trigger when ACK ratio drops below threshold.
+        if worker_wal.should_compact() {
+            match worker_wal.compact().await {
+                Err(e) => {
+                    tracing::warn!(error = %e, "auto-compaction failed");
+                }
+                Ok(_pending) => {
+                    tracing::debug!("auto-compaction completed");
+                    let wal_bytes = worker_wal.total_bytes();
+                    record_wal_compaction(worker_stats, wal_bytes).await;
+                }
+            }
+        }
+    }
+}
+
+/// Drain the pending ACK queue, retrying each entry with a short sleep
+/// on failure.  This is called during Flush/Shutdown and must make
+/// progress; it will not block indefinitely (max 60 retries, 100ms each).
+///
+/// Returns an error if any entries were abandoned after exhausting retries.
+/// The caller (Flush/Shutdown handler) uses this to decide whether to
+/// report the shutdown as incomplete.
+async fn drain_pending_acks(
+    worker_wal: &Arc<PersistenceWal>,
+    pending_acks: &mut std::collections::VecDeque<(uuid::Uuid, u32)>,
+) -> Result<(), String> {
+    use tracing::{debug, warn};
+    let mut retries = 0;
+    let max_retries = 60; // ~6 seconds total at 100ms per retry
+    let initial_count = pending_acks.len();
+    let mut abandoned: Vec<uuid::Uuid> = Vec::new();
+
+    while !pending_acks.is_empty() && retries < max_retries {
+        if let Some((id, attempt)) = pending_acks.pop_front() {
+            match worker_wal.ack(id).await {
+                Ok(()) => {
+                    worker_wal.set_degraded(false);
+                    debug!(wal_id = %id, "pending ACK drained");
+                }
+                Err(e) => {
+                    worker_wal.set_degraded(true);
+                    if retries >= max_retries - 1 {
+                        warn!(
+                            wal_id = %id, error = %e,
+                            "pending ACK drain failed after {max_retries} retries; WAL record will replay on restart"
+                        );
+                        abandoned.push(id);
+                        // Do NOT re-queue — exhausted retries.
+                    } else {
+                        pending_acks.push_back((id, attempt.saturating_add(1)));
+                        tokio::time::sleep(Duration::from_millis(100)).await;
+                    }
+                }
+            }
+        }
+        retries += 1;
+    }
+
+    if !abandoned.is_empty() {
+        let drained = initial_count.saturating_sub(pending_acks.len());
+        Err(format!(
+            "ACK drain abandoned {} WAL record(s) after {max_retries} retries ({drained} drained, {} remaining)",
+            abandoned.len(),
+            pending_acks.len(),
+        ))
+    } else {
+        Ok(())
+    }
+}
+
+/// Degraded worker loop: entered when WAL replay fails. Only accepts
+/// Shutdown commands; all other messages are logged and discarded so no
+/// data is processed with an unverified WAL.
+async fn process_degraded_worker_loop(
+    rx: &mut mpsc::Receiver<WorkerMessage>,
+) {
+    use tracing::{error, info, warn};
+
+    error!("persistence worker entered degraded mode: WAL replay failed, rejecting all events");
+
+    loop {
+        let Some(message) = rx.recv().await else {
+            break;
+        };
+        match message {
+            WorkerMessage::Event { wal_id, needs_wal_ack: _, .. } => {
+                warn!(wal_id = %wal_id, "dropping event in degraded persistence worker");
+                continue;
+            }
+            WorkerMessage::Flush { reply } => {
+                let _ = reply.send(Ok(()));
+                continue;
+            }
+            WorkerMessage::Shutdown { reply } => {
+                info!("degraded persistence worker shutting down");
+                let _ = reply.send(Ok(()));
+                break;
+            }
+        }
+    }
+}
+
+impl PersistenceWorker {
+    pub fn spawn(queue_capacity: usize) -> Arc<Self> {
+        Self::spawn_with_journals(
+            queue_capacity,
+            Some("data/persistence-dead-letter.jsonl".to_string()),
+            "data/persistence-worker.wal.jsonl".to_string(),
+        )
+    }
+
+    pub fn spawn_with_journals(
+        queue_capacity: usize,
+        dead_letter_path: Option<String>,
+        wal_path: String,
+    ) -> Arc<Self> {
+        let capacity = queue_capacity.max(16);
+        let dead_letter_path = dead_letter_path
+            .map(|path| path.trim().to_string())
+            .filter(|path| !path.is_empty());
+        let (tx, mut rx) = mpsc::channel::<WorkerMessage>(capacity);
+        let stats = Arc::new(RwLock::new(PersistenceStats {
+            capacity,
+            dead_letter_path: dead_letter_path.clone(),
+            ..PersistenceStats::default()
+        }));
+        let worker_stats = Arc::clone(&stats);
+        let worker_dead_letter_path = dead_letter_path.map(PathBuf::from);
+        let wal = Arc::new(PersistenceWal::new(wal_path));
+        let worker_wal = Arc::clone(&wal);
+
+        crate::supervisor_actor::spawn_critical("persistence-worker", async move {
+            // Check WAL instance consistency before replay to detect
+            // accidental deletion/truncation of an already-initialized WAL.
+            // If consistency check fails, enter degraded mode instead of replay.
+            let mut replay_ok = true;
+            if let Err(e) = worker_wal.check_instance_consistency().await {
+                crate::supervisor_actor::report_critical_failure(
+                    "persistence-wal-consistency",
+                    e,
+                )
+                .await;
+                replay_ok = false;
+            }
+            if replay_ok {
+            match worker_wal.replay().await {
+                Ok(events) => {
+                    let mut replay: std::collections::VecDeque<(uuid::Uuid, PersistenceEvent)> =
+                        std::collections::VecDeque::from(events);
+                    process_worker_loop(
+                        &mut rx,
+                        &mut replay,
+                        &worker_stats,
+                        &worker_dead_letter_path,
+                        &worker_wal,
+                    )
+                    .await;
+                }
+                Err(error) => {
+                    crate::supervisor_actor::report_critical_failure(
+                        "persistence-wal",
+                        format!("WAL replay failed — persistence worker cannot start: {error}"),
+                    )
+                    .await;
+                    // Fail-closed: enter a degraded loop that only accepts
+                    // shutdown/control messages; all events are rejected.
+                    process_degraded_worker_loop(&mut rx).await;
+                }
+            }
+            } else {
+                // Instance consistency check failed — enter degraded mode.
+                process_degraded_worker_loop(&mut rx).await;
+            }
+        });
+
+        Arc::new(Self {
+            tx,
+            send_gate: Mutex::new(()),
+            stats,
+            wal,
+            suspended: AtomicBool::new(false),
+            closed: AtomicBool::new(false),
+        })
+    }
+
+    /// Check whether the persistence worker is suspended (idle mode).
+    pub fn is_suspended(&self) -> bool {
+        self.suspended.load(Ordering::Relaxed)
+    }
+
+    /// Set the idle-mode hint. Ingestion deliberately remains active.
+    pub async fn set_suspended(&self, suspended: bool) {
+        self.suspended.store(suspended, Ordering::Release);
+        if suspended {
+            info!("persistence idle hint enabled; ingestion remains active");
+        } else {
+            info!("persistence idle hint cleared");
+        }
+    }
+
+    pub async fn enqueue(&self, event: PersistenceEvent) -> Result<(), PersistenceEvent> {
+        let kind = event.kind();
+        let simulation = event.is_simulation();
+        let summary = event.summary();
+        let _send_guard = self.send_gate.lock().await;
+        if self.closed.load(Ordering::Acquire) {
+            record_dropped(&self.stats, kind, simulation, summary,
+                "persistence worker is shutting down".to_string()).await;
+            return Err(event);
+        }
+        // Reserve queue capacity BEFORE WAL admit so that a full queue
+        // produces backpressure to the caller instead of admitting to WAL
+        // without being able to process. This avoids the cancellation window
+        // where an event is fsynced to WAL but has no queue slot.
+        let permit = match self.tx.try_reserve() {
+            Ok(permit) => permit,
+            Err(mpsc::error::TrySendError::Full(_)) => {
+                record_dropped(&self.stats, kind, simulation, summary,
+                    "persistence worker queue full".to_string()).await;
+                return Err(event);
+            }
+            Err(mpsc::error::TrySendError::Closed(_)) => {
+                record_dropped(&self.stats, kind, simulation, summary,
+                    "persistence worker is shutting down".to_string()).await;
+                return Err(event);
+            }
+        };
+        // Queue capacity is reserved — WAL admit is now safe.
+        let (wal_id, needs_wal_ack) = match self.wal.admit(event.clone()).await {
+            Ok(id) => {
+                // Record WAL admission.
+                record_wal_received(&self.stats).await;
+                (id, true)
+            }
+            Err(error) => {
+                record_dropped(&self.stats, kind, simulation, summary, error).await;
+                return Err(event);
+            }
+        };
+        // Send using the reserved permit (infallible).
+        permit.send(WorkerMessage::Event { wal_id, event, needs_wal_ack });
+        record_queued(&self.stats, kind.clone(), simulation, summary).await;
+        Ok(())
+    }
+
+    /// Drain every event accepted before this control message.
+    pub async fn flush(&self, timeout: Duration) -> Result<(), String> {
+        let (reply, rx) = oneshot::channel();
+        {
+            let _send_guard = self.send_gate.lock().await;
+            if self.closed.load(Ordering::Acquire) {
+                return Err("persistence worker is shutting down".to_string());
+            }
+            self.tx
+                .send(WorkerMessage::Flush { reply })
+                .await
+                .map_err(|_| "persistence worker is closed".to_string())?;
+        }
+        tokio::time::timeout(timeout, rx)
+            .await
+            .map_err(|_| "persistence flush timed out".to_string())?
+            .map_err(|_| "persistence flush acknowledgement was dropped".to_string())??;
+        self.wal.compact().await?;
+        Ok(())
+    }
+
+    /// Drain accepted events, flush telemetry, then stop the worker.
+    pub async fn shutdown(&self, timeout: Duration) -> Result<(), String> {
+        let (reply, rx) = oneshot::channel();
+        {
+            let _send_guard = self.send_gate.lock().await;
+            if self.closed.swap(true, Ordering::AcqRel) {
+                return Ok(());
+            }
+            if self
+                .tx
+                .send(WorkerMessage::Shutdown { reply })
+                .await
+                .is_err()
+            {
+                self.closed.store(false, Ordering::Release);
+                return Err("persistence worker is closed".to_string());
+            }
+        }
+        let result = match tokio::time::timeout(timeout, rx).await {
+            Ok(Ok(result)) => result,
+            Ok(Err(_)) => Err("persistence shutdown acknowledgement was dropped".to_string()),
+            Err(_) => Err("persistence shutdown timed out".to_string()),
+        };
+        if let Err(error) = result {
+            // A failed control operation did not establish that the worker stopped.
+            // Re-open admission so an operator can retry flush/shutdown explicitly.
+            self.closed.store(false, Ordering::Release);
+            return Err(error);
+        }
+        self.wal.compact().await?;
+        Ok(())
+    }
+
+    pub async fn stats(&self) -> PersistenceStats {
+        let mut stats = self.stats.read().await.clone();
+        stats.refresh_derived();
+        stats
+    }
+
+    pub async fn is_healthy(&self) -> bool {
+        self.wal.replay_succeeded()
+            && !self.wal.is_degraded()
+            && !self.closed.load(Ordering::Acquire)
+    }
+
+}

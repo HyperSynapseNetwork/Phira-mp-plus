@@ -1,0 +1,144 @@
+# Phira-mp+ 服务端配置文件
+# 所有选项均有默认值，可按需覆盖。
+# 默认读取当前工作目录的 server_config.yml，也可通过 --config <FILE> 指定。
+# 只有显式提供的命令行参数才覆盖同名 YAML 字段；RUST_LOG/NO_COLOR 只影响日志或终端显示。
+# 完整说明见 docs/configuration.md。
+
+# ---- 网络 ----
+
+# TCP 监听端口（游戏客户端直连）
+port: 12346
+
+# PMP HTTP/SSE/WebSocket 端口。仅应位于受控网络，不直接暴露公网。
+http_port: 12347
+
+# HTTP/SSE 监听地址。默认 0.0.0.0（所有接口）。
+# 生产环境中如通过反向代理访问，建议改为 127.0.0.1。
+# http_bind_address: "0.0.0.0"
+
+# 可信转发头兼容监听端口。该端口读取 X-Forwarded-For；它不是 HAProxy PROXY protocol v1/v2。
+# 只能放在可信反向代理之后，禁止直接暴露给不可信客户端。设为 0 禁用。
+# proxy_protocol_port: 12344
+
+# 认证完成前与在线会话容量。认证任务通过有界并发执行，避免慢认证阻塞 TCP accept。
+max_sessions: 4096
+max_pending_auth: 256
+
+# SIGTERM/Ctrl+C 后，通知会话、插件事件、持久化 flush 与受监督任务退出共享的总时限。
+graceful_shutdown_timeout_secs: 15
+
+# ---- 认证 / Phira API ----
+
+# 允许旁观的 Phira 用户 ID 列表
+monitors:
+  - 2
+
+# 全局 Phira API 端点。认证默认使用它；房间未设置覆盖时，查谱面、查成绩也使用它。
+# 单个房间可用 `room set <房间ID> phira_api_endpoint <url>` 临时覆盖，设置后立即生效。
+phira_api_endpoint: "https://phira.5wyxi.com"
+
+# ---- 真实网络压测（高级） ----
+# Real Benchmark 是显式真实网络测试，默认不推荐。
+# Simulation 不需要 token，不访问 Phira。
+# 如需使用 Real Benchmark，请看 docs/simulation.md。
+
+# ---- 插件 / 数据 ----
+
+# 插件目录路径（存放 .wasm 文件）
+plugins_dir: plugins
+
+# 扩展数据持久化 JSON 文件路径
+# extensions_file: data/extensions.json
+
+# PostgreSQL 数据库连接。留空时默认尝试 postgres://postgres:postgres@localhost:5432/phira_mp_plus，会自动建库。
+database_url: ""
+
+# 统一 PostgreSQL 历史数据保留天数。0 表示不自动清理。
+persistence_retention_days: 30
+
+# Touches/Judges 高频遥测在 PostgreSQL 中的独立保留天数。
+# 未设置时遵循 persistence_retention_days；设为 0 表示不自动清理遥测。
+# touch_judge_retention_days: 7
+
+# ---- Runtime v2 内部策略 ----
+
+# Runtime v2 不再继续膨胀管理命令；核心开关尽量放在配置里。
+# telemetry_cutover_mode 可选：direct_only / worker_preferred / worker_authoritative。
+# 默认使用 direct_only；先通过 worker_preferred 验证队列和数据库，再显式切换 worker_authoritative。
+# worker_preferred 直写成功时 Worker 是镜像；直写失败但 Worker 接收时由 Worker 补偿该批次。
+# runtime_v2:
+#   persistence_queue_capacity: 4096
+#   # 数据库重试耗尽后的失败事件保全。设为 null 可禁用；禁用后若数据库最终失败，Supervisor 会进入 degraded。
+#   # dead-letter 是数据库最终失败保全；WAL 则覆盖进入内存队列前的崩溃窗口。
+#   persistence_dead_letter_path: data/persistence-dead-letter.jsonl
+#   persistence_wal_path: data/persistence-worker.wal.jsonl  # fsync before queue admission; replayed on startup
+#   telemetry_cutover_mode: direct_only  # direct_only | worker_preferred (direct first; Worker mirror or canonical compensation) | worker_authoritative (Worker normal-operation single writer)
+#   phira_http:
+#     timeout_ms: 5000
+#     max_retries: 3
+#     base_backoff_ms: 200
+#     max_backoff_ms: 3000
+#     circuit_breaker:
+#       enabled: true
+#       failure_threshold: 8
+#       open_duration_ms: 20000
+
+# ---- 功能开关 ----
+
+# 是否启用聊天功能
+chat_enabled: true
+
+# 是否启用交互式 TUI/CLI 管理控制台
+cli_enabled: true
+
+# ---- 房间 / 公开展示 ----
+
+# 隐藏房间不是全局配置项，而是房间状态：
+# - 房间名以 "-" 开头时默认隐藏；
+# - 隐藏房间不会出现在 Web API 与欢迎语 [active_rooms] 中；
+# - 可通过 room hide/unhide、room set <id> hidden true|false、WIT/API 手动管理。
+
+# 最大房间数（不设则无限制）
+# max_rooms: 100
+
+# 每房间最大玩家数（不设则使用默认 100）
+# max_users_per_room: 100
+
+# ---- 限速 / 数据保留 ----
+
+# 连接速率限制（每个窗口内允许的连接次数）
+connection_rate_limit: 30
+
+# 连接速率统计窗口（秒）
+connection_rate_window: 10
+
+# 轮次 Touches/Judges 数据保留天数（0 为不保留）
+round_data_retention_days: 7
+
+# ---- WASM 运行时限制 ----
+
+# WASM 插件资源限制。一般无需修改；插件较大或事件较多时可按需调高。
+# wasm_runtime:
+#   max_memory_mb: 64
+#   fuel_per_call: 10000000
+#   max_stack_bytes: 2097152
+#   http_timeout_secs: 10
+#   max_http_response_bytes: 2097152
+#   max_file_bytes: 4194304
+#   allow_private_network: false
+#   max_event_concurrency: 8  # 单个有序事件内并行执行的插件数
+#   event_queue_capacity: 2048
+#   call_timeout_ms: 2000
+
+# ---- 定制 / 管理 ----
+
+# 服务器名称（显示在欢迎语等位置）
+# server_name: "My Phira Server"
+
+# 管理员 API 令牌（预留字段）
+# admin_token: "your-secret-token"
+
+# 游戏内管理员 Phira ID。管理员在创建房间弹窗输入 _<CLI命令> 时不会创建房间，
+# 而是执行服务端 CLI 命令，并把输出通过聊天消息发回该客户端。
+# 也可通过 CLI admin-id 或 WIT/host admin.* 动态维护。
+admin_phira_ids: []

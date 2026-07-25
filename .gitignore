@@ -1,0 +1,37 @@
+# Rust build artifacts
+target/
+**/target/
+
+# Log files
+log/
+*.log
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Environment
+.env
+*.local
+
+# Runtime data
+data/
+
+# Generated
+**/*.wasm
+
+# Hidden directories (reference material, local config)
+.??*
+phira-mp/phira-mp-server/
+phira-mp/phira-mp-client/
+phira-mp/target/
+phira-mp/Cargo.lock
+*.patch
+PMP_PRODUCTION_PRODUCTIZATION_AUDIT.md
+0 * * * *
