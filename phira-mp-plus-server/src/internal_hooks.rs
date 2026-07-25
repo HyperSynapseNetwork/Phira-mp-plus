@@ -173,7 +173,7 @@ fn compile_template(tpl: &str, show_time: bool) -> Vec<WelcomeSegment> {
     segs
 }
 
-pub fn send_welcome(user_id: i32, user_name: &str, online: usize, state: &PlusServerState) {
+pub fn send_welcome(user_id: i32, user_name: &str, online: usize, state: &PlusServerState) -> usize {
     use std::time::{SystemTime, UNIX_EPOCH};
     let compiled = WELCOME_SEGMENTS.lock().unwrap();
     let mut texts: Vec<String> = Vec::with_capacity(compiled.len());
@@ -332,6 +332,8 @@ pub fn send_welcome(user_id: i32, user_name: &str, online: usize, state: &PlusSe
         texts.push(text);
     }
 
+    let line_count = texts.len();
+
     // Send all welcome messages in order in a single spawned task.
     // Previously each message was spawned individually, which caused
     // non-deterministic send order when tasks ran concurrently.
@@ -371,6 +373,7 @@ pub fn send_welcome(user_id: i32, user_name: &str, online: usize, state: &PlusSe
             }
         }
     }
+    line_count
 }
 
 async fn init_welcome(_state: &PlusServerState, pm: &PluginManager) {
