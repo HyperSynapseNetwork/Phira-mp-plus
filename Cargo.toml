@@ -13,7 +13,7 @@ edition = "2021"
 license = "AGPL-3.0"
 
 [profile.release]
-lto = true
+lto = "thin"
 codegen-units = 1
 strip = "symbols"
 
