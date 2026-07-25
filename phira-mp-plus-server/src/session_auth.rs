@@ -16,11 +16,13 @@ use tracing::warn;
 /// falling back to the static config value.
 pub(crate) async fn resolve_phira_api_endpoint(server: &PlusServerState) -> String {
     let lc = server.live_config.read().await;
-    if lc.phira_api_endpoint.is_empty() {
+    let ep = if lc.phira_api_endpoint.is_empty() || lc.phira_api_endpoint == server.config.phira_api_endpoint {
         server.config.phira_api_endpoint.clone()
     } else {
         lc.phira_api_endpoint.clone()
-    }
+    };
+    tracing::debug!(%ep, live = %lc.phira_api_endpoint, config = %server.config.phira_api_endpoint, "resolve_phira_api_endpoint");
+    ep
 }
 
 const AUTH_FAILURE_RESPONSE_DELAY: Duration = Duration::from_millis(50);
