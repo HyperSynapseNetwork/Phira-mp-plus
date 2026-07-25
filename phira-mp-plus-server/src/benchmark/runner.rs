@@ -7,7 +7,9 @@ use crate::benchmark::command::BenchmarkRunArgs;
 use crate::benchmark::config::BenchmarkConfig;
 use crate::benchmark::environment::EnvironmentSnapshot;
 use crate::benchmark::report::BenchmarkReport;
+use crate::server::PlusServerState;
 use serde::{Deserialize, Serialize};
+use std::sync::Arc;
 
 /// 基准测试运行器状态
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -38,6 +40,8 @@ pub enum RunnerState {
 pub struct BenchmarkRunner {
     config: BenchmarkConfig,
     state: RunnerState,
+    /// Optional server state reference (required for Real mode Mock Phira integration).
+    pub server_state: Option<Arc<PlusServerState>>,
 }
 
 impl BenchmarkRunner {
@@ -47,6 +51,7 @@ impl BenchmarkRunner {
         Self {
             config,
             state: RunnerState::Idle,
+            server_state: None,
         }
     }
 
@@ -55,7 +60,13 @@ impl BenchmarkRunner {
         Self {
             config,
             state: RunnerState::Idle,
+            server_state: None,
         }
+    }
+
+    /// 设置服务器状态引用（Real mode 需要）
+    pub fn set_server_state(&mut self, state: Arc<PlusServerState>) {
+        self.server_state = Some(state);
     }
 
     /// 构建配置（从 args 合并预设参数）
@@ -112,8 +123,12 @@ impl BenchmarkRunner {
     /// 委托到 `modes::real::run_real()`，连接真实 PMP 服务并执行
     /// 二进制协议认证与房间命令。
     async fn run_real(&self) -> Result<BenchmarkReport, String> {
-        let result =
-            crate::benchmark::modes::real::run_real(self.config.clone()).await?;
+        let state = self
+            .server_state
+            .as_ref()
+            .ok_or_else(|| "Real mode requires server_state to be set via set_server_state()".to_string())?;
+        let result = crate::benchmark::modes::real::run_real(self.config.clone(), state.as_ref())
+            .await?;
         Ok(result.report)
     }
 

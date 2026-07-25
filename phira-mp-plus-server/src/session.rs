@@ -6,7 +6,8 @@ use crate::l10n::{Language, LANGUAGE};
 use crate::phira_client::PhiraRetryNoticeTarget;
 use crate::server::PlusServerState;
 use crate::session_auth::{
-    authenticate_remote_with_notice, ban_rejection_message, send_auth_rejection, AuthUserInfo,
+    authenticate_remote_with_notice, ban_rejection_message, resolve_phira_api_endpoint,
+    send_auth_rejection, AuthUserInfo,
 };
 use anyhow::{anyhow, bail, Result};
 use phira_mp_common::{ClientCommand, Message, ServerCommand, Stream};
@@ -164,10 +165,11 @@ impl Session {
                                             }
                                         } else {
                                             // 缓存未命中，请求 API；遇到 “认证失败 502错误”/502/5xx 时重试并提示该客户端。
+                                            let endpoint = resolve_phira_api_endpoint(&server).await;
                                             match server
                                                 .phira_client
                                                 .get_json::<AuthUserInfo>(
-                                                    &server.config.phira_api_endpoint,
+                                                    &endpoint,
                                                     None,
                                                     "/me",
                                                     Some(&token),

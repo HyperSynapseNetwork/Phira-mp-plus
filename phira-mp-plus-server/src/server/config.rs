@@ -109,6 +109,10 @@ impl Default for RuntimeConfig {
 /// Updated via the `config reload` CLI command or file watcher.
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct LiveConfig {
+    /// Hot-reloadable Phira API endpoint override (used by Mock Phira in benchmarks).
+    /// When empty, consumers fall back to `PlusConfig::phira_api_endpoint`.
+    #[serde(default)]
+    pub phira_api_endpoint: String,
     /// Chat feature toggle.
     #[serde(default)]
     pub chat_enabled: bool,
@@ -139,6 +143,7 @@ impl LiveConfig {
     /// Extract hot-reloadable fields from a full config.
     pub fn from_full(config: &PlusConfig) -> Self {
         Self {
+            phira_api_endpoint: config.phira_api_endpoint.clone(),
             chat_enabled: config.chat_enabled,
             server_name: config.server_name.clone(),
             monitors: config.monitors.clone(),

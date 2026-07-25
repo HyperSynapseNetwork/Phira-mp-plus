@@ -39,24 +39,6 @@ impl CliHandler {
             return;
         }
 
-        // `benchmark run --mode real …` — not-yet-implemented (early exit)
-        if matches!(args.first().copied(), Some("run"))
-            && args.len() > 1
-            && matches!(args.get(1).copied(), Some("--mode"))
-            && matches!(args.get(2).copied(), Some("real"))
-        {
-            self.out(format!("  {} Real mode removed — use --mode simulation", c::yellow("!")));
-            self.out(format!(
-                "  {} This mode requires starting a real PMP server, connecting mock clients over real TCP, and requires PostgreSQL and optionally mock Phira HTTP",
-                c::dim("▸")
-            ));
-            self.out(format!(
-                "  {} Use --mode simulation for the in-process benchmark",
-                c::dim("▸")
-            ));
-            return;
-        }
-
         // `benchmark run --<flag> …` — new-style parametric benchmark run
         if matches!(args.first().copied(), Some("run"))
             && args.len() > 1
@@ -94,26 +76,9 @@ impl CliHandler {
             self.print_benchmark_reports(args).await;
             return;
         }
-        if matches!(args.first().copied(), Some("hybrid"))
-            || (matches!(args.first().copied(), Some("run"))
-                && matches!(args.get(1).copied(), Some("hybrid")))
-            || matches!(args.first().copied(), Some("real"))
-            || (matches!(args.first().copied(), Some("run"))
-                && matches!(args.get(1).copied(), Some("real")))
-        {
-            self.out(format!(
-                "  {} Real/Hybrid benchmark mode is removed. Use `benchmark run --mode simulation` instead.",
-                c::yellow("!")
-            ));
-            self.out(format!(
-                "  {} See `benchmark list` for available scenarios and presets.",
-                c::dim("▸")
-            ));
-            return;
-        }
-        // Bare numeric arguments legacy benchmark is removed.
+        // Redirect to `benchmark run --mode real`
         self.out(format!(
-            "  {} Legacy benchmark mode is removed. Use `benchmark run --mode simulation` instead.",
+            "  {} Use `benchmark run --mode real` to run a real-mode benchmark",
             c::yellow("!")
         ));
         self.out(format!(
@@ -124,11 +89,11 @@ impl CliHandler {
 
     fn print_benchmark_modes(&self) {
         self.out(format!("  {} Benchmark modes", c::green("◆")));
-        self.out(format!("  {} simulation  默认压测路径：不访问 Phira，不需要真实账号，suite/report 输出统一 BenchmarkReport", c::dim("│")));
+        self.out(format!("  {} real  默认压测路径：连接真实 PMP 服务器，使用二进制协议认证与房间命令交互", c::dim("│")));
         self.out(format!("  {} examples", c::cyan("▸")));
-        self.out("    benchmark simulation suite smoke".to_string());
-        self.out("    benchmark simulation run medium scenario=touch_judge_burst duration=30".to_string());
-        self.out("    benchmark run --mode simulation --scenario gameplay --preset standard".to_string());
+        self.out("    benchmark run --mode real --scenario gameplay --preset standard".to_string());
+        self.out("    benchmark run --mode real --clients 10 --rooms 1 --duration 30".to_string());
+        self.out("    benchmark suite --preset quick".to_string());
         self.out("    benchmark modes".to_string());
     }
 
@@ -161,7 +126,7 @@ impl CliHandler {
                 rows.len(),
             ));
             if rows.is_empty() {
-                self.out(format!("  {} 暂无已持久化 benchmark report；先运行 benchmark/simulation，或检查 database_url", c::yellow("?")));
+                self.out(format!("  {} 暂无已持久化 benchmark report；先运行 benchmark，或检查 database_url", c::yellow("?")));
             } else {
                 for row in rows {
                     self.out(format!(
@@ -211,7 +176,7 @@ impl CliHandler {
             snapshot.recent.len(),
         ));
         if snapshot.latest_by_mode.is_empty() {
-            self.out(format!("  {} 尚无 benchmark.completed 报告；先运行 simulation suite / benchmark run --mode simulation", c::yellow("?")));
+            self.out(format!("  {} 尚无 benchmark.completed 报告；先运行 benchmark run --mode real", c::yellow("?")));
             return;
         }
         self.out(format!("  {} latest by mode", c::cyan("▸")));
@@ -239,7 +204,7 @@ impl CliHandler {
                 ));
             }
         }
-        self.out(format!("  {} examples: benchmark report simulation | benchmark report 16", c::dim("▸")));
+        self.out(format!("  {} examples: benchmark report real | benchmark report 16", c::dim("▸")));
     }
 
     async fn bind_benchmark(&self, _args: &[&str]) {
@@ -318,7 +283,10 @@ impl CliHandler {
         // args = ["run", "--mode", "simulation", "--scenario", "gameplay", ...]
         let cmd_args = &args[1..]; // skip "run"
 
-        let mut run_args = crate::benchmark::command::BenchmarkRunArgs::default();
+        let mut run_args = crate::benchmark::command::BenchmarkRunArgs {
+            mode: crate::benchmark::command::BenchmarkRunMode::Real,
+            ..crate::benchmark::command::BenchmarkRunArgs::default()
+        };
         let mut output_format = OutputFormat::Text;
         let mut show_help = false;
         let mut explicit_clients = false;
@@ -332,7 +300,7 @@ impl CliHandler {
                     i += 1;
                     if i >= cmd_args.len() {
                         self.out(format!(
-                            "  {} --mode requires a value (simulation|real)",
+                            "  {} --mode requires a value (real|simulation)",
                             c::red("✗")
                         ));
                         return;
@@ -341,7 +309,7 @@ impl CliHandler {
                         Some(mode) => run_args.mode = mode,
                         None => {
                             self.out(format!(
-                                "  {} invalid mode: '{}'. Use simulation|real",
+                                "  {} invalid mode: '{}'. Use real|simulation",
                                 c::red("✗"),
                                 cmd_args[i]
                             ));
@@ -532,39 +500,6 @@ impl CliHandler {
             return;
         }
 
-        // If mode is real, return clean "not yet implemented" error
-        if run_args.mode == crate::benchmark::command::BenchmarkRunMode::Real {
-            self.out(format!(
-                "  {} Real mode has been removed — use --mode simulation",
-                c::yellow("?")
-            ));
-            self.out(format!(
-                "  {} Real mode requires:",
-                c::dim("▸")
-            ));
-            self.out(format!(
-                "  {}   - Starting a real PMP server process",
-                c::dim("▸")
-            ));
-            self.out(format!(
-                "  {}   - Mock Phira HTTP server",
-                c::dim("▸")
-            ));
-            self.out(format!(
-                "  {}   - PostgreSQL database",
-                c::dim("▸")
-            ));
-            self.out(format!(
-                "  {}   - Real TCP client connections",
-                c::dim("▸")
-            ));
-            self.out(format!(
-                "  {} Use --mode simulation (default) for in-process benchmarks",
-                c::dim("▸")
-            ));
-            return;
-        }
-
         // Apply preset defaults for values not explicitly overridden by the user.
         // If the user supplied --clients/--rooms/--duration via CLI, those take
         // priority over the preset.  Fields the user didn't touch get filled from
@@ -583,8 +518,9 @@ impl CliHandler {
 
         // Announce
         self.out(format!(
-            "  {} Starting benchmark: mode=simulation scenario={} preset={} clients={} rooms={} duration={}s seed={}",
+            "  {} Starting benchmark: mode={} scenario={} preset={} clients={} rooms={} duration={}s seed={}",
             c::green("◆"),
+            run_args.mode.as_str(),
             run_args.scenario.as_str(),
             run_args.preset.as_str(),
             run_args.clients,
@@ -595,6 +531,7 @@ impl CliHandler {
 
         // Execute via BenchmarkRunner
         let mut runner = crate::benchmark::runner::BenchmarkRunner::from_args(run_args);
+        runner.set_server_state(std::sync::Arc::clone(&self.state));
         match runner.run().await {
             Ok(report) => {
                 self.out(format!("  {} Benchmark completed", c::green("✓")));
@@ -706,7 +643,7 @@ impl CliHandler {
             ));
 
             let mut run_args = crate::benchmark::command::BenchmarkRunArgs::default();
-            run_args.mode = crate::benchmark::command::BenchmarkRunMode::Simulation;
+            run_args.mode = crate::benchmark::command::BenchmarkRunMode::Real;
             run_args.scenario = *scenario;
             run_args.preset = preset;
             run_args.clients = preset_params.clients;
@@ -714,6 +651,7 @@ impl CliHandler {
             run_args.duration = preset_params.duration;
 
             let mut runner = crate::benchmark::runner::BenchmarkRunner::from_args(run_args);
+            runner.set_server_state(std::sync::Arc::clone(&self.state));
             match runner.run().await {
                 Ok(report) => {
                     all_passed += 1;
@@ -1027,7 +965,7 @@ impl CliHandler {
         self.out(String::new());
         self.out(format!("  {} Options:", c::cyan("▸")));
         self.out(format!(
-            "  {}   --mode <mode>         Benchmark mode: simulation (default) or real",
+            "  {}   --mode <mode>         Benchmark mode: real (default) or simulation",
             c::dim("│")
         ));
         self.out(format!(
@@ -1065,7 +1003,7 @@ impl CliHandler {
         self.out(String::new());
         self.out(format!("  {} Examples:", c::cyan("▸")));
         self.out(format!(
-            "  {}   benchmark run --mode simulation --scenario gameplay --preset standard",
+            "  {}   benchmark run --mode real --scenario gameplay --preset standard",
             c::dim("│")
         ));
         self.out(format!(
