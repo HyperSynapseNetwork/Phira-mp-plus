@@ -88,8 +88,8 @@ impl BenchmarkConfig {
             metrics_interval_ms: 1_000,
             profile_enabled: false,
             persist_events: false,
-            mock_phira: false,
-            mock_phira_port: 9877,
+            mock_phira: true,
+            mock_phira_port: 0,
         }
     }
 
@@ -169,8 +169,8 @@ impl Default for RealModeConfig {
             database_url: String::new(),
             connect_timeout: Duration::from_secs(10),
             reconnect_delay: Duration::from_millis(500),
-            mock_phira: false,
-            mock_phira_port: 9877,
+            mock_phira: true,
+            mock_phira_port: 0,
         }
     }
 }
