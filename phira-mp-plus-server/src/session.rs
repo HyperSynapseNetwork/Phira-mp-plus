@@ -387,9 +387,7 @@ impl Session {
                                         online,
                                         &server,
                                     );
-                                            },
-                                        );
-                                    }
+                                    // 后台定时刷新欢迎语（只在用户不在房间时刷新）
                                     // 通知 room monitor 新用户
                                     let uid = user.id;
                                     crate::supervisor_actor::spawn_named(
