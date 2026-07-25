@@ -146,8 +146,10 @@ pub async fn maybe_read_proxy_header(
         Ok(s) => s,
         Err(e) => {
             warn!("maybe_read_proxy_header: into_std failed: {e}");
-            return (TcpStream::from_std(std::net::TcpStream::connect("127.0.0.1:1")
-                .expect("fallback connect for error path")), None);
+            let fallback = std::net::TcpStream::connect("127.0.0.1:1")
+                .expect("fallback connect for error path");
+            return (TcpStream::from_std(fallback)
+                .expect("fallback tokio convert"), None);
         }
     };
 
