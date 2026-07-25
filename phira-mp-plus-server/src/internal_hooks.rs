@@ -318,25 +318,9 @@ pub fn send_welcome(user_id: i32, user_name: &str, online: usize, state: &PlusSe
                                 .and_then(|g| g.get(uid))
                                 .map(|u| u.name.clone())
                                 .or_else(|| {
-                                    let cached = PLAYERS.lock().unwrap().get(uid).cloned();
-                                    if cached.is_some() {
-                                        cached
-                                    } else {
-                                        // Fetch from Phira API and cache
-                                        let client = &state.phira_client;
-                                        tokio::runtime::Handle::try_current()
-                                            .ok()
-                                            .and_then(|h| {
-                                                h.block_on(client.fetch_user_by_id(&endpoint, *uid))
-                                            })
-                                            .or_else(|| {
-                                                let rt = tokio::runtime::Builder::new_current_thread()
-                                                    .enable_all()
-                                                    .build()
-                                                    .ok()?;
-                                                rt.block_on(client.fetch_user_by_id(&endpoint, *uid))
-                                            })
-                                    }
+                                    PLAYERS.lock().unwrap().get(uid).cloned()
+                                    // Missing usernames are prefetched in background when
+                                    // a user connects (track_player is called on auth).
                                 })
                                 .unwrap_or_default();
                             format!("#{} {}: {:.1}h", i + 1, name, *secs as f64 / 3600.0)
@@ -363,6 +347,22 @@ pub fn send_welcome(user_id: i32, user_name: &str, online: usize, state: &PlusSe
                                 let cmd =
                                     ServerCommand::Message(Message::Chat { user: 0, content });
                                 let _ = session.stream.send(cmd).await;
+                            }
+                        });
+                        // Background prefetch missing usernames for playtime leaderboard.
+                        let client = Arc::clone(&state.phira_client);
+                        let endpoint = state.config.phira_api_endpoint.clone();
+                        handle.spawn(async move {
+                            let pt = PLAYTIME_DATA.lock().unwrap();
+                            let uids: Vec<i32> = pt.keys().copied().take(50).collect();
+                            drop(pt);
+                            for uid in uids {
+                                let mut guard = PLAYERS.lock().unwrap();
+                                if guard.contains_key(&uid) { continue; }
+                                drop(guard);
+                                if let Some(name) = client.fetch_user_by_id(&endpoint, uid).await {
+                                    track_player(uid, &name);
+                                }
                             }
                         });
                     }
