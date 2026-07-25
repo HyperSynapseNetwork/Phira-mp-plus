@@ -370,7 +370,6 @@ pub fn send_welcome(user_id: i32, user_name: &str, online: usize, state: &PlusSe
                     }
                 }
             }
-    line_count
 }
 
 async fn init_welcome(_state: &PlusServerState, pm: &PluginManager) {
