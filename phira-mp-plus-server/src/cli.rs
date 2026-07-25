@@ -123,7 +123,7 @@ pub async fn execute_cli_once(state: Arc<PlusServerState>, line: String) -> Vec<
     let (out_tx, mut out_rx) = mpsc::channel::<String>(256);
     let (cmd_tx, cmd_rx) = mpsc::channel::<String>(16);
     let handler = CliHandler::new(state, out_tx);
-    let task = tokio::task::spawn_blocking(move || {
+    let _task = tokio::task::spawn_blocking(move || {
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
