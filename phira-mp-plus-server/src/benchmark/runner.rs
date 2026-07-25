@@ -109,10 +109,12 @@ impl BenchmarkRunner {
 
     /// 真实模式运行
     ///
-    /// TODO: 启动真实 PMP 服务，使用 `phira_client` 连接模拟客户端。
+    /// 委托到 `modes::real::run_real()`，连接真实 PMP 服务并执行
+    /// 二进制协议认证与房间命令。
     async fn run_real(&self) -> Result<BenchmarkReport, String> {
-        // TODO: 实现真实模式运行
-        Err("Real mode runner not yet implemented".to_string())
+        let result =
+            crate::benchmark::modes::real::run_real(self.config.clone()).await?;
+        Ok(result.report)
     }
 
     /// 返回当前状态
