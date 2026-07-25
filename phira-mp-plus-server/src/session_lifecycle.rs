@@ -27,7 +27,6 @@ pub struct User {
     pub admin_cli_pending: Mutex<Option<String>>,
     /// 用户确认加入进行中游戏的房间 ID（第一次请求时设置，第二次直接加入）。
     pub join_pending_game: RwLock<Option<String>>,
-    /// 用户进入房间的时间戳（用于欢迎语刷新逻辑判断刚进入房间）。
 }
 
 impl User {
