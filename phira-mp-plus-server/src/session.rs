@@ -445,7 +445,7 @@ impl Session {
                                                             }
                                                         }
 
-                                                        interval_secs = if lines > 24 { 10 } else { 10 };
+                                                        interval_secs = 10;
                                                         was_in_room = false;
                                                     } else if !in_room && was_in_room {
                                                         // 刚离开房间：重置状态，下一轮开始重新发送欢迎语
