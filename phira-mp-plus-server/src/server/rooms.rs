@@ -238,18 +238,22 @@ impl PlusServerState {
             }
         };
         if let Some(chart_id) = chart_id {
-            if let Some(chart) = phira_client.fetch_chart_by_id(&endpoint, chart_id).await {
-                let name = chart.name.clone();
-                let _ = state
-                    .room_commands
-                    .set_chart(state, &room.id.to_string(), chart_id, &name, 0)
-                    .await;
-                room.publish_update(phira_mp_common::PartialRoomData {
-                    chart: Some(chart_id),
-                    ..Default::default()
-                })
+            let name = match phira_client.fetch_chart_by_id(&endpoint, chart_id).await {
+                Some(chart) => chart.name,
+                None => {
+                    tracing::warn!("refresh_metadata: failed to fetch chart {chart_id}");
+                    format!("#{chart_id}")
+                }
+            };
+            let _ = state
+                .room_commands
+                .set_chart(state, &room.id.to_string(), chart_id, &name, 0)
                 .await;
-            }
+            room.publish_update(phira_mp_common::PartialRoomData {
+                chart: Some(chart_id),
+                ..Default::default()
+            })
+            .await;
         }
     }
 

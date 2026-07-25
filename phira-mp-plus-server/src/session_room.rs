@@ -577,22 +577,29 @@ pub async fn select_chart(user: Arc<User>, id: i32) -> Result<()> {
         trace!("fetch");
         // Use server's default phira endpoint (room override is in actor state now).
         let endpoint = &user.server.config.phira_api_endpoint;
-        let res: crate::server::Chart = user
+        let chart_name: String = match user
             .server
             .phira_client
-            .get_json(
+            .get_json::<crate::server::Chart>(
                 endpoint,
                 None,
                 &format!("/chart/{id}"),
                 None,
-                PhiraRetryNoticeTarget::User(user.as_ref()),
+                crate::phira_client::PhiraRetryNoticeTarget::Silent,
             )
-            .await?;
-        debug!("chart is {res:?}");
+            .await
+        {
+            Ok(chart) => chart.name,
+            Err(_) => {
+                warn!("failed to fetch chart {id} from Phira API; using ID as name");
+                format!("#{id}")
+            }
+        };
+        debug!("chart name: {chart_name}");
         // Route state mutation through RoomActor mailbox for serialized access.
         user.server
             .room_commands
-            .set_chart(&user.server, &room.id.to_string(), id, &res.name, user.id)
+            .set_chart(&user.server, &room.id.to_string(), id, &chart_name, user.id)
             .await
             .map_err(|e| anyhow!("set chart failed: {e}"))?;
         Ok(())
