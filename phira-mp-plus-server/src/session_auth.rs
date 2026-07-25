@@ -21,7 +21,7 @@ pub(crate) async fn resolve_phira_api_endpoint(server: &PlusServerState) -> Stri
     } else {
         lc.phira_api_endpoint.clone()
     };
-    tracing::debug!(%ep, live = %lc.phira_api_endpoint, config = %server.config.phira_api_endpoint, "resolve_phira_api_endpoint");
+    tracing::error!(%ep, live = %lc.phira_api_endpoint, config = %server.config.phira_api_endpoint, "resolve_phira_api_endpoint");
     ep
 }
 
