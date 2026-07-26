@@ -115,33 +115,32 @@ jobs:
           sudo -u postgres psql -c "CREATE DATABASE phira_mp_plus;" 2>/dev/null || true
       - name: Build with profile-generate
         run: |
-          mkdir -p /tmp/pgo-data
-          cargo build --locked --release --target ${{ matrix.target }}
-        env:
-          RUSTFLAGS: "-Cprofile-generate=/tmp/pgo-data"
+          PGO_DIR="/tmp/pgo-data/${{ matrix.target }}"
+          mkdir -p "$PGO_DIR"
+          RUSTFLAGS="-Cprofile-generate=$PGO_DIR" cargo build --locked --release --target ${{ matrix.target }}
       - if: matrix.os == 'ubuntu-latest'
         name: Run workload to collect profiles
         run: |
+          PGO_DIR="/tmp/pgo-data/${{ matrix.target }}"
           export PM_DATABASE_URL="postgres://postgres:postgres@localhost:5432/phira_mp_plus"
-          export LLVM_PROFILE_FILE="/tmp/pgo-data/%m_%p.profraw"
-          # Start instrumented server
+          export LLVM_PROFILE_FILE="$PGO_DIR/%m_%p.profraw"
           target/${{ matrix.target }}/release/phira-mp-plus-server --port 22346 --http-port 22347 --no-cli &
           SERVER_PID=$!
           sleep 4
-          # Run benchmark to generate profile data
           echo "benchmark run --mode real --duration 10s" | timeout 20 target/${{ matrix.target }}/release/phira-mp-plus-server --port 22348 --http-port 22349 --no-cli 2>/dev/null || true
-          # Graceful shutdown to flush profile data
           kill -TERM $SERVER_PID 2>/dev/null || true
           sleep 2
-          ls -la /tmp/pgo-data/ 2>/dev/null || true
-          llvm-profdata merge -output=/tmp/pgo-data/merged.profdata /tmp/pgo-data/*.profraw 2>/dev/null && echo "PGO profiles merged" || echo "No PGO profiles generated"
-      - name: Build with profile-use (or normal build if no profile)
+          ls -la "$PGO_DIR/" 2>/dev/null
+          llvm-profdata merge -output="$PGO_DIR/merged.profdata" "$PGO_DIR"/*.profraw 2>/dev/null && echo "PGO profiles merged for ${{ matrix.target }}" || echo "WARNING: No PGO profiles for ${{ matrix.target }}"
+      - name: Build with profile-use
         run: |
-          PROFILES=/tmp/pgo-data/merged.profdata
+          PGO_DIR="/tmp/pgo-data/${{ matrix.target }}"
+          PROFILES="$PGO_DIR/merged.profdata"
           if [ -f "$PROFILES" ]; then
             RUSTFLAGS="-Cprofile-use=$PROFILES -Cllvm-args=-pgo-warn-missing-function=false" \
               cargo build --locked --release --target ${{ matrix.target }}
           else
+            echo "WARNING: No PGO profile at $PROFILES, building without PGO"
             cargo build --locked --release --target ${{ matrix.target }}
           fi
       - run: cp ${{ matrix.artifact-path }} ${{ matrix.artifact-name }}
