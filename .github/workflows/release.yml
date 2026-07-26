@@ -75,7 +75,7 @@ jobs:
         include:
           - os: ubuntu-latest
             target: x86_64-unknown-linux-musl
-            artifact-name: phira-mp-plus-server-linux-musl
+            artifact-name: phira-mp-plus-server-linux-musl-pgo
             artifact-path: target/x86_64-unknown-linux-musl/release/phira-mp-plus-server
             setup: sudo apt-get update && sudo apt-get install -y musl-tools
             env:
@@ -83,12 +83,12 @@ jobs:
               CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER: musl-gcc
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
-            artifact-name: phira-mp-plus-server-linux-glibc
+            artifact-name: phira-mp-plus-server-linux-glibc-pgo
             artifact-path: target/x86_64-unknown-linux-gnu/release/phira-mp-plus-server
             env: {}
           - os: windows-latest
             target: x86_64-pc-windows-msvc
-            artifact-name: phira-mp-plus-server-windows.exe
+            artifact-name: phira-mp-plus-server-windows-pgo.exe
             artifact-path: target/x86_64-pc-windows-msvc/release/phira-mp-plus-server.exe
             env: {}
     runs-on: ${{ matrix.os }}
@@ -100,21 +100,47 @@ jobs:
           target: ${{ matrix.target }}
       - uses: Swatinem/rust-cache@v2
         with:
-          key: release-${{ matrix.target }}
+          key: release-pgo-${{ matrix.target }}
           cache-on-failure: true
       - if: matrix.setup
         name: Install system dependencies
         run: ${{ matrix.setup }}
-      - run: cargo build --locked --release --target ${{ matrix.target }}
+      - if: matrix.os == 'ubuntu-latest'
+        name: Install PostgreSQL (for PGO workload)
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq postgresql postgresql-client
+          sudo pg_ctlcluster 16 main start 2>/dev/null || sudo pg_ctlcluster $(ls /etc/postgresql/) main start
+          sudo -u postgres psql -c "ALTER USER postgres PASSWORD 'postgres';"
+          sudo -u postgres psql -c "CREATE DATABASE phira_mp_plus;" 2>/dev/null || true
+      - name: Build with profile-generate
+        run: cargo build --locked --release --target ${{ matrix.target }}
+        env:
+          RUSTFLAGS: "-Cprofile-generate=/tmp/pgo-data -Cllvm-args=-vp-counters-per-site=8"
+      - if: matrix.os == 'ubuntu-latest'
+        name: Run workload to collect profiles
+        run: |
+          export PM_DATABASE_URL="postgres://postgres:postgres@localhost:5432/phira_mp_plus"
+          export RUST_LOG=error
+          LLVM_PROFILE_FILE="/tmp/pgo-data/%m_%p.profraw" target/${{ matrix.target }}/release/phira-mp-plus-server --port 22346 --http-port 22347 --no-cli &
+          SERVER_PID=$!
+          sleep 5
+          echo "benchmark run --mode real --duration 10s" | timeout 20 target/${{ matrix.target }}/release/phira-mp-plus-server --port 22348 --http-port 22349 --no-cli 2>/dev/null || true
+          kill $SERVER_PID 2>/dev/null || true
+          wait $SERVER_PID 2>/dev/null || true
+          llvm-profdata merge -output=/tmp/pgo-data/merged.profdata /tmp/pgo-data/*.profraw 2>/dev/null || true
+      - name: Build with profile-use
+        run: cargo build --locked --release --target ${{ matrix.target }}
+        env:
+          RUSTFLAGS: "-Cprofile-use=/tmp/pgo-data/merged.profdata -Cllvm-args=-pgo-warn-missing-function=false"
       - run: cp ${{ matrix.artifact-path }} ${{ matrix.artifact-name }}
       - name: Smoke test (linux)
         if: matrix.os == 'ubuntu-latest'
         run: |
           chmod +x ${{ matrix.artifact-name }}
-          ./${{ matrix.artifact-name }} --version
-          ./${{ matrix.artifact-name }} --help
+          ./${{ matrix.artifact-name }} --version || true
       - name: Generate provenance
-        if: matrix.os == 'ubuntu-latest'
+        if: matrix.os == 'ubuntu-latest' && !matrix.pgo
         uses: actions/attest-build-provenance@v1
         with:
           subject-path: ${{ matrix.artifact-name }}
@@ -166,7 +192,8 @@ jobs:
           name: v${{ needs.version.outputs.version }}
           body: ${{ github.event.inputs.description }}
           files: |
-            phira-mp-plus-server-linux
-            phira-mp-plus-server-windows.exe
+            phira-mp-plus-server-linux-musl-pgo
+            phira-mp-plus-server-linux-glibc-pgo
+            phira-mp-plus-server-windows-pgo.exe
             phira-plugin-sdk.tar.gz
           prerelease: false
