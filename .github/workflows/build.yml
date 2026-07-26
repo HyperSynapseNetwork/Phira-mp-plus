@@ -170,16 +170,14 @@ jobs:
           export PM_DATABASE_URL="postgres://postgres:postgres@localhost:5432/phira_mp_plus"
           export LLVM_PROFILE_FILE="/tmp/pgo-data/%m_%p.profraw"
 
-          ./target/x86_64-unknown-linux-gnu/release/phira-mp-plus-server --port 22346 --http-port 22347 --no-cli &
-          SERVER_PID=$!
-          sleep 4
-
-          LLVM_PROFILE_FILE="/tmp/pgo-data/%m_%p.profraw" \
-          echo "benchmark run --mode real --duration 10s" | timeout 20 ./target/x86_64-unknown-linux-gnu/release/phira-mp-plus-server --port 22348 --http-port 22349 --no-cli 2>/dev/null || true
-
-          kill -INT $SERVER_PID 2>/dev/null || true
-          sleep 3
-          wait $SERVER_PID 2>/dev/null || true
+          # Start the instrumented server WITHOUT --no-cli so it reads from stdin.
+          # The piped "benchmark run" command runs inside the server process and
+          # connects to itself via TCP (port 22346), generating profile data.
+          echo "benchmark run --mode real --duration 10s" | \
+            timeout 30 \
+              ./target/x86_64-unknown-linux-gnu/release/phira-mp-plus-server \
+                --port 22346 --http-port 22347 \
+                2>/dev/null || true
 
           ls -la /tmp/pgo-data/ 2>/dev/null || true
 

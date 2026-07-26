@@ -127,18 +127,19 @@ jobs:
         name: Run workload to collect profiles
         run: |
           PGO_DIR="/tmp/pgo-data/${{ matrix.target }}"
+          mkdir -p "$PGO_DIR"
           export PM_DATABASE_URL="postgres://postgres:postgres@localhost:5432/phira_mp_plus"
           export LLVM_PROFILE_FILE="$PGO_DIR/%m_%p.profraw"
-          # Start server with --no-cli (no TUI, clean shutdown on signal)
-          target/${{ matrix.target }}/release/phira-mp-plus-server --port 22346 --http-port 22347 --no-cli &
-          SERVER_PID=$!
-          sleep 4
-          # Run benchmark workload against the server
-          LLVM_PROFILE_FILE="$PGO_DIR/%m_%p.profraw" \
-          echo "benchmark run --mode real --duration 10s" | timeout 20 target/${{ matrix.target }}/release/phira-mp-plus-server --port 22348 --http-port 22349 --no-cli 2>/dev/null || true
-          # Send SIGINT to trigger graceful shutdown + LLVM profile flush
-          kill -INT $SERVER_PID 2>/dev/null || true
-          sleep 3
+
+          # Start the instrumented server WITHOUT --no-cli so it reads from stdin.
+          # The piped "benchmark run" command runs inside the server process and
+          # connects to itself via TCP, generating profile data.
+          echo "benchmark run --mode real --duration 10s" | \
+            timeout 30 \
+              target/${{ matrix.target }}/release/phira-mp-plus-server \
+                --port 22346 --http-port 22347 \
+                2>/dev/null || true
+
           ls -la "$PGO_DIR/"
           LLVM_PROF="$(rustc --print sysroot)/bin/llvm-profdata"
           if "$LLVM_PROF" merge -output="$PGO_DIR/merged.profdata" "$PGO_DIR"/*.profraw 2>/dev/null; then
