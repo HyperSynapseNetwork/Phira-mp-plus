@@ -522,9 +522,10 @@ impl Session {
                                 .await
                                 {
                                     Ok(info) => {
+                                        let monitor_id = -info.id; // negative to avoid conflicting with normal session
                                         let user = Arc::new(User::new(
-                                            info.id,
-                                            format!("{} (monitor)", info.name),
+                                            monitor_id,
+                                            info.name.clone(),
                                             info.language.parse().map(Language).unwrap_or_default(),
                                             Arc::clone(&server),
                                             Some(token.to_string()),
@@ -544,10 +545,10 @@ impl Session {
                                             .users
                                             .write()
                                             .await
-                                            .insert(info.id, Arc::clone(&user));
+                                            .insert(monitor_id, Arc::clone(&user));
                                         server
                                             .set_game_monitor(
-                                                info.id,
+                                                monitor_id,
                                                 Arc::downgrade(this.get().unwrap()),
                                             )
                                             .await;
