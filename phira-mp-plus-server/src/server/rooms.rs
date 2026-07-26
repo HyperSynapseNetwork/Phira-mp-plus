@@ -1,6 +1,5 @@
 //! Room management methods on PlusServerState.
 
-use fluent::FluentArgs;
 use phira_mp_common::{RoomEvent, RoomId, ServerCommand};
 use serde_json::Value;
 use std::sync::atomic::Ordering;

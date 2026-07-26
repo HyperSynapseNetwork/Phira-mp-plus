@@ -67,7 +67,7 @@ impl User {
 
     /// Send a localized system message (Message::Chat { user: 0 }) to this user.
     /// Translates `key` with `args` into the user's language.
-    pub async fn send_system_msg(&self, key: &str, args: FluentArgs) {
+    pub async fn send_system_msg(&self, key: &str, args: FluentArgs<'_>) {
         let content = crate::l10n::translate_system(&self.lang, key, args);
         self.try_send(ServerCommand::Message(phira_mp_common::Message::Chat {
             user: 0,
