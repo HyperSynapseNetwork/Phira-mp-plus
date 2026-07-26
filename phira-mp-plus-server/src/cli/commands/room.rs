@@ -163,12 +163,18 @@ impl CliHandler {
                         .set_lock(&self.state, args[1], v)
                         .await
                     {
-                        Ok(_) => self.out(format!(
-                            "  {} 房间 {} 已{}锁定",
-                            c::green("✓"),
-                            args[1],
-                            if v { "" } else { "解除" }
-                        )),
+                        Ok(_) => {
+                            self.out(format!(
+                                "  {} 房间 {} 已{}锁定",
+                                c::green("✓"),
+                                args[1],
+                                if v { "" } else { "解除" }
+                            ));
+                            // Broadcast to game clients so they update UI immediately.
+                            if let Some(room) = self.find_room(args[1]).await {
+                                room.send(phira_mp_common::Message::LockRoom { lock: v }).await;
+                            }
+                        }
                         Err(e) => self.out(format!("  {} {}", c::red("✗"), e)),
                     }
                 }
@@ -188,12 +194,18 @@ impl CliHandler {
                         .set_cycle(&self.state, args[1], v)
                         .await
                     {
-                        Ok(_) => self.out(format!(
-                            "  {} 房间 {} 已{}轮换",
-                            c::green("✓"),
-                            args[1],
-                            if v { "开启" } else { "关闭" }
-                        )),
+                        Ok(_) => {
+                            self.out(format!(
+                                "  {} 房间 {} 已{}轮换",
+                                c::green("✓"),
+                                args[1],
+                                if v { "开启" } else { "关闭" }
+                            ));
+                            // Broadcast to game clients so they update UI immediately.
+                            if let Some(room) = self.find_room(args[1]).await {
+                                room.send(phira_mp_common::Message::CycleRoom { cycle: v }).await;
+                            }
+                        }
                         Err(e) => self.out(format!("  {} {}", c::red("✗"), e)),
                     }
                 }

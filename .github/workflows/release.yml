@@ -131,11 +131,11 @@ jobs:
           export PM_DATABASE_URL="postgres://postgres:postgres@localhost:5432/phira_mp_plus"
           export LLVM_PROFILE_FILE="$PGO_DIR/%m_%p.profraw"
 
-          # Start the instrumented server WITHOUT --no-cli so it reads from stdin.
-          # The piped "benchmark run" command runs inside the server process and
-          # connects to itself via TCP, generating profile data.
+          # Start instrumented server with stdin so the benchmark CLI runs
+          # in-process and connects to itself via TCP.
+          # timeout -s INT triggers graceful shutdown which flushes profraw.
           echo "benchmark run --mode real --duration 10s" | \
-            timeout 30 \
+            timeout -s INT 45 \
               target/${{ matrix.target }}/release/phira-mp-plus-server \
                 --port 22346 --http-port 22347 \
                 2>/dev/null || true
