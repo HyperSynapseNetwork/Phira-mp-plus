@@ -334,6 +334,14 @@ pub async fn join_room(
         };
         match stripped {
             Some(phira_mp_common::StrippedRoomState::SelectingChart) | None => {}
+            Some(phira_mp_common::StrippedRoomState::WaitingForReady) => {
+                // ProtocolHack: 断线重连进 WaitForReady 时客户端不知道谱面 ID，
+                // 先以 SelectChart 响应让客户端拿到谱面，再异步切回 WaitForReady。
+                // 这样客户端能正常显示谱面信息，同时知道需要准备。
+                if category != SessionCategory::Normal {
+                    bail!("{}", tl!("join-game-ongoing"));
+                }
+            }
             Some(phira_mp_common::StrippedRoomState::Playing) => {
                 let mut pending = user.join_pending_game.write().await;
                 if pending.as_ref().map(|s| s.as_str()) == Some(id.to_string().as_str()) {
@@ -453,17 +461,21 @@ pub async fn join_room(
         users.extend(room.monitors().await);
     }
 
-    let room_state = if late_join {
-        // Read chart from actor snapshot.
+    // ProtocolHack: 断线重连时，如果房间在 WaitForReady，先以 SelectChart
+    // 响应让客户端拿到谱面 ID，再异步切回 WaitingForReady（Phira 客户端在
+    // WaitingForReady 状态下不直接包含谱面 ID）。
+    let (room_state, deferred_wfr) = if late_join {
         let chart = if let Some(server) = room.server.upgrade() {
             server.room_snapshot(&room.id.to_string())
                 .and_then(|s| s.chart)
         } else {
             None
         };
-        phira_mp_common::RoomState::SelectChart(chart)
+        (phira_mp_common::RoomState::SelectChart(chart), false)
     } else {
-        build_client_room_state(&room, &user).await.state
+        let client_state = build_client_room_state(&room, &user).await;
+        let is_waiting = matches!(client_state.state, phira_mp_common::RoomState::WaitingForReady);
+        (client_state.state, is_waiting)
     };
 
     // 发送房间最近的消息缓冲区给新加入用户
@@ -472,6 +484,18 @@ pub async fn join_room(
         user.try_send(cmd.clone()).await;
     }
     drop(buf);
+
+    if deferred_wfr {
+        // ProtocolHack: 客户端刚收到 SelectChart，50ms 后发 GameStart
+        // 让客户端切换到 WaitingForReady 状态并显示准备按钮。
+        let user_clone = Arc::clone(&user);
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            user_clone.try_send(ServerCommand::Message(Message::GameStart {
+                user: 0,
+            })).await;
+        });
+    }
 
     Ok(JoinRoomResponse {
         state: room_state,

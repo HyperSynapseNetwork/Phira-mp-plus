@@ -192,11 +192,18 @@ async fn check_all_ready(
     let lifecycle = as_.state.lifecycle.clone();
     match &lifecycle {
         InternalRoomState::WaitForReady { started, admin_started } => {
+            let total: Vec<_> = r.users().await.into_iter().chain(r.monitors().await).collect();
+            let ready_count = total.iter().filter(|it| started.contains(&it.id)).count();
+            if ready_count < total.len() {
+                debug!(
+                    room = %r.id, ready = ready_count, total = total.len(),
+                    "waiting for ready"
+                );
+            }
             // Admin start (force start) skips the per-user ready check — all
             // players are moved directly into the game without waiting for Ready.
             if *admin_started
-                || r.users().await.into_iter().chain(r.monitors().await.into_iter())
-                    .all(|it| started.contains(&it.id))
+                || total.iter().all(|it| started.contains(&it.id))
             {
                 // All ready — transition to Playing
                 as_.state.ready_countdown_started_at = None;
