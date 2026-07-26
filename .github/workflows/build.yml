@@ -147,30 +147,42 @@ jobs:
           sudo pg_ctlcluster 16 main start 2>/dev/null || sudo pg_ctlcluster $(ls /etc/postgresql/) main start
           sudo -u postgres psql -c "ALTER USER postgres PASSWORD 'postgres';"
           sudo -u postgres psql -c "CREATE DATABASE phira_mp_plus;" 2>/dev/null || true
+
       - name: Build with profile-generate
         run: |
           mkdir -p /tmp/pgo-data
+          cargo clean
           unset RUSTFLAGS
           export RUSTFLAGS="-Cprofile-generate=/tmp/pgo-data"
-          # Disable LTO and strip during generate — both can interfere
           CARGO_PROFILE_RELEASE_LTO=false \
           CARGO_PROFILE_RELEASE_STRIP=false \
             cargo build --locked --release --target x86_64-unknown-linux-gnu
+
+          # 验证：binary 必须包含 LLVM profiling runtime 符号
+          if ! nm target/x86_64-unknown-linux-gnu/release/phira-mp-plus-server | grep -q "llvm_profile"; then
+            echo "ERROR: binary is NOT instrumented for PGO (no llvm_profile symbols)"
+            exit 1
+          fi
+          echo "OK: binary is instrumented for PGO"
+
       - name: Run workload to collect profiles
         run: |
           export PM_DATABASE_URL="postgres://postgres:postgres@localhost:5432/phira_mp_plus"
           export LLVM_PROFILE_FILE="/tmp/pgo-data/%m_%p.profraw"
-          # Start instrumented server in background
-          target/x86_64-unknown-linux-gnu/release/phira-mp-plus-server --port 22346 --http-port 22347 --no-cli &
+
+          ./target/x86_64-unknown-linux-gnu/release/phira-mp-plus-server --port 22346 --http-port 22347 --no-cli &
           SERVER_PID=$!
           sleep 4
-          # Run benchmark workload against the server
+
           LLVM_PROFILE_FILE="/tmp/pgo-data/%m_%p.profraw" \
-          echo "benchmark run --mode real --duration 10s" | timeout 20 target/x86_64-unknown-linux-gnu/release/phira-mp-plus-server --port 22348 --http-port 22349 --no-cli 2>/dev/null || true
-          # SIGINT triggers graceful shutdown + LLVM profile flush
+          echo "benchmark run --mode real --duration 10s" | timeout 20 ./target/x86_64-unknown-linux-gnu/release/phira-mp-plus-server --port 22348 --http-port 22349 --no-cli 2>/dev/null || true
+
           kill -INT $SERVER_PID 2>/dev/null || true
           sleep 3
+          wait $SERVER_PID 2>/dev/null || true
+
           ls -la /tmp/pgo-data/ 2>/dev/null || true
+
       - name: Merge profiles
         id: merge
         run: |
@@ -184,13 +196,16 @@ jobs:
             echo "profiles_exist=false" >> "$GITHUB_OUTPUT"
           fi
           ls -la /tmp/pgo-data/
+
       - name: Build with profile-use
         if: steps.merge.outputs.profiles_exist == 'true'
         run: |
+          cargo clean
           cargo build --release --target x86_64-unknown-linux-gnu
         env:
           RUSTFLAGS: "-Cprofile-use=/tmp/pgo-data/merged.profdata -Cllvm-args=-pgo-warn-missing-function=false"
           CARGO_PROFILE_RELEASE_DEBUG: 0
+
       - name: Upload PGO-optimized binary
         if: steps.merge.outputs.profiles_exist == 'true'
         uses: actions/upload-artifact@v4
