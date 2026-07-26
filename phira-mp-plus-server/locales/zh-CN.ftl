@@ -50,3 +50,12 @@ server-room-limit-reached = 服务器房间数已达上限（最多 { $limit }�
 admin-start-in-progress = 管理员发起游戏正在进行中
 chat-disabled = 聊天功能已禁用
 already-authenticated = 已经认证过了
+
+# ── 系统消息（广播给客户端） ──
+
+user-became-host = { $name } 成为了房主
+host-transferred-to = 房主已转移给 { $name }
+host-set-to-system = 房主已设为系统？
+admin-started-game = 服务器已发起游戏，请加载谱面并点击准备
+result-summary = 完成率：{ $passed }/{ $total } 已完成
+kicked-by-admin = 你已被管理员踢出服务器：{ $reason }

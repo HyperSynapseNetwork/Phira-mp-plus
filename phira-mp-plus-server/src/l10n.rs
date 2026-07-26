@@ -88,6 +88,12 @@ pub fn try_translate_with_args(lang: &LanguageIdentifier, id: &str, args: Fluent
     }
 }
 
+/// Convenience: translate for a `Language` with dynamic args.
+/// Use this in send_system() helpers instead of the tl! macro (which requires a task-local scope).
+pub fn translate_system(lang: &Language, key: &str, args: FluentArgs) -> String {
+    try_translate_with_args(&lang.0, key, args)
+}
+
 fn translate_bundle(bundle: &Bundle, id: &str) -> String {
     let Some(msg) = bundle.get_message(id) else {
         error!("failed to get message {id:?}");

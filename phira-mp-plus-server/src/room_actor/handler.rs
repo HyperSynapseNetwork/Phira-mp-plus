@@ -439,10 +439,12 @@ impl RoomCommandHandler {
                             .or(fallback_name)
                             .unwrap_or_else(|| uid.to_string());
                         // Send messages directly via Room broadcast
+                        let mut args = fluent::FluentArgs::new();
+                        args.set("name", &name);
                         if as_.state.control.host_id.is_some() {
-                            r.send(Message::Chat { user: 0, content: format!("房主已转移给 {name}") }).await;
+                            r.send_system_msg("host-transferred-to", args).await;
                         } else {
-                            r.send(Message::Chat { user: 0, content: format!("{name} 成为了房主") }).await;
+                            r.send_system_msg("user-became-host", args).await;
                         }
                         // Notify old host
                         if let Some(old_uid) = as_.state.control.host_id {
@@ -467,7 +469,7 @@ impl RoomCommandHandler {
                         (Some(*uid), name, false)
                     }
                     None => {
-                        r.send(Message::Chat { user: 0, content: "房主已设为系统 ?".to_string() }).await;
+                        r.send_system_msg_simple("host-set-to-system").await;
                         // Notify old host
                         if let Some(old_uid) = as_.state.control.host_id {
                             if let Some(old) = r.users().await.iter().find(|u| u.id == old_uid) {
@@ -575,10 +577,7 @@ impl RoomCommandHandler {
 
                 reset_game_time(r).await;
                 r.send(Message::GameStart { user: 0 }).await;
-                r.send(Message::Chat {
-                    user: 0,
-                    content: "服务器已发起游戏，请加载谱面并点击准备".to_string(),
-                }).await;
+                r.send_system_msg_simple("admin-started-game").await;
                 as_.state.lifecycle = InternalRoomState::WaitForReady {
                     started: HashSet::new(),
                     admin_started: true,

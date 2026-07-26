@@ -104,9 +104,14 @@ pub(crate) async fn run_admin_kick_user(
     drop(registration_guard);
 
     if let Some(session) = target_session {
+        let mut args = fluent::FluentArgs::new();
+        args.set("reason", reason);
+        let content = crate::l10n::translate_system(
+            &session.user.lang, "kicked-by-admin", args,
+        );
         let message = ServerCommand::Message(phira_mp_common::Message::Chat {
             user: 0,
-            content: format!("你已被管理员踢出服务器: {reason}"),
+            content,
         });
         let _ = tokio::time::timeout(
             std::time::Duration::from_secs(2),

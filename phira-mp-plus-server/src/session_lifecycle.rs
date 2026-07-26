@@ -1,6 +1,7 @@
 use crate::l10n::Language;
 use crate::server::PlusServerState;
 use crate::session::Session;
+use fluent::FluentArgs;
 use phira_mp_common::{RoomEvent, ServerCommand, UserInfo};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Weak};
@@ -62,6 +63,22 @@ impl User {
             name: self.name.clone(),
             monitor: self.monitor.load(Ordering::Relaxed),
         }
+    }
+
+    /// Send a localized system message (Message::Chat { user: 0 }) to this user.
+    /// Translates `key` with `args` into the user's language.
+    pub async fn send_system_msg(&self, key: &str, args: FluentArgs) {
+        let content = crate::l10n::translate_system(&self.lang, key, args);
+        self.try_send(ServerCommand::Message(phira_mp_common::Message::Chat {
+            user: 0,
+            content,
+        }))
+        .await;
+    }
+
+    /// Send a localized system message with no args.
+    pub async fn send_system_msg_simple(&self, key: &str) {
+        self.send_system_msg(key, FluentArgs::new()).await;
     }
 
     pub async fn set_session(&self, session: Weak<Session>) {

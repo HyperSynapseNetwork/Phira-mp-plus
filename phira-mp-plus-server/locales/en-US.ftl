@@ -50,3 +50,12 @@ server-room-limit-reached = Server room limit reached (max { $limit })
 admin-start-in-progress = Administrative start is already in progress
 chat-disabled = Chat is disabled
 already-authenticated = Already authenticated
+
+# ── System messages (broadcast to clients) ──
+
+user-became-host = { $name } became the host
+host-transferred-to = Host transferred to { $name }
+host-set-to-system = Host has been set to system
+admin-started-game = The server has started the game. Please load the chart and ready up
+result-summary = Results: { $passed }/{ $total } completed
+kicked-by-admin = You have been kicked by the admin: { $reason }

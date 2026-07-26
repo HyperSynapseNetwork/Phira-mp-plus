@@ -15,6 +15,7 @@
 //! mutations through RoomActorCommand variants via RoomCommandGateway.
 
 use crate::plugin::{JudgeEventItem, PluginManager, TouchEventPoint};
+use fluent::FluentArgs;
 use phira_mp_common::{
     Message, PartialRoomData, RoomEvent, RoomId, RoundData, ServerCommand,
 };
@@ -364,6 +365,32 @@ impl Room {
             content,
         })
         .await;
+    }
+
+    /// Broadcast a localized system message to all users in the room.
+    /// Each recipient receives the message translated to their language.
+    pub async fn send_system_msg(&self, key: &str, args: FluentArgs) {
+        for user in self.users().await {
+            let content = crate::l10n::translate_system(&user.lang, key, args.clone());
+            user.try_send(ServerCommand::Message(Message::Chat {
+                user: 0,
+                content,
+            }))
+            .await;
+        }
+        for user in self.monitors().await {
+            let content = crate::l10n::translate_system(&user.lang, key, args.clone());
+            user.try_send(ServerCommand::Message(Message::Chat {
+                user: 0,
+                content,
+            }))
+            .await;
+        }
+    }
+
+    /// Broadcast a localized system message with no args.
+    pub async fn send_system_msg_simple(&self, key: &str) {
+        self.send_system_msg(key, FluentArgs::new()).await;
     }
 
     /// Broadcast a `PartialRoomData` update to the monitoring infrastructure.
