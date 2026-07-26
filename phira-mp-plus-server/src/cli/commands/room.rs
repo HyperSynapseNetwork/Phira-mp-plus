@@ -38,6 +38,35 @@ impl CliHandler {
                     self.room_start(args[1]).await;
                 }
             }
+            "ready" => {
+                if args.len() < 2 {
+                    self.out(format!(
+                        "  {} {} room ready <房间ID> [用户ID]",
+                        c::yellow("?"),
+                        c::bold("用法")
+                    ));
+                    self.out(format!(
+                        "  {} 不指定用户 ID = 让房间进入准备状态",
+                        c::dim("▸")
+                    ));
+                    self.out(format!(
+                        "  {} 指定用户 ID = 强制该玩家准备",
+                        c::dim("▸")
+                    ));
+                } else if args.len() == 2 {
+                    // 没给用户 ID = 进入准备状态（同 room start）
+                    self.room_start(args[1]).await;
+                } else {
+                    let uid: i32 = match args[2].parse() {
+                        Ok(id) => id,
+                        Err(_) => {
+                            self.out(format!("  {} 无效的用户ID", c::red("✗")));
+                            return;
+                        }
+                    };
+                    self.room_ready_player(args[1], uid).await;
+                }
+            }
             "cancel" => {
                 if args.len() < 2 {
                     self.out(format!(
@@ -390,7 +419,7 @@ impl CliHandler {
                     c::red("✗"),
                     c::yellow(sub)
                 ));
-                self.out(format!("  {} 可用: room list|create-empty|info|start|cancel|lock|cycle|kick|host|force-move|hide|unhide|close|set|history|rounds|round|uuid|ban|unban|banlist", c::dim("▸")));
+                self.out(format!("  {} 可用: room list|create-empty|info|start|ready|cancel|lock|cycle|kick|host|force-move|hide|unhide|close|set|history|rounds|round|uuid|ban|unban|banlist", c::dim("▸")));
             }
         }
     }
@@ -591,6 +620,22 @@ impl CliHandler {
                 c::green("✓")
             )),
             Err(e) => self.out(format!("  {} 无法开始游戏: {}", c::red("✗"), e)),
+        }
+    }
+
+    /// 强制某玩家准备（管理员操作）
+    pub(crate) async fn room_ready_player(&self, room_id: &str, user_id: i32) {
+        match self
+            .state
+            .room_commands
+            .set_ready(&self.state, room_id, user_id)
+            .await
+        {
+            Ok(_) => self.out(format!(
+                "  {} 已强制准备用户 #{}",
+                c::green("✓"), user_id
+            )),
+            Err(e) => self.out(format!("  {} {}", c::red("✗"), e)),
         }
     }
 

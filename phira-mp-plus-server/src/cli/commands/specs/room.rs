@@ -65,6 +65,14 @@ pub fn specs() -> Vec<CommandSpec> {
             "room unhide <room_id>",
         )
         .advanced(),
+        CommandSpec::new(
+            "room ready",
+            "rooms",
+            "让房间进入准备状态，或强制指定玩家准备。",
+            "room ready <room_id> [user_id]",
+        )
+        .example("room ready my-room")
+        .example("room ready my-room 12345"),
         CommandSpec::new("room close", "rooms", "解散房间。", "room close <room_id>"),
         CommandSpec::new(
             "room lock",
