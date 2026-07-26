@@ -753,8 +753,6 @@ impl RoomCommandHandler {
                         as_.state.control.host_id = Some(*user_id);
                     }
                 }
-                    as_.state.control.host_id = Some(*user_id);
-                }
                 state.dispatch_plugin_event(PluginEvent::RoomModify {
                     user_id: *user_id, room_id: room_id.clone().to_string(),
                     data: json!({"action": if *monitor { "monitor_join" } else { "join" }}).to_string(),
