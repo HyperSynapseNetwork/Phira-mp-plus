@@ -24,17 +24,15 @@ impl PlusServerState {
 
         let language = session.user.lang.0.to_string();
         let message = crate::session_auth::ban_rejection_message(&language, reason);
-        if let Err(err) = session
+        // Send a chat message so the client visibly displays the ban reason,
+        // not just a silent Authenticate error they may not handle mid-session.
+        let _ = session
             .stream
-            .send_and_flush(ServerCommand::Authenticate(Err(message)))
-            .await
-        {
-            warn!(
-                user = user_id,
-                ?err,
-                "failed to deliver ban reason before disconnect"
-            );
-        }
+            .send_and_flush(ServerCommand::Message(phira_mp_common::Message::Chat {
+                user: 0,
+                content: message.clone(),
+            }))
+            .await;
 
         session.stream.close();
         if let Err(err) = self.lost_con_tx.send(session_id).await {
