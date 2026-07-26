@@ -12,8 +12,8 @@
 //! - `users()` / `monitors()` / `on_user_leave()` — user management
 
 use super::{
-    command::RoomActorCommand, context::RoomCommandContext, RoomCommandDelivery,
-    RoomCommandPayload, RoomCommandResult,
+    command::RoomActorCommand, context::RoomCommandContext, lifecycle::RoomLifecycle,
+    RoomCommandDelivery, RoomCommandPayload, RoomCommandResult,
 };
 use crate::plugin::PluginEvent;
 use crate::room::InternalRoomState;
@@ -71,40 +71,30 @@ fn ok(payload: RoomCommandPayload) -> RoomCommandResult {
 }
 
 /// Helper: broadcast a state change via `on_state_change`.
-async fn broadcast_state_change(r: &crate::room::Room, state: &InternalRoomState, chart: Option<i32>) {
+async fn broadcast_state_change(lc: &dyn RoomLifecycle, state: &InternalRoomState, chart: Option<i32>) {
     let room_state = state.to_client(chart);
-    r.broadcast(ServerCommand::ChangeState(room_state)).await;
+    lc.broadcast(ServerCommand::ChangeState(room_state)).await;
     let stripped = state.stripped();
     let state_desc = match stripped {
         phira_mp_common::StrippedRoomState::SelectingChart => "selecting_chart",
         phira_mp_common::StrippedRoomState::WaitingForReady => "waiting_for_ready",
         phira_mp_common::StrippedRoomState::Playing => "playing",
     };
-    r.publish_update(PartialRoomData {
+    lc.publish_update(PartialRoomData {
         state: Some(stripped),
         ..Default::default()
     })
     .await;
-    if let Some(server) = r.server.upgrade() {
-        server.publish_runtime_event(crate::event_bus::MpEvent::RoomStateChanged {
-            room_id: r.id.clone(),
-            state: state_desc.to_string(),
-        });
-    }
-}
-
-/// Reset game time for all users in the room.
-async fn reset_game_time(r: &crate::room::Room) {
-    for user in r.users().await {
-        user.game_time
-            .store(f32::NEG_INFINITY.to_bits(), Ordering::Relaxed);
-    }
+    lc.publish_runtime_event(crate::event_bus::MpEvent::RoomStateChanged {
+        room_id: lc.room().id.clone(),
+        state: state_desc.to_string(),
+    });
 }
 
 /// Save round history and produce a RoundData event.
 /// Returns Some(RoundData) if there was a Playing round to save.
 async fn save_round_history(
-    r: &crate::room::Room,
+    lc: &dyn RoomLifecycle,
     lifecycle: &mut InternalRoomState,
     current_round_id: &mut Option<uuid::Uuid>,
     chart: Option<i32>,
@@ -129,7 +119,8 @@ async fn save_round_history(
 
     // 收集用户名
     let mut users_map: HashMap<i32, String> = HashMap::new();
-    for u in r.users().await {
+    let room_ref = lc.room();
+    for u in lc.users().await {
         let name = display_names.get(&u.id).cloned().unwrap_or_else(|| u.name.clone());
         users_map.insert(u.id, name);
     }
@@ -187,11 +178,11 @@ async fn save_round_history(
     if let Some(db) = crate::internal_hooks::DB.get() {
         for result in &round.results {
             if !db
-                .record_round_result(&round.round_id.to_string(), &r.id.to_string(), result)
+                .record_round_result(&round.round_id.to_string(), &room_ref.id.to_string(), result)
                 .await
             {
                 warn!(
-                    room = %r.id,
+                    room = %room_ref.id,
                     round_id = %round.round_id,
                     user_id = result.user_id,
                     "failed to persist round result"
@@ -200,10 +191,10 @@ async fn save_round_history(
         }
     }
     let event = crate::room::protocol_round(&round);
-    r.play_history.push(round, &r.uuid).await;
-    let total = r.play_history.len().await;
+    room_ref.play_history.push(round, &room_ref.uuid).await;
+    let total = room_ref.play_history.len().await;
     info!(
-        room = r.id.to_string(),
+        room = room_ref.id.to_string(),
         "saved play round history (total {})", total
     );
     Some(event)
@@ -211,19 +202,18 @@ async fn save_round_history(
 
 /// Check if all users are ready (transition to Playing) or all have finished (transition to SelectChart).
 async fn check_all_ready(
-    r: &crate::room::Room,
+    lc: &dyn RoomLifecycle,
     as_: &mut crate::room_actor::actor::RoomActorState,
-    _state: &crate::server::PlusServerState,
 ) {
     // Clone the lifecycle to check state
     let lifecycle = as_.state.lifecycle.clone();
     match &lifecycle {
         InternalRoomState::WaitForReady { started, admin_started } => {
-            let total: Vec<_> = r.users().await.into_iter().chain(r.monitors().await).collect();
+            let total: Vec<_> = lc.users().await.into_iter().chain(lc.monitors().await).collect();
             let ready_count = total.iter().filter(|it| started.contains(&it.id)).count();
             if ready_count < total.len() {
                 debug!(
-                    room = %r.id, ready = ready_count, total = total.len(),
+                    room = %lc.room().id, ready = ready_count, total = total.len(),
                     "waiting for ready"
                 );
             }
@@ -237,38 +227,36 @@ async fn check_all_ready(
                 if *admin_started {
                     // Finish admin start
                     as_.state.control.admin_start_pending = false;
-                    if let Some(host) = r.users().await.iter().find(|u| as_.state.control.host_id == Some(u.id)) {
+                    if let Some(host) = lc.users().await.iter().find(|u| as_.state.control.host_id == Some(u.id)) {
                         host.try_send(ServerCommand::ChangeHost(true)).await;
                     }
                 }
                 let round_id = uuid::Uuid::new_v4();
                 as_.state.round.round_id = Some(round_id);
-                info!(room = r.id.to_string(), round = %round_id, "game start");
-                if let Some(server) = r.server.upgrade() {
-                    server.publish_runtime_event(crate::event_bus::MpEvent::GameStarted {
-                        room_id: r.id.clone(),
-                        round_id: round_id.to_string(),
-                    });
-                }
-                r.send(Message::StartPlaying).await;
-                reset_game_time(r).await;
+                info!(room = lc.room().id.to_string(), round = %round_id, "game start");
+                lc.publish_runtime_event(crate::event_bus::MpEvent::GameStarted {
+                    room_id: lc.room().id.clone(),
+                    round_id: round_id.to_string(),
+                });
+                lc.send_msg(Message::StartPlaying).await;
+                lc.reset_game_time().await;
                 as_.state.lifecycle = InternalRoomState::Playing {
                     results: HashMap::new(),
                     aborted: HashSet::new(),
                 };
-                set_playing_deadline(as_, state);
-                broadcast_state_change(r, &as_.state.lifecycle, as_.state.chart).await;
+                set_playing_deadline(as_, lc.server_state());
+                broadcast_state_change(lc, &as_.state.lifecycle, as_.state.chart).await;
 
                 // 打开轮次数据存储
                 let rid = round_id.to_string();
                 let cid = as_.state.chart.unwrap_or(0);
-                let players: Vec<i32> = r.users().await.into_iter().map(|u| u.id).collect();
-                if let Some(rs) = &r.round_store {
+                let players: Vec<i32> = lc.users().await.into_iter().map(|u| u.id).collect();
+                if let Some(rs) = &lc.room().round_store {
                     let meta = crate::round_store::RoundMeta {
                         round_uuid: rid,
                         chart_id: cid,
                         chart_name: as_.state.chart_name.clone().unwrap_or_default(),
-                        room_id: r.id.to_string(),
+                        room_id: lc.room().id.to_string(),
                         players: players.clone(),
                         started_at: std::time::SystemTime::now()
                             .duration_since(std::time::UNIX_EPOCH)
@@ -283,39 +271,37 @@ async fn check_all_ready(
             }
         }
         InternalRoomState::Playing { results, aborted } => {
-            if r.users().await.into_iter()
+            if lc.users().await.into_iter()
                 .all(|it| results.contains_key(&it.id) || aborted.contains(&it.id))
             {
                 let rid = as_.state.round.round_id;
                 let completed_round = save_round_history(
-                    r,
+                    lc,
                     &mut as_.state.lifecycle,
                     &mut as_.state.round.round_id,
                     as_.state.chart,
                     as_.state.chart_name.as_deref(),
                     &as_.display_names,
                 ).await;
-                if let (Some(server), Some(round)) = (r.server.upgrade(), completed_round) {
-                    server
-                        .publish_room_event(RoomEvent::NewRound {
-                            room: r.id.clone(),
-                            round,
-                        })
-                        .await;
+                if let Some(round) = completed_round {
+                    lc.publish_room_event(RoomEvent::NewRound {
+                        room: lc.room().id.clone(),
+                        round,
+                    }).await;
                 }
 
                 // 关闭轮次数据存储
                 if let Some(rid) = rid {
                     info!("round complete: {}", rid);
-                    if let Some(rs) = &r.round_store {
+                    if let Some(rs) = &lc.room().round_store {
                         rs.close_round(&rid.to_string()).await;
                     }
                 }
 
                 // 触发 RoundComplete 事件
-                if let Some(pm) = &r.plugin_manager {
+                if let Some(pm) = &lc.room().plugin_manager {
                     pm.dispatch_event(PluginEvent::RoundComplete {
-                        room_id: r.id.to_string(),
+                        room_id: lc.room().id.to_string(),
                         chart_id: as_.state.chart.unwrap_or(0),
                         chart_name: as_.state.chart_name.clone().unwrap_or_default(),
                     })
@@ -323,21 +309,19 @@ async fn check_all_ready(
                 }
 
                 // Domain event for round completion
-                if let Some(server) = r.server.upgrade() {
-                    if let Some(round_uuid) = rid {
-                        server.publish_runtime_event(crate::event_bus::MpEvent::RoundCompleted {
-                            room_id: r.id.clone(),
-                            round_id: round_uuid.to_string(),
-                        });
-                    }
+                if let Some(round_uuid) = rid {
+                    lc.publish_runtime_event(crate::event_bus::MpEvent::RoundCompleted {
+                        room_id: lc.room().id.clone(),
+                        round_id: round_uuid.to_string(),
+                    });
                 }
 
                 // 发送结算排行（本地化）
                 {
-                    if let Some(last) = r.play_history.last().await {
+                    if let Some(last) = lc.room().play_history.last().await {
                         let mut sorted = last.results.clone();
                         sorted.sort_by(|a, b| b.score.cmp(&a.score));
-                        for user in r.users().await.into_iter().chain(r.monitors().await) {
+                        for user in lc.users().await.into_iter().chain(lc.monitors().await) {
                             let lang = user.lang.clone();
                             // 标题行
                             {
@@ -376,14 +360,14 @@ async fn check_all_ready(
                         }
                     }
                 }
-                r.send(Message::GameEnd).await;
+                lc.send_msg(Message::GameEnd).await;
                 as_.state.round.round_id = None;
                 as_.state.ready_countdown_started_at = None;
                 as_.state.playing_timeout_deadline = None;
                 as_.state.lifecycle = InternalRoomState::SelectChart;
                 if as_.state.control.cycle && !as_.state.control.system_host {
-                    debug!(room = r.id.to_string(), "cycling");
-                    let users = r.users().await;
+                    debug!(room = lc.room().id.to_string(), "cycling");
+                    let users = lc.users().await;
                     let host_id = as_.state.control.host_id;
                     let new_host = {
                         if users.is_empty() {
@@ -401,21 +385,21 @@ async fn check_all_ready(
                         let old_id = as_.state.control.host_id;
                         as_.state.control.host_id = Some(new_host.id);
                         as_.state.control.system_host = false;
-                        r.send(Message::NewHost { user: new_host.id }).await;
+                        lc.send_msg(Message::NewHost { user: new_host.id }).await;
                         if let Some(old_uid) = old_id {
-                            if let Some(old) = r.users().await.iter().find(|u| u.id == old_uid) {
+                            if let Some(old) = lc.users().await.iter().find(|u| u.id == old_uid) {
                                 old.try_send(ServerCommand::ChangeHost(false)).await;
                             }
                         }
                         new_host.try_send(ServerCommand::ChangeHost(true)).await;
-                        r.publish_update(PartialRoomData {
+                        lc.publish_update(PartialRoomData {
                             host: Some(new_host.id),
                             ..Default::default()
                         })
                         .await;
                     }
                 }
-                broadcast_state_change(r, &as_.state.lifecycle, as_.state.chart).await;
+                broadcast_state_change(lc, &as_.state.lifecycle, as_.state.chart).await;
             }
         }
         _ => {}
@@ -425,9 +409,8 @@ async fn check_all_ready(
 /// Transition to Playing — unready players are marked aborted.
 /// Used by the ready countdown timer and can be reused for other auto-start paths.
 pub(super) async fn force_start_playing(
-    r: &crate::room::Room,
+    lc: &dyn RoomLifecycle,
     state: &mut crate::room_actor::actor::RoomState,
-    server: &crate::server::PlusServerState,
 ) {
     if !matches!(&state.lifecycle, InternalRoomState::WaitForReady { .. }) {
         return;
@@ -436,7 +419,7 @@ pub(super) async fn force_start_playing(
 
     // Collect unready players to abort
     let unready: HashSet<i32> = {
-        let users = r.users().await;
+        let users = lc.users().await;
         let ready = match &state.lifecycle {
             InternalRoomState::WaitForReady { started, .. } => started.clone(),
             _ => HashSet::new(),
@@ -448,29 +431,27 @@ pub(super) async fn force_start_playing(
     if let InternalRoomState::WaitForReady { admin_started, .. } = &state.lifecycle {
         if *admin_started {
             state.control.admin_start_pending = false;
-            if let Some(host) = r.users().await.iter().find(|u| state.control.host_id == Some(u.id)) {
+            if let Some(host) = lc.users().await.iter().find(|u| state.control.host_id == Some(u.id)) {
                 host.try_send(ServerCommand::ChangeHost(true)).await;
             }
         }
     }
 
     for id in &unready {
-        info!(user = id, room = %r.id, "auto-aborted (ready timeout)");
+        info!(user = id, room = %lc.room().id, "auto-aborted (ready timeout)");
     }
 
     let round_id = uuid::Uuid::new_v4();
     state.round.round_id = Some(round_id);
-    info!(room = r.id.to_string(), round = %round_id, "game start (ready timeout)");
+    info!(room = lc.room().id.to_string(), round = %round_id, "game start (ready timeout)");
 
-    if let Some(s) = r.server.upgrade() {
-        s.publish_runtime_event(crate::event_bus::MpEvent::GameStarted {
-            room_id: r.id.clone(),
-            round_id: round_id.to_string(),
-        });
-    }
+    lc.publish_runtime_event(crate::event_bus::MpEvent::GameStarted {
+        room_id: lc.room().id.clone(),
+        round_id: round_id.to_string(),
+    });
 
-    r.send(Message::StartPlaying).await;
-    reset_game_time(r).await;
+    lc.send_msg(Message::StartPlaying).await;
+    lc.reset_game_time().await;
 
     let mut results = HashMap::new();
     let mut aborted = HashSet::new();
@@ -479,11 +460,12 @@ pub(super) async fn force_start_playing(
     }
     state.lifecycle = InternalRoomState::Playing { results, aborted };
     // Set playing timeout
+    let server_state = lc.server_state();
     {
-        let offset_secs = server.config.playing_timeout_offset_secs;
+        let offset_secs = server_state.config.playing_timeout_offset_secs;
         if offset_secs > 0 {
             let chart_id = state.chart.unwrap_or(0);
-            let duration_secs = server
+            let duration_secs = server_state
                 .chart_duration_cache
                 .try_read()
                 .ok()
@@ -497,17 +479,17 @@ pub(super) async fn force_start_playing(
             );
         }
     }
-    broadcast_state_change(r, &state.lifecycle, state.chart).await;
+    broadcast_state_change(lc, &state.lifecycle, state.chart).await;
 
     let rid = round_id.to_string();
     let cid = state.chart.unwrap_or(0);
-    let players: Vec<i32> = r.users().await.into_iter().map(|u| u.id).collect();
-    if let Some(rs) = &r.round_store {
+    let players: Vec<i32> = lc.users().await.into_iter().map(|u| u.id).collect();
+    if let Some(rs) = &lc.room().round_store {
         let meta = crate::round_store::RoundMeta {
             round_uuid: rid,
             chart_id: cid,
             chart_name: state.chart_name.clone().unwrap_or_default(),
-            room_id: r.id.to_string(),
+            room_id: lc.room().id.to_string(),
             players,
             started_at: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -519,29 +501,28 @@ pub(super) async fn force_start_playing(
             warn!("round store: failed to open round: {e}");
         }
     }
-    server.dispatch_plugin_event(PluginEvent::GameStart {
+    lc.dispatch_plugin_event(PluginEvent::GameStart {
         user_id: 0,
-        room_id: r.id.to_string(),
+        room_id: lc.room().id.to_string(),
     }).await;
 }
 
 /// End the playing phase due to timeout. Unfinished players are marked aborted,
 /// then the round is saved and transitioned back to SelectChart.
 pub(super) async fn force_end_playing(
-    r: &crate::room::Room,
+    lc: &dyn RoomLifecycle,
     state: &mut crate::room_actor::actor::RoomState,
-    server: &crate::server::PlusServerState,
 ) {
     if !matches!(&state.lifecycle, InternalRoomState::Playing { .. }) {
         return;
     }
     // Remove unfinished and un-aborted players by adding them to aborted
     if let InternalRoomState::Playing { ref mut results, ref mut aborted } = &mut state.lifecycle {
-        let users = r.users().await;
+        let users = lc.users().await;
         for u in &users {
             if !results.contains_key(&u.id) {
                 aborted.insert(u.id);
-                info!(user = u.id, room = %r.id, "aborted by playing timeout");
+                info!(user = u.id, room = %lc.room().id, "aborted by playing timeout");
             }
         }
     }
@@ -549,7 +530,7 @@ pub(super) async fn force_end_playing(
     // But we need actor_state for this — clone the lifecycle and check
     let all_done = match &state.lifecycle {
         InternalRoomState::Playing { results, aborted } => {
-            let users = r.users().await;
+            let users = lc.users().await;
             users.iter().all(|u| results.contains_key(&u.id) || aborted.contains(&u.id))
         }
         _ => true,
@@ -558,36 +539,32 @@ pub(super) async fn force_end_playing(
         // Save round history directly
         let rid = state.round.round_id;
         if let InternalRoomState::Playing { results, .. } = &state.lifecycle {
-            if let Some(server_upgraded) = r.server.upgrade() {
-                let completed_round = crate::room_actor::handler::save_round_history(
-                    r,
-                    &mut state.lifecycle,
-                    &mut state.round.round_id,
-                    state.chart,
-                    state.chart_name.as_deref(),
-                    &std::collections::HashMap::new(), // display_names not available here
-                ).await;
-                if let (Some(round)) = completed_round {
-                    server_upgraded
-                        .publish_room_event(RoomEvent::NewRound {
-                            room: r.id.clone(),
-                            round,
-                        })
-                        .await;
-                }
+            let completed_round = save_round_history(
+                lc,
+                &mut state.lifecycle,
+                &mut state.round.round_id,
+                state.chart,
+                state.chart_name.as_deref(),
+                &std::collections::HashMap::new(), // display_names not available here
+            ).await;
+            if let Some(round) = completed_round {
+                lc.publish_room_event(RoomEvent::NewRound {
+                    room: lc.room().id.clone(),
+                    round,
+                }).await;
             }
         }
         if let Some(rid) = rid {
-            if let Some(rs) = &r.round_store {
+            if let Some(rs) = &lc.room().round_store {
                 rs.close_round(&rid.to_string()).await;
             }
         }
         state.round.round_id = None;
         state.ready_countdown_started_at = None;
         state.playing_timeout_deadline = None;
-        r.send(Message::GameEnd).await;
+        lc.send_msg(Message::GameEnd).await;
         state.lifecycle = InternalRoomState::SelectChart;
-        crate::room_actor::handler::broadcast_state_change(r, &state.lifecycle, state.chart).await;
+        broadcast_state_change(lc, &state.lifecycle, state.chart).await;
     }
 }
 
@@ -600,21 +577,18 @@ impl RoomCommandHandler {
         mut ctx: RoomCommandContext<'_>,
         command: &RoomActorCommand,
     ) -> RoomCommandResult {
-        let state = ctx.state;
-        let room = ctx.room.clone();
+        let lc: &dyn RoomLifecycle = ctx.lc;
 
         match command {
             RoomActorCommand::SetLock { room_id, locked, actor_user_id, .. } => {
                 let as_ = ctx.expect_actor_state();
                 as_.state.set_locked(*locked);
-                if let Some(ref r) = room {
-                    r.publish_update(PartialRoomData { lock: Some(*locked), ..Default::default() }).await;
-                }
-                state.dispatch_plugin_event(PluginEvent::RoomModify {
+                lc.publish_update(PartialRoomData { lock: Some(*locked), ..Default::default() }).await;
+                lc.dispatch_plugin_event(PluginEvent::RoomModify {
                     user_id: *actor_user_id, room_id: room_id.clone().to_string(),
                     data: json!({"action":"lock","value":locked}).to_string(),
                 }).await;
-                state.publish_runtime_event(crate::event_bus::MpEvent::RoomLocked {
+                lc.publish_runtime_event(crate::event_bus::MpEvent::RoomLocked {
                     room_id: room_id.clone().try_into().unwrap(),
                     locked: *locked,
                 });
@@ -624,14 +598,12 @@ impl RoomCommandHandler {
             RoomActorCommand::SetCycle { room_id, cycle, actor_user_id, .. } => {
                 let as_ = ctx.expect_actor_state();
                 as_.state.set_cycle(*cycle);
-                if let Some(ref r) = room {
-                    r.publish_update(PartialRoomData { cycle: Some(*cycle), ..Default::default() }).await;
-                }
-                state.dispatch_plugin_event(PluginEvent::RoomModify {
+                lc.publish_update(PartialRoomData { cycle: Some(*cycle), ..Default::default() }).await;
+                lc.dispatch_plugin_event(PluginEvent::RoomModify {
                     user_id: *actor_user_id, room_id: room_id.clone().to_string(),
                     data: json!({"action":"cycle","value":cycle}).to_string(),
                 }).await;
-                state.publish_runtime_event(crate::event_bus::MpEvent::RoomCycled {
+                lc.publish_runtime_event(crate::event_bus::MpEvent::RoomCycled {
                     room_id: room_id.clone().try_into().unwrap(),
                     cycle: *cycle,
                 });
@@ -641,7 +613,7 @@ impl RoomCommandHandler {
             RoomActorCommand::SetHidden { room_id, hidden, .. } => {
                 let as_ = ctx.expect_actor_state();
                 as_.state.set_hidden(*hidden);
-                state.dispatch_plugin_event(PluginEvent::RoomModify {
+                lc.dispatch_plugin_event(PluginEvent::RoomModify {
                     user_id: 0, room_id: room_id.clone().to_string(),
                     data: json!({"action":"hidden","value":hidden}).to_string(),
                 }).await;
@@ -650,12 +622,11 @@ impl RoomCommandHandler {
 
             RoomActorCommand::SetHost { room_id, target_id, .. } => {
                 let as_ = ctx.expect_actor_state();
-                let r = match room { Some(ref r) => r, None => return err("no room") };
                 // Find the target user (if any) and get display name from actor_state
                 let (_host_id, host_name, system_host) = match target_id {
                     Some(uid) => {
                         let fallback_name = {
-                            let users = r.users().await;
+                            let users = lc.users().await;
                             users.iter().find(|u| u.id == *uid).map(|u| u.name.clone())
                         };
                         let name = as_.display_names.get(uid)
@@ -666,14 +637,14 @@ impl RoomCommandHandler {
                         let mut args = fluent::FluentArgs::new();
                         args.set("name", &name);
                         if as_.state.control.host_id.is_some() {
-                            r.send_system_msg("host-transferred-to", &args).await;
+                            lc.send_system_msg("host-transferred-to", &args).await;
                         } else {
-                            r.send_system_msg("user-became-host", &args).await;
+                            lc.send_system_msg("user-became-host", &args).await;
                         }
                         // Notify old host
                         if let Some(old_uid) = as_.state.control.host_id {
                             if old_uid != *uid {
-                                if let Some(old) = r.users().await.iter().find(|u| u.id == old_uid) {
+                                if let Some(old) = lc.users().await.iter().find(|u| u.id == old_uid) {
                                     old.try_send(ServerCommand::ChangeHost(false)).await;
                                 }
                             }
@@ -682,35 +653,35 @@ impl RoomCommandHandler {
                         as_.state.control.host_id = Some(*uid);
                         as_.state.control.system_host = false;
                         // Announce
-                        r.send(Message::NewHost { user: *uid }).await;
-                        if let Some(u) = r.users().await.iter().find(|u| u.id == *uid) {
+                        lc.send_msg(Message::NewHost { user: *uid }).await;
+                        if let Some(u) = lc.users().await.iter().find(|u| u.id == *uid) {
                             u.try_send(ServerCommand::ChangeHost(true)).await;
                         }
-                        r.publish_update(PartialRoomData {
+                        lc.publish_update(PartialRoomData {
                             host: Some(*uid),
                             ..Default::default()
                         }).await;
                         (Some(*uid), name, false)
                     }
                     None => {
-                        r.send_system_msg_simple("host-set-to-system").await;
+                        lc.send_system_msg_simple("host-set-to-system").await;
                         // Notify old host
                         if let Some(old_uid) = as_.state.control.host_id {
-                            if let Some(old) = r.users().await.iter().find(|u| u.id == old_uid) {
+                            if let Some(old) = lc.users().await.iter().find(|u| u.id == old_uid) {
                                 old.try_send(ServerCommand::ChangeHost(false)).await;
                             }
                         }
                         as_.state.control.host_id = None;
                         as_.state.control.system_host = true;
-                        r.send(Message::NewHost { user: -1 }).await;
-                        r.publish_update(PartialRoomData {
+                        lc.send_msg(Message::NewHost { user: -1 }).await;
+                        lc.publish_update(PartialRoomData {
                             host: Some(-1),
                             ..Default::default()
                         }).await;
                         (None, "?".to_string(), true)
                     }
                 };
-                state.publish_runtime_event(crate::event_bus::MpEvent::HostChanged {
+                lc.publish_runtime_event(crate::event_bus::MpEvent::HostChanged {
                     room_id: room_id.clone().try_into().unwrap(),
                     host: *target_id,
                 });
@@ -729,47 +700,45 @@ impl RoomCommandHandler {
             }
 
             RoomActorCommand::CloseRoom { room_id: _, .. } => {
-                let r = match room { Some(ref r) => r, None => return err("no room") };
-                r.send_system_msg_simple("room-closed-by-admin").await;
-                for user in r.users().await {
+                lc.send_system_msg_simple("room-closed-by-admin").await;
+                for user in lc.users().await {
                     *user.room.write().await = None;
                     user.try_send(ServerCommand::LeaveRoom(Ok(()))).await;
-                    state.publish_room_event(RoomEvent::LeaveRoom { room: r.id.clone(), user: user.id }).await;
+                    lc.publish_room_event(RoomEvent::LeaveRoom { room: lc.room().id.clone(), user: user.id }).await;
                 }
-                for monitor in r.monitors().await {
+                for monitor in lc.monitors().await {
                     *monitor.room.write().await = None;
                     monitor.try_send(ServerCommand::LeaveRoom(Ok(()))).await;
                 }
-                state.rooms.write().await.remove(&r.id);
-                state.dispatch_plugin_event(PluginEvent::RoomModify {
-                    user_id: 0, room_id: r.id.to_string(),
+                lc.remove_room(&lc.room().id).await;
+                lc.dispatch_plugin_event(PluginEvent::RoomModify {
+                    user_id: 0, room_id: lc.room().id.to_string(),
                     data: json!({"action":"closed"}).to_string(),
                 }).await;
-                ok(RoomCommandPayload::RoomClosed { room_id: r.id.to_string() })
+                ok(RoomCommandPayload::RoomClosed { room_id: lc.room().id.to_string() })
             }
 
             RoomActorCommand::KickUser { room_id, target_id, .. } => {
-                let r = match room { Some(ref r) => r, None => return err("no room") };
-                let users = r.users().await;
-                let monitors = r.monitors().await;
+                let users = lc.users().await;
+                let monitors = lc.monitors().await;
                 let user = match users.into_iter().chain(monitors.into_iter()).find(|u| u.id == *target_id) {
                     Some(u) => u, None => return err("user not in room"),
                 };
                 let mut args = fluent::FluentArgs::new();
                 args.set("name", &user.name);
-                r.send_system_msg("user-kicked-from-room", &args).await;
+                lc.send_system_msg("user-kicked-from-room", &args).await;
                 let was_monitor = user.monitor.load(std::sync::atomic::Ordering::SeqCst);
-                let should_drop = r.on_user_leave(&user).await;
+                let should_drop = lc.on_user_leave(&user).await;
                 user.try_send(ServerCommand::LeaveRoom(Ok(()))).await;
-                if should_drop { state.rooms.write().await.remove(&r.id); }
+                if should_drop { lc.remove_room(&lc.room().id).await; }
                 if !was_monitor {
-                    state.publish_room_event(RoomEvent::LeaveRoom { room: r.id.clone(), user: *target_id }).await;
+                    lc.publish_room_event(RoomEvent::LeaveRoom { room: lc.room().id.clone(), user: *target_id }).await;
                 }
                 // Clean up cached player data and display names for the kicked user.
                 let as_ = ctx.expect_actor_state();
                 as_.player_data.remove(target_id);
                 as_.display_names.remove(target_id);
-                state.dispatch_plugin_event(PluginEvent::RoomModify {
+                lc.dispatch_plugin_event(PluginEvent::RoomModify {
                     user_id: *target_id, room_id: room_id.clone().to_string(),
                     data: json!({"action":"kicked"}).to_string(),
                 }).await;
@@ -781,7 +750,6 @@ impl RoomCommandHandler {
 
             RoomActorCommand::StartRoom { room_id, .. } => {
                 let as_ = ctx.expect_actor_state();
-                let r = match room { Some(ref r) => r, None => return err("no room") };
                 // Inline begin_admin_start using actor_state
                 if as_.state.control.admin_start_pending {
                     return err("administrative start is already in progress");
@@ -794,62 +762,59 @@ impl RoomCommandHandler {
                 }
 
                 as_.state.control.admin_start_pending = true;
-                broadcast_state_change(r, &as_.state.lifecycle, as_.state.chart).await;
+                broadcast_state_change(lc, &as_.state.lifecycle, as_.state.chart).await;
 
                 // Temporarily remove host privileges
-                if let Some(host) = r.users().await.iter().find(|u| as_.state.control.host_id == Some(u.id)) {
+                if let Some(host) = lc.users().await.iter().find(|u| as_.state.control.host_id == Some(u.id)) {
                     host.try_send(ServerCommand::ChangeHost(false)).await;
                 }
 
-                reset_game_time(r).await;
-                r.send(Message::GameStart { user: 0 }).await;
-                r.send_system_msg_simple("admin-started-game").await;
+                lc.reset_game_time().await;
+                lc.send_msg(Message::GameStart { user: 0 }).await;
+                lc.send_system_msg_simple("admin-started-game").await;
                 as_.state.lifecycle = InternalRoomState::WaitForReady {
                     started: HashSet::new(),
                     admin_started: true,
                 };
                 as_.state.ready_countdown_started_at = Some(now_ms());
-                broadcast_state_change(r, &as_.state.lifecycle, as_.state.chart).await;
-                check_all_ready(r, as_, state).await;
-                state.dispatch_plugin_event(PluginEvent::GameStart { user_id: 0, room_id: room_id.clone().to_string() }).await;
+                broadcast_state_change(lc, &as_.state.lifecycle, as_.state.chart).await;
+                check_all_ready(lc, as_).await;
+                lc.dispatch_plugin_event(PluginEvent::GameStart { user_id: 0, room_id: room_id.clone().to_string() }).await;
                 ok(RoomCommandPayload::RoomStarted { room_id: room_id.clone().to_string() })
             }
 
             RoomActorCommand::CancelStart { room_id, .. } => {
                 let as_ = ctx.expect_actor_state();
-                let r = match room { Some(ref r) => r, None => return err("no room") };
                 let canceled = matches!(&as_.state.lifecycle, InternalRoomState::WaitForReady { .. });
                 if canceled {
                     // Restore host privileges if admin_started
                     if let InternalRoomState::WaitForReady { admin_started, .. } = &as_.state.lifecycle {
                         if *admin_started {
-                            if let Some(host) = r.users().await.iter().find(|u| as_.state.control.host_id == Some(u.id)) {
+                            if let Some(host) = lc.users().await.iter().find(|u| as_.state.control.host_id == Some(u.id)) {
                                 host.try_send(ServerCommand::ChangeHost(true)).await;
                             }
                         }
                     }
                     as_.state.control.admin_start_pending = false;
                     as_.state.ready_countdown_started_at = None;
-                    as_.state.playing_timeout_deadline = None;
                     as_.state.lifecycle = InternalRoomState::SelectChart;
-                    r.send(Message::CancelGame { user: 0 }).await;
-                    broadcast_state_change(r, &as_.state.lifecycle, as_.state.chart).await;
+                    lc.send_msg(Message::CancelGame { user: 0 }).await;
+                    broadcast_state_change(lc, &as_.state.lifecycle, as_.state.chart).await;
                 }
                 ok(RoomCommandPayload::CancelResult { room_id: room_id.clone().to_string(), canceled })
             }
 
             RoomActorCommand::SetChart { room_id, chart_id, chart_name, actor_user_id, .. } => {
                 let as_ = ctx.expect_actor_state();
-                let r = match room { Some(ref r) => r, None => return err("no room") };
                 if !matches!(&as_.state.lifecycle, InternalRoomState::SelectChart) {
                     return err("cannot set chart outside SelectChart state");
                 }
                 as_.state.chart = Some(*chart_id);
                 as_.state.chart_name = Some(chart_name.clone());
-                r.send(Message::SelectChart { user: *actor_user_id, name: chart_name.clone(), id: *chart_id }).await;
-                broadcast_state_change(r, &as_.state.lifecycle, as_.state.chart).await;
-                r.publish_update(phira_mp_common::PartialRoomData { chart: Some(*chart_id), ..Default::default() }).await;
-                state.publish_runtime_event(crate::event_bus::MpEvent::ChartSelected {
+                lc.send_msg(Message::SelectChart { user: *actor_user_id, name: chart_name.clone(), id: *chart_id }).await;
+                broadcast_state_change(lc, &as_.state.lifecycle, as_.state.chart).await;
+                lc.publish_update(phira_mp_common::PartialRoomData { chart: Some(*chart_id), ..Default::default() }).await;
+                lc.publish_runtime_event(crate::event_bus::MpEvent::ChartSelected {
                     room_id: room_id.clone().try_into().unwrap(),
                     chart_id: *chart_id,
                 });
@@ -858,24 +823,22 @@ impl RoomCommandHandler {
 
             RoomActorCommand::SetReady { room_id, user_id, .. } => {
                 let as_ = ctx.expect_actor_state();
-                let r = match room { Some(ref r) => r, None => return err("no room") };
                 match &mut as_.state.lifecycle {
                     InternalRoomState::WaitForReady { ref mut started, .. } => {
                         if !started.insert(*user_id) { return err("already ready"); }
                     }
                     _ => return err("not in WaitForReady state"),
                 }
-                r.send(Message::Ready { user: *user_id }).await;
-                state.publish_runtime_event(crate::event_bus::MpEvent::PlayerReadyChanged {
+                lc.send_msg(Message::Ready { user: *user_id }).await;
+                lc.publish_runtime_event(crate::event_bus::MpEvent::PlayerReadyChanged {
                     room_id: room_id.clone().try_into().unwrap(), user_id: *user_id, ready: true,
                 });
-                check_all_ready(r, as_, state).await;
+                check_all_ready(lc, as_).await;
                 ok(RoomCommandPayload::UserReady { room_id: room_id.clone().to_string(), user_id: *user_id })
             }
 
             RoomActorCommand::CancelReady { room_id, user_id, .. } => {
                 let as_ = ctx.expect_actor_state();
-                let r = match room { Some(ref r) => r, None => return err("no room") };
                 let was_host = as_.state.control.host_id == Some(*user_id);
                 match &mut as_.state.lifecycle {
                     InternalRoomState::WaitForReady { ref mut started, .. } => {
@@ -884,24 +847,23 @@ impl RoomCommandHandler {
                             // All users' host cancels the game
                             if let InternalRoomState::WaitForReady { admin_started, .. } = &as_.state.lifecycle {
                                 if *admin_started {
-                                    if let Some(host) = r.users().await.iter().find(|u| as_.state.control.host_id == Some(u.id)) {
+                                    if let Some(host) = lc.users().await.iter().find(|u| as_.state.control.host_id == Some(u.id)) {
                                         host.try_send(ServerCommand::ChangeHost(true)).await;
                                     }
                                 }
                             }
                             as_.state.control.admin_start_pending = false;
                             as_.state.ready_countdown_started_at = None;
-                            as_.state.playing_timeout_deadline = None;
-                            r.send(Message::CancelGame { user: *user_id }).await;
+                            lc.send_msg(Message::CancelGame { user: *user_id }).await;
                             as_.state.lifecycle = InternalRoomState::SelectChart;
-                            broadcast_state_change(r, &as_.state.lifecycle, as_.state.chart).await;
+                            broadcast_state_change(lc, &as_.state.lifecycle, as_.state.chart).await;
                         } else {
-                            r.send(Message::CancelReady { user: *user_id }).await;
+                            lc.send_msg(Message::CancelReady { user: *user_id }).await;
                         }
                     }
                     _ => return err("not in WaitForReady state"),
                 }
-                state.publish_runtime_event(crate::event_bus::MpEvent::PlayerReadyChanged {
+                lc.publish_runtime_event(crate::event_bus::MpEvent::PlayerReadyChanged {
                     room_id: room_id.clone().try_into().unwrap(), user_id: *user_id, ready: false,
                 });
                 ok(RoomCommandPayload::UserNotReady { room_id: room_id.clone().to_string(), user_id: *user_id })
@@ -909,7 +871,6 @@ impl RoomCommandHandler {
 
             RoomActorCommand::SubmitResult { room_id, user_id, score, accuracy, perfect, good, bad, miss, max_combo, full_combo, std, std_score, .. } => {
                 let as_ = ctx.expect_actor_state();
-                let r = match room { Some(ref r) => r, None => return err("no room") };
                 let record = crate::server::Record {
                     id: 0, player: *user_id, score: *score, perfect: *perfect,
                     good: *good, bad: *bad, miss: *miss, max_combo: *max_combo,
@@ -924,21 +885,21 @@ impl RoomCommandHandler {
                 }
                 // 首个完成者出现后延长对局超时（给其他玩家追赶时间）
                 if let InternalRoomState::Playing { results, .. } = &as_.state.lifecycle {
-                    let users = r.users().await;
+                    let users = lc.users().await;
                     let finished = results.len();
                     let total = users.len();
                     if finished == 1 && total > 1 {
                         // 第一个完成，延长截止时间
-                        let offset = (state.config.playing_timeout_offset_secs as f64) * 1000.0;
+                        let offset = (lc.server_state().config.playing_timeout_offset_secs as f64) * 1000.0;
                         if offset > 0.0 {
                             as_.state.playing_timeout_deadline = as_.state.playing_timeout_deadline.map(|d| d + offset as i64);
                             debug!("playing timeout extended by {}ms after first finish", offset as i64);
                         }
                     }
                 }
-                r.send(Message::Played { user: *user_id, score: *score, accuracy: *accuracy, full_combo: *full_combo, perfect: *perfect, good: *good, bad: *bad, miss: *miss, max_combo: *max_combo }).await;
-                check_all_ready(r, as_, state).await;
-                state.dispatch_plugin_event(PluginEvent::GameEnd {
+                lc.send_msg(Message::Played { user: *user_id, score: *score, accuracy: *accuracy, full_combo: *full_combo, perfect: *perfect, good: *good, bad: *bad, miss: *miss, max_combo: *max_combo }).await;
+                check_all_ready(lc, as_).await;
+                lc.dispatch_plugin_event(PluginEvent::GameEnd {
                     user_id: *user_id, user_name: String::new(), room_id: room_id.clone().to_string(),
                     score: *score, accuracy: *accuracy, perfect: *perfect,
                     good: *good, bad: *bad, miss: *miss, max_combo: *max_combo, full_combo: *full_combo,
@@ -948,7 +909,6 @@ impl RoomCommandHandler {
 
             RoomActorCommand::AbortRound { room_id, user_id, .. } => {
                 let as_ = ctx.expect_actor_state();
-                let r = match room { Some(ref r) => r, None => return err("no room") };
                 match &mut as_.state.lifecycle {
                     InternalRoomState::Playing { results, aborted } => {
                         if results.contains_key(user_id) { return err("already uploaded"); }
@@ -956,41 +916,39 @@ impl RoomCommandHandler {
                     }
                     _ => return err("not in Playing state"),
                 }
-                r.send(Message::Abort { user: *user_id }).await;
-                check_all_ready(r, as_, state).await;
+                lc.send_msg(Message::Abort { user: *user_id }).await;
+                check_all_ready(lc, as_).await;
                 ok(RoomCommandPayload::RoundAborted { room_id: room_id.clone().to_string(), user_id: *user_id })
             }
 
             RoomActorCommand::HostStart { room_id, user_id, .. } => {
                 let as_ = ctx.expect_actor_state();
-                let r = match room { Some(ref r) => r, None => return err("no room") };
                 if !matches!(&as_.state.lifecycle, InternalRoomState::SelectChart) {
                     return err("room is not selecting a chart");
                 }
                 if as_.state.control.admin_start_pending { return err("administrative start is already in progress"); }
                 if as_.state.chart.is_none() { return err("no chart selected"); }
-                reset_game_time(r).await;
-                r.send(Message::GameStart { user: *user_id }).await;
+                lc.reset_game_time().await;
+                lc.send_msg(Message::GameStart { user: *user_id }).await;
                 as_.state.lifecycle = InternalRoomState::WaitForReady {
                     started: std::iter::once(*user_id).collect(), admin_started: false,
                 };
                 as_.state.ready_countdown_started_at = Some(now_ms());
-                broadcast_state_change(r, &as_.state.lifecycle, as_.state.chart).await;
-                check_all_ready(r, as_, state).await;
-                state.dispatch_plugin_event(PluginEvent::GameStart { user_id: *user_id, room_id: room_id.clone().to_string() }).await;
+                broadcast_state_change(lc, &as_.state.lifecycle, as_.state.chart).await;
+                check_all_ready(lc, as_).await;
+                lc.dispatch_plugin_event(PluginEvent::GameStart { user_id: *user_id, room_id: room_id.clone().to_string() }).await;
                 ok(RoomCommandPayload::HostStarted { room_id: room_id.clone().to_string() })
             }
 
             RoomActorCommand::AddUser { room_id, user_id, user_name: _, monitor, .. } => {
                 let as_ = ctx.expect_actor_state();
-                let r = match room { Some(ref r) => r, None => return err("no room") };
-                let current_count = r.users().await.len();
+                let current_count = lc.users().await.len();
                 if current_count >= as_.state.control.max_users && !monitor {
                     return err("room is full");
                 }
                 if !as_.state.live {
                     as_.state.live = true;
-                    tracing::info!(room = %r.id, "room goes live via add_user");
+                    tracing::info!(room = %lc.room().id, "room goes live via add_user");
                 }
                 if *monitor {
                     as_.state.members.monitors.push(*user_id);
@@ -999,11 +957,11 @@ impl RoomCommandHandler {
                     // First non-monitor user becomes host, but only for
                     // player-created rooms (those with a creator_id).
                     // Server-created empty rooms keep host=None until CLI sets it.
-                    if as_.state.control.host_id.is_none() && r.creator_id.is_some() {
+                    if as_.state.control.host_id.is_none() && lc.room().creator_id.is_some() {
                         as_.state.control.host_id = Some(*user_id);
                     }
                 }
-                state.dispatch_plugin_event(PluginEvent::RoomModify {
+                lc.dispatch_plugin_event(PluginEvent::RoomModify {
                     user_id: *user_id, room_id: room_id.clone().to_string(),
                     data: json!({"action": if *monitor { "monitor_join" } else { "join" }}).to_string(),
                 }).await;
@@ -1015,20 +973,19 @@ impl RoomCommandHandler {
             }
 
             RoomActorCommand::RemoveUser { room_id, user_id, .. } => {
-                let r = match room { Some(ref r) => r, None => return err("no room") };
                 let user = {
-                    let users = r.users().await;
-                    let monitors = r.monitors().await;
+                    let users = lc.users().await;
+                    let monitors = lc.monitors().await;
                     users.iter().find(|u| u.id == *user_id).cloned()
                         .or_else(|| monitors.iter().find(|u| u.id == *user_id).cloned())
                 };
                 match user {
                     Some(user) => {
                         let was_monitor = user.monitor.load(std::sync::atomic::Ordering::SeqCst);
-                        let should_drop = r.on_user_leave(&user).await;
-                        if should_drop { state.rooms.write().await.remove(&r.id); }
+                        let should_drop = lc.on_user_leave(&user).await;
+                        if should_drop { lc.remove_room(&lc.room().id).await; }
                         if !was_monitor {
-                            state.publish_room_event(RoomEvent::LeaveRoom { room: r.id.clone(), user: *user_id }).await;
+                            lc.publish_room_event(RoomEvent::LeaveRoom { room: lc.room().id.clone(), user: *user_id }).await;
                         }
                         // Clean up cached player data and display names for the removed user,
                         // and remove from authoritative members list.
@@ -1037,12 +994,12 @@ impl RoomCommandHandler {
                         as_.display_names.remove(user_id);
                         as_.state.members.users.retain(|id| *id != *user_id);
                         as_.state.members.monitors.retain(|id| *id != *user_id);
-                        state.dispatch_plugin_event(PluginEvent::RoomModify {
+                        lc.dispatch_plugin_event(PluginEvent::RoomModify {
                             user_id: *user_id, room_id: room_id.clone().to_string(),
                             data: json!({"action": "leave"}).to_string(),
                         }).await;
                         // Trigger check_all_ready in case the leaving user was in-game.
-                        check_all_ready(r, as_, state).await;
+                        check_all_ready(lc, as_).await;
                         ok(RoomCommandPayload::UserRemoved {
                             room_id: room_id.clone().to_string(), user_id: *user_id, room_dropped: should_drop,
                         })

@@ -66,6 +66,7 @@ mod audit;
 mod command;
 mod context;
 mod handler;
+mod lifecycle;
 mod mailbox;
 mod ops;
 mod result;

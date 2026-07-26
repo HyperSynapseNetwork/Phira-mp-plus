@@ -1,42 +1,26 @@
 //! Execution context for Runtime room command handlers.
 //!
-//! Carries server state, room reference for broadcasts, and actor
-//! reference for state mutations.
+//! Carries a `RoomLifecycle` reference (for broadcasts, events, user access)
+//! and a mutable `RoomActorState` reference (for state mutations).
 
-use super::actor::RoomActor;
-use crate::server::PlusServerState;
-use std::sync::Arc;
+use super::actor::RoomActorState;
+use super::lifecycle::RoomLifecycle;
 
 pub(super) struct RoomCommandContext<'a> {
-    pub(super) state: &'a PlusServerState,
-    /// Room reference for broadcasts and plugin events.
-    pub(super) room: Option<Arc<crate::room::Room>>,
-    /// Actor reference for state modifications.
-    pub(super) actor: Option<&'a mut RoomActor>,
+    /// Lifecycle abstraction for room/server operations.
+    pub(super) lc: &'a dyn RoomLifecycle,
+    /// Mutable actor state reference for state mutations.
+    as_: &'a mut RoomActorState,
 }
 
 impl<'a> RoomCommandContext<'a> {
-    /// Create a context with room and actor references.
-    pub(super) fn with_actor(
-        state: &'a PlusServerState,
-        room: Arc<crate::room::Room>,
-        actor: &'a mut RoomActor,
-    ) -> Self {
-        Self {
-            state,
-            room: Some(room),
-            actor: Some(actor),
-        }
+    /// Create a new context with lifecycle and actor state references.
+    pub(super) fn new(lc: &'a dyn RoomLifecycle, as_: &'a mut RoomActorState) -> Self {
+        Self { lc, as_ }
     }
 
     /// Get a mutable reference to the actor's state (always present).
-    pub(super) fn actor_state(&mut self) -> Option<&mut crate::room_actor::actor::RoomActorState> {
-        self.actor.as_mut().map(|a| &mut a.actor_state)
-    }
-
-    /// Get the actor state (always available).
-    pub(super) fn expect_actor_state(&mut self) -> &mut crate::room_actor::actor::RoomActorState {
-        self.actor_state()
-            .expect("actor_state is always initialized in RoomActor")
+    pub(super) fn expect_actor_state(&mut self) -> &mut RoomActorState {
+        self.as_
     }
 }

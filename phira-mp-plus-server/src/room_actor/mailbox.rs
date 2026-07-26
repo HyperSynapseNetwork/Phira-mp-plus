@@ -164,12 +164,12 @@ impl RoomCommandGateway {
                                     let timeout_ms = (actor.state.config.ready_countdown_secs.max(10) * 1000) as i64;
                                     if elapsed >= timeout_ms {
                                         // 超时 —— 强制开赛
-                                        if let Some(room) = actor.room.as_ref() {
-                                            let room: &crate::room::Room = room;
-                                            crate::room_actor::handler::force_start_playing(
-                                                room, &mut as_.state, &actor.state,
-                                            ).await;
-                                        }
+                                        let room = Arc::clone(&actor.room);
+                                        let state: &crate::server::PlusServerState = &*actor.state;
+                                        let lc = crate::room_actor::lifecycle::DefaultRoomLifecycle::new(room, state);
+                                        crate::room_actor::handler::force_start_playing(
+                                            &lc, &mut as_.state,
+                                        ).await;
                                     }
                                 }
                             }
@@ -183,11 +183,12 @@ impl RoomCommandGateway {
                                         .unwrap_or(0);
                                     if now >= deadline {
                                         as_.state.playing_timeout_deadline = None;
-                                        if let Some(room) = actor.room.as_ref() {
-                                            crate::room_actor::handler::force_end_playing(
-                                                room, &mut as_.state, &actor.state,
-                                            ).await;
-                                        }
+                                        let room = Arc::clone(&actor.room);
+                                        let state: &crate::server::PlusServerState = &*actor.state;
+                                        let lc = crate::room_actor::lifecycle::DefaultRoomLifecycle::new(room, state);
+                                        crate::room_actor::handler::force_end_playing(
+                                            &lc, &mut as_.state,
+                                        ).await;
                                     }
                                 }
                             }

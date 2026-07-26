@@ -232,15 +232,12 @@ impl RoomActor {
     pub(super) async fn execute_command(&mut self, command: RoomActorCommand) -> bool {
         use super::handler::RoomCommandHandler;
         use super::context::RoomCommandContext;
+        use super::lifecycle::DefaultRoomLifecycle;
 
-        let state_arc = Arc::clone(&self.state);
-        let state: &crate::server::PlusServerState = &state_arc;
+        let state: &PlusServerState = &*self.state;
         let room = Arc::clone(&self.room);
-        let ctx = RoomCommandContext::with_actor(
-            state,
-            room,
-            self,
-        );
+        let lc = DefaultRoomLifecycle::new(room, state);
+        let ctx = RoomCommandContext::new(&lc, &mut self.actor_state);
         let result = RoomCommandHandler::execute_with_actor(ctx, &command).await;
         let should_stop = RoomCommandHandler::should_stop_room_mailbox(&command, &result);
         self.state.room_commands.observe_mailbox_result(&result);
