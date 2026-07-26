@@ -114,21 +114,27 @@ jobs:
           sudo -u postgres psql -c "ALTER USER postgres PASSWORD 'postgres';"
           sudo -u postgres psql -c "CREATE DATABASE phira_mp_plus;" 2>/dev/null || true
       - name: Build with profile-generate
-        run: cargo build --locked --release --target ${{ matrix.target }}
+        run: |
+          mkdir -p /tmp/pgo-data
+          cargo build --locked --release --target ${{ matrix.target }}
         env:
-          RUSTFLAGS: "-Cprofile-generate=/tmp/pgo-data -Cllvm-args=-vp-counters-per-site=8"
+          RUSTFLAGS: "-Cprofile-generate=/tmp/pgo-data"
       - if: matrix.os == 'ubuntu-latest'
         name: Run workload to collect profiles
         run: |
           export PM_DATABASE_URL="postgres://postgres:postgres@localhost:5432/phira_mp_plus"
-          export RUST_LOG=error
-          LLVM_PROFILE_FILE="/tmp/pgo-data/%m_%p.profraw" target/${{ matrix.target }}/release/phira-mp-plus-server --port 22346 --http-port 22347 --no-cli &
+          export LLVM_PROFILE_FILE="/tmp/pgo-data/%m_%p.profraw"
+          # Start instrumented server
+          target/${{ matrix.target }}/release/phira-mp-plus-server --port 22346 --http-port 22347 --no-cli &
           SERVER_PID=$!
-          sleep 5
+          sleep 4
+          # Run benchmark to generate profile data
           echo "benchmark run --mode real --duration 10s" | timeout 20 target/${{ matrix.target }}/release/phira-mp-plus-server --port 22348 --http-port 22349 --no-cli 2>/dev/null || true
-          kill $SERVER_PID 2>/dev/null || true
-          wait $SERVER_PID 2>/dev/null || true
-          llvm-profdata merge -output=/tmp/pgo-data/merged.profdata /tmp/pgo-data/*.profraw 2>/dev/null || true
+          # Graceful shutdown to flush profile data
+          kill -TERM $SERVER_PID 2>/dev/null || true
+          sleep 2
+          ls -la /tmp/pgo-data/ 2>/dev/null || true
+          llvm-profdata merge -output=/tmp/pgo-data/merged.profdata /tmp/pgo-data/*.profraw 2>/dev/null && echo "PGO profiles merged" || echo "No PGO profiles generated"
       - name: Build with profile-use
         run: cargo build --locked --release --target ${{ matrix.target }}
         env:
