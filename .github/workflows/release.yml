@@ -117,7 +117,11 @@ jobs:
         run: |
           PGO_DIR="/tmp/pgo-data/${{ matrix.target }}"
           mkdir -p "$PGO_DIR"
-          RUSTFLAGS="-Cprofile-generate=$PGO_DIR" cargo build --locked --release --target ${{ matrix.target }}
+          # Disable LTO during generate phase — LTO + profile-generate can conflict.
+          # LTO is re-enabled in the profile-use build.
+          CARGO_PROFILE_RELEASE_LTO=false \
+          RUSTFLAGS="-Cprofile-generate=$PGO_DIR" \
+            cargo build --locked --release --target ${{ matrix.target }}
       - if: matrix.os == 'ubuntu-latest'
         name: Run workload to collect profiles
         run: |
