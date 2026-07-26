@@ -288,6 +288,15 @@ pub async fn create_room(user: Arc<User>, id: RoomId) -> Result<()> {
             room_uuid,
         });
 
+    // Pre-create the mailbox so the first join doesn't pay creation latency.
+    {
+        let id_str = id.to_string();
+        let state = Arc::clone(&user.server);
+        tokio::spawn(async move {
+            let _ = state.room_commands.set_live(&state, &id_str, true).await;
+        });
+    }
+
     crate::internal_hooks::playtime_room_enter(user.id);
     Ok(())
 }
@@ -388,17 +397,17 @@ pub async fn join_room(
         "user join room"
     );
     user.monitor.store(monitor, Ordering::SeqCst);
-    // Route SetLive(true) through mailbox for actor-authoritative live flag.
-    let _ = user.server
-        .room_commands
-        .set_live(&user.server, &id.to_string(), true)
-        .await;
-    // Register display name so result screens show names, not IDs.
-    user.server
-        .room_commands
-        .set_display_name(&user.server, &id.to_string(), user.id, &user.name)
-        .await
-        .ok();
+    // Route SetLive(true) and set_display_name through mailbox — fire-and-forget
+    // so mailbox creation latency doesn't block the JoinRoom response.
+    {
+        let room_id = id.to_string();
+        let user_name = user.name.clone();
+        let server = Arc::clone(&user.server);
+        tokio::spawn(async move {
+            let _ = server.room_commands.set_live(&server, &room_id, true).await;
+            let _ = server.room_commands.set_display_name(&server, &room_id, user.id, &user_name).await;
+        });
+    }
     user.server
         .assign_room_host_if_missing(&room, &user, monitor, false)
         .await;
