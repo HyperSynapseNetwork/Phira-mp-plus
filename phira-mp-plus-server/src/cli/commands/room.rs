@@ -148,6 +148,56 @@ impl CliHandler {
                     self.room_set(args[1], args[2], &args[3..].join(" ")).await;
                 }
             }
+            "lock" => {
+                if args.len() < 2 {
+                    self.out(format!(
+                        "  {} {} room lock <房间ID> [true|false]",
+                        c::yellow("?"),
+                        c::bold("用法")
+                    ));
+                } else {
+                    let v = args.get(2).map(|v| parse_cli_bool(v)).unwrap_or(true);
+                    match self
+                        .state
+                        .room_commands
+                        .set_lock(&self.state, args[1], v)
+                        .await
+                    {
+                        Ok(_) => self.out(format!(
+                            "  {} 房间 {} 已{}锁定",
+                            c::green("✓"),
+                            args[1],
+                            if v { "" } else { "解除" }
+                        )),
+                        Err(e) => self.out(format!("  {} {}", c::red("✗"), e)),
+                    }
+                }
+            }
+            "cycle" => {
+                if args.len() < 2 {
+                    self.out(format!(
+                        "  {} {} room cycle <房间ID> [true|false]",
+                        c::yellow("?"),
+                        c::bold("用法")
+                    ));
+                } else {
+                    let v = args.get(2).map(|v| parse_cli_bool(v)).unwrap_or(true);
+                    match self
+                        .state
+                        .room_commands
+                        .set_cycle(&self.state, args[1], v)
+                        .await
+                    {
+                        Ok(_) => self.out(format!(
+                            "  {} 房间 {} 已{}轮换",
+                            c::green("✓"),
+                            args[1],
+                            if v { "开启" } else { "关闭" }
+                        )),
+                        Err(e) => self.out(format!("  {} {}", c::red("✗"), e)),
+                    }
+                }
+            }
             "history" => {
                 if args.len() < 2 {
                     self.out(format!(
@@ -328,7 +378,7 @@ impl CliHandler {
                     c::red("✗"),
                     c::yellow(sub)
                 ));
-                self.out(format!("  {} 可用: room list|create-empty|info|start|force-start|cancel|kick|host|force-move|hide|unhide|close|set|history|rounds|round|uuid|ban|unban|banlist", c::dim("▸")));
+                self.out(format!("  {} 可用: room list|create-empty|info|start|force-start|cancel|lock|cycle|kick|host|force-move|hide|unhide|close|set|history|rounds|round|uuid|ban|unban|banlist", c::dim("▸")));
             }
         }
     }

@@ -81,6 +81,18 @@ pub fn specs() -> Vec<CommandSpec> {
         .advanced(),
         CommandSpec::new("room close", "rooms", "解散房间。", "room close <room_id>"),
         CommandSpec::new(
+            "room lock",
+            "rooms",
+            "锁定/解锁房间。",
+            "room lock <room_id> [true|false]",
+        ),
+        CommandSpec::new(
+            "room cycle",
+            "rooms",
+            "开启/关闭房主轮换。",
+            "room cycle <room_id> [true|false]",
+        ),
+        CommandSpec::new(
             "room set",
             "rooms",
             "修改房间设置。",
