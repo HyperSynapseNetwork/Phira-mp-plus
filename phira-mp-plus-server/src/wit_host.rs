@@ -320,7 +320,7 @@ mod wit_trait_impls {
         }
 
         fn api_call(&mut self, method: String, args: Vec<types::JsonValue>) -> types::ApiResult {
-            tracing::info!(plugin = %self.plugin_name, %method, "api_call");
+            tracing::trace!(plugin = %self.plugin_name, %method, "api_call");
             let args_serde: Vec<serde_json::Value> = args.iter().map(super::wit_json_value_to_serde).collect();
             let args_serde =
                 match normalize_plugin_scoped_api_args(&method, &self.plugin_name, args_serde) {

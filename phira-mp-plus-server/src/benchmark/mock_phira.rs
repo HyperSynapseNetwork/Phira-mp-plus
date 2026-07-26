@@ -77,13 +77,15 @@ impl MockPhiraServer {
     /// - `GET /me` — 返回固定测试用户信息
     /// - `GET /user/{id}` — 返回测试用户数据
     /// - `GET /chart/{id}` — 返回测试谱面数据
+    /// - `GET /record/{id}` — 返回测试游玩记录
     ///
     /// 启动后通过 `port()` 获取实际端口号。
     pub async fn start(&self) -> Result<(), String> {
         let app = Router::new()
             .route("/me", get(me_handler))
             .route("/user/{id}", get(user_handler))
-            .route("/chart/{id}", get(chart_handler));
+            .route("/chart/{id}", get(chart_handler))
+            .route("/record/{id}", get(record_handler));
 
         let listener = TcpListener::bind("127.0.0.1:0")
             .await
@@ -184,5 +186,25 @@ async fn chart_handler(Path(id): Path<i32>) -> Json<Value> {
     Json(json!({
         "id": id,
         "name": format!("chart-{}", id)
+    }))
+}
+
+/// `GET /record/{id}` — 返回测试游玩记录
+///
+/// PMP 在 Played 流程中通过此端点获取玩家的游玩结果。
+async fn record_handler(Path(id): Path<i32>) -> Json<Value> {
+    Json(json!({
+        "id": id,
+        "player": 999,
+        "score": 998877,
+        "accuracy": 0.9876,
+        "perfect": 800,
+        "good": 10,
+        "bad": 2,
+        "miss": 1,
+        "max_combo": 500,
+        "full_combo": true,
+        "std": 0,
+        "std_score": 998877
     }))
 }

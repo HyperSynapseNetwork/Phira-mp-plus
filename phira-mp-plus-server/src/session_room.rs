@@ -11,6 +11,7 @@
 use crate::phira_client::PhiraRetryNoticeTarget;
 use crate::plugin::PluginEvent;
 use crate::session::{SessionCategory, User};
+use crate::session_auth::resolve_phira_api_endpoint;
 use crate::tl;
 use anyhow::{anyhow, bail, Result};
 
@@ -597,13 +598,13 @@ pub async fn select_chart(user: Arc<User>, id: i32) -> Result<()> {
     );
     async move {
         trace!("fetch");
-        // Use server's default phira endpoint (room override is in actor state now).
-        let endpoint = &user.server.config.phira_api_endpoint;
+        // Use live_config endpoint first, falling back to config file.
+        let endpoint = resolve_phira_api_endpoint(&user.server).await;
         let chart_name: String = match user
             .server
             .phira_client
             .get_json::<crate::server::Chart>(
-                endpoint,
+                &endpoint,
                 None,
                 &format!("/chart/{id}"),
                 None,
@@ -683,13 +684,13 @@ pub async fn cancel_ready(user: Arc<User>) -> Result<()> {
 
 pub async fn played(user: Arc<User>, id: i32) -> Result<()> {
     let room = current_room(&user).await?;
-    // Use server's default phira endpoint (room override is in actor state).
-    let endpoint = &user.server.config.phira_api_endpoint;
+    // Use live_config endpoint first, falling back to config file.
+    let endpoint = resolve_phira_api_endpoint(&user.server).await;
     let res: crate::server::Record = user
         .server
         .phira_client
         .get_json(
-            endpoint,
+            &endpoint,
             None,
             &format!("/record/{id}"),
             None,
