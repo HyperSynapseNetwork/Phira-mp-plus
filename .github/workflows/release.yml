@@ -128,12 +128,16 @@ jobs:
           PGO_DIR="/tmp/pgo-data/${{ matrix.target }}"
           export PM_DATABASE_URL="postgres://postgres:postgres@localhost:5432/phira_mp_plus"
           export LLVM_PROFILE_FILE="$PGO_DIR/%m_%p.profraw"
+          # Start server with --no-cli (no TUI, clean shutdown on signal)
           target/${{ matrix.target }}/release/phira-mp-plus-server --port 22346 --http-port 22347 --no-cli &
           SERVER_PID=$!
           sleep 4
+          # Run benchmark workload against the server
+          LLVM_PROFILE_FILE="$PGO_DIR/%m_%p.profraw" \
           echo "benchmark run --mode real --duration 10s" | timeout 20 target/${{ matrix.target }}/release/phira-mp-plus-server --port 22348 --http-port 22349 --no-cli 2>/dev/null || true
-          kill -TERM $SERVER_PID 2>/dev/null || true
-          sleep 2
+          # Send SIGINT to trigger graceful shutdown + LLVM profile flush
+          kill -INT $SERVER_PID 2>/dev/null || true
+          sleep 3
           ls -la "$PGO_DIR/" 2>/dev/null
           llvm-profdata merge -output="$PGO_DIR/merged.profdata" "$PGO_DIR"/*.profraw 2>/dev/null && echo "PGO profiles merged for ${{ matrix.target }}" || echo "WARNING: No PGO profiles for ${{ matrix.target }}"
       - name: Build with profile-use

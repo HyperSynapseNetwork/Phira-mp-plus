@@ -162,10 +162,12 @@ jobs:
           target/x86_64-unknown-linux-gnu/release/phira-mp-plus-server --port 22346 --http-port 22347 --no-cli &
           SERVER_PID=$!
           sleep 4
-          # Run benchmark to generate profile data
+          # Run benchmark workload against the server
+          LLVM_PROFILE_FILE="/tmp/pgo-data/%m_%p.profraw" \
           echo "benchmark run --mode real --duration 10s" | timeout 20 target/x86_64-unknown-linux-gnu/release/phira-mp-plus-server --port 22348 --http-port 22349 --no-cli 2>/dev/null || true
-          kill -TERM $SERVER_PID 2>/dev/null || true
-          sleep 2
+          # SIGINT triggers graceful shutdown + LLVM profile flush
+          kill -INT $SERVER_PID 2>/dev/null || true
+          sleep 3
           ls -la /tmp/pgo-data/ 2>/dev/null || true
       - name: Merge profiles
         run: |
