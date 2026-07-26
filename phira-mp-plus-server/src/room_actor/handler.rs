@@ -297,37 +297,47 @@ async fn check_all_ready(
                     }
                 }
 
-                // 发送结算排行
+                // 发送结算排行（本地化）
                 {
                     if let Some(last) = r.play_history.last().await {
                         let mut sorted = last.results.clone();
                         sorted.sort_by(|a, b| b.score.cmp(&a.score));
-                        let mut lines: Vec<String> =
-                            vec![format!("▸ {} 排行", last.chart_name)];
-                        for (i, rr) in sorted.iter().enumerate() {
-                            let status = if rr.aborted { " 放弃" } else { "" };
-                            let fc = if rr.full_combo { " FC" } else { "" };
-                            lines.push(format!(
-                                "#{}. {:<12} {:>8}分  准确率 {:.2}%  ±{:.1}ms{}{}",
-                                i + 1,
-                                rr.user_name,
-                                rr.score,
-                                rr.accuracy * 100.0,
-                                rr.std * 1000.0,
-                                fc,
-                                status
-                            ));
-                            lines.push(format!(
-                                "    Perfect:{}  Good:{}  Bad:{}  Miss:{}  MaxCombo:{}",
-                                rr.perfect, rr.good, rr.bad, rr.miss, rr.max_combo
-                            ));
-                        }
-                        for line in &lines {
-                            r.send(Message::Chat {
-                                user: 0,
-                                content: line.clone(),
-                            })
-                            .await;
+                        for user in r.users().await.into_iter().chain(r.monitors().await) {
+                            let lang = user.lang.clone();
+                            // 标题行
+                            {
+                                let mut args = fluent::FluentArgs::new();
+                                args.set("chart_name", &last.chart_name);
+                                let content = crate::l10n::translate_system(&lang, "result-ranking-title", &args);
+                                user.try_send(ServerCommand::Message(Message::Chat { user: 0, content })).await;
+                            }
+                            // 每位玩家两行
+                            for (i, rr) in sorted.iter().enumerate() {
+                                let status_str = if rr.aborted {
+                                    crate::l10n::translate_system(&lang, "result-aborted", &fluent::FluentArgs::new())
+                                } else { String::new() };
+                                let fc_str = if rr.full_combo {
+                                    crate::l10n::translate_system(&lang, "result-fc", &fluent::FluentArgs::new())
+                                } else { String::new() };
+                                let mut args = fluent::FluentArgs::new();
+                                args.set("rank", (i + 1) as i64);
+                                args.set("name", &rr.user_name);
+                                args.set("score", rr.score);
+                                args.set("accuracy", format!("{:.2}", rr.accuracy * 100.0));
+                                args.set("std", format!("{:.1}", rr.std * 1000.0));
+                                args.set("fc", &fc_str);
+                                args.set("status", &status_str);
+                                let content = crate::l10n::translate_system(&lang, "result-player-line", &args);
+                                user.try_send(ServerCommand::Message(Message::Chat { user: 0, content })).await;
+                                let mut args2 = fluent::FluentArgs::new();
+                                args2.set("perfect", rr.perfect);
+                                args2.set("good", rr.good);
+                                args2.set("bad", rr.bad);
+                                args2.set("miss", rr.miss);
+                                args2.set("max_combo", rr.max_combo);
+                                let content = crate::l10n::translate_system(&lang, "result-detail-line", &args2);
+                                user.try_send(ServerCommand::Message(Message::Chat { user: 0, content })).await;
+                            }
                         }
                     }
                 }
