@@ -249,15 +249,7 @@ fn all_primary_commands_have_valid_help() {
     }
 }
 
-// ── Force-start aliases ───────────────────────────────────────────────
-
-#[test]
-fn force_start_compatibility_command_is_registered() {
-    let registry = runtime_registry();
-    assert!(registry.get("force-start").is_some());
-    assert!(registry.get("room force-start").is_some());
-    assert!(registry.get("room start").is_some());
-}
+// ── Force-start aliases removed ──────────────────────────────────────
 
 // ── Deprecated / legacy command removal ───────────────────────────────
 
