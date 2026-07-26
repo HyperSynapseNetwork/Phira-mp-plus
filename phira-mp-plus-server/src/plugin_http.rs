@@ -311,7 +311,8 @@ fn plugin_sse_translate(
                     let event_type = result
                         .get("type")
                         .and_then(|v| v.as_str())
-                        .unwrap_or("event");
+                        .unwrap_or("event")
+                        .to_owned();
                     // Strip the "type" key from data — the spec says it goes in
                     // the SSE event: line, not inside the data: payload.
                     let mut data = result;
