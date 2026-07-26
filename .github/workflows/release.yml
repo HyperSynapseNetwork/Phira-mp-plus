@@ -135,10 +135,15 @@ jobs:
           sleep 2
           ls -la /tmp/pgo-data/ 2>/dev/null || true
           llvm-profdata merge -output=/tmp/pgo-data/merged.profdata /tmp/pgo-data/*.profraw 2>/dev/null && echo "PGO profiles merged" || echo "No PGO profiles generated"
-      - name: Build with profile-use
-        run: cargo build --locked --release --target ${{ matrix.target }}
-        env:
-          RUSTFLAGS: "-Cprofile-use=/tmp/pgo-data/merged.profdata -Cllvm-args=-pgo-warn-missing-function=false"
+      - name: Build with profile-use (or normal build if no profile)
+        run: |
+          PROFILES=/tmp/pgo-data/merged.profdata
+          if [ -f "$PROFILES" ]; then
+            RUSTFLAGS="-Cprofile-use=$PROFILES -Cllvm-args=-pgo-warn-missing-function=false" \
+              cargo build --locked --release --target ${{ matrix.target }}
+          else
+            cargo build --locked --release --target ${{ matrix.target }}
+          fi
       - run: cp ${{ matrix.artifact-path }} ${{ matrix.artifact-name }}
       - name: Smoke test (linux)
         if: matrix.os == 'ubuntu-latest'
