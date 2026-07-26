@@ -93,6 +93,8 @@ pub struct RoomState {
     pub live: bool,
     /// 准备倒计时开始时间（毫秒时间戳）。None 表示未启动倒计时。
     pub ready_countdown_started_at: Option<i64>,
+    /// 对局超时截止时间（毫秒时间戳）。None 表示未启用超时或已超时。
+    pub playing_timeout_deadline: Option<i64>,
 }
 
 impl RoomState {
@@ -197,6 +199,7 @@ impl RoomActor {
                 },
                 live: false,
                 ready_countdown_started_at: None,
+                playing_timeout_deadline: None,
             },
             room.created_at,
         );

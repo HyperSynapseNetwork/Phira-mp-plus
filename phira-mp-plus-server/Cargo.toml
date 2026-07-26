@@ -7,6 +7,7 @@ license = "AGPL-3.0"
 [dependencies]
 anyhow = { workspace = true }
 chrono = { workspace = true }
+flate2 = { workspace = true }
 clap = { version = "4.5.58", features = ["derive", "env"] }
 crossterm = "0.28"
 ratatui = "0.28"

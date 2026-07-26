@@ -643,6 +643,26 @@ pub async fn select_chart(user: Arc<User>, id: i32) -> Result<()> {
             }
         };
         debug!("chart name: {chart_name}");
+
+        // 异步获取谱面时长（只下 info.txt，不拖整个 zip）
+        if !user.server.chart_duration_cache.read().await.contains_key(&id) {
+            // 先从 API 拿 chart 元数据（含 file 下载链接）
+            let file_url = user.server.phira_client
+                .fetch_chart_by_id(&endpoint, id)
+                .await
+                .and_then(|c| c.file);
+            if let Some(ref url) = file_url {
+                let state = Arc::clone(&user.server);
+                let cid = id;
+                tokio::spawn(async move {
+                    if let Some(duration) = state.phira_client.fetch_chart_duration(url).await {
+                        state.chart_duration_cache.write().await.insert(cid, duration);
+                        debug!(chart = cid, duration, "chart duration cached");
+                    }
+                });
+            }
+        }
+
         // Route state mutation through RoomActor mailbox for serialized access.
         user.server
             .room_commands

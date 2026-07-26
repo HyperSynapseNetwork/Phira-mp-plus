@@ -23,6 +23,33 @@ use std::collections::{HashMap, HashSet};
 use std::sync::atomic::Ordering;
 use tracing::{debug, info, warn};
 
+/// Calculate and set the playing timeout deadline based on chart duration + offset.
+/// Falls back to a default if no cached duration is available.
+fn set_playing_deadline(
+    as_: &mut crate::room_actor::actor::RoomActorState,
+    state: &crate::server::PlusServerState,
+) {
+    let offset_secs = state.config.playing_timeout_offset_secs;
+    if offset_secs == 0 {
+        as_.state.playing_timeout_deadline = None;
+        return; // 超时未启用
+    }
+    let chart_id = as_.state.chart.unwrap_or(0);
+    let duration_secs = state
+        .chart_duration_cache
+        .try_read()
+        .ok()
+        .and_then(|c| c.get(&chart_id).copied())
+        .unwrap_or(120.0); // fallback: 120s
+    let total_ms = (duration_secs + offset_secs as f64) * 1000.0;
+    let deadline = now_ms() + total_ms as i64;
+    as_.state.playing_timeout_deadline = Some(deadline);
+    debug!(
+        chart = chart_id, duration = %duration_secs, offset = offset_secs,
+        deadline_ms = deadline, "playing timeout set"
+    );
+}
+
 fn now_ms() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -229,6 +256,7 @@ async fn check_all_ready(
                     results: HashMap::new(),
                     aborted: HashSet::new(),
                 };
+                set_playing_deadline(as_, state);
                 broadcast_state_change(r, &as_.state.lifecycle, as_.state.chart).await;
 
                 // 打开轮次数据存储
@@ -351,6 +379,7 @@ async fn check_all_ready(
                 r.send(Message::GameEnd).await;
                 as_.state.round.round_id = None;
                 as_.state.ready_countdown_started_at = None;
+                as_.state.playing_timeout_deadline = None;
                 as_.state.lifecycle = InternalRoomState::SelectChart;
                 if as_.state.control.cycle && !as_.state.control.system_host {
                     debug!(room = r.id.to_string(), "cycling");
@@ -449,6 +478,25 @@ pub(super) async fn force_start_playing(
         aborted.insert(id);
     }
     state.lifecycle = InternalRoomState::Playing { results, aborted };
+    // Set playing timeout
+    {
+        let offset_secs = server.config.playing_timeout_offset_secs;
+        if offset_secs > 0 {
+            let chart_id = state.chart.unwrap_or(0);
+            let duration_secs = server
+                .chart_duration_cache
+                .try_read()
+                .ok()
+                .and_then(|c| c.get(&chart_id).copied())
+                .unwrap_or(120.0);
+            let total_ms = (duration_secs + offset_secs as f64) * 1000.0;
+            state.playing_timeout_deadline = Some(now_ms() + total_ms as i64);
+            debug!(
+                chart = chart_id, duration = %duration_secs, offset = offset_secs,
+                "playing timeout set (force)"
+            );
+        }
+    }
     broadcast_state_change(r, &state.lifecycle, state.chart).await;
 
     let rid = round_id.to_string();
@@ -475,6 +523,72 @@ pub(super) async fn force_start_playing(
         user_id: 0,
         room_id: r.id.to_string(),
     }).await;
+}
+
+/// End the playing phase due to timeout. Unfinished players are marked aborted,
+/// then the round is saved and transitioned back to SelectChart.
+pub(super) async fn force_end_playing(
+    r: &crate::room::Room,
+    state: &mut crate::room_actor::actor::RoomState,
+    server: &crate::server::PlusServerState,
+) {
+    if !matches!(&state.lifecycle, InternalRoomState::Playing { .. }) {
+        return;
+    }
+    // Remove unfinished and un-aborted players by adding them to aborted
+    if let InternalRoomState::Playing { ref mut results, ref mut aborted } = &mut state.lifecycle {
+        let users = r.users().await;
+        for u in &users {
+            if !results.contains_key(&u.id) {
+                aborted.insert(u.id);
+                info!(user = u.id, room = %r.id, "aborted by playing timeout");
+            }
+        }
+    }
+    // Now check_all_ready will see all as finished/aborted and transition
+    // But we need actor_state for this — clone the lifecycle and check
+    let all_done = match &state.lifecycle {
+        InternalRoomState::Playing { results, aborted } => {
+            let users = r.users().await;
+            users.iter().all(|u| results.contains_key(&u.id) || aborted.contains(&u.id))
+        }
+        _ => true,
+    };
+    if all_done {
+        // Save round history directly
+        let rid = state.round.round_id;
+        if let InternalRoomState::Playing { results, .. } = &state.lifecycle {
+            if let Some(server_upgraded) = r.server.upgrade() {
+                let completed_round = crate::room_actor::handler::save_round_history(
+                    r,
+                    &mut state.lifecycle,
+                    &mut state.round.round_id,
+                    state.chart,
+                    state.chart_name.as_deref(),
+                    &std::collections::HashMap::new(), // display_names not available here
+                ).await;
+                if let (Some(round)) = completed_round {
+                    server_upgraded
+                        .publish_room_event(RoomEvent::NewRound {
+                            room: r.id.clone(),
+                            round,
+                        })
+                        .await;
+                }
+            }
+        }
+        if let Some(rid) = rid {
+            if let Some(rs) = &r.round_store {
+                rs.close_round(&rid.to_string()).await;
+            }
+        }
+        state.round.round_id = None;
+        state.ready_countdown_started_at = None;
+        state.playing_timeout_deadline = None;
+        r.send(Message::GameEnd).await;
+        state.lifecycle = InternalRoomState::SelectChart;
+        crate::room_actor::handler::broadcast_state_change(r, &state.lifecycle, state.chart).await;
+    }
 }
 
 pub(super) struct RoomCommandHandler;
@@ -805,6 +919,20 @@ impl RoomCommandHandler {
                         if results.insert(*user_id, record).is_some() { return err("already uploaded"); }
                     }
                     _ => return err("not in Playing state"),
+                }
+                // 首个完成者出现后延长对局超时（给其他玩家追赶时间）
+                if let InternalRoomState::Playing { results, .. } = &as_.state.lifecycle {
+                    let users = r.users().await;
+                    let finished = results.len();
+                    let total = users.len();
+                    if finished == 1 && total > 1 {
+                        // 第一个完成，延长截止时间
+                        let offset = (state.config.playing_timeout_offset_secs as f64) * 1000.0;
+                        if offset > 0.0 {
+                            as_.state.playing_timeout_deadline = as_.state.playing_timeout_deadline.map(|d| d + offset as i64);
+                            debug!("playing timeout extended by {}ms after first finish", offset as i64);
+                        }
+                    }
                 }
                 r.send(Message::Played { user: *user_id, score: *score, accuracy: *accuracy, full_combo: *full_combo, perfect: *perfect, good: *good, bad: *bad, miss: *miss, max_combo: *max_combo }).await;
                 check_all_ready(r, as_, state).await;

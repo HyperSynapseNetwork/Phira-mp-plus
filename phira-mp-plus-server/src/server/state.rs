@@ -109,6 +109,8 @@ pub struct PlusServerState {
     pub game_monitors: SafeMap<i32, Weak<crate::session::Session>>,
     /// PostgreSQL 数据库管理器。
     pub db_manager: crate::db::DbManager,
+    /// 谱面时长缓存：chart_id → 秒。选谱时异步填充。
+    pub chart_duration_cache: RwLock<std::collections::HashMap<i32, f64>>,
 }
 
 /// Phira-mp+ 服务器

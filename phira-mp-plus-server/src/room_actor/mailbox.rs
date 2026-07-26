@@ -173,6 +173,24 @@ impl RoomCommandGateway {
                                     }
                                 }
                             }
+
+                            // 对局超时：检查 Playing 状态下是否超过截止时间
+                            if let InternalRoomState::Playing { .. } = &as_.state.lifecycle {
+                                if let Some(deadline) = as_.state.playing_timeout_deadline {
+                                    let now = std::time::SystemTime::now()
+                                        .duration_since(std::time::UNIX_EPOCH)
+                                        .map(|d| d.as_millis() as i64)
+                                        .unwrap_or(0);
+                                    if now >= deadline {
+                                        as_.state.playing_timeout_deadline = None;
+                                        if let Some(room) = actor.room.as_ref() {
+                                            crate::room_actor::handler::force_end_playing(
+                                                room, &mut as_.state, &actor.state,
+                                            ).await;
+                                        }
+                                    }
+                                }
+                            }
                         }
                     }
                 }

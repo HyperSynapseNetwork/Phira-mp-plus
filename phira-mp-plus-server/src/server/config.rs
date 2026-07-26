@@ -16,6 +16,9 @@ use uuid::Uuid;
 pub struct Chart {
     pub id: i32,
     pub name: String,
+    /// Download URL for the .phira chart file (zip).
+    #[serde(default)]
+    pub file: Option<String>,
 }
 
 /// Record information from the Phira API
@@ -218,7 +221,11 @@ pub struct PlusConfig {
     /// 准备倒计时（秒）。房主/管理员发起游戏后，未在此时长内准备的玩家自动弃权。
     #[serde(default = "default_ready_countdown_secs")]
     pub ready_countdown_secs: u64,
-    /// 是否允许玩家建房。false 时只有管理员可通过 CLI 创建空房间。
+    /// 对局超时偏移量（秒）。谱面时长 + 此偏移 = 最大对局时间。
+    /// 首个完成者出现后，偏移量会重新计算（给其他玩家追赶时间）。
+    /// 设为 0 表示不启用对局超时。
+    #[serde(default = "default_playing_timeout_offset_secs")]
+    pub playing_timeout_offset_secs: u64,
     #[serde(default = "default_room_creation_enabled")]
     pub room_creation_enabled: bool,
     /// Maximum number of authenticated/registered sessions.
@@ -707,6 +714,7 @@ fn default_max_pending_auth() -> usize {
 }
 fn default_ready_countdown_secs() -> u64 { 60 }
 fn default_room_creation_enabled() -> bool { true }
+fn default_playing_timeout_offset_secs() -> u64 { 60 }
 fn default_graceful_shutdown_timeout_secs() -> u64 {
     15
 }

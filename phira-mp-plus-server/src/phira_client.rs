@@ -8,6 +8,7 @@
 
 use anyhow::{bail, Result};
 use phira_mp_common::{Message, ServerCommand, StreamSender};
+use reqwest::header::RANGE;
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use std::collections::HashMap;
 use std::{
@@ -587,6 +588,105 @@ impl PhiraRetryClient {
         )
         .await
         .ok()
+    }
+
+    /// Fetch chart duration by downloading just info.txt from the .phira zip
+    /// via HTTP Range requests. Returns seconds, or None if unavailable.
+    pub async fn fetch_chart_duration(&self, file_url: &str) -> Option<f64> {
+        // 1. Download last 64KB to find EOCD + central directory
+        let tail = self
+            .client
+            .get(file_url)
+            .header(RANGE, "bytes=-65536")
+            .send()
+            .await
+            .ok()?
+            .bytes()
+            .await
+            .ok()?;
+
+        // 2. Find EOCD signature (PK\x05\x06) from the end
+        let eocd_sig = b"PK\x05\x06";
+        let eocd_pos = tail.windows(4).rposition(|w| w == eocd_sig)?;
+        let eocd = &tail[eocd_pos..];
+
+        let central_offset = u64::from_le_bytes([eocd[16], eocd[17], eocd[18], eocd[19], 0, 0, 0, 0]);
+        let central_size = u64::from_le_bytes([eocd[12], eocd[13], eocd[14], eocd[15], 0, 0, 0, 0]);
+
+        // 3. Download central directory
+        let central = self
+            .client
+            .get(file_url)
+            .header(RANGE, format!("bytes={}-{}", central_offset, central_offset + central_size - 1))
+            .send()
+            .await
+            .ok()?
+            .bytes()
+            .await
+            .ok()?;
+
+        // 4. Walk central directory entries to find info.txt
+        let mut pos = 0usize;
+        while pos + 46 <= central.len() {
+            if &central[pos..pos + 4] != b"PK\x01\x02" {
+                break;
+            }
+            let compression = u16::from_le_bytes([central[pos + 10], central[pos + 11]]);
+            let compressed_size =
+                u32::from_le_bytes([central[pos + 20], central[pos + 21], central[pos + 22], central[pos + 23]]);
+            let uncompressed_size =
+                u32::from_le_bytes([central[pos + 24], central[pos + 25], central[pos + 26], central[pos + 27]]);
+            let fn_len = u16::from_le_bytes([central[pos + 28], central[pos + 29]]);
+            let extra_len = u16::from_le_bytes([central[pos + 30], central[pos + 31]]);
+            let _comment_len = u16::from_le_bytes([central[pos + 32], central[pos + 33]]);
+            let local_offset =
+                u32::from_le_bytes([central[pos + 42], central[pos + 43], central[pos + 44], central[pos + 45]]);
+
+            let filename = String::from_utf8_lossy(&central[pos + 46..pos + 46 + fn_len as usize]);
+            let entry_size = 46 + fn_len as usize + extra_len as usize;
+            pos += entry_size;
+
+            if filename.as_ref() != "info.txt" {
+                continue;
+            }
+
+            // 5. Download local file header + compressed info.txt
+            let range_end = local_offset as u64 + 30 + 256 + compressed_size as u64;
+            let raw = self
+                .client
+                .get(file_url)
+                .header(RANGE, format!("bytes={}-{}", local_offset, range_end))
+                .send()
+                .await
+                .ok()?
+                .bytes()
+                .await
+                .ok()?;
+
+            let lh_fn_len = u16::from_le_bytes([raw[26], raw[27]]);
+            let lh_extra_len = u16::from_le_bytes([raw[28], raw[29]]);
+            let data_start = 30 + lh_fn_len as usize + lh_extra_len as usize;
+            let compressed = &raw[data_start..data_start + compressed_size as usize];
+
+            // 6. Decompress and parse EditTime
+            let content: Vec<u8> = if compression == 0 {
+                compressed[..uncompressed_size as usize].to_vec()
+            } else {
+                use std::io::Read;
+                let mut decoder = flate2::read::DeflateDecoder::new(compressed);
+                let mut buf = Vec::with_capacity(uncompressed_size as usize);
+                decoder.read_to_end(&mut buf).ok()?
+            };
+
+            for line in content.split(|&b| b == b'\n') {
+                if line.starts_with(b"EditTime:") {
+                    let s = std::str::from_utf8(&line[9..]).ok()?.trim();
+                    return s.parse::<f64>().ok();
+                }
+            }
+            return None;
+        }
+        None
     }
 
     /// Fetch user name by Phira user ID (unauthenticated).
