@@ -198,7 +198,8 @@ impl PlusServerState {
         };
         let mut sent = 0usize;
         for user in recipients {
-            let prefix = crate::l10n::translate_system(&user.lang, "system-broadcast-prefix", fluent::FluentArgs::new());
+            let empty_args = fluent::FluentArgs::new();
+            let prefix = crate::l10n::translate_system(&user.lang, "system-broadcast-prefix", &empty_args);
             user.try_send(ServerCommand::Message(phira_mp_common::Message::Chat {
                 user: 0,
                 content: format!("{prefix} {message}"),

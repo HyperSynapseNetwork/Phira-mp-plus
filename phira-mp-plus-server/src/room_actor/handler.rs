@@ -442,9 +442,9 @@ impl RoomCommandHandler {
                         let mut args = fluent::FluentArgs::new();
                         args.set("name", &name);
                         if as_.state.control.host_id.is_some() {
-                            r.send_system_msg("host-transferred-to", args).await;
+                            r.send_system_msg("host-transferred-to", &args).await;
                         } else {
-                            r.send_system_msg("user-became-host", args).await;
+                            r.send_system_msg("user-became-host", &args).await;
                         }
                         // Notify old host
                         if let Some(old_uid) = as_.state.control.host_id {
@@ -533,7 +533,7 @@ impl RoomCommandHandler {
                 };
                 let mut args = fluent::FluentArgs::new();
                 args.set("name", &user.name);
-                r.send_system_msg("user-kicked-from-room", args).await;
+                r.send_system_msg("user-kicked-from-room", &args).await;
                 let was_monitor = user.monitor.load(std::sync::atomic::Ordering::SeqCst);
                 let should_drop = r.on_user_leave(&user).await;
                 user.try_send(ServerCommand::LeaveRoom(Ok(()))).await;

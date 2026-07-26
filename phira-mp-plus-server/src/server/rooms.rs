@@ -483,7 +483,7 @@ impl PlusServerState {
         {
             let mut args = fluent::FluentArgs::new();
             args.set("name", &user.name);
-            target_room.send_system_msg("user-moved-to-room", args).await;
+            target_room.send_system_msg("user-moved-to-room", &args).await;
         }
 
         Ok(serde_json::json!({

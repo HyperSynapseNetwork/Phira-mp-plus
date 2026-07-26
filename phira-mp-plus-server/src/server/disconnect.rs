@@ -107,7 +107,7 @@ pub(crate) async fn run_admin_kick_user(
         let mut args = fluent::FluentArgs::new();
         args.set("reason", reason);
         let content = crate::l10n::translate_system(
-            &session.user.lang, "kicked-by-admin", args,
+            &session.user.lang, "kicked-by-admin", &args,
         );
         let message = ServerCommand::Message(phira_mp_common::Message::Chat {
             user: 0,

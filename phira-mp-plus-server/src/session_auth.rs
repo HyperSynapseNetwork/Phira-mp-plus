@@ -75,7 +75,7 @@ pub(crate) fn ban_rejection_message(language: &str, reason: &str) -> String {
 
     let mut args = fluent::FluentArgs::new();
     args.set("reason", reason);
-    crate::l10n::try_translate_with_args(&language.0, "auth-banned", args)
+    crate::l10n::try_translate_with_args(&language.0, "auth-banned", &args)
         .chars()
         .filter(|ch| !matches!(ch, '\u{2068}' | '\u{2069}'))
         .collect()

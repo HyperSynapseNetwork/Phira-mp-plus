@@ -369,9 +369,9 @@ impl Room {
 
     /// Broadcast a localized system message to all users in the room.
     /// Each recipient receives the message translated to their language.
-    pub async fn send_system_msg(&self, key: &str, args: FluentArgs<'_>) {
+    pub async fn send_system_msg(&self, key: &str, args: &FluentArgs<'_>) {
         for user in self.users().await {
-            let content = crate::l10n::translate_system(&user.lang, key, args.clone());
+            let content = crate::l10n::translate_system(&user.lang, key, args);
             user.try_send(ServerCommand::Message(Message::Chat {
                 user: 0,
                 content,
@@ -379,13 +379,19 @@ impl Room {
             .await;
         }
         for user in self.monitors().await {
-            let content = crate::l10n::translate_system(&user.lang, key, args.clone());
+            let content = crate::l10n::translate_system(&user.lang, key, args);
             user.try_send(ServerCommand::Message(Message::Chat {
                 user: 0,
                 content,
             }))
             .await;
         }
+    }
+
+    /// Broadcast a localized system message with no args.
+    pub async fn send_system_msg_simple(&self, key: &str) {
+        let args = fluent::FluentArgs::new();
+        self.send_system_msg(key, &args).await;
     }
 
     /// Broadcast a localized system message with no args.

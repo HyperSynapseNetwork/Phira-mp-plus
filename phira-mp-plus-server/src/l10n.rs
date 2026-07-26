@@ -68,7 +68,7 @@ macro_rules! tl {
         $(
             args.set(stringify!($key), $value);
         )*
-        $crate::l10n::try_translate_with_args(&lang.0, id, args)
+        $crate::l10n::try_translate_with_args(&lang.0, id, &args)
     }};
 }
 
@@ -80,7 +80,7 @@ pub fn try_translate(lang: &LanguageIdentifier, id: &str) -> String {
     }
 }
 
-pub fn try_translate_with_args(lang: &LanguageIdentifier, id: &str, args: FluentArgs) -> String {
+pub fn try_translate_with_args(lang: &LanguageIdentifier, id: &str, args: &FluentArgs) -> String {
     match lang.to_string().as_str() {
         "zh-CN" => translate_bundle_with_args(&ZH_CN_BUNDLE, id, args),
         "zh-TW" => translate_bundle_with_args(&ZH_TW_BUNDLE, id, args),
@@ -90,7 +90,7 @@ pub fn try_translate_with_args(lang: &LanguageIdentifier, id: &str, args: Fluent
 
 /// Convenience: translate for a `Language` with dynamic args.
 /// Use this in send_system() helpers instead of the tl! macro (which requires a task-local scope).
-pub fn translate_system(lang: &Language, key: &str, args: FluentArgs) -> String {
+pub fn translate_system(lang: &Language, key: &str, args: &FluentArgs) -> String {
     try_translate_with_args(&lang.0, key, args)
 }
 
@@ -111,7 +111,7 @@ fn translate_bundle(bundle: &Bundle, id: &str) -> String {
     translated.into_owned()
 }
 
-fn translate_bundle_with_args(bundle: &Bundle, id: &str, args: FluentArgs) -> String {
+fn translate_bundle_with_args(bundle: &Bundle, id: &str, args: &FluentArgs) -> String {
     let Some(msg) = bundle.get_message(id) else {
         error!("failed to get message {id:?}");
         return id.to_owned();
@@ -121,7 +121,7 @@ fn translate_bundle_with_args(bundle: &Bundle, id: &str, args: FluentArgs) -> St
         return id.to_owned();
     };
     let mut errors = vec![];
-    let translated = bundle.format_pattern(value, Some(&args), &mut errors);
+    let translated = bundle.format_pattern(value, Some(args), &mut errors);
     if !errors.is_empty() {
         error!("failed to format message {id:?}: {errors:?}");
     }
