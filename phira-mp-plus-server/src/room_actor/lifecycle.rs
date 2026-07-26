@@ -23,7 +23,6 @@ use crate::plugin::PluginEvent;
 use crate::room::Room;
 use crate::session::User;
 use crate::server::state::PlusServerState;
-use fluent::FluentArgs;
 use phira_mp_common::{Message, PartialRoomData, RoomEvent, RoomId, ServerCommand};
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
@@ -47,14 +46,6 @@ pub trait RoomLifecycle {
 
     /// Send a `Message` to all users and monitors.
     async fn send_msg(&self, msg: Message);
-
-    // ── System messages ───────────────────────────────────────────
-
-    /// Send a localised system message to all users and monitors.
-    async fn send_system_msg(&self, key: &str, args: &FluentArgs<'_>);
-
-    /// Send a localised system message with no arguments.
-    async fn send_system_msg_simple(&self, key: &str);
 
     // ── Room updates ─────────────────────────────────────────────
 
@@ -124,14 +115,6 @@ impl<'a> RoomLifecycle for DefaultRoomLifecycle<'a> {
 
     async fn send_msg(&self, msg: Message) {
         self.room.send(msg).await;
-    }
-
-    async fn send_system_msg(&self, key: &str, args: &FluentArgs<'_>) {
-        self.room.send_system_msg(key, args).await;
-    }
-
-    async fn send_system_msg_simple(&self, key: &str) {
-        self.room.send_system_msg_simple(key).await;
     }
 
     async fn publish_update(&self, data: PartialRoomData) {

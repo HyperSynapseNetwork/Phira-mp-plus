@@ -637,9 +637,9 @@ impl RoomCommandHandler {
                         let mut args = fluent::FluentArgs::new();
                         args.set("name", &name);
                         if as_.state.control.host_id.is_some() {
-                            lc.send_system_msg("host-transferred-to", &args).await;
+                            lc.room().send_system_msg("host-transferred-to", &args).await;
                         } else {
-                            lc.send_system_msg("user-became-host", &args).await;
+                            lc.room().send_system_msg("user-became-host", &args).await;
                         }
                         // Notify old host
                         if let Some(old_uid) = as_.state.control.host_id {
@@ -664,7 +664,7 @@ impl RoomCommandHandler {
                         (Some(*uid), name, false)
                     }
                     None => {
-                        lc.send_system_msg_simple("host-set-to-system").await;
+                        lc.room().send_system_msg_simple("host-set-to-system").await;
                         // Notify old host
                         if let Some(old_uid) = as_.state.control.host_id {
                             if let Some(old) = lc.users().await.iter().find(|u| u.id == old_uid) {
@@ -700,7 +700,7 @@ impl RoomCommandHandler {
             }
 
             RoomActorCommand::CloseRoom { room_id: _, .. } => {
-                lc.send_system_msg_simple("room-closed-by-admin").await;
+                lc.room().send_system_msg_simple("room-closed-by-admin").await;
                 for user in lc.users().await {
                     *user.room.write().await = None;
                     user.try_send(ServerCommand::LeaveRoom(Ok(()))).await;
@@ -726,7 +726,7 @@ impl RoomCommandHandler {
                 };
                 let mut args = fluent::FluentArgs::new();
                 args.set("name", &user.name);
-                lc.send_system_msg("user-kicked-from-room", &args).await;
+                lc.room().send_system_msg("user-kicked-from-room", &args).await;
                 let was_monitor = user.monitor.load(std::sync::atomic::Ordering::SeqCst);
                 let should_drop = lc.on_user_leave(&user).await;
                 user.try_send(ServerCommand::LeaveRoom(Ok(()))).await;
@@ -771,7 +771,7 @@ impl RoomCommandHandler {
 
                 lc.reset_game_time().await;
                 lc.send_msg(Message::GameStart { user: 0 }).await;
-                lc.send_system_msg_simple("admin-started-game").await;
+                lc.room().send_system_msg_simple("admin-started-game").await;
                 as_.state.lifecycle = InternalRoomState::WaitForReady {
                     started: HashSet::new(),
                     admin_started: true,

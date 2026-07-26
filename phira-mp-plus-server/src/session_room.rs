@@ -402,10 +402,11 @@ pub async fn join_room(
     {
         let room_id = id.to_string();
         let user_name = user.name.clone();
+        let uid = user.id;
         let server = Arc::clone(&user.server);
         tokio::spawn(async move {
             let _ = server.room_commands.set_live(&server, &room_id, true).await;
-            let _ = server.room_commands.set_display_name(&server, &room_id, user.id, &user_name).await;
+            let _ = server.room_commands.set_display_name(&server, &room_id, uid, &user_name).await;
         });
     }
     user.server
@@ -660,11 +661,11 @@ pub async fn select_chart(user: Arc<User>, id: i32) -> Result<()> {
                 .fetch_chart_by_id(&endpoint, id)
                 .await
                 .and_then(|c| c.file);
-            if let Some(ref url) = file_url {
+            if let Some(url) = file_url {
                 let state = Arc::clone(&user.server);
                 let cid = id;
                 tokio::spawn(async move {
-                    if let Some(duration) = state.phira_client.fetch_chart_duration(url).await {
+                    if let Some(duration) = state.phira_client.fetch_chart_duration(&url).await {
                         state.chart_duration_cache.write().await.insert(cid, duration);
                         debug!(chart = cid, duration, "chart duration cached");
                     }

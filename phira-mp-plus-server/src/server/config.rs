@@ -326,6 +326,9 @@ impl Default for PlusConfig {
             idle: IdleConfig::default(),
             proxy_protocol_port: 0,
             proxy_allow_cidr: None,
+            ready_countdown_secs: default_ready_countdown_secs(),
+            playing_timeout_offset_secs: default_playing_timeout_offset_secs(),
+            room_creation_enabled: default_room_creation_enabled(),
         }
     }
 }

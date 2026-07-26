@@ -675,7 +675,8 @@ impl PhiraRetryClient {
                 use std::io::Read;
                 let mut decoder = flate2::read::DeflateDecoder::new(compressed);
                 let mut buf = Vec::with_capacity(uncompressed_size as usize);
-                decoder.read_to_end(&mut buf).ok()?
+                let _ = decoder.read_to_end(&mut buf).ok()?;
+                buf
             };
 
             for line in content.split(|&b| b == b'\n') {

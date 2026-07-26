@@ -394,11 +394,6 @@ impl Room {
         self.send_system_msg(key, &args).await;
     }
 
-    /// Broadcast a localized system message with no args.
-    pub async fn send_system_msg_simple(&self, key: &str) {
-        self.send_system_msg(key, FluentArgs::new()).await;
-    }
-
     /// Broadcast a `PartialRoomData` update to the monitoring infrastructure.
     pub(crate) async fn publish_update(&self, data: PartialRoomData) {
         if let Some(server) = self.server.upgrade() {

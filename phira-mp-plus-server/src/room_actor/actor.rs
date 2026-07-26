@@ -170,7 +170,7 @@ impl RoomActorState {
 
 /// Room Actor — 每个房间一个，持有状态并处理命令。
 pub struct RoomActor {
-    room: Arc<Room>,
+    pub(super) room: Arc<Room>,
     pub(super) state: Arc<PlusServerState>,
     latest_snapshot: RoomSnapshot,
     /// Actor-owned state (always present).
