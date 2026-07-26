@@ -25,20 +25,6 @@ pub fn specs() -> Vec<CommandSpec> {
             "room start <room_id>",
         ),
         CommandSpec::new(
-            "room force-start",
-            "rooms",
-            "room start 的房间子命令兼容别名。",
-            "room force-start <room_id>",
-        )
-        .advanced(),
-        CommandSpec::new(
-            "force-start",
-            "rooms",
-            "room start 的旧版顶层兼容命令。",
-            "force-start <room_id>",
-        )
-        .advanced(),
-        CommandSpec::new(
             "room cancel",
             "rooms",
             "取消管理员发起的游戏开始。",

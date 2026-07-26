@@ -27,7 +27,7 @@ impl CliHandler {
                     self.room_info(args[1]).await;
                 }
             }
-            "start" | "force-start" => {
+            "start" => {
                 if args.len() < 2 {
                     self.out(format!(
                         "  {} {} room start <房间ID>",
@@ -378,7 +378,7 @@ impl CliHandler {
                     c::red("✗"),
                     c::yellow(sub)
                 ));
-                self.out(format!("  {} 可用: room list|create-empty|info|start|force-start|cancel|lock|cycle|kick|host|force-move|hide|unhide|close|set|history|rounds|round|uuid|ban|unban|banlist", c::dim("▸")));
+                self.out(format!("  {} 可用: room list|create-empty|info|start|cancel|lock|cycle|kick|host|force-move|hide|unhide|close|set|history|rounds|round|uuid|ban|unban|banlist", c::dim("▸")));
             }
         }
     }
