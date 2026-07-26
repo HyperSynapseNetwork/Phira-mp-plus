@@ -900,10 +900,13 @@ impl RoomCommandHandler {
                         if !was_monitor {
                             state.publish_room_event(RoomEvent::LeaveRoom { room: r.id.clone(), user: *user_id }).await;
                         }
-                        // Clean up cached player data and display names for the removed user.
+                        // Clean up cached player data and display names for the removed user,
+                        // and remove from authoritative members list.
                         let as_ = ctx.expect_actor_state();
                         as_.player_data.remove(user_id);
                         as_.display_names.remove(user_id);
+                        as_.state.members.users.retain(|id| *id != *user_id);
+                        as_.state.members.monitors.retain(|id| *id != *user_id);
                         state.dispatch_plugin_event(PluginEvent::RoomModify {
                             user_id: *user_id, room_id: room_id.clone().to_string(),
                             data: json!({"action": "leave"}).to_string(),

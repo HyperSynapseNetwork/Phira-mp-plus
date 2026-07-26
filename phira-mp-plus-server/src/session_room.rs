@@ -370,18 +370,15 @@ pub async fn join_room(
                 .ok();
         }
     }
-    if monitor {
-        // Route monitor add through mailbox for actor_state.members update.
-        user.server
-            .room_commands
-            .add_user(&user.server, &id.to_string(), user.id, &user.name, true)
-            .await
-            .map_err(|e| anyhow!("{}", tr(e)))?;
-        // Also add to Room connection mapping (immediate, direct).
-        if !room.add_user(Arc::downgrade(&user), true).await {
-            bail!("{}", tl!("join-room-full"));
-        }
-    } else if !room.add_user(Arc::downgrade(&user), false).await {
+    // Route user/monitor add through mailbox for actor_state.members tracking.
+    // This is the authoritative source — Room.users is derived for broadcast only.
+    user.server
+        .room_commands
+        .add_user(&user.server, &id.to_string(), user.id, &user.name, monitor)
+        .await
+        .map_err(|e| anyhow!("{}", tr(e)))?;
+    // Also add to Room connection mapping (immediate, direct).
+    if !room.add_user(Arc::downgrade(&user), monitor).await {
         bail!("{}", tl!("join-room-full"));
     }
     info!(
