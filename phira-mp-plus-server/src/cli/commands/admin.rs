@@ -65,4 +65,111 @@ impl CliHandler {
             self.unban_user(args[0]).await;
         }
     }
+
+    // ── IP 封禁 ───────────────────────────────────────────────────────
+
+    pub(in crate::cli) async fn dispatch_ban_ip_command(&self, args: &[&str]) {
+        if args.len() < 1 {
+            self.out(format!("  {} {} <Phira ID|IP> [原因]", c::yellow("?"), c::bold("ban ip")));
+            return;
+        }
+        let reason = if args.len() >= 2 {
+            args[1..].join(" ")
+        } else {
+            "违规行为".to_string()
+        };
+
+        // 先试试当 IP 处理
+        if let Ok(ip) = args[0].parse::<std::net::IpAddr>() {
+            match self.state.ban_manager.ban_ip(ip, &reason).await {
+                Ok(()) => self.out(format!("  {} IP {} 已封禁", c::green("✓"), ip)),
+                Err(e) => self.out(format!("  {} {}", c::red("✗"), e)),
+            }
+            return;
+        }
+
+        // 不是 IP 就当用户 ID 处理——查他所有 IP 全封了
+        let uid: i32 = match args[0].parse() {
+            Ok(id) => id,
+            Err(_) => {
+                self.out(format!("  {} '{}' 既不是 IP 也不是用户 ID", c::red("✗"), args[0]));
+                return;
+            }
+        };
+        match &self.state.db_manager {
+            crate::db::DbManager::Pg(pool) => {
+                let count = self.state.ban_manager.ban_user_ips(uid, &reason, pool).await;
+                self.out(format!(
+                    "  {} 用户 #{} 名下 {} 个 IP 已封禁",
+                    c::green("✓"), uid, count
+                ));
+            }
+            _ => self.out(format!("  {} IP 封禁需要 PostgreSQL", c::red("✗"))),
+        }
+    }
+
+    pub(in crate::cli) async fn dispatch_unban_ip_command(&self, args: &[&str]) {
+        if args.is_empty() {
+            self.out(format!("  {} {} <IP>", c::yellow("?"), c::bold("unban ip")));
+            return;
+        }
+        let ip: std::net::IpAddr = match args[0].parse() {
+            Ok(ip) => ip,
+            Err(_) => {
+                self.out(format!("  {} 无效的 IP 地址: {}", c::red("✗"), args[0]));
+                return;
+            }
+        };
+        match self.state.ban_manager.unban_ip(ip).await {
+            Ok(()) => self.out(format!("  {} IP {} 已解封", c::green("✓"), ip)),
+            Err(e) => self.out(format!("  {} {}", c::red("✗"), e)),
+        }
+    }
+
+    pub(in crate::cli) async fn dispatch_user_ip_history(&self, args: &[&str]) {
+        if args.is_empty() {
+            self.out(format!("  {} {} <用户ID>", c::yellow("?"), c::bold("ip-history")));
+            return;
+        }
+        let uid: i32 = match args[0].parse() {
+            Ok(id) => id,
+            Err(_) => {
+                self.out(format!("  {} 无效的用户 ID: {}", c::red("✗"), args[0]));
+                return;
+            }
+        };
+        match &self.state.db_manager {
+            crate::db::DbManager::Pg(pool) => {
+                let records = self.state.ban_manager.user_ip_history(uid, pool).await;
+                if records.is_empty() {
+                    self.out(format!("  ○ 用户 #{} 没有 IP 记录", uid));
+                    return;
+                }
+                self.out(format!("  ◆ 用户 #{} 使用过的 IP：", uid));
+                for r in &records {
+                    let seen = chrono::DateTime::from_timestamp_millis(r.last_seen_at)
+                        .map(|t| t.format("%Y-%m-%d").to_string())
+                        .unwrap_or_else(|| "?".to_string());
+                    self.out(format!(
+                        "    {:<16}  {} 次  ·  最近 {}",
+                        r.ip, r.use_count, seen
+                    ));
+                }
+            }
+            _ => self.out(format!("  {} IP 记录需要 PostgreSQL", c::red("✗"))),
+        }
+    }
+
+    pub(in crate::cli) async fn dispatch_ip_banlist(&self) {
+        let bans = self.state.ban_manager.list_ip_bans().await;
+        if bans.is_empty() {
+            self.out("  ○ 没有 IP 被封禁".to_string());
+            return;
+        }
+        self.out(format!("  ◆ 被封禁的 IP ({} 个)：", bans.len()));
+        // 取前 50 条
+        for entry in bans.iter().take(50) {
+            self.out(format!("    {}  ·  {}", entry.ip, entry.reason));
+        }
+    }
 }

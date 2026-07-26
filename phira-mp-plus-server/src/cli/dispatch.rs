@@ -77,15 +77,31 @@ impl CliHandler {
                 true
             }
             "ban" => {
-                self.dispatch_global_ban_command(args).await;
+                if args.first().copied() == Some("ip") {
+                    self.dispatch_ban_ip_command(&args[1..]).await;
+                } else {
+                    self.dispatch_global_ban_command(args).await;
+                }
                 true
             }
             "unban" => {
-                self.dispatch_global_unban_command(args).await;
+                if args.first().copied() == Some("ip") {
+                    self.dispatch_unban_ip_command(&args[1..]).await;
+                } else {
+                    self.dispatch_global_unban_command(args).await;
+                }
                 true
             }
             "banlist" => {
-                self.ban_list().await;
+                if args.first().copied() == Some("ip") {
+                    self.dispatch_ip_banlist().await;
+                } else {
+                    self.ban_list().await;
+                }
+                true
+            }
+            "ip-history" => {
+                self.dispatch_user_ip_history(args).await;
                 true
             }
             _ => {

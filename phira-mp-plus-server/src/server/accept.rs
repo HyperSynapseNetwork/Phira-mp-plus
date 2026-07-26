@@ -20,9 +20,15 @@ impl PlusServer {
         if self.state.shutting_down.load(Ordering::Acquire) {
             return Ok(());
         }
-        let ip = addr.ip().to_string();
+        let ip = addr.ip();
 
-        if !self.state.connection_limiter.check(&ip).await {
+        if self.state.ban_manager.is_ip_banned(&ip).await {
+            trace!(%ip, "connection rejected: IP banned");
+            return Ok(());
+        }
+
+        let ip_str = ip.to_string();
+        if !self.state.connection_limiter.check(&ip_str).await {
             return Ok(());
         }
 

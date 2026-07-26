@@ -180,7 +180,10 @@ pub async fn persist_production_event_if_needed(event: &PersistenceEvent) -> Per
                 ip,
             } => {
                 db.record_user_seen(*user_id, user_name, language, Some(ip.clone()))
-                    .await
+                    .await;
+                if !ip.is_empty() {
+                    db.record_user_ip(*user_id, ip).await;
+                }
             }
             PersistenceEvent::BenchmarkReport { .. }
             | PersistenceEvent::Flush

@@ -178,6 +178,29 @@ impl DbManager {
         });
     }
 
+    /// Record a user's IP address in user_ip_history (upsert).
+    /// Called on each connection so we track all IPs a user has used.
+    pub fn record_user_ip(&self, user_id: i32, ip: &str) {
+        let Self::Pg(pool) = self;
+        let pool = pool.clone();
+        let ip = ip.to_string();
+        let now = now_ms_inline();
+        tokio::spawn(async move {
+            let _ = sqlx::query(
+                "INSERT INTO user_ip_history (user_id, ip, first_seen_at, last_seen_at, use_count)
+                 VALUES ($1, $2, $3, $3, 1)
+                 ON CONFLICT (user_id, ip) DO UPDATE SET
+                   last_seen_at = EXCLUDED.last_seen_at,
+                   use_count = user_ip_history.use_count + 1",
+            )
+            .bind(user_id)
+            .bind(&ip)
+            .bind(now)
+            .execute(&pool)
+            .await;
+        });
+    }
+
     /// Record user disconnect with optional name and time.
     pub fn record_user_disconnect_sync(&self, user_id: i32, name: &str) {
         let Self::Pg(pool) = self;

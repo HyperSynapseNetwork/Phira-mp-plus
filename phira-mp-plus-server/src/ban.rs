@@ -1,8 +1,17 @@
 use crate::extensions::{ExtensionDataStore, ExtensionManager};
 use serde::{Deserialize, Serialize};
+use sqlx::Row;
 use std::net::IpAddr;
 use std::sync::Arc;
 use tracing::{info, warn};
+
+#[derive(Debug, Clone)]
+pub struct UserIpRecord {
+    pub ip: String,
+    pub first_seen_at: i64,
+    pub last_seen_at: i64,
+    pub use_count: i32,
+}
 
 const BAN_STATUS_KEY: &str = "ban-status";
 const BAN_REASON_KEY: &str = "ban-reason";
@@ -105,6 +114,47 @@ impl BanManager {
 
     pub async fn list_ip_bans(&self) -> Vec<IpBanEntry> {
         self.get_ip_ban_list_raw().await
+    }
+
+    /// Ban all IPs a user has ever connected from. Queries user_ip_history.
+    pub async fn ban_user_ips(&self, user_id: i32, reason: &str, pool: &sqlx::PgPool) -> usize {
+        let rows: Vec<(String,)> = sqlx::query_as(
+            "SELECT DISTINCT ip FROM user_ip_history WHERE user_id = $1",
+        )
+        .bind(user_id)
+        .fetch_all(pool)
+        .await
+        .unwrap_or_default();
+        let mut banned = 0usize;
+        for (ip,) in &rows {
+            if let Ok(addr) = ip.parse::<std::net::IpAddr>() {
+                if self.ban_ip(addr, reason).await.is_ok() {
+                    banned += 1;
+                }
+            }
+        }
+        banned
+    }
+
+    /// Query IPs used by a user, ordered by use_count descending.
+    pub async fn user_ip_history(&self, user_id: i32, pool: &sqlx::PgPool) -> Vec<UserIpRecord> {
+        sqlx::query(
+            "SELECT ip, first_seen_at, last_seen_at, use_count
+             FROM user_ip_history WHERE user_id = $1
+             ORDER BY use_count DESC, last_seen_at DESC",
+        )
+        .bind(user_id)
+        .fetch_all(pool)
+        .await
+        .unwrap_or_default()
+        .iter()
+        .map(|row| UserIpRecord {
+            ip: row.get("ip"),
+            first_seen_at: row.get("first_seen_at"),
+            last_seen_at: row.get("last_seen_at"),
+            use_count: row.get("use_count"),
+        })
+        .collect()
     }
 
     async fn get_ip_ban_list_raw(&self) -> Vec<IpBanEntry> {
