@@ -59,3 +59,7 @@ host-set-to-system = Host has been set to system
 admin-started-game = The server has started the game. Please load the chart and ready up
 result-summary = Results: { $passed }/{ $total } completed
 kicked-by-admin = You have been kicked by the admin: { $reason }
+room-closed-by-admin = Room has been closed by admin
+user-kicked-from-room = User { $name } has been kicked from the room
+user-moved-to-room = User { $name } has been moved to this room by admin
+system-broadcast-prefix = [Broadcast]

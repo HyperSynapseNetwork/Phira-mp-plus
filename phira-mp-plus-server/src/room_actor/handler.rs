@@ -506,7 +506,7 @@ impl RoomCommandHandler {
 
             RoomActorCommand::CloseRoom { room_id: _, .. } => {
                 let r = match room { Some(ref r) => r, None => return err("no room") };
-                r.send(Message::Chat { user: 0, content: "房间已被管理员关闭".to_string() }).await;
+                r.send_system_msg_simple("room-closed-by-admin").await;
                 for user in r.users().await {
                     *user.room.write().await = None;
                     user.try_send(ServerCommand::LeaveRoom(Ok(()))).await;
@@ -531,7 +531,9 @@ impl RoomCommandHandler {
                 let user = match users.into_iter().chain(monitors.into_iter()).find(|u| u.id == *target_id) {
                     Some(u) => u, None => return err("user not in room"),
                 };
-                r.send(Message::Chat { user: 0, content: format!("用户 {} 已被管理员踢出房间", user.name) }).await;
+                let mut args = fluent::FluentArgs::new();
+                args.set("name", &user.name);
+                r.send_system_msg("user-kicked-from-room", args).await;
                 let was_monitor = user.monitor.load(std::sync::atomic::Ordering::SeqCst);
                 let should_drop = r.on_user_leave(&user).await;
                 user.try_send(ServerCommand::LeaveRoom(Ok(()))).await;

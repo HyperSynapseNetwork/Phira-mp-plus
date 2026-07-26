@@ -59,3 +59,7 @@ host-set-to-system = 房主已设为系统？
 admin-started-game = 服务器已发起游戏，请加载谱面并点击准备
 result-summary = 完成率：{ $passed }/{ $total } 已完成
 kicked-by-admin = 你已被管理员踢出服务器：{ $reason }
+room-closed-by-admin = 房间已被管理员关闭
+user-kicked-from-room = 用户 { $name } 已被管理员踢出房间
+user-moved-to-room = 用户 { $name } 已被管理员强制转移到本房间
+system-broadcast-prefix = [系统广播]

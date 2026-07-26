@@ -1,5 +1,6 @@
 //! Room management methods on PlusServerState.
 
+use fluent::FluentArgs;
 use phira_mp_common::{RoomEvent, RoomId, ServerCommand};
 use serde_json::Value;
 use std::sync::atomic::Ordering;
@@ -480,12 +481,11 @@ impl PlusServerState {
         })
         .await;
 
-        target_room
-            .send(phira_mp_common::Message::Chat {
-                user: 0,
-                content: format!("用户 {} 已被管理员强制转移到本房间", user.name),
-            })
-            .await;
+        {
+            let mut args = fluent::FluentArgs::new();
+            args.set("name", &user.name);
+            target_room.send_system_msg("user-moved-to-room", args).await;
+        }
 
         Ok(serde_json::json!({
             "ok": true,

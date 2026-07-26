@@ -196,13 +196,14 @@ impl PlusServerState {
             let users = self.users.read().await;
             users.values().cloned().collect::<Vec<_>>()
         };
-        let cmd = ServerCommand::Message(phira_mp_common::Message::Chat {
-            user: 0,
-            content: format!("[系统广播] {message}"),
-        });
         let mut sent = 0usize;
         for user in recipients {
-            user.try_send(cmd.clone()).await;
+            let prefix = crate::l10n::translate_system(&user.lang, "system-broadcast-prefix", fluent::FluentArgs::new());
+            user.try_send(ServerCommand::Message(phira_mp_common::Message::Chat {
+                user: 0,
+                content: format!("{prefix} {message}"),
+            }))
+            .await;
             sent += 1;
         }
         sent
