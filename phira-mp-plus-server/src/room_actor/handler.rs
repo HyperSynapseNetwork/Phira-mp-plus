@@ -23,6 +23,13 @@ use std::collections::{HashMap, HashSet};
 use std::sync::atomic::Ordering;
 use tracing::{debug, info, warn};
 
+fn now_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
+}
+
 /// Helper: build an error result.
 fn err(msg: &str) -> RoomCommandResult {
     RoomCommandResult::Err {
@@ -192,6 +199,7 @@ async fn check_all_ready(
                     .all(|it| started.contains(&it.id))
             {
                 // All ready — transition to Playing
+                as_.state.ready_countdown_started_at = None;
                 if *admin_started {
                     // Finish admin start
                     as_.state.control.admin_start_pending = false;
@@ -325,6 +333,7 @@ async fn check_all_ready(
                 }
                 r.send(Message::GameEnd).await;
                 as_.state.round.round_id = None;
+                as_.state.ready_countdown_started_at = None;
                 as_.state.lifecycle = InternalRoomState::SelectChart;
                 if as_.state.control.cycle && !as_.state.control.system_host {
                     debug!(room = r.id.to_string(), "cycling");
@@ -365,6 +374,90 @@ async fn check_all_ready(
         }
         _ => {}
     }
+}
+
+/// Transition to Playing — unready players are marked aborted.
+/// Used by the ready countdown timer and can be reused for other auto-start paths.
+pub(super) async fn force_start_playing(
+    r: &crate::room::Room,
+    state: &mut crate::room_actor::actor::RoomState,
+    server: &crate::server::PlusServerState,
+) {
+    if !matches!(&state.lifecycle, InternalRoomState::WaitForReady { .. }) {
+        return;
+    }
+    state.ready_countdown_started_at = None;
+
+    // Collect unready players to abort
+    let unready: HashSet<i32> = {
+        let users = r.users().await;
+        let ready = match &state.lifecycle {
+            InternalRoomState::WaitForReady { started, .. } => started.clone(),
+            _ => HashSet::new(),
+        };
+        users.iter().map(|u| u.id).filter(|id| !ready.contains(id)).collect()
+    };
+
+    // If admin_started, restore host
+    if let InternalRoomState::WaitForReady { admin_started, .. } = &state.lifecycle {
+        if *admin_started {
+            state.control.admin_start_pending = false;
+            if let Some(host) = r.users().await.iter().find(|u| state.control.host_id == Some(u.id)) {
+                host.try_send(ServerCommand::ChangeHost(true)).await;
+            }
+        }
+    }
+
+    for id in &unready {
+        info!(user = id, room = %r.id, "auto-aborted (ready timeout)");
+    }
+
+    let round_id = uuid::Uuid::new_v4();
+    state.round.round_id = Some(round_id);
+    info!(room = r.id.to_string(), round = %round_id, "game start (ready timeout)");
+
+    if let Some(s) = r.server.upgrade() {
+        s.publish_runtime_event(crate::event_bus::MpEvent::GameStarted {
+            room_id: r.id.clone(),
+            round_id: round_id.to_string(),
+        });
+    }
+
+    r.send(Message::StartPlaying).await;
+    reset_game_time(r).await;
+
+    let mut results = HashMap::new();
+    let mut aborted = HashSet::new();
+    for id in unready {
+        aborted.insert(id);
+    }
+    state.lifecycle = InternalRoomState::Playing { results, aborted };
+    broadcast_state_change(r, &state.lifecycle, state.chart).await;
+
+    let rid = round_id.to_string();
+    let cid = state.chart.unwrap_or(0);
+    let players: Vec<i32> = r.users().await.into_iter().map(|u| u.id).collect();
+    if let Some(rs) = &r.round_store {
+        let meta = crate::round_store::RoundMeta {
+            round_uuid: rid,
+            chart_id: cid,
+            chart_name: state.chart_name.clone().unwrap_or_default(),
+            room_id: r.id.to_string(),
+            players,
+            started_at: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis() as i64)
+                .unwrap_or(0),
+            finished_at: None,
+        };
+        if let Err(e) = rs.open_round(&meta).await {
+            warn!("round store: failed to open round: {e}");
+        }
+    }
+    server.dispatch_plugin_event(PluginEvent::GameStart {
+        user_id: 0,
+        room_id: r.id.to_string(),
+    }).await;
 }
 
 pub(super) struct RoomCommandHandler;
@@ -584,6 +677,7 @@ impl RoomCommandHandler {
                     started: HashSet::new(),
                     admin_started: true,
                 };
+                as_.state.ready_countdown_started_at = Some(now_ms());
                 broadcast_state_change(r, &as_.state.lifecycle, as_.state.chart).await;
                 check_all_ready(r, as_, state).await;
                 state.dispatch_plugin_event(PluginEvent::GameStart { user_id: 0, room_id: room_id.clone().to_string() }).await;
@@ -604,6 +698,7 @@ impl RoomCommandHandler {
                         }
                     }
                     as_.state.control.admin_start_pending = false;
+                    as_.state.ready_countdown_started_at = None;
                     as_.state.lifecycle = InternalRoomState::SelectChart;
                     r.send(Message::CancelGame { user: 0 }).await;
                     broadcast_state_change(r, &as_.state.lifecycle, as_.state.chart).await;
@@ -663,6 +758,7 @@ impl RoomCommandHandler {
                                 }
                             }
                             as_.state.control.admin_start_pending = false;
+                            as_.state.ready_countdown_started_at = None;
                             r.send(Message::CancelGame { user: *user_id }).await;
                             as_.state.lifecycle = InternalRoomState::SelectChart;
                             broadcast_state_change(r, &as_.state.lifecycle, as_.state.chart).await;
@@ -731,6 +827,7 @@ impl RoomCommandHandler {
                 as_.state.lifecycle = InternalRoomState::WaitForReady {
                     started: std::iter::once(*user_id).collect(), admin_started: false,
                 };
+                as_.state.ready_countdown_started_at = Some(now_ms());
                 broadcast_state_change(r, &as_.state.lifecycle, as_.state.chart).await;
                 check_all_ready(r, as_, state).await;
                 state.dispatch_plugin_event(PluginEvent::GameStart { user_id: *user_id, room_id: room_id.clone().to_string() }).await;

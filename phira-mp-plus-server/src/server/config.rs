@@ -211,6 +211,9 @@ pub struct PlusConfig {
     pub max_rooms: Option<usize>,
     #[serde(default)]
     pub max_users_per_room: Option<usize>,
+    /// 准备倒计时（秒）。房主/管理员发起游戏后，未在此时长内准备的玩家自动弃权。
+    #[serde(default = "default_ready_countdown_secs")]
+    pub ready_countdown_secs: u64,
     /// Maximum number of authenticated/registered sessions.
     #[serde(default = "default_max_sessions")]
     pub max_sessions: usize,
@@ -645,6 +648,9 @@ pub struct IdleConfig {
     pub heartbeat_timeout_secs: u64,
     #[serde(default = "default_auth_timeout")]
     pub auth_timeout_secs: u64,
+    /// 断线重连宽限时间（秒）。玩家断线后在此时长内重连可恢复。
+    #[serde(default = "default_dangle_grace_secs")]
+    pub dangle_grace_secs: u64,
 }
 
 impl Default for IdleConfig {
@@ -654,6 +660,7 @@ impl Default for IdleConfig {
             check_interval_secs: default_check_interval_secs(),
             heartbeat_timeout_secs: default_heartbeat_timeout(),
             auth_timeout_secs: default_auth_timeout(),
+            dangle_grace_secs: default_dangle_grace_secs(),
         }
     }
 }
@@ -662,6 +669,7 @@ fn default_idle_after_secs() -> u64 { 300 }
 fn default_check_interval_secs() -> u64 { 15 }
 fn default_heartbeat_timeout() -> u64 { 15 }
 fn default_auth_timeout() -> u64 { 15 }
+fn default_dangle_grace_secs() -> u64 { 10 }
 
 fn default_phira_api() -> String {
     "https://phira.5wyxi.com".to_string()
@@ -690,6 +698,7 @@ fn default_max_sessions() -> usize {
 fn default_max_pending_auth() -> usize {
     256
 }
+fn default_ready_countdown_secs() -> u64 { 60 }
 fn default_graceful_shutdown_timeout_secs() -> u64 {
     15
 }

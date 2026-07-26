@@ -241,8 +241,9 @@ impl User {
             .await;
 
         let weak_self = Arc::downgrade(&self);
+        let grace_secs = self.server.config.idle.dangle_grace_secs.max(5);
         crate::supervisor_actor::spawn_named(format!("dangle-grace-{}", self.id), async move {
-            time::sleep(Duration::from_secs(10)).await;
+            time::sleep(Duration::from_secs(grace_secs)).await;
             let Some(self_) = weak_self.upgrade() else {
                 return;
             };

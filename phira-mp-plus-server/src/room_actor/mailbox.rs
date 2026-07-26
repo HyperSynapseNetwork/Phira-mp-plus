@@ -4,6 +4,7 @@ use super::{
     actor::RoomActor, command::RoomActorCommand,
     RoomCommandGateway, RoomCommandResult,
 };
+use crate::room::InternalRoomState;
 use crate::server::PlusServerState;
 use std::sync::{atomic::Ordering, Arc, Weak};
 use tokio::sync::{mpsc, oneshot};
@@ -144,14 +145,34 @@ impl RoomCommandGateway {
                             // longer in this room. Users may leave through direct paths (dangle/
                             // leave_room) that bypass the actor mailbox, so periodic cleanup is
                             // necessary to prevent unbounded HashMap growth over time.
-                            let actor_state = &mut actor.actor_state;
+                            let as_ = &mut actor.actor_state;
                             // Collect current member IDs from actor state (authoritative).
                             let current_ids: std::collections::HashSet<i32> = {
-                                let members = &actor_state.state.members;
+                                let members = &as_.state.members;
                                 members.users.iter().chain(members.monitors.iter()).copied().collect()
                             };
-                            actor_state.player_data.retain(|&k, _| current_ids.contains(&k));
-                            actor_state.display_names.retain(|&k, _| current_ids.contains(&k));
+                            as_.player_data.retain(|&k, _| current_ids.contains(&k));
+                            as_.display_names.retain(|&k, _| current_ids.contains(&k));
+
+                            // 准备倒计时：检查是否超时
+                            if let InternalRoomState::WaitForReady { .. } = &as_.state.lifecycle {
+                                if let Some(started_at) = as_.state.ready_countdown_started_at {
+                                    let elapsed = std::time::SystemTime::now()
+                                        .duration_since(std::time::UNIX_EPOCH)
+                                        .map(|d| d.as_millis() as i64)
+                                        .unwrap_or(0) - started_at;
+                                    let timeout_ms = (actor.state.config.ready_countdown_secs.max(10) * 1000) as i64;
+                                    if elapsed >= timeout_ms {
+                                        // 超时 —— 强制开赛
+                                        if let Some(room) = actor.room.as_ref() {
+                                            let room: &crate::room::Room = room;
+                                            crate::room_actor::handler::force_start_playing(
+                                                room, &mut as_.state, &actor.state,
+                                            ).await;
+                                        }
+                                    }
+                                }
+                            }
                         }
                     }
                 }

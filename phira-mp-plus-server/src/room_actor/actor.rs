@@ -91,6 +91,8 @@ pub struct RoomState {
     pub chart_name: Option<String>,
     pub round: RoundInfo,
     pub live: bool,
+    /// 准备倒计时开始时间（毫秒时间戳）。None 表示未启动倒计时。
+    pub ready_countdown_started_at: Option<i64>,
 }
 
 impl RoomState {
@@ -194,6 +196,7 @@ impl RoomActor {
                     round_uuid: None,
                 },
                 live: false,
+                ready_countdown_started_at: None,
             },
             room.created_at,
         );
