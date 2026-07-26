@@ -149,26 +149,27 @@ jobs:
           sudo -u postgres psql -c "CREATE DATABASE phira_mp_plus;" 2>/dev/null || true
       - name: Build with profile-generate
         run: |
-          cargo build --release --target x86_64-unknown-linux-gnu
+          mkdir -p /tmp/pgo-data
+          RUSTFLAGS="-Cprofile-generate=/tmp/pgo-data" \
+            cargo build --release --target x86_64-unknown-linux-gnu
         env:
-          RUSTFLAGS: "-Cprofile-generate=/tmp/pgo-data -Cllvm-args=-vp-counters-per-site=8"
           CARGO_PROFILE_RELEASE_DEBUG: 0
       - name: Run workload to collect profiles
         run: |
           export PM_DATABASE_URL="postgres://postgres:postgres@localhost:5432/phira_mp_plus"
-          export RUST_LOG=error
-          # Start server in background
-          LLVM_PROFILE_FILE="/tmp/pgo-data/%m_%p.profraw" target/x86_64-unknown-linux-gnu/release/phira-mp-plus-server --port 22346 --http-port 22347 --no-cli &
+          export LLVM_PROFILE_FILE="/tmp/pgo-data/%m_%p.profraw"
+          # Start instrumented server in background
+          target/x86_64-unknown-linux-gnu/release/phira-mp-plus-server --port 22346 --http-port 22347 --no-cli &
           SERVER_PID=$!
-          sleep 5
-          # Run benchmark
+          sleep 4
+          # Run benchmark to generate profile data
           echo "benchmark run --mode real --duration 10s" | timeout 20 target/x86_64-unknown-linux-gnu/release/phira-mp-plus-server --port 22348 --http-port 22349 --no-cli 2>/dev/null || true
-          kill $SERVER_PID 2>/dev/null || true
-          wait $SERVER_PID 2>/dev/null || true
+          kill -TERM $SERVER_PID 2>/dev/null || true
+          sleep 2
+          ls -la /tmp/pgo-data/ 2>/dev/null || true
       - name: Merge profiles
         run: |
-          cargo install rustfilt 2>/dev/null || true
-          llvm-profdata merge -output=/tmp/pgo-data/merged.profdata /tmp/pgo-data/*.profraw 2>/dev/null || echo "profile merge skipped (no data)"
+          llvm-profdata merge -output=/tmp/pgo-data/merged.profdata /tmp/pgo-data/*.profraw 2>/dev/null && echo "PGO profiles merged" || echo "WARNING: No PGO profiles generated"
       - name: Build with profile-use
         if: hashFiles('/tmp/pgo-data/merged.profdata') != ''
         run: |
