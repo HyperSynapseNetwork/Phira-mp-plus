@@ -170,6 +170,11 @@ impl PlusServerState {
         if control.host_id.is_some() || control.system_host {
             return false;
         }
+        // Server-created empty rooms (no creator_id) keep host=None until
+        // CLI explicitly sets it via room host <id> <user_id>.
+        if room.creator_id.is_none() {
+            return false;
+        }
         tracing::info!(
             user = user.id, room = %room.id,
             "assigning host to first joiner"
