@@ -64,15 +64,6 @@ impl User {
         }
     }
 
-    pub async fn can_monitor(&self) -> bool {
-        self.server
-            .live_config
-            .read()
-            .await
-            .monitors
-            .contains(&self.id)
-    }
-
     pub async fn set_session(&self, session: Weak<Session>) {
         *self.session.write().await = Some(session);
         *self.dangle_mark.lock().await = None;

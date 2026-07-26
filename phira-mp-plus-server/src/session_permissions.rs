@@ -24,6 +24,7 @@ pub fn is_command_permitted(category: SessionCategory, cmd: &ClientCommand) -> b
         SessionCategory::RoomMonitor => matches!(
             cmd,
             ClientCommand::QueryRoomInfo
+                | ClientCommand::JoinRoom { .. }
                 | ClientCommand::Authenticate { .. }
                 | ClientCommand::ConsoleAuthenticate { .. }
                 | ClientCommand::RoomMonitorAuthenticate { .. }

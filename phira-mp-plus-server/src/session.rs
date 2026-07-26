@@ -522,16 +522,6 @@ impl Session {
                                 .await
                                 {
                                     Ok(info) => {
-                                        if !server.config.monitors.contains(&info.id) {
-                                            send_auth_rejection(
-                                                &send_tx,
-                                                format!("user {} is not in the monitor whitelist", info.id),
-                                            )
-                                            .await;
-                                            let _ = tx.send(AuthenticationOutcome::Rejected);
-                                            panicked.store(true, Ordering::SeqCst);
-                                            return;
-                                        }
                                         let user = Arc::new(User::new(
                                             info.id,
                                             format!("{} (monitor)", info.name),

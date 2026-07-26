@@ -303,11 +303,8 @@ pub async fn join_room(
     let Some(room) = room else {
         bail!("{}", tl!("room-not-found"))
     };
-    // Protocol game monitors may observe any room. Normal monitor users still
-    // require explicit permission, but monitors bypass player-only lock/ban/game-state gates.
-    if monitor && user.id > 0 && !user.can_monitor().await {
-        bail!("{}", tl!("join-cant-monitor"));
-    }
+    // Monitors bypass player-only lock/ban/game-state gates.
+    // No whitelist check — authentication at connection time is sufficient.
     let mut late_join = false;
     let mut need_abort = false;
     if !monitor {
