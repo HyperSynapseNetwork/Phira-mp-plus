@@ -744,9 +744,15 @@ impl RoomCommandHandler {
                     as_.state.live = true;
                     tracing::info!(room = %r.id, "room goes live via add_user");
                 }
-                as_.state.members.users.push(*user_id);
-                // First non-monitor user becomes host.
-                if !monitor && as_.state.control.host_id.is_none() {
+                if *monitor {
+                    as_.state.members.monitors.push(*user_id);
+                } else {
+                    as_.state.members.users.push(*user_id);
+                    // First non-monitor user becomes host.
+                    if as_.state.control.host_id.is_none() {
+                        as_.state.control.host_id = Some(*user_id);
+                    }
+                }
                     as_.state.control.host_id = Some(*user_id);
                 }
                 state.dispatch_plugin_event(PluginEvent::RoomModify {
