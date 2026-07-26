@@ -751,8 +751,10 @@ impl RoomCommandHandler {
                     as_.state.members.monitors.push(*user_id);
                 } else {
                     as_.state.members.users.push(*user_id);
-                    // First non-monitor user becomes host.
-                    if as_.state.control.host_id.is_none() {
+                    // First non-monitor user becomes host, but only for
+                    // player-created rooms (those with a creator_id).
+                    // Server-created empty rooms keep host=None until CLI sets it.
+                    if as_.state.control.host_id.is_none() && r.creator_id.is_some() {
                         as_.state.control.host_id = Some(*user_id);
                     }
                 }
