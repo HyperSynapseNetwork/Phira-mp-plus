@@ -150,10 +150,12 @@ jobs:
       - name: Build with profile-generate
         run: |
           mkdir -p /tmp/pgo-data
-          # Disable LTO during generate — LTO + profile-generate can conflict
+          unset RUSTFLAGS
+          export RUSTFLAGS="-Cprofile-generate=/tmp/pgo-data"
+          # Disable LTO and strip during generate — both can interfere
           CARGO_PROFILE_RELEASE_LTO=false \
-          RUSTFLAGS="-Cprofile-generate=/tmp/pgo-data" \
-            cargo build --release --target x86_64-unknown-linux-gnu
+          CARGO_PROFILE_RELEASE_STRIP=false \
+            cargo build --locked --release --target x86_64-unknown-linux-gnu
       - name: Run workload to collect profiles
         run: |
           export PM_DATABASE_URL="postgres://postgres:postgres@localhost:5432/phira_mp_plus"
@@ -171,7 +173,9 @@ jobs:
           ls -la /tmp/pgo-data/ 2>/dev/null || true
       - name: Merge profiles
         run: |
-          llvm-profdata merge -output=/tmp/pgo-data/merged.profdata /tmp/pgo-data/*.profraw 2>/dev/null && echo "PGO profiles merged" || echo "WARNING: No PGO profiles generated"
+          ls -la /tmp/pgo-data/
+          llvm-profdata merge -output=/tmp/pgo-data/merged.profdata /tmp/pgo-data/*.profraw && echo "PGO profiles merged" || echo "WARNING: No PGO profiles generated"
+          ls -la /tmp/pgo-data/
       - name: Build with profile-use
         if: hashFiles('/tmp/pgo-data/merged.profdata') != ''
         run: |

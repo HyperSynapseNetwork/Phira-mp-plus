@@ -117,10 +117,11 @@ jobs:
         run: |
           PGO_DIR="/tmp/pgo-data/${{ matrix.target }}"
           mkdir -p "$PGO_DIR"
-          # Disable LTO during generate phase — LTO + profile-generate can conflict.
-          # LTO is re-enabled in the profile-use build.
+          unset RUSTFLAGS
+          export RUSTFLAGS="-Cprofile-generate=$PGO_DIR"
+          # Disable LTO and strip during generate — both can interfere
           CARGO_PROFILE_RELEASE_LTO=false \
-          RUSTFLAGS="-Cprofile-generate=$PGO_DIR" \
+          CARGO_PROFILE_RELEASE_STRIP=false \
             cargo build --locked --release --target ${{ matrix.target }}
       - if: matrix.os == 'ubuntu-latest'
         name: Run workload to collect profiles
@@ -138,8 +139,9 @@ jobs:
           # Send SIGINT to trigger graceful shutdown + LLVM profile flush
           kill -INT $SERVER_PID 2>/dev/null || true
           sleep 3
-          ls -la "$PGO_DIR/" 2>/dev/null
-          llvm-profdata merge -output="$PGO_DIR/merged.profdata" "$PGO_DIR"/*.profraw 2>/dev/null && echo "PGO profiles merged for ${{ matrix.target }}" || echo "WARNING: No PGO profiles for ${{ matrix.target }}"
+          ls -la "$PGO_DIR/"
+          llvm-profdata merge -output="$PGO_DIR/merged.profdata" "$PGO_DIR"/*.profraw && echo "PGO profiles merged for ${{ matrix.target }}" || echo "WARNING: No PGO profiles for ${{ matrix.target }}"
+          ls -la "$PGO_DIR/"
       - name: Build with profile-use
         run: |
           PGO_DIR="/tmp/pgo-data/${{ matrix.target }}"
