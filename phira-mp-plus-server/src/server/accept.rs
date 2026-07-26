@@ -21,12 +21,6 @@ impl PlusServer {
             return Ok(());
         }
         let ip = addr.ip();
-
-        if self.state.ban_manager.is_ip_banned(&ip).await {
-            trace!(%ip, "connection rejected: IP banned");
-            return Ok(());
-        }
-
         let ip_str = ip.to_string();
         if !self.state.connection_limiter.check(&ip_str).await {
             return Ok(());
@@ -93,6 +87,12 @@ impl PlusServer {
             } else {
                 (stream, addr)
             };
+
+            // ── IP ban check (uses real client IP from PROXY if applicable) ──
+            if state.ban_manager.is_ip_banned(&addr.ip()).await {
+                trace!(ip = %addr.ip(), "connection rejected: IP banned");
+                return;
+            }
 
             let session = match tokio::time::timeout(
                 std::time::Duration::from_secs(auth_timeout),
