@@ -20,7 +20,6 @@ use crate::room::InternalRoomState;
 use phira_mp_common::{Message, PartialRoomData, RoomEvent, ServerCommand};
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
-use std::sync::atomic::Ordering;
 use tracing::{debug, info, warn};
 
 /// Calculate and set the playing timeout deadline based on chart duration + offset.
@@ -453,7 +452,7 @@ pub(super) async fn force_start_playing(
     lc.send_msg(Message::StartPlaying).await;
     lc.reset_game_time().await;
 
-    let mut results = HashMap::new();
+    let results = HashMap::new();
     let mut aborted = HashSet::new();
     for id in unready {
         aborted.insert(id);
@@ -538,7 +537,7 @@ pub(super) async fn force_end_playing(
     if all_done {
         // Save round history directly
         let rid = state.round.round_id;
-        if let InternalRoomState::Playing { results, .. } = &state.lifecycle {
+        if let InternalRoomState::Playing { .. } = &state.lifecycle {
             let completed_round = save_round_history(
                 lc,
                 &mut state.lifecycle,

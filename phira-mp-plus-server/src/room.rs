@@ -369,22 +369,26 @@ impl Room {
 
     /// Broadcast a localized system message to all users in the room.
     /// Each recipient receives the message translated to their language.
+    /// Translates all messages first (synchronous) then sends in batch to
+    /// avoid holding non-Send FluentArgs across .await boundaries.
     pub async fn send_system_msg(&self, key: &str, args: &FluentArgs<'_>) {
-        for user in self.users().await {
-            let content = crate::l10n::translate_system(&user.lang, key, args);
-            user.try_send(ServerCommand::Message(Message::Chat {
-                user: 0,
-                content,
-            }))
-            .await;
+        // Phase 1: translate for each user (no .await)
+        let users_msgs: Vec<_> = self.users().await.iter()
+            .map(|u| (Arc::downgrade(u), crate::l10n::translate_system(&u.lang, key, args)))
+            .collect();
+        let monitors_msgs: Vec<_> = self.monitors().await.iter()
+            .map(|u| (Arc::downgrade(u), crate::l10n::translate_system(&u.lang, key, args)))
+            .collect();
+        // Phase 2: send all (args already dropped, no lifetime issue)
+        for (weak, content) in users_msgs {
+            if let Some(u) = weak.upgrade() {
+                u.try_send(ServerCommand::Message(Message::Chat { user: 0, content })).await;
+            }
         }
-        for user in self.monitors().await {
-            let content = crate::l10n::translate_system(&user.lang, key, args);
-            user.try_send(ServerCommand::Message(Message::Chat {
-                user: 0,
-                content,
-            }))
-            .await;
+        for (weak, content) in monitors_msgs {
+            if let Some(u) = weak.upgrade() {
+                u.try_send(ServerCommand::Message(Message::Chat { user: 0, content })).await;
+            }
         }
     }
 

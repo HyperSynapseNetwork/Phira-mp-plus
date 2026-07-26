@@ -96,15 +96,12 @@ impl CliHandler {
                 return;
             }
         };
-        match &self.state.db_manager {
-            crate::db::DbManager::Pg(pool) => {
-                let count = self.state.ban_manager.ban_user_ips(uid, &reason, pool).await;
-                self.out(format!(
-                    "  {} 用户 #{} 名下 {} 个 IP 已封禁",
-                    c::green("✓"), uid, count
-                ));
-            }
-            _ => self.out(format!("  {} IP 封禁需要 PostgreSQL", c::red("✗"))),
+        if let crate::db::DbManager::Pg(pool) = &self.state.db_manager {
+            let count = self.state.ban_manager.ban_user_ips(uid, &reason, pool).await;
+            self.out(format!(
+                "  {} 用户 #{} 名下 {} 个 IP 已封禁",
+                c::green("✓"), uid, count
+            ));
         }
     }
 
@@ -138,9 +135,8 @@ impl CliHandler {
                 return;
             }
         };
-        match &self.state.db_manager {
-            crate::db::DbManager::Pg(pool) => {
-                let records = self.state.ban_manager.user_ip_history(uid, pool).await;
+        if let crate::db::DbManager::Pg(pool) = &self.state.db_manager {
+            let records = self.state.ban_manager.user_ip_history(uid, pool).await;
                 if records.is_empty() {
                     self.out(format!("  ○ 用户 #{} 没有 IP 记录", uid));
                     return;
@@ -156,7 +152,6 @@ impl CliHandler {
                     ));
                 }
             }
-            _ => self.out(format!("  {} IP 记录需要 PostgreSQL", c::red("✗"))),
         }
     }
 

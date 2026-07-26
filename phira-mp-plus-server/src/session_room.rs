@@ -368,7 +368,6 @@ pub async fn join_room(
                     bail!("{}", tl!("join-game-ongoing"));
                 }
             }
-            _ => bail!("{}", tl!("join-game-ongoing")),
         }
         if need_abort {
             // Route the abort through the actor mailbox.
