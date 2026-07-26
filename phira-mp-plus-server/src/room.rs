@@ -276,7 +276,7 @@ impl Room {
         }
         // Fallback default — no actor snapshot yet.
         RoomControlSnapshot {
-            host_id: None,
+            host_id: self.creator_id,
             locked: false,
             cycle: false,
             hidden: room_id_is_hidden(&self.id.to_string()),

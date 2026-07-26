@@ -140,7 +140,12 @@ jobs:
           kill -INT $SERVER_PID 2>/dev/null || true
           sleep 3
           ls -la "$PGO_DIR/"
-          llvm-profdata merge -output="$PGO_DIR/merged.profdata" "$PGO_DIR"/*.profraw && echo "PGO profiles merged for ${{ matrix.target }}" || echo "WARNING: No PGO profiles for ${{ matrix.target }}"
+          LLVM_PROF="$(rustc --print sysroot)/bin/llvm-profdata"
+          if "$LLVM_PROF" merge -output="$PGO_DIR/merged.profdata" "$PGO_DIR"/*.profraw 2>/dev/null; then
+            echo "PGO profiles merged for ${{ matrix.target }}"
+          else
+            echo "WARNING: No PGO profiles for ${{ matrix.target }}"
+          fi
           ls -la "$PGO_DIR/"
       - name: Build with profile-use
         run: |
