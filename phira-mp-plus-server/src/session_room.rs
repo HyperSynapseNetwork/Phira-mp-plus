@@ -232,6 +232,9 @@ pub async fn create_room(user: Arc<User>, id: RoomId) -> Result<()> {
             bail!("{}", tl!("server-room-limit-reached", limit => limit.to_string()));
         }
     }
+    if !user.server.live_config.read().await.room_creation_enabled && !user.server.is_admin_id(user.id).await {
+        bail!("{}", tl!("room-creation-disabled"));
+    }
     let max_users = user.server.config.max_users_per_room.unwrap_or(100);
     let room = Arc::new(crate::room::Room::new(
         id.clone(),

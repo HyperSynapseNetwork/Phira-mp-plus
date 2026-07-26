@@ -137,6 +137,9 @@ pub struct LiveConfig {
     /// Runtime internal policy.
     #[serde(default)]
     pub runtime: RuntimeConfig,
+    /// 是否允许玩家建房（CLI 可动态切换）。
+    #[serde(default = "default_room_creation_enabled")]
+    pub room_creation_enabled: bool,
 }
 
 impl LiveConfig {
@@ -152,6 +155,7 @@ impl LiveConfig {
             connection_rate_limit: config.connection_rate_limit,
             connection_rate_window: config.connection_rate_window,
             runtime: config.runtime.clone(),
+            room_creation_enabled: config.room_creation_enabled,
         }
     }
 }
@@ -214,6 +218,9 @@ pub struct PlusConfig {
     /// 准备倒计时（秒）。房主/管理员发起游戏后，未在此时长内准备的玩家自动弃权。
     #[serde(default = "default_ready_countdown_secs")]
     pub ready_countdown_secs: u64,
+    /// 是否允许玩家建房。false 时只有管理员可通过 CLI 创建空房间。
+    #[serde(default = "default_room_creation_enabled")]
+    pub room_creation_enabled: bool,
     /// Maximum number of authenticated/registered sessions.
     #[serde(default = "default_max_sessions")]
     pub max_sessions: usize,
@@ -699,6 +706,7 @@ fn default_max_pending_auth() -> usize {
     256
 }
 fn default_ready_countdown_secs() -> u64 { 60 }
+fn default_room_creation_enabled() -> bool { true }
 fn default_graceful_shutdown_timeout_secs() -> u64 {
     15
 }

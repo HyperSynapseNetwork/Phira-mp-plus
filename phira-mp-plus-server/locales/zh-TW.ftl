@@ -15,6 +15,7 @@ join-room-banned = 你已被此房間封禁
 
 join-game-ongoing-warning = 該房間遊戲進行中，請再次確認以加入
 server-room-limit-reached = 伺服器房間數已達上限（最多 { $limit }）
+room-creation-disabled = 暫不允許玩家建房
 admin-start-in-progress = 管理員發起遊戲正在進行中
 chat-disabled = 聊天功能已停用
 already-authenticated = 已經認證過了

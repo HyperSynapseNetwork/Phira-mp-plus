@@ -424,9 +424,120 @@ impl ConfigLoad {
 
 fn load_config(path: &str) -> Result<(PlusConfig, ConfigLoad)> {
     if !Path::new(path).exists() {
+        // 首次启动 —— 生成完整配置文件，只激活最小必要项，其余全部注释
+        let generated = generate_default_config(path);
+        println!("{}", generated);
         return Ok((PlusConfig::default(), ConfigLoad::Missing));
     }
 
     let config = PlusConfig::from_yaml(path)?;
     Ok((config, ConfigLoad::Loaded))
+}
+
+/// 生成完整配置文件，最小化激活、其余注释，方便运维按需开启。
+fn generate_default_config(path: &str) -> String {
+    let content = format!(
+        r##"# Phira-mp+ 配置文件
+# 首次启动自动生成。只激活了最小必要配置，其余选项全部注释并按需开启。
+# 修改后重启或 CLI 执行 config reload 使变更生效。
+
+# ---- 网络 ----
+
+# 游戏 TCP 监听端口
+port: 12346
+
+# HTTP/SSE/WebSocket 端口
+http_port: 12347
+
+# HTTP 监听地址（默认 0.0.0.0）
+# http_bind_address: "127.0.0.1"
+
+# 可信转发兼容端口（X-Forwarded-For，设 0 禁用）
+# proxy_protocol_port: 12344
+
+# PROXY protocol v1/v2 来源 CIDR 白名单
+# proxy_allow_cidr: "10.0.0.0/8"
+
+# 认证完成前与在线会话容量
+# max_sessions: 4096
+# max_pending_auth: 256
+
+# SIGTERM/Ctrl+C 后的总关闭时限（秒）
+# graceful_shutdown_timeout_secs: 15
+
+# ---- 认证 / Phira API ----
+
+# Phira API 端点（必须正确配置）
+phira_api_endpoint: "https://phira.5wyx.com"
+
+# 游戏内管理员 Phira ID
+# admin_phira_ids: []
+
+# ---- 数据库 ----
+
+# PostgreSQL 连接（留空 = 尝试本地默认连接）
+# database_url: "postgres://postgres:postgres@localhost:5432/phira_mp_plus"
+
+# 历史数据保留天数（0 = 不自动清理）
+# persistence_retention_days: 30
+
+# ---- 插件 ----
+
+# WASM 插件目录
+plugins_dir: plugins
+
+# 扩展数据持久化文件
+# extensions_file: "data/extensions.json"
+
+# ---- 房间 ----
+
+# 最大房间数（不设则无限制）
+# max_rooms: 100
+
+# 每房间最大玩家数
+# max_users_per_room: 100
+
+# 准备倒计时（秒）。发起游戏后未在此时长内准备的玩家自动弃权
+# ready_countdown_secs: 60
+
+# ---- 功能开关 ----
+
+# 启用聊天
+chat_enabled: true
+
+# 启用管理控制台
+cli_enabled: true
+
+# 是否允许玩家建房（false 时只有管理员可通过 CLI 创建房间）
+# room_creation_enabled: true
+
+# ---- 限速 ----
+
+# 连接速率限制（每窗口）
+# connection_rate_limit: 30
+# connection_rate_window: 10
+
+# ---- 空闲 / 断线 ----
+
+# 断线重连宽限时间（秒）
+# idle:
+#   dangle_grace_secs: 10
+#   heartbeat_timeout_secs: 15
+
+# ---- WASM 运行时 ----
+
+# wasm_runtime:
+#   max_memory_mb: 64
+#   call_timeout_ms: 2000
+
+# ---- 定制 ----
+
+# server_name: "My Phira Server"
+"##
+    );
+    if let Some(parent) = std::path::Path::new(path).parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let _ = std::fs::write(path, &content);
+    content
 }

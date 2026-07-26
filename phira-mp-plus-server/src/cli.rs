@@ -713,6 +713,16 @@ impl CliHandler {
         }
     }
 
+    /// 切换玩家建房开关
+    async fn toggle_room_creation(&self, enabled: bool) {
+        self.state.live_config.write().await.room_creation_enabled = enabled;
+        self.out(format!(
+            "  {} 玩家建房已{}",
+            c::green("✓"),
+            if enabled { "开启" } else { "关闭" }
+        ));
+    }
+
     async fn ban_list(&self) {
         let list = self.state.ban_manager.list_banned().await;
         if list.is_empty() {

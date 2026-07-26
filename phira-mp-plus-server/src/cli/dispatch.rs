@@ -104,6 +104,21 @@ impl CliHandler {
                 self.dispatch_user_ip_history(args).await;
                 true
             }
+            "roomcreation" => {
+                match args.first().copied() {
+                    Some("on" | "enable" | "1") => self.toggle_room_creation(true).await,
+                    Some("off" | "disable" | "0") => self.toggle_room_creation(false).await,
+                    _ => {
+                        let enabled = self.state.live_config.read().await.room_creation_enabled;
+                        self.out(format!(
+                            "  {} 玩家建房：{}",
+                            c::cyan("◆"),
+                            if enabled { "已开启" } else { "已关闭" }
+                        ));
+                    }
+                }
+                true
+            }
             _ => {
                 // Try Runtime CommandRegistry (unified execution path)
                 if let Some(output) =
