@@ -830,6 +830,7 @@ impl RoomCommandHandler {
                     }
                     as_.state.control.admin_start_pending = false;
                     as_.state.ready_countdown_started_at = None;
+                    as_.state.playing_timeout_deadline = None;
                     as_.state.lifecycle = InternalRoomState::SelectChart;
                     r.send(Message::CancelGame { user: 0 }).await;
                     broadcast_state_change(r, &as_.state.lifecycle, as_.state.chart).await;
@@ -890,6 +891,7 @@ impl RoomCommandHandler {
                             }
                             as_.state.control.admin_start_pending = false;
                             as_.state.ready_countdown_started_at = None;
+                            as_.state.playing_timeout_deadline = None;
                             r.send(Message::CancelGame { user: *user_id }).await;
                             as_.state.lifecycle = InternalRoomState::SelectChart;
                             broadcast_state_change(r, &as_.state.lifecycle, as_.state.chart).await;
