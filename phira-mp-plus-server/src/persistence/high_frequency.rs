@@ -248,29 +248,37 @@ impl HighFrequencyWriter {
 
     /// Enqueue a single HF item.
     ///
-    /// Returns `Err(String)` when the writer is shut down or the channel is
-    /// closed.  The item is not sent on error, so the caller may cache or
-    /// retry it.
+    /// Uses `try_send` — if the queue is full the item is dropped immediately
+    /// and the `dropped` counter is incremented, rather than blocking the
+    /// caller's hotpath. Returns `Err(String)` when the writer is shut down,
+    /// the channel is closed, or the queue is full.
     pub async fn enqueue(&self, item: HighFrequencyItem) -> Result<(), String> {
         let _send_guard = self.send_gate.lock().await;
         if self.closed.load(Ordering::Acquire) {
             self.stats.dropped.fetch_add(1, Ordering::Relaxed);
             return Err("high frequency writer is shutting down".to_string());
         }
-        match self.tx.send(HfMessage::Item(item)).await {
+        match self.tx.try_send(HfMessage::Item(item)) {
             Ok(()) => {
                 self.stats.received.fetch_add(1, Ordering::Relaxed);
                 Ok(())
             }
-            Err(mpsc::error::SendError(HfMessage::Item(ref item))) => {
+            Err(mpsc::error::TrySendError::Full(HfMessage::Item(item))) => {
                 self.stats.dropped.fetch_add(1, Ordering::Relaxed);
                 warn!(
                     "high frequency writer queue full; item dropped (kind={})",
                     item.kind.as_str()
                 );
-                Err("high frequency writer queue full or closed".to_string())
+                Err("high frequency writer queue full".to_string())
             }
-            Err(_) => unreachable!("enqueue only sends Item messages"),
+            Err(mpsc::error::TrySendError::Closed(HfMessage::Item(ref item))) => {
+                self.stats.dropped.fetch_add(1, Ordering::Relaxed);
+                warn!(
+                    "high frequency writer queue closed; item dropped (kind={})",
+                    item.kind.as_str()
+                );
+                Err("high frequency writer is closed".to_string())
+            }
         }
     }
 
