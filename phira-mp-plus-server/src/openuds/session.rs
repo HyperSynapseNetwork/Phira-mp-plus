@@ -12,7 +12,8 @@ use crate::openuds::protocol;
 use serde_json::Value;
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, RwLock};
+use std::sync::RwLock;
+use tokio::io::AsyncWriteExt;
 use tokio::sync::mpsc;
 use uuid::Uuid;
 
@@ -225,8 +226,6 @@ pub async fn session_writer(
                 }
                 if let Err(e) = write_half.flush().await {
                     tracing::debug!("session_writer: flush error: {e}");
-                    break;
-                    tracing::debug!("session_writer: write error: {e}");
                     break;
                 }
                 if let Err(e) = write_stream.flush().await {

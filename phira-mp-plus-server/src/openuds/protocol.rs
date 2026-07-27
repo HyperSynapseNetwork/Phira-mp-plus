@@ -117,7 +117,7 @@ pub fn read_frame(reader: &mut dyn Read) -> Result<Value, ProtocolError> {
 
 /// Async read one complete frame from a tokio UnixStream.
 pub async fn read_frame_async(
-    stream: &mut tokio::net::UnixStream,
+    stream: &mut (impl tokio::io::AsyncRead + Unpin),
 ) -> Result<Value, ProtocolError> {
     use tokio::io::AsyncReadExt;
 
