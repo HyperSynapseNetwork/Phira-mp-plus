@@ -247,7 +247,7 @@ impl ExtensionManager {
                 serde_json::to_string_pretty(&value).map_err(|e| format!("serialize: {}", e))?;
             std::fs::write(path, json).map_err(|e| format!("write: {}", e))?;
         }
-        self.enqueue_or_write_direct("extensions.snapshot", value, None, None)
+        self.enqueue_event("extensions.snapshot", value, None, None)
             .await;
         Ok(())
     }
@@ -268,7 +268,7 @@ impl ExtensionManager {
             description,
         );
         if result.is_ok() {
-            self.enqueue_or_write_direct(
+            self.enqueue_event(
                 "extensions.user_field.register",
                 serde_json::json!({
                     "key": key,
@@ -298,7 +298,7 @@ impl ExtensionManager {
             description,
         );
         if result.is_ok() {
-            self.enqueue_or_write_direct(
+            self.enqueue_event(
                 "extensions.room_field.register",
                 serde_json::json!({
                     "key": key,
@@ -314,10 +314,9 @@ impl ExtensionManager {
         result
     }
 
-    /// Enqueue a persistence event via worker, falling back to direct DB write.
-    /// `user_id` and `room_id` are passed separately for the DB fallback and
-    /// included in the payload for pipeline extraction.
-    async fn enqueue_or_write_direct(
+    /// Enqueue a persistence event via the PersistenceWorker.
+    /// The worker handles retries, dead-letter journal, and WAL-based crash recovery.
+    async fn enqueue_event(
         &self,
         kind: &str,
         mut payload: serde_json::Value,
@@ -345,8 +344,8 @@ impl ExtensionManager {
             .as_ref()
             .and_then(|w| w.upgrade())
         {
-            if futures::executor::block_on(worker.enqueue(worker_event)).is_err() {
-                warn!("enqueue_or_write_direct: worker enqueue failed");
+            if worker.enqueue(worker_event).await.is_err() {
+                warn!("enqueue_event: worker enqueue failed");
             }
         }
     }
@@ -372,7 +371,7 @@ impl ExtensionManager {
             .await
             .set_user_extra(user_id, key, value.clone());
         if result.is_ok() {
-            self.enqueue_or_write_direct(
+            self.enqueue_event(
                 "extensions.user.set",
                 serde_json::json!({
                     "user_id": user_id,
@@ -409,7 +408,7 @@ impl ExtensionManager {
             .await
             .set_room_extra(room_id, key, value.clone());
         if result.is_ok() {
-            self.enqueue_or_write_direct(
+            self.enqueue_event(
                 "extensions.room.set",
                 serde_json::json!({
                     "room_id": room_owned.clone(),

@@ -11,9 +11,6 @@ use std::time::{Duration, Instant};
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PersistenceWriteStage {
     NotApplicable,
-    SkippedNoDatabase {
-        pipeline: PersistencePipeline,
-    },
     Acknowledged {
         pipeline: PersistencePipeline,
         elapsed_ms: u64,
@@ -28,7 +25,6 @@ pub enum PersistenceWriteStage {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BenchmarkReportStage {
     NotBenchmark,
-    SkippedNoDatabase,
     Acknowledged { elapsed_ms: u64 },
     Failed { elapsed_ms: u64, error: String },
 }
@@ -50,11 +46,7 @@ pub async fn persist_simulation_event_if_needed(event: &PersistenceEvent) -> Per
     if !event.is_simulation() {
         return PersistenceWriteStage::NotApplicable;
     }
-    let Some(db) = crate::internal_hooks::DB.get().filter(|db| db.is_active()) else {
-        return PersistenceWriteStage::SkippedNoDatabase {
-            pipeline: PersistencePipeline::Simulation,
-        };
-    };
+    let db = crate::internal_hooks::DB.get().expect("DB must be initialized before persistence worker starts");
 
     let started = Instant::now();
     let event_id = payload_event_id(event).unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
@@ -115,11 +107,7 @@ pub async fn persist_production_event_if_needed(event: &PersistenceEvent) -> Per
     if event.is_simulation() {
         return PersistenceWriteStage::NotApplicable;
     }
-    let Some(db) = crate::internal_hooks::DB.get().filter(|db| db.is_active()) else {
-        return PersistenceWriteStage::SkippedNoDatabase {
-            pipeline: PersistencePipeline::EventMirror,
-        };
-    };
+    let db = crate::internal_hooks::DB.get().expect("DB must be initialized before persistence worker starts");
 
     let started = Instant::now();
     let server_event_id = match event {
@@ -199,12 +187,12 @@ pub async fn persist_production_event_if_needed(event: &PersistenceEvent) -> Per
     }
     if result {
         PersistenceWriteStage::Acknowledged {
-            pipeline: PersistencePipeline::EventMirror,
+            pipeline: PersistencePipeline::ProductionEvent,
             elapsed_ms: elapsed_ms(started),
         }
     } else {
         PersistenceWriteStage::Failed {
-            pipeline: PersistencePipeline::EventMirror,
+            pipeline: PersistencePipeline::ProductionEvent,
             elapsed_ms: elapsed_ms(started),
             error: "production event database write failed".to_string(),
         }
@@ -215,9 +203,7 @@ pub async fn persist_benchmark_report_if_needed(event: &PersistenceEvent) -> Ben
     let PersistenceEvent::BenchmarkReport { report } = event else {
         return BenchmarkReportStage::NotBenchmark;
     };
-    let Some(db) = crate::internal_hooks::DB.get().filter(|db| db.is_active()) else {
-        return BenchmarkReportStage::SkippedNoDatabase;
-    };
+    let db = crate::internal_hooks::DB.get().expect("DB must be initialized before persistence worker starts");
     let started = Instant::now();
     let record = crate::persistence::BenchmarkReportPersistenceRecord::from_report(
         report,

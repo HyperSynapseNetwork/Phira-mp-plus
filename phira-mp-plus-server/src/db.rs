@@ -66,28 +66,25 @@ pub enum DbManager {
 impl DbManager {
     /// 根据配置初始化数据库连接，连接或迁移失败直接返回错误。
     ///
-    /// 空 URL 时依次尝试常见本地开发连接：
-    /// 1. TCP + 默认密码 `postgres:postgres`
-    /// 2. Unix socket (peer auth)
-    /// 3. 返回错误
-    ///
-    /// 非空 URL 时直接连接，不做任何自动猜测或回退。
+    /// PostgreSQL is required — `database_url` must not be empty.
     pub async fn new(database_url: &str) -> anyhow::Result<Self> {
         let url = database_url.trim();
 
+        if url.is_empty() {
+            anyhow::bail!(
+                "database_url 配置为空；必须通过配置文件或 PM_DATABASE_URL \
+                 环境变量设置 PostgreSQL 连接地址"
+            );
+        }
+
         #[cfg(feature = "postgres")]
         {
-            let pool = if url.is_empty() {
-                tracing::info!("database_url 未设置，尝试本地默认连接");
-                Self::try_connect_dev().await?
-            } else {
-                sqlx::PgPool::connect(url).await.map_err(|e| {
-                    anyhow::anyhow!(
-                        "PostgreSQL 连接失败: {e}\n      请确保 PostgreSQL 已安装且正在运行，\
-                         或配置正确的 database_url"
-                    )
-                })?
-            };
+            let pool = sqlx::PgPool::connect(url).await.map_err(|e| {
+                anyhow::anyhow!(
+                    "PostgreSQL 连接失败: {e}\n      请确保 PostgreSQL 已安装且正在运行，\
+                     或配置正确的 database_url"
+                )
+            })?;
             tracing::info!("PostgreSQL 已连接");
             if let Err(e) = init_tables(&pool).await {
                 anyhow::bail!("数据库建表失败: {e:?}");
@@ -99,51 +96,6 @@ impl DbManager {
         {
             anyhow::bail!("postgres feature 未启用，无法启动");
         }
-    }
-
-    /// 空 URL 时依次尝试常见开发连接方式。
-    #[cfg(feature = "postgres")]
-    async fn try_connect_dev() -> anyhow::Result<sqlx::PgPool> {
-        use sqlx::postgres::PgConnectOptions;
-
-        // 1. TCP + 默认密码 postgres
-        tracing::info!("尝试 TCP 连接 postgres:postgres@localhost:5432/phira_mp_plus");
-        match sqlx::PgPool::connect("postgres://postgres:postgres@localhost:5432/phira_mp_plus").await {
-            Ok(pool) => {
-                tracing::info!("TCP 连接成功");
-                return Ok(pool);
-            }
-            Err(e) => {
-                tracing::warn!("TCP 连接失败: {e}");
-            }
-        }
-
-        // 2. Unix socket (peer auth, 无需密码)
-        for (socket_dir, label) in &[
-            ("/var/run/postgresql", "Debian/Ubuntu"),
-            ("/tmp", "macOS/Homebrew"),
-        ] {
-            tracing::info!("尝试 Unix socket ({label}): {socket_dir}");
-            let opts = PgConnectOptions::new()
-                .host(socket_dir)
-                .database("phira_mp_plus")
-                .username("postgres");
-            match sqlx::PgPool::connect_with(opts).await {
-                Ok(pool) => {
-                    tracing::info!("Unix socket 连接成功 ({label})");
-                    return Ok(pool);
-                }
-                Err(e) => {
-                    tracing::warn!("Unix socket ({label}) 连接失败: {e}");
-                }
-            }
-        }
-
-        anyhow::bail!(
-            "PostgreSQL 自动连接失败。\n\
-             请确保 PostgreSQL 已安装且正在运行。\n\
-             可通过 PM_DATABASE_URL 环境变量手动配置连接地址。"
-        );
     }
 
     /// 是否使用 PostgreSQL（始终有效，因 None 变体已移除）

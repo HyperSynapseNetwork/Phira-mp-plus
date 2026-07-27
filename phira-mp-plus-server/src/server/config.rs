@@ -266,12 +266,6 @@ pub struct PlusConfig {
     pub round_data_retention_days: u32,
     #[serde(default)]
     pub database_url: String,
-    /// When set, database initialization failure is tolerated even when
-    /// `database_url` is explicitly configured. The server will start without
-    /// structured persistence (readiness reports degraded).
-    /// This is intended for development/staging only.
-    #[serde(default)]
-    pub allow_database_degraded_mode: bool,
     #[serde(default = "default_persistence_retention_days")]
     pub persistence_retention_days: u32,
     #[serde(default)]
@@ -316,7 +310,6 @@ impl Default for PlusConfig {
             chat_enabled: true,
             round_data_retention_days: 7,
             database_url: String::new(),
-            allow_database_degraded_mode: false,
             persistence_retention_days: 30,
             touch_judge_retention_days: None,
             admin_phira_ids: Vec::new(),
@@ -457,16 +450,6 @@ impl PlusConfig {
                      interfaces. Ensure a firewall or reverse proxy restricts access."
                 );
             }
-            if self.allow_database_degraded_mode {
-                return Err(AppError::ConfigValidation(
-                    "allow_database_degraded_mode is incompatible with production profile".into(),
-                ));
-            }
-            if self.database_url.is_empty() {
-                return Err(AppError::ConfigValidation(
-                    "production profile requires database_url".into(),
-                ));
-            }
         }
         if self.max_users_per_room == Some(0) {
             return Err(AppError::ConfigValidation(
@@ -555,9 +538,9 @@ impl PlusConfig {
                 "runtime WAL/dead-letter 路径冲突: {e}"
             )));
         }
-        if self.database_url.trim().is_empty() && self.profile == ConfigProfile::Production {
+        if self.database_url.trim().is_empty() {
             return Err(AppError::ConfigValidation(
-                "database_url 不能为空；生产模式下必须指定 PostgreSQL 连接地址".into(),
+                "database_url 不能为空；必须指定 PostgreSQL 连接地址".into(),
             ));
         }
         if self.connection_rate_limit == 0 {

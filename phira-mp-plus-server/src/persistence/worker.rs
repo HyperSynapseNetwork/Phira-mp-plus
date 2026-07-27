@@ -298,9 +298,6 @@ async fn process_worker_loop(
                 )
                 .await;
             }
-            BenchmarkReportStage::SkippedNoDatabase => {
-                record_benchmark_report_persist_skipped(worker_stats).await;
-            }
             BenchmarkReportStage::NotBenchmark => {
                 match persist_simulation_event_if_needed(&event).await {
                     PersistenceWriteStage::Acknowledged {
@@ -330,9 +327,6 @@ async fn process_worker_loop(
                         }
                         record_simulation_persist_request(worker_stats).await;
                         record_db_dispatch_failure(worker_stats, pipeline, elapsed_ms, error).await;
-                    }
-                    PersistenceWriteStage::SkippedNoDatabase { .. } => {
-                        record_simulation_persist_request(worker_stats).await;
                     }
                     PersistenceWriteStage::NotApplicable => {
                         match persist_production_event_if_needed(&event).await {
@@ -375,9 +369,6 @@ async fn process_worker_loop(
                                 )
                                 .await;
                             }
-                            PersistenceWriteStage::SkippedNoDatabase { .. } => {
-                                record_production_persist_request(worker_stats).await;
-                            }
                             PersistenceWriteStage::NotApplicable => {
                                 if !event.is_simulation()
                                     && !matches!(
@@ -410,7 +401,7 @@ async fn process_worker_loop(
 
         // Only ACK events that reached a durable terminal state AND used WAL.
         // DatabaseCommitted / DurableDeadLetterStored → ACK
-        // TelemetryStaged / DeadLetterFailed / SkippedNoDB → retain in WAL
+        // TelemetryStaged / DeadLetterFailed → retain in WAL
         // Production Touch/Judge (B-class) bypassed WAL entirely.
         if needs_wal_ack {
             if durable {

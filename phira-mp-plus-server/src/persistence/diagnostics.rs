@@ -5,19 +5,19 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PersistencePipeline {
-    EventMirror,
     BenchmarkReport,
     Simulation,
-    DirectWrite,
+    ProductionEvent,
+    ExtensionWrite,
 }
 
 impl PersistencePipeline {
     pub fn as_str(self) -> &'static str {
         match self {
-            Self::EventMirror => "event_mirror",
             Self::BenchmarkReport => "benchmark_report",
             Self::Simulation => "simulation",
-            Self::DirectWrite => "direct_write",
+            Self::ProductionEvent => "production_event",
+            Self::ExtensionWrite => "extension_write",
         }
     }
 }
