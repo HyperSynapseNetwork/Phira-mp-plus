@@ -137,20 +137,19 @@ impl CliHandler {
         };
         let crate::db::DbManager::Pg(pool) = &self.state.db_manager;
         let records = self.state.ban_manager.user_ip_history(uid, pool).await;
-            if records.is_empty() {
-                self.out(format!("  ○ 用户 #{} 没有 IP 记录", uid));
-                return;
-            }
-            self.out(format!("  ◆ 用户 #{} 使用过的 IP：", uid));
-            for r in &records {
-                let seen = chrono::DateTime::from_timestamp_millis(r.last_seen_at)
-                    .map(|t| t.format("%Y-%m-%d").to_string())
-                    .unwrap_or_else(|| "?".to_string());
-                self.out(format!(
-                    "    {:<16}  {} 次  ·  最近 {}",
-                    r.ip, r.use_count, seen
-                ));
-            }
+        if records.is_empty() {
+            self.out(format!("  ○ 用户 #{} 没有 IP 记录", uid));
+            return;
+        }
+        self.out(format!("  ◆ 用户 #{} 使用过的 IP：", uid));
+        for r in &records {
+            let seen = chrono::DateTime::from_timestamp_millis(r.last_seen_at)
+                .map(|t| t.format("%Y-%m-%d").to_string())
+                .unwrap_or_else(|| "?".to_string());
+            self.out(format!(
+                "    {:<16}  {} 次  ·  最近 {}",
+                r.ip, r.use_count, seen
+            ));
         }
     }
 
