@@ -708,6 +708,8 @@ fn default_graceful_shutdown_timeout_secs() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::{PlusConfig, PlusConfigCli};
+    use crate::plugin::WasmRuntimeConfig;
+    use crate::RuntimeConfig;
 
     #[test]
     fn partial_yaml_uses_runtime_defaults() {

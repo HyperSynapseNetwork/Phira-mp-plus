@@ -784,7 +784,7 @@ mod tests {
 
         let payload = payload.to_vec();
         let jh = tokio::spawn(async move {
-            let mut s = tokio::net::TcpStream::connect(addr).await.unwrap();
+            let s = tokio::net::TcpStream::connect(addr).await.unwrap();
             // Wait for the server to call accept first so the write
             // completes before the server's peek timeout fires.
             tokio::time::sleep(Duration::from_millis(50)).await;
@@ -863,7 +863,7 @@ mod tests {
         let addr = listener.local_addr().unwrap();
 
         let jh = tokio::spawn(async move {
-            let mut s = tokio::net::TcpStream::connect(addr).await.unwrap();
+            let s = tokio::net::TcpStream::connect(addr).await.unwrap();
             tokio::time::sleep(Duration::from_millis(100)).await;
             let _ = s.try_write(payload);
             // Hold the connection open without sending more.
@@ -891,7 +891,7 @@ mod tests {
         let addr = listener.local_addr().unwrap();
 
         let jh = tokio::spawn(async move {
-            let mut s = tokio::net::TcpStream::connect(addr).await.unwrap();
+            let s = tokio::net::TcpStream::connect(addr).await.unwrap();
             tokio::time::sleep(Duration::from_millis(100)).await;
             let _ = s.try_write(&PROXY_V2_SIG);
             // Hold the connection open.
@@ -937,7 +937,7 @@ mod tests {
         let addr = listener.local_addr().unwrap();
 
         let jh = tokio::spawn(async move {
-            let mut s = tokio::net::TcpStream::connect(addr).await.unwrap();
+            let s = tokio::net::TcpStream::connect(addr).await.unwrap();
             tokio::time::sleep(Duration::from_millis(100)).await;
             let _ = s.try_write(&raw);
             tokio::time::sleep(Duration::from_secs(2)).await;
@@ -971,14 +971,14 @@ mod tests {
         let addr = listener.local_addr().unwrap();
 
         let jh = tokio::spawn(async move {
-            let mut s = tokio::net::TcpStream::connect(addr).await.unwrap();
+            let s = tokio::net::TcpStream::connect(addr).await.unwrap();
             tokio::time::sleep(Duration::from_millis(100)).await;
             let _ = s.try_write(&full);
             tokio::time::sleep(Duration::from_secs(2)).await;
         });
 
         let (stream, _) = listener.accept().await.unwrap();
-        let (mut stream, proxy_addr) =
+        let (stream, proxy_addr) =
             maybe_read_proxy_header(stream, Some("0.0.0.0/0"), Duration::from_secs(3), MAX_HEADER_LEN)
                 .await
                 .unwrap();
