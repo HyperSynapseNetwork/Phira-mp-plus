@@ -193,8 +193,8 @@ jobs:
           # the accept loop so the server can exit.
           kill -INT $SERVER_PID 2>/dev/null || true
           curl -sf http://127.0.0.1:22347/ >/dev/null 2>&1 || true
-          # Wait up to 5s for process to exit
-          for i in 1 2 3 4 5; do
+          # Wait up to 20s for graceful shutdown + LLVM profile flush
+          for i in $(seq 1 20); do
             kill -0 $SERVER_PID 2>/dev/null || break
             sleep 1
           done
