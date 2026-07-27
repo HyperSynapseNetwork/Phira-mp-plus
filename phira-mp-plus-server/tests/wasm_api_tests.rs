@@ -73,7 +73,7 @@ mod tests {
 
     #[test]
     fn plugin_calls_host_api_call() {
-        let Ok(mut component) = try_load_component() else { return; };
+        let mut component = try_load_component().expect("WIT fixture must load for conformance tests");
         component.call_init().unwrap();
 
         let result = component
@@ -89,7 +89,7 @@ mod tests {
 
     #[test]
     fn plugin_calls_host_api_call_with_args() {
-        let Ok(mut component) = try_load_component() else { return; };
+        let mut component = try_load_component().expect("WIT fixture must load for conformance tests");
         component.call_init().unwrap();
 
         let result = component
@@ -102,7 +102,7 @@ mod tests {
 
     #[test]
     fn plugin_calls_host_api_call_unknown_method() {
-        let Ok(mut component) = try_load_component() else { return; };
+        let mut component = try_load_component().expect("WIT fixture must load for conformance tests");
         component.call_init().unwrap();
 
         let result = component
@@ -117,7 +117,7 @@ mod tests {
 
     #[test]
     fn plugin_logs_via_host() {
-        let Ok(mut component) = try_load_component() else { return; };
+        let mut component = try_load_component().expect("WIT fixture must load for conformance tests");
         component.call_init().unwrap();
         let result = component.call_api("log", &[json!("info"), json!("test log message")]);
         assert!(result.is_ok(), "log should succeed");

@@ -18,25 +18,28 @@ impl RoomCommandGateway {
     ///
     /// Writes via the per-room mailbox to actor_state.player_data,
     /// then mirrors to Room for plugin WASM reads.
+    ///
+    /// Note: deliberately skips the `finish_command` audit trail
+    /// (ring-buffer entry + `room.command` MpEvent) to reduce overhead
+    /// on the high-frequency telemetry path. If per-command auditing
+    /// becomes needed for telemetry, add a dedicated telemetry audit
+    /// counter instead of sharing the control-command audit path.
     pub async fn add_touches(
         &self,
-        state: &PlusServerState,
         room_id: &str,
         user_id: i32,
         touches: &[TouchEventPoint],
     ) -> Result<Value, String> {
-        let started = Instant::now();
         let rid = room_id.to_string();
         let data = touches.to_vec();
-        let result = self
+        self
             .room_mailbox(&rid, |reply| RoomActorCommand::AddTouches {
                 room_id: rid.clone(),
                 user_id,
                 touches: data,
                 reply,
             })
-            .await;
-        self.finish_command(state, RoomCommandKind::AddTouches.action(), room_id, started, result)
+            .await
             .into_untyped()
     }
 
@@ -44,25 +47,28 @@ impl RoomCommandGateway {
     ///
     /// Writes via the per-room mailbox to actor_state.player_data,
     /// then mirrors to Room for plugin WASM reads.
+    ///
+    /// Note: deliberately skips the `finish_command` audit trail
+    /// (ring-buffer entry + `room.command` MpEvent) to reduce overhead
+    /// on the high-frequency telemetry path. If per-command auditing
+    /// becomes needed for telemetry, add a dedicated telemetry audit
+    /// counter instead of sharing the control-command audit path.
     pub async fn add_judges(
         &self,
-        state: &PlusServerState,
         room_id: &str,
         user_id: i32,
         judges: &[JudgeEventItem],
     ) -> Result<Value, String> {
-        let started = Instant::now();
         let rid = room_id.to_string();
         let data = judges.to_vec();
-        let result = self
+        self
             .room_mailbox(&rid, |reply| RoomActorCommand::AddJudges {
                 room_id: rid.clone(),
                 user_id,
                 judges: data,
                 reply,
             })
-            .await;
-        self.finish_command(state, RoomCommandKind::AddJudges.action(), room_id, started, result)
+            .await
             .into_untyped()
     }
 

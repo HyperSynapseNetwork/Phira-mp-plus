@@ -28,7 +28,7 @@ async fn persist_touches(
     if let Err(e) = user
         .server
         .room_commands
-        .add_touches(&user.server, &room.id.to_string(), user.id, touch_data)
+        .add_touches(&room.id.to_string(), user.id, touch_data)
         .await
     {
         trace!(
@@ -96,7 +96,7 @@ async fn persist_judges(
     if let Err(e) = user
         .server
         .room_commands
-        .add_judges(&user.server, &room.id.to_string(), user.id, judge_data)
+        .add_judges(&room.id.to_string(), user.id, judge_data)
         .await
     {
         trace!(

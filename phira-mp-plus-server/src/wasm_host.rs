@@ -611,7 +611,7 @@ mod tests {
 
         #[test]
         fn init_returns_ok() {
-            let Ok(mut c) = try_load_component() else { return; };
+            let mut c = try_load_component().expect("WIT fixture must load for conformance tests");
             c.call_init().unwrap();
             assert!(c.initialized);
         }
@@ -620,7 +620,7 @@ mod tests {
         fn info_is_refreshed_from_guest_after_init() {
             // Note: this test requires the WASM fixture to be compiled with the
             // same WIT version. If the WIT changes, rebuild the fixture.
-            let Ok(mut c) = try_load_component() else { return; };
+            let mut c = try_load_component().expect("WIT fixture must load for conformance tests");
             c.call_init().unwrap();
             assert_eq!(c.info.name, "test-plugin");
             assert_eq!(c.info.version, "0.1.0-test");
@@ -629,7 +629,7 @@ mod tests {
 
         #[test]
         fn cleanup_does_not_panic() {
-            let Ok(mut c) = try_load_component() else { return; };
+            let mut c = try_load_component().expect("WIT fixture must load for conformance tests");
             c.call_init().unwrap();
             c.call_cleanup();
             assert!(!c.initialized);
@@ -637,14 +637,14 @@ mod tests {
 
         #[test]
         fn double_cleanup_is_safe() {
-            let Ok(mut c) = try_load_component() else { return; };
+            let mut c = try_load_component().expect("WIT fixture must load for conformance tests");
             c.call_cleanup();
             c.call_cleanup();
         }
 
         #[test]
         fn on_event_returns_false() {
-            let Ok(mut c) = try_load_component() else { return; };
+            let mut c = try_load_component().expect("WIT fixture must load for conformance tests");
             c.call_init().unwrap();
             let result = c.call_on_event(&PluginEvent::UserConnect {
                 user_id: 1,
@@ -656,14 +656,14 @@ mod tests {
 
         #[test]
         fn on_api_ping() {
-            let Ok(mut c) = try_load_component() else { return; };
+            let mut c = try_load_component().expect("WIT fixture must load for conformance tests");
             c.call_init().unwrap();
             assert_eq!(c.call_api("ping", &[]), Ok(serde_json::json!(null)));
         }
 
         #[test]
         fn on_api_echo_roundtrip() {
-            let Ok(mut c) = try_load_component() else { return; };
+            let mut c = try_load_component().expect("WIT fixture must load for conformance tests");
             c.call_init().unwrap();
             assert_eq!(
                 c.call_api("echo", &[serde_json::json!("hello")]),
@@ -673,7 +673,7 @@ mod tests {
 
         #[test]
         fn on_api_count_increments() {
-            let Ok(mut c) = try_load_component() else { return; };
+            let mut c = try_load_component().expect("WIT fixture must load for conformance tests");
             c.call_init().unwrap();
             assert_eq!(c.call_api("count", &[]), Ok(serde_json::json!(0)));
             assert_eq!(c.call_api("count", &[]), Ok(serde_json::json!(1)));
@@ -682,7 +682,7 @@ mod tests {
 
         #[test]
         fn on_api_unknown_method_returns_error() {
-            let Ok(mut c) = try_load_component() else { return; };
+            let mut c = try_load_component().expect("WIT fixture must load for conformance tests");
             c.call_init().unwrap();
             assert!(c.call_api("nonexistent", &[]).is_err());
         }
@@ -696,7 +696,7 @@ mod tests {
 
         #[test]
         fn admin_method_allowed_with_default_capabilities() {
-            let Ok(mut c) = try_load_component() else { return; };
+            let mut c = try_load_component().expect("WIT fixture must load for conformance tests");
             c.call_init().unwrap();
             let result = c.call_api("host.api_call", &[serde_json::json!("admin.list")]);
             let v = result.expect("host.api_call should return Ok value (error encoded in JSON)");
@@ -710,7 +710,7 @@ mod tests {
 
         #[test]
         fn room_manage_method_rejected_with_default_capabilities() {
-            let Ok(mut c) = try_load_component() else { return; };
+            let mut c = try_load_component().expect("WIT fixture must load for conformance tests");
             c.call_init().unwrap();
             let result = c.call_api(
                 "host.api_call",
@@ -729,7 +729,7 @@ mod tests {
 
         #[test]
         fn state_read_method_allowed_with_default_capabilities() {
-            let Ok(mut c) = try_load_component() else { return; };
+            let mut c = try_load_component().expect("WIT fixture must load for conformance tests");
             c.call_init().unwrap();
             let result = c.call_api("host.api_call", &[serde_json::json!("rooms.list")]);
             assert!(result.is_ok(), "state.read method should be allowed");
