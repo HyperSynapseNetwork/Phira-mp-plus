@@ -40,7 +40,7 @@ pub struct PluginHttpServer {
     sse_streams: Arc<RwLock<HashMap<String, SseStreamConfig>>>,
     port: u16,
     bind_address: String,
-    proxy_port: u16,
+    trusted_forwarded_http_port: u16,
 }
 
 /// Configuration for a plugin-registered SSE stream.
@@ -54,7 +54,7 @@ impl PluginHttpServer {
     pub fn new(
         port: u16,
         bind_address: impl Into<String>,
-        proxy_protocol_port: u16,
+        trusted_forwarded_http_port: u16,
         events: Arc<SseHub>,
     ) -> Self {
         Self {
@@ -63,7 +63,7 @@ impl PluginHttpServer {
             sse_streams: Arc::new(RwLock::new(HashMap::new())),
             port,
             bind_address: bind_address.into(),
-            proxy_port: proxy_protocol_port,
+            trusted_forwarded_http_port,
         }
     }
 
@@ -131,8 +131,8 @@ impl PluginHttpServer {
 
         // Trusted-forwarded-header compatibility port. This is not HAProxy
         // PROXY v1/v2; it trusts X-Forwarded-For only behind a trusted proxy.
-        if self.proxy_port > 0 && self.proxy_port != self.port {
-            let proxy_addr = format!("{}:{}", self.bind_address, self.proxy_port);
+        if self.trusted_forwarded_http_port > 0 && self.trusted_forwarded_http_port != self.port {
+            let proxy_addr = format!("{}:{}", self.bind_address, self.trusted_forwarded_http_port);
             let proxy_listener = tokio::net::TcpListener::bind(&proxy_addr)
                 .await
                 .map_err(|e| {

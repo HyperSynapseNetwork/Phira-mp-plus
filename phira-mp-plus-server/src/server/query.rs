@@ -373,7 +373,7 @@ fn server_state_query_dispatch(
                     .unwrap_or(0);
                 let _ = tx.send(count);
             });
-            let count = rx.recv().unwrap_or(0);
+            let count = rx.recv_timeout(runtime_state_query_timeout()).unwrap_or(0);
             // Fallback: if DB returns 0 but users are online, use online count
             if count == 0 {
                 let users = crate::read_lock!(state.users);

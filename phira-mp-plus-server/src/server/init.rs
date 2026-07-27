@@ -104,7 +104,7 @@ impl PlusServer {
         )?);
         let events = Arc::new(SseHub::new());
         // Capture config fields before config is consumed by state
-        let proxy_protocol_port = config.proxy_protocol_port;
+        let trusted_forwarded_http_port = config.trusted_forwarded_http_port;
         let http_bind_address = config.http_bind_address.clone();
         let max_pending_auth = config.max_pending_auth;
         let max_sessions = config.max_sessions;
@@ -125,6 +125,13 @@ impl PlusServer {
             connection_limiter: crate::rate_limiter::ConnectionRateLimiter::new(
                 rate_limit,
                 rate_window,
+            ),
+            // Trusted proxy peers get a dedicated, higher-capacity rate limiter
+            // so that traffic from HAProxy/LB is not throttled by the normal
+            // client limit (e.g. 30/10s) before the forwarded IP is checked.
+            proxy_connection_limiter: crate::rate_limiter::ConnectionRateLimiter::new(
+                1000,
+                10,
             ),
             round_store: Arc::new(crate::round_store::RoundStore::new()),
             user_room_history: SafeMap::default(),
@@ -237,7 +244,7 @@ impl PlusServer {
             let srv = Arc::new(PluginHttpServer::new(
                 http_port,
                 &http_bind_address,
-                proxy_protocol_port,
+                trusted_forwarded_http_port,
                 Arc::clone(&state.events),
             ));
             let http_handle =
@@ -301,6 +308,7 @@ impl PlusServer {
                 ))
                 .await;
                 limiter_cleanup_state.connection_limiter.cleanup().await;
+                limiter_cleanup_state.proxy_connection_limiter.cleanup().await;
             }
         });
 

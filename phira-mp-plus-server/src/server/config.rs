@@ -238,8 +238,8 @@ pub struct PlusConfig {
     #[serde(default = "default_graceful_shutdown_timeout_secs")]
     pub graceful_shutdown_timeout_secs: u64,
     /// Port for the optional forwarded-header compatibility listener.
-    #[serde(default = "default_proxy_protocol_port")]
-    pub proxy_protocol_port: u16,
+    #[serde(default = "default_trusted_forwarded_http_port")]
+    pub trusted_forwarded_http_port: u16,
     /// Comma-separated CIDR allowlist for HAProxy PROXY protocol v1/v2.
     ///
     /// When set, connections whose peer IP matches an entry in this list
@@ -317,7 +317,7 @@ impl Default for PlusConfig {
             wasm_runtime: WasmRuntimeConfig::default(),
             runtime: RuntimeConfig::default(),
             idle: IdleConfig::default(),
-            proxy_protocol_port: 0,
+            trusted_forwarded_http_port: 0,
             proxy_allow_cidr: None,
             ready_countdown_secs: default_ready_countdown_secs(),
             playing_timeout_offset_secs: default_playing_timeout_offset_secs(),
@@ -402,16 +402,16 @@ impl PlusConfig {
                 "TCP 端口和 HTTP 端口不能相同".into(),
             ));
         }
-        if self.proxy_protocol_port > 0 && self.http_port == 0 {
+        if self.trusted_forwarded_http_port > 0 && self.http_port == 0 {
             return Err(AppError::ConfigValidation(
-                "启用 proxy_protocol_port 时必须同时启用 http_port".into(),
+                "启用 trusted_forwarded_http_port 时必须同时启用 http_port".into(),
             ));
         }
-        if self.proxy_protocol_port > 0
-            && (self.proxy_protocol_port == self.port || self.proxy_protocol_port == self.http_port)
+        if self.trusted_forwarded_http_port > 0
+            && (self.trusted_forwarded_http_port == self.port || self.trusted_forwarded_http_port == self.http_port)
         {
             return Err(AppError::ConfigValidation(
-                "PROXY protocol 端口不能与 TCP/HTTP 端口相同".into(),
+                "可信转发 HTTP 端口不能与 TCP/HTTP 端口相同".into(),
             ));
         }
         if self.http_port > 0 && self.http_bind_address.trim().is_empty() {
@@ -586,8 +586,8 @@ impl PlusConfig {
         if let Some(ext) = cli.extensions_file {
             self.extensions_file = Some(ext);
         }
-        if let Some(proxy_protocol_port) = cli.proxy_protocol_port {
-            self.proxy_protocol_port = proxy_protocol_port;
+        if let Some(trusted_forwarded_http_port) = cli.trusted_forwarded_http_port {
+            self.trusted_forwarded_http_port = trusted_forwarded_http_port;
         }
         if cli.disable_cli {
             self.cli_enabled = false;
@@ -600,7 +600,7 @@ impl PlusConfig {
 pub struct PlusConfigCli {
     pub port: Option<u16>,
     pub http_port: Option<u16>,
-    pub proxy_protocol_port: Option<u16>,
+    pub trusted_forwarded_http_port: Option<u16>,
     pub monitors: Vec<i32>,
     pub plugins_dir: Option<String>,
     pub extensions_file: Option<String>,
@@ -674,7 +674,7 @@ fn default_dangle_grace_secs() -> u64 { 10 }
 fn default_phira_api() -> String {
     "https://phira.5wyxi.com".to_string()
 }
-fn default_proxy_protocol_port() -> u16 {
+fn default_trusted_forwarded_http_port() -> u16 {
     0
 }
 fn default_retention_days() -> u32 {
@@ -766,7 +766,7 @@ mod tests {
         .merge_cli(PlusConfigCli {
             port: None,
             http_port: None,
-            proxy_protocol_port: None,
+            trusted_forwarded_http_port: None,
             monitors: Vec::new(),
             plugins_dir: None,
             extensions_file: None,
@@ -784,7 +784,7 @@ mod tests {
         let config = PlusConfig::default().merge_cli(PlusConfigCli {
             port: None,
             http_port: None,
-            proxy_protocol_port: None,
+            trusted_forwarded_http_port: None,
             monitors: vec![7, 9],
             plugins_dir: None,
             extensions_file: None,

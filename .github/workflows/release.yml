@@ -112,20 +112,14 @@ jobs:
       - if: matrix.setup
         name: Install system dependencies
         run: ${{ matrix.setup }}
-      - if: matrix.os == 'ubuntu-latest'
-        name: Install PostgreSQL
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq postgresql postgresql-client
-          sudo pg_ctlcluster 16 main start 2>/dev/null || sudo pg_ctlcluster $(ls /etc/postgresql/) main start
-          sudo -u postgres psql -c "ALTER USER postgres PASSWORD 'postgres';"
-          sudo -u postgres psql -c "CREATE DATABASE phira_mp_plus;" 2>/dev/null || true
+      - name: Build release binary
+        run: cargo build --locked --release --target ${{ matrix.target }}
       - run: cp ${{ matrix.artifact-path }} ${{ matrix.artifact-name }}
       - name: Smoke test (linux)
         if: matrix.os == 'ubuntu-latest'
         run: |
           chmod +x ${{ matrix.artifact-name }}
-          ./${{ matrix.artifact-name }} --version || true
+          ./${{ matrix.artifact-name }} --version
       - name: Generate provenance
         if: matrix.os == 'ubuntu-latest'
         uses: actions/attest-build-provenance@v1

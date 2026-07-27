@@ -41,7 +41,7 @@ round_data_retention_days: 7
 # ---- 网络 ----
 port: 12346
 http_port: 12347
-# proxy_protocol_port: 12344  # 可信 X-Forwarded-For 兼容监听；不是 PROXY v1/v2
+# trusted_forwarded_http_port: 12344  # 可信 X-Forwarded-For 兼容监听；不是 PROXY v1/v2
 max_sessions: 4096
 max_pending_auth: 256
 graceful_shutdown_timeout_secs: 15
@@ -122,7 +122,7 @@ wasm_runtime:
 | `admin_phira_ids` | `Vec<i32>` | `[]` | 游戏内管理员 Phira ID。管理员可在创建房间弹窗输入 `_命令` 执行 CLI 命令。 |
 | `wasm_runtime` | `object` | 见下表 | WASM 插件运行时资源限制。 |
 
-端口校验规则：`port`、`http_port` 和启用后的 `proxy_protocol_port` 不能冲突；设置 `proxy_protocol_port > 0` 时必须同时启用 `http_port`。`proxy_protocol_port` 只解析可信代理写入的 `X-Forwarded-For`，不实现 PROXY v1/v2。`max_rooms` 与 `max_users_per_room` 若设置，必须大于 0；`max_sessions`、`max_pending_auth` 和关闭时限也必须为正。`max_rooms` 同时约束客户端建房与管理端/WIT 创建空房。
+端口校验规则：`port`、`http_port` 和启用后的 `trusted_forwarded_http_port` 不能冲突；设置 `trusted_forwarded_http_port > 0` 时必须同时启用 `http_port`。`trusted_forwarded_http_port` 只解析可信代理写入的 `X-Forwarded-For`，不实现 PROXY v1/v2。`max_rooms` 与 `max_users_per_room` 若设置，必须大于 0；`max_sessions`、`max_pending_auth` 和关闭时限也必须为正。`max_rooms` 同时约束客户端建房与管理端/WIT 创建空房。
 
 ### WASM 运行时限制
 

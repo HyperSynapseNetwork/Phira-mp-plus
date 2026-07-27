@@ -72,6 +72,8 @@ pub struct PlusServerState {
     pub shutting_down: AtomicBool,
     /// 连接速率限制器（按 IP）
     pub connection_limiter: crate::rate_limiter::ConnectionRateLimiter,
+    /// 可信代理连接速率限制器（独立于普通客户端，使用更高限额）
+    pub proxy_connection_limiter: crate::rate_limiter::ConnectionRateLimiter,
     /// 轮次数据持久化存储（Touches/Judges 按轮次写入磁盘）
     pub round_store: Arc<crate::round_store::RoundStore>,
     /// 用户房间访问历史: user_id → (room_id, room_uuid, join_timestamp_ms)

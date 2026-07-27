@@ -60,10 +60,10 @@ struct Args {
     http_port: Option<u16>,
 
     #[arg(
-        long = "proxy-port",
-        help = "Forwarded-header compatibility HTTP port (0 = disabled; overrides YAML only when provided)"
+        long = "forwarded-http-port",
+        help = "Trusted forwarded-header compatibility HTTP port (0 = disabled; overrides YAML only when provided)"
     )]
-    proxy_protocol_port: Option<u16>,
+    trusted_forwarded_http_port: Option<u16>,
 
     #[arg(long = "no-cli", help = "Disable the interactive management console")]
     no_cli: bool,
@@ -105,7 +105,7 @@ async fn main() -> Result<()> {
     let mut config = base_config.merge_cli(PlusConfigCli {
         port: args.port,
         http_port: args.http_port,
-        proxy_protocol_port: args.proxy_protocol_port,
+        trusted_forwarded_http_port: args.trusted_forwarded_http_port,
         monitors: args.monitors.clone(),
         plugins_dir: args.plugins_dir.clone(),
         extensions_file: args.extensions_file.clone(),
@@ -452,7 +452,7 @@ http_port: 12347
 # http_bind_address: "127.0.0.1"
 
 # 可信转发兼容端口（X-Forwarded-For，设 0 禁用）
-# proxy_protocol_port: 12344
+# trusted_forwarded_http_port: 12344
 
 # PROXY protocol v1/v2 来源 CIDR 白名单
 # proxy_allow_cidr: "10.0.0.0/8"

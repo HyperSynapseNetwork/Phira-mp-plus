@@ -233,36 +233,52 @@ pub async fn maybe_read_proxy_header(
     }
 
     let effective_timeout = timeout_dur.max(Duration::from_secs(1));
+    let deadline = tokio::time::Instant::now() + effective_timeout;
 
-    // Peek at enough bytes to distinguish v1 from v2 from neither.
-    // v1 needs 6 bytes ("PROXY "), v2 needs 12 (signature).
+    // Loop with peek until enough bytes are available to determine the
+    // protocol.  TCP segments may arrive in pieces (1-5 bytes for v1,
+    // 1-11 for v2); a single peek can miss the full signature.
     let mut peek_buf = [0u8; 12];
 
-    let n = timeout(effective_timeout, stream.peek(&mut peek_buf))
-        .await
-        .map_err(|_| ProxyError::Timeout)?
-        .map_err(ProxyError::Io)?;
+    loop {
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        if remaining.is_zero() {
+            return Err(ProxyError::Timeout);
+        }
 
-    // No data available (connection closed or empty).
-    if n == 0 {
-        return Err(ProxyError::Eof);
+        let n = timeout(remaining, stream.peek(&mut peek_buf))
+            .await
+            .map_err(|_| ProxyError::Timeout)?
+            .map_err(ProxyError::Io)?;
+
+        // No data available (connection closed or empty).
+        if n == 0 {
+            return Err(ProxyError::Eof);
+        }
+
+        // ── v1 check ──────────────────────────────────────────────
+        if n >= 6 && peek_buf.starts_with(b"PROXY ") {
+            let header = read_v1_body(&mut stream, effective_timeout, max_header_len).await?;
+            return Ok((stream, proxy_source_addr(&header)));
+        }
+
+        // ── v2 check ──────────────────────────────────────────────
+        if n >= 12 && peek_buf[..12] == PROXY_V2_SIG {
+            let header = read_v2_body(&mut stream, effective_timeout, max_header_len).await?;
+            return Ok((stream, proxy_source_addr(&header)));
+        }
+
+        // Partial prefix match — need more data, loop and peek again.
+        if b"PROXY ".starts_with(&peek_buf[..n])
+            || PROXY_V2_SIG.starts_with(&peek_buf[..n])
+        {
+            continue;
+        }
+
+        // Data is present but does not match v1 or v2.
+        // Because we used `peek`, the stream is still untouched.
+        return Ok((stream, None));
     }
-
-    // ── v1 check ──────────────────────────────────────────────────
-    if n >= 6 && peek_buf.starts_with(b"PROXY ") {
-        let header = read_v1_body(&mut stream, effective_timeout, max_header_len).await?;
-        return Ok((stream, proxy_source_addr(&header)));
-    }
-
-    // ── v2 check ──────────────────────────────────────────────────
-    if n >= 12 && peek_buf[..12] == PROXY_V2_SIG {
-        let header = read_v2_body(&mut stream, effective_timeout, max_header_len).await?;
-        return Ok((stream, proxy_source_addr(&header)));
-    }
-
-    // Data is present but does not match v1 or v2.
-    // Because we used `peek`, the stream is still untouched.
-    Ok((stream, None))
 }
 
 /// Convenience wrapper using the default timeout (5 s) and max header
@@ -473,14 +489,25 @@ fn parse_v2_body(data: &[u8]) -> Result<Option<(ProxyHeader, usize)>, String> {
 
     let addr_data = &data[16..total];
 
-    // LOCAL command (0x00) — used for health checks, no address info.
+    // Strict v2 validation: upper nibble must be 0x20 (version 2).
+    if ver_cmd & 0xF0 != 0x20 {
+        return Err(format!(
+            "invalid PROXY v2 version: 0x{:02X}, expected 0x2X",
+            ver_cmd
+        ));
+    }
+    // Lower nibble: 0x00 = LOCAL, 0x01 = PROXY.
     let cmd = ver_cmd & 0x0F;
+    if cmd != 0x00 && cmd != 0x01 {
+        return Err(format!(
+            "invalid PROXY v2 command: 0x{:02X}, expected LOCAL (0x00) or PROXY (0x01)",
+            cmd
+        ));
+    }
+    // LOCAL command (0x00) — used for health checks, no address info.
     if cmd == 0x00 {
         return Ok(Some((ProxyHeader::Unknown, total)));
     }
-
-    // The upper nibble should be 0x20 (v2).  We do not enforce it strictly;
-    // parsing proceeds based on the family byte.
 
     let header = match fam {
         // 0x11 = TCP over IPv4

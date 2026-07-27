@@ -22,7 +22,17 @@ impl PlusServer {
         }
         let ip = addr.ip();
         let ip_str = ip.to_string();
-        if !self.state.connection_limiter.check(&ip_str).await {
+        // Use dedicated proxy rate limiter for trusted proxy peers to avoid
+        // throttling HAProxy/LB traffic before the forwarded client IP is known.
+        let is_trusted_proxy = self.state.config.proxy_allow_cidr.as_ref().map_or(false, |cidr| {
+            crate::server::proxy_protocol::ip_matches_any_cidr(&ip, cidr)
+        });
+        let limiter = if is_trusted_proxy {
+            &self.state.proxy_connection_limiter
+        } else {
+            &self.state.connection_limiter
+        };
+        if !limiter.check(&ip_str).await {
             return Ok(());
         }
 
@@ -55,9 +65,10 @@ impl PlusServer {
             // parsing via a non-consuming peek; untrusted peers are returned
             // immediately with the stream untouched.
             //
-            // Dual rate‑limiting: the proxy peer IP was checked above at
-            // L25; the forwarded client IP is checked here so both are
-            // independently rate‑limited.
+            // Dual rate‑limiting: the trusted proxy peer IP was checked above
+            // against the dedicated proxy_connection_limiter (higher limit);
+            // the forwarded client IP is checked here against the normal
+            // connection_limiter so both are independently rate‑limited.
             const PROXY_HDR_TIMEOUT: std::time::Duration =
                 std::time::Duration::from_secs(3);
             const PROXY_MAX_HDR: usize = 16384;

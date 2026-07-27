@@ -69,20 +69,8 @@ impl PlusServerState {
             max_users,
             Some(Arc::clone(&self.round_store)),
         ));
-        if let Some(endpoint) = endpoint.clone() {
-            // Route endpoint override through gateway.
-            let _ = self
-                .room_commands
-                .set_phira_api_endpoint(self, &rid.to_string(), Some(endpoint))
-                .await;
-        }
-        // Route persistent_empty through gateway (triggers mailbox creation).
-        if persistent_empty {
-            let _ = self
-                .room_commands
-                .set_persistent_empty(self, &rid.to_string(), true)
-                .await;
-        }
+        // Insert room into state.rooms FIRST so that mailbox/actor lookups
+        // succeed when gateway commands are issued below.
         {
             let mut rooms = self.rooms.write().await;
             if rooms.contains_key(&rid) {
@@ -94,6 +82,20 @@ impl PlusServerState {
                 }
             }
             rooms.insert(rid.clone(), Arc::clone(&room));
+        }
+        if let Some(endpoint) = endpoint.clone() {
+            // Route endpoint override through gateway.
+            let _ = self
+                .room_commands
+                .set_phira_api_endpoint(self, &rid.to_string(), Some(endpoint))
+                .await;
+        }
+        // Route persistent_empty through gateway.
+        if persistent_empty {
+            let _ = self
+                .room_commands
+                .set_persistent_empty(self, &rid.to_string(), true)
+                .await;
         }
         // Re-use session_room's build function for consistency.
         let data = crate::session_room::build_room_data(&room).await;
@@ -132,15 +134,18 @@ impl PlusServerState {
             .to_string()
             .try_into()
             .map_err(|_| "invalid room_id".to_string())?;
+        // Apply the actor command FIRST, then dispatch plugin event only on success.
+        let result = self
+            .room_commands
+            .set_persistent_empty(self, &rid.to_string(), persistent)
+            .await?;
         self.dispatch_plugin_event(crate::plugin::PluginEvent::RoomModify {
             user_id: 0,
             room_id: rid.to_string(),
             data: serde_json::json!({"action":"persistent_empty","value": persistent}).to_string(),
         })
         .await;
-        self.room_commands
-            .set_persistent_empty(self, &rid.to_string(), persistent)
-            .await
+        Ok(result)
     }
 
     /// 如果房间没有真实房主或系统 `?` 房主，让指定普通玩家成为房主。

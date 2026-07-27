@@ -18,7 +18,7 @@ http_port: 12347
 
 # 可信转发头兼容监听端口。该端口读取 X-Forwarded-For；它不是 HAProxy PROXY protocol v1/v2。
 # 只能放在可信反向代理之后，禁止直接暴露给不可信客户端。设为 0 禁用。
-# proxy_protocol_port: 12344
+# trusted_forwarded_http_port: 12344
 
 # HAProxy PROXY protocol v1/v2 来源 CIDR 白名单。
 # 启用后，从这些 CIDR 来源的连接会先读取 PROXY protocol 头部并用其中转发的

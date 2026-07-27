@@ -9,7 +9,7 @@
     "port": { "type": "integer", "minimum": 1, "maximum": 65535, "default": 12346 },
     "http_port": { "type": "integer", "minimum": 0, "maximum": 65535, "default": 12347 },
     "http_bind_address": { "type": "string", "default": "127.0.0.1" },
-    "proxy_protocol_port": { "type": "integer", "minimum": 0, "maximum": 65535, "default": 0 },
+    "trusted_forwarded_http_port": { "type": "integer", "minimum": 0, "maximum": 65535, "default": 0 },
     "max_sessions": { "type": "integer", "minimum": 1, "maximum": 1000000, "default": 4096 },
     "max_pending_auth": { "type": "integer", "minimum": 1, "default": 256 },
     "max_rooms": { "oneOf": [{ "type": "null" }, { "type": "integer", "minimum": 1 }], "default": null },
