@@ -75,7 +75,7 @@ jobs:
         include:
           - os: ubuntu-latest
             target: x86_64-unknown-linux-musl
-            artifact-name: phira-mp-plus-server-linux-musl-pgo
+            artifact-name: phira-mp-plus-server-linux-musl
             artifact-path: target/x86_64-unknown-linux-musl/release/phira-mp-plus-server
             setup: sudo apt-get update && sudo apt-get install -y musl-tools
             env:
@@ -83,19 +83,19 @@ jobs:
               CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER: musl-gcc
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
-            artifact-name: phira-mp-plus-server-linux-glibc-pgo
+            artifact-name: phira-mp-plus-server-linux-glibc
             artifact-path: target/x86_64-unknown-linux-gnu/release/phira-mp-plus-server
             env: {}
           - os: ubuntu-latest
             target: aarch64-unknown-linux-gnu
-            artifact-name: phira-mp-plus-server-linux-arm64-glibc-pgo
+            artifact-name: phira-mp-plus-server-linux-arm64-glibc
             artifact-path: target/aarch64-unknown-linux-gnu/release/phira-mp-plus-server
             setup: sudo apt-get update && sudo apt-get install -y gcc-aarch64-linux-gnu
             env:
               CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
           - os: windows-latest
             target: x86_64-pc-windows-msvc
-            artifact-name: phira-mp-plus-server-windows-pgo.exe
+            artifact-name: phira-mp-plus-server-windows.exe
             artifact-path: target/x86_64-pc-windows-msvc/release/phira-mp-plus-server.exe
             env: {}
     runs-on: ${{ matrix.os }}
@@ -107,73 +107,19 @@ jobs:
           target: ${{ matrix.target }}
       - uses: Swatinem/rust-cache@v2
         with:
-          key: release-pgo-${{ matrix.target }}
+          key: release-${{ matrix.target }}
           cache-on-failure: true
       - if: matrix.setup
         name: Install system dependencies
         run: ${{ matrix.setup }}
       - if: matrix.os == 'ubuntu-latest'
-        name: Install PostgreSQL (for PGO workload)
+        name: Install PostgreSQL
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq postgresql postgresql-client
           sudo pg_ctlcluster 16 main start 2>/dev/null || sudo pg_ctlcluster $(ls /etc/postgresql/) main start
           sudo -u postgres psql -c "ALTER USER postgres PASSWORD 'postgres';"
           sudo -u postgres psql -c "CREATE DATABASE phira_mp_plus;" 2>/dev/null || true
-      - name: Build with profile-generate
-        run: |
-          PGO_DIR="/tmp/pgo-data/${{ matrix.target }}"
-          mkdir -p "$PGO_DIR"
-          unset RUSTFLAGS
-          export RUSTFLAGS="-Cprofile-generate=$PGO_DIR"
-          # Disable LTO and strip during generate — both can interfere
-          CARGO_PROFILE_RELEASE_LTO=false \
-          CARGO_PROFILE_RELEASE_STRIP=false \
-            cargo build --locked --release --target ${{ matrix.target }}
-      # PGO workload only for native targets (can't execute cross-compiled binaries)
-      - if: matrix.os == 'ubuntu-latest' && matrix.target == 'x86_64-unknown-linux-gnu'
-        name: Run workload to collect profiles
-        run: |
-          PGO_DIR="/tmp/pgo-data/${{ matrix.target }}"
-          mkdir -p "$PGO_DIR"
-          export PM_DATABASE_URL="postgres://postgres:postgres@localhost:5432/phira_mp_plus"
-
-          # 1. Start target server in background
-          target/${{ matrix.target }}/release/phira-mp-plus-server \
-            --port 22346 --http-port 22347 --no-cli &
-          SERVER_PID=$!
-          sleep 3
-
-          # 2. Run benchmark via second server instance as CLI client
-          printf 'y\nbenchmark run --mode real --scenario gameplay --preset quick --duration 5s --listen-addr 127.0.0.1:22346\n' | \
-            timeout 30 \
-              target/${{ matrix.target }}/release/phira-mp-plus-server \
-                --port 22348 --http-port 22349 \
-                || true
-
-          # 3. SIGINT triggers LLVM profile flush on target
-          kill -INT $SERVER_PID 2>/dev/null || true
-          wait $SERVER_PID 2>/dev/null || true
-
-          ls -la "$PGO_DIR/"
-          LLVM_PROF="$(rustc --print sysroot)/bin/llvm-profdata"
-          if "$LLVM_PROF" merge -output="$PGO_DIR/merged.profdata" "$PGO_DIR"/*.profraw 2>/dev/null; then
-            echo "PGO profiles merged for ${{ matrix.target }}"
-          else
-            echo "WARNING: No PGO profiles for ${{ matrix.target }}"
-          fi
-          ls -la "$PGO_DIR/"
-      - name: Build with profile-use
-        run: |
-          PGO_DIR="/tmp/pgo-data/${{ matrix.target }}"
-          PROFILES="$PGO_DIR/merged.profdata"
-          if [ -f "$PROFILES" ]; then
-            RUSTFLAGS="-Cprofile-use=$PROFILES -Cllvm-args=-pgo-warn-missing-function=false" \
-              cargo build --locked --release --target ${{ matrix.target }}
-          else
-            echo "WARNING: No PGO profile at $PROFILES, building without PGO"
-            cargo build --locked --release --target ${{ matrix.target }}
-          fi
       - run: cp ${{ matrix.artifact-path }} ${{ matrix.artifact-name }}
       - name: Smoke test (linux)
         if: matrix.os == 'ubuntu-latest'
@@ -181,7 +127,7 @@ jobs:
           chmod +x ${{ matrix.artifact-name }}
           ./${{ matrix.artifact-name }} --version || true
       - name: Generate provenance
-        if: matrix.os == 'ubuntu-latest' && !matrix.pgo
+        if: matrix.os == 'ubuntu-latest'
         uses: actions/attest-build-provenance@v1
         with:
           subject-path: ${{ matrix.artifact-name }}
@@ -233,9 +179,9 @@ jobs:
           name: v${{ needs.version.outputs.version }}
           body: ${{ github.event.inputs.description }}
           files: |
-            phira-mp-plus-server-linux-musl-pgo
-            phira-mp-plus-server-linux-glibc-pgo
-            phira-mp-plus-server-linux-arm64-glibc-pgo
-            phira-mp-plus-server-windows-pgo.exe
+            phira-mp-plus-server-linux-musl
+            phira-mp-plus-server-linux-glibc
+            phira-mp-plus-server-linux-arm64-glibc
+            phira-mp-plus-server-windows.exe
             phira-plugin-sdk.tar.gz
           prerelease: false
