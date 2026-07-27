@@ -360,8 +360,27 @@ fn server_state_query_dispatch(
             Ok(serde_json::json!(list))
         }
         "auth.visited_count" => {
-            let users = crate::read_lock!(state.users);
-            Ok(serde_json::json!(users.len()))
+            // Return total unique visitors from PostgreSQL, falling back
+            // to current online count if DB is unavailable.
+            let pool = match &state.db_manager {
+                crate::db::DbManager::Pg(p) => p.clone(),
+            };
+            let (tx, rx) = std::sync::mpsc::channel();
+            spawn_on_runtime(async move {
+                let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM mp_users")
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap_or(0);
+                let _ = tx.send(count);
+            });
+            let count = rx.recv().unwrap_or(0);
+            // Fallback: if DB returns 0 but users are online, use online count
+            if count == 0 {
+                let users = crate::read_lock!(state.users);
+                Ok(serde_json::json!(users.len()))
+            } else {
+                Ok(serde_json::json!(count))
+            }
         }
         "users.list" => {
             let users = crate::read_lock!(state.users);
