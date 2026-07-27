@@ -137,7 +137,7 @@ jobs:
           PGO_DIR="/tmp/pgo-data/${{ matrix.target }}"
           mkdir -p "$PGO_DIR"
           export PM_DATABASE_URL="postgres://postgres:postgres@localhost:5432/phira_mp_plus"
-          export LLVM_PROFILE_FILE="$PGO_DIR/%m_%p.profraw"
+          export LLVM_PROFILE_FILE="$PGO_DIR/default.profraw"
 
           # 1. Start target server in background
           target/${{ matrix.target }}/release/phira-mp-plus-server \

@@ -175,7 +175,7 @@ jobs:
       - name: Run workload to collect profiles
         run: |
           export PM_DATABASE_URL="postgres://postgres:postgres@localhost:5432/phira_mp_plus"
-          export LLVM_PROFILE_FILE="/tmp/pgo-data/%m_%p.profraw"
+          export LLVM_PROFILE_FILE="/tmp/pgo-data/default.profraw"
 
           # Start benchmark server, pipe benchmark CLI via stdin.
           # The benchmark runs in-process, connects to itself via TCP.
