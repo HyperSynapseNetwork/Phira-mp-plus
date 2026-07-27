@@ -13,7 +13,6 @@ use serde_json::Value;
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, RwLock};
-use tokio::net::UnixStream;
 use tokio::sync::mpsc;
 use uuid::Uuid;
 
@@ -26,8 +25,6 @@ pub struct Session {
     pub id: Uuid,
     /// Whether the session has completed authentication.
     authenticated: AtomicBool,
-    /// The underlying UDS stream.
-    pub stream: Arc<UnixStream>,
     /// Sender for outgoing frames. Used by dispatch/events/streams to push
     /// responses back to the client.
     pub tx: mpsc::Sender<Value>,
@@ -42,7 +39,7 @@ pub struct Session {
 }
 
 impl Session {
-    pub fn new(stream: Arc<UnixStream>, send_buffer: usize) -> (Self, mpsc::Receiver<Value>) {
+    pub fn new(send_buffer: usize) -> (Self, mpsc::Receiver<Value>) {
         let (tx, rx) = mpsc::channel(send_buffer.max(64));
         let id = Uuid::new_v4();
 
@@ -50,7 +47,6 @@ impl Session {
             Self {
                 id,
                 authenticated: AtomicBool::new(false),
-                stream,
                 tx,
                 subscriptions: RwLock::new(HashSet::new()),
                 stream_subscriptions: RwLock::new(HashSet::new()),
@@ -217,23 +213,19 @@ impl Session {
 
 /// Writer task: reads from the mpsc receiver and writes frames to the UDS stream.
 pub async fn session_writer(
-    stream: Arc<UnixStream>,
+    mut write_half: tokio::net::unix::OwnedWriteHalf,
     mut rx: mpsc::Receiver<Value>,
 ) {
-    use tokio::io::AsyncWriteExt;
-
-    let mut write_stream = match stream.as_ref().try_clone() {
-        Ok(s) => s,
-        Err(e) => {
-            tracing::error!("session_writer: failed to clone stream: {e}");
-            return;
-        }
-    };
-
     while let Some(value) = rx.recv().await {
         match protocol::encode(&value) {
             Ok(buf) => {
-                if let Err(e) = write_stream.write_all(&buf).await {
+                if let Err(e) = write_half.write_all(&buf).await {
+                    tracing::debug!("session_writer: write error: {e}");
+                    break;
+                }
+                if let Err(e) = write_half.flush().await {
+                    tracing::debug!("session_writer: flush error: {e}");
+                    break;
                     tracing::debug!("session_writer: write error: {e}");
                     break;
                 }

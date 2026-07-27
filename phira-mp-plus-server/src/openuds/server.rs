@@ -16,6 +16,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::net::UnixListener;
 use tokio::sync::RwLock;
+use uuid::Uuid;
 
 /// Start the OpenUDS server. Spawns the accept loop and returns immediately.
 ///
@@ -112,7 +113,7 @@ pub async fn start(state: Arc<PlusServerState>, config: &OpenUdsConfig) {
 
             match listener.accept().await {
                 Ok((stream, _addr)) => {
-                    let stream = Arc::new(stream);
+                    let (reader, writer) = stream.into_split();
                     let session_state = Arc::clone(&sessions);
                     let state_clone = Arc::clone(&state);
                     let auth_state_clone = Arc::clone(&auth_state);
@@ -120,7 +121,8 @@ pub async fn start(state: Arc<PlusServerState>, config: &OpenUdsConfig) {
                     crate::supervisor_actor::spawn_named(
                         "openuds-session",
                         handle_session(
-                            stream,
+                            reader,
+                            writer,
                             session_state,
                             state_clone,
                             auth_state_clone,
@@ -140,41 +142,31 @@ pub async fn start(state: Arc<PlusServerState>, config: &OpenUdsConfig) {
 
 /// Handle a single UDS client connection.
 async fn handle_session(
-    stream: Arc<tokio::net::UnixStream>,
+    read_half: tokio::net::unix::OwnedReadHalf,
+    write_half: tokio::net::unix::OwnedWriteHalf,
     sessions: Arc<RwLock<HashMap<Uuid, Arc<Session>>>>,
     state: Arc<PlusServerState>,
     auth_state: Arc<crate::openuds::auth::AuthState>,
     send_buffer_size: usize,
     use_token_mode: bool,
 ) {
-    // Create session
-    let (session, rx) = Session::new(Arc::clone(&stream), send_buffer_size);
+    // Create session with write half
+    let (session, rx) = Session::new(send_buffer_size);
     let session = Arc::new(session);
     let session_id = session.id;
 
     // Register session
     sessions.write().await.insert(session_id, Arc::clone(&session));
 
-    // Spawn writer task
-    let write_stream = Arc::clone(&stream);
+    // Spawn writer task using the write half
     crate::supervisor_actor::spawn_named(
         format!("openuds-writer-{session_id}"),
-        openuds_session::session_writer(write_stream, rx),
+        openuds_session::session_writer(write_half, rx),
     );
-
-    // Reader loop — try_clone the inner stream for independent reading
-    let mut read_stream = match stream.as_ref().try_clone() {
-        Ok(s) => s,
-        Err(e) => {
-            tracing::error!("openuds-session {session_id}: failed to clone stream: {e}");
-            sessions.write().await.remove(&session_id);
-            return;
-        }
-    };
 
     let read_result: Result<(), String> = async {
         loop {
-            let frame = protocol::read_frame_async(&mut read_stream)
+            let frame = protocol::read_frame_async(&mut read_half)
                 .await
                 .map_err(|e| format!("read error: {e}"))?;
 

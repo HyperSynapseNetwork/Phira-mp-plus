@@ -22,7 +22,7 @@ use phira_mp_common::RoomId;
 /// `req_id` is the optional request ID for correlating responses.
 /// `state` is the PMP server state.
 pub async fn dispatch_command(
-    session: &Session,
+    _session: &Session,
     command: &str,
     params: &Value,
     req_id: Option<&str>,
