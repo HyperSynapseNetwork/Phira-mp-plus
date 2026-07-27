@@ -633,12 +633,23 @@ impl RoomCommandHandler {
                             .or(fallback_name)
                             .unwrap_or_else(|| uid.to_string());
                         // Send messages directly via Room broadcast
-                        let mut args = fluent::FluentArgs::new();
-                        args.set("name", &name);
+                        let name_clone = name.clone();
                         if as_.state.control.host_id.is_some() {
-                            lc.room().send_system_msg("host-transferred-to", &args).await;
+                            lc.room().send_system_msg(
+                                &|lang| crate::l10n::translate_system(lang, "host-transferred-to", {
+                                    let mut a = fluent::FluentArgs::new();
+                                    a.set("name", &name_clone);
+                                    a
+                                }),
+                            ).await;
                         } else {
-                            lc.room().send_system_msg("user-became-host", &args).await;
+                            lc.room().send_system_msg(
+                                &|lang| crate::l10n::translate_system(lang, "user-became-host", {
+                                    let mut a = fluent::FluentArgs::new();
+                                    a.set("name", &name_clone);
+                                    a
+                                }),
+                            ).await;
                         }
                         // Notify old host
                         if let Some(old_uid) = as_.state.control.host_id {
@@ -723,9 +734,14 @@ impl RoomCommandHandler {
                 let user = match users.into_iter().chain(monitors.into_iter()).find(|u| u.id == *target_id) {
                     Some(u) => u, None => return err("user not in room"),
                 };
-                let mut args = fluent::FluentArgs::new();
-                args.set("name", &user.name);
-                lc.room().send_system_msg("user-kicked-from-room", &args).await;
+                let name = user.name.clone();
+                lc.room().send_system_msg(
+                    &|lang| crate::l10n::translate_system(lang, "user-kicked-from-room", {
+                        let mut a = fluent::FluentArgs::new();
+                        a.set("name", &name);
+                        a
+                    }),
+                ).await;
                 let was_monitor = user.monitor.load(std::sync::atomic::Ordering::SeqCst);
                 let should_drop = lc.on_user_leave(&user).await;
                 user.try_send(ServerCommand::LeaveRoom(Ok(()))).await;

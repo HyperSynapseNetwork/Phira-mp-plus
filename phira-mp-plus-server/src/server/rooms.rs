@@ -481,9 +481,14 @@ impl PlusServerState {
         .await;
 
         {
-            let mut args = fluent::FluentArgs::new();
-            args.set("name", &user.name);
-            target_room.send_system_msg("user-moved-to-room", &args).await;
+            let uname = user.name.clone();
+            target_room.send_system_msg(
+                &|lang| crate::l10n::translate_system(lang, "user-moved-to-room", {
+                    let mut a = fluent::FluentArgs::new();
+                    a.set("name", &uname);
+                    a
+                }),
+            ).await;
         }
 
         Ok(serde_json::json!({

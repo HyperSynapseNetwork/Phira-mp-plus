@@ -15,7 +15,6 @@
 //! mutations through RoomActorCommand variants via RoomCommandGateway.
 
 use crate::plugin::{JudgeEventItem, PluginManager, TouchEventPoint};
-use fluent::FluentArgs;
 use phira_mp_common::{
     Message, PartialRoomData, RoomEvent, RoomId, RoundData, ServerCommand,
 };
@@ -367,35 +366,24 @@ impl Room {
         .await;
     }
 
-    /// Broadcast a localized system message to all users in the room.
-    /// Each recipient receives the message translated to their language.
-    /// Translates all messages first (synchronous) then sends in batch to
-    /// avoid holding non-Send FluentArgs across .await boundaries.
-    pub async fn send_system_msg(&self, key: &str, args: &FluentArgs<'_>) {
-        // Phase 1: translate for each user (no .await)
-        let users_msgs: Vec<_> = self.users().await.iter()
-            .map(|u| (Arc::downgrade(u), crate::l10n::translate_system(&u.lang, key, args)))
-            .collect();
-        let monitors_msgs: Vec<_> = self.monitors().await.iter()
-            .map(|u| (Arc::downgrade(u), crate::l10n::translate_system(&u.lang, key, args)))
-            .collect();
-        // Phase 2: send all (args already dropped, no lifetime issue)
-        for (weak, content) in users_msgs {
-            if let Some(u) = weak.upgrade() {
-                u.try_send(ServerCommand::Message(Message::Chat { user: 0, content })).await;
-            }
-        }
-        for (weak, content) in monitors_msgs {
-            if let Some(u) = weak.upgrade() {
-                u.try_send(ServerCommand::Message(Message::Chat { user: 0, content })).await;
-            }
+    /// Broadcast a localized system message to all users and monitors.
+    /// Pre-translates with `translate(&lang)` for each recipient, then sends in batch.
+    pub async fn send_system_msg(
+        &self,
+        translate: &(dyn Fn(&crate::l10n::Language) -> String + Sync),
+    ) {
+        let users = self.users().await;
+        let monitors = self.monitors().await;
+        for user in users.iter().chain(monitors.iter()) {
+            let content = translate(&user.lang);
+            user.try_send(ServerCommand::Message(Message::Chat { user: 0, content })).await;
         }
     }
 
     /// Broadcast a localized system message with no args.
     pub async fn send_system_msg_simple(&self, key: &str) {
-        let args = fluent::FluentArgs::new();
-        self.send_system_msg(key, &args).await;
+        let key = key.to_owned();
+        self.send_system_msg(&|lang| crate::l10n::try_translate(&lang.0, &key)).await;
     }
 
     /// Broadcast a `PartialRoomData` update to the monitoring infrastructure.

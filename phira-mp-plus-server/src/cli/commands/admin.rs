@@ -96,8 +96,8 @@ impl CliHandler {
                 return;
             }
         };
-        if let crate::db::DbManager::Pg(pool) = &self.state.db_manager {
-            let count = self.state.ban_manager.ban_user_ips(uid, &reason, pool).await;
+        let crate::db::DbManager::Pg(pool) = &self.state.db_manager;
+        let count = self.state.ban_manager.ban_user_ips(uid, &reason, pool).await;
             self.out(format!(
                 "  {} 用户 #{} 名下 {} 个 IP 已封禁",
                 c::green("✓"), uid, count
@@ -135,8 +135,8 @@ impl CliHandler {
                 return;
             }
         };
-        if let crate::db::DbManager::Pg(pool) = &self.state.db_manager {
-            let records = self.state.ban_manager.user_ip_history(uid, pool).await;
+        let crate::db::DbManager::Pg(pool) = &self.state.db_manager;
+        let records = self.state.ban_manager.user_ip_history(uid, pool).await;
             if records.is_empty() {
                 self.out(format!("  ○ 用户 #{} 没有 IP 记录", uid));
                 return;

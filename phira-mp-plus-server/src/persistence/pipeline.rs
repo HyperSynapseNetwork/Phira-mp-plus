@@ -184,6 +184,7 @@ pub async fn persist_production_event_if_needed(event: &PersistenceEvent) -> Per
                 if !ip.is_empty() {
                     db.record_user_ip(*user_id, &ip);
                 }
+                true
             }
             PersistenceEvent::BenchmarkReport { .. }
             | PersistenceEvent::Flush
