@@ -80,9 +80,8 @@ impl BenchmarkRunner {
         config.seed = args.seed;
         config.plugins = args.plugins.clone();
         for (key, val) in &args.overrides {
-            match key.as_str() {
-                "listen-addr" => config.listen_addr = Some(val.clone()),
-                _ => {}
+            if key.as_str() == "listen-addr" {
+                config.listen_addr = Some(val.clone());
             }
         }
         config
