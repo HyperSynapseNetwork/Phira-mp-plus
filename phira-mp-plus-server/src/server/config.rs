@@ -275,6 +275,9 @@ pub struct PlusConfig {
     /// Idle mode configuration.
     #[serde(default)]
     pub idle: IdleConfig,
+    /// OpenUDS (Unix Domain Socket) API configuration.
+    #[serde(default)]
+    pub openuds: OpenUdsConfig,
 }
 
 impl Default for PlusConfig {
@@ -310,6 +313,7 @@ impl Default for PlusConfig {
             wasm_runtime: WasmRuntimeConfig::default(),
             runtime: RuntimeConfig::default(),
             idle: IdleConfig::default(),
+            openuds: OpenUdsConfig::default(),
             trusted_forwarded_http_port: 0,
             proxy_allow_cidr: None,
             ready_countdown_secs: default_ready_countdown_secs(),
@@ -650,6 +654,61 @@ impl Default for IdleConfig {
 fn default_heartbeat_timeout() -> u64 { 15 }
 fn default_auth_timeout() -> u64 { 15 }
 fn default_dangle_grace_secs() -> u64 { 10 }
+
+// ── OpenUDS Config ──────────────────────────────────────────
+
+/// OpenUDS (Unix Domain Socket) API configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OpenUdsConfig {
+    /// Whether to enable the OpenUDS API.
+    #[serde(default)]
+    pub enabled: bool,
+    /// Unix Domain Socket path.
+    #[serde(default = "default_openuds_socket_path")]
+    pub socket_path: String,
+    /// Auth token for automatic authentication.
+    /// Empty string = CLI approve mode.
+    #[serde(default)]
+    pub auth_token: String,
+    /// Maximum concurrent UDS connections.
+    #[serde(default = "default_openuds_max_connections")]
+    pub max_connections: u32,
+    /// Event buffer size per connection.
+    #[serde(default = "default_openuds_event_buffer_size")]
+    pub event_buffer_size: u32,
+    /// Heartbeat interval in seconds.
+    #[serde(default = "default_openuds_heartbeat_interval_secs")]
+    pub heartbeat_interval_secs: u64,
+}
+
+impl Default for OpenUdsConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            socket_path: default_openuds_socket_path(),
+            auth_token: String::new(),
+            max_connections: default_openuds_max_connections(),
+            event_buffer_size: default_openuds_event_buffer_size(),
+            heartbeat_interval_secs: default_openuds_heartbeat_interval_secs(),
+        }
+    }
+}
+
+fn default_openuds_socket_path() -> String {
+    "/var/run/pmp-openuds.sock".to_string()
+}
+
+fn default_openuds_max_connections() -> u32 {
+    4
+}
+
+fn default_openuds_event_buffer_size() -> u32 {
+    1024
+}
+
+fn default_openuds_heartbeat_interval_secs() -> u64 {
+    60
+}
 
 fn default_phira_api() -> String {
     "https://phira.5wyxi.com".to_string()

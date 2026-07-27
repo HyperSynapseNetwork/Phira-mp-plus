@@ -119,6 +119,10 @@ impl CliHandler {
                 }
                 true
             }
+            "approve" => {
+                self.dispatch_approve_command(args).await;
+                true
+            }
             _ => {
                 // Try Runtime CommandRegistry (unified execution path)
                 if let Some(output) =

@@ -338,6 +338,15 @@ impl PlusServer {
             });
         }
 
+        // OpenUDS: start Unix Domain Socket API server if enabled
+        if state.config.openuds.enabled {
+            let uds_state = Arc::clone(&state);
+            let uds_config = state.config.openuds.clone();
+            crate::supervisor_actor::spawn_named("openuds-server", async move {
+                crate::openuds::server::start(uds_state, &uds_config).await;
+            });
+        }
+
         Ok(Self { state, listener })
     }
 }

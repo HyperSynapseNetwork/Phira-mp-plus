@@ -235,6 +235,12 @@ async fn main() -> Result<()> {
     server.state.pre_auth_gate.close();
     server.state.session_gate.close();
 
+    // Clean up OpenUDS socket file if enabled
+    if server.state.config.openuds.enabled {
+        let socket_path = server.state.config.openuds.socket_path.clone();
+        let _ = tokio::fs::remove_file(&socket_path).await;
+    }
+
     let shutdown_timeout =
         Duration::from_secs(server.state.config.graceful_shutdown_timeout_secs.max(1));
     let shutdown_deadline = Instant::now() + shutdown_timeout;
