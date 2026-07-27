@@ -537,5 +537,5 @@ cli_enabled: true
         let _ = std::fs::create_dir_all(parent);
     }
     let _ = std::fs::write(path, &content);
-    content
+    content.to_string()
 }
