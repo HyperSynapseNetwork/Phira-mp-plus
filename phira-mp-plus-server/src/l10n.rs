@@ -50,8 +50,7 @@ task_local! {
 
 /// Safely get the current language, falling back to a default if not in a scope.
 pub fn current_language() -> Arc<Language> {
-    let result = std::panic::catch_unwind(|| LANGUAGE.get());
-    result.unwrap_or_else(|_| Arc::new(Language::default()))
+    LANGUAGE.try_with(|v| Arc::clone(v)).unwrap_or_else(|_| Arc::new(Language::default()))
 }
 
 #[macro_export]
