@@ -179,8 +179,7 @@ pub fn strip_ansi(input: &str) -> String {
 
 pub fn sanitize_paste(input: &str) -> String {
     strip_ansi(input)
-        .replace('\r', " ")
-        .replace('\n', " ")
+        .replace(['\r', '\n'], " ")
         .chars()
         .filter(|ch| !ch.is_control() || *ch == '\t')
         .collect()

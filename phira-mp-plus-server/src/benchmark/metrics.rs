@@ -14,7 +14,7 @@ use std::collections::VecDeque;
 use std::time::Duration;
 
 /// 延迟百分位数据
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, Default, Clone, Copy, Serialize, Deserialize)]
 pub struct LatencyPercentiles {
     /// p50 延迟（毫秒）
     pub p50_ms: f64,
@@ -33,22 +33,6 @@ pub struct LatencyPercentiles {
     /// 样本数
     pub count: u64,
 }
-
-impl Default for LatencyPercentiles {
-    fn default() -> Self {
-        Self {
-            p50_ms: 0.0,
-            p95_ms: 0.0,
-            p99_ms: 0.0,
-            max_ms: 0.0,
-            min_ms: 0.0,
-            avg_ms: 0.0,
-            connect_latency_ms: 0.0,
-            count: 0,
-        }
-    }
-}
-
 /// 数据库写入指标
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub struct DatabaseMetrics {

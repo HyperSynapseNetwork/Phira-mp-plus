@@ -250,8 +250,8 @@ impl EnvironmentSnapshot {
         {
             if let Ok(content) = std::fs::read_to_string("/proc/version") {
                 let parts: Vec<&str> = content.split_whitespace().collect();
-                if parts.len() >= 3 && parts[0] == "Linux" {
-                    return format!("{} {}", parts[0], parts[2]);
+                if parts.len() >= 3 && parts.first().copied() == Some("Linux") {
+                    return format!("{} {}", parts.first().copied().unwrap_or(""), parts[2]);
                 }
                 return content.trim().to_string();
             }

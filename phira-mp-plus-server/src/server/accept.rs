@@ -52,7 +52,7 @@ impl PlusServer {
             .config
             .proxy_allow_cidr
             .as_ref()
-            .map_or(false, |cidr| {
+            .is_some_and(|cidr| {
                 crate::server::proxy_protocol::ip_matches_any_cidr(&addr.ip(), cidr)
             });
 

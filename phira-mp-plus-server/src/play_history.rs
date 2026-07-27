@@ -25,6 +25,12 @@ pub struct PlayHistoryStore {
     file_path: RwLock<Option<PathBuf>>,
 }
 
+impl Default for PlayHistoryStore {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl PlayHistoryStore {
     pub fn new() -> Self {
         Self {

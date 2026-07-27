@@ -276,7 +276,7 @@ impl CommandRegistry {
         }
 
         if tokens.len() == 1 && !ends_with_space {
-            return self.complete_root(tokens[0]);
+            return self.complete_root(tokens.first().copied().unwrap_or(""));
         }
 
         let parent_tokens = if ends_with_space {
@@ -360,7 +360,7 @@ impl CommandRegistry {
         self.set_arg_completer(
             "benchmark simulation run",
             Arc::new(|_cmd, prefix| {
-                vec!["baseline", "small", "medium", "large", "custom"]
+                ["baseline", "small", "medium", "large", "custom"]
                     .into_iter()
                     .filter(|p| p.starts_with(prefix))
                     .map(|s| s.to_string())
@@ -371,7 +371,7 @@ impl CommandRegistry {
         self.set_arg_completer(
             "benchmark simulation suite",
             Arc::new(|_cmd, prefix| {
-                vec!["smoke", "mixed", "stress"]
+                ["smoke", "mixed", "stress"]
                     .into_iter()
                     .filter(|s| s.starts_with(prefix))
                     .map(|s| s.to_string())
@@ -382,7 +382,7 @@ impl CommandRegistry {
         self.set_arg_completer(
             "benchmark suite",
             Arc::new(|_cmd, prefix| {
-                vec!["--preset"]
+                ["--preset"]
                     .into_iter()
                     .filter(|s| s.starts_with(prefix))
                     .map(|s| s.to_string())

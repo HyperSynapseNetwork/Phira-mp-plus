@@ -369,7 +369,7 @@ impl PlusConfig {
         if let Some(obj) = value.as_object_mut() {
             for field in &["database_url", "admin_token", "benchmark_phira_tokens"] {
                 if let Some(val) = obj.get_mut(*field) {
-                    let is_non_empty_string = val.as_str().map_or(false, |s| !s.is_empty());
+                    let is_non_empty_string = val.as_str().is_some_and(|s| !s.is_empty());
                     if is_non_empty_string {
                         *val = serde_json::json!("****");
                     }
@@ -793,39 +793,25 @@ mod tests {
     }
     #[test]
     fn rejects_invalid_capacity_and_shutdown_limits() {
-        let mut config = PlusConfig::default();
-        config.max_sessions = 0;
-        assert!(config.validate().is_err());
+        assert!(PlusConfig { max_sessions: 0, ..Default::default() }.validate().is_err());
 
-        let mut config = PlusConfig::default();
-        config.max_pending_auth = config.max_sessions + 1;
-        assert!(config.validate().is_err());
+        assert!(PlusConfig { max_pending_auth: PlusConfig::default().max_sessions + 1, ..Default::default() }.validate().is_err());
 
-        let mut config = PlusConfig::default();
-        config.graceful_shutdown_timeout_secs = 0;
-        assert!(config.validate().is_err());
+        assert!(PlusConfig { graceful_shutdown_timeout_secs: 0, ..Default::default() }.validate().is_err());
     }
 
     #[test]
     fn rejects_unmetered_or_unbounded_plugin_runtime() {
-        let mut config = PlusConfig::default();
-        config.wasm_runtime.fuel_per_call = 0;
-        assert!(config.validate().is_err());
+        assert!(PlusConfig { wasm_runtime: WasmRuntimeConfig { fuel_per_call: 0, ..Default::default() }, ..Default::default() }.validate().is_err());
 
-        let mut config = PlusConfig::default();
-        config.wasm_runtime.event_queue_capacity = 0;
-        assert!(config.validate().is_err());
+        assert!(PlusConfig { wasm_runtime: WasmRuntimeConfig { event_queue_capacity: 0, ..Default::default() }, ..Default::default() }.validate().is_err());
 
-        let mut config = PlusConfig::default();
-        config.wasm_runtime.call_timeout_ms = 0;
-        assert!(config.validate().is_err());
+        assert!(PlusConfig { wasm_runtime: WasmRuntimeConfig { call_timeout_ms: 0, ..Default::default() }, ..Default::default() }.validate().is_err());
     }
 
     #[test]
     fn rejects_invalid_runtime_batching_contract() {
-        let mut config = PlusConfig::default();
-        config.runtime.persistence_queue_capacity = 0;
-        assert!(config.validate().is_err());
+        assert!(PlusConfig { runtime: RuntimeConfig { persistence_queue_capacity: 0, ..Default::default() }, ..Default::default() }.validate().is_err());
     }
 
     #[test]

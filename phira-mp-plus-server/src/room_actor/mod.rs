@@ -160,6 +160,12 @@ pub struct RoomCommandGateway {
     recent_commands: StdRwLock<VecDeque<RoomCommandAuditEntry>>,
 }
 
+impl Default for RoomCommandGateway {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl RoomCommandGateway {
     pub fn new() -> Self {
         Self {

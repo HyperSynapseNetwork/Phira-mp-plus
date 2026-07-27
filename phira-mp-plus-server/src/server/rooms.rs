@@ -58,10 +58,9 @@ impl PlusServerState {
             .to_string()
             .try_into()
             .map_err(|_| "invalid room_id".to_string())?;
-        let endpoint = match endpoint {
-            Some(value) => Some(normalize_phira_api_endpoint(&value)?),
-            None => None,
-        };
+        let endpoint = endpoint
+            .map(|value| normalize_phira_api_endpoint(&value))
+            .transpose()?;
         let max_users = self.config.max_users_per_room.unwrap_or(100);
         let room = Arc::new(crate::room::Room::new_empty(
             rid.clone(),
@@ -530,10 +529,9 @@ impl PlusServerState {
         room_id: &str,
         endpoint: Option<String>,
     ) -> Result<Value, String> {
-        let normalized = match endpoint {
-            Some(value) => Some(normalize_phira_api_endpoint(&value)?),
-            None => None,
-        };
+        let normalized = endpoint
+            .map(|value| normalize_phira_api_endpoint(&value))
+            .transpose()?;
         // Route through gateway.
         self.room_commands
             .set_phira_api_endpoint(self, room_id, normalized.clone())

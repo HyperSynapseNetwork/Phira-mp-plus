@@ -39,6 +39,12 @@ pub struct RoundStore {
     active_rounds: RwLock<HashMap<String, bool>>,
 }
 
+impl Default for RoundStore {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl RoundStore {
     pub fn new() -> Self {
         Self {
@@ -52,8 +58,7 @@ impl RoundStore {
     pub async fn open_round(&self, meta: &RoundMeta) -> std::io::Result<()> {
         let db = crate::internal_hooks::DB.get().expect("DB not initialized");
         if !db.open_round(meta).await {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::Other,
+            return Err(std::io::Error::other(
                 "PostgreSQL round-open transaction failed",
             ));
         }

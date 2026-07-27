@@ -124,6 +124,12 @@ pub struct CommandRateLimiter {
     api: TokenBucketRateLimiter,
 }
 
+impl Default for CommandRateLimiter {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl CommandRateLimiter {
     pub fn new() -> Self {
         Self {

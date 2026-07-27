@@ -388,20 +388,20 @@ async fn init_welcome(_state: &PlusServerState, pm: &PluginManager) {
             handler: Arc::new(|_| {
                 let cfg = WELCOME.lock().unwrap();
                 let mut out = vec![
-                    format!("  ◆ 欢迎语配置"),
-                    format!("  │ data/welcome-config.json"),
+                    "  ◆ 欢迎语配置".to_string(),
+                    "  │ data/welcome-config.json".to_string(),
                 ];
                 for (i, msg) in cfg.messages.iter().enumerate() {
                     out.push(format!("  │ [{i}] {msg}"));
                 }
-                out.push(format!(""));
-                out.push(format!("  ■ 占位符:"));
-                out.push(format!("  │ [user_name]    用户名"));
-                out.push(format!("  │ [user_id]      Phira ID"));
-                out.push(format!("  │ [player-count] 当前在线数"));
-                out.push(format!("  │ [playtime]     该用户游玩时间"));
-                out.push(format!("  │ [playtime <id>]指定用户游玩时间"));
-                out.push(format!("  │ [active_rooms] 活跃房间数"));
+                out.push(String::new());
+                out.push("  ■ 占位符:".to_string());
+                out.push("  │ [user_name]    用户名".to_string());
+                out.push("  │ [user_id]      Phira ID".to_string());
+                out.push("  │ [player-count] 当前在线数".to_string());
+                out.push("  │ [playtime]     该用户游玩时间".to_string());
+                out.push("  │ [playtime <id>]指定用户游玩时间".to_string());
+                out.push("  │ [active_rooms] 活跃房间数".to_string());
                 out
             }),
         })

@@ -36,6 +36,12 @@ impl EventId {
     }
 }
 
+impl Default for EventId {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// Envelope wrapping every domain event with schema version and trace context.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DomainEvent<T: Clone> {

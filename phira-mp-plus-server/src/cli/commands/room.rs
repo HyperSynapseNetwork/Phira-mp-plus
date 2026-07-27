@@ -1007,7 +1007,7 @@ impl CliHandler {
         };
         let history = room.play_history.all().await;
         if history.is_empty() {
-            self.out(format!("  · 该房间暂无轮次记录"));
+            self.out("  · 该房间暂无轮次记录".to_string());
             return;
         }
         self.out(format!("  ◆ 房间 {} 轮次记录 ({})", room_id, history.len()));
