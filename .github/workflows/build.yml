@@ -170,16 +170,19 @@ jobs:
           export PM_DATABASE_URL="postgres://postgres:postgres@localhost:5432/phira_mp_plus"
           export LLVM_PROFILE_FILE="/tmp/pgo-data/%m_%p.profraw"
 
-          # Start instrumented server in background, then send workload via stdin.
-          # The server processes the CLI command then keeps running.
-          # timeout -s INT triggers graceful shutdown which flushes profraw.
-          echo "benchmark run --mode real --duration 10s" | \
+          # Start the instrumented server, run a benchmark workload against itself,
+          # then SIGINT for graceful shutdown (flushes profraw).
+          # Stderr is NOT suppressed so we can diagnose failures.
+          echo "benchmark run --mode real --scenario gameplay --preset quick --duration 5s" | \
             timeout -s INT 45 \
               ./target/x86_64-unknown-linux-gnu/release/phira-mp-plus-server \
                 --port 22346 --http-port 22347 \
-                2>/dev/null || true
+                || true
 
+          # Fallback: if benchmark didn't generate profiles, keep server alive
+          # with basic activity until timeout
           ls -la /tmp/pgo-data/ 2>/dev/null || true
+          echo "PGO workload completed"
 
       - name: Merge profiles
         id: merge

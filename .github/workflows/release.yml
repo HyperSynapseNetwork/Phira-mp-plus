@@ -134,11 +134,11 @@ jobs:
           # Start instrumented server with stdin so the benchmark CLI runs
           # in-process and connects to itself via TCP.
           # timeout -s INT triggers graceful shutdown which flushes profraw.
-          echo "benchmark run --mode real --duration 10s" | \
+          echo "benchmark run --mode real --scenario gameplay --preset quick --duration 5s" | \
             timeout -s INT 45 \
               target/${{ matrix.target }}/release/phira-mp-plus-server \
                 --port 22346 --http-port 22347 \
-                2>/dev/null || true
+                || true
 
           ls -la "$PGO_DIR/"
           LLVM_PROF="$(rustc --print sysroot)/bin/llvm-profdata"
