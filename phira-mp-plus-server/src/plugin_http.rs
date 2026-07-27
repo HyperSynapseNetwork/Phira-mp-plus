@@ -313,13 +313,7 @@ fn plugin_sse_translate(
                         .and_then(|v| v.as_str())
                         .unwrap_or("event")
                         .to_owned();
-                    // Strip the "type" key from data — the spec says it goes in
-                    // the SSE event: line, not inside the data: payload.
-                    let mut data = result;
-                    if let Some(obj) = data.as_object_mut() {
-                        obj.remove("type");
-                    }
-                    let data_str = serde_json::to_string(&data).unwrap_or_default();
+                    let data_str = serde_json::to_string(&result).unwrap_or_default();
                     Some(Ok(AxumSseEvent::default().event(event_type).data(data_str)))
                 }
                 Err(err) => {
