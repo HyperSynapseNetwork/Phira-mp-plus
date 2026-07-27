@@ -436,8 +436,7 @@ fn load_config(path: &str) -> Result<(PlusConfig, ConfigLoad)> {
 
 /// 生成完整配置文件，最小化激活、其余注释，方便运维按需开启。
 fn generate_default_config(path: &str) -> String {
-    let content = format!(
-        r##"# Phira-mp+ 配置文件
+    let content = r##"# Phira-mp+ 配置文件
 # 首次启动自动生成。只激活了最小必要配置，其余选项全部注释并按需开启。
 # 修改后重启或 CLI 执行 config reload 使变更生效。
 
@@ -533,8 +532,7 @@ cli_enabled: true
 # ---- 定制 ----
 
 # server_name: "My Phira Server"
-"##
-    );
+"##;
     if let Some(parent) = std::path::Path::new(path).parent() {
         let _ = std::fs::create_dir_all(parent);
     }
