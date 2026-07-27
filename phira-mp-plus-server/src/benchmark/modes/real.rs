@@ -198,7 +198,35 @@ pub async fn run_real(
         select_latency.as_secs_f64() * 1000.0
     );
 
-    // ── 7. 游玩报告 (Played) ─────────────────────────────────────────
+    // ── 7. 发起游戏并准备 (RequestStart + Ready) ─────────────────────
+    info!("Starting game...");
+    stream
+        .send(ClientCommand::RequestStart)
+        .await
+        .map_err(|e| format!("failed to send RequestStart: {e}"))?;
+    let _ = wait_for_response(&mut cmd_rx, |cmd| match cmd {
+        ServerCommand::Message(msg) => match msg {
+            phira_mp_common::Message::GameStart { .. } => Some(Ok(())),
+            _ => None,
+        },
+        _ => None,
+    })
+    .await;
+    // 标记准备
+    stream
+        .send(ClientCommand::Ready)
+        .await
+        .map_err(|e| format!("failed to send Ready: {e}"))?;
+    let _ = wait_for_response(&mut cmd_rx, |cmd| match cmd {
+        ServerCommand::Message(msg) => match msg {
+            phira_mp_common::Message::StartPlaying { .. } => Some(Ok(())),
+            _ => None,
+        },
+        _ => None,
+    })
+    .await;
+
+    // ── 8. 游玩报告 (Played) ─────────────────────────────────────────
     info!("Reporting played...");
     let cmd_start = Instant::now();
     stream

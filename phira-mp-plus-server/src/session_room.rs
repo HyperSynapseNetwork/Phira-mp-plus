@@ -16,19 +16,25 @@ use crate::tl;
 use anyhow::{anyhow, bail, Result};
 
 /// Translate known English error strings from room command results.
+/// Falls back to the English string if no LANGUAGE scope is set.
 fn tr(e: String) -> String {
-    match e.as_str() {
-        "already ready" => tl!("already-ready"),
-        "already uploaded" => tl!("already-uploaded"),
-        "not ready" => tl!("not-ready"),
-        "user aborted" => tl!("aborted"),
-        "no chart selected" => tl!("start-no-chart-selected"),
-        "room is full" => tl!("join-room-full"),
-        "administrative start is already in progress" => tl!("admin-start-in-progress"),
-        "room is not selecting a chart" | "cannot set chart outside SelectChart state" => tl!("invalid-state"),
-        "not in WaitForReady state" => tl!("invalid-state"),
-        "not in Playing state" => tl!("invalid-state"),
-        _ => e,
+    let lang = crate::l10n::current_language();
+    let id = match e.as_str() {
+        "already ready" => Some("already-ready"),
+        "already uploaded" => Some("already-uploaded"),
+        "not ready" => Some("not-ready"),
+        "user aborted" => Some("aborted"),
+        "no chart selected" => Some("start-no-chart-selected"),
+        "room is full" => Some("join-room-full"),
+        "administrative start is already in progress" => Some("admin-start-in-progress"),
+        "room is not selecting a chart" | "cannot set chart outside SelectChart state" => Some("invalid-state"),
+        "not in WaitForReady state" => Some("invalid-state"),
+        "not in Playing state" => Some("invalid-state"),
+        _ => None,
+    };
+    match id {
+        Some(id) => crate::l10n::try_translate(&lang.0, id),
+        None => e,
     }
 }
 use phira_mp_common::{
