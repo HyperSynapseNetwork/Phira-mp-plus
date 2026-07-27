@@ -386,10 +386,10 @@ async fn try_copy_write_inner(
     records: &[RuntimeTelemetryBatchRecord],
 ) -> Result<(), String> {
     use std::fmt::Write as _;
-    let mut conn = pool
-        .acquire()
+    let mut transaction = pool
+        .begin()
         .await
-        .map_err(|e| format!("acquire connection: {e}"))?;
+        .map_err(|e| format!("begin transaction: {e}"))?;
     let now = now_ms();
 
     // ── Build CSV data ──────────────────────────────────────────────────
@@ -446,7 +446,7 @@ async fn try_copy_write_inner(
 
     // ── COPY mp_runtime_telemetry_batches ───────────────────────────────
     {
-        let mut copy = conn
+        let mut copy = transaction
             .copy_in_raw(
                 "COPY mp_runtime_telemetry_batches \
                  (event_id, batch_uuid, run_id, scope, pipeline, kind, \
@@ -467,7 +467,7 @@ async fn try_copy_write_inner(
 
     // ── COPY mp_runtime_telemetry_items ─────────────────────────────────
     {
-        let mut copy = conn
+        let mut copy = transaction
             .copy_in_raw(
                 "COPY mp_runtime_telemetry_items \
                  (event_id, batch_uuid, ordinal, kind, room_id, round_uuid, \
@@ -530,7 +530,7 @@ async fn try_copy_write_inner(
             .bind(record.player_id)
             .bind(&payload_json)
             .bind(now)
-            .execute(&mut *conn)
+            .execute(&mut *transaction)
             .await
             .map_err(|e| format!("canonical update {round_uuid}: {e}"))?;
 
@@ -548,10 +548,16 @@ async fn try_copy_write_inner(
             .bind(last_game_time)
             .bind(&payload_json)
             .bind(now)
-            .execute(&mut *conn)
+            .execute(&mut *transaction)
             .await
             .map_err(|e| format!("batch insert {round_uuid}: {e}"))?;
     }
+
+    // ── Commit ──────────────────────────────────────────────────────────
+    transaction
+        .commit()
+        .await
+        .map_err(|e| format!("commit transaction: {e}"))?;
 
     Ok(())
 }
