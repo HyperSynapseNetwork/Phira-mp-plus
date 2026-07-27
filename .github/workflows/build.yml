@@ -186,12 +186,19 @@ jobs:
               --port 22346 --http-port 22347 &
           SERVER_PID=$!
 
-          # Give benchmark time to complete + 10s buffer
-          sleep 15
+          # Give benchmark time to complete
+          sleep 12
 
-          # SIGINT triggers graceful shutdown + LLVM profile flush
+          # SIGINT triggers graceful shutdown. Curl the HTTP port to unblock
+          # the accept loop so the server can exit.
           kill -INT $SERVER_PID 2>/dev/null || true
-          # Wait up to 15s for cleanup, then force kill
+          curl -sf http://127.0.0.1:22347/ >/dev/null 2>&1 || true
+          # Wait up to 5s for process to exit
+          for i in 1 2 3 4 5; do
+            kill -0 $SERVER_PID 2>/dev/null || break
+            sleep 1
+          done
+          kill -9 $SERVER_PID 2>/dev/null || true
           wait $SERVER_PID 2>/dev/null || true
 
           ls -la /tmp/pgo-data/ 2>/dev/null || true
