@@ -69,7 +69,7 @@ impl CliHandler {
     // ── IP 封禁 ───────────────────────────────────────────────────────
 
     pub(in crate::cli) async fn dispatch_ban_ip_command(&self, args: &[&str]) {
-        if args.len() < 1 {
+        if args.is_empty() {
             self.out(format!("  {} {} <Phira ID|IP> [原因]", c::yellow("?"), c::bold("ban ip")));
             return;
         }
