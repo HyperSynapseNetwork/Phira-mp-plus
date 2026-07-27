@@ -347,10 +347,12 @@ impl PlusServerState {
     // ── Force move user ──────────────────────────────────────────────
 
     /// 管理员强制把用户迁移到指定房间，绕过房间人数、锁定、进行中等普通加入限制。
-    // TODO(Phase2-WorkD): Direct room/user mutation bypassing gateway. This
-    // multi-step operation (leave old room → join new room) should be routed
-    // through RoomCommandGateway mailbox commands (RemoveUser + AddUser) for
-    // serialized actor state transitions.
+    ///
+    /// Uses a compiler approach via RoomCommandGateway:
+    ///   1. RemoveUser from old room (actor state + Room connection registry)
+    ///   2. AddUser to new room (actor state)
+    ///   3. Update connection registry (force_add_user)
+    ///   4. If AddUser fails after RemoveUser, rollback: re-AddUser to old room
     pub async fn force_move_user_to_room(
         self: &Arc<Self>,
         room_id: &str,
@@ -380,41 +382,102 @@ impl PlusServerState {
             .as_ref()
             .is_some_and(|room| room.id.to_string() == rid.to_string());
 
-        if let Some(room) = old_room.as_ref().filter(|_| !same_room) {
-            let old_id = room.id.clone();
-            let old_id_text = old_id.to_string();
-            if room.on_user_leave(&user).await {
-                self.rooms.write().await.remove(&old_id);
+        // Phase 1: RemoveUser from old room via actor (actor state + Room connection registry).
+        let old_room_dropped = if let Some(ref old_room_val) = old_room {
+            if same_room {
+                false
+            } else {
+                let old_id_text = old_room_val.id.to_string();
+                match self
+                    .room_commands
+                    .remove_user(self, &old_id_text, target_id)
+                    .await
+                {
+                    Ok(val) => val
+                        .get("room_dropped")
+                        .and_then(Value::as_bool)
+                        .unwrap_or(false),
+                    Err(_) => {
+                        // Fallback: direct cleanup.
+                        let room_empty = old_room_val.on_user_leave(&user).await;
+                        if room_empty {
+                            self.rooms.write().await.remove(&old_room_val.id);
+                        }
+                        if !was_monitor {
+                            self.publish_room_event(RoomEvent::LeaveRoom {
+                                room: old_room_val.id.clone(),
+                                user: target_id,
+                            })
+                            .await;
+                        }
+                        self.dispatch_plugin_event(crate::plugin::PluginEvent::RoomLeave {
+                            user_id: target_id,
+                            room_id: old_id_text,
+                        })
+                        .await;
+                        false
+                    }
+                }
             }
-            if !was_monitor {
-                self.publish_room_event(RoomEvent::LeaveRoom {
-                    room: old_id,
-                    user: target_id,
-                })
-                .await;
+        } else {
+            false
+        };
+
+        // Phase 2: AddUser to new room via actor (actor state).
+        user.monitor.store(monitor, Ordering::SeqCst);
+        let add_result = if same_room {
+            // Same room: skip AddUser (would duplicate in members list).
+            Ok(serde_json::json!({"monitor": monitor}))
+        } else {
+            self.room_commands
+                .add_user(self, &rid.to_string(), target_id, &user.name, monitor)
+                .await
+        };
+
+        // Rollback: if AddUser fails after RemoveUser, re-AddUser to old room.
+        if let Err(err) = add_result {
+            user.monitor.store(was_monitor, Ordering::SeqCst);
+            if let Some(ref old_room_val) = old_room {
+                if !same_room && !old_room_dropped {
+                    let _ = self
+                        .room_commands
+                        .add_user(
+                            self,
+                            &old_room_val.id.to_string(),
+                            target_id,
+                            &user.name,
+                            was_monitor,
+                        )
+                        .await;
+                    old_room_val
+                        .force_add_user(Arc::downgrade(&user), was_monitor)
+                        .await;
+                }
+                *user.room.write().await = Some(Arc::clone(old_room_val));
             }
-            self.dispatch_plugin_event(crate::plugin::PluginEvent::RoomLeave {
-                user_id: target_id,
-                room_id: old_id_text,
-            })
-            .await;
+            return Err(err);
         }
 
-        user.monitor.store(monitor, Ordering::SeqCst);
+        // Phase 3: Update connection registry.
         target_room
             .force_add_user(Arc::downgrade(&user), monitor)
             .await;
         *user.room.write().await = Some(Arc::clone(&target_room));
+
+        // Phase 4: Set monitor live flag.
         if monitor {
             let _ = self
                 .room_commands
                 .set_live(self, &rid.to_string(), true)
                 .await;
         }
+
+        // Phase 5: Assign host if missing.
         self.assign_room_host_if_missing(&target_room, &user, monitor, false)
             .await;
         self.refresh_room_display_metadata_background(&target_room);
 
+        // Phase 6: Broadcast join.
         let join = ServerCommand::OnJoinRoom(user.to_info());
         let message = ServerCommand::Message(phira_mp_common::Message::JoinRoom {
             user: user.id,
@@ -435,6 +498,7 @@ impl PlusServerState {
             }
         }
 
+        // Phase 7: Send JoinRoom response to user.
         let mut users = target_room.users().await;
         users.extend(target_room.monitors().await);
         let room_state = crate::session_room::build_client_room_state(&target_room, &user).await;
@@ -449,6 +513,7 @@ impl PlusServerState {
         .await;
         user.try_send(ServerCommand::ChangeHost(is_host)).await;
 
+        // Phase 8: Record history.
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_millis() as i64)
@@ -461,6 +526,7 @@ impl PlusServerState {
         )
         .await;
 
+        // Phase 9: Plugin events.
         self.dispatch_plugin_event(crate::plugin::PluginEvent::RoomJoin {
             user_id: target_id,
             room_id: rid.to_string(),
@@ -474,6 +540,7 @@ impl PlusServerState {
         })
         .await;
 
+        // Phase 10: System message.
         {
             let uname = user.name.clone();
             target_room.send_system_msg(

@@ -731,7 +731,7 @@ impl RoomCommandHandler {
             RoomActorCommand::KickUser { room_id, target_id, .. } => {
                 let users = lc.users().await;
                 let monitors = lc.monitors().await;
-                let user = match users.into_iter().chain(monitors.into_iter()).find(|u| u.id == *target_id) {
+                let user = match users.into_iter().chain(monitors).find(|u| u.id == *target_id) {
                     Some(u) => u, None => return err("user not in room"),
                 };
                 let name = user.name.clone();

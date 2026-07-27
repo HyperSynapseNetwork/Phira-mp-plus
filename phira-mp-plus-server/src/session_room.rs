@@ -393,6 +393,11 @@ pub async fn join_room(
         .map_err(|e| anyhow!("{}", tr(e)))?;
     // Also add to Room connection mapping (immediate, direct).
     if !room.add_user(Arc::downgrade(&user), monitor).await {
+        // Rollback: remove user from actor members since connection registry failed.
+        let _ = user.server
+            .room_commands
+            .remove_user(&user.server, &id.to_string(), user.id)
+            .await;
         bail!("{}", tl!("join-room-full"));
     }
     info!(
