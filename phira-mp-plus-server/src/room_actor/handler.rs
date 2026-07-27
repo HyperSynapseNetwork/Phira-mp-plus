@@ -639,7 +639,7 @@ impl RoomCommandHandler {
                                 &|lang| crate::l10n::translate_system(lang, "host-transferred-to", {
                                     let mut a = fluent::FluentArgs::new();
                                     a.set("name", &name_clone);
-                                    a
+                                    &a
                                 }),
                             ).await;
                         } else {
@@ -647,7 +647,7 @@ impl RoomCommandHandler {
                                 &|lang| crate::l10n::translate_system(lang, "user-became-host", {
                                     let mut a = fluent::FluentArgs::new();
                                     a.set("name", &name_clone);
-                                    a
+                                    &a
                                 }),
                             ).await;
                         }
@@ -739,7 +739,7 @@ impl RoomCommandHandler {
                     &|lang| crate::l10n::translate_system(lang, "user-kicked-from-room", {
                         let mut a = fluent::FluentArgs::new();
                         a.set("name", &name);
-                        a
+                        &a
                     }),
                 ).await;
                 let was_monitor = user.monitor.load(std::sync::atomic::Ordering::SeqCst);

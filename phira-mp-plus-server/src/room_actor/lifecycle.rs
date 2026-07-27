@@ -32,7 +32,7 @@ use std::sync::Arc;
 /// All methods take `&self` so the lifecycle can be held behind a shared
 /// reference while the actor state is mutated separately.
 #[async_trait]
-pub trait RoomLifecycle {
+pub trait RoomLifecycle: Send + Sync {
     /// Get a reference to the underlying Room broadcast bus.
     fn room(&self) -> &Arc<Room>;
 

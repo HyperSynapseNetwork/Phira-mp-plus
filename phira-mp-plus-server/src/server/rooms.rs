@@ -486,7 +486,7 @@ impl PlusServerState {
                 &|lang| crate::l10n::translate_system(lang, "user-moved-to-room", {
                     let mut a = fluent::FluentArgs::new();
                     a.set("name", &uname);
-                    a
+                    &a
                 }),
             ).await;
         }
