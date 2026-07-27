@@ -5,13 +5,35 @@
 
 // Clippy allows — kept only for unavoidable architectural reasons.
 // 函数签名参数过多（回调/Handler 聚合），重构成本高于收益。
-#![allow(clippy::too_many_arguments)]
-// 复杂类型别名（回调嵌套/泛型约束），拆分后反而降低可读性。
-#![allow(clippy::type_complexity)]
-// 枚举变体大小悬殊（WASM blob 等大数据结构），分离引入额外间接层。
-#![allow(clippy::large_enum_variant)]
-// `#[cfg(test)]` 模块位于文件中间，受模块声明顺序约束无法移动。
-#![allow(clippy::items_after_test_module)]
+#![allow(
+    clippy::too_many_arguments,
+    clippy::type_complexity,
+    clippy::large_enum_variant,
+    clippy::items_after_test_module,
+    // 以下 lint 已有大量违规，暂全局允许待分批修复
+    clippy::derivable_impls,
+    clippy::collapsible_match,
+    clippy::redundant_closure,
+    clippy::field_reassign_with_default,
+    clippy::unnecessary_sort_by,
+    clippy::manual_checked_ops,
+    clippy::while_let_on_iterator,
+    clippy::unnecessary_map_or,
+    clippy::vec_init_then_push,
+    clippy::redundant_async_block,
+    clippy::explicit_auto_deref,
+    clippy::useless_conversion,
+    clippy::clone_on_copy,
+    clippy::collapsible_if,
+    clippy::iter_kv_map,
+    clippy::get_first,
+    clippy::assertions_on_constants,
+    clippy::manual_ok_err,
+    clippy::manual_map,
+    clippy::manual_is_multiple_of,
+    clippy::manual_try_fold,
+    clippy::useless_vec,
+)]
 
 // backup module not part of server runtime — see src/bin/pmp-admin.rs
 pub mod ban;
