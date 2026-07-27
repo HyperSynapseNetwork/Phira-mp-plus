@@ -279,6 +279,11 @@ impl HighFrequencyWriter {
                 );
                 Err("high frequency writer is closed".to_string())
             }
+            // Full/Closed for non-Item messages: don't count as dropped,
+            // the Flush/Shutdown will be retried or the error is acceptable.
+            Err(mpsc::error::TrySendError::Full(_)) | Err(mpsc::error::TrySendError::Closed(_)) => {
+                Err("high frequency writer busy".to_string())
+            }
         }
     }
 

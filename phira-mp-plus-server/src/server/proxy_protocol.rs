@@ -8,45 +8,45 @@
 //! # Design
 //!
 //! [`maybe_read_proxy_header`] is a **pure tokio async** function designed
-//! to be called from the accept pre-auth task for connections whose peer IP
-//! matches `proxy_allow_cidr`.  Because those connections are *expected* to
-//! carry a PROXY header, the function reads header bytes directly from the
-//! tokio [`TcpStream`] without needing `peek` — if the header is invalid or
-//! absent the caller closes the connection (no corruption risk).
-//!
-//! v1 headers are read until `\r\n` (one byte at a time after the `PROXY `
-//! prefix is confirmed) so the reader never consumes application-protocol
-//! bytes.  v2 headers are read in three exact chunks: 12‑byte signature,
-//! 4‑byte header, variable‑length address data.
+//! to be called inside the accept pre-auth task.  It uses
+//! [`TcpStream::peek`](tokio::net::TcpStream::peek) so that non-PROXY
+//! connections are returned **without any bytes consumed** — the same design
+//! principle as the original `std::net::TcpStream::peek` approach, but
+//! without converting to a blocking stream.
 //!
 //! # Bugs fixed from PMP22 audit
 //!
-//! 1. v1 `PROXY ` prefix duplication — eliminated (v1 bytes are now read
-//!    precisely once via tokio async I/O).
-//! 2. `tokio::TcpStream → std::TcpStream` conversion kept `O_NONBLOCK`,
-//!    causing `WouldBlock` on `read_exact` — eliminated (pure tokio).
-//! 3. Error branch connected to `127.0.0.1:1` with `expect()`, causing a
-//!    panic — eliminated (errors are returned cleanly via [`ProxyError`]).
-//! 4. Rate‑limiting was applied to the proxy‑peer IP only — the caller now
-//!    also rate‑limits the forwarded client IP after header parsing.
-//! 5. No timeout on header parsing — all reads are bounded by a configurable
-//!    [`Duration`].
+//! 1. **v1 `PROXY ` prefix duplication** — the old `read_proxy_v1` called
+//!    `header.extend_from_slice(b"PROXY ")` after peek had already confirmed
+//!    the prefix, doubling it.  The new v1 reader pushes each byte exactly
+//!    once (the peek is non-consuming).
+//! 2. **`tokio::TcpStream -> std::TcpStream` nonblocking mode** — the old
+//!    code converted to `std::net::TcpStream` via `into_std()` which left the
+//!    socket in `O_NONBLOCK` mode, causing `WouldBlock` on `read_exact`.
+//!    The rewrite is pure tokio async — no conversion at all.
+//! 3. **Error branch `127.0.0.1:1` panic** — removed.  Errors are returned
+//!    cleanly via [`ProxyError`].
+//! 4. **Rate limiting on proxy IP only** — the caller now also rate-limits
+//!    the forwarded client IP after proxy header parsing.
+//! 5. **No timeout** — all reads are bounded by a [`Duration`] parameter.
 
+use std::fmt;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::time::Duration;
 use tokio::io::AsyncReadExt;
 use tokio::net::TcpStream;
+use tokio::time::timeout;
 
 // ── Constants ─────────────────────────────────────────────────────────
 
-/// PROXY protocol v2 12‑byte signature (magic bytes).
+/// PROXY protocol v2 12-byte signature (magic bytes).
 const PROXY_V2_SIG: [u8; 12] = *b"\x0D\x0A\x0D\x0A\x00\x0D\x0A\x51\x55\x49\x54\x0A";
 
-/// Default timeout for reading the PROXY header from a peer.
-const DEFAULT_HEADER_TIMEOUT: Duration = Duration::from_secs(3);
+/// Default maximum time to wait for a PROXY header to arrive.
+const DEFAULT_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Hard upper bound for any PROXY header (v1 line or v2 frame).
-const MAX_HEADER_LEN: usize = 16384;
+const MAX_HEADER_LEN: usize = 16 * 1024;
 
 /// PROXY v1 line maximum per the spec (including `PROXY ` + `\r\n`).
 const V1_MAX_LINE: usize = 108;
@@ -56,7 +56,7 @@ const V1_MAX_LINE: usize = 108;
 /// Parsed PROXY protocol header.
 ///
 /// Only the `Tcp4` and `Tcp6` variants carry usable source addresses.
-/// `Unknown` covers `UNKNOWN` (v1), `LOCAL` (v2), Unix‑family (v2),
+/// `Unknown` covers `UNKNOWN` (v1), `LOCAL` (v2), Unix-family (v2),
 /// and any unrecognised transport.
 #[derive(Debug, Clone, PartialEq)]
 pub enum ProxyHeader {
@@ -73,9 +73,9 @@ pub enum ProxyError {
     Timeout,
     /// Underlying I/O error from tokio.
     Io(std::io::Error),
-    /// The data on the wire does not match v1 or v2 signature.
+    /// The bytes on the wire do not match any known PROXY protocol signature.
     InvalidSignature,
-    /// Header exceeded the configured maximum length.
+    /// Header exceeded the maximum allowed length.
     HeaderTooLarge(usize),
     /// The header bytes are syntactically invalid.
     Parse(String),
@@ -83,8 +83,8 @@ pub enum ProxyError {
     Eof,
 }
 
-impl std::fmt::Display for ProxyError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Display for ProxyError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Timeout => write!(f, "timeout reading PROXY header"),
             Self::Io(e) => write!(f, "I/O error reading PROXY header: {e}"),
@@ -190,168 +190,185 @@ pub fn validate_cidr_list(value: &str) -> Result<(), String> {
     Ok(())
 }
 
-// ── Stream‑level PROXY reading (pure tokio async) ─────────────────────
+// ── Stream-level PROXY reading (pure tokio async) ─────────────────────
 
-/// Read a PROXY protocol header from a tokio [`TcpStream`] without using
-/// `std::net::TcpStream` conversion or blocking I/O.
+/// Attempt to detect and parse a PROXY protocol header from a new TCP
+/// connection using a **peek** operation (bytes are not consumed if no
+/// PROXY header is found).
 ///
-/// # When to call
+/// This is a pure tokio async rewrite of the original peek-based approach.
+/// It uses [`TcpStream::peek`] which translates to `MSG_PEEK` at the
+/// platform level, so non-PROXY connections see zero bytes consumed from
+/// the stream.
 ///
-/// Only for connections whose peer IP matches `proxy_allow_cidr`.
-/// Non‑PROXY connections from an allowed range are **not** handled
-/// gracefully — the function returns `Err` and the caller **must** close
-/// the connection (the admin has opted the CIDR in for PROXY, so a missing
-/// header is a protocol violation).
+/// **When to call:**
+/// Only for connections whose peer IP matches the configured
+/// `proxy_allow_cidr`.  This function handles the CIDR check internally
+/// via the `trusted_cidr` parameter.
 ///
-/// # How it works
+/// **Timeout:**
+/// All reads are bounded by `timeout_dur` (floored at 1 second).
 ///
-/// 1. Read the first byte to distinguish v1 (`P`) from v2 (`\r = 0x0D`).
-/// 2. **v1** — confirm `ROXY ` (5 B), then read one byte at a time until
-///    `\r\n` is seen.  The next byte in the kernel buffer is the first
-///    application‑protocol byte.  No byte replay is needed.
-/// 3. **v2** — read remaining 11 B of signature, 4‑byte header, and
-///    `addr_len` variable‑length address data.  Again no over‑read.
-/// 4. Every read is bounded by `timeout` (floored at 1 s).
+/// **Returns:**
+/// - `Ok((stream, Some(forwarded_addr)))` — valid PROXY header parsed.
+/// - `Ok((stream, None))` — no PROXY header detected (stream is untouched).
+/// - `Err(ProxyError)` — I/O error, timeout, or invalid header data.
 ///
-/// # Errors
-///
-/// Returns [`ProxyError`] on timeout, I/O error, invalid signature, or
-/// parse failure.  The caller should log and close the connection.
+/// When `Err` is returned the stream is **not recoverable** for protocol
+/// use (some headers may have been partially consumed); the caller must
+/// close the connection.
 pub async fn maybe_read_proxy_header(
-    stream: TcpStream,
-    timeout: Duration,
+    mut stream: TcpStream,
+    trusted_cidr: Option<&str>,
+    timeout_dur: Duration,
     max_header_len: usize,
 ) -> Result<(TcpStream, Option<SocketAddr>), ProxyError> {
-    let timeout = timeout.max(Duration::from_secs(1)); // floor 1s
+    let peer_addr = stream.peer_addr().map_err(ProxyError::Io)?;
+    let is_trusted = trusted_cidr
+        .map_or(false, |cidr| ip_matches_any_cidr(&peer_addr.ip(), cidr));
 
-    // ── Peek at the first byte ─────────────────────────────────────
-    let mut first = [0u8; 1];
-    tokio::time::timeout(timeout, stream.read_exact(&mut first))
+    // Not from a trusted CIDR — return immediately, stream untouched.
+    if !is_trusted {
+        return Ok((stream, None));
+    }
+
+    let effective_timeout = timeout_dur.max(Duration::from_secs(1));
+
+    // Peek at enough bytes to distinguish v1 from v2 from neither.
+    // v1 needs 6 bytes ("PROXY "), v2 needs 12 (signature).
+    let mut peek_buf = [0u8; 12];
+
+    let n = timeout(effective_timeout, stream.peek(&mut peek_buf))
         .await
         .map_err(|_| ProxyError::Timeout)?
         .map_err(ProxyError::Io)?;
 
-    match first[0] {
-        // ═══════════════════════════════════════════════════════════
-        // v2: starts with \r (0x0D)
-        // ═══════════════════════════════════════════════════════════
-        0x0D => {
-            // Read remaining 11 bytes of the 12‑byte signature.
-            let mut sig_rest = [0u8; 11];
-            tokio::time::timeout(timeout, stream.read_exact(&mut sig_rest))
-                .await
-                .map_err(|_| ProxyError::Timeout)?
-                .map_err(ProxyError::Io)?;
-
-            // Reconstruct the full signature.
-            let mut sig = [0u8; 12];
-            sig[0] = 0x0D;
-            sig[1..].copy_from_slice(&sig_rest);
-
-            if sig != PROXY_V2_SIG {
-                return Err(ProxyError::InvalidSignature);
-            }
-
-            // Read the 4‑byte v2 header (ver_cmd + fam + addr_len).
-            let mut hdr = [0u8; 4];
-            tokio::time::timeout(timeout, stream.read_exact(&mut hdr))
-                .await
-                .map_err(|_| ProxyError::Timeout)?
-                .map_err(ProxyError::Io)?;
-
-            let addr_len = u16::from_be_bytes([hdr[2], hdr[3]]) as usize;
-            let total_v2 = 16 + addr_len; // sig(12) + hdr(4) + addr_data
-
-            if total_v2 > max_header_len {
-                return Err(ProxyError::HeaderTooLarge(total_v2));
-            }
-
-            // Read the variable‑length address data.
-            let mut addr_data = vec![0u8; addr_len];
-            if addr_len > 0 {
-                tokio::time::timeout(timeout, stream.read_exact(&mut addr_data))
-                    .await
-                    .map_err(|_| ProxyError::Timeout)?
-                    .map_err(ProxyError::Io)?;
-            }
-
-            // Reconstruct the full binary frame and parse it.
-            let mut full = Vec::with_capacity(total_v2);
-            full.extend_from_slice(&sig);
-            full.extend_from_slice(&hdr);
-            full.extend_from_slice(&addr_data);
-
-            let (hdr, _consumed) = parse_v2_body(&full)
-                .map_err(ProxyError::Parse)?
-                .ok_or(ProxyError::Parse("incomplete v2 body after full read".into()))?;
-
-            Ok((stream, proxy_source_addr(&hdr)))
-        }
-
-        // ═══════════════════════════════════════════════════════════
-        // v1: starts with 'P'
-        // ═══════════════════════════════════════════════════════════
-        b'P' => {
-            // Confirm the remaining "ROXY " prefix.
-            let mut rest = [0u8; 5];
-            tokio::time::timeout(timeout, stream.read_exact(&mut rest))
-                .await
-                .map_err(|_| ProxyError::Timeout)?
-                .map_err(ProxyError::Io)?;
-
-            if &rest != b"ROXY " {
-                return Err(ProxyError::InvalidSignature);
-            }
-
-            // Accumulate the full v1 line including the prefix.
-            let mut line = Vec::with_capacity(V1_MAX_LINE);
-            line.push(b'P');
-            line.extend_from_slice(&rest);
-
-            // Read one byte at a time until `\r\n`.
-            loop {
-                if line.len() >= max_header_len {
-                    return Err(ProxyError::HeaderTooLarge(line.len()));
-                }
-
-                let mut byte = [0u8; 1];
-                tokio::time::timeout(timeout, stream.read_exact(&mut byte))
-                    .await
-                    .map_err(|_| ProxyError::Timeout)?
-                    .map_err(ProxyError::Io)?;
-
-                line.push(byte[0]);
-
-                // Check for the `\r\n` terminator.
-                if line.len() >= 2 && line[line.len() - 2..] == [b'\r', b'\n'] {
-                    break;
-                }
-            }
-
-            let (hdr, _consumed) = parse_v1_header(&line)
-                .map_err(ProxyError::Parse)?
-                .ok_or(ProxyError::Parse("incomplete v1 header after full read".into()))?;
-
-            Ok((stream, proxy_source_addr(&hdr)))
-        }
-
-        // ═══════════════════════════════════════════════════════════
-        // Neither v1 nor v2.
-        // ═══════════════════════════════════════════════════════════
-        _ => Err(ProxyError::InvalidSignature),
+    // No data available (connection closed or empty).
+    if n == 0 {
+        return Err(ProxyError::Eof);
     }
+
+    // ── v1 check ──────────────────────────────────────────────────
+    if n >= 6 && peek_buf.starts_with(b"PROXY ") {
+        let header = read_v1_body(&mut stream, effective_timeout, max_header_len).await?;
+        return Ok((stream, proxy_source_addr(&header)));
+    }
+
+    // ── v2 check ──────────────────────────────────────────────────
+    if n >= 12 && peek_buf[..12] == PROXY_V2_SIG {
+        let header = read_v2_body(&mut stream, effective_timeout, max_header_len).await?;
+        return Ok((stream, proxy_source_addr(&header)));
+    }
+
+    // Data is present but does not match v1 or v2.
+    // Because we used `peek`, the stream is still untouched.
+    Ok((stream, None))
 }
 
-/// Convenience wrapper that uses default timeout (3s) and max header
-/// length (16 KiB).
-#[allow(dead_code)]
+/// Convenience wrapper using the default timeout (5 s) and max header
+/// length (16 KiB).
 pub async fn maybe_read_proxy_header_default(
     stream: TcpStream,
+    trusted_cidr: Option<&str>,
 ) -> Result<(TcpStream, Option<SocketAddr>), ProxyError> {
-    maybe_read_proxy_header(stream, DEFAULT_HEADER_TIMEOUT, MAX_HEADER_LEN).await
+    maybe_read_proxy_header(stream, trusted_cidr, DEFAULT_TIMEOUT, MAX_HEADER_LEN).await
 }
 
 // ── Internal helpers ──────────────────────────────────────────────────
+
+/// Read a complete v1 header from the stream.
+///
+/// The caller **must** have already confirmed via peek that the stream
+/// starts with `"PROXY "` — this function reads the same bytes again
+/// (peek does not consume) plus the rest of the line up to `\r\n`.
+async fn read_v1_body(
+    stream: &mut TcpStream,
+    read_timeout: Duration,
+    max_header_len: usize,
+) -> Result<ProxyHeader, ProxyError> {
+    // We need to read exactly the full v1 line from the stream.
+    // Since we already peeked "PROXY ", we must read it again (peek is
+    // non-consuming).  Accumulate into a Vec and parse at the end.
+    //
+    // Maximum sane v1 line is ~108 B (PROXY TCP6 with two IPv6 addresses
+    // and two ports).  Start with that capacity to reduce reallocs.
+
+    let mut line = Vec::with_capacity(V1_MAX_LINE);
+
+    loop {
+        if line.len() >= max_header_len {
+            return Err(ProxyError::HeaderTooLarge(line.len()));
+        }
+
+        let mut byte = [0u8; 1];
+        timeout(read_timeout, stream.read_exact(&mut byte))
+            .await
+            .map_err(|_| ProxyError::Timeout)?
+            .map_err(ProxyError::Io)?;
+
+        line.push(byte[0]);
+
+        // Check for the `\r\n` terminator.
+        if line.len() >= 2 && line[line.len() - 2..] == [b'\r', b'\n'] {
+            let (hdr, _consumed) = parse_v1_header(&line)
+                .map_err(ProxyError::Parse)?
+                .ok_or_else(|| ProxyError::Parse("incomplete v1 header".to_string()))?;
+            return Ok(hdr);
+        }
+    }
+}
+
+/// Read a complete v2 header (12 B sig + 4 B header + variable addr data)
+/// from the stream.
+///
+/// The caller **must** have already confirmed via peek that the stream
+/// starts with `PROXY_V2_SIG`.
+async fn read_v2_body(
+    stream: &mut TcpStream,
+    read_timeout: Duration,
+    max_header_len: usize,
+) -> Result<ProxyHeader, ProxyError> {
+    // Read the full 12-byte signature + 4-byte header = 16 bytes.
+    let mut buf = [0u8; 16];
+    timeout(read_timeout, stream.read_exact(&mut buf))
+        .await
+        .map_err(|_| ProxyError::Timeout)?
+        .map_err(ProxyError::Io)?;
+
+    // Sanity-check the signature (should match after peek, but verify).
+    if buf[..12] != PROXY_V2_SIG {
+        return Err(ProxyError::InvalidSignature);
+    }
+
+    let _ver_cmd = buf[12];
+    let _fam = buf[13];
+    let addr_len = u16::from_be_bytes([buf[14], buf[15]]) as usize;
+    let total = 16 + addr_len;
+
+    if total > max_header_len {
+        return Err(ProxyError::HeaderTooLarge(total));
+    }
+
+    // Read the variable-length address data.
+    let mut addr_data = vec![0u8; addr_len];
+    if addr_len > 0 {
+        timeout(read_timeout, stream.read_exact(&mut addr_data))
+            .await
+            .map_err(|_| ProxyError::Timeout)?
+            .map_err(ProxyError::Io)?;
+    }
+
+    // Reconstruct the full binary frame and parse it.
+    let mut full = Vec::with_capacity(total);
+    full.extend_from_slice(&buf);
+    full.extend_from_slice(&addr_data);
+
+    let (hdr, _consumed) = parse_v2_body(&full)
+        .map_err(ProxyError::Parse)?
+        .ok_or_else(|| ProxyError::Parse("incomplete v2 body after full read".to_string()))?;
+
+    Ok(hdr)
+}
 
 /// Parse a PROXY v1 header from a byte slice (already confirmed to start
 /// with `"PROXY "`).
@@ -489,10 +506,8 @@ fn parse_v2_body(data: &[u8]) -> Result<Option<(ProxyHeader, usize)>, String> {
             if addr_data.len() < 36 {
                 return Err("truncated PROXY v2 TCP6 address data".to_string());
             }
-            let src_ip =
-                Ipv6Addr::from(<[u8; 16]>::try_from(&addr_data[0..16]).unwrap());
-            let dst_ip =
-                Ipv6Addr::from(<[u8; 16]>::try_from(&addr_data[16..32]).unwrap());
+            let src_ip = Ipv6Addr::from(<[u8; 16]>::try_from(&addr_data[0..16]).unwrap());
+            let dst_ip = Ipv6Addr::from(<[u8; 16]>::try_from(&addr_data[16..32]).unwrap());
             let src_port = u16::from_be_bytes([addr_data[32], addr_data[33]]);
             let dst_port = u16::from_be_bytes([addr_data[34], addr_data[35]]);
             ProxyHeader::Tcp6 {
@@ -682,9 +697,7 @@ mod tests {
     fn random_bytes_rejected() {
         assert!(parse_proxy_header(b"GET / HTTP/1.1\r\n").is_err());
         assert!(parse_proxy_header(b"SSH-2.0-OpenSSH").is_err());
-        assert!(
-            parse_proxy_header(b"\x00\x01\x02\x03\x04\x05\x06\x07\x08\x09\x0a\x0b").is_err()
-        );
+        assert!(parse_proxy_header(b"\x00\x01\x02\x03\x04\x05\x06\x07\x08\x09\x0a\x0b").is_err());
     }
 
     // ── CIDR ────────────────────────────────────────────────────────
@@ -707,13 +720,9 @@ mod tests {
     #[test]
     fn cidr_list_multiple() {
         let ip: IpAddr = "10.0.0.5".parse().unwrap();
-        assert!(
-            ip_matches_any_cidr(&ip, "192.168.0.0/16,10.0.0.0/8")
-        );
+        assert!(ip_matches_any_cidr(&ip, "192.168.0.0/16,10.0.0.0/8"));
         let ip: IpAddr = "172.16.0.1".parse().unwrap();
-        assert!(
-            !ip_matches_any_cidr(&ip, "192.168.0.0/16,10.0.0.0/8")
-        );
+        assert!(!ip_matches_any_cidr(&ip, "192.168.0.0/16,10.0.0.0/8"));
     }
 
     #[test]
@@ -757,37 +766,47 @@ mod tests {
     //
     // These exercise the full `maybe_read_proxy_header` path: a peer
     // connects and sends PROXY header bytes, and the parser reads them
-    // from the tokio TcpStream.
+    // from the tokio TcpStream using `peek` + selective reads.
 
-    #[tokio::test]
-    async fn integration_v1_complete() {
-        let payload = b"PROXY TCP4 192.168.1.1 10.0.0.1 12345 80\r\n";
+    /// Build a local-address listener, spawn a client that sends `payload`,
+    /// and call `maybe_read_proxy_header` on the server-side stream.
+    /// Returns the result directly.
+    async fn run_proxy_test(
+        payload: &[u8],
+        timeout_dur: Duration,
+        max_len: usize,
+        cidr: Option<&str>,
+    ) -> Result<(TcpStream, Option<SocketAddr>), ProxyError> {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
             .await
             .unwrap();
         let addr = listener.local_addr().unwrap();
 
+        let payload = payload.to_vec();
         let jh = tokio::spawn(async move {
             let mut s = tokio::net::TcpStream::connect(addr).await.unwrap();
-            s.writable().await.unwrap();
-            let _ = s.try_write(payload);
-            // Keep the connection alive so the reader can complete.
-            tokio::time::sleep(Duration::from_millis(500)).await;
+            // Wait for the server to call accept first so the write
+            // completes before the server's peek timeout fires.
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            let _ = s.try_write(&payload);
+            // Hold the connection open so the reader can complete.
+            tokio::time::sleep(Duration::from_secs(2)).await;
         });
 
         let (stream, _) = listener.accept().await.unwrap();
-        let (_stream, proxy_addr) =
-            maybe_read_proxy_header(stream, Duration::from_secs(3), MAX_HEADER_LEN)
-                .await
-                .unwrap();
-        assert!(proxy_addr.is_some());
-        let addr = proxy_addr.unwrap();
-        assert_eq!(
-            addr,
-            "192.168.1.1:12345".parse::<SocketAddr>().unwrap()
-        );
+        let result = maybe_read_proxy_header(stream, cidr, timeout_dur, max_len).await;
 
         jh.await.unwrap();
+        result
+    }
+
+    #[tokio::test]
+    async fn integration_v1_complete() {
+        let payload = b"PROXY TCP4 192.168.1.1 10.0.0.1 12345 80\r\n";
+        let result = run_proxy_test(payload, Duration::from_secs(3), MAX_HEADER_LEN, Some("0.0.0.0/0")).await;
+        let (_stream, proxy_addr) = result.unwrap();
+        let addr = proxy_addr.expect("expected a proxied address");
+        assert_eq!(addr, "192.168.1.1:12345".parse::<SocketAddr>().unwrap());
     }
 
     #[tokio::test]
@@ -802,121 +821,41 @@ mod tests {
         raw.extend_from_slice(&80u16.to_be_bytes());
         raw.extend_from_slice(&443u16.to_be_bytes());
 
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-            .await
-            .unwrap();
-        let addr = listener.local_addr().unwrap();
-
-        let jh = tokio::spawn(async move {
-            let mut s = tokio::net::TcpStream::connect(addr).await.unwrap();
-            s.writable().await.unwrap();
-            let _ = s.try_write(&raw);
-            tokio::time::sleep(Duration::from_millis(500)).await;
-        });
-
-        let (stream, _) = listener.accept().await.unwrap();
-        let (_stream, proxy_addr) =
-            maybe_read_proxy_header(stream, Duration::from_secs(3), MAX_HEADER_LEN)
-                .await
-                .unwrap();
-        assert!(proxy_addr.is_some());
-        let addr = proxy_addr.unwrap();
+        let result = run_proxy_test(&raw, Duration::from_secs(3), MAX_HEADER_LEN, Some("0.0.0.0/0")).await;
+        let (_stream, proxy_addr) = result.unwrap();
+        let addr = proxy_addr.expect("expected a proxied address");
         assert_eq!(addr, "10.0.0.1:80".parse::<SocketAddr>().unwrap());
-
-        jh.await.unwrap();
     }
 
     #[tokio::test]
-    async fn integration_no_proxy_http() {
-        // A plain HTTP request from a trusted CIDR === protocol violation.
+    async fn integration_no_proxy() {
+        // Plain HTTP data that does NOT match any PROXY signature.
+        // Because we use `peek`, the stream is untouched and the
+        // function returns `Ok((stream, None))`.
         let payload = b"GET / HTTP/1.1\r\nHost: example.com\r\n\r\n";
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-            .await
-            .unwrap();
-        let addr = listener.local_addr().unwrap();
-
-        let jh = tokio::spawn(async move {
-            let mut s = tokio::net::TcpStream::connect(addr).await.unwrap();
-            s.writable().await.unwrap();
-            let _ = s.try_write(payload);
-            tokio::time::sleep(Duration::from_millis(500)).await;
-        });
-
-        let (stream, _) = listener.accept().await.unwrap();
-        let result =
-            maybe_read_proxy_header(stream, Duration::from_secs(3), MAX_HEADER_LEN).await;
-        assert!(result.is_err());
-        match result.unwrap_err() {
-            ProxyError::InvalidSignature => {} // expected
-            e => panic!("expected InvalidSignature, got {e:?}"),
-        }
-
-        jh.await.unwrap();
+        let result = run_proxy_test(payload, Duration::from_secs(3), MAX_HEADER_LEN, Some("0.0.0.0/0")).await;
+        let (_stream, proxy_addr) = result.unwrap();
+        assert!(proxy_addr.is_none(), "expected no proxy address");
     }
 
     #[tokio::test]
-    async fn integration_no_proxy_tls() {
-        // TLS ClientHello from a trusted CIDR === protocol violation.
-        let payload = b"\x16\x03\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00";
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-            .await
-            .unwrap();
-        let addr = listener.local_addr().unwrap();
-
-        let jh = tokio::spawn(async move {
-            let mut s = tokio::net::TcpStream::connect(addr).await.unwrap();
-            s.writable().await.unwrap();
-            let _ = s.try_write(payload);
-            tokio::time::sleep(Duration::from_millis(500)).await;
-        });
-
-        let (stream, _) = listener.accept().await.unwrap();
-        let result =
-            maybe_read_proxy_header(stream, Duration::from_secs(3), MAX_HEADER_LEN).await;
-        assert!(result.is_err());
-        match result.unwrap_err() {
-            ProxyError::InvalidSignature => {} // expected
-            e => panic!("expected InvalidSignature, got {e:?}"),
-        }
-
-        jh.await.unwrap();
-    }
-
-    #[tokio::test]
-    async fn integration_invalid_v2_sig() {
-        // 12 bytes where first byte matches v2 but the rest don't.
-        let mut raw = Vec::new();
-        raw.push(0x0D); // matches v2
-        raw.extend_from_slice(b"AAAAAAAAAAA"); // 11 bytes that aren't the real sig
-
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-            .await
-            .unwrap();
-        let addr = listener.local_addr().unwrap();
-
-        let jh = tokio::spawn(async move {
-            let mut s = tokio::net::TcpStream::connect(addr).await.unwrap();
-            s.writable().await.unwrap();
-            let _ = s.try_write(&raw);
-            tokio::time::sleep(Duration::from_millis(500)).await;
-        });
-
-        let (stream, _) = listener.accept().await.unwrap();
-        let result =
-            maybe_read_proxy_header(stream, Duration::from_secs(3), MAX_HEADER_LEN).await;
-        assert!(result.is_err());
-        match result.unwrap_err() {
-            ProxyError::InvalidSignature => {} // expected
-            e => panic!("expected InvalidSignature, got {e:?}"),
-        }
-
-        jh.await.unwrap();
+    async fn integration_invalid_signature() {
+        // Data that starts with '\r' (0x0D, the same as v2's first byte)
+        // but doesn't match the full v2 signature.  The first peek returns
+        // the data, v2 check fails, v1 check fails, and because peek is
+        // non-consuming we return Ok(None).
+        let payload = b"\x0D\x0A\x0D\x0A\x00\x0D\x0A\x51\x55\x49\x54\x0B"; // last byte differs
+        let result = run_proxy_test(payload, Duration::from_secs(3), MAX_HEADER_LEN, Some("0.0.0.0/0")).await;
+        // The peek returns 12 bytes, but they don't match PROXY_V2_SIG,
+        // and they don't start with "PROXY ", so this is a non-proxy result.
+        let (_stream, proxy_addr) = result.unwrap();
+        assert!(proxy_addr.is_none(), "expected no proxy address for bad v2 sig");
     }
 
     #[tokio::test]
     async fn integration_v1_partial_timeout() {
-        // Send only "PROXY TCP4 " and then stop — the reader should time
-        // out waiting for the rest.
+        // Send only "PROXY TCP4 " and stop — the reader should time out
+        // waiting for the rest of the line.
         let payload = b"PROXY TCP4 ";
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
             .await
@@ -925,17 +864,16 @@ mod tests {
 
         let jh = tokio::spawn(async move {
             let mut s = tokio::net::TcpStream::connect(addr).await.unwrap();
-            s.writable().await.unwrap();
+            tokio::time::sleep(Duration::from_millis(100)).await;
             let _ = s.try_write(payload);
-            // Hold the connection open without sending more data.
+            // Hold the connection open without sending more.
             tokio::time::sleep(Duration::from_secs(5)).await;
         });
 
         let (stream, _) = listener.accept().await.unwrap();
-        // Use a short timeout so the test finishes quickly.
-        let result =
-            maybe_read_proxy_header(stream, Duration::from_millis(200), MAX_HEADER_LEN).await;
-        assert!(result.is_err());
+        // Use a very short timeout so the test finishes quickly.
+        let result = maybe_read_proxy_header(stream, Some("0.0.0.0/0"), Duration::from_millis(200), MAX_HEADER_LEN).await;
+        assert!(result.is_err(), "expected error, got {:?}", result);
         match result.unwrap_err() {
             ProxyError::Timeout => {} // expected
             e => panic!("expected Timeout, got {e:?}"),
@@ -954,15 +892,16 @@ mod tests {
 
         let jh = tokio::spawn(async move {
             let mut s = tokio::net::TcpStream::connect(addr).await.unwrap();
-            s.writable().await.unwrap();
+            tokio::time::sleep(Duration::from_millis(100)).await;
             let _ = s.try_write(&PROXY_V2_SIG);
+            // Hold the connection open.
             tokio::time::sleep(Duration::from_secs(5)).await;
         });
 
         let (stream, _) = listener.accept().await.unwrap();
         let result =
-            maybe_read_proxy_header(stream, Duration::from_millis(200), MAX_HEADER_LEN).await;
-        assert!(result.is_err());
+            maybe_read_proxy_header(stream, Some("0.0.0.0/0"), Duration::from_millis(200), MAX_HEADER_LEN).await;
+        assert!(result.is_err(), "expected error, got {:?}", result);
         match result.unwrap_err() {
             ProxyError::Timeout => {} // expected
             e => panic!("expected Timeout, got {e:?}"),
@@ -972,14 +911,25 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn integration_not_in_cidr() {
+        // Connection from a non-trusted IP should return immediately
+        // with no proxy address, without attempting any read.
+        let payload = b"PROXY TCP4 192.168.1.1 10.0.0.1 12345 80\r\n";
+        let result = run_proxy_test(payload, Duration::from_secs(3), MAX_HEADER_LEN, Some("10.0.0.0/8")).await;
+        // The test client connects from 127.0.0.1, which is NOT in 10.0.0.0/8.
+        let (_stream, proxy_addr) = result.unwrap();
+        assert!(proxy_addr.is_none(), "expected no proxy for non-trusted CIDR");
+    }
+
+    #[tokio::test]
     async fn integration_max_header_len_respected() {
-        // Send a v2 header with an addr_len that would exceed the limit
-        // (65535 > our max_header_len of 100).
+        // Send a v2 header with addr_len = 65535 which exceeds any
+        // reasonable max_header_len.
         let mut raw = Vec::new();
         raw.extend_from_slice(&PROXY_V2_SIG);
         raw.push(0x21);
         raw.push(0x11);
-        raw.extend_from_slice(&0xFFFFu16.to_be_bytes()); // addr_len = 65535
+        raw.extend_from_slice(&0xFFFFu16.to_be_bytes());
 
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
             .await
@@ -988,16 +938,16 @@ mod tests {
 
         let jh = tokio::spawn(async move {
             let mut s = tokio::net::TcpStream::connect(addr).await.unwrap();
-            s.writable().await.unwrap();
+            tokio::time::sleep(Duration::from_millis(100)).await;
             let _ = s.try_write(&raw);
-            tokio::time::sleep(Duration::from_millis(500)).await;
+            tokio::time::sleep(Duration::from_secs(2)).await;
         });
 
         let (stream, _) = listener.accept().await.unwrap();
-        let result = maybe_read_proxy_header(stream, Duration::from_secs(3), 100).await;
-        assert!(result.is_err());
+        let result = maybe_read_proxy_header(stream, Some("0.0.0.0/0"), Duration::from_secs(3), 100).await;
+        assert!(result.is_err(), "expected error, got {:?}", result);
         match result.unwrap_err() {
-            ProxyError::HeaderTooLarge(_) => {} // expected
+            ProxyError::HeaderTooLarge(_) => {}
             e => panic!("expected HeaderTooLarge, got {e:?}"),
         }
 
@@ -1022,22 +972,19 @@ mod tests {
 
         let jh = tokio::spawn(async move {
             let mut s = tokio::net::TcpStream::connect(addr).await.unwrap();
-            s.writable().await.unwrap();
-            // Send both PROXY header and app data in one write.
+            tokio::time::sleep(Duration::from_millis(100)).await;
             let _ = s.try_write(&full);
-            tokio::time::sleep(Duration::from_millis(500)).await;
+            tokio::time::sleep(Duration::from_secs(2)).await;
         });
 
         let (stream, _) = listener.accept().await.unwrap();
         let (mut stream, proxy_addr) =
-            maybe_read_proxy_header(stream, Duration::from_secs(3), MAX_HEADER_LEN)
+            maybe_read_proxy_header(stream, Some("0.0.0.0/0"), Duration::from_secs(3), MAX_HEADER_LEN)
                 .await
                 .unwrap();
         assert!(proxy_addr.is_some());
 
         // The app data must still be readable from the returned stream.
-        // It was sent in the same TCP segment but the PROXY header reader
-        // consumed exactly the v1 header bytes, leaving "HELLO" untouched.
         let mut buf = [0u8; 5];
         stream.readable().await.unwrap();
         let n = stream.try_read(&mut buf).unwrap();

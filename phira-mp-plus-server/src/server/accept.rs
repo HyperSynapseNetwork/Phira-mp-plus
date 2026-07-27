@@ -46,79 +46,66 @@ impl PlusServer {
         let auth_timeout = self.state.config.idle.auth_timeout_secs.max(5);
         let state = Arc::clone(&self.state);
 
-        // Check whether the connection originates from a CIDR range that
-        // is configured for PROXY protocol.
-        let proxy_enabled = state
-            .config
-            .proxy_allow_cidr
-            .as_ref()
-            .is_some_and(|cidr| {
-                crate::server::proxy_protocol::ip_matches_any_cidr(&addr.ip(), cidr)
-            });
-
         crate::supervisor_actor::spawn_named(format!("pre-auth-{id}"), async move {
             let _permit = permit;
 
             // ── PROXY protocol header parsing ─────────────────────
-            // If the peer is from a trusted PROXY source, attempt to
-            // read the PROXY header and substitute the real client
-            // address.  Non-PROXY connections from the same CIDR are
-            // rejected (the admin has explicitly opted in).
+            // `maybe_read_proxy_header` handles the CIDR check internally.
+            // If the peer is in `proxy_allow_cidr` it attempts PROXY header
+            // parsing via a non-consuming peek; untrusted peers are returned
+            // immediately with the stream untouched.
             //
             // Dual rate‑limiting: the proxy peer IP was checked above at
             // L25; the forwarded client IP is checked here so both are
             // independently rate‑limited.
-            let (stream, addr) = if proxy_enabled {
-                const PROXY_HDR_TIMEOUT: std::time::Duration =
-                    std::time::Duration::from_secs(3);
-                const PROXY_MAX_HDR: usize = 16384;
+            const PROXY_HDR_TIMEOUT: std::time::Duration =
+                std::time::Duration::from_secs(3);
+            const PROXY_MAX_HDR: usize = 16384;
 
-                match crate::server::proxy_protocol::maybe_read_proxy_header(
-                    stream,
-                    PROXY_HDR_TIMEOUT,
-                    PROXY_MAX_HDR,
-                )
-                .await
-                {
-                    Ok((s, Some(forwarded))) => {
-                        // Rate‑limit the forwarded client IP (RFC 7239 /
-                        // PROXY protocol semantics).  This is the IP that
-                        // subsequent rate‑limit and ban checks should use.
-                        let fwd_ip = forwarded.ip();
-                        if !state
-                            .connection_limiter
-                            .check(&fwd_ip.to_string())
-                            .await
-                        {
-                            trace!(
-                                peer = %ip,
-                                forwarded = %fwd_ip,
-                                "connection rejected: forwarded IP rate‑limited"
-                            );
-                            return;
-                        }
-
+            let cidr = state.config.proxy_allow_cidr.as_deref();
+            let (stream, addr) = match crate::server::proxy_protocol::maybe_read_proxy_header(
+                stream,
+                cidr,
+                PROXY_HDR_TIMEOUT,
+                PROXY_MAX_HDR,
+            )
+            .await
+            {
+                Ok((s, Some(forwarded))) => {
+                    // Rate‑limit the forwarded client IP (PROXY protocol
+                    // semantics).  This is the IP that subsequent rate‑limit
+                    // and ban checks should use.
+                    let fwd_ip = forwarded.ip();
+                    if !state
+                        .connection_limiter
+                        .check(&fwd_ip.to_string())
+                        .await
+                    {
                         trace!(
                             peer = %ip,
                             forwarded = %fwd_ip,
-                            "PROXY protocol forwarded connection"
-                        );
-                        (s, forwarded)
-                    }
-                    Ok((_s, None)) => {
-                        warn!(
-                            %ip,
-                            "PROXY source without valid PROXY header; closing connection"
+                            "connection rejected: forwarded IP rate‑limited"
                         );
                         return;
                     }
-                    Err(e) => {
-                        warn!(%ip, "PROXY protocol error: {e}; closing connection");
-                        return;
-                    }
+
+                    trace!(
+                        peer = %ip,
+                        forwarded = %fwd_ip,
+                        "PROXY protocol forwarded connection"
+                    );
+                    (s, forwarded)
                 }
-            } else {
-                (stream, addr)
+                Ok((s, None)) => {
+                    // Either the peer is not in the trusted CIDR, or the
+                    // peeked data did not match v1/v2 and the stream is
+                    // untouched — proceed with the original peer address.
+                    (s, addr)
+                }
+                Err(e) => {
+                    warn!(%ip, "PROXY protocol error: {e}; closing connection");
+                    return;
+                }
             };
 
             // ── IP ban check (uses real client IP from PROXY if applicable) ──
