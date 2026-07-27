@@ -536,6 +536,6 @@ cli_enabled: true
     if let Some(parent) = std::path::Path::new(path).parent() {
         let _ = std::fs::create_dir_all(parent);
     }
-    let _ = std::fs::write(path, &content);
+    let _ = std::fs::write(path, content);
     content.to_string()
 }
