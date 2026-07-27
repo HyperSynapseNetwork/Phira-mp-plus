@@ -483,11 +483,11 @@ impl PlusServerState {
         {
             let uname = user.name.clone();
             target_room.send_system_msg(
-                &|lang| crate::l10n::translate_system(lang, "user-moved-to-room", {
+                &|lang| {
                     let mut a = fluent::FluentArgs::new();
                     a.set("name", &uname);
-                    &a
-                }),
+                    crate::l10n::translate_system(lang, "user-moved-to-room", &a)
+                },
             ).await;
         }
 

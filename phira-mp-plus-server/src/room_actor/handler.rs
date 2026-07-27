@@ -636,19 +636,19 @@ impl RoomCommandHandler {
                         let name_clone = name.clone();
                         if as_.state.control.host_id.is_some() {
                             lc.room().send_system_msg(
-                                &|lang| crate::l10n::translate_system(lang, "host-transferred-to", {
+                                &|lang| {
                                     let mut a = fluent::FluentArgs::new();
                                     a.set("name", &name_clone);
-                                    &a
-                                }),
+                                    crate::l10n::translate_system(lang, "host-transferred-to", &a)
+                                },
                             ).await;
                         } else {
                             lc.room().send_system_msg(
-                                &|lang| crate::l10n::translate_system(lang, "user-became-host", {
+                                &|lang| {
                                     let mut a = fluent::FluentArgs::new();
                                     a.set("name", &name_clone);
-                                    &a
-                                }),
+                                    crate::l10n::translate_system(lang, "user-became-host", &a)
+                                },
                             ).await;
                         }
                         // Notify old host
@@ -736,11 +736,11 @@ impl RoomCommandHandler {
                 };
                 let name = user.name.clone();
                 lc.room().send_system_msg(
-                    &|lang| crate::l10n::translate_system(lang, "user-kicked-from-room", {
+                    &|lang| {
                         let mut a = fluent::FluentArgs::new();
                         a.set("name", &name);
-                        &a
-                    }),
+                        crate::l10n::translate_system(lang, "user-kicked-from-room", &a)
+                    },
                 ).await;
                 let was_monitor = user.monitor.load(std::sync::atomic::Ordering::SeqCst);
                 let should_drop = lc.on_user_leave(&user).await;
