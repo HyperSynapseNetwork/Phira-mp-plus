@@ -190,12 +190,7 @@ async fn save_round_history(
         }
     }
     let event = crate::room::protocol_round(&round);
-    room_ref.play_history.push(round, &room_ref.uuid).await;
-    let total = room_ref.play_history.len().await;
-    info!(
-        room = room_ref.id.to_string(),
-        "saved play round history (total {})", total
-    );
+    room_ref.play_history.push(round).await;
     Some(event)
 }
 

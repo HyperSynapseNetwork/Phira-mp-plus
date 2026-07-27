@@ -77,13 +77,12 @@ persistence_retention_days: 30
 # telemetry_cutover_mode 可选：direct_only / worker_preferred / worker_authoritative。
 # 默认使用 direct_only；先通过 worker_preferred 验证队列和数据库，再显式切换 worker_authoritative。
 # worker_preferred 直写成功时 Worker 是镜像；直写失败但 Worker 接收时由 Worker 补偿该批次。
-# runtime_v2:
+# runtime:
 #   persistence_queue_capacity: 4096
 #   # 数据库重试耗尽后的失败事件保全。设为 null 可禁用；禁用后若数据库最终失败，Supervisor 会进入 degraded。
 #   # dead-letter 是数据库最终失败保全；WAL 则覆盖进入内存队列前的崩溃窗口。
 #   persistence_dead_letter_path: data/persistence-dead-letter.jsonl
 #   persistence_wal_path: data/persistence-worker.wal.jsonl  # fsync before queue admission; replayed on startup
-#   telemetry_cutover_mode: direct_only  # direct_only | worker_preferred (direct first; Worker mirror or canonical compensation) | worker_authoritative (Worker normal-operation single writer)
 #   phira_http:
 #     timeout_ms: 5000
 #     max_retries: 3

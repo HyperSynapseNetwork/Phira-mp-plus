@@ -468,8 +468,8 @@ mod tests {
     #[test]
     fn benchmark_completed_has_stable_kind_and_summary() {
         let mut report = crate::benchmark_report::BenchmarkReport::new(
-            crate::benchmark_report::BenchmarkMode::Hybrid,
-            "hybrid probe",
+            crate::benchmark_report::BenchmarkMode::Simulation,
+            "simulation probe",
             30,
         );
         report.failed_operations = Some(2);
@@ -479,7 +479,7 @@ mod tests {
         let event = MpEvent::BenchmarkCompleted { report };
         assert_eq!(event.kind(), "benchmark.completed");
         let summary = event.summary();
-        assert!(summary.contains("mode=hybrid"));
+        assert!(summary.contains("mode=simulation"));
         assert!(summary.contains("failed_operations=2"));
         assert!(summary.contains("probes_failed=1"));
         assert!(summary.contains("probes_blocked=1"));

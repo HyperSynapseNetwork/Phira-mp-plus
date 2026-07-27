@@ -101,10 +101,8 @@ impl StoredBenchmarkReport {
 struct BenchmarkReportStoreInner {
     recent: VecDeque<StoredBenchmarkReport>,
     latest_simulation: Option<StoredBenchmarkReport>,
-    latest_hybrid: Option<StoredBenchmarkReport>,
     latest_real: Option<StoredBenchmarkReport>,
     simulation_count: u64,
-    hybrid_count: u64,
     real_count: u64,
 }
 
@@ -154,10 +152,6 @@ impl BenchmarkReportStore {
                     inner.simulation_count = inner.simulation_count.saturating_add(1);
                     inner.latest_simulation = Some(stored.clone());
                 }
-                BenchmarkMode::Hybrid => {
-                    inner.hybrid_count = inner.hybrid_count.saturating_add(1);
-                    inner.latest_hybrid = Some(stored.clone());
-                }
                 BenchmarkMode::Real => {
                     inner.real_count = inner.real_count.saturating_add(1);
                     inner.latest_real = Some(stored.clone());
@@ -176,10 +170,6 @@ impl BenchmarkReportStore {
         self.inner.read().ok().and_then(|inner| match mode {
             BenchmarkMode::Simulation => inner
                 .latest_simulation
-                .as_ref()
-                .map(StoredBenchmarkReport::to_entry),
-            BenchmarkMode::Hybrid => inner
-                .latest_hybrid
                 .as_ref()
                 .map(StoredBenchmarkReport::to_entry),
             BenchmarkMode::Real => inner
@@ -201,18 +191,12 @@ impl BenchmarkReportStore {
             };
         };
 
-        let mut latest_by_mode = Vec::with_capacity(3);
+        let mut latest_by_mode = Vec::with_capacity(2);
         push_summary(
             &mut latest_by_mode,
             BenchmarkMode::Simulation,
             inner.simulation_count,
             inner.latest_simulation.as_ref(),
-        );
-        push_summary(
-            &mut latest_by_mode,
-            BenchmarkMode::Hybrid,
-            inner.hybrid_count,
-            inner.latest_hybrid.as_ref(),
         );
         push_summary(
             &mut latest_by_mode,
@@ -281,7 +265,7 @@ mod tests {
     fn store_keeps_digest_snapshots_and_lazy_full_reports() {
         let store = BenchmarkReportStore::new(2);
         store.record(report(BenchmarkMode::Simulation, "sim-1"));
-        store.record(report(BenchmarkMode::Hybrid, "hybrid-1"));
+        store.record(report(BenchmarkMode::Real, "real-1"));
         store.record(report(BenchmarkMode::Simulation, "sim-2"));
 
         let snapshot = store.snapshot(8);
@@ -296,10 +280,9 @@ mod tests {
         assert_eq!(latest.report.title, "sim-2");
         assert_eq!(latest.report.notes.len(), 1);
         assert_eq!(
-            store.latest(BenchmarkMode::Hybrid).unwrap().report.title,
-            "hybrid-1"
+            store.latest(BenchmarkMode::Real).unwrap().report.title,
+            "real-1"
         );
-        assert!(store.latest(BenchmarkMode::Real).is_none());
     }
 
     #[test]

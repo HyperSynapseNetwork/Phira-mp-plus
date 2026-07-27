@@ -342,7 +342,6 @@ impl CommandRegistry {
             Arc::new(|_cmd, prefix| {
                 let mut candidates: Vec<&str> = vec![
                     "real",
-                    "hybrid",
                     "--mode",
                     "--scenario",
                     "--preset",

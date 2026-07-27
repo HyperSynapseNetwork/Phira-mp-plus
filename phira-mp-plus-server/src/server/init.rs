@@ -163,8 +163,6 @@ impl PlusServer {
         state.plugin_manager.start_event_dispatcher().await;
         spawn_event_subscribers(&state);
         state.room_commands.start_mailbox(Arc::clone(&state), 1024);
-        // 启动 IdleMonitor 主循环（定期检查空闲条件，挂起/恢复重服务）
-
         let lost_con_state = Arc::clone(&state);
         crate::supervisor_actor::spawn_critical("lost-connection-worker", async move {
             while let Some(id) = lost_con_rx.recv().await {

@@ -10,7 +10,6 @@ use serde::{Deserialize, Serialize};
 #[serde(rename_all = "snake_case")]
 pub enum BenchmarkMode {
     Simulation,
-    Hybrid,
     Real,
 }
 
@@ -18,7 +17,6 @@ impl BenchmarkMode {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Simulation => "simulation",
-            Self::Hybrid => "hybrid",
             Self::Real => "real",
         }
     }
@@ -269,13 +267,13 @@ mod tests {
 
     #[test]
     fn report_limits_failure_samples() {
-        let mut report = BenchmarkReport::new(BenchmarkMode::Hybrid, "hybrid", 30);
+        let mut report = BenchmarkReport::new(BenchmarkMode::Simulation, "simulation", 30);
         for i in 0..16 {
             report.add_failure_sample("probe", format!("failure-{i}"));
         }
         assert_eq!(report.failure_samples.len(), 8);
         let rendered = report.render_text();
-        assert!(rendered.contains("Benchmark report [hybrid]"));
+        assert!(rendered.contains("Benchmark report [simulation]"));
         assert!(rendered.contains("failure-7"));
         assert!(!rendered.contains("failure-8"));
     }

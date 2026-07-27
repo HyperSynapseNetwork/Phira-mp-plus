@@ -141,7 +141,7 @@ impl CliHandler {
                     ));
                 }
             }
-            self.out(format!("  {} examples: benchmark history | benchmark history real | benchmark history hybrid 20", c::dim("▸")));
+            self.out(format!("  {} examples: benchmark history | benchmark history real 20", c::dim("▸")));
             return;
         }
         if let Some(mode) = mode {
@@ -209,7 +209,7 @@ impl CliHandler {
 
     async fn bind_benchmark(&self, _args: &[&str]) {
         self.out(format!(
-            "  {} Benchmark token management is removed. Use `server_config.yml: benchmark_phira_tokens` instead.",
+            "  {} Benchmark token management is removed. Mock Phira is used for benchmark authentication.",
             c::yellow("!")
         ));
     }
@@ -1067,7 +1067,6 @@ fn parse_benchmark_duration(value: &str) -> Result<std::time::Duration, String> 
 fn parse_benchmark_mode(value: &&str) -> Option<crate::benchmark_report::BenchmarkMode> {
     match value.trim().to_ascii_lowercase().as_str() {
         "simulation" | "sim" => Some(crate::benchmark_report::BenchmarkMode::Simulation),
-        "hybrid" => Some(crate::benchmark_report::BenchmarkMode::Hybrid),
         "real" => Some(crate::benchmark_report::BenchmarkMode::Real),
         _ => None,
     }

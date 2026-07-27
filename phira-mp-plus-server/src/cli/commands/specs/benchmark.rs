@@ -142,7 +142,6 @@ pub fn specs() -> Vec<CommandSpec> {
                 "  Benchmark modes:".to_string(),
                 "    simulation  — 默认推荐压测（隔离本地，不访问 Phira，不需要 token）".to_string(),
                 "    real        — 显式真实 TCP 协议测试（需要 Phira token）".to_string(),
-                "    hybrid      — Hybrid Phira 探测（chart_lookup / record_lookup）".to_string(),
             ]
         })),
     );
@@ -157,16 +156,11 @@ pub fn specs() -> Vec<CommandSpec> {
         .example("benchmark run real 30 100"),
     );
     out.push(
-        CommandSpec::new("benchmark run hybrid", "diagnostics", "运行 Hybrid Phira 探测。", "benchmark run hybrid [duration] [authenticate=true] [chart_lookup=<id>] [record_lookup=<id>]").advanced()
-            .example("benchmark run hybrid")
-            .example("benchmark run hybrid authenticate=true chart_lookup=1 record_lookup=1"),
-    );
-    out.push(
         CommandSpec::new(
             "benchmark report",
             "diagnostics",
             "查看 Benchmark 报告。",
-            "benchmark report [simulation|hybrid|real|limit]",
+            "benchmark report [simulation|real|limit]",
         )
         .advanced()
         .example("benchmark report")
@@ -178,7 +172,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "benchmark history",
             "diagnostics",
             "查看已持久化的 BenchmarkReport 历史记录。",
-            "benchmark history [simulation|hybrid|real] [limit]",
+            "benchmark history [simulation|real] [limit]",
         )
         .advanced()
         .example("benchmark history")

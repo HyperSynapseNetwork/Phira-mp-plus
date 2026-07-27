@@ -131,17 +131,12 @@ fn benchmark_report_has_simulation_as_default_mode() {
 }
 
 #[test]
-fn benchmark_real_and_hybrid_are_explicit_not_default() {
+fn benchmark_real_is_explicit_not_default() {
     use phira_mp_plus_server::benchmark_report::BenchmarkMode;
     let real: BenchmarkMode = serde_json::from_str("\"real\"").unwrap();
     match real {
         BenchmarkMode::Real => {}
         _ => panic!("not Real"),
-    }
-    let hybrid: BenchmarkMode = serde_json::from_str("\"hybrid\"").unwrap();
-    match hybrid {
-        BenchmarkMode::Hybrid => {}
-        _ => panic!("not Hybrid"),
     }
 }
 

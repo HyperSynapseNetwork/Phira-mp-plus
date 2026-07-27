@@ -106,11 +106,11 @@ mod tests {
 
     #[test]
     fn persistence_record_preserves_report_shape() {
-        let mut report = BenchmarkReport::new(BenchmarkMode::Hybrid, "hybrid smoke", 3);
+        let mut report = BenchmarkReport::new(BenchmarkMode::Simulation, "simulation smoke", 3);
         report.probes.record_success();
         report.add_note("dry-run");
         let record = BenchmarkReportPersistenceRecord::from_report(&report, "test");
-        assert_eq!(record.mode, BenchmarkMode::Hybrid);
+        assert_eq!(record.mode, BenchmarkMode::Simulation);
         assert_eq!(record.probes_succeeded, 1);
         assert_eq!(record.notes, 1);
         assert_eq!(
@@ -308,7 +308,6 @@ impl DbManager {
 fn benchmark_mode_from_str(value: &str) -> Option<crate::benchmark_report::BenchmarkMode> {
     match value {
         "simulation" | "sim" => Some(crate::benchmark_report::BenchmarkMode::Simulation),
-        "hybrid" => Some(crate::benchmark_report::BenchmarkMode::Hybrid),
         "real" => Some(crate::benchmark_report::BenchmarkMode::Real),
         _ => None,
     }

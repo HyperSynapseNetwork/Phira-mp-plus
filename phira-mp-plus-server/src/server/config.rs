@@ -128,9 +128,6 @@ pub struct LiveConfig {
     /// Game admin Phira IDs.
     #[serde(default)]
     pub admin_phira_ids: Vec<i32>,
-    /// Benchmark auth tokens.
-    #[serde(default)]
-    pub benchmark_phira_tokens: Vec<String>,
     /// Connection rate limit (per window).
     #[serde(default = "default_rate_limit")]
     pub connection_rate_limit: u32,
@@ -154,7 +151,6 @@ impl LiveConfig {
             server_name: config.server_name.clone(),
             monitors: config.monitors.clone(),
             admin_phira_ids: config.admin_phira_ids.clone(),
-            benchmark_phira_tokens: config.benchmark_phira_tokens.clone(),
             connection_rate_limit: config.connection_rate_limit,
             connection_rate_window: config.connection_rate_window,
             runtime: config.runtime.clone(),
@@ -273,8 +269,6 @@ pub struct PlusConfig {
     #[serde(default)]
     pub admin_phira_ids: Vec<i32>,
     #[serde(default)]
-    pub benchmark_phira_tokens: Vec<String>,
-    #[serde(default)]
     pub wasm_runtime: WasmRuntimeConfig,
     #[serde(default)]
     pub runtime: RuntimeConfig,
@@ -313,7 +307,6 @@ impl Default for PlusConfig {
             persistence_retention_days: 30,
             touch_judge_retention_days: None,
             admin_phira_ids: Vec::new(),
-            benchmark_phira_tokens: Vec::new(),
             wasm_runtime: WasmRuntimeConfig::default(),
             runtime: RuntimeConfig::default(),
             idle: IdleConfig::default(),
@@ -367,7 +360,7 @@ impl PlusConfig {
         let mut value = serde_json::to_value(self).unwrap_or_default();
         // Mask known secret fields
         if let Some(obj) = value.as_object_mut() {
-            for field in &["database_url", "admin_token", "benchmark_phira_tokens"] {
+            for field in &["database_url", "admin_token"] {
                 if let Some(val) = obj.get_mut(*field) {
                     let is_non_empty_string = val.as_str().is_some_and(|s| !s.is_empty());
                     if is_non_empty_string {
@@ -553,11 +546,6 @@ impl PlusConfig {
                 "connection_rate_window 必须大于 0".into(),
             ));
         }
-        if self.idle.check_interval_secs == 0 {
-            return Err(AppError::ConfigValidation(
-                "idle.check_interval_secs 必须大于 0".into(),
-            ));
-        }
         if let Some(ref cidr) = self.proxy_allow_cidr {
             if let Err(e) = super::proxy_protocol::validate_cidr_list(cidr) {
                 return Err(AppError::ConfigValidation(format!(
@@ -640,10 +628,6 @@ fn default_rate_window() -> u32 {
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IdleConfig {
-    #[serde(default = "default_idle_after_secs")]
-    pub idle_after_secs: u64,
-    #[serde(default = "default_check_interval_secs")]
-    pub check_interval_secs: u64,
     #[serde(default = "default_heartbeat_timeout")]
     pub heartbeat_timeout_secs: u64,
     #[serde(default = "default_auth_timeout")]
@@ -656,8 +640,6 @@ pub struct IdleConfig {
 impl Default for IdleConfig {
     fn default() -> Self {
         Self {
-            idle_after_secs: default_idle_after_secs(),
-            check_interval_secs: default_check_interval_secs(),
             heartbeat_timeout_secs: default_heartbeat_timeout(),
             auth_timeout_secs: default_auth_timeout(),
             dangle_grace_secs: default_dangle_grace_secs(),
@@ -665,8 +647,6 @@ impl Default for IdleConfig {
     }
 }
 
-fn default_idle_after_secs() -> u64 { 300 }
-fn default_check_interval_secs() -> u64 { 15 }
 fn default_heartbeat_timeout() -> u64 { 15 }
 fn default_auth_timeout() -> u64 { 15 }
 fn default_dangle_grace_secs() -> u64 { 10 }
