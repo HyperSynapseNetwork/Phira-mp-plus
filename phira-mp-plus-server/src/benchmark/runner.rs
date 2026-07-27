@@ -69,7 +69,7 @@ impl BenchmarkRunner {
         self.server_state = Some(state);
     }
 
-    /// 构建配置（从 args 合并预设参数）
+    /// 构建配置（从 args 合并预设参数和 overrides）
     fn build_config(args: &BenchmarkRunArgs) -> BenchmarkConfig {
         let mut config = BenchmarkConfig::from_preset(args.preset);
         config.mode = args.mode;
@@ -80,8 +80,29 @@ impl BenchmarkRunner {
         config.seed = args.seed;
         config.plugins = args.plugins.clone();
         for (key, val) in &args.overrides {
-            if key.as_str() == "listen-addr" {
-                config.listen_addr = Some(val.clone());
+            match key.as_str() {
+                "listen-addr" => config.listen_addr = Some(val.clone()),
+                "mock-phira-delay" => {
+                    if let Ok(v) = val.parse() {
+                        config.mock_phira_delay_ms = v;
+                    }
+                }
+                "mock-phira-jitter" => {
+                    if let Ok(v) = val.parse() {
+                        config.mock_phira_jitter_ms = v;
+                    }
+                }
+                "mock-phira-error-rate" => {
+                    if let Ok(v) = val.parse() {
+                        config.mock_phira_error_rate = v;
+                    }
+                }
+                "mock-phira-timeout" => {
+                    if let Ok(v) = val.parse() {
+                        config.mock_phira_timeout_ms = v;
+                    }
+                }
+                _ => {}
             }
         }
         config
@@ -132,7 +153,9 @@ impl BenchmarkRunner {
             .server_state
             .as_ref()
             .ok_or_else(|| "Real mode requires server_state to be set via set_server_state()".to_string())?;
-        let result = crate::benchmark::modes::real::run_real(self.config.clone(), state.as_ref())
+        // 传递 run_id 给每一个客户端，用于生成唯一的 token / user / room
+        let run_id = uuid::Uuid::new_v4();
+        let result = crate::benchmark::modes::real::run_real(self.config.clone(), state.as_ref(), run_id)
             .await?;
         Ok(result.report)
     }

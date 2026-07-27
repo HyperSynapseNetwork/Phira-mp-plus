@@ -64,6 +64,14 @@ pub struct BenchmarkConfig {
     pub mock_phira: bool,
     /// Mock Phira 监听端口
     pub mock_phira_port: u16,
+    /// Mock Phira 人工响应延迟（毫秒）
+    pub mock_phira_delay_ms: u64,
+    /// Mock Phira 延迟抖动（毫秒）
+    pub mock_phira_jitter_ms: u64,
+    /// Mock Phira 错误率 (0.0-1.0)
+    pub mock_phira_error_rate: f64,
+    /// Mock Phira 超时延迟（毫秒）
+    pub mock_phira_timeout_ms: u64,
 }
 
 impl BenchmarkConfig {
@@ -90,6 +98,10 @@ impl BenchmarkConfig {
             persist_events: false,
             mock_phira: true,
             mock_phira_port: 0,
+            mock_phira_delay_ms: 5,
+            mock_phira_jitter_ms: 2,
+            mock_phira_error_rate: 0.0,
+            mock_phira_timeout_ms: 30_000,
         }
     }
 

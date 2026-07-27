@@ -4,6 +4,7 @@
 
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
+use uuid::Uuid;
 
 /// 基准测试顶层子命令
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -184,6 +185,8 @@ pub struct BenchmarkRunArgs {
     pub plugins: Vec<String>,
     /// 可选的自定义参数覆盖（key=value 格式）
     pub overrides: Vec<(String, String)>,
+    /// 运行唯一标识（每次运行生成一次）
+    pub run_id: Uuid,
 }
 
 impl Default for BenchmarkRunArgs {
@@ -198,6 +201,7 @@ impl Default for BenchmarkRunArgs {
             seed: 114_514,
             plugins: Vec::new(),
             overrides: Vec::new(),
+            run_id: Uuid::new_v4(),
         }
     }
 }

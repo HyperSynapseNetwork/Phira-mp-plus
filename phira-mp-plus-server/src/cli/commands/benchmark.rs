@@ -467,6 +467,38 @@ impl CliHandler {
                     let addr = cmd_args[i].to_string();
                     run_args.overrides.push(("listen-addr".to_string(), addr));
                 }
+                "--mock-phira-delay" => {
+                    i += 1;
+                    if i >= cmd_args.len() {
+                        self.out(format!("  {} --mock-phira-delay requires a number (ms)", c::red("✗")));
+                        return;
+                    }
+                    run_args.overrides.push(("mock-phira-delay".to_string(), cmd_args[i].to_string()));
+                }
+                "--mock-phira-jitter" => {
+                    i += 1;
+                    if i >= cmd_args.len() {
+                        self.out(format!("  {} --mock-phira-jitter requires a number (ms)", c::red("✗")));
+                        return;
+                    }
+                    run_args.overrides.push(("mock-phira-jitter".to_string(), cmd_args[i].to_string()));
+                }
+                "--mock-phira-error-rate" => {
+                    i += 1;
+                    if i >= cmd_args.len() {
+                        self.out(format!("  {} --mock-phira-error-rate requires a float (0.0-1.0)", c::red("✗")));
+                        return;
+                    }
+                    run_args.overrides.push(("mock-phira-error-rate".to_string(), cmd_args[i].to_string()));
+                }
+                "--mock-phira-timeout" => {
+                    i += 1;
+                    if i >= cmd_args.len() {
+                        self.out(format!("  {} --mock-phira-timeout requires a number (ms)", c::red("✗")));
+                        return;
+                    }
+                    run_args.overrides.push(("mock-phira-timeout".to_string(), cmd_args[i].to_string()));
+                }
                 "--output" => {
                     i += 1;
                     if i >= cmd_args.len() {
@@ -1006,6 +1038,22 @@ impl CliHandler {
         ));
         self.out(format!(
             "  {}   --output <fmt>         Output: text (default), json, markdown",
+            c::dim("│")
+        ));
+        self.out(format!(
+            "  {}   --mock-phira-delay <ms>   Mock Phira artificial delay (default: 5ms)",
+            c::dim("│")
+        ));
+        self.out(format!(
+            "  {}   --mock-phira-jitter <ms>  Mock Phira delay jitter (default: 2ms)",
+            c::dim("│")
+        ));
+        self.out(format!(
+            "  {}   --mock-phira-error-rate <rate>  Mock Phira error rate (0.0-1.0)",
+            c::dim("│")
+        ));
+        self.out(format!(
+            "  {}   --mock-phira-timeout <ms> Mock Phira timeout delay (default: 30000ms)",
             c::dim("│")
         ));
         self.out(format!(
