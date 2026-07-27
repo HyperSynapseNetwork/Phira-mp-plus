@@ -10,7 +10,6 @@
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::sync::Arc;
 use tokio::sync::RwLock;
 use uuid::Uuid;
 
@@ -18,7 +17,7 @@ use uuid::Uuid;
 const PENDING_AUTH_TTL_MS: u64 = 120_000;
 
 /// A pending approval request.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct PendingAuth {
     /// Unique identifier for this pending request.
     pub pending_id: String,

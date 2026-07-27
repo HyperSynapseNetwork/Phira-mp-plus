@@ -222,7 +222,7 @@ pub async fn session_writer(
 ) {
     use tokio::io::AsyncWriteExt;
 
-    let mut write_stream = match stream.try_clone() {
+    let mut write_stream = match stream.as_ref().try_clone() {
         Ok(s) => s,
         Err(e) => {
             tracing::error!("session_writer: failed to clone stream: {e}");

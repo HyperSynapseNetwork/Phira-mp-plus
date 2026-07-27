@@ -81,15 +81,9 @@ pub async fn dispatch_command(
         "runtime.phira" => cmd_runtime_phira(state).await,
 
         // ── Subscription commands (handled by session) ────────────
-        "subscribe" => {
+        "subscribe" | "unsubscribe" | "subscribe_stream" => {
             // These are handled in the session reader loop, not here.
-            Value::Null
-        }
-        "unsubscribe" => {
-            Value::Null
-        }
-        "subscribe_stream" => {
-            Value::Null
+            Ok(Value::Null)
         }
 
         _ => {

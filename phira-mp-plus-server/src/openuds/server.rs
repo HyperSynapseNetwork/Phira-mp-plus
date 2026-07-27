@@ -16,8 +16,6 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::net::UnixListener;
 use tokio::sync::RwLock;
-use uuid::Uuid;
-use uuid::Uuid;
 
 /// Start the OpenUDS server. Spawns the accept loop and returns immediately.
 ///
@@ -164,8 +162,8 @@ async fn handle_session(
         openuds_session::session_writer(write_stream, rx),
     );
 
-    // Reader loop
-    let mut read_stream = match stream.try_clone() {
+    // Reader loop — try_clone the inner stream for independent reading
+    let mut read_stream = match stream.as_ref().try_clone() {
         Ok(s) => s,
         Err(e) => {
             tracing::error!("openuds-session {session_id}: failed to clone stream: {e}");

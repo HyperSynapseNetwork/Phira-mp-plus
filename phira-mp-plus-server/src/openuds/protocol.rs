@@ -11,7 +11,7 @@
 //! - Max payload: 16 MiB
 
 use serde_json::Value;
-use std::io::{Read, Write};
+use std::io::Read;
 
 /// Maximum payload size: 16 MiB.
 pub const MAX_PAYLOAD_SIZE: u32 = 16 * 1024 * 1024;

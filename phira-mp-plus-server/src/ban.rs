@@ -5,7 +5,7 @@ use std::net::IpAddr;
 use std::sync::Arc;
 use tracing::{info, warn};
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct UserIpRecord {
     pub ip: String,
     pub first_seen_at: i64,
