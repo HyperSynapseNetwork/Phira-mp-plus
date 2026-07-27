@@ -132,6 +132,31 @@ impl RoomCommandGateway {
         .into_untyped()
     }
 
+    pub async fn set_persistent_empty(
+        &self,
+        state: &PlusServerState,
+        room_id: &str,
+        persistent_empty: bool,
+    ) -> Result<Value, String> {
+        let started = Instant::now();
+        let rid = room_id.to_string();
+        let result = self
+            .room_mailbox(&rid, |reply| RoomActorCommand::SetPersistentEmpty {
+                room_id: rid.clone(),
+                persistent_empty,
+                reply,
+            })
+            .await;
+        self.finish_command(
+            state,
+            RoomCommandKind::SetPersistentEmpty.action(),
+            room_id,
+            started,
+            result,
+        )
+        .into_untyped()
+    }
+
     pub async fn set_phira_api_endpoint(
         &self,
         state: &PlusServerState,

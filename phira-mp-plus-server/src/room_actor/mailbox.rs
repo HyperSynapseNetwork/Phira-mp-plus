@@ -372,6 +372,7 @@ mod tests {
             hidden: false,
             live: false,
             created_at: 0,
+            persistent_empty: false,
             chart: None,
             stripped: phira_mp_common::StrippedRoomState::SelectingChart,
             round_id: None,

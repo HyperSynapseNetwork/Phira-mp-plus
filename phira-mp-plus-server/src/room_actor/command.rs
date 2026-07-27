@@ -11,6 +11,7 @@ pub(super) enum RoomCommandKind {
     SetHost,
     SetHidden,
     SetEndpoint,
+    SetPersistentEmpty,
     CloseRoom,
     KickUser,
     StartRoom,
@@ -53,6 +54,7 @@ impl RoomCommandKind {
             Self::AddTouches => "add_touches",
             Self::AddJudges => "add_judges",
             Self::SetDisplayName => "set_display_name",
+            Self::SetPersistentEmpty => "set_persistent_empty",
         }
     }
 
@@ -185,6 +187,11 @@ pub(super) enum RoomActorCommand {
         name: String,
         reply: oneshot::Sender<RoomCommandResult>,
     },
+    SetPersistentEmpty {
+        room_id: String,
+        persistent_empty: bool,
+        reply: oneshot::Sender<RoomCommandResult>,
+    },
 }
 
 impl RoomActorCommand {
@@ -211,6 +218,7 @@ impl RoomActorCommand {
             Self::AddTouches { .. } => RoomCommandKind::AddTouches,
             Self::AddJudges { .. } => RoomCommandKind::AddJudges,
             Self::SetDisplayName { .. } => RoomCommandKind::SetDisplayName,
+            Self::SetPersistentEmpty { .. } => RoomCommandKind::SetPersistentEmpty,
         }
     }
 
@@ -236,7 +244,8 @@ impl RoomActorCommand {
             | Self::SetLive { reply, .. }
             | Self::AddTouches { reply, .. }
             | Self::AddJudges { reply, .. }
-            | Self::SetDisplayName { reply, .. } => {
+            | Self::SetDisplayName { reply, .. }
+            | Self::SetPersistentEmpty { reply, .. } => {
                 let _ = reply.send(result);
             }
         }

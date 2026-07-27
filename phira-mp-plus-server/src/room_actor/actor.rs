@@ -25,6 +25,7 @@ pub struct RoomSnapshot {
     pub hidden: bool,
     pub live: bool,
     pub created_at: i64,
+    pub persistent_empty: bool,
     /// Chart id, if one is selected (actor-authoritative).
     pub chart: Option<i32>,
     /// The room lifecycle state as a stripped enum (actor-authoritative).
@@ -47,6 +48,7 @@ impl RoomSnapshot {
             hidden: state.state.control.hidden,
             live: state.state.live,
             created_at: state.created_at,
+            persistent_empty: state.state.control.persistent_empty,
             chart: state.state.chart,
             stripped: state.state.lifecycle.stripped(),
             round_id: state.state.round.round_id,
@@ -109,6 +111,7 @@ impl RoomState {
             hidden: self.control.hidden,
             live: self.live,
             created_at,
+            persistent_empty: self.control.persistent_empty,
             chart: self.chart,
             stripped: self.lifecycle.stripped(),
             round_id: self.round.round_id,

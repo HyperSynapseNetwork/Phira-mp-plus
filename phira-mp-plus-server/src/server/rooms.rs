@@ -46,14 +46,13 @@ impl PlusServerState {
     /// command exists for room creation. A future RoomActorCommand::CreateRoom
     /// variant could unify this path with the actor lifecycle.
     ///
-    /// TODO(Phase2-WorkC): Room no longer holds state (set_persistent_empty,
-    /// set_phira_api_endpoint_override removed). These must be routed through
-    /// the gateway after the room actor is registered.
+    /// persistent_empty and phira_api_endpoint are now routed through the
+    /// gateway after the room actor is registered.
     pub async fn create_empty_room(
         self: &Arc<Self>,
         room_id: &str,
         endpoint: Option<String>,
-        _persistent_empty: bool,
+        persistent_empty: bool,
     ) -> Result<Value, String> {
         let rid: RoomId = room_id
             .to_string()
@@ -71,14 +70,18 @@ impl PlusServerState {
             max_users,
             Some(Arc::clone(&self.round_store)),
         ));
-        // TODO(Phase2-WorkC): Route set_persistent_empty through gateway once
-        // a RoomActorCommand::SetPersistentEmpty variant exists.
-        // For now, the value is not persisted to actor state.
         if let Some(endpoint) = endpoint.clone() {
             // Route endpoint override through gateway.
             let _ = self
                 .room_commands
                 .set_phira_api_endpoint(self, &rid.to_string(), Some(endpoint))
+                .await;
+        }
+        // Route persistent_empty through gateway (triggers mailbox creation).
+        if persistent_empty {
+            let _ = self
+                .room_commands
+                .set_persistent_empty(self, &rid.to_string(), true)
                 .await;
         }
         {
@@ -119,14 +122,8 @@ impl PlusServerState {
 
     // ── Room persistence / metadata ──────────────────────────────────
 
-    /// TODO(Phase2-WorkD): Direct room mutation bypassing gateway. No
-    /// RoomActorCommand::SetPersistentEmpty variant exists yet. Consider adding
-    /// one so this operation goes through the per-room mailbox.
-    ///
-    /// TODO(Phase2-WorkC): Room no longer has set_persistent_empty. The
-    /// persistent_empty flag should be stored in actor_state. This function
-    /// is kept as a stub that records the plugin event but does not persist
-    /// the flag until a gateway command exists.
+    /// Set the persistent_empty flag for a room.
+    /// Routes through the RoomCommandGateway to persist in actor state.
     pub async fn set_room_persistent_empty(
         &self,
         room_id: &str,
@@ -136,17 +133,15 @@ impl PlusServerState {
             .to_string()
             .try_into()
             .map_err(|_| "invalid room_id".to_string())?;
-        // Room no longer has set_persistent_empty. The value would need to be
-        // stored in actor_state via a future gateway command.
         self.dispatch_plugin_event(crate::plugin::PluginEvent::RoomModify {
             user_id: 0,
             room_id: rid.to_string(),
             data: serde_json::json!({"action":"persistent_empty","value": persistent}).to_string(),
         })
         .await;
-        Ok(
-            serde_json::json!({"ok": true, "room_id": rid.to_string(), "persistent_empty": persistent}),
-        )
+        self.room_commands
+            .set_persistent_empty(self, &rid.to_string(), persistent)
+            .await
     }
 
     /// 如果房间没有真实房主或系统 `?` 房主，让指定普通玩家成为房主。
@@ -168,11 +163,6 @@ impl PlusServerState {
         // Check if room already has a host.
         let control = room.control_snapshot();
         if control.host_id.is_some() || control.system_host {
-            return false;
-        }
-        // Server-created empty rooms (no creator_id) keep host=None until
-        // CLI explicitly sets it via room host <id> <user_id>.
-        if room.creator_id.is_none() {
             return false;
         }
         tracing::info!(

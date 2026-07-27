@@ -51,8 +51,8 @@
 //! ### Bypasses without a gateway equivalent (TODO)
 //! - `room.create_empty` in state query dispatch: Calls `s.create_empty_room()`
 //!   directly.  No `RoomActorCommand::CreateRoom` variant exists.
-//! - `set_room_persistent_empty` in PlusServer: Calls
-//!   `room.set_persistent_empty()` directly.  No gateway command variant.
+//! - ~~`set_room_persistent_empty` in PlusServer: Now routes through
+//!   gateway via `RoomActorCommand::SetPersistentEmpty`.~~
 //! - `send_room_chat` in state query dispatch: Calls `room.send()` directly.
 //!   Read-only w.r.t. room state (message broadcast), but bypasses mailbox.
 //! - `create_empty_room` / `force_move_user_to_room` / `assign_room_host_if_missing`

@@ -261,11 +261,11 @@ impl Room {
         if let Some(server) = self.server.upgrade() {
             if let Some(snap) = server.room_snapshot(&self.id.to_string()) {
                 return RoomControlSnapshot {
-                    host_id: snap.host.or(self.creator_id),
+                    host_id: snap.host,
                     locked: snap.locked,
                     cycle: snap.cycle,
                     hidden: snap.hidden,
-                    persistent_empty: false, // not yet in actor snapshot
+                    persistent_empty: snap.persistent_empty,
                     system_host: false,
                     phira_api_endpoint: None,
                     admin_start_pending: false,
@@ -275,6 +275,7 @@ impl Room {
             }
         }
         // Fallback default — no actor snapshot yet.
+        // creator_id is still used here as a bootstrap for the pre-mailbox window.
         RoomControlSnapshot {
             host_id: self.creator_id,
             locked: false,

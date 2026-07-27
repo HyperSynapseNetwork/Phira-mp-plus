@@ -129,6 +129,10 @@ pub enum RoomCommandPayload {
         user_id: i32,
         name: String,
     },
+    PersistentEmptyChanged {
+        room_id: String,
+        persistent_empty: bool,
+    },
 }
 
 impl RoomCommandPayload {
@@ -221,6 +225,9 @@ impl RoomCommandPayload {
             }),
             Self::DisplayNameSet { room_id, user_id, name } => json!({
                 "ok": true, "room_id": room_id, "user_id": user_id, "name": name,
+            }),
+            Self::PersistentEmptyChanged { room_id, persistent_empty } => json!({
+                "ok": true, "room_id": room_id, "persistent_empty": persistent_empty,
             }),
         }
     }

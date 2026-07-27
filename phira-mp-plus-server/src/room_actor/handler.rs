@@ -969,10 +969,10 @@ impl RoomCommandHandler {
                     as_.state.members.monitors.push(*user_id);
                 } else {
                     as_.state.members.users.push(*user_id);
-                    // First non-monitor user becomes host, but only for
-                    // player-created rooms (those with a creator_id).
-                    // Server-created empty rooms keep host=None until CLI sets it.
-                    if as_.state.control.host_id.is_none() && lc.room().creator_id.is_some() {
+                    // First non-monitor user becomes host when no host is set.
+                    // This applies to both player-created rooms (set during actor
+                    // init from creator_id) and server-created empty rooms.
+                    if as_.state.control.host_id.is_none() {
                         as_.state.control.host_id = Some(*user_id);
                     }
                 }
@@ -1058,6 +1058,15 @@ impl RoomCommandHandler {
                 as_.display_names.insert(*user_id, name.clone());
                 ok(RoomCommandPayload::DisplayNameSet {
                     room_id: room_id.clone().to_string(), user_id: *user_id, name: name.clone(),
+                })
+            }
+
+            RoomActorCommand::SetPersistentEmpty { room_id, persistent_empty, .. } => {
+                let as_ = ctx.expect_actor_state();
+                as_.state.control.persistent_empty = *persistent_empty;
+                ok(RoomCommandPayload::PersistentEmptyChanged {
+                    room_id: room_id.clone().to_string(),
+                    persistent_empty: *persistent_empty,
                 })
             }
         }
