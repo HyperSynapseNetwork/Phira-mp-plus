@@ -98,11 +98,10 @@ impl CliHandler {
         };
         let crate::db::DbManager::Pg(pool) = &self.state.db_manager;
         let count = self.state.ban_manager.ban_user_ips(uid, &reason, pool).await;
-            self.out(format!(
-                "  {} 用户 #{} 名下 {} 个 IP 已封禁",
-                c::green("✓"), uid, count
-            ));
-        }
+        self.out(format!(
+            "  {} 用户 #{} 名下 {} 个 IP 已封禁",
+            c::green("✓"), uid, count
+        ));
     }
 
     pub(in crate::cli) async fn dispatch_unban_ip_command(&self, args: &[&str]) {
