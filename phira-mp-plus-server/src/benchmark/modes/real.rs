@@ -206,7 +206,7 @@ pub async fn run_real(
         .map_err(|e| format!("failed to send RequestStart: {e}"))?;
     let _ = wait_for_response(&mut cmd_rx, |cmd| match cmd {
         ServerCommand::Message(msg) => match msg {
-            phira_mp_common::Message::GameStart { .. } => Some(Ok(())),
+            phira_mp_common::Message::GameStart { .. } => Some(Ok::<(), String>(())),
             _ => None,
         },
         _ => None,
@@ -219,7 +219,7 @@ pub async fn run_real(
         .map_err(|e| format!("failed to send Ready: {e}"))?;
     let _ = wait_for_response(&mut cmd_rx, |cmd| match cmd {
         ServerCommand::Message(msg) => match msg {
-            phira_mp_common::Message::StartPlaying { .. } => Some(Ok(())),
+            phira_mp_common::Message::StartPlaying { .. } => Some(Ok::<(), String>(())),
             _ => None,
         },
         _ => None,
