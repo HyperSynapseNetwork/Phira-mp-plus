@@ -177,13 +177,22 @@ jobs:
           export PM_DATABASE_URL="postgres://postgres:postgres@localhost:5432/phira_mp_plus"
           export LLVM_PROFILE_FILE="/tmp/pgo-data/%m_%p.profraw"
 
-          # Start instrumented server, pipe benchmark through stdin.
-          # Runs in-process, connects to itself via TCP on port 22346.
+          # Start benchmark server, pipe benchmark CLI via stdin.
+          # The benchmark runs in-process, connects to itself via TCP.
+          # After the benchmark, stdin reaches EOF and CLI exits, but the
+          # server keeps running until we send SIGINT.
           printf 'y\nbenchmark run --mode real --scenario gameplay --preset quick --duration 5s\n' | \
-            timeout -s INT 60 \
-              ./target/x86_64-unknown-linux-gnu/release/phira-mp-plus-server \
-                --port 22346 --http-port 22347 \
-                || true
+            ./target/x86_64-unknown-linux-gnu/release/phira-mp-plus-server \
+              --port 22346 --http-port 22347 &
+          SERVER_PID=$!
+
+          # Give benchmark time to complete + 10s buffer
+          sleep 15
+
+          # SIGINT triggers graceful shutdown + LLVM profile flush
+          kill -INT $SERVER_PID 2>/dev/null || true
+          # Wait up to 15s for cleanup, then force kill
+          wait $SERVER_PID 2>/dev/null || true
 
           ls -la /tmp/pgo-data/ 2>/dev/null || true
 
