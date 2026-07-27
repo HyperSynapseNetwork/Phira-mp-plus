@@ -64,23 +64,56 @@ impl PlusServer {
             // read the PROXY header and substitute the real client
             // address.  Non-PROXY connections from the same CIDR are
             // rejected (the admin has explicitly opted in).
+            //
+            // Dual rate‑limiting: the proxy peer IP was checked above at
+            // L25; the forwarded client IP is checked here so both are
+            // independently rate‑limited.
             let (stream, addr) = if proxy_enabled {
-                let (s, proxy_addr) =
-                    crate::server::proxy_protocol::maybe_read_proxy_header(stream).await;
-                match proxy_addr {
-                    Some(forwarded) => {
+                const PROXY_HDR_TIMEOUT: std::time::Duration =
+                    std::time::Duration::from_secs(3);
+                const PROXY_MAX_HDR: usize = 16384;
+
+                match crate::server::proxy_protocol::maybe_read_proxy_header(
+                    stream,
+                    PROXY_HDR_TIMEOUT,
+                    PROXY_MAX_HDR,
+                )
+                .await
+                {
+                    Ok((s, Some(forwarded))) => {
+                        // Rate‑limit the forwarded client IP (RFC 7239 /
+                        // PROXY protocol semantics).  This is the IP that
+                        // subsequent rate‑limit and ban checks should use.
+                        let fwd_ip = forwarded.ip();
+                        if !state
+                            .connection_limiter
+                            .check(&fwd_ip.to_string())
+                            .await
+                        {
+                            trace!(
+                                peer = %ip,
+                                forwarded = %fwd_ip,
+                                "connection rejected: forwarded IP rate‑limited"
+                            );
+                            return;
+                        }
+
                         trace!(
                             peer = %ip,
-                            forwarded = %forwarded.ip(),
+                            forwarded = %fwd_ip,
                             "PROXY protocol forwarded connection"
                         );
                         (s, forwarded)
                     }
-                    None => {
+                    Ok((_s, None)) => {
                         warn!(
                             %ip,
                             "PROXY source without valid PROXY header; closing connection"
                         );
+                        return;
+                    }
+                    Err(e) => {
+                        warn!(%ip, "PROXY protocol error: {e}; closing connection");
                         return;
                     }
                 }
