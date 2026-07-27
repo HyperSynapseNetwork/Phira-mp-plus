@@ -455,6 +455,18 @@ impl CliHandler {
                         }
                     }
                 }
+                "--listen-addr" => {
+                    i += 1;
+                    if i >= cmd_args.len() {
+                        self.out(format!(
+                            "  {} --listen-addr requires an address (ip:port)",
+                            c::red("✗")
+                        ));
+                        return;
+                    }
+                    let addr = cmd_args[i].to_string();
+                    run_args.overrides.push(("listen-addr".to_string(), addr));
+                }
                 "--output" => {
                     i += 1;
                     if i >= cmd_args.len() {
