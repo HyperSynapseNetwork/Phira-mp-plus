@@ -828,6 +828,7 @@ mod tests {
     #[test]
     fn rejects_empty_dead_letter_path_but_allows_explicit_disable() {
         let mut config = PlusConfig::default();
+        config.database_url = "postgres://localhost:5432/pmp_test".to_string();
         config.runtime.persistence_dead_letter_path = Some("   ".to_string());
         assert!(config.validate().is_err());
 
