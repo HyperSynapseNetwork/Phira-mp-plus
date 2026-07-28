@@ -336,7 +336,7 @@ mod tests {
     fn failure_round_trips_to_untyped_error() {
         let result = RoomCommandResult::from_untyped(
             Err("room not found".to_string()),
-            // FallbackInline removed in PMP25
+            RoomCommandDelivery::MailboxError,
         );
 
         assert!(!result.is_ok());
