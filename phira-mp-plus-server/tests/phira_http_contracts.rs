@@ -90,7 +90,6 @@ fn benchmark_real_is_explicit_not_default() {
     let real: BenchmarkRunMode = serde_json::from_str("\"real\"").unwrap();
     match real {
         BenchmarkRunMode::Real => {}
-        _ => panic!("not Real"),
     }
 }
 
