@@ -126,7 +126,7 @@ pub fn specs() -> Vec<CommandSpec> {
         CommandSpec::new("doctor", "core", "运行系统诊断检查。", "doctor")
             .handler(Arc::new(|state, _args| {
                 let mut lines = vec![format!("  ◆ Phira-mp+ v{} Doctor", env!("CARGO_PKG_VERSION"))];
-                if let Some(db) = crate::internal_hooks::DB.get() {
+                if let Some(_db) = crate::internal_hooks::DB.get() {
                     lines.push("  ✓ 数据库: 已连接".to_string());
                 } else {
                     lines.push("  ○ 数据库: 未配置".to_string());
