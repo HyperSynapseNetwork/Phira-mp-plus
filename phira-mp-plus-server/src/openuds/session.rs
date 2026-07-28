@@ -228,10 +228,6 @@ pub async fn session_writer(
                     tracing::debug!("session_writer: flush error: {e}");
                     break;
                 }
-                if let Err(e) = write_stream.flush().await {
-                    tracing::debug!("session_writer: flush error: {e}");
-                    break;
-                }
             }
             Err(e) => {
                 tracing::warn!("session_writer: encode error: {e}");

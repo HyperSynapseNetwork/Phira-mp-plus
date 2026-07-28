@@ -142,7 +142,7 @@ pub async fn start(state: Arc<PlusServerState>, config: &OpenUdsConfig) {
 
 /// Handle a single UDS client connection.
 async fn handle_session(
-    read_half: tokio::net::unix::OwnedReadHalf,
+    mut read_half: tokio::net::unix::OwnedReadHalf,
     write_half: tokio::net::unix::OwnedWriteHalf,
     sessions: Arc<RwLock<HashMap<Uuid, Arc<Session>>>>,
     state: Arc<PlusServerState>,
