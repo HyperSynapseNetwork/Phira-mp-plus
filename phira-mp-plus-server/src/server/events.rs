@@ -4,7 +4,6 @@
 //! orchestration layer.
 
 use crate::benchmark::report::BenchmarkReport;
-use crate::event_bus::MpEvent;
 use crate::plugin::PluginEvent;
 use crate::server::state::{PlusServerState, ServerStats};
 use phira_mp_common::{RoomEvent, ServerCommand};
