@@ -10,34 +10,35 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{mpsc, oneshot};
 use tracing::{error, info, warn};
 
+/// Synchronous reply channel for WIT host functions — blocks the calling
+/// WASM thread until the async TCP actor processes the command.
+pub(crate) type SyncReply<T> = std::sync::mpsc::Sender<Result<T, String>>;
+
 /// Commands plugins send to the TCP actor.
 #[derive(Debug)]
 pub enum PluginTcpCommand {
     Connect {
         addr: String,
-        reply: oneshot::Sender<Result<u64, String>>,
+        reply: SyncReply<u64>,
     },
     Listen {
         addr: String,
-        reply: oneshot::Sender<Result<u64, String>>,
+        reply: SyncReply<u64>,
     },
     Send { handle: u64, bytes: Vec<u8> },
     Close { handle: u64 },
-    /// Accept a queued inbound connection (non-blocking).
     Accept {
         listener_handle: u64,
-        reply: oneshot::Sender<Result<Option<u64>, String>>,
+        reply: SyncReply<Option<u64>>,
     },
-    /// Read buffered data from a connection (non-blocking).
     Recv {
         handle: u64,
         max_bytes: u32,
-        reply: oneshot::Sender<Result<Option<Vec<u8>>, String>>,
+        reply: SyncReply<Option<Vec<u8>>>,
     },
-    /// Get the remote address of a connection.
     PeerAddr {
         handle: u64,
-        reply: oneshot::Sender<Result<String, String>>,
+        reply: SyncReply<String>,
     },
 }
 

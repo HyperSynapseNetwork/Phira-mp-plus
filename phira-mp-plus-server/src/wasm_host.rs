@@ -181,7 +181,7 @@ impl WitPluginComponent {
             node_key: Arc::new(crate::crypto::NodeKey::from_secret(&phira_mp_common::generate_secret_key("node_key", 32).map_err(|e| format!("node key derivation: {e}"))?)),
             timers: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
             timer_callback: None,
-            tcp: None,
+            tcp: server.plugin_tcp_tx.clone(),
             tcp_callback: None,
             room_state_query: None,
         }))
