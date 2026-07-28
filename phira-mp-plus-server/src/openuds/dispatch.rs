@@ -420,9 +420,7 @@ async fn cmd_player_ban_ip(
     } else if let Ok(user_id) = target.parse::<i32>() {
         // Treat as user_id, ban all their IPs
         let db = &state.db_manager;
-        let pool = match db {
-            crate::db::DbManager::Pg(p) => p,
-        };
+        let crate::db::DbManager::Pg(pool) = db;
         let count = state.ban_manager.ban_user_ips(user_id, reason, pool).await;
         Ok(serde_json::json!({"user_id": user_id, "banned_ips": count, "reason": reason}))
     } else {
@@ -455,9 +453,7 @@ async fn cmd_player_ip_history(
         .map(|v| v as i32)
         .ok_or_else(|| "user_id required".to_string())?;
     let db = &state.db_manager;
-    let pool = match db {
-        crate::db::DbManager::Pg(p) => p,
-    };
+    let crate::db::DbManager::Pg(pool) = db;
     let history = state.ban_manager.user_ip_history(user_id, pool).await;
     Ok(serde_json::json!({"user_id": user_id, "ip_history": history}))
 }

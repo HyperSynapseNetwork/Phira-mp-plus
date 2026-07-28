@@ -373,7 +373,7 @@ async fn handle_command_frame(
                 .unwrap_or("")
                 .to_string();
 
-            session.add_stream_subscriptions(&[stream.clone()]);
+            session.add_stream_subscriptions(std::slice::from_ref(&stream));
 
             let resp = serde_json::json!({
                 "type": "stream_subscribed",

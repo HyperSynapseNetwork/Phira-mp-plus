@@ -56,8 +56,8 @@ impl EventDispatcher {
 
         let sessions = self.sessions.read().await;
         for (_id, session) in sessions.iter() {
-            if session.is_authenticated() && session.subscribes_to(&event_type) {
-                let frame = Session::event_response(&event_type, data.clone());
+            if session.is_authenticated() && session.subscribes_to(event_type) {
+                let frame = Session::event_response(event_type, data.clone());
                 let _ = session.send(frame).await;
             }
         }
