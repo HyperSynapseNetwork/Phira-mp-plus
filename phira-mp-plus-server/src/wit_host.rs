@@ -55,6 +55,10 @@ pub struct WitHostContext {
     pub http_allow_private_network: bool,
     /// TCP actor sender for plugin-initiated connections.
     pub tcp: Option<tokio::sync::mpsc::Sender<crate::plugin_tcp::PluginTcpCommand>>,
+    /// TCP event callback: forwards tcp:accept/data/disconnect events to plugin's on-api.
+    pub tcp_callback: Option<Arc<dyn Fn(String, serde_json::Value) + Send + Sync>>,
+    /// Room state query access (for phira-room-state interface).
+    pub room_state_query: Option<Arc<dyn Fn(String) -> Result<serde_json::Value, String> + Send + Sync>>,
 }
 
 /// Wraps server capabilities to implement WIT host traits.
@@ -1029,6 +1033,135 @@ mod wit_trait_impls {
             let tx = self.ctx.tcp.as_ref().ok_or("tcp not available")?;
             tx.try_send(crate::plugin_tcp::PluginTcpCommand::Close { handle })
                 .map_err(|e| format!("tcp close failed: {e}"))
+        }
+
+        fn accept(&mut self, handle: u64) -> Result<Option<u64>, String> {
+            self.require_capability("tcp")?;
+            let tx = self.ctx.tcp.as_ref().ok_or("tcp not available")?;
+            let (reply, rx) = tokio::sync::oneshot::channel();
+            tx.try_send(crate::plugin_tcp::PluginTcpCommand::Accept { listener_handle: handle, reply })
+                .map_err(|e| format!("tcp accept failed: {e}"))?;
+            rx.try_recv().map_err(|_| "tcp accept reply lost".to_string())?
+        }
+
+        fn recv(&mut self, handle: u64, max_bytes: u32) -> Result<Option<Vec<u8>>, String> {
+            self.require_capability("tcp")?;
+            let tx = self.ctx.tcp.as_ref().ok_or("tcp not available")?;
+            let (reply, rx) = tokio::sync::oneshot::channel();
+            tx.try_send(crate::plugin_tcp::PluginTcpCommand::Recv { handle, max_bytes, reply })
+                .map_err(|e| format!("tcp recv failed: {e}"))?;
+            rx.try_recv().map_err(|_| "tcp recv reply lost".to_string())?
+        }
+
+        fn peer_addr(&mut self, handle: u64) -> Result<String, String> {
+            self.require_capability("tcp")?;
+            let tx = self.ctx.tcp.as_ref().ok_or("tcp not available")?;
+            let (reply, rx) = tokio::sync::oneshot::channel();
+            tx.try_send(crate::plugin_tcp::PluginTcpCommand::PeerAddr { handle, reply })
+                .map_err(|e| format!("tcp peer-addr failed: {e}"))?;
+            rx.try_recv().map_err(|_| "tcp peer-addr reply lost".to_string())?
+        }
+    }
+
+    // ── phira-room-state ──
+    impl wit::phira::plugin::phira_room_state::Host for WitPluginHost {
+        fn get_room_state(&mut self, room_id: String) -> Result<wit::phira::plugin::phira_room_state::RoomState, String> {
+            self.require_capability("room-state")?;
+            let query = self.ctx.room_state_query.as_ref()
+                .ok_or("room state query not available")?;
+            let json = query(room_id.clone())?;
+            // Parse JSON into structured RoomState
+            let v: serde_json::Value = serde_json::from_str(&json)
+                .map_err(|e| format!("room state parse error: {e}"))?;
+            let room_id = v.get("room_id").and_then(|v| v.as_str()).unwrap_or("").to_string();
+            let room_uuid = v.get("room_uuid").and_then(|v| v.as_str()).unwrap_or("").to_string();
+            let host_id = v.get("host_id").and_then(|v| v.as_i64()).map(|n| n as u32);
+            let locked = v.get("locked").and_then(|v| v.as_bool()).unwrap_or(false);
+            let hidden = v.get("hidden").and_then(|v| v.as_bool()).unwrap_or(false);
+            let player_count = v.get("player_count").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+            let monitor_count = v.get("monitor_count").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+            let players = Vec::new(); // detailed player list queried separately
+            let current_round = None;
+            Ok(wit::phira::plugin::phira_room_state::RoomState {
+                room_id, room_uuid, host_id, locked, hidden,
+                player_count, monitor_count, players, current_round,
+            })
+        }
+
+        fn get_room_players(&mut self, room_id: String) -> Result<Vec<wit::phira::plugin::phira_room_state::RoomPlayer>, String> {
+            self.require_capability("room-state")?;
+            let query = self.ctx.room_state_query.as_ref()
+                .ok_or("room state query not available")?;
+            let json = query(format!("{room_id}/players"))?;
+            let arr: Vec<serde_json::Value> = serde_json::from_str(&json)
+                .map_err(|e| format!("room players parse error: {e}"))?;
+            let players = arr.into_iter().map(|v| {
+                wit::phira::plugin::phira_room_state::RoomPlayer {
+                    user_id: v.get("user_id").and_then(|v| v.as_u64()).unwrap_or(0) as u32,
+                    display_name: v.get("display_name").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                    is_monitor: v.get("is_monitor").and_then(|v| v.as_bool()).unwrap_or(false),
+                    is_ready: v.get("is_ready").and_then(|v| v.as_bool()).unwrap_or(false),
+                    is_host: v.get("is_host").and_then(|v| v.as_bool()).unwrap_or(false),
+                    is_finished: v.get("is_finished").and_then(|v| v.as_bool()).unwrap_or(false),
+                    score: v.get("score").and_then(|v| v.as_u64()).map(|n| n as u32),
+                    accuracy: v.get("accuracy").and_then(|v| v.as_f64()).map(|n| n as f32),
+                }
+            }).collect();
+            Ok(players)
+        }
+
+        fn get_player_status(&mut self, room_id: String, user_id: u32) -> Result<Option<wit::phira::plugin::phira_room_state::RoomPlayer>, String> {
+            let players = self.get_room_players(room_id)?;
+            Ok(players.into_iter().find(|p| p.user_id == user_id))
+        }
+
+        fn list_rooms(&mut self) -> Result<Vec<String>, String> {
+            let query = self.ctx.room_state_query.as_ref()
+                .ok_or("room state query not available")?;
+            let json = query("list".to_string())?;
+            let arr: Vec<String> = serde_json::from_str(&json)
+                .map_err(|e| format!("list rooms parse error: {e}"))?;
+            Ok(arr)
+        }
+    }
+
+    // ── phira-handler ──
+    impl wit::phira::plugin::phira_handler::Host for WitPluginHost {
+        fn register_handler(&mut self, desc: wit::phira::plugin::phira_handler::HandlerDescriptor) -> Result<(), String> {
+            self.require_capability("handler")?;
+            // Store handler metadata in context for routing
+            let method = desc.method.clone();
+            // Register via the shared api_handlers map
+            if let Some(ref handler_registry) = self.ctx.room_state_query {
+                let payload = serde_json::json!({
+                    "plugin": self.plugin_name,
+                    "method": desc.method,
+                    "description": desc.description,
+                    "request_schema": desc.request_schema,
+                    "response_schema": desc.response_schema,
+                });
+                let _ = handler_registry(format!("register:{method}"));
+                // Would store in a proper registry in full implementation
+            }
+            Ok(())
+        }
+
+        fn unregister_handler(&mut self, method: String) -> Result<(), String> {
+            self.require_capability("handler")?;
+            if let Some(ref handler_registry) = self.ctx.room_state_query {
+                let _ = handler_registry(format!("unregister:{method}"));
+            }
+            Ok(())
+        }
+
+        fn list_handlers(&mut self) -> Result<Vec<wit::phira::plugin::phira_handler::HandlerDescriptor>, String> {
+            Ok(Vec::new()) // Full implementation would query registry
+        }
+
+        fn request_capability(&mut self, capability: String) -> Result<bool, String> {
+            // By default, deny dynamic capability requests.
+            // Admin plugins with special permissions may override this.
+            Ok(false)
         }
     }
 

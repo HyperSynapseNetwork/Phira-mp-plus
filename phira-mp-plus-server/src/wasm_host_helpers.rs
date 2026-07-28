@@ -64,6 +64,8 @@ pub fn default_capabilities() -> HashSet<String> {
         "crypto",
         "timer",
         "tcp",
+        "room-state",
+        "handler",
         "file.read",
         "file.write",
         "plugin.call",

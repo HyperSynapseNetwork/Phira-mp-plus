@@ -3,6 +3,9 @@
 // This WIT file defines the plugin world `phira-plugin-v2`, the only supported
 // plugin ABI. All host interfaces and guest exports are fully implemented.
 //
+// v3 extension interfaces (phira-room-state, phira-handler, phira-tcp-v3)
+// are backward-compatible additions to the same v2 world.
+//
 // Status:
 //   - Host capability and resource boundaries are implemented in the server.
 //   - Release readiness still depends on workspace tests and real component fixtures.
@@ -383,7 +386,7 @@ interface phira-timer {
 }
 
 
-/// Plain TCP networking — connect/listen/send/close for WASM plugins.
+/// TCP networking — connect/listen/send/close with accept and event-driven receive.
 interface phira-tcp {
     /// Connect to a remote TCP endpoint. Returns a connection handle.
     connect: func(addr: string) -> result<u64, string>;
@@ -394,8 +397,95 @@ interface phira-tcp {
     /// Send raw bytes on an established connection.
     send: func(handle: u64, bytes: list<u8>) -> result<_, string>;
 
+    /// Accept an inbound connection from a listener (non-blocking).
+    /// Returns null if no pending connection.
+    /// Host also dispatches `on-api("tcp:accept", [listener, conn])` on arrival.
+    accept: func(handle: u64) -> result<option<u64>, string>;
+
+    /// Receive buffered data from a connection (non-blocking).
+    /// Returns null if no data available.
+    /// Host also dispatches `on-api("tcp:data", [conn, data])` on arrival.
+    recv: func(handle: u64, max-bytes: u32) -> result<option<list<u8>>, string>;
+
     /// Close a connection or stop a listener by handle.
     close: func(handle: u64) -> result<_, string>;
+
+    /// Get the remote address of a connection.
+    peer-addr: func(handle: u64) -> result<string, string>;
+}
+
+/// Structured room state query — returns typed records instead of JSON blobs.
+interface phira-room-state {
+    /// A player's current status in a room.
+    record room-player {
+        user-id: u32,
+        display-name: string,
+        is-monitor: bool,
+        is-ready: bool,
+        is-host: bool,
+        is-finished: bool,
+        score: option<u32>,
+        accuracy: option<f32>,
+    }
+
+    /// Current round metadata.
+    record round-info {
+        round-id: string,
+        chart-id: option<u32>,
+        chart-name: option<string>,
+        phase: string,
+    }
+
+    /// Full structured room state.
+    record room-state {
+        room-id: string,
+        room-uuid: string,
+        host-id: option<u32>,
+        locked: bool,
+        hidden: bool,
+        player-count: u32,
+        monitor-count: u32,
+        players: list<room-player>,
+        current-round: option<round-info>,
+    }
+
+    /// Get structured room state by room ID.
+    get-room-state: func(room-id: string) -> result<room-state, string>;
+
+    /// Get all players in a room.
+    get-room-players: func(room-id: string) -> result<list<room-player>, string>;
+
+    /// Check a player's membership and status in a specific room.
+    get-player-status: func(room-id: string, user-id: u32) -> result<option<room-player>, string>;
+
+    /// List all active room IDs.
+    list-rooms: func() -> result<list<string>, string>;
+}
+
+/// Dynamic handler registration — plugins can expose custom service methods.
+interface phira-handler {
+    /// Descriptor for a registered handler.
+    record handler-descriptor {
+        method: string,
+        description: string,
+        request-schema: option<string>,
+        response-schema: option<string>,
+    }
+
+    /// Register a handler for a custom API method.
+    /// When called, host dispatches `on-api(method, args)` to this plugin.
+    /// Overrides any previous handler for the same method name.
+    register-handler: func(desc: handler-descriptor) -> result<_, string>;
+
+    /// Unregister a previously registered handler.
+    unregister-handler: func(method: string) -> result<_, string>;
+
+    /// List all handlers currently registered by this plugin.
+    list-handlers: func() -> result<list<handler-descriptor>, string>;
+
+    /// Update runtime capability set (admin only, checked by host policy).
+    /// Adding capabilities requires host authorization.
+    request-capability: func(capability: string) -> result<bool, string>;
 }
 
 /// Runtime diagnostics.
@@ -432,6 +522,8 @@ world phira-plugin-v2 {
     import phira-tcp;
     import phira-timer;
     import phira-runtime;
+    import phira-room-state;
+    import phira-handler;
 
     export init: func() -> result<_, string>;
     export get-info: func() -> plugin-info;

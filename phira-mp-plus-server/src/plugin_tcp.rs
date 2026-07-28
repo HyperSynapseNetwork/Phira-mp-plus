@@ -23,6 +23,22 @@ pub enum PluginTcpCommand {
     },
     Send { handle: u64, bytes: Vec<u8> },
     Close { handle: u64 },
+    /// Accept a queued inbound connection (non-blocking).
+    Accept {
+        listener_handle: u64,
+        reply: oneshot::Sender<Result<Option<u64>, String>>,
+    },
+    /// Read buffered data from a connection (non-blocking).
+    Recv {
+        handle: u64,
+        max_bytes: u32,
+        reply: oneshot::Sender<Result<Option<Vec<u8>>, String>>,
+    },
+    /// Get the remote address of a connection.
+    PeerAddr {
+        handle: u64,
+        reply: oneshot::Sender<Result<String, String>>,
+    },
 }
 
 /// Events from the TCP actor back to the plugin system.
@@ -49,15 +65,21 @@ pub enum PluginTcpEvent {
 
 type ConnectionMap = Arc<Mutex<HashMap<u64, mpsc::Sender<Vec<u8>>>>>;
 type CloseMap = Arc<Mutex<HashMap<u64, oneshot::Sender<()>>>>;
+/// Shared buffer for received data (read task → recv command).
+type ReadBufMap = Arc<Mutex<HashMap<u64, Vec<u8>>>>;
 
 struct Connection {
     remote_addr: String,
     close_tx: Option<oneshot::Sender<()>>,
+    /// Buffer for incoming data (bytes arriving before the plugin calls recv).
+    read_buf: Vec<u8>,
 }
 
 struct Listener {
     addr: String,
     close_tx: Option<oneshot::Sender<()>>,
+    /// Queue of accepted connections waiting for the plugin to call accept().
+    pending_accepts: Vec<u64>,
 }
 
 /// TCP actor managing connection and listener handles.
@@ -68,6 +90,7 @@ pub struct PluginTcpActor {
     next_handle: u64,
     conn_map: ConnectionMap,
     close_map: CloseMap,
+    read_buf_map: ReadBufMap,
     event_callback: Option<Arc<dyn Fn(String, serde_json::Value) + Send + Sync>>,
 }
 
@@ -80,8 +103,14 @@ impl PluginTcpActor {
             next_handle: 1,
             conn_map: Arc::new(Mutex::new(HashMap::new())),
             close_map: Arc::new(Mutex::new(HashMap::new())),
+            read_buf_map: Arc::new(Mutex::new(HashMap::new())),
             event_callback: None,
         }
+    }
+
+    /// Return the event callback for wiring (used by PluginManager).
+    pub fn event_callback(&self) -> Option<Arc<dyn Fn(String, serde_json::Value) + Send + Sync>> {
+        self.event_callback.clone()
     }
 
     pub fn set_event_callback(
@@ -89,6 +118,24 @@ impl PluginTcpActor {
         cb: Arc<dyn Fn(String, serde_json::Value) + Send + Sync>,
     ) {
         self.event_callback = Some(cb);
+    }
+
+    fn close_handle(&mut self, handle: u64) {
+        let _ = self.conn_map.lock().unwrap().remove(&handle);
+        let _ = self.close_map.lock().unwrap().remove(&handle);
+        if let Some(conn) = self.connections.remove(&handle) {
+            if let Some(tx) = conn.close_tx {
+                let _ = tx.send(());
+            }
+            info!(%handle, addr = %conn.remote_addr, "tcp connection closed");
+        } else if let Some(listener) = self.listeners.remove(&handle) {
+            if let Some(tx) = listener.close_tx {
+                let _ = tx.send(());
+            }
+            info!(%handle, addr = %listener.addr, "tcp listener stopped");
+        } else {
+            warn!(%handle, "tcp close on unknown handle");
+        }
     }
 
     fn alloc_handle(&mut self) -> u64 {
@@ -112,8 +159,9 @@ impl PluginTcpActor {
                     let handle = self.alloc_handle();
                     let cb = self.event_callback.clone();
                     let cm = Arc::clone(&self.conn_map);
+                    let rbm = Arc::clone(&self.read_buf_map);
 
-                    match tcp_connect(&addr, handle, cb, cm).await {
+                    match tcp_connect(&addr, handle, cb, cm, rbm).await {
                         Ok((_, close_tx)) => {
                             self.connections.insert(
                                 handle,
@@ -136,8 +184,9 @@ impl PluginTcpActor {
                     let cb = self.event_callback.clone();
                     let cm = Arc::clone(&self.conn_map);
                     let clm = Arc::clone(&self.close_map);
+                    let rbm = Arc::clone(&self.read_buf_map);
 
-                    match tcp_listen(&addr, handle, cb, cm, clm).await {
+                    match tcp_listen(&addr, handle, cb, cm, clm, rbm).await {
                         Ok(close_tx) => {
                             self.listeners.insert(
                                 handle,
@@ -170,23 +219,48 @@ impl PluginTcpActor {
                     }
                 }
                 PluginTcpCommand::Close { handle } => {
-                    let _ = self.conn_map.lock().unwrap().remove(&handle);
-                    if let Some(close_tx) = self.close_map.lock().unwrap().remove(&handle) {
-                        let _ = close_tx.send(());
-                        info!(%handle, "tcp accepted connection closed");
-                    } else if let Some(conn) = self.connections.remove(&handle) {
-                        if let Some(tx) = conn.close_tx {
-                            let _ = tx.send(());
+                    self.close_handle(handle);
+                }
+                PluginTcpCommand::Accept { listener_handle, reply } => {
+                    let result = if let Some(listener) = self.listeners.get_mut(&listener_handle) {
+                        if listener.pending_accepts.is_empty() {
+                            Ok(None)
+                        } else {
+                            Ok(Some(listener.pending_accepts.remove(0)))
                         }
-                        info!(%handle, addr = %conn.remote_addr, "tcp connection closed");
-                    } else if let Some(listener) = self.listeners.remove(&handle) {
-                        if let Some(tx) = listener.close_tx {
-                            let _ = tx.send(());
-                        }
-                        info!(%handle, addr = %listener.addr, "tcp listener stopped");
                     } else {
-                        warn!(%handle, "tcp close on unknown handle");
-                    }
+                        Err(format!("unknown listener handle: {listener_handle}"))
+                    };
+                    let _ = reply.send(result);
+                }
+                PluginTcpCommand::Recv { handle, max_bytes, reply } => {
+                    let result = {
+                        let map = self.read_buf_map.lock().unwrap();
+                        if let Some(buf) = map.get(&handle) {
+                            if buf.is_empty() {
+                                Ok(None)
+                            } else {
+                                let len = (max_bytes as usize).min(buf.len());
+                                let data = buf[..len].to_vec();
+                                // Drop from shared buf after read (done via drain in real usage)
+                                drop(map);
+                                self.read_buf_map.lock().unwrap().get_mut(&handle)
+                                    .map(|b| { b.drain(..len); });
+                                Ok(Some(data))
+                            }
+                        } else {
+                            Err(format!("unknown connection handle: {handle}"))
+                        }
+                    };
+                    let _ = reply.send(result);
+                }
+                PluginTcpCommand::PeerAddr { handle, reply } => {
+                    let result = if let Some(conn) = self.connections.get(&handle) {
+                        Ok(conn.remote_addr.clone())
+                    } else {
+                        Err(format!("unknown handle: {handle}"))
+                    };
+                    let _ = reply.send(result);
                 }
             }
         }
@@ -201,6 +275,7 @@ async fn tcp_connect(
     handle: u64,
     event_cb: Option<Arc<dyn Fn(String, serde_json::Value) + Send + Sync>>,
     conn_map: ConnectionMap,
+    read_buf_map: ReadBufMap,
 ) -> Result<(mpsc::Sender<Vec<u8>>, oneshot::Sender<()>), String> {
     let stream = TcpStream::connect(addr)
         .await
@@ -209,11 +284,13 @@ async fn tcp_connect(
     let (data_tx, data_rx) = mpsc::channel::<Vec<u8>>(64);
     let (close_tx, close_rx) = oneshot::channel();
     conn_map.lock().unwrap().insert(handle, data_tx.clone());
+    read_buf_map.lock().unwrap().insert(handle, Vec::new());
 
     let remote = addr.to_string();
     let cm = Arc::clone(&conn_map);
+    let rbm = Arc::clone(&read_buf_map);
     tokio::spawn(async move {
-        tcp_read_task(stream, handle, data_rx, close_rx, event_cb, remote).await;
+        tcp_read_task(stream, handle, data_rx, close_rx, event_cb, remote, rbm).await;
         cm.lock().unwrap().remove(&handle);
     });
 
@@ -226,6 +303,7 @@ async fn tcp_listen(
     event_cb: Option<Arc<dyn Fn(String, serde_json::Value) + Send + Sync>>,
     conn_map: ConnectionMap,
     close_map: CloseMap,
+    read_buf_map: ReadBufMap,
 ) -> Result<oneshot::Sender<()>, String> {
     let listener = TcpListener::bind(addr)
         .await
@@ -233,7 +311,7 @@ async fn tcp_listen(
 
     let (close_tx, close_rx) = oneshot::channel();
     tokio::spawn(tcp_accept_loop(
-        listener, listener_handle, close_rx, event_cb, conn_map, close_map,
+        listener, listener_handle, close_rx, event_cb, conn_map, close_map, read_buf_map,
     ));
     Ok(close_tx)
 }
@@ -245,6 +323,7 @@ async fn tcp_accept_loop(
     event_cb: Option<Arc<dyn Fn(String, serde_json::Value) + Send + Sync>>,
     conn_map: ConnectionMap,
     close_map: CloseMap,
+    read_buf_map: ReadBufMap,
 ) {
     let mut next_conn: u64 = 1;
     loop {
@@ -258,19 +337,23 @@ async fn tcp_accept_loop(
                         let cb = event_cb.clone();
                         let cm_handle = Arc::clone(&conn_map);
                         let clm_handle = Arc::clone(&close_map);
+                        let rbm = Arc::clone(&read_buf_map);
+                        // Register read buffer for this connection.
+                        rbm.lock().unwrap().insert(conn_handle, Vec::new());
+                        // Notify plugin via on-api event.
+                        if let Some(ref cb) = cb {
+                            cb("tcp:accept".into(), serde_json::json!({
+                                "listener_handle": listener_handle,
+                                "conn_handle": conn_handle,
+                                "remote_addr": peer,
+                            }));
+                        }
                         tokio::spawn(async move {
                             let (data_tx, data_rx) = mpsc::channel::<Vec<u8>>(64);
                             let (close_tx, close_rx) = oneshot::channel::<()>();
                             cm_handle.lock().unwrap().insert(conn_handle, data_tx);
                             clm_handle.lock().unwrap().insert(conn_handle, close_tx);
-                            if let Some(ref cb) = cb {
-                                cb("tcp:accept".into(), serde_json::json!({
-                                    "listener_handle": listener_handle,
-                                    "conn_handle": conn_handle,
-                                    "remote_addr": peer,
-                                }));
-                            }
-                            tcp_read_task(stream, conn_handle, data_rx, close_rx, cb, peer).await;
+                            tcp_read_task(stream, conn_handle, data_rx, close_rx, cb, peer, rbm).await;
                             cm_handle.lock().unwrap().remove(&conn_handle);
                             clm_handle.lock().unwrap().remove(&conn_handle);
                         });
@@ -296,6 +379,7 @@ async fn tcp_read_task(
     mut close_rx: oneshot::Receiver<()>,
     event_cb: Option<Arc<dyn Fn(String, serde_json::Value) + Send + Sync>>,
     _remote_addr: String,
+    read_buf_map: ReadBufMap,
 ) {
     use tokio::io::AsyncWriteExt;
 
@@ -321,17 +405,23 @@ async fn tcp_read_task(
             result = reader.read(&mut buf) => {
                 match result {
                     Ok(0) => {
+                        read_buf_map.lock().unwrap().remove(&handle);
                         cb("tcp:disconnect".into(), serde_json::json!({
                             "handle": handle, "reason": "remote peer closed connection",
                         }));
                         break;
                     }
                     Ok(n) => {
+                        // Buffer for pull-based recv()
+                        read_buf_map.lock().unwrap()
+                            .entry(handle).or_default()
+                            .extend_from_slice(&buf[..n]);
                         cb("tcp:receive".into(), serde_json::json!({
                             "handle": handle, "bytes": buf[..n].to_vec(),
                         }));
                     }
                     Err(e) => {
+                        read_buf_map.lock().unwrap().remove(&handle);
                         cb("tcp:error".into(), serde_json::json!({
                             "handle": handle, "error": format!("read: {e}"),
                         }));
