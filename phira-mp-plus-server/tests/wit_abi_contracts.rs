@@ -246,10 +246,18 @@ fn wit_interfaces_are_extracted_correctly() {
         names.contains(&"phira-runtime"),
         "should find phira-runtime"
     );
+    assert!(
+        names.contains(&"phira-room-state"),
+        "should find phira-room-state"
+    );
+    assert!(
+        names.contains(&"phira-handler"),
+        "should find phira-handler"
+    );
     assert_eq!(
         interfaces.len(),
-        15,
-        "WIT should define exactly 15 interfaces (removed phira-federation + phira-federation-types, added phira-tcp)"
+        17,
+        "WIT should define exactly 17 interfaces (added phira-room-state + phira-handler)"
     );
 }
 
