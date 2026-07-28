@@ -1,6 +1,6 @@
 # Phira-mp+ 插件开发指南
 
-> 旧版 JSON 内存桥 ABI（abi-json-v1）已移除。所有插件必须使用 WIT 组件模型（abi-wit-v2）。
+> 旧版 JSON 内存桥 ABI（abi-json-v1）已移除。所有插件必须使用 WIT 组件模型（abi-wit-v3）。
 >
 > 完整 API 参考和 Capability 映射表请查看 [api/plugin-api.md](api/plugin-api.md) 和 [api/capability-table.md](api/capability-table.md)（自动生成）。
 
@@ -52,7 +52,7 @@ tar xzf phira-plugin-sdk.tar.gz
 
 ```rust
 // src/lib.rs
-phira_plugin_sdk::wit_bindgen!("phira-plugin-v2");
+phira_plugin_sdk::wit_bindgen!("phira-plugin-v3");
 export!(MyPlugin);
 
 use serde_json::{json, Value};
@@ -230,7 +230,7 @@ fn on_api(method: String, args: Vec<JsonValue>) -> ApiResult {
 
 ## WIT ABI 参考
 
-插件使用 WIT 接口与宿主通信。定义文件：`wit/phira-plugin.wit`，World：`phira-plugin-v2`。
+插件使用 WIT 接口与宿主通信。定义文件：`wit/phira-plugin.wit`，World：`phira-plugin-v3`。
 
 ### 插件导出（需实现）
 
@@ -368,13 +368,13 @@ plugin purge <name>            # 彻底清理
 
 ### SDK Cookbook
 
-SDK 宏路径：`phira_plugin_sdk::wit_bindgen!("phira-plugin-v2")`
+SDK 宏路径：`phira_plugin_sdk::wit_bindgen!("phira-plugin-v3")`
 
 ```rust
 // 原生 SDK 用法（在 PMP 仓库外开发时）
 wit_bindgen::generate!({
     path: "path/to/wit/phira-plugin.wit",
-    world: "phira-plugin-v2",
+    world: "phira-plugin-v3",
 });
 ```
 
@@ -388,15 +388,15 @@ wit_bindgen::generate!({
 
 | 属性 | 值 |
 |------|-----|
-| **运行时 ABI** | `abi-wit-v2` (WIT / Component Model) |
-| **目标 ABI** | `abi-wit-v2` |
+| **运行时 ABI** | `abi-wit-v3` (WIT / Component Model) |
+| **目标 ABI** | `abi-wit-v3` |
 | **规范 WIT** | `wit/phira-plugin.wit` |
 | **MIGRATION_PHASE** | `3` (Stable: JSON bridge removed, WIT-only component ABI) |
 | **接口数量** | `15` |
 
 ## 规范 WIT 接口
 
-WIT 文件定义了以下接口与 world `phira-plugin-v2`:
+WIT 文件定义了以下接口与 world `phira-plugin-v3`:
 
 ### `phira-types`
 
@@ -574,7 +574,7 @@ Runtime diagnostics.
 
 ## World
 
-`phira-plugin-v2` — 导入上述所有接口，导出 `init`、`get-info`、`cleanup`、`on-event`、`on-api`。
+`phira-plugin-v3` — 导入上述所有接口，导出 `init`、`get-info`、`cleanup`、`on-event`、`on-api`。
 
 ## Capability 边界
 
@@ -604,7 +604,7 @@ Runtime diagnostics.
 
 ## 兼容性规则
 
-- 仅支持 `abi-wit-v2`
+- 仅支持 `abi-wit-v3`
 - WIT 的破坏性修改必须提升 package/ABI 版本，而不是只修改 Rust 实现。
 - 新增字段优先使用可选类型或新增接口，避免改变已有 record/variant 的二进制契约。
 - 插件元数据中的显示名称不是安全身份；授权与清理均使用稳定插件 ID。
