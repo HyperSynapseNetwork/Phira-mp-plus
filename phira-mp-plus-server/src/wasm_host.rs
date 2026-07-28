@@ -196,7 +196,7 @@ impl WitPluginComponent {
                     }
                 }))
             },
-            api_handlers: services.api_handlers.clone(),
+            api_handlers: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
         }))
     }
 

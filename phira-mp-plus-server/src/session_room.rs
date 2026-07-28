@@ -545,7 +545,7 @@ pub async fn leave_room(user: Arc<User>, category: SessionCategory) -> Result<()
     if result.is_err() {
         let err_msg = format!("Actor RemoveUser failed for user {}", user.id);
         warn!("{}", err_msg);
-        return Err(err_msg);
+        return Err(anyhow::anyhow!(err_msg));
     }
     if !room_dropped && !was_monitor {
         // Reassign host to a random remaining user if host leaves.
