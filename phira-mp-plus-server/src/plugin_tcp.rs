@@ -241,10 +241,11 @@ impl PluginTcpActor {
                             } else {
                                 let len = (max_bytes as usize).min(buf.len());
                                 let data = buf[..len].to_vec();
-                                // Drop from shared buf after read (done via drain in real usage)
+                                // Drain consumed bytes from shared buffer
                                 drop(map);
-                                self.read_buf_map.lock().unwrap().get_mut(&handle)
-                                    .map(|b| { b.drain(..len); });
+                                if let Some(b) = self.read_buf_map.lock().unwrap().get_mut(&handle) {
+                                    b.drain(..len);
+                                }
                                 Ok(Some(data))
                             }
                         } else {
