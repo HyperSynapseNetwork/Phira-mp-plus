@@ -6,7 +6,6 @@ use crate::ban::BanManager;
 use crate::extensions::ExtensionManager;
 use crate::plugin::PluginManager;
 use crate::plugin_http::SseHub;
-use crate::plugin_tcp::PluginTcpCommand;
 use phira_mp_common::RoomId;
 use std::collections::HashSet;
 use uuid::Uuid;
@@ -88,8 +87,6 @@ pub struct PlusServerState {
     pub command_registry: Arc<crate::command_registry::CommandRegistry>,
     /// Runtime 事件总线。当前记录新增 Runtime 事件和诊断统计，旧路径仍逐步迁移。
     pub event_bus: Arc<crate::event_bus::EventBus>,
-    /// Runtime Simulation 状态管理器。当前只创建隔离 shadow world，不污染真实 rooms/users。
-    pub simulation: Arc<crate::simulation::SimulationManager>,
     /// Bounded persistence worker with retry and acknowledged flush/shutdown.
     /// Touch/Judge high-frequency rows retain their explicit telemetry path.
     pub persistence_worker: Arc<crate::persistence::PersistenceWorker>,
@@ -109,8 +106,6 @@ pub struct PlusServerState {
     pub game_monitors: SafeMap<i32, Weak<crate::session::Session>>,
     /// PostgreSQL 数据库管理器。
     pub db_manager: crate::db::DbManager,
-    /// Plugin TCP actor command sender (PMP25: production-wired).
-    pub plugin_tcp_tx: Option<tokio::sync::mpsc::Sender<PluginTcpCommand>>,
     /// 谱面时长缓存：chart_id → 秒。选谱时异步填充。
     pub chart_duration_cache: RwLock<std::collections::HashMap<i32, f64>>,
 }

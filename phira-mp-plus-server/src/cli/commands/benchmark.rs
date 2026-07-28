@@ -163,7 +163,7 @@ impl CliHandler {
 
     /// `benchmark run` — parse flags and execute
     pub(in crate::cli) async fn dispatch_benchmark_run_command(&self, args: &[&str]) {
-        // args = ["run", "--mode", "simulation", "--scenario", "gameplay", ...]
+        // args = ["run", "--mode", "real", "--scenario", "gameplay", ...]
         let cmd_args = &args[1..]; // skip "run"
 
         let mut run_args = crate::benchmark::command::BenchmarkRunArgs {
@@ -183,7 +183,7 @@ impl CliHandler {
                     i += 1;
                     if i >= cmd_args.len() {
                         self.out(format!(
-                            "  {} --mode requires a value (real|simulation)",
+                            "  {} --mode requires a value (real)",
                             c::red("✗")
                         ));
                         return;
@@ -192,7 +192,7 @@ impl CliHandler {
                         Some(mode) => run_args.mode = mode,
                         None => {
                             self.out(format!(
-                                "  {} invalid mode: '{}'. Use real|simulation",
+                                "  {} invalid mode: '{}'. Use real",
                                 c::red("✗"),
                                 cmd_args[i]
                             ));
@@ -892,7 +892,7 @@ impl CliHandler {
         self.out(String::new());
         self.out(format!("  {} Options:", c::cyan("▸")));
         self.out(format!(
-            "  {}   --mode <mode>         Benchmark mode: real (default) or simulation",
+            "  {}   --mode <mode>         Benchmark mode: real (default)",
             c::dim("│")
         ));
         self.out(format!(

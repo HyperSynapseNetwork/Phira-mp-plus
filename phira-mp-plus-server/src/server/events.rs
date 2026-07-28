@@ -38,18 +38,6 @@ pub fn spawn_event_subscribers(state: &Arc<PlusServerState>) {
         loop {
             match rx.recv().await {
                 Ok(event) => match &event {
-                    MpEvent::SimulationStarted { .. } => {
-                        state_clone
-                            .broadcast_system_message(
-                                "服务器正在进行性能测试，期间可能出现短暂卡顿。",
-                            )
-                            .await;
-                    }
-                    MpEvent::SimulationStopped { .. } => {
-                        state_clone
-                            .broadcast_system_message("性能测试已结束，感谢您的耐心等待。")
-                            .await;
-                    }
                     MpEvent::BenchmarkCompleted { .. } => {}
                     _ => {}
                 },

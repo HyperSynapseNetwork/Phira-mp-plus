@@ -357,28 +357,6 @@ impl CommandRegistry {
         );
 
         self.set_arg_completer(
-            "benchmark simulation run",
-            Arc::new(|_cmd, prefix| {
-                ["baseline", "small", "medium", "large", "custom"]
-                    .into_iter()
-                    .filter(|p| p.starts_with(prefix))
-                    .map(|s| s.to_string())
-                    .collect()
-            }),
-        );
-
-        self.set_arg_completer(
-            "benchmark simulation suite",
-            Arc::new(|_cmd, prefix| {
-                ["smoke", "mixed", "stress"]
-                    .into_iter()
-                    .filter(|s| s.starts_with(prefix))
-                    .map(|s| s.to_string())
-                    .collect()
-            }),
-        );
-
-        self.set_arg_completer(
             "benchmark suite",
             Arc::new(|_cmd, prefix| {
                 ["--preset"]
@@ -714,9 +692,6 @@ mod tests {
                 .contains(&"info".to_string()),
             "room info should be indexed as child of room"
         );
-        assert!(registry
-            .complete_line("benchmark simulation ")
-            .contains(&"status".to_string()));
         assert!(registry
             .complete_line("room f")
             .contains(&"force-move".to_string()));

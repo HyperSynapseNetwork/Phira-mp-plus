@@ -33,8 +33,6 @@ pub struct WitHostContext {
     pub room_commands: Arc<crate::room_actor::RoomCommandGateway>,
     /// Ban manager.
     pub ban_manager: Arc<crate::ban::BanManager>,
-    /// Simulation manager.
-    pub simulation: Arc<crate::simulation::SimulationManager>,
     /// Event bus (for dispatching PluginEvents).
     pub event_bus: Arc<crate::event_bus::EventBus>,
     /// Immutable capability grant bound to this plugin instance.
@@ -874,87 +872,6 @@ mod wit_trait_impls {
         }
     }
 
-    // ── phira-simulation ──
-    impl wit::phira::plugin::phira_simulation::Host for WitPluginHost {
-        fn status(&mut self) -> types::ApiResult {
-            if let Err(error) = self.require_api_capability("simulation") {
-                return error;
-            }
-            let result =
-                self.block_on_sync(|ctx| futures::executor::block_on(ctx.simulation.status()));
-            match result {
-                Ok(status) => {
-                    let json = serde_json::to_value(&status).unwrap_or_default();
-                    types::ApiResult::Ok(json_to_wit_json(&json))
-                }
-                Err(e) => types::ApiResult::Error(e),
-            }
-        }
-        fn run(
-            &mut self,
-            preset: String,
-            users: Option<u32>,
-            rooms: Option<u32>,
-            duration: Option<u32>,
-        ) -> types::ApiResult {
-            if let Err(error) = self.require_api_capability("simulation") {
-                return error;
-            }
-            let result = self.block_on_sync(|ctx| {
-                let mut config = crate::simulation::SimulationConfig::default();
-                if let Some(p) = crate::simulation::SimulationPreset::parse(&preset) {
-                    config = p.defaults(ctx.simulation.seed_hint());
-                }
-                if let Some(u) = users {
-                    config.users = u as usize;
-                }
-                if let Some(r) = rooms {
-                    config.rooms = r as usize;
-                }
-                if let Some(d) = duration {
-                    config.duration_secs = d as u64;
-                }
-                futures::executor::block_on(ctx.simulation.start(config))
-            });
-            match result {
-                Ok(status) => {
-                    let json = serde_json::to_value(&status).unwrap_or_default();
-                    types::ApiResult::Ok(json_to_wit_json(&json))
-                }
-                Err(e) => types::ApiResult::Error(e),
-            }
-        }
-        fn stop(&mut self) -> types::ApiResult {
-            if let Err(error) = self.require_api_capability("simulation") {
-                return error;
-            }
-            let result = self.block_on_sync(|ctx| {
-                futures::executor::block_on(ctx.simulation.stop("stopped via plugin API"))
-            });
-            match result {
-                Ok(status) => {
-                    let json = serde_json::to_value(&status).unwrap_or_default();
-                    types::ApiResult::Ok(json_to_wit_json(&json))
-                }
-                Err(e) => types::ApiResult::Error(e),
-            }
-        }
-        fn cleanup(&mut self) -> types::ApiResult {
-            if let Err(error) = self.require_api_capability("simulation") {
-                return error;
-            }
-            let result =
-                self.block_on_sync(|ctx| futures::executor::block_on(ctx.simulation.cleanup()));
-            match result {
-                Ok(status) => {
-                    let json = serde_json::to_value(&status).unwrap_or_default();
-                    types::ApiResult::Ok(json_to_wit_json(&json))
-                }
-                Err(e) => types::ApiResult::Error(e),
-            }
-        }
-    }
-
     // ── phira-runtime ──
     impl wit::phira::plugin::phira_runtime::Host for WitPluginHost {
         fn status(&mut self) -> types::ApiResult {
@@ -1006,19 +923,19 @@ mod wit_trait_impls {
         fn connect(&mut self, addr: String) -> Result<u64, String> {
             self.require_capability("tcp")?;
             let tx = self.ctx.tcp.as_ref().ok_or("tcp not available")?;
-            let (reply, rx) = std::sync::mpsc::channel();
+            let (reply, mut rx) = tokio::sync::oneshot::channel();
             tx.try_send(crate::plugin_tcp::PluginTcpCommand::Connect { addr, reply })
                 .map_err(|e| format!("tcp connect failed: {e}"))?;
-            rx.recv().map_err(|_| "tcp connect reply lost".to_string())?
+            rx.try_recv().map_err(|_| "tcp connect reply lost".to_string())?
         }
 
         fn listen(&mut self, addr: String) -> Result<u64, String> {
             self.require_capability("tcp")?;
             let tx = self.ctx.tcp.as_ref().ok_or("tcp not available")?;
-            let (reply, rx) = std::sync::mpsc::channel();
+            let (reply, mut rx) = tokio::sync::oneshot::channel();
             tx.try_send(crate::plugin_tcp::PluginTcpCommand::Listen { addr, reply })
                 .map_err(|e| format!("tcp listen failed: {e}"))?;
-            rx.recv().map_err(|_| "tcp listen reply lost".to_string())?
+            rx.try_recv().map_err(|_| "tcp listen reply lost".to_string())?
         }
 
         fn send(&mut self, handle: u64, bytes: Vec<u8>) -> Result<(), String> {
@@ -1038,28 +955,28 @@ mod wit_trait_impls {
         fn accept(&mut self, handle: u64) -> Result<Option<u64>, String> {
             self.require_capability("tcp")?;
             let tx = self.ctx.tcp.as_ref().ok_or("tcp not available")?;
-            let (reply, rx) = std::sync::mpsc::channel();
+            let (reply, mut rx) = tokio::sync::oneshot::channel();
             tx.try_send(crate::plugin_tcp::PluginTcpCommand::Accept { listener_handle: handle, reply })
                 .map_err(|e| format!("tcp accept failed: {e}"))?;
-            rx.recv().map_err(|_| "tcp accept reply lost".to_string())?
+            rx.try_recv().map_err(|_| "tcp accept reply lost".to_string())?
         }
 
         fn recv(&mut self, handle: u64, max_bytes: u32) -> Result<Option<Vec<u8>>, String> {
             self.require_capability("tcp")?;
             let tx = self.ctx.tcp.as_ref().ok_or("tcp not available")?;
-            let (reply, rx) = std::sync::mpsc::channel();
+            let (reply, mut rx) = tokio::sync::oneshot::channel();
             tx.try_send(crate::plugin_tcp::PluginTcpCommand::Recv { handle, max_bytes, reply })
                 .map_err(|e| format!("tcp recv failed: {e}"))?;
-            rx.recv().map_err(|_| "tcp recv reply lost".to_string())?
+            rx.try_recv().map_err(|_| "tcp recv reply lost".to_string())?
         }
 
         fn peer_addr(&mut self, handle: u64) -> Result<String, String> {
             self.require_capability("tcp")?;
             let tx = self.ctx.tcp.as_ref().ok_or("tcp not available")?;
-            let (reply, rx) = std::sync::mpsc::channel();
+            let (reply, mut rx) = tokio::sync::oneshot::channel();
             tx.try_send(crate::plugin_tcp::PluginTcpCommand::PeerAddr { handle, reply })
                 .map_err(|e| format!("tcp peer-addr failed: {e}"))?;
-            rx.recv().map_err(|_| "tcp peer-addr reply lost".to_string())?
+            rx.try_recv().map_err(|_| "tcp peer-addr reply lost".to_string())?
         }
     }
 

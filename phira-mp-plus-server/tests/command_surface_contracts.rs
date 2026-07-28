@@ -83,9 +83,6 @@ fn default_overview_omits_developer_commands() {
         "runtime actors",
         "runtime rooms",
         "runtime events",
-        "benchmark simulation tick",
-        "benchmark simulation persist",
-        "benchmark simulation seed",
     ] {
         assert!(
             !overview.contains(cmd_name),
@@ -133,10 +130,6 @@ fn help_dev_shows_developer_commands() {
     assert!(
         dev.contains("runtime roadmap"),
         "dev view should show runtime roadmap"
-    );
-    assert!(
-        dev.contains("benchmark simulation tick"),
-        "dev view should show benchmark simulation tick"
     );
 }
 
@@ -222,8 +215,6 @@ fn developer_commands_have_developer_audience() {
     for name in &[
         "runtime roadmap",
         "runtime schema",
-        "benchmark simulation tick",
-        "benchmark simulation persist",
     ] {
         let spec = registry.get(name).expect("{name} should be in registry");
         assert_eq!(

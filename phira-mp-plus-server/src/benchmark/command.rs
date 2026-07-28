@@ -192,7 +192,7 @@ pub struct BenchmarkRunArgs {
 impl Default for BenchmarkRunArgs {
     fn default() -> Self {
         Self {
-            mode: BenchmarkRunMode::Simulation,
+            mode: BenchmarkRunMode::Real,
             scenario: BenchmarkScenario::SteadyState,
             preset: BenchmarkPreset::Quick,
             clients: 20,
@@ -210,8 +210,6 @@ impl Default for BenchmarkRunArgs {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum BenchmarkRunMode {
-    /// 仿真模式（使用影子世界，不涉及真实网络）
-    Simulation,
     /// 真实模式（启动真实 PMP 服务，连接真实客户端）
     Real,
 }
@@ -219,14 +217,12 @@ pub enum BenchmarkRunMode {
 impl BenchmarkRunMode {
     pub fn as_str(self) -> &'static str {
         match self {
-            Self::Simulation => "simulation",
             Self::Real => "real",
         }
     }
 
     pub fn parse(value: &str) -> Option<Self> {
         match value.trim().to_ascii_lowercase().as_str() {
-            "simulation" | "sim" => Some(Self::Simulation),
             "real" => Some(Self::Real),
             _ => None,
         }

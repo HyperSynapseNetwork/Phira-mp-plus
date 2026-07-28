@@ -342,23 +342,6 @@ interface phira-config {
     poll-config-changes: func(since-version: u64) -> api-result;
 }
 
-/// Simulation management.
-interface phira-simulation {
-    use phira-types.{api-result};
-
-    /// Get current simulation status.
-    status: func() -> api-result;
-
-    /// Start a simulation run.
-    run: func(preset: string, users: option<u32>, rooms: option<u32>, duration: option<u32>) -> api-result;
-
-    /// Stop the current simulation run.
-    stop: func() -> api-result;
-
-    /// Clean up all simulation data.
-    cleanup: func() -> api-result;
-}
-
 /// Non-realtime timer for plugin-internal scheduling.
 /// Cryptographic operations (host-side key management).
 interface phira-crypto {
@@ -517,7 +500,6 @@ world phira-plugin-v2 {
     import phira-persistence;
     import phira-admin;
     import phira-config;
-    import phira-simulation;
     import phira-crypto;
     import phira-tcp;
     import phira-timer;

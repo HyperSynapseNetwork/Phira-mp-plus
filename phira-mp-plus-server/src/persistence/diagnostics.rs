@@ -6,7 +6,6 @@ use serde::{Deserialize, Serialize};
 #[serde(rename_all = "snake_case")]
 pub enum PersistencePipeline {
     BenchmarkReport,
-    Simulation,
     ProductionEvent,
     ExtensionWrite,
 }
@@ -15,7 +14,6 @@ impl PersistencePipeline {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::BenchmarkReport => "benchmark_report",
-            Self::Simulation => "simulation",
             Self::ProductionEvent => "production_event",
             Self::ExtensionWrite => "extension_write",
         }

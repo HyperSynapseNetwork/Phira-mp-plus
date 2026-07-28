@@ -239,10 +239,6 @@ fn wit_interfaces_are_extracted_correctly() {
     assert!(names.contains(&"phira-admin"), "should find phira-admin");
     assert!(names.contains(&"phira-config"), "should find phira-config");
     assert!(
-        names.contains(&"phira-simulation"),
-        "should find phira-simulation"
-    );
-    assert!(
         names.contains(&"phira-runtime"),
         "should find phira-runtime"
     );
@@ -697,7 +693,6 @@ fn canonical_wit_has_all_interfaces() {
         "phira-persistence",
         "phira-admin",
         "phira-config",
-        "phira-simulation",
         "phira-crypto",
         "phira-timer",
         "phira-tcp",
@@ -814,19 +809,6 @@ fn phira_config_methods_have_capability() {
     assert_eq!(
         wasm_host_helpers::required_capability("config.set"),
         Some("config")
-    );
-}
-
-#[test]
-fn phira_simulation_methods_have_capability() {
-    // phira-simulation: simulation.* → simulation
-    assert_eq!(
-        wasm_host_helpers::required_capability("simulation.status"),
-        Some("simulation")
-    );
-    assert_eq!(
-        wasm_host_helpers::required_capability("simulation.run"),
-        Some("simulation")
     );
 }
 

@@ -1,4 +1,4 @@
-//! Persistence pipeline adapters for simulation, production telemetry and benchmark reports.
+//! Persistence pipeline adapters for production telemetry and benchmark reports.
 //!
 //! All DB-facing helpers in this module await the concrete database method when
 //! one exists. That makes the latency metrics in `PersistenceStats` represent
@@ -40,67 +40,6 @@ async fn wait_before_retry(attempt: usize) {
 
 fn elapsed_ms(start: Instant) -> u64 {
     u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX)
-}
-
-pub async fn persist_simulation_event_if_needed(event: &PersistenceEvent) -> PersistenceWriteStage {
-    if !event.is_simulation() {
-        return PersistenceWriteStage::NotApplicable;
-    }
-    let db = crate::internal_hooks::DB.get().expect("DB must be initialized before persistence worker starts");
-
-    let started = Instant::now();
-    let event_id = payload_event_id(event).unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
-    let mut result = false;
-    for attempt in 0..DB_WRITE_ATTEMPTS {
-        result = match event {
-            PersistenceEvent::ServerEvent { kind, payload, .. } => {
-                let payload = with_runtime_event_id((**payload).clone(), &event_id);
-                db.record_sim_event(extract_run_id(&payload), kind, payload)
-                    .await
-            }
-            PersistenceEvent::RoomSnapshot {
-                room_id, payload, ..
-            } => {
-                let mut payload_owned = with_runtime_event_id((**payload).clone(), &event_id);
-                if let Some(obj) = payload_owned.as_object_mut() {
-                    obj.entry("room_id".to_string())
-                        .or_insert_with(|| serde_json::json!(room_id));
-                }
-                db.record_sim_event(
-                    extract_run_id(&payload_owned),
-                    "simulation.room_snapshot",
-                    payload_owned,
-                )
-                .await
-            }
-            PersistenceEvent::UserOnline { .. }
-            | PersistenceEvent::UserOffline { .. }
-            | PersistenceEvent::UserDisconnect { .. }
-            | PersistenceEvent::UserSeen { .. }
-            | PersistenceEvent::UserRoomHistory { .. }
-            | PersistenceEvent::BenchmarkReport { .. }
-            | PersistenceEvent::Flush
-            | PersistenceEvent::Shutdown => {
-                return PersistenceWriteStage::NotApplicable;
-            }
-        };
-        if result {
-            break;
-        }
-        wait_before_retry(attempt).await;
-    }
-    if result {
-        PersistenceWriteStage::Acknowledged {
-            pipeline: PersistencePipeline::Simulation,
-            elapsed_ms: elapsed_ms(started),
-        }
-    } else {
-        PersistenceWriteStage::Failed {
-            pipeline: PersistencePipeline::Simulation,
-            elapsed_ms: elapsed_ms(started),
-            error: "simulation event database write failed".to_string(),
-        }
-    }
 }
 
 pub async fn persist_production_event_if_needed(event: &PersistenceEvent) -> PersistenceWriteStage {
@@ -242,14 +181,6 @@ fn payload_event_id(event: &PersistenceEvent) -> Option<String> {
         .map(ToString::to_string)
 }
 
-fn with_runtime_event_id(mut payload: Value, event_id: &str) -> Value {
-    if let Some(obj) = payload.as_object_mut() {
-        obj.entry("event_id".to_string())
-            .or_insert_with(|| serde_json::json!(event_id));
-    }
-    payload
-}
-
 fn with_persistence_meta(mut payload: Value, event_id: Option<&str>) -> Value {
     if let Some(obj) = payload.as_object_mut() {
         if let Some(event_id) = event_id {
@@ -277,9 +208,3 @@ fn extract_user_id(payload: &Value) -> Option<i32> {
         .and_then(|value| i32::try_from(value).ok())
 }
 
-fn extract_run_id(payload: &Value) -> Option<String> {
-    payload
-        .get("run_id")
-        .and_then(Value::as_str)
-        .map(ToString::to_string)
-}

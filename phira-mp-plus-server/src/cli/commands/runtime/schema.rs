@@ -28,9 +28,6 @@ impl CliHandler {
         self.out(format!("  {} persistence path", c::cyan("▸")));
         self.out("    production Touch/Judge: HighFrequencyWriter (bypasses WAL)".to_string());
         self.out("    persist.touches / persist.judges: high_frequency batch table".to_string());
-        self.out(
-            "    simulation: mp_sim_events + Runtime simulation telemetry path".to_string(),
-        );
         self.out(format!("  {} 项目仍处测试阶段，schema 和持久化路径可继续自由演进", c::dim("▸")));
     }
 }

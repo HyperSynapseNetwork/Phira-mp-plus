@@ -190,8 +190,6 @@ impl EventDispatcher {
             | MpEvent::JudgesReceived { .. }
             | MpEvent::ChatMessage { .. }
             | MpEvent::AdminCommandExecuted { .. }
-            | MpEvent::SimulationStarted { .. }
-            | MpEvent::SimulationStopped { .. }
             | MpEvent::PersistenceWritten { .. }
             | MpEvent::BenchmarkCompleted { .. }
             | MpEvent::PluginEventDispatched(..)

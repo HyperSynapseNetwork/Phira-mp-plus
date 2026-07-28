@@ -183,14 +183,13 @@ async fn process_worker_loop(
 ) {
     use crate::persistence::pipeline::{
         persist_benchmark_report_if_needed, persist_production_event_if_needed,
-        persist_simulation_event_if_needed,
         BenchmarkReportStage, PersistenceWriteStage,
     };
     use crate::persistence::stats::{
         record_benchmark_report_persist_request, record_benchmark_report_persist_skipped,
         record_db_dispatch_failure,
         record_db_dispatch_success, record_processed, record_production_persist_request,
-        record_production_persist_skipped, record_simulation_persist_request,
+        record_production_persist_skipped,
     };
     use tracing::{debug, trace, warn};
 
@@ -299,14 +298,19 @@ async fn process_worker_loop(
                 .await;
             }
             BenchmarkReportStage::NotBenchmark => {
-                match persist_simulation_event_if_needed(&event).await {
+                match persist_production_event_if_needed(&event).await {
                     PersistenceWriteStage::Acknowledged {
                         pipeline,
                         elapsed_ms,
                     } => {
                         durable = true;
-                        record_simulation_persist_request(worker_stats).await;
-                        record_db_dispatch_success(worker_stats, pipeline, elapsed_ms).await;
+                        record_production_persist_request(worker_stats).await;
+                        record_db_dispatch_success(
+                            worker_stats,
+                            pipeline,
+                            elapsed_ms,
+                        )
+                        .await;
                     }
                     PersistenceWriteStage::Failed {
                         pipeline,
@@ -317,7 +321,7 @@ async fn process_worker_loop(
                             wal_id,
                             worker_dead_letter_path.as_deref(),
                             &event,
-                            "simulation",
+                            "production",
                             &error,
                             worker_stats,
                         )
@@ -325,61 +329,22 @@ async fn process_worker_loop(
                         {
                             durable = true;
                         }
-                        record_simulation_persist_request(worker_stats).await;
-                        record_db_dispatch_failure(worker_stats, pipeline, elapsed_ms, error).await;
+                        record_production_persist_request(worker_stats).await;
+                        record_db_dispatch_failure(
+                            worker_stats,
+                            pipeline,
+                            elapsed_ms,
+                            error,
+                        )
+                        .await;
                     }
                     PersistenceWriteStage::NotApplicable => {
-                        match persist_production_event_if_needed(&event).await {
-                            PersistenceWriteStage::Acknowledged {
-                                pipeline,
-                                elapsed_ms,
-                            } => {
-                                durable = true;
-                                record_production_persist_request(worker_stats).await;
-                                record_db_dispatch_success(
-                                    worker_stats,
-                                    pipeline,
-                                    elapsed_ms,
-                                )
-                                .await;
-                            }
-                            PersistenceWriteStage::Failed {
-                                pipeline,
-                                elapsed_ms,
-                                error,
-                            } => {
-                                if preserve_failed_event(
-                                    wal_id,
-                                    worker_dead_letter_path.as_deref(),
-                                    &event,
-                                    "production",
-                                    &error,
-                                    worker_stats,
-                                )
-                                .await
-                                {
-                                    durable = true;
-                                }
-                                record_production_persist_request(worker_stats).await;
-                                record_db_dispatch_failure(
-                                    worker_stats,
-                                    pipeline,
-                                    elapsed_ms,
-                                    error,
-                                )
-                                .await;
-                            }
-                            PersistenceWriteStage::NotApplicable => {
-                                if !event.is_simulation()
-                                    && !matches!(
-                                        &event,
-                                        PersistenceEvent::Flush
-                                            | PersistenceEvent::Shutdown
-                                    )
-                                {
-                                    record_production_persist_skipped(worker_stats).await;
-                                }
-                            }
+                        if !matches!(
+                            &event,
+                            PersistenceEvent::Flush
+                                | PersistenceEvent::Shutdown
+                        ) {
+                            record_production_persist_skipped(worker_stats).await;
                         }
                     }
                 }

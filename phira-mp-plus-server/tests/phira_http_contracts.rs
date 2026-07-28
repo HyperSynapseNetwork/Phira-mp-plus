@@ -1,14 +1,11 @@
 //! Phira HTTP client contract tests.
 //!
 //! These tests verify that:
-//! - Simulation config has no Phira dependency
-//! - Real benchmark requires explicit opt-in
 //! - Core Phira API paths use PhiraRetryClient (not bare reqwest)
 //!
 //! Static source scanning prevents bare reqwest from reappearing in core
 //! business logic paths.
 
-use phira_mp_plus_server::simulation::{SimulationConfig, SimulationPreset};
 use std::path::PathBuf;
 
 fn workspace_root() -> PathBuf {
@@ -30,8 +27,6 @@ const BANNED_REQWEST_FILES: &[&str] = &[
     "phira-mp-plus-server/src/session_auth.rs",
     "phira-mp-plus-server/src/session_room.rs",
     "phira-mp-plus-server/src/room.rs",
-    "phira-mp-plus-server/src/simulation.rs",
-    "phira-mp-plus-server/src/simulation_realistic.rs",
     "phira-mp-plus-server/src/cli/commands/benchmark.rs",
 ];
 
@@ -86,47 +81,6 @@ fn banned_core_paths_have_no_bare_reqwest() {
              server.rs: all Phira API calls now go through PhiraRetryClient.",
             failures.join("\n")
         );
-    }
-}
-
-#[test]
-fn default_simulation_config_has_no_token_or_endpoint() {
-    let config = SimulationConfig::default();
-    assert!(std::mem::size_of::<SimulationConfig>() > 0);
-    assert_eq!(config.preset, SimulationPreset::Baseline);
-}
-
-#[test]
-fn simulation_presets_do_not_require_phira() {
-    for preset in &[
-        SimulationPreset::Baseline,
-        SimulationPreset::Small,
-        SimulationPreset::Medium,
-    ] {
-        let config = preset.defaults(42);
-        assert!(config.users > 0, "preset {:?} must have users", preset);
-        assert!(config.rooms > 0, "preset {:?} must have rooms", preset);
-        assert!(
-            config.duration_secs > 0,
-            "preset {:?} must have duration",
-            preset
-        );
-    }
-}
-
-#[test]
-fn simulation_config_lacks_phira_account_fields() {
-    let _config = SimulationConfig::default();
-}
-
-#[test]
-fn benchmark_report_has_simulation_as_default_mode() {
-    use phira_mp_plus_server::benchmark::command::BenchmarkRunMode;
-    let sim = serde_json::from_str::<BenchmarkRunMode>("\"simulation\"")
-        .expect("'simulation' benchmark mode must be parseable");
-    match sim {
-        BenchmarkRunMode::Simulation => {}
-        _ => panic!("not Simulation"),
     }
 }
 

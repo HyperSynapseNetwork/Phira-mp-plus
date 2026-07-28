@@ -44,8 +44,6 @@ pub struct BenchmarkConfig {
     pub plugins: Vec<String>,
 
     // ── 模式特有配置 ──
-    /// Simulation 模式下，是否使用影子世界（仿真模式）
-    pub shadow_world: bool,
     /// Real 模式下，监听地址
     pub listen_addr: Option<String>,
     /// Real 模式下，数据库连接字符串
@@ -79,7 +77,7 @@ impl BenchmarkConfig {
     pub fn from_preset(preset: BenchmarkPreset) -> Self {
         let params = crate::benchmark::presets::BenchmarkPresetParams::from_preset(preset);
         Self {
-            mode: BenchmarkRunMode::Simulation,
+            mode: BenchmarkRunMode::Real,
             scenario: BenchmarkScenario::SteadyState,
             preset,
             clients: params.clients,
@@ -90,7 +88,6 @@ impl BenchmarkConfig {
             tick_interval_ms: params.tick_interval_ms,
             seed: 114_514,
             plugins: Vec::new(),
-            shadow_world: true,
             listen_addr: None,
             database_url: None,
             metrics_interval_ms: 1_000,
@@ -133,27 +130,6 @@ impl BenchmarkConfig {
     /// 返回是否应采集 CPU profile
     pub fn should_profile(&self) -> bool {
         self.profile_enabled && self.duration >= Duration::from_secs(30)
-    }
-}
-
-/// 模式特有配置
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SimulationModeConfig {
-    /// 是否使用影子世界
-    pub shadow_world: bool,
-    /// Simulation 内部 tick 是否自动推进
-    pub auto_tick: bool,
-    /// 每 N tick 持久化事件快照（0 = 禁用）
-    pub persist_every_ticks: u64,
-}
-
-impl Default for SimulationModeConfig {
-    fn default() -> Self {
-        Self {
-            shadow_world: true,
-            auto_tick: true,
-            persist_every_ticks: 0,
-        }
     }
 }
 

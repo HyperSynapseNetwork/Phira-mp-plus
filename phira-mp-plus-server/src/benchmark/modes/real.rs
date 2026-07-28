@@ -28,7 +28,7 @@ use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::net::TcpStream;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, Barrier};
 use tokio::time::Instant;
 use tracing::{debug, info, warn};
 use uuid::Uuid;
@@ -491,8 +491,11 @@ async fn run_full_lifecycle(
     overall_deadline: Instant,
     is_host: bool,
     room_index: u32,
+    auth_barrier: &Barrier,
+    phase_barrier: &Barrier,
 ) -> Result<(), String> {
     step_authenticate(stream, rx, cm, last_cmd, client_index, run_id).await?;
+    auth_barrier.wait().await;
 
     if Instant::now() >= overall_deadline {
         return Ok(());
@@ -548,6 +551,8 @@ async fn run_full_lifecycle(
         info!("client {} entered playing state (joiner)", client_index);
     }
 
+    phase_barrier.wait().await;
+
     if Instant::now() >= overall_deadline {
         return Ok(());
     }
@@ -586,6 +591,8 @@ async fn run_single_client(
     overall_deadline: Instant,
     is_host: bool,
     room_index: u32,
+    auth_barrier: Arc<Barrier>,
+    phase_barrier: Arc<Barrier>,
 ) -> Result<ClientMetrics, String> {
     let mut cm = ClientMetrics::new();
     let mut last_cmd: Option<String> = None;
@@ -630,7 +637,7 @@ async fn run_single_client(
     // ── 3. 场景调度 ──
     let result = match config.scenario {
         BenchmarkScenario::Connection => {
-            // Connection 场景：只认证，不创建房间
+            // Connection：只认证，通过两个屏障确保所有客户端同时完成阶段
             step_authenticate(
                 &stream,
                 &mut cmd_rx,
@@ -640,6 +647,8 @@ async fn run_single_client(
                 &run_id,
             )
             .await?;
+            auth_barrier.wait().await;
+            phase_barrier.wait().await;
             Ok(())
         }
         BenchmarkScenario::SteadyState => {
@@ -653,6 +662,7 @@ async fn run_single_client(
                 &run_id,
             )
             .await?;
+            auth_barrier.wait().await;
             if Instant::now() < overall_deadline {
                 step_create_room(
                     &stream,
@@ -664,7 +674,9 @@ async fn run_single_client(
                     0,
                 )
                 .await?;
-                // 保持连接直到 deadline
+            }
+            phase_barrier.wait().await;
+            if Instant::now() < overall_deadline {
                 let remaining = overall_deadline.saturating_duration_since(Instant::now());
                 if remaining > Duration::from_millis(100) {
                     tokio::time::sleep(remaining).await;
@@ -672,8 +684,9 @@ async fn run_single_client(
             }
             Ok(())
         }
-        _ => {
-            // 默认：完整生命周期（RoomLifecycle, Gameplay, HotRoom, SlowConsumer 等）
+        BenchmarkScenario::RoomLifecycle
+        | BenchmarkScenario::Gameplay
+        | BenchmarkScenario::HotRoom => {
             run_full_lifecycle(
                 &stream,
                 &mut cmd_rx,
@@ -685,9 +698,21 @@ async fn run_single_client(
                 overall_deadline,
                 is_host,
                 room_index,
+                auth_barrier.as_ref(),
+                phase_barrier.as_ref(),
             )
             .await
         }
+        // ── 尚未在 Real 模式中实现的场景 ──
+        BenchmarkScenario::SlowConsumer
+        | BenchmarkScenario::Reconnect
+        | BenchmarkScenario::PluginLoad
+        | BenchmarkScenario::DatabaseWrite
+        | BenchmarkScenario::Mixed
+        | BenchmarkScenario::LongRun => Err(format!(
+            "scenario '{}' is not implemented in real mode",
+            config.scenario.as_str()
+        )),
     };
 
     // ── 4. 清理 ──
@@ -775,11 +800,18 @@ pub async fn run_real(
     let members_per_room = config.members_per_room.max(1);
     let mut join_set = tokio::task::JoinSet::new();
 
+    // 创建阶段同步屏障（所有客户端在 Auth / RoomSetup 阶段结束后同步）
+    let n = num_clients as usize;
+    let auth_barrier = Arc::new(Barrier::new(n));
+    let phase_barrier = Arc::new(Barrier::new(n));
+
     for i in 0..num_clients {
         let addr = server_addr.clone();
         let cfg = config.clone();
         let rid = run_id;
         let deadline = overall_deadline;
+        let auth_b = auth_barrier.clone();
+        let phase_b = phase_barrier.clone();
 
         // 按 rooms 和 members_per_room 计算房间分配
         let room_index = if cfg.scenario == BenchmarkScenario::HotRoom {
@@ -798,7 +830,7 @@ pub async fn run_real(
         };
 
         join_set.spawn(async move {
-            run_single_client(i, rid, addr, cfg, deadline, is_host, room_index).await
+            run_single_client(i, rid, addr, cfg, deadline, is_host, room_index, auth_b, phase_b).await
         });
     }
 

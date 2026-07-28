@@ -15,7 +15,6 @@
 | `http` | phira-host.`http-request` | ❌ 需 manifest |
 | `room.manage` | phira-room-mgmt.`create-empty-room`, phira-room-mgmt.`kick-from-room`, phira-room-mgmt.`transfer-host`, phira-room-mgmt.`set-host`, phira-room-mgmt.`set-room-lock`, phira-room-mgmt.`set-room-hidden`, phira-room-mgmt.`close-room`, phira-room-mgmt.`set-room-phira-api-endpoint` | ❌ 需 manifest |
 | `admin` | phira-user-mgmt.`kick-user`, phira-user-mgmt.`ban-user`, phira-user-mgmt.`unban-user`, phira-user-mgmt.`get-ban-list`, phira-user-mgmt.`is-banned`, phira-admin.`list-admin-ids`, phira-admin.`is-admin`, phira-admin.`add-admin-id`, phira-admin.`remove-admin-id`, phira-admin.`set-admin-ids` | ❌ 需 manifest |
-| `simulation` | phira-simulation.`status`, phira-simulation.`run`, phira-simulation.`stop`, phira-simulation.`cleanup` | ❌ 需 manifest |
 | `crypto` | phira-crypto.`sign`, phira-crypto.`verify`, phira-crypto.`sha256` | ❌ 需 manifest |
 | `timer` | （无） | ❌ 需 manifest |
 | `tcp` | phira-tcp.`connect`, phira-tcp.`listen`, phira-tcp.`send`, phira-tcp.`close` | ❌ 需 manifest |

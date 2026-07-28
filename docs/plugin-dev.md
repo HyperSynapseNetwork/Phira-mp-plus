@@ -122,9 +122,9 @@ cp target/wasm32-unknown-unknown/release/my_plugin.component.wasm \
 }
 ```
 
-允许值为 `state.read`、`send`、`ext`、`config`、`file.read`、`file.write`、`plugin.call`、`plugin.register`、`http`、`room.manage`、`admin`、`simulation`。未知值会拒绝加载。`room.manage`、`admin`、`simulation` 和 `http` 等能力必须显式授予；不要用可变的插件显示名称作为授权身份。
+允许值为 `state.read`、`send`、`ext`、`config`、`file.read`、`file.write`、`plugin.call`、`plugin.register`、`http`、`room.manage`、`admin`。未知值会拒绝加载。`room.manage`、`admin` 和 `http` 等能力必须显式授予；不要用可变的插件显示名称作为授权身份。
 
-缺少 sidecar 时仅获得兼容性默认能力，不包含 `http`、`room.manage`、`admin` 或 `simulation`。插件应显式提交最小 capability 清单，不要依赖默认集合。
+缺少 sidecar 时仅获得兼容性默认能力，不包含 `http`、`room.manage` 或 `admin`。插件应显式提交最小 capability 清单，不要依赖默认集合。
 
 ## 资源与超时语义
 
@@ -263,7 +263,7 @@ fn on_api(method: String, args: Vec<JsonValue>) -> ApiResult {
 
 `create-empty-room` / `kick-from-room` / `transfer-host` / `set-host` / `set-room-lock` / `set-room-hidden` / `close-room` / `set-room-phira-api-endpoint`
 
-#### phira-user-mgmt / phira-messaging / phira-persistence / phira-admin / phira-config / phira-simulation / phira-runtime
+#### phira-user-mgmt / phira-messaging / phira-persistence / phira-admin / phira-config / phira-runtime
 
 全部 53 个函数的详细签名见 [WIT 定义文件](../wit/phira-plugin.wit)。
 
@@ -531,22 +531,6 @@ Plugin configuration (key-value, JSON, per-plugin config.json on disk).
 - `reload-config`
 - `poll-config-changes`
 
-### `phira-simulation`
-
-Simulation management.
-
-**导出:**
-
-- `status`
-- `run`
-- `stop`
-- `cleanup`
-
-
-
-**导出:**
-
-
 ### `phira-crypto`
 
 Cryptographic operations (host-side key management).
@@ -607,7 +591,6 @@ Runtime diagnostics.
 | `http` | 出站 HTTP |
 | `room.manage` | 房间管理写操作 |
 | `admin` | 踢人、封禁、管理员写操作 |
-| `simulation` | Simulation 控制 |
 
 未知方法映射为拒绝，未知 capability 也拒绝加载。管理员和房间管理能力不会因缺少 sidecar 自动授予。
 

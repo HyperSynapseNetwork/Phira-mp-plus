@@ -2,7 +2,6 @@
 
 #![allow(clippy::large_enum_variant)]
 
-use crate::benchmark::command::BenchmarkRunMode;
 use crate::benchmark::report::BenchmarkReport;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -75,12 +74,12 @@ impl PersistenceEvent {
         match self {
             Self::RoomSnapshot { simulation, .. }
             | Self::ServerEvent { simulation, .. } => *simulation,
-            Self::BenchmarkReport { report } => report.config.mode == BenchmarkRunMode::Simulation,
             Self::UserRoomHistory { .. }
             | Self::UserOnline { .. }
             | Self::UserOffline { .. }
             | Self::UserDisconnect { .. }
             | Self::UserSeen { .. }
+            | Self::BenchmarkReport { .. }
             | Self::Flush
             | Self::Shutdown => false,
         }
@@ -186,7 +185,7 @@ mod tests {
     use crate::benchmark::config::BenchmarkConfig;
     use crate::benchmark::environment::EnvironmentSnapshot;
 
-    fn make_simulation_report() -> BenchmarkReport {
+    fn make_benchmark_report() -> BenchmarkReport {
         let env = EnvironmentSnapshot {
             version: "0.1.0".to_string(),
             git_commit: "abc123".to_string(),
@@ -204,15 +203,7 @@ mod tests {
             captured_at_ms: 1_000_000,
         };
         let config = BenchmarkConfig::from_preset(crate::benchmark::command::BenchmarkPreset::Quick);
-        BenchmarkReport::new("simulation", env, config)
-    }
-
-    #[test]
-    fn benchmark_report_is_simulation_when_report_mode_is_simulation() {
-        let report = make_simulation_report();
-        let event = PersistenceEvent::BenchmarkReport { report };
-        assert!(event.is_simulation());
-        assert_eq!(event.kind(), "benchmark.completed");
+        BenchmarkReport::new("benchmark", env, config)
     }
 
     #[test]

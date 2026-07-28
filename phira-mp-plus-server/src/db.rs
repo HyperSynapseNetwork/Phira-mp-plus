@@ -210,7 +210,6 @@ async fn init_tables(pool: &sqlx::PgPool) -> Result<()> {
 
     for (scope, seconds, cleanup_enabled) in [
         ("production.telemetry", 30 * 24 * 3600_i64, false),
-        ("simulation", 7 * 24 * 3600_i64, true),
         ("runtime.events", 30 * 24 * 3600_i64, false),
     ] {
         sqlx::query(

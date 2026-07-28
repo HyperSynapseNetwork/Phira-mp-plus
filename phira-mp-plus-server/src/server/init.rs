@@ -81,7 +81,6 @@ impl PlusServer {
             crate::runtime_diagnostics::EVENT_TRACE_WINDOW,
         ));
         spawn_runtime_event_observer(Arc::clone(&event_bus));
-        let simulation = Arc::new(crate::simulation::SimulationManager::new());
         let persistence_worker =
             crate::persistence::PersistenceWorker::spawn_with_journals(
                 runtime.persistence_queue_capacity,
@@ -95,14 +94,6 @@ impl PlusServer {
             ),
         );
         let room_commands = Arc::new(crate::room_actor::RoomCommandGateway::new());
-        // PMP25: Start PluginTcpActor for plugin TCP capabilities
-        let (plugin_tcp_tx, plugin_tcp_rx) = mpsc::channel::<crate::plugin_tcp::PluginTcpCommand>(256);
-        {
-            let mut actor = crate::plugin_tcp::PluginTcpActor::new(plugin_tcp_rx);
-            crate::supervisor_actor::spawn_critical("plugin-tcp-actor", async move {
-                actor.run().await;
-            });
-        }
         let phira_client = Arc::new(crate::phira_client::PhiraRetryClient::new(
             runtime.phira_http.clone().into_policy(),
         )?);
@@ -146,11 +137,9 @@ impl PlusServer {
             )),
             command_registry,
             event_bus,
-            simulation,
             persistence_worker,
             high_frequency_writer,
             room_commands,
-            plugin_tcp_tx: Some(plugin_tcp_tx),
             phira_client,
             admin_ids: RwLock::new(admin_ids),
             room_monitor: RwLock::new(None),

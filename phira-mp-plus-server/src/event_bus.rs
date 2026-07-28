@@ -144,13 +144,6 @@ pub enum MpEvent {
         user_id: Option<i32>,
         command: String,
     },
-    SimulationStarted {
-        run_id: Uuid,
-    },
-    SimulationStopped {
-        run_id: Uuid,
-        reason: String,
-    },
     PersistenceWritten {
         table: String,
         rows: usize,
@@ -188,8 +181,6 @@ impl MpEvent {
             Self::RoundCompleted { .. } => "round.completed",
             Self::ChatMessage { .. } => "chat.message",
             Self::AdminCommandExecuted { .. } => "admin.command_executed",
-            Self::SimulationStarted { .. } => "simulation.started",
-            Self::SimulationStopped { .. } => "simulation.stopped",
             Self::PersistenceWritten { .. } => "persistence.written",
             Self::BenchmarkCompleted { .. } => "benchmark.completed",
             Self::PluginEventDispatched(event) => match &**event {
@@ -256,10 +247,6 @@ impl MpEvent {
             }
             Self::AdminCommandExecuted { user_id, command } => {
                 format!("user_id={user_id:?} command={command}")
-            }
-            Self::SimulationStarted { run_id } => format!("run_id={run_id}"),
-            Self::SimulationStopped { run_id, reason } => {
-                format!("run_id={run_id} reason={reason}")
             }
             Self::PersistenceWritten { table, rows } => format!("table={table} rows={rows}"),
             Self::BenchmarkCompleted { report } => format!(
@@ -485,7 +472,7 @@ mod tests {
             crate::benchmark::command::BenchmarkPreset::Quick,
         );
         let mut report = crate::benchmark::report::BenchmarkReport::new(
-            "simulation probe",
+            "benchmark probe",
             env,
             config,
         );
@@ -494,7 +481,7 @@ mod tests {
         let event = MpEvent::BenchmarkCompleted { report };
         assert_eq!(event.kind(), "benchmark.completed");
         let summary = event.summary();
-        assert!(summary.contains("mode=simulation"));
+        assert!(summary.contains("mode=real"));
         assert!(summary.contains("errors=2"));
     }
 

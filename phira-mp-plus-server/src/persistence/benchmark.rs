@@ -34,7 +34,7 @@ impl BenchmarkReportPersistenceRecord {
             mode: report.config.mode,
             title: report.title.clone(),
             duration_secs: report.summary.duration_secs,
-            is_simulation: report.config.mode == BenchmarkRunMode::Simulation,
+            is_simulation: false,
             operations: Some(report.summary.total_commands),
             failed_operations: Some(report.errors_total),
             probes_attempted: 0,
@@ -133,7 +133,7 @@ mod tests {
         let mut report = make_test_report();
         report.notes.push("dry-run".to_string());
         let record = BenchmarkReportPersistenceRecord::from_report(&report, "test");
-        assert_eq!(record.mode, BenchmarkRunMode::Simulation);
+        assert_eq!(record.mode, BenchmarkRunMode::Real);
         assert_eq!(record.notes, 1);
         assert_eq!(
             record.schema_version,

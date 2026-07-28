@@ -295,14 +295,8 @@ impl CliHandler {
             .count();
         let sessions = self.state.sessions.read().await.len();
         let plugins = self.state.plugin_manager.list_plugins().await.len();
-        let sim = self.state.simulation.status().await;
-        let sim_status = if sim.running {
-            format!("运行{}u/{}r", sim.virtual_users, sim.virtual_rooms)
-        } else {
-            "停止".into()
-        };
         self.out(format!(
-            "📊 rooms={rooms} users={users} sessions={sessions} plugins={plugins} sim={sim_status}"
+            "📊 rooms={rooms} users={users} sessions={sessions} plugins={plugins}"
         ));
     }
 

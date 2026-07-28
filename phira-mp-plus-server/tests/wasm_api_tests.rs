@@ -41,7 +41,6 @@ mod tests {
             extensions: Arc::clone(&extensions),
             room_commands: Arc::new(phira_mp_plus_server::room_actor::RoomCommandGateway::new()),
             ban_manager: Arc::new(phira_mp_plus_server::ban::BanManager::new(extensions)),
-            simulation: Arc::new(phira_mp_plus_server::simulation::SimulationManager::new()),
             event_bus: Arc::new(phira_mp_plus_server::event_bus::EventBus::new(1024)),
             capabilities: Arc::new(phira_mp_plus_server::wasm_host_helpers::default_capabilities()),
             send_chat: None,

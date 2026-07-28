@@ -4,7 +4,6 @@ use super::super::super::*;
 
 impl CliHandler {
     pub(in crate::cli) async fn print_runtime_status(&self) {
-        let sim = self.state.simulation.status().await;
         let persistence = self.state.persistence_worker.stats().await;
         self.out(format!("  {} Runtime skeleton", c::green("◆")));
         let event_stats = self.state.event_bus.stats(5);
@@ -24,11 +23,6 @@ impl CliHandler {
             event_stats.published
         ));
         let room_commands = self.state.room_commands.stats();
-        self.out(format!(
-            "  {} simulation running: {}",
-            c::dim("│"),
-            sim.running
-        ));
         self.out(format!(
             "  {} persistence queue:  queued={} processed={} dropped={} health={} pending={}%",
             c::dim("│"),

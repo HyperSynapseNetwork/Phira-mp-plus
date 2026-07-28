@@ -9,55 +9,6 @@ use std::sync::Arc;
 pub fn specs() -> Vec<CommandSpec> {
     let mut out = Vec::new();
 
-    // ── Simulation commands ──
-    for spec in [
-        CommandSpec::new("benchmark simulation status", "benchmark", "查看 Simulation 状态。", "benchmark simulation status")
-            .handler(Arc::new(|_state, _args| {
-                vec!["  Simulation status (CLI: use `benchmark simulation status` in console)".to_string()]
-            })),
-        CommandSpec::new(
-            "benchmark simulation run",
-            "benchmark",
-            "启动隔离本地压测；默认自动 tick，到达 duration 后自动停止。",
-            "benchmark simulation run <baseline|small|medium|large|custom> [scenario=balanced|ready_storm|round_storm|touch_judge_burst|idle] [users=N] [rooms=N] [duration=N] [tick_ms=N] [auto=true] [persist_every=N] [touch=true] [judge=true]",
-        )
-        .example("benchmark simulation run baseline")
-        .example("benchmark simulation run custom users=500 rooms=50 duration=300 scenario=touch_judge_burst tick_ms=1000 persist_every=30")
-        .example("benchmark simulation run small auto=false"),
-        CommandSpec::new("benchmark simulation scenarios", "benchmark", "列出可用 Simulation workload scenario/profile。", "benchmark simulation scenarios").advanced()
-            .example("benchmark simulation scenarios"),
-        CommandSpec::new(
-            "benchmark simulation suite",
-            "benchmark",
-            "按顺序运行多个 Simulation scenario，用于一次性比较不同压力形状。",
-            "benchmark simulation suite <smoke|mixed|stress> [duration=N] [tick_ms=N] [persist_every=N] [users=N] [rooms=N]",
-        ).advanced()
-        .example("benchmark simulation suite smoke")
-        .example("benchmark simulation suite mixed duration=15 tick_ms=500 persist_every=5")
-        .example("benchmark simulation suite stress users=800 rooms=80"),
-        CommandSpec::new(
-            "benchmark simulation report",
-            "benchmark",
-            "查看最近一次 Simulation suite 汇总报告，并输出统一 BenchmarkReport [simulation] 摘要。",
-            "benchmark simulation report [latest|list|clear]",
-        ).advanced()
-        .example("benchmark simulation report")
-        .example("benchmark simulation report list 8")
-        .example("benchmark simulation report clear"),
-        CommandSpec::new("benchmark simulation tick", "benchmark", "手动推进 Simulation tick。", "benchmark simulation tick [count]").developer()
-            .example("benchmark simulation tick 10"),
-        CommandSpec::new("benchmark simulation inspect", "benchmark", "查看 shadow users/rooms/rounds/recent events 样本。", "benchmark simulation inspect [limit]").developer()
-            .example("benchmark simulation inspect 20"),
-        CommandSpec::new("benchmark simulation stop", "benchmark", "停止当前 Simulation 运行状态并广播结束提示。", "benchmark simulation stop"),
-        CommandSpec::new("benchmark simulation seed", "benchmark", "设置 deterministic simulation seed。", "benchmark simulation seed <value>").developer(),
-        CommandSpec::new("benchmark simulation cleanup", "benchmark", "清理 Simulation 数据。", "benchmark simulation cleanup"),
-        CommandSpec::new("benchmark simulation persist", "benchmark", "发送 Simulation 快照到持久化 Worker。", "benchmark simulation persist").developer()
-            .example("benchmark simulation persist"),
-        CommandSpec::new("benchmark simulation sample", "benchmark", "查看 deterministic touches/judges 示例数据规模。", "benchmark simulation sample").developer(),
-    ] {
-        out.push(spec);
-    }
-
     // ── Phase 4.4 benchmark commands ──
     out.push(
         CommandSpec::new(
@@ -73,11 +24,11 @@ pub fn specs() -> Vec<CommandSpec> {
         CommandSpec::new(
             "benchmark run",
             "benchmark",
-            "运行基准测试，支持 simulation（默认）和 real 两种模式。",
-            "benchmark run --mode simulation|real --scenario <name> --preset <name> [options]",
+            "运行基准测试，仅支持 real 模式。",
+            "benchmark run --mode real --scenario <name> --preset <name> [options]",
         )
         .advanced()
-        .arg(CommandArgSpec::optional("--mode", "运行模式：simulation（默认）|real"))
+        .arg(CommandArgSpec::optional("--mode", "运行模式：real（默认）"))
         .arg(CommandArgSpec::optional("--scenario", "负载场景名（见 benchmark list）"))
         .arg(CommandArgSpec::optional("--preset", "预设参数集：quick|standard|stress|soak"))
         .arg(CommandArgSpec::optional("--clients", "模拟客户端数"))
@@ -85,7 +36,6 @@ pub fn specs() -> Vec<CommandSpec> {
         .arg(CommandArgSpec::optional("--duration", "运行时长，如 30（秒）/ 10m / 2h"))
         .arg(CommandArgSpec::optional("--seed", "随机种子（用于可复现性）"))
         .arg(CommandArgSpec::optional("--output", "输出格式：text（默认）|json|markdown"))
-        .example("benchmark run --mode simulation --scenario gameplay --preset standard")
         .example("benchmark run --scenario room-lifecycle --clients 50 --rooms 5 --duration 30")
         .example("benchmark run --mode real --scenario hot-room --clients 100 --duration 10m"),
     );
@@ -132,7 +82,7 @@ pub fn specs() -> Vec<CommandSpec> {
         CommandSpec::new(
             "benchmark modes",
             "diagnostics",
-            "查看三种压测模式说明。",
+            "查看压测模式说明。",
             "benchmark modes",
         )
         .advanced()
@@ -140,8 +90,7 @@ pub fn specs() -> Vec<CommandSpec> {
         .handler(Arc::new(|_state, _args| {
             vec![
                 "  Benchmark modes:".to_string(),
-                "    simulation  — 默认推荐压测（隔离本地，不访问 Phira，不需要 token）".to_string(),
-                "    real        — 显式真实 TCP 协议测试（需要 Phira token）".to_string(),
+                "    real  — 显式真实 TCP 协议测试（需要 Phira token）".to_string(),
             ]
         })),
     );
@@ -160,11 +109,10 @@ pub fn specs() -> Vec<CommandSpec> {
             "benchmark report",
             "diagnostics",
             "查看 Benchmark 报告。",
-            "benchmark report [simulation|real|limit]",
+            "benchmark report [real|limit]",
         )
         .advanced()
         .example("benchmark report")
-        .example("benchmark report simulation")
         .example("benchmark report 16"),
     );
     out.push(
@@ -172,7 +120,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "benchmark history",
             "diagnostics",
             "查看已持久化的 BenchmarkReport 历史记录。",
-            "benchmark history [simulation|real] [limit]",
+            "benchmark history [real] [limit]",
         )
         .advanced()
         .example("benchmark history")

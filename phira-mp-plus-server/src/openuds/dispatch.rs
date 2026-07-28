@@ -816,7 +816,6 @@ async fn cmd_plugin_call(
 async fn cmd_runtime_status(
     state: &Arc<PlusServerState>,
 ) -> Result<Value, String> {
-    let simulation = state.simulation.status().await;
     let persistence = state.persistence_worker.stats().await;
     let events = state
         .event_bus
@@ -825,7 +824,6 @@ async fn cmd_runtime_status(
     let room_commands = state.room_commands.stats();
     let phira_http = state.phira_client.stats();
     Ok(serde_json::json!({
-        "simulation": simulation,
         "persistence_worker": persistence,
         "event_bus": events,
         "registered_commands": commands,

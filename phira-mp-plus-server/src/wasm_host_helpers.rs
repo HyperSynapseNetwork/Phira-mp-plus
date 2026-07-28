@@ -60,7 +60,6 @@ pub fn default_capabilities() -> HashSet<String> {
         "http",
         "room.manage",
         "admin",
-        "simulation",
         "crypto",
         "timer",
         "tcp",
@@ -114,7 +113,6 @@ pub fn load_manifest_capabilities(plugin_path: &str) -> Result<HashSet<String>, 
         "http",
         "room.manage",
         "admin",
-        "simulation",
         "crypto",
         "timer",
         "tcp",
@@ -207,7 +205,6 @@ pub fn required_capability(method: &str) -> Option<&'static str> {
         value if value.starts_with("ext.") => Some("ext"),
         value if value.starts_with("config.") => Some("config"),
         value if value.starts_with("http.") || value.starts_with("sse.") => Some("http"),
-        value if value.starts_with("simulation.") => Some("simulation"),
         "file.read" => Some("file.read"),
         "file.write" => Some("file.write"),
         "plugin.api_call" => Some("plugin.call"),
@@ -490,7 +487,6 @@ mod tests {
         assert_eq!(required_capability("uuid.v4"), None);
         assert_eq!(required_capability("admin.list"), Some("admin"));
         assert_eq!(required_capability("room.set_lock"), Some("room.manage"));
-        assert_eq!(required_capability("simulation.start"), Some("simulation"));
         assert_eq!(required_capability("ban.check"), Some("admin"));
         assert_eq!(required_capability("runtime.status"), Some("state.read"));
         assert_eq!(required_capability("not.a.real.method"), None);

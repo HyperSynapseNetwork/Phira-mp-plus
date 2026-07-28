@@ -84,7 +84,6 @@ pub(crate) fn server_state_query_inner(
             let (tx, rx) = std::sync::mpsc::channel();
             let s = Arc::clone(state);
             spawn_on_runtime(async move {
-                let simulation = s.simulation.status().await;
                 let persistence = s.persistence_worker.stats().await;
                 let events = s
                     .event_bus
@@ -96,60 +95,13 @@ pub(crate) fn server_state_query_inner(
                     "runtime": true,
                     "note": "Runtime hardening is active: Session and Room management commands are mailbox-only, Room control state has coherent snapshots, and failed database writes are preserved in a local dead-letter journal. Full Room state ownership and enqueue-before crash-consistent WAL remain migration items.",
                     "commands": {"registered": commands},
-                    "event_bus": events, "simulation": simulation,
+                    "event_bus": events,
                     "persistence_worker": persistence, "room_command_gateway": room_commands,
                     "phira_http": phira_http,
                 })));
             });
             rx.recv_timeout(runtime_state_query_timeout())
                 .unwrap_or(Err("runtime.status timeout".to_string()))
-        }
-        "simulation.status" => {
-            let (tx, rx) = std::sync::mpsc::channel();
-            let s = Arc::clone(state);
-            spawn_on_runtime(async move {
-                let status = s.simulation.status().await;
-                let _ = tx.send(Ok(serde_json::to_value(status).unwrap_or_default()));
-            });
-            rx.recv_timeout(runtime_state_query_timeout())
-                .unwrap_or(Err("simulation.status timeout".to_string()))
-        }
-        "simulation.start" => {
-            let (tx, rx) = std::sync::mpsc::channel();
-            let s = Arc::clone(state);
-            let config = serde_json::from_value(args.first().cloned().unwrap_or_default())
-                .map_err(|e| format!("invalid simulation config: {e}"))?;
-            spawn_on_runtime(async move {
-                let status = s.simulation.start(config).await;
-                let _ = tx.send(Ok(serde_json::to_value(status).unwrap_or_default()));
-            });
-            rx.recv_timeout(runtime_state_query_timeout())
-                .unwrap_or(Err("simulation.start timeout".to_string()))
-        }
-        "simulation.stop" => {
-            let (tx, rx) = std::sync::mpsc::channel();
-            let s = Arc::clone(state);
-            let reason = args
-                .first()
-                .and_then(|v| v.as_str())
-                .unwrap_or("stopped via state query")
-                .to_string();
-            spawn_on_runtime(async move {
-                let status = s.simulation.stop(&reason).await;
-                let _ = tx.send(Ok(serde_json::to_value(status).unwrap_or_default()));
-            });
-            rx.recv_timeout(runtime_state_query_timeout())
-                .unwrap_or(Err("simulation.stop timeout".to_string()))
-        }
-        "simulation.cleanup" => {
-            let (tx, rx) = std::sync::mpsc::channel();
-            let s = Arc::clone(state);
-            spawn_on_runtime(async move {
-                s.simulation.cleanup().await;
-                let _ = tx.send(Ok(serde_json::json!({"ok": true})));
-            });
-            rx.recv_timeout(runtime_state_query_timeout())
-                .unwrap_or(Err("simulation.cleanup timeout".to_string()))
         }
         "benchmark.reports" => {
             Err("benchmark.reports removed: in-memory report store was deleted, use benchmark.history for persisted reports".to_string())

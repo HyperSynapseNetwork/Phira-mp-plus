@@ -73,7 +73,6 @@ pub mod session_room;
 pub mod openuds;
 mod session_lifecycle;
 mod session_telemetry;
-pub mod simulation;
 pub mod supervisor_actor;
 pub use session_room::decode_admin_room_command;
 pub mod terminal;

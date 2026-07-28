@@ -17,7 +17,6 @@
 | phira-persistence | 6 | 持久化数据查询 |
 | phira-admin | 5 | 管理员 ID 配置 |
 | phira-config | 5 | 插件配置管理 |
-| phira-simulation | 4 | 模拟运行管理 |
 | phira-crypto | 4 | 密码学操作 |
 | phira-timer | 2 | 非实时定时器 |
 | phira-tcp | 4 | TCP 网络连接 |
@@ -649,58 +648,6 @@ Poll for config changes since a version counter.
 **返回值**: `api-result`
 
 **所需 Capability**: `config`
-
----
-## phira-simulation
-
-Simulation management.
-
-### `status`
-
-Get current simulation status.
-
-**参数**:  
-（无）
-
-**返回值**: `api-result`
-
-**所需 Capability**: `simulation`
-
-### `run`
-
-Start a simulation run.
-
-**参数**:  
-- `preset`: `string`
-- `users`: `option<u32>`
-- `rooms`: `option<u32>`
-- `duration`: `option<u32>`
-
-**返回值**: `api-result`
-
-**所需 Capability**: `simulation`
-
-### `stop`
-
-Stop the current simulation run.
-
-**参数**:  
-（无）
-
-**返回值**: `api-result`
-
-**所需 Capability**: `simulation`
-
-### `cleanup`
-
-Clean up all simulation data.
-
-**参数**:  
-（无）
-
-**返回值**: `api-result`
-
-**所需 Capability**: `simulation`
 
 ---
 ## phira-crypto

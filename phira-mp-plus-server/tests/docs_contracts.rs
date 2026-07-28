@@ -36,7 +36,6 @@ fn read_doc_required(filename: &str) -> String {
 #[test]
 fn required_docs_exist() {
     for doc in &[
-        "simulation.md",
         "cli.md",
         "configuration.md",
         "plugin-dev.md",
@@ -200,31 +199,6 @@ fn configuration_docs_do_not_show_real_benchmark_token_example() {
     }
 }
 
-// ── docs/simulation.md checks ───────────────────────────────────────
-
-#[test]
-fn simulation_docs_no_phira_access() {
-    let content = read_doc_required("simulation.md");
-    assert!(
-        content.contains("不访问") || content.contains("不需要 token") || content.contains("无需"),
-        "simulation.md must state no Phira access / no token needed"
-    );
-}
-
-// ── docs/simulation.md benchmark checks ─────────────────────────────
-
-#[test]
-fn benchmark_section_marked_advanced() {
-    let content = read_doc_required("simulation.md");
-    // Benchmark content (if present) must be marked as advanced
-    if content.contains("Real Benchmark") || content.contains("压测") {
-        assert!(
-            content.contains("advanced") || content.contains("explicit") || content.contains("不推荐"),
-            "simulation.md benchmark section must be marked as advanced/explicit"
-        );
-    }
-}
-
 // ── docs/plugin-dev.md WIT checks ───────────────────────────────────
 
 #[test]
@@ -268,17 +242,3 @@ fn plugin_dev_prefers_canonical_wit() {
     }
 }
 
-// ── server_config vs simulation.md pointer ──────────────────────────
-
-#[test]
-fn server_config_points_to_simulation_doc() {
-    let content = std::fs::read_to_string(workspace_root().join("server_config.yml"))
-        .expect("server_config.yml should be readable");
-    // If server_config has any benchmark-related comment, it must reference simulation.md
-    if content.contains("benchmark") || content.contains("压测") {
-        assert!(
-            content.contains("simulation.md"),
-            "server_config.yml benchmark section must point to docs/simulation.md"
-        );
-    }
-}
