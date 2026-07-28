@@ -41,8 +41,8 @@ fn canonical_wit_file_exists() {
 #[test]
 fn plugin_abi_constants_are_locked() {
     assert_eq!(plugin_abi::wit::WIT_FILE, "wit/phira-plugin.wit");
-    assert_eq!(plugin_abi::wit::WIT_WORLD, "phira-plugin-v2");
-    assert_eq!(plugin_abi::wit::WIT_VERSION, "abi-wit-v2");
+    assert_eq!(plugin_abi::wit::WIT_WORLD, "phira-plugin-v3");
+    assert_eq!(plugin_abi::wit::WIT_VERSION, "abi-wit-v3");
     assert_eq!(plugin_abi::wit::MIGRATION_PHASE, 3,
         "MIGRATION_PHASE 3 = JSON bridge removed, WIT lifecycle wired, all host APIs implemented, WASM integration tests pass");
 }
@@ -368,11 +368,11 @@ fn current_abi_is_wit() {
     let plan = plugin_abi::plugin_abi_plan();
     assert_eq!(
         plan.current_transport,
-        plugin_abi::PluginAbiTransport::WitTypedV2
+        plugin_abi::PluginAbiTransport::WitTypedV3
     );
     assert_eq!(
         plan.target_transport,
-        plugin_abi::PluginAbiTransport::WitTypedV2
+        plugin_abi::PluginAbiTransport::WitTypedV3
     );
 }
 
