@@ -67,7 +67,7 @@ impl RoomCommandKind {
     }
 }
 
-pub(super) enum RoomActorCommand {
+pub(crate) enum RoomActorCommand {
     SetLock {
         room_id: String,
         locked: bool,
