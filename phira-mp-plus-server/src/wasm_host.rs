@@ -560,11 +560,13 @@ mod tests {
         manifest.join("tests/test-plugin.component.wasm")
     }
 
+    #[allow(dead_code)]
     fn load_wasm_bytes() -> Vec<u8> {
         std::fs::read(wasm_fixture_path())
             .expect("test-plugin.component.wasm not found — run `make` in tests/test-plugin/")
     }
 
+    #[allow(dead_code)]
     fn mock_host_context() -> Arc<crate::wit_host::WitHostContext> {
         let raw_query = |method: &str, _args: &[serde_json::Value]| {
             Err(format!("mock: no handler for {method}"))
@@ -607,6 +609,7 @@ mod tests {
     }
 
     /// Non-panicking version for tests that may run with outdated WIT fixtures.
+    #[allow(dead_code)]
     fn try_load_component() -> Result<WitPluginComponent, String> {
         let bytes = load_wasm_bytes();
         let ctx = mock_host_context();
