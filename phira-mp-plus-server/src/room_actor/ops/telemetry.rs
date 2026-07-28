@@ -1,8 +1,9 @@
 //! Telemetry command adapters behind the Runtime gateway.
 //!
-//! AddTouches, AddJudges, and SetDisplayName route through the per-room
-//! mailbox so that `player_data` and `display_names` writes are serialized
-//! by the actor and mirrored in Room.
+//! AddTouches and AddJudges use fire-and-forget `TelemetryTouches` /
+//! `TelemetryJudges` commands that skip the oneshot reply, avoiding
+//! control mailbox contention (审计 P0).  SetDisplayName remains a
+//! request/reply control command.
 
 use super::super::{
     command::{RoomActorCommand, RoomCommandKind},
@@ -14,16 +15,11 @@ use serde_json::Value;
 use std::time::Instant;
 
 impl RoomCommandGateway {
-    /// Cache a batch of touch data for a player.
+    /// Cache a batch of touch data for a player — fire-and-forget.
     ///
-    /// Writes via the per-room mailbox to actor_state.player_data,
-    /// then mirrors to Room for plugin WASM reads.
-    ///
-    /// Note: deliberately skips the `finish_command` audit trail
-    /// (ring-buffer entry + `room.command` MpEvent) to reduce overhead
-    /// on the high-frequency telemetry path. If per-command auditing
-    /// becomes needed for telemetry, add a dedicated telemetry audit
-    /// counter instead of sharing the control-command audit path.
+    /// Uses `try_send` to the per-room telemetry channel without waiting
+    /// for a oneshot reply, so control commands (join, leave, start, …)
+    /// are never blocked by high-frequency telemetry.
     pub async fn add_touches(
         &self,
         room_id: &str,
@@ -32,6 +28,21 @@ impl RoomCommandGateway {
     ) -> Result<Value, String> {
         let rid = room_id.to_string();
         let data = touches.to_vec();
+        // 审计 P0: cast fire-and-forget telemetry via try_send.
+        if let Some(tx) = self.telemetry_sender(room_id).await {
+            match tx.try_send(RoomActorCommand::TelemetryTouches {
+                room_id: rid.clone(),
+                user_id,
+                touches: data,
+            }) {
+                Ok(()) => return Ok(serde_json::json!({"ok": true})),
+                Err(_) => {
+                    // Telemetry channel saturated — return error, caller will log.
+                    return Err("telemetry channel full".to_string());
+                }
+            }
+        }
+        // Fall back to control mailbox path if telemetry sender unavailable.
         self
             .room_mailbox(&rid, |reply| RoomActorCommand::AddTouches {
                 room_id: rid.clone(),
@@ -43,16 +54,7 @@ impl RoomCommandGateway {
             .into_untyped()
     }
 
-    /// Cache a batch of judge data for a player.
-    ///
-    /// Writes via the per-room mailbox to actor_state.player_data,
-    /// then mirrors to Room for plugin WASM reads.
-    ///
-    /// Note: deliberately skips the `finish_command` audit trail
-    /// (ring-buffer entry + `room.command` MpEvent) to reduce overhead
-    /// on the high-frequency telemetry path. If per-command auditing
-    /// becomes needed for telemetry, add a dedicated telemetry audit
-    /// counter instead of sharing the control-command audit path.
+    /// Cache a batch of judge data for a player — fire-and-forget.
     pub async fn add_judges(
         &self,
         room_id: &str,
@@ -61,6 +63,18 @@ impl RoomCommandGateway {
     ) -> Result<Value, String> {
         let rid = room_id.to_string();
         let data = judges.to_vec();
+        if let Some(tx) = self.telemetry_sender(room_id).await {
+            match tx.try_send(RoomActorCommand::TelemetryJudges {
+                room_id: rid.clone(),
+                user_id,
+                judges: data,
+            }) {
+                Ok(()) => return Ok(serde_json::json!({"ok": true})),
+                Err(_) => {
+                    return Err("telemetry channel full".to_string());
+                }
+            }
+        }
         self
             .room_mailbox(&rid, |reply| RoomActorCommand::AddJudges {
                 room_id: rid.clone(),

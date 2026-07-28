@@ -67,7 +67,7 @@ impl RoomCommandGateway {
 
         self.mailbox_registry_miss.fetch_add(1, Ordering::Relaxed);
         // 作用域限制 StdRwLockWriteGuard 在 .await 之前释放
-        let (tx, mut rx, _capacity) = {
+        let (tx, mut rx, mut telemetry_rx, _capacity) = {
             let mut mailboxes = self.room_mailboxes.write().ok()?;
             if let Some(entry) = mailboxes.get(room_id) {
                 if entry.room_uuid == room_uuid && !entry.tx.is_closed() {
@@ -77,14 +77,18 @@ impl RoomCommandGateway {
             }
             let cap = self.mailbox_capacity.load(Ordering::Acquire).max(16);
             let (tx, rx) = mpsc::channel::<RoomActorCommand>(cap);
+            // 审计 P0: 独立 telemetry channel，容量 2× control 以应对高频 Touch/Judge。
+            let telemetry_cap = cap * 2;
+            let (telemetry_tx, telemetry_rx) = mpsc::channel::<RoomActorCommand>(telemetry_cap);
             mailboxes.insert(
                 room_id.to_string(),
                 super::RoomMailboxEntry {
                     room_uuid: room_uuid.clone(),
                     tx: tx.clone(),
+                    telemetry_tx,
                 },
             );
-            (tx, rx, cap)
+            (tx, rx, telemetry_rx, cap)
         };
         self.mailbox_created.fetch_add(1, Ordering::Relaxed);
         let worker_room_id = room_id.to_string();
@@ -121,6 +125,8 @@ impl RoomCommandGateway {
                 lifecycle_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
                 loop {
                     tokio::select! {
+                        biased;
+                        // 审计 P0: control 命令优先处理。
                         command = rx.recv() => {
                             let Some(command) = command else {
                                 break;
@@ -129,6 +135,13 @@ impl RoomCommandGateway {
                             if should_stop {
                                 break;
                             }
+                        }
+                        // 审计 P0: telemetry 命令通过独立 channel 非阻塞接收。
+                        telemetry = telemetry_rx.recv() => {
+                            let Some(telemetry) = telemetry else {
+                                break;
+                            };
+                            actor.execute_telemetry(telemetry).await;
                         }
                         _ = lifecycle_tick.tick() => {
                             let generation_is_current = {
@@ -333,6 +346,7 @@ mod tests {
         let old_uuid = uuid::Uuid::new_v4();
         let new_uuid = uuid::Uuid::new_v4();
         let (tx, _rx) = mpsc::channel(1);
+        let (telem_tx, _telem_rx) = mpsc::channel(1);
 
         gateway
             .room_mailboxes
@@ -343,6 +357,7 @@ mod tests {
                 super::super::RoomMailboxEntry {
                     room_uuid: new_uuid,
                     tx,
+                    telemetry_tx: telem_tx,
                 },
             );
 

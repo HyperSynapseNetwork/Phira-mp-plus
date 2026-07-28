@@ -229,6 +229,23 @@ impl RoomActor {
         self.latest_snapshot = RoomSnapshot::from_actor_state(&self.actor_state);
     }
 
+    /// Execute a fire-and-forget telemetry command.
+    /// 审计 P0: telemetry path is lighter — no snapshot refresh, no audit,
+    /// no oneshot reply, no `finish_command`. Only updates `player_data`.
+    pub(super) async fn execute_telemetry(&mut self, command: RoomActorCommand) {
+        match command {
+            RoomActorCommand::TelemetryTouches { room_id: _, user_id, touches } => {
+                let entry = self.actor_state.player_data.entry(user_id).or_default();
+                entry.push_touches(&touches);
+            }
+            RoomActorCommand::TelemetryJudges { room_id: _, user_id, judges } => {
+                let entry = self.actor_state.player_data.entry(user_id).or_default();
+                entry.push_judges(&judges);
+            }
+            _ => {}
+        }
+    }
+
     /// Execute a command against the actor's owned state.
     /// All commands go through execute_with_actor which writes actor_state.
     /// The snapshot cache is updated directly after execution.

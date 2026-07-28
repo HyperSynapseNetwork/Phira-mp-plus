@@ -28,6 +28,8 @@ pub(super) enum RoomCommandKind {
     AddTouches,
     AddJudges,
     SetDisplayName,
+    TelemetryTouches,
+    TelemetryJudges,
 }
 
 impl RoomCommandKind {
@@ -151,6 +153,19 @@ pub(super) enum RoomActorCommand {
         user_id: i32,
         reply: oneshot::Sender<RoomCommandResult>,
     },
+    /// Fire-and-forget telemetry variant — no oneshot reply, casts through
+    /// a dedicated telemetry channel to avoid control mailbox contention.
+    TelemetryTouches {
+        room_id: String,
+        user_id: i32,
+        touches: Vec<TouchEventPoint>,
+    },
+    /// Fire-and-forget telemetry variant — no oneshot reply.
+    TelemetryJudges {
+        room_id: String,
+        user_id: i32,
+        judges: Vec<JudgeEventItem>,
+    },
     #[allow(dead_code)]
     AddUser {
         room_id: String,
@@ -219,6 +234,8 @@ impl RoomActorCommand {
             Self::AddJudges { .. } => RoomCommandKind::AddJudges,
             Self::SetDisplayName { .. } => RoomCommandKind::SetDisplayName,
             Self::SetPersistentEmpty { .. } => RoomCommandKind::SetPersistentEmpty,
+            Self::TelemetryTouches { .. } => RoomCommandKind::TelemetryTouches,
+            Self::TelemetryJudges { .. } => RoomCommandKind::TelemetryJudges,
         }
     }
 
@@ -248,6 +265,8 @@ impl RoomActorCommand {
             | Self::SetPersistentEmpty { reply, .. } => {
                 let _ = reply.send(result);
             }
+            // Telemetry variants are fire-and-forget — no reply channel.
+            Self::TelemetryTouches { .. } | Self::TelemetryJudges { .. } => {}
         }
     }
 }
