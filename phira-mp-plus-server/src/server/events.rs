@@ -37,9 +37,8 @@ pub fn spawn_event_subscribers(state: &Arc<PlusServerState>) {
     crate::supervisor_actor::spawn_critical("event-subscribers", async move {
         loop {
             match rx.recv().await {
-                Ok(event) => match &event {
-                    MpEvent::BenchmarkCompleted { .. } => {}
-                    _ => {}
+                Ok(event) => {
+                    let _ = &event;
                 },
                 Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
                     warn!(skipped, "event subscriber lagged");

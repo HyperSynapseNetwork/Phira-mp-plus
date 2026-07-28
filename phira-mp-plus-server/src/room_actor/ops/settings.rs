@@ -193,7 +193,7 @@ impl RoomCommandGateway {
     ) -> Result<Value, String> {
         if let Some(ref ep) = endpoint {
             let result = self
-                .room_mailbox(&room_id.to_string(), |reply| RoomActorCommand::SetEndpoint {
+                .room_mailbox(room_id, |reply| RoomActorCommand::SetEndpoint {
                     room_id: room_id.to_string(),
                     endpoint: Some(ep.clone()),
                     reply,
@@ -205,7 +205,7 @@ impl RoomCommandGateway {
         }
         if persistent_empty {
             let result = self
-                .room_mailbox(&room_id.to_string(), |reply| RoomActorCommand::SetPersistentEmpty {
+                .room_mailbox(room_id, |reply| RoomActorCommand::SetPersistentEmpty {
                     room_id: room_id.to_string(),
                     persistent_empty: true,
                     reply,
