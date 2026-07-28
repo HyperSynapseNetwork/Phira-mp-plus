@@ -98,11 +98,6 @@ jobs:
             setup: sudo apt-get update && sudo apt-get install -y gcc-aarch64-linux-gnu
             env:
               CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
-          - os: windows-latest
-            target: x86_64-pc-windows-msvc
-            artifact: phira-mp-plus-server-windows
-            artifact-path: target/x86_64-pc-windows-msvc/release/phira-mp-plus-server.exe
-            env: {}
     runs-on: ${{ matrix.os }}
     permissions:
       contents: read
