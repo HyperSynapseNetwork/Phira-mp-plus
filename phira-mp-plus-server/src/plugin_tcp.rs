@@ -157,6 +157,14 @@ impl PluginTcpActor {
         self.plugin_read_bytes.remove(plugin_id);
     }
 
+    fn count_plugin_connections(&self, plugin_id: &str) -> u32 {
+        self.plugin_connections.get(plugin_id).copied().unwrap_or(0)
+    }
+
+    fn count_plugin_listeners(&self, plugin_id: &str) -> u32 {
+        self.plugin_listeners.get(plugin_id).copied().unwrap_or(0)
+    }
+
     fn check_owner(&self, handle: u64, plugin_id: &str) -> Result<(), String> {
         match self.handle_owner.get(&handle) {
             Some(owner) if owner == plugin_id => Ok(()),

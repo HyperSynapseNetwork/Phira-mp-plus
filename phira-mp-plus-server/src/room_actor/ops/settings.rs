@@ -199,7 +199,7 @@ impl RoomCommandGateway {
                     reply,
                 })
                 .await;
-            if result.is_err() {
+            if !result.is_ok() {
                 return Err("init_empty_room: set endpoint failed".to_string());
             }
         }
@@ -211,7 +211,7 @@ impl RoomCommandGateway {
                     reply,
                 })
                 .await;
-            if result.is_err() {
+            if !result.is_ok() {
                 return Err("init_empty_room: set persistent_empty failed".to_string());
             }
         }

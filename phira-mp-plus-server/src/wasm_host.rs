@@ -103,7 +103,7 @@ pub struct WitHostState {
 #[cfg(feature = "wit-bindgen")]
 pub struct WitPluginComponent {
     store: wasmtime::Store<WitHostState>,
-    component: crate::plugin_abi::wit_abi::PhiraPluginV2,
+    component: crate::plugin_abi::wit_abi::PhiraPluginV3,
     pub info: PluginInfo,
     pub plugin_name: String,
     pub initialized: bool,
@@ -224,7 +224,7 @@ impl WitPluginComponent {
         let component = wasmtime::component::Component::new(&engine, wasm_bytes)
             .map_err(|e| format!("component compile: {e}"))?;
         let mut linker = wasmtime::component::Linker::<WitHostState>::new(&engine);
-        wit_abi::PhiraPluginV2::add_to_linker::<WitHostState, wasmtime::component::HasSelf<crate::wit_host::WitPluginHost>>(
+        wit_abi::PhiraPluginV3::add_to_linker::<WitHostState, wasmtime::component::HasSelf<crate::wit_host::WitPluginHost>>(
             &mut linker,
             |state: &mut WitHostState| &mut state.host,
         ).map_err(|e| format!("linker setup: {e}"))?;
@@ -256,7 +256,7 @@ impl WitPluginComponent {
         let component = wasmtime::component::Component::new(&engine, wasm_bytes)
             .map_err(|e| format!("component compile: {e}"))?;
         let mut linker = wasmtime::component::Linker::<WitHostState>::new(&engine);
-        wit_abi::PhiraPluginV2::add_to_linker::<WitHostState, wasmtime::component::HasSelf<crate::wit_host::WitPluginHost>>(
+        wit_abi::PhiraPluginV3::add_to_linker::<WitHostState, wasmtime::component::HasSelf<crate::wit_host::WitPluginHost>>(
             &mut linker,
             |state: &mut WitHostState| &mut state.host,
         ).map_err(|e| format!("linker setup: {e}"))?;
@@ -296,7 +296,7 @@ impl WitPluginComponent {
         let instance = linker
             .instantiate(&mut store, &component)
             .map_err(|e| format!("instantiate component: {e}"))?;
-        let component_handle = wit::PhiraPluginV2::new(&mut store, &instance)
+        let component_handle = wit::PhiraPluginV3::new(&mut store, &instance)
             .map_err(|e| format!("get component handle: {e}"))?;
         let info = PluginInfo {
             name: plugin_name.clone(),

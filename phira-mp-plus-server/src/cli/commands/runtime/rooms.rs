@@ -11,10 +11,10 @@ impl CliHandler {
         self.out(format!("  {} succeeded: {}", c::dim("│"), stats.succeeded));
         self.out(format!("  {} failed:    {}", c::dim("│"), stats.failed));
         self.out(format!(
-            "  {} mailbox:   enabled={} active_rooms={} created={} enqueued={} completed={} failed={} fallback={} closed={}",
+            "  {} mailbox:   enabled={} active_rooms={} created={} enqueued={} completed={} failed={} closed={}",
             c::dim("│"), stats.mailbox_enabled, stats.room_mailboxes, stats.mailbox_created,
             stats.mailbox_enqueued, stats.mailbox_completed, stats.mailbox_failed,
-            stats.mailbox_fallback, stats.mailbox_closed
+            stats.mailbox_closed
         ));
         self.out(format!(
             "  {} registry:  hit={} miss={}",
