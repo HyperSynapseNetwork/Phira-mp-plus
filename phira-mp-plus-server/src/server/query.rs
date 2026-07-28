@@ -92,16 +92,13 @@ pub(crate) fn server_state_query_inner(
                 let commands = s.command_registry.iter().count();
                 let room_commands = s.room_commands.stats();
                 let phira_http = s.phira_client.stats();
-                let benchmark_reports = s
-                    .benchmark_reports
-                    .snapshot(crate::runtime_diagnostics::BENCHMARK_REPORT_RECENT_DEFAULT);
                 let _ = tx.send(Ok(serde_json::json!({
                     "runtime": true,
                     "note": "Runtime hardening is active: Session and Room management commands are mailbox-only, Room control state has coherent snapshots, and failed database writes are preserved in a local dead-letter journal. Full Room state ownership and enqueue-before crash-consistent WAL remain migration items.",
                     "commands": {"registered": commands},
                     "event_bus": events, "simulation": simulation,
                     "persistence_worker": persistence, "room_command_gateway": room_commands,
-                    "phira_http": phira_http, "benchmark_reports": benchmark_reports,
+                    "phira_http": phira_http,
                 })));
             });
             rx.recv_timeout(runtime_state_query_timeout())
@@ -155,32 +152,13 @@ pub(crate) fn server_state_query_inner(
                 .unwrap_or(Err("simulation.cleanup timeout".to_string()))
         }
         "benchmark.reports" => {
-            let count = args
-                .first()
-                .and_then(|v| v.as_u64())
-                .unwrap_or(crate::runtime_diagnostics::BENCHMARK_REPORT_RECENT_DEFAULT as u64)
-                as usize;
-            let reports = state.benchmark_reports.snapshot(count);
-            serde_json::to_value(&reports).map_err(|e| format!("serialize benchmark reports: {e}"))
+            Err("benchmark.reports removed: in-memory report store was deleted, use benchmark.history for persisted reports".to_string())
         }
         "benchmark.latest" => {
-            let latest = state
-                .benchmark_reports
-                .snapshot(1)
-                .recent
-                .into_iter()
-                .next();
-            serde_json::to_value(latest)
-                .map_err(|e| format!("serialize latest benchmark report: {e}"))
+            Err("benchmark.latest removed: in-memory report store was deleted, use benchmark.history for persisted reports".to_string())
         }
         "benchmark.history" => {
-            let max = args
-                .first()
-                .and_then(|v| v.as_u64())
-                .map(|v| v as usize)
-                .unwrap_or(usize::MAX);
-            let reports = state.benchmark_reports.snapshot(max);
-            serde_json::to_value(&reports).map_err(|e| format!("serialize benchmark reports: {e}"))
+            Err("benchmark.history removed: in-memory report store was deleted, use benchmark.history for persisted reports".to_string())
         }
         "rooms.history" => {
             let users = crate::read_lock!(state.rooms);

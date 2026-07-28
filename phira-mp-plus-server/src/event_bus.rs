@@ -156,7 +156,7 @@ pub enum MpEvent {
         rows: usize,
     },
     BenchmarkCompleted {
-        report: crate::benchmark_report::BenchmarkReport,
+        report: crate::benchmark::report::BenchmarkReport,
     },
     /// Diagnostic copy of a plugin event. Reliable delivery is owned by the
     /// dedicated PluginManager queue; broadcast subscribers must not re-trigger it.
@@ -263,12 +263,10 @@ impl MpEvent {
             }
             Self::PersistenceWritten { table, rows } => format!("table={table} rows={rows}"),
             Self::BenchmarkCompleted { report } => format!(
-                "mode={} title={} failed_operations={} probes_failed={} probes_blocked={}",
-                report.mode.as_str(),
-                report.title.as_str(),
-                report.failed_operations.unwrap_or(0),
-                report.probes.failed,
-                report.probes.blocked,
+                "mode={} title={} errors={}",
+                report.config.mode.as_str(),
+                report.title,
+                report.errors_total,
             ),
             Self::PluginEventDispatched(event) => format!("plugin.{}", event.kind()),
             Self::Custom { kind, .. } => format!("kind={kind}"),
@@ -467,22 +465,37 @@ mod tests {
 
     #[test]
     fn benchmark_completed_has_stable_kind_and_summary() {
-        let mut report = crate::benchmark_report::BenchmarkReport::new(
-            crate::benchmark_report::BenchmarkMode::Simulation,
-            "simulation probe",
-            30,
+        let env = crate::benchmark::environment::EnvironmentSnapshot {
+            version: "0.1.0".to_string(),
+            git_commit: "abc123".to_string(),
+            cpu_cores: 4,
+            cpu_model: "Test CPU".to_string(),
+            total_memory_bytes: 8_589_934_592,
+            available_memory_bytes: 4_294_967_296,
+            os_name: "linux".to_string(),
+            os_version: "Ubuntu 22.04".to_string(),
+            kernel_version: "6.2.0".to_string(),
+            hostname: "test-host".to_string(),
+            rust_version: "1.82.0".to_string(),
+            target_triple: "x86_64-linux".to_string(),
+            postgres_version: Some("16.2".to_string()),
+            captured_at_ms: 1_000_000,
+        };
+        let config = crate::benchmark::config::BenchmarkConfig::from_preset(
+            crate::benchmark::command::BenchmarkPreset::Quick,
         );
-        report.failed_operations = Some(2);
-        report.probes.record_failure();
-        report.probes.record_blocked();
+        let mut report = crate::benchmark::report::BenchmarkReport::new(
+            "simulation probe",
+            env,
+            config,
+        );
+        report.errors_total = 2;
 
         let event = MpEvent::BenchmarkCompleted { report };
         assert_eq!(event.kind(), "benchmark.completed");
         let summary = event.summary();
         assert!(summary.contains("mode=simulation"));
-        assert!(summary.contains("failed_operations=2"));
-        assert!(summary.contains("probes_failed=1"));
-        assert!(summary.contains("probes_blocked=1"));
+        assert!(summary.contains("errors=2"));
     }
 
     #[test]

@@ -348,8 +348,7 @@ Phira-mp-plus/
 │       ├── event_bus.rs             #   EventBus (MpEvent 广播)
 │       ├── simulation.rs            #   Simulation 管理器
 │       ├── runtime_diagnostics.rs   #   Runtime 诊断常量
-│       ├── benchmark_report.rs      #   Benchmark report 类型
-│       ├── benchmark_snapshot.rs    #   Benchmark snapshot
+│       ├── benchmark/               #   基准测试模块（配置/场景/运行器/报告）
 │       ├── db.rs                    #   PostgreSQL 持久化 (DbManager)
 │       ├── error.rs                 #   错误类型
 │       ├── l10n.rs                  #   Fluent i18n

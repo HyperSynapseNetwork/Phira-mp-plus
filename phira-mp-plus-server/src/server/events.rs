@@ -3,7 +3,7 @@
 //! Extracted from the original `server.rs` to reduce complexity in the
 //! orchestration layer.
 
-use crate::benchmark_report::BenchmarkReport;
+use crate::benchmark::report::BenchmarkReport;
 use crate::event_bus::MpEvent;
 use crate::plugin::PluginEvent;
 use crate::server::state::{PlusServerState, ServerStats};
@@ -50,9 +50,7 @@ pub fn spawn_event_subscribers(state: &Arc<PlusServerState>) {
                             .broadcast_system_message("性能测试已结束，感谢您的耐心等待。")
                             .await;
                     }
-                    MpEvent::BenchmarkCompleted { report } => {
-                        state_clone.benchmark_reports.record(report.clone());
-                    }
+                    MpEvent::BenchmarkCompleted { .. } => {}
                     _ => {}
                 },
                 Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
@@ -173,9 +171,6 @@ impl PlusServerState {
     /// Mandatory plugin and persistence side effects use their dedicated bounded
     /// dispatchers; the broadcast EventBus is an observation channel and may lag.
     pub fn publish_runtime_event(&self, event: crate::event_bus::MpEvent) -> usize {
-        if let crate::event_bus::MpEvent::BenchmarkCompleted { report } = &event {
-            self.benchmark_reports.record(report.clone());
-        }
         self.event_bus.publish(event)
     }
 

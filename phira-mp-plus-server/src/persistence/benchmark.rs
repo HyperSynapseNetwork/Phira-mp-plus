@@ -1,6 +1,7 @@
 //! BenchmarkReport persistence contracts.
 
-use crate::benchmark_report::{BenchmarkMode, BenchmarkReport};
+use crate::benchmark::command::BenchmarkRunMode;
+use crate::benchmark::report::BenchmarkReport;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -8,7 +9,7 @@ use serde_json::Value;
 pub struct BenchmarkReportPersistenceRecord {
     /// Stable idempotency key reused across database retries.
     pub report_id: String,
-    pub mode: BenchmarkMode,
+    pub mode: BenchmarkRunMode,
     pub title: String,
     pub duration_secs: u64,
     pub is_simulation: bool,
@@ -30,18 +31,18 @@ impl BenchmarkReportPersistenceRecord {
     pub fn from_report(report: &BenchmarkReport, source: impl Into<String>) -> Self {
         Self {
             report_id: uuid::Uuid::new_v4().to_string(),
-            mode: report.mode,
+            mode: report.config.mode,
             title: report.title.clone(),
-            duration_secs: report.duration_secs,
-            is_simulation: report.mode == BenchmarkMode::Simulation,
-            operations: report.operations,
-            failed_operations: report.failed_operations,
-            probes_attempted: report.probes.attempted,
-            probes_succeeded: report.probes.succeeded,
-            probes_failed: report.probes.failed,
-            probes_blocked: report.probes.blocked,
-            probes_skipped: report.probes.skipped,
-            failure_samples: report.failure_samples.len(),
+            duration_secs: report.summary.duration_secs,
+            is_simulation: report.config.mode == BenchmarkRunMode::Simulation,
+            operations: Some(report.summary.total_commands),
+            failed_operations: Some(report.errors_total),
+            probes_attempted: 0,
+            probes_succeeded: 0,
+            probes_failed: 0,
+            probes_blocked: 0,
+            probes_skipped: 0,
+            failure_samples: report.invariant_violations as usize,
             notes: report.notes.len(),
             source: source.into(),
             schema_version: crate::persistence::schema::RUNTIME_BENCHMARK_REPORTS_SCHEMA_VERSION,
@@ -70,12 +71,12 @@ impl BenchmarkReportPersistenceRecord {
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct BenchmarkReportHistoryQuery {
-    pub mode: Option<BenchmarkMode>,
+    pub mode: Option<BenchmarkRunMode>,
     pub limit: usize,
 }
 
 impl BenchmarkReportHistoryQuery {
-    pub fn new(mode: Option<BenchmarkMode>, limit: usize) -> Self {
+    pub fn new(mode: Option<BenchmarkRunMode>, limit: usize) -> Self {
         Self {
             mode,
             limit: limit.clamp(1, 200),
@@ -86,7 +87,7 @@ impl BenchmarkReportHistoryQuery {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BenchmarkReportHistoryRow {
     pub sequence: i64,
-    pub mode: BenchmarkMode,
+    pub mode: BenchmarkRunMode,
     pub title: String,
     pub duration_secs: i64,
     pub is_simulation: bool,
@@ -103,15 +104,36 @@ pub struct BenchmarkReportHistoryRow {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::benchmark::config::BenchmarkConfig;
+    use crate::benchmark::environment::EnvironmentSnapshot;
+
+    fn make_test_report() -> BenchmarkReport {
+        let env = EnvironmentSnapshot {
+            version: "0.1.0".to_string(),
+            git_commit: "abc123".to_string(),
+            cpu_cores: 4,
+            cpu_model: "Test CPU".to_string(),
+            total_memory_bytes: 8_589_934_592,
+            available_memory_bytes: 4_294_967_296,
+            os_name: "linux".to_string(),
+            os_version: "Ubuntu 22.04".to_string(),
+            kernel_version: "6.2.0".to_string(),
+            hostname: "test-host".to_string(),
+            rust_version: "1.82.0".to_string(),
+            target_triple: "x86_64-linux".to_string(),
+            postgres_version: Some("16.2".to_string()),
+            captured_at_ms: 1_000_000,
+        };
+        let config = BenchmarkConfig::from_preset(crate::benchmark::command::BenchmarkPreset::Quick);
+        BenchmarkReport::new("test", env, config)
+    }
 
     #[test]
     fn persistence_record_preserves_report_shape() {
-        let mut report = BenchmarkReport::new(BenchmarkMode::Simulation, "simulation smoke", 3);
-        report.probes.record_success();
-        report.add_note("dry-run");
+        let mut report = make_test_report();
+        report.notes.push("dry-run".to_string());
         let record = BenchmarkReportPersistenceRecord::from_report(&report, "test");
-        assert_eq!(record.mode, BenchmarkMode::Simulation);
-        assert_eq!(record.probes_succeeded, 1);
+        assert_eq!(record.mode, BenchmarkRunMode::Simulation);
         assert_eq!(record.notes, 1);
         assert_eq!(
             record.schema_version,
@@ -304,11 +326,7 @@ impl DbManager {
     }
 }
 
-/// Parse a benchmark-mode string into [`BenchmarkMode`].
-fn benchmark_mode_from_str(value: &str) -> Option<crate::benchmark_report::BenchmarkMode> {
-    match value {
-        "simulation" | "sim" => Some(crate::benchmark_report::BenchmarkMode::Simulation),
-        "real" => Some(crate::benchmark_report::BenchmarkMode::Real),
-        _ => None,
-    }
+/// Parse a benchmark-mode string into [`BenchmarkRunMode`].
+fn benchmark_mode_from_str(value: &str) -> Option<BenchmarkRunMode> {
+    BenchmarkRunMode::parse(value)
 }

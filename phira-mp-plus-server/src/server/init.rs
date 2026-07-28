@@ -81,10 +81,6 @@ impl PlusServer {
             crate::runtime_diagnostics::EVENT_TRACE_WINDOW,
         ));
         spawn_runtime_event_observer(Arc::clone(&event_bus));
-        let benchmark_reports =
-            Arc::new(crate::benchmark_snapshot::BenchmarkReportStore::new(
-                crate::runtime_diagnostics::BENCHMARK_REPORT_HISTORY,
-            ));
         let simulation = Arc::new(crate::simulation::SimulationManager::new());
         let persistence_worker =
             crate::persistence::PersistenceWorker::spawn_with_journals(
@@ -142,7 +138,6 @@ impl PlusServer {
             )),
             command_registry,
             event_bus,
-            benchmark_reports,
             simulation,
             persistence_worker,
             high_frequency_writer,

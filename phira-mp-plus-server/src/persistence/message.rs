@@ -2,7 +2,8 @@
 
 #![allow(clippy::large_enum_variant)]
 
-use crate::benchmark_report::{BenchmarkMode, BenchmarkReport};
+use crate::benchmark::command::BenchmarkRunMode;
+use crate::benchmark::report::BenchmarkReport;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::sync::Arc;
@@ -74,7 +75,7 @@ impl PersistenceEvent {
         match self {
             Self::RoomSnapshot { simulation, .. }
             | Self::ServerEvent { simulation, .. } => *simulation,
-            Self::BenchmarkReport { report } => report.mode == BenchmarkMode::Simulation,
+            Self::BenchmarkReport { report } => report.config.mode == BenchmarkRunMode::Simulation,
             Self::UserRoomHistory { .. }
             | Self::UserOnline { .. }
             | Self::UserOffline { .. }
@@ -157,10 +158,10 @@ impl PersistenceEvent {
                 format!("kind={kind} simulation={simulation}")
             }
             Self::BenchmarkReport { report } => format!(
-                "mode={} title={} failed_operations={}",
-                report.mode.as_str(),
-                report.title.as_str(),
-                report.failed_operations.unwrap_or(0),
+                "mode={} title={} errors={}",
+                report.config.mode.as_str(),
+                report.title,
+                report.errors_total,
             ),
             Self::UserRoomHistory {
                 user_id, room_id, ..
@@ -182,10 +183,33 @@ impl PersistenceEvent {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::benchmark::config::BenchmarkConfig;
+    use crate::benchmark::environment::EnvironmentSnapshot;
+
+    fn make_simulation_report() -> BenchmarkReport {
+        let env = EnvironmentSnapshot {
+            version: "0.1.0".to_string(),
+            git_commit: "abc123".to_string(),
+            cpu_cores: 4,
+            cpu_model: "Test CPU".to_string(),
+            total_memory_bytes: 8_589_934_592,
+            available_memory_bytes: 4_294_967_296,
+            os_name: "linux".to_string(),
+            os_version: "Ubuntu 22.04".to_string(),
+            kernel_version: "6.2.0".to_string(),
+            hostname: "test-host".to_string(),
+            rust_version: "1.82.0".to_string(),
+            target_triple: "x86_64-linux".to_string(),
+            postgres_version: Some("16.2".to_string()),
+            captured_at_ms: 1_000_000,
+        };
+        let config = BenchmarkConfig::from_preset(crate::benchmark::command::BenchmarkPreset::Quick);
+        BenchmarkReport::new("simulation", env, config)
+    }
 
     #[test]
     fn benchmark_report_is_simulation_when_report_mode_is_simulation() {
-        let report = BenchmarkReport::new(BenchmarkMode::Simulation, "simulation", 1);
+        let report = make_simulation_report();
         let event = PersistenceEvent::BenchmarkReport { report };
         assert!(event.is_simulation());
         assert_eq!(event.kind(), "benchmark.completed");

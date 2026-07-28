@@ -121,21 +121,21 @@ fn simulation_config_lacks_phira_account_fields() {
 
 #[test]
 fn benchmark_report_has_simulation_as_default_mode() {
-    use phira_mp_plus_server::benchmark_report::BenchmarkMode;
-    let sim = serde_json::from_str::<BenchmarkMode>("\"simulation\"")
+    use phira_mp_plus_server::benchmark::command::BenchmarkRunMode;
+    let sim = serde_json::from_str::<BenchmarkRunMode>("\"simulation\"")
         .expect("'simulation' benchmark mode must be parseable");
     match sim {
-        BenchmarkMode::Simulation => {}
+        BenchmarkRunMode::Simulation => {}
         _ => panic!("not Simulation"),
     }
 }
 
 #[test]
 fn benchmark_real_is_explicit_not_default() {
-    use phira_mp_plus_server::benchmark_report::BenchmarkMode;
-    let real: BenchmarkMode = serde_json::from_str("\"real\"").unwrap();
+    use phira_mp_plus_server::benchmark::command::BenchmarkRunMode;
+    let real: BenchmarkRunMode = serde_json::from_str("\"real\"").unwrap();
     match real {
-        BenchmarkMode::Real => {}
+        BenchmarkRunMode::Real => {}
         _ => panic!("not Real"),
     }
 }

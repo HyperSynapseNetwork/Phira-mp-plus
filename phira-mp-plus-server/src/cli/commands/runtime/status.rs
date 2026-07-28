@@ -24,7 +24,6 @@ impl CliHandler {
             event_stats.published
         ));
         let room_commands = self.state.room_commands.stats();
-        let benchmark_reports = self.state.benchmark_reports.snapshot(3);
         self.out(format!(
             "  {} simulation running: {}",
             c::dim("│"),
@@ -60,16 +59,8 @@ impl CliHandler {
             phira.failures
         ));
         self.out(format!(
-            "  {} benchmark reports:  total={} latest_modes={} recent={}",
+            "  {} diagnostics cache:  event_trace={}",
             c::dim("│"),
-            benchmark_reports.total,
-            benchmark_reports.latest_by_mode.len(),
-            benchmark_reports.recent.len()
-        ));
-        self.out(format!(
-            "  {} diagnostics cache:  benchmark_retained={} event_trace={}",
-            c::dim("│"),
-            benchmark_reports.retained,
             event_stats.trace_capacity
         ));
         self.out(format!(

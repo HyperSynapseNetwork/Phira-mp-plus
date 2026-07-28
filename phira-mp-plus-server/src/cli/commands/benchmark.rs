@@ -69,13 +69,6 @@ impl CliHandler {
             self.print_benchmark_modes();
             return;
         }
-        if matches!(
-            args.first().copied(),
-            Some("report") | Some("reports") | Some("latest") | Some("history")
-        ) {
-            self.print_benchmark_reports(args).await;
-            return;
-        }
         // Redirect to `benchmark run --mode real`
         self.out(format!(
             "  {} Use `benchmark run --mode real` to run a real-mode benchmark",
@@ -95,116 +88,6 @@ impl CliHandler {
         self.out("    benchmark run --mode real --clients 10 --rooms 1 --duration 30".to_string());
         self.out("    benchmark suite --preset quick".to_string());
         self.out("    benchmark modes".to_string());
-    }
-
-    async fn print_benchmark_reports(&self, args: &[&str]) {
-        let sub = args.first().copied().unwrap_or("report");
-        let rest = if matches!(sub, "report" | "reports" | "latest" | "history") {
-            &args[1..]
-        } else {
-            args
-        };
-        let mode = rest.first().and_then(|value| parse_benchmark_mode(value));
-        let limit = rest
-            .iter()
-            .find_map(|value| value.parse::<usize>().ok())
-            .unwrap_or(crate::runtime_diagnostics::BENCHMARK_REPORT_RECENT_DEFAULT);
-
-        self.out(format!("  {} Benchmark reports", c::green("◆")));
-        if matches!(sub, "history") {
-            let rows = if let Some(db) = crate::internal_hooks::DB.get() {
-                db.runtime_benchmark_report_history(
-                    crate::persistence::BenchmarkReportHistoryQuery::new(mode, limit),
-                )
-                .await
-            } else {
-                Vec::new()
-            };
-            self.out(format!(
-                "  {} persisted history rows={} source=mp_runtime_benchmark_reports",
-                c::dim("│"),
-                rows.len(),
-            ));
-            if rows.is_empty() {
-                self.out(format!("  {} 暂无已持久化 benchmark report；先运行 benchmark，或检查 database_url", c::yellow("?")));
-            } else {
-                for row in rows {
-                    self.out(format!(
-                        "    #{:<4} {:<10} created_at={} duration={}s failed={} probes_failed={} title={}",
-                        row.sequence,
-                        row.mode.as_str(),
-                        row.created_at,
-                        row.duration_secs,
-                        row.failed_operations.unwrap_or(0),
-                        row.probes_failed,
-                        row.title,
-                    ));
-                }
-            }
-            self.out(format!("  {} examples: benchmark history | benchmark history real 20", c::dim("▸")));
-            return;
-        }
-        if let Some(mode) = mode {
-            match self.state.benchmark_reports.latest(mode) {
-                Some(entry) => {
-                    self.out(format!(
-                        "  {} latest {} report: seq={} at_ms={}",
-                        c::dim("│"),
-                        mode.as_str(),
-                        entry.seq,
-                        entry.at_ms,
-                    ));
-                    for line in entry.report.render_text().lines() {
-                        self.out(line.to_string());
-                    }
-                }
-                None => self.out(format!(
-                    "  {} no {} benchmark report yet",
-                    c::yellow("?"),
-                    mode.as_str()
-                )),
-            }
-            return;
-        }
-
-        let snapshot = self.state.benchmark_reports.snapshot(limit);
-        self.out(format!(
-            "  {} total={} retained={} recent={}",
-            c::dim("│"),
-            snapshot.total,
-            snapshot.retained,
-            snapshot.recent.len(),
-        ));
-        if snapshot.latest_by_mode.is_empty() {
-            self.out(format!("  {} 尚无 benchmark.completed 报告；先运行 benchmark run --mode real", c::yellow("?")));
-            return;
-        }
-        self.out(format!("  {} latest by mode", c::cyan("▸")));
-        for item in &snapshot.latest_by_mode {
-            self.out(format!(
-                "    {:<10} count={} latest_seq={} title={} failed={}",
-                item.mode.as_str(),
-                item.count,
-                item.latest_seq,
-                item.latest.title,
-                item.latest.failed_operations,
-            ));
-        }
-        if !snapshot.recent.is_empty() {
-            self.out(format!("  {} recent", c::cyan("▸")));
-            for entry in snapshot.recent {
-                self.out(format!(
-                    "    #{:<4} {:<10} duration={}s title={} failed={} probes_failed={}",
-                    entry.seq,
-                    entry.mode.as_str(),
-                    entry.duration_secs,
-                    entry.title,
-                    entry.failed_operations,
-                    entry.probes_failed,
-                ));
-            }
-        }
-        self.out(format!("  {} examples: benchmark report real | benchmark report 16", c::dim("▸")));
     }
 
     async fn bind_benchmark(&self, _args: &[&str]) {
@@ -1112,10 +995,3 @@ fn parse_benchmark_duration(value: &str) -> Result<std::time::Duration, String> 
     }
 }
 
-fn parse_benchmark_mode(value: &&str) -> Option<crate::benchmark_report::BenchmarkMode> {
-    match value.trim().to_ascii_lowercase().as_str() {
-        "simulation" | "sim" => Some(crate::benchmark_report::BenchmarkMode::Simulation),
-        "real" => Some(crate::benchmark_report::BenchmarkMode::Real),
-        _ => None,
-    }
-}

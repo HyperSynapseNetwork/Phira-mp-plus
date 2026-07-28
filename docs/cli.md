@@ -708,7 +708,7 @@ help groups
 | `persist_every` | `int` (可选) | 持久化频率 |
 | `users/rooms` | `int` (可选) | 大小覆盖 |
 
-**输出:** Suite 汇总报告（统一 BenchmarkReport 格式）
+**输出:** Suite 汇总报告
 
 ---
 
