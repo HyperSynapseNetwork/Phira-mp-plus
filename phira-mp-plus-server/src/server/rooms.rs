@@ -388,34 +388,21 @@ impl PlusServerState {
                 false
             } else {
                 let old_id_text = old_room_val.id.to_string();
-                match self
+                let remove_result = self
                     .room_commands
                     .remove_user(self, &old_id_text, target_id)
-                    .await
-                {
+                    .await;
+                match remove_result {
                     Ok(val) => val
                         .get("room_dropped")
                         .and_then(Value::as_bool)
                         .unwrap_or(false),
-                    Err(_) => {
-                        // Fallback: direct cleanup.
-                        let room_empty = old_room_val.on_user_leave(&user).await;
-                        if room_empty {
-                            self.rooms.write().await.remove(&old_room_val.id);
-                        }
-                        if !was_monitor {
-                            self.publish_room_event(RoomEvent::LeaveRoom {
-                                room: old_room_val.id.clone(),
-                                user: target_id,
-                            })
-                            .await;
-                        }
-                        self.dispatch_plugin_event(crate::plugin::PluginEvent::RoomLeave {
-                            user_id: target_id,
-                            room_id: old_id_text,
-                        })
-                        .await;
-                        false
+                    Err(e) => {
+                        // 审计 P3: Actor RemoveUser 失败时不再 fallback 到 direct cleanup，
+                        // 而是终止整个 move 操作。使用者应当重试或关闭 Session。
+                        return Err(format!(
+                            "force_move: RemoveUser failed for user {target_id} in {old_id_text}: {e}"
+                        ));
                     }
                 }
             }
@@ -434,12 +421,12 @@ impl PlusServerState {
                 .await
         };
 
-        // Rollback: if AddUser fails after RemoveUser, re-AddUser to old room.
+        // 审计 P3: AddUser 失败时通过 actor 回滚 RemoveUser，不调用 force_add_user。
         if let Err(err) = add_result {
             user.monitor.store(was_monitor, Ordering::SeqCst);
             if let Some(ref old_room_val) = old_room {
                 if !same_room && !old_room_dropped {
-                    let _ = self
+                    let re_add = self
                         .room_commands
                         .add_user(
                             self,
@@ -449,9 +436,13 @@ impl PlusServerState {
                             was_monitor,
                         )
                         .await;
-                    old_room_val
-                        .force_add_user(Arc::downgrade(&user), was_monitor)
-                        .await;
+                    if re_add.is_err() {
+                        warn!(
+                            target_id,
+                            old_room = %old_room_val.id,
+                            "force_move rollback: actor AddUser failed; user may be unattached"
+                        );
+                    }
                 }
                 *user.room.write().await = Some(Arc::clone(old_room_val));
             }

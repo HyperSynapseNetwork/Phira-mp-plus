@@ -541,12 +541,17 @@ pub async fn leave_room(user: Arc<User>, category: SessionCategory) -> Result<()
         .and_then(|v| v.get("room_dropped"))
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
-    // Fallback: if mailbox command failed, do direct cleanup.
+    // 审计 P3: Actor RemoveUser 失败时不走 direct fallback，
+    // 而是关闭 Session 保证状态一致性。
     if result.is_err() {
-        let room_empty = room.on_user_leave(&user).await;
-        if room_empty {
-            user.server.rooms.write().await.remove(&room.id);
-        }
+        warn!(
+            user = user.id,
+            room = room.id.to_string(),
+            error = ?result.err(),
+            "Actor RemoveUser failed; closing session for consistency"
+        );
+        user.server.close_user_session(&user, "leave room failed").await;
+        return Ok(());
     }
     if !room_dropped && !was_monitor {
         // Reassign host to a random remaining user if host leaves.
