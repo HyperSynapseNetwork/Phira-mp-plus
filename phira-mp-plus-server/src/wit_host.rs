@@ -935,60 +935,60 @@ mod wit_trait_impls {
         fn connect(&mut self, addr: String) -> Result<u64, String> {
             self.require_capability("tcp")?;
             let tx = self.ctx.tcp.as_ref().ok_or("tcp not available")?;
-            let (reply, mut rx) = tokio::sync::oneshot::channel();
-            tx.try_send(crate::plugin_tcp::PluginTcpCommand::Connect { addr, reply })
+            let (reply, rx) = std::sync::mpsc::channel();
+            tx.try_send(crate::plugin_tcp::PluginTcpCommand::Connect { plugin_id: self.plugin_name.clone(), addr, reply })
                 .map_err(|e| format!("tcp connect failed: {e}"))?;
-            rx.try_recv().map_err(|_| "tcp connect reply lost".to_string())?
+            rx.recv().map_err(|_| "tcp connect reply lost".to_string())?
         }
 
         fn listen(&mut self, addr: String) -> Result<u64, String> {
             self.require_capability("tcp")?;
             let tx = self.ctx.tcp.as_ref().ok_or("tcp not available")?;
-            let (reply, mut rx) = tokio::sync::oneshot::channel();
-            tx.try_send(crate::plugin_tcp::PluginTcpCommand::Listen { addr, reply })
+            let (reply, rx) = std::sync::mpsc::channel();
+            tx.try_send(crate::plugin_tcp::PluginTcpCommand::Listen { plugin_id: self.plugin_name.clone(), addr, reply })
                 .map_err(|e| format!("tcp listen failed: {e}"))?;
-            rx.try_recv().map_err(|_| "tcp listen reply lost".to_string())?
+            rx.recv().map_err(|_| "tcp listen reply lost".to_string())?
         }
 
         fn send(&mut self, handle: u64, bytes: Vec<u8>) -> Result<(), String> {
             self.require_capability("tcp")?;
             let tx = self.ctx.tcp.as_ref().ok_or("tcp not available")?;
-            tx.try_send(crate::plugin_tcp::PluginTcpCommand::Send { handle, bytes })
+            tx.try_send(crate::plugin_tcp::PluginTcpCommand::Send { plugin_id: self.plugin_name.clone(), handle, bytes })
                 .map_err(|e| format!("tcp send failed: {e}"))
         }
 
         fn close(&mut self, handle: u64) -> Result<(), String> {
             self.require_capability("tcp")?;
             let tx = self.ctx.tcp.as_ref().ok_or("tcp not available")?;
-            tx.try_send(crate::plugin_tcp::PluginTcpCommand::Close { handle })
+            tx.try_send(crate::plugin_tcp::PluginTcpCommand::Close { plugin_id: self.plugin_name.clone(), handle })
                 .map_err(|e| format!("tcp close failed: {e}"))
         }
 
         fn accept(&mut self, handle: u64) -> Result<Option<u64>, String> {
             self.require_capability("tcp")?;
             let tx = self.ctx.tcp.as_ref().ok_or("tcp not available")?;
-            let (reply, mut rx) = tokio::sync::oneshot::channel();
-            tx.try_send(crate::plugin_tcp::PluginTcpCommand::Accept { listener_handle: handle, reply })
+            let (reply, rx) = std::sync::mpsc::channel();
+            tx.try_send(crate::plugin_tcp::PluginTcpCommand::Accept { plugin_id: self.plugin_name.clone(), listener_handle: handle, reply })
                 .map_err(|e| format!("tcp accept failed: {e}"))?;
-            rx.try_recv().map_err(|_| "tcp accept reply lost".to_string())?
+            rx.recv().map_err(|_| "tcp accept reply lost".to_string())?
         }
 
         fn recv(&mut self, handle: u64, max_bytes: u32) -> Result<Option<Vec<u8>>, String> {
             self.require_capability("tcp")?;
             let tx = self.ctx.tcp.as_ref().ok_or("tcp not available")?;
-            let (reply, mut rx) = tokio::sync::oneshot::channel();
-            tx.try_send(crate::plugin_tcp::PluginTcpCommand::Recv { handle, max_bytes, reply })
+            let (reply, rx) = std::sync::mpsc::channel();
+            tx.try_send(crate::plugin_tcp::PluginTcpCommand::Recv { plugin_id: self.plugin_name.clone(), handle, max_bytes, reply })
                 .map_err(|e| format!("tcp recv failed: {e}"))?;
-            rx.try_recv().map_err(|_| "tcp recv reply lost".to_string())?
+            rx.recv().map_err(|_| "tcp recv reply lost".to_string())?
         }
 
         fn peer_addr(&mut self, handle: u64) -> Result<String, String> {
             self.require_capability("tcp")?;
             let tx = self.ctx.tcp.as_ref().ok_or("tcp not available")?;
-            let (reply, mut rx) = tokio::sync::oneshot::channel();
-            tx.try_send(crate::plugin_tcp::PluginTcpCommand::PeerAddr { handle, reply })
+            let (reply, rx) = std::sync::mpsc::channel();
+            tx.try_send(crate::plugin_tcp::PluginTcpCommand::PeerAddr { plugin_id: self.plugin_name.clone(), handle, reply })
                 .map_err(|e| format!("tcp peer-addr failed: {e}"))?;
-            rx.try_recv().map_err(|_| "tcp peer-addr reply lost".to_string())?
+            rx.recv().map_err(|_| "tcp peer-addr reply lost".to_string())?
         }
     }
 

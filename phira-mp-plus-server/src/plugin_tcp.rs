@@ -10,6 +10,12 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{mpsc, oneshot};
 use tracing::{error, info, warn};
 
+// ── Resource limits (PMP25 P5) ──────────────────────────────────────
+const MAX_CONNECTIONS_PER_PLUGIN: u32 = 32;
+const MAX_LISTENERS_PER_PLUGIN: u32 = 8;
+const MAX_READ_BUF_PER_CONNECTION: usize = 1_048_576;  // 1 MB
+const MAX_READ_BUF_PER_PLUGIN: usize = 4_194_304;      // 4 MB
+
 /// Synchronous reply channel for WIT host functions — blocks the calling
 /// WASM thread until the async TCP actor processes the command.
 pub(crate) type SyncReply<T> = std::sync::mpsc::Sender<Result<T, String>>;
@@ -18,25 +24,30 @@ pub(crate) type SyncReply<T> = std::sync::mpsc::Sender<Result<T, String>>;
 #[derive(Debug)]
 pub enum PluginTcpCommand {
     Connect {
+        plugin_id: String,
         addr: String,
         reply: SyncReply<u64>,
     },
     Listen {
+        plugin_id: String,
         addr: String,
         reply: SyncReply<u64>,
     },
-    Send { handle: u64, bytes: Vec<u8> },
-    Close { handle: u64 },
+    Send { plugin_id: String, handle: u64, bytes: Vec<u8> },
+    Close { plugin_id: String, handle: u64 },
     Accept {
+        plugin_id: String,
         listener_handle: u64,
         reply: SyncReply<Option<u64>>,
     },
     Recv {
+        plugin_id: String,
         handle: u64,
         max_bytes: u32,
         reply: SyncReply<Option<Vec<u8>>>,
     },
     PeerAddr {
+        plugin_id: String,
         handle: u64,
         reply: SyncReply<String>,
     },
@@ -91,6 +102,15 @@ pub struct PluginTcpActor {
     close_map: CloseMap,
     read_buf_map: ReadBufMap,
     event_callback: Option<Arc<dyn Fn(String, serde_json::Value) + Send + Sync>>,
+    // ── Resource ownership (PMP25 P5) ───────────────────────────────
+    /// handle → owning plugin_id
+    handle_owner: HashMap<u64, String>,
+    /// plugin_id → connection count
+    plugin_connections: HashMap<String, u32>,
+    /// plugin_id → listener count
+    plugin_listeners: HashMap<String, u32>,
+    /// plugin_id → total buffered read bytes
+    plugin_read_bytes: HashMap<String, usize>,
 }
 
 impl PluginTcpActor {
@@ -104,6 +124,10 @@ impl PluginTcpActor {
             close_map: Arc::new(Mutex::new(HashMap::new())),
             read_buf_map: Arc::new(Mutex::new(HashMap::new())),
             event_callback: None,
+            handle_owner: HashMap::new(),
+            plugin_connections: HashMap::new(),
+            plugin_listeners: HashMap::new(),
+            plugin_read_bytes: HashMap::new(),
         }
     }
 
@@ -119,15 +143,50 @@ impl PluginTcpActor {
         self.event_callback = Some(cb);
     }
 
+    /// Remove all handles owned by a plugin (for unload cleanup).
+    pub fn remove_plugin_handles(&mut self, plugin_id: &str) {
+        let handles: Vec<u64> = self.handle_owner.iter()
+            .filter(|(_, owner)| owner.as_str() == plugin_id)
+            .map(|(h, _)| *h)
+            .collect();
+        for h in handles {
+            self.close_handle(h);
+        }
+        self.plugin_connections.remove(plugin_id);
+        self.plugin_listeners.remove(plugin_id);
+        self.plugin_read_bytes.remove(plugin_id);
+    }
+
+    fn check_owner(&self, handle: u64, plugin_id: &str) -> Result<(), String> {
+        match self.handle_owner.get(&handle) {
+            Some(owner) if owner == plugin_id => Ok(()),
+            Some(owner) => Err(format!("handle {handle} owned by plugin '{owner}'")),
+            None => Err(format!("handle {handle} not found")),
+        }
+    }
+
     fn close_handle(&mut self, handle: u64) {
         let _ = self.conn_map.lock().unwrap().remove(&handle);
         let _ = self.close_map.lock().unwrap().remove(&handle);
+        let plugin_id = self.handle_owner.remove(&handle);
         if let Some(conn) = self.connections.remove(&handle) {
+            if let Some(ref pid) = plugin_id {
+                if let Some(cnt) = self.plugin_connections.get_mut(pid) {
+                    *cnt = cnt.saturating_sub(1);
+                    if *cnt == 0 { self.plugin_connections.remove(pid); }
+                }
+            }
             if let Some(tx) = conn.close_tx {
                 let _ = tx.send(());
             }
             info!(%handle, addr = %conn.remote_addr, "tcp connection closed");
         } else if let Some(listener) = self.listeners.remove(&handle) {
+            if let Some(ref pid) = plugin_id {
+                if let Some(cnt) = self.plugin_listeners.get_mut(pid) {
+                    *cnt = cnt.saturating_sub(1);
+                    if *cnt == 0 { self.plugin_listeners.remove(pid); }
+                }
+            }
             if let Some(tx) = listener.close_tx {
                 let _ = tx.send(());
             }
@@ -154,11 +213,18 @@ impl PluginTcpActor {
 
         while let Some(cmd) = self.rx.recv().await {
             match cmd {
-                PluginTcpCommand::Connect { addr, reply } => {
+                PluginTcpCommand::Connect { plugin_id, addr, reply } => {
+                    if self.count_plugin_connections(&plugin_id) >= MAX_CONNECTIONS_PER_PLUGIN {
+                        let _ = reply.send(Err(format!("plugin '{plugin_id}' connection quota exceeded ({MAX_CONNECTIONS_PER_PLUGIN})")));
+                        continue;
+                    }
                     let handle = self.alloc_handle();
                     let cb = self.event_callback.clone();
                     let cm = Arc::clone(&self.conn_map);
                     let rbm = Arc::clone(&self.read_buf_map);
+
+                    self.handle_owner.insert(handle, plugin_id.clone());
+                    *self.plugin_connections.entry(plugin_id.clone()).or_insert(0) += 1;
 
                     match tcp_connect(&addr, handle, cb, cm, rbm).await {
                         Ok((_, close_tx)) => {
@@ -178,12 +244,19 @@ impl PluginTcpActor {
                         }
                     }
                 }
-                PluginTcpCommand::Listen { addr, reply } => {
+                PluginTcpCommand::Listen { plugin_id, addr, reply } => {
+                    if self.count_plugin_listeners(&plugin_id) >= MAX_LISTENERS_PER_PLUGIN {
+                        let _ = reply.send(Err(format!("plugin '{plugin_id}' listener quota exceeded ({MAX_LISTENERS_PER_PLUGIN})")));
+                        continue;
+                    }
                     let handle = self.alloc_handle();
                     let cb = self.event_callback.clone();
                     let cm = Arc::clone(&self.conn_map);
                     let clm = Arc::clone(&self.close_map);
                     let rbm = Arc::clone(&self.read_buf_map);
+
+                    self.handle_owner.insert(handle, plugin_id.clone());
+                    *self.plugin_listeners.entry(plugin_id.clone()).or_insert(0) += 1;
 
                     match tcp_listen(&addr, handle, cb, cm, clm, rbm).await {
                         Ok(close_tx) => {
@@ -204,7 +277,8 @@ impl PluginTcpActor {
                         }
                     }
                 }
-                PluginTcpCommand::Send { handle, bytes } => {
+                PluginTcpCommand::Send { plugin_id, handle, bytes } => {
+                    if let Err(e) = self.check_owner(handle, &plugin_id) { continue; }
                     let map = self.conn_map.lock().unwrap();
                     if let Some(tx) = map.get(&handle) {
                         if let Err(e) = tx.try_send(bytes) {
@@ -218,23 +292,36 @@ impl PluginTcpActor {
                             serde_json::json!({"handle": handle, "error": "unknown handle"}));
                     }
                 }
-                PluginTcpCommand::Close { handle } => {
-                    self.close_handle(handle);
+                PluginTcpCommand::Close { plugin_id, handle } => {
+                    if self.check_owner(handle, &plugin_id).is_ok() {
+                        self.close_handle(handle);
+                    }
                 }
-                PluginTcpCommand::Accept { listener_handle, reply } => {
-                    let result = if let Some(listener) = self.listeners.get_mut(&listener_handle) {
-                        if listener.pending_accepts.is_empty() {
-                            Ok(None)
+                PluginTcpCommand::Accept { plugin_id, listener_handle, reply } => {
+                    let result = if let Err(e) = self.check_owner(listener_handle, &plugin_id) {
+                        Err(e)
+                    } else if let Some(listener) = self.listeners.get_mut(&listener_handle) {
+                        if let Some(conn_handle) = listener.pending_accepts.pop() {
+                            self.handle_owner.insert(conn_handle, plugin_id.clone());
+                            *self.plugin_connections.entry(plugin_id.clone()).or_insert(0) += 1;
+                            // Store a minimal connection record for peer_addr support.
+                            self.connections.insert(conn_handle, Connection {
+                                remote_addr: listener.addr.clone(),
+                                close_tx: None,
+                            });
+                            Ok(Some(conn_handle))
                         } else {
-                            Ok(Some(listener.pending_accepts.remove(0)))
+                            Ok(None)
                         }
                     } else {
                         Err(format!("unknown listener handle: {listener_handle}"))
                     };
                     let _ = reply.send(result);
                 }
-                PluginTcpCommand::Recv { handle, max_bytes, reply } => {
-                    let result = {
+                PluginTcpCommand::Recv { plugin_id, handle, max_bytes, reply } => {
+                    let result = if let Err(e) = self.check_owner(handle, &plugin_id) {
+                        Err(e)
+                    } else {
                         let map = self.read_buf_map.lock().unwrap();
                         if let Some(buf) = map.get(&handle) {
                             if buf.is_empty() {
@@ -242,7 +329,6 @@ impl PluginTcpActor {
                             } else {
                                 let len = (max_bytes as usize).min(buf.len());
                                 let data = buf[..len].to_vec();
-                                // Drain consumed bytes from shared buffer
                                 drop(map);
                                 if let Some(b) = self.read_buf_map.lock().unwrap().get_mut(&handle) {
                                     b.drain(..len);
@@ -255,8 +341,10 @@ impl PluginTcpActor {
                     };
                     let _ = reply.send(result);
                 }
-                PluginTcpCommand::PeerAddr { handle, reply } => {
-                    let result = if let Some(conn) = self.connections.get(&handle) {
+                PluginTcpCommand::PeerAddr { plugin_id, handle, reply } => {
+                    let result = if let Err(e) = self.check_owner(handle, &plugin_id) {
+                        Err(e)
+                    } else if let Some(conn) = self.connections.get(&handle) {
                         Ok(conn.remote_addr.clone())
                     } else {
                         Err(format!("unknown handle: {handle}"))
