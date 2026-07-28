@@ -591,7 +591,7 @@ help groups
 
 ---
 
-### `benchmark run hybrid [duration=N] [authenticate=true] [chart_lookup=<id>] [record_lookup=<id>]`
+### `benchmark run real [duration=N] [authenticate=true] [chart_lookup=<id>] [record_lookup=<id>]`
 
 运行混合 Phira 探测。
 
@@ -606,7 +606,7 @@ help groups
 
 ---
 
-### `benchmark report [simulation|hybrid|real|limit]`
+### `benchmark report [simulation|real|limit]`
 
 查看最新 Benchmark 报告。
 
@@ -619,7 +619,7 @@ help groups
 
 ---
 
-### `benchmark history [simulation|hybrid|real] [limit]`
+### `benchmark history [simulation|real] [limit]`
 
 查看持久化的 Benchmark 历史记录。
 

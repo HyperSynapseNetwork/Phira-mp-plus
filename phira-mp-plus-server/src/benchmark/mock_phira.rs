@@ -99,18 +99,26 @@ impl MockPhiraServer {
     /// - `GET /chart/{id}` — 返回测试谱面数据
     /// - `GET /record/{id}` — 返回测试游玩记录
     pub async fn start(&self) -> Result<(), String> {
-        let cfg = Arc::new(self.config.clone());
+        let state = Arc::new(MockPhiraState {
+            config: self.config.clone(),
+            counter: std::sync::atomic::AtomicU64::new(0),
+        });
 
         let app = Router::new()
             .route("/me", get(me_handler))
             .route("/user/{id}", get(user_handler))
             .route("/chart/{id}", get(chart_handler))
             .route("/record/{id}", get(record_handler))
-            .with_state(Arc::clone(&cfg));
+            .with_state(Arc::clone(&state));
 
-        let listener = TcpListener::bind("127.0.0.1:0")
+        let bind_addr = if self.config.listen_addr != "127.0.0.1:9877" {
+            self.config.listen_addr.as_str()
+        } else {
+            "127.0.0.1:0"
+        };
+        let listener = TcpListener::bind(bind_addr)
             .await
-            .map_err(|e| format!("failed to bind Mock Phira server: {e}"))?;
+            .map_err(|e| format!("failed to bind Mock Phira server on {bind_addr}: {e}"))?;
 
         let local_addr = listener
             .local_addr()
@@ -174,39 +182,40 @@ impl MockPhiraServer {
     }
 }
 
+// ── MockPhiraState ────────────────────────────────────────────────────
+
+/// Axum 共享状态，包含配置和 per-instance 计数器。
+struct MockPhiraState {
+    config: MockPhiraConfig,
+    counter: std::sync::atomic::AtomicU64,
+}
+
 // ── 故障注入辅助函数 ──────────────────────────────────────────────
 
 /// 基于 seed 和 counter 的确定性伪随机数生成器 (0.0 .. 1.0)
-///
-/// 使用 Sha256(seed || counter) 生成确定性值。避免了对外部 rand crate 的依赖。
 fn seeded_f64(seed: u64, counter: u64) -> f64 {
     let mut hasher = Sha256::new();
     hasher.update(seed.to_le_bytes());
     hasher.update(counter.to_le_bytes());
     let hash = hasher.finalize();
-    // 取前 8 字节作为 u64, 映射到 [0.0, 1.0)
     let val = u64::from_le_bytes(hash[..8].try_into().unwrap());
     (val >> 11) as f64 / (1u64 << 53) as f64
 }
 
-/// 带计数器的种子——在函数调用级别提供伪随机性，
-/// 同时保持给定种子下的确定性。
-fn seeded_counter() -> u64 {
-    use std::sync::atomic::{AtomicU64, Ordering};
-    static COUNTER: AtomicU64 = AtomicU64::new(0);
-    COUNTER.fetch_add(1, Ordering::Relaxed)
+/// 获取 per-server-instance 的单调递增计数器。
+fn next_counter(state: &MockPhiraState) -> u64 {
+    state.counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
 }
 
 /// 根据配置应用延迟和抖动。
-async fn apply_delay(cfg: &MockPhiraConfig) {
-    let base = cfg.delay_ms as f64;
-    if base <= 0.0 && cfg.jitter_ms == 0 {
+async fn apply_delay(state: &MockPhiraState) {
+    let base = state.config.delay_ms as f64;
+    if base <= 0.0 && state.config.jitter_ms == 0 {
         return;
     }
-    let jitter = if cfg.jitter_ms > 0 {
-        // 确定性抖动：[-jitter_ms, +jitter_ms]
-        let r = seeded_f64(cfg.seed, seeded_counter());
-        (r * 2.0 - 1.0) * cfg.jitter_ms as f64
+    let jitter = if state.config.jitter_ms > 0 {
+        let r = seeded_f64(state.config.seed, next_counter(state));
+        (r * 2.0 - 1.0) * state.config.jitter_ms as f64
     } else {
         0.0
     };
@@ -217,12 +226,21 @@ async fn apply_delay(cfg: &MockPhiraConfig) {
 }
 
 /// 检查当前请求是否应返回错误（基于 error_rate）
-fn should_error(cfg: &MockPhiraConfig) -> bool {
-    if cfg.error_rate <= 0.0 {
+fn should_error(state: &MockPhiraState) -> bool {
+    if state.config.error_rate <= 0.0 {
         return false;
     }
-    let r = seeded_f64(cfg.seed, seeded_counter());
-    r < cfg.error_rate
+    let r = seeded_f64(state.config.seed, next_counter(state));
+    r < state.config.error_rate
+}
+
+/// 检查当前请求是否应触发超时（基于 timeout_rate）
+fn should_timeout(state: &MockPhiraState) -> bool {
+    if state.config.timeout_rate <= 0.0 || state.config.timeout_ms <= state.config.delay_ms {
+        return false;
+    }
+    let r = seeded_f64(state.config.seed, next_counter(state));
+    r < state.config.timeout_rate
 }
 
 /// 从 Authorization header 提取 token
@@ -252,21 +270,17 @@ fn token_to_user_id(token: &str) -> i32 {
 }
 
 /// 组合故障注入检查（延迟 + 错误率）
-async fn apply_faults(cfg: &MockPhiraConfig) -> Result<(), ()> {
-    // 根据 timeout_rate 判断是否触发超时长延迟
-    let use_timeout = if cfg.timeout_rate > 0.0 && cfg.timeout_ms > cfg.delay_ms {
-        seeded_f64(cfg.seed, seeded_counter()) < cfg.timeout_rate
+async fn apply_faults(state: &MockPhiraState) -> Result<(), ()> {
+    if should_timeout(state) {
+        tokio::time::sleep(Duration::from_millis(state.config.timeout_ms)).await;
     } else {
-        false
-    };
-
-    if use_timeout {
-        tokio::time::sleep(Duration::from_millis(cfg.timeout_ms)).await;
-    } else {
-        apply_delay(cfg).await;
+        apply_delay(state).await;
     }
 
-    if should_error(cfg) {
+    if should_error(state) {
+        if state.config.verbose {
+            tracing::info!("mock_phira: injecting error");
+        }
         return Err(());
     }
     Ok(())
@@ -274,16 +288,29 @@ async fn apply_faults(cfg: &MockPhiraConfig) -> Result<(), ()> {
 
 // ── Axum 请求处理器 ──────────────────────────────────────────────
 
+/// 构建响应体，如果 response_size 配置大于默认 JSON 大小则用空格填充。
+fn build_payload(mut base: Value, state: &MockPhiraState) -> Value {
+    if state.config.response_size > 0 {
+        let default_size = serde_json::to_string(&base).unwrap_or_default().len();
+        if let Some(pad_needed) = state.config.response_size.checked_sub(default_size) {
+            if pad_needed > 0 {
+                let padding = " ".repeat(pad_needed);
+                base["_padding"] = Value::String(padding);
+            }
+        }
+    }
+    base
+}
+
 /// `GET /me` — 返回基准用户信息
-///
-/// 从 Authorization header 提取 token，通过 `token_to_user_id` 解析为
-/// 确定的用户 ID（范围 1_000_000 - 1_999_999）。
-/// 应用故障注入参数（延迟、抖动、错误率）。
 async fn me_handler(
-    State(cfg): State<Arc<MockPhiraConfig>>,
+    State(state): State<Arc<MockPhiraState>>,
     headers: HeaderMap,
 ) -> (StatusCode, Json<Value>) {
-    if apply_faults(&cfg).await.is_err() {
+    if state.config.verbose {
+        tracing::info!("mock_phira: GET /me");
+    }
+    if apply_faults(&state).await.is_err() {
         return (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(json!({"error": "mock internal error"})),
@@ -294,86 +321,87 @@ async fn me_handler(
         .map(token_to_user_id)
         .unwrap_or(999);
 
-    (
-        StatusCode::OK,
-        Json(json!({
-            "id": user_id,
-            "name": format!("bench-user-{}", user_id),
-            "language": "zh-CN"
-        })),
-    )
+    let payload = build_payload(json!({
+        "id": user_id,
+        "name": format!("bench-user-{}", user_id),
+        "language": "zh-CN"
+    }), &state);
+    (StatusCode::OK, Json(payload))
 }
 
 /// `GET /user/{id}` — 返回指定用户信息
 async fn user_handler(
-    State(cfg): State<Arc<MockPhiraConfig>>,
+    State(state): State<Arc<MockPhiraState>>,
     Path(id): Path<i32>,
 ) -> (StatusCode, Json<Value>) {
-    if apply_faults(&cfg).await.is_err() {
+    if state.config.verbose {
+        tracing::info!("mock_phira: GET /user/{id}");
+    }
+    if apply_faults(&state).await.is_err() {
         return (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(json!({"error": "mock internal error"})),
         );
     }
 
-    (
-        StatusCode::OK,
-        Json(json!({
-            "id": id,
-            "name": format!("user-{}", id),
-            "language": "zh-CN"
-        })),
-    )
+    let payload = build_payload(json!({
+        "id": id,
+        "name": format!("user-{}", id),
+        "language": "zh-CN"
+    }), &state);
+    (StatusCode::OK, Json(payload))
 }
 
 /// `GET /chart/{id}` — 返回指定谱面信息
 async fn chart_handler(
-    State(cfg): State<Arc<MockPhiraConfig>>,
+    State(state): State<Arc<MockPhiraState>>,
     Path(id): Path<i32>,
 ) -> (StatusCode, Json<Value>) {
-    if apply_faults(&cfg).await.is_err() {
+    if state.config.verbose {
+        tracing::info!("mock_phira: GET /chart/{id}");
+    }
+    if apply_faults(&state).await.is_err() {
         return (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(json!({"error": "mock internal error"})),
         );
     }
 
-    (
-        StatusCode::OK,
-        Json(json!({
-            "id": id,
-            "name": format!("chart-{}", id)
-        })),
-    )
+    let payload = build_payload(json!({
+        "id": id,
+        "name": format!("chart-{}", id)
+    }), &state);
+    (StatusCode::OK, Json(payload))
 }
 
 /// `GET /record/{id}` — 返回测试游玩记录
 async fn record_handler(
-    State(cfg): State<Arc<MockPhiraConfig>>,
+    State(state): State<Arc<MockPhiraState>>,
     Path(id): Path<i32>,
 ) -> (StatusCode, Json<Value>) {
-    if apply_faults(&cfg).await.is_err() {
+    if state.config.verbose {
+        tracing::info!("mock_phira: GET /record/{id}");
+    }
+    if apply_faults(&state).await.is_err() {
         return (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(json!({"error": "mock internal error"})),
         );
     }
 
-    (
-        StatusCode::OK,
-        Json(json!({
-            "id": id,
-            "player": 999,
-            "score": 998877,
-            "accuracy": 0.9876,
-            "perfect": 800,
-            "good": 10,
-            "bad": 2,
-            "miss": 1,
-            "max_combo": 500,
-            "full_combo": true,
-            "std": 0,
-            "std_score": 998877
-        })),
-    )
+    let payload = build_payload(json!({
+        "id": id,
+        "player": 999,
+        "score": 998877,
+        "accuracy": 0.9876,
+        "perfect": 800,
+        "good": 10,
+        "bad": 2,
+        "miss": 1,
+        "max_combo": 500,
+        "full_combo": true,
+        "std": 0,
+        "std_score": 998877
+    }), &state);
+    (StatusCode::OK, Json(payload))
 }

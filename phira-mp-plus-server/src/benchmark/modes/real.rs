@@ -719,8 +719,13 @@ pub async fn run_real(
 
     // ── 1. 可选：启动 Mock Phira 服务器 ──────────────────────────────
     let mock_phira = if config.mock_phira {
+        let listen_addr = if config.mock_phira_port > 0 {
+            format!("127.0.0.1:{}", config.mock_phira_port)
+        } else {
+            "127.0.0.1:0".to_string()
+        };
         let mock_config = MockPhiraConfig {
-            listen_addr: "127.0.0.1:0".to_string(),
+            listen_addr: listen_addr.clone(),
             delay_ms: config.mock_phira_delay_ms,
             jitter_ms: config.mock_phira_jitter_ms,
             error_rate: config.mock_phira_error_rate,
@@ -730,7 +735,7 @@ pub async fn run_real(
         };
         let server = MockPhiraServer::new(mock_config);
         server.start().await?;
-        info!("Mock Phira server started on port {:?}", server.port());
+        info!("Mock Phira server started on {} (port {:?})", listen_addr, server.port());
         Some(server)
     } else {
         None

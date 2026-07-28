@@ -109,29 +109,20 @@ simulation suite stress
 
 ## 前提条件
 
-需要 Phira 账号 token，可通过以下方式配置：
-
-1. `server_config.yml` 的 `benchmark_phira_tokens` 字段
-2. `data/benchmark-auth.json` 文件
-
-```yaml
-# server_config.yml
-benchmark_phira_tokens:
-  - "your-phira-token-1"
-  - "your-phira-token-2"
-```
+Real 模式需要 Phira 账号 token，通过 `data/benchmark-auth.json` 配置。
+Simulation 模式不需要外部依赖。
 
 ## 使用
 
 ```bash
-# 查看三种压测模式
+# 查看两种压测模式
 benchmark modes
 
 # 运行真实 TCP 压测（30 秒，100 房间）
 benchmark run real 30 100
 
-# 运行 Hybrid 探测
-benchmark run hybrid authenticate=true chart_lookup=1
+# 运行仿真压测
+benchmark run simulation --clients 10 --duration 30s
 ```
 
 ## 模式说明
@@ -140,7 +131,6 @@ benchmark run hybrid authenticate=true chart_lookup=1
 |------|------|
 | `simulation` | **默认推荐**。隔离 shadow world，不需要 token |
 | `real` | 显式真实 TCP 网络测试，需要 Phira token |
-| `hybrid` | Hybrid Phira 探测（chart_lookup / record_lookup） |
 
 ## 报告
 
@@ -154,6 +144,5 @@ benchmark history
 
 ## 安全提醒
 
-- **不要将真实 token 提交到 Git** — `benchmark_phira_tokens` 已在 `.gitignore` 中推荐排除
 - **不要对 Phira 官方服务器做高频压测**
 - 建议使用 Simulation 作为日常压力测试工具
