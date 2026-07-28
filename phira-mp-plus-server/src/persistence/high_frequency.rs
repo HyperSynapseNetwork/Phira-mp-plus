@@ -325,24 +325,27 @@ impl HighFrequencyWriter {
                 self.stats.queue_full_count.fetch_add(1, Ordering::Relaxed);
                 self.stats.received.fetch_add(1, Ordering::Relaxed);
                 self.stats.received_points.fetch_add(points, Ordering::Relaxed);
+                let kind = item.kind.as_str().to_string();
                 if let Some(overflow) = self.overflow_tx.as_ref() {
-                    if overflow.try_send(OverflowItem { item, enqueued_at_ms: now_ms() }).is_err() {
+                    let overflow_item = OverflowItem { item, enqueued_at_ms: now_ms() };
+                    if overflow.try_send(overflow_item).is_err() {
                         // Overflow full — finally drop
                         self.stats.dropped.fetch_add(1, Ordering::Relaxed);
                         self.stats.dropped_points.fetch_add(points, Ordering::Relaxed);
-                        warn!("high frequency writer overflow queue full; item dropped (kind={})", item.kind.as_str());
+                        warn!("high frequency writer overflow queue full; item dropped (kind={kind})");
                     }
                 } else {
                     self.stats.dropped.fetch_add(1, Ordering::Relaxed);
                     self.stats.dropped_points.fetch_add(points, Ordering::Relaxed);
-                    warn!("high frequency writer queue full; item dropped (kind={})", item.kind.as_str());
+                    warn!("high frequency writer queue full; item dropped (kind={kind})");
                 }
                 Ok(())
             }
-            Err(mpsc::error::TrySendError::Closed(HfMessage::Item(item))) => {
+            Err(mpsc::error::TrySendError::Closed(HfMessage::Item(_item))) => {
                 self.stats.dropped.fetch_add(1, Ordering::Relaxed);
                 self.stats.dropped_points.fetch_add(points, Ordering::Relaxed);
-                warn!("high frequency writer queue closed; item dropped (kind={})", item.kind.as_str());
+                let kind = _item.kind.as_str().to_string();
+                warn!("high frequency writer queue closed; item dropped (kind={kind})");
                 Err("high frequency writer is closed".to_string())
             }
             // Full/Closed for non-Item messages: don't count as dropped,

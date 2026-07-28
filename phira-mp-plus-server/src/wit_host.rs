@@ -1038,7 +1038,7 @@ mod wit_trait_impls {
         fn accept(&mut self, handle: u64) -> Result<Option<u64>, String> {
             self.require_capability("tcp")?;
             let tx = self.ctx.tcp.as_ref().ok_or("tcp not available")?;
-            let (reply, rx) = tokio::sync::oneshot::channel();
+            let (reply, mut rx) = tokio::sync::oneshot::channel();
             tx.try_send(crate::plugin_tcp::PluginTcpCommand::Accept { listener_handle: handle, reply })
                 .map_err(|e| format!("tcp accept failed: {e}"))?;
             rx.try_recv().map_err(|_| "tcp accept reply lost".to_string())?
@@ -1047,7 +1047,7 @@ mod wit_trait_impls {
         fn recv(&mut self, handle: u64, max_bytes: u32) -> Result<Option<Vec<u8>>, String> {
             self.require_capability("tcp")?;
             let tx = self.ctx.tcp.as_ref().ok_or("tcp not available")?;
-            let (reply, rx) = tokio::sync::oneshot::channel();
+            let (reply, mut rx) = tokio::sync::oneshot::channel();
             tx.try_send(crate::plugin_tcp::PluginTcpCommand::Recv { handle, max_bytes, reply })
                 .map_err(|e| format!("tcp recv failed: {e}"))?;
             rx.try_recv().map_err(|_| "tcp recv reply lost".to_string())?
@@ -1056,7 +1056,7 @@ mod wit_trait_impls {
         fn peer_addr(&mut self, handle: u64) -> Result<String, String> {
             self.require_capability("tcp")?;
             let tx = self.ctx.tcp.as_ref().ok_or("tcp not available")?;
-            let (reply, rx) = tokio::sync::oneshot::channel();
+            let (reply, mut rx) = tokio::sync::oneshot::channel();
             tx.try_send(crate::plugin_tcp::PluginTcpCommand::PeerAddr { handle, reply })
                 .map_err(|e| format!("tcp peer-addr failed: {e}"))?;
             rx.try_recv().map_err(|_| "tcp peer-addr reply lost".to_string())?
@@ -1069,21 +1069,18 @@ mod wit_trait_impls {
             self.require_capability("room-state")?;
             let query = self.ctx.room_state_query.as_ref()
                 .ok_or("room state query not available")?;
-            let json = query(room_id.clone())?;
-            // Parse JSON into structured RoomState
-            let v: serde_json::Value = serde_json::from_str(&json)
-                .map_err(|e| format!("room state parse error: {e}"))?;
-            let room_id = v.get("room_id").and_then(|v| v.as_str()).unwrap_or("").to_string();
+            let v: serde_json::Value = query(room_id)?;
+            let rid = v.get("room_id").and_then(|v| v.as_str()).unwrap_or("").to_string();
             let room_uuid = v.get("room_uuid").and_then(|v| v.as_str()).unwrap_or("").to_string();
             let host_id = v.get("host_id").and_then(|v| v.as_i64()).map(|n| n as u32);
             let locked = v.get("locked").and_then(|v| v.as_bool()).unwrap_or(false);
             let hidden = v.get("hidden").and_then(|v| v.as_bool()).unwrap_or(false);
             let player_count = v.get("player_count").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
             let monitor_count = v.get("monitor_count").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
-            let players = Vec::new(); // detailed player list queried separately
+            let players = Vec::new();
             let current_round = None;
             Ok(wit::phira::plugin::phira_room_state::RoomState {
-                room_id, room_uuid, host_id, locked, hidden,
+                room_id: rid, room_uuid, host_id, locked, hidden,
                 player_count, monitor_count, players, current_round,
             })
         }
@@ -1092,8 +1089,7 @@ mod wit_trait_impls {
             self.require_capability("room-state")?;
             let query = self.ctx.room_state_query.as_ref()
                 .ok_or("room state query not available")?;
-            let json = query(format!("{room_id}/players"))?;
-            let arr: Vec<serde_json::Value> = serde_json::from_str(&json)
+            let arr: Vec<serde_json::Value> = serde_json::from_value(query(format!("{room_id}/players"))?)
                 .map_err(|e| format!("room players parse error: {e}"))?;
             let players = arr.into_iter().map(|v| {
                 wit::phira::plugin::phira_room_state::RoomPlayer {
@@ -1118,8 +1114,8 @@ mod wit_trait_impls {
         fn list_rooms(&mut self) -> Result<Vec<String>, String> {
             let query = self.ctx.room_state_query.as_ref()
                 .ok_or("room state query not available")?;
-            let json = query("list".to_string())?;
-            let arr: Vec<String> = serde_json::from_str(&json)
+            let v = query("list".to_string())?;
+            let arr: Vec<String> = serde_json::from_value(v)
                 .map_err(|e| format!("list rooms parse error: {e}"))?;
             Ok(arr)
         }
