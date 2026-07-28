@@ -1129,7 +1129,7 @@ mod wit_trait_impls {
             let method = desc.method.clone();
             // Register via the shared api_handlers map
             if let Some(ref handler_registry) = self.ctx.room_state_query {
-                let payload = serde_json::json!({
+                let _payload = serde_json::json!({
                     "plugin": self.plugin_name,
                     "method": desc.method,
                     "description": desc.description,
@@ -1154,7 +1154,7 @@ mod wit_trait_impls {
             Ok(Vec::new()) // Full implementation would query registry
         }
 
-        fn request_capability(&mut self, capability: String) -> Result<bool, String> {
+        fn request_capability(&mut self, _capability: String) -> Result<bool, String> {
             // By default, deny dynamic capability requests.
             // Admin plugins with special permissions may override this.
             Ok(false)

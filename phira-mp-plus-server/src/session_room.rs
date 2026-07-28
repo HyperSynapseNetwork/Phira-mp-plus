@@ -44,7 +44,7 @@ use std::{
     collections::HashMap,
     sync::{atomic::Ordering, Arc},
 };
-use tracing::{debug, debug_span, info, trace, Instrument};
+use tracing::{debug, debug_span, info, trace, warn, Instrument};
 
 pub fn decode_admin_room_command(input: &str) -> String {
     // Phira's room-name input box may not allow spaces. For the in-game admin
