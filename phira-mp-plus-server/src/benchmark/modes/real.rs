@@ -66,9 +66,6 @@ impl ClientMetrics {
         self.commands_sent += 1;
     }
 
-    fn record_error(&mut self) {
-        self.errors += 1;
-    }
 }
 
 // ── 辅助函数 ──────────────────────────────────────────────────────
