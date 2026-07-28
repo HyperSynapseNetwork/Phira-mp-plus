@@ -57,6 +57,11 @@ pub struct HighFrequencyConfig {
     pub max_batch_size: usize,
     pub flush_interval_ms: u64,
     pub max_retries: u32,
+    // ── Overflow queue (审计 P2) ──────────────────────────────────
+    /// Capacity of the overflow queue (0 = disabled).
+    pub overflow_capacity: usize,
+    /// Max age of an overflow item in milliseconds before it is dropped.
+    pub overflow_max_age_ms: u64,
 }
 
 impl Default for HighFrequencyConfig {
@@ -66,6 +71,8 @@ impl Default for HighFrequencyConfig {
             max_batch_size: DEFAULT_MAX_BATCH_SIZE,
             flush_interval_ms: DEFAULT_FLUSH_INTERVAL_MS,
             max_retries: DEFAULT_MAX_RETRIES,
+            overflow_capacity: 1024,
+            overflow_max_age_ms: 5000,
         }
     }
 }
@@ -137,6 +144,17 @@ pub struct HighFrequencyStats {
     pub retrying: AtomicU64,
     /// Timestamp (unix millis) of the oldest unflushed batch item, or 0 if none pending.
     pub oldest_batch_at: AtomicU64,
+    // ── Point-level metrics (审计 P2) ──────────────────────────────
+    /// Total touch/point count received across all items.
+    pub received_points: AtomicU64,
+    /// Total touch/point count committed to the database.
+    pub committed_points: AtomicU64,
+    /// Total touch/point count dropped.
+    pub dropped_points: AtomicU64,
+    /// Number of times the main channel was full (overflow triggered).
+    pub queue_full_count: AtomicU64,
+    /// Millisecond timestamp when the database last returned an error, or 0.
+    pub database_error_at: AtomicU64,
 }
 
 impl HighFrequencyStats {
@@ -148,6 +166,11 @@ impl HighFrequencyStats {
             dropped: self.dropped.load(Ordering::Relaxed),
             retrying: self.retrying.load(Ordering::Relaxed),
             oldest_batch_at: self.oldest_batch_at.load(Ordering::Relaxed),
+            received_points: self.received_points.load(Ordering::Relaxed),
+            committed_points: self.committed_points.load(Ordering::Relaxed),
+            dropped_points: self.dropped_points.load(Ordering::Relaxed),
+            queue_full_count: self.queue_full_count.load(Ordering::Relaxed),
+            database_error_at: self.database_error_at.load(Ordering::Relaxed),
         }
     }
 
@@ -158,6 +181,11 @@ impl HighFrequencyStats {
         self.dropped.store(0, Ordering::Relaxed);
         self.retrying.store(0, Ordering::Relaxed);
         self.oldest_batch_at.store(0, Ordering::Relaxed);
+        self.received_points.store(0, Ordering::Relaxed);
+        self.committed_points.store(0, Ordering::Relaxed);
+        self.dropped_points.store(0, Ordering::Relaxed);
+        self.queue_full_count.store(0, Ordering::Relaxed);
+        self.database_error_at.store(0, Ordering::Relaxed);
     }
 }
 
@@ -169,6 +197,12 @@ pub struct HighFrequencyStatsSnapshot {
     pub dropped: u64,
     pub retrying: u64,
     pub oldest_batch_at: u64,
+    // ── Point-level metrics (审计 P2) ──────────────────────────────
+    pub received_points: u64,
+    pub committed_points: u64,
+    pub dropped_points: u64,
+    pub queue_full_count: u64,
+    pub database_error_at: u64,
 }
 
 // ── Internal message type ──────────────────────────────────────────────
@@ -177,6 +211,12 @@ enum HfMessage {
     Item(HighFrequencyItem),
     Flush(oneshot::Sender<Result<(), String>>),
     Shutdown(oneshot::Sender<Result<(), String>>),
+}
+
+/// Item stored in the overflow queue when the main channel is full.
+struct OverflowItem {
+    item: HighFrequencyItem,
+    enqueued_at_ms: i64,
 }
 
 // ── HighFrequencyWriter ─────────────────────────────────────────────────
@@ -202,6 +242,8 @@ enum HfMessage {
 /// has the same effect (the receiver sees `None`).
 pub struct HighFrequencyWriter {
     tx: mpsc::Sender<HfMessage>,
+    /// Overflow channel sender (when main queue is full).
+    overflow_tx: Option<mpsc::Sender<OverflowItem>>,
     closed: AtomicBool,
     stats: Arc<HighFrequencyStats>,
 }
@@ -220,9 +262,22 @@ impl HighFrequencyWriter {
             dropped: AtomicU64::new(0),
             retrying: AtomicU64::new(0),
             oldest_batch_at: AtomicU64::new(0),
+            received_points: AtomicU64::new(0),
+            committed_points: AtomicU64::new(0),
+            dropped_points: AtomicU64::new(0),
+            queue_full_count: AtomicU64::new(0),
+            database_error_at: AtomicU64::new(0),
         });
         let worker_stats = Arc::clone(&stats);
         let worker_db = Arc::clone(&db);
+
+        // 审计 P2: overflow queue 用于主队列满时暂存
+        let (overflow_tx, overflow_rx) = if config.overflow_capacity > 0 {
+            let (tx, rx) = mpsc::channel::<OverflowItem>(config.overflow_capacity);
+            (Some(tx), Some(rx))
+        } else {
+            (None, None)
+        };
 
         crate::supervisor_actor::spawn_named("high-frequency-writer", async move {
             run_hf_writer(
@@ -231,6 +286,7 @@ impl HighFrequencyWriter {
                     ..config
                 },
                 &mut rx,
+                overflow_rx,
                 worker_stats,
                 worker_db,
             )
@@ -239,6 +295,7 @@ impl HighFrequencyWriter {
 
         Self {
             tx,
+            overflow_tx,
             closed: AtomicBool::new(false),
             stats,
         }
@@ -246,34 +303,46 @@ impl HighFrequencyWriter {
 
     /// Enqueue a single HF item.
     ///
-    /// Uses `try_send` — if the queue is full the item is dropped immediately
-    /// and the `dropped` counter is incremented, rather than blocking the
-    /// caller's hotpath. Returns `Err(String)` when the writer is shut down,
-    /// the channel is closed, or the queue is full.
+    /// Uses `try_send` — if the queue is full the item is pushed to an
+    /// in-memory overflow queue instead of being dropped immediately.
+    /// If the overflow queue is also full, the item is dropped.
+    /// Returns `Err(String)` when the writer is shut down or closed.
     pub async fn enqueue(&self, item: HighFrequencyItem) -> Result<(), String> {
         if self.closed.load(Ordering::Acquire) {
             self.stats.dropped.fetch_add(1, Ordering::Relaxed);
+            self.stats.dropped_points.fetch_add(item.item_count() as u64, Ordering::Relaxed);
             return Err("high frequency writer is shutting down".to_string());
         }
+        let points = item.item_count() as u64;
         match self.tx.try_send(HfMessage::Item(item)) {
             Ok(()) => {
                 self.stats.received.fetch_add(1, Ordering::Relaxed);
+                self.stats.received_points.fetch_add(points, Ordering::Relaxed);
                 Ok(())
             }
             Err(mpsc::error::TrySendError::Full(HfMessage::Item(item))) => {
-                self.stats.dropped.fetch_add(1, Ordering::Relaxed);
-                warn!(
-                    "high frequency writer queue full; item dropped (kind={})",
-                    item.kind.as_str()
-                );
-                Err("high frequency writer queue full".to_string())
+                // 审计 P2: 主队列满时尝试 overflow queue
+                self.stats.queue_full_count.fetch_add(1, Ordering::Relaxed);
+                self.stats.received.fetch_add(1, Ordering::Relaxed);
+                self.stats.received_points.fetch_add(points, Ordering::Relaxed);
+                if let Some(overflow) = self.overflow_tx.as_ref() {
+                    if overflow.try_send(OverflowItem { item, enqueued_at_ms: now_ms() }).is_err() {
+                        // Overflow full — finally drop
+                        self.stats.dropped.fetch_add(1, Ordering::Relaxed);
+                        self.stats.dropped_points.fetch_add(points, Ordering::Relaxed);
+                        warn!("high frequency writer overflow queue full; item dropped (kind={})", item.kind.as_str());
+                    }
+                } else {
+                    self.stats.dropped.fetch_add(1, Ordering::Relaxed);
+                    self.stats.dropped_points.fetch_add(points, Ordering::Relaxed);
+                    warn!("high frequency writer queue full; item dropped (kind={})", item.kind.as_str());
+                }
+                Ok(())
             }
-            Err(mpsc::error::TrySendError::Closed(HfMessage::Item(ref item))) => {
+            Err(mpsc::error::TrySendError::Closed(HfMessage::Item(item))) => {
                 self.stats.dropped.fetch_add(1, Ordering::Relaxed);
-                warn!(
-                    "high frequency writer queue closed; item dropped (kind={})",
-                    item.kind.as_str()
-                );
+                self.stats.dropped_points.fetch_add(points, Ordering::Relaxed);
+                warn!("high frequency writer queue closed; item dropped (kind={})", item.kind.as_str());
                 Err("high frequency writer is closed".to_string())
             }
             // Full/Closed for non-Item messages: don't count as dropped,
@@ -608,12 +677,14 @@ fn extract_runtime_records(
 async fn run_hf_writer(
     config: HighFrequencyConfig,
     rx: &mut mpsc::Receiver<HfMessage>,
+    mut overflow_rx: Option<mpsc::Receiver<OverflowItem>>,
     stats: Arc<HighFrequencyStats>,
     db: Arc<DbManager>,
 ) {
     let flush_interval = Duration::from_millis(config.flush_interval_ms.max(100));
     let max_batch_size = config.max_batch_size.max(1);
     let max_retries = config.max_retries.max(1);
+    let overflow_max_age_ms = config.overflow_max_age_ms as i64;
     let mut batch: Vec<HighFrequencyItem> = Vec::with_capacity(max_batch_size);
     let mut ticker = tokio::time::interval(flush_interval);
     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
@@ -640,12 +711,15 @@ async fn run_hf_writer(
                         }
                     }
                     Some(HfMessage::Flush(reply)) => {
+                        // Drain overflow into current batch before flushing
+                        drain_overflow(&mut batch, &mut overflow_rx, &stats, overflow_max_age_ms).await;
                         let result = flush_batch(
                             &mut batch, &stats, &db, max_retries, "explicit_flush"
                         ).await;
                         let _ = reply.send(result);
                     }
                     Some(HfMessage::Shutdown(reply)) => {
+                        drain_overflow(&mut batch, &mut overflow_rx, &stats, overflow_max_age_ms).await;
                         let result = flush_batch(
                             &mut batch, &stats, &db, max_retries, "shutdown"
                         ).await;
@@ -658,6 +732,7 @@ async fn run_hf_writer(
                     }
                     None => {
                         // Channel closed — flush remaining items and exit.
+                        drain_overflow(&mut batch, &mut overflow_rx, &stats, overflow_max_age_ms).await;
                         if !batch.is_empty() {
                             let _ = flush_batch(
                                 &mut batch, &stats, &db, max_retries, "closed"
@@ -669,11 +744,44 @@ async fn run_hf_writer(
                 }
             }
             _ = ticker.tick() => {
+                // Drain overflow into current batch before flushing
+                drain_overflow(&mut batch, &mut overflow_rx, &stats, overflow_max_age_ms).await;
                 if !batch.is_empty() {
                     let _ = flush_batch(
                         &mut batch, &stats, &db, max_retries, "interval"
                     ).await;
                 }
+            }
+        }
+    }
+}
+
+/// Drain expired and pending overflow items into the current batch.
+/// Expired items (older than max_age) are dropped and counted.
+async fn drain_overflow(
+    batch: &mut Vec<HighFrequencyItem>,
+    overflow_rx: &mut Option<mpsc::Receiver<OverflowItem>>,
+    stats: &HighFrequencyStats,
+    max_age_ms: i64,
+) {
+    let Some(rx) = overflow_rx.as_mut() else { return };
+    let now = now_ms();
+    loop {
+        match rx.try_recv() {
+            Ok(overflow) => {
+                let age = now - overflow.enqueued_at_ms;
+                if max_age_ms > 0 && age > max_age_ms {
+                    // Overflow item expired — drop it
+                    stats.dropped.fetch_add(1, Ordering::Relaxed);
+                    stats.dropped_points.fetch_add(overflow.item.item_count() as u64, Ordering::Relaxed);
+                    continue;
+                }
+                batch.push(overflow.item);
+            }
+            Err(mpsc::error::TryRecvError::Empty) => break,
+            Err(mpsc::error::TryRecvError::Disconnected) => {
+                *overflow_rx = None;
+                break;
             }
         }
     }
@@ -702,7 +810,7 @@ async fn flush_batch(
     let batch_id = batch_uuid();
     let records = extract_runtime_records(&batch_id, &items);
     let record_count = records.len() as u64;
-    let point_count: usize = items.iter().map(|i| i.item_count()).sum();
+    let point_count: u64 = items.iter().map(|i| i.item_count() as u64).sum();
 
     // Reset oldest timestamp — will be updated on next item arrival.
     stats.oldest_batch_at.store(0, Ordering::Relaxed);
@@ -730,15 +838,19 @@ async fn flush_batch(
             stats
                 .committed
                 .fetch_add(record_count, Ordering::Relaxed);
+            stats
+                .committed_points
+                .fetch_add(point_count, Ordering::Relaxed);
             debug!(
                 items = items.len(),
-                points = point_count,
+                point_count,
                 reason,
                 "high frequency batch committed"
             );
             return Ok(());
         }
 
+        stats.database_error_at.store(now_ms() as u64, Ordering::Relaxed);
         warn!(
             attempt = attempt + 1,
             max_retries,
@@ -751,9 +863,12 @@ async fn flush_batch(
     stats
         .dropped
         .fetch_add(record_count, Ordering::Relaxed);
+    stats
+        .dropped_points
+        .fetch_add(point_count, Ordering::Relaxed);
     error!(
         items = items.len(),
-        points = point_count,
+        point_count,
         reason,
         "high frequency batch dropped after {max_retries} retries"
     );
@@ -813,6 +928,11 @@ mod tests {
             dropped: AtomicU64::new(2),
             retrying: AtomicU64::new(1),
             oldest_batch_at: AtomicU64::new(12345),
+            received_points: AtomicU64::new(30),
+            committed_points: AtomicU64::new(24),
+            dropped_points: AtomicU64::new(6),
+            queue_full_count: AtomicU64::new(3),
+            database_error_at: AtomicU64::new(67890),
         };
         let snap = stats.snapshot();
         assert_eq!(snap.received, 10);
@@ -820,6 +940,11 @@ mod tests {
         assert_eq!(snap.dropped, 2);
         assert_eq!(snap.retrying, 1);
         assert_eq!(snap.oldest_batch_at, 12345);
+        assert_eq!(snap.received_points, 30);
+        assert_eq!(snap.committed_points, 24);
+        assert_eq!(snap.dropped_points, 6);
+        assert_eq!(snap.queue_full_count, 3);
+        assert_eq!(snap.database_error_at, 67890);
     }
 
     #[test]
