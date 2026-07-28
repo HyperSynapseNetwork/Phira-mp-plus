@@ -180,9 +180,23 @@ impl WitPluginComponent {
             node_key: Arc::new(crate::crypto::NodeKey::from_secret(&phira_mp_common::generate_secret_key("node_key", 32).map_err(|e| format!("node key derivation: {e}"))?)),
             timers: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
             timer_callback: None,
-            tcp: None,
+            tcp: server.plugin_tcp_tx.clone(),
             tcp_callback: None,
-            room_state_query: None,
+            room_state_query: {
+                let server_clone = Arc::clone(&server);
+                Some(Arc::new(move |request: String| -> Result<serde_json::Value, String> {
+                    // request format: "MESSAGE_TYPE" or "MESSAGE_TYPE:ARG"
+                    // where MESSAGE_TYPE is a server_state_query method like "rooms.by_name"
+                    if let Some((method, param)) = request.split_once(':') {
+                        // Use rooms.by_name for state query, or other methods
+                        let args = [serde_json::json!({"room_id": param})];
+                        crate::server::query::server_state_query_inner(&server_clone, method, &args)
+                    } else {
+                        crate::server::query::server_state_query_inner(&server_clone, &request, &[])
+                    }
+                }))
+            },
+            api_handlers: services.api_handlers.clone(),
         }))
     }
 
@@ -588,6 +602,7 @@ mod tests {
             tcp: None,
             tcp_callback: None,
             room_state_query: None,
+            api_handlers: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
         })
     }
 

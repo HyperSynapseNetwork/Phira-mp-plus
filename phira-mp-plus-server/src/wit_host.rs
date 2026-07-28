@@ -57,6 +57,18 @@ pub struct WitHostContext {
     pub tcp_callback: Option<Arc<dyn Fn(String, serde_json::Value) + Send + Sync>>,
     /// Room state query access (for phira-room-state interface).
     pub room_state_query: Option<Arc<dyn Fn(String) -> Result<serde_json::Value, String> + Send + Sync>>,
+    /// Plugin handler registry: method → owner + metadata.
+    pub api_handlers: Arc<Mutex<HashMap<String, RegisteredHandler>>>,
+}
+
+/// A registered plugin handler.
+#[derive(Debug, Clone)]
+pub struct RegisteredHandler {
+    pub plugin_name: String,
+    pub method: String,
+    pub description: String,
+    pub request_schema: Option<String>,
+    pub response_schema: Option<String>,
 }
 
 /// Wraps server capabilities to implement WIT host traits.
@@ -986,7 +998,7 @@ mod wit_trait_impls {
             self.require_capability("room-state")?;
             let query = self.ctx.room_state_query.as_ref()
                 .ok_or("room state query not available")?;
-            let v: serde_json::Value = query(room_id)?;
+            let v: serde_json::Value = query(format!("rooms.by_name:{room_id}"))?;
             let rid = v.get("room_id").and_then(|v| v.as_str()).unwrap_or("").to_string();
             let room_uuid = v.get("room_uuid").and_then(|v| v.as_str()).unwrap_or("").to_string();
             let host_id = v.get("host_id").and_then(|v| v.as_i64()).map(|n| n as u32);
@@ -994,8 +1006,26 @@ mod wit_trait_impls {
             let hidden = v.get("hidden").and_then(|v| v.as_bool()).unwrap_or(false);
             let player_count = v.get("player_count").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
             let monitor_count = v.get("monitor_count").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
-            let players = Vec::new();
-            let current_round = None;
+            // Query players list via the same service
+            let players = if let Ok(arr) = serde_json::from_value::<Vec<serde_json::Value>>(
+                query(format!("room.players:{room_id}"))?
+            ) {
+                arr.into_iter().map(|v| {
+                    wit::phira::plugin::phira_room_state::RoomPlayer {
+                        user_id: v.get("user_id").and_then(|v| v.as_u64()).unwrap_or(0) as u32,
+                        display_name: v.get("display_name").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                        is_monitor: v.get("is_monitor").and_then(|v| v.as_bool()).unwrap_or(false),
+                        is_ready: v.get("is_ready").and_then(|v| v.as_bool()).unwrap_or(false),
+                        is_host: v.get("is_host").and_then(|v| v.as_bool()).unwrap_or(false),
+                        is_finished: v.get("is_finished").and_then(|v| v.as_bool()).unwrap_or(false),
+                        score: v.get("score").and_then(|v| v.as_u64()).map(|n| n as u32),
+                        accuracy: v.get("accuracy").and_then(|v| v.as_f64()).map(|n| n as f32),
+                    }
+                }).collect()
+            } else {
+                Vec::new()
+            };
+            let current_round = None; // Available via room.snapshot round_id field
             Ok(wit::phira::plugin::phira_room_state::RoomState {
                 room_id: rid, room_uuid, host_id, locked, hidden,
                 player_count, monitor_count, players, current_round,
@@ -1006,7 +1036,7 @@ mod wit_trait_impls {
             self.require_capability("room-state")?;
             let query = self.ctx.room_state_query.as_ref()
                 .ok_or("room state query not available")?;
-            let arr: Vec<serde_json::Value> = serde_json::from_value(query(format!("{room_id}/players"))?)
+            let arr: Vec<serde_json::Value> = serde_json::from_value(query(format!("rooms.by_name:{room_id}"))?)
                 .map_err(|e| format!("room players parse error: {e}"))?;
             let players = arr.into_iter().map(|v| {
                 wit::phira::plugin::phira_room_state::RoomPlayer {
@@ -1029,12 +1059,16 @@ mod wit_trait_impls {
         }
 
         fn list_rooms(&mut self) -> Result<Vec<String>, String> {
+            self.require_capability("room-state")?;
             let query = self.ctx.room_state_query.as_ref()
                 .ok_or("room state query not available")?;
-            let v = query("list".to_string())?;
-            let arr: Vec<String> = serde_json::from_value(v)
+            let v = query("rooms.list".to_string())?;
+            let rooms: Vec<serde_json::Value> = serde_json::from_value(v)
                 .map_err(|e| format!("list rooms parse error: {e}"))?;
-            Ok(arr)
+            let ids: Vec<String> = rooms.iter()
+                .filter_map(|r| r.get("id").and_then(|v| v.as_str()).map(|s| s.to_string()))
+                .collect();
+            Ok(ids)
         }
     }
 
@@ -1042,33 +1076,53 @@ mod wit_trait_impls {
     impl wit::phira::plugin::phira_handler::Host for WitPluginHost {
         fn register_handler(&mut self, desc: wit::phira::plugin::phira_handler::HandlerDescriptor) -> Result<(), String> {
             self.require_capability("handler")?;
-            // Store handler metadata in context for routing
             let method = desc.method.clone();
-            // Register via the shared api_handlers map
-            if let Some(ref handler_registry) = self.ctx.room_state_query {
-                let _payload = serde_json::json!({
-                    "plugin": self.plugin_name,
-                    "method": desc.method,
-                    "description": desc.description,
-                    "request_schema": desc.request_schema,
-                    "response_schema": desc.response_schema,
-                });
-                let _ = handler_registry(format!("register:{method}"));
-                // Would store in a proper registry in full implementation
+            if method.is_empty() || method.len() > 128 {
+                return Err("handler method name must be 1-128 chars".to_string());
             }
+            if !method.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '.' || c == ':') {
+                return Err("handler method name contains invalid characters".to_string());
+            }
+            let registered = crate::wit_host::RegisteredHandler {
+                plugin_name: self.plugin_name.clone(),
+                method: method.clone(),
+                description: desc.description,
+                request_schema: desc.request_schema,
+                response_schema: desc.response_schema,
+            };
+            let mut registry = self.ctx.api_handlers.lock()
+                .map_err(|e| format!("handler registry lock: {e}"))?;
+            registry.insert(method, registered);
             Ok(())
         }
 
         fn unregister_handler(&mut self, method: String) -> Result<(), String> {
             self.require_capability("handler")?;
-            if let Some(ref handler_registry) = self.ctx.room_state_query {
-                let _ = handler_registry(format!("unregister:{method}"));
+            let mut registry = self.ctx.api_handlers.lock()
+                .map_err(|e| format!("handler registry lock: {e}"))?;
+            match registry.get(&method) {
+                Some(h) if h.plugin_name == self.plugin_name => {
+                    registry.remove(&method);
+                    Ok(())
+                }
+                Some(_) => Err("handler owned by another plugin".to_string()),
+                None => Err(format!("handler '{method}' not found")),
             }
-            Ok(())
         }
 
         fn list_handlers(&mut self) -> Result<Vec<wit::phira::plugin::phira_handler::HandlerDescriptor>, String> {
-            Ok(Vec::new()) // Full implementation would query registry
+            let registry = self.ctx.api_handlers.lock()
+                .map_err(|e| format!("handler registry lock: {e}"))?;
+            let handlers: Vec<_> = registry.values()
+                .filter(|h| h.plugin_name == self.plugin_name)
+                .map(|h| wit::phira::plugin::phira_handler::HandlerDescriptor {
+                    method: h.method.clone(),
+                    description: h.description.clone(),
+                    request_schema: h.request_schema.clone(),
+                    response_schema: h.response_schema.clone(),
+                })
+                .collect();
+            Ok(handlers)
         }
 
         fn request_capability(&mut self, _capability: String) -> Result<bool, String> {
