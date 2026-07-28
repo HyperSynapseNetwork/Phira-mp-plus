@@ -13,8 +13,10 @@ use tracing::{error, info, warn};
 // ── Resource limits (PMP25 P5) ──────────────────────────────────────
 const MAX_CONNECTIONS_PER_PLUGIN: u32 = 32;
 const MAX_LISTENERS_PER_PLUGIN: u32 = 8;
-const MAX_READ_BUF_PER_CONNECTION: usize = 1_048_576;  // 1 MB
-const MAX_READ_BUF_PER_PLUGIN: usize = 4_194_304;      // 4 MB
+#[allow(dead_code)]
+const MAX_READ_BUF_PER_CONNECTION: usize = 1_048_576;  // 1 MB (future enforcement)
+#[allow(dead_code)]
+const MAX_READ_BUF_PER_PLUGIN: usize = 4_194_304;      // 4 MB (future enforcement)
 
 /// Synchronous reply channel for WIT host functions — blocks the calling
 /// WASM thread until the async TCP actor processes the command.
@@ -286,7 +288,7 @@ impl PluginTcpActor {
                     }
                 }
                 PluginTcpCommand::Send { plugin_id, handle, bytes } => {
-                    if let Err(e) = self.check_owner(handle, &plugin_id) { continue; }
+                    if let Err(_e) = self.check_owner(handle, &plugin_id) { continue; }
                     let map = self.conn_map.lock().unwrap();
                     if let Some(tx) = map.get(&handle) {
                         if let Err(e) = tx.try_send(bytes) {

@@ -33,7 +33,7 @@ pub fn spawn_runtime_event_observer(event_bus: Arc<crate::event_bus::EventBus>) 
 /// Subscribe to EventBus events and drive real side effects.
 pub fn spawn_event_subscribers(state: &Arc<PlusServerState>) {
     let mut rx = state.event_bus.subscribe();
-    let state_clone = Arc::clone(state);
+    let _state = Arc::clone(state);
     crate::supervisor_actor::spawn_critical("event-subscribers", async move {
         loop {
             match rx.recv().await {
