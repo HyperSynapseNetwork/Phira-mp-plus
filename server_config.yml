@@ -71,12 +71,6 @@ persistence_retention_days: 30
 # 未设置时遵循 persistence_retention_days；设为 0 表示不自动清理遥测。
 # touch_judge_retention_days: 7
 
-# ---- Runtime v2 内部策略 ----
-
-# Runtime v2 不再继续膨胀管理命令；核心开关尽量放在配置里。
-# telemetry_cutover_mode 可选：direct_only / worker_preferred / worker_authoritative。
-# 默认使用 direct_only；先通过 worker_preferred 验证队列和数据库，再显式切换 worker_authoritative。
-# worker_preferred 直写成功时 Worker 是镜像；直写失败但 Worker 接收时由 Worker 补偿该批次。
 # runtime:
 #   persistence_queue_capacity: 4096
 #   # 数据库重试耗尽后的失败事件保全。设为 null 可禁用；禁用后若数据库最终失败，Supervisor 会进入 degraded。

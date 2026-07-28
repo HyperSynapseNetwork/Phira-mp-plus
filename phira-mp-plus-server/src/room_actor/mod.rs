@@ -1,6 +1,6 @@
-//! Room command gateway — actor_state as snapshot authority.
+//! Room command gateway — actor_state as primary snapshot authority.
 //!
-//! Status: actor_state is the sole authoritative source for room state.
+//! Status: 主要业务状态已 actor-owned；管理编排和连接 registry cutover 尚未完成。
 //! Room is a pure broadcast bus (connection references only).
 //!
 //! 架构：

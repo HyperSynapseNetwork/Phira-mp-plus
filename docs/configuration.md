@@ -14,7 +14,7 @@
 - YAML 可以只写需要覆盖的字段，其余字段使用结构体默认值。
 - 只有显式提供的命令行参数才覆盖 YAML：`--port`、`--http-port`、`--proxy-port`、`--monitor`、`--plugins-dir`、`--ext-file`、`--no-cli`。未提供的 CLI 参数不会再用其默认值覆盖 YAML。
 - `config reload` 仍遵循同一优先级：显式 `--monitor` 不会被 YAML 重载覆盖；运行时或数据库维护的管理员/压测凭据在 YAML 与持久化文件均未声明时保持不变。
-- `phira_api_endpoint` 在启动和重载时会去除首尾空白及末尾 `/`，并校验必须为 HTTP(S) URL；`idle.check_interval_secs` 必须大于 0，防止空闲检测形成忙循环。
+- `phira_api_endpoint` 在启动和重载时会去除首尾空白及末尾 `/`，并校验必须为 HTTP(S) URL。
 - `RUST_LOG`、`NO_COLOR`、`TERM`、`STY`、`TMUX` 等环境变量只影响日志或终端显示，不会覆盖业务配置项。
 
 ## 最小可用配置
@@ -329,10 +329,9 @@ RUST_LOG=debug ./phira-mp-plus-server
 
 | 配置项 | 类型 | 默认值 | 说明 |
 |---|---:|---:|---|
-| `idle.idle_after_secs` | `u64` | `300` | 无活动多少秒后标记为空载。 |
-| `idle.check_interval_secs` | `u64` | `15` | 空载检查间隔，必须大于 0。 |
-| `idle.heartbeat_timeout_secs` | `u64` | `30` | 会话心跳超时阈值。 |
+| `idle.heartbeat_timeout_secs` | `u64` | `15` | 会话心跳超时阈值。 |
 | `idle.auth_timeout_secs` | `u64` | `15` | 未认证连接超时阈值。 |
+| `idle.dangle_grace_secs` | `u64` | `10` | 断线重连宽限时间（秒）。玩家断线后在此时长内重连可恢复。 |
 
 ## WASM 运行时限制
 

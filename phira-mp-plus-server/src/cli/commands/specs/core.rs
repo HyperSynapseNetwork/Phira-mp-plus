@@ -117,7 +117,7 @@ pub fn specs() -> Vec<CommandSpec> {
                 lines.push(format!("  ◆ profile: {:?}", state.config.profile));
                 if !state.config.database_url.is_empty() {
                     let db_status = crate::internal_hooks::DB.get()
-                        .map(|db| if db.is_active() { "已连接" } else { "已断开" })
+                        .map(|_db| "已连接")
                         .unwrap_or("不可用");
                     lines.push(format!("  ◆ 数据库状态: {db_status}"));
                 }
@@ -127,7 +127,7 @@ pub fn specs() -> Vec<CommandSpec> {
             .handler(Arc::new(|state, _args| {
                 let mut lines = vec![format!("  ◆ Phira-mp+ v{} Doctor", env!("CARGO_PKG_VERSION"))];
                 if let Some(db) = crate::internal_hooks::DB.get() {
-                    lines.push(format!("  {} 数据库: {}", if db.is_active() { "✓" } else { "✗" }, if db.is_active() { "已连接" } else { "已断开" }));
+                    lines.push("  ✓ 数据库: 已连接".to_string());
                 } else {
                     lines.push("  ○ 数据库: 未配置".to_string());
                 }

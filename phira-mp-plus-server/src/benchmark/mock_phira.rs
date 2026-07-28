@@ -40,6 +40,8 @@ pub struct MockPhiraConfig {
     pub error_rate: f64,
     /// 模拟的请求超时时间——触发客户端超时的慢响应
     pub timeout_ms: u64,
+    /// 超时注入概率（0.0 ~ 1.0），默认 0.0，即不注入超时
+    pub timeout_rate: f64,
     /// 随机种子，用于确定性回放
     pub seed: u64,
     /// 模拟的响应体大小（字节）
@@ -57,6 +59,7 @@ impl Default for MockPhiraConfig {
             jitter_ms: 2,
             error_rate: 0.0,
             timeout_ms: 30_000,
+            timeout_rate: 0.0,
             seed: 114_514,
             response_size: 1024,
             listen_addr: "127.0.0.1:9877".to_string(),
@@ -250,9 +253,9 @@ fn token_to_user_id(token: &str) -> i32 {
 
 /// 组合故障注入检查（延迟 + 错误率）
 async fn apply_faults(cfg: &MockPhiraConfig) -> Result<(), ()> {
-    // 如果设置了 timeout_ms，有 5% 概率触发超时长延迟
-    let use_timeout = if cfg.timeout_ms > 0 && cfg.timeout_ms > cfg.delay_ms {
-        seeded_f64(cfg.seed, seeded_counter()) < 0.05
+    // 根据 timeout_rate 判断是否触发超时长延迟
+    let use_timeout = if cfg.timeout_rate > 0.0 && cfg.timeout_ms > cfg.delay_ms {
+        seeded_f64(cfg.seed, seeded_counter()) < cfg.timeout_rate
     } else {
         false
     };

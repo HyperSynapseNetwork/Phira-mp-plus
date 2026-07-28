@@ -20,7 +20,7 @@ use serde_json::Value;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use tokio::sync::{mpsc, oneshot, Mutex};
+use tokio::sync::{mpsc, oneshot};
 use tracing::{debug, error, warn};
 
 // ── Defaults ───────────────────────────────────────────────────────────
@@ -202,7 +202,6 @@ enum HfMessage {
 /// has the same effect (the receiver sees `None`).
 pub struct HighFrequencyWriter {
     tx: mpsc::Sender<HfMessage>,
-    send_gate: Mutex<()>,
     closed: AtomicBool,
     stats: Arc<HighFrequencyStats>,
 }
@@ -240,7 +239,6 @@ impl HighFrequencyWriter {
 
         Self {
             tx,
-            send_gate: Mutex::new(()),
             closed: AtomicBool::new(false),
             stats,
         }
@@ -253,7 +251,6 @@ impl HighFrequencyWriter {
     /// caller's hotpath. Returns `Err(String)` when the writer is shut down,
     /// the channel is closed, or the queue is full.
     pub async fn enqueue(&self, item: HighFrequencyItem) -> Result<(), String> {
-        let _send_guard = self.send_gate.lock().await;
         if self.closed.load(Ordering::Acquire) {
             self.stats.dropped.fetch_add(1, Ordering::Relaxed);
             return Err("high frequency writer is shutting down".to_string());
@@ -293,16 +290,13 @@ impl HighFrequencyWriter {
     /// database and reply.  Timeout is 5 seconds.
     pub async fn flush(&self) -> Result<(), String> {
         let (reply, rx) = oneshot::channel();
-        {
-            let _send_guard = self.send_gate.lock().await;
-            if self.closed.load(Ordering::Acquire) {
-                return Err("high frequency writer is shutting down".to_string());
-            }
-            self.tx
-                .send(HfMessage::Flush(reply))
-                .await
-                .map_err(|_| "high frequency writer is closed".to_string())?;
+        if self.closed.load(Ordering::Acquire) {
+            return Err("high frequency writer is shutting down".to_string());
         }
+        self.tx
+            .send(HfMessage::Flush(reply))
+            .await
+            .map_err(|_| "high frequency writer is closed".to_string())?;
         tokio::time::timeout(Duration::from_secs(5), rx)
             .await
             .map_err(|_| "high frequency flush timed out".to_string())?
@@ -314,15 +308,12 @@ impl HighFrequencyWriter {
     /// After shutdown the writer is unusable.  Timeout is 10 seconds.
     pub async fn shutdown(&self) -> Result<(), String> {
         let (reply, rx) = oneshot::channel();
-        {
-            let _send_guard = self.send_gate.lock().await;
-            if self.closed.swap(true, Ordering::AcqRel) {
-                return Ok(());
-            }
-            if self.tx.send(HfMessage::Shutdown(reply)).await.is_err() {
-                self.closed.store(false, Ordering::Release);
-                return Err("high frequency writer is closed".to_string());
-            }
+        if self.closed.swap(true, Ordering::AcqRel) {
+            return Ok(());
+        }
+        if self.tx.send(HfMessage::Shutdown(reply)).await.is_err() {
+            self.closed.store(false, Ordering::Release);
+            return Err("high frequency writer is closed".to_string());
         }
         let result = match tokio::time::timeout(Duration::from_secs(10), rx).await {
             Ok(Ok(result)) => result,
@@ -620,14 +611,6 @@ async fn run_hf_writer(
     stats: Arc<HighFrequencyStats>,
     db: Arc<DbManager>,
 ) {
-    if !db.is_active() {
-        warn!("high frequency writer: database not active; items will be dropped");
-        while rx.recv().await.is_some() {
-            stats.dropped.fetch_add(1, Ordering::Relaxed);
-        }
-        return;
-    }
-
     let flush_interval = Duration::from_millis(config.flush_interval_ms.max(100));
     let max_batch_size = config.max_batch_size.max(1);
     let max_retries = config.max_retries.max(1);

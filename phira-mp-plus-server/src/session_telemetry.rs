@@ -217,15 +217,12 @@ pub(crate) async fn handle_touches(user: Arc<User>, room: Arc<Room>, frames: Arc
     }
 
     if should_broadcast_monitor_telemetry(has_active_monitors) {
-        let monitor_room = Arc::clone(&room);
-        tokio::spawn(async move {
-            monitor_room
-                .broadcast_monitors(ServerCommand::Touches {
-                    player: player_id,
-                    frames,
-                })
-                .await;
-        });
+        room
+            .broadcast_monitors(ServerCommand::Touches {
+                player: player_id,
+                frames,
+            })
+            .await;
     } else {
         trace!(room = %room.id, user_id = user.id, "touch data persisted without active monitor broadcast");
     }
@@ -276,15 +273,12 @@ pub(crate) async fn handle_judges(user: Arc<User>, room: Arc<Room>, judges: Arc<
     }
 
     if should_broadcast_monitor_telemetry(has_active_monitors) {
-        let monitor_room = Arc::clone(&room);
-        tokio::spawn(async move {
-            monitor_room
-                .broadcast_monitors(ServerCommand::Judges {
-                    player: player_id,
-                    judges,
-                })
-                .await;
-        });
+        room
+            .broadcast_monitors(ServerCommand::Judges {
+                player: player_id,
+                judges,
+            })
+            .await;
     } else {
         trace!(room = %room.id, user_id = user.id, "judge data persisted without active monitor broadcast");
     }

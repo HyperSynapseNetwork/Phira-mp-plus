@@ -30,7 +30,7 @@ use std::time::Duration;
 use tokio::net::TcpStream;
 use tokio::sync::mpsc;
 use tokio::time::Instant;
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 use uuid::Uuid;
 
 /// 默认的单个步骤超时（秒）
@@ -83,9 +83,11 @@ fn make_bench_token(run_id: &Uuid, client_index: u32) -> String {
 
 /// 生成确定性房间 ID
 ///
-/// 格式: `br{client_index}` (最多 15 字符，适配 Varchar<20>)
-fn make_bench_room_id(client_index: u32) -> String {
-    format!("br{}", client_index)
+/// 格式: `b{run_hash}-{room_index}` 包含 run_id 前缀，避免不同运行间的房间冲突。
+/// run_hash 使用 run_id 前 8 位十六进制字符。
+fn make_bench_room_id(run_id: &Uuid, room_index: u32) -> String {
+    let run_hash = &run_id.to_string()[..8];
+    format!("b{}-{}", run_hash, room_index)
 }
 
 /// 带超时的 wait_for_response
@@ -179,8 +181,10 @@ async fn step_create_room(
     cm: &mut ClientMetrics,
     last_cmd: &mut Option<String>,
     client_index: u32,
+    run_id: &Uuid,
+    room_index: u32,
 ) -> Result<(), String> {
-    let room_id_str = make_bench_room_id(client_index);
+    let room_id_str = make_bench_room_id(run_id, room_index);
     let room_id = RoomId::try_from(room_id_str.clone())
         .map_err(|e| format!("client {client_index}: invalid room id '{room_id_str}': {e}"))?;
 
@@ -212,6 +216,54 @@ async fn step_create_room(
         .push(step_start.elapsed().as_secs_f64() * 1000.0);
     info!("client {} created room {}", client_index, room_id);
     Ok(())
+}
+
+/// 加入房间步骤
+async fn step_join_room(
+    stream: &Stream<ClientCommand, ServerCommand>,
+    rx: &mut mpsc::UnboundedReceiver<ServerCommand>,
+    cm: &mut ClientMetrics,
+    last_cmd: &mut Option<String>,
+    client_index: u32,
+    run_id: &Uuid,
+    room_index: u32,
+) -> Result<(), String> {
+    let room_id_str = make_bench_room_id(run_id, room_index);
+    let room_id = RoomId::try_from(room_id_str.clone())
+        .map_err(|e| format!("client {client_index}: invalid room id '{room_id_str}': {e}"))?;
+
+    let step_start = Instant::now();
+    stream
+        .send(ClientCommand::JoinRoom {
+            id: room_id.clone(),
+            monitor: false,
+        })
+        .await
+        .map_err(|e| format!("client {client_index}: send JoinRoom: {e}"))?;
+    cm.record_command();
+
+    let join_result = wait_for_response(
+        rx,
+        |cmd| match cmd {
+            ServerCommand::JoinRoom(result) => Some(result.clone()),
+            _ => None,
+        },
+        STEP_TIMEOUT,
+        "JoinRoom",
+        last_cmd,
+    )
+    .await
+    .map_err(|e| format!("client {client_index}: {e}"))?;
+
+    match join_result {
+        Ok(_response) => {
+            cm.all_latencies
+                .push(step_start.elapsed().as_secs_f64() * 1000.0);
+            info!("client {} joined room {}", client_index, room_id);
+            Ok(())
+        }
+        Err(e) => Err(format!("client {client_index}: JoinRoom failed: {e}")),
+    }
 }
 
 /// 选曲步骤
@@ -366,6 +418,7 @@ async fn send_touch_judge_frames(
     let end = Instant::now() + duration;
 
     let mut touch_time: f32 = 0.0;
+    let mut frame_index: u32 = 0;
     while Instant::now() < end && Instant::now() < overall_deadline {
         // Touch 帧
         let frames: Vec<TouchFrame> = (0..num_touches_per_frame)
@@ -387,7 +440,7 @@ async fn send_touch_judge_frames(
         cm.record_command();
 
         // 每 10 帧（~6Hz）发送一次 Judge 事件
-        if (touch_time as u32) % 10 == 0 {
+        if frame_index % 10 == 0 {
             let judges: Vec<JudgeEvent> = (0..num_judges_per_batch)
                 .map(|j| JudgeEvent {
                     time: touch_time,
@@ -411,6 +464,7 @@ async fn send_touch_judge_frames(
         }
 
         touch_time += 1.0 / 60.0;
+        frame_index += 1;
         tokio::time::sleep(interval).await;
     }
 
@@ -422,7 +476,10 @@ async fn send_touch_judge_frames(
     Ok(())
 }
 
-/// 完整房间生命周期：Auth → CreateRoom → SelectChart → RequestStart → Ready → Played
+/// 完整房间生命周期：Auth → CreateRoom/JoinRoom → SelectChart → RequestStart → Ready → Played
+///
+/// `is_host` 控制该客户端是创建房间还是加入现有房间。
+/// `room_index` 指定要创建/加入的房间。
 async fn run_full_lifecycle(
     stream: &Stream<ClientCommand, ServerCommand>,
     rx: &mut mpsc::UnboundedReceiver<ServerCommand>,
@@ -432,6 +489,8 @@ async fn run_full_lifecycle(
     run_id: &Uuid,
     config: &BenchmarkConfig,
     overall_deadline: Instant,
+    is_host: bool,
+    room_index: u32,
 ) -> Result<(), String> {
     step_authenticate(stream, rx, cm, last_cmd, client_index, run_id).await?;
 
@@ -439,19 +498,55 @@ async fn run_full_lifecycle(
         return Ok(());
     }
 
-    step_create_room(stream, rx, cm, last_cmd, client_index).await?;
+    if is_host {
+        step_create_room(stream, rx, cm, last_cmd, client_index, run_id, room_index).await?;
 
-    if Instant::now() >= overall_deadline {
-        return Ok(());
+        if Instant::now() >= overall_deadline {
+            return Ok(());
+        }
+
+        step_select_chart(stream, rx, cm, last_cmd, client_index).await?;
+
+        if Instant::now() >= overall_deadline {
+            return Ok(());
+        }
+
+        step_start_and_ready(stream, rx, cm, last_cmd, client_index).await?;
+    } else {
+        step_join_room(stream, rx, cm, last_cmd, client_index, run_id, room_index).await?;
+
+        if Instant::now() >= overall_deadline {
+            return Ok(());
+        }
+
+        // 非 host 客户端只发送 Ready 等待开始
+        let step_start = Instant::now();
+        stream
+            .send(ClientCommand::Ready)
+            .await
+            .map_err(|e| format!("client {client_index}: send Ready: {e}"))?;
+        cm.record_command();
+
+        let _start_playing = wait_for_response(
+            rx,
+            |cmd| match cmd {
+                ServerCommand::Message(msg) => match msg {
+                    phira_mp_common::Message::StartPlaying => Some(Ok::<(), String>(())),
+                    _ => None,
+                },
+                _ => None,
+            },
+            STEP_TIMEOUT,
+            "StartPlaying",
+            last_cmd,
+        )
+        .await
+        .map_err(|e| format!("client {client_index}: waiting StartPlaying: {e}"))?;
+
+        cm.all_latencies
+            .push(step_start.elapsed().as_secs_f64() * 1000.0);
+        info!("client {} entered playing state (joiner)", client_index);
     }
-
-    step_select_chart(stream, rx, cm, last_cmd, client_index).await?;
-
-    if Instant::now() >= overall_deadline {
-        return Ok(());
-    }
-
-    step_start_and_ready(stream, rx, cm, last_cmd, client_index).await?;
 
     if Instant::now() >= overall_deadline {
         return Ok(());
@@ -480,12 +575,17 @@ async fn run_full_lifecycle(
 }
 
 /// 运行单个客户端场景
+///
+/// `is_host` 表示该客户端是否为房间创建者。
+/// `room_index` 指定客户端应加入的房间编号（用于 rooms/members_per_room 分组）。
 async fn run_single_client(
     client_index: u32,
     run_id: Uuid,
     server_addr: String,
     config: BenchmarkConfig,
     overall_deadline: Instant,
+    is_host: bool,
+    room_index: u32,
 ) -> Result<ClientMetrics, String> {
     let mut cm = ClientMetrics::new();
     let mut last_cmd: Option<String> = None;
@@ -560,6 +660,8 @@ async fn run_single_client(
                     &mut cm,
                     &mut last_cmd,
                     client_index,
+                    &run_id,
+                    0,
                 )
                 .await?;
                 // 保持连接直到 deadline
@@ -581,6 +683,8 @@ async fn run_single_client(
                 &run_id,
                 &config,
                 overall_deadline,
+                is_host,
+                room_index,
             )
             .await
         }
@@ -652,57 +756,110 @@ pub async fn run_real(
         .unwrap_or_else(|| format!("127.0.0.1:{}", state.config.port));
 
     info!(
-        "Starting real benchmark: {} clients, scenario={}, duration={}s",
+        "Starting real benchmark: {} clients, scenario={}, duration={}s, rooms={}, members_per_room={}",
         config.clients,
         config.scenario.as_str(),
-        config.duration.as_secs()
+        config.duration.as_secs(),
+        config.rooms,
+        config.members_per_room,
     );
 
     // ── 3. 并发启动 N 个客户端任务 ──────────────────────────────────
     let num_clients = config.clients.max(1);
-    let mut handles = Vec::with_capacity(num_clients as usize);
+    let rooms = config.rooms.max(1);
+    let members_per_room = config.members_per_room.max(1);
+    let mut join_set = tokio::task::JoinSet::new();
 
     for i in 0..num_clients {
         let addr = server_addr.clone();
         let cfg = config.clone();
         let rid = run_id;
         let deadline = overall_deadline;
-        let handle = tokio::spawn(async move {
-            run_single_client(i, rid, addr, cfg, deadline).await
+
+        // 按 rooms 和 members_per_room 计算房间分配
+        let room_index = if cfg.scenario == BenchmarkScenario::HotRoom {
+            // HotRoom: 所有客户端加入同一个房间
+            0
+        } else {
+            // 按 rooms 分配：每个房间一组
+            (i / members_per_room) % rooms
+        };
+
+        // 每组第一个客户端是 host（创建房间），其余 join
+        let is_host = if cfg.scenario == BenchmarkScenario::HotRoom {
+            i == 0
+        } else {
+            i % members_per_room == 0
+        };
+
+        join_set.spawn(async move {
+            run_single_client(i, rid, addr, cfg, deadline, is_host, room_index).await
         });
-        handles.push(handle);
     }
 
     info!("Spawned {} client tasks, waiting for completion...", num_clients);
 
     // ── 4. 等待所有客户端完成（受整体超时限制）────────────────────
+    let mut results = Vec::new();
     let remaining = overall_deadline.saturating_duration_since(Instant::now());
-    let results = if remaining > Duration::from_millis(50) {
-        match tokio::time::timeout(remaining, async {
-            let mut results = Vec::new();
-            for handle in handles {
-                match handle.await {
-                    Ok(result) => results.push(result),
-                    Err(e) => {
-                        warn!("Client task join error: {e}");
-                        results.push(Err(format!("task join: {e}")));
+
+    if remaining > Duration::from_millis(50) {
+        let deadline_instant = Instant::now() + remaining;
+        loop {
+            let deadline_remaining = deadline_instant.saturating_duration_since(Instant::now());
+            if deadline_remaining.is_zero() {
+                warn!("Overall benchmark timeout ({:.1}s) reached; aborting {} remaining task(s)",
+                    config.duration.as_secs_f64(), join_set.len());
+                join_set.abort_all();
+                // Drain aborted tasks to avoid detached futures
+                while let Some(result) = join_set.join_next().await {
+                    match result {
+                        Ok(Ok(cm)) => results.push(Ok(cm)),
+                        Ok(Err(e)) => results.push(Err(e)),
+                        Err(e) if e.is_cancelled() => {
+                            debug!("Client task cancelled on timeout");
+                        }
+                        Err(e) => {
+                            warn!("Client task join error during drain: {e}");
+                        }
                     }
                 }
+                break;
             }
-            results
-        })
-        .await
-        {
-            Ok(r) => r,
-            Err(_) => {
-                // 超时：尝试收集已完成的任务
-                warn!("Overall benchmark timeout ({:.1}s) reached", config.duration.as_secs_f64());
-                Vec::new()
+
+            match tokio::time::timeout(deadline_remaining, join_set.join_next()).await {
+                Ok(Some(Ok(Ok(cm)))) => {
+                    results.push(Ok(cm));
+                }
+                Ok(Some(Ok(Err(e)))) => {
+                    results.push(Err(e));
+                }
+                Ok(Some(Err(e))) => {
+                    warn!("Client task join error: {e}");
+                }
+                Ok(None) => {
+                    // All tasks completed
+                    break;
+                }
+                Err(_) => {
+                    // Timeout reached during join_next
+                    warn!("Overall benchmark timeout ({:.1}s) reached; aborting {} remaining task(s)",
+                        config.duration.as_secs_f64(), join_set.len());
+                    join_set.abort_all();
+                    // Drain remaining
+                    while let Some(result) = join_set.join_next().await {
+                        match result {
+                            Ok(Ok(cm)) => results.push(Ok(cm)),
+                            Ok(Err(e)) => results.push(Err(e)),
+                            Err(e) if e.is_cancelled() => {}
+                            Err(e) => warn!("Client task join error during drain: {e}"),
+                        }
+                    }
+                    break;
+                }
             }
         }
-    } else {
-        Vec::new()
-    };
+    }
 
     // ── 5. 合并结果 ──────────────────────────────────────────────────
     let elapsed = started_at.elapsed();

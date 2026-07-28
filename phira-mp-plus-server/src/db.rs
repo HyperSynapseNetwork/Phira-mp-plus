@@ -98,11 +98,6 @@ impl DbManager {
         }
     }
 
-    /// 是否使用 PostgreSQL（始终有效，因 None 变体已移除）
-    pub fn is_active(&self) -> bool {
-        true
-    }
-
     pub async fn cleanup_expired(&self, retention_days: u32, touch_judge_retention_days: u32) {
         let Self::Pg(pool) = self;
         let now = || {

@@ -606,7 +606,7 @@ mod tests {
 
         #[test]
         fn load_succeeds() {
-            if try_load_component().is_err() {} // skip if fixture outdated
+            try_load_component().expect("WIT fixture must load for conformance tests");
         }
 
         #[test]
