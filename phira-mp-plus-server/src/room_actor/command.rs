@@ -157,12 +157,14 @@ pub(super) enum RoomActorCommand {
     },
     /// Fire-and-forget telemetry variant — no oneshot reply, casts through
     /// a dedicated telemetry channel to avoid control mailbox contention.
+    #[allow(dead_code)]
     TelemetryTouches {
         room_id: String,
         user_id: i32,
         touches: Vec<TouchEventPoint>,
     },
     /// Fire-and-forget telemetry variant — no oneshot reply.
+    #[allow(dead_code)]
     TelemetryJudges {
         room_id: String,
         user_id: i32,

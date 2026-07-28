@@ -208,7 +208,7 @@ impl RoomCommandGateway {
     /// Get the fire-and-forget telemetry sender for a room, if available.
     /// Returns `None` when the mailbox is not yet started, the room is
     /// unknown, or the telemetry channel is closed.
-    pub(super) async fn telemetry_sender(&self, room_id: &str) -> Option<mpsc::Sender<RoomActorCommand>> {
+    pub(crate) async fn telemetry_sender(&self, room_id: &str) -> Option<mpsc::Sender<RoomActorCommand>> {
         if !self.mailbox_enabled() {
             return None;
         }

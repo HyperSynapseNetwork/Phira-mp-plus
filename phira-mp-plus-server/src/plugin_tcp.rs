@@ -71,8 +71,6 @@ type ReadBufMap = Arc<Mutex<HashMap<u64, Vec<u8>>>>;
 struct Connection {
     remote_addr: String,
     close_tx: Option<oneshot::Sender<()>>,
-    /// Buffer for incoming data (bytes arriving before the plugin calls recv).
-    read_buf: Vec<u8>,
 }
 
 struct Listener {
@@ -168,7 +166,6 @@ impl PluginTcpActor {
                                 Connection {
                                     remote_addr: addr.clone(),
                                     close_tx: Some(close_tx),
-                                    read_buf: Vec::new(),
                                 },
                             );
                             info!(%handle, %addr, "tcp connected");
