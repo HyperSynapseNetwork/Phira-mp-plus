@@ -252,8 +252,8 @@ fn wit_interfaces_are_extracted_correctly() {
     );
     assert_eq!(
         interfaces.len(),
-        17,
-        "WIT should define exactly 17 interfaces (added phira-room-state + phira-handler)"
+        16,
+        "WIT should define exactly 16 interfaces (added phira-room-state + phira-handler, removed phira-simulation)"
     );
 }
 
