@@ -52,6 +52,8 @@ mod tests {
             timers: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
             timer_callback: None,
             tcp: None,
+            tcp_callback: None,
+            room_state_query: None,
         })
     }
 
