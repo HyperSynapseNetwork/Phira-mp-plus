@@ -239,6 +239,7 @@ pub async fn maybe_read_proxy_header(
     // protocol.  TCP segments may arrive in pieces (1-5 bytes for v1,
     // 1-11 for v2); a single peek can miss the full signature.
     let mut peek_buf = [0u8; 12];
+    let mut prev_peek_n = 0usize;
 
     loop {
         let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
@@ -258,13 +259,13 @@ pub async fn maybe_read_proxy_header(
 
         // ── v1 check ──────────────────────────────────────────────
         if n >= 6 && peek_buf.starts_with(b"PROXY ") {
-            let header = read_v1_body(&mut stream, effective_timeout, max_header_len).await?;
+            let header = read_v1_body(&mut stream, deadline, max_header_len).await?;
             return Ok((stream, proxy_source_addr(&header)));
         }
 
         // ── v2 check ──────────────────────────────────────────────
         if n >= 12 && peek_buf[..12] == PROXY_V2_SIG {
-            let header = read_v2_body(&mut stream, effective_timeout, max_header_len).await?;
+            let header = read_v2_body(&mut stream, deadline, max_header_len).await?;
             return Ok((stream, proxy_source_addr(&header)));
         }
 
@@ -272,6 +273,12 @@ pub async fn maybe_read_proxy_header(
         if b"PROXY ".starts_with(&peek_buf[..n])
             || PROXY_V2_SIG.starts_with(&peek_buf[..n])
         {
+            // 防止忙等：如果 peek 数据长度没有增长（客户端发送"P"后停住），
+            // 主动 yield 避免用户态 CPU 空转直到 deadline。
+            if n == prev_peek_n && n > 0 {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+            prev_peek_n = n;
             continue;
         }
 
@@ -297,27 +304,26 @@ pub async fn maybe_read_proxy_header_default(
 /// The caller **must** have already confirmed via peek that the stream
 /// starts with `"PROXY "` — this function reads the same bytes again
 /// (peek does not consume) plus the rest of the line up to `\r\n`.
+///
+/// Uses an absolute `deadline` so a slow byte-by-byte client cannot
+/// exceed the total allowed header read time.  The header is also capped
+/// at [`V1_MAX_LINE`] (108 bytes per the PROXY protocol spec).
 async fn read_v1_body(
     stream: &mut TcpStream,
-    read_timeout: Duration,
+    deadline: tokio::time::Instant,
     max_header_len: usize,
 ) -> Result<ProxyHeader, ProxyError> {
-    // We need to read exactly the full v1 line from the stream.
-    // Since we already peeked "PROXY ", we must read it again (peek is
-    // non-consuming).  Accumulate into a Vec and parse at the end.
-    //
-    // Maximum sane v1 line is ~108 B (PROXY TCP6 with two IPv6 addresses
-    // and two ports).  Start with that capacity to reduce reallocs.
-
+    let effective_max = max_header_len.min(V1_MAX_LINE);
     let mut line = Vec::with_capacity(V1_MAX_LINE);
 
     loop {
-        if line.len() >= max_header_len {
+        if line.len() >= effective_max {
             return Err(ProxyError::HeaderTooLarge(line.len()));
         }
 
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
         let mut byte = [0u8; 1];
-        timeout(read_timeout, stream.read_exact(&mut byte))
+        timeout(remaining, stream.read_exact(&mut byte))
             .await
             .map_err(|_| ProxyError::Timeout)?
             .map_err(ProxyError::Io)?;
@@ -338,18 +344,22 @@ async fn read_v1_body(
 /// from the stream.
 ///
 /// The caller **must** have already confirmed via peek that the stream
-/// starts with `PROXY_V2_SIG`.
+/// starts with `PROXY_V2_SIG`.  Uses the same absolute `deadline` as the
+/// caller so header + address data share the total allowed time budget.
 async fn read_v2_body(
     stream: &mut TcpStream,
-    read_timeout: Duration,
+    deadline: tokio::time::Instant,
     max_header_len: usize,
 ) -> Result<ProxyHeader, ProxyError> {
     // Read the full 12-byte signature + 4-byte header = 16 bytes.
     let mut buf = [0u8; 16];
-    timeout(read_timeout, stream.read_exact(&mut buf))
-        .await
-        .map_err(|_| ProxyError::Timeout)?
-        .map_err(ProxyError::Io)?;
+    {
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        timeout(remaining, stream.read_exact(&mut buf))
+            .await
+            .map_err(|_| ProxyError::Timeout)?
+            .map_err(ProxyError::Io)?;
+    }
 
     // Sanity-check the signature (should match after peek, but verify).
     if buf[..12] != PROXY_V2_SIG {
@@ -365,10 +375,11 @@ async fn read_v2_body(
         return Err(ProxyError::HeaderTooLarge(total));
     }
 
-    // Read the variable-length address data.
+    // Read the variable-length address data, sharing the same deadline.
     let mut addr_data = vec![0u8; addr_len];
     if addr_len > 0 {
-        timeout(read_timeout, stream.read_exact(&mut addr_data))
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        timeout(remaining, stream.read_exact(&mut addr_data))
             .await
             .map_err(|_| ProxyError::Timeout)?
             .map_err(ProxyError::Io)?;
