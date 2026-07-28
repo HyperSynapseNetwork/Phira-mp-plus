@@ -154,7 +154,12 @@ pub struct HighFrequencyStats {
     /// Number of times the main channel was full (overflow triggered).
     pub queue_full_count: AtomicU64,
     /// Millisecond timestamp when the database last returned an error, or 0.
-    pub database_error_at: AtomicU64,
+    pub last_database_error_at: AtomicU64,
+    // ── Sequence counters (审计 P3) ────────────────────────────────
+    /// Monotonic admission sequence number (incremented per accepted item).
+    pub admission_sequence: AtomicU64,
+    /// Highest admission_sequence whose batch has been durably committed.
+    pub committed_sequence: AtomicU64,
 }
 
 impl HighFrequencyStats {
@@ -170,7 +175,9 @@ impl HighFrequencyStats {
             committed_points: self.committed_points.load(Ordering::Relaxed),
             dropped_points: self.dropped_points.load(Ordering::Relaxed),
             queue_full_count: self.queue_full_count.load(Ordering::Relaxed),
-            database_error_at: self.database_error_at.load(Ordering::Relaxed),
+            last_database_error_at: self.last_database_error_at.load(Ordering::Relaxed),
+            admission_sequence: self.admission_sequence.load(Ordering::Relaxed),
+            committed_sequence: self.committed_sequence.load(Ordering::Relaxed),
         }
     }
 
@@ -185,7 +192,9 @@ impl HighFrequencyStats {
         self.committed_points.store(0, Ordering::Relaxed);
         self.dropped_points.store(0, Ordering::Relaxed);
         self.queue_full_count.store(0, Ordering::Relaxed);
-        self.database_error_at.store(0, Ordering::Relaxed);
+        self.last_database_error_at.store(0, Ordering::Relaxed);
+        self.admission_sequence.store(0, Ordering::Relaxed);
+        self.committed_sequence.store(0, Ordering::Relaxed);
     }
 }
 
@@ -202,7 +211,10 @@ pub struct HighFrequencyStatsSnapshot {
     pub committed_points: u64,
     pub dropped_points: u64,
     pub queue_full_count: u64,
-    pub database_error_at: u64,
+    pub last_database_error_at: u64,
+    // ── Sequence counters (审计 P3) ────────────────────────────────
+    pub admission_sequence: u64,
+    pub committed_sequence: u64,
 }
 
 // ── Internal message type ──────────────────────────────────────────────
@@ -217,6 +229,19 @@ enum HfMessage {
 struct OverflowItem {
     item: HighFrequencyItem,
     enqueued_at_ms: i64,
+}
+
+// ── EnqueueOutcome ───────────────────────────────────────────────────────
+
+/// Result of enqueuing a high-frequency telemetry item.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EnqueueOutcome {
+    /// Item was accepted into the main bounded channel.
+    MainQueue,
+    /// Item was accepted into the overflow queue (main queue was full).
+    OverflowQueue,
+    /// Item was dropped because both main and overflow queues were full.
+    Dropped,
 }
 
 // ── HighFrequencyWriter ─────────────────────────────────────────────────
@@ -266,7 +291,9 @@ impl HighFrequencyWriter {
             committed_points: AtomicU64::new(0),
             dropped_points: AtomicU64::new(0),
             queue_full_count: AtomicU64::new(0),
-            database_error_at: AtomicU64::new(0),
+            last_database_error_at: AtomicU64::new(0),
+            admission_sequence: AtomicU64::new(0),
+            committed_sequence: AtomicU64::new(0),
         });
         let worker_stats = Arc::clone(&stats);
         let worker_db = Arc::clone(&db);
@@ -306,8 +333,9 @@ impl HighFrequencyWriter {
     /// Uses `try_send` — if the queue is full the item is pushed to an
     /// in-memory overflow queue instead of being dropped immediately.
     /// If the overflow queue is also full, the item is dropped.
-    /// Returns `Err(String)` when the writer is shut down or closed.
-    pub async fn enqueue(&self, item: HighFrequencyItem) -> Result<(), String> {
+    /// Returns `Ok(EnqueueOutcome::MainQueue)`, `Ok(EnqueueOutcome::OverflowQueue)`,
+    /// `Ok(EnqueueOutcome::Dropped)`, or `Err(String)` when closed.
+    pub async fn enqueue(&self, item: HighFrequencyItem) -> Result<EnqueueOutcome, String> {
         if self.closed.load(Ordering::Acquire) {
             self.stats.dropped.fetch_add(1, Ordering::Relaxed);
             self.stats.dropped_points.fetch_add(item.item_count() as u64, Ordering::Relaxed);
@@ -318,13 +346,15 @@ impl HighFrequencyWriter {
             Ok(()) => {
                 self.stats.received.fetch_add(1, Ordering::Relaxed);
                 self.stats.received_points.fetch_add(points, Ordering::Relaxed);
-                Ok(())
+                self.stats.admission_sequence.fetch_add(1, Ordering::Relaxed);
+                Ok(EnqueueOutcome::MainQueue)
             }
             Err(mpsc::error::TrySendError::Full(HfMessage::Item(item))) => {
                 // 审计 P2: 主队列满时尝试 overflow queue
                 self.stats.queue_full_count.fetch_add(1, Ordering::Relaxed);
                 self.stats.received.fetch_add(1, Ordering::Relaxed);
                 self.stats.received_points.fetch_add(points, Ordering::Relaxed);
+                self.stats.admission_sequence.fetch_add(1, Ordering::Relaxed);
                 let kind = item.kind.as_str().to_string();
                 if let Some(overflow) = self.overflow_tx.as_ref() {
                     let overflow_item = OverflowItem { item, enqueued_at_ms: now_ms() };
@@ -333,13 +363,16 @@ impl HighFrequencyWriter {
                         self.stats.dropped.fetch_add(1, Ordering::Relaxed);
                         self.stats.dropped_points.fetch_add(points, Ordering::Relaxed);
                         warn!("high frequency writer overflow queue full; item dropped (kind={kind})");
+                        Ok(EnqueueOutcome::Dropped)
+                    } else {
+                        Ok(EnqueueOutcome::OverflowQueue)
                     }
                 } else {
                     self.stats.dropped.fetch_add(1, Ordering::Relaxed);
                     self.stats.dropped_points.fetch_add(points, Ordering::Relaxed);
                     warn!("high frequency writer queue full; item dropped (kind={kind})");
+                    Ok(EnqueueOutcome::Dropped)
                 }
-                Ok(())
             }
             Err(mpsc::error::TrySendError::Closed(HfMessage::Item(_item))) => {
                 self.stats.dropped.fetch_add(1, Ordering::Relaxed);
@@ -377,14 +410,14 @@ impl HighFrequencyWriter {
 
     /// Flush remaining items and stop the background task.
     ///
-    /// After shutdown the writer is unusable.  Timeout is 10 seconds.
+    /// After shutdown the writer is permanently closed, regardless of whether
+    /// the final flush succeeds or fails.  Timeout is 10 seconds.
     pub async fn shutdown(&self) -> Result<(), String> {
         let (reply, rx) = oneshot::channel();
         if self.closed.swap(true, Ordering::AcqRel) {
             return Ok(());
         }
         if self.tx.send(HfMessage::Shutdown(reply)).await.is_err() {
-            self.closed.store(false, Ordering::Release);
             return Err("high frequency writer is closed".to_string());
         }
         let result = match tokio::time::timeout(Duration::from_secs(10), rx).await {
@@ -392,10 +425,8 @@ impl HighFrequencyWriter {
             Ok(Err(_)) => Err("high frequency shutdown reply dropped".to_string()),
             Err(_) => Err("high frequency shutdown timed out".to_string()),
         };
-        if let Err(ref error) = result {
-            self.closed.store(false, Ordering::Release);
-            return Err(error.clone());
-        }
+        // Note: closed stays true regardless of flush outcome.
+        // The handle is permanently dead after shutdown() is called.
         result
     }
 
@@ -708,38 +739,49 @@ async fn run_hf_writer(
                         batch.push(item);
 
                         if batch.len() >= max_batch_size {
-                            let _ = flush_batch(
+                            let fence = stats.admission_sequence.load(Ordering::Relaxed);
+                            if flush_batch(
                                 &mut batch, &stats, &db, max_retries, "max_items"
-                            ).await;
+                            ).await.is_ok() {
+                                stats.committed_sequence.store(fence, Ordering::Relaxed);
+                            }
                         }
                     }
                     Some(HfMessage::Flush(reply)) => {
                         // Drain overflow into current batch before flushing
                         drain_overflow(&mut batch, &mut overflow_rx, &stats, overflow_max_age_ms).await;
+                        let fence = stats.admission_sequence.load(Ordering::Relaxed);
                         let result = flush_batch(
                             &mut batch, &stats, &db, max_retries, "explicit_flush"
                         ).await;
+                        if result.is_ok() {
+                            stats.committed_sequence.store(fence, Ordering::Relaxed);
+                        }
                         let _ = reply.send(result);
                     }
                     Some(HfMessage::Shutdown(reply)) => {
                         drain_overflow(&mut batch, &mut overflow_rx, &stats, overflow_max_age_ms).await;
+                        let fence = stats.admission_sequence.load(Ordering::Relaxed);
                         let result = flush_batch(
                             &mut batch, &stats, &db, max_retries, "shutdown"
                         ).await;
-                        let should_stop = result.is_ok();
-                        let _ = reply.send(result);
-                        if should_stop {
+                        if result.is_ok() {
+                            stats.committed_sequence.store(fence, Ordering::Relaxed);
                             debug!("high frequency writer shut down gracefully");
                         }
+                        let _ = reply.send(result);
                         break;
                     }
                     None => {
                         // Channel closed — flush remaining items and exit.
                         drain_overflow(&mut batch, &mut overflow_rx, &stats, overflow_max_age_ms).await;
                         if !batch.is_empty() {
-                            let _ = flush_batch(
+                            let fence = stats.admission_sequence.load(Ordering::Relaxed);
+                            if flush_batch(
                                 &mut batch, &stats, &db, max_retries, "closed"
-                            ).await;
+                            ).await.is_ok() {
+                                stats.committed_sequence.store(fence, Ordering::Relaxed);
+                            }
                         }
                         debug!("high frequency writer channel closed, exiting");
                         break;
@@ -750,9 +792,12 @@ async fn run_hf_writer(
                 // Drain overflow into current batch before flushing
                 drain_overflow(&mut batch, &mut overflow_rx, &stats, overflow_max_age_ms).await;
                 if !batch.is_empty() {
-                    let _ = flush_batch(
+                    let fence = stats.admission_sequence.load(Ordering::Relaxed);
+                    if flush_batch(
                         &mut batch, &stats, &db, max_retries, "interval"
-                    ).await;
+                    ).await.is_ok() {
+                        stats.committed_sequence.store(fence, Ordering::Relaxed);
+                    }
                 }
             }
         }
@@ -844,6 +889,7 @@ async fn flush_batch(
             stats
                 .committed_points
                 .fetch_add(point_count, Ordering::Relaxed);
+            stats.last_database_error_at.store(0, Ordering::Relaxed);
             debug!(
                 items = items.len(),
                 point_count,
@@ -853,7 +899,7 @@ async fn flush_batch(
             return Ok(());
         }
 
-        stats.database_error_at.store(now_ms() as u64, Ordering::Relaxed);
+        stats.last_database_error_at.store(now_ms() as u64, Ordering::Relaxed);
         warn!(
             attempt = attempt + 1,
             max_retries,
@@ -935,7 +981,9 @@ mod tests {
             committed_points: AtomicU64::new(24),
             dropped_points: AtomicU64::new(6),
             queue_full_count: AtomicU64::new(3),
-            database_error_at: AtomicU64::new(67890),
+            last_database_error_at: AtomicU64::new(67890),
+            admission_sequence: AtomicU64::new(100),
+            committed_sequence: AtomicU64::new(95),
         };
         let snap = stats.snapshot();
         assert_eq!(snap.received, 10);
@@ -947,7 +995,9 @@ mod tests {
         assert_eq!(snap.committed_points, 24);
         assert_eq!(snap.dropped_points, 6);
         assert_eq!(snap.queue_full_count, 3);
-        assert_eq!(snap.database_error_at, 67890);
+        assert_eq!(snap.last_database_error_at, 67890);
+        assert_eq!(snap.admission_sequence, 100);
+        assert_eq!(snap.committed_sequence, 95);
     }
 
     #[test]

@@ -75,8 +75,12 @@ async fn persist_touches(
         .enqueue(item)
         .await
     {
-        Ok(()) => {
+        Ok(crate::persistence::high_frequency::EnqueueOutcome::MainQueue)
+        | Ok(crate::persistence::high_frequency::EnqueueOutcome::OverflowQueue) => {
             trace!(room = %room.id, user_id = user.id, "touch batch enqueued to high frequency writer");
+        }
+        Ok(crate::persistence::high_frequency::EnqueueOutcome::Dropped) => {
+            warn!(room = %room.id, user_id = user.id, "touch batch dropped by high frequency writer");
         }
         Err(e) => {
             warn!(room = %room.id, user_id = user.id, "touch batch could not be enqueued to high frequency writer: {e}");
@@ -143,8 +147,12 @@ async fn persist_judges(
         .enqueue(item)
         .await
     {
-        Ok(()) => {
+        Ok(crate::persistence::high_frequency::EnqueueOutcome::MainQueue)
+        | Ok(crate::persistence::high_frequency::EnqueueOutcome::OverflowQueue) => {
             trace!(room = %room.id, user_id = user.id, "judge batch enqueued to high frequency writer");
+        }
+        Ok(crate::persistence::high_frequency::EnqueueOutcome::Dropped) => {
+            warn!(room = %room.id, user_id = user.id, "judge batch dropped by high frequency writer");
         }
         Err(e) => {
             warn!(room = %room.id, user_id = user.id, "judge batch could not be enqueued to high frequency writer: {e}");
