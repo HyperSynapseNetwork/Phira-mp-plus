@@ -185,6 +185,7 @@ mod tests {
     use crate::benchmark::config::BenchmarkConfig;
     use crate::benchmark::environment::EnvironmentSnapshot;
 
+    #[allow(dead_code)]
     fn make_benchmark_report() -> BenchmarkReport {
         let env = EnvironmentSnapshot {
             version: "0.1.0".to_string(),
