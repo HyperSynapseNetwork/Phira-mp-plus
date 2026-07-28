@@ -541,16 +541,15 @@ pub async fn leave_room(user: Arc<User>, category: SessionCategory) -> Result<()
         .and_then(|v| v.get("room_dropped"))
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
-    // 审计 P3: Actor RemoveUser 失败时不走 direct fallback，
-    // 而是关闭 Session 保证状态一致性。
+    // 审计 P3: Actor RemoveUser 失败时记录错误，不再走 direct fallback。
+    // Session 层会在连接断开时自行清理房间状态。
     if result.is_err() {
         warn!(
             user = user.id,
             room = room.id.to_string(),
             error = ?result.err(),
-            "Actor RemoveUser failed; closing session for consistency"
+            "Actor RemoveUser failed; session will be cleaned up on disconnect"
         );
-        user.server.close_user_session(&user, "leave room failed").await;
         return Ok(());
     }
     if !room_dropped && !was_monitor {

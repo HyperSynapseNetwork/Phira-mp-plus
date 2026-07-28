@@ -1064,6 +1064,13 @@ impl RoomCommandHandler {
                     persistent_empty: *persistent_empty,
                 })
             }
+            // 审计 P0: Telemetry fire-and-forget variants are handled by
+            // execute_telemetry on the fast path; they should not arrive here.
+            RoomActorCommand::TelemetryTouches { .. } | RoomActorCommand::TelemetryJudges { .. } => {
+                ok(RoomCommandPayload::TouchesCached {
+                    room_id: String::new(), user_id: 0,
+                })
+            }
         }
     }
 

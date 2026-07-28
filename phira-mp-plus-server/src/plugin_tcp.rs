@@ -168,6 +168,7 @@ impl PluginTcpActor {
                                 Connection {
                                     remote_addr: addr.clone(),
                                     close_tx: Some(close_tx),
+                                    read_buf: Vec::new(),
                                 },
                             );
                             info!(%handle, %addr, "tcp connected");
@@ -193,6 +194,7 @@ impl PluginTcpActor {
                                 Listener {
                                     addr: addr.clone(),
                                     close_tx: Some(close_tx),
+                                    pending_accepts: Vec::new(),
                                 },
                             );
                             info!(%handle, %addr, "tcp listener started");

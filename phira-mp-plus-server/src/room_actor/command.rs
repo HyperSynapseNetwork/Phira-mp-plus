@@ -57,6 +57,8 @@ impl RoomCommandKind {
             Self::AddJudges => "add_judges",
             Self::SetDisplayName => "set_display_name",
             Self::SetPersistentEmpty => "set_persistent_empty",
+            Self::TelemetryTouches => "telemetry_touches",
+            Self::TelemetryJudges => "telemetry_judges",
         }
     }
 
