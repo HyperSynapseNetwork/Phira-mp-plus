@@ -85,7 +85,7 @@ impl PlusServerState {
         }
         let init_result = self
             .room_commands
-            .init_empty_room(&self.state, &rid.to_string(), endpoint.clone(), persistent_empty)
+            .init_empty_room(self, &rid.to_string(), endpoint.clone(), persistent_empty)
             .await;
         if let Err(e) = init_result {
             // Rollback: remove room from registry since init failed
