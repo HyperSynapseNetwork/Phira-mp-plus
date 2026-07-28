@@ -51,8 +51,8 @@ fn plugin_abi_constants_are_locked() {
 fn canonical_wit_contains_world_phira_plugin_v2() {
     let wit = read_canonical();
     assert!(
-        wit.contains("world phira-plugin-v2"),
-        "WIT must declare world phira-plugin-v2"
+        wit.contains("world phira-plugin-v3"),
+        "WIT must declare world phira-plugin-v3"
     );
     assert!(
         wit.contains("import phira-host;"),
@@ -310,8 +310,8 @@ fn generate_wit_docs() -> String {
     md.push_str("## 当前状态\n\n");
     md.push_str("| 属性 | 值 |\n");
     md.push_str("|------|-----|\n");
-    md.push_str("| **运行时 ABI** | `abi-wit-v2` (WIT / Component Model) |\n");
-    md.push_str("| **目标 ABI** | `abi-wit-v2` |\n");
+    md.push_str("| **运行时 ABI** | `abi-wit-v3` (WIT / Component Model) |\n");
+    md.push_str("| **目标 ABI** | `abi-wit-v3` |\n");
     md.push_str("| **规范 WIT** | `wit/phira-plugin.wit` |\n");
     md.push_str(&format!(
         "| **MIGRATION_PHASE** | `{}` (JSON bridge removed, WIT-only component ABI) |\n",
@@ -320,7 +320,7 @@ fn generate_wit_docs() -> String {
     md.push_str(&format!("| **接口数量** | `{}` |\n\n", interfaces.len()));
 
     md.push_str("## 规范 WIT 接口\n\n");
-    md.push_str("WIT 文件定义了以下接口与 world `phira-plugin-v2`:\n\n");
+    md.push_str("WIT 文件定义了以下接口与 world `phira-plugin-v3`:\n\n");
 
     for iface in &interfaces {
         md.push_str(&format!("### `{}`\n\n", iface.name));
@@ -337,7 +337,7 @@ fn generate_wit_docs() -> String {
     }
 
     md.push_str("## World\n\n");
-    md.push_str("`phira-plugin-v2` — 导入上述所有接口，导出 `init`、`get-info`、`cleanup`、`on-event`、`on-api`。\n\n");
+    md.push_str("`phira-plugin-v3` — 导入上述所有接口，导出 `init`、`get-info`、`cleanup`、`on-event`、`on-api`。\n\n");
 
     md
 }

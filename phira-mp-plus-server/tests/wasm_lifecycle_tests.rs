@@ -29,6 +29,6 @@ fn wasm_fixture_exists() {
 #[test]
 fn plugin_abi_is_wit_only() {
     let versions = plugin_abi::supported_abi_versions();
-    assert_eq!(versions, vec!["abi-wit-v2"]);
+    assert_eq!(versions, vec!["abi-wit-v3"]);
     assert!(!plugin_abi::is_abi_version_supported("abi-json-v1"));
 }

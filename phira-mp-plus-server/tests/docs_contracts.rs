@@ -205,8 +205,8 @@ fn configuration_docs_do_not_show_real_benchmark_token_example() {
 fn plugin_dev_has_wit_abi_fields() {
     let content = read_doc_required("plugin-dev.md");
     assert!(
-        content.contains("abi-wit-v2"),
-        "plugin-dev.md must mention abi-wit-v2"
+        content.contains("abi-wit-v3"),
+        "plugin-dev.md must mention abi-wit-v3"
     );
     // abi-json-v1 may be mentioned only in context of its removal
     if content.contains("abi-json-v1") {
@@ -220,8 +220,8 @@ fn plugin_dev_has_wit_abi_fields() {
         "plugin-dev.md must mention canonical WIT path"
     );
     assert!(
-        content.contains("phira-plugin-v2"),
-        "plugin-dev.md must mention the WIT world phira-plugin-v2"
+        content.contains("phira-plugin-v3"),
+        "plugin-dev.md must mention the WIT world phira-plugin-v3"
     );
 }
 
