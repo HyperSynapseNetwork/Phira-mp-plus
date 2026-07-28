@@ -336,11 +336,11 @@ mod tests {
     fn failure_round_trips_to_untyped_error() {
         let result = RoomCommandResult::from_untyped(
             Err("room not found".to_string()),
-            RoomCommandDelivery::FallbackInline,
+            // FallbackInline removed in PMP25
         );
 
         assert!(!result.is_ok());
-        assert_eq!(result.delivery(), RoomCommandDelivery::FallbackInline);
+        // FallbackInline removed in PMP25
         assert_eq!(result.error_message().as_deref(), Some("room not found"));
         assert_eq!(result.into_untyped().unwrap_err(), "room not found");
     }
@@ -352,7 +352,7 @@ mod tests {
             "per_room_mailbox"
         );
         assert_eq!(
-            RoomCommandDelivery::FallbackInline.as_str(),
+            // FallbackInline removed in PMP25
             "fallback_inline"
         );
         assert_eq!(RoomCommandDelivery::MailboxError.as_str(), "mailbox_error");

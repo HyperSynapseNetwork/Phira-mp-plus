@@ -69,8 +69,8 @@ impl PlusServerState {
             max_users,
             Some(Arc::clone(&self.round_store)),
         ));
-        // Insert room into state.rooms FIRST so that mailbox/actor lookups
-        // succeed when gateway commands are issued below.
+        // PMP25 P4: 先插入 registry，再通过 RoomActorInit 一次性初始化属性。
+        // 初始化失败时回滚删除 room。
         {
             let mut rooms = self.rooms.write().await;
             if rooms.contains_key(&rid) {
@@ -83,21 +83,15 @@ impl PlusServerState {
             }
             rooms.insert(rid.clone(), Arc::clone(&room));
         }
-        if let Some(endpoint) = endpoint.clone() {
-            // Route endpoint override through gateway.
-            let _ = self
-                .room_commands
-                .set_phira_api_endpoint(self, &rid.to_string(), Some(endpoint))
-                .await;
+        let init_result = self
+            .room_commands
+            .init_empty_room(self, &rid.to_string(), endpoint.clone(), persistent_empty)
+            .await;
+        if let Err(e) = init_result {
+            // Rollback: remove room from registry since init failed
+            self.rooms.write().await.remove(&rid);
+            return Err(format!("room init failed: {e}"));
         }
-        // Route persistent_empty through gateway.
-        if persistent_empty {
-            let _ = self
-                .room_commands
-                .set_persistent_empty(self, &rid.to_string(), true)
-                .await;
-        }
-        // Re-use session_room's build function for consistency.
         let data = crate::session_room::build_room_data(&room).await;
         self.publish_room_event(RoomEvent::CreateRoom {
             room: rid.clone(),

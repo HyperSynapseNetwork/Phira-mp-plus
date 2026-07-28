@@ -27,7 +27,6 @@ impl RoomCommandGateway {
             mailbox_completed: self.mailbox_completed.load(Ordering::Relaxed),
             mailbox_failed: self.mailbox_failed.load(Ordering::Relaxed),
             mailbox_retried: self.mailbox_retried.load(Ordering::Relaxed),
-            mailbox_fallback: self.mailbox_fallback.load(Ordering::Relaxed),
             mailbox_closed: self.mailbox_closed.load(Ordering::Relaxed),
             room_mailboxes: self.room_mailboxes.read().map(|m| m.len()).unwrap_or(0),
             mailbox_created: self.mailbox_created.load(Ordering::Relaxed),
@@ -35,7 +34,7 @@ impl RoomCommandGateway {
             mailbox_registry_miss: self.mailbox_registry_miss.load(Ordering::Relaxed),
             recent_commands,
             phase: if mailbox_enabled { "per_room_mailbox_strict" } else { "mailbox_not_started" }.to_string(),
-            note: "nine management commands use the per-room mailbox exclusively; legacy retry/fallback counters are retained only for diagnostic schema compatibility".to_string(),
+            note: "legacy retry/fallback counters removed in PMP25".to_string(),
         }
     }
 

@@ -182,6 +182,42 @@ impl RoomCommandGateway {
         .into_untyped()
     }
 
+    /// PMP25 P4: 空房间初始化——一次性设置 endpoint 和 persistent_empty。
+    /// 失败时由调用方负责回滚 registry。
+    pub async fn init_empty_room(
+        &self,
+        state: &PlusServerState,
+        room_id: &str,
+        endpoint: Option<String>,
+        persistent_empty: bool,
+    ) -> Result<Value, String> {
+        if let Some(ref ep) = endpoint {
+            let result = self
+                .room_mailbox(&room_id.to_string(), |reply| RoomActorCommand::SetEndpoint {
+                    room_id: room_id.to_string(),
+                    endpoint: Some(ep.clone()),
+                    reply,
+                })
+                .await;
+            if result.is_err() {
+                return Err("init_empty_room: set endpoint failed".to_string());
+            }
+        }
+        if persistent_empty {
+            let result = self
+                .room_mailbox(&room_id.to_string(), |reply| RoomActorCommand::SetPersistentEmpty {
+                    room_id: room_id.to_string(),
+                    persistent_empty: true,
+                    reply,
+                })
+                .await;
+            if result.is_err() {
+                return Err("init_empty_room: set persistent_empty failed".to_string());
+            }
+        }
+        Ok(serde_json::json!({"ok": true}))
+    }
+
 }
 
 #[cfg(test)]
