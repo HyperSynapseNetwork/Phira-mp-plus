@@ -186,7 +186,7 @@ impl RoomCommandGateway {
     /// 失败时由调用方负责回滚 registry。
     pub async fn init_empty_room(
         &self,
-        state: &PlusServerState,
+        _state: &PlusServerState,
         room_id: &str,
         endpoint: Option<String>,
         persistent_empty: bool,

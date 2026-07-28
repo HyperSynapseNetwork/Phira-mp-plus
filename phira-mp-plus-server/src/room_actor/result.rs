@@ -351,10 +351,6 @@ mod tests {
             RoomCommandDelivery::PerRoomMailbox.as_str(),
             "per_room_mailbox"
         );
-        assert_eq!(
-            // FallbackInline removed in PMP25
-            "fallback_inline"
-        );
         assert_eq!(RoomCommandDelivery::MailboxError.as_str(), "mailbox_error");
     }
 
