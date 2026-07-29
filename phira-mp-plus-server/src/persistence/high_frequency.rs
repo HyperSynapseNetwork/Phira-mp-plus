@@ -761,7 +761,8 @@ async fn run_hf_writer(
                         // Interleave overflow items with the main queue so that
                         // overflow is not starved when main-channel items arrive
                         // continuously (审计 P2).
-                        drain_overflow(&mut batch, &mut overflow_rx, &stats, overflow_max_age_ms, max_batch_size.saturating_sub(batch.len())).await;
+                        let remaining = max_batch_size.saturating_sub(batch.len());
+                        drain_overflow(&mut batch, &mut overflow_rx, &stats, overflow_max_age_ms, remaining).await;
 
                         if batch.len() >= max_batch_size {
                             flush_and_update_seq(
@@ -1117,6 +1118,7 @@ mod tests {
             max_retries: 1,
             overflow_capacity: 512,
             overflow_max_age_ms: 60_000,
+            retry_max_age_ms: 30_000,
         };
 
         let writer = Arc::new(HighFrequencyWriter::spawn(config, db));

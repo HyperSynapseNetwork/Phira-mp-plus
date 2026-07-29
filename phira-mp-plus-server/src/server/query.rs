@@ -314,7 +314,6 @@ fn server_state_query_dispatch(
                 let pool = match &s.db_manager {
                     crate::db::DbManager::Pg(p) => p.clone(),
                 };
-                // Try login_count sum first, fall back to COUNT(*) for backward compat
                 match sqlx::query_scalar::<_, i64>("SELECT COALESCE(SUM(login_count), 0) FROM mp_users")
                     .fetch_one(&pool)
                     .await
