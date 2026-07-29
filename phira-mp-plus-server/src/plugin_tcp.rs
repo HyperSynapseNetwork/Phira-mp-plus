@@ -414,8 +414,6 @@ impl PluginTcpActor {
                 }
             }
         }
-    }
-}
 
 // ── Plain TCP helpers ───────────────────────────────────────────────
 
