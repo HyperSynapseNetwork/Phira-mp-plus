@@ -31,6 +31,7 @@ pub(crate) enum PluginTcpInternal {
         close_tx: oneshot::Sender<()>,
         plugin_id_tx: oneshot::Sender<String>,
     },
+    #[allow(dead_code)]
     Disconnected {
         handle: u64,
         plugin_id: String,
