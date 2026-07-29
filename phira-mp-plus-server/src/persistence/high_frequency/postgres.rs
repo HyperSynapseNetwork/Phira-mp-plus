@@ -12,7 +12,7 @@ use crate::db::{DbManager, RuntimeTelemetryBatchRecord};
 use serde_json::Value;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use super::{now_ms, HF_SCHEMA_VERSION, HighFrequencyItem};
+use super::{now_ms, HF_SCHEMA_VERSION, HighFrequencyItem, HighFrequencyKind};
 
 // ── CSV helpers ──────────────────────────────────────────────────────────────
 
