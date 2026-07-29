@@ -231,7 +231,7 @@ pub(crate) async fn handle_touches(user: Arc<User>, room: Arc<Room>, frames: Arc
         // ensuring slow monitors never block the game hot path.
         if let Some(server) = room.server.upgrade() {
             if let Some(tx) = server.room_commands.monitor_telemetry_sender(&room.id.to_string()) {
-                let _ = tx.try_send(ServerCommand::Touches {
+                let _ = tx.send(ServerCommand::Touches {
                     player: player_id,
                     frames,
                 });
@@ -290,7 +290,7 @@ pub(crate) async fn handle_judges(user: Arc<User>, room: Arc<Room>, judges: Arc<
         // 审计 P1-A: use bounded broadcast channel with try_send.
         if let Some(server) = room.server.upgrade() {
             if let Some(tx) = server.room_commands.monitor_telemetry_sender(&room.id.to_string()) {
-                let _ = tx.try_send(ServerCommand::Judges {
+                let _ = tx.send(ServerCommand::Judges {
                     player: player_id,
                     judges,
                 });
