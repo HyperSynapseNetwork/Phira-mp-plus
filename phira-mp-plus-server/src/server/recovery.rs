@@ -25,7 +25,7 @@ use super::state::PlusServerState;
 ///
 /// Failures are **non-fatal** — the server logs warnings and continues.
 /// A broken database would have been caught by `DbManager::new()` earlier.
-pub async fn recover_state(state: &Arc<PlusServerState>, db: &DbManager) {
+pub async fn recover_state(_state: &Arc<PlusServerState>, db: &DbManager) {
     // ── 1. Crash recovery: abort unfinished rounds ──────────────────────
     let unfinished = db.find_unfinished_rounds().await;
     let count = unfinished.len();
