@@ -164,6 +164,8 @@ impl PlusServerState {
             | MpEvent::UserConnected { .. }
             | MpEvent::UserDisconnected { .. }
             | MpEvent::ChatMessage { .. } => None,
+            // Remaining MpEvent variants are not persisted (observational only)
+            _ => None,
         }
     }
 
