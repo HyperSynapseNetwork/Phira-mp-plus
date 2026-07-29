@@ -162,6 +162,10 @@ pub struct HighFrequencyStats {
     pub admission_sequence: AtomicU64,
     /// Highest admission_sequence whose batch has been durably committed.
     pub committed_sequence: AtomicU64,
+    /// Highest admission_sequence where ALL sequences <= this value have been
+    /// durably committed.  Stays behind `committed_sequence` when gaps exist
+    /// (e.g. a batch was dropped, creating a missing sequence).
+    pub continuous_committed_watermark: AtomicU64,
 }
 
 impl HighFrequencyStats {
@@ -180,6 +184,7 @@ impl HighFrequencyStats {
             last_database_error_at: self.last_database_error_at.load(Ordering::Relaxed),
             admission_sequence: self.admission_sequence.load(Ordering::Relaxed),
             committed_sequence: self.committed_sequence.load(Ordering::Relaxed),
+            continuous_committed_watermark: self.continuous_committed_watermark.load(Ordering::Relaxed),
         }
     }
 
@@ -197,6 +202,7 @@ impl HighFrequencyStats {
         self.last_database_error_at.store(0, Ordering::Relaxed);
         self.admission_sequence.store(1, Ordering::Relaxed);
         self.committed_sequence.store(1, Ordering::Relaxed);
+        self.continuous_committed_watermark.store(0, Ordering::Relaxed);
     }
 }
 
@@ -217,6 +223,7 @@ pub struct HighFrequencyStatsSnapshot {
     // ── Sequence counters (审计 P3) ────────────────────────────────
     pub admission_sequence: u64,
     pub committed_sequence: u64,
+    pub continuous_committed_watermark: u64,
 }
 
 // ── Internal message type ──────────────────────────────────────────────
@@ -296,6 +303,7 @@ impl HighFrequencyWriter {
             last_database_error_at: AtomicU64::new(0),
             admission_sequence: AtomicU64::new(1),
             committed_sequence: AtomicU64::new(1),
+            continuous_committed_watermark: AtomicU64::new(0),
         });
         let worker_stats = Arc::clone(&stats);
         let worker_db = Arc::clone(&db);
@@ -936,12 +944,20 @@ async fn flush_and_update_seq(
     max_retries: u32,
     reason: &str,
 ) -> Result<(), String> {
-    let target_seq = batch.iter().map(|i| i.admission_seq).max().unwrap_or(0);
+    let seqs: Vec<u64> = batch.iter().map(|i| i.admission_seq).collect();
+    let target_seq = seqs.iter().max().copied().unwrap_or(0);
+    let min_seq = seqs.iter().min().copied().unwrap_or(0);
     let result = flush_batch(batch, stats, db, max_retries, reason).await;
     if result.is_ok() && target_seq > 0 {
         let current = stats.committed_sequence.load(Ordering::Relaxed);
         if target_seq > current {
             stats.committed_sequence.store(target_seq, Ordering::Relaxed);
+        }
+        // Advance continuous committed watermark when this batch fills from
+        // after the current watermark (i.e. no gaps before the batch).
+        let watermark = stats.continuous_committed_watermark.load(Ordering::Relaxed);
+        if min_seq == watermark + 1 {
+            stats.continuous_committed_watermark.store(target_seq, Ordering::Relaxed);
         }
     }
     result
@@ -1006,6 +1022,7 @@ mod tests {
             last_database_error_at: AtomicU64::new(67890),
             admission_sequence: AtomicU64::new(100),
             committed_sequence: AtomicU64::new(95),
+            continuous_committed_watermark: AtomicU64::new(80),
         };
         let snap = stats.snapshot();
         assert_eq!(snap.received, 10);
@@ -1020,6 +1037,7 @@ mod tests {
         assert_eq!(snap.last_database_error_at, 67890);
         assert_eq!(snap.admission_sequence, 100);
         assert_eq!(snap.committed_sequence, 95);
+        assert_eq!(snap.continuous_committed_watermark, 80);
     }
 
     #[test]
