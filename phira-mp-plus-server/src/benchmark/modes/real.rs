@@ -232,6 +232,9 @@ fn make_bench_room_id(run_id: &Uuid, room_index: u32) -> String {
 /// 直到找到匹配项、流关闭或超时。
 ///
 /// `last_cmd` 用于在超时时报告最后接收到的命令。
+///
+/// 注意：`deadline` 是绝对截止时间，从第一次调用时开始计算。
+/// 不会因为不匹配的中间消息而重置，从而避免"永远等待"问题。
 async fn wait_for_response<T>(
     rx: &mut mpsc::UnboundedReceiver<ServerCommand>,
     predicate: impl Fn(&ServerCommand) -> Option<T>,
@@ -239,8 +242,17 @@ async fn wait_for_response<T>(
     step_name: &str,
     last_cmd: &mut Option<String>,
 ) -> Result<T, String> {
+    let deadline = Instant::now() + timeout;
     loop {
-        match tokio::time::timeout(timeout, rx.recv()).await {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Err(format!(
+                "timeout ({:.1}s) while waiting for step '{step_name}', last command: {}",
+                timeout.as_secs_f64(),
+                last_cmd.as_deref().unwrap_or("(none)")
+            ));
+        }
+        match tokio::time::timeout(remaining, rx.recv()).await {
             Ok(Some(cmd)) => {
                 *last_cmd = Some(format!("{cmd:?}"));
                 if let Some(result) = predicate(&cmd) {
