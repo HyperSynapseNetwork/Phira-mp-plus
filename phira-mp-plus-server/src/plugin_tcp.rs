@@ -288,7 +288,7 @@ impl PluginTcpActor {
                 PluginTcpCommand::Connect { plugin_id, addr, reply } => {
                     if self.count_plugin_connections(&plugin_id) >= MAX_CONNECTIONS_PER_PLUGIN {
                         let _ = reply.send(Err(format!("plugin '{plugin_id}' connection quota exceeded ({MAX_CONNECTIONS_PER_PLUGIN})")));
-                        continue;
+                        return;
                     }
                     let handle = self.alloc_handle();
                     let cb = self.event_callback.clone();
@@ -318,7 +318,7 @@ impl PluginTcpActor {
                 PluginTcpCommand::Listen { plugin_id, addr, reply } => {
                     if self.count_plugin_listeners(&plugin_id) >= MAX_LISTENERS_PER_PLUGIN {
                         let _ = reply.send(Err(format!("plugin '{plugin_id}' listener quota exceeded ({MAX_LISTENERS_PER_PLUGIN})")));
-                        continue;
+                        return;
                     }
                     let handle = self.alloc_handle();
                     let cb = self.event_callback.clone();
@@ -346,7 +346,7 @@ impl PluginTcpActor {
                     }
                 }
                 PluginTcpCommand::Send { plugin_id, handle, bytes } => {
-                    if let Err(_e) = self.check_owner(handle, &plugin_id) { continue; }
+                    if let Err(_e) = self.check_owner(handle, &plugin_id) { return; }
                     let map = self.conn_map.lock().unwrap();
                     if let Some(tx) = map.get(&handle) {
                         if let Err(e) = tx.try_send(bytes) {
@@ -414,7 +414,6 @@ impl PluginTcpActor {
                 }
             }
         }
-        info!("tcp actor stopped");
     }
 }
 
