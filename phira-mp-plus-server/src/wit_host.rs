@@ -954,7 +954,12 @@ mod wit_trait_impls {
             let (reply, rx) = std::sync::mpsc::channel();
             tx.try_send(crate::plugin_tcp::PluginTcpCommand::Connect { plugin_id: self.plugin_name.clone(), addr, reply })
                 .map_err(|e| format!("tcp connect failed: {e}"))?;
-            rx.recv().map_err(|_| "tcp connect reply lost".to_string())?
+            rx.recv_timeout(Duration::from_secs(5)).map_err(|e|
+                match e {
+                    std::sync::mpsc::RecvTimeoutError::Timeout => "tcp connect timed out".to_string(),
+                    std::sync::mpsc::RecvTimeoutError::Disconnected => "tcp connect reply lost".to_string(),
+                }
+            )?
         }
 
         fn listen(&mut self, addr: String) -> Result<u64, String> {
@@ -963,7 +968,12 @@ mod wit_trait_impls {
             let (reply, rx) = std::sync::mpsc::channel();
             tx.try_send(crate::plugin_tcp::PluginTcpCommand::Listen { plugin_id: self.plugin_name.clone(), addr, reply })
                 .map_err(|e| format!("tcp listen failed: {e}"))?;
-            rx.recv().map_err(|_| "tcp listen reply lost".to_string())?
+            rx.recv_timeout(Duration::from_secs(5)).map_err(|e|
+                match e {
+                    std::sync::mpsc::RecvTimeoutError::Timeout => "tcp listen timed out".to_string(),
+                    std::sync::mpsc::RecvTimeoutError::Disconnected => "tcp listen reply lost".to_string(),
+                }
+            )?
         }
 
         fn send(&mut self, handle: u64, bytes: Vec<u8>) -> Result<(), String> {
@@ -986,7 +996,12 @@ mod wit_trait_impls {
             let (reply, rx) = std::sync::mpsc::channel();
             tx.try_send(crate::plugin_tcp::PluginTcpCommand::Accept { plugin_id: self.plugin_name.clone(), listener_handle: handle, reply })
                 .map_err(|e| format!("tcp accept failed: {e}"))?;
-            rx.recv().map_err(|_| "tcp accept reply lost".to_string())?
+            rx.recv_timeout(Duration::from_secs(5)).map_err(|e|
+                match e {
+                    std::sync::mpsc::RecvTimeoutError::Timeout => "tcp accept timed out".to_string(),
+                    std::sync::mpsc::RecvTimeoutError::Disconnected => "tcp accept reply lost".to_string(),
+                }
+            )?
         }
 
         fn recv(&mut self, handle: u64, max_bytes: u32) -> Result<Option<Vec<u8>>, String> {
@@ -995,7 +1010,12 @@ mod wit_trait_impls {
             let (reply, rx) = std::sync::mpsc::channel();
             tx.try_send(crate::plugin_tcp::PluginTcpCommand::Recv { plugin_id: self.plugin_name.clone(), handle, max_bytes, reply })
                 .map_err(|e| format!("tcp recv failed: {e}"))?;
-            rx.recv().map_err(|_| "tcp recv reply lost".to_string())?
+            rx.recv_timeout(Duration::from_secs(5)).map_err(|e|
+                match e {
+                    std::sync::mpsc::RecvTimeoutError::Timeout => "tcp recv timed out".to_string(),
+                    std::sync::mpsc::RecvTimeoutError::Disconnected => "tcp recv reply lost".to_string(),
+                }
+            )?
         }
 
         fn peer_addr(&mut self, handle: u64) -> Result<String, String> {
@@ -1004,7 +1024,12 @@ mod wit_trait_impls {
             let (reply, rx) = std::sync::mpsc::channel();
             tx.try_send(crate::plugin_tcp::PluginTcpCommand::PeerAddr { plugin_id: self.plugin_name.clone(), handle, reply })
                 .map_err(|e| format!("tcp peer-addr failed: {e}"))?;
-            rx.recv().map_err(|_| "tcp peer-addr reply lost".to_string())?
+            rx.recv_timeout(Duration::from_secs(5)).map_err(|e|
+                match e {
+                    std::sync::mpsc::RecvTimeoutError::Timeout => "tcp peer-addr timed out".to_string(),
+                    std::sync::mpsc::RecvTimeoutError::Disconnected => "tcp peer-addr reply lost".to_string(),
+                }
+            )?
         }
     }
 
