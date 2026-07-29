@@ -190,6 +190,8 @@ pub struct ScenarioResult {
     pub error: Option<String>,
 }
 
+// ── Report construction ───────────────────────────────────────────────────────
+
 impl BenchmarkReport {
     /// 创建新的基准测试报告
     pub fn new(
@@ -254,6 +256,8 @@ impl BenchmarkReport {
             notes: Vec::new(),
         }
     }
+
+    // ── Metrics merge ──────────────────────────────────────────────────
 
     /// 合并一系列指标快照到报告中
     ///
@@ -367,6 +371,8 @@ impl BenchmarkReport {
         self.touch_judge.judge_dropped = metrics.iter().map(|m| m.touch_judge.judge_dropped).sum();
     }
 
+    // ── Lifecycle ──────────────────────────────────────────────────────
+
     /// 标记为已完成并设置完成时间
     pub fn mark_finished(&mut self) {
         self.finished_at_ms = Self::now_ms();
@@ -384,6 +390,8 @@ impl BenchmarkReport {
     }
 
     // ── 格式化输出 ──
+
+    // ── Formatting: text ───────────────────────────────────────────────
 
     /// 格式化为人类可读文本（输出到 stderr）
     ///
@@ -606,6 +614,8 @@ impl BenchmarkReport {
         out
     }
 
+    // ── Formatting: JSON ───────────────────────────────────────────────
+
     /// 格式化为 JSON 字符串（输出到 stdout）
     ///
     /// 生成的 JSON 包含完整报告。输出应通过管道重定向：
@@ -613,6 +623,8 @@ impl BenchmarkReport {
     pub fn format_json(&self) -> Result<String, serde_json::Error> {
         serde_json::to_string_pretty(self)
     }
+
+    // ── Formatting: Markdown ───────────────────────────────────────────
 
     /// 格式化为 Markdown 文档（写入报告文件）
     ///
@@ -916,6 +928,8 @@ impl BenchmarkReport {
         md
     }
 }
+
+// ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {

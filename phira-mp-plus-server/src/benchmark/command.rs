@@ -6,6 +6,8 @@ use serde::{Deserialize, Serialize};
 use std::time::Duration;
 use uuid::Uuid;
 
+// ── Top-level command ─────────────────────────────────────────────────────────
+
 /// 基准测试顶层子命令
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -19,6 +21,8 @@ pub enum BenchmarkCommand {
     /// 查看可用预设列表
     Presets,
 }
+
+// ── Scenario types ────────────────────────────────────────────────────────────
 
 /// 11 种基准测试场景
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -119,6 +123,8 @@ impl BenchmarkScenario {
     }
 }
 
+// ── Presets ───────────────────────────────────────────────────────────────────
+
 /// 基准测试预设
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -159,6 +165,8 @@ impl BenchmarkPreset {
         }
     }
 }
+
+// ── Run args ──────────────────────────────────────────────────────────────────
 
 /// 基准测试运行参数
 ///

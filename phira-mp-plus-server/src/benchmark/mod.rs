@@ -29,7 +29,7 @@ pub mod modes {
     pub mod real;
 }
 
-// ── Re-exports ──
+// ── Re-exports ────────────────────────────────────────────────────────────────
 
 pub use command::{BenchmarkCommand, BenchmarkRunArgs, BenchmarkScenario};
 pub use command::BenchmarkPreset;

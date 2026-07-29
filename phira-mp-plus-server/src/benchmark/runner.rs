@@ -11,6 +11,8 @@ use crate::server::PlusServerState;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
+// ── Runner state ─────────────────────────────────────────────────────────────
+
 /// 基准测试运行器状态
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -28,6 +30,8 @@ pub enum RunnerState {
     /// 出错中止
     Failed,
 }
+
+// ── Runner struct ────────────────────────────────────────────────────────────
 
 /// 基准测试运行器
 ///
@@ -69,6 +73,8 @@ impl BenchmarkRunner {
         self.server_state = Some(state);
     }
 
+    // ── Config building ────────────────────────────────────────────────
+
     /// 构建配置（从 args 合并预设参数和 overrides）
     fn build_config(args: &BenchmarkRunArgs) -> BenchmarkConfig {
         let mut config = BenchmarkConfig::from_preset(args.preset);
@@ -106,6 +112,8 @@ impl BenchmarkRunner {
         }
         config
     }
+
+    // ── Orchestration ──────────────────────────────────────────────────
 
     /// 运行基准测试
     ///

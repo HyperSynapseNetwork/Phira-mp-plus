@@ -22,6 +22,8 @@
 use serde::{Deserialize, Serialize};
 use std::time::Instant;
 
+// ── Types ─────────────────────────────────────────────────────────────────────
+
 /// 分析器状态
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -63,6 +65,8 @@ pub struct ProfileReport {
     pub notes: Vec<String>,
 }
 
+// ── Profiler ──────────────────────────────────────────────────────────────────
+
 /// CPU / 堆内存分析器
 ///
 /// 支持两种 profiling 类型：
@@ -86,6 +90,8 @@ pub struct Profiler {
     #[cfg(feature = "pprof")]
     cpu_guard: Option<pprof::ProfilerGuard<'static>>,
 }
+
+// ── Impl ──────────────────────────────────────────────────────────────────────
 
 impl Profiler {
     /// 创建新的分析器
@@ -360,6 +366,8 @@ impl Profiler {
     }
 }
 
+// ── Helper functions ──────────────────────────────────────────────────────────
+
 /// 便利函数：创建一个 CPU profiler 并返回一个 guard，在 guard drop 时自动停止
 ///
 /// # 示例
@@ -391,6 +399,8 @@ impl Drop for ProfilerGuard {
         }
     }
 }
+
+// ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {

@@ -7,6 +7,8 @@ use crate::benchmark::command::BenchmarkPreset;
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 
+// ── Preset params ────────────────────────────────────────────────────────────
+
 /// 预设参数
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub struct BenchmarkPresetParams {
