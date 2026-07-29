@@ -72,7 +72,6 @@ pub struct BenchmarkReportHistoryQuery {
 impl BenchmarkReportHistoryQuery {
     pub fn new(limit: usize) -> Self {
         Self {
-            mode,
             limit: limit.clamp(1, 200),
         }
     }
@@ -149,8 +148,8 @@ mod tests {
 
     #[test]
     fn history_query_clamps_limit() {
-        assert_eq!(BenchmarkReportHistoryQuery::new(None, 0).limit, 1);
-        assert_eq!(BenchmarkReportHistoryQuery::new(None, 999).limit, 200);
+        assert_eq!(BenchmarkReportHistoryQuery::new(0).limit, 1);
+        assert_eq!(BenchmarkReportHistoryQuery::new(999).limit, 200);
     }
 
     /// Verify that the SQL column names used in INSERT match the column
@@ -183,10 +182,10 @@ mod tests {
 /// SQL constants exposed for unit test verification of column names.
 #[cfg(test)]
 pub(crate) const INSERT_BENCHMARK_REPORT: &str = "INSERT INTO mp_runtime_benchmark_reports
-                   (report_id, mode, title, duration_secs, operations, failed_operations,
+                   (report_id, title, duration_secs, operations, failed_operations,
                     probes_attempted, probes_succeeded, probes_failed, probes_blocked, probes_skipped,
                     failure_samples, notes, source, schema_version, report, created_at, sequence)
-                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16::jsonb, $17, nextval('mp_persist_sequence'))
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15::jsonb, $16, nextval('mp_persist_sequence'))
                  ON CONFLICT (report_id) WHERE report_id IS NOT NULL DO NOTHING";
 
 #[cfg(test)]
@@ -209,14 +208,13 @@ impl DbManager {
         let payload = record.payload();
         sqlx::query(
             "INSERT INTO mp_runtime_benchmark_reports
-                   (report_id, mode, title, duration_secs, operations, failed_operations,
+                   (report_id, title, duration_secs, operations, failed_operations,
                     probes_attempted, probes_succeeded, probes_failed, probes_blocked, probes_skipped,
                     failure_samples, notes, source, schema_version, report, created_at, sequence)
-                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16::jsonb, $17, nextval('mp_persist_sequence'))
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15::jsonb, $16, nextval('mp_persist_sequence'))
                  ON CONFLICT (report_id) WHERE report_id IS NOT NULL DO NOTHING",
         )
         .bind(&record.report_id)
-        .bind(record.mode.as_str())
         .bind(&record.title)
         .bind(record.duration_secs as i64)
         .bind(record.operations.map(|v| v as i64))
@@ -257,7 +255,7 @@ impl DbManager {
         let Self::Pg(pool) = self;
         use sqlx::Row;
         let limit = i64::try_from(query.limit).unwrap_or(200).clamp(1, 200);
-        let rows = if let Some(mode) = query.mode {
+        let rows = true {
             sqlx::query(
                 "SELECT sequence, mode, title, duration_secs, operations, failed_operations,
                             probes_failed, probes_blocked, report::text AS report, created_at, source, schema_version
@@ -287,14 +285,12 @@ impl DbManager {
         rows
             .into_iter()
             .filter_map(|row| {
-                let raw_mode = row.try_get::<String, _>("mode").ok()?;
-                let mode = benchmark_mode_from_str(&raw_mode)?;
                 let raw_report = row
                     .try_get::<String, _>("report")
                     .unwrap_or_else(|_| "{}".to_string());
                 Some(crate::persistence::BenchmarkReportHistoryRow {
                     sequence: row.try_get::<i64, _>("sequence").unwrap_or_default(),
-                    mode,
+
                     title: row.try_get::<String, _>("title").unwrap_or_default(),
                     duration_secs: row.try_get::<i64, _>("duration_secs").unwrap_or_default(),
                     operations: row.try_get::<Option<i64>, _>("operations").ok().flatten(),
