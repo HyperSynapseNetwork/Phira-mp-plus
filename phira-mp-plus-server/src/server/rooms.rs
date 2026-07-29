@@ -415,7 +415,8 @@ impl PlusServerState {
                 .await
         };
 
-        // 审计 P3: AddUser 失败时通过 actor 回滚 RemoveUser，不调用 force_add_user。
+        // 审计 P1 (PMP28): AddUser 失败时通过 actor 回滚 RemoveUser; 如果旧房间已被删除则置
+        // user.room 为 None 避免悬挂引用。
         if let Err(err) = add_result {
             user.monitor.store(was_monitor, Ordering::SeqCst);
             if let Some(ref old_room_val) = old_room {
@@ -438,7 +439,11 @@ impl PlusServerState {
                         );
                     }
                 }
-                *user.room.write().await = Some(Arc::clone(old_room_val));
+                if old_room_dropped {
+                    *user.room.write().await = None;
+                } else {
+                    *user.room.write().await = Some(Arc::clone(old_room_val));
+                }
             }
             return Err(err);
         }
