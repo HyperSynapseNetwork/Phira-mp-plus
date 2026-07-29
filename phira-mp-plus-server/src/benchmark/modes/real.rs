@@ -31,7 +31,7 @@ use std::time::Duration;
 use tokio::net::TcpStream;
 use tokio::sync::{mpsc, watch, Notify};
 use tokio::time::Instant;
-use tracing::{debug, info, warn};
+use tracing::{info, warn};
 use uuid::Uuid;
 
 /// 默认的单个步骤超时（秒）
