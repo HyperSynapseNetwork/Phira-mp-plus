@@ -255,7 +255,7 @@ impl DbManager {
         let Self::Pg(pool) = self;
         use sqlx::Row;
         let limit = i64::try_from(query.limit).unwrap_or(200).clamp(1, 200);
-        let rows = sqlx::query(
+        sqlx::query(
                 "SELECT sequence, title, duration_secs, operations, failed_operations,
                             probes_failed, probes_blocked, report::text AS report, created_at, source, schema_version
                      FROM mp_runtime_benchmark_reports
