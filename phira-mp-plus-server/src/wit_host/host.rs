@@ -79,8 +79,8 @@ pub struct RegisteredHandler {
 
 /// Wraps server capabilities to implement WIT host traits.
 pub struct WitPluginHost {
-    ctx: Arc<WitHostContext>,
-    plugin_name: String,
+    pub(crate) ctx: Arc<WitHostContext>,
+    pub(crate) plugin_name: String,
 }
 
 impl WitPluginHost {
