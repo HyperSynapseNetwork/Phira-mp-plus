@@ -614,7 +614,7 @@ impl PluginManager {
 
     /// Set the TCP actor command sender after the TCP actor is started.
     pub fn set_plugin_tcp_tx(&self, tx: tokio::sync::mpsc::Sender<crate::plugin_tcp::PluginTcpCommand>) {
-        if let Ok(mut guard) = self.plugin_tcp_tx.lock() {
+        if let Ok(mut guard) = self.plugin_tcp_tx.try_lock() {
             *guard = Some(tx);
         }
     }
@@ -1016,7 +1016,7 @@ impl PluginManager {
 
         // Clean up TCP connections owned by the plugin
         {
-            if let Ok(tx_guard) = self.plugin_tcp_tx.lock() {
+            if let Ok(tx_guard) = self.plugin_tcp_tx.try_lock() {
                 if let Some(ref tx) = *tx_guard {
                     let (reply, rx) = std::sync::mpsc::channel();
                     let _ = tx.try_send(crate::plugin_tcp::PluginTcpCommand::RemovePlugin {
