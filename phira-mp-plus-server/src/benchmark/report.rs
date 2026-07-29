@@ -140,6 +140,14 @@ pub struct ReportSummary {
     pub clients_succeeded: u32,
     /// 失败客户端数
     pub clients_failed: u32,
+    /// 启动的客户端总数
+    pub clients_started: u32,
+    /// 正常完成的客户端数（成功或失败，非取消/超时）
+    pub clients_completed: u32,
+    /// 因同房间其他客户端失败而被取消的客户端数
+    pub clients_cancelled: u32,
+    /// 因整体超时而超时的客户端数
+    pub clients_timed_out: u32,
     /// 是否提前中止
     pub aborted: bool,
     /// 中止原因
@@ -206,6 +214,10 @@ impl BenchmarkReport {
                 peak_messages_per_sec: 0.0,
                 clients_succeeded: 0,
                 clients_failed: 0,
+                clients_started: 0,
+                clients_completed: 0,
+                clients_cancelled: 0,
+                clients_timed_out: 0,
                 aborted: false,
                 abort_reason: None,
             },
@@ -422,6 +434,13 @@ impl BenchmarkReport {
             self.summary.peak_messages_per_sec
         ));
         out.push_str(&format!("  Errors: {}\n", self.errors_total));
+        out.push_str(&format!(
+            "  Clients: {} succeeded, {} failed, {} cancelled, {} timed_out\n",
+            self.summary.clients_succeeded,
+            self.summary.clients_failed,
+            self.summary.clients_cancelled,
+            self.summary.clients_timed_out,
+        ));
         out.push_str(&format!(
             "  Invariant violations: {}\n",
             self.invariant_violations
@@ -667,6 +686,10 @@ impl BenchmarkReport {
         md.push_str(&format!("| Total commands | {} |\n", self.summary.total_commands));
         md.push_str(&format!("| Total messages | {} |\n", self.summary.total_messages));
         md.push_str(&format!("| Errors | {} |\n", self.errors_total));
+        md.push_str(&format!("| Clients succeeded | {} |\n", self.summary.clients_succeeded));
+        md.push_str(&format!("| Clients failed | {} |\n", self.summary.clients_failed));
+        md.push_str(&format!("| Clients cancelled | {} |\n", self.summary.clients_cancelled));
+        md.push_str(&format!("| Clients timed out | {} |\n", self.summary.clients_timed_out));
         md.push_str(&format!("| Invariant violations | {} |\n", self.invariant_violations));
         if self.summary.aborted {
             md.push_str(&format!(
