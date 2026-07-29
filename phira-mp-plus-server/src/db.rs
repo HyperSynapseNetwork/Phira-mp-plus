@@ -325,7 +325,6 @@ mod tests {
             "mp_runtime_persistence_meta",
             "mp_runtime_retention_policies",
             "mp_runtime_benchmark_reports",
-            "mp_sim_events",
             "mp_settings",
             "_pmp_schema_version",
         ];
@@ -358,9 +357,6 @@ mod tests {
             "uq_mp_runtime_benchmark_report_id",
             "idx_mp_runtime_benchmark_reports_mode_created",
             "uq_mp_events_event_id",
-            "uq_mp_sim_events_event_id",
-            "idx_mp_sim_events_run",
-            "idx_mp_sim_events_kind",
         ];
         for index in &expected_indexes {
             assert!(

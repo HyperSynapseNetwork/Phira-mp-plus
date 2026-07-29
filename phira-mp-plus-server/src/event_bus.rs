@@ -250,8 +250,7 @@ impl MpEvent {
             }
             Self::PersistenceWritten { table, rows } => format!("table={table} rows={rows}"),
             Self::BenchmarkCompleted { report } => format!(
-                "mode={} title={} errors={}",
-                report.config.mode.as_str(),
+                "title={} errors={}",
                 report.title,
                 report.errors_total,
             ),

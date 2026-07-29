@@ -18,8 +18,6 @@ pub enum BenchmarkCommand {
     Scenarios,
     /// 查看可用预设列表
     Presets,
-    /// 查看运行模式说明
-    Modes,
 }
 
 /// 11 种基准测试场景
@@ -167,8 +165,6 @@ impl BenchmarkPreset {
 /// 由 CLI 解析后传给 `BenchmarkRunner`。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BenchmarkRunArgs {
-    /// 运行模式：Simulation（默认）或 Real
-    pub mode: BenchmarkRunMode,
     /// 负载场景
     pub scenario: BenchmarkScenario,
     /// 预设参数集
@@ -192,7 +188,6 @@ pub struct BenchmarkRunArgs {
 impl Default for BenchmarkRunArgs {
     fn default() -> Self {
         Self {
-            mode: BenchmarkRunMode::Real,
             scenario: BenchmarkScenario::SteadyState,
             preset: BenchmarkPreset::Quick,
             clients: 20,
@@ -202,29 +197,6 @@ impl Default for BenchmarkRunArgs {
             plugins: Vec::new(),
             overrides: Vec::new(),
             run_id: Uuid::new_v4(),
-        }
-    }
-}
-
-/// 基准测试运行模式
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum BenchmarkRunMode {
-    /// 真实模式（启动真实 PMP 服务，连接真实客户端）
-    Real,
-}
-
-impl BenchmarkRunMode {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Real => "real",
-        }
-    }
-
-    pub fn parse(value: &str) -> Option<Self> {
-        match value.trim().to_ascii_lowercase().as_str() {
-            "real" => Some(Self::Real),
-            _ => None,
         }
     }
 }

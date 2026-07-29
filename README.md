@@ -30,7 +30,7 @@
 | **插件** | [插件开发指南](docs/plugin-dev.md)（含 WIT ABI、示例） |
 | **开发** | [架构](docs/development/architecture.md) · [CLI 手册](docs/cli.md) · [测试指南](docs/development/testing.md) · [CLI 错误码 (EN)](docs/development/error-codes.en.md) · [产品概览 (EN)](docs/overview.en.md) · [兼容矩阵 (EN)](docs/compatibility-matrix.en.md) |
 | **API** | [事件 API](docs/api.md) |
-| **仿真** | [仿真与压测](docs/simulation.md) |
+| **压测** | [基准测试](docs/cli.md#基准测试) |
 
 ## 许可
 
@@ -145,8 +145,6 @@ round_data_retention_days: 7
 server_name: "My Phira Server"
 chat_enabled: true
 cli_enabled: true
-
-# Real Benchmark 是高级兼容性测试，默认不推荐；Simulation 不需要 token。
 ```
 
 **4. 启动**
@@ -218,7 +216,6 @@ Phira-mp-plus/
 │   ├── cli.md                       #    CLI 命令参考
 │   ├── configuration.md             #    配置说明
 │   ├── plugin-dev.md                #    插件开发指南
-│   ├── simulation.md                #    Simulation 架构
 │   ├── operations.md                #    运维手册
 │   └── development/                 #    开发文档
 │
@@ -253,7 +250,6 @@ Phira-mp-plus/
 │       │   ├── report.rs            #    报告生成 (text/json/markdown)
 │       │   ├── presets.rs           #    预设参数 (quick/standard/stress/soak)
 │       │   ├── modes/               #    运行模式
-│       │   │   ├── simulation.rs    #      进程内模式
 │       │   │   └── real.rs          #      真实 TCP 模式
 │       │   └── scenarios/           #    负载场景 (11 个)
 │       │       ├── common.rs        #      共享工具
@@ -272,7 +268,7 @@ Phira-mp-plus/
 │       ├── cli/dispatch.rs          #   顶层命令路由
 │       ├── cli/commands/            #   命令模块
 │       │   ├── admin.rs             #   admin-id / ban / extension
-│       │   ├── benchmark.rs         #   benchmark (list/run/suite/compare/simulation)
+│       │   ├── benchmark.rs         #   benchmark (list/run/suite/compare)
 │       │   ├── broadcast.rs         #   消息广播
 │       │   ├── plugin.rs            #   WASM 插件管理
 │       │   ├── room.rs              #   房间管理
@@ -325,7 +321,6 @@ Phira-mp-plus/
 │       │   ├── events.rs            #   事件持久化
 │       │   ├── queries.rs           #   查询方法
 │       │   ├── schema.rs            #   Schema 常量
-│       │   ├── simulation.rs        #   Simulation 事件持久化
 │       │   └── users.rs             #   用户数据持久化
 │       ├── proxy_protocol.rs        #   可信代理支持
 │       ├── round_store.rs           #   轮次数据存储
@@ -346,7 +341,6 @@ Phira-mp-plus/
 │       ├── phira_client.rs          #   Phira HTTP RetryClient
 │       ├── rate_limiter.rs          #   速率限制
 │       ├── event_bus.rs             #   EventBus (MpEvent 广播)
-│       ├── simulation.rs            #   Simulation 管理器
 │       ├── runtime_diagnostics.rs   #   Runtime 诊断常量
 │       ├── benchmark/               #   基准测试模块（配置/场景/运行器/报告）
 │       ├── db.rs                    #   PostgreSQL 持久化 (DbManager)
@@ -361,7 +355,6 @@ Phira-mp-plus/
 │       ├── persistence_contracts.rs
 │       ├── phira_http_contracts.rs
 │       ├── room_state_machine_tests.rs
-│       ├── simulation_contracts.rs
 │       ├── wit_abi_contracts.rs      #   15 接口 conformance (Phase 5)
 │       ├── wasm_lifecycle_tests.rs
 │       ├── wasm_api_tests.rs

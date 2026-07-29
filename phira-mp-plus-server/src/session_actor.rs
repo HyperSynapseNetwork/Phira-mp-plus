@@ -270,7 +270,6 @@ async fn handle_chat(
             crate::persistence::message::PersistenceEvent::ServerEvent {
                 kind: "chat.message".to_string(),
                 payload: Arc::new(serde_json::json!({"room_id": room.id.to_string(), "user_id": user.id, "user_name": user.name.clone(), "message": content.clone()})),
-                simulation: false,
             },
         ).await;
         room.send_as(&user, content).await;

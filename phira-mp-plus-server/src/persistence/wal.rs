@@ -793,7 +793,6 @@ mod tests {
         PersistenceEvent::ServerEvent {
             kind: kind.into(),
             payload: Arc::new(json!({"n": 1})),
-            simulation: false,
         }
     }
 
@@ -877,7 +876,7 @@ mod tests {
         let path =
             std::env::temp_dir().join(format!("pmp-wal-corrupt-{}.jsonl", uuid::Uuid::new_v4()));
         // Write a manually crafted frame with wrong checksum.
-        let bad_frame = r#"{"ver":1,"record":"admission","id":"00000000-0000-0000-0000-000000000001","event":{"PersistenceEvent":{"ServerEvent":{"kind":"bad","payload":{"n":1},"simulation":false}}},"cksum":"0000"}"#;
+        let bad_frame = r#"{"ver":1,"record":"admission","id":"00000000-0000-0000-0000-000000000001","event":{"PersistenceEvent":{"ServerEvent":{"kind":"bad","payload":{"n":1}}}},"cksum":"0000"}"#;
         tokio::fs::write(&path, format!("{bad_frame}\n"))
             .await
             .unwrap();
@@ -1035,7 +1034,7 @@ mod tests {
     async fn replay_version_mismatch_is_rejected() {
         let path =
             std::env::temp_dir().join(format!("pmp-wal-vers-{}.jsonl", uuid::Uuid::new_v4()));
-        let future_frame = r#"{"ver":255,"record":"admission","id":"00000000-0000-0000-0000-000000000001","event":{"PersistenceEvent":{"ServerEvent":{"kind":"future","payload":{},"simulation":false}}},"cksum":"0000000000000000000000000000000000000000000000000000000000000000"}"#;
+        let future_frame = r#"{"ver":255,"record":"admission","id":"00000000-0000-0000-0000-000000000001","event":{"PersistenceEvent":{"ServerEvent":{"kind":"future","payload":{}}}},"cksum":"0000000000000000000000000000000000000000000000000000000000000000"}"#;
         tokio::fs::write(&path, format!("{future_frame}\n"))
             .await
             .unwrap();

@@ -570,209 +570,50 @@ help groups
 
 ## 基准测试
 
-### `benchmark modes`
+### `benchmark list`
 
-查看三种压测模式说明。
+列出可用场景（scenarios）和预设（presets）。
 
-**输出:** Simulation / Hybrid / Real 三种模式说明
+**输出:** 场景列表、预设参数及使用示例。
 
 ---
 
-### `benchmark run real [seconds] [rooms]`
+### `benchmark run`
 
-显式真实 TCP 协议测试。
+运行基准测试。仅支持 Real 模式。
 
 | 参数 | 类型 | 说明 |
 |------|------|------|
-| `seconds` | `int` (可选, 默认 30) | 测试时长 |
-| `rooms` | `int` (可选, 默认 8) | 房间数 |
+| `--mode` | `str` (可选) | 运行模式：real（默认） |
+| `--scenario` | `str` | 负载场景名（见 benchmark list） |
+| `--preset` | `str` (可选) | 预设参数：quick、standard（默认）、stress、soak |
+| `--clients` | `int` (可选) | 模拟客户端数 |
+| `--rooms` | `int` (可选) | 模拟房间数 |
+| `--duration` | `str` (可选) | 运行时长，如 30 / 10m / 2h |
+| `--seed` | `int` (可选) | 随机种子 |
+| `--output` | `str` (可选) | 输出格式：text（默认）、json、markdown |
 
-**输出:** Benchmark 报告（含 probe_stats、failure_samples、elapsed）
+**输出:** Benchmark 报告。
 
 ---
 
-### `benchmark run real [duration=N] [authenticate=true] [chart_lookup=<id>] [record_lookup=<id>]`
+### `benchmark suite`
 
-运行混合 Phira 探测。
+按预设参数顺序运行所有场景，汇总输出。
 
 | 参数 | 类型 | 说明 |
 |------|------|------|
-| `duration` | `int` (可选, 默认 10) | 测试秒数 |
-| `authenticate` | `bool` (可选, 默认 true) | 是否执行认证探测 |
-| `chart_lookup` | `int` (可选) | 谱面查询 ID |
-| `record_lookup` | `int` (可选) | 成绩查询 ID |
+| `--preset` | `str` (可选) | 预设参数：quick、standard（默认）、stress、soak |
 
-**输出:** Hybrid 探测报告
+**输出:** 每个场景的压测结果汇总。
 
 ---
 
-### `benchmark report [simulation|real|limit]`
+### `benchmark compare <old.json> <new.json>`
 
-查看最新 Benchmark 报告。
+比较两份基准测试报告（JSON 文件）的差异。
 
-| 参数 | 类型 | 说明 |
-|------|------|------|
-| `mode` | `str` (可选) | 模式过滤，如 `report simulation` |
-| `limit` | `int` (可选) | 显示最近 N 条 |
-
-**输出:** 报告摘要（模式、标题、失败操作数、耗时）
-
----
-
-### `benchmark history [simulation|real] [limit]`
-
-查看持久化的 Benchmark 历史记录。
-
-| 参数 | 类型 | 说明 |
-|------|------|------|
-| `mode` | `str` (可选) | 模式过滤 |
-| `limit` | `int` (可选, 默认 10) | 返回条数上限 |
-
-**输出:** 历史报告列表
-
----
-
-## 模拟器
-
-### `simulation status`
-
-查看模拟器状态。
-
-**输出:**
-```
-  Running: <true|false>  │ Users: N  │ Rooms: N  │ Seed: N  │ Scenario: <name>
-```
-| 字段 | 说明 |
-|------|------|
-| Running | 是否正在运行 |
-| Users/Rooms | 虚拟用户/房间数 |
-| Seed | 随机种子 |
-| Scenario | 当前场景 |
-| Started/Elapsed | 启动时间/已运行时间 |
-
----
-
-### `simulation run <preset> [key=value...]`
-
-启动隔离本地压测。自动 tick，到达 duration 后自动停止。
-
-| 参数 | 类型 | 说明 |
-|------|------|------|
-| `preset` | `str` | 预置：`baseline` `small` `medium` `large` `custom` |
-| `scenario` | `str` (可选) | 场景：`balanced` `ready_storm` `round_storm` `touch_judge_burst` `idle` |
-| `users` | `int` (可选) | 虚拟用户数 |
-| `rooms` | `int` (可选) | 虚拟房间数 |
-| `duration` | `int` (可选) | 运行秒数 |
-| `tick_ms` | `int` (可选) | tick 间隔毫秒 |
-| `auto` | `bool` (可选) | 自动 tick |
-| `persist_every` | `int` (可选) | 每 N tick 持久化一次 |
-| `touch/judge/chat/ready/rounds` | `bool` (可选) | 活动开关 |
-
-**输出:** Simulation 状态，含运行 ID 和配置
-
----
-
-### `simulation stop`
-
-停止当前 Simulation 运行。
-
-**输出:** Simulation 状态（已停止）
-
----
-
-### `simulation cleanup`
-
-清理 Simulation 数据（shadow world）。
-
-**输出:** `simulation shadow world cleaned; real rooms/users were not touched`
-
----
-
-### `simulation scenarios`
-
-查看可用场景列表。
-
-**输出:** 每个场景的名称、描述和参数说明
-
----
-
-### `simulation suite <name> [key=value...]`
-
-运行场景序列。
-
-| 参数 | 类型 | 说明 |
-|------|------|------|
-| `name` | `str` | `smoke` `mixed` `stress` |
-| `duration` | `int` (可选) | 每步秒数 |
-| `tick_ms` | `int` (可选) | tick 间隔 |
-| `persist_every` | `int` (可选) | 持久化频率 |
-| `users/rooms` | `int` (可选) | 大小覆盖 |
-
-**输出:** Suite 汇总报告
-
----
-
-### `simulation report [latest|list|clear]`
-
-查看模拟报告。
-
-| 参数 | 类型 | 说明 |
-|------|------|------|
-| 子命令 | `str` (可选) | `latest` 最新、`list` 列表、`clear` 清除 |
-
-**输出:** Simulation 运行报告或报告列表
-
----
-
-### `simulation tick [count]`
-
-手动推进 Simulation tick。仅 developer。
-
-| 参数 | 类型 | 说明 |
-|------|------|------|
-| `count` | `int` (可选, 默认 1) | tick 次数 |
-
-**输出:** Simulation 状态
-
----
-
-### `simulation inspect [limit]`
-
-查看影子世界数据。仅 developer。
-
-| 参数 | 类型 | 说明 |
-|------|------|------|
-| `limit` | `int` (可选, 默认 5) | 样本条数 |
-
-**输出:** VirtualUser / VirtualRoom / VirtualRound 样本
-
----
-
-### `simulation seed <value>`
-
-设置确定性随机种子。仅 developer。
-
-| 参数 | 类型 | 说明 |
-|------|------|------|
-| `value` | `u64` | 种子值 |
-
-**输出:** `simulation seed updated to <value>`
-
----
-
-### `simulation persist`
-
-发送 Simulation 快照到持久化 Worker。仅 developer。
-
-**输出:** 持久化队列状态
-
----
-
-### `simulation sample`
-
-查看 deterministic touches/judges 示例数据规模。仅 developer。
-
-**输出:** `Touches: N  │ Judges: N`
+**输出:** 差异对比表。
 
 ---
 

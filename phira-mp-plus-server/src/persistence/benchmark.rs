@@ -12,7 +12,6 @@ pub struct BenchmarkReportPersistenceRecord {
     pub mode: BenchmarkRunMode,
     pub title: String,
     pub duration_secs: u64,
-    pub is_simulation: bool,
     pub operations: Option<u64>,
     pub failed_operations: Option<u64>,
     pub probes_attempted: u64,
@@ -34,7 +33,6 @@ impl BenchmarkReportPersistenceRecord {
             mode: report.config.mode,
             title: report.title.clone(),
             duration_secs: report.summary.duration_secs,
-            is_simulation: false,
             operations: Some(report.summary.total_commands),
             failed_operations: Some(report.errors_total),
             probes_attempted: 0,
@@ -90,7 +88,6 @@ pub struct BenchmarkReportHistoryRow {
     pub mode: BenchmarkRunMode,
     pub title: String,
     pub duration_secs: i64,
-    pub is_simulation: bool,
     pub operations: Option<i64>,
     pub failed_operations: Option<i64>,
     pub probes_failed: i64,
@@ -192,14 +189,14 @@ mod tests {
 /// SQL constants exposed for unit test verification of column names.
 #[cfg(test)]
 pub(crate) const INSERT_BENCHMARK_REPORT: &str = "INSERT INTO mp_runtime_benchmark_reports
-                   (report_id, mode, title, duration_secs, is_simulation, operations, failed_operations,
+                   (report_id, mode, title, duration_secs, operations, failed_operations,
                     probes_attempted, probes_succeeded, probes_failed, probes_blocked, probes_skipped,
                     failure_samples, notes, source, schema_version, report, created_at, sequence)
-                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17::jsonb, $18, nextval('mp_persist_sequence'))
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16::jsonb, $17, nextval('mp_persist_sequence'))
                  ON CONFLICT (report_id) WHERE report_id IS NOT NULL DO NOTHING";
 
 #[cfg(test)]
-pub(crate) const SELECT_BENCHMARK_HISTORY: &str = "SELECT sequence, mode, title, duration_secs, is_simulation, operations, failed_operations,
+pub(crate) const SELECT_BENCHMARK_HISTORY: &str = "SELECT sequence, mode, title, duration_secs, operations, failed_operations,
                             probes_failed, probes_blocked, report::text AS report, created_at, source, schema_version
                      FROM mp_runtime_benchmark_reports";
 
@@ -218,17 +215,16 @@ impl DbManager {
         let payload = record.payload();
         sqlx::query(
             "INSERT INTO mp_runtime_benchmark_reports
-                   (report_id, mode, title, duration_secs, is_simulation, operations, failed_operations,
+                   (report_id, mode, title, duration_secs, operations, failed_operations,
                     probes_attempted, probes_succeeded, probes_failed, probes_blocked, probes_skipped,
                     failure_samples, notes, source, schema_version, report, created_at, sequence)
-                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17::jsonb, $18, nextval('mp_persist_sequence'))
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16::jsonb, $17, nextval('mp_persist_sequence'))
                  ON CONFLICT (report_id) WHERE report_id IS NOT NULL DO NOTHING",
         )
         .bind(&record.report_id)
         .bind(record.mode.as_str())
         .bind(&record.title)
         .bind(record.duration_secs as i64)
-        .bind(record.is_simulation)
         .bind(record.operations.map(|v| v as i64))
         .bind(record.failed_operations.map(|v| v as i64))
         .bind(record.probes_attempted as i64)
@@ -269,7 +265,7 @@ impl DbManager {
         let limit = i64::try_from(query.limit).unwrap_or(200).clamp(1, 200);
         let rows = if let Some(mode) = query.mode {
             sqlx::query(
-                "SELECT sequence, mode, title, duration_secs, is_simulation, operations, failed_operations,
+                "SELECT sequence, mode, title, duration_secs, operations, failed_operations,
                             probes_failed, probes_blocked, report::text AS report, created_at, source, schema_version
                      FROM mp_runtime_benchmark_reports
                      WHERE mode = $1
@@ -283,7 +279,7 @@ impl DbManager {
             .unwrap_or_default()
         } else {
             sqlx::query(
-                "SELECT sequence, mode, title, duration_secs, is_simulation, operations, failed_operations,
+                "SELECT sequence, mode, title, duration_secs, operations, failed_operations,
                             probes_failed, probes_blocked, report::text AS report, created_at, source, schema_version
                      FROM mp_runtime_benchmark_reports
                      ORDER BY sequence DESC
@@ -307,7 +303,6 @@ impl DbManager {
                     mode,
                     title: row.try_get::<String, _>("title").unwrap_or_default(),
                     duration_secs: row.try_get::<i64, _>("duration_secs").unwrap_or_default(),
-                    is_simulation: row.try_get::<bool, _>("is_simulation").unwrap_or(false),
                     operations: row.try_get::<Option<i64>, _>("operations").ok().flatten(),
                     failed_operations: row
                         .try_get::<Option<i64>, _>("failed_operations")

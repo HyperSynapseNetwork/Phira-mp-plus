@@ -104,13 +104,13 @@ pub(crate) fn server_state_query_inner(
                 .unwrap_or(Err("runtime.status timeout".to_string()))
         }
         "benchmark.reports" => {
-            Err("benchmark.reports removed: in-memory report store was deleted, use benchmark.history for persisted reports".to_string())
+            Err("benchmark.reports is no longer available".to_string())
         }
         "benchmark.latest" => {
-            Err("benchmark.latest removed: in-memory report store was deleted, use benchmark.history for persisted reports".to_string())
+            Err("benchmark.latest is no longer available".to_string())
         }
         "benchmark.history" => {
-            Err("benchmark.history removed: in-memory report store was deleted, use benchmark.history for persisted reports".to_string())
+            Err("benchmark.history is no longer available".to_string())
         }
         "rooms.history" => {
             let users = crate::read_lock!(state.rooms);

@@ -3,7 +3,7 @@
 //! 基准测试配置结构体，由 CLI 参数（`BenchmarkRunArgs`）派生。
 //! 包含模式特有配置、场景参数和全局运行时设置。
 
-use crate::benchmark::command::{BenchmarkPreset, BenchmarkRunMode, BenchmarkScenario};
+use crate::benchmark::command::{BenchmarkPreset, BenchmarkScenario};
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 
@@ -12,8 +12,6 @@ use std::time::Duration;
 /// 由 `BenchmarkRunArgs` 和预设参数合并生成，是 runner 和各场景的最终配置。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BenchmarkConfig {
-    /// 运行模式
-    pub mode: BenchmarkRunMode,
     /// 负载场景
     pub scenario: BenchmarkScenario,
     /// 预设名称
@@ -77,7 +75,6 @@ impl BenchmarkConfig {
     pub fn from_preset(preset: BenchmarkPreset) -> Self {
         let params = crate::benchmark::presets::BenchmarkPresetParams::from_preset(preset);
         Self {
-            mode: BenchmarkRunMode::Real,
             scenario: BenchmarkScenario::SteadyState,
             preset,
             clients: params.clients,

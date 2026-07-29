@@ -71,7 +71,6 @@ impl BenchmarkRunner {
     /// 构建配置（从 args 合并预设参数和 overrides）
     fn build_config(args: &BenchmarkRunArgs) -> BenchmarkConfig {
         let mut config = BenchmarkConfig::from_preset(args.preset);
-        config.mode = args.mode;
         config.scenario = args.scenario;
         config.clients = args.clients;
         config.rooms = args.rooms;

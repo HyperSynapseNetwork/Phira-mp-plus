@@ -335,7 +335,6 @@ impl ExtensionManager {
         let worker_event = crate::persistence::message::PersistenceEvent::ServerEvent {
             kind: kind.to_string(),
             payload: payload_arc,
-            simulation: false,
         };
         if let Some(worker) = self
             .persistence_worker

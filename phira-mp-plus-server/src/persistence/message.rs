@@ -12,12 +12,10 @@ pub enum PersistenceEvent {
     RoomSnapshot {
         room_id: String,
         payload: Arc<Value>,
-        simulation: bool,
     },
     ServerEvent {
         kind: String,
         payload: Arc<Value>,
-        simulation: bool,
     },
     BenchmarkReport {
         report: BenchmarkReport,
@@ -71,18 +69,7 @@ impl PersistenceEvent {
     }
 
     pub fn is_simulation(&self) -> bool {
-        match self {
-            Self::RoomSnapshot { simulation, .. }
-            | Self::ServerEvent { simulation, .. } => *simulation,
-            Self::UserRoomHistory { .. }
-            | Self::UserOnline { .. }
-            | Self::UserOffline { .. }
-            | Self::UserDisconnect { .. }
-            | Self::UserSeen { .. }
-            | Self::BenchmarkReport { .. }
-            | Self::Flush
-            | Self::Shutdown => false,
-        }
+        false
     }
 
     /// Lossless JSON representation used by the local persistence dead-letter
@@ -93,20 +80,16 @@ impl PersistenceEvent {
             Self::RoomSnapshot {
                 room_id,
                 payload,
-                simulation,
             } => Some(json!({
                 "room_id": room_id,
                 "payload": payload.as_ref(),
-                "simulation": simulation,
             })),
             Self::ServerEvent {
                 kind,
                 payload,
-                simulation,
             } => Some(json!({
                 "kind": kind,
                 "payload": payload.as_ref(),
-                "simulation": simulation,
             })),
             Self::BenchmarkReport { report } => Some(json!({ "report": report })),
             Self::UserRoomHistory {
@@ -146,15 +129,14 @@ impl PersistenceEvent {
         match self {
             Self::RoomSnapshot {
                 room_id,
-                simulation,
                 ..
             } => {
-                format!("room_id={room_id} simulation={simulation}")
+                format!("room_id={room_id}")
             }
             Self::ServerEvent {
-                kind, simulation, ..
+                kind, ..
             } => {
-                format!("kind={kind} simulation={simulation}")
+                format!("kind={kind}")
             }
             Self::BenchmarkReport { report } => format!(
                 "mode={} title={} errors={}",

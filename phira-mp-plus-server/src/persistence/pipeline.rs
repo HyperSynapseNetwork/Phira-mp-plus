@@ -43,9 +43,6 @@ fn elapsed_ms(start: Instant) -> u64 {
 }
 
 pub async fn persist_production_event_if_needed(event: &PersistenceEvent) -> PersistenceWriteStage {
-    if event.is_simulation() {
-        return PersistenceWriteStage::NotApplicable;
-    }
     let db = crate::internal_hooks::DB.get().expect("DB must be initialized before persistence worker starts");
 
     let started = Instant::now();

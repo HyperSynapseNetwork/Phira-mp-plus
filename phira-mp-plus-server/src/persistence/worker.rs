@@ -68,7 +68,6 @@ async fn preserve_failed_event(
     stats: &Arc<RwLock<PersistenceStats>>,
 ) -> bool {
     let kind = event.kind();
-    let simulation = event.is_simulation();
     let summary = event.summary();
     let Some(payload) = event.dead_letter_payload() else {
         return false;
@@ -76,7 +75,7 @@ async fn preserve_failed_event(
     let Some(path) = path else {
         let durability_error =
             "dead-letter journal disabled; failed event was not preserved".to_string();
-        record_dead_letter_failed(stats, kind, simulation, summary, durability_error.clone()).await;
+        record_dead_letter_failed(stats, kind, summary, durability_error.clone()).await;
         report_dead_letter_durability_failure(durability_error).await;
         return false;
     };
@@ -91,14 +90,13 @@ async fn preserve_failed_event(
         "failed_at_ms": timestamp_ms,
         "stage": stage,
         "kind": kind,
-        "simulation": simulation,
         "summary": summary,
         "error": error,
         "event": payload,
     });
     match append_dead_letter(path, &record).await {
         Ok(()) => {
-            record_dead_letter_written(stats, event.kind(), simulation, event.summary()).await;
+            record_dead_letter_written(stats, event.kind(), event.summary()).await;
             true
         }
         Err(dead_letter_error) => {
@@ -107,7 +105,6 @@ async fn preserve_failed_event(
             record_dead_letter_failed(
                 stats,
                 event.kind(),
-                simulation,
                 event.summary(),
                 durability_error.clone(),
             )
@@ -258,7 +255,6 @@ async fn process_worker_loop(
             }
         };
         let kind = event.kind();
-        let simulation = event.is_simulation();
         let summary = event.summary();
         // Track whether this event reached a durable terminal state.
         // Only durable events get WAL ACKed; non-durable entries remain
@@ -354,7 +350,7 @@ async fn process_worker_loop(
         match event {
             PersistenceEvent::Shutdown => {
                 debug!(kind = %kind, "persistence worker shutdown requested");
-                record_processed(worker_stats, kind, simulation, summary).await;
+                record_processed(worker_stats, kind, summary).await;
                 break;
             }
             PersistenceEvent::Flush => {
@@ -362,7 +358,7 @@ async fn process_worker_loop(
             }
             _ => {}
         }
-        record_processed(worker_stats, kind.clone(), simulation, summary).await;
+        record_processed(worker_stats, kind.clone(), summary).await;
 
         // Only ACK events that reached a durable terminal state AND used WAL.
         // DatabaseCommitted / DurableDeadLetterStored → ACK
@@ -589,11 +585,10 @@ impl PersistenceWorker {
 
     pub async fn enqueue(&self, event: PersistenceEvent) -> Result<(), PersistenceEvent> {
         let kind = event.kind();
-        let simulation = event.is_simulation();
         let summary = event.summary();
         let _send_guard = self.send_gate.lock().await;
         if self.closed.load(Ordering::Acquire) {
-            record_dropped(&self.stats, kind, simulation, summary,
+            record_dropped(&self.stats, kind, summary,
                 "persistence worker is shutting down".to_string()).await;
             return Err(event);
         }
@@ -604,12 +599,12 @@ impl PersistenceWorker {
         let permit = match self.tx.try_reserve() {
             Ok(permit) => permit,
             Err(mpsc::error::TrySendError::Full(_)) => {
-                record_dropped(&self.stats, kind, simulation, summary,
+                record_dropped(&self.stats, kind, summary,
                     "persistence worker queue full".to_string()).await;
                 return Err(event);
             }
             Err(mpsc::error::TrySendError::Closed(_)) => {
-                record_dropped(&self.stats, kind, simulation, summary,
+                record_dropped(&self.stats, kind, summary,
                     "persistence worker is shutting down".to_string()).await;
                 return Err(event);
             }
@@ -622,13 +617,13 @@ impl PersistenceWorker {
                 (id, true)
             }
             Err(error) => {
-                record_dropped(&self.stats, kind, simulation, summary, error).await;
+                record_dropped(&self.stats, kind, summary, error).await;
                 return Err(event);
             }
         };
         // Send using the reserved permit (infallible).
         permit.send(WorkerMessage::Event { wal_id, event, needs_wal_ack });
-        record_queued(&self.stats, kind.clone(), simulation, summary).await;
+        record_queued(&self.stats, kind.clone(), summary).await;
         Ok(())
     }
 

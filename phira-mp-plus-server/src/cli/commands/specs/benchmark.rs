@@ -104,28 +104,5 @@ pub fn specs() -> Vec<CommandSpec> {
         .advanced()
         .example("benchmark run real 30 100"),
     );
-    out.push(
-        CommandSpec::new(
-            "benchmark report",
-            "diagnostics",
-            "查看 Benchmark 报告。",
-            "benchmark report [real|limit]",
-        )
-        .advanced()
-        .example("benchmark report")
-        .example("benchmark report 16"),
-    );
-    out.push(
-        CommandSpec::new(
-            "benchmark history",
-            "diagnostics",
-            "查看已持久化的 BenchmarkReport 历史记录。",
-            "benchmark history [real] [limit]",
-        )
-        .advanced()
-        .example("benchmark history")
-        .example("benchmark history real 20"),
-    );
-
     out
 }

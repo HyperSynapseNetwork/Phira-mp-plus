@@ -35,7 +35,6 @@ fn user_room_history_event_kind() {
         joined_at: 1000,
     };
     assert_eq!(event.kind(), "user_room_history");
-    assert!(!event.is_simulation(), "room history is not simulation");
     let summary = event.summary();
     assert!(summary.contains("user_id=42"), "summary contains user_id");
     assert!(
@@ -64,7 +63,6 @@ fn user_online_event_kind() {
     use phira_mp_plus_server::persistence::message::PersistenceEvent;
     let event = PersistenceEvent::UserOnline { user_id: 42 };
     assert_eq!(event.kind(), "user_online");
-    assert!(!event.is_simulation());
     assert!(event.summary().contains("user_id=42"));
 }
 
@@ -73,6 +71,5 @@ fn user_offline_event_kind() {
     use phira_mp_plus_server::persistence::message::PersistenceEvent;
     let event = PersistenceEvent::UserOffline { user_id: 99 };
     assert_eq!(event.kind(), "user_offline");
-    assert!(!event.is_simulation());
     assert!(event.summary().contains("user_id=99"));
 }

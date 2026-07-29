@@ -85,15 +85,6 @@ fn banned_core_paths_have_no_bare_reqwest() {
 }
 
 #[test]
-fn benchmark_real_is_explicit_not_default() {
-    use phira_mp_plus_server::benchmark::command::BenchmarkRunMode;
-    let real: BenchmarkRunMode = serde_json::from_str("\"real\"").unwrap();
-    match real {
-        BenchmarkRunMode::Real => {}
-    }
-}
-
-#[test]
 fn phira_retry_client_exists() {
     use phira_mp_plus_server::phira_client::PhiraRetryClient;
     let _ = std::any::TypeId::of::<PhiraRetryClient>();

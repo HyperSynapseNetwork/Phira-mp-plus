@@ -12,7 +12,6 @@ pub struct PersistenceTraceEntry {
     pub seq: u64,
     pub action: String,
     pub kind: String,
-    pub simulation: bool,
     pub summary: String,
 }
 
@@ -50,7 +49,6 @@ pub struct PersistenceStats {
     pub pending_ratio_percent: u8,
     pub queue_health: String,
     pub backpressure_advice: String,
-    pub simulation_persist_requests: u64,
     pub production_persist_requests: u64,
     pub production_persist_skipped: u64,
     pub production_telemetry_staged: u64,
@@ -119,10 +117,6 @@ impl PersistenceStats {
 
 }
 
-pub async fn record_simulation_persist_request(stats: &Arc<RwLock<PersistenceStats>>) {
-    stats.write().await.simulation_persist_requests += 1;
-}
-
 pub async fn record_production_persist_request(stats: &Arc<RwLock<PersistenceStats>>) {
     stats.write().await.production_persist_requests += 1;
 }
@@ -142,25 +136,23 @@ pub async fn record_benchmark_report_persist_skipped(stats: &Arc<RwLock<Persiste
 pub async fn record_dead_letter_written(
     stats: &Arc<RwLock<PersistenceStats>>,
     kind: String,
-    simulation: bool,
     summary: String,
 ) {
     let mut stats = stats.write().await;
     stats.dead_letter_written += 1;
-    push_trace(&mut stats, "dead_letter", kind, simulation, summary);
+    push_trace(&mut stats, "dead_letter", kind, summary);
 }
 
 pub async fn record_dead_letter_failed(
     stats: &Arc<RwLock<PersistenceStats>>,
     kind: String,
-    simulation: bool,
     summary: String,
     error: String,
 ) {
     let mut stats = stats.write().await;
     stats.dead_letter_failed += 1;
     stats.last_error = Some(error);
-    push_trace(&mut stats, "dead_letter_failed", kind, simulation, summary);
+    push_trace(&mut stats, "dead_letter_failed", kind, summary);
 }
 
 pub async fn record_db_dispatch_success(
@@ -198,37 +190,34 @@ pub async fn record_db_dispatch_failure(
 pub async fn record_queued(
     stats: &Arc<RwLock<PersistenceStats>>,
     kind: String,
-    simulation: bool,
     summary: String,
 ) {
     let mut stats = stats.write().await;
     stats.queued += 1;
     *stats.by_kind.entry(kind.clone()).or_insert(0) += 1;
-    push_trace(&mut stats, "queued", kind, simulation, summary);
+    push_trace(&mut stats, "queued", kind, summary);
 }
 
 pub async fn record_processed(
     stats: &Arc<RwLock<PersistenceStats>>,
     kind: String,
-    simulation: bool,
     summary: String,
 ) {
     let mut stats = stats.write().await;
     stats.processed += 1;
-    push_trace(&mut stats, "processed", kind, simulation, summary);
+    push_trace(&mut stats, "processed", kind, summary);
 }
 
 pub async fn record_dropped(
     stats: &Arc<RwLock<PersistenceStats>>,
     kind: String,
-    simulation: bool,
     summary: String,
     error: String,
 ) {
     let mut stats = stats.write().await;
     stats.dropped += 1;
     stats.last_error = Some(error);
-    push_trace(&mut stats, "dropped", kind, simulation, summary);
+    push_trace(&mut stats, "dropped", kind, summary);
 }
 
 // ── Async WAL recording helpers ──────────────────────────────────────
@@ -254,7 +243,6 @@ fn push_trace(
     stats: &mut PersistenceStats,
     action: impl Into<String>,
     kind: String,
-    simulation: bool,
     summary: String,
 ) {
     let seq = stats.queued + stats.processed + stats.dropped;
@@ -266,7 +254,6 @@ fn push_trace(
         seq,
         action: action.into(),
         kind,
-        simulation,
         summary,
     });
 }

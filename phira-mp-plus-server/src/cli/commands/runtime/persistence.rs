@@ -23,11 +23,6 @@ impl CliHandler {
         ));
         self.out(format!("  {} dropped:   {}", c::dim("│"), stats.dropped));
         self.out(format!(
-            "  {} sim_db_req:{}",
-            c::dim("│"),
-            stats.simulation_persist_requests
-        ));
-        self.out(format!(
             "  {} prod_db_req:{}",
             c::dim("│"),
             stats.production_persist_requests
@@ -94,8 +89,8 @@ impl CliHandler {
             self.out(format!("  {} recent", c::cyan("▸")));
             for event in stats.recent.iter().rev().take(12) {
                 self.out(format!(
-                    "    #{:<4} {:<9} {:<24} sim={} {}",
-                    event.seq, event.action, event.kind, event.simulation, event.summary
+                    "    #{:<4} {:<9} {:<24} {}",
+                    event.seq, event.action, event.kind, event.summary
                 ));
             }
         }

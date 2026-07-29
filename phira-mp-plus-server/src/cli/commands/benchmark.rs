@@ -2,12 +2,6 @@ use super::super::*;
 
 impl CliHandler {
     pub(in crate::cli) async fn dispatch_benchmark_command(&self, args: &[&str]) {
-        if matches!(args.first().copied(), Some("token")) {
-            // benchmark token bind <token...>
-            let token_args = if args.len() > 2 { &args[2..] } else { &[] };
-            self.bind_benchmark(token_args).await;
-            return;
-        }
         if matches!(args.first().copied(), Some("cleanup")) {
             self.dispatch_benchmark_cleanup_command().await;
             return;
@@ -48,8 +42,8 @@ impl CliHandler {
             return;
         }
 
-        // ── Legacy fallthrough ──
-        self.start_benchmark(args).await;
+        // Unknown benchmark command
+        self.out(format!("  {} Unknown benchmark command. Use `benchmark run --help` for usage.", c::yellow("?")));
     }
 
     pub(in crate::cli) async fn dispatch_benchmark_cleanup_command(&self) {
@@ -61,41 +55,6 @@ impl CliHandler {
         self.out(format!("  {} 已清理 bench-* 压测房间", c::green("✓")));
     }
 
-    async fn start_benchmark(&self, args: &[&str]) {
-        if matches!(
-            args.first().copied(),
-            Some("modes") | Some("mode") | Some("help")
-        ) {
-            self.print_benchmark_modes();
-            return;
-        }
-        // Redirect to `benchmark run --mode real`
-        self.out(format!(
-            "  {} Use `benchmark run --mode real` to run a real-mode benchmark",
-            c::yellow("!")
-        ));
-        self.out(format!(
-            "  {} See `benchmark list` for available scenarios and presets.",
-            c::dim("▸")
-        ));
-    }
-
-    fn print_benchmark_modes(&self) {
-        self.out(format!("  {} Benchmark modes", c::green("◆")));
-        self.out(format!("  {} real  默认压测路径：连接真实 PMP 服务器，使用二进制协议认证与房间命令交互", c::dim("│")));
-        self.out(format!("  {} examples", c::cyan("▸")));
-        self.out("    benchmark run --mode real --scenario gameplay --preset standard".to_string());
-        self.out("    benchmark run --mode real --clients 10 --rooms 1 --duration 30".to_string());
-        self.out("    benchmark suite --preset quick".to_string());
-        self.out("    benchmark modes".to_string());
-    }
-
-    async fn bind_benchmark(&self, _args: &[&str]) {
-        self.out(format!(
-            "  {} Benchmark token management is removed. Mock Phira is used for benchmark authentication.",
-            c::yellow("!")
-        ));
-    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -148,7 +107,7 @@ impl CliHandler {
             c::dim("▸")
         ));
         self.out(format!(
-            "  {}   benchmark run --mode real --scenario hot-room --clients 100 --rooms 1 --duration 10m",
+            "  {}   benchmark run --scenario hot-room --clients 100 --rooms 1 --duration 10m",
             c::dim("▸")
         ));
         self.out(format!(
@@ -163,13 +122,10 @@ impl CliHandler {
 
     /// `benchmark run` — parse flags and execute
     pub(in crate::cli) async fn dispatch_benchmark_run_command(&self, args: &[&str]) {
-        // args = ["run", "--mode", "real", "--scenario", "gameplay", ...]
+        // args = ["run", "--scenario", "gameplay", ...]
         let cmd_args = &args[1..]; // skip "run"
 
-        let mut run_args = crate::benchmark::command::BenchmarkRunArgs {
-            mode: crate::benchmark::command::BenchmarkRunMode::Real,
-            ..crate::benchmark::command::BenchmarkRunArgs::default()
-        };
+        let mut run_args = crate::benchmark::command::BenchmarkRunArgs::default();
         let mut output_format = OutputFormat::Text;
         let mut show_help = false;
         let mut explicit_clients = false;
@@ -179,27 +135,6 @@ impl CliHandler {
         let mut i = 0;
         while i < cmd_args.len() {
             match cmd_args[i] {
-                "--mode" => {
-                    i += 1;
-                    if i >= cmd_args.len() {
-                        self.out(format!(
-                            "  {} --mode requires a value (real)",
-                            c::red("✗")
-                        ));
-                        return;
-                    }
-                    match crate::benchmark::command::BenchmarkRunMode::parse(cmd_args[i]) {
-                        Some(mode) => run_args.mode = mode,
-                        None => {
-                            self.out(format!(
-                                "  {} invalid mode: '{}'. Use real",
-                                c::red("✗"),
-                                cmd_args[i]
-                            ));
-                            return;
-                        }
-                    }
-                }
                 "--scenario" => {
                     i += 1;
                     if i >= cmd_args.len() {
@@ -445,9 +380,8 @@ impl CliHandler {
 
         // Announce
         self.out(format!(
-            "  {} Starting benchmark: mode={} scenario={} preset={} clients={} rooms={} duration={}s seed={}",
+            "  {} Starting benchmark: scenario={} preset={} clients={} rooms={} duration={}s seed={}",
             c::green("◆"),
-            run_args.mode.as_str(),
             run_args.scenario.as_str(),
             run_args.preset.as_str(),
             run_args.clients,
@@ -570,7 +504,6 @@ impl CliHandler {
             ));
 
             let mut run_args = crate::benchmark::command::BenchmarkRunArgs::default();
-            run_args.mode = crate::benchmark::command::BenchmarkRunMode::Real;
             run_args.scenario = *scenario;
             run_args.preset = preset;
             run_args.clients = preset_params.clients;
@@ -707,15 +640,11 @@ impl CliHandler {
             new_path,
             new_report.title
         ));
-        if old_report.config.mode != new_report.config.mode
-            || old_report.config.scenario != new_report.config.scenario
-        {
+        if old_report.config.scenario != new_report.config.scenario {
             self.out(format!(
-                "  {} Note: reports have different configurations (old: {} / {}, new: {} / {})",
+                "  {} Note: reports have different scenarios (old: {}, new: {})",
                 c::yellow("?"),
-                old_report.config.mode.as_str(),
                 old_report.config.scenario.as_str(),
-                new_report.config.mode.as_str(),
                 new_report.config.scenario.as_str()
             ));
         }
@@ -892,10 +821,6 @@ impl CliHandler {
         self.out(String::new());
         self.out(format!("  {} Options:", c::cyan("▸")));
         self.out(format!(
-            "  {}   --mode <mode>         Benchmark mode: real (default)",
-            c::dim("│")
-        ));
-        self.out(format!(
             "  {}   --scenario <scenario>  Load scenario (use benchmark list to see all)",
             c::dim("│")
         ));
@@ -946,7 +871,7 @@ impl CliHandler {
         self.out(String::new());
         self.out(format!("  {} Examples:", c::cyan("▸")));
         self.out(format!(
-            "  {}   benchmark run --mode real --scenario gameplay --preset standard",
+            "  {}   benchmark run --scenario gameplay --preset standard",
             c::dim("│")
         ));
         self.out(format!(

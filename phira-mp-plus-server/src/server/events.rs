@@ -199,7 +199,6 @@ impl PlusServerState {
             .enqueue(crate::persistence::message::PersistenceEvent::ServerEvent {
                 kind: event.event_type().to_string(),
                 payload: Arc::new(event.clone().inner()),
-                simulation: false,
             })
             .await;
         self.events.publish_room_event(event.clone());

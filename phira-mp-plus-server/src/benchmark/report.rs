@@ -392,7 +392,6 @@ impl BenchmarkReport {
 
         // ── 配置 ──
         out.push_str("配置\n");
-        out.push_str(&format!("  Mode: {}\n", self.config.mode.as_str()));
         out.push_str(&format!("  Scenario: {}\n", self.config.scenario.as_str()));
         out.push_str(&format!("  Seed: {}\n", self.config.seed));
         out.push_str(&format!("  Clients: {}\n", self.config.clients));
@@ -639,7 +638,6 @@ impl BenchmarkReport {
         // ── 配置 ──
         md.push_str("## 配置 (Configuration)\n\n");
         md.push_str("| 参数 | 值 |\n|------|-----|\n");
-        md.push_str(&format!("| Mode | `{}` |\n", self.config.mode.as_str()));
         md.push_str(&format!("| Scenario | `{}` |\n", self.config.scenario.as_str()));
         md.push_str(&format!("| Seed | `{}` |\n", self.config.seed));
         md.push_str(&format!("| Clients | `{}` |\n", self.config.clients));

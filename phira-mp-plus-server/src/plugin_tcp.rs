@@ -22,6 +22,18 @@ const MAX_READ_BUF_PER_PLUGIN: usize = 4_194_304;      // 4 MB (future enforceme
 /// WASM thread until the async TCP actor processes the command.
 pub(crate) type SyncReply<T> = std::sync::mpsc::Sender<Result<T, String>>;
 
+/// Internal events from accept loops back to the PluginTcpActor.
+#[derive(Debug)]
+pub(crate) enum PluginTcpInternal {
+    Accepted {
+        listener_handle: u64,
+        conn_handle: u64,
+        remote_addr: String,
+        data_tx: mpsc::Sender<Vec<u8>>,
+        close_tx: oneshot::Sender<()>,
+    },
+}
+
 /// Commands plugins send to the TCP actor.
 #[derive(Debug)]
 pub enum PluginTcpCommand {
@@ -97,6 +109,10 @@ struct Listener {
 /// TCP actor managing connection and listener handles.
 pub struct PluginTcpActor {
     rx: mpsc::Receiver<PluginTcpCommand>,
+    /// Internal events (e.g. from accept loop).
+    internal_rx: mpsc::Receiver<PluginTcpInternal>,
+    /// Sender cloned into accept loops for sending internal events.
+    internal_tx: mpsc::Sender<PluginTcpInternal>,
     connections: HashMap<u64, Connection>,
     listeners: HashMap<u64, Listener>,
     next_handle: u64,
@@ -117,8 +133,11 @@ pub struct PluginTcpActor {
 
 impl PluginTcpActor {
     pub fn new(rx: mpsc::Receiver<PluginTcpCommand>) -> Self {
+        let (internal_tx, internal_rx) = mpsc::channel::<PluginTcpInternal>(256);
         Self {
             rx,
+            internal_rx,
+            internal_tx,
             connections: HashMap::new(),
             listeners: HashMap::new(),
             next_handle: 1,
@@ -221,8 +240,51 @@ impl PluginTcpActor {
     pub async fn run(&mut self) {
         info!("tcp actor started");
 
-        while let Some(cmd) = self.rx.recv().await {
-            match cmd {
+        loop {
+            tokio::select! {
+                biased;
+                cmd = self.rx.recv() => {
+                    let Some(cmd) = cmd else { break; };
+                    self.handle_command(cmd).await;
+                }
+                internal = self.internal_rx.recv() => {
+                    let Some(msg) = internal else { break; };
+                    match msg {
+                        PluginTcpInternal::Accepted { listener_handle, conn_handle, remote_addr, data_tx, close_tx } => {
+                            // Register accepted connection with listener's plugin
+                            let plugin_id = self.handle_owner.get(&listener_handle).cloned();
+                            if let Some(ref pid) = plugin_id {
+                                if self.count_plugin_connections(pid) >= MAX_CONNECTIONS_PER_PLUGIN {
+                                    warn!(%conn_handle, %pid, "inbound connection quota exceeded, dropping");
+                                    self.emit_event("tcp:error",
+                                        serde_json::json!({"handle": conn_handle, "error": format!("connection quota exceeded for {pid}")}));
+                                    continue;
+                                }
+                                self.handle_owner.insert(conn_handle, pid.clone());
+                                *self.plugin_connections.entry(pid.clone()).or_insert(0) += 1;
+                                self.connections.insert(conn_handle, Connection {
+                                    remote_addr: remote_addr.clone(),
+                                    close_tx: Some(close_tx),
+                                });
+                                // Register in shared maps for send/close
+                                self.conn_map.lock().unwrap().insert(conn_handle, data_tx);
+                                // Push to pending_accepts for the plugin to accept()
+                                if let Some(listener) = self.listeners.get_mut(&listener_handle) {
+                                    listener.pending_accepts.push(conn_handle);
+                                }
+                                self.emit_event("tcp:accept",
+                                    serde_json::json!({"listener_handle": listener_handle, "conn_handle": conn_handle, "remote_addr": remote_addr}));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        info!("tcp actor stopped");
+    }
+
+    async fn handle_command(&mut self, cmd: PluginTcpCommand) {
+        match cmd {
                 PluginTcpCommand::Connect { plugin_id, addr, reply } => {
                     if self.count_plugin_connections(&plugin_id) >= MAX_CONNECTIONS_PER_PLUGIN {
                         let _ = reply.send(Err(format!("plugin '{plugin_id}' connection quota exceeded ({MAX_CONNECTIONS_PER_PLUGIN})")));
@@ -233,11 +295,10 @@ impl PluginTcpActor {
                     let cm = Arc::clone(&self.conn_map);
                     let rbm = Arc::clone(&self.read_buf_map);
 
-                    self.handle_owner.insert(handle, plugin_id.clone());
-                    *self.plugin_connections.entry(plugin_id.clone()).or_insert(0) += 1;
-
                     match tcp_connect(&addr, handle, cb, cm, rbm).await {
                         Ok((_, close_tx)) => {
+                            self.handle_owner.insert(handle, plugin_id.clone());
+                            *self.plugin_connections.entry(plugin_id.clone()).or_insert(0) += 1;
                             self.connections.insert(
                                 handle,
                                 Connection {
@@ -261,15 +322,12 @@ impl PluginTcpActor {
                     }
                     let handle = self.alloc_handle();
                     let cb = self.event_callback.clone();
-                    let cm = Arc::clone(&self.conn_map);
-                    let clm = Arc::clone(&self.close_map);
                     let rbm = Arc::clone(&self.read_buf_map);
 
-                    self.handle_owner.insert(handle, plugin_id.clone());
-                    *self.plugin_listeners.entry(plugin_id.clone()).or_insert(0) += 1;
-
-                    match tcp_listen(&addr, handle, cb, cm, clm, rbm).await {
+                    match tcp_listen(&addr, handle, self.internal_tx.clone(), cb, rbm).await {
                         Ok(close_tx) => {
+                            self.handle_owner.insert(handle, plugin_id.clone());
+                            *self.plugin_listeners.entry(plugin_id.clone()).or_insert(0) += 1;
                             self.listeners.insert(
                                 handle,
                                 Listener {
@@ -312,13 +370,6 @@ impl PluginTcpActor {
                         Err(e)
                     } else if let Some(listener) = self.listeners.get_mut(&listener_handle) {
                         if let Some(conn_handle) = listener.pending_accepts.pop() {
-                            self.handle_owner.insert(conn_handle, plugin_id.clone());
-                            *self.plugin_connections.entry(plugin_id.clone()).or_insert(0) += 1;
-                            // Store a minimal connection record for peer_addr support.
-                            self.connections.insert(conn_handle, Connection {
-                                remote_addr: listener.addr.clone(),
-                                close_tx: None,
-                            });
                             Ok(Some(conn_handle))
                         } else {
                             Ok(None)
@@ -399,9 +450,8 @@ async fn tcp_connect(
 async fn tcp_listen(
     addr: &str,
     listener_handle: u64,
+    internal_tx: mpsc::Sender<PluginTcpInternal>,
     event_cb: Option<Arc<dyn Fn(String, serde_json::Value) + Send + Sync>>,
-    conn_map: ConnectionMap,
-    close_map: CloseMap,
     read_buf_map: ReadBufMap,
 ) -> Result<oneshot::Sender<()>, String> {
     let listener = TcpListener::bind(addr)
@@ -410,7 +460,7 @@ async fn tcp_listen(
 
     let (close_tx, close_rx) = oneshot::channel();
     tokio::spawn(tcp_accept_loop(
-        listener, listener_handle, close_rx, event_cb, conn_map, close_map, read_buf_map,
+        listener, listener_handle, internal_tx, close_rx, event_cb, read_buf_map,
     ));
     Ok(close_tx)
 }
@@ -418,10 +468,9 @@ async fn tcp_listen(
 async fn tcp_accept_loop(
     listener: TcpListener,
     listener_handle: u64,
+    internal_tx: mpsc::Sender<PluginTcpInternal>,
     mut close_rx: oneshot::Receiver<()>,
     event_cb: Option<Arc<dyn Fn(String, serde_json::Value) + Send + Sync>>,
-    conn_map: ConnectionMap,
-    close_map: CloseMap,
     read_buf_map: ReadBufMap,
 ) {
     let mut next_conn: u64 = 1;
@@ -434,27 +483,20 @@ async fn tcp_accept_loop(
                         let conn_handle = (listener_handle << 32) | next_conn;
                         next_conn += 1;
                         let cb = event_cb.clone();
-                        let cm_handle = Arc::clone(&conn_map);
-                        let clm_handle = Arc::clone(&close_map);
                         let rbm = Arc::clone(&read_buf_map);
-                        // Register read buffer for this connection.
-                        rbm.lock().unwrap().insert(conn_handle, Vec::new());
-                        // Notify plugin via on-api event.
-                        if let Some(ref cb) = cb {
-                            cb("tcp:accept".into(), serde_json::json!({
-                                "listener_handle": listener_handle,
-                                "conn_handle": conn_handle,
-                                "remote_addr": peer,
-                            }));
-                        }
+                        let itx = internal_tx.clone();
+                        let peer_for_msg = peer.clone();
                         tokio::spawn(async move {
                             let (data_tx, data_rx) = mpsc::channel::<Vec<u8>>(64);
                             let (close_tx, close_rx) = oneshot::channel::<()>();
-                            cm_handle.lock().unwrap().insert(conn_handle, data_tx);
-                            clm_handle.lock().unwrap().insert(conn_handle, close_tx);
+                            let _ = itx.send(PluginTcpInternal::Accepted {
+                                listener_handle,
+                                conn_handle,
+                                remote_addr: peer_for_msg,
+                                data_tx,
+                                close_tx,
+                            }).await;
                             tcp_read_task(stream, conn_handle, data_rx, close_rx, cb, peer, rbm).await;
-                            cm_handle.lock().unwrap().remove(&conn_handle);
-                            clm_handle.lock().unwrap().remove(&conn_handle);
                         });
                     }
                     Err(e) => {
