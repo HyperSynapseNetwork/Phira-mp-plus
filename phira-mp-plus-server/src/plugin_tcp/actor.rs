@@ -13,7 +13,7 @@ use crate::plugin_tcp::{
     CloseMap, ConnectionMap, PluginTcpCommand, PluginTcpInternal, ReadBufMap,
 };
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use tokio::sync::{mpsc, oneshot};
 use tracing::{error, info, warn};
 
