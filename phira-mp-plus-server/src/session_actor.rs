@@ -266,12 +266,14 @@ async fn handle_chat(
         let room = user.room.read().await.as_ref().map(Arc::clone)
             .ok_or_else(|| anyhow::anyhow!("{}", crate::tl!("no-room")))?;
         // PersistenceWorker (exclusive — no direct DB write)
-        let _ = user.server.persistence_worker.enqueue(
+        if let Err(e) = user.server.persistence_worker.enqueue(
             crate::persistence::message::PersistenceEvent::ServerEvent {
                 kind: "chat.message".to_string(),
                 payload: Arc::new(serde_json::json!({"room_id": room.id.to_string(), "user_id": user.id, "user_name": user.name.clone(), "message": content.clone()})),
             },
-        ).await;
+        ).await {
+            tracing::warn!(user = user.id, kind = %e.kind(), "chat persistence enqueue failed");
+        }
         room.send_as(&user, content).await;
         user.server.publish_runtime_event(crate::event_bus::MpEvent::ChatMessage {
             room_id: Some(room.id.clone()), user_id: user.id,

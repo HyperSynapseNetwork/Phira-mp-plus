@@ -29,8 +29,8 @@ pub enum BenchmarkReportStage {
     Failed { elapsed_ms: u64, error: String },
 }
 
-const DB_WRITE_ATTEMPTS: usize = 3;
-const DB_RETRY_BACKOFF_MS: [u64; DB_WRITE_ATTEMPTS - 1] = [50, 250];
+const DB_WRITE_ATTEMPTS: usize = 5;
+const DB_RETRY_BACKOFF_MS: [u64; DB_WRITE_ATTEMPTS - 1] = [100, 200, 500, 2000];
 
 async fn wait_before_retry(attempt: usize) {
     if let Some(delay_ms) = DB_RETRY_BACKOFF_MS.get(attempt) {
@@ -103,12 +103,11 @@ pub async fn persist_production_event_if_needed(event: &PersistenceEvent) -> Per
                 language,
                 ip,
             } => {
-                db.record_user_seen(*user_id, user_name, language, Some(ip.clone()))
-                    .await;
+                let seen_ok = db.record_user_seen(*user_id, user_name, language, Some(ip.clone())).await.is_ok();
                 if !ip.is_empty() {
                     db.record_user_ip(*user_id, ip.as_str());
                 }
-                true
+                seen_ok
             }
             PersistenceEvent::BenchmarkReport { .. }
             | PersistenceEvent::Flush

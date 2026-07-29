@@ -46,28 +46,30 @@ impl DbManager {
     }
 
     /// Upsert a user record and wait for acknowledgement.
+    /// Increments login_count on conflict to track total visit count.
     pub async fn record_user_seen(
         &self,
         user_id: i32,
         name: &str,
         language: &str,
         ip: Option<String>,
-    ) -> bool {
+    ) -> Result<(), sqlx::Error> {
         let Self::Pg(pool) = self;
         let now = now_ms_inline();
         sqlx::query(
             "INSERT INTO mp_users (
                    user_id, name, language, ip, first_seen_at, last_seen_at,
-                   last_connected_at, updated_at
+                   last_connected_at, updated_at, login_count
                  )
-                 VALUES ($1, $2, $3, $4, $5, $5, $5, $5)
+                 VALUES ($1, $2, $3, $4, $5, $5, $5, $5, 1)
                  ON CONFLICT (user_id) DO UPDATE SET
                    name = EXCLUDED.name,
                    language = EXCLUDED.language,
                    ip = COALESCE(EXCLUDED.ip, mp_users.ip),
                    last_seen_at = EXCLUDED.last_seen_at,
                    last_connected_at = EXCLUDED.last_connected_at,
-                   updated_at = EXCLUDED.updated_at",
+                   updated_at = EXCLUDED.updated_at,
+                   login_count = mp_users.login_count + 1",
         )
         .bind(user_id)
         .bind(name)
@@ -75,8 +77,8 @@ impl DbManager {
         .bind(ip)
         .bind(now)
         .execute(pool)
-        .await
-        .is_ok()
+        .await?;
+        Ok(())
     }
 
     /// Record a user disconnect and wait for acknowledgement.

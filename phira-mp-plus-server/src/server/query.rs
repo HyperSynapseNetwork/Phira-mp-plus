@@ -289,18 +289,42 @@ fn server_state_query_dispatch(
                 .collect();
             Ok(serde_json::json!(list))
         }
-        "auth.visited_count" => {
-            // 直接同步查询 PG，避免双重线程 + recv_timeout 在冷启动时超时返回 0
-            let pool = match &state.db_manager {
-                crate::db::DbManager::Pg(p) => p.clone(),
-            };
-            let count = futures::executor::block_on(async {
-                sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM mp_users")
+        "auth.visited_count" | "auth.unique_visitor_count" => {
+            let (tx, rx) = std::sync::mpsc::channel();
+            let s = Arc::clone(state);
+            spawn_on_runtime(async move {
+                let pool = match &s.db_manager {
+                    crate::db::DbManager::Pg(p) => p.clone(),
+                };
+                match sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM mp_users")
                     .fetch_one(&pool)
                     .await
-                    .unwrap_or(0)
+                {
+                    Ok(count) => { let _ = tx.send(Ok(serde_json::json!(count))); }
+                    Err(e) => { let _ = tx.send(Err(format!("database error: {e}"))); }
+                }
             });
-            Ok(serde_json::json!(count))
+            rx.recv_timeout(runtime_state_query_timeout())
+                .unwrap_or(Err("auth.visited_count timeout".to_string()))
+        }
+        "auth.total_visit_count" => {
+            let (tx, rx) = std::sync::mpsc::channel();
+            let s = Arc::clone(state);
+            spawn_on_runtime(async move {
+                let pool = match &s.db_manager {
+                    crate::db::DbManager::Pg(p) => p.clone(),
+                };
+                // Try login_count sum first, fall back to COUNT(*) for backward compat
+                match sqlx::query_scalar::<_, i64>("SELECT COALESCE(SUM(login_count), 0) FROM mp_users")
+                    .fetch_one(&pool)
+                    .await
+                {
+                    Ok(count) => { let _ = tx.send(Ok(serde_json::json!(count))); }
+                    Err(e) => { let _ = tx.send(Err(format!("database error: {e}"))); }
+                }
+            });
+            rx.recv_timeout(runtime_state_query_timeout())
+                .unwrap_or(Err("auth.total_visit_count timeout".to_string()))
         }
         "users.list" => {
             let users = crate::read_lock!(state.users);

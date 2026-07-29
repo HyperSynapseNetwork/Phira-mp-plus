@@ -105,8 +105,66 @@ impl PlusServerState {
         if let Some(pe) = plugin_event {
             self.plugin_manager.dispatch_event(pe).await;
         }
-        // 3. Persistence (future: canonical event pipeline integration)
-        // 4. Telemetry (future: automatic telemetry event recording)
+        // 3. Persistence — enqueue server event for durable storage
+        let persistence_event = Self::mp_event_to_persistence_event(&event);
+        if let Some(pe) = persistence_event {
+            if let Err(e) = self.persistence_worker.enqueue(pe).await {
+                tracing::warn!(?event, "canonical_event: failed to enqueue persistence event");
+            }
+        }
+    }
+
+    /// Convert an MpEvent to a PersistenceEvent for durable storage, if applicable.
+    fn mp_event_to_persistence_event(
+        event: &crate::event_bus::MpEvent,
+    ) -> Option<crate::persistence::message::PersistenceEvent> {
+        use crate::event_bus::MpEvent;
+        match event {
+            MpEvent::GameStarted { room_id, round_id } => Some(
+                crate::persistence::message::PersistenceEvent::ServerEvent {
+                    kind: "game_started".to_string(),
+                    payload: Arc::new(serde_json::json!({
+                        "room_id": room_id.to_string(),
+                        "round_id": round_id,
+                    })),
+                },
+            ),
+            MpEvent::RoomStateChanged { room_id, state } => Some(
+                crate::persistence::message::PersistenceEvent::ServerEvent {
+                    kind: "room_state_changed".to_string(),
+                    payload: Arc::new(serde_json::json!({
+                        "room_id": room_id.to_string(),
+                        "state": state,
+                    })),
+                },
+            ),
+            MpEvent::RoomJoined { room_id, user_id }
+            | MpEvent::RoomLeft { room_id, user_id } => {
+                let kind = if matches!(event, MpEvent::RoomJoined { .. }) {
+                    "room_joined"
+                } else {
+                    "room_left"
+                };
+                Some(
+                    crate::persistence::message::PersistenceEvent::ServerEvent {
+                        kind: kind.to_string(),
+                        payload: Arc::new(serde_json::json!({
+                            "room_id": room_id.to_string(),
+                            "user_id": user_id,
+                        })),
+                    },
+                )
+            }
+            MpEvent::BenchmarkCompleted { report } => {
+                Some(crate::persistence::message::PersistenceEvent::BenchmarkReport {
+                    report: report.clone(),
+                })
+            }
+            MpEvent::PluginEventDispatched(_)
+            | MpEvent::UserConnected { .. }
+            | MpEvent::UserDisconnected { .. }
+            | MpEvent::ChatMessage { .. } => None,
+        }
     }
 
     /// Publish a plugin event to the diagnostic bus and the reliable bounded

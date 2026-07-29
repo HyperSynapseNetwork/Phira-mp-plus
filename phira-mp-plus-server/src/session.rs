@@ -240,14 +240,31 @@ impl Session {
                                         };
 
                                         // PersistenceWorker (exclusive — no direct fallback)
-                                        let _ = server.persistence_worker.enqueue(
+                                        // UserSeen MUST be durably admitted to WAL before auth succeeds
+                                        if let Err(event) = server.persistence_worker.enqueue(
                                             crate::persistence::message::PersistenceEvent::UserSeen {
                                                 user_id: user_info.id,
                                                 user_name: user_info.name.clone(),
                                                 language: user_info.language.clone(),
                                                 ip: addr.ip().to_string(),
                                             }
-                                        ).await;
+                                        ).await {
+                                            warn!(
+                                                user = user_info.id,
+                                                kind = %event.kind(),
+                                                "UserSeen enqueue failed, rejecting auth"
+                                            );
+                                            send_auth_rejection(
+                                                &send_tx,
+                                                "persistence temporarily unavailable, please try again".to_string(),
+                                            )
+                                            .await;
+                                            if let Some(tx) = auth_tx.take() {
+                                                let _ = tx.send(AuthenticationOutcome::Rejected);
+                                            }
+                                            panicked.store(true, Ordering::SeqCst);
+                                            return;
+                                        }
 
                                         // Keep the final reconnect/new-user decision atomic across
                                         // Session construction. Cancellation releases this guard,
