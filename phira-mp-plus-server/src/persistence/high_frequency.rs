@@ -755,7 +755,7 @@ async fn run_hf_writer(
                         // Interleave overflow items with the main queue so that
                         // overflow is not starved when main-channel items arrive
                         // continuously (审计 P2).
-                        drain_overflow(&mut batch, &mut overflow_rx, &stats, overflow_max_age_ms).await;
+                        drain_overflow(&mut batch, &mut overflow_rx, &stats, overflow_max_age_ms, max_batch_size.saturating_sub(batch.len())).await;
 
                         if batch.len() >= max_batch_size {
                             flush_and_update_seq(
@@ -765,14 +765,14 @@ async fn run_hf_writer(
                     }
                     Some(HfMessage::Flush(reply)) => {
                         // Drain overflow into current batch before flushing
-                        drain_overflow(&mut batch, &mut overflow_rx, &stats, overflow_max_age_ms).await;
+                        drain_overflow(&mut batch, &mut overflow_rx, &stats, overflow_max_age_ms, max_batch_size).await;
                         let result = flush_and_update_seq(
                             &mut batch, &stats, &db, max_retries, "explicit_flush"
                         ).await;
                         let _ = reply.send(result);
                     }
                     Some(HfMessage::Shutdown(reply)) => {
-                        drain_overflow(&mut batch, &mut overflow_rx, &stats, overflow_max_age_ms).await;
+                        drain_overflow(&mut batch, &mut overflow_rx, &stats, overflow_max_age_ms, max_batch_size).await;
                         let result = flush_and_update_seq(
                             &mut batch, &stats, &db, max_retries, "shutdown"
                         ).await;
@@ -784,7 +784,7 @@ async fn run_hf_writer(
                     }
                     None => {
                         // Channel closed — flush remaining items and exit.
-                        drain_overflow(&mut batch, &mut overflow_rx, &stats, overflow_max_age_ms).await;
+                        drain_overflow(&mut batch, &mut overflow_rx, &stats, overflow_max_age_ms, max_batch_size).await;
                         if !batch.is_empty() {
                             flush_and_update_seq(
                                 &mut batch, &stats, &db, max_retries, "closed"
@@ -797,7 +797,7 @@ async fn run_hf_writer(
             }
             _ = ticker.tick() => {
                 // Drain overflow into current batch before flushing
-                drain_overflow(&mut batch, &mut overflow_rx, &stats, overflow_max_age_ms).await;
+                drain_overflow(&mut batch, &mut overflow_rx, &stats, overflow_max_age_ms, max_batch_size).await;
                 if !batch.is_empty() {
                     flush_and_update_seq(
                         &mut batch, &stats, &db, max_retries, "interval"
@@ -810,15 +810,24 @@ async fn run_hf_writer(
 
 /// Drain expired and pending overflow items into the current batch.
 /// Expired items (older than max_age) are dropped and counted.
+/// Drains at most `max_items` items into the batch per call.
 async fn drain_overflow(
     batch: &mut Vec<HighFrequencyItem>,
     overflow_rx: &mut Option<mpsc::Receiver<OverflowItem>>,
     stats: &HighFrequencyStats,
     max_age_ms: i64,
+    max_items: usize,
 ) {
     let Some(rx) = overflow_rx.as_mut() else { return };
+    if max_items == 0 {
+        return;
+    }
     let now = now_ms();
+    let mut drained = 0usize;
     loop {
+        if drained >= max_items {
+            break;
+        }
         match rx.try_recv() {
             Ok(overflow) => {
                 let age = now - overflow.enqueued_at_ms;
@@ -829,6 +838,7 @@ async fn drain_overflow(
                     continue;
                 }
                 batch.push(overflow.item);
+                drained += 1;
             }
             Err(mpsc::error::TryRecvError::Empty) => break,
             Err(mpsc::error::TryRecvError::Disconnected) => {
