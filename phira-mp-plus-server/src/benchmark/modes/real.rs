@@ -854,6 +854,31 @@ async fn run_client_scenario(
         _ => {}
     }
 
+    // ── 离开房间（RoomLifecycle 场景） ───────────────────────────
+    if scenario == BenchmarkScenario::RoomLifecycle {
+        stream
+            .send(ClientCommand::LeaveRoom)
+            .await
+            .map_err(|e| format!("client {client_index}: send LeaveRoom: {e}"))?;
+        cm.record_command();
+
+        // Wait for LeaveRoom confirmation
+        let _leave_result = wait_for_response(
+            rx,
+            |cmd| match cmd {
+                ServerCommand::LeaveRoom(result) => Some(result.clone()),
+                _ => None,
+            },
+            STEP_TIMEOUT,
+            "LeaveRoom",
+            last_cmd,
+        )
+        .await
+        .map_err(|e| format!("client {client_index}: {e}"))?;
+
+        info!("client {} left room", client_index);
+    }
+
     Ok(())
 }
 
