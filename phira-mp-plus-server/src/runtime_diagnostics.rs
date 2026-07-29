@@ -21,7 +21,7 @@ pub const BENCHMARK_REPORT_HISTORY: usize = 64;
 pub const BENCHMARK_REPORT_RECENT_DEFAULT: usize = 12;
 
 /// Synchronous state-query timeout used by plugin/Web readonly bridge calls.
-pub const RUNTIME_STATE_QUERY_TIMEOUT: Duration = Duration::from_millis(2000);
+pub const RUNTIME_STATE_QUERY_TIMEOUT: Duration = Duration::from_secs(30);
 
 #[cfg(test)]
 mod tests {
@@ -33,6 +33,6 @@ mod tests {
         assert!(EVENT_TRACE_WINDOW >= 32);
         assert!(BENCHMARK_REPORT_HISTORY >= 8);
         assert!(BENCHMARK_REPORT_RECENT_DEFAULT <= BENCHMARK_REPORT_HISTORY);
-        assert!(RUNTIME_STATE_QUERY_TIMEOUT.as_millis() >= 500);
+        assert!(RUNTIME_STATE_QUERY_TIMEOUT.as_secs() >= 5);
     }
 }
