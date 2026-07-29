@@ -1,6 +1,5 @@
 //! BenchmarkReport persistence contracts.
 
-use crate::benchmark::command::BenchmarkRunMode;
 use crate::benchmark::report::BenchmarkReport;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -9,7 +8,6 @@ use serde_json::Value;
 pub struct BenchmarkReportPersistenceRecord {
     /// Stable idempotency key reused across database retries.
     pub report_id: String,
-    pub mode: BenchmarkRunMode,
     pub title: String,
     pub duration_secs: u64,
     pub operations: Option<u64>,
@@ -30,7 +28,6 @@ impl BenchmarkReportPersistenceRecord {
     pub fn from_report(report: &BenchmarkReport, source: impl Into<String>) -> Self {
         Self {
             report_id: uuid::Uuid::new_v4().to_string(),
-            mode: report.config.mode,
             title: report.title.clone(),
             duration_secs: report.summary.duration_secs,
             operations: Some(report.summary.total_commands),
@@ -69,12 +66,11 @@ impl BenchmarkReportPersistenceRecord {
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct BenchmarkReportHistoryQuery {
-    pub mode: Option<BenchmarkRunMode>,
     pub limit: usize,
 }
 
 impl BenchmarkReportHistoryQuery {
-    pub fn new(mode: Option<BenchmarkRunMode>, limit: usize) -> Self {
+    pub fn new(limit: usize) -> Self {
         Self {
             mode,
             limit: limit.clamp(1, 200),
@@ -85,7 +81,6 @@ impl BenchmarkReportHistoryQuery {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BenchmarkReportHistoryRow {
     pub sequence: i64,
-    pub mode: BenchmarkRunMode,
     pub title: String,
     pub duration_secs: i64,
     pub operations: Option<i64>,
@@ -130,7 +125,6 @@ mod tests {
         let mut report = make_test_report();
         report.notes.push("dry-run".to_string());
         let record = BenchmarkReportPersistenceRecord::from_report(&report, "test");
-        assert_eq!(record.mode, BenchmarkRunMode::Real);
         assert_eq!(record.notes, 1);
         assert_eq!(
             record.schema_version,
@@ -321,7 +315,3 @@ impl DbManager {
     }
 }
 
-/// Parse a benchmark-mode string into [`BenchmarkRunMode`].
-fn benchmark_mode_from_str(value: &str) -> Option<BenchmarkRunMode> {
-    BenchmarkRunMode::parse(value)
-}

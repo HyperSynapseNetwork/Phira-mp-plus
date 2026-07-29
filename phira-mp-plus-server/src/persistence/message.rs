@@ -139,8 +139,7 @@ impl PersistenceEvent {
                 format!("kind={kind}")
             }
             Self::BenchmarkReport { report } => format!(
-                "mode={} title={} errors={}",
-                report.config.mode.as_str(),
+                "title={} errors={}",
                 report.title,
                 report.errors_total,
             ),
