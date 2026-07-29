@@ -102,6 +102,7 @@ impl PlusServer {
                 actor.run().await;
             });
         }
+        plugin_manager.set_plugin_tcp_tx(plugin_tcp_tx.clone());
         let phira_client = Arc::new(crate::phira_client::PhiraRetryClient::new(
             runtime.phira_http.clone().into_policy(),
         )?);

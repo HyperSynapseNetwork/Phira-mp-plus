@@ -57,6 +57,7 @@ mod tests {
             room_state_query: None,
             api_handlers: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
             services_handlers: None,
+            handler_owners: None,
             api_forward: None,
         })
     }

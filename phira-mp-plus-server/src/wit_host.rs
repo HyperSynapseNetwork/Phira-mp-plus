@@ -67,6 +67,10 @@ pub struct WitHostContext {
     /// PluginManager.api_handlers.  Methods registered via register_handler are
     /// also inserted here so PluginManager can dispatch to them.
     pub services_handlers: Option<Arc<Mutex<HashMap<String, api::PluginApiHandler>>>>,
+    /// Tracks method name ownership for the shared handler registry.
+    /// Maps plugin_name -> list of handler methods owned by that plugin.
+    /// Used by PluginManager::remove_plugin to clean up stale handlers.
+    pub handler_owners: Option<Arc<Mutex<HashMap<String, Vec<String>>>>>,
     /// Dispatch function that forwards an API call to this plugin via
     /// PluginManager::call_plugin_api.  Set in build_context_from_services.
     pub api_forward: Option<Arc<dyn Fn(&str, &[serde_json::Value]) -> Result<serde_json::Value, String> + Send + Sync>>,
@@ -1193,6 +1197,12 @@ mod wit_trait_impls {
                     sh.insert(method.clone(), handler);
                 }
             }
+            // Track handler ownership for cleanup
+            if let Some(ref owners) = self.ctx.handler_owners {
+                if let Ok(mut map) = owners.lock() {
+                    map.entry(self.plugin_name.clone()).or_default().push(method.clone());
+                }
+            }
 
             Ok(())
         }
@@ -1208,6 +1218,17 @@ mod wit_trait_impls {
                     if let Some(ref shared) = self.ctx.services_handlers {
                         if let Ok(mut sh) = shared.lock() {
                             sh.remove(&method);
+                        }
+                    }
+                    // Remove from handler_owners tracking
+                    if let Some(ref owners) = self.ctx.handler_owners {
+                        if let Ok(mut map) = owners.lock() {
+                            if let Some(methods) = map.get_mut(&self.plugin_name) {
+                                methods.retain(|m| m != &method);
+                                if methods.is_empty() {
+                                    map.remove(&self.plugin_name);
+                                }
+                            }
                         }
                     }
                     Ok(())

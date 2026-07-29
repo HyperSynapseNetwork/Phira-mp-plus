@@ -35,6 +35,9 @@ pub struct WasmPluginServices {
     pub state_query: Mutex<Option<api::ServerStateQuery>>,
     /// WASM-only: chat callback set by PluginManager::set_send_chat.
     pub send_chat: Mutex<Option<Arc<dyn Fn(i32, String) + Send + Sync>>>,
+    /// Tracks which handler methods each plugin has registered.
+    /// Shared with PluginManager — do not write separately.
+    pub handler_owners: Arc<Mutex<HashMap<String, Vec<String>>>>,
 }
 
 impl WasmPluginServices {
@@ -42,6 +45,7 @@ impl WasmPluginServices {
         extensions: Arc<ExtensionManager>,
         cli_commands: Arc<Mutex<HashMap<String, CliCommand>>>,
         api_handlers: Arc<Mutex<HashMap<String, api::PluginApiHandler>>>,
+        handler_owners: Arc<Mutex<HashMap<String, Vec<String>>>>,
     ) -> Self {
         Self {
             capabilities: Mutex::new(HashMap::new()),
@@ -52,6 +56,7 @@ impl WasmPluginServices {
             http_handle: Mutex::new(None),
             state_query: Mutex::new(None),
             send_chat: Mutex::new(None),
+            handler_owners,
         }
     }
 
@@ -191,6 +196,7 @@ impl WitPluginComponent {
             room_state_query: None, // Replaced by direct state_query.call() in phira-room-state
             api_handlers: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
             services_handlers: Some(Arc::clone(&services.api_handlers)),
+            handler_owners: Some(Arc::clone(&services.handler_owners)),
             api_forward: Some(api_forward),
         }))
     }
@@ -601,6 +607,7 @@ mod tests {
             room_state_query: None,
             api_handlers: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
             services_handlers: None,
+            handler_owners: None,
             api_forward: None,
         })
     }

@@ -379,6 +379,11 @@ pub struct PluginManager {
     suspended: AtomicBool,
     #[cfg(feature = "plugin-system")]
     wasm_services: Arc<crate::wasm_host::WasmPluginServices>,
+    /// TCP actor command sender, set after the actor is started.
+    plugin_tcp_tx: tokio::sync::Mutex<Option<tokio::sync::mpsc::Sender<crate::plugin_tcp::PluginTcpCommand>>>,
+    /// Tracks which handlers are owned by each plugin (method name list per plugin).
+    /// Used by remove_plugin to clean up the shared handler registry.
+    handler_owners: Arc<Mutex<HashMap<String, Vec<String>>>>,
 }
 
 impl PluginManager {
@@ -389,6 +394,7 @@ impl PluginManager {
     ) -> Self {
         let cli_commands = Arc::new(Mutex::new(HashMap::new()));
         let api_handlers = Arc::new(Mutex::new(HashMap::new()));
+        let handler_owners = Arc::new(Mutex::new(HashMap::new()));
         let http_handle = Arc::new(RwLock::new(None));
         let (event_tx, event_rx) = mpsc::channel(runtime.event_queue_capacity.max(16));
 
@@ -397,6 +403,7 @@ impl PluginManager {
             extensions,
             Arc::clone(&cli_commands),
             Arc::clone(&api_handlers),
+            Arc::clone(&handler_owners),
         ));
         #[cfg(not(feature = "plugin-system"))]
         let _ = extensions;
@@ -416,6 +423,8 @@ impl PluginManager {
             suspended: AtomicBool::new(false),
             #[cfg(feature = "plugin-system")]
             wasm_services,
+            plugin_tcp_tx: tokio::sync::Mutex::new(None),
+            handler_owners,
         }
     }
 
@@ -600,6 +609,13 @@ impl PluginManager {
                 .send_chat
                 .lock()
                 .unwrap_or_else(|e| e.into_inner()) = Some(callback);
+        }
+    }
+
+    /// Set the TCP actor command sender after the TCP actor is started.
+    pub fn set_plugin_tcp_tx(&self, tx: tokio::sync::mpsc::Sender<crate::plugin_tcp::PluginTcpCommand>) {
+        if let Ok(mut guard) = self.plugin_tcp_tx.lock() {
+            *guard = Some(tx);
         }
     }
 
@@ -997,6 +1013,34 @@ impl PluginManager {
         }
         #[cfg(not(feature = "plugin-system"))]
         let _ = (&stable_id, &plugin_name);
+
+        // Clean up TCP connections owned by the plugin
+        {
+            if let Ok(tx_guard) = self.plugin_tcp_tx.lock() {
+                if let Some(ref tx) = *tx_guard {
+                    let (reply, rx) = std::sync::mpsc::channel();
+                    let _ = tx.try_send(crate::plugin_tcp::PluginTcpCommand::RemovePlugin {
+                        plugin_id: plugin_name.clone(),
+                        reply,
+                    });
+                    // Wait up to 5s for the TCP actor to clean up handles
+                    let _ = rx.recv_timeout(std::time::Duration::from_secs(5));
+                }
+            }
+        }
+
+        // Clean up registered handlers from the shared registry
+        {
+            if let Ok(mut owners) = self.handler_owners.lock() {
+                if let Some(methods) = owners.remove(&plugin_name) {
+                    if let Ok(mut handlers) = self.api_handlers.lock() {
+                        for method in methods {
+                            handlers.remove(&method);
+                        }
+                    }
+                }
+            }
+        }
 
         info!(plugin = %plugin_name, stable_id = %stable_id,
             "plugin removed from registry; files and data retained. Use purge_plugin_data to delete them."
