@@ -26,6 +26,7 @@ pub mod disconnect;
 pub mod events;
 pub mod init;
 pub mod query;
+pub mod recovery;
 pub mod rooms;
 pub mod proxy_protocol;
 pub mod snapshot;

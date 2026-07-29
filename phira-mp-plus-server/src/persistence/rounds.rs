@@ -6,6 +6,16 @@
 use crate::db::DbManager;
 use sqlx::Row;
 
+/// A round that was never finished — found during crash recovery.
+#[derive(Debug, Clone)]
+pub struct UnfinishedRound {
+    pub round_uuid: String,
+    pub room_id: String,
+    pub chart_id: i32,
+    pub chart_name: String,
+    pub started_at: i64,
+}
+
 fn telemetry_time_range<I>(times: I) -> (Option<f64>, Option<f64>)
 where
     I: IntoIterator<Item = f64>,
@@ -331,5 +341,90 @@ impl DbManager {
             }
         }
         None
+    }
+
+    /// Find all rounds that were started but never finished (crash recovery).
+    ///
+    /// Returns rows from `mp_rounds` where `finished_at IS NULL`, ordered by
+    /// started_at ascending (oldest first).
+    pub async fn find_unfinished_rounds(&self) -> Vec<UnfinishedRound> {
+        let Self::Pg(pool) = self;
+        let rows = sqlx::query(
+            "SELECT round_uuid, room_id, chart_id, chart_name, started_at
+                 FROM mp_rounds
+                 WHERE finished_at IS NULL
+                 ORDER BY started_at ASC",
+        )
+        .fetch_all(pool)
+        .await
+        .unwrap_or_default();
+        rows.iter()
+            .filter_map(|row| {
+                Some(UnfinishedRound {
+                    round_uuid: row.try_get::<String, _>("round_uuid").ok()?,
+                    room_id: row.try_get::<String, _>("room_id").ok()?,
+                    chart_id: row.try_get::<i32, _>("chart_id").ok()?,
+                    chart_name: row.try_get::<String, _>("chart_name").ok()?,
+                    started_at: row.try_get::<i64, _>("started_at").ok()?,
+                })
+            })
+            .collect()
+    }
+
+    /// Mark an unfinished round as aborted (crash recovery).
+    ///
+    /// Sets `finished_at` to the current timestamp and `aborted = true`.
+    /// Returns `true` if a row was updated successfully, `false` if the round
+    /// was already finished or did not exist.
+    pub async fn abort_round(&self, round_uuid: &str) -> bool {
+        let Self::Pg(pool) = self;
+        let now = now_ms();
+        sqlx::query(
+            "UPDATE mp_rounds
+                 SET finished_at = $2,
+                     aborted = TRUE,
+                     updated_at = $2,
+                     sequence = nextval('mp_persist_sequence')
+                 WHERE round_uuid = $1 AND finished_at IS NULL",
+        )
+        .bind(round_uuid)
+        .bind(now)
+        .execute(pool)
+        .await
+        .is_ok_and(|r| r.rows_affected() > 0)
+    }
+
+    /// Return the highest schema version recorded in `_pmp_schema_version`.
+    pub async fn get_schema_version(&self) -> Option<i32> {
+        let Self::Pg(pool) = self;
+        let row = sqlx::query(
+            "SELECT MAX(version) AS version FROM _pmp_schema_version",
+        )
+        .fetch_optional(pool)
+        .await
+        .ok()??;
+        row.try_get::<i32, _>("version").ok()
+    }
+
+    /// Count total rows in `mp_users`.
+    pub async fn count_users(&self) -> i64 {
+        let Self::Pg(pool) = self;
+        sqlx::query("SELECT COUNT(*) AS cnt FROM mp_users")
+            .fetch_one(pool)
+            .await
+            .ok()
+            .and_then(|r| r.try_get::<i64, _>("cnt").ok())
+            .unwrap_or(0)
+    }
+
+    /// Count total rows in `playtime`.
+    pub async fn count_playtime(&self) -> i64 {
+        let Self::Pg(pool) = self;
+        sqlx::query("SELECT COUNT(*) AS cnt FROM playtime")
+            .fetch_one(pool)
+            .await
+            .ok()
+            .and_then(|r| r.try_get::<i64, _>("cnt").ok())
+            .unwrap_or(0)
     }
 }

@@ -164,6 +164,14 @@ impl PlusServer {
             .await;
         state.plugin_manager.start_event_dispatcher().await;
         spawn_event_subscribers(&state);
+
+        // ── Startup state recovery ─────────────────────────────────────────
+        // After DB connection is verified and migrations are applied, but before
+        // plugins are loaded or network connections are accepted, recover any
+        // state from the previous server session (unfinished rounds, etc.).
+        info!("startup recovery: running postgres state recovery");
+        super::recovery::recover_state(&state, &state.db_manager).await;
+        info!("startup recovery: complete");
         state.room_commands.start_mailbox(Arc::clone(&state), 1024);
         let lost_con_state = Arc::clone(&state);
         crate::supervisor_actor::spawn_critical("lost-connection-worker", async move {
