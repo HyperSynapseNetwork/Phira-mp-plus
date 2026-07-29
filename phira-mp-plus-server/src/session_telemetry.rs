@@ -226,12 +226,17 @@ pub(crate) async fn handle_touches(user: Arc<User>, room: Arc<Room>, frames: Arc
     }
 
     if should_broadcast_monitor_telemetry(has_active_monitors) {
-        room
-            .broadcast_monitors(ServerCommand::Touches {
-                player: player_id,
-                frames,
-            })
-            .await;
+        // 审计 P1-A: use bounded broadcast channel with try_send.
+        // If the channel is full the oldest telemetry frame is dropped,
+        // ensuring slow monitors never block the game hot path.
+        if let Some(server) = room.server.upgrade() {
+            if let Some(tx) = server.room_commands.monitor_telemetry_sender(&room.id.to_string()) {
+                let _ = tx.try_send(ServerCommand::Touches {
+                    player: player_id,
+                    frames,
+                });
+            }
+        }
     } else {
         trace!(room = %room.id, user_id = user.id, "touch data persisted without active monitor broadcast");
     }
@@ -282,12 +287,15 @@ pub(crate) async fn handle_judges(user: Arc<User>, room: Arc<Room>, judges: Arc<
     }
 
     if should_broadcast_monitor_telemetry(has_active_monitors) {
-        room
-            .broadcast_monitors(ServerCommand::Judges {
-                player: player_id,
-                judges,
-            })
-            .await;
+        // 审计 P1-A: use bounded broadcast channel with try_send.
+        if let Some(server) = room.server.upgrade() {
+            if let Some(tx) = server.room_commands.monitor_telemetry_sender(&room.id.to_string()) {
+                let _ = tx.try_send(ServerCommand::Judges {
+                    player: player_id,
+                    judges,
+                });
+            }
+        }
     } else {
         trace!(room = %room.id, user_id = user.id, "judge data persisted without active monitor broadcast");
     }

@@ -76,13 +76,14 @@ pub use self::result::{RoomCommandDelivery, RoomCommandPayload, RoomCommandResul
 
 use self::command::RoomActorCommand;
 use crate::server::PlusServerState;
+use phira_mp_common::ServerCommand;
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{HashMap, VecDeque},
     sync::atomic::{AtomicBool, AtomicU64, AtomicUsize},
     sync::{RwLock as StdRwLock, Weak},
 };
-use tokio::sync::mpsc;
+use tokio::sync::{broadcast, mpsc};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RoomCommandGatewayStats {
@@ -126,6 +127,11 @@ struct RoomMailboxEntry {
     tx: mpsc::Sender<RoomActorCommand>,
     /// Fire-and-forget telemetry channel (审计 P0).
     telemetry_tx: mpsc::Sender<RoomActorCommand>,
+    /// Bounded broadcast channel for monitor telemetry (审计 P1-A).
+    /// try_send drops if full — slow monitors never block the hot path.
+    /// A per-room relay task reads from this channel and forwards to connected
+    /// monitor sessions via Room::broadcast_monitors.
+    monitor_telemetry_tx: broadcast::Sender<ServerCommand>,
 }
 
 #[derive(Clone)]
@@ -211,6 +217,21 @@ impl RoomCommandGateway {
         }
         let mailboxes = self.room_mailboxes.read().ok()?;
         mailboxes.get(room_id).map(|entry| entry.telemetry_tx.clone())
+    }
+
+    /// Get the bounded broadcast sender for monitor telemetry, if available.
+    /// Returns `None` when the mailbox is not yet started, the room is
+    /// unknown, or the broadcast channel is closed.
+    ///
+    /// The sender uses `try_send` internally — if the channel is full the
+    /// oldest telemetry frame is dropped, so slow monitors never block the
+    /// game hot path.
+    pub(crate) fn monitor_telemetry_sender(&self, room_id: &str) -> Option<broadcast::Sender<ServerCommand>> {
+        if !self.mailbox_enabled() {
+            return None;
+        }
+        let mailboxes = self.room_mailboxes.read().ok()?;
+        mailboxes.get(room_id).map(|entry| entry.monitor_telemetry_tx.clone())
     }
 }
 

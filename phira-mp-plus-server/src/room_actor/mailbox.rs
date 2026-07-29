@@ -6,8 +6,9 @@ use super::{
 };
 use crate::room::InternalRoomState;
 use crate::server::PlusServerState;
+use phira_mp_common::ServerCommand;
 use std::sync::{atomic::Ordering, Arc, Weak};
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{broadcast, mpsc, oneshot};
 
 enum MailboxAttempt {
     Completed(RoomCommandResult),
@@ -67,7 +68,11 @@ impl RoomCommandGateway {
 
         self.mailbox_registry_miss.fetch_add(1, Ordering::Relaxed);
         // 作用域限制 StdRwLockWriteGuard 在 .await 之前释放
-        let (tx, mut rx, mut telemetry_rx, _capacity) = {
+        // 审计 P1-A: bounded broadcast channel for monitor telemetry.
+        // Capacity 16 — small and bounded. try_send drops oldest when full,
+        // so slow monitors never block the game hot path.
+        const MONITOR_TELEMETRY_CAPACITY: usize = 16;
+        let (tx, mut rx, mut telemetry_rx, _capacity, monitor_rx) = {
             let mut mailboxes = self.room_mailboxes.write().ok()?;
             if let Some(entry) = mailboxes.get(room_id) {
                 if entry.room_uuid == room_uuid && !entry.tx.is_closed() {
@@ -80,15 +85,17 @@ impl RoomCommandGateway {
             // 审计 P0: 独立 telemetry channel，容量 2× control 以应对高频 Touch/Judge。
             let telemetry_cap = cap * 2;
             let (telemetry_tx, telemetry_rx) = mpsc::channel::<RoomActorCommand>(telemetry_cap);
+            let (monitor_tx, monitor_rx) = broadcast::channel::<ServerCommand>(MONITOR_TELEMETRY_CAPACITY);
             mailboxes.insert(
                 room_id.to_string(),
                 super::RoomMailboxEntry {
                     room_uuid: room_uuid.clone(),
                     tx: tx.clone(),
                     telemetry_tx,
+                    monitor_telemetry_tx: monitor_tx,
                 },
             );
-            (tx, rx, telemetry_rx, cap)
+            (tx, rx, telemetry_rx, cap, monitor_rx)
         };
         self.mailbox_created.fetch_add(1, Ordering::Relaxed);
         let worker_room_id = room_id.to_string();
@@ -120,6 +127,35 @@ impl RoomCommandGateway {
                     worker_room_uuid.clone(),
                     actor.snapshot().clone(),
                 );
+
+                // 审计 P1-A: 独立 monitor telemetry relay task。
+                // Reads from the bounded broadcast channel and forwards to actual
+                // monitor connections. If the broadcast channel is full, old
+                // telemetry frames are dropped (coalesce/skip old telemetry).
+                // This relay runs alongside the main mailbox loop so monitor
+                // broadcasts never block the game hot path.
+                {
+                    let relay_room = Arc::clone(actor.room());
+                    crate::supervisor_actor::spawn_named(
+                        format!("room-monitor-relay-{worker_room_id}"),
+                        async move {
+                            let mut rx = monitor_rx;
+                            loop {
+                                match rx.recv().await {
+                                    Ok(cmd) => relay_room.broadcast_monitors(cmd).await,
+                                    Err(broadcast::error::RecvError::Lagged(skipped)) => {
+                                        tracing::trace!(
+                                            room = %relay_room.id,
+                                            skipped,
+                                            "monitor relay lagged, dropping old telemetry"
+                                        );
+                                    }
+                                    Err(broadcast::error::RecvError::Closed) => break,
+                                }
+                            }
+                        },
+                    );
+                }
 
                 let mut lifecycle_tick = tokio::time::interval(std::time::Duration::from_secs(1));
                 lifecycle_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
@@ -347,6 +383,7 @@ mod tests {
         let new_uuid = uuid::Uuid::new_v4();
         let (tx, _rx) = mpsc::channel(1);
         let (telem_tx, _telem_rx) = mpsc::channel(1);
+        let (monitor_tx, _monitor_rx) = broadcast::channel::<ServerCommand>(16);
 
         gateway
             .room_mailboxes
@@ -358,6 +395,7 @@ mod tests {
                     room_uuid: new_uuid,
                     tx,
                     telemetry_tx: telem_tx,
+                    monitor_telemetry_tx: monitor_tx,
                 },
             );
 
