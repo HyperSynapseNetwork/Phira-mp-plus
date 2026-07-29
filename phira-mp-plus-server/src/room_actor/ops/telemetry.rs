@@ -1,9 +1,10 @@
 //! Telemetry command adapters behind the Runtime gateway.
 //!
-//! AddTouches and AddJudges use fire-and-forget `TelemetryTouches` /
+//! add_touches and add_judges use fire-and-forget `TelemetryTouches` /
 //! `TelemetryJudges` commands that skip the oneshot reply, avoiding
-//! control mailbox contention (审计 P0).  SetDisplayName remains a
-//! request/reply control command.
+//! control mailbox contention (审计 P0).  If the telemetry sender is
+//! unavailable the data is dropped (no control mailbox fallback).
+//! SetDisplayName remains a request/reply control command.
 
 use super::super::{
     command::{RoomActorCommand, RoomCommandKind},
@@ -31,7 +32,7 @@ impl RoomCommandGateway {
         // 审计 P0: cast fire-and-forget telemetry via try_send.
         if let Some(tx) = self.telemetry_sender(room_id).await {
             match tx.try_send(RoomActorCommand::TelemetryTouches {
-                room_id: rid.clone(),
+                room_id: rid,
                 user_id,
                 touches: data,
             }) {
@@ -42,16 +43,9 @@ impl RoomCommandGateway {
                 }
             }
         }
-        // Fall back to control mailbox path if telemetry sender unavailable.
-        self
-            .room_mailbox(&rid, |reply| RoomActorCommand::AddTouches {
-                room_id: rid.clone(),
-                user_id,
-                touches: data,
-                reply,
-            })
-            .await
-            .into_untyped()
+        // Telemetry sender unavailable — drop the data rather than falling
+        // back to the control mailbox (审计 P1).
+        Err("telemetry sender unavailable".to_string())
     }
 
     /// Cache a batch of judge data for a player — fire-and-forget.
@@ -65,7 +59,7 @@ impl RoomCommandGateway {
         let data = judges.to_vec();
         if let Some(tx) = self.telemetry_sender(room_id).await {
             match tx.try_send(RoomActorCommand::TelemetryJudges {
-                room_id: rid.clone(),
+                room_id: rid,
                 user_id,
                 judges: data,
             }) {
@@ -75,15 +69,7 @@ impl RoomCommandGateway {
                 }
             }
         }
-        self
-            .room_mailbox(&rid, |reply| RoomActorCommand::AddJudges {
-                room_id: rid.clone(),
-                user_id,
-                judges: data,
-                reply,
-            })
-            .await
-            .into_untyped()
+        Err("telemetry sender unavailable".to_string())
     }
 
     /// Set a player's display name.

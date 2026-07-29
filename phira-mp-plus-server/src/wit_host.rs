@@ -59,6 +59,13 @@ pub struct WitHostContext {
     pub room_state_query: Option<Arc<dyn Fn(String) -> Result<serde_json::Value, String> + Send + Sync>>,
     /// Plugin handler registry: method → owner + metadata.
     pub api_handlers: Arc<Mutex<HashMap<String, RegisteredHandler>>>,
+    /// Shared handler registry (PluginManager/WasmPluginServices), same Arc as
+    /// PluginManager.api_handlers.  Methods registered via register_handler are
+    /// also inserted here so PluginManager can dispatch to them.
+    pub services_handlers: Option<Arc<Mutex<HashMap<String, api::PluginApiHandler>>>>,
+    /// Dispatch function that forwards an API call to this plugin via
+    /// PluginManager::call_plugin_api.  Set in build_context_from_services.
+    pub api_forward: Option<Arc<dyn Fn(&str, &[serde_json::Value]) -> Result<serde_json::Value, String> + Send + Sync>>,
 }
 
 /// A registered plugin handler.
@@ -287,6 +294,7 @@ fn normalize_plugin_scoped_api_args(
 mod wit_trait_impls {
     use super::{normalize_plugin_scoped_api_args, WitPluginHost};
     use crate::plugin_abi::wit_abi as wit;
+    use phira_mp_plus_server_api as api;
     use std::sync::Arc;
     use std::time::Duration;
     use wit::phira::plugin::phira_types as types;
@@ -994,63 +1002,120 @@ mod wit_trait_impls {
 
     // ── phira-room-state ──
     impl wit::phira::plugin::phira_room_state::Host for WitPluginHost {
+        // Helpers to parse snapshot fields.
+        fn extract_snapshot_data(&self, v: &serde_json::Value) -> Result<&serde_json::Value, String> {
+            v.get("data").ok_or_else(|| "snapshot missing 'data' field".to_string())
+        }
+
+        fn build_room_players(&self, data: &serde_json::Value) -> Vec<wit::phira::plugin::phira_room_state::RoomPlayer> {
+            let ready: Vec<i32> = data.get("ready_users")
+                .and_then(|v| serde_json::from_value(v.clone()).ok()).unwrap_or_default();
+            let finished: Vec<i32> = data.get("finished_users")
+                .and_then(|v| serde_json::from_value(v.clone()).ok()).unwrap_or_default();
+            let host: i32 = data.get("host").and_then(|v| v.as_i64()).unwrap_or(-1) as i32;
+
+            let mut players = Vec::new();
+
+            // Users (non-monitor players)
+            if let Some(users_info) = data.get("users_info").and_then(|v| v.as_array()) {
+                for u in users_info {
+                    let uid = u.get("id").and_then(|v| v.as_i64()).unwrap_or(0) as u32;
+                    players.push(wit::phira::plugin::phira_room_state::RoomPlayer {
+                        user_id: uid,
+                        display_name: u.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                        is_monitor: false,
+                        is_ready: ready.contains(&(uid as i32)),
+                        is_host: u.get("is_host").and_then(|v| v.as_bool()).unwrap_or(false),
+                        is_finished: finished.contains(&(uid as i32)),
+                        score: None, // Not available in snapshot
+                        accuracy: None,
+                    });
+                }
+            }
+
+            // Monitors
+            if let Some(monitors_info) = data.get("monitors_info").and_then(|v| v.as_array()) {
+                for m in monitors_info {
+                    let uid = m.get("id").and_then(|v| v.as_i64()).unwrap_or(0) as u32;
+                    players.push(wit::phira::plugin::phira_room_state::RoomPlayer {
+                        user_id: uid,
+                        display_name: m.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                        is_monitor: true,
+                        is_ready: ready.contains(&(uid as i32)),
+                        is_host: m.get("is_host").and_then(|v| v.as_bool()).unwrap_or(false),
+                        is_finished: finished.contains(&(uid as i32)),
+                        score: None,
+                        accuracy: None,
+                    });
+                }
+            }
+
+            players
+        }
+
         fn get_room_state(&mut self, room_id: String) -> Result<wit::phira::plugin::phira_room_state::RoomState, String> {
             self.require_capability("room-state")?;
-            let query = self.ctx.room_state_query.as_ref()
-                .ok_or("room state query not available")?;
-            let v: serde_json::Value = query(format!("rooms.by_name:{room_id}"))?;
-            let rid = v.get("room_id").and_then(|v| v.as_str()).unwrap_or("").to_string();
-            let room_uuid = v.get("room_uuid").and_then(|v| v.as_str()).unwrap_or("").to_string();
-            let host_id = v.get("host_id").and_then(|v| v.as_i64()).map(|n| n as u32);
-            let locked = v.get("locked").and_then(|v| v.as_bool()).unwrap_or(false);
-            let hidden = v.get("hidden").and_then(|v| v.as_bool()).unwrap_or(false);
-            let player_count = v.get("player_count").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
-            let monitor_count = v.get("monitor_count").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
-            // Query players list via the same service
-            let players = if let Ok(arr) = serde_json::from_value::<Vec<serde_json::Value>>(
-                query(format!("room.players:{room_id}"))?
-            ) {
-                arr.into_iter().map(|v| {
-                    wit::phira::plugin::phira_room_state::RoomPlayer {
-                        user_id: v.get("user_id").and_then(|v| v.as_u64()).unwrap_or(0) as u32,
-                        display_name: v.get("display_name").and_then(|v| v.as_str()).unwrap_or("").to_string(),
-                        is_monitor: v.get("is_monitor").and_then(|v| v.as_bool()).unwrap_or(false),
-                        is_ready: v.get("is_ready").and_then(|v| v.as_bool()).unwrap_or(false),
-                        is_host: v.get("is_host").and_then(|v| v.as_bool()).unwrap_or(false),
-                        is_finished: v.get("is_finished").and_then(|v| v.as_bool()).unwrap_or(false),
-                        score: v.get("score").and_then(|v| v.as_u64()).map(|n| n as u32),
-                        accuracy: v.get("accuracy").and_then(|v| v.as_f64()).map(|n| n as f32),
-                    }
-                }).collect()
-            } else {
-                Vec::new()
-            };
-            let current_round = None; // Available via room.snapshot round_id field
+            let v = self.ctx.state_query.call("rooms.by_name", &[serde_json::json!(room_id)])?;
+            let data = self.extract_snapshot_data(&v)?;
+
+            let rid = data.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string();
+            let room_uuid = data.get("uuid").and_then(|v| v.as_str()).unwrap_or("").to_string();
+            let host_val = data.get("host").and_then(|v| v.as_i64()).unwrap_or(-1);
+            let host_id = if host_val >= 0 { Some(host_val as u32) } else { None };
+            let locked = data.get("locked").and_then(|v| v.as_bool()).unwrap_or(false);
+            let hidden = data.get("hidden").and_then(|v| v.as_bool()).unwrap_or(false);
+            let player_count = data.get("player_count").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+            let monitor_count = data.get("monitor_count").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+
+            let players = self.build_room_players(data);
+
+            // Derive current_round from round_history
+            let current_round = self.extract_current_round(data);
+
             Ok(wit::phira::plugin::phira_room_state::RoomState {
                 room_id: rid, room_uuid, host_id, locked, hidden,
                 player_count, monitor_count, players, current_round,
             })
         }
 
+        fn extract_current_round(&self, data: &serde_json::Value) -> Option<wit::phira::plugin::phira_room_state::RoundInfo> {
+            use wit::phira::plugin::phira_room_state::RoundInfo;
+            // Try current_round_id first, then fall back to the last round in
+            // round_history when the room state indicates an active round.
+            if let Some(rid) = data.get("current_round_id").and_then(|v| v.as_str()) {
+                if !rid.is_empty() {
+                    let phase = data.get("state").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                    return Some(RoundInfo {
+                        round_id: rid.to_string(),
+                        chart_id: data.get("chart").and_then(|v| v.as_i64()).map(|n| n as u32),
+                        chart_name: data.get("chart_name").and_then(|v| v.as_str()).map(str::to_string),
+                        phase,
+                    });
+                }
+            }
+            // Fall back to the last round in round_history
+            if let Some(rounds) = data.get("round_history").and_then(|v| v.as_array()) {
+                if let Some(last) = rounds.last() {
+                    let round_id = last.get("round_id").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                    if !round_id.is_empty() {
+                        let phase = data.get("state").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                        return Some(RoundInfo {
+                            round_id,
+                            chart_id: last.get("chart_id").and_then(|v| v.as_i64()).map(|n| n as u32),
+                            chart_name: last.get("chart_name").and_then(|v| v.as_str()).map(str::to_string),
+                            phase,
+                        });
+                    }
+                }
+            }
+            None
+        }
+
         fn get_room_players(&mut self, room_id: String) -> Result<Vec<wit::phira::plugin::phira_room_state::RoomPlayer>, String> {
             self.require_capability("room-state")?;
-            let query = self.ctx.room_state_query.as_ref()
-                .ok_or("room state query not available")?;
-            let arr: Vec<serde_json::Value> = serde_json::from_value(query(format!("rooms.by_name:{room_id}"))?)
-                .map_err(|e| format!("room players parse error: {e}"))?;
-            let players = arr.into_iter().map(|v| {
-                wit::phira::plugin::phira_room_state::RoomPlayer {
-                    user_id: v.get("user_id").and_then(|v| v.as_u64()).unwrap_or(0) as u32,
-                    display_name: v.get("display_name").and_then(|v| v.as_str()).unwrap_or("").to_string(),
-                    is_monitor: v.get("is_monitor").and_then(|v| v.as_bool()).unwrap_or(false),
-                    is_ready: v.get("is_ready").and_then(|v| v.as_bool()).unwrap_or(false),
-                    is_host: v.get("is_host").and_then(|v| v.as_bool()).unwrap_or(false),
-                    is_finished: v.get("is_finished").and_then(|v| v.as_bool()).unwrap_or(false),
-                    score: v.get("score").and_then(|v| v.as_u64()).map(|n| n as u32),
-                    accuracy: v.get("accuracy").and_then(|v| v.as_f64()).map(|n| n as f32),
-                }
-            }).collect();
-            Ok(players)
+            let v = self.ctx.state_query.call("rooms.by_name", &[serde_json::json!(room_id)])?;
+            let data = self.extract_snapshot_data(&v)?;
+            Ok(self.build_room_players(data))
         }
 
         fn get_player_status(&mut self, room_id: String, user_id: u32) -> Result<Option<wit::phira::plugin::phira_room_state::RoomPlayer>, String> {
@@ -1060,13 +1125,18 @@ mod wit_trait_impls {
 
         fn list_rooms(&mut self) -> Result<Vec<String>, String> {
             self.require_capability("room-state")?;
-            let query = self.ctx.room_state_query.as_ref()
-                .ok_or("room state query not available")?;
-            let v = query("rooms.list".to_string())?;
+            let v = self.ctx.state_query.call("rooms.list", &[])?;
             let rooms: Vec<serde_json::Value> = serde_json::from_value(v)
                 .map_err(|e| format!("list rooms parse error: {e}"))?;
+            // Each room entry is a RoomSnapshot { name, data } — room ID is in data.id.
+            // Hidden rooms are already filtered server-side by rooms.list.
             let ids: Vec<String> = rooms.iter()
-                .filter_map(|r| r.get("id").and_then(|v| v.as_str()).map(|s| s.to_string()))
+                .filter_map(|r| {
+                    r.get("data")
+                        .and_then(|d| d.get("id"))
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string())
+                })
                 .collect();
             Ok(ids)
         }
@@ -1083,6 +1153,21 @@ mod wit_trait_impls {
             if !method.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '.' || c == ':') {
                 return Err("handler method name contains invalid characters".to_string());
             }
+            // Reject reserved "phira:" namespace
+            if method.starts_with("phira:") {
+                return Err("handler method name must not use reserved 'phira:' prefix".to_string());
+            }
+            // Schema length limits (max 512 bytes)
+            if let Some(ref s) = desc.request_schema {
+                if s.len() > 512 {
+                    return Err("request_schema exceeds maximum length of 512 bytes".to_string());
+                }
+            }
+            if let Some(ref s) = desc.response_schema {
+                if s.len() > 512 {
+                    return Err("response_schema exceeds maximum length of 512 bytes".to_string());
+                }
+            }
             let registered = crate::wit_host::RegisteredHandler {
                 plugin_name: self.plugin_name.clone(),
                 method: method.clone(),
@@ -1092,7 +1177,20 @@ mod wit_trait_impls {
             };
             let mut registry = self.ctx.api_handlers.lock()
                 .map_err(|e| format!("handler registry lock: {e}"))?;
-            registry.insert(method, registered);
+            registry.insert(method.clone(), registered);
+
+            // Also register in shared PluginManager registry
+            if let (Some(ref shared), Some(ref forward)) = (&self.ctx.services_handlers, &self.ctx.api_forward) {
+                let method_clone = method.clone();
+                let forward_clone = Arc::clone(forward);
+                let handler: api::PluginApiHandler = Arc::new(move |_m, args| {
+                    forward_clone(&method_clone, args)
+                });
+                if let Ok(mut sh) = shared.lock() {
+                    sh.insert(method.clone(), handler);
+                }
+            }
+
             Ok(())
         }
 
@@ -1103,6 +1201,12 @@ mod wit_trait_impls {
             match registry.get(&method) {
                 Some(h) if h.plugin_name == self.plugin_name => {
                     registry.remove(&method);
+                    // Also remove from shared PluginManager registry
+                    if let Some(ref shared) = self.ctx.services_handlers {
+                        if let Ok(mut sh) = shared.lock() {
+                            sh.remove(&method);
+                        }
+                    }
                     Ok(())
                 }
                 Some(_) => Err("handler owned by another plugin".to_string()),

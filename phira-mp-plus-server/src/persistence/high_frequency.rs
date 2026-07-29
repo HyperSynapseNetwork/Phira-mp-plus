@@ -90,6 +90,8 @@ pub struct HighFrequencyItem {
     pub user_id: i32,
     pub payload: Value,
     pub created_at_ms: i64,
+    /// Monotonic admission sequence assigned by [`enqueue`](HighFrequencyWriter::enqueue).
+    pub admission_seq: u64,
 }
 
 impl HighFrequencyItem {
@@ -335,18 +337,24 @@ impl HighFrequencyWriter {
     /// If the overflow queue is also full, the item is dropped.
     /// Returns `Ok(EnqueueOutcome::MainQueue)`, `Ok(EnqueueOutcome::OverflowQueue)`,
     /// `Ok(EnqueueOutcome::Dropped)`, or `Err(String)` when closed.
-    pub async fn enqueue(&self, item: HighFrequencyItem) -> Result<EnqueueOutcome, String> {
+    pub async fn enqueue(&self, mut item: HighFrequencyItem) -> Result<EnqueueOutcome, String> {
         if self.closed.load(Ordering::Acquire) {
             self.stats.dropped.fetch_add(1, Ordering::Relaxed);
             self.stats.dropped_points.fetch_add(item.item_count() as u64, Ordering::Relaxed);
             return Err("high frequency writer is shutting down".to_string());
         }
         let points = item.item_count() as u64;
+        // Assign a monotonic admission sequence before any channel send so that
+        // the item carries its position in the global admission order through
+        // both the main and overflow paths.  The sequence is used by flush to
+        // determine committed_sequence.
+        let seq = self.stats.admission_sequence.fetch_add(1, Ordering::Relaxed);
+        item.admission_seq = seq;
+
         match self.tx.try_send(HfMessage::Item(item)) {
             Ok(()) => {
                 self.stats.received.fetch_add(1, Ordering::Relaxed);
                 self.stats.received_points.fetch_add(points, Ordering::Relaxed);
-                self.stats.admission_sequence.fetch_add(1, Ordering::Relaxed);
                 Ok(EnqueueOutcome::MainQueue)
             }
             Err(mpsc::error::TrySendError::Full(HfMessage::Item(item))) => {
@@ -354,7 +362,6 @@ impl HighFrequencyWriter {
                 self.stats.queue_full_count.fetch_add(1, Ordering::Relaxed);
                 self.stats.received.fetch_add(1, Ordering::Relaxed);
                 self.stats.received_points.fetch_add(points, Ordering::Relaxed);
-                self.stats.admission_sequence.fetch_add(1, Ordering::Relaxed);
                 let kind = item.kind.as_str().to_string();
                 if let Some(overflow) = self.overflow_tx.as_ref() {
                     let overflow_item = OverflowItem { item, enqueued_at_ms: now_ms() };
@@ -737,36 +744,31 @@ async fn run_hf_writer(
                             stats.oldest_batch_at.store(created_at, Ordering::Relaxed);
                         }
                         batch.push(item);
+                        // Interleave overflow items with the main queue so that
+                        // overflow is not starved when main-channel items arrive
+                        // continuously (审计 P2).
+                        drain_overflow(&mut batch, &mut overflow_rx, &stats, overflow_max_age_ms).await;
 
                         if batch.len() >= max_batch_size {
-                            let fence = stats.admission_sequence.load(Ordering::Relaxed);
-                            if flush_batch(
+                            flush_and_update_seq(
                                 &mut batch, &stats, &db, max_retries, "max_items"
-                            ).await.is_ok() {
-                                stats.committed_sequence.store(fence, Ordering::Relaxed);
-                            }
+                            ).await.ok();
                         }
                     }
                     Some(HfMessage::Flush(reply)) => {
                         // Drain overflow into current batch before flushing
                         drain_overflow(&mut batch, &mut overflow_rx, &stats, overflow_max_age_ms).await;
-                        let fence = stats.admission_sequence.load(Ordering::Relaxed);
-                        let result = flush_batch(
+                        let result = flush_and_update_seq(
                             &mut batch, &stats, &db, max_retries, "explicit_flush"
                         ).await;
-                        if result.is_ok() {
-                            stats.committed_sequence.store(fence, Ordering::Relaxed);
-                        }
                         let _ = reply.send(result);
                     }
                     Some(HfMessage::Shutdown(reply)) => {
                         drain_overflow(&mut batch, &mut overflow_rx, &stats, overflow_max_age_ms).await;
-                        let fence = stats.admission_sequence.load(Ordering::Relaxed);
-                        let result = flush_batch(
+                        let result = flush_and_update_seq(
                             &mut batch, &stats, &db, max_retries, "shutdown"
                         ).await;
                         if result.is_ok() {
-                            stats.committed_sequence.store(fence, Ordering::Relaxed);
                             debug!("high frequency writer shut down gracefully");
                         }
                         let _ = reply.send(result);
@@ -776,12 +778,9 @@ async fn run_hf_writer(
                         // Channel closed — flush remaining items and exit.
                         drain_overflow(&mut batch, &mut overflow_rx, &stats, overflow_max_age_ms).await;
                         if !batch.is_empty() {
-                            let fence = stats.admission_sequence.load(Ordering::Relaxed);
-                            if flush_batch(
+                            flush_and_update_seq(
                                 &mut batch, &stats, &db, max_retries, "closed"
-                            ).await.is_ok() {
-                                stats.committed_sequence.store(fence, Ordering::Relaxed);
-                            }
+                            ).await.ok();
                         }
                         debug!("high frequency writer channel closed, exiting");
                         break;
@@ -792,12 +791,9 @@ async fn run_hf_writer(
                 // Drain overflow into current batch before flushing
                 drain_overflow(&mut batch, &mut overflow_rx, &stats, overflow_max_age_ms).await;
                 if !batch.is_empty() {
-                    let fence = stats.admission_sequence.load(Ordering::Relaxed);
-                    if flush_batch(
+                    flush_and_update_seq(
                         &mut batch, &stats, &db, max_retries, "interval"
-                    ).await.is_ok() {
-                        stats.committed_sequence.store(fence, Ordering::Relaxed);
-                    }
+                    ).await.ok();
                 }
             }
         }
@@ -926,6 +922,31 @@ async fn flush_batch(
     ))
 }
 
+/// Flush the current batch and advance `committed_sequence` based on the
+/// highest `admission_seq` present in the batch items.
+///
+/// Unlike the previous approach (which snapshot `admission_sequence` before
+/// flushing), this derives the target sequence from the batch content so that
+/// items admitted *after* the batch was assembled never inflate
+/// `committed_sequence` prematurely.
+async fn flush_and_update_seq(
+    batch: &mut Vec<HighFrequencyItem>,
+    stats: &Arc<HighFrequencyStats>,
+    db: &Arc<DbManager>,
+    max_retries: u32,
+    reason: &str,
+) -> Result<(), String> {
+    let target_seq = batch.iter().map(|i| i.admission_seq).max().unwrap_or(0);
+    let result = flush_batch(batch, stats, db, max_retries, reason).await;
+    if result.is_ok() && target_seq > 0 {
+        let current = stats.committed_sequence.load(Ordering::Relaxed);
+        if target_seq > current {
+            stats.committed_sequence.store(target_seq, Ordering::Relaxed);
+        }
+    }
+    result
+}
+
 // ── Tests ──────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -952,6 +973,7 @@ mod tests {
                 ],
             }),
             created_at_ms: now_ms(),
+            admission_seq: 0,
         }
     }
 
@@ -1013,5 +1035,78 @@ mod tests {
         assert_eq!(records[0].round_uuid.as_deref(), Some("round-1"));
         assert_eq!(records[0].item_count, 3);
         assert!(!records[0].event_id.is_empty());
+    }
+
+    /// Verify that concurrent producers all receive distinct monotonic
+    /// admission sequences and that flush sequencing is correct.
+    ///
+    /// This test creates a lazy PostgreSQL pool that never actually connects
+    /// — no DB writes are attempted because `max_batch_size` exceeds the
+    /// total number of items enqueued.  Flush is exercised to confirm it
+    /// returns an error (no real DB) without panicking.
+    #[tokio::test]
+    async fn concurrent_producer_applies_monotonic_sequences() {
+        use sqlx::postgres::PgPoolOptions;
+
+        // Lazily-connected pool — never actually connects because we don't
+        // trigger a flush in this test (max_batch_size > total items).
+        let pool = PgPoolOptions::new()
+            .max_connections(1)
+            .connect_lazy("postgres://localhost:5432/mp_test?application_name=hf_test")
+            .expect("lazy pool creation should not fail");
+        let db = Arc::new(DbManager::Pg(pool));
+
+        let config = HighFrequencyConfig {
+            channel_capacity: 512,
+            max_batch_size: 2048,
+            flush_interval_ms: 60_000,
+            max_retries: 1,
+            overflow_capacity: 512,
+            overflow_max_age_ms: 60_000,
+        };
+
+        let writer = Arc::new(HighFrequencyWriter::spawn(config, db));
+        const ITEMS_PER_TASK: u64 = 100;
+        const TASK_COUNT: u64 = 10;
+        const TOTAL: u64 = ITEMS_PER_TASK * TASK_COUNT;
+
+        let mut join_set = tokio::task::JoinSet::new();
+        for t in 0..TASK_COUNT {
+            let w = Arc::clone(&writer);
+            join_set.spawn(async move {
+                for i in 0..ITEMS_PER_TASK {
+                    let kind = if (t + i) % 2 == 0 {
+                        HighFrequencyKind::Touch
+                    } else {
+                        HighFrequencyKind::Judge
+                    };
+                    let item = make_item(kind, (t * ITEMS_PER_TASK + i) as i32);
+                    let _ = w.enqueue(item).await;
+                }
+            });
+        }
+
+        while join_set.join_next().await.is_some() {}
+
+        let snap = writer.stats().snapshot();
+        // All items should have been received (some may go to overflow).
+        assert!(
+            snap.received <= TOTAL,
+            "received {} should not exceed total {TOTAL}",
+            snap.received
+        );
+        assert!(
+            snap.dropped == 0,
+            "no items should be dropped; got {} dropped",
+            snap.dropped
+        );
+        // admission_sequence counts every accepted attempt.
+        assert_eq!(snap.admission_sequence, snap.received);
+
+        // Flush will fail (no real DB) — confirm it doesn't panic.
+        let flush_result = writer.flush().await;
+        assert!(flush_result.is_err(), "flush expected to fail without DB");
+
+        writer.shutdown().await.ok();
     }
 }

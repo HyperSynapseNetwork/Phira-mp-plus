@@ -166,6 +166,12 @@ impl WitPluginComponent {
             .unwrap_or_else(|e| e.into_inner())
             .clone();
 
+        let plugin_manager = Arc::clone(&server.plugin_manager);
+        let forward_plugin = plugin_name.to_string();
+        let api_forward: Arc<dyn Fn(&str, &[serde_json::Value]) -> Result<serde_json::Value, String> + Send + Sync> = Arc::new(move |method, args| {
+            futures::executor::block_on(plugin_manager.call_plugin_api(&forward_plugin, method, args.to_vec()))
+        });
+
         Ok(Arc::new(crate::wit_host::WitHostContext {
             state_query,
             extensions: Arc::clone(&services.extensions),
@@ -182,21 +188,10 @@ impl WitPluginComponent {
             timer_callback: None,
             tcp: server.plugin_tcp_tx.clone(),
             tcp_callback: None,
-            room_state_query: {
-                let server_clone = Arc::clone(&server);
-                Some(Arc::new(move |request: String| -> Result<serde_json::Value, String> {
-                    // request format: "MESSAGE_TYPE" or "MESSAGE_TYPE:ARG"
-                    // where MESSAGE_TYPE is a server_state_query method like "rooms.by_name"
-                    if let Some((method, param)) = request.split_once(':') {
-                        // Use rooms.by_name for state query, or other methods
-                        let args = [serde_json::json!({"room_id": param})];
-                        crate::server::query::server_state_query_inner(&server_clone, method, &args)
-                    } else {
-                        crate::server::query::server_state_query_inner(&server_clone, &request, &[])
-                    }
-                }))
-            },
+            room_state_query: None, // Replaced by direct state_query.call() in phira-room-state
             api_handlers: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
+            services_handlers: Some(Arc::clone(&services.api_handlers)),
+            api_forward: Some(api_forward),
         }))
     }
 
@@ -605,6 +600,8 @@ mod tests {
             tcp_callback: None,
             room_state_query: None,
             api_handlers: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
+            services_handlers: None,
+            api_forward: None,
         })
     }
 

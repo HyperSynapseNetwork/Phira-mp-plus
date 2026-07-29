@@ -13,10 +13,8 @@ use tracing::{error, info, warn};
 // ── Resource limits (PMP25 P5) ──────────────────────────────────────
 const MAX_CONNECTIONS_PER_PLUGIN: u32 = 32;
 const MAX_LISTENERS_PER_PLUGIN: u32 = 8;
-#[allow(dead_code)]
-const MAX_READ_BUF_PER_CONNECTION: usize = 1_048_576;  // 1 MB (future enforcement)
-#[allow(dead_code)]
-const MAX_READ_BUF_PER_PLUGIN: usize = 4_194_304;      // 4 MB (future enforcement)
+const MAX_READ_BUF_PER_CONNECTION: usize = 1_048_576;  // 1 MB
+const MAX_READ_BUF_PER_PLUGIN: usize = 4_194_304;      // 4 MB
 
 /// Synchronous reply channel for WIT host functions — blocks the calling
 /// WASM thread until the async TCP actor processes the command.
@@ -31,6 +29,12 @@ pub(crate) enum PluginTcpInternal {
         remote_addr: String,
         data_tx: mpsc::Sender<Vec<u8>>,
         close_tx: oneshot::Sender<()>,
+        plugin_id_tx: oneshot::Sender<String>,
+    },
+    Disconnected {
+        handle: u64,
+        plugin_id: String,
+        remote_addr: String,
     },
 }
 
@@ -64,6 +68,10 @@ pub enum PluginTcpCommand {
         plugin_id: String,
         handle: u64,
         reply: SyncReply<String>,
+    },
+    RemovePlugin {
+        plugin_id: String,
+        reply: SyncReply<()>,
     },
 }
 
@@ -128,7 +136,7 @@ pub struct PluginTcpActor {
     /// plugin_id → listener count
     plugin_listeners: HashMap<String, u32>,
     /// plugin_id → total buffered read bytes
-    plugin_read_bytes: HashMap<String, usize>,
+    plugin_read_bytes: Arc<Mutex<HashMap<String, usize>>>,
 }
 
 impl PluginTcpActor {
@@ -148,7 +156,7 @@ impl PluginTcpActor {
             handle_owner: HashMap::new(),
             plugin_connections: HashMap::new(),
             plugin_listeners: HashMap::new(),
-            plugin_read_bytes: HashMap::new(),
+            plugin_read_bytes: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -175,7 +183,7 @@ impl PluginTcpActor {
         }
         self.plugin_connections.remove(plugin_id);
         self.plugin_listeners.remove(plugin_id);
-        self.plugin_read_bytes.remove(plugin_id);
+        let _ = self.plugin_read_bytes.lock().unwrap().remove(plugin_id);
     }
 
     fn count_plugin_connections(&self, plugin_id: &str) -> u32 {
@@ -197,12 +205,21 @@ impl PluginTcpActor {
     fn close_handle(&mut self, handle: u64) {
         let _ = self.conn_map.lock().unwrap().remove(&handle);
         let _ = self.close_map.lock().unwrap().remove(&handle);
+        let removed_buf = self.read_buf_map.lock().unwrap().remove(&handle);
+        let buf_len = removed_buf.map(|b| b.len()).unwrap_or(0);
         let plugin_id = self.handle_owner.remove(&handle);
         if let Some(conn) = self.connections.remove(&handle) {
             if let Some(ref pid) = plugin_id {
                 if let Some(cnt) = self.plugin_connections.get_mut(pid) {
                     *cnt = cnt.saturating_sub(1);
                     if *cnt == 0 { self.plugin_connections.remove(pid); }
+                }
+                if buf_len > 0 {
+                    let mut prb = self.plugin_read_bytes.lock().unwrap();
+                    if let Some(total) = prb.get_mut(pid) {
+                        *total = total.saturating_sub(buf_len);
+                        if *total == 0 { prb.remove(pid); }
+                    }
                 }
             }
             if let Some(tx) = conn.close_tx {
@@ -250,7 +267,7 @@ impl PluginTcpActor {
                 internal = self.internal_rx.recv() => {
                     let Some(msg) = internal else { break; };
                     match msg {
-                        PluginTcpInternal::Accepted { listener_handle, conn_handle, remote_addr, data_tx, close_tx } => {
+                        PluginTcpInternal::Accepted { listener_handle, conn_handle, remote_addr, data_tx, close_tx, plugin_id_tx } => {
                             // Register accepted connection with listener's plugin
                             let plugin_id = self.handle_owner.get(&listener_handle).cloned();
                             if let Some(ref pid) = plugin_id {
@@ -258,6 +275,7 @@ impl PluginTcpActor {
                                     warn!(%conn_handle, %pid, "inbound connection quota exceeded, dropping");
                                     self.emit_event("tcp:error",
                                         serde_json::json!({"handle": conn_handle, "error": format!("connection quota exceeded for {pid}")}));
+                                    let _ = plugin_id_tx.send(String::new());
                                     continue;
                                 }
                                 self.handle_owner.insert(conn_handle, pid.clone());
@@ -274,7 +292,16 @@ impl PluginTcpActor {
                                 }
                                 self.emit_event("tcp:accept",
                                     serde_json::json!({"listener_handle": listener_handle, "conn_handle": conn_handle, "remote_addr": remote_addr}));
+                                let _ = plugin_id_tx.send(pid.clone());
+                            } else {
+                                let _ = plugin_id_tx.send(String::new());
                             }
+                        }
+                        PluginTcpInternal::Disconnected { handle, plugin_id: _, remote_addr } => {
+                            // Remote peer closed — clean up connection state.
+                            self.close_handle(handle);
+                            self.emit_event("tcp:disconnect",
+                                serde_json::json!({"handle": handle, "reason": "remote peer closed connection", "remote_addr": remote_addr}));
                         }
                     }
                 }
@@ -294,8 +321,11 @@ impl PluginTcpActor {
                     let cb = self.event_callback.clone();
                     let cm = Arc::clone(&self.conn_map);
                     let rbm = Arc::clone(&self.read_buf_map);
+                    let itx = self.internal_tx.clone();
+                    let prb = Arc::clone(&self.plugin_read_bytes);
+                    let pid = plugin_id.clone();
 
-                    match tcp_connect(&addr, handle, cb, cm, rbm).await {
+                    match tcp_connect(&addr, handle, pid, cb, cm, rbm, itx, prb).await {
                         Ok((_, close_tx)) => {
                             self.handle_owner.insert(handle, plugin_id.clone());
                             *self.plugin_connections.entry(plugin_id.clone()).or_insert(0) += 1;
@@ -323,8 +353,9 @@ impl PluginTcpActor {
                     let handle = self.alloc_handle();
                     let cb = self.event_callback.clone();
                     let rbm = Arc::clone(&self.read_buf_map);
+                    let prb = Arc::clone(&self.plugin_read_bytes);
 
-                    match tcp_listen(&addr, handle, self.internal_tx.clone(), cb, rbm).await {
+                    match tcp_listen(&addr, handle, self.internal_tx.clone(), cb, rbm, prb).await {
                         Ok(close_tx) => {
                             self.handle_owner.insert(handle, plugin_id.clone());
                             *self.plugin_listeners.entry(plugin_id.clone()).or_insert(0) += 1;
@@ -394,6 +425,13 @@ impl PluginTcpActor {
                                 if let Some(b) = self.read_buf_map.lock().unwrap().get_mut(&handle) {
                                     b.drain(..len);
                                 }
+                                // Update per-plugin read byte tracking
+                                let mut prb = self.plugin_read_bytes.lock().unwrap();
+                                if let Some(total) = prb.get_mut(&plugin_id) {
+                                    *total = total.saturating_sub(len);
+                                    if *total == 0 { prb.remove(&plugin_id); }
+                                }
+                                drop(prb);
                                 Ok(Some(data))
                             }
                         } else {
@@ -412,6 +450,10 @@ impl PluginTcpActor {
                     };
                     let _ = reply.send(result);
                 }
+                PluginTcpCommand::RemovePlugin { plugin_id, reply } => {
+                    self.remove_plugin_handles(&plugin_id);
+                    let _ = reply.send(Ok(()));
+                }
 // ── Plain TCP helpers ───────────────────────────────────────────────
         }
     }
@@ -420,9 +462,12 @@ impl PluginTcpActor {
 async fn tcp_connect(
     addr: &str,
     handle: u64,
+    plugin_id: String,
     event_cb: Option<Arc<dyn Fn(String, serde_json::Value) + Send + Sync>>,
     conn_map: ConnectionMap,
     read_buf_map: ReadBufMap,
+    internal_tx: mpsc::Sender<PluginTcpInternal>,
+    plugin_read_bytes: Arc<Mutex<HashMap<String, usize>>>,
 ) -> Result<(mpsc::Sender<Vec<u8>>, oneshot::Sender<()>), String> {
     let stream = TcpStream::connect(addr)
         .await
@@ -436,8 +481,9 @@ async fn tcp_connect(
     let remote = addr.to_string();
     let cm = Arc::clone(&conn_map);
     let rbm = Arc::clone(&read_buf_map);
+    let prb = Arc::clone(&plugin_read_bytes);
     tokio::spawn(async move {
-        tcp_read_task(stream, handle, data_rx, close_rx, event_cb, remote, rbm).await;
+        tcp_read_task(stream, handle, data_rx, close_rx, event_cb, remote, rbm, internal_tx, plugin_id, prb).await;
         cm.lock().unwrap().remove(&handle);
     });
 
@@ -450,6 +496,7 @@ async fn tcp_listen(
     internal_tx: mpsc::Sender<PluginTcpInternal>,
     event_cb: Option<Arc<dyn Fn(String, serde_json::Value) + Send + Sync>>,
     read_buf_map: ReadBufMap,
+    plugin_read_bytes: Arc<Mutex<HashMap<String, usize>>>,
 ) -> Result<oneshot::Sender<()>, String> {
     let listener = TcpListener::bind(addr)
         .await
@@ -457,7 +504,7 @@ async fn tcp_listen(
 
     let (close_tx, close_rx) = oneshot::channel();
     tokio::spawn(tcp_accept_loop(
-        listener, listener_handle, internal_tx, close_rx, event_cb, read_buf_map,
+        listener, listener_handle, internal_tx, close_rx, event_cb, read_buf_map, plugin_read_bytes,
     ));
     Ok(close_tx)
 }
@@ -469,6 +516,7 @@ async fn tcp_accept_loop(
     mut close_rx: oneshot::Receiver<()>,
     event_cb: Option<Arc<dyn Fn(String, serde_json::Value) + Send + Sync>>,
     read_buf_map: ReadBufMap,
+    plugin_read_bytes: Arc<Mutex<HashMap<String, usize>>>,
 ) {
     let mut next_conn: u64 = 1;
     loop {
@@ -482,18 +530,22 @@ async fn tcp_accept_loop(
                         let cb = event_cb.clone();
                         let rbm = Arc::clone(&read_buf_map);
                         let itx = internal_tx.clone();
+                        let prb = Arc::clone(&plugin_read_bytes);
                         let peer_for_msg = peer.clone();
                         tokio::spawn(async move {
                             let (data_tx, data_rx) = mpsc::channel::<Vec<u8>>(64);
                             let (close_tx, close_rx) = oneshot::channel::<()>();
+                            let (plugin_id_tx, plugin_id_rx) = oneshot::channel::<String>();
                             let _ = itx.send(PluginTcpInternal::Accepted {
                                 listener_handle,
                                 conn_handle,
                                 remote_addr: peer_for_msg,
                                 data_tx,
                                 close_tx,
+                                plugin_id_tx,
                             }).await;
-                            tcp_read_task(stream, conn_handle, data_rx, close_rx, cb, peer, rbm).await;
+                            let plugin_id = plugin_id_rx.await.unwrap_or_default();
+                            tcp_read_task(stream, conn_handle, data_rx, close_rx, cb, peer, rbm, itx, plugin_id, prb).await;
                         });
                     }
                     Err(e) => {
@@ -516,14 +568,18 @@ async fn tcp_read_task(
     mut data_rx: mpsc::Receiver<Vec<u8>>,
     mut close_rx: oneshot::Receiver<()>,
     event_cb: Option<Arc<dyn Fn(String, serde_json::Value) + Send + Sync>>,
-    _remote_addr: String,
+    remote_addr: String,
     read_buf_map: ReadBufMap,
+    internal_tx: mpsc::Sender<PluginTcpInternal>,
+    plugin_id: String,
+    plugin_read_bytes: Arc<Mutex<HashMap<String, usize>>>,
 ) {
     use tokio::io::AsyncWriteExt;
 
     let (mut reader, mut writer) = tokio::io::split(stream);
     let mut buf = vec![0u8; 8192];
     let cb = event_cb.unwrap_or_else(|| Arc::new(|_, _| {}));
+    let cb_plugin_id = plugin_id.clone();
 
     loop {
         tokio::select! {
@@ -532,7 +588,8 @@ async fn tcp_read_task(
                     Some(bytes) => {
                         if let Err(e) = writer.write_all(&bytes).await {
                             cb("tcp:error".into(), serde_json::json!({
-                                "handle": handle, "error": format!("write: {e}"),
+                                "handle": handle, "plugin_id": cb_plugin_id.clone(),
+                                "error": format!("write: {e}"),
                             }));
                             break;
                         }
@@ -543,25 +600,84 @@ async fn tcp_read_task(
             result = reader.read(&mut buf) => {
                 match result {
                     Ok(0) => {
+                        // Send Disconnected to actor before cleaning up buffers
+                        let _ = internal_tx.try_send(PluginTcpInternal::Disconnected {
+                            handle,
+                            plugin_id: cb_plugin_id.clone(),
+                            remote_addr: remote_addr.clone(),
+                        });
                         read_buf_map.lock().unwrap().remove(&handle);
+                        if !plugin_id.is_empty() {
+                            let mut prb = plugin_read_bytes.lock().unwrap();
+                            prb.remove(&plugin_id);
+                        }
                         cb("tcp:disconnect".into(), serde_json::json!({
-                            "handle": handle, "reason": "remote peer closed connection",
+                            "handle": handle, "plugin_id": cb_plugin_id.clone(),
+                            "reason": "remote peer closed connection",
                         }));
                         break;
                     }
                     Ok(n) => {
-                        // Buffer for pull-based recv()
-                        read_buf_map.lock().unwrap()
-                            .entry(handle).or_default()
-                            .extend_from_slice(&buf[..n]);
+                        // Buffer for pull-based recv(), with read buffer limits
+                        let mut rbm = read_buf_map.lock().unwrap();
+                        let entry = rbm.entry(handle).or_default();
+
+                        // Per-connection limit: drop oldest data if at limit
+                        if entry.len() + n > MAX_READ_BUF_PER_CONNECTION {
+                            let excess = entry.len() + n - MAX_READ_BUF_PER_CONNECTION;
+                            let drain_end = entry.len().min(excess);
+                            entry.drain(..drain_end);
+                            // Track dropped bytes
+                            if !plugin_id.is_empty() && drain_end > 0 {
+                                let mut prb = plugin_read_bytes.lock().unwrap();
+                                if let Some(total) = prb.get_mut(&plugin_id) {
+                                    *total = total.saturating_sub(drain_end);
+                                }
+                            }
+                        }
+
+                        // Per-plugin limit: cap how much we add
+                        let room = MAX_READ_BUF_PER_CONNECTION.saturating_sub(entry.len());
+                        let to_buffer = n.min(room);
+                        let actually_buffered = if !plugin_id.is_empty() && to_buffer > 0 {
+                            let plugin_total = {
+                                let prb = plugin_read_bytes.lock().unwrap();
+                                prb.get(&plugin_id).copied().unwrap_or(0)
+                            };
+                            let plugin_room = MAX_READ_BUF_PER_PLUGIN.saturating_sub(plugin_total);
+                            to_buffer.min(plugin_room)
+                        } else {
+                            to_buffer
+                        };
+
+                        if actually_buffered > 0 {
+                            entry.extend_from_slice(&buf[..actually_buffered]);
+                            if !plugin_id.is_empty() {
+                                let mut prb = plugin_read_bytes.lock().unwrap();
+                                *prb.entry(plugin_id.clone()).or_insert(0) += actually_buffered;
+                            }
+                        }
+                        drop(rbm);
+
                         cb("tcp:receive".into(), serde_json::json!({
-                            "handle": handle, "bytes": buf[..n].to_vec(),
+                            "handle": handle, "plugin_id": cb_plugin_id.clone(),
+                            "bytes": buf[..n].to_vec(),
                         }));
                     }
                     Err(e) => {
+                        let _ = internal_tx.try_send(PluginTcpInternal::Disconnected {
+                            handle,
+                            plugin_id: cb_plugin_id.clone(),
+                            remote_addr: remote_addr.clone(),
+                        });
                         read_buf_map.lock().unwrap().remove(&handle);
+                        if !plugin_id.is_empty() {
+                            let mut prb = plugin_read_bytes.lock().unwrap();
+                            prb.remove(&plugin_id);
+                        }
                         cb("tcp:error".into(), serde_json::json!({
-                            "handle": handle, "error": format!("read: {e}"),
+                            "handle": handle, "plugin_id": cb_plugin_id.clone(),
+                            "error": format!("read: {e}"),
                         }));
                         break;
                     }
@@ -571,6 +687,7 @@ async fn tcp_read_task(
         }
     }
     cb("tcp:disconnect".into(), serde_json::json!({
-        "handle": handle, "reason": "connection task exited",
+        "handle": handle, "plugin_id": cb_plugin_id,
+        "reason": "connection task exited",
     }));
 }

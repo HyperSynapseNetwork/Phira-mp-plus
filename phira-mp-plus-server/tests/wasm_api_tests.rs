@@ -56,6 +56,8 @@ mod tests {
             tcp_callback: None,
             room_state_query: None,
             api_handlers: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
+            services_handlers: None,
+            api_forward: None,
         })
     }
 

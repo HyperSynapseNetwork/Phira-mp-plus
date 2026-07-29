@@ -188,12 +188,14 @@ pub(crate) enum RoomActorCommand {
         live: bool,
         reply: oneshot::Sender<RoomCommandResult>,
     },
+    #[allow(dead_code)]
     AddTouches {
         room_id: String,
         user_id: i32,
         touches: Vec<TouchEventPoint>,
         reply: oneshot::Sender<RoomCommandResult>,
     },
+    #[allow(dead_code)]
     AddJudges {
         room_id: String,
         user_id: i32,
