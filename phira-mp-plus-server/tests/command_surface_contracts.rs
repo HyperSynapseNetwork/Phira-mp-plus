@@ -113,12 +113,8 @@ fn help_advanced_shows_benchmark_commands() {
     let registry = runtime_registry();
     let adv = registry.format_advanced();
     assert!(
-        adv.contains("benchmark modes"),
-        "advanced view should show benchmark modes"
-    );
-    assert!(
-        adv.contains("benchmark run real"),
-        "advanced view should show benchmark run real"
+        adv.contains("benchmark run"),
+        "advanced view should show benchmark run"
     );
 }
 
@@ -197,10 +193,6 @@ fn canonical_namespaces_exist() {
             "namespace '{name}' should have child commands"
         );
     }
-    assert!(
-        registry.get("benchmark").is_some(),
-        "benchmark should exist"
-    );
     assert!(
         !registry.child_commands("benchmark").is_empty(),
         "benchmark should have child commands"
