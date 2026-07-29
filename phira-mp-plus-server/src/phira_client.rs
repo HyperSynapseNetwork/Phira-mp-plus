@@ -2,9 +2,7 @@
 //!
 //! The old code had retry/timeout handling embedded in session paths.  This
 //! module is the first central seam for all Phira HTTP traffic: authentication,
-//! chart lookup, record lookup and future hybrid/real benchmark modes should
-//! converge here.  Simulation remains the default benchmark path and does not
-//! call this client.
+//! chart lookup and record lookup converge here.
 
 use anyhow::{bail, Result};
 use phira_mp_common::{Message, ServerCommand, StreamSender};
@@ -379,8 +377,8 @@ enum PhiraHttpFailureKind {
 }
 
 pub enum PhiraRetryNoticeTarget<'a> {
-    /// No user-facing retry notice target. Used by diagnostics, simulation and
-    /// hybrid benchmark probes where retry behavior should be measured without
+    /// No user-facing retry notice target. Used by diagnostic benchmark
+    /// probes where retry behavior should be measured without
     /// sending chat messages to real players.
     Silent,
     Stream(&'a StreamSender<ServerCommand>),

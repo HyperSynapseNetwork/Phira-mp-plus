@@ -229,10 +229,8 @@ impl PlusServerState {
 
     /// Broadcast a system chat message to every currently connected normal user.
     ///
-    /// This is intentionally small and side-effect-only. Runtime background
-    /// tasks use it for simulation lifecycle notices without reaching into the
-    /// CLI handler. User Arcs are cloned before awaiting so the global users lock
-    /// is never held across network sends.
+    /// This is intentionally small and side-effect-only. User Arcs are cloned
+    /// before awaiting so the global users lock is never held across network sends.
     pub async fn broadcast_system_message(&self, message: &str) -> usize {
         let recipients = {
             let users = self.users.read().await;

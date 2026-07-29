@@ -4,9 +4,8 @@
 //! high-frequency and coordinates persistence, EventBus, plugins and monitor
 //! broadcast.
 //!
-//! Production Touch/Judge telemetry goes through the HighFrequencyWriter which
-//! bypasses WAL for maximum throughput.  Simulation-mode touch/judge still use
-//! the PersistenceWorker path.
+//! Touch/Judge telemetry goes through the HighFrequencyWriter which
+//! bypasses WAL for maximum throughput.
 
 use crate::persistence::high_frequency::{HighFrequencyItem, HighFrequencyKind};
 use crate::plugin::PluginEvent;

@@ -95,7 +95,7 @@ pub struct PlusServerState {
     pub high_frequency_writer: Arc<crate::persistence::high_frequency::HighFrequencyWriter>,
     /// Runtime Room command gateway. Admin/StateQuery room writes route through this facade while the gateway gradually moves commands into per-room mailboxes.
     pub room_commands: Arc<crate::room_actor::RoomCommandGateway>,
-    /// Runtime Phira HTTP client. Authentication/chart/record paths should converge here before hybrid/real benchmark expansion.
+    /// Runtime Phira HTTP client. Authentication/chart/record paths converge here.
     pub phira_client: Arc<crate::phira_client::PhiraRetryClient>,
     /// 管理员 Phira ID 集合。可由配置、PostgreSQL 设置、CLI/WIT 动态修改。
     pub admin_ids: RwLock<HashSet<i32>>,

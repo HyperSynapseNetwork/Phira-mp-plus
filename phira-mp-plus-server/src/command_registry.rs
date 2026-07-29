@@ -44,7 +44,7 @@ pub enum CommandAudience {
     Primary,
     /// Useful operational/diagnostic commands hidden from the default overview.
     Advanced,
-    /// Internal developer commands (runtime internals, simulation internals).
+    /// Internal developer commands (runtime internals, diagnostics).
     Developer,
 }
 
