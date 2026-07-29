@@ -193,8 +193,8 @@ pub struct Room {
     /// 房间创建时间戳（Unix 毫秒）
     pub created_at: i64,
 
-    /// 最近 N 条聊天消息缓冲区，新人加入时同步
-    pub message_buffer: RwLock<VecDeque<ServerCommand>>,
+    /// 最近 N 条聊天消息缓冲区，新人加入时同步 (仅包含 Chat 变体)
+    pub chat_history: RwLock<VecDeque<Message>>,
 }
 
 /// 房间名以前缀 `-` 开头时默认隐藏。
@@ -227,7 +227,7 @@ impl Room {
             play_history: crate::play_history::PlayHistoryStore::new(),
             round_store,
             created_at: now,
-            message_buffer: RwLock::new(VecDeque::new()),
+            chat_history: RwLock::new(VecDeque::new()),
         }
     }
 
@@ -319,12 +319,14 @@ impl Room {
 
     pub async fn broadcast(&self, cmd: ServerCommand) {
         debug!("broadcast {cmd:?}");
-        if matches!(&cmd, ServerCommand::Message(..)) {
-            let mut buf = self.message_buffer.write().await;
-            if buf.len() >= 50 {
-                buf.pop_front();
+        if let ServerCommand::Message(msg) = &cmd {
+            if matches!(msg, Message::Chat { .. }) {
+                let mut buf = self.chat_history.write().await;
+                if buf.len() >= 50 {
+                    buf.pop_front();
+                }
+                buf.push_back(msg.clone());
             }
-            buf.push_back(cmd.clone());
         }
         for session in self.users().await.into_iter().chain(self.monitors().await) {
             session.try_send(cmd.clone()).await;
@@ -332,12 +334,14 @@ impl Room {
     }
 
     pub async fn broadcast_except(&self, excluded_user_id: i32, cmd: ServerCommand) {
-        if matches!(&cmd, ServerCommand::Message(..)) {
-            let mut buf = self.message_buffer.write().await;
-            if buf.len() >= 50 {
-                buf.pop_front();
+        if let ServerCommand::Message(msg) = &cmd {
+            if matches!(msg, Message::Chat { .. }) {
+                let mut buf = self.chat_history.write().await;
+                if buf.len() >= 50 {
+                    buf.pop_front();
+                }
+                buf.push_back(msg.clone());
             }
-            buf.push_back(cmd.clone());
         }
         for session in self.users().await.into_iter().chain(self.monitors().await) {
             if session.id != excluded_user_id {

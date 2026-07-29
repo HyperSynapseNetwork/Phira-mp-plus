@@ -312,7 +312,7 @@ pub async fn join_room(
     category: SessionCategory,
     id: RoomId,
     monitor: bool,
-) -> Result<JoinRoomResponse> {
+) -> Result<()> {
     crate::internal_hooks::playtime_room_enter(user.id);
     let mut room_guard = user.room.write().await;
     if room_guard.is_some() {
@@ -495,12 +495,27 @@ pub async fn join_room(
         (client_state.state, is_waiting)
     };
 
-    // 发送房间最近的消息缓冲区给新加入用户
-    let buf = room.message_buffer.read().await;
-    for cmd in buf.iter() {
-        user.try_send(cmd.clone()).await;
+    // 先发送 JoinRoom(Ok) 响应，确保客户端先拿到完整快照
+    user.try_send(ServerCommand::JoinRoom(Ok(JoinRoomResponse {
+        state: room_state,
+        users: users.into_iter().map(|user| user.to_info()).collect(),
+        live: room.is_live(),
+    })))
+    .await;
+
+    // 再发送聊天历史（仅 Chat 消息），让客户端在完整快照后接收增量消息
+    {
+        let history = room.chat_history.read().await;
+        for msg in history.iter() {
+            if let Message::Chat { user: chat_user, content } = msg {
+                user.try_send(ServerCommand::Message(Message::Chat {
+                    user: *chat_user,
+                    content: content.clone(),
+                }))
+                .await;
+            }
+        }
     }
-    drop(buf);
 
     if deferred_wfr {
         // ProtocolHack: 客户端刚收到 SelectChart，50ms 后发 GameStart
@@ -514,11 +529,7 @@ pub async fn join_room(
         });
     }
 
-    Ok(JoinRoomResponse {
-        state: room_state,
-        users: users.into_iter().map(|user| user.to_info()).collect(),
-        live: room.is_live(),
-    })
+    Ok(())
 }
 
 pub async fn leave_room(user: Arc<User>, category: SessionCategory) -> Result<()> {

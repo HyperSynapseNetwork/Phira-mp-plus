@@ -385,11 +385,13 @@ async fn handle_join(
     id: RoomId,
     monitor: bool,
 ) -> Option<ServerCommand> {
-    Some(ServerCommand::JoinRoom(
-        crate::session_room::join_room(user, category, id, monitor)
-            .await
-            .map_err(|e| e.to_string()),
-    ))
+    match crate::session_room::join_room(user, category, id, monitor).await {
+        Ok(()) => {
+            // join_room already sent JoinRoom(Ok) + chat history directly
+            None
+        }
+        Err(e) => Some(ServerCommand::JoinRoom(Err(e.to_string()))),
+    }
 }
 
 pub(crate) async fn route_join(
