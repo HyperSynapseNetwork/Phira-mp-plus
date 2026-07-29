@@ -4,15 +4,15 @@
 //! 协议 (phira_mp_common::Stream) 进行完整的认证与房间命令交互。
 //! 收集命令延迟和吞吐量指标。
 //!
-//! ## 改进 (PMP23 迭代)
+//! ## 改进 (PMP27 迭代)
 //!
-//! - **多客户端**: 从 config.clients 生成 N 个并行客户端任务
-//! - **唯一标识**: 每个客户端使用 bench-{run_id}-{client_index} 的 token/user/room
-//! - **步骤超时**: 每个协议步骤有独立超时，整体使用 config.duration 作为时限
-//! - **命令计数器**: 使用 CommandCollector 实时追踪发送的命令数
-//! - **场景驱动**: 根据 config.scenario 执行不同行为（Connection / RoomLifecycle / Gameplay / HotRoom 等）
-//! - **Touch/Judge**: HotRoom/Gameplay 场景在 playing 阶段发送 60Hz Touch/Judge 帧
-//! - **Mock Phira 故障**: 配置参数 (delay_ms, jitter_ms, error_rate, timeout_ms, seed) 实际生效
+//! - **Per-Room 编排器**: 用 `RoomCoordinator`（基于 `watch` 通道）
+//!   替换全局 `Barrier`，每个房间独立同步阶段
+//! - **阶段**: auth -> create -> join -> select -> start -> ready -> play -> finish
+//! - **取消令牌**: 第一个客户端失败会设置 `cancelled` 标志，避免死锁
+//! - **SteadyState**: 正确的房间分组（host 创建、joiners 加入），
+//!   稳态期间发送 Ping 代替 sleep
+//! - **HotRoom**: 使用 `members_needed = num_clients` 确保所有成员就位后开始
 
 use crate::benchmark::command::BenchmarkScenario;
 use crate::benchmark::config::BenchmarkConfig;
@@ -25,16 +25,22 @@ use phira_mp_common::{
     Varchar,
 };
 use std::hash::{Hash, Hasher};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::net::TcpStream;
-use tokio::sync::{mpsc, Barrier};
+use tokio::sync::{mpsc, watch, Notify};
 use tokio::time::Instant;
 use tracing::{debug, info, warn};
 use uuid::Uuid;
 
 /// 默认的单个步骤超时（秒）
 const STEP_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Ping 发送间隔（SteadyState 场景）
+const STEADY_STATE_PING_INTERVAL: Duration = Duration::from_secs(2);
+
+// ── Public types ─────────────────────────────────────────────────────
 
 /// 真实模式运行结果
 pub struct RealRunResult {
@@ -65,7 +71,135 @@ impl ClientMetrics {
     fn record_command(&mut self) {
         self.commands_sent += 1;
     }
+}
 
+// ── Room Orchestrator ───────────────────────────────────────────────
+
+/// 房间阶段：所有客户端在同一个房间内按阶段同步推进。
+///
+/// 变体的声明顺序就是阶段顺序（通过 `#[derive(Ord)]` 保证
+/// `Auth < Create < … < Finish`），因此可以用 `>=` 比较。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum RoomPhase {
+    Auth,
+    Create,
+    Join,
+    Select,
+    Start,
+    Ready,
+    Play,
+    Finish,
+}
+
+/// 每房间协调器，替换全局的 `Barrier`。
+///
+/// 使用 `tokio::sync::watch` 通道广播阶段切换。一个原子计数器
+/// 跟踪有多少客户端已到达当前阶段的关卡。当最后一个客户端到达时，
+/// 阶段推进到下一阶段。
+///
+/// 如果某个客户端失败（`cancel()` 被调用），`cancelled` 标志被设置，
+/// 所有正在等待的客户端立即收到错误，不会死锁。
+struct RoomCoordinator {
+    /// 阶段广播发送端
+    phase_tx: watch::Sender<RoomPhase>,
+    /// 当前关卡到达的客户端数
+    arrived: AtomicU32,
+    /// 该房间需要的客户端总数
+    members_needed: u32,
+    /// 取消标志（首个客户端失败时设置）
+    cancelled: AtomicBool,
+    /// 取消时通知等待者
+    cancel_notify: Notify,
+}
+
+impl RoomCoordinator {
+    /// 创建新协调器。`members_needed` 是该房间的总客户端数。
+    fn new(members_needed: u32) -> Arc<Self> {
+        let (phase_tx, _) = watch::channel(RoomPhase::Auth);
+        Arc::new(Self {
+            phase_tx,
+            arrived: AtomicU32::new(0),
+            members_needed,
+            cancelled: AtomicBool::new(false),
+            cancel_notify: Notify::new(),
+        })
+    }
+
+    /// 获取当前阶段。
+    fn current_phase(&self) -> RoomPhase {
+        *self.phase_tx.borrow()
+    }
+
+    /// 订阅阶段变更。
+    fn subscribe(&self) -> watch::Receiver<RoomPhase> {
+        self.phase_tx.subscribe()
+    }
+
+    /// 设置取消标志并唤醒所有等待者。
+    fn cancel(&self) {
+        self.cancelled.store(true, Ordering::SeqCst);
+        self.cancel_notify.notify_waiters();
+    }
+
+    /// 等待房间阶段达到（或超过）`target`。
+    async fn wait_phase(
+        &self,
+        rx: &mut watch::Receiver<RoomPhase>,
+        target: RoomPhase,
+    ) -> Result<(), String> {
+        loop {
+            if self.cancelled.load(Ordering::SeqCst) {
+                return Err("room cancelled due to client failure".into());
+            }
+            if *rx.borrow() >= target {
+                return Ok(());
+            }
+            tokio::select! {
+                _ = rx.changed() => {}
+                _ = self.cancel_notify.notified() => {
+                    if self.cancelled.load(Ordering::SeqCst) {
+                        return Err("room cancelled due to client failure".into());
+                    }
+                }
+            }
+        }
+    }
+
+    /// 标记当前阶段完成并等待所有房间成员也完成。
+    /// 当最后一个成员到达时，阶段推进到 `next`。
+    async fn advance(&self, next: RoomPhase) -> Result<(), String> {
+        let prev = self.arrived.fetch_add(1, Ordering::SeqCst);
+        if prev + 1 == self.members_needed {
+            // 最后一个到达 -> 推进阶段并唤醒所有人
+            self.arrived.store(0, Ordering::SeqCst);
+            self.phase_tx
+                .send(next)
+                .map_err(|_| "room coordinator: receiver dropped".to_string())?;
+            return Ok(());
+        }
+
+        // 不是最后一个 -> 等待阶段推进
+        loop {
+            if self.cancelled.load(Ordering::SeqCst) {
+                return Err("room cancelled due to client failure".into());
+            }
+            if *self.phase_tx.borrow() >= next {
+                return Ok(());
+            }
+            let mut rx = self.phase_tx.subscribe();
+            if *rx.borrow() >= next {
+                return Ok(());
+            }
+            tokio::select! {
+                _ = rx.changed() => {}
+                _ = self.cancel_notify.notified() => {
+                    if self.cancelled.load(Ordering::SeqCst) {
+                        return Err("room cancelled due to client failure".into());
+                    }
+                }
+            }
+        }
+    }
 }
 
 // ── 辅助函数 ──────────────────────────────────────────────────────
@@ -301,8 +435,10 @@ async fn step_select_chart(
     Ok(())
 }
 
-/// 请求开始 + 准备步骤
-async fn step_start_and_ready(
+/// 请求开始 + 准备步骤（host 调用）
+///
+/// 发送 RequestStart，等待 GameStart，然后发送 Ready，等待 StartPlaying。
+async fn step_host_start_and_ready(
     stream: &Stream<ClientCommand, ServerCommand>,
     rx: &mut mpsc::UnboundedReceiver<ServerCommand>,
     cm: &mut ClientMetrics,
@@ -362,7 +498,64 @@ async fn step_start_and_ready(
 
     cm.all_latencies
         .push(step_start.elapsed().as_secs_f64() * 1000.0);
-    info!("client {} entered playing state", client_index);
+    info!("client {} (host) entered playing state", client_index);
+    Ok(())
+}
+
+/// 加入者准备步骤（joiner 调用）
+///
+/// 等待 GameStart，然后发送 Ready，等待 StartPlaying。
+async fn step_joiner_ready(
+    stream: &Stream<ClientCommand, ServerCommand>,
+    rx: &mut mpsc::UnboundedReceiver<ServerCommand>,
+    cm: &mut ClientMetrics,
+    last_cmd: &mut Option<String>,
+    client_index: u32,
+) -> Result<(), String> {
+    // Wait for GameStart (sent by host)
+    let _game_start = wait_for_response(
+        rx,
+        |cmd| match cmd {
+            ServerCommand::Message(msg) => match msg {
+                phira_mp_common::Message::GameStart { .. } => Some(Ok::<(), String>(())),
+                _ => None,
+            },
+            _ => None,
+        },
+        STEP_TIMEOUT,
+        "GameStart",
+        last_cmd,
+    )
+    .await
+    .map_err(|e| format!("client {client_index}: waiting GameStart: {e}"))?;
+
+    // Ready
+    let step_start = Instant::now();
+    stream
+        .send(ClientCommand::Ready)
+        .await
+        .map_err(|e| format!("client {client_index}: send Ready: {e}"))?;
+    cm.record_command();
+
+    let _start_playing = wait_for_response(
+        rx,
+        |cmd| match cmd {
+            ServerCommand::Message(msg) => match msg {
+                phira_mp_common::Message::StartPlaying => Some(Ok::<(), String>(())),
+                _ => None,
+            },
+            _ => None,
+        },
+        STEP_TIMEOUT,
+        "StartPlaying",
+        last_cmd,
+    )
+    .await
+    .map_err(|e| format!("client {client_index}: waiting StartPlaying: {e}"))?;
+
+    cm.all_latencies
+        .push(step_start.elapsed().as_secs_f64() * 1000.0);
+    info!("client {} (joiner) entered playing state", client_index);
     Ok(())
 }
 
@@ -476,11 +669,49 @@ async fn send_touch_judge_frames(
     Ok(())
 }
 
-/// 完整房间生命周期：Auth → CreateRoom/JoinRoom → SelectChart → RequestStart → Ready → Played
+/// 在 SteadyState 场景的 Play 阶段发送 Ping 命令。
 ///
-/// `is_host` 控制该客户端是创建房间还是加入现有房间。
-/// `room_index` 指定要创建/加入的房间。
-async fn run_full_lifecycle(
+/// 每 2 秒发送一次 Ping，持续到 `duration` 结束或整体截止时间。
+/// 不等待 Pong 响应。
+async fn send_steady_state_commands(
+    stream: &Stream<ClientCommand, ServerCommand>,
+    cm: &mut ClientMetrics,
+    client_index: u32,
+    duration: Duration,
+    overall_deadline: Instant,
+) -> Result<(), String> {
+    let end = Instant::now() + duration;
+    let mut ping_count: u64 = 0;
+
+    while Instant::now() < end && Instant::now() < overall_deadline {
+        stream
+            .send(ClientCommand::Ping)
+            .await
+            .map_err(|e| format!("client {client_index}: send Ping: {e}"))?;
+        cm.record_command();
+        ping_count += 1;
+
+        tokio::time::sleep(STEADY_STATE_PING_INTERVAL).await;
+    }
+
+    info!(
+        "client {} sent {} Ping commands during steady state ({:.1}s)",
+        client_index,
+        ping_count,
+        duration.as_secs_f64()
+    );
+    Ok(())
+}
+
+// ── 场景运行器 ──────────────────────────────────────────────────────
+
+/// 运行单个客户端的完整场景，通过 `RoomCoordinator` 与同房间其他客户端同步。
+///
+/// 所有场景共享同一个阶段流水线，仅在实际执行的工作上有所不同：
+/// - `Connection`: 仅认证（跳过房间操作）
+/// - `SteadyState`: 认证 -> 创建/加入房间 -> 发送 Ping
+/// - `RoomLifecycle`/`Gameplay`/`HotRoom`: 完整房间生命周期
+async fn run_client_scenario(
     stream: &Stream<ClientCommand, ServerCommand>,
     rx: &mut mpsc::UnboundedReceiver<ServerCommand>,
     cm: &mut ClientMetrics,
@@ -491,74 +722,99 @@ async fn run_full_lifecycle(
     overall_deadline: Instant,
     is_host: bool,
     room_index: u32,
-    auth_barrier: &Barrier,
-    phase_barrier: &Barrier,
+    coordinator: &RoomCoordinator,
+    phase_watcher: &mut watch::Receiver<RoomPhase>,
 ) -> Result<(), String> {
+    let scenario = config.scenario;
+
+    // ── Auth 阶段 ────────────────────────────────────────────────
+    coordinator.wait_phase(phase_watcher, RoomPhase::Auth).await?;
     step_authenticate(stream, rx, cm, last_cmd, client_index, run_id).await?;
-    auth_barrier.wait().await;
+    coordinator.advance(RoomPhase::Create).await?;
 
-    if Instant::now() >= overall_deadline {
-        return Ok(());
-    }
-
-    if is_host {
-        step_create_room(stream, rx, cm, last_cmd, client_index, run_id, room_index).await?;
-
-        if Instant::now() >= overall_deadline {
-            return Ok(());
+    // ── Create 阶段 ─────────────────────────────────────────────
+    coordinator.wait_phase(phase_watcher, RoomPhase::Create).await?;
+    match scenario {
+        BenchmarkScenario::Connection => {} // no rooms
+        _ => {
+            if is_host {
+                step_create_room(stream, rx, cm, last_cmd, client_index, run_id, room_index)
+                    .await?;
+            }
         }
-
-        step_select_chart(stream, rx, cm, last_cmd, client_index).await?;
-
-        if Instant::now() >= overall_deadline {
-            return Ok(());
-        }
-
-        step_start_and_ready(stream, rx, cm, last_cmd, client_index).await?;
-    } else {
-        step_join_room(stream, rx, cm, last_cmd, client_index, run_id, room_index).await?;
-
-        if Instant::now() >= overall_deadline {
-            return Ok(());
-        }
-
-        // 非 host 客户端只发送 Ready 等待开始
-        let step_start = Instant::now();
-        stream
-            .send(ClientCommand::Ready)
-            .await
-            .map_err(|e| format!("client {client_index}: send Ready: {e}"))?;
-        cm.record_command();
-
-        let _start_playing = wait_for_response(
-            rx,
-            |cmd| match cmd {
-                ServerCommand::Message(msg) => match msg {
-                    phira_mp_common::Message::StartPlaying => Some(Ok::<(), String>(())),
-                    _ => None,
-                },
-                _ => None,
-            },
-            STEP_TIMEOUT,
-            "StartPlaying",
-            last_cmd,
-        )
-        .await
-        .map_err(|e| format!("client {client_index}: waiting StartPlaying: {e}"))?;
-
-        cm.all_latencies
-            .push(step_start.elapsed().as_secs_f64() * 1000.0);
-        info!("client {} entered playing state (joiner)", client_index);
     }
+    coordinator.advance(RoomPhase::Join).await?;
 
-    phase_barrier.wait().await;
-
-    if Instant::now() >= overall_deadline {
-        return Ok(());
+    // ── Join 阶段 ───────────────────────────────────────────────
+    coordinator.wait_phase(phase_watcher, RoomPhase::Join).await?;
+    match scenario {
+        BenchmarkScenario::Connection => {}
+        _ => {
+            if !is_host {
+                step_join_room(stream, rx, cm, last_cmd, client_index, run_id, room_index)
+                    .await?;
+            }
+        }
     }
+    coordinator.advance(RoomPhase::Select).await?;
 
-    // 场景特定行为：Touch/Judge
-    match config.scenario {
+    // ── Select 阶段 ─────────────────────────────────────────────
+    coordinator.wait_phase(phase_watcher, RoomPhase::Select).await?;
+    match scenario {
+        BenchmarkScenario::Connection | BenchmarkScenario::SteadyState => {
+            // SteadyState: skip chart selection (no game needed)
+        }
+        BenchmarkScenario::RoomLifecycle
+        | BenchmarkScenario::Gameplay
+        | BenchmarkScenario::HotRoom => {
+            if is_host {
+                step_select_chart(stream, rx, cm, last_cmd, client_index).await?;
+            }
+        }
+        _ => {}
+    }
+    coordinator.advance(RoomPhase::Start).await?;
+
+    // ── Start 阶段 ──────────────────────────────────────────────
+    coordinator.wait_phase(phase_watcher, RoomPhase::Start).await?;
+    match scenario {
+        BenchmarkScenario::Connection | BenchmarkScenario::SteadyState => {
+            // no game start needed
+        }
+        BenchmarkScenario::RoomLifecycle
+        | BenchmarkScenario::Gameplay
+        | BenchmarkScenario::HotRoom => {
+            if is_host {
+                step_host_start_and_ready(stream, rx, cm, last_cmd, client_index).await?;
+            } else {
+                step_joiner_ready(stream, rx, cm, last_cmd, client_index).await?;
+            }
+        }
+        _ => {}
+    }
+    coordinator.advance(RoomPhase::Ready).await?;
+
+    // ── Ready phase (work already merged into Start) ────────────
+    coordinator.wait_phase(phase_watcher, RoomPhase::Ready).await?;
+    coordinator.advance(RoomPhase::Play).await?;
+
+    // ── Play 阶段 ───────────────────────────────────────────────
+    coordinator.wait_phase(phase_watcher, RoomPhase::Play).await?;
+    match scenario {
+        BenchmarkScenario::SteadyState => {
+            // Send Ping until overall_deadline is near
+            let remaining = overall_deadline.saturating_duration_since(Instant::now());
+            if remaining > Duration::from_millis(100) {
+                send_steady_state_commands(
+                    stream,
+                    cm,
+                    client_index,
+                    remaining,
+                    overall_deadline,
+                )
+                .await?;
+            }
+        }
         BenchmarkScenario::HotRoom => {
             send_touch_judge_frames(stream, cm, client_index, Duration::from_secs(10), overall_deadline)
                 .await?;
@@ -569,20 +825,31 @@ async fn run_full_lifecycle(
         }
         _ => {}
     }
+    coordinator.advance(RoomPhase::Finish).await?;
 
-    if Instant::now() >= overall_deadline {
-        return Ok(());
+    // ── Finish 阶段 ─────────────────────────────────────────────
+    coordinator.wait_phase(phase_watcher, RoomPhase::Finish).await?;
+    match scenario {
+        BenchmarkScenario::Connection | BenchmarkScenario::SteadyState => {
+            // no Played report needed — no game was started
+        }
+        BenchmarkScenario::RoomLifecycle
+        | BenchmarkScenario::Gameplay
+        | BenchmarkScenario::HotRoom => {
+            step_played(stream, rx, cm, last_cmd, client_index).await?;
+        }
+        _ => {}
     }
-
-    step_played(stream, rx, cm, last_cmd, client_index).await?;
 
     Ok(())
 }
 
-/// 运行单个客户端场景
+/// 运行单个客户端任务
 ///
-/// `is_host` 表示该客户端是否为房间创建者。
-/// `room_index` 指定客户端应加入的房间编号（用于 rooms/members_per_room 分组）。
+/// 1. TCP 连接
+/// 2. 建立 Stream
+/// 3. 通过 `RoomCoordinator` 编排的阶段流水线运行场景
+/// 4. 清理并返回指标
 async fn run_single_client(
     client_index: u32,
     run_id: Uuid,
@@ -591,8 +858,8 @@ async fn run_single_client(
     overall_deadline: Instant,
     is_host: bool,
     room_index: u32,
-    auth_barrier: Arc<Barrier>,
-    phase_barrier: Arc<Barrier>,
+    coordinator: Arc<RoomCoordinator>,
+    mut phase_watcher: watch::Receiver<RoomPhase>,
 ) -> Result<ClientMetrics, String> {
     let mut cm = ClientMetrics::new();
     let mut last_cmd: Option<String> = None;
@@ -634,104 +901,47 @@ async fn run_single_client(
         stream.version()
     );
 
-    // ── 3. 场景调度 ──
-    let result = match config.scenario {
-        BenchmarkScenario::Connection => {
-            // Connection：只认证，通过两个屏障确保所有客户端同时完成阶段
-            step_authenticate(
-                &stream,
-                &mut cmd_rx,
-                &mut cm,
-                &mut last_cmd,
-                client_index,
-                &run_id,
-            )
-            .await?;
-            auth_barrier.wait().await;
-            phase_barrier.wait().await;
-            Ok(())
-        }
-        BenchmarkScenario::SteadyState => {
-            // SteadyState: 认证 + 创建房间，然后等待剩余时间
-            step_authenticate(
-                &stream,
-                &mut cmd_rx,
-                &mut cm,
-                &mut last_cmd,
-                client_index,
-                &run_id,
-            )
-            .await?;
-            auth_barrier.wait().await;
-            if Instant::now() < overall_deadline {
-                step_create_room(
-                    &stream,
-                    &mut cmd_rx,
-                    &mut cm,
-                    &mut last_cmd,
-                    client_index,
-                    &run_id,
-                    0,
-                )
-                .await?;
-            }
-            phase_barrier.wait().await;
-            if Instant::now() < overall_deadline {
-                let remaining = overall_deadline.saturating_duration_since(Instant::now());
-                if remaining > Duration::from_millis(100) {
-                    tokio::time::sleep(remaining).await;
-                }
-            }
-            Ok(())
-        }
-        BenchmarkScenario::RoomLifecycle
-        | BenchmarkScenario::Gameplay
-        | BenchmarkScenario::HotRoom => {
-            run_full_lifecycle(
-                &stream,
-                &mut cmd_rx,
-                &mut cm,
-                &mut last_cmd,
-                client_index,
-                &run_id,
-                &config,
-                overall_deadline,
-                is_host,
-                room_index,
-                auth_barrier.as_ref(),
-                phase_barrier.as_ref(),
-            )
-            .await
-        }
-        // ── 尚未在 Real 模式中实现的场景 ──
-        BenchmarkScenario::SlowConsumer
-        | BenchmarkScenario::Reconnect
-        | BenchmarkScenario::PluginLoad
-        | BenchmarkScenario::DatabaseWrite
-        | BenchmarkScenario::Mixed
-        | BenchmarkScenario::LongRun => Err(format!(
-            "scenario '{}' is not implemented in real mode",
-            config.scenario.as_str()
-        )),
-    };
+    // ── 3. Scenario (synchronised through RoomCoordinator) ──────
+    let result = run_client_scenario(
+        &stream,
+        &mut cmd_rx,
+        &mut cm,
+        &mut last_cmd,
+        client_index,
+        &run_id,
+        &config,
+        overall_deadline,
+        is_host,
+        room_index,
+        &coordinator,
+        &mut phase_watcher,
+    )
+    .await;
 
-    // ── 4. 清理 ──
+    // ── 4. Cleanup ──
     stream.close();
+
+    // If this client failed, cancel the room so other members
+    // don't deadlock waiting for us.
+    if result.is_err() {
+        coordinator.cancel();
+    }
 
     result?;
     Ok(cm)
 }
 
+// ── 主运行器 ──────────────────────────────────────────────────────
+
 /// 运行真实模式基准测试
 ///
 /// 连接到一个已运行的 PMP 服务器并执行基准测试：
 /// 1. 解析配置，若 `config.mock_phira` 为 true 则启动 Mock Phira 服务器
-/// 2. 根据 `config.clients` 并发连接 N 个客户端
-/// 3. 每个客户端执行场景定义的步骤（Auth → CreateRoom → SelectChart → ...）
-/// 4. 使用 `config.duration` 作为整体超时
-/// 5. 用 `CommandCollector` 追踪命令数、延迟和错误
-/// 6. 根据 `config.scenario` 调整行为（Connection / RoomLifecycle / HotRoom 等）
-/// 7. 生成并返回基准测试报告
+/// 2. 为每个房间创建 `RoomCoordinator`
+/// 3. 根据 `config.clients` 并发连接 N 个客户端
+/// 4. 每个客户端通过 `RoomCoordinator` 同步执行阶段流水线
+/// 5. 使用 `config.duration` 作为整体超时
+/// 6. 生成并返回基准测试报告
 pub async fn run_real(
     config: BenchmarkConfig,
     state: &crate::server::PlusServerState,
@@ -800,38 +1010,89 @@ pub async fn run_real(
     let members_per_room = config.members_per_room.max(1);
     let mut join_set = tokio::task::JoinSet::new();
 
-    // 创建阶段同步屏障（所有客户端在 Auth / RoomSetup 阶段结束后同步）
-    let n = num_clients as usize;
-    let auth_barrier = Arc::new(Barrier::new(n));
-    let phase_barrier = Arc::new(Barrier::new(n));
+    // For Connection each client is its own "room" (members=1) so they
+    // never block on each other.
+    let is_connection = config.scenario == BenchmarkScenario::Connection;
+    let is_hot_room = config.scenario == BenchmarkScenario::HotRoom;
 
-    for i in 0..num_clients {
-        let addr = server_addr.clone();
-        let cfg = config.clone();
-        let rid = run_id;
-        let deadline = overall_deadline;
-        let auth_b = auth_barrier.clone();
-        let phase_b = phase_barrier.clone();
+    if is_hot_room {
+        // ── HotRoom: all clients in one room ────────────────────
+        let coordinator = RoomCoordinator::new(num_clients);
 
-        // 按 rooms 和 members_per_room 计算房间分配
-        let room_index = if cfg.scenario == BenchmarkScenario::HotRoom {
-            // HotRoom: 所有客户端加入同一个房间
-            0
-        } else {
-            // 按 rooms 分配：每个房间一组
-            (i / members_per_room) % rooms
-        };
+        for i in 0..num_clients {
+            let addr = server_addr.clone();
+            let cfg = config.clone();
+            let rid = run_id;
+            let deadline = overall_deadline;
+            let is_host = i == 0;
 
-        // 每组第一个客户端是 host（创建房间），其余 join
-        let is_host = if cfg.scenario == BenchmarkScenario::HotRoom {
-            i == 0
-        } else {
-            i % members_per_room == 0
-        };
+            let phase_rx = coordinator.subscribe();
+            let coord = coordinator.clone();
 
-        join_set.spawn(async move {
-            run_single_client(i, rid, addr, cfg, deadline, is_host, room_index, auth_b, phase_b).await
-        });
+            join_set.spawn(async move {
+                run_single_client(
+                    i, rid, addr, cfg, deadline, is_host, 0, coord, phase_rx,
+                )
+                .await
+            });
+        }
+    } else if is_connection {
+        // ── Connection: each client gets its own coordinator ────
+        for i in 0..num_clients {
+            let addr = server_addr.clone();
+            let cfg = config.clone();
+            let rid = run_id;
+            let deadline = overall_deadline;
+
+            let coordinator = RoomCoordinator::new(1);
+            let phase_rx = coordinator.subscribe();
+            let coord = coordinator;
+
+            join_set.spawn(async move {
+                run_single_client(
+                    i, rid, addr, cfg, deadline, false, 0, coord, phase_rx,
+                )
+                .await
+            });
+        }
+    } else {
+        // ── Standard / SteadyState / RoomLifecycle / Gameplay ──
+        let actual_rooms_needed = (num_clients + members_per_room - 1) / members_per_room;
+        let num_rooms_to_use = actual_rooms_needed.max(rooms);
+
+        // Compute the actual number of clients per room; the last
+        // room may have fewer than members_per_room.
+        let mut room_sizes: Vec<u32> = vec![0; num_rooms_to_use as usize];
+        for i in 0..num_clients {
+            let idx = (i / members_per_room) as usize % num_rooms_to_use as usize;
+            room_sizes[idx] += 1;
+        }
+
+        let mut room_coords: Vec<Arc<RoomCoordinator>> =
+            Vec::with_capacity(num_rooms_to_use as usize);
+        for &size in &room_sizes {
+            room_coords.push(RoomCoordinator::new(size));
+        }
+
+        for i in 0..num_clients {
+            let addr = server_addr.clone();
+            let cfg = config.clone();
+            let rid = run_id;
+            let deadline = overall_deadline;
+
+            let room_idx = (i / members_per_room) % num_rooms_to_use;
+            let is_host = i % members_per_room == 0;
+
+            let coordinator = room_coords[room_idx as usize].clone();
+            let phase_rx = coordinator.subscribe();
+
+            join_set.spawn(async move {
+                run_single_client(
+                    i, rid, addr, cfg, deadline, is_host, room_idx, coordinator, phase_rx,
+                )
+                .await
+            });
+        }
     }
 
     info!("Spawned {} client tasks, waiting for completion...", num_clients);
@@ -870,6 +1131,8 @@ pub async fn run_real(
                 }
                 Ok(Some(Ok(Err(e)))) => {
                     results.push(Err(e));
+                    // Other clients in the same room will exit
+                    // through coordinator.cancel().
                 }
                 Ok(Some(Err(e))) => {
                     warn!("Client task join error: {e}");
@@ -879,11 +1142,9 @@ pub async fn run_real(
                     break;
                 }
                 Err(_) => {
-                    // Timeout reached during join_next
                     warn!("Overall benchmark timeout ({:.1}s) reached; aborting {} remaining task(s)",
                         config.duration.as_secs_f64(), join_set.len());
                     join_set.abort_all();
-                    // Drain remaining
                     while let Some(result) = join_set.join_next().await {
                         match result {
                             Ok(Ok(cm)) => results.push(Ok(cm)),
@@ -928,7 +1189,7 @@ pub async fn run_real(
 
     // ── 6. 填写报告 ──────────────────────────────────────────────────
     let duration_secs = elapsed.as_secs().max(1);
-    let total_messages = total_commands; // 近似
+    let total_messages = total_commands;
 
     report.summary.duration_secs = duration_secs;
     report.summary.total_commands = total_commands;
@@ -946,7 +1207,6 @@ pub async fn run_real(
         .copied()
         .fold(0.0_f64, f64::max);
 
-    // 计算延迟百分位
     if !all_latencies.is_empty() {
         let mut sampler = LatencySampler::new(all_latencies.len().max(100_000));
         for lat in &all_latencies {

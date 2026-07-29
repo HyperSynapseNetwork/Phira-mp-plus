@@ -783,7 +783,7 @@ Runtime diagnostics.
 
 ### `status`
 
-Get runtime v2 status summary (event bus, worker, registry).
+Get runtime status summary (event bus, worker, registry).
 
 **参数**:  
 （无）

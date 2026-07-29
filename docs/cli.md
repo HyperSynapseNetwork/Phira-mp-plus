@@ -584,7 +584,6 @@ help groups
 
 | 参数 | 类型 | 说明 |
 |------|------|------|
-| `--mode` | `str` (可选) | 运行模式：real（默认） |
 | `--scenario` | `str` | 负载场景名（见 benchmark list） |
 | `--preset` | `str` (可选) | 预设参数：quick、standard（默认）、stress、soak |
 | `--clients` | `int` (可选) | 模拟客户端数 |

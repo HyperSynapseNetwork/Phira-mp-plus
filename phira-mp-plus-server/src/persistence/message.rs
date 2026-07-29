@@ -68,10 +68,6 @@ impl PersistenceEvent {
         }
     }
 
-    pub fn is_simulation(&self) -> bool {
-        false
-    }
-
     /// Lossless JSON representation used by the local persistence dead-letter
     /// journal after all configured database retries are exhausted. Control
     /// markers are not persistence work and therefore return `None`.

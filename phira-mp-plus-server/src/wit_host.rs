@@ -6,6 +6,10 @@
 //!
 //! The core `WitPluginHost` skeleton is available with `plugin-system`.
 //! The generated trait impls require `wit-bindgen` (default feature).
+//!
+//! TODO(PMP-followup): This file has grown past 1200 lines. It should be split
+//! into per-world modules under a new `wit_host/` directory, keeping only the
+//! core dispatch and common helpers here.
 
 #![allow(clippy::type_complexity)]
 

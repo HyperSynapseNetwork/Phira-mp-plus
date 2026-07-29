@@ -202,7 +202,7 @@ impl ExtensionDataStore {
 pub struct ExtensionManager {
     store: Arc<RwLock<ExtensionDataStore>>,
     persist_path: Option<String>,
-    /// Optional reference to PersistenceWorker for mirrored writes.
+    /// Optional reference to PersistenceWorker for extension persistence.
     persistence_worker: RwLock<Option<Weak<PersistenceWorker>>>,
 }
 
@@ -228,7 +228,7 @@ impl ExtensionManager {
         Self::new(None)
     }
 
-    /// Attach a PersistenceWorker for mirrored production writes.
+    /// Attach a PersistenceWorker for extension persistence.
     pub async fn set_persistence_worker(&self, worker: &Arc<PersistenceWorker>) {
         *self.persistence_worker.write().await = Some(Arc::downgrade(worker));
     }

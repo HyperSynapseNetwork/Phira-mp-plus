@@ -157,7 +157,7 @@ impl PlusServer {
             events,
             db_manager,
         });
-        // Wire PersistenceWorker into ExtensionManager for mirrored writes
+        // Wire PersistenceWorker into ExtensionManager for persistence
         state
             .extensions
             .set_persistence_worker(&state.persistence_worker)
