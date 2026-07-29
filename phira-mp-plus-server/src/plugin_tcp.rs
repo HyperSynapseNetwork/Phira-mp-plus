@@ -413,7 +413,7 @@ impl PluginTcpActor {
                     let _ = reply.send(result);
                 }
             }
-        }
+}
 
 // ── Plain TCP helpers ───────────────────────────────────────────────
 
