@@ -140,9 +140,15 @@ pub(super) fn build_snapshot(
         control.host_id.unwrap_or(-1)
     };
 
-    // Read lifecycle from actor snapshot.
+    // Read lifecycle + members from actor snapshot (actor-authoritative).
     let actor_stripped = actor_snap.as_ref().map(|s| s.stripped);
     let actor_chart = actor_snap.as_ref().and_then(|s| s.chart);
+    let actor_chart_name = actor_snap.as_ref().and_then(|s| s.chart_name.clone());
+    let actor_round_id = actor_snap.as_ref().and_then(|s| s.round_id.map(|id| id.to_string()));
+    // Prefer actor-authoritative member IDs. The Room connection refs are
+    // still used below for full UserSnapshot info (names, session status).
+    let actor_player_ids: Option<Vec<i32>> = actor_snap.as_ref().map(|s| s.members.users.clone());
+    let actor_monitor_ids: Option<Vec<i32>> = actor_snap.as_ref().map(|s| s.members.monitors.clone());
 
     let (st, playing_users, ready_users, finished_users, aborted_users, result_count, state_detail) =
         match actor_stripped {
@@ -165,7 +171,10 @@ pub(super) fn build_snapshot(
                 serde_json::json!({"kind":"wait_for_ready", "ready_users": users_arcs.iter().map(|u| u.id).collect::<Vec<_>>()}),
             ),
             Some(phira_mp_common::StrippedRoomState::Playing) => {
-                let finished: Vec<i32> = users_arcs.iter().map(|u| u.id).collect();
+                let finished: Vec<i32> = match actor_snap.as_ref() {
+                    Some(s) => s.members.users.clone(),
+                    None => users_arcs.iter().map(|u| u.id).collect(),
+                };
                 let playing: Vec<i32> = Vec::new();
                 (
                     "PLAYING".to_string(),
@@ -210,7 +219,8 @@ pub(super) fn build_snapshot(
     let phira_api_endpoint = state.config.phira_api_endpoint.clone();
     let phira_api_endpoint_override: Option<String> = control.phira_api_endpoint;
     let using_override = phira_api_endpoint_override.is_some();
-    let current_round_id: Option<String> = None; // No longer on Room.
+    // Use actor snapshot for current round id (actor-authoritative).
+    let current_round_id = actor_round_id;
     let rounds: Vec<RoundInfo> = room
         .play_history
         .recent_sync()
@@ -251,7 +261,7 @@ pub(super) fn build_snapshot(
     let chart_info = actor_chart.map(|cid| {
         serde_json::json!({
             "id": cid,
-            "name": "",
+            "name": actor_chart_name.as_deref().unwrap_or(""),
         })
     });
 
@@ -263,7 +273,7 @@ pub(super) fn build_snapshot(
             lock: control.locked,
             cycle: control.cycle,
             chart: actor_chart,
-            chart_name: None,
+            chart_name: actor_chart_name,
             state: st,
             playing_users,
             rounds: rounds.clone(),

@@ -427,9 +427,11 @@ mod tests {
             created_at: 0,
             persistent_empty: false,
             chart: None,
+            chart_name: None,
             stripped: phira_mp_common::StrippedRoomState::SelectingChart,
             round_id: None,
             ready_set: None,
+            members: super::super::actor::RoomMembers { users: Vec::new(), monitors: Vec::new() },
         };
 
         gateway

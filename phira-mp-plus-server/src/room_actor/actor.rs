@@ -29,12 +29,16 @@ pub struct RoomSnapshot {
     pub persistent_empty: bool,
     /// Chart id, if one is selected (actor-authoritative).
     pub chart: Option<i32>,
+    /// Chart name, if one is selected (actor-authoritative).
+    pub chart_name: Option<String>,
     /// The room lifecycle state as a stripped enum (actor-authoritative).
     pub stripped: phira_mp_common::StrippedRoomState,
     /// Current round id, if a round is active (actor-authoritative).
     pub round_id: Option<uuid::Uuid>,
     /// IDs of users who have readied up (actor-authoritative, only meaningful in WaitForReady).
     pub ready_set: Option<Vec<i32>>,
+    /// Actor-authoritative member lists (actor-state members, not Room connection refs).
+    pub members: RoomMembers,
 }
 
 impl RoomSnapshot {
@@ -51,6 +55,7 @@ impl RoomSnapshot {
             created_at: state.created_at,
             persistent_empty: state.state.control.persistent_empty,
             chart: state.state.chart,
+            chart_name: state.state.chart_name.clone(),
             stripped: state.state.lifecycle.stripped(),
             round_id: state.state.round.round_id,
             ready_set: match &state.state.lifecycle {
@@ -59,6 +64,7 @@ impl RoomSnapshot {
                 }
                 _ => None,
             },
+            members: state.state.members.clone(),
         }
     }
 }
@@ -114,6 +120,7 @@ impl RoomState {
             created_at,
             persistent_empty: self.control.persistent_empty,
             chart: self.chart,
+            chart_name: self.chart_name.clone(),
             stripped: self.lifecycle.stripped(),
             round_id: self.round.round_id,
             ready_set: match &self.lifecycle {
@@ -122,6 +129,7 @@ impl RoomState {
                 }
                 _ => None,
             },
+            members: self.members.clone(),
         }
     }
 
