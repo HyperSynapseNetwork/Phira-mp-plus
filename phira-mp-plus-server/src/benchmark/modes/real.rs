@@ -1311,7 +1311,27 @@ pub async fn run_real(
         total_errors,
     );
 
-    // ── 7. 清理 ──────────────────────────────────────────────────────
+    // ── 7. 清理基准测试房间 ──────────────────────────────────────────
+    // 使用 benchmark_run_id 构造房间 ID 前缀，关闭本运行创建的所有房间。
+    if config.scenario != BenchmarkScenario::Connection && !results.is_empty() {
+        let rooms_used = if is_hot_room {
+            1u32
+        } else {
+            let actual_rooms_needed = num_clients.div_ceil(members_per_room);
+            actual_rooms_needed.max(rooms)
+        };
+
+        for room_idx in 0..rooms_used {
+            let room_id = make_bench_room_id(&run_id, room_idx);
+            if let Err(e) = state.room_commands.close_room(state, &room_id).await {
+                warn!("Failed to close benchmark room {room_id}: {e}");
+            } else {
+                info!("Closed benchmark room {room_id}");
+            }
+        }
+    }
+
+    // ── 8. 恢复环境 ──────────────────────────────────────────────────
     if let Some(orig) = original_endpoint {
         state.live_config.write().await.phira_api_endpoint = orig;
         info!("Restored original phira_api_endpoint");
