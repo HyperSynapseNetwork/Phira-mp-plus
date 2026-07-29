@@ -1014,7 +1014,6 @@ mod wit_trait_impls {
             .and_then(|v| serde_json::from_value(v.clone()).ok()).unwrap_or_default();
         let finished: Vec<i32> = data.get("finished_users")
             .and_then(|v| serde_json::from_value(v.clone()).ok()).unwrap_or_default();
-        let _host: i32 = data.get("host").and_then(|v| v.as_i64()).unwrap_or(-1) as i32;
 
         let mut players = Vec::new();
 

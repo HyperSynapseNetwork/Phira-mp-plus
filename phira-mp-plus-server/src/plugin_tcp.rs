@@ -31,7 +31,6 @@ pub(crate) enum PluginTcpInternal {
         close_tx: oneshot::Sender<()>,
         plugin_id_tx: oneshot::Sender<String>,
     },
-    #[allow(dead_code)]
     Disconnected {
         handle: u64,
         plugin_id: String,
@@ -73,28 +72,6 @@ pub enum PluginTcpCommand {
     RemovePlugin {
         plugin_id: String,
         reply: SyncReply<()>,
-    },
-}
-
-/// Events from the TCP actor back to the plugin system.
-#[derive(Debug, Clone)]
-pub enum PluginTcpEvent {
-    Accepted {
-        listener_handle: u64,
-        conn_handle: u64,
-        remote_addr: String,
-    },
-    Received {
-        handle: u64,
-        bytes: Vec<u8>,
-    },
-    Disconnected {
-        handle: u64,
-        reason: String,
-    },
-    Error {
-        handle: u64,
-        error: String,
     },
 }
 
