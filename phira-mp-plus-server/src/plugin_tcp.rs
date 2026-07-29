@@ -412,10 +412,10 @@ impl PluginTcpActor {
                     };
                     let _ = reply.send(result);
                 }
-            }
-}
-
 // ── Plain TCP helpers ───────────────────────────────────────────────
+        }
+    }
+}
 
 async fn tcp_connect(
     addr: &str,
