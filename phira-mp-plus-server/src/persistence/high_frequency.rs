@@ -195,8 +195,8 @@ impl HighFrequencyStats {
         self.dropped_points.store(0, Ordering::Relaxed);
         self.queue_full_count.store(0, Ordering::Relaxed);
         self.last_database_error_at.store(0, Ordering::Relaxed);
-        self.admission_sequence.store(0, Ordering::Relaxed);
-        self.committed_sequence.store(0, Ordering::Relaxed);
+        self.admission_sequence.store(1, Ordering::Relaxed);
+        self.committed_sequence.store(1, Ordering::Relaxed);
     }
 }
 
@@ -294,8 +294,8 @@ impl HighFrequencyWriter {
             dropped_points: AtomicU64::new(0),
             queue_full_count: AtomicU64::new(0),
             last_database_error_at: AtomicU64::new(0),
-            admission_sequence: AtomicU64::new(0),
-            committed_sequence: AtomicU64::new(0),
+            admission_sequence: AtomicU64::new(1),
+            committed_sequence: AtomicU64::new(1),
         });
         let worker_stats = Arc::clone(&stats);
         let worker_db = Arc::clone(&db);
@@ -1100,8 +1100,8 @@ mod tests {
             "no items should be dropped; got {} dropped",
             snap.dropped
         );
-        // admission_sequence counts every accepted attempt.
-        assert_eq!(snap.admission_sequence, snap.received);
+        // admission_sequence counts every accepted attempt (starting at 1).
+        assert_eq!(snap.admission_sequence, snap.received + 1);
 
         // Flush will fail (no real DB) — confirm it doesn't panic.
         let flush_result = writer.flush().await;
