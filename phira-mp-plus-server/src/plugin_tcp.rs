@@ -252,7 +252,7 @@ impl PluginTcpActor {
                                 if self.count_plugin_connections(pid) >= MAX_CONNECTIONS_PER_PLUGIN {
                                     warn!(%conn_handle, %pid, "inbound connection quota exceeded, dropping");
                                     self.emit_event("tcp:error",
-                                        serde_json::json!({"handle": conn_handle, "error": format!("connection quota exceeded for {pid}")}));
+                                        serde_json::json!({"handle": conn_handle, "plugin_id": pid, "error": format!("connection quota exceeded for {pid}")}));
                                     let _ = plugin_id_tx.send(String::new());
                                     continue;
                                 }
@@ -269,17 +269,17 @@ impl PluginTcpActor {
                                     listener.pending_accepts.push(conn_handle);
                                 }
                                 self.emit_event("tcp:accept",
-                                    serde_json::json!({"listener_handle": listener_handle, "conn_handle": conn_handle, "remote_addr": remote_addr}));
+                                    serde_json::json!({"listener_handle": listener_handle, "conn_handle": conn_handle, "remote_addr": remote_addr, "plugin_id": pid}));
                                 let _ = plugin_id_tx.send(pid.clone());
                             } else {
                                 let _ = plugin_id_tx.send(String::new());
                             }
                         }
-                        PluginTcpInternal::Disconnected { handle, plugin_id: _, remote_addr } => {
+                        PluginTcpInternal::Disconnected { handle, plugin_id, remote_addr } => {
                             // Remote peer closed — clean up connection state.
                             self.close_handle(handle);
                             self.emit_event("tcp:disconnect",
-                                serde_json::json!({"handle": handle, "reason": "remote peer closed connection", "remote_addr": remote_addr}));
+                                serde_json::json!({"handle": handle, "plugin_id": plugin_id, "reason": "remote peer closed connection", "remote_addr": remote_addr}));
                         }
                     }
                 }
@@ -361,12 +361,12 @@ impl PluginTcpActor {
                         if let Err(e) = tx.try_send(bytes) {
                             warn!(%handle, error = %e, "tcp send failed");
                             self.emit_event("tcp:error",
-                                serde_json::json!({"handle": handle, "error": e.to_string()}));
+                                serde_json::json!({"handle": handle, "plugin_id": plugin_id, "error": e.to_string()}));
                         }
                     } else {
                         warn!(%handle, "tcp send on unknown handle");
                         self.emit_event("tcp:error",
-                            serde_json::json!({"handle": handle, "error": "unknown handle"}));
+                            serde_json::json!({"handle": handle, "plugin_id": plugin_id, "error": "unknown handle"}));
                     }
                 }
                 PluginTcpCommand::Close { plugin_id, handle } => {
