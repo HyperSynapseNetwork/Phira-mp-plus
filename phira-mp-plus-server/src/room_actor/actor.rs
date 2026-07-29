@@ -7,6 +7,7 @@
 //! in the gateway's snapshot cache for external readers.
 
 use super::command::RoomActorCommand;
+use crate::persistence::message::PersistenceEvent;
 use crate::room::{InternalRoomState, PlayerLiveData, Room, RoomControlSnapshot};
 use crate::server::PlusServerState;
 use serde::{Deserialize, Serialize};
@@ -269,6 +270,18 @@ impl RoomActor {
                 self.room.uuid,
                 self.latest_snapshot.clone(),
             );
+            // Enqueue a RoomSnapshot to the persistence worker for the
+            // mp_room_snapshots table (P0-E audit).
+            if let Ok(payload) = serde_json::to_value(&self.latest_snapshot) {
+                let _ = self
+                    .state
+                    .persistence_worker
+                    .enqueue(PersistenceEvent::RoomSnapshot {
+                        room_id: self.room.id.to_string(),
+                        payload: Arc::new(payload),
+                    })
+                    .await;
+            }
         }
         command.reply_with(result);
         should_stop
