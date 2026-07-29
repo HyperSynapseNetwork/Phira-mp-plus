@@ -1058,7 +1058,7 @@ pub async fn run_real(
         }
     } else {
         // ── Standard / SteadyState / RoomLifecycle / Gameplay ──
-        let actual_rooms_needed = (num_clients + members_per_room - 1) / members_per_room;
+        let actual_rooms_needed = num_clients.div_ceil(members_per_room);
         let num_rooms_to_use = actual_rooms_needed.max(rooms);
 
         // Compute the actual number of clients per room; the last
