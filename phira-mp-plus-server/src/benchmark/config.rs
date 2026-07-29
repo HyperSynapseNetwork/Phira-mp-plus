@@ -30,6 +30,8 @@ pub struct BenchmarkConfig {
     pub duration: Duration,
     /// 预热时长（不计入指标）
     pub warmup: Duration,
+    /// 测量阶段持续时间（Gameplay/HotRoom 的 Touch/Judge 帧发送时长）
+    pub measurement_duration: Duration,
     /// 内部 tick 间隔（毫秒）
     pub tick_interval_ms: u64,
 
@@ -82,6 +84,7 @@ impl BenchmarkConfig {
             members_per_room: params.members_per_room,
             duration: params.duration,
             warmup: params.warmup,
+            measurement_duration: Duration::from_secs(5),
             tick_interval_ms: params.tick_interval_ms,
             seed: 114_514,
             plugins: Vec::new(),

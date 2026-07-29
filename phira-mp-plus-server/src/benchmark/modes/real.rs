@@ -829,11 +829,11 @@ async fn run_client_scenario(
             }
         }
         BenchmarkScenario::HotRoom => {
-            send_touch_judge_frames(stream, cm, client_index, Duration::from_secs(10), overall_deadline)
+            send_touch_judge_frames(stream, cm, client_index, config.measurement_duration, overall_deadline)
                 .await?;
         }
         BenchmarkScenario::Gameplay => {
-            send_touch_judge_frames(stream, cm, client_index, Duration::from_secs(5), overall_deadline)
+            send_touch_judge_frames(stream, cm, client_index, config.measurement_duration, overall_deadline)
                 .await?;
         }
         _ => {}
