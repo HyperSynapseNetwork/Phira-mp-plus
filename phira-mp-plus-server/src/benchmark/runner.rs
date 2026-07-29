@@ -6,6 +6,7 @@ use crate::benchmark::command::BenchmarkRunArgs;
 use crate::benchmark::config::BenchmarkConfig;
 use crate::benchmark::environment::EnvironmentSnapshot;
 use crate::benchmark::report::BenchmarkReport;
+use crate::persistence::message::PersistenceEvent;
 use crate::server::PlusServerState;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -123,6 +124,17 @@ impl BenchmarkRunner {
         let report = self.run_real().await?;
 
         self.state = RunnerState::Completed;
+
+        // Enqueue BenchmarkReport to persistence worker for mp_runtime_benchmark_reports table.
+        if let Some(state) = &self.server_state {
+            let _ = state
+                .persistence_worker
+                .enqueue(PersistenceEvent::BenchmarkReport {
+                    report: report.clone(),
+                })
+                .await;
+        }
+
         Ok(report)
     }
 
