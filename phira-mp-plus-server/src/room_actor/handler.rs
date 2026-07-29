@@ -447,7 +447,7 @@ pub(super) async fn force_start_playing(
     lc: &dyn RoomLifecycle,
     state: &mut crate::room_actor::actor::RoomState,
 ) {
-    if !matches!(&state.lifecycle, InternalRoomState::WaitForReady { .. }) {
+    if !matches!(state.lifecycle, InternalRoomState::WaitForReady { .. }) {
         return;
     }
     state.ready_countdown_started_at = None;
@@ -558,7 +558,7 @@ pub(super) async fn force_end_playing(
     lc: &dyn RoomLifecycle,
     state: &mut crate::room_actor::actor::RoomState,
 ) {
-    if !matches!(&state.lifecycle, InternalRoomState::Playing { .. }) {
+    if !matches!(state.lifecycle, InternalRoomState::Playing { .. }) {
         return;
     }
     // Remove unfinished and un-aborted players by adding them to aborted
@@ -815,7 +815,7 @@ impl RoomCommandHandler {
                 if as_.state.control.admin_start_pending {
                     return err("administrative start is already in progress");
                 }
-                if !matches!(&as_.state.lifecycle, InternalRoomState::SelectChart) {
+                if !matches!(as_.state.lifecycle, InternalRoomState::SelectChart) {
                     return err("room is not selecting a chart");
                 }
                 if as_.state.chart.is_none() {
@@ -846,7 +846,7 @@ impl RoomCommandHandler {
 
             RoomActorCommand::CancelStart { room_id, .. } => {
                 let as_ = ctx.expect_actor_state();
-                let canceled = matches!(&as_.state.lifecycle, InternalRoomState::WaitForReady { .. });
+                let canceled = matches!(as_.state.lifecycle, InternalRoomState::WaitForReady { .. });
                 if canceled {
                     // Restore host privileges if admin_started
                     if let InternalRoomState::WaitForReady { admin_started, .. } = &as_.state.lifecycle {
@@ -867,7 +867,7 @@ impl RoomCommandHandler {
 
             RoomActorCommand::SetChart { room_id, chart_id, chart_name, actor_user_id, .. } => {
                 let as_ = ctx.expect_actor_state();
-                if !matches!(&as_.state.lifecycle, InternalRoomState::SelectChart) {
+                if !matches!(as_.state.lifecycle, InternalRoomState::SelectChart) {
                     return err("cannot set chart outside SelectChart state");
                 }
                 as_.state.chart = Some(*chart_id);
@@ -984,7 +984,7 @@ impl RoomCommandHandler {
 
             RoomActorCommand::HostStart { room_id, user_id, .. } => {
                 let as_ = ctx.expect_actor_state();
-                if !matches!(&as_.state.lifecycle, InternalRoomState::SelectChart) {
+                if !matches!(as_.state.lifecycle, InternalRoomState::SelectChart) {
                     return err("room is not selecting a chart");
                 }
                 if as_.state.control.admin_start_pending { return err("administrative start is already in progress"); }

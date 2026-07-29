@@ -105,7 +105,7 @@ impl Session {
                             return;
                         }
                         *last_recv.lock().await = Instant::now();
-                        if matches!(&cmd, ClientCommand::Ping) {
+                        if matches!(cmd, ClientCommand::Ping) {
                             let _ = send_tx.send(ServerCommand::Pong).await;
                             return;
                         }
@@ -621,7 +621,7 @@ impl Session {
                             }
                         }
 
-                        let creating_player = matches!(&cmd, ClientCommand::CreateRoom { .. })
+                        let creating_player = matches!(cmd, ClientCommand::CreateRoom { .. })
                             .then(|| Arc::clone(&user));
                         let result = LANGUAGE
                             .scope(
@@ -635,7 +635,7 @@ impl Session {
                             .await;
                         if let Some(resp) = result {
                             let created_room = creating_player.is_some()
-                                && matches!(&resp, ServerCommand::CreateRoom(Ok(())));
+                                && matches!(resp, ServerCommand::CreateRoom(Ok(())));
                             if let Err(err) = send_tx.send(resp).await {
                                 error!(
                                     "failed to handle message, aborting connection {id}: {err:?}",
