@@ -474,17 +474,19 @@ impl PluginManager {
         use tokio::sync::mpsc::error::TrySendError;
         match self.event_tx.try_send(PluginDispatchMessage::Event(event)) {
             Ok(()) => {}
-            Err(TrySendError::Full(event)) => {
-                warn!(
-                    kind = event.kind(),
-                    "plugin event queue full, dropping event to avoid blocking core protocol"
-                );
+            Err(TrySendError::Full(msg)) => {
+                let kind = match &msg {
+                    PluginDispatchMessage::Event(e) => e.kind(),
+                    _ => "control",
+                };
+                warn!(kind, "plugin event queue full, dropping event to avoid blocking core protocol");
             }
-            Err(TrySendError::Closed(event)) => {
-                warn!(
-                    kind = event.kind(),
-                    "plugin event dispatcher is closed"
-                );
+            Err(TrySendError::Closed(msg)) => {
+                let kind = match &msg {
+                    PluginDispatchMessage::Event(e) => e.kind(),
+                    _ => "control",
+                };
+                warn!(kind, "plugin event dispatcher is closed");
             }
         }
     }

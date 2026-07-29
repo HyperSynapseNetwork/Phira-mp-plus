@@ -263,7 +263,7 @@ impl Session {
                                                 let _ = tx.send(AuthenticationOutcome::Rejected);
                                             }
                                             panicked.store(true, Ordering::SeqCst);
-                                            return;
+                                            return Ok(());
                                         }
 
                                         // Keep the final reconnect/new-user decision atomic across

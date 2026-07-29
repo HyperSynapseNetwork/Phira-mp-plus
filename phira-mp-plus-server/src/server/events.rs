@@ -100,16 +100,17 @@ impl PlusServerState {
         plugin_event: Option<PluginEvent>,
     ) {
         // 1. EventBus (observational / diagnostic tracing)
+        // Clone event before publish since we need it for persistence lookup
+        let persistence_event = Self::mp_event_to_persistence_event(&event);
         self.event_bus.publish(event);
         // 2. Plugin delivery (if applicable)
         if let Some(pe) = plugin_event {
             self.plugin_manager.dispatch_event(pe).await;
         }
         // 3. Persistence — enqueue server event for durable storage
-        let persistence_event = Self::mp_event_to_persistence_event(&event);
         if let Some(pe) = persistence_event {
-            if let Err(e) = self.persistence_worker.enqueue(pe).await {
-                tracing::warn!(?event, "canonical_event: failed to enqueue persistence event");
+            if let Err(_e) = self.persistence_worker.enqueue(pe).await {
+                tracing::warn!("canonical_event: failed to enqueue persistence event");
             }
         }
     }

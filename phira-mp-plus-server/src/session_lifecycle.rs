@@ -208,7 +208,7 @@ impl User {
                                 let room_id = room.id.clone();
                                 // Abort the player's game if room still exists
                                 if let Some(server) = room.server.upgrade() {
-                                    let _ = server.room_commands.abort_player(
+                                    let _ = server.room_commands.abort_round(
                                         &server, &room_id, self_.id,
                                     ).await;
                                 }

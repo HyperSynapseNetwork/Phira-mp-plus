@@ -329,12 +329,7 @@ async fn check_all_ready(
                 if let Some(rid) = rid {
                     info!("round complete: {}", rid);
                     if let Some(rs) = &lc.room().round_store {
-                        if let Err(e) = rs.close_round(&rid.to_string()).await {
-                            warn!(
-                                room = %lc.room().id, round = %rid,
-                                "round store: failed to close round: {e}"
-                            );
-                        }
+                        rs.close_round(&rid.to_string()).await;
                     }
                 }
 
@@ -606,12 +601,7 @@ pub(super) async fn force_end_playing(
         }
         if let Some(rid) = rid {
             if let Some(rs) = &lc.room().round_store {
-                if let Err(e) = rs.close_round(&rid.to_string()).await {
-                    warn!(
-                        room = %lc.room().id, round = %rid,
-                        "round store: failed to close round: {e}"
-                    );
-                }
+                rs.close_round(&rid.to_string()).await;
             }
         }
         state.round.round_id = None;
