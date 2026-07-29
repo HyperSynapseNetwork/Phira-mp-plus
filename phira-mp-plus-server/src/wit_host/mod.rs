@@ -6,301 +6,37 @@
 //!
 //! The core `WitPluginHost` skeleton is available with `plugin-system`.
 //! The generated trait impls require `wit-bindgen` (default feature).
-//!
-//! TODO(PMP-followup): This file has grown past 1200 lines. It should be split
-//! into per-world modules under a new `wit_host/` directory, keeping only the
-//! core dispatch and common helpers here.
 
 #![allow(clippy::type_complexity)]
 
-use phira_mp_plus_server_api as api;
-use std::collections::{HashMap, HashSet};
-use std::sync::{Arc, Mutex};
+pub mod host;
 
-/// Explicit dependency bundle for the WIT host.
-///
-/// Instead of grabbing the entire PlusServerState, WitPluginHost
-/// only sees the subsystems it actually uses.  This makes the
-/// dependency boundary visible and simplifies testing.
-pub struct WitHostContext {
-    /// Generic query dispatch (wraps server_state_query_for_host).
-    pub state_query: api::ServerStateQuery,
-    /// Extension manager for user/room extra data.
-    pub extensions: Arc<crate::extensions::ExtensionManager>,
-    /// Room command gateway.
-    ///
-    /// NOTE(Phase2-WorkD): Currently unused by the WIT host implementation.
-    /// Room mutations are dispatched through `state_query` →
-    /// `server_state_query_dispatch` → `s.room_commands.*` (gateway).  The
-    /// `room_commands` field is included here for future direct use when the
-    /// gateway is refactored to not require PlusServerState as a parameter.
-    pub room_commands: Arc<crate::room_actor::RoomCommandGateway>,
-    /// Ban manager.
-    pub ban_manager: Arc<crate::ban::BanManager>,
-    /// Event bus (for dispatching PluginEvents).
-    pub event_bus: Arc<crate::event_bus::EventBus>,
-    /// Immutable capability grant bound to this plugin instance.
-    pub capabilities: Arc<HashSet<String>>,
-    /// Node key pair for crypto operations (derived from HSN_SECRET_KEY).
-    pub node_key: Arc<crate::crypto::NodeKey>,
-    /// Shared timer registry (plugin_name → timer map).
-    pub timers: Arc<Mutex<HashMap<String, HashMap<String, tokio::task::JoinHandle<()>>>>>,
-    /// Host messaging callback. uid=0 means broadcast.
-    pub send_chat: Option<Arc<dyn Fn(i32, String) + Send + Sync>>,
-    /// Timer fire callback: calls the plugin's on_api("timer:fired", ...).
-    pub timer_callback: Option<Arc<dyn Fn(String, String) + Send + Sync>>,
-    /// HTTP sandbox timeout (seconds).
-    pub http_timeout_secs: u64,
-    /// HTTP sandbox max response body (bytes).
-    pub http_max_body: usize,
-    /// Whether plugin HTTP calls may target private/reserved addresses.
-    pub http_allow_private_network: bool,
-    /// TCP actor sender for plugin-initiated connections.
-    pub tcp: Option<tokio::sync::mpsc::Sender<crate::plugin_tcp::PluginTcpCommand>>,
-    /// TCP event callback: forwards tcp:accept/data/disconnect events to plugin's on-api.
-    pub tcp_callback: Option<Arc<dyn Fn(String, serde_json::Value) + Send + Sync>>,
-    /// Room state query access (for phira-room-state interface).
-    pub room_state_query: Option<Arc<dyn Fn(String) -> Result<serde_json::Value, String> + Send + Sync>>,
-    /// Plugin handler registry: method → owner + metadata.
-    pub api_handlers: Arc<Mutex<HashMap<String, RegisteredHandler>>>,
-    /// Shared handler registry (PluginManager/WasmPluginServices), same Arc as
-    /// PluginManager.api_handlers.  Methods registered via register_handler are
-    /// also inserted here so PluginManager can dispatch to them.
-    pub services_handlers: Option<Arc<Mutex<HashMap<String, api::PluginApiHandler>>>>,
-    /// Tracks method name ownership for the shared handler registry.
-    /// Maps plugin_name -> list of handler methods owned by that plugin.
-    /// Used by PluginManager::remove_plugin to clean up stale handlers.
-    pub handler_owners: Option<Arc<Mutex<HashMap<String, Vec<String>>>>>,
-    /// Dispatch function that forwards an API call to this plugin via
-    /// PluginManager::call_plugin_api.  Set in build_context_from_services.
-    pub api_forward: Option<Arc<dyn Fn(&str, &[serde_json::Value]) -> Result<serde_json::Value, String> + Send + Sync>>,
-}
+// Re-export all public items from host (WitHostContext, RegisteredHandler,
+// WitPluginHost, json_value_to_wit, wit_json_value_to_serde).
+pub use host::*;
 
-/// A registered plugin handler.
-#[derive(Debug, Clone)]
-pub struct RegisteredHandler {
-    pub plugin_name: String,
-    pub method: String,
-    pub description: String,
-    pub request_schema: Option<String>,
-    pub response_schema: Option<String>,
-}
+// Re-export items needed by the wit_trait_impls inline module.
+#[cfg(feature = "wit-bindgen")]
+pub(crate) use host::normalize_plugin_scoped_api_args;
 
-/// Wraps server capabilities to implement WIT host traits.
-pub struct WitPluginHost {
-    ctx: Arc<WitHostContext>,
-    plugin_name: String,
-}
+// Room state query helpers depend on wit_abi types, so they are only
+// compiled when wit-bindgen is enabled.
+#[cfg(feature = "wit-bindgen")]
+pub mod query;
 
-impl WitPluginHost {
-    pub fn new(ctx: Arc<WitHostContext>, plugin_name: String) -> Self {
-        Self { ctx, plugin_name }
-    }
-
-    pub fn name(&self) -> &str {
-        &self.plugin_name
-    }
-
-    fn require_capability(&self, capability: &str) -> Result<(), String> {
-        if self.ctx.capabilities.contains(capability) {
-            Ok(())
-        } else {
-            Err(format!(
-                "plugin '{}' lacks capability '{}'",
-                self.plugin_name, capability
-            ))
-        }
-    }
-
-    #[cfg(feature = "wit-bindgen")]
-    fn require_api_capability(
-        &self,
-        capability: &str,
-    ) -> Result<(), crate::plugin_abi::wit_abi::phira::plugin::phira_types::ApiResult> {
-        self.require_capability(capability)
-            .map_err(crate::plugin_abi::wit_abi::phira::plugin::phira_types::ApiResult::Error)
-    }
-
-    /// Run an async fn synchronously with panic protection.
-    ///
-    /// Every WIT host method is sync, but most server operations are async.
-    /// This helper takes an async closure that receives an `Arc<WitHostContext>`
-    /// and blocks on it inside `catch_unwind`, so a panicking plugin call never
-    /// takes down the host thread. Unlike the old `block_on_sync`, this does
-    /// not require additional `futures::executor::block_on` inside the closure.
-    fn block_on_async<T, F, Fut>(&self, f: F) -> Result<T, String>
-    where
-        F: FnOnce(Arc<WitHostContext>) -> Fut + Send,
-        Fut: std::future::Future<Output = T> + Send,
-        T: Send,
-    {
-        let ctx = Arc::clone(&self.ctx);
-        std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
-            match tokio::runtime::Handle::try_current() {
-                Ok(handle) => handle.block_on(f(ctx)),
-                Err(_) => futures::executor::block_on(f(ctx)),
-            }
-        }))
-        .map_err(|_| "WIT host operation panicked — plugin disabled".to_string())
-    }
-}
-
-#[cfg(test)]
-mod capability_tests {
-    use crate::wasm_host_helpers;
-
-    #[test]
-    fn required_cap_maps_admin_methods() {
-        assert_eq!(
-            wasm_host_helpers::required_capability("admin.list"),
-            Some("admin")
-        );
-        assert_eq!(
-            wasm_host_helpers::required_capability("admin.add"),
-            Some("admin")
-        );
-    }
-
-    #[test]
-    fn required_cap_maps_room_methods() {
-        assert_eq!(
-            wasm_host_helpers::required_capability("room.set_lock"),
-            Some("room.manage")
-        );
-        assert_eq!(
-            wasm_host_helpers::required_capability("room.kick"),
-            Some("room.manage")
-        );
-    }
-
-    #[test]
-    fn required_cap_returns_none_for_unguarded_methods() {
-        assert_eq!(wasm_host_helpers::required_capability("uuid.v4"), None);
-        assert_eq!(wasm_host_helpers::required_capability("time.now"), None);
-    }
-
-    #[test]
-    fn default_capabilities_include_all() {
-        let caps = wasm_host_helpers::default_capabilities();
-        assert!(caps.contains("admin"), "default must include admin");
-        assert!(
-            caps.contains("room.manage"),
-            "default must include room.manage"
-        );
-        assert!(
-            caps.contains("state.read"),
-            "default must include state.read"
-        );
-        assert!(caps.contains("config"), "default must include config");
-    }
-
-    #[test]
-    fn persist_methods_require_state_read() {
-        // persist.* methods require the "state.read" capability.
-        let methods = [
-            "persist.events",
-            "persist.rooms",
-            "persist.touches",
-            "persist.judges",
-        ];
-        for method in &methods {
-            let cap = wasm_host_helpers::required_capability(method);
-            assert_eq!(
-                cap,
-                Some("state.read"),
-                "method {method} should require state.read"
-            );
-        }
-    }
-
-    #[test]
-    fn admin_methods_require_admin() {
-        let methods = ["admin.list", "admin.add", "admin.remove", "admin.set"];
-        for method in &methods {
-            let cap = wasm_host_helpers::required_capability(method);
-            assert_eq!(cap, Some("admin"), "method {method} should require admin");
-        }
-    }
-}
+#[cfg(feature = "wit-bindgen")]
+pub(crate) use query::{build_room_players, extract_current_round, extract_snapshot_data};
 
 // ══════════════════════════════════════════════════════════════════════
 // Generated trait implementations — only with wit-bindgen feature.
 // ══════════════════════════════════════════════════════════════════════
 
-/// Convert a serde_json::Value to a WIT JsonValue. Only available with wit-bindgen.
-#[cfg(feature = "wit-bindgen")]
-pub fn json_value_to_wit(
-    value: &serde_json::Value,
-) -> crate::plugin_abi::wit_abi::phira::plugin::phira_types::JsonValue {
-    use crate::plugin_abi::wit_abi::phira::plugin::phira_types::JsonValue;
-    match value {
-        serde_json::Value::Null => JsonValue::Null,
-        serde_json::Value::Bool(b) => JsonValue::Flag(*b),
-        serde_json::Value::Number(n) => {
-            if let Some(i) = n.as_i64() {
-                JsonValue::Integer(i)
-            } else if let Some(f) = n.as_f64() {
-                JsonValue::Float(f)
-            } else {
-                JsonValue::Text(n.to_string())
-            }
-        }
-        serde_json::Value::String(s) => JsonValue::Text(s.clone()),
-        serde_json::Value::Array(arr) => {
-            JsonValue::Array(serde_json::to_string(arr).unwrap_or_default())
-        }
-        serde_json::Value::Object(obj) => {
-            JsonValue::Object(serde_json::to_string(obj).unwrap_or_default())
-        }
-    }
-}
-
-/// Convert a WIT JsonValue back to serde_json::Value. Only available with wit-bindgen.
-#[cfg(feature = "wit-bindgen")]
-pub fn wit_json_value_to_serde(
-    value: &crate::plugin_abi::wit_abi::phira::plugin::phira_types::JsonValue,
-) -> serde_json::Value {
-    use crate::plugin_abi::wit_abi::phira::plugin::phira_types::JsonValue;
-    match value {
-        JsonValue::Null => serde_json::Value::Null,
-        JsonValue::Flag(b) => serde_json::Value::Bool(*b),
-        JsonValue::Integer(i) => serde_json::json!(*i),
-        JsonValue::Float(f) => serde_json::json!(*f),
-        JsonValue::Text(s) => serde_json::Value::String(s.clone()),
-        JsonValue::Array(s) | JsonValue::Object(s) => {
-            serde_json::from_str(s).unwrap_or(serde_json::Value::String(s.clone()))
-        }
-    }
-}
-
-#[cfg(feature = "wit-bindgen")]
-fn normalize_plugin_scoped_api_args(
-    method: &str,
-    plugin_name: &str,
-    args: Vec<serde_json::Value>,
-) -> Result<Vec<serde_json::Value>, String> {
-    if method != "http.register_route" {
-        return Ok(args);
-    }
-
-    let path = match args.first() {
-        Some(serde_json::Value::Object(config)) => {
-            config.get("path").and_then(serde_json::Value::as_str)
-        }
-        Some(value) => value.as_str(),
-        None => None,
-    }
-    .ok_or_else(|| "path required".to_string())?;
-
-    Ok(vec![
-        serde_json::Value::String(path.to_string()),
-        serde_json::Value::String(plugin_name.to_string()),
-    ])
-}
-
 #[cfg(feature = "wit-bindgen")]
 mod wit_trait_impls {
-    use super::{normalize_plugin_scoped_api_args, WitPluginHost};
+    use super::{
+        build_room_players, extract_current_round, extract_snapshot_data,
+        normalize_plugin_scoped_api_args, WitPluginHost,
+    };
     use crate::plugin_abi::wit_abi as wit;
     use phira_mp_plus_server_api as api;
     use std::sync::Arc;
@@ -351,7 +87,7 @@ mod wit_trait_impls {
 
         fn api_call(&mut self, method: String, args: Vec<types::JsonValue>) -> types::ApiResult {
             tracing::trace!(plugin = %self.plugin_name, %method, "api_call");
-            let args_serde: Vec<serde_json::Value> = args.iter().map(super::wit_json_value_to_serde).collect();
+            let args_serde: Vec<serde_json::Value> = args.iter().map(super::host::wit_json_value_to_serde).collect();
             let args_serde =
                 match normalize_plugin_scoped_api_args(&method, &self.plugin_name, args_serde) {
                     Ok(args) => args,
@@ -941,7 +677,6 @@ mod wit_trait_impls {
         }
     }
 
-
     // ── phira-tcp (plain TCP, no TLS) ──
     impl wit::phira::plugin::phira_tcp::Host for WitPluginHost {
         fn connect(&mut self, addr: String) -> Result<u64, String> {
@@ -1027,89 +762,6 @@ mod wit_trait_impls {
                 }
             )?
         }
-    }
-
-    // ── Helper functions for phira-room-state ──
-    fn extract_snapshot_data(v: &serde_json::Value) -> Result<&serde_json::Value, String> {
-        v.get("data").ok_or_else(|| "snapshot missing 'data' field".to_string())
-    }
-
-    fn build_room_players(data: &serde_json::Value) -> Vec<wit::phira::plugin::phira_room_state::RoomPlayer> {
-        let ready: Vec<i32> = data.get("ready_users")
-            .and_then(|v| serde_json::from_value(v.clone()).ok()).unwrap_or_default();
-        let finished: Vec<i32> = data.get("finished_users")
-            .and_then(|v| serde_json::from_value(v.clone()).ok()).unwrap_or_default();
-
-        let mut players = Vec::new();
-
-        // Users (non-monitor players)
-        if let Some(users_info) = data.get("users_info").and_then(|v| v.as_array()) {
-            for u in users_info {
-                let uid = u.get("id").and_then(|v| v.as_i64()).unwrap_or(0) as u32;
-                players.push(wit::phira::plugin::phira_room_state::RoomPlayer {
-                    user_id: uid,
-                    display_name: u.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string(),
-                    is_monitor: false,
-                    is_ready: ready.contains(&(uid as i32)),
-                    is_host: u.get("is_host").and_then(|v| v.as_bool()).unwrap_or(false),
-                    is_finished: finished.contains(&(uid as i32)),
-                    score: None, // Not available in snapshot
-                    accuracy: None,
-                });
-            }
-        }
-
-        // Monitors
-        if let Some(monitors_info) = data.get("monitors_info").and_then(|v| v.as_array()) {
-            for m in monitors_info {
-                let uid = m.get("id").and_then(|v| v.as_i64()).unwrap_or(0) as u32;
-                players.push(wit::phira::plugin::phira_room_state::RoomPlayer {
-                    user_id: uid,
-                    display_name: m.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string(),
-                    is_monitor: true,
-                    is_ready: ready.contains(&(uid as i32)),
-                    is_host: m.get("is_host").and_then(|v| v.as_bool()).unwrap_or(false),
-                    is_finished: finished.contains(&(uid as i32)),
-                    score: None,
-                    accuracy: None,
-                });
-            }
-        }
-
-        players
-    }
-
-    fn extract_current_round(data: &serde_json::Value) -> Option<wit::phira::plugin::phira_room_state::RoundInfo> {
-        use wit::phira::plugin::phira_room_state::RoundInfo;
-        // Try current_round_id first, then fall back to the last round in
-        // round_history when the room state indicates an active round.
-        if let Some(rid) = data.get("current_round_id").and_then(|v| v.as_str()) {
-            if !rid.is_empty() {
-                let phase = data.get("state").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                return Some(RoundInfo {
-                    round_id: rid.to_string(),
-                    chart_id: data.get("chart").and_then(|v| v.as_i64()).map(|n| n as u32),
-                    chart_name: data.get("chart_name").and_then(|v| v.as_str()).map(str::to_string),
-                    phase,
-                });
-            }
-        }
-        // Fall back to the last round in round_history
-        if let Some(rounds) = data.get("round_history").and_then(|v| v.as_array()) {
-            if let Some(last) = rounds.last() {
-                let round_id = last.get("round_id").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                if !round_id.is_empty() {
-                    let phase = data.get("state").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                    return Some(RoundInfo {
-                        round_id,
-                        chart_id: last.get("chart_id").and_then(|v| v.as_i64()).map(|n| n as u32),
-                        chart_name: last.get("chart_name").and_then(|v| v.as_str()).map(str::to_string),
-                        phase,
-                    });
-                }
-            }
-        }
-        None
     }
 
     // ── phira-room-state ──
@@ -1338,3 +990,79 @@ mod wit_trait_impls {
     }
 } // mod wit_trait_impls
 
+#[cfg(test)]
+mod capability_tests {
+    use crate::wasm_host_helpers;
+
+    #[test]
+    fn required_cap_maps_admin_methods() {
+        assert_eq!(
+            wasm_host_helpers::required_capability("admin.list"),
+            Some("admin")
+        );
+        assert_eq!(
+            wasm_host_helpers::required_capability("admin.add"),
+            Some("admin")
+        );
+    }
+
+    #[test]
+    fn required_cap_maps_room_methods() {
+        assert_eq!(
+            wasm_host_helpers::required_capability("room.set_lock"),
+            Some("room.manage")
+        );
+        assert_eq!(
+            wasm_host_helpers::required_capability("room.kick"),
+            Some("room.manage")
+        );
+    }
+
+    #[test]
+    fn required_cap_returns_none_for_unguarded_methods() {
+        assert_eq!(wasm_host_helpers::required_capability("uuid.v4"), None);
+        assert_eq!(wasm_host_helpers::required_capability("time.now"), None);
+    }
+
+    #[test]
+    fn default_capabilities_include_all() {
+        let caps = wasm_host_helpers::default_capabilities();
+        assert!(caps.contains("admin"), "default must include admin");
+        assert!(
+            caps.contains("room.manage"),
+            "default must include room.manage"
+        );
+        assert!(
+            caps.contains("state.read"),
+            "default must include state.read"
+        );
+        assert!(caps.contains("config"), "default must include config");
+    }
+
+    #[test]
+    fn persist_methods_require_state_read() {
+        let methods = [
+            "persist.events",
+            "persist.rooms",
+            "persist.touches",
+            "persist.judges",
+        ];
+        for method in &methods {
+            let cap = wasm_host_helpers::required_capability(method);
+            assert_eq!(
+                cap,
+                Some("state.read"),
+                "method {method} should require state.read"
+            );
+        }
+    }
+
+    #[test]
+    fn admin_methods_require_admin() {
+        let methods = ["admin.list", "admin.add", "admin.remove", "admin.set"];
+        for method in &methods {
+            let cap = wasm_host_helpers::required_capability(method);
+            assert_eq!(cap, Some("admin"), "method {method} should require admin");
+        }
+    }
+}
