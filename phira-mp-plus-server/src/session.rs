@@ -114,6 +114,7 @@ impl Session {
                                 let Some(tx) = tx else { return };
                                 let mut auth_tx = Some(tx);
                                 let retry_send_tx = Arc::clone(&send_tx);
+                                let panicked_clone = Arc::clone(&panicked);
                                 let res: Result<()> = {
                                     let this = Arc::clone(&this);
                                     let server = Arc::clone(&server);
@@ -255,14 +256,14 @@ impl Session {
                                                 "UserSeen enqueue failed, rejecting auth"
                                             );
                                             send_auth_rejection(
-                                                &send_tx,
+                                                retry_send_tx.as_ref(),
                                                 "persistence temporarily unavailable, please try again".to_string(),
                                             )
                                             .await;
                                             if let Some(tx) = auth_tx.take() {
                                                 let _ = tx.send(AuthenticationOutcome::Rejected);
                                             }
-                                            panicked.store(true, Ordering::SeqCst);
+                                            panicked_clone.store(true, Ordering::SeqCst);
                                             return Ok(());
                                         }
 
