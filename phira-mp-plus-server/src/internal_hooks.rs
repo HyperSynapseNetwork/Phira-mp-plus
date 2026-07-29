@@ -13,7 +13,30 @@ use tracing::info;
 pub static DB: OnceLock<super::db::DbManager> = OnceLock::new();
 
 const PLAYER_TRACKER_MAX_ENTRIES: usize = 50_000;
-const PLAYTIME_CACHE_MAX_ENTRIES: usize = 50_000;
+
+/// PostgreSQL-backed playtime cache (single source of truth).
+/// Maps user_id → effective total seconds (includes current session contribution).
+/// Loaded on startup from the `playtime` table.
+static PLAYTIME_CACHE: OnceLock<Mutex<HashMap<i32, i64>>> = OnceLock::new();
+
+fn ensure_playtime_cache() -> &'static Mutex<HashMap<i32, i64>> {
+    PLAYTIME_CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Load the playtime cache from PostgreSQL on startup.
+async fn load_playtime_cache(state: &PlusServerState) {
+    let rows = state.db_manager.top_playtime(100000).await;
+    let mut cache = ensure_playtime_cache().lock().unwrap();
+    for row in rows {
+        if let (Some(user_id), Some(secs)) = (
+            row.get("user_id").and_then(|v| v.as_i64()),
+            row.get("total_playtime").and_then(|v| v.as_i64()),
+        ) {
+            cache.insert(user_id as i32, secs);
+        }
+    }
+    info!("playtime cache loaded with {} entries", cache.len());
+}
 
 pub async fn init_internal_hooks(
     state: &PlusServerState,
@@ -30,9 +53,11 @@ pub async fn init_internal_hooks(
         }
     }
 
+    // Load the playtime cache from the authoritative PostgreSQL table.
+    load_playtime_cache(state).await;
+
     init_welcome(state, pm).await;
     init_player_tracker(state, http, pm).await;
-    init_playtime_tracker(state, http, pm).await;
     init_round_results(state, pm).await;
     info!("internal hooks initialized");
 }
@@ -194,41 +219,13 @@ pub fn send_welcome(user_id: i32, user_name: &str, online: usize, state: &PlusSe
                     text.push_str(&ts.to_string());
                 }
                 WelcomeSegment::Playtime => {
-                    let pt = PLAYTIME_DATA.lock().unwrap();
-                    let secs = pt
-                        .get(&user_id)
-                        .map(|e| {
-                            e.total_secs
-                                + e.room_start
-                                    .map(|s| {
-                                        SystemTime::now()
-                                            .duration_since(UNIX_EPOCH)
-                                            .map(|d| d.as_secs())
-                                            .unwrap_or(0)
-                                            .saturating_sub(s)
-                                    })
-                                    .unwrap_or(0)
-                        })
-                        .unwrap_or(0);
+                    let pt = ensure_playtime_cache().lock().unwrap();
+                    let secs = pt.get(&user_id).copied().unwrap_or(0);
                     text.push_str(&format!("{:.1}h", secs as f64 / 3600.0));
                 }
                 WelcomeSegment::PlaytimeId(uid) => {
-                    let pt = PLAYTIME_DATA.lock().unwrap();
-                    let secs = pt
-                        .get(uid)
-                        .map(|e| {
-                            e.total_secs
-                                + e.room_start
-                                    .map(|s| {
-                                        SystemTime::now()
-                                            .duration_since(UNIX_EPOCH)
-                                            .map(|d| d.as_secs())
-                                            .unwrap_or(0)
-                                            .saturating_sub(s)
-                                    })
-                                    .unwrap_or(0)
-                        })
-                        .unwrap_or(0);
+                    let pt = ensure_playtime_cache().lock().unwrap();
+                    let secs = pt.get(uid).copied().unwrap_or(0);
                     text.push_str(&format!("{:.1}h", secs as f64 / 3600.0));
                 }
                 WelcomeSegment::ActiveRooms => {
@@ -288,23 +285,9 @@ pub fn send_welcome(user_id: i32, user_name: &str, online: usize, state: &PlusSe
                     text.push_str(&room_list.join("; "));
                 }
                 WelcomeSegment::TopPlaytime => {
-                    let now = SystemTime::now()
-                        .duration_since(UNIX_EPOCH)
-                        .map(|d| d.as_secs())
-                        .unwrap_or(0);
-                    let pt = PLAYTIME_DATA.lock().unwrap();
+                    let pt = ensure_playtime_cache().lock().unwrap();
                     let users_guard = state.users.try_read();
-                    let mut ranking: Vec<(i32, u64)> = pt
-                        .iter()
-                        .map(|(&uid, entry)| {
-                            let total = entry.total_secs
-                                + entry
-                                    .room_start
-                                    .map(|s| now.saturating_sub(s))
-                                    .unwrap_or(0);
-                            (uid, total)
-                        })
-                        .collect();
+                    let mut ranking: Vec<(i32, i64)> = pt.iter().map(|(&uid, &secs)| (uid, secs)).collect();
                     ranking.sort_by(|a, b| b.1.cmp(&a.1));
                     let top: Vec<String> = ranking
                         .iter()
@@ -355,7 +338,7 @@ pub fn send_welcome(user_id: i32, user_name: &str, online: usize, state: &PlusSe
                         let endpoint = state.config.phira_api_endpoint.clone();
                         handle.spawn(async move {
                             let uids: Vec<i32> = {
-                                let pt = PLAYTIME_DATA.lock().unwrap();
+                                let pt = ensure_playtime_cache().lock().unwrap();
                                 pt.keys().copied().take(50).collect()
                             };
                             for uid in uids {
@@ -455,127 +438,25 @@ async fn init_player_tracker(
 }
 
 // ════════════════════════════════════
-//  游玩时间统计
+//  游玩时间统计 (removed — single source of truth is PostgreSQL via PersistenceWorker)
 // ════════════════════════════════════
 
-static PLAYTIME_DATA: once_cell::sync::Lazy<Mutex<HashMap<i32, PlaytimeEntry>>> =
-    once_cell::sync::Lazy::new(|| {
-        std::fs::read_to_string("data/playtime-tracker.json")
-            .ok()
-            .and_then(|s| serde_json::from_str(&s).ok())
-            .unwrap_or_default()
-    });
+/// No-op: playtime is tracked purely through UserOnline/UserOffline persistence
+/// events updating the PostgreSQL `playtime` table.
+pub fn playtime_connect(_user_id: i32) {}
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-struct PlaytimeEntry {
-    total_secs: u64,
-    room_start: Option<u64>,
-}
+/// No-op: playtime is tracked purely through UserOnline/UserOffline persistence
+/// events updating the PostgreSQL `playtime` table.
+pub fn playtime_room_enter(_user_id: i32) {}
 
-pub fn playtime_connect(user_id: i32) {
-    let mut data = PLAYTIME_DATA.lock().unwrap();
-    data.entry(user_id).or_default();
-    prune_playtime_cache(&mut data, user_id);
-}
+/// No-op: playtime is tracked purely through UserOnline/UserOffline persistence
+/// events updating the PostgreSQL `playtime` table.
+pub fn playtime_room_leave(_user_id: i32) {}
 
-/// Start tracking room time for a user.
-pub fn playtime_room_enter(user_id: i32) {
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
-    let mut data = PLAYTIME_DATA.lock().unwrap();
-    let entry = data.entry(user_id).or_default();
-    if entry.room_start.is_none() {
-        entry.room_start = Some(now);
-    }
-}
-
-/// Stop tracking room time and accumulate into total_secs.
-pub fn playtime_room_leave(user_id: i32) {
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
-    let mut data = PLAYTIME_DATA.lock().unwrap();
-    let mut changed = false;
-    if let Some(entry) = data.get_mut(&user_id) {
-        if let Some(start) = entry.room_start.take() {
-            entry.total_secs += now.saturating_sub(start);
-            changed = true;
-        }
-    }
-    if changed {
-        save_json("data/playtime-tracker.json", &*data);
-    }
-    prune_playtime_cache(&mut data, user_id);
-}
-
-pub fn playtime_disconnect(user_id: i32) {
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
-    let mut data = PLAYTIME_DATA.lock().unwrap();
-    let mut changed = false;
-    if let Some(entry) = data.get_mut(&user_id) {
-        if let Some(start) = entry.room_start.take() {
-            entry.total_secs += now.saturating_sub(start);
-            changed = true;
-        }
-    }
-    if changed {
-        save_json("data/playtime-tracker.json", &*data);
-    }
-    prune_playtime_cache(&mut data, user_id);
-}
-
-fn prune_playtime_cache(data: &mut HashMap<i32, PlaytimeEntry>, keep_user_id: i32) {
-    while data.len() > PLAYTIME_CACHE_MAX_ENTRIES {
-        let Some(remove_id) = data
-            .iter()
-            .find(|(id, entry)| **id != keep_user_id && entry.room_start.is_none())
-            .map(|(id, _)| *id)
-        else {
-            break;
-        };
-        data.remove(&remove_id);
-    }
-}
-
-async fn init_playtime_tracker(
-    _state: &PlusServerState,
-    _http: &Option<Arc<PluginHttpServer>>,
-    pm: &PluginManager,
-) {
-    let _ = pm
-        .register_cli_command(crate::plugin::CliCommand {
-            name: "playtime".into(),
-            description: "查询用户游玩时间: playtime <用户ID>".into(),
-            usage: "playtime <用户ID>".into(),
-            handler: Arc::new(|args| {
-                let uid: i32 = args.first().and_then(|a| a.parse().ok()).unwrap_or(0);
-                let data = PLAYTIME_DATA.lock().unwrap();
-                let secs = data
-                    .get(&uid)
-                    .map(|e| {
-                        e.total_secs
-                            + e.room_start
-                                .map(|s| {
-                                    std::time::SystemTime::now()
-                                        .duration_since(std::time::UNIX_EPOCH)
-                                        .map(|d| d.as_secs())
-                                        .unwrap_or(0)
-                                        .saturating_sub(s)
-                                })
-                                .unwrap_or(0)
-                    })
-                    .unwrap_or(0);
-                vec![format!("  ◆ 用户 {uid}: {:.1}h", secs as f64 / 3600.0)]
-            }),
-        })
-        .await;
-}
+/// No-op: playtime is tracked purely through UserOnline/UserOffline persistence
+/// events updating the PostgreSQL `playtime` table. The UserOffline persistence
+/// event handles the actual playtime accumulation.
+pub fn playtime_disconnect(_user_id: i32) {}
 
 // ════════════════════════════════════
 //  结算排行

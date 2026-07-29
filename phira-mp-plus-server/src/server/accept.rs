@@ -180,7 +180,6 @@ impl PlusServer {
                             user_id: session.user.id,
                         })
                         .await;
-                    crate::internal_hooks::playtime_disconnect(session.user.id);
                 }
                 return;
             }

@@ -200,7 +200,6 @@ impl User {
                 self.server
                     .publish_user_disconnected(self.id, self.name.clone())
                     .await;
-                crate::internal_hooks::playtime_disconnect(self.id);
                 let _ = self
                     .server
                     .persistence_worker
@@ -293,7 +292,6 @@ impl User {
             if let Some(event) = room_leave_event {
                 self_.server.publish_room_event(event).await;
             }
-            crate::internal_hooks::playtime_disconnect(self_.id);
             let _ = self_
                 .server
                 .persistence_worker

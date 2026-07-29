@@ -303,7 +303,6 @@ pub async fn create_room(user: Arc<User>, id: RoomId) -> Result<()> {
         });
     }
 
-    crate::internal_hooks::playtime_room_enter(user.id);
     Ok(())
 }
 
@@ -313,7 +312,6 @@ pub async fn join_room(
     id: RoomId,
     monitor: bool,
 ) -> Result<()> {
-    crate::internal_hooks::playtime_room_enter(user.id);
     let mut room_guard = user.room.write().await;
     if room_guard.is_some() {
         bail!("{}", tl!("already-in-room"));
@@ -533,7 +531,6 @@ pub async fn join_room(
 }
 
 pub async fn leave_room(user: Arc<User>, category: SessionCategory) -> Result<()> {
-    crate::internal_hooks::playtime_room_leave(user.id);
     user.join_pending_game.write().await.take();
     let room = current_room(&user).await?;
     let room_id = room.id.clone();

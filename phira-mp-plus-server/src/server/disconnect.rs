@@ -125,7 +125,6 @@ pub(crate) async fn run_admin_kick_user(
     state
         .publish_user_disconnected(target_id, user.name.clone())
         .await;
-    crate::internal_hooks::playtime_disconnect(target_id);
     let _ = state
         .persistence_worker
         .enqueue(

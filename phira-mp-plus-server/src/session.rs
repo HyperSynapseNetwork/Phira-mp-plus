@@ -712,7 +712,6 @@ impl Session {
         this_inited.notify_one();
 
         if category == SessionCategory::Normal {
-            crate::internal_hooks::playtime_connect(res.user.id);
             if let Err(event) = server
                 .persistence_worker
                 .enqueue(crate::persistence::message::PersistenceEvent::UserOnline {
