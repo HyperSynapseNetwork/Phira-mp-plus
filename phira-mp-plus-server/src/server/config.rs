@@ -4,6 +4,7 @@
 //! the re-exported type list.
 
 use crate::error::AppError;
+use crate::persistence::high_frequency::HighFrequencyConfig;
 use crate::phira_client::PhiraHttpPolicyConfig;
 use crate::plugin::WasmRuntimeConfig;
 use serde::{Deserialize, Serialize};
@@ -93,6 +94,9 @@ pub struct RuntimeConfig {
     /// Unified Phira HTTP retry/timeout/circuit-breaker policy.
     #[serde(default)]
     pub phira_http: PhiraHttpPolicyConfig,
+    /// High-frequency telemetry writer (Touch/Judge) configuration.
+    #[serde(default)]
+    pub high_frequency: HighFrequencyConfig,
 }
 
 impl Default for RuntimeConfig {
@@ -102,6 +106,7 @@ impl Default for RuntimeConfig {
             persistence_dead_letter_path: default_persistence_dead_letter_path(),
             persistence_wal_path: default_persistence_wal_path(),
             phira_http: PhiraHttpPolicyConfig::default(),
+            high_frequency: HighFrequencyConfig::default(),
         }
     }
 }

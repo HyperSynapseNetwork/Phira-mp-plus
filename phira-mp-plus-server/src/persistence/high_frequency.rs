@@ -51,7 +51,7 @@ impl HighFrequencyKind {
 // ── HighFrequencyConfig ─────────────────────────────────────────────────
 
 /// Configuration for the [`HighFrequencyWriter`].
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct HighFrequencyConfig {
     pub channel_capacity: usize,
     pub max_batch_size: usize,

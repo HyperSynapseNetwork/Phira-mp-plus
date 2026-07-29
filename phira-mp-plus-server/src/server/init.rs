@@ -89,7 +89,7 @@ impl PlusServer {
             );
         let high_frequency_writer = Arc::new(
             crate::persistence::high_frequency::HighFrequencyWriter::spawn(
-                crate::persistence::high_frequency::HighFrequencyConfig::default(),
+                runtime.high_frequency.clone(),
                 Arc::new(db_manager.clone()),
             ),
         );
