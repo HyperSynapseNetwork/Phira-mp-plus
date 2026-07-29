@@ -290,27 +290,17 @@ fn server_state_query_dispatch(
             Ok(serde_json::json!(list))
         }
         "auth.visited_count" => {
-            // Return total unique visitors from PostgreSQL, falling back
-            // to current online count if DB is unavailable.
+            // 直接同步查询 PG，避免双重线程 + recv_timeout 在冷启动时超时返回 0
             let pool = match &state.db_manager {
                 crate::db::DbManager::Pg(p) => p.clone(),
             };
-            let (tx, rx) = std::sync::mpsc::channel();
-            spawn_on_runtime(async move {
-                let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM mp_users")
+            let count = futures::executor::block_on(async {
+                sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM mp_users")
                     .fetch_one(&pool)
                     .await
-                    .unwrap_or(0);
-                let _ = tx.send(count);
+                    .unwrap_or(0)
             });
-            let count = rx.recv_timeout(runtime_state_query_timeout()).unwrap_or(0);
-            // Fallback: if DB returns 0 but users are online, use online count
-            if count == 0 {
-                let users = crate::read_lock!(state.users);
-                Ok(serde_json::json!(users.len()))
-            } else {
-                Ok(serde_json::json!(count))
-            }
+            Ok(serde_json::json!(count))
         }
         "users.list" => {
             let users = crate::read_lock!(state.users);
@@ -367,20 +357,18 @@ fn server_state_query_dispatch(
             }
         }
         "playtime.leaderboard" => {
-            let (tx, rx) = std::sync::mpsc::channel();
-            spawn_on_runtime(async move {
+            let result = futures::executor::block_on(async {
                 let db = crate::internal_hooks::DB.get().expect("DB not initialized");
                 let data = db.top_playtime(1000).await;
                 let total = data.len();
-                let _ = tx.send(Ok(serde_json::json!({
+                Ok(serde_json::json!({
                     "success": true,
                     "data": data,
                     "timestamp": chrono::Utc::now().to_rfc3339(),
                     "total_users": total,
-                })));
+                }))
             });
-            rx.recv_timeout(runtime_state_query_timeout())
-                .unwrap_or(Err("playtime.leaderboard timeout".to_string()))
+            result
         }
         // TODO(Phase2-WorkD): send_room_chat bypasses mailbox — directly
         // reads state.rooms and calls room.send(). This is a message broadcast

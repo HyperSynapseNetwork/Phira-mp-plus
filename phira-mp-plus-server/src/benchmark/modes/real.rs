@@ -126,6 +126,7 @@ impl RoomCoordinator {
     }
 
     /// 获取当前阶段。
+    #[allow(dead_code)]
     fn current_phase(&self) -> RoomPhase {
         *self.phase_tx.borrow()
     }
