@@ -189,7 +189,7 @@ pub(crate) const INSERT_BENCHMARK_REPORT: &str = "INSERT INTO mp_runtime_benchma
                  ON CONFLICT (report_id) WHERE report_id IS NOT NULL DO NOTHING";
 
 #[cfg(test)]
-pub(crate) const SELECT_BENCHMARK_HISTORY: &str = "SELECT sequence, mode, title, duration_secs, operations, failed_operations,
+pub(crate) const SELECT_BENCHMARK_HISTORY: &str = "SELECT sequence, title, duration_secs, operations, failed_operations,
                             probes_failed, probes_blocked, report::text AS report, created_at, source, schema_version
                      FROM mp_runtime_benchmark_reports";
 
@@ -253,25 +253,9 @@ impl DbManager {
         query: crate::persistence::BenchmarkReportHistoryQuery,
     ) -> Vec<crate::persistence::BenchmarkReportHistoryRow> {
         let Self::Pg(pool) = self;
-        use sqlx::Row;
         let limit = i64::try_from(query.limit).unwrap_or(200).clamp(1, 200);
-        let rows = true {
-            sqlx::query(
-                "SELECT sequence, mode, title, duration_secs, operations, failed_operations,
-                            probes_failed, probes_blocked, report::text AS report, created_at, source, schema_version
-                     FROM mp_runtime_benchmark_reports
-                     WHERE mode = $1
-                     ORDER BY sequence DESC
-                     LIMIT $2"
-            )
-            .bind(mode.as_str())
-            .bind(limit)
-            .fetch_all(pool)
-            .await
-            .unwrap_or_default()
-        } else {
-            sqlx::query(
-                "SELECT sequence, mode, title, duration_secs, operations, failed_operations,
+        let rows = sqlx::query(
+                "SELECT sequence, title, duration_secs, operations, failed_operations,
                             probes_failed, probes_blocked, report::text AS report, created_at, source, schema_version
                      FROM mp_runtime_benchmark_reports
                      ORDER BY sequence DESC
@@ -281,8 +265,6 @@ impl DbManager {
             .fetch_all(pool)
             .await
             .unwrap_or_default()
-        };
-        rows
             .into_iter()
             .filter_map(|row| {
                 let raw_report = row
