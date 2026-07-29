@@ -62,6 +62,10 @@ pub struct HighFrequencyConfig {
     pub overflow_capacity: usize,
     /// Max age of an overflow item in milliseconds before it is dropped.
     pub overflow_max_age_ms: u64,
+    // ── Retry (审计 P1) ──────────────────────────────────────────
+    /// Maximum total time in milliseconds to spend retrying a failed batch
+    /// before giving up (in addition to the first attempt). 0 = no limit.
+    pub retry_max_age_ms: u64,
 }
 
 impl Default for HighFrequencyConfig {
@@ -73,6 +77,7 @@ impl Default for HighFrequencyConfig {
             max_retries: DEFAULT_MAX_RETRIES,
             overflow_capacity: 1024,
             overflow_max_age_ms: 5000,
+            retry_max_age_ms: 30_000,
         }
     }
 }
@@ -733,6 +738,7 @@ async fn run_hf_writer(
     let flush_interval = Duration::from_millis(config.flush_interval_ms.max(100));
     let max_batch_size = config.max_batch_size.max(1);
     let max_retries = config.max_retries.max(1);
+    let retry_max_age_ms = config.retry_max_age_ms as i64;
     let overflow_max_age_ms = config.overflow_max_age_ms as i64;
     let mut batch: Vec<HighFrequencyItem> = Vec::with_capacity(max_batch_size);
     let mut ticker = tokio::time::interval(flush_interval);
@@ -759,7 +765,7 @@ async fn run_hf_writer(
 
                         if batch.len() >= max_batch_size {
                             flush_and_update_seq(
-                                &mut batch, &stats, &db, max_retries, "max_items"
+                                &mut batch, &stats, &db, max_retries, retry_max_age_ms, "max_items"
                             ).await.ok();
                         }
                     }
@@ -767,14 +773,14 @@ async fn run_hf_writer(
                         // Drain overflow into current batch before flushing
                         drain_overflow(&mut batch, &mut overflow_rx, &stats, overflow_max_age_ms, max_batch_size).await;
                         let result = flush_and_update_seq(
-                            &mut batch, &stats, &db, max_retries, "explicit_flush"
+                            &mut batch, &stats, &db, max_retries, retry_max_age_ms, "explicit_flush"
                         ).await;
                         let _ = reply.send(result);
                     }
                     Some(HfMessage::Shutdown(reply)) => {
                         drain_overflow(&mut batch, &mut overflow_rx, &stats, overflow_max_age_ms, max_batch_size).await;
                         let result = flush_and_update_seq(
-                            &mut batch, &stats, &db, max_retries, "shutdown"
+                            &mut batch, &stats, &db, max_retries, retry_max_age_ms, "shutdown"
                         ).await;
                         if result.is_ok() {
                             debug!("high frequency writer shut down gracefully");
@@ -787,7 +793,7 @@ async fn run_hf_writer(
                         drain_overflow(&mut batch, &mut overflow_rx, &stats, overflow_max_age_ms, max_batch_size).await;
                         if !batch.is_empty() {
                             flush_and_update_seq(
-                                &mut batch, &stats, &db, max_retries, "closed"
+                                &mut batch, &stats, &db, max_retries, retry_max_age_ms, "closed"
                             ).await.ok();
                         }
                         debug!("high frequency writer channel closed, exiting");
@@ -800,7 +806,7 @@ async fn run_hf_writer(
                 drain_overflow(&mut batch, &mut overflow_rx, &stats, overflow_max_age_ms, max_batch_size).await;
                 if !batch.is_empty() {
                     flush_and_update_seq(
-                        &mut batch, &stats, &db, max_retries, "interval"
+                        &mut batch, &stats, &db, max_retries, retry_max_age_ms, "interval"
                     ).await.ok();
                 }
             }
@@ -862,6 +868,7 @@ async fn flush_batch(
     stats: &Arc<HighFrequencyStats>,
     db: &Arc<DbManager>,
     max_retries: u32,
+    retry_max_age_ms: i64,
     reason: &str,
 ) -> Result<(), String> {
     if batch.is_empty() {
@@ -877,8 +884,26 @@ async fn flush_batch(
     // Reset oldest timestamp — will be updated on next item arrival.
     stats.oldest_batch_at.store(0, Ordering::Relaxed);
 
+    let deadline = if retry_max_age_ms > 0 {
+        Some(now_ms() + retry_max_age_ms)
+    } else {
+        None
+    };
+
     for attempt in 0..max_retries {
         if attempt > 0 {
+            // Check retry deadline before sleeping.
+            if let Some(deadline_ms) = deadline {
+                if now_ms() >= deadline_ms {
+                    warn!(
+                        attempt = attempt + 1,
+                        max_retries,
+                        reason,
+                        "retry deadline exceeded, dropping batch"
+                    );
+                    break;
+                }
+            }
             stats.retrying.fetch_add(1, Ordering::Relaxed);
             let delay = Duration::from_millis(match attempt {
                 1 => 50,
@@ -952,12 +977,13 @@ async fn flush_and_update_seq(
     stats: &Arc<HighFrequencyStats>,
     db: &Arc<DbManager>,
     max_retries: u32,
+    retry_max_age_ms: i64,
     reason: &str,
 ) -> Result<(), String> {
     let seqs: Vec<u64> = batch.iter().map(|i| i.admission_seq).collect();
     let target_seq = seqs.iter().max().copied().unwrap_or(0);
     let min_seq = seqs.iter().min().copied().unwrap_or(0);
-    let result = flush_batch(batch, stats, db, max_retries, reason).await;
+    let result = flush_batch(batch, stats, db, max_retries, retry_max_age_ms, reason).await;
     if result.is_ok() && target_seq > 0 {
         let current = stats.committed_sequence.load(Ordering::Relaxed);
         if target_seq > current {
