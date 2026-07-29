@@ -168,29 +168,58 @@ async fn save_round_history(
         }
     }
 
+    // --- Persist round results via PersistenceWorker (WAL-backed) ---
+    // Route through PersistenceWorker instead of direct SQL to ensure
+    // write-ahead logging, retry, and dead-letter durability.
+    let persistence_worker = &lc.server_state().persistence_worker;
+    let mut any_failed = false;
+    for result in &play_results {
+        let event = crate::persistence::PersistenceEvent::RoundResult {
+            round_uuid: round_id.to_string(),
+            room_id: room_ref.id.to_string(),
+            result: result.clone(),
+        };
+        if persistence_worker.enqueue(event).await.is_err() {
+            warn!(
+                room = %room_ref.id,
+                round_id = %round_id,
+                user_id = result.user_id,
+                "failed to enqueue round result to persistence worker"
+            );
+            any_failed = true;
+        }
+    }
+
+    let persistence_status = if any_failed {
+        crate::room::PersistenceStatus::Pending
+    } else {
+        crate::room::PersistenceStatus::Durable
+    };
+
     let round = crate::room::PlayRound {
         round_id,
         chart_id,
         chart_name: chart_name_str,
         results: play_results,
+        persistence_status,
     };
-    if let Some(db) = crate::internal_hooks::DB.get() {
-        for result in &round.results {
-            if !db
-                .record_round_result(&round.round_id.to_string(), &room_ref.id.to_string(), result)
-                .await
-            {
-                warn!(
-                    room = %room_ref.id,
-                    round_id = %round.round_id,
-                    user_id = result.user_id,
-                    "failed to persist round result"
-                );
-            }
-        }
-    }
     let event = crate::room::protocol_round(&round);
-    room_ref.play_history.push(round).await;
+
+    // Only add to in-memory play_history if all results were durably queued.
+    // The PersistenceWorker guarantees eventual writes via WAL + retry +
+    // dead-letter, so a successful enqueue means the data is safe.
+    if !any_failed {
+        room_ref.play_history.push(round).await;
+    } else {
+        // Round still dispatched as a RoomEvent so clients see the result,
+        // but the in-memory history will not have this entry for subsequent
+        // queries (e.g. room history CLI command).
+        warn!(
+            room = %room_ref.id,
+            round_id = %round_id,
+            "round results not fully persisted; skipping play_history push"
+        );
+    }
     Some(event)
 }
 
@@ -217,7 +246,8 @@ async fn check_all_ready(
                 || total.iter().all(|it| started.contains(&it.id))
             {
                 // All ready — transition to Playing
-                as_.state.ready_countdown_started_at = None;
+                let prev_ready_countdown = as_.state.ready_countdown_started_at.take();
+                let prev_admin_pending = as_.state.control.admin_start_pending;
                 if *admin_started {
                     // Finish admin start
                     as_.state.control.admin_start_pending = false;
@@ -227,25 +257,14 @@ async fn check_all_ready(
                 }
                 let round_id = uuid::Uuid::new_v4();
                 as_.state.round.round_id = Some(round_id);
-                info!(room = lc.room().id.to_string(), round = %round_id, "game start");
-                lc.publish_runtime_event(crate::event_bus::MpEvent::GameStarted {
-                    room_id: lc.room().id.clone(),
-                    round_id: round_id.to_string(),
-                });
-                lc.send_msg(Message::StartPlaying).await;
-                lc.reset_game_time().await;
-                as_.state.lifecycle = InternalRoomState::Playing {
-                    results: HashMap::new(),
-                    aborted: HashSet::new(),
-                };
-                set_playing_deadline(as_, lc.server_state());
-                broadcast_state_change(lc, &as_.state.lifecycle, as_.state.chart).await;
 
-                // 打开轮次数据存储
-                let rid = round_id.to_string();
-                let cid = as_.state.chart.unwrap_or(0);
-                let players: Vec<i32> = lc.users().await.into_iter().map(|u| u.id).collect();
+                // --- FIX P0-D(1): open_round FIRST (durable admission) ---
+                // If open_round fails, revert state and return to WaitForReady
+                // instead of transitioning to Playing without a persisted round.
                 if let Some(rs) = &lc.room().round_store {
+                    let rid = round_id.to_string();
+                    let cid = as_.state.chart.unwrap_or(0);
+                    let players: Vec<i32> = lc.users().await.into_iter().map(|u| u.id).collect();
                     let meta = crate::round_store::RoundMeta {
                         round_uuid: rid,
                         chart_id: cid,
@@ -259,9 +278,31 @@ async fn check_all_ready(
                         finished_at: None,
                     };
                     if let Err(e) = rs.open_round(&meta).await {
-                        warn!("round store: failed to open round: {e}");
+                        warn!(
+                            room = %lc.room().id, round = %round_id,
+                            "round store: failed to open round, aborting game start: {e}"
+                        );
+                        // Revert state — return to WaitForReady
+                        as_.state.round.round_id = None;
+                        as_.state.control.admin_start_pending = prev_admin_pending;
+                        as_.state.ready_countdown_started_at = prev_ready_countdown;
+                        return;
                     }
                 }
+
+                info!(room = lc.room().id.to_string(), round = %round_id, "game start");
+                lc.publish_runtime_event(crate::event_bus::MpEvent::GameStarted {
+                    room_id: lc.room().id.clone(),
+                    round_id: round_id.to_string(),
+                });
+                lc.send_msg(Message::StartPlaying).await;
+                lc.reset_game_time().await;
+                as_.state.lifecycle = InternalRoomState::Playing {
+                    results: HashMap::new(),
+                    aborted: HashSet::new(),
+                };
+                set_playing_deadline(as_, lc.server_state());
+                broadcast_state_change(lc, &as_.state.lifecycle, as_.state.chart).await;
             }
         }
         InternalRoomState::Playing { results, aborted } => {
@@ -288,7 +329,12 @@ async fn check_all_ready(
                 if let Some(rid) = rid {
                     info!("round complete: {}", rid);
                     if let Some(rs) = &lc.room().round_store {
-                        rs.close_round(&rid.to_string()).await;
+                        if let Err(e) = rs.close_round(&rid.to_string()).await {
+                            warn!(
+                                room = %lc.room().id, round = %rid,
+                                "round store: failed to close round: {e}"
+                            );
+                        }
                     }
                 }
 
@@ -439,6 +485,35 @@ pub(super) async fn force_start_playing(
     state.round.round_id = Some(round_id);
     info!(room = lc.room().id.to_string(), round = %round_id, "game start (ready timeout)");
 
+    // --- FIX P0-D(1): open_round FIRST (durable admission) ---
+    // If open_round fails, revert state and return instead of
+    // transitioning to Playing without a persisted round.
+    if let Some(rs) = &lc.room().round_store {
+        let rid = round_id.to_string();
+        let cid = state.chart.unwrap_or(0);
+        let players: Vec<i32> = lc.users().await.into_iter().map(|u| u.id).collect();
+        let meta = crate::round_store::RoundMeta {
+            round_uuid: rid,
+            chart_id: cid,
+            chart_name: state.chart_name.clone().unwrap_or_default(),
+            room_id: lc.room().id.to_string(),
+            players,
+            started_at: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis() as i64)
+                .unwrap_or(0),
+            finished_at: None,
+        };
+        if let Err(e) = rs.open_round(&meta).await {
+            warn!(
+                room = %lc.room().id, round = %round_id,
+                "round store: failed to open round, aborting force start: {e}"
+            );
+            state.round.round_id = None;
+            return;
+        }
+    }
+
     lc.publish_runtime_event(crate::event_bus::MpEvent::GameStarted {
         room_id: lc.room().id.clone(),
         round_id: round_id.to_string(),
@@ -475,26 +550,7 @@ pub(super) async fn force_start_playing(
     }
     broadcast_state_change(lc, &state.lifecycle, state.chart).await;
 
-    let rid = round_id.to_string();
-    let cid = state.chart.unwrap_or(0);
-    let players: Vec<i32> = lc.users().await.into_iter().map(|u| u.id).collect();
-    if let Some(rs) = &lc.room().round_store {
-        let meta = crate::round_store::RoundMeta {
-            round_uuid: rid,
-            chart_id: cid,
-            chart_name: state.chart_name.clone().unwrap_or_default(),
-            room_id: lc.room().id.to_string(),
-            players,
-            started_at: std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_millis() as i64)
-                .unwrap_or(0),
-            finished_at: None,
-        };
-        if let Err(e) = rs.open_round(&meta).await {
-            warn!("round store: failed to open round: {e}");
-        }
-    }
+    // Remove old open_round call — moved above
     lc.dispatch_plugin_event(PluginEvent::GameStart {
         user_id: 0,
         room_id: lc.room().id.to_string(),
@@ -550,7 +606,12 @@ pub(super) async fn force_end_playing(
         }
         if let Some(rid) = rid {
             if let Some(rs) = &lc.room().round_store {
-                rs.close_round(&rid.to_string()).await;
+                if let Err(e) = rs.close_round(&rid.to_string()).await {
+                    warn!(
+                        room = %lc.room().id, round = %rid,
+                        "round store: failed to close round: {e}"
+                    );
+                }
             }
         }
         state.round.round_id = None;

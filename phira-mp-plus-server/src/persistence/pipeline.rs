@@ -109,6 +109,13 @@ pub async fn persist_production_event_if_needed(event: &PersistenceEvent) -> Per
                 }
                 seen_ok
             }
+            PersistenceEvent::RoundResult {
+                round_uuid,
+                room_id,
+                result,
+            } => {
+                db.record_round_result(round_uuid, room_id, result).await
+            }
             PersistenceEvent::BenchmarkReport { .. }
             | PersistenceEvent::Flush
             | PersistenceEvent::Shutdown => {

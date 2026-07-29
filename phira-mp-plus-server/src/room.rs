@@ -59,6 +59,17 @@ impl InternalRoomState {
     }
 }
 
+/// Persistence status of a completed round's results.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum PersistenceStatus {
+    /// Round results have been durably persisted to the database.
+    Durable,
+    /// Round results could not be durably persisted (queue full, worker unavailable).
+    Pending,
+    /// Round results persistence failed definitively.
+    Failed,
+}
+
 /// 一轮游玩的结算数据
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PlayRound {
@@ -67,6 +78,8 @@ pub struct PlayRound {
     pub chart_id: i32,
     pub chart_name: String,
     pub results: Vec<PlayResult>,
+    /// Whether the round results were durably persisted to the database.
+    pub persistence_status: PersistenceStatus,
 }
 
 /// 单个用户的实时触控数据缓存

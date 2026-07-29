@@ -48,6 +48,13 @@ pub enum PersistenceEvent {
         language: String,
         ip: String,
     },
+    /// Round result persistence (migrated from direct SQL in save_round_history).
+    /// Contains a single player's result for a completed round. Low-frequency.
+    RoundResult {
+        round_uuid: String,
+        room_id: String,
+        result: crate::room::PlayResult,
+    },
     Flush,
     Shutdown,
 }
@@ -63,6 +70,7 @@ impl PersistenceEvent {
             Self::UserOffline { .. } => "user_offline".to_string(),
             Self::UserDisconnect { .. } => "user_disconnect".to_string(),
             Self::UserSeen { .. } => "user_seen".to_string(),
+            Self::RoundResult { .. } => "round_result".to_string(),
             Self::Flush => "flush".to_string(),
             Self::Shutdown => "shutdown".to_string(),
         }
@@ -118,6 +126,13 @@ impl PersistenceEvent {
                 "ip": ip,
             })),
             Self::Flush | Self::Shutdown => None,
+            Self::RoundResult {
+                round_uuid, room_id, result
+            } => Some(json!({
+                "round_uuid": round_uuid,
+                "room_id": room_id,
+                "result": result,
+            })),
         }
     }
 
@@ -150,6 +165,9 @@ impl PersistenceEvent {
             Self::UserSeen {
                 user_id, user_name, ..
             } => format!("user_id={user_id} user_name={user_name}"),
+            Self::RoundResult { round_uuid, .. } => {
+                format!("round_uuid={round_uuid}")
+            }
             Self::Flush => "flush".to_string(),
             Self::Shutdown => "shutdown".to_string(),
         }
