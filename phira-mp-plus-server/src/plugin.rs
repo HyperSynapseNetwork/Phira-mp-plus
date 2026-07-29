@@ -454,6 +454,7 @@ impl PluginManager {
 
     /// Queue a plugin event. Before the dispatcher starts (mainly unit tests),
     /// execute synchronously so callers never enqueue into an unconsumed queue.
+    /// Uses try_send to avoid blocking core protocol on slow plugins.
     pub async fn dispatch_event(&self, event: PluginEvent) {
         if !self.dispatcher_started.load(Ordering::Acquire) {
             let _ = self.trigger(&event).await;
@@ -467,13 +468,23 @@ impl PluginManager {
             );
             return;
         }
-        if let Err(error) = self
-            .event_tx
-            .send(PluginDispatchMessage::Event(event))
-            .await
-        {
-            if let PluginDispatchMessage::Event(event) = error.0 {
-                warn!(kind = event.kind(), "plugin event dispatcher is closed");
+        // try_send — never block core protocol on slow plugins.
+        // If the bounded queue is full, the event is dropped with a warning.
+        // This prevents a slow/stuck plugin from blocking client commands.
+        use tokio::sync::mpsc::error::TrySendError;
+        match self.event_tx.try_send(PluginDispatchMessage::Event(event)) {
+            Ok(()) => {}
+            Err(TrySendError::Full(event)) => {
+                warn!(
+                    kind = event.kind(),
+                    "plugin event queue full, dropping event to avoid blocking core protocol"
+                );
+            }
+            Err(TrySendError::Closed(event)) => {
+                warn!(
+                    kind = event.kind(),
+                    "plugin event dispatcher is closed"
+                );
             }
         }
     }

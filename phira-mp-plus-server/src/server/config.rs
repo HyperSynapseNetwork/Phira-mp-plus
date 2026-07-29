@@ -639,6 +639,11 @@ pub struct IdleConfig {
     /// 断线重连宽限时间（秒）。玩家断线后在此时长内重连可恢复。
     #[serde(default = "default_dangle_grace_secs")]
     pub dangle_grace_secs: u64,
+    /// Playing 状态断线重连宽限时间（秒）。
+    /// Playing 中断线不立即踢出房间，保留成员资格等待重连。
+    /// 默认为 15 秒，设为 0 表示立即踢出（旧行为）。
+    #[serde(default = "default_playing_reconnect_grace_secs")]
+    pub playing_reconnect_grace_secs: u64,
 }
 
 impl Default for IdleConfig {
@@ -647,6 +652,7 @@ impl Default for IdleConfig {
             heartbeat_timeout_secs: default_heartbeat_timeout(),
             auth_timeout_secs: default_auth_timeout(),
             dangle_grace_secs: default_dangle_grace_secs(),
+            playing_reconnect_grace_secs: default_playing_reconnect_grace_secs(),
         }
     }
 }
@@ -654,6 +660,7 @@ impl Default for IdleConfig {
 fn default_heartbeat_timeout() -> u64 { 15 }
 fn default_auth_timeout() -> u64 { 15 }
 fn default_dangle_grace_secs() -> u64 { 10 }
+fn default_playing_reconnect_grace_secs() -> u64 { 15 }
 
 // ── OpenUDS Config ──────────────────────────────────────────
 

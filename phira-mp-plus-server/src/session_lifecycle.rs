@@ -165,59 +165,120 @@ impl User {
         }
 
         if let Some(room) = room.as_ref() {
-            let playing = room.server.upgrade()
+            let is_playing = room.server.upgrade()
                 .and_then(|s| s.room_snapshot(&room.id.to_string()))
                 .map(|snap| matches!(snap.stripped, phira_mp_common::StrippedRoomState::Playing))
                 .unwrap_or(false);
-            if playing {
-                warn!(
-                    user = self.id,
-                    "lost connection while playing; removing immediately"
-                );
-                let room_id = room.id.clone();
-                let was_monitor = self.monitor.load(Ordering::Relaxed);
-                if room.on_user_leave(&self).await {
-                    self.server.rooms.write().await.remove(&room_id);
-                }
-                let mut users = self.server.users.write().await;
-                if users
-                    .get(&self.id)
-                    .is_some_and(|current| Arc::ptr_eq(current, &self))
-                {
-                    users.remove(&self.id);
-                }
-                drop(users);
-                drop(registration_guard);
+            if is_playing {
+                let grace_secs = self.server.config.idle.playing_reconnect_grace_secs;
+                if grace_secs > 0 {
+                    warn!(
+                        user = self.id,
+                        grace_secs,
+                        "lost connection while playing; reconnect grace started"
+                    );
+                    // Playing reconnect grace: keep room membership, use playing-specific timer.
+                    let dangle_mark = Arc::new(());
+                    *self.dangle_mark.lock().await = Some(Arc::clone(&dangle_mark));
+                    drop(registration_guard);
 
-                if !was_monitor {
                     self.server
-                        .publish_room_event(RoomEvent::LeaveRoom {
-                            room: room_id,
-                            user: self.id,
+                        .publish_user_disconnected(self.id, self.name.clone())
+                        .await;
+
+                    let weak_self = Arc::downgrade(&self);
+                    crate::supervisor_actor::spawn_named(
+                        format!("playing-grace-{}", self.id),
+                        async move {
+                            time::sleep(Duration::from_secs(grace_secs)).await;
+                            let Some(self_) = weak_self.upgrade() else { return };
+                            let registration_guard = self_.server.user_registration_gate.lock().await;
+                            let expired = {
+                                let mut current = self_.dangle_mark.lock().await;
+                                if current.as_ref().is_some_and(|mark| Arc::ptr_eq(mark, &dangle_mark)) {
+                                    current.take();
+                                    true
+                                } else { false }
+                            };
+                            if !expired { return; }
+
+                            // Grace expired — abort game, remove from room.
+                            let room = self_.room.read().await.as_ref().map(Arc::clone);
+                            if let Some(room) = room {
+                                let room_id = room.id.clone();
+                                // Abort the player's game if room still exists
+                                if let Some(server) = room.server.upgrade() {
+                                    let _ = server.room_commands.abort_player(
+                                        &server, &room_id, self_.id,
+                                    ).await;
+                                }
+                                if room.on_user_leave(&self_).await {
+                                    self_.server.rooms.write().await.remove(&room_id);
+                                }
+                                self_.server.publish_room_event(
+                                    RoomEvent::LeaveRoom { room: room_id, user: self_.id },
+                                ).await;
+                            }
+                            let mut users = self_.server.users.write().await;
+                            if users.get(&self_.id).is_some_and(|current| Arc::ptr_eq(current, &self_)) {
+                                users.remove(&self_.id);
+                            }
+                            drop(users);
+                            drop(registration_guard);
+                            self_.server.publish_user_disconnected(self_.id, self_.name.clone()).await;
+                        },
+                    );
+                    return;
+                } else {
+                    warn!(
+                        user = self.id,
+                        "lost connection while playing; removing immediately (grace disabled)"
+                    );
+                    let room_id = room.id.clone();
+                    let was_monitor = self.monitor.load(Ordering::Relaxed);
+                    if room.on_user_leave(&self).await {
+                        self.server.rooms.write().await.remove(&room_id);
+                    }
+                    let mut users = self.server.users.write().await;
+                    if users
+                        .get(&self.id)
+                        .is_some_and(|current| Arc::ptr_eq(current, &self))
+                    {
+                        users.remove(&self.id);
+                    }
+                    drop(users);
+                    drop(registration_guard);
+
+                    if !was_monitor {
+                        self.server
+                            .publish_room_event(RoomEvent::LeaveRoom {
+                                room: room_id,
+                                user: self.id,
+                            })
+                            .await;
+                    }
+                    self.server
+                        .publish_user_disconnected(self.id, self.name.clone())
+                        .await;
+                    let _ = self
+                        .server
+                        .persistence_worker
+                        .enqueue(
+                            crate::persistence::message::PersistenceEvent::UserDisconnect {
+                                user_id: self.id,
+                                user_name: self.name.clone(),
+                            },
+                        )
+                        .await;
+                    let _ = self
+                        .server
+                        .persistence_worker
+                        .enqueue(crate::persistence::message::PersistenceEvent::UserOffline {
+                            user_id: self.id,
                         })
                         .await;
+                    return;
                 }
-                self.server
-                    .publish_user_disconnected(self.id, self.name.clone())
-                    .await;
-                let _ = self
-                    .server
-                    .persistence_worker
-                    .enqueue(
-                        crate::persistence::message::PersistenceEvent::UserDisconnect {
-                            user_id: self.id,
-                            user_name: self.name.clone(),
-                        },
-                    )
-                    .await;
-                let _ = self
-                    .server
-                    .persistence_worker
-                    .enqueue(crate::persistence::message::PersistenceEvent::UserOffline {
-                        user_id: self.id,
-                    })
-                    .await;
-                return;
             }
         }
 
