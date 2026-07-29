@@ -1145,6 +1145,15 @@ impl PluginManager {
             .map(|commands| commands.values().cloned().collect())
             .unwrap_or_default()
     }
+
+    /// Look up a registered API handler by method name.
+    /// Returns `None` if no handler is registered for the given method.
+    pub fn get_api_handler(&self, method: &str) -> Option<api::PluginApiHandler> {
+        self.api_handlers
+            .lock()
+            .ok()
+            .and_then(|map| map.get(method).cloned())
+    }
 }
 
 fn plugin_matches(meta: &PluginMeta, selector: &str) -> bool {

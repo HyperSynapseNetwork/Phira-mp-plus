@@ -121,24 +121,24 @@ impl WitPluginHost {
             .map_err(crate::plugin_abi::wit_abi::phira::plugin::phira_types::ApiResult::Error)
     }
 
-    /// Convenience: run an async fn synchronously with panic protection.
+    /// Run an async fn synchronously with panic protection.
     ///
     /// Every WIT host method is sync, but most server operations are async.
-    /// This helper uses `futures::executor::block_on` to bridge sync→async
-    /// inside `catch_unwind`, so a panicking plugin call never takes down
-    /// the host thread. The closure returns a `Result<T, String>` directly
-    /// (synchronously), not a future — avoiding the lifetime issues with
-    /// async closures borrowing from the `&WitHostContext` reference.
-    fn block_on_sync<T, F>(&self, f: F) -> Result<T, String>
+    /// This helper takes an async closure that receives an `Arc<WitHostContext>`
+    /// and blocks on it inside `catch_unwind`, so a panicking plugin call never
+    /// takes down the host thread. Unlike the old `block_on_sync`, this does
+    /// not require additional `futures::executor::block_on` inside the closure.
+    fn block_on_async<T, F, Fut>(&self, f: F) -> Result<T, String>
     where
-        F: FnOnce(&WitHostContext) -> T + Send,
+        F: FnOnce(Arc<WitHostContext>) -> Fut + Send,
+        Fut: std::future::Future<Output = T> + Send,
         T: Send,
     {
         let ctx = Arc::clone(&self.ctx);
         std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
             match tokio::runtime::Handle::try_current() {
-                Ok(handle) => handle.block_on(async { f(&ctx) }),
-                Err(_) => futures::executor::block_on(async { f(&ctx) }),
+                Ok(handle) => handle.block_on(f(ctx)),
+                Err(_) => futures::executor::block_on(f(ctx)),
             }
         }))
         .map_err(|_| "WIT host operation panicked — plugin disabled".to_string())
@@ -457,8 +457,8 @@ mod wit_trait_impls {
             if let Err(error) = self.require_api_capability("ext") {
                 return error;
             }
-            match self.block_on_sync(|ctx| {
-                futures::executor::block_on(ctx.extensions.get_user_extra(user_id as i32, &key))
+            match self.block_on_async(move |ctx| async move {
+                ctx.extensions.get_user_extra(user_id as i32, &key).await
             }) {
                 Ok(Some(value)) => types::ApiResult::Ok(types::JsonValue::Text(value)),
                 Ok(None) => types::ApiResult::Ok(types::JsonValue::Null),
@@ -469,12 +469,8 @@ mod wit_trait_impls {
             if let Err(error) = self.require_api_capability("ext") {
                 return error;
             }
-            match self.block_on_sync(|ctx| {
-                futures::executor::block_on(ctx.extensions.set_user_extra(
-                    user_id as i32,
-                    &key,
-                    value,
-                ))
+            match self.block_on_async(move |ctx| async move {
+                ctx.extensions.set_user_extra(user_id as i32, &key, value).await
             }) {
                 Ok(Ok(())) => types::ApiResult::Ok(types::JsonValue::Null),
                 Ok(Err(e)) | Err(e) => types::ApiResult::Error(e),
@@ -487,8 +483,8 @@ mod wit_trait_impls {
             if let Err(error) = self.require_api_capability("ext") {
                 return error;
             }
-            match self.block_on_sync(|ctx| {
-                futures::executor::block_on(ctx.extensions.get_room_extra(&room_id, &key))
+            match self.block_on_async(move |ctx| async move {
+                ctx.extensions.get_room_extra(&room_id, &key).await
             }) {
                 Ok(Some(value)) => types::ApiResult::Ok(types::JsonValue::Text(value)),
                 Ok(None) => types::ApiResult::Ok(types::JsonValue::Null),

@@ -174,7 +174,10 @@ impl WitPluginComponent {
         let plugin_manager = Arc::clone(&server.plugin_manager);
         let forward_plugin = plugin_name.to_string();
         let api_forward: Arc<dyn Fn(&str, &[serde_json::Value]) -> Result<serde_json::Value, String> + Send + Sync> = Arc::new(move |method, args| {
-            futures::executor::block_on(plugin_manager.call_plugin_api(&forward_plugin, method, args.to_vec()))
+            match tokio::runtime::Handle::try_current() {
+                Ok(handle) => handle.block_on(plugin_manager.call_plugin_api(&forward_plugin, method, args.to_vec())),
+                Err(_) => futures::executor::block_on(plugin_manager.call_plugin_api(&forward_plugin, method, args.to_vec())),
+            }
         });
 
         Ok(Arc::new(crate::wit_host::WitHostContext {

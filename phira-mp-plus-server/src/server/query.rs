@@ -380,18 +380,20 @@ fn server_state_query_dispatch(
             }
         }
         "playtime.leaderboard" => {
-            let result = futures::executor::block_on(async {
+            let (tx, rx) = std::sync::mpsc::channel();
+            spawn_on_runtime(async move {
                 let db = crate::internal_hooks::DB.get().expect("DB not initialized");
                 let data = db.top_playtime(1000).await;
                 let total = data.len();
-                Ok(serde_json::json!({
+                let _ = tx.send(Ok(serde_json::json!({
                     "success": true,
                     "data": data,
                     "timestamp": chrono::Utc::now().to_rfc3339(),
                     "total_users": total,
-                }))
+                })));
             });
-            result
+            rx.recv_timeout(runtime_state_query_timeout())
+                .unwrap_or(Err("playtime.leaderboard timeout".to_string()))
         }
         // TODO(Phase2-WorkD): send_room_chat bypasses mailbox — directly
         // reads state.rooms and calls room.send(). This is a message broadcast
@@ -479,11 +481,15 @@ fn server_state_query_dispatch(
                                 if let Some(json_body) = body {
                                     args.push(json_body);
                                 }
-                                match futures::executor::block_on(pm.call_plugin_api(
-                                    &pn,
-                                    &route_path_for_closure,
-                                    args,
-                                )) {
+                                let call_result = match tokio::runtime::Handle::try_current() {
+                                    Ok(handle) => handle.block_on(pm.call_plugin_api(
+                                        &pn, &route_path_for_closure, args,
+                                    )),
+                                    Err(_) => futures::executor::block_on(pm.call_plugin_api(
+                                        &pn, &route_path_for_closure, args,
+                                    )),
+                                };
+                                match call_result {
                                     Ok(val) => Ok(val),
                                     Err(e) => Err((500, e)),
                                 }
@@ -831,7 +837,15 @@ fn server_state_query_dispatch(
             rx.recv_timeout(runtime_state_query_timeout())
                 .unwrap_or(Err("ban.remove timeout".to_string()))
         }
-        _ => Err(format!("unknown method: {method}")),
+        _ => {
+            // Fall back to registered plugin handlers (unified gateway).
+            // Every API call goes through this single dispatch point:
+            // method → lookup owner → capability check → PluginSlot.call_api
+            if let Some(handler) = state.plugin_manager.get_api_handler(method) {
+                return handler(method, args);
+            }
+            Err(format!("unknown method: {method}"))
+        }
     }
 }
 
