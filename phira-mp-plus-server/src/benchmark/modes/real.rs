@@ -1112,6 +1112,7 @@ pub async fn run_real(
 
     // ── 4. 等待所有客户端完成（受整体超时限制）────────────────────
     let mut results = Vec::new();
+    let mut clients_timed_out: u32 = 0;
     let remaining = overall_deadline.saturating_duration_since(Instant::now());
 
     if remaining > Duration::from_millis(50) {
@@ -1121,17 +1122,15 @@ pub async fn run_real(
             if deadline_remaining.is_zero() {
                 warn!("Overall benchmark timeout ({:.1}s) reached; aborting {} remaining task(s)",
                     config.duration.as_secs_f64(), join_set.len());
+                clients_timed_out += join_set.len() as u32;
                 join_set.abort_all();
                 // Drain aborted tasks to avoid detached futures
                 while let Some(result) = join_set.join_next().await {
                     match result {
                         Ok(Ok(cm)) => results.push(Ok(cm)),
                         Ok(Err(e)) => results.push(Err(e)),
-                        Err(e) if e.is_cancelled() => {
-                            debug!("Client task cancelled on timeout");
-                        }
-                        Err(e) => {
-                            warn!("Client task join error during drain: {e}");
+                        Err(_) => {
+                            // Already counted in clients_timed_out
                         }
                     }
                 }
@@ -1149,6 +1148,9 @@ pub async fn run_real(
                 }
                 Ok(Some(Err(e))) => {
                     warn!("Client task join error: {e}");
+                    if e.is_cancelled() {
+                        clients_timed_out += 1;
+                    }
                 }
                 Ok(None) => {
                     // All tasks completed
@@ -1157,13 +1159,13 @@ pub async fn run_real(
                 Err(_) => {
                     warn!("Overall benchmark timeout ({:.1}s) reached; aborting {} remaining task(s)",
                         config.duration.as_secs_f64(), join_set.len());
+                    clients_timed_out += join_set.len() as u32;
                     join_set.abort_all();
                     while let Some(result) = join_set.join_next().await {
                         match result {
                             Ok(Ok(cm)) => results.push(Ok(cm)),
                             Ok(Err(e)) => results.push(Err(e)),
-                            Err(e) if e.is_cancelled() => {}
-                            Err(e) => warn!("Client task join error during drain: {e}"),
+                            Err(_) => {} // Already counted
                         }
                     }
                     break;
@@ -1178,6 +1180,7 @@ pub async fn run_real(
     let mut total_errors: u64 = 0;
     let mut clients_succeeded: u32 = 0;
     let mut clients_failed: u32 = 0;
+    let mut clients_cancelled: u32 = 0;
     let mut all_latencies: Vec<f64> = Vec::new();
     let mut connect_latencies: Vec<f64> = Vec::new();
 
@@ -1193,7 +1196,13 @@ pub async fn run_real(
                 }
             }
             Err(e) => {
-                clients_failed += 1;
+                // Distinguish cancelled (room cancelled by another client's failure)
+                // from other failures
+                if e.contains("room cancelled due to client failure") {
+                    clients_cancelled += 1;
+                } else {
+                    clients_failed += 1;
+                }
                 total_errors += 1;
                 warn!("Client error: {e}");
             }
@@ -1209,8 +1218,12 @@ pub async fn run_real(
     report.summary.total_messages = total_messages;
     report.summary.avg_commands_per_sec = total_commands as f64 / duration_secs as f64;
     report.summary.peak_commands_per_sec = total_commands as f64 / duration_secs as f64;
+    report.summary.clients_started = num_clients;
+    report.summary.clients_completed = clients_succeeded;
     report.summary.clients_succeeded = clients_succeeded;
     report.summary.clients_failed = clients_failed;
+    report.summary.clients_cancelled = clients_cancelled;
+    report.summary.clients_timed_out = clients_timed_out;
     report.summary.avg_messages_per_sec = total_messages as f64 / duration_secs as f64;
     report.summary.peak_messages_per_sec = total_messages as f64 / duration_secs as f64;
 
@@ -1238,11 +1251,23 @@ pub async fn run_real(
             messages_per_sec: report.summary.avg_messages_per_sec,
             errors: total_errors,
             latency: report.command_latency,
-            passed: clients_failed == 0,
-            error: if clients_failed > 0 {
-                Some(format!("{} client(s) failed", clients_failed))
-            } else {
-                None
+            passed: clients_failed == 0 && clients_cancelled == 0 && clients_timed_out == 0,
+            error: {
+                let mut reasons = Vec::new();
+                if clients_failed > 0 {
+                    reasons.push(format!("{} failed", clients_failed));
+                }
+                if clients_cancelled > 0 {
+                    reasons.push(format!("{} cancelled", clients_cancelled));
+                }
+                if clients_timed_out > 0 {
+                    reasons.push(format!("{} timed_out", clients_timed_out));
+                }
+                if reasons.is_empty() {
+                    None
+                } else {
+                    Some(reasons.join(", "))
+                }
             },
         },
     );
@@ -1250,11 +1275,13 @@ pub async fn run_real(
     report.mark_finished();
 
     info!(
-        "Real benchmark completed in {:.1}s: {} clients ({} ok, {} failed), {} commands, {} errors",
+        "Real benchmark completed in {:.1}s: {} clients ({} ok, {} failed, {} cancelled, {} timed_out), {} commands, {} errors",
         elapsed.as_secs_f64(),
         num_clients,
         clients_succeeded,
         clients_failed,
+        clients_cancelled,
+        clients_timed_out,
         total_commands,
         total_errors,
     );
