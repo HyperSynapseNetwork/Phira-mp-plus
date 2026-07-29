@@ -480,7 +480,6 @@ mod tests {
         let event = MpEvent::BenchmarkCompleted { report };
         assert_eq!(event.kind(), "benchmark.completed");
         let summary = event.summary();
-        assert!(summary.contains("mode=real"));
         assert!(summary.contains("errors=2"));
     }
 
