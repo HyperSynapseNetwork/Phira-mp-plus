@@ -1000,63 +1000,96 @@ mod wit_trait_impls {
         }
     }
 
+    // ── Helper functions for phira-room-state ──
+    fn extract_snapshot_data(v: &serde_json::Value) -> Result<&serde_json::Value, String> {
+        v.get("data").ok_or_else(|| "snapshot missing 'data' field".to_string())
+    }
+
+    fn build_room_players(data: &serde_json::Value) -> Vec<wit::phira::plugin::phira_room_state::RoomPlayer> {
+        let ready: Vec<i32> = data.get("ready_users")
+            .and_then(|v| serde_json::from_value(v.clone()).ok()).unwrap_or_default();
+        let finished: Vec<i32> = data.get("finished_users")
+            .and_then(|v| serde_json::from_value(v.clone()).ok()).unwrap_or_default();
+        let host: i32 = data.get("host").and_then(|v| v.as_i64()).unwrap_or(-1) as i32;
+
+        let mut players = Vec::new();
+
+        // Users (non-monitor players)
+        if let Some(users_info) = data.get("users_info").and_then(|v| v.as_array()) {
+            for u in users_info {
+                let uid = u.get("id").and_then(|v| v.as_i64()).unwrap_or(0) as u32;
+                players.push(wit::phira::plugin::phira_room_state::RoomPlayer {
+                    user_id: uid,
+                    display_name: u.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                    is_monitor: false,
+                    is_ready: ready.contains(&(uid as i32)),
+                    is_host: u.get("is_host").and_then(|v| v.as_bool()).unwrap_or(false),
+                    is_finished: finished.contains(&(uid as i32)),
+                    score: None, // Not available in snapshot
+                    accuracy: None,
+                });
+            }
+        }
+
+        // Monitors
+        if let Some(monitors_info) = data.get("monitors_info").and_then(|v| v.as_array()) {
+            for m in monitors_info {
+                let uid = m.get("id").and_then(|v| v.as_i64()).unwrap_or(0) as u32;
+                players.push(wit::phira::plugin::phira_room_state::RoomPlayer {
+                    user_id: uid,
+                    display_name: m.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                    is_monitor: true,
+                    is_ready: ready.contains(&(uid as i32)),
+                    is_host: m.get("is_host").and_then(|v| v.as_bool()).unwrap_or(false),
+                    is_finished: finished.contains(&(uid as i32)),
+                    score: None,
+                    accuracy: None,
+                });
+            }
+        }
+
+        players
+    }
+
+    fn extract_current_round(data: &serde_json::Value) -> Option<wit::phira::plugin::phira_room_state::RoundInfo> {
+        use wit::phira::plugin::phira_room_state::RoundInfo;
+        // Try current_round_id first, then fall back to the last round in
+        // round_history when the room state indicates an active round.
+        if let Some(rid) = data.get("current_round_id").and_then(|v| v.as_str()) {
+            if !rid.is_empty() {
+                let phase = data.get("state").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                return Some(RoundInfo {
+                    round_id: rid.to_string(),
+                    chart_id: data.get("chart").and_then(|v| v.as_i64()).map(|n| n as u32),
+                    chart_name: data.get("chart_name").and_then(|v| v.as_str()).map(str::to_string),
+                    phase,
+                });
+            }
+        }
+        // Fall back to the last round in round_history
+        if let Some(rounds) = data.get("round_history").and_then(|v| v.as_array()) {
+            if let Some(last) = rounds.last() {
+                let round_id = last.get("round_id").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                if !round_id.is_empty() {
+                    let phase = data.get("state").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                    return Some(RoundInfo {
+                        round_id,
+                        chart_id: last.get("chart_id").and_then(|v| v.as_i64()).map(|n| n as u32),
+                        chart_name: last.get("chart_name").and_then(|v| v.as_str()).map(str::to_string),
+                        phase,
+                    });
+                }
+            }
+        }
+        None
+    }
+
     // ── phira-room-state ──
     impl wit::phira::plugin::phira_room_state::Host for WitPluginHost {
-        // Helpers to parse snapshot fields.
-        fn extract_snapshot_data(&self, v: &serde_json::Value) -> Result<&serde_json::Value, String> {
-            v.get("data").ok_or_else(|| "snapshot missing 'data' field".to_string())
-        }
-
-        fn build_room_players(&self, data: &serde_json::Value) -> Vec<wit::phira::plugin::phira_room_state::RoomPlayer> {
-            let ready: Vec<i32> = data.get("ready_users")
-                .and_then(|v| serde_json::from_value(v.clone()).ok()).unwrap_or_default();
-            let finished: Vec<i32> = data.get("finished_users")
-                .and_then(|v| serde_json::from_value(v.clone()).ok()).unwrap_or_default();
-            let host: i32 = data.get("host").and_then(|v| v.as_i64()).unwrap_or(-1) as i32;
-
-            let mut players = Vec::new();
-
-            // Users (non-monitor players)
-            if let Some(users_info) = data.get("users_info").and_then(|v| v.as_array()) {
-                for u in users_info {
-                    let uid = u.get("id").and_then(|v| v.as_i64()).unwrap_or(0) as u32;
-                    players.push(wit::phira::plugin::phira_room_state::RoomPlayer {
-                        user_id: uid,
-                        display_name: u.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string(),
-                        is_monitor: false,
-                        is_ready: ready.contains(&(uid as i32)),
-                        is_host: u.get("is_host").and_then(|v| v.as_bool()).unwrap_or(false),
-                        is_finished: finished.contains(&(uid as i32)),
-                        score: None, // Not available in snapshot
-                        accuracy: None,
-                    });
-                }
-            }
-
-            // Monitors
-            if let Some(monitors_info) = data.get("monitors_info").and_then(|v| v.as_array()) {
-                for m in monitors_info {
-                    let uid = m.get("id").and_then(|v| v.as_i64()).unwrap_or(0) as u32;
-                    players.push(wit::phira::plugin::phira_room_state::RoomPlayer {
-                        user_id: uid,
-                        display_name: m.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string(),
-                        is_monitor: true,
-                        is_ready: ready.contains(&(uid as i32)),
-                        is_host: m.get("is_host").and_then(|v| v.as_bool()).unwrap_or(false),
-                        is_finished: finished.contains(&(uid as i32)),
-                        score: None,
-                        accuracy: None,
-                    });
-                }
-            }
-
-            players
-        }
-
         fn get_room_state(&mut self, room_id: String) -> Result<wit::phira::plugin::phira_room_state::RoomState, String> {
             self.require_capability("room-state")?;
             let v = self.ctx.state_query.call("rooms.by_name", &[serde_json::json!(room_id)])?;
-            let data = self.extract_snapshot_data(&v)?;
+            let data = extract_snapshot_data(&v)?;
 
             let rid = data.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string();
             let room_uuid = data.get("uuid").and_then(|v| v.as_str()).unwrap_or("").to_string();
@@ -1067,10 +1100,10 @@ mod wit_trait_impls {
             let player_count = data.get("player_count").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
             let monitor_count = data.get("monitor_count").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
 
-            let players = self.build_room_players(data);
+            let players = build_room_players(data);
 
             // Derive current_round from round_history
-            let current_round = self.extract_current_round(data);
+            let current_round = extract_current_round(data);
 
             Ok(wit::phira::plugin::phira_room_state::RoomState {
                 room_id: rid, room_uuid, host_id, locked, hidden,
@@ -1078,44 +1111,11 @@ mod wit_trait_impls {
             })
         }
 
-        fn extract_current_round(&self, data: &serde_json::Value) -> Option<wit::phira::plugin::phira_room_state::RoundInfo> {
-            use wit::phira::plugin::phira_room_state::RoundInfo;
-            // Try current_round_id first, then fall back to the last round in
-            // round_history when the room state indicates an active round.
-            if let Some(rid) = data.get("current_round_id").and_then(|v| v.as_str()) {
-                if !rid.is_empty() {
-                    let phase = data.get("state").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                    return Some(RoundInfo {
-                        round_id: rid.to_string(),
-                        chart_id: data.get("chart").and_then(|v| v.as_i64()).map(|n| n as u32),
-                        chart_name: data.get("chart_name").and_then(|v| v.as_str()).map(str::to_string),
-                        phase,
-                    });
-                }
-            }
-            // Fall back to the last round in round_history
-            if let Some(rounds) = data.get("round_history").and_then(|v| v.as_array()) {
-                if let Some(last) = rounds.last() {
-                    let round_id = last.get("round_id").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                    if !round_id.is_empty() {
-                        let phase = data.get("state").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                        return Some(RoundInfo {
-                            round_id,
-                            chart_id: last.get("chart_id").and_then(|v| v.as_i64()).map(|n| n as u32),
-                            chart_name: last.get("chart_name").and_then(|v| v.as_str()).map(str::to_string),
-                            phase,
-                        });
-                    }
-                }
-            }
-            None
-        }
-
         fn get_room_players(&mut self, room_id: String) -> Result<Vec<wit::phira::plugin::phira_room_state::RoomPlayer>, String> {
             self.require_capability("room-state")?;
             let v = self.ctx.state_query.call("rooms.by_name", &[serde_json::json!(room_id)])?;
-            let data = self.extract_snapshot_data(&v)?;
-            Ok(self.build_room_players(data))
+            let data = extract_snapshot_data(&v)?;
+            Ok(build_room_players(data))
         }
 
         fn get_player_status(&mut self, room_id: String, user_id: u32) -> Result<Option<wit::phira::plugin::phira_room_state::RoomPlayer>, String> {

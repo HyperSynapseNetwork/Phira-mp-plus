@@ -67,6 +67,7 @@ async fn persist_touches(
         user_id: user.id,
         payload,
         created_at_ms,
+        admission_seq: 0,
     };
 
     match user
@@ -139,6 +140,7 @@ async fn persist_judges(
         user_id: user.id,
         payload,
         created_at_ms,
+        admission_seq: 0,
     };
 
     match user

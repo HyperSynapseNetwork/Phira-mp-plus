@@ -1053,6 +1053,13 @@ impl RoomCommandHandler {
                     room_id: String::new(), user_id: 0,
                 })
             }
+            // AddTouches/AddJudges are no-op here — telemetry is now handled
+            // by the execute_telemetry fast path in the actor.
+            RoomActorCommand::AddTouches { .. } | RoomActorCommand::AddJudges { .. } => {
+                ok(RoomCommandPayload::TouchesCached {
+                    room_id: String::new(), user_id: 0,
+                })
+            }
         }
     }
 
