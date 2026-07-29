@@ -267,11 +267,11 @@ impl DbManager {
             .await
             .unwrap_or_default()
             .into_iter()
-            .filter_map(|row| {
+            .map(|row| {
                 let raw_report = row
                     .try_get::<String, _>("report")
                     .unwrap_or_else(|_| "{}".to_string());
-                Some(crate::persistence::BenchmarkReportHistoryRow {
+                crate::persistence::BenchmarkReportHistoryRow {
                     sequence: row.try_get::<i64, _>("sequence").unwrap_or_default(),
 
                     title: row.try_get::<String, _>("title").unwrap_or_default(),
@@ -288,7 +288,7 @@ impl DbManager {
                     schema_version: row.try_get::<i32, _>("schema_version").unwrap_or_default(),
                     report: serde_json::from_str(&raw_report)
                         .unwrap_or_else(|_| serde_json::json!({})),
-                })
+                }
             })
             .collect()
     }
