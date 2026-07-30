@@ -29,14 +29,17 @@ enum WorkerMessage {
     Event {
         wal_sequence: u64,
         wal_id: uuid::Uuid,
+        wal_sequence: u64,
         event: PersistenceEvent,
         needs_wal_ack: bool,
     },
     Flush {
         reply: oneshot::Sender<Result<(), String>>,
+        target_wal_sequence: u64,
     },
     Shutdown {
         reply: oneshot::Sender<Result<(), String>>,
+        target_wal_sequence: u64,
     },
 }
 
@@ -179,6 +182,167 @@ async fn append_dead_letter(path: &Path, record: &serde_json::Value) -> Result<(
     Ok(())
 }
 
+/// Process a single event through the persistence pipeline and optionally
+/// acknowledge it in the WAL.
+///
+/// Returns `true` if the event was a Shutdown marker — the caller should
+/// break the worker loop.
+async fn process_event_through_pipeline(
+    wal_id: uuid::Uuid,
+    event: PersistenceEvent,
+    needs_wal_ack: bool,
+    worker_stats: &Arc<RwLock<PersistenceStats>>,
+    worker_dead_letter_path: &Option<PathBuf>,
+    worker_wal: &Arc<PersistenceWal>,
+    in_flight: &Arc<Mutex<HashSet<uuid::Uuid>>>,
+    pending_acks: &mut std::collections::VecDeque<(uuid::Uuid, u32)>,
+) -> bool {
+    use crate::persistence::pipeline::{
+        persist_benchmark_report_if_needed, persist_production_event_if_needed,
+        BenchmarkReportStage, PersistenceWriteStage,
+    };
+    use crate::persistence::stats::{
+        record_benchmark_report_persist_request, record_benchmark_report_persist_skipped,
+        record_db_dispatch_failure,
+        record_db_dispatch_success, record_processed, record_production_persist_request,
+        record_production_persist_skipped,
+    };
+    use tracing::debug;
+
+    let kind = event.kind();
+    let summary = event.summary();
+    // Track whether this event reached a durable terminal state.
+    // Only durable events get WAL ACKed; non-durable entries remain
+    // in the WAL for replay on restart (crash recovery).
+    let mut durable = false;
+    match persist_benchmark_report_if_needed(&event).await {
+        BenchmarkReportStage::Acknowledged { elapsed_ms } => {
+            durable = true;
+            record_benchmark_report_persist_request(worker_stats).await;
+            record_db_dispatch_success(
+                worker_stats,
+                crate::persistence::PersistencePipeline::BenchmarkReport,
+                elapsed_ms,
+            )
+            .await;
+        }
+        BenchmarkReportStage::Failed { elapsed_ms, error } => {
+            if preserve_failed_event(
+                wal_id,
+                worker_dead_letter_path.as_deref(),
+                &event,
+                "benchmark_report",
+                &error,
+                worker_stats,
+            )
+            .await
+            {
+                durable = true;
+            }
+            record_benchmark_report_persist_skipped(worker_stats).await;
+            record_db_dispatch_failure(
+                worker_stats,
+                crate::persistence::PersistencePipeline::BenchmarkReport,
+                elapsed_ms,
+                error,
+            )
+            .await;
+        }
+        BenchmarkReportStage::NotBenchmark => {
+            match persist_production_event_if_needed(&event).await {
+                PersistenceWriteStage::Acknowledged {
+                    pipeline,
+                    elapsed_ms,
+                } => {
+                    durable = true;
+                    record_production_persist_request(worker_stats).await;
+                    record_db_dispatch_success(
+                        worker_stats,
+                        pipeline,
+                        elapsed_ms,
+                    )
+                    .await;
+                }
+                PersistenceWriteStage::Failed {
+                    pipeline,
+                    elapsed_ms,
+                    error,
+                } => {
+                    if preserve_failed_event(
+                        wal_id,
+                        worker_dead_letter_path.as_deref(),
+                        &event,
+                        "production",
+                        &error,
+                        worker_stats,
+                    )
+                    .await
+                    {
+                        durable = true;
+                    }
+                    record_production_persist_request(worker_stats).await;
+                    record_db_dispatch_failure(
+                        worker_stats,
+                        pipeline,
+                        elapsed_ms,
+                        error,
+                    )
+                    .await;
+                }
+                PersistenceWriteStage::NotApplicable => {
+                    if !matches!(
+                        &event,
+                        PersistenceEvent::Flush
+                            | PersistenceEvent::Shutdown
+                    ) {
+                        record_production_persist_skipped(worker_stats).await;
+                    }
+                }
+            }
+        }
+    }
+
+    match &event {
+        PersistenceEvent::Shutdown => {
+            debug!(kind = %kind, "persistence worker shutdown requested");
+            record_processed(worker_stats, kind, summary).await;
+            return true;
+        }
+        PersistenceEvent::Flush => {
+            debug!(kind = %kind, "persistence worker flush marker received");
+        }
+        _ => {}
+    }
+    record_processed(worker_stats, kind.clone(), summary).await;
+
+    // Only ACK events that reached a durable terminal state AND used WAL.
+    // DatabaseCommitted / DurableDeadLetterStored → ACK
+    // TelemetryStaged / DeadLetterFailed → retain in WAL
+    // Production Touch/Judge (B-class) bypassed WAL entirely.
+    if needs_wal_ack {
+        if durable {
+            if let Err(error) = worker_wal.ack(wal_id).await {
+                worker_wal.set_degraded(true);
+                crate::supervisor_actor::report_critical_failure("persistence-wal-ack", error).await;
+                pending_acks.push_back((wal_id, 0));
+            } else {
+                worker_wal.set_degraded(false);
+                record_wal_committed(worker_stats).await;
+                // Remove from in_flight set so the recovery scanner
+                // knows this entry no longer needs attention.
+                in_flight.lock().await.remove(&wal_id);
+            }
+        } else {
+            tracing::warn!(
+                wal_id = %wal_id, kind = %kind,
+                "WAL entry not ACKed (non-durable outcome); will replay on restart"
+            );
+        }
+    }
+
+    false
+}
+
 /// Normal worker loop: processes replayed events first, then new admissions
 /// from the channel, dispatching each through the persistence pipeline and
 /// ACKing the WAL on completion.
@@ -196,16 +360,6 @@ async fn process_worker_loop(
     in_flight: &Arc<Mutex<HashSet<uuid::Uuid>>>,
     initial_replay_drained: &Arc<AtomicBool>,
 ) {
-    use crate::persistence::pipeline::{
-        persist_benchmark_report_if_needed, persist_production_event_if_needed,
-        BenchmarkReportStage, PersistenceWriteStage,
-    };
-    use crate::persistence::stats::{
-        record_benchmark_report_persist_request, record_benchmark_report_persist_skipped,
-        record_db_dispatch_failure,
-        record_db_dispatch_success, record_processed, record_production_persist_request,
-        record_production_persist_skipped,
-    };
     use tracing::{debug, trace, warn};
 
     // Pending ACK retry queue. When worker_wal.ack() fails, the wal_id is
@@ -224,63 +378,14 @@ async fn process_worker_loop(
         BTreeMap::new();
 
     loop {
-        // --- Message acquisition with WAL sequence gating -------------------
-        let message = 'acquire: {
-            // Priority 1: replay queue (already in WAL order, no gating).
-            if let Some((wal_id, event, seq)) = replay.pop_front() {
-                break 'acquire Some(WorkerMessage::Event {
-                    wal_sequence: seq,
-                    wal_id,
-                    event,
-                    needs_wal_ack: true,
-                });
-            }
-            // Priority 2: buffer — is the next expected sequence available?
-            if let Some((wal_id, event, needs_wal_ack)) =
-                buffer.remove(&next_expected_sequence)
-            {
-                break 'acquire Some(WorkerMessage::Event {
-                    wal_sequence: next_expected_sequence,
-                    wal_id,
-                    event,
-                    needs_wal_ack,
-                });
-            }
-            // Priority 3: channel — read with sequence gating.
-            loop {
-                let Some(msg) = rx.recv().await else {
-                    break 'acquire None;
-                };
-                match msg {
-                    WorkerMessage::Event {
-                        wal_sequence,
-                        wal_id,
-                        event,
-                        needs_wal_ack,
-                    } => {
-                        if wal_sequence != 0
-                            && wal_sequence != next_expected_sequence
-                        {
-                            // Out of order — stash for later.
-                            buffer.insert(wal_sequence, (wal_id, event, needs_wal_ack));
-                            continue;
-                        }
-                        break 'acquire Some(WorkerMessage::Event {
-                            wal_sequence,
-                            wal_id,
-                            event,
-                            needs_wal_ack,
-                        });
-                    }
-                    // Control messages always pass through.
-                    other => break 'acquire Some(other),
-                }
-            }
-        };
-
-        let Some(message) = message else {
-            break;
->>>>>>> 8279dec (fix: add WAL sequence gating to preserve event order)
+        let message = if let Some((wal_id, event)) = replay.pop_front() {
+            WorkerMessage::Event { wal_id, wal_sequence: 0, event, needs_wal_ack: true }
+        } else {
+            let Some(message) = rx.recv().await else {
+                break;
+            };
+            message
+>>>>>>> 13fb120 (fix: Flush captures target WAL sequence and processes remaining pending entries)
         };
         // Retry pending WAL ACKs — one attempt per iteration, no blocking
         // sleeps.  The queue is naturally retried on each subsequent event,
@@ -309,164 +414,81 @@ async fn process_worker_loop(
             }
         }
 
-        let (wal_id, event, needs_wal_ack, wal_sequence) = match message {
-            WorkerMessage::Event {
-                wal_id,
-                wal_sequence,
-                event,
-                needs_wal_ack,
-            } => (wal_id, event, needs_wal_ack, wal_sequence),
-            WorkerMessage::Flush { reply } => {
-                let remaining = drain_pending_acks(worker_wal, &mut pending_acks, in_flight).await;
-                if remaining > 0 {
-                    warn!(remaining = %remaining, "flush: pending ACK drain incomplete");
+        let (wal_id, wal_sequence, event, needs_wal_ack) = match message {
+            WorkerMessage::Event { wal_id, wal_sequence, event, needs_wal_ack } => (wal_id, wal_sequence, event, needs_wal_ack),
+            WorkerMessage::Flush { reply, target_wal_sequence } => {
+                let drain_result = drain_pending_acks(worker_wal, &mut pending_acks, in_flight).await;
+                // Process any remaining pending WAL entries that were never
+                // enqueued (WalOnly).  This ensures the flush covers all events
+                // admitted before the flush request, even if the in-memory
+                // queue was full at admission time.
+                if let Ok(pending) = worker_wal.list_pending().await {
+                    for (wid, wevent) in &pending {
+                        // Skip entries already being processed (in_flight).
+                        let already_in_flight = in_flight.lock().await.contains(wid);
+                        if already_in_flight {
+                            continue;
+                        }
+                        in_flight.lock().await.insert(*wid);
+                        let _ = process_event_through_pipeline(
+                            *wid, wevent.clone(), true,
+                            worker_stats, worker_dead_letter_path, worker_wal,
+                            in_flight, &mut pending_acks,
+                        ).await;
+                    }
                 }
-                let _ = reply.send(Ok(()));
+                let drain_after = drain_pending_acks(worker_wal, &mut pending_acks, in_flight).await;
+                if let Err(ref e) = drain_result {
+                    warn!(error = %e, "pending ACK drain failed");
+                }
+                if let Err(ref e) = drain_after {
+                    warn!(error = %e, "pending WAL entry ACK drain failed");
+                }
+                let _ = reply.send(drain_result.and(drain_after));
                 continue;
             }
-            WorkerMessage::Shutdown { reply } => {
-                let remaining = drain_pending_acks(worker_wal, &mut pending_acks, in_flight).await;
-                let should_stop = remaining == 0;
-                if remaining > 0 {
-                    warn!(remaining = %remaining, "shutdown: pending ACK drain incomplete");
+            WorkerMessage::Shutdown { reply, target_wal_sequence } => {
+                let drain_result = drain_pending_acks(worker_wal, &mut pending_acks, in_flight).await;
+                // Same as Flush: process remaining pending WAL entries.
+                if let Ok(pending) = worker_wal.list_pending().await {
+                    for (wid, wevent) in &pending {
+                        let already_in_flight = in_flight.lock().await.contains(wid);
+                        if already_in_flight {
+                            continue;
+                        }
+                        in_flight.lock().await.insert(*wid);
+                        let _ = process_event_through_pipeline(
+                            *wid, wevent.clone(), true,
+                            worker_stats, worker_dead_letter_path, worker_wal,
+                            in_flight, &mut pending_acks,
+                        ).await;
+                    }
                 }
-                let _ = reply.send(if should_stop { Ok(()) } else { Err(format!("{remaining} pending ACK(s) not drained")) });
+                let drain_after = drain_pending_acks(worker_wal, &mut pending_acks, in_flight).await;
+                if let Err(ref e) = drain_result {
+                    warn!(error = %e, "pending ACK drain failed");
+                }
+                if let Err(ref e) = drain_after {
+                    warn!(error = %e, "pending WAL entry ACK drain failed");
+                }
+                let should_stop = drain_result.is_ok() && drain_after.is_ok();
+                let _ = reply.send(drain_result.and(drain_after));
+>>>>>>> 13fb120 (fix: Flush captures target WAL sequence and processes remaining pending entries)
                 if should_stop {
                     break;
                 }
                 continue;
             }
         };
-        let kind = event.kind();
-        let summary = event.summary();
-        // Track whether this event reached a durable terminal state.
-        // Only durable events get WAL ACKed; non-durable entries remain
-        // in the WAL for replay on restart (crash recovery).
-        let mut durable = false;
-        match persist_benchmark_report_if_needed(&event).await {
-            BenchmarkReportStage::Acknowledged { elapsed_ms } => {
-                durable = true;
-                record_benchmark_report_persist_request(worker_stats).await;
-                record_db_dispatch_success(
-                    worker_stats,
-                    crate::persistence::PersistencePipeline::BenchmarkReport,
-                    elapsed_ms,
-                )
-                .await;
-            }
-            BenchmarkReportStage::Failed { elapsed_ms, error } => {
-                if preserve_failed_event(
-                    wal_id,
-                    worker_dead_letter_path.as_deref(),
-                    &event,
-                    "benchmark_report",
-                    &error,
-                    worker_stats,
-                )
-                .await
-                {
-                    durable = true;
-                }
-                record_benchmark_report_persist_skipped(worker_stats).await;
-                record_db_dispatch_failure(
-                    worker_stats,
-                    crate::persistence::PersistencePipeline::BenchmarkReport,
-                    elapsed_ms,
-                    error,
-                )
-                .await;
-            }
-            BenchmarkReportStage::NotBenchmark => {
-                match persist_production_event_if_needed(&event).await {
-                    PersistenceWriteStage::Acknowledged {
-                        pipeline,
-                        elapsed_ms,
-                    } => {
-                        durable = true;
-                        record_production_persist_request(worker_stats).await;
-                        record_db_dispatch_success(
-                            worker_stats,
-                            pipeline,
-                            elapsed_ms,
-                        )
-                        .await;
-                    }
-                    PersistenceWriteStage::Failed {
-                        pipeline,
-                        elapsed_ms,
-                        error,
-                    } => {
-                        if preserve_failed_event(
-                            wal_id,
-                            worker_dead_letter_path.as_deref(),
-                            &event,
-                            "production",
-                            &error,
-                            worker_stats,
-                        )
-                        .await
-                        {
-                            durable = true;
-                        }
-                        record_production_persist_request(worker_stats).await;
-                        record_db_dispatch_failure(
-                            worker_stats,
-                            pipeline,
-                            elapsed_ms,
-                            error,
-                        )
-                        .await;
-                    }
-                    PersistenceWriteStage::NotApplicable => {
-                        if !matches!(
-                            &event,
-                            PersistenceEvent::Flush
-                                | PersistenceEvent::Shutdown
-                        ) {
-                            record_production_persist_skipped(worker_stats).await;
-                        }
-                    }
-                }
-            }
-        }
-
-        match event {
-            PersistenceEvent::Shutdown => {
-                debug!(kind = %kind, "persistence worker shutdown requested");
-                record_processed(worker_stats, kind, summary).await;
-                break;
-            }
-            PersistenceEvent::Flush => {
-                debug!(kind = %kind, "persistence worker flush marker received");
-            }
-            _ => {}
-        }
-        record_processed(worker_stats, kind.clone(), summary).await;
-
-        // Only ACK events that reached a durable terminal state AND used WAL.
-        // DatabaseCommitted / DurableDeadLetterStored → ACK
-        // TelemetryStaged / DeadLetterFailed → retain in WAL
-        // Production Touch/Judge (B-class) bypassed WAL entirely.
-        if needs_wal_ack {
-            if durable {
-                if let Err(error) = worker_wal.ack(wal_id).await {
-                    worker_wal.set_degraded(true);
-                    crate::supervisor_actor::report_critical_failure("persistence-wal-ack", error).await;
-                    pending_acks.push_back((wal_id, 0));
-                } else {
-                    worker_wal.set_degraded(false);
-                    record_wal_committed(worker_stats).await;
-                    // Remove from in_flight set so the recovery scanner
-                    // knows this entry no longer needs attention.
-                    in_flight.lock().await.remove(&wal_id);
-                }
-            } else {
-                tracing::warn!(
-                    wal_id = %wal_id, kind = %kind,
-                    "WAL entry not ACKed (non-durable outcome); removing from in_flight so scanner can retry"
-                );
-                in_flight.lock().await.remove(&wal_id);
-            }
+        // Process the event through the persistence pipeline and optionally ACK.
+        let should_stop = process_event_through_pipeline(
+            wal_id, event, needs_wal_ack,
+            worker_stats, worker_dead_letter_path, worker_wal,
+            in_flight, &mut pending_acks,
+        ).await;
+        if should_stop {
+            break;
+>>>>>>> 13fb120 (fix: Flush captures target WAL sequence and processes remaining pending entries)
         }
 
         // Auto-compaction: trigger when ACK ratio drops below threshold.
@@ -647,6 +669,7 @@ async fn wal_recovery_scanner(
             let msg = WorkerMessage::Event {
                 wal_sequence: *wal_sequence,
                 wal_id: *wal_id,
+                wal_sequence: 0,
                 event: event.clone(),
                 needs_wal_ack: true,
             };
@@ -862,8 +885,9 @@ impl PersistenceWorker {
                 return Err(event);
             }
         };
-        // Register in_flight BEFORE sending so the worker cannot ACK and remove
-        // the entry before our insert completes (race with recovery scanner).
+        // Send using the reserved permit (infallible).
+        permit.send(WorkerMessage::Event { wal_id, wal_sequence, event, needs_wal_ack });
+>>>>>>> 13fb120 (fix: Flush captures target WAL sequence and processes remaining pending entries)
         self.in_flight.lock().await.insert(wal_id);
         // Send using the reserved permit (infallible).
         permit.send(WorkerMessage::Event {
@@ -886,8 +910,9 @@ impl PersistenceWorker {
             if self.closed.load(Ordering::Acquire) {
                 return Err("persistence worker is shutting down".to_string());
             }
+            let target_wal_sequence = self.wal.current_sequence();
             self.tx
-                .send(WorkerMessage::Flush { reply })
+                .send(WorkerMessage::Flush { reply, target_wal_sequence })
                 .await
                 .map_err(|_| "persistence worker is closed".to_string())?;
         }
@@ -907,9 +932,10 @@ impl PersistenceWorker {
             if self.closed.swap(true, Ordering::AcqRel) {
                 return Ok(());
             }
+            let target_wal_sequence = self.wal.current_sequence();
             if self
                 .tx
-                .send(WorkerMessage::Shutdown { reply })
+                .send(WorkerMessage::Shutdown { reply, target_wal_sequence })
                 .await
                 .is_err()
             {
