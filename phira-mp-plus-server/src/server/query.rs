@@ -839,10 +839,18 @@ fn server_state_query_dispatch(
         }
         _ => {
             // Fall back to registered plugin handlers (unified gateway).
-            // Every API call goes through this single dispatch point:
-            // method → lookup owner → capability check → PluginSlot.call_api
+            // Dispatch asynchronously via spawn_on_runtime to avoid blocking
+            // the calling thread with block_on on the tokio runtime.
             if let Some(handler) = state.plugin_manager.get_api_handler(method) {
-                return handler(method, args);
+                let handler = handler.clone();
+                let method = method.to_string();
+                let args = args.to_vec();
+                let (tx, rx) = std::sync::mpsc::channel();
+                spawn_on_runtime(async move {
+                    let _ = tx.send(handler(method, args).await);
+                });
+                return rx.recv_timeout(runtime_state_query_timeout())
+                    .unwrap_or(Err("handler dispatch timeout".to_string()));
             }
             Err(format!("unknown method: {method}"))
         }

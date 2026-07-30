@@ -872,7 +872,11 @@ mod wit_trait_impls {
                 let method_clone = method.clone();
                 let forward_clone = Arc::clone(forward);
                 let handler: api::PluginApiHandler = Arc::new(move |_m, args| {
-                    forward_clone(&method_clone, args)
+                    let forward = Arc::clone(&forward_clone);
+                    let m = method_clone.clone();
+                    Box::pin(async move {
+                        forward(m, args).await
+                    })
                 });
                 if let Ok(mut sh) = shared.lock() {
                     sh.insert(shared_key, handler);

@@ -17,6 +17,8 @@ use crate::extensions::ExtensionManager;
 use crate::plugin::{CliCommand, PluginEvent, PluginInfo, WasmRuntimeConfig};
 use phira_mp_plus_server_api as api;
 use std::collections::HashMap;
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::{Arc, Mutex, Weak};
 
 // ── Shared host services (used by WitPluginComponent) ──
@@ -190,11 +192,12 @@ impl WitPluginComponent {
 
         let plugin_manager = Arc::clone(&server.plugin_manager);
         let forward_plugin = plugin_name.to_string();
-        let api_forward: Arc<dyn Fn(&str, &[serde_json::Value]) -> Result<serde_json::Value, String> + Send + Sync> = Arc::new(move |method, args| {
-            match tokio::runtime::Handle::try_current() {
-                Ok(handle) => handle.block_on(plugin_manager.call_plugin_api(&forward_plugin, method, args.to_vec())),
-                Err(_) => futures::executor::block_on(plugin_manager.call_plugin_api(&forward_plugin, method, args.to_vec())),
-            }
+        let api_forward: Arc<dyn Fn(String, Vec<serde_json::Value>) -> Pin<Box<dyn Future<Output = Result<serde_json::Value, String>> + Send>> + Send + Sync> = Arc::new(move |method, args| {
+            let pm = Arc::clone(&plugin_manager);
+            let fp = forward_plugin.clone();
+            Box::pin(async move {
+                pm.call_plugin_api(&fp, &method, args).await
+            })
         });
 
         Ok(Arc::new(crate::wit_host::WitHostContext {

@@ -5,6 +5,8 @@
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::Arc;
 
 // ── 事件 ──
@@ -158,8 +160,9 @@ impl HttpHandle {
 
 // ── 插件间 API（WASM 插件互调用） ──
 
-/// 插件 API 处理器：接收方法名和 JSON 参数 → 返回 JSON
-pub type PluginApiHandler = Arc<dyn Fn(&str, &[Value]) -> Result<Value, String> + Send + Sync>;
+/// 插件 API 处理器：接收方法名和 JSON 参数 → 返回 JSON（异步）
+pub type PluginApiHandler =
+    Arc<dyn Fn(String, Vec<Value>) -> Pin<Box<dyn Future<Output = Result<Value, String>> + Send>> + Send + Sync>;
 
 // ── 服务端状态查询 ──
 

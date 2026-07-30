@@ -6,6 +6,8 @@
 
 use phira_mp_plus_server_api as api;
 use std::collections::{HashMap, HashSet};
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 
 /// Explicit dependency bundle for the WIT host.
@@ -62,9 +64,9 @@ pub struct WitHostContext {
     /// Maps plugin_name -> list of handler methods owned by that plugin.
     /// Used by PluginManager::remove_plugin to clean up stale handlers.
     pub handler_owners: Option<Arc<Mutex<HashMap<String, Vec<String>>>>>,
-    /// Dispatch function that forwards an API call to this plugin via
+    /// Async dispatch function that forwards an API call to this plugin via
     /// PluginManager::call_plugin_api.  Set in build_context_from_services.
-    pub api_forward: Option<Arc<dyn Fn(&str, &[serde_json::Value]) -> Result<serde_json::Value, String> + Send + Sync>>,
+    pub api_forward: Option<Arc<dyn Fn(String, Vec<serde_json::Value>) -> Pin<Box<dyn Future<Output = Result<serde_json::Value, String>> + Send>> + Send + Sync>>,
 }
 
 /// A registered plugin handler.
