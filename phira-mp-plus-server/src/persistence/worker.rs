@@ -33,12 +33,9 @@ enum WorkerMessage {
         needs_wal_ack: bool,
     },
     Flush {
-        target_wal_sequence: u64,
         reply: oneshot::Sender<Result<(), String>>,
     },
     Shutdown {
-        target_wal_sequence: u64,
-        deadline: Instant,
         reply: oneshot::Sender<Result<(), String>>,
     },
 }
