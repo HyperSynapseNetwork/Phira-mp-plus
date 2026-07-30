@@ -30,6 +30,7 @@
 | **插件** | [插件开发指南](docs/plugin-dev.md)（含 WIT ABI、示例） |
 | **开发** | [架构](docs/development/architecture.md) · [CLI 手册](docs/cli.md) · [测试指南](docs/development/testing.md) · [CLI 错误码 (EN)](docs/development/error-codes.en.md) · [产品概览 (EN)](docs/overview.en.md) · [兼容矩阵 (EN)](docs/compatibility-matrix.en.md) |
 | **API** | [事件 API](docs/api.md) |
+| **OpenUDS** | [PPB 集成接口](docs/ppb-uds-interface.md) — Unix Domain Socket 管理 API |
 | **压测** | [基准测试](docs/cli.md#基准测试) |
 
 ## 许可

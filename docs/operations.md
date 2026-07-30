@@ -31,11 +31,13 @@ pmp-admin backup verify /path/to/backup/dir
 
 PMP 启动时自动执行恢复流程：
 
-1. **扫描未完成轮次** — 查询 `mp_rounds WHERE finished_at IS NULL`，标记为 aborted
-2. **WAL 健康检查** — 验证 PersistenceWorker WAL 可读，失败时服务 not-ready
-3. **固定时长 playtime 会话修复** — 清理超过 24h 的 stale `session_start`
-4. **持久空房恢复** — 从 `mp_settings` 读取 `persistent_rooms` 列表并重建
-5. **DLQ 重放** — 扫描 dead-letter JSONL 文件，重新入队未处理事件
+1. **WAL 重放** — Worker 按 WAL sequence 顺序重放未 ACK 事件（先 WAL 后 queue）
+2. **扫描未完成轮次** — 查询 `mp_rounds WHERE finished_at IS NULL`，标记为 aborted
+3. **Schema 验证** — 验证 `_pmp_schema_version` 可读，失败时 not-ready
+4. **WAL 健康检查** — 验证 PersistenceWorker 状态，等待 replay drained 后才 ready
+5. **Playtime 会话修复** — 关闭全部残留 `session_start`（最多补偿 1h，防止停机时间计入）
+6. **持久空房恢复** — 从 `mp_settings` 读取 `persistent_rooms` 列表并重建
+7. **DLQ 重放** — 先 rename active DLQ 文件再读取，避免与 Worker 并发写冲突。完成后删除 replaying 文件
 
 以上任一步骤失败时，服务进入 **not-ready** 状态（不接收客户端连接），必须人工干预。
 
@@ -61,7 +63,24 @@ idle:
 WAL append/fsync → queue reservation → background worker → PostgreSQL commit → WAL ACK
 ```
 
-Queue 满时使用 100ms 有界等待，而非直接在 WAL 前丢事件。非关键事件（调试 telemetry 等）允许 best-effort 丢弃。
+Queue 满时使用 100ms 有界等待，超过后返回 `WalOnly` 而不是在 WAL 前丢事件。
+WalOnly 事件由 WAL recovery scanner 每 5 秒重新入队，保持 WAL sequence 顺序（不插入队尾）。
+
+### Admission 返回语义
+
+| 返回 | 含义 |
+|------|------|
+| `Queued` | WAL 已持久化，Worker 已收到通知 |
+| `WalOnly` | WAL 已持久化，queue 满，scanner 会重试 |
+| `RejectedBeforeWal` | 事件未进入持久化系统（极少发生，仅 WAL 文件系统错误） |
+
+### WAL sequence gating
+
+Worker 维护 `next_expected_sequence` 和 `BTreeMap` 缓冲区。
+来自 channel 的消息如果 sequence 不连续，会先存入缓冲区，等缺失的消息到达后再按序处理。
+来自 replay 和 scanner 的消息自带 sequence，确保 WalOnly 事件不会插队到 Queued 事件之前。
+
+非关键事件（调试 telemetry 等）允许 best-effort 丢弃。
 
 PMP 配置支持 YAML 文件、环境变量、CLI 参数三层覆盖（优先 CLI > 环境变量 > YAML）。
 
@@ -218,3 +237,29 @@ plugin reload <name>  # 热重载
 2. 逐个 `plugin disable` 定位问题插件
 3. 检查插件日志和 `wasm_runtime` 配置
 4. 降低 `fuel_per_call` 或 `max_event_concurrency`
+
+---
+
+## HighFrequency Flush/Shutdown
+
+`HighFrequencyWriter` 用于 Touch/Judge 高频遥测（绕过 WAL，直接 PostgreSQL COPY）。
+
+### Sequence 跟踪
+
+- `admission_sequence` — 下一个待分配序号（从 1 开始）
+- `last_accepted_sequence` — 最后成功进入 main/overflow 队列的序号（fetch_max 并发安全）
+- `committed_sequence` — 已提交的最高序号
+- `continuous_committed_watermark` — 从 1 开始连续已提交的最高序号（基于 interval set 合并）
+
+### Flush target
+
+Flush 使用 `last_accepted_sequence` 作为 target，避免等待不存在的序号。
+Dropped 的序号进入 `dropped_range`，Flush 检测到 drop gap 时返回 `DataLoss`。
+
+### Shutdown
+
+Shutdown 以 `usize::MAX` 为 limit 循环 drain overflow，确保全部 accepted item 被处理。
+
+### Retry
+
+重试循环使用 `retry_max_age_ms` 作为硬截止时间（默认 30s），超时后放弃，不是固定 `max_retries` 次。
