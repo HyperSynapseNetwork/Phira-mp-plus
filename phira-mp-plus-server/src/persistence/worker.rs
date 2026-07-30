@@ -10,7 +10,7 @@ use crate::persistence::message::{AdmissionOutcome, PersistenceEvent};
 use crate::persistence::stats::{
     record_dead_letter_failed, record_dead_letter_written, record_dropped, record_queued,
     record_wal_committed, record_wal_compaction, record_wal_only,
-    record_wal_received, PersistenceStats,
+    record_wal_received, record_wal_recovered, PersistenceStats,
 };
 use crate::persistence::wal::PersistenceWal;
 use serde_json::json;
