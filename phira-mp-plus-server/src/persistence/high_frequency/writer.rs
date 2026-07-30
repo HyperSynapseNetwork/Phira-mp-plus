@@ -141,13 +141,17 @@ impl HighFrequencyWriter {
         // both the main and overflow paths.  The sequence is used by flush to
         // determine committed_sequence.
         let seq = self.stats.admission_sequence.fetch_add(1, Ordering::Relaxed);
-        self.stats.last_accepted_sequence.store(seq, Ordering::Relaxed);
         item.admission_seq = seq;
 
         match self.tx.try_send(HfMessage::Item(item)) {
             Ok(()) => {
                 self.stats.received.fetch_add(1, Ordering::Relaxed);
                 self.stats.received_points.fetch_add(points, Ordering::Relaxed);
+                // Only update last_accepted_sequence AFTER the item successfully
+                // enters the main queue.  Dropped items must NOT advance this
+                // counter — otherwise Flush can target a seq that was never
+                // accepted and hang forever.
+                self.stats.last_accepted_sequence.fetch_max(seq, Ordering::AcqRel);
                 Ok(EnqueueOutcome::MainQueue)
             }
             Err(mpsc::error::TrySendError::Full(HfMessage::Item(item))) => {
@@ -166,6 +170,8 @@ impl HighFrequencyWriter {
                         warn!("high frequency writer overflow queue full; item dropped (kind={kind})");
                         Ok(EnqueueOutcome::Dropped)
                     } else {
+                        // Only update after accepted into overflow queue.
+                        self.stats.last_accepted_sequence.fetch_max(seq, Ordering::AcqRel);
                         Ok(EnqueueOutcome::OverflowQueue)
                     }
                 } else {
