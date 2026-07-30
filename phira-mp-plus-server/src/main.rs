@@ -127,11 +127,12 @@ async fn main() -> Result<()> {
     let _sentry_guard = if let Some(dsn) = &config.sentry_dsn {
         let dsn = dsn.trim();
         if !dsn.is_empty() {
-            let guard = sentry::init((dsn.to_string(), sentry::ClientOptions {
-                release: sentry::release_name!(),
-                send_default_pii: true,
-                ..Default::default()
-            }));
+            let guard = {
+                let mut opts = sentry::ClientOptions::default();
+                opts.release = sentry::release_name!();
+                opts.send_default_pii = true;
+                sentry::init((dsn.to_string(), opts))
+            };
             // tracing integration is built-in with sentry (via tracing feature flag)
             info!("sentry error monitoring enabled");
             Some(guard)
