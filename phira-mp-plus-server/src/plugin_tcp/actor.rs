@@ -6,13 +6,13 @@
 
 use crate::plugin_tcp::events::{tcp_connect, tcp_listen};
 use crate::plugin_tcp::{
-    CloseMap, ConnectionMap, EventSemaphoreMap, HandleReadBytesMap, PluginTcpCommand, PluginTcpInternal, ReadBufMap,
+    CloseMap, ConnectionMap, HandleReadBytesMap, PluginEventChannel, PluginTcpCommand, PluginTcpInternal, ReadBufMap,
     SyncReply,
     MAX_CONNECTIONS_PER_PLUGIN, MAX_LISTENERS_PER_PLUGIN, MAX_PENDING_EVENTS_PER_PLUGIN,
 };
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
-use tokio::sync::{mpsc, oneshot, Semaphore};
+use tokio::sync::{mpsc, oneshot};
 use tracing::{info, warn};
 
 struct Connection {
@@ -41,7 +41,10 @@ pub struct PluginTcpActor {
     close_map: CloseMap,
     read_buf_map: ReadBufMap,
     event_callback: Option<Arc<dyn Fn(String, serde_json::Value) + Send + Sync>>,
-    event_semaphores: EventSemaphoreMap,
+    /// Per-plugin bounded event channels.
+    event_channels: HashMap<String, Arc<PluginEventChannel>>,
+    /// Per-plugin event worker task handles.
+    event_workers: HashMap<String, tokio::task::JoinHandle<()>>,
     // ── Resource ownership (PMP25 P5) ───────────────────────────────
     /// handle → owning plugin_id
     handle_owner: HashMap<u64, String>,
@@ -72,7 +75,8 @@ impl PluginTcpActor {
             close_map: Arc::new(Mutex::new(HashMap::new())),
             read_buf_map: Arc::new(Mutex::new(HashMap::new())),
             event_callback: None,
-            event_semaphores: Arc::new(Mutex::new(HashMap::new())),
+            event_channels: HashMap::new(),
+            event_workers: HashMap::new(),
             handle_owner: HashMap::new(),
             plugin_connections: HashMap::new(),
             plugin_listeners: HashMap::new(),
@@ -116,6 +120,11 @@ impl PluginTcpActor {
         self.plugin_connections.remove(plugin_id);
         self.plugin_listeners.remove(plugin_id);
         let _ = self.plugin_read_bytes.lock().unwrap().remove(plugin_id);
+        // Stop event worker and remove channel for this plugin
+        if let Some(handle) = self.event_workers.remove(plugin_id) {
+            handle.abort();
+        }
+        self.event_channels.remove(plugin_id);
     }
 
     fn count_plugin_connections(&self, plugin_id: &str) -> u32 {
@@ -180,16 +189,36 @@ impl PluginTcpActor {
         h
     }
 
-    fn emit_event(&self, event_type: &str, payload: serde_json::Value) {
-        if let Some(cb) = &self.event_callback {
-            cb(event_type.to_string(), payload);
+    fn emit_event(&self, plugin_id: &str, event_type: &str, payload: serde_json::Value) {
+        if let Some(channel) = self.event_channels.get(plugin_id) {
+            channel.push(event_type.to_string(), payload);
         }
     }
 
-    fn ensure_event_semaphore(&self, plugin_id: &str) {
-        let mut map = self.event_semaphores.lock().unwrap();
-        map.entry(plugin_id.to_string())
-            .or_insert_with(|| Arc::new(Semaphore::new(MAX_PENDING_EVENTS_PER_PLUGIN)));
+    fn ensure_event_channel(&mut self, plugin_id: &str) -> Arc<PluginEventChannel> {
+        use std::collections::hash_map::Entry;
+        let cb = self.event_callback.clone().unwrap_or_else(|| Arc::new(|_, _| {}));
+        match self.event_channels.entry(plugin_id.to_string()) {
+            Entry::Occupied(e) => Arc::clone(e.get()),
+            Entry::Vacant(e) => {
+                let channel = Arc::new(PluginEventChannel::new(MAX_PENDING_EVENTS_PER_PLUGIN));
+                let (worker_queue, worker_notify) = channel.shared();
+                let worker_handle = tokio::spawn(async move {
+                    loop {
+                        worker_notify.notified().await;
+                        loop {
+                            let event = worker_queue.lock().unwrap().pop_front();
+                            match event {
+                                Some((type_, payload)) => cb(type_, payload),
+                                None => break,
+                            }
+                        }
+                    }
+                });
+                self.event_workers.insert(plugin_id.to_string(), worker_handle);
+                e.insert(channel).clone()
+            }
+        }
     }
 
     pub async fn run(&mut self) {
@@ -209,10 +238,10 @@ impl PluginTcpActor {
                             // Register accepted connection with listener's plugin
                             let plugin_id = self.handle_owner.get(&listener_handle).cloned();
                             if let Some(ref pid) = plugin_id {
-                                self.ensure_event_semaphore(pid);
+                                self.ensure_event_channel(pid);
                                 if self.count_plugin_connections(pid) >= MAX_CONNECTIONS_PER_PLUGIN {
                                     warn!(%conn_handle, %pid, "inbound connection quota exceeded, dropping");
-                                    self.emit_event("tcp:error",
+                                    self.emit_event(pid, "tcp:error",
                                         serde_json::json!({"handle": conn_handle, "plugin_id": pid, "error": format!("connection quota exceeded for {pid}")}));
                                     let _ = plugin_id_tx.send(String::new());
                                     continue;
@@ -229,7 +258,7 @@ impl PluginTcpActor {
                                 if let Some(listener) = self.listeners.get_mut(&listener_handle) {
                                     listener.pending_accepts.push(conn_handle);
                                 }
-                                self.emit_event("tcp:accept",
+                                self.emit_event(pid, "tcp:accept",
                                     serde_json::json!({"listener_handle": listener_handle, "conn_handle": conn_handle, "remote_addr": remote_addr, "plugin_id": pid}));
                                 let _ = plugin_id_tx.send(pid.clone());
                             } else {
@@ -239,8 +268,8 @@ impl PluginTcpActor {
                         PluginTcpInternal::Disconnected { handle, plugin_id, remote_addr } => {
                             // Remote peer closed — clean up connection state.
                             self.close_handle(handle);
-                            self.emit_event("tcp:disconnect",
-                                serde_json::json!({"handle": handle, "plugin_id": plugin_id, "reason": "remote peer closed connection", "remote_addr": remote_addr}));
+                            self.emit_event(&plugin_id, "tcp:disconnect",
+                                serde_json::json!({"handle": handle, "plugin_id": &plugin_id, "reason": "remote peer closed connection", "remote_addr": remote_addr}));
                         }
                         PluginTcpInternal::ConnectCompleted { handle, plugin_id, addr, result } => {
                             if let Some((_, reply)) = self.pending_connects.remove(&handle) {
@@ -295,16 +324,14 @@ impl PluginTcpActor {
                     // Pre-reserve the connection slot for quota accuracy
                     *self.plugin_connections.entry(plugin_id.clone()).or_insert(0) += 1;
 
-                    self.ensure_event_semaphore(&plugin_id);
+                    let event_channel = self.ensure_event_channel(&plugin_id);
 
-                    let cb = self.event_callback.clone();
                     let cm = Arc::clone(&self.conn_map);
                     let rbm = Arc::clone(&self.read_buf_map);
                     let hrb = Arc::clone(&self.handle_read_bytes);
                     let itx = self.internal_tx.clone();
                     let itx_for_result = self.internal_tx.clone();
                     let prb = Arc::clone(&self.plugin_read_bytes);
-                    let esem = Arc::clone(&self.event_semaphores);
                     let pid = plugin_id.clone();
                     let addr_clone = addr.clone();
 
@@ -312,7 +339,7 @@ impl PluginTcpActor {
                     // block the actor loop.
                     tokio::spawn(async move {
                         let result = tcp_connect(
-                            &addr_clone, handle, pid.clone(), cb, cm, rbm, hrb, itx, prb, esem,
+                            &addr_clone, handle, pid.clone(), cm, rbm, hrb, itx, prb, event_channel,
                         ).await;
                         let _ = itx_for_result.send(PluginTcpInternal::ConnectCompleted {
                             handle,
@@ -328,13 +355,12 @@ impl PluginTcpActor {
                         return;
                     }
                     let handle = self.alloc_handle();
-                    self.ensure_event_semaphore(&plugin_id);
-                    let cb = self.event_callback.clone();
+                    let event_channel = self.ensure_event_channel(&plugin_id);
                     let rbm = Arc::clone(&self.read_buf_map);
                     let hrb = Arc::clone(&self.handle_read_bytes);
                     let prb = Arc::clone(&self.plugin_read_bytes);
 
-                    match tcp_listen(&addr, handle, self.internal_tx.clone(), cb, rbm, hrb, prb, self.event_semaphores.clone()).await {
+                    match tcp_listen(&addr, handle, self.internal_tx.clone(), rbm, hrb, prb, event_channel).await {
                         Ok(close_tx) => {
                             self.handle_owner.insert(handle, plugin_id.clone());
                             *self.plugin_listeners.entry(plugin_id.clone()).or_insert(0) += 1;
@@ -361,13 +387,13 @@ impl PluginTcpActor {
                     if let Some(tx) = map.get(&handle) {
                         if let Err(e) = tx.try_send(bytes) {
                             warn!(%handle, error = %e, "tcp send failed");
-                            self.emit_event("tcp:error",
-                                serde_json::json!({"handle": handle, "plugin_id": plugin_id, "error": e.to_string()}));
+                            self.emit_event(&plugin_id, "tcp:error",
+                                serde_json::json!({"handle": handle, "plugin_id": &plugin_id, "error": e.to_string()}));
                         }
                     } else {
                         warn!(%handle, "tcp send on unknown handle");
-                        self.emit_event("tcp:error",
-                            serde_json::json!({"handle": handle, "plugin_id": plugin_id, "error": "unknown handle"}));
+                        self.emit_event(&plugin_id, "tcp:error",
+                            serde_json::json!({"handle": handle, "plugin_id": &plugin_id, "error": "unknown handle"}));
                     }
                 }
                 PluginTcpCommand::Close { plugin_id, handle } => {

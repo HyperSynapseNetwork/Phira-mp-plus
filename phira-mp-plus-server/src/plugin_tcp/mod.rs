@@ -9,9 +9,9 @@ pub mod events;
 
 pub use actor::PluginTcpActor;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex};
-use tokio::sync::{mpsc, oneshot, Semaphore};
+use tokio::sync::{mpsc, oneshot, Notify};
 
 // ── Resource limits (PMP25 P5) ──────────────────────────────────────
 pub(crate) use quota::{
@@ -94,5 +94,35 @@ pub(crate) type ReadBufMap = Arc<Mutex<HashMap<u64, Vec<u8>>>>;
 /// Per-handle buffered byte count, used for per-connection buffer accounting
 /// at cleanup. Plugin totals are derived by summing per-handle values.
 pub(crate) type HandleReadBytesMap = Arc<Mutex<HashMap<u64, usize>>>;
-/// Per-plugin semaphore for rate-limiting TCP events.
-pub(crate) type EventSemaphoreMap = Arc<Mutex<HashMap<String, Arc<Semaphore>>>>;
+/// Per-plugin bounded event channel for TCP events.
+/// When full, drops the oldest event.
+pub(crate) struct PluginEventChannel {
+    queue: Arc<Mutex<VecDeque<(String, serde_json::Value)>>>,
+    notify: Arc<Notify>,
+    max_len: usize,
+}
+
+impl PluginEventChannel {
+    pub fn new(max_len: usize) -> Self {
+        Self {
+            queue: Arc::new(Mutex::new(VecDeque::with_capacity(max_len))),
+            notify: Arc::new(Notify::new()),
+            max_len,
+        }
+    }
+
+    /// Push an event. If the channel is full, drop the oldest event.
+    pub fn push(&self, event_type: String, payload: serde_json::Value) {
+        let mut queue = self.queue.lock().unwrap();
+        if queue.len() >= self.max_len {
+            queue.pop_front();
+        }
+        queue.push_back((event_type, payload));
+        self.notify.notify_one();
+    }
+
+    /// Shared queue and notify for worker task consumption.
+    pub fn shared(&self) -> (Arc<Mutex<VecDeque<(String, serde_json::Value)>>>, Arc<Notify>) {
+        (Arc::clone(&self.queue), Arc::clone(&self.notify))
+    }
+}
