@@ -213,7 +213,7 @@ impl User {
                                     ).await;
                                 }
                                 let _ = self_.server.room_commands.remove_user(
-                                    &self_.server,
+                                    self_.server.as_ref(),
                                     &room_id,
                                     self_.id,
                                 ).await;
