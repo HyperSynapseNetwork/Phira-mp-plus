@@ -353,8 +353,12 @@ impl Session {
                                         .duration_since(std::time::UNIX_EPOCH)
                                         .map(|d| d.as_millis() as i64)
                                         .unwrap_or(0);
+                                    let event_id = Uuid::new_v4().to_string();
+                                    let session_id = this.get().unwrap().id.to_string();
                                     if let Err(event) = server.persistence_worker.enqueue(
                                         crate::persistence::message::PersistenceEvent::UserAuthenticated {
+                                            event_id,
+                                            session_id,
                                             user_id: user.id,
                                             user_name: user.name.clone(),
                                             language: user.lang.0.to_string(),
