@@ -23,7 +23,7 @@ pub use benchmark::{
     BenchmarkReportHistoryQuery, BenchmarkReportHistoryRow, BenchmarkReportPersistenceRecord,
 };
 pub use diagnostics::{PersistencePipeline, PersistenceQueueHealth};
-pub use message::PersistenceEvent;
+pub use message::{AdmissionOutcome, PersistenceEvent};
 pub use stats::{
     PersistenceLatencyStats, PersistenceStats, PersistenceTraceEntry,
 };

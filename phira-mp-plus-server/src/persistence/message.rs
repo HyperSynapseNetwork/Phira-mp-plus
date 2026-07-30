@@ -7,6 +7,19 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::sync::Arc;
 
+/// Outcome of enqueuing an event to the persistence worker.
+///
+/// - `Queued`: event admitted to both WAL and the in-memory queue (will be
+///   processed on this runtime iteration).
+/// - `WalOnly`: event admitted to WAL only (in-memory queue was full).  The
+///   event is safely stored in WAL and will be recovered by the periodic WAL
+///   recovery scanner (or on restart replay) — no data is lost.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AdmissionOutcome {
+    Queued,
+    WalOnly,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum PersistenceEvent {
     RoomSnapshot {
