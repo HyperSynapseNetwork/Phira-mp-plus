@@ -18,6 +18,7 @@
 //! Every step returns `Err` on failure so that `recover_state` propagates
 //! the error and prevents the server from becoming ready.
 
+use std::path::Path;
 use std::sync::Arc;
 
 use crate::db::DbManager;
@@ -194,6 +195,137 @@ async fn close_all_stale_playtime_sessions(db: &DbManager) -> Result<()> {
     Ok(())
 }
 
+/// Summary of a single DLQ file replay.
+#[derive(Default)]
+struct DlqReplaySummary {
+    replayed: u32,
+    skipped: u32,
+    quarantined: u32,
+    enqueue_failures: u32,
+    critical_unsupported: bool,
+}
+
+/// Process a single DLQ replaying file: read entries, re-enqueue valid ones,
+/// quarantine malformed JSON lines to a `.quarantine` sidecar file, and
+/// return a summary of the outcome.
+///
+/// Known non-critical event kinds are skipped without quarantine since they
+/// carry no meaningful data loss risk:
+///   - `round_result`: low-risk, the client has the result and can re-submit.
+///   - `benchmark.completed`: diagnostic only.
+async fn process_dlq_file(
+    state: &Arc<PlusServerState>,
+    file_path: &Path,
+) -> Result<DlqReplaySummary> {
+    let content = match tokio::fs::read_to_string(file_path).await {
+        Ok(c) => c,
+        Err(e) => {
+            return Err(anyhow::anyhow!(
+                "startup recovery: failed to read DLQ file {}: {e}",
+                file_path.display(),
+            ));
+        }
+    };
+
+    const NON_CRITICAL_KINDS: &[&str] = &["round_result", "benchmark.completed"];
+
+    let mut summary = DlqReplaySummary::default();
+    let mut quarantined_lines: Vec<String> = Vec::new();
+
+    for line in content.lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+
+        let record: serde_json::Value = match serde_json::from_str(line) {
+            Ok(v) => v,
+            Err(e) => {
+                warn!("startup recovery: quarantining malformed DLQ entry: {e}");
+                quarantined_lines.push(line.to_string());
+                summary.quarantined += 1;
+                continue;
+            }
+        };
+
+        let kind = match record.get("kind").and_then(|v| v.as_str()) {
+            Some(k) => k,
+            None => {
+                warn!("startup recovery: skipping DLQ entry without kind");
+                summary.skipped += 1;
+                continue;
+            }
+        };
+
+        let event_payload = match record.get("event") {
+            Some(v) if !v.is_null() => v,
+            _ => {
+                warn!(
+                    "startup recovery: skipping DLQ entry without event payload (kind={kind})"
+                );
+                summary.skipped += 1;
+                continue;
+            }
+        };
+
+        let event = match reconstruct_event(kind, event_payload) {
+            Some(e) => e,
+            None if NON_CRITICAL_KINDS.contains(&kind) => {
+                warn!("startup recovery: skipping non-critical DLQ entry (kind={kind})");
+                summary.skipped += 1;
+                continue;
+            }
+            None => {
+                error!(
+                    "startup recovery: critical unsupported DLQ entry (kind={kind}) \
+                     — service will not become ready"
+                );
+                summary.critical_unsupported = true;
+                summary.skipped += 1;
+                continue;
+            }
+        };
+
+        // Enqueue — best effort; failure is logged but does not block recovery.
+        if state.persistence_worker.enqueue(event).await.is_err() {
+            warn!("startup recovery: failed to re-enqueue DLQ event (kind={kind})");
+            summary.skipped += 1;
+            summary.enqueue_failures += 1;
+        } else {
+            summary.replayed += 1;
+        }
+    }
+
+    // ── Write quarantined lines to a sidecar file ─────────────────────────
+    if !quarantined_lines.is_empty() {
+        // Append ".quarantine" to the full filename rather than replacing the
+        // extension so the quarantine file is uniquely paired with its source.
+        let quarantine_name = format!(
+            "{}.quarantine",
+            file_path.file_name().map(|n| n.to_string_lossy()).unwrap_or_default(),
+        );
+        let quarantine_path = file_path.with_file_name(&quarantine_name);
+        if let Some(parent) = quarantine_path.parent() {
+            let _ = tokio::fs::create_dir_all(parent).await;
+        }
+        // Terminate each line so the quarantine file is valid line-delimited JSON.
+        let qcontent = quarantined_lines.join("\n") + "\n";
+        match tokio::fs::write(&quarantine_path, qcontent).await {
+            Ok(()) => info!(
+                "startup recovery: quarantined {} malformed DLQ entry(ies) to {}",
+                summary.quarantined,
+                quarantine_path.display(),
+            ),
+            Err(e) => warn!(
+                "startup recovery: failed to write quarantine file {}: {e}",
+                quarantine_path.display(),
+            ),
+        }
+    }
+
+    Ok(summary)
+}
+
 /// Replay the dead-letter queue: scan the DLQ JSONL file and re-enqueue
 /// events that were not persisted in the previous run.
 ///
@@ -203,11 +335,21 @@ async fn close_all_stale_playtime_sessions(db: &DbManager) -> Result<()> {
 /// Instead we rename the active file to a generation-stamped name first;
 /// the worker then writes to a brand-new active DLQ automatically.
 ///
+/// **Orphan replaying files** (`*.replaying-*`) from previous crashes are
+/// scanned and replayed first, ordered by timestamp/generation, so that no
+/// records are lost across restarts.
+///
+/// **Malformed records** are written to a quarantine file rather than
+/// silently skipped.
+///
+/// **After replay**, persistence is flushed to ensure all replayed events
+/// are committed before stale session cleanup runs.
+///
 /// If any record fails WAL admission the replaying file is **preserved** so
 /// that no data is silently lost.  A critical error is logged when records
 /// are skipped for any reason.
 ///
-/// Returns `Err` only when the DLQ file itself cannot be renamed or read
+/// Returns `Err` only when a DLQ file itself cannot be renamed or read
 /// (indicating a filesystem or configuration problem), or when a critical
 /// unsupported event kind is encountered.  Individual entry replay failures
 /// are logged but do not abort the step.
@@ -217,14 +359,44 @@ async fn replay_dead_letter_queue(state: &Arc<PlusServerState>) -> Result<()> {
         .runtime
         .persistence_dead_letter_path
         .as_deref()
-        .map(std::path::Path::new);
+        .map(Path::new);
 
     let Some(path) = dlq_path else {
         info!("startup recovery: no dead-letter path configured, skipping DLQ replay");
         return Ok(());
     };
 
-    // ── 1. Rename the active DLQ file BEFORE reading ──────────────────────
+    let parent_dir = path.parent().unwrap_or_else(|| Path::new("."));
+    let file_name = path
+        .file_name()
+        .map(|n| n.to_string_lossy())
+        .unwrap_or_default();
+
+    // ── 1. Scan for orphan *.replaying-* files from previous crashes ────
+    // These exist when the server crashed mid-replay or when a replaying
+    // file was preserved due to enqueue failures on a previous restart.
+    // Process them oldest-first by filename sort order (the millisecond
+    // timestamp suffix sorts correctly as a string).
+    let prefix = format!("{file_name}.replaying-");
+    let mut orphan_paths: Vec<std::path::PathBuf> = Vec::new();
+    if let Ok(mut entries) = tokio::fs::read_dir(parent_dir).await {
+        while let Ok(Some(entry)) = entries.next_entry().await {
+            let name = entry.file_name().to_string_lossy().to_string();
+            if name.starts_with(&prefix) {
+                orphan_paths.push(entry.path());
+            }
+        }
+    }
+    orphan_paths.sort();
+
+    if !orphan_paths.is_empty() {
+        info!(
+            "startup recovery: found {} orphan DLQ replaying file(s) — processing oldest first",
+            orphan_paths.len(),
+        );
+    }
+
+    // ── 2. Rename the active DLQ file BEFORE reading ──────────────────────
     // Rename first so any concurrent worker append goes to a brand-new
     // active DLQ file and never races against our read-then-rename cycle.
     // If enqueue fails for any record the replaying file is preserved so
@@ -233,22 +405,18 @@ async fn replay_dead_letter_queue(state: &Arc<PlusServerState>) -> Result<()> {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis();
-    let file_name = path
-        .file_name()
-        .map(|n| n.to_string_lossy())
-        .unwrap_or_default();
     let replaying_name = format!("{file_name}.replaying-{timestamp}");
     let replaying_path = path.with_file_name(&replaying_name);
 
-    match tokio::fs::rename(path, &replaying_path).await {
-        Ok(()) => info!(
-            "startup recovery: renamed active DLQ to {} for replay",
-            replaying_name,
-        ),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            info!("startup recovery: no dead-letter file found, skipping DLQ replay");
-            return Ok(());
+    let active_exists = match tokio::fs::rename(path, &replaying_path).await {
+        Ok(()) => {
+            info!(
+                "startup recovery: renamed active DLQ to {} for replay",
+                replaying_name,
+            );
+            true
         }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => false,
         Err(e) => {
             return Err(anyhow::anyhow!(
                 "startup recovery: failed to rename DLQ file {}: {e}",
@@ -257,134 +425,113 @@ async fn replay_dead_letter_queue(state: &Arc<PlusServerState>) -> Result<()> {
         }
     };
 
-    // ── 2. Read from the renamed (stable) file ────────────────────────────
-    let content = match tokio::fs::read_to_string(&replaying_path).await {
-        Ok(c) => c,
-        Err(e) => {
-            return Err(anyhow::anyhow!(
-                "startup recovery: failed to read replaying DLQ file {}: {e}",
-                replaying_path.display(),
-            ));
-        }
-    };
-
-    // Known non-critical event kinds that can be safely skipped during replay.
-    // round_result: low-risk since the client has the result and can re-submit.
-    // benchmark.completed: diagnostic only.
-    const NON_CRITICAL_KINDS: &[&str] = &["round_result", "benchmark.completed"];
-
-    let mut replayed = 0u32;
-    let mut skipped = 0u32;
-    let mut enqueue_failures = 0u32;
-    let mut critical_unsupported = false;
-
-    for line in content.lines() {
-        let line = line.trim();
-        if line.is_empty() {
-            continue;
-        }
-        let record: serde_json::Value = match serde_json::from_str(line) {
-            Ok(v) => v,
-            Err(e) => {
-                warn!("startup recovery: skipping malformed DLQ entry: {e}");
-                skipped += 1;
-                continue;
-            }
-        };
-
-        let kind = match record.get("kind").and_then(|v| v.as_str()) {
-            Some(k) => k,
-            None => {
-                warn!("startup recovery: skipping DLQ entry without kind");
-                skipped += 1;
-                continue;
-            }
-        };
-
-        let event_payload = match record.get("event") {
-            Some(v) if !v.is_null() => v,
-            _ => {
-                warn!("startup recovery: skipping DLQ entry without event payload (kind={kind})");
-                skipped += 1;
-                continue;
-            }
-        };
-
-        let event = match reconstruct_event(kind, event_payload) {
-            Some(e) => e,
-            None if NON_CRITICAL_KINDS.contains(&kind) => {
-                warn!("startup recovery: skipping non-critical DLQ entry (kind={kind})");
-                skipped += 1;
-                continue;
-            }
-            None => {
-                error!(
-                    "startup recovery: critical unsupported DLQ entry (kind={kind}) \
-                     — service will not become ready"
-                );
-                critical_unsupported = true;
-                skipped += 1;
-                continue;
-            }
-        };
-
-        // Enqueue — best effort; failure is logged but does not block recovery.
-        if state.persistence_worker.enqueue(event).await.is_err() {
-            warn!("startup recovery: failed to re-enqueue DLQ event (kind={kind})");
-            skipped += 1;
-            enqueue_failures += 1;
-        } else {
-            replayed += 1;
-        }
+    // ── 3. Process all replaying files (orphans first, then active) ───────
+    let mut all_paths: Vec<std::path::PathBuf> = Vec::new();
+    // Orphans go first (already sorted by timestamp).
+    all_paths.extend(orphan_paths);
+    // Active (now renamed) comes last.
+    if active_exists {
+        all_paths.push(replaying_path.clone());
     }
 
-    if replayed > 0 || skipped > 0 {
+    if all_paths.is_empty() {
+        info!("startup recovery: no dead-letter file found, skipping DLQ replay");
+        return Ok(());
+    }
+
+    let mut needs_flush = false;
+    let mut total_skipped: u32 = 0;
+    let mut total_quarantined: u32 = 0;
+    let mut total_enqueue_failures: u32 = 0;
+    let mut critical_unsupported = false;
+
+    for file_path in &all_paths {
+        let summary = process_dlq_file(state, file_path).await?;
+        if summary.replayed > 0 {
+            needs_flush = true;
+        }
+        if summary.critical_unsupported {
+            critical_unsupported = true;
+        }
+        total_skipped += summary.skipped;
+        total_quarantined += summary.quarantined;
+        total_enqueue_failures += summary.enqueue_failures;
+    }
+
+    // Log aggregate stats.
+    if needs_flush || total_skipped > 0 || total_quarantined > 0 || total_enqueue_failures > 0 {
         info!(
-            "startup recovery: DLQ replay finished — {replayed} replayed, {skipped} skipped, \
-             {enqueue_failures} enqueue failure(s)",
+            "startup recovery: DLQ replay finished over {} file(s) — \
+             {} quarantined, {} skipped, {} enqueue failure(s)",
+            all_paths.len(),
+            total_quarantined,
+            total_skipped,
+            total_enqueue_failures,
         );
     } else {
         info!("startup recovery: no DLQ entries to replay");
     }
 
-    // ── 3. Critical unsupported events prevent the server from starting ───
-    // Keep the replaying file for operator inspection.
+    // ── 4. Flush persistence to ensure enqueued events are committed ───────
+    // This must happen BEFORE stale session cleanup so that recovered
+    // UserAuthenticated events are visible before playtime is finalised.
+    if needs_flush {
+        info!("startup recovery: flushing persistence after DLQ replay");
+        state
+            .persistence_worker
+            .flush(std::time::Duration::from_secs(30))
+            .await
+            .map_err(|e| {
+                anyhow::anyhow!(
+                    "startup recovery: persistence flush failed after DLQ replay: {e}"
+                )
+            })?;
+    }
+
+    // ── 5. Critical unsupported events prevent the server from starting ───
+    // Keep all replaying files for operator inspection.
     if critical_unsupported {
         return Err(anyhow::anyhow!(
             "startup recovery: DLQ contains one or more critical unsupported events \
-             — replaying file preserved at {}",
+             — replaying file(s) preserved at {}",
             replaying_path.display(),
         ));
     }
 
-    // ── 4. Enqueue failures: preserve the replaying file for retry ────────
-    if enqueue_failures > 0 {
+    // ── 6. Enqueue failures: preserve all replaying files for retry ───────
+    if total_enqueue_failures > 0 {
         error!(
-            "startup recovery: {enqueue_failures} DLQ event(s) failed WAL admission \
-             — replaying file preserved at {}",
-            replaying_path.display(),
+            "startup recovery: {total_enqueue_failures} DLQ event(s) failed WAL admission \
+             — replaying file(s) preserved",
         );
         return Ok(());
     }
 
-    // ── 5. Log a critical error if any records were otherwise skipped ─────
-    if skipped > 0 {
+    // ── 7. Log warnings for any non-critical losses ────────────────────────
+    if total_skipped > 0 {
         error!(
-            "startup recovery: {skipped} DLQ entry(ies) were skipped during replay \
+            "startup recovery: {total_skipped} DLQ entry(ies) were skipped during replay \
              — data may have been lost",
         );
     }
+    if total_quarantined > 0 {
+        warn!(
+            "startup recovery: {total_quarantined} malformed DLQ entry(ies) were quarantined",
+        );
+    }
 
-    // ── 6. All records successfully replayed — clean up ───────────────────
-    match tokio::fs::remove_file(&replaying_path).await {
-        Ok(()) => info!(
-            "startup recovery: deleted replayed DLQ file {}",
-            replaying_path.display(),
-        ),
-        Err(e) => warn!(
-            "startup recovery: failed to delete replayed DLQ file {}: {e}",
-            replaying_path.display(),
-        ),
+    // ── 8. All records successfully processed — clean up replaying files ──
+    for file_path in &all_paths {
+        match tokio::fs::remove_file(file_path).await {
+            Ok(()) => info!(
+                "startup recovery: deleted replayed DLQ file {}",
+                file_path.display(),
+            ),
+            Err(e) => warn!(
+                "startup recovery: failed to delete replayed DLQ file {}: {e}",
+                file_path.display(),
+            ),
+        }
     }
 
     Ok(())
