@@ -74,16 +74,19 @@ impl RoundStore {
     }
 
     /// 关闭一轮记录
-    pub async fn close_round(&self, round_uuid: &str) {
+    pub async fn close_round(&self, round_uuid: &str) -> std::io::Result<()> {
         let db = crate::internal_hooks::DB.get().expect("DB not initialized");
         if !db.close_round(round_uuid).await {
-            tracing::warn!(round_uuid, "PostgreSQL round-close transaction failed");
+            return Err(std::io::Error::other(
+                "PostgreSQL round-close transaction failed",
+            ));
         }
         self.active_rounds
             .write()
             .await
             .insert(round_uuid.to_string(), false);
         info!("round store: closed round {round_uuid}");
+        Ok(())
     }
 
     // ── 数据追加 ──
