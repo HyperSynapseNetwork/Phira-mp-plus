@@ -267,7 +267,7 @@ async fn run_hf_writer(
 ) {
     let flush_interval = Duration::from_millis(config.flush_interval_ms.max(100));
     let max_batch_size = config.max_batch_size.max(1);
-    let max_retries = config.max_retries.max(1);
+    let max_retries = config.max_retries;  // 0 = unlimited by count (bounded by deadline)
     let retry_max_age_ms = config.retry_max_age_ms as i64;
     let overflow_max_age_ms = config.overflow_max_age_ms as i64;
     let mut batch: Vec<HighFrequencyItem> = Vec::with_capacity(max_batch_size);
@@ -296,7 +296,7 @@ async fn run_hf_writer(
 
                         if batch.len() >= max_batch_size {
                             flush_and_update_seq(
-                                &mut batch, &stats, &db, max_retries, retry_max_age_ms, "max_items"
+                                &mut batch, &stats, &db, max_retries, retry_max_age_ms, None, "max_items"
                             ).await.ok();
                         }
                     }
@@ -363,6 +363,7 @@ async fn run_hf_writer(
                                 &db,
                                 max_retries,
                                 retry_max_age_ms,
+                                Some(deadline_ms),
                                 "explicit_flush",
                             )
                             .await;
@@ -378,7 +379,7 @@ async fn run_hf_writer(
                         // is empty (the function breaks on TryRecvError::Empty).
                         drain_overflow(&mut batch, &mut overflow_rx, &stats, overflow_max_age_ms, usize::MAX).await;
                         let flush_result = flush_and_update_seq(
-                            &mut batch, &stats, &db, max_retries, retry_max_age_ms, "shutdown"
+                            &mut batch, &stats, &db, max_retries, retry_max_age_ms, None, "shutdown"
                         ).await;
                         // After the final flush, verify that all accepted
                         // sequences are resolved (committed or dropped).
@@ -420,7 +421,7 @@ async fn run_hf_writer(
                         drain_overflow(&mut batch, &mut overflow_rx, &stats, overflow_max_age_ms, usize::MAX).await;
                         if !batch.is_empty() {
                             flush_and_update_seq(
-                                &mut batch, &stats, &db, max_retries, retry_max_age_ms, "closed"
+                                &mut batch, &stats, &db, max_retries, retry_max_age_ms, None, "closed"
                             ).await.ok();
                         }
                         debug!("high frequency writer channel closed, exiting");
@@ -433,7 +434,7 @@ async fn run_hf_writer(
                 drain_overflow(&mut batch, &mut overflow_rx, &stats, overflow_max_age_ms, max_batch_size).await;
                 if !batch.is_empty() {
                     flush_and_update_seq(
-                        &mut batch, &stats, &db, max_retries, retry_max_age_ms, "interval"
+                        &mut batch, &stats, &db, max_retries, retry_max_age_ms, None, "interval"
                     ).await.ok();
                 }
             }
@@ -470,6 +471,7 @@ async fn drain_overflow(
                     // Overflow item expired — drop it
                     stats.dropped.fetch_add(1, Ordering::Relaxed);
                     stats.dropped_points.fetch_add(overflow.item.item_count() as u64, Ordering::Relaxed);
+                    stats.sequence_tracker.lock().unwrap().mark_dropped(overflow.item.admission_seq);
                     continue;
                 }
                 batch.push(overflow.item);
@@ -500,6 +502,7 @@ async fn flush_batch(
     db: &Arc<DbManager>,
     max_retries: u32,
     retry_max_age_ms: i64,
+    message_deadline_ms: Option<i64>,
     reason: &str,
 ) -> Result<(), String> {
     if batch.is_empty() {
@@ -521,18 +524,43 @@ async fn flush_batch(
     // Reset oldest timestamp — will be updated on next item arrival.
     stats.oldest_batch_at.store(0, Ordering::Relaxed);
 
-    let deadline = if retry_max_age_ms > 0 {
+    // Retry deadline from config, capped by the caller's patience.
+    let retry_deadline = if retry_max_age_ms > 0 {
         Some(now_ms() + retry_max_age_ms)
     } else {
         None
+    };
+    let effective_deadline = match (retry_deadline, message_deadline_ms) {
+        (Some(r), Some(m)) => Some(r.min(m)),
+        (Some(r), None) => Some(r),
+        (None, Some(m)) => Some(m),
+        (None, None) => None,
+    };
+
+    // Ensure at least one bound exists to prevent infinite retry.
+    let effective_max_retries = if max_retries == 0 && effective_deadline.is_none() {
+        warn!("no retry bound configured (max_retries=0, no deadline), falling back to single attempt");
+        1u32
+    } else {
+        max_retries
     };
 
     let mut attempt = 0u32;
 
     loop {
         if attempt > 0 {
-            // Check retry deadline before sleeping.
-            if let Some(deadline_ms) = deadline {
+            // Check count-based retry limit.
+            if effective_max_retries > 0 && attempt >= effective_max_retries {
+                warn!(
+                    attempt,
+                    effective_max_retries,
+                    reason,
+                    "max retries exceeded, dropping batch"
+                );
+                break;
+            }
+            // Check time-based deadline before sleeping.
+            if let Some(deadline_ms) = effective_deadline {
                 if now_ms() >= deadline_ms {
                     warn!(
                         attempt = attempt + 1,
@@ -613,10 +641,12 @@ async fn flush_batch(
         items = items.len(),
         point_count,
         reason,
-        "high frequency batch dropped after {max_retries} retries"
+        attempt,
+        max_retries = max_retries,
+        "high frequency batch dropped after {attempt} attempts"
     );
     Err(format!(
-        "high frequency batch dropped after {max_retries} retries"
+        "high frequency batch dropped after {attempt} attempts"
     ))
 }
 
@@ -635,21 +665,34 @@ async fn flush_and_update_seq(
     db: &Arc<DbManager>,
     max_retries: u32,
     retry_max_age_ms: i64,
+    message_deadline_ms: Option<i64>,
     reason: &str,
 ) -> Result<(), String> {
     let seqs: Vec<u64> = batch.iter().map(|i| i.admission_seq).collect();
     let target_seq = seqs.iter().max().copied().unwrap_or(0);
-    let min_seq = seqs.iter().min().copied().unwrap_or(0);
-    let result = flush_batch(batch, stats, db, max_retries, retry_max_age_ms, reason).await;
+    let result = flush_batch(batch, stats, db, max_retries, retry_max_age_ms, message_deadline_ms, reason).await;
     if result.is_ok() && target_seq > 0 {
         let current = stats.committed_sequence.load(Ordering::Relaxed);
         if target_seq > current {
             stats.committed_sequence.store(target_seq, Ordering::Relaxed);
         }
-        // Update the sequence tracker with the committed range and derive
-        // the new continuous watermark (handles out-of-order commits and gaps).
+        // Mark committed using the batch's actual sequence intervals so that
+        // gaps in the batch are not falsely committed (PMP33 P0-G).
+        let mut unique_seqs: Vec<u64> = seqs.into_iter().filter(|&s| s > 0).collect();
+        unique_seqs.sort_unstable();
+        unique_seqs.dedup();
         let mut tracker = stats.sequence_tracker.lock().unwrap();
-        tracker.mark_committed(min_seq, target_seq);
+        let mut i = 0;
+        while i < unique_seqs.len() {
+            let start = unique_seqs[i];
+            let mut end = start;
+            while i + 1 < unique_seqs.len() && unique_seqs[i + 1] == end + 1 {
+                i += 1;
+                end = unique_seqs[i];
+            }
+            tracker.mark_committed(start, end);
+            i += 1;
+        }
         stats.continuous_committed_watermark.store(tracker.watermark(), Ordering::Relaxed);
     }
     result
