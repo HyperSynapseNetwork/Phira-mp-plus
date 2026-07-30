@@ -43,6 +43,7 @@ use phira_mp_common::{
 use std::{
     collections::HashMap,
     sync::{atomic::Ordering, Arc},
+    time::Duration,
 };
 use tracing::{debug, debug_span, info, trace, warn, Instrument};
 
@@ -502,13 +503,37 @@ pub async fn join_room(
         (client_state.state, is_waiting)
     };
 
-    // 先发送 JoinRoom(Ok) 响应，确保客户端先拿到完整快照
-    user.try_send(ServerCommand::JoinRoom(Ok(JoinRoomResponse {
+    // 先发送 JoinRoom(Ok) 响应，确保客户端先拿到完整快照。
+    // Use send with 5s timeout instead of try_send for this critical init packet.
+    // If the client can't receive it, rollback the AddUser so room state stays
+    // consistent with the client's view.
+    let response = JoinRoomResponse {
         state: room_state,
         users: users.into_iter().map(|user| user.to_info()).collect(),
         live: room.is_live(),
-    })))
-    .await;
+    };
+    match tokio::time::timeout(
+        Duration::from_secs(5),
+        user.send(ServerCommand::JoinRoom(Ok(response))),
+    )
+    .await
+    {
+        Ok(Ok(())) => {}
+        _ => {
+            // Send failed or timed out — rollback: remove user from room.
+            warn!(
+                user = user.id,
+                room = %id,
+                "JoinRoom send failed, rolling back AddUser"
+            );
+            let _ = user
+                .server
+                .room_commands
+                .remove_user(&user.server, &id.to_string(), user.id)
+                .await;
+            bail!("failed to deliver JoinRoom response to client");
+        }
+    }
 
     // 再发送聊天历史（仅 Chat 消息），让客户端在完整快照后接收增量消息
     {
