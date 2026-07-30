@@ -351,6 +351,7 @@ impl RoomActor {
                 let snapshot = self.latest_snapshot.clone();
                 self.snapshot_debounce_handle = Some(tokio::spawn(async move {
                     tokio::time::sleep(std::time::Duration::from_millis(ROOM_SNAPSHOT_DEBOUNCE_MS)).await;
+                    let room_id_for_msg = room_id.clone();
                     if let Ok(payload) = serde_json::to_value(&snapshot) {
                         if let Err(e) = persistence
                             .enqueue(PersistenceEvent::RoomSnapshot {
@@ -360,7 +361,7 @@ impl RoomActor {
                             .await
                         {
                             warn!(
-                                room = %room_id,
+                                room = %room_id_for_msg,
                                 kind = %e.kind(),
                                 "debounced room snapshot enqueue failed"
                             );

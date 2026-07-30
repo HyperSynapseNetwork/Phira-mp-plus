@@ -191,7 +191,8 @@ async fn tcp_read_task(
                         // permit.  If the semaphore is exhausted, drop this event
                         // (and the associated read data) — the connection stays alive
                         // but the plugin misses this data.
-                        let event_permit = event_semaphores.lock().unwrap()
+                        let _sem_guard = event_semaphores.lock().unwrap();
+                        let event_permit = _sem_guard
                             .get(&cb_plugin_id)
                             .and_then(|sem| sem.try_acquire().ok());
 
