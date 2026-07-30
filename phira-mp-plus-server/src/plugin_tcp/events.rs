@@ -229,7 +229,7 @@ async fn tcp_read_task(
                             "bytes": buf[..n].to_vec(),
                         }));
                     }
-                    Err(e) => {
+                    Err(_e) => {
                         let _ = internal_tx.try_send(PluginTcpInternal::Disconnected {
                             handle,
                             plugin_id: cb_plugin_id.clone(),
