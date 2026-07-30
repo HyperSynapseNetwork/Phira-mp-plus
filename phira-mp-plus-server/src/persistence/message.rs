@@ -41,6 +41,16 @@ pub enum PersistenceEvent {
         user_id: i32,
         user_name: String,
     },
+    /// User authenticated event — merged UserSeen + UserOnline for atomic
+    /// admission before the auth OK frame is sent.  Blocks until WAL enqueue
+    /// succeeds so a user is never authenticated without being persisted.
+    UserAuthenticated {
+        user_id: i32,
+        user_name: String,
+        language: String,
+        ip: String,
+        connected_at: i64,
+    },
     /// User identity/last-seen snapshot captured at authenticated session setup.
     UserSeen {
         user_id: i32,
@@ -79,6 +89,7 @@ impl PersistenceEvent {
             Self::UserOnline { .. } => "user_online".to_string(),
             Self::UserOffline { .. } => "user_offline".to_string(),
             Self::UserDisconnect { .. } => "user_disconnect".to_string(),
+            Self::UserAuthenticated { .. } => "user_authenticated".to_string(),
             Self::UserSeen { .. } => "user_seen".to_string(),
             Self::RoundResult { .. } => "round_result".to_string(),
             Self::RoundCompleted { .. } => "round_completed".to_string(),
@@ -136,6 +147,19 @@ impl PersistenceEvent {
                 "language": language,
                 "ip": ip,
             })),
+            Self::UserAuthenticated {
+                user_id,
+                user_name,
+                language,
+                ip,
+                connected_at,
+            } => Some(json!({
+                "user_id": user_id,
+                "user_name": user_name,
+                "language": language,
+                "ip": ip,
+                "connected_at": connected_at,
+            })),
             Self::Flush | Self::Shutdown => None,
             Self::RoundResult {
                 round_uuid, room_id, result
@@ -186,6 +210,9 @@ impl PersistenceEvent {
             Self::UserOnline { user_id } => format!("user_id={user_id}"),
             Self::UserOffline { user_id } => format!("user_id={user_id}"),
             Self::UserDisconnect { user_id, .. } => format!("user_id={user_id}"),
+            Self::UserAuthenticated {
+                user_id, user_name, ..
+            } => format!("user_id={user_id} user_name={user_name}"),
             Self::UserSeen {
                 user_id, user_name, ..
             } => format!("user_id={user_id} user_name={user_name}"),
