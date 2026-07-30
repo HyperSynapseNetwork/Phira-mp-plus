@@ -17,12 +17,12 @@
 use crate::persistence::message::PersistenceEvent;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use tokio::io::AsyncWriteExt;
 use tokio::sync::Mutex;
-use tracing::warn;
+
 
 /// Current frame format version. Increment when the wire format changes.
 const WAL_FORMAT_VERSION: u8 = 1;
@@ -307,7 +307,6 @@ impl PersistenceWal {
         self.admit_sequence.load(Ordering::Acquire)
     }
 
->>>>>>> 13fb120 (fix: Flush captures target WAL sequence and processes remaining pending entries)
     pub async fn admit(&self, event: PersistenceEvent) -> Result<(uuid::Uuid, u64), String> {
         if !self.replay_succeeded.load(Ordering::Acquire) {
             return Err("WAL replay has not succeeded; admissions are rejected".to_string());
@@ -315,7 +314,6 @@ impl PersistenceWal {
         self.check_disk_space().await?;
         let id = uuid::Uuid::new_v4();
         let seq = self.admit_sequence.fetch_add(1, Ordering::AcqRel) + 1;
->>>>>>> 13fb120 (fix: Flush captures target WAL sequence and processes remaining pending entries)
         let frame = WalFrame::new(WalRecord::Admission { id, event })?;
         self.append_frame(&frame).await?;
         self.admission_count.fetch_add(1, Ordering::Release);
@@ -923,7 +921,6 @@ mod tests {
 
         let (first_id, _) = wal.admit(make_event("first")).await.unwrap();
         let (_, _) = wal.admit(make_event("second")).await.unwrap();
->>>>>>> 13fb120 (fix: Flush captures target WAL sequence and processes remaining pending entries)
         wal.ack(first_id).await.unwrap();
 
         let replay = wal.replay().await.unwrap();
@@ -942,7 +939,6 @@ mod tests {
         wal.replay().await.unwrap();
         let (_, _) = wal.admit(make_event("keep")).await.unwrap();
         let (ack_id, _) = wal.admit(make_event("ack-me")).await.unwrap();
->>>>>>> 13fb120 (fix: Flush captures target WAL sequence and processes remaining pending entries)
         wal.ack(ack_id).await.unwrap();
 
         assert_eq!(wal.compact().await.unwrap(), 1);
@@ -961,7 +957,6 @@ mod tests {
 
         let (id1, _) = wal.admit(make_event("event1")).await.unwrap();
         let (id2, _) = wal.admit(make_event("event2")).await.unwrap();
->>>>>>> 13fb120 (fix: Flush captures target WAL sequence and processes remaining pending entries)
         wal.ack(id1).await.unwrap();
 
         // Compact: only id2 should survive.
@@ -972,7 +967,6 @@ mod tests {
 
         // After compact, new admissions work.
         let (id3, _) = wal.admit(make_event("event3")).await.unwrap();
->>>>>>> 13fb120 (fix: Flush captures target WAL sequence and processes remaining pending entries)
         wal.ack(id2).await.unwrap();
         wal.ack(id3).await.unwrap();
         assert_eq!(wal.compact().await.unwrap(), 0);
@@ -981,7 +975,6 @@ mod tests {
         assert!(wal.replay().await.unwrap().is_empty());
         // New admissions must still work after compact-to-zero (WAL recreated).
         let (id4, _) = wal.admit(make_event("event4")).await.unwrap();
->>>>>>> 13fb120 (fix: Flush captures target WAL sequence and processes remaining pending entries)
         wal.ack(id4).await.unwrap();
         assert_eq!(wal.compact().await.unwrap(), 0);
 
@@ -1020,7 +1013,6 @@ mod tests {
         wal.replay().await.unwrap();
 
         let (id, _) = wal.admit(make_event("trunc-test")).await.unwrap();
->>>>>>> 13fb120 (fix: Flush captures target WAL sequence and processes remaining pending entries)
         wal.ack(id).await.unwrap();
 
         // Append a trailing incomplete line (simulate crash during write).
@@ -1118,7 +1110,6 @@ mod tests {
         let wal = PersistenceWal::new(&path);
         wal.replay().await.unwrap();
         let (id, _) = wal.admit(make_event("test")).await.unwrap();
->>>>>>> 13fb120 (fix: Flush captures target WAL sequence and processes remaining pending entries)
         wal.ack(id).await.unwrap();
         wal.ack(id).await.unwrap(); // duplicate ACK
         let replay = wal.replay().await.unwrap();

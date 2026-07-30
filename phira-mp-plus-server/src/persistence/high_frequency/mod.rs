@@ -203,7 +203,7 @@ impl SequenceTracker {
     /// Flush target, the watermark can never reach the target and the caller
     /// must return DataLoss.
     pub fn find_dropped_up_to(&self, target: u64) -> Option<u64> {
-        for &(lo, hi) in &self.dropped {
+        for &(lo, _hi) in &self.dropped {
             if lo > self.watermark && lo <= target {
                 return Some(lo);
             }

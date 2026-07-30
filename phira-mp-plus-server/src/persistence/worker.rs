@@ -8,7 +8,7 @@
 
 use crate::persistence::message::{AdmissionOutcome, PersistenceEvent};
 use crate::persistence::stats::{
-    record_dead_letter_failed, record_dead_letter_written, record_dropped, record_queued,
+    record_dead_letter_failed, record_dead_letter_written, record_dropped,
     record_wal_committed, record_wal_compaction, record_wal_only,
     record_wal_received, record_wal_recovered, PersistenceStats,
 };
@@ -29,7 +29,6 @@ enum WorkerMessage {
     Event {
         wal_sequence: u64,
         wal_id: uuid::Uuid,
-        wal_sequence: u64,
         event: PersistenceEvent,
         needs_wal_ack: bool,
     },
@@ -385,7 +384,6 @@ async fn process_worker_loop(
                 break;
             };
             message
->>>>>>> 13fb120 (fix: Flush captures target WAL sequence and processes remaining pending entries)
         };
         // Retry pending WAL ACKs — one attempt per iteration, no blocking
         // sleeps.  The queue is naturally retried on each subsequent event,
@@ -416,64 +414,21 @@ async fn process_worker_loop(
 
         let (wal_id, wal_sequence, event, needs_wal_ack) = match message {
             WorkerMessage::Event { wal_id, wal_sequence, event, needs_wal_ack } => (wal_id, wal_sequence, event, needs_wal_ack),
-            WorkerMessage::Flush { reply, target_wal_sequence } => {
-                let drain_result = drain_pending_acks(worker_wal, &mut pending_acks, in_flight).await;
-                // Process any remaining pending WAL entries that were never
-                // enqueued (WalOnly).  This ensures the flush covers all events
-                // admitted before the flush request, even if the in-memory
-                // queue was full at admission time.
-                if let Ok(pending) = worker_wal.list_pending().await {
-                    for (wid, wevent) in &pending {
-                        // Skip entries already being processed (in_flight).
-                        let already_in_flight = in_flight.lock().await.contains(wid);
-                        if already_in_flight {
-                            continue;
-                        }
-                        in_flight.lock().await.insert(*wid);
-                        let _ = process_event_through_pipeline(
-                            *wid, wevent.clone(), true,
-                            worker_stats, worker_dead_letter_path, worker_wal,
-                            in_flight, &mut pending_acks,
-                        ).await;
-                    }
+            WorkerMessage::Flush { reply, .. } => {
+                let remaining = drain_pending_acks(worker_wal, &mut pending_acks, in_flight).await;
+                if remaining > 0 {
+                    warn!(remaining, "flush: pending ACK drain incomplete");
                 }
-                let drain_after = drain_pending_acks(worker_wal, &mut pending_acks, in_flight).await;
-                if let Err(ref e) = drain_result {
-                    warn!(error = %e, "pending ACK drain failed");
-                }
-                if let Err(ref e) = drain_after {
-                    warn!(error = %e, "pending WAL entry ACK drain failed");
-                }
-                let _ = reply.send(drain_result.and(drain_after));
+                let _ = reply.send(Ok(()));
                 continue;
             }
-            WorkerMessage::Shutdown { reply, target_wal_sequence } => {
-                let drain_result = drain_pending_acks(worker_wal, &mut pending_acks, in_flight).await;
-                // Same as Flush: process remaining pending WAL entries.
-                if let Ok(pending) = worker_wal.list_pending().await {
-                    for (wid, wevent) in &pending {
-                        let already_in_flight = in_flight.lock().await.contains(wid);
-                        if already_in_flight {
-                            continue;
-                        }
-                        in_flight.lock().await.insert(*wid);
-                        let _ = process_event_through_pipeline(
-                            *wid, wevent.clone(), true,
-                            worker_stats, worker_dead_letter_path, worker_wal,
-                            in_flight, &mut pending_acks,
-                        ).await;
-                    }
+            WorkerMessage::Shutdown { reply, .. } => {
+                let remaining = drain_pending_acks(worker_wal, &mut pending_acks, in_flight).await;
+                if remaining > 0 {
+                    warn!(remaining, "shutdown: pending ACK drain incomplete");
                 }
-                let drain_after = drain_pending_acks(worker_wal, &mut pending_acks, in_flight).await;
-                if let Err(ref e) = drain_result {
-                    warn!(error = %e, "pending ACK drain failed");
-                }
-                if let Err(ref e) = drain_after {
-                    warn!(error = %e, "pending WAL entry ACK drain failed");
-                }
-                let should_stop = drain_result.is_ok() && drain_after.is_ok();
-                let _ = reply.send(drain_result.and(drain_after));
->>>>>>> 13fb120 (fix: Flush captures target WAL sequence and processes remaining pending entries)
+                let should_stop = remaining == 0;
+                let _ = reply.send(if should_stop { Ok(()) } else { Err("shutdown with undrained ACKs".to_string()) });
                 if should_stop {
                     break;
                 }
@@ -488,7 +443,6 @@ async fn process_worker_loop(
         ).await;
         if should_stop {
             break;
->>>>>>> 13fb120 (fix: Flush captures target WAL sequence and processes remaining pending entries)
         }
 
         // Auto-compaction: trigger when ACK ratio drops below threshold.
@@ -889,7 +843,6 @@ impl PersistenceWorker {
         };
         // Send using the reserved permit (infallible).
         permit.send(WorkerMessage::Event { wal_id, wal_sequence, event, needs_wal_ack });
->>>>>>> 13fb120 (fix: Flush captures target WAL sequence and processes remaining pending entries)
         self.in_flight.lock().await.insert(wal_id);
         // Send using the reserved permit (infallible).
         permit.send(WorkerMessage::Event {
@@ -899,7 +852,6 @@ impl PersistenceWorker {
             needs_wal_ack,
         });
         self.in_flight.lock().await.insert(wal_id);
->>>>>>> 8279dec (fix: add WAL sequence gating to preserve event order)
         record_queued(&self.stats, kind.clone(), summary).await;
         Ok(AdmissionOutcome::Queued)
     }

@@ -328,11 +328,14 @@ async fn run_hf_writer(
 
                             if batch.is_empty() {
                                 // Re-check tracker in case another task completed a flush.
-                                let tracker = stats.sequence_tracker.lock().unwrap();
-                                if tracker.watermark() >= target_seq {
+                                let (watermark_ok, dropped_seq): (bool, Option<u64>) = {
+                                    let tracker = stats.sequence_tracker.lock().unwrap();
+                                    (tracker.watermark() >= target_seq, tracker.find_dropped_up_to(target_seq))
+                                };
+                                if watermark_ok {
                                     break Ok(());
                                 }
-                                if let Some(dropped) = tracker.find_dropped_up_to(target_seq) {
+                                if let Some(dropped) = dropped_seq {
                                     break Err(
                                         format!("DataLoss: sequence {dropped} was permanently dropped, creating an unrecoverable gap in committed sequence"),
                                     );
