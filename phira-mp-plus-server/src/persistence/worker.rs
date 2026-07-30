@@ -866,9 +866,10 @@ impl PersistenceWorker {
                 {
                     Ok(Ok(permit)) => permit,
                     Ok(Err(_)) => {
-                        record_dropped(&self.stats, kind, summary,
-                            "persistence worker channel closed during bounded wait".to_string()).await;
-                        return Err(event);
+                        // WAL has the event — return WalOnly so the caller
+                        // knows the event is safe and will replayed on restart.
+                        record_wal_only(&self.stats, kind, summary).await;
+                        return Ok(AdmissionOutcome::WalOnly);
                     }
                     Err(_) => {
                         // WAL has the event — return WalOnly so the caller
@@ -880,9 +881,10 @@ impl PersistenceWorker {
                 }
             }
             Err(mpsc::error::TrySendError::Closed(_)) => {
-                record_dropped(&self.stats, kind, summary,
-                    "persistence worker is shutting down".to_string()).await;
-                return Err(event);
+                // WAL has the event — return WalOnly so the caller knows the
+                // event is safe and will be replayed on restart.
+                record_wal_only(&self.stats, kind, summary).await;
+                return Ok(AdmissionOutcome::WalOnly);
             }
         };
         // Send using the reserved permit (infallible).
