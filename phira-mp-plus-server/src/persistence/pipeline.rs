@@ -138,20 +138,22 @@ pub async fn persist_production_event_if_needed(event: &PersistenceEvent) -> Per
             PersistenceEvent::RoundCompleted {
                 round_uuid,
                 room_id,
+                event_id,
                 results,
-                ..
+                finished_at,
+                aborted_users,
             } => {
-                // Batch-write all results in sequence; short-circuit on first failure.
-                // Individual failures here indicate a transient database error, not
-                // partial admission — the caller sends one atomic event.
-                let mut all_ok = true;
-                for result in results {
-                    if !db.record_round_result(round_uuid, room_id, result).await {
-                        all_ok = false;
-                        break;
-                    }
-                }
-                all_ok
+                // Atomic single-transaction commit: all results + close_round
+                // in one PostgreSQL transaction.  No more partial admission.
+                db.commit_round_completed(
+                    round_uuid,
+                    room_id,
+                    event_id,
+                    results,
+                    *finished_at,
+                    aborted_users,
+                )
+                .await
             }
             PersistenceEvent::BenchmarkReport { .. }
             | PersistenceEvent::Flush
