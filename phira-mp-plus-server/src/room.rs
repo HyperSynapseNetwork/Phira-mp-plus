@@ -62,10 +62,14 @@ impl InternalRoomState {
 /// Persistence status of a completed round's results.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum PersistenceStatus {
-    /// Round results have been durably persisted to the database.
-    Durable,
-    /// Round results could not be durably persisted (queue full, worker unavailable).
-    Pending,
+    /// Round results are pending admission to the persistence worker.
+    PendingAdmission,
+    /// Round results have been written to the WAL.
+    WalAdmitted,
+    /// Round results have been committed to the database.
+    DatabaseCommitted,
+    /// Round results could not be persisted and were dead-lettered.
+    DeadLettered,
     /// Round results persistence failed definitively.
     Failed,
 }

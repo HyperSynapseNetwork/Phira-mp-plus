@@ -191,9 +191,9 @@ async fn save_round_history(
     }
 
     let persistence_status = if any_failed {
-        crate::room::PersistenceStatus::Pending
+        crate::room::PersistenceStatus::PendingAdmission
     } else {
-        crate::room::PersistenceStatus::Durable
+        crate::room::PersistenceStatus::WalAdmitted
     };
 
     let round = crate::room::PlayRound {
