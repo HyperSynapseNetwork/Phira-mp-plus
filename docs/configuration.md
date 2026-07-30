@@ -51,6 +51,9 @@ monitors:
   - 2
 phira_api_endpoint: "https://phira.5wyxi.com"
 
+# ---- 错误监控 ----
+# sentry_dsn: "https://examplePublicKey@o0.ingest.sentry.io/0"
+
 # ---- 压测 ----
 # 压测使用 Real 模式（需要 Phira token）。
 
@@ -74,7 +77,6 @@ round_data_retention_days: 7
 
 # ---- 展示 / 管理 ----
 # server_name: "My Phira Server"
-# admin_token: "your-secret-token"
 admin_phira_ids: []
 
 # ---- WASM 运行时限制 ----
@@ -117,8 +119,8 @@ wasm_runtime:
 | `touch_judge_retention_days` | `u32?` | 未设置 | Touches/Judges 高频遥测独立保留天数；未设置时遵循 `persistence_retention_days`，`0` 表示不自动清理遥测。 |
 | `runtime` | `object` | 见下文 | 持久化内部策略。用于配置 PersistenceWorker。 |
 | `idle` | `object` | 见下文 | 空载调度提示。不得暂停或丢弃权威持久化与可靠插件事件；只允许降低非关键后台活动。 |
+| `sentry_dsn` | `String?` | 未设置 | Sentry 错误监控 DSN。设置有效的 Sentry DSN 可启用自动错误和 Panic 捕获，留空或省略则不启用。 |
 | `server_name` | `String?` | 未设置 | 服务器展示名称，可用于欢迎语等场景。 |
-| `admin_token` | `String?` | 未设置 | 预留字段 |
 | `admin_phira_ids` | `Vec<i32>` | `[]` | 游戏内管理员 Phira ID。管理员可在创建房间弹窗输入 `_命令` 执行 CLI 命令。 |
 | `wasm_runtime` | `object` | 见下表 | WASM 插件运行时资源限制。 |
 
