@@ -55,6 +55,16 @@ pub enum PersistenceEvent {
         room_id: String,
         result: crate::room::PlayResult,
     },
+    /// Batch round completed event (all results in one atomic event).
+    /// Replaces per-player RoundResult for atomic admission — partial
+    /// admission is no longer possible.
+    RoundCompleted {
+        round_uuid: String,
+        room_id: String,
+        results: Vec<crate::room::PlayResult>,
+        finished_at: i64,
+        aborted_users: Vec<i32>,
+    },
     Flush,
     Shutdown,
 }
@@ -71,6 +81,7 @@ impl PersistenceEvent {
             Self::UserDisconnect { .. } => "user_disconnect".to_string(),
             Self::UserSeen { .. } => "user_seen".to_string(),
             Self::RoundResult { .. } => "round_result".to_string(),
+            Self::RoundCompleted { .. } => "round_completed".to_string(),
             Self::Flush => "flush".to_string(),
             Self::Shutdown => "shutdown".to_string(),
         }
@@ -133,6 +144,19 @@ impl PersistenceEvent {
                 "room_id": room_id,
                 "result": result,
             })),
+            Self::RoundCompleted {
+                round_uuid,
+                room_id,
+                results,
+                finished_at,
+                aborted_users,
+            } => Some(json!({
+                "round_uuid": round_uuid,
+                "room_id": room_id,
+                "results": results,
+                "finished_at": finished_at,
+                "aborted_users": aborted_users,
+            })),
         }
     }
 
@@ -166,6 +190,9 @@ impl PersistenceEvent {
                 user_id, user_name, ..
             } => format!("user_id={user_id} user_name={user_name}"),
             Self::RoundResult { round_uuid, .. } => {
+                format!("round_uuid={round_uuid}")
+            }
+            Self::RoundCompleted { round_uuid, .. } => {
                 format!("round_uuid={round_uuid}")
             }
             Self::Flush => "flush".to_string(),
