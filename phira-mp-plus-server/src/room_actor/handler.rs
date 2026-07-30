@@ -171,23 +171,29 @@ async fn save_round_history(
     // --- Persist round results via PersistenceWorker (WAL-backed) ---
     // Route through PersistenceWorker instead of direct SQL to ensure
     // write-ahead logging, retry, and dead-letter durability.
+    //
+    // All results are batched into a single RoundCompleted event so that
+    // partial admission is impossible — either the whole round persists
+    // or none of it does.
     let persistence_worker = &lc.server_state().persistence_worker;
-    let mut any_failed = false;
-    for result in &play_results {
-        let event = crate::persistence::PersistenceEvent::RoundResult {
-            round_uuid: round_id.to_string(),
-            room_id: room_ref.id.to_string(),
-            result: result.clone(),
-        };
-        if persistence_worker.enqueue(event).await.is_err() {
-            warn!(
-                room = %room_ref.id,
-                round_id = %round_id,
-                user_id = result.user_id,
-                "failed to enqueue round result to persistence worker"
-            );
-            any_failed = true;
-        }
+    let finished_at = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0);
+    let event = crate::persistence::PersistenceEvent::RoundCompleted {
+        round_uuid: round_id.to_string(),
+        room_id: room_ref.id.to_string(),
+        results: play_results.clone(),
+        finished_at,
+        aborted_users: aborted.iter().copied().collect(),
+    };
+    let any_failed = persistence_worker.enqueue(event).await.is_err();
+    if any_failed {
+        warn!(
+            room = %room_ref.id,
+            round_id = %round_id,
+            "failed to enqueue RoundCompleted to persistence worker"
+        );
     }
 
     let persistence_status = if any_failed {
