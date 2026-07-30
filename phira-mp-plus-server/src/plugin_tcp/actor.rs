@@ -6,7 +6,7 @@
 
 use crate::plugin_tcp::events::{tcp_connect, tcp_listen};
 use crate::plugin_tcp::{
-    CloseMap, ConnectionMap, HandleReadBytesMap, PluginTcpCommand, PluginTcpInternal, ReadBufMap,
+    CloseMap, ConnectionMap, HandleReadBytesMap, PluginTcpCommand, PluginTcpInternal, ReadBufMap, SyncReply,
     MAX_CONNECTIONS_PER_PLUGIN, MAX_LISTENERS_PER_PLUGIN,
 };
 use std::collections::HashMap;
@@ -51,6 +51,9 @@ pub struct PluginTcpActor {
     plugin_read_bytes: Arc<Mutex<HashMap<String, usize>>>,
     /// handle → buffered read bytes (per-handle tracking for accurate cleanup)
     handle_read_bytes: HandleReadBytesMap,
+    /// Handles whose connect has been spawned but not yet completed.
+    /// Maps handle -> (plugin_id, reply) for cleanup on plugin removal.
+    pending_connects: HashMap<u64, (String, SyncReply<u64>)>,
 }
 
 impl PluginTcpActor {
@@ -72,6 +75,7 @@ impl PluginTcpActor {
             plugin_listeners: HashMap::new(),
             plugin_read_bytes: Arc::new(Mutex::new(HashMap::new())),
             handle_read_bytes: Arc::new(Mutex::new(HashMap::new())),
+            pending_connects: HashMap::new(),
         }
     }
 
@@ -95,6 +99,16 @@ impl PluginTcpActor {
             .collect();
         for h in handles {
             self.close_handle(h);
+        }
+        // Clean up pending connect attempts for this plugin
+        let pending: Vec<u64> = self.pending_connects.iter()
+            .filter(|(_, (pid, _))| pid == plugin_id)
+            .map(|(h, _)| *h)
+            .collect();
+        for h in pending {
+            if let Some((_, reply)) = self.pending_connects.remove(&h) {
+                let _ = reply.send(Err(format!("plugin '{plugin_id}' removed while connecting")));
+            }
         }
         self.plugin_connections.remove(plugin_id);
         self.plugin_listeners.remove(plugin_id);
@@ -218,6 +232,39 @@ impl PluginTcpActor {
                             self.emit_event("tcp:disconnect",
                                 serde_json::json!({"handle": handle, "plugin_id": plugin_id, "reason": "remote peer closed connection", "remote_addr": remote_addr}));
                         }
+                        PluginTcpInternal::ConnectCompleted { handle, plugin_id, addr, result } => {
+                            if let Some((_, reply)) = self.pending_connects.remove(&handle) {
+                                match result {
+                                    Ok((_data_tx, close_tx)) => {
+                                        self.handle_owner.insert(handle, plugin_id.clone());
+                                        self.connections.insert(
+                                            handle,
+                                            Connection {
+                                                remote_addr: addr.clone(),
+                                                close_tx: Some(close_tx),
+                                            },
+                                        );
+                                        info!(%handle, %addr, "tcp connected");
+                                        let _ = reply.send(Ok(handle));
+                                    }
+                                    Err(e) => {
+                                        // Release the pre-reserved connection slot
+                                        if let Some(cnt) = self.plugin_connections.get_mut(&plugin_id) {
+                                            *cnt = cnt.saturating_sub(1);
+                                            if *cnt == 0 { self.plugin_connections.remove(&plugin_id); }
+                                        }
+                                        warn!(%handle, %addr, error = %e, "tcp connect failed");
+                                        let _ = reply.send(Err(e));
+                                    }
+                                }
+                            } else {
+                                // Plugin was removed while connecting — clean up maps
+                                // that tcp_connect may have registered.
+                                self.conn_map.lock().unwrap().remove(&handle);
+                                self.read_buf_map.lock().unwrap().remove(&handle);
+                                self.handle_read_bytes.lock().unwrap().remove(&handle);
+                            }
+                        }
                     }
                 }
             }
@@ -233,33 +280,34 @@ impl PluginTcpActor {
                         return;
                     }
                     let handle = self.alloc_handle();
+                    // Store reply so we can send it asynchronously when connect completes
+                    self.pending_connects.insert(handle, (plugin_id.clone(), reply));
+                    // Pre-reserve the connection slot for quota accuracy
+                    *self.plugin_connections.entry(plugin_id.clone()).or_insert(0) += 1;
+
                     let cb = self.event_callback.clone();
                     let cm = Arc::clone(&self.conn_map);
                     let rbm = Arc::clone(&self.read_buf_map);
                     let hrb = Arc::clone(&self.handle_read_bytes);
                     let itx = self.internal_tx.clone();
+                    let itx_for_result = self.internal_tx.clone();
                     let prb = Arc::clone(&self.plugin_read_bytes);
                     let pid = plugin_id.clone();
+                    let addr_clone = addr.clone();
 
-                    match tcp_connect(&addr, handle, pid, cb, cm, rbm, hrb, itx, prb).await {
-                        Ok((_, close_tx)) => {
-                            self.handle_owner.insert(handle, plugin_id.clone());
-                            *self.plugin_connections.entry(plugin_id.clone()).or_insert(0) += 1;
-                            self.connections.insert(
-                                handle,
-                                Connection {
-                                    remote_addr: addr.clone(),
-                                    close_tx: Some(close_tx),
-                                },
-                            );
-                            info!(%handle, %addr, "tcp connected");
-                            let _ = reply.send(Ok(handle));
-                        }
-                        Err(e) => {
-                            warn!(%handle, %addr, error = %e, "tcp connect failed");
-                            let _ = reply.send(Err(e));
-                        }
-                    }
+                    // Spawn connect in its own task so a slow address doesn't
+                    // block the actor loop.
+                    tokio::spawn(async move {
+                        let result = tcp_connect(
+                            &addr_clone, handle, pid.clone(), cb, cm, rbm, hrb, itx, prb,
+                        ).await;
+                        let _ = itx_for_result.send(PluginTcpInternal::ConnectCompleted {
+                            handle,
+                            plugin_id: pid,
+                            addr: addr_clone,
+                            result,
+                        }).await;
+                    });
                 }
                 PluginTcpCommand::Listen { plugin_id, addr, reply } => {
                     if self.count_plugin_listeners(&plugin_id) >= MAX_LISTENERS_PER_PLUGIN {

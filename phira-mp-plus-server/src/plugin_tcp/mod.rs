@@ -39,6 +39,13 @@ pub(crate) enum PluginTcpInternal {
         plugin_id: String,
         remote_addr: String,
     },
+    /// Result of a spawned connect attempt — actor completes the registration.
+    ConnectCompleted {
+        handle: u64,
+        plugin_id: String,
+        addr: String,
+        result: Result<(mpsc::Sender<Vec<u8>>, oneshot::Sender<()>), String>,
+    },
 }
 
 /// Commands plugins send to the TCP actor.
