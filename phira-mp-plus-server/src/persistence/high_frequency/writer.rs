@@ -25,7 +25,11 @@ use super::{
 
 enum HfMessage {
     Item(HighFrequencyItem),
-    Flush(oneshot::Sender<Result<(), String>>),
+    Flush {
+        reply: oneshot::Sender<Result<(), String>>,
+        target_seq: u64,
+        deadline_ms: i64,
+    },
     Shutdown(oneshot::Sender<Result<(), String>>),
 }
 
@@ -207,8 +211,14 @@ impl HighFrequencyWriter {
         if self.closed.load(Ordering::Acquire) {
             return Err("high frequency writer is shutting down".to_string());
         }
+        let target_seq = self.stats.last_accepted_sequence.load(Ordering::Acquire);
+        if target_seq == 0 {
+            // No items ever accepted; flush is a no-op.
+            return Ok(());
+        }
+        let deadline_ms = now_ms() + 5_000;
         self.tx
-            .send(HfMessage::Flush(reply))
+            .send(HfMessage::Flush { reply, target_seq, deadline_ms })
             .await
             .map_err(|_| "high frequency writer is closed".to_string())?;
         tokio::time::timeout(Duration::from_secs(5), rx)
@@ -290,18 +300,15 @@ async fn run_hf_writer(
                             ).await.ok();
                         }
                     }
-                    Some(HfMessage::Flush(reply)) => {
-                        // Target is the *last assigned* sequence, not the *next*
-                        // sequence to assign.  Using admission_sequence here
-                        // would over-shoot by 1 and make the watermark
-                        // unreachable, causing a permanent hang (PMP30 P0-5).
-                        let target_seq = stats.last_accepted_sequence.load(Ordering::Acquire);
-                        if target_seq == 0 {
-                            // No items ever accepted; flush is a no-op.
-                            let _ = reply.send(Ok(()));
-                            continue;
-                        }
+                    Some(HfMessage::Flush { reply, target_seq, deadline_ms }) => {
                         let result = loop {
+                            // Check deadline captured at call time so the worker
+                            // does not loop indefinitely after the caller has
+                            // already timed out (PMP32 P0-F-4).
+                            if now_ms() >= deadline_ms {
+                                break Err("high frequency flush timed out in worker".to_string());
+                            }
+
                             // Check the sequence tracker for watermark and
                             // dropped ranges before attempting any work.
                             let early = {
@@ -327,7 +334,7 @@ async fn run_hf_writer(
                             .await;
 
                             if batch.is_empty() {
-                                // Re-check tracker in case another task completed a flush.
+                                // Re-check tracker in case a concurrent flush completed.
                                 let (watermark_ok, dropped_seq): (bool, Option<u64>) = {
                                     let tracker = stats.sequence_tracker.lock().unwrap();
                                     (tracker.watermark() >= target_seq, tracker.find_dropped_up_to(target_seq))
@@ -340,10 +347,14 @@ async fn run_hf_writer(
                                         format!("DataLoss: sequence {dropped} was permanently dropped, creating an unrecoverable gap in committed sequence"),
                                     );
                                 }
-                                // Items still being produced; yield briefly so
-                                // concurrent enqueuers can make progress.
-                                tokio::time::sleep(Duration::from_millis(10)).await;
-                                continue;
+                                // No overflow items, no batch, no dropped
+                                // sequences, but watermark < target_seq.
+                                // The accepted sequences between watermark
+                                // and target_seq are neither committed nor
+                                // dropped — progress is impossible.
+                                break Err(
+                                    format!("DataLoss: accepted sequences between watermark and {target_seq} are neither committed nor dropped"),
+                                );
                             }
 
                             let res = flush_and_update_seq(
@@ -366,12 +377,40 @@ async fn run_hf_writer(
                         // one batch-worth.  Using usize::MAX drains until the channel
                         // is empty (the function breaks on TryRecvError::Empty).
                         drain_overflow(&mut batch, &mut overflow_rx, &stats, overflow_max_age_ms, usize::MAX).await;
-                        let result = flush_and_update_seq(
+                        let flush_result = flush_and_update_seq(
                             &mut batch, &stats, &db, max_retries, retry_max_age_ms, "shutdown"
                         ).await;
-                        if result.is_ok() {
-                            debug!("high frequency writer shut down gracefully");
-                        }
+                        // After the final flush, verify that all accepted
+                        // sequences are resolved (committed or dropped).
+                        // If not, report the specific condition so the
+                        // caller knows whether data loss occurred
+                        // (PMP32 P0-F-3).
+                        let target_seq = stats.last_accepted_sequence.load(Ordering::Acquire);
+                        let result = if flush_result.is_err() {
+                            // The flush itself failed — preserve that error.
+                            flush_result
+                        } else if target_seq == 0 {
+                            // No items ever accepted.
+                            debug!("high frequency writer shut down gracefully (no items)");
+                            Ok(())
+                        } else {
+                            let (watermark_ok, dropped_seq): (bool, Option<u64>) = {
+                                let tracker = stats.sequence_tracker.lock().unwrap();
+                                (tracker.watermark() >= target_seq, tracker.find_dropped_up_to(target_seq))
+                            };
+                            if watermark_ok {
+                                debug!("high frequency writer shut down gracefully");
+                                Ok(())
+                            } else if let Some(dropped) = dropped_seq {
+                                Err(format!(
+                                    "DataLoss: sequence {dropped} was permanently dropped during shutdown"
+                                ))
+                            } else {
+                                Err(format!(
+                                    "high frequency shutdown incomplete: sequences between watermark and {target_seq} are pending"
+                                ))
+                            }
+                        };
                         let _ = reply.send(result);
                         break;
                     }
@@ -548,7 +587,22 @@ async fn flush_batch(
         attempt += 1;
     }
 
-    // All retries exhausted — drop the batch.
+    // All retries exhausted — mark every item's admission sequence as
+    // dropped in the SequenceTracker so the tracker's watermark knows
+    // to stop before this gap and Flush/Shutdown can detect the loss
+    // (PMP32 P0-F-1).  Without this the second Flush of the same
+    // target_seq finds the batch empty and loops forever (PMP32 P0-F-2).
+    {
+        let mut tracker = stats.sequence_tracker.lock().unwrap();
+        for item in &items {
+            if item.admission_seq > 0 {
+                tracker.mark_dropped(item.admission_seq);
+            }
+        }
+        stats
+            .continuous_committed_watermark
+            .store(tracker.watermark(), Ordering::Relaxed);
+    }
     stats
         .dropped
         .fetch_add(record_count, Ordering::Relaxed);
