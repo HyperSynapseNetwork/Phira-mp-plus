@@ -441,7 +441,7 @@ async fn process_worker_loop(
 
                     if wal_sequence == next_expected_sequence {
                         // In-order — process directly.
-                        Some(msg)
+                        Some(WorkerMessage::Event { wal_id, wal_sequence, event, needs_wal_ack })
                     } else if wal_sequence > next_expected_sequence {
                         // Out-of-order (future sequence) — buffer.
                         buffer.insert(wal_sequence, (wal_id, event, needs_wal_ack));
