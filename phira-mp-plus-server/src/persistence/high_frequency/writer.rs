@@ -413,7 +413,9 @@ async fn flush_batch(
         None
     };
 
-    for attempt in 0..max_retries {
+    let mut attempt = 0u32;
+
+    loop {
         if attempt > 0 {
             // Check retry deadline before sleeping.
             if let Some(deadline_ms) = deadline {
@@ -428,11 +430,10 @@ async fn flush_batch(
                 }
             }
             stats.retrying.fetch_add(1, Ordering::Relaxed);
-            let delay = Duration::from_millis(match attempt {
-                1 => 50,
-                _ => 250,
-            });
-            tokio::time::sleep(delay).await;
+            // Exponential backoff: 50ms, 100ms, 200ms, 400ms, 800ms, max 1s
+            let backoff_ms = (50u64 << (attempt - 1).min(4)).min(1000);
+            let jitter = (attempt as u64 * 7) % 50;
+            tokio::time::sleep(Duration::from_millis(backoff_ms + jitter)).await;
         }
 
         // Try COPY-first; fall back to INSERT-based path if COPY fails.
@@ -468,6 +469,8 @@ async fn flush_batch(
             reason,
             "high frequency batch write failed"
         );
+
+        attempt += 1;
     }
 
     // All retries exhausted — drop the batch.
