@@ -33,9 +33,12 @@ enum WorkerMessage {
         needs_wal_ack: bool,
     },
     Flush {
+        target_wal_sequence: u64,
         reply: oneshot::Sender<Result<(), String>>,
     },
     Shutdown {
+        target_wal_sequence: u64,
+        deadline: Instant,
         reply: oneshot::Sender<Result<(), String>>,
     },
 }
@@ -374,7 +377,64 @@ async fn process_worker_loop(
     let mut buffer: BTreeMap<u64, (uuid::Uuid, PersistenceEvent, bool)> =
         BTreeMap::new();
 
+    // Tracks a deferred control message (Flush/Shutdown) waiting for all
+    // events with wal_sequence <= target to reach a terminal state before
+    // replying.  Checked on each loop iteration so progress is made through
+    // normal event processing.
+    enum PendingControl {
+        FlushReply {
+            target: u64,
+            reply: oneshot::Sender<Result<(), String>>,
+            deadline: Instant,
+        },
+        Shutdown {
+            target: u64,
+            reply: oneshot::Sender<Result<(), String>>,
+            deadline: Instant,
+        },
+    }
+    let mut pending_control: Option<PendingControl> = None;
+
     loop {
+        // ---- Check pending control (deferred flush/shutdown) ----
+        if let Some(ref pc) = pending_control {
+            let (target, reply, deadline, should_break) = match pc {
+                PendingControl::FlushReply { target, reply, deadline } => {
+                    (*target, reply, *deadline, false)
+                }
+                PendingControl::Shutdown { target, reply, deadline } => {
+                    (*target, reply, *deadline, true)
+                }
+            };
+            let buffer_remaining = buffer.range(..=target).count();
+            // Exclude in_flight entries to find truly WalOnly events
+            // that have not yet been re-enqueued to the channel.
+            let in_flight_ids: HashSet<uuid::Uuid> = in_flight.lock().await.clone();
+            let wal_pending = match worker_wal.list_pending().await {
+                Ok(p) => p.iter()
+                    .filter(|(id, _, seq)| !in_flight_ids.contains(id) && *seq <= target)
+                    .count(),
+                Err(_) => 0,
+            };
+            if pending_acks.is_empty() && buffer_remaining == 0 && wal_pending == 0 {
+                let _ = reply.send(Ok(()));
+                pending_control = None;
+                if should_break {
+                    break;
+                }
+            } else if Instant::now() >= deadline {
+                warn!(
+                    buffer_remaining, wal_pending,
+                    "pending control deadline exceeded",
+                );
+                let _ = reply.send(Err("deadline exceeded".to_string()));
+                pending_control = None;
+                if should_break {
+                    break;
+                }
+            }
+        }
+
         // ---- Determine the message to process this iteration ----
         //
         // Priority: buffer (for draining the expected sequence) >
@@ -410,9 +470,19 @@ async fn process_worker_loop(
             initial_replay_drained.store(true, Ordering::Release);
 
             // 3. Channel receive with sequence gating.
-            let msg = match rx.recv().await {
-                Some(msg) => msg,
-                None => break 'fetch None,
+            let msg = if pending_control.is_some() {
+                // Use a short timeout so we can re-check pending control
+                // conditions when the channel is otherwise idle.
+                match tokio::time::timeout(Duration::from_millis(100), rx.recv()).await {
+                    Ok(Some(msg)) => msg,
+                    Ok(None) => break 'fetch None,
+                    Err(_) => break 'fetch None, // timeout — re-check pending control
+                }
+            } else {
+                match rx.recv().await {
+                    Some(msg) => msg,
+                    None => break 'fetch None,
+                }
             };
 
             let result = match msg {
@@ -504,31 +574,65 @@ async fn process_worker_loop(
                 event,
                 needs_wal_ack,
             } => (wal_id, wal_sequence, event, needs_wal_ack),
-            WorkerMessage::Flush { reply, .. } => {
-                let remaining =
-                    drain_pending_acks(worker_wal, &mut pending_acks, in_flight, None).await;
-                if remaining > 0 {
-                    warn!(remaining, "flush: pending ACK drain incomplete");
+            WorkerMessage::Flush { target_wal_sequence, reply } => {
+                let deadline = Instant::now() + Duration::from_secs(30);
+                drain_pending_acks(worker_wal, &mut pending_acks, in_flight, Some(deadline)).await;
+
+                let buffer_remaining = buffer.range(..=target_wal_sequence).count();
+                let in_flight_ids: HashSet<uuid::Uuid> = in_flight.lock().await.clone();
+                let wal_pending = match worker_wal.list_pending().await {
+                    Ok(p) => p.iter()
+                        .filter(|(id, _, seq)| !in_flight_ids.contains(id) && *seq <= target_wal_sequence)
+                        .count(),
+                    Err(_) => 0,
+                };
+
+                if pending_acks.is_empty() && buffer_remaining == 0 && wal_pending == 0 {
+                    // All events <= target_wal_sequence are terminal.
+                    let _ = reply.send(Ok(()));
+                } else if Instant::now() >= deadline {
+                    warn!(buffer_remaining, wal_pending, "flush deadline exceeded");
+                    let _ = reply.send(Err("flush deadline exceeded".to_string()));
+                } else {
+                    // Not yet done — defer and re-check on subsequent iterations
+                    // as progress is made through normal event processing.
+                    pending_control = Some(PendingControl::FlushReply {
+                        target: target_wal_sequence,
+                        reply,
+                        deadline,
+                    });
                 }
-                let _ = reply.send(Ok(()));
                 continue;
             }
-            WorkerMessage::Shutdown { reply, .. } => {
-                let remaining =
-                    drain_pending_acks(worker_wal, &mut pending_acks, in_flight, None).await;
-                if remaining > 0 {
-                    warn!(remaining, "shutdown: pending ACK drain incomplete");
-                }
-                let should_stop = remaining == 0;
-                let _ = reply.send(if should_stop {
-                    Ok(())
-                } else {
-                    Err("shutdown with undrained ACKs".to_string())
-                });
-                if should_stop {
+            WorkerMessage::Shutdown { target_wal_sequence, deadline, reply } => {
+                drain_pending_acks(worker_wal, &mut pending_acks, in_flight, Some(deadline)).await;
+
+                let buffer_remaining = buffer.range(..=target_wal_sequence).count();
+                let in_flight_ids: HashSet<uuid::Uuid> = in_flight.lock().await.clone();
+                let wal_pending = match worker_wal.list_pending().await {
+                    Ok(p) => p.iter()
+                        .filter(|(id, _, seq)| !in_flight_ids.contains(id) && *seq <= target_wal_sequence)
+                        .count(),
+                    Err(_) => 0,
+                };
+
+                if pending_acks.is_empty() && buffer_remaining == 0 && wal_pending == 0 {
+                    // All events <= target_wal_sequence are terminal; safe to exit.
+                    let _ = reply.send(Ok(()));
                     break;
+                } else if Instant::now() >= deadline {
+                    warn!(buffer_remaining, wal_pending, "shutdown deadline exceeded");
+                    let _ = reply.send(Err("shutdown deadline exceeded".to_string()));
+                    break;
+                } else {
+                    // Defer and re-check after processing more events.
+                    pending_control = Some(PendingControl::Shutdown {
+                        target: target_wal_sequence,
+                        reply,
+                        deadline,
+                    });
+                    continue;
                 }
-                continue;
             }
         };
 
@@ -961,13 +1065,16 @@ impl PersistenceWorker {
     /// Drain every event accepted before this control message.
     pub async fn flush(&self, timeout: Duration) -> Result<(), String> {
         let (reply, rx) = oneshot::channel();
+        // Capture the current WAL sequence so the worker can verify that all
+        // events admitted before this point have reached a terminal state.
+        let target = self.wal.current_sequence();
         {
             let _send_guard = self.send_gate.lock().await;
             if self.closed.load(Ordering::Acquire) {
                 return Err("persistence worker is shutting down".to_string());
             }
             self.tx
-                .send(WorkerMessage::Flush { reply })
+                .send(WorkerMessage::Flush { target_wal_sequence: target, reply })
                 .await
                 .map_err(|_| "persistence worker is closed".to_string())?;
         }
@@ -982,6 +1089,8 @@ impl PersistenceWorker {
     /// Drain accepted events, flush telemetry, then stop the worker.
     pub async fn shutdown(&self, timeout: Duration) -> Result<(), String> {
         let (reply, rx) = oneshot::channel();
+        let deadline = Instant::now() + timeout;
+        let target = self.wal.current_sequence();
         {
             let _send_guard = self.send_gate.lock().await;
             if self.closed.swap(true, Ordering::AcqRel) {
@@ -989,7 +1098,7 @@ impl PersistenceWorker {
             }
             if self
                 .tx
-                .send(WorkerMessage::Shutdown { reply })
+                .send(WorkerMessage::Shutdown { target_wal_sequence: target, deadline, reply })
                 .await
                 .is_err()
             {
