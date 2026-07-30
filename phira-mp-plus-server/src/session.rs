@@ -240,33 +240,6 @@ impl Session {
                                             }
                                         };
 
-                                        // PersistenceWorker (exclusive — no direct fallback)
-                                        // UserSeen MUST be durably admitted to WAL before auth succeeds
-                                        if let Err(event) = server.persistence_worker.enqueue(
-                                            crate::persistence::message::PersistenceEvent::UserSeen {
-                                                user_id: user_info.id,
-                                                user_name: user_info.name.clone(),
-                                                language: user_info.language.clone(),
-                                                ip: addr.ip().to_string(),
-                                            }
-                                        ).await {
-                                            warn!(
-                                                user = user_info.id,
-                                                kind = %event.kind(),
-                                                "UserSeen enqueue failed, rejecting auth"
-                                            );
-                                            send_auth_rejection(
-                                                retry_send_tx.as_ref(),
-                                                "persistence temporarily unavailable, please try again".to_string(),
-                                            )
-                                            .await;
-                                            if let Some(tx) = auth_tx.take() {
-                                                let _ = tx.send(AuthenticationOutcome::Rejected);
-                                            }
-                                            panicked_clone.store(true, Ordering::SeqCst);
-                                            return Ok(());
-                                        }
-
                                         // Keep the final reconnect/new-user decision atomic across
                                         // Session construction. Cancellation releases this guard,
                                         // so a failed handshake cannot leave a reserved user entry.
@@ -387,16 +360,39 @@ impl Session {
                                         return;
                                     }
                                     debug!("auth response sent");
-                                    server
-                                        .publish_user_connected(
-                                            user.id,
-                                            user.name.clone(),
-                                            addr.ip().to_string(),
-                                            user.lang.0.to_string(),
-                                        )
-                                        .await;
-                                    // Welcome chat must follow the successful authentication frame;
-                                    // otherwise clients may discard it before room/user state exists.
+                                    // ── 后台后置任务 ──────────────────────────────────────
+                                    // UserSeen 持久化：不阻塞握手，但失败时记录 critical 告警
+                                    // publish_user_connected、track_player、send_welcome
+                                    // 均不阻塞客户端认证响应。
+                                    let uid = user.id;
+                                    let uname = user.name.clone();
+                                    let uip = addr.ip().to_string();
+                                    let ulang = user.lang.0.to_string();
+                                    let state = Arc::clone(&server);
+                                    crate::supervisor_actor::spawn_named(
+                                        format!("auth-post-{uid}"),
+                                        async move {
+                                            // UserSeen: best-effort durable admission
+                                            if let Err(event) = state.persistence_worker.enqueue(
+                                                crate::persistence::message::PersistenceEvent::UserSeen {
+                                                    user_id: uid,
+                                                    user_name: uname.clone(),
+                                                    language: ulang.clone(),
+                                                    ip: uip.clone(),
+                                                }
+                                            ).await {
+                                                tracing::error!(
+                                                    user = uid,
+                                                    kind = %event.kind(),
+                                                    "CRITICAL: UserSeen enqueue failed — user authed but not persisted"
+                                                );
+                                            }
+                                            state.publish_user_connected(
+                                                uid, uname, uip, ulang,
+                                            ).await;
+                                        },
+                                    );
+                                    // Welcome chat follows auth frame immediately (sync, fast)
                                     let online = server.users.read().await.len();
                                     crate::internal_hooks::track_player(user.id, &user.name);
                                     crate::internal_hooks::send_welcome(
@@ -405,15 +401,14 @@ impl Session {
                                         online,
                                         &server,
                                     );
-                                    // 后台定时刷新欢迎语（只在用户不在房间时刷新）
-                                    // 通知 room monitor 新用户
-                                    let uid = user.id;
+                                    // Room monitor notification (后台)
+                                    let srv = Arc::clone(&server);
                                     crate::supervisor_actor::spawn_named(
-                                        format!("room-monitor-visit-{uid}"),
+                                        format!("room-monitor-visit-{}", user.id),
                                         async move {
-                                            if let Some(mon) = server.get_room_monitor().await {
+                                            if let Some(mon) = srv.get_room_monitor().await {
                                                 mon.stream
-                                                    .send(ServerCommand::UserVisit(uid))
+                                                    .send(ServerCommand::UserVisit(user.id))
                                                     .await
                                                     .ok();
                                             }
