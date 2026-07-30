@@ -320,11 +320,20 @@ pub async fn join_room(
     let Some(room) = room else {
         bail!("{}", tl!("room-not-found"))
     };
+    // Compute effective_monitor from category to prevent Normal/Console sessions
+    // from bypassing lock/ban/game-state gates by sending monitor=true.
+    let effective_monitor = match category {
+        SessionCategory::RoomMonitor | SessionCategory::GameMonitor => true,
+        SessionCategory::Normal | SessionCategory::Console => false,
+    };
+    if monitor && !effective_monitor {
+        bail!("monitor access requires dedicated monitor authentication");
+    }
     // Monitors bypass player-only lock/ban/game-state gates.
     // No whitelist check — authentication at connection time is sufficient.
     let mut late_join = false;
     let mut need_abort = false;
-    if !monitor {
+    if !effective_monitor {
         // Use control_snapshot for lock check (actor-authoritative)
         let control = room.control_snapshot();
         if control.locked {
