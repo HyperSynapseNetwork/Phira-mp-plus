@@ -314,7 +314,7 @@ fn server_state_query_dispatch(
                 let pool = match &s.db_manager {
                     crate::db::DbManager::Pg(p) => p.clone(),
                 };
-                match sqlx::query_scalar::<_, i64>("SELECT COALESCE(SUM(login_count), 0) FROM mp_users")
+                match sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM mp_user_visits")
                     .fetch_one(&pool)
                     .await
                 {
