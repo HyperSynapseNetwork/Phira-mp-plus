@@ -15,8 +15,10 @@ use tracing::warn;
 use std::collections::HashMap;
 use std::sync::Arc;
 
-/// Minimum interval (ms) between RoomSnapshot persistence enqueues (P1-E coalescing).
-const ROOM_SNAPSHOT_COALESCE_MS: u64 = 500;
+/// Debounce interval (ms) for RoomSnapshot persistence enqueues.
+/// After a state change, a debounce timer is started. If no further
+/// state change occurs within this interval, the snapshot is enqueued.
+const ROOM_SNAPSHOT_DEBOUNCE_MS: u64 = 500;
 
 /// 房间状态的只读快照。
 /// Actor 在每次命令执行后生成新快照，外部读路径使用快照而非直接访问 Room。
@@ -211,9 +213,6 @@ pub struct RoomActorState {
     pub player_data: HashMap<i32, PlayerLiveData>,
     /// 各玩家展示名（actor-authoritative）
     pub display_names: HashMap<i32, String>,
-    /// Monotonic version counter incremented on every state mutation.
-    /// Used for RoomSnapshot persistence coalescing (P1-E).
-    pub snapshot_version: u64,
 }
 
 impl RoomActorState {
@@ -231,7 +230,6 @@ impl RoomActorState {
             created_at,
             player_data: HashMap::new(),
             display_names: HashMap::new(),
-            snapshot_version: 0,
         }
     }
 }
@@ -243,10 +241,10 @@ pub struct RoomActor {
     latest_snapshot: RoomSnapshot,
     /// Actor-owned state (always present).
     pub actor_state: RoomActorState,
-    /// Version last enqueued to the persistence worker (P1-E coalescing).
-    last_enqueued_snapshot_version: u64,
-    /// Timestamp of the last enqueue (P1-E coalescing).
-    last_snapshot_enqueue_time: Option<std::time::Instant>,
+    /// Handle for the debounce timer that enqueues the RoomSnapshot for
+    /// persistence. Cancelled and replaced on every state mutation so that
+    /// rapid-fire commands produce at most one enqueue 500ms after the last change.
+    snapshot_debounce_handle: Option<tokio::task::JoinHandle<()>>,
 }
 
 impl RoomActor {
@@ -281,8 +279,7 @@ impl RoomActor {
             state,
             latest_snapshot: snapshot,
             actor_state,
-            last_enqueued_snapshot_version: 0,
-            last_snapshot_enqueue_time: None,
+            snapshot_debounce_handle: None,
         }
     }
 
@@ -295,9 +292,8 @@ impl RoomActor {
     }
 
     /// Refresh snapshot from actor state (always the authority after command
-    /// execution). Increments the version counter for coalescing (P1-E).
+    /// execution).
     pub fn refresh_snapshot_from_state(&mut self) {
-        self.actor_state.snapshot_version += 1;
         self.latest_snapshot = RoomSnapshot::from_actor_state(&self.actor_state);
     }
 
@@ -341,40 +337,36 @@ impl RoomActor {
                 self.room.uuid,
                 self.latest_snapshot.clone(),
             );
-            // P1-E: Coalesced RoomSnapshot persistence — only enqueue for
-            // persistent rooms when the state version has changed AND enough
-            // time has passed since the last enqueue, to avoid flooding the
-            // persistence worker on rapid-fire commands.
-            let should_enqueue = {
-                let version = self.actor_state.snapshot_version;
-                let time_ok = self
-                    .last_snapshot_enqueue_time
-                    .map(|t| t.elapsed().as_millis() >= ROOM_SNAPSHOT_COALESCE_MS as u128)
-                    .unwrap_or(true);
-                self.actor_state.state.control.persistent_empty
-                    && version != self.last_enqueued_snapshot_version
-                    && time_ok
-            };
-            if should_enqueue {
-                self.last_enqueued_snapshot_version = self.actor_state.snapshot_version;
-                self.last_snapshot_enqueue_time = Some(std::time::Instant::now());
-                if let Ok(payload) = serde_json::to_value(&self.latest_snapshot) {
-                    if let Err(e) = self
-                        .state
-                        .persistence_worker
-                        .enqueue(PersistenceEvent::RoomSnapshot {
-                            room_id: self.room.id.to_string(),
-                            payload: Arc::new(payload),
-                        })
-                        .await
-                    {
-                        warn!(
-                            room = %self.room.id,
-                            kind = %e.kind(),
-                            "room snapshot enqueue failed"
-                        );
+            // P1-E: Debounced RoomSnapshot persistence — cancel any previous
+            // debounce timer, then schedule a new one that waits 500ms before
+            // enqueuing. This ensures rapid-fire state mutations produce at
+            // most one enqueue after the last change settles, without flooding
+            // the persistence worker.
+            if let Some(handle) = self.snapshot_debounce_handle.take() {
+                handle.abort();
+            }
+            if self.actor_state.state.control.persistent_empty {
+                let persistence = self.state.persistence_worker.clone();
+                let room_id = self.room.id.to_string();
+                let snapshot = self.latest_snapshot.clone();
+                self.snapshot_debounce_handle = Some(tokio::spawn(async move {
+                    tokio::time::sleep(std::time::Duration::from_millis(ROOM_SNAPSHOT_DEBOUNCE_MS)).await;
+                    if let Ok(payload) = serde_json::to_value(&snapshot) {
+                        if let Err(e) = persistence
+                            .enqueue(PersistenceEvent::RoomSnapshot {
+                                room_id,
+                                payload: Arc::new(payload),
+                            })
+                            .await
+                        {
+                            warn!(
+                                room = %room_id,
+                                kind = %e.kind(),
+                                "debounced room snapshot enqueue failed"
+                            );
+                        }
                     }
-                }
+                }));
             }
         }
         command.reply_with(result);
