@@ -17,9 +17,9 @@
 use crate::persistence::message::PersistenceEvent;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use tokio::io::AsyncWriteExt;
 use tokio::sync::Mutex;
 use tracing::warn;
@@ -106,6 +106,16 @@ pub struct PersistenceWal {
     admission_count: std::sync::atomic::AtomicU64,
     /// Total ACK count since last compact.
     ack_count: std::sync::atomic::AtomicU64,
+    /// Monotonically increasing sequence counter for admit() calls.
+    /// Gives each admitted event a unique, ordered sequence number so the
+    /// worker can process events in WAL order when the periodic recovery
+    /// scanner re-enqueues WalOnly events.
+    next_seq: AtomicU64,
+    /// Maps wal_id -> sequence number for all un-ACKed admissions.
+    /// Updated on admit (insert), cleared on ack (remove), and populated
+    /// during replay from stored WAL records.  The scanner reads sequences
+    /// from this map when enqueueing recovered events.
+    admit_sequences: Mutex<HashMap<uuid::Uuid, u64>>,
 }
 
 impl PersistenceWal {
@@ -119,6 +129,8 @@ impl PersistenceWal {
             truncated_frames: std::sync::atomic::AtomicU64::new(0),
             admission_count: std::sync::atomic::AtomicU64::new(0),
             ack_count: std::sync::atomic::AtomicU64::new(0),
+            next_seq: AtomicU64::new(0),
+            admit_sequences: Mutex::new(HashMap::new()),
         }
     }
 
@@ -284,19 +296,22 @@ impl PersistenceWal {
         Ok(())
     }
 
-    pub async fn admit(&self, event: PersistenceEvent) -> Result<uuid::Uuid, String> {
+    pub async fn admit(&self, event: PersistenceEvent) -> Result<(uuid::Uuid, u64), String> {
         if !self.replay_succeeded.load(Ordering::Acquire) {
             return Err("WAL replay has not succeeded; admissions are rejected".to_string());
         }
         self.check_disk_space().await?;
         let id = uuid::Uuid::new_v4();
+        let seq = self.next_seq.fetch_add(1, Ordering::SeqCst);
         let frame = WalFrame::new(WalRecord::Admission { id, event })?;
         self.append_frame(&frame).await?;
         self.admission_count.fetch_add(1, Ordering::Release);
+        // Store sequence mapping so scanner and worker can look it up.
+        self.admit_sequences.lock().await.insert(id, seq);
         // Mark marker as active (not clean) so accidental WAL deletion is
         // detectable even after a compact-to-zero followed by new admissions.
         let _ = self.mark_marker_active().await;
-        Ok(id)
+        Ok((id, seq))
     }
 
     pub async fn ack(&self, id: uuid::Uuid) -> Result<(), String> {
@@ -306,10 +321,12 @@ impl PersistenceWal {
         let frame = WalFrame::new(WalRecord::Ack { id })?;
         self.append_frame(&frame).await?;
         self.ack_count.fetch_add(1, Ordering::Release);
+        self.admit_sequences.lock().await.remove(&id);
         Ok(())
     }
 
-    /// Replay WAL and return unacknowledged admissions.
+    /// Replay WAL and return unacknowledged admissions with their sequence
+    /// numbers.
     ///
     /// # Fail-closed semantics
     ///
@@ -319,7 +336,7 @@ impl PersistenceWal {
     ///
     /// Truncated trailing bytes (last line incomplete) are silently discarded
     /// because a crash during append produces exactly this pattern.
-    pub async fn replay(&self) -> Result<Vec<(uuid::Uuid, PersistenceEvent)>, String> {
+    pub async fn replay(&self) -> Result<Vec<(uuid::Uuid, PersistenceEvent, u64)>, String> {
         let _guard = self.io_gate.lock().await;
         // Check instance consistency first: if marker exists but WAL is gone
         // or empty, refuse to replay (fail-closed) UNLESS the marker is
@@ -458,11 +475,36 @@ impl PersistenceWal {
         // Used to detect accidental WAL deletion on subsequent starts.
         self.write_instance_marker().await?;
 
-        self.replay_succeeded.store(true, Ordering::Release);
-        Ok(admitted
+        // Build un-ACKed list and populate sequence mapping.
+        let unacked: Vec<(uuid::Uuid, PersistenceEvent)> = admitted
             .into_iter()
             .filter(|(id, _)| !acked.contains(id))
-            .collect())
+            .collect();
+
+        let mut seq_counter = 0u64;
+        let mut sequences = self.admit_sequences.lock().await;
+        for (id, _) in &unacked {
+            sequences.insert(*id, seq_counter);
+            seq_counter += 1;
+        }
+        // next_seq continues where replay left off so future admit() calls
+        // do not conflict with replayed entry sequences.
+        self.next_seq.store(seq_counter, Ordering::Release);
+        drop(sequences);
+
+        self.replay_succeeded.store(true, Ordering::Release);
+        // Re-read sequences from the map we just populated, using enumerate
+        // as fallback (map should have them all from the loop above).
+        let sequences = self.admit_sequences.lock().await;
+        let result: Vec<_> = unacked
+            .into_iter()
+            .enumerate()
+            .map(|(idx, (id, event))| {
+                let seq = sequences.get(&id).copied().unwrap_or(idx as u64);
+                (id, event, seq)
+            })
+            .collect();
+        Ok(result)
     }
 
     /// Write an instance marker file next to the WAL so we can detect
@@ -738,7 +780,7 @@ impl PersistenceWal {
         self.total_bytes.load(Ordering::Acquire)
     }
 
-    /// List unacknowledged admissions without side effects.
+    /// List unacknowledged admissions with their sequence numbers.
     ///
     /// Unlike `replay()`, this is a pure read — it does not set
     /// `replay_succeeded`, truncate trailing garbage, write instance
@@ -746,10 +788,15 @@ impl PersistenceWal {
     /// time after a successful `replay()` (or on an empty/never-used
     /// WAL).
     ///
-    /// Returns the set of (id, event) pairs whose ACK has not yet
-    /// been observed, in file order.  Returns an empty vec when the
-    /// WAL file does not exist.
-    pub async fn list_pending(&self) -> Result<Vec<(uuid::Uuid, PersistenceEvent)>, String> {
+    /// Returns the set of (id, event, seq) whose ACK has not yet
+    /// been observed, in file order.  Sequence numbers come from the
+    /// in-memory admit_sequences map (set during replay/admit and
+    /// cleared during ack).  Returns an empty vec when the WAL file
+    /// does not exist or when the WAL is in an un-replayed state.
+    pub async fn list_pending(&self) -> Result<Vec<(uuid::Uuid, PersistenceEvent, u64)>, String> {
+        if !self.replay_succeeded.load(Ordering::Acquire) {
+            return Ok(Vec::new());
+        }
         let bytes = match tokio::fs::read(&self.path).await {
             Ok(bytes) => bytes,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
@@ -781,7 +828,15 @@ impl PersistenceWal {
             }
         }
 
-        Ok(admitted.into_iter().filter(|(id, _)| !acked.contains(id)).collect())
+        let sequences = self.admit_sequences.lock().await;
+        Ok(admitted
+            .into_iter()
+            .filter(|(id, _)| !acked.contains(id))
+            .map(|(id, event)| {
+                let seq = sequences.get(&id).copied().unwrap_or(0);
+                (id, event, seq)
+            })
+            .collect())
     }
 
     /// Check whether auto-compaction is worth running based on admission/ACK ratio.
@@ -853,8 +908,8 @@ mod tests {
         assert!(replay.is_empty());
         assert!(wal.replay_succeeded());
 
-        let first_id = wal.admit(make_event("first")).await.unwrap();
-        let _second_id = wal.admit(make_event("second")).await.unwrap();
+        let (first_id, _first_seq) = wal.admit(make_event("first")).await.unwrap();
+        let (_second_id, _second_seq) = wal.admit(make_event("second")).await.unwrap();
         wal.ack(first_id).await.unwrap();
 
         let replay = wal.replay().await.unwrap();
@@ -871,8 +926,8 @@ mod tests {
         let wal = PersistenceWal::new(&path);
 
         wal.replay().await.unwrap();
-        let _id = wal.admit(make_event("keep")).await.unwrap();
-        let ack_id = wal.admit(make_event("ack-me")).await.unwrap();
+        let (_id, _seq) = wal.admit(make_event("keep")).await.unwrap();
+        let (ack_id, _ack_seq) = wal.admit(make_event("ack-me")).await.unwrap();
         wal.ack(ack_id).await.unwrap();
 
         assert_eq!(wal.compact().await.unwrap(), 1);
@@ -889,8 +944,8 @@ mod tests {
         let wal = PersistenceWal::new(&path);
         wal.replay().await.unwrap();
 
-        let id1 = wal.admit(make_event("event1")).await.unwrap();
-        let id2 = wal.admit(make_event("event2")).await.unwrap();
+        let (id1, _seq1) = wal.admit(make_event("event1")).await.unwrap();
+        let (id2, _seq2) = wal.admit(make_event("event2")).await.unwrap();
         wal.ack(id1).await.unwrap();
 
         // Compact: only id2 should survive.
@@ -900,7 +955,7 @@ mod tests {
         assert_eq!(replay[0].1.kind(), "event2");
 
         // After compact, new admissions work.
-        let id3 = wal.admit(make_event("event3")).await.unwrap();
+        let (id3, _seq3) = wal.admit(make_event("event3")).await.unwrap();
         wal.ack(id2).await.unwrap();
         wal.ack(id3).await.unwrap();
         assert_eq!(wal.compact().await.unwrap(), 0);
@@ -908,7 +963,7 @@ mod tests {
         // replay succeeds (the missing WAL is expected, not accidental).
         assert!(wal.replay().await.unwrap().is_empty());
         // New admissions must still work after compact-to-zero (WAL recreated).
-        let id4 = wal.admit(make_event("event4")).await.unwrap();
+        let (id4, _seq4) = wal.admit(make_event("event4")).await.unwrap();
         wal.ack(id4).await.unwrap();
         assert_eq!(wal.compact().await.unwrap(), 0);
 
@@ -946,7 +1001,7 @@ mod tests {
         let wal = PersistenceWal::new(&path);
         wal.replay().await.unwrap();
 
-        let id = wal.admit(make_event("trunc-test")).await.unwrap();
+        let (id, _seq) = wal.admit(make_event("trunc-test")).await.unwrap();
         wal.ack(id).await.unwrap();
 
         // Append a trailing incomplete line (simulate crash during write).
@@ -1043,7 +1098,7 @@ mod tests {
         let path = std::env::temp_dir().join(format!("pmp-wal-idem-{}.jsonl", uuid::Uuid::new_v4()));
         let wal = PersistenceWal::new(&path);
         wal.replay().await.unwrap();
-        let id = wal.admit(make_event("test")).await.unwrap();
+        let (id, _seq) = wal.admit(make_event("test")).await.unwrap();
         wal.ack(id).await.unwrap();
         wal.ack(id).await.unwrap(); // duplicate ACK
         let replay = wal.replay().await.unwrap();
@@ -1073,6 +1128,42 @@ mod tests {
 
         let replay = wal.replay().await.unwrap();
         assert_eq!(replay.len(), 20);
+        let _ = tokio::fs::remove_file(path).await;
+    }
+
+    #[tokio::test]
+    async fn replay_sequence_numbers_are_monotonic() {
+        let path =
+            std::env::temp_dir().join(format!("pmp-wal-seq-{}.jsonl", uuid::Uuid::new_v4()));
+        let wal = PersistenceWal::new(&path);
+        wal.replay().await.unwrap();
+
+        let (id1, seq1) = wal.admit(make_event("first")).await.unwrap();
+        let (id2, seq2) = wal.admit(make_event("second")).await.unwrap();
+        let (id3, seq3) = wal.admit(make_event("third")).await.unwrap();
+
+        // Sequences must be strictly increasing.
+        assert!(seq1 < seq2);
+        assert!(seq2 < seq3);
+
+        // list_pending should return the same sequences.
+        let pending = wal.list_pending().await.unwrap();
+        for (pid, _pe, pseq) in &pending {
+            if *pid == id1 { assert_eq!(*pseq, seq1); }
+            if *pid == id2 { assert_eq!(*pseq, seq2); }
+            if *pid == id3 { assert_eq!(*pseq, seq3); }
+        }
+
+        // After ACK, the entry is removed from the sequences map.
+        wal.ack(id2).await.unwrap();
+        let pending_after = wal.list_pending().await.unwrap();
+        assert_eq!(pending_after.len(), 2);
+        // Remaining entries should still have their original sequences.
+        for (pid, _pe, pseq) in &pending_after {
+            if *pid == id1 { assert_eq!(*pseq, seq1); }
+            if *pid == id3 { assert_eq!(*pseq, seq3); }
+        }
+
         let _ = tokio::fs::remove_file(path).await;
     }
 
@@ -1124,7 +1215,7 @@ mod tests {
         });
         let _ = tokio::join!(h1, h2);
         let replay = wal.replay().await.unwrap();
-        let kinds: Vec<String> = replay.iter().map(|(_, e)| e.kind().to_string()).collect();
+        let kinds: Vec<String> = replay.iter().map(|(_, e, _)| e.kind().to_string()).collect();
         assert!(
             kinds.contains(&"concurrent".to_string()),
             "concurrent event must survive: {kinds:?}"

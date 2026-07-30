@@ -14,7 +14,7 @@ use crate::persistence::stats::{
 };
 use crate::persistence::wal::PersistenceWal;
 use serde_json::json;
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -27,6 +27,7 @@ static DEAD_LETTER_FAILURE_REPORTED: AtomicBool = AtomicBool::new(false);
 
 enum WorkerMessage {
     Event {
+        wal_sequence: u64,
         wal_id: uuid::Uuid,
         event: PersistenceEvent,
         needs_wal_ack: bool,
@@ -179,9 +180,14 @@ async fn append_dead_letter(path: &Path, record: &serde_json::Value) -> Result<(
 /// Normal worker loop: processes replayed events first, then new admissions
 /// from the channel, dispatching each through the persistence pipeline and
 /// ACKing the WAL on completion.
+///
+/// Uses WAL sequence gating to preserve WAL order: the recovery scanner may
+/// re-enqueue WalOnly events at the back of the channel, so we buffer any
+/// message whose sequence does not match `next_expected_sequence` and process
+/// them in WAL order once the missing predecessor arrives.
 async fn process_worker_loop(
     rx: &mut mpsc::Receiver<WorkerMessage>,
-    replay: &mut std::collections::VecDeque<(uuid::Uuid, PersistenceEvent)>,
+    replay: &mut std::collections::VecDeque<(uuid::Uuid, PersistenceEvent, u64)>,
     worker_stats: &Arc<RwLock<PersistenceStats>>,
     worker_dead_letter_path: &Option<std::path::PathBuf>,
     worker_wal: &Arc<PersistenceWal>,
@@ -206,18 +212,73 @@ async fn process_worker_loop(
     let mut pending_acks: std::collections::VecDeque<(uuid::Uuid, u32)> =
         std::collections::VecDeque::new();
 
+    // WAL sequence gating: the next wal_sequence we expect from the channel.
+    // Replayed events are processed first (already in WAL order) and do not
+    // participate in gating; after they are exhausted the channel takes over
+    // with sequence-gated dispatch.
+    let mut next_expected_sequence: u64 = 0;
+    // Buffer for out-of-order channel messages, keyed by wal_sequence.
+    let mut buffer: BTreeMap<u64, (uuid::Uuid, PersistenceEvent, bool)> =
+        BTreeMap::new();
+
     loop {
-        let message = if let Some((wal_id, event)) = replay.pop_front() {
-            WorkerMessage::Event { wal_id, event, needs_wal_ack: true }
-        } else {
-            // All replayed events have been processed and acknowledged.
-            // Signal that initial WAL replay is fully drained so readiness
-            // checks (is_healthy) can proceed.
-            initial_replay_drained.store(true, Ordering::Release);
-            let Some(message) = rx.recv().await else {
-                break;
-            };
-            message
+        // --- Message acquisition with WAL sequence gating -------------------
+        let message = 'acquire: {
+            // Priority 1: replay queue (already in WAL order, no gating).
+            if let Some((wal_id, event, seq)) = replay.pop_front() {
+                break 'acquire Some(WorkerMessage::Event {
+                    wal_sequence: seq,
+                    wal_id,
+                    event,
+                    needs_wal_ack: true,
+                });
+            }
+            // Priority 2: buffer — is the next expected sequence available?
+            if let Some((wal_id, event, needs_wal_ack)) =
+                buffer.remove(&next_expected_sequence)
+            {
+                break 'acquire Some(WorkerMessage::Event {
+                    wal_sequence: next_expected_sequence,
+                    wal_id,
+                    event,
+                    needs_wal_ack,
+                });
+            }
+            // Priority 3: channel — read with sequence gating.
+            loop {
+                let Some(msg) = rx.recv().await else {
+                    break 'acquire None;
+                };
+                match msg {
+                    WorkerMessage::Event {
+                        wal_sequence,
+                        wal_id,
+                        event,
+                        needs_wal_ack,
+                    } => {
+                        if wal_sequence != 0
+                            && wal_sequence != next_expected_sequence
+                        {
+                            // Out of order — stash for later.
+                            buffer.insert(wal_sequence, (wal_id, event, needs_wal_ack));
+                            continue;
+                        }
+                        break 'acquire Some(WorkerMessage::Event {
+                            wal_sequence,
+                            wal_id,
+                            event,
+                            needs_wal_ack,
+                        });
+                    }
+                    // Control messages always pass through.
+                    other => break 'acquire Some(other),
+                }
+            }
+        };
+
+        let Some(message) = message else {
+            break;
+>>>>>>> 8279dec (fix: add WAL sequence gating to preserve event order)
         };
         // Retry pending WAL ACKs — one attempt per iteration, no blocking
         // sleeps.  The queue is naturally retried on each subsequent event,
@@ -246,8 +307,13 @@ async fn process_worker_loop(
             }
         }
 
-        let (wal_id, event, needs_wal_ack) = match message {
-            WorkerMessage::Event { wal_id, event, needs_wal_ack } => (wal_id, event, needs_wal_ack),
+        let (wal_id, event, needs_wal_ack, wal_sequence) = match message {
+            WorkerMessage::Event {
+                wal_id,
+                wal_sequence,
+                event,
+                needs_wal_ack,
+            } => (wal_id, event, needs_wal_ack, wal_sequence),
             WorkerMessage::Flush { reply } => {
                 let remaining = drain_pending_acks(worker_wal, &mut pending_acks, in_flight).await;
                 if remaining > 0 {
@@ -414,6 +480,14 @@ async fn process_worker_loop(
                 }
             }
         }
+
+        // Advance the sequence gate so the next loop iteration can dispatch
+        // the next buffered message or the next in-order channel message.
+        // The seq=0 sentinel is used for replay/compat entries that do not
+        // participate in gating.
+        if wal_sequence != 0 {
+            next_expected_sequence = wal_sequence + 1;
+        }
     }
 }
 
@@ -538,7 +612,7 @@ async fn wal_recovery_scanner(
         // Snapshot in_flight set to avoid holding the lock across the scan loop.
         let in_flight_ids: HashSet<uuid::Uuid> = in_flight.lock().await.clone();
 
-        for (wal_id, event) in &pending {
+        for (wal_id, event, wal_sequence) in &pending {
             // Skip entries that are already queued (in-flight).
             if in_flight_ids.contains(wal_id) {
                 continue;
@@ -547,6 +621,7 @@ async fn wal_recovery_scanner(
             let kind = event.kind();
             let summary = event.summary();
             let msg = WorkerMessage::Event {
+                wal_sequence: *wal_sequence,
                 wal_id: *wal_id,
                 event: event.clone(),
                 needs_wal_ack: true,
@@ -633,8 +708,14 @@ impl PersistenceWorker {
             if replay_ok {
             match worker_wal.replay().await {
                 Ok(events) => {
-                    let mut replay: std::collections::VecDeque<(uuid::Uuid, PersistenceEvent)> =
-                        std::collections::VecDeque::from(events);
+                    let mut replay: std::collections::VecDeque<
+                        (uuid::Uuid, PersistenceEvent, u64),
+                    > = std::collections::VecDeque::from(events);
+                    // Add replayed entries to in_flight so the periodic recovery
+                    // scanner does not re-enqueue them while they are being processed.
+                    for (wal_id, _, _) in &replay {
+                        worker_in_flight.lock().await.insert(*wal_id);
+                    }
                     process_worker_loop(
                         &mut rx,
                         &mut replay,
@@ -711,10 +792,10 @@ impl PersistenceWorker {
         }
         // WAL admit FIRST — once fsynced to WAL the event is recoverable
         // on restart even if queue admission fails temporarily.
-        let (wal_id, needs_wal_ack) = match self.wal.admit(event.clone()).await {
-            Ok(id) => {
+        let (wal_id, wal_sequence, needs_wal_ack) = match self.wal.admit(event.clone()).await {
+            Ok((id, seq)) => {
                 record_wal_received(&self.stats).await;
-                (id, true)
+                (id, seq, true)
             }
             Err(error) => {
                 record_dropped(&self.stats, kind, summary, error).await;
@@ -758,7 +839,14 @@ impl PersistenceWorker {
         // the entry before our insert completes (race with recovery scanner).
         self.in_flight.lock().await.insert(wal_id);
         // Send using the reserved permit (infallible).
-        permit.send(WorkerMessage::Event { wal_id, event, needs_wal_ack });
+        permit.send(WorkerMessage::Event {
+            wal_sequence,
+            wal_id,
+            event,
+            needs_wal_ack,
+        });
+        self.in_flight.lock().await.insert(wal_id);
+>>>>>>> 8279dec (fix: add WAL sequence gating to preserve event order)
         record_queued(&self.stats, kind.clone(), summary).await;
         Ok(AdmissionOutcome::Queued)
     }
