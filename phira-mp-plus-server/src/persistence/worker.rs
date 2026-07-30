@@ -355,7 +355,7 @@ async fn process_worker_loop(
     worker_dead_letter_path: &Option<std::path::PathBuf>,
     worker_wal: &Arc<PersistenceWal>,
     in_flight: &Arc<Mutex<HashSet<uuid::Uuid>>>,
-    _initial_replay_drained: &Arc<AtomicBool>,
+    initial_replay_drained: &Arc<AtomicBool>,
 ) {
     use tracing::{debug, trace, warn};
 
@@ -378,6 +378,8 @@ async fn process_worker_loop(
         let message = if let Some((wal_id, event, _seq)) = replay.pop_front() {
             WorkerMessage::Event { wal_id, wal_sequence: 0, event, needs_wal_ack: true }
         } else {
+            // Replay is fully drained — mark as ready so health checks pass.
+            initial_replay_drained.store(true, Ordering::Release);
             let Some(message) = rx.recv().await else {
                 break;
             };
@@ -715,6 +717,10 @@ impl PersistenceWorker {
                     // scanner does not re-enqueue them while they are being processed.
                     for (wal_id, _, _) in &replay {
                         worker_in_flight.lock().await.insert(*wal_id);
+                    }
+                    // If WAL had no events to replay, mark drained immediately.
+                    if replay.is_empty() {
+                        worker_initial_replay_drained.store(true, Ordering::Release);
                     }
                     process_worker_loop(
                         &mut rx,
