@@ -1062,7 +1062,13 @@ impl PersistenceWorker {
         record_queued(&self.stats, kind.clone(), summary).await;
         Ok(AdmissionOutcome::Queued)
     }
-    /// Drain every event accepted before this control message.
+    /// Wait for all queued events with a WAL sequence <= the current sequence
+    /// to reach a terminal state (ACKed or dead-lettered).
+    ///
+    /// Events that were admitted as WalOnly (WAL-only, never reached the
+    /// in-memory channel) are also covered by the WAL-sequence fence: the
+    /// worker waits for the periodic recovery scanner to re-enqueue and
+    /// process them, or for the timeout to expire.
     pub async fn flush(&self, timeout: Duration) -> Result<(), String> {
         let (reply, rx) = oneshot::channel();
         // Capture the current WAL sequence so the worker can verify that all
