@@ -7,7 +7,8 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::sync::OnceLock;
 use std::sync::{Arc, Mutex};
-use tracing::info;
+use std::time::Instant;
+use tracing::{info, warn};
 
 /// 全局数据库管理器（保留静态用于未迁移的模块）
 pub static DB: OnceLock<super::db::DbManager> = OnceLock::new();
@@ -18,9 +19,14 @@ const PLAYER_TRACKER_MAX_ENTRIES: usize = 50_000;
 /// Maps user_id → effective total seconds (includes current session contribution).
 /// Loaded on startup from the `playtime` table.
 static PLAYTIME_CACHE: OnceLock<Mutex<HashMap<i32, i64>>> = OnceLock::new();
+static PLAYTIME_CACHE_LAST_REFRESH: OnceLock<Mutex<Instant>> = OnceLock::new();
 
 fn ensure_playtime_cache() -> &'static Mutex<HashMap<i32, i64>> {
     PLAYTIME_CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn ensure_playtime_cache_last_refresh() -> &'static Mutex<Instant> {
+    PLAYTIME_CACHE_LAST_REFRESH.get_or_init(|| Mutex::new(Instant::now()))
 }
 
 /// Load the playtime cache from PostgreSQL on startup.
@@ -35,7 +41,30 @@ async fn load_playtime_cache(state: &PlusServerState) {
             cache.insert(user_id as i32, secs);
         }
     }
+    *ensure_playtime_cache_last_refresh().lock().unwrap() = Instant::now();
     info!("playtime cache loaded with {} entries", cache.len());
+}
+
+/// Refresh the playtime cache from PostgreSQL using the static DB handle.
+/// Called periodically to keep the cache fresh.
+async fn refresh_playtime_cache() {
+    let Some(db) = DB.get() else {
+        warn!("playtime cache refresh: DB not initialized");
+        return;
+    };
+    let rows = db.top_playtime(100000).await;
+    let mut cache = ensure_playtime_cache().lock().unwrap();
+    cache.clear();
+    for row in rows {
+        if let (Some(user_id), Some(secs)) = (
+            row.get("user_id").and_then(|v| v.as_i64()),
+            row.get("total_playtime").and_then(|v| v.as_i64()),
+        ) {
+            cache.insert(user_id as i32, secs);
+        }
+    }
+    *ensure_playtime_cache_last_refresh().lock().unwrap() = Instant::now();
+    info!("playtime cache refreshed with {} entries", cache.len());
 }
 
 pub async fn init_internal_hooks(
@@ -55,6 +84,14 @@ pub async fn init_internal_hooks(
 
     // Load the playtime cache from the authoritative PostgreSQL table.
     load_playtime_cache(state).await;
+
+    // Spawn periodic playtime cache refresh every 60s.
+    tokio::spawn(async {
+        loop {
+            tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+            refresh_playtime_cache().await;
+        }
+    });
 
     init_welcome(state, pm).await;
     init_player_tracker(state, http, pm).await;
