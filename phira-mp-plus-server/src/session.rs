@@ -346,6 +346,30 @@ impl Session {
                                         Some(room) => Some(crate::session_room::build_client_room_state(room, &user).await),
                                         None => None,
                                     };
+                                    // ── 阻塞持久化：认证成功但尚未响应客户端 ──────────────
+                                    // 在发送 Authenticate(Ok) 之前先持久化用户记录，
+                                    // 确保 WAL admission 成功后才放行客户端。
+                                    let connected_at = std::time::SystemTime::now()
+                                        .duration_since(std::time::UNIX_EPOCH)
+                                        .map(|d| d.as_millis() as i64)
+                                        .unwrap_or(0);
+                                    if let Err(event) = server.persistence_worker.enqueue(
+                                        crate::persistence::message::PersistenceEvent::UserAuthenticated {
+                                            user_id: user.id,
+                                            user_name: user.name.clone(),
+                                            language: user.lang.0.to_string(),
+                                            ip: addr.ip().to_string(),
+                                            connected_at,
+                                        }
+                                    ).await {
+                                        warn!(
+                                            user = user.id,
+                                            kind = %event.kind(),
+                                            "UserAuthenticated enqueue failed — rejecting auth"
+                                        );
+                                        panicked.store(true, Ordering::SeqCst);
+                                        return;
+                                    }
                                     debug!("sending auth OK to user {}", user.id);
                                     if let Err(err) = send_tx
                                         .send_and_flush(ServerCommand::Authenticate(Ok((
@@ -360,9 +384,7 @@ impl Session {
                                     }
                                     debug!("auth response sent");
                                     // ── 后台后置任务 ──────────────────────────────────────
-                                    // UserSeen 持久化：不阻塞握手，但失败时记录 critical 告警
-                                    // publish_user_connected、track_player、send_welcome
-                                    // 均不阻塞客户端认证响应。
+                                    // publish_user_connected 不阻塞客户端认证响应。
                                     let uid = user.id;
                                     let uname = user.name.clone();
                                     let uip = addr.ip().to_string();
@@ -371,21 +393,6 @@ impl Session {
                                     crate::supervisor_actor::spawn_named(
                                         format!("auth-post-{uid}"),
                                         async move {
-                                            // UserSeen: best-effort durable admission
-                                            if let Err(event) = state.persistence_worker.enqueue(
-                                                crate::persistence::message::PersistenceEvent::UserSeen {
-                                                    user_id: uid,
-                                                    user_name: uname.clone(),
-                                                    language: ulang.clone(),
-                                                    ip: uip.clone(),
-                                                }
-                                            ).await {
-                                                tracing::error!(
-                                                    user = uid,
-                                                    kind = %event.kind(),
-                                                    "CRITICAL: UserSeen enqueue failed — user authed but not persisted"
-                                                );
-                                            }
                                             state.publish_user_connected(
                                                 uid, uname, uip, ulang,
                                             ).await;
@@ -705,22 +712,6 @@ impl Session {
         });
         let _ = this.set(Arc::clone(&res));
         this_inited.notify_one();
-
-        if category == SessionCategory::Normal {
-            if let Err(event) = server
-                .persistence_worker
-                .enqueue(crate::persistence::message::PersistenceEvent::UserOnline {
-                    user_id: res.user.id,
-                })
-                .await
-            {
-                warn!(
-                    user = res.user.id,
-                    kind = %event.kind(),
-                    "failed to enqueue authoritative online state"
-                );
-            }
-        }
 
         Ok(res)
     }
