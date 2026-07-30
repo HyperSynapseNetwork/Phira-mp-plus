@@ -4,7 +4,9 @@
 //! PluginTcpActor, sending internal events back to it for state management.
 
 use crate::plugin_tcp::quota::{MAX_READ_BUF_PER_CONNECTION, MAX_READ_BUF_PER_PLUGIN};
-use crate::plugin_tcp::{ConnectionMap, HandleReadBytesMap, PluginTcpInternal, ReadBufMap};
+use crate::plugin_tcp::{
+    ConnectionMap, EventSemaphoreMap, HandleReadBytesMap, PluginTcpInternal, ReadBufMap,
+};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use tokio::io::AsyncReadExt;
@@ -22,6 +24,7 @@ pub(crate) async fn tcp_connect(
     handle_read_bytes: HandleReadBytesMap,
     internal_tx: mpsc::Sender<PluginTcpInternal>,
     plugin_read_bytes: Arc<Mutex<HashMap<String, usize>>>,
+    event_semaphores: EventSemaphoreMap,
 ) -> Result<(mpsc::Sender<Vec<u8>>, oneshot::Sender<()>), String> {
     let stream = tokio::time::timeout(
         std::time::Duration::from_secs(10),
@@ -41,8 +44,9 @@ pub(crate) async fn tcp_connect(
     let rbm = Arc::clone(&read_buf_map);
     let hrb = Arc::clone(&handle_read_bytes);
     let prb = Arc::clone(&plugin_read_bytes);
+    let esem = event_semaphores.clone();
     tokio::spawn(async move {
-        tcp_read_task(stream, handle, data_rx, close_rx, event_cb, remote, rbm, hrb, internal_tx, plugin_id, prb).await;
+        tcp_read_task(stream, handle, data_rx, close_rx, event_cb, remote, rbm, hrb, internal_tx, plugin_id, prb, esem).await;
         cm.lock().unwrap().remove(&handle);
     });
 
@@ -57,6 +61,7 @@ pub(crate) async fn tcp_listen(
     read_buf_map: ReadBufMap,
     handle_read_bytes: HandleReadBytesMap,
     plugin_read_bytes: Arc<Mutex<HashMap<String, usize>>>,
+    event_semaphores: EventSemaphoreMap,
 ) -> Result<oneshot::Sender<()>, String> {
     let listener = TcpListener::bind(addr)
         .await
@@ -64,7 +69,7 @@ pub(crate) async fn tcp_listen(
 
     let (close_tx, close_rx) = oneshot::channel();
     tokio::spawn(tcp_accept_loop(
-        listener, listener_handle, internal_tx, close_rx, event_cb, read_buf_map, handle_read_bytes, plugin_read_bytes,
+        listener, listener_handle, internal_tx, close_rx, event_cb, read_buf_map, handle_read_bytes, plugin_read_bytes, event_semaphores,
     ));
     Ok(close_tx)
 }
@@ -78,6 +83,7 @@ async fn tcp_accept_loop(
     read_buf_map: ReadBufMap,
     handle_read_bytes: HandleReadBytesMap,
     plugin_read_bytes: Arc<Mutex<HashMap<String, usize>>>,
+    event_semaphores: EventSemaphoreMap,
 ) {
     let mut next_conn: u64 = 1;
     loop {
@@ -94,6 +100,7 @@ async fn tcp_accept_loop(
                         let prb = Arc::clone(&plugin_read_bytes);
                         let peer_for_msg = peer.clone();
                         let hrb = Arc::clone(&handle_read_bytes);
+                        let esem = event_semaphores.clone();
                         tokio::spawn(async move {
                             let (data_tx, data_rx) = mpsc::channel::<Vec<u8>>(64);
                             let (close_tx, close_rx) = oneshot::channel::<()>();
@@ -107,7 +114,11 @@ async fn tcp_accept_loop(
                                 plugin_id_tx,
                             }).await;
                             let plugin_id = plugin_id_rx.await.unwrap_or_default();
-                            tcp_read_task(stream, conn_handle, data_rx, close_rx, cb, peer, rbm, hrb, itx, plugin_id, prb).await;
+                            if plugin_id.is_empty() {
+                                // Quota exceeded or other rejection — drop the connection immediately
+                                return;
+                            }
+                            tcp_read_task(stream, conn_handle, data_rx, close_rx, cb, peer, rbm, hrb, itx, plugin_id, prb, esem).await;
                         });
                     }
                     Err(e) => {
@@ -136,6 +147,7 @@ async fn tcp_read_task(
     internal_tx: mpsc::Sender<PluginTcpInternal>,
     plugin_id: String,
     plugin_read_bytes: Arc<Mutex<HashMap<String, usize>>>,
+    event_semaphores: EventSemaphoreMap,
 ) {
     use tokio::io::AsyncWriteExt;
 
@@ -165,76 +177,91 @@ async fn tcp_read_task(
                     Ok(0) => {
                         // Tell the actor to handle disconnect — actor is the
                         // sole publisher of plugin events and owns cleanup.
-                        let _ = internal_tx.try_send(PluginTcpInternal::Disconnected {
+                        if (internal_tx.send(PluginTcpInternal::Disconnected {
                             handle,
                             plugin_id: cb_plugin_id.clone(),
                             remote_addr: remote_addr.clone(),
-                        });
+                        }).await).is_err() {
+                            // Actor gone; nothing more to do.
+                        }
                         break;
                     }
                     Ok(n) => {
-                        // Buffer for pull-based recv(), with read buffer limits
-                        let mut rbm = read_buf_map.lock().unwrap();
-                        let entry = rbm.entry(handle).or_default();
+                        // Per-plugin event rate limiting: try to acquire a semaphore
+                        // permit.  If the semaphore is exhausted, drop this event
+                        // (and the associated read data) — the connection stays alive
+                        // but the plugin misses this data.
+                        let event_permit = event_semaphores.lock().unwrap()
+                            .get(&cb_plugin_id)
+                            .and_then(|sem| sem.try_acquire().ok());
 
-                        // Per-connection limit: drop oldest data if at limit
-                        if entry.len() + n > MAX_READ_BUF_PER_CONNECTION {
-                            let excess = entry.len() + n - MAX_READ_BUF_PER_CONNECTION;
-                            let drain_end = entry.len().min(excess);
-                            entry.drain(..drain_end);
-                            // Track dropped bytes per-handle and per-plugin
-                            if !plugin_id.is_empty() && drain_end > 0 {
-                                let mut hrb = handle_read_bytes.lock().unwrap();
-                                if let Some(v) = hrb.get_mut(&handle) {
-                                    *v = v.saturating_sub(drain_end);
-                                    if *v == 0 { hrb.remove(&handle); }
-                                }
-                                drop(hrb);
-                                let mut prb = plugin_read_bytes.lock().unwrap();
-                                if let Some(total) = prb.get_mut(&plugin_id) {
-                                    *total = total.saturating_sub(drain_end);
-                                    if *total == 0 { prb.remove(&plugin_id); }
+                        if event_permit.is_some() {
+                            // Buffer for pull-based recv(), with read buffer limits
+                            let mut rbm = read_buf_map.lock().unwrap();
+                            let entry = rbm.entry(handle).or_default();
+
+                            // Per-connection limit: drop oldest data if at limit
+                            if entry.len() + n > MAX_READ_BUF_PER_CONNECTION {
+                                let excess = entry.len() + n - MAX_READ_BUF_PER_CONNECTION;
+                                let drain_end = entry.len().min(excess);
+                                entry.drain(..drain_end);
+                                // Track dropped bytes per-handle and per-plugin
+                                if !plugin_id.is_empty() && drain_end > 0 {
+                                    let mut hrb = handle_read_bytes.lock().unwrap();
+                                    if let Some(v) = hrb.get_mut(&handle) {
+                                        *v = v.saturating_sub(drain_end);
+                                        if *v == 0 { hrb.remove(&handle); }
+                                    }
+                                    drop(hrb);
+                                    let mut prb = plugin_read_bytes.lock().unwrap();
+                                    if let Some(total) = prb.get_mut(&plugin_id) {
+                                        *total = total.saturating_sub(drain_end);
+                                        if *total == 0 { prb.remove(&plugin_id); }
+                                    }
                                 }
                             }
-                        }
 
-                        // Per-plugin limit: cap how much we add
-                        let room = MAX_READ_BUF_PER_CONNECTION.saturating_sub(entry.len());
-                        let to_buffer = n.min(room);
-                        let actually_buffered = if !plugin_id.is_empty() && to_buffer > 0 {
-                            let plugin_total = {
-                                let prb = plugin_read_bytes.lock().unwrap();
-                                prb.get(&plugin_id).copied().unwrap_or(0)
+                            // Per-plugin limit: cap how much we add
+                            let room = MAX_READ_BUF_PER_CONNECTION.saturating_sub(entry.len());
+                            let to_buffer = n.min(room);
+                            let actually_buffered = if !plugin_id.is_empty() && to_buffer > 0 {
+                                let plugin_total = {
+                                    let prb = plugin_read_bytes.lock().unwrap();
+                                    prb.get(&plugin_id).copied().unwrap_or(0)
+                                };
+                                let plugin_room = MAX_READ_BUF_PER_PLUGIN.saturating_sub(plugin_total);
+                                to_buffer.min(plugin_room)
+                            } else {
+                                to_buffer
                             };
-                            let plugin_room = MAX_READ_BUF_PER_PLUGIN.saturating_sub(plugin_total);
-                            to_buffer.min(plugin_room)
-                        } else {
-                            to_buffer
-                        };
 
-                        if actually_buffered > 0 {
-                            entry.extend_from_slice(&buf[..actually_buffered]);
-                            if !plugin_id.is_empty() {
-                                let mut hrb = handle_read_bytes.lock().unwrap();
-                                *hrb.entry(handle).or_insert(0) += actually_buffered;
-                                drop(hrb);
-                                let mut prb = plugin_read_bytes.lock().unwrap();
-                                *prb.entry(plugin_id.clone()).or_insert(0) += actually_buffered;
+                            if actually_buffered > 0 {
+                                entry.extend_from_slice(&buf[..actually_buffered]);
+                                if !plugin_id.is_empty() {
+                                    let mut hrb = handle_read_bytes.lock().unwrap();
+                                    *hrb.entry(handle).or_insert(0) += actually_buffered;
+                                    drop(hrb);
+                                    let mut prb = plugin_read_bytes.lock().unwrap();
+                                    *prb.entry(plugin_id.clone()).or_insert(0) += actually_buffered;
+                                }
                             }
-                        }
-                        drop(rbm);
+                            drop(rbm);
 
-                        cb("tcp:receive".into(), serde_json::json!({
-                            "handle": handle, "plugin_id": cb_plugin_id.clone(),
-                            "bytes": buf[..n].to_vec(),
-                        }));
+                            cb("tcp:receive".into(), serde_json::json!({
+                                "handle": handle, "plugin_id": cb_plugin_id.clone(),
+                                "bytes": buf[..n].to_vec(),
+                            }));
+                            // event_permit dropped here, returned to semaphore
+                        }
                     }
                     Err(_e) => {
-                        let _ = internal_tx.try_send(PluginTcpInternal::Disconnected {
+                        if (internal_tx.send(PluginTcpInternal::Disconnected {
                             handle,
                             plugin_id: cb_plugin_id.clone(),
                             remote_addr: remote_addr.clone(),
-                        });
+                        }).await).is_err() {
+                            // Actor gone; nothing more to do.
+                        }
                         break;
                     }
                 }
