@@ -16,7 +16,7 @@ use std::time::Duration;
 use tokio::sync::{mpsc, oneshot};
 use tracing::{debug, error, warn};
 
-use super::{now_ms, EnqueueOutcome, HighFrequencyConfig, HighFrequencyItem, HighFrequencyKind, HighFrequencyStats};
+use super::{now_ms, EnqueueOutcome, HighFrequencyConfig, HighFrequencyItem, HighFrequencyStats};
 
 // ── Internal message type ────────────────────────────────────────────────────
 

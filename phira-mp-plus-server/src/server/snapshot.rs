@@ -145,11 +145,6 @@ pub(super) fn build_snapshot(
     let actor_chart = actor_snap.as_ref().and_then(|s| s.chart);
     let actor_chart_name = actor_snap.as_ref().and_then(|s| s.chart_name.clone());
     let actor_round_id = actor_snap.as_ref().and_then(|s| s.round_id.map(|id| id.to_string()));
-    // Prefer actor-authoritative member IDs. The Room connection refs are
-    // still used below for full UserSnapshot info (names, session status).
-    let actor_player_ids: Option<Vec<i32>> = actor_snap.as_ref().map(|s| s.members.users.clone());
-    let actor_monitor_ids: Option<Vec<i32>> = actor_snap.as_ref().map(|s| s.members.monitors.clone());
-
     let (st, playing_users, ready_users, finished_users, aborted_users, result_count, state_detail) =
         match actor_stripped {
             Some(phira_mp_common::StrippedRoomState::SelectingChart) | None => (

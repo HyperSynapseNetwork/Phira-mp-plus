@@ -5,16 +5,13 @@
 //! per-plugin resource quotas.
 
 use crate::plugin_tcp::events::{tcp_connect, tcp_listen};
-use crate::plugin_tcp::quota::{
-    MAX_CONNECTIONS_PER_PLUGIN, MAX_LISTENERS_PER_PLUGIN,
-};
 use crate::plugin_tcp::{
     CloseMap, ConnectionMap, PluginTcpCommand, PluginTcpInternal, ReadBufMap,
 };
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use tokio::sync::{mpsc, oneshot};
-use tracing::{info, warn};
+use tracing::info;
 
 struct Connection {
     remote_addr: String,
