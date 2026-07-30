@@ -11,6 +11,7 @@ use crate::persistence::message::PersistenceEvent;
 use crate::room::{InternalRoomState, PlayerLiveData, Room, RoomControlSnapshot};
 use crate::server::PlusServerState;
 use serde::{Deserialize, Serialize};
+use tracing::warn;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -281,14 +282,21 @@ impl RoomActor {
             // Enqueue a RoomSnapshot to the persistence worker for the
             // mp_room_snapshots table (P0-E audit).
             if let Ok(payload) = serde_json::to_value(&self.latest_snapshot) {
-                let _ = self
+                if let Err(e) = self
                     .state
                     .persistence_worker
                     .enqueue(PersistenceEvent::RoomSnapshot {
                         room_id: self.room.id.to_string(),
                         payload: Arc::new(payload),
                     })
-                    .await;
+                    .await
+                {
+                    warn!(
+                        room = %self.room.id,
+                        kind = %e.kind(),
+                        "room snapshot enqueue failed"
+                    );
+                }
             }
         }
         command.reply_with(result);

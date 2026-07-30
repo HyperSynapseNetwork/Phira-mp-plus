@@ -10,6 +10,7 @@ use crate::persistence::message::PersistenceEvent;
 use crate::server::PlusServerState;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
+use tracing::warn;
 
 // ── Runner state ─────────────────────────────────────────────────────────────
 
@@ -135,12 +136,15 @@ impl BenchmarkRunner {
 
         // Enqueue BenchmarkReport to persistence worker for mp_runtime_benchmark_reports table.
         if let Some(state) = &self.server_state {
-            let _ = state
+            if let Err(e) = state
                 .persistence_worker
                 .enqueue(PersistenceEvent::BenchmarkReport {
                     report: report.clone(),
                 })
-                .await;
+                .await
+            {
+                warn!(kind = %e.kind(), "benchmark report enqueue failed");
+            }
         }
 
         Ok(report)

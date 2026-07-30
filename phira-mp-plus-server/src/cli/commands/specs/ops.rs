@@ -64,7 +64,9 @@ pub fn specs() -> Vec<CommandSpec> {
                         if let Some(ev) = event {
                             let pw = Arc::clone(&state.persistence_worker);
                             tokio::task::spawn(async move {
-                                let _ = pw.enqueue(ev).await;
+                                if let Err(e) = pw.enqueue(ev).await {
+                                    tracing::warn!(kind = %e.kind(), "dead-letter replay enqueue failed");
+                                }
                             });
                             count += 1;
                         }
