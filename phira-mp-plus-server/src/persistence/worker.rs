@@ -34,11 +34,9 @@ enum WorkerMessage {
     },
     Flush {
         reply: oneshot::Sender<Result<(), String>>,
-        target_wal_sequence: u64,
     },
     Shutdown {
         reply: oneshot::Sender<Result<(), String>>,
-        target_wal_sequence: u64,
     },
 }
 
@@ -854,9 +852,8 @@ impl PersistenceWorker {
             if self.closed.load(Ordering::Acquire) {
                 return Err("persistence worker is shutting down".to_string());
             }
-            let target_wal_sequence = self.wal.current_sequence();
             self.tx
-                .send(WorkerMessage::Flush { reply, target_wal_sequence })
+                .send(WorkerMessage::Flush { reply })
                 .await
                 .map_err(|_| "persistence worker is closed".to_string())?;
         }
@@ -876,10 +873,9 @@ impl PersistenceWorker {
             if self.closed.swap(true, Ordering::AcqRel) {
                 return Ok(());
             }
-            let target_wal_sequence = self.wal.current_sequence();
             if self
                 .tx
-                .send(WorkerMessage::Shutdown { reply, target_wal_sequence })
+                .send(WorkerMessage::Shutdown { reply })
                 .await
                 .is_err()
             {
