@@ -284,6 +284,162 @@ impl DbManager {
         .is_ok()
     }
 
+    /// Atomically commit all round results and close the round in a single
+    /// PostgreSQL transaction.
+    ///
+    /// This replaces the previous pattern of per-result INSERT + separate
+    /// close_round call, eliminating the window where `mp_rounds.finished_at`
+    /// could be left NULL after partial failures.
+    ///
+    /// The transaction:
+    /// 1. Verifies the round exists (`SELECT ... FOR UPDATE`)
+    /// 2. Upserts all results (`ON CONFLICT DO NOTHING`)
+    /// 3. Inserts minimal aborted-user records for any not already in results
+    /// 4. Closes the round (`UPDATE mp_rounds SET finished_at`)
+    /// 5. Records a `round.completed` event
+    ///
+    /// Returns `true` if the entire transaction committed successfully.
+    pub async fn commit_round_completed(
+        &self,
+        round_uuid: &str,
+        room_id: &str,
+        event_id: &str,
+        results: &[crate::room::PlayResult],
+        finished_at: i64,
+        aborted_users: &[i32],
+    ) -> bool {
+        let Self::Pg(pool) = self;
+        let now = now_ms();
+        let Ok(mut transaction) = pool.begin().await else {
+            return false;
+        };
+
+        // 1. Verify round exists and lock it (prevents concurrent writes).
+        if sqlx::query("SELECT 1 FROM mp_rounds WHERE round_uuid = $1 FOR UPDATE")
+            .bind(round_uuid)
+            .fetch_optional(&mut *transaction)
+            .await
+            .ok()
+            .flatten()
+            .is_none()
+        {
+            // Round does not exist — create a stub row so the rest of the
+            // transaction can succeed.  This handles edge cases where the
+            // round metadata was never fully opened (e.g. crash recovery).
+            if sqlx::query(
+                "INSERT INTO mp_rounds (round_uuid, room_id, chart_id, chart_name, players,
+                                        started_at, finished_at, created_at, updated_at, sequence)
+                 VALUES ($1, $2, 0, '', '[]'::jsonb, $3, $3, $3, $3,
+                         nextval('mp_persist_sequence'))
+                 ON CONFLICT (round_uuid) DO UPDATE SET
+                   finished_at = EXCLUDED.finished_at,
+                   updated_at  = EXCLUDED.updated_at",
+            )
+            .bind(round_uuid)
+            .bind(room_id)
+            .bind(now)
+            .execute(&mut *transaction)
+            .await
+            .is_err()
+            {
+                return false;
+            }
+        }
+
+        // 2. Upsert all results (ON CONFLICT DO NOTHING ensures first-write-wins).
+        for result in results {
+            let payload = serde_json::to_value(result).unwrap_or_default();
+            if sqlx::query(
+                "INSERT INTO mp_round_results
+                       (round_uuid, user_id, room_id, score, accuracy,
+                        payload, created_at, updated_at, sequence)
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, $7,
+                         nextval('mp_persist_sequence'))
+                 ON CONFLICT (round_uuid, user_id) DO NOTHING",
+            )
+            .bind(round_uuid)
+            .bind(result.user_id)
+            .bind(room_id)
+            .bind(result.score)
+            .bind(f64::from(result.accuracy))
+            .bind(payload)
+            .bind(now)
+            .execute(&mut *transaction)
+            .await
+            .is_err()
+            {
+                return false;
+            }
+        }
+
+        // 3. Mark aborted users not already in results (defensive).
+        for uid in aborted_users {
+            let already = results.iter().any(|r| r.user_id == *uid);
+            if !already {
+                let payload = serde_json::json!({"user_id": uid, "aborted": true});
+                if sqlx::query(
+                    "INSERT INTO mp_round_results
+                           (round_uuid, user_id, room_id, score, accuracy,
+                            payload, created_at, updated_at, sequence)
+                     VALUES ($1, $2, $3, 0, 0.0, $4, $5, $5,
+                             nextval('mp_persist_sequence'))
+                     ON CONFLICT (round_uuid, user_id) DO NOTHING",
+                )
+                .bind(round_uuid)
+                .bind(uid)
+                .bind(room_id)
+                .bind(payload)
+                .bind(now)
+                .execute(&mut *transaction)
+                .await
+                .is_err()
+                {
+                    return false;
+                }
+            }
+        }
+
+        // 4. Close the round.
+        if sqlx::query(
+            "UPDATE mp_rounds
+                SET finished_at = $2,
+                    updated_at  = $2,
+                    sequence    = nextval('mp_persist_sequence')
+              WHERE round_uuid = $1",
+        )
+        .bind(round_uuid)
+        .bind(finished_at)
+        .execute(&mut *transaction)
+        .await
+        .is_err()
+        {
+            return false;
+        }
+
+        // 5. Record a round.completed event for audit.
+        if sqlx::query(
+            "INSERT INTO mp_events (event_id, kind, room_id, user_id, payload, created_at)
+             VALUES ($1, 'round.completed', $2, NULL, $3, $4)
+             ON CONFLICT (event_id) WHERE event_id IS NOT NULL DO NOTHING",
+        )
+        .bind(event_id)
+        .bind(room_id)
+        .bind(serde_json::json!({
+            "round_uuid": round_uuid,
+            "result_count": results.len(),
+            "aborted_count": aborted_users.len(),
+        }))
+        .bind(now)
+        .execute(&mut *transaction)
+        .await
+        .is_err()
+        {
+            return false;
+        }
+
+        transaction.commit().await.is_ok()
+    }
+
     pub async fn list_rounds(&self, limit: i64) -> Vec<crate::round_store::RoundMeta> {
         let Self::Pg(pool) = self;
         let limit = limit.clamp(1, 200);
