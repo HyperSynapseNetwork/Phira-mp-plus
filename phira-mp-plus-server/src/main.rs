@@ -130,12 +130,9 @@ async fn main() -> Result<()> {
             let guard = sentry::init((dsn.to_string(), sentry::ClientOptions {
                 release: sentry::release_name!(),
                 send_default_pii: true,
-                enable_profiling: true,
-                traces_sample_rate: 0.1,
                 ..Default::default()
             }));
-            // Integrate sentry with tracing for automatic breadcrumb capture
-            let _ = sentry_tracing::register_sentry_subscriber();
+            // tracing integration is built-in with sentry (via tracing feature flag)
             info!("sentry error monitoring enabled");
             Some(guard)
         } else {
