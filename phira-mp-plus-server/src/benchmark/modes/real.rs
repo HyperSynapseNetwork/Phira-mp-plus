@@ -1154,8 +1154,12 @@ pub async fn run_real(
                     match result {
                         Ok(Ok(cm)) => results.push(Ok(cm)),
                         Ok(Err(e)) => results.push(Err(e)),
-                        Err(_) => {
-                            // Already counted in clients_timed_out
+                        Err(e) => {
+                            // Panics before abort are tracked; cancelled by
+                            // abort_all are already counted in clients_timed_out.
+                            if e.is_panic() {
+                                results.push(Err(format!("client task panicked before abort: {e}")));
+                            }
                         }
                     }
                 }
@@ -1175,6 +1179,9 @@ pub async fn run_real(
                     warn!("Client task join error: {e}");
                     if e.is_cancelled() {
                         clients_timed_out += 1;
+                    } else {
+                        // panic or other join error — track as failure
+                        results.push(Err(format!("client task panicked or errored: {e}")));
                     }
                 }
                 Ok(None) => {
@@ -1190,7 +1197,13 @@ pub async fn run_real(
                         match result {
                             Ok(Ok(cm)) => results.push(Ok(cm)),
                             Ok(Err(e)) => results.push(Err(e)),
-                            Err(_) => {} // Already counted
+                            Err(e) => {
+                                // Panics before abort are tracked; cancelled by
+                                // abort_all are already counted in clients_timed_out.
+                                if e.is_panic() {
+                                    results.push(Err(format!("client task panicked before abort: {e}")));
+                                }
+                            }
                         }
                     }
                     break;
@@ -1244,7 +1257,7 @@ pub async fn run_real(
     report.summary.avg_commands_per_sec = total_commands as f64 / duration_secs as f64;
     report.summary.peak_commands_per_sec = total_commands as f64 / duration_secs as f64;
     report.summary.clients_started = num_clients;
-    report.summary.clients_completed = clients_succeeded;
+    report.summary.clients_completed = clients_succeeded + clients_failed + clients_cancelled + clients_timed_out;
     report.summary.clients_succeeded = clients_succeeded;
     report.summary.clients_failed = clients_failed;
     report.summary.clients_cancelled = clients_cancelled;
@@ -1276,7 +1289,7 @@ pub async fn run_real(
             messages_per_sec: report.summary.avg_messages_per_sec,
             errors: total_errors,
             latency: report.command_latency,
-            passed: clients_failed == 0 && clients_cancelled == 0 && clients_timed_out == 0,
+            passed: clients_succeeded == num_clients,
             error: {
                 let mut reasons = Vec::new();
                 if clients_failed > 0 {
