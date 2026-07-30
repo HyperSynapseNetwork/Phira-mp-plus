@@ -738,6 +738,52 @@ impl PersistenceWal {
         self.total_bytes.load(Ordering::Acquire)
     }
 
+    /// List unacknowledged admissions without side effects.
+    ///
+    /// Unlike `replay()`, this is a pure read — it does not set
+    /// `replay_succeeded`, truncate trailing garbage, write instance
+    /// markers, or mutate any WAL state.  It is safe to call at any
+    /// time after a successful `replay()` (or on an empty/never-used
+    /// WAL).
+    ///
+    /// Returns the set of (id, event) pairs whose ACK has not yet
+    /// been observed, in file order.  Returns an empty vec when the
+    /// WAL file does not exist.
+    pub async fn list_pending(&self) -> Result<Vec<(uuid::Uuid, PersistenceEvent)>, String> {
+        let bytes = match tokio::fs::read(&self.path).await {
+            Ok(bytes) => bytes,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(e) => return Err(format!("read WAL {}: {e}", self.path.display())),
+        };
+
+        let mut admitted: Vec<(uuid::Uuid, PersistenceEvent)> = Vec::new();
+        let mut acked = std::collections::HashSet::new();
+
+        for line in bytes.split(|b| *b == b'\n') {
+            if line.is_empty() {
+                continue;
+            }
+            let frame: WalFrame = match serde_json::from_slice(line) {
+                Ok(f) => f,
+                Err(_) => continue, // skip truncated/corrupt lines silently
+            };
+            if frame.ver > WAL_FORMAT_VERSION {
+                continue;
+            }
+            if frame.verify().is_err() {
+                continue; // skip checksum failures
+            }
+            match frame.record {
+                WalRecord::Admission { id, event } => admitted.push((id, event)),
+                WalRecord::Ack { id } => {
+                    acked.insert(id);
+                }
+            }
+        }
+
+        Ok(admitted.into_iter().filter(|(id, _)| !acked.contains(id)).collect())
+    }
+
     /// Check whether auto-compaction is worth running based on admission/ACK ratio.
     pub fn should_compact(&self) -> bool {
         let admitted = self.admission_count.load(Ordering::Acquire);
