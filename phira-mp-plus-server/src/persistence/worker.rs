@@ -33,9 +33,12 @@ enum WorkerMessage {
         needs_wal_ack: bool,
     },
     Flush {
+        target_wal_sequence: u64,
         reply: oneshot::Sender<Result<(), String>>,
     },
     Shutdown {
+        target_wal_sequence: u64,
+        deadline: Instant,
         reply: oneshot::Sender<Result<(), String>>,
     },
 }
@@ -414,21 +417,33 @@ async fn process_worker_loop(
 
         let (wal_id, wal_sequence, event, needs_wal_ack) = match message {
             WorkerMessage::Event { wal_id, wal_sequence, event, needs_wal_ack } => (wal_id, wal_sequence, event, needs_wal_ack),
-            WorkerMessage::Flush { reply, .. } => {
-                let remaining = drain_pending_acks(worker_wal, &mut pending_acks, in_flight).await;
-                if remaining > 0 {
-                    warn!(remaining, "flush: pending ACK drain incomplete");
-                }
-                let _ = reply.send(Ok(()));
+            WorkerMessage::Flush { target_wal_sequence, reply } => {
+                let remaining = drain_pending_acks(worker_wal, &mut pending_acks, in_flight, None).await;
+                let result = if remaining > 0 {
+                    warn!(remaining, target_wal_sequence, "flush: pending ACK drain incomplete");
+                    Err(format!(
+                        "flush: {} pending ACKs remain after drain (target seq: {})",
+                        remaining, target_wal_sequence
+                    ))
+                } else {
+                    Ok(())
+                };
+                let _ = reply.send(result);
                 continue;
             }
-            WorkerMessage::Shutdown { reply, .. } => {
-                let remaining = drain_pending_acks(worker_wal, &mut pending_acks, in_flight).await;
-                if remaining > 0 {
-                    warn!(remaining, "shutdown: pending ACK drain incomplete");
-                }
+            WorkerMessage::Shutdown { target_wal_sequence, deadline, reply } => {
+                let remaining = drain_pending_acks(worker_wal, &mut pending_acks, in_flight, Some(deadline)).await;
+                let result = if remaining > 0 {
+                    warn!(remaining, target_wal_sequence, "shutdown: pending ACK drain incomplete");
+                    Err(format!(
+                        "shutdown: {} pending ACKs remain after drain (target seq: {})",
+                        remaining, target_wal_sequence
+                    ))
+                } else {
+                    Ok(())
+                };
                 let should_stop = remaining == 0;
-                let _ = reply.send(if should_stop { Ok(()) } else { Err("shutdown with undrained ACKs".to_string()) });
+                let _ = reply.send(if should_stop { Ok(()) } else { result });
                 if should_stop {
                     break;
                 }
@@ -473,15 +488,20 @@ async fn process_worker_loop(
 /// on failure.  Uses a time-based deadline rather than a fixed retry count,
 /// so every entry gets a fair attempt within the drain window.
 ///
+/// When `deadline` is `None`, a default 6-second deadline is used from the
+/// call time.  When `Some(abs_deadline)` is provided, the drain respects the
+/// caller's absolute deadline and can abort early if it expires.
+///
 /// Returns the number of entries that remain in the queue after the deadline
 /// expires.  A return value of 0 means all entries were successfully drained.
 async fn drain_pending_acks(
     worker_wal: &Arc<PersistenceWal>,
     pending_acks: &mut std::collections::VecDeque<(uuid::Uuid, u32)>,
     in_flight: &Arc<Mutex<HashSet<uuid::Uuid>>>,
+    deadline: Option<Instant>,
 ) -> usize {
     use tracing::{debug, warn};
-    let deadline = Instant::now() + Duration::from_secs(6);
+    let deadline = deadline.unwrap_or_else(|| Instant::now() + Duration::from_secs(6));
     let initial_count = pending_acks.len();
     let mut attempts = 0u64;
 
@@ -853,13 +873,18 @@ impl PersistenceWorker {
     /// Drain every event accepted before this control message.
     pub async fn flush(&self, timeout: Duration) -> Result<(), String> {
         let (reply, rx) = oneshot::channel();
+        let target_wal_sequence;
         {
             let _send_guard = self.send_gate.lock().await;
             if self.closed.load(Ordering::Acquire) {
                 return Err("persistence worker is shutting down".to_string());
             }
+            // Capture the current WAL admission sequence so the worker knows
+            // which events are covered by this flush.  Events admitted after
+            // this point have higher sequences and are not included.
+            target_wal_sequence = self.wal.current_sequence();
             self.tx
-                .send(WorkerMessage::Flush { reply })
+                .send(WorkerMessage::Flush { target_wal_sequence, reply })
                 .await
                 .map_err(|_| "persistence worker is closed".to_string())?;
         }
@@ -874,14 +899,22 @@ impl PersistenceWorker {
     /// Drain accepted events, flush telemetry, then stop the worker.
     pub async fn shutdown(&self, timeout: Duration) -> Result<(), String> {
         let (reply, rx) = oneshot::channel();
+        let target_wal_sequence;
+        let deadline;
         {
             let _send_guard = self.send_gate.lock().await;
             if self.closed.swap(true, Ordering::AcqRel) {
                 return Ok(());
             }
+            // Capture the current WAL admission sequence so the worker knows
+            // which events are covered by this shutdown.
+            target_wal_sequence = self.wal.current_sequence();
+            // Capture an absolute deadline so the worker can abort waiting
+            // for pending ACKs when the caller's timeout would expire.
+            deadline = Instant::now() + timeout;
             if self
                 .tx
-                .send(WorkerMessage::Shutdown { reply })
+                .send(WorkerMessage::Shutdown { target_wal_sequence, deadline, reply })
                 .await
                 .is_err()
             {
