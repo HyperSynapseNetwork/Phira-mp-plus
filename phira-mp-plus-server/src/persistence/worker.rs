@@ -841,9 +841,10 @@ impl PersistenceWorker {
             }
         };
         // Send using the reserved permit (infallible).
-        permit.send(WorkerMessage::Event { wal_id, wal_sequence, event, needs_wal_ack });
         self.in_flight.lock().await.insert(wal_id);
-        // Send using the reserved permit (infallible).
+        permit.send(WorkerMessage::Event { wal_id, wal_sequence, event, needs_wal_ack });
+        record_queued(&self.stats, kind.clone(), summary).await;
+        Ok(AdmissionOutcome::Queued)
     }
     /// Drain every event accepted before this control message.
     pub async fn flush(&self, timeout: Duration) -> Result<(), String> {
