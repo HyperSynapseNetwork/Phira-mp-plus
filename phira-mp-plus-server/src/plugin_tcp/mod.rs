@@ -83,3 +83,6 @@ pub(crate) type ConnectionMap = Arc<Mutex<HashMap<u64, mpsc::Sender<Vec<u8>>>>>;
 pub(crate) type CloseMap = Arc<Mutex<HashMap<u64, oneshot::Sender<()>>>>;
 /// Shared buffer for received data (read task → recv command).
 pub(crate) type ReadBufMap = Arc<Mutex<HashMap<u64, Vec<u8>>>>;
+/// Per-handle buffered byte count, used for per-connection buffer accounting
+/// at cleanup. Plugin totals are derived by summing per-handle values.
+pub(crate) type HandleReadBytesMap = Arc<Mutex<HashMap<u64, usize>>>;

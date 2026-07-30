@@ -6,7 +6,7 @@
 
 use crate::plugin_tcp::events::{tcp_connect, tcp_listen};
 use crate::plugin_tcp::{
-    CloseMap, ConnectionMap, PluginTcpCommand, PluginTcpInternal, ReadBufMap,
+    CloseMap, ConnectionMap, HandleReadBytesMap, PluginTcpCommand, PluginTcpInternal, ReadBufMap,
     MAX_CONNECTIONS_PER_PLUGIN, MAX_LISTENERS_PER_PLUGIN,
 };
 use std::collections::HashMap;
@@ -49,6 +49,8 @@ pub struct PluginTcpActor {
     plugin_listeners: HashMap<String, u32>,
     /// plugin_id → total buffered read bytes
     plugin_read_bytes: Arc<Mutex<HashMap<String, usize>>>,
+    /// handle → buffered read bytes (per-handle tracking for accurate cleanup)
+    handle_read_bytes: HandleReadBytesMap,
 }
 
 impl PluginTcpActor {
@@ -69,6 +71,7 @@ impl PluginTcpActor {
             plugin_connections: HashMap::new(),
             plugin_listeners: HashMap::new(),
             plugin_read_bytes: Arc::new(Mutex::new(HashMap::new())),
+            handle_read_bytes: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -117,8 +120,8 @@ impl PluginTcpActor {
     fn close_handle(&mut self, handle: u64) {
         let _ = self.conn_map.lock().unwrap().remove(&handle);
         let _ = self.close_map.lock().unwrap().remove(&handle);
-        let removed_buf = self.read_buf_map.lock().unwrap().remove(&handle);
-        let buf_len = removed_buf.map(|b| b.len()).unwrap_or(0);
+        let _ = self.read_buf_map.lock().unwrap().remove(&handle);
+        let buf_len = self.handle_read_bytes.lock().unwrap().remove(&handle).unwrap_or(0);
         let plugin_id = self.handle_owner.remove(&handle);
         if let Some(conn) = self.connections.remove(&handle) {
             if let Some(ref pid) = plugin_id {
@@ -233,11 +236,12 @@ impl PluginTcpActor {
                     let cb = self.event_callback.clone();
                     let cm = Arc::clone(&self.conn_map);
                     let rbm = Arc::clone(&self.read_buf_map);
+                    let hrb = Arc::clone(&self.handle_read_bytes);
                     let itx = self.internal_tx.clone();
                     let prb = Arc::clone(&self.plugin_read_bytes);
                     let pid = plugin_id.clone();
 
-                    match tcp_connect(&addr, handle, pid, cb, cm, rbm, itx, prb).await {
+                    match tcp_connect(&addr, handle, pid, cb, cm, rbm, hrb, itx, prb).await {
                         Ok((_, close_tx)) => {
                             self.handle_owner.insert(handle, plugin_id.clone());
                             *self.plugin_connections.entry(plugin_id.clone()).or_insert(0) += 1;
@@ -265,9 +269,10 @@ impl PluginTcpActor {
                     let handle = self.alloc_handle();
                     let cb = self.event_callback.clone();
                     let rbm = Arc::clone(&self.read_buf_map);
+                    let hrb = Arc::clone(&self.handle_read_bytes);
                     let prb = Arc::clone(&self.plugin_read_bytes);
 
-                    match tcp_listen(&addr, handle, self.internal_tx.clone(), cb, rbm, prb).await {
+                    match tcp_listen(&addr, handle, self.internal_tx.clone(), cb, rbm, hrb, prb).await {
                         Ok(close_tx) => {
                             self.handle_owner.insert(handle, plugin_id.clone());
                             *self.plugin_listeners.entry(plugin_id.clone()).or_insert(0) += 1;
@@ -337,7 +342,13 @@ impl PluginTcpActor {
                                 if let Some(b) = self.read_buf_map.lock().unwrap().get_mut(&handle) {
                                     b.drain(..len);
                                 }
-                                // Update per-plugin read byte tracking
+                                // Update per-handle and per-plugin read byte tracking
+                                let mut hrb = self.handle_read_bytes.lock().unwrap();
+                                if let Some(v) = hrb.get_mut(&handle) {
+                                    *v = v.saturating_sub(len);
+                                    if *v == 0 { hrb.remove(&handle); }
+                                }
+                                drop(hrb);
                                 let mut prb = self.plugin_read_bytes.lock().unwrap();
                                 if let Some(total) = prb.get_mut(&plugin_id) {
                                     *total = total.saturating_sub(len);
