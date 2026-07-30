@@ -5,9 +5,9 @@
 //!
 //! # Submodule dependencies
 //!
-//! - `super`        — core data types (`HighFrequencyConfig`, `HighFrequencyItem`,
-//!                    `HighFrequencyStats`, `EnqueueOutcome`, `now_ms`)
-//! - `super::postgres` — PostgreSQL COPY helpers and data preparation
+//! - `super` — core data types (`HighFrequencyConfig`, `HighFrequencyItem`,
+//!   `HighFrequencyStats`, `EnqueueOutcome`, `now_ms`)
+//! - `super::postgres` — PostgreSQL COPY helpers
 
 use crate::db::DbManager;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
