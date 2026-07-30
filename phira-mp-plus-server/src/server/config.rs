@@ -328,6 +328,7 @@ impl Default for PlusConfig {
             ready_countdown_secs: default_ready_countdown_secs(),
             playing_timeout_offset_secs: default_playing_timeout_offset_secs(),
             room_creation_enabled: default_room_creation_enabled(),
+            sentry_dsn: None,
         }
     }
 }
