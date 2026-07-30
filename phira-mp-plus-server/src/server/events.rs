@@ -253,13 +253,16 @@ impl PlusServerState {
     /// Publish a room event to the SSE hub and the room monitor (if connected).
     pub async fn publish_room_event(&self, event: RoomEvent) {
         // Enqueue to PersistenceWorker (exclusive — no direct DB fallback)
-        let _ = self
+        if let Err(e) = self
             .persistence_worker
             .enqueue(crate::persistence::message::PersistenceEvent::ServerEvent {
                 kind: event.event_type().to_string(),
                 payload: Arc::new(event.clone().inner()),
             })
-            .await;
+            .await
+        {
+            warn!(kind = %e.kind(), "publish_room_event enqueue failed");
+        }
         self.events.publish_room_event(event.clone());
         if let Some(monitor) = self.get_room_monitor().await {
             monitor.try_send(ServerCommand::RoomEvent(event)).await;

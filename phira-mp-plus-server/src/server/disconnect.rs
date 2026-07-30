@@ -125,7 +125,7 @@ pub(crate) async fn run_admin_kick_user(
     state
         .publish_user_disconnected(target_id, user.name.clone())
         .await;
-    let _ = state
+    if let Err(e) = state
         .persistence_worker
         .enqueue(
             crate::persistence::message::PersistenceEvent::UserDisconnect {
@@ -133,13 +133,19 @@ pub(crate) async fn run_admin_kick_user(
                 user_name: user.name.clone(),
             },
         )
-        .await;
-    let _ = state
+        .await
+    {
+        warn!(user = target_id, kind = %e.kind(), "UserDisconnect enqueue failed during kick");
+    }
+    if let Err(e) = state
         .persistence_worker
         .enqueue(crate::persistence::message::PersistenceEvent::UserOffline {
             user_id: target_id,
         })
-        .await;
+        .await
+    {
+        warn!(user = target_id, kind = %e.kind(), "UserOffline enqueue failed during kick");
+    }
 
     Ok(serde_json::json!({"ok": true, "reason": reason}))
 }
