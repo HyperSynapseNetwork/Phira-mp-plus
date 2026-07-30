@@ -11,6 +11,8 @@ use crate::plugin_tcp::{
     MAX_CONNECTIONS_PER_PLUGIN, MAX_LISTENERS_PER_PLUGIN, MAX_PENDING_EVENTS_PER_PLUGIN,
 };
 use std::collections::HashMap;
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use tokio::sync::{mpsc, oneshot};
 use tracing::{info, warn};
@@ -40,7 +42,7 @@ pub struct PluginTcpActor {
     conn_map: ConnectionMap,
     close_map: CloseMap,
     read_buf_map: ReadBufMap,
-    event_callback: Option<Arc<dyn Fn(String, serde_json::Value) + Send + Sync>>,
+    event_callback: Option<Arc<dyn Fn(String, serde_json::Value) -> Pin<Box<dyn Future<Output = ()> + Send>> + Send + Sync>>,
     /// Per-plugin bounded event channels.
     event_channels: HashMap<String, Arc<PluginEventChannel>>,
     /// Per-plugin event worker task handles.
@@ -87,13 +89,16 @@ impl PluginTcpActor {
     }
 
     /// Return the event callback for wiring (used by PluginManager).
-    pub fn event_callback(&self) -> Option<Arc<dyn Fn(String, serde_json::Value) + Send + Sync>> {
+    pub fn event_callback(
+        &self,
+    ) -> Option<Arc<dyn Fn(String, serde_json::Value) -> Pin<Box<dyn Future<Output = ()> + Send>> + Send + Sync>>
+    {
         self.event_callback.clone()
     }
 
     pub fn set_event_callback(
         &mut self,
-        cb: Arc<dyn Fn(String, serde_json::Value) + Send + Sync>,
+        cb: Arc<dyn Fn(String, serde_json::Value) -> Pin<Box<dyn Future<Output = ()> + Send>> + Send + Sync>,
     ) {
         self.event_callback = Some(cb);
     }
@@ -197,7 +202,9 @@ impl PluginTcpActor {
 
     fn ensure_event_channel(&mut self, plugin_id: &str) -> Arc<PluginEventChannel> {
         use std::collections::hash_map::Entry;
-        let cb = self.event_callback.clone().unwrap_or_else(|| Arc::new(|_, _| {}));
+        let cb = self.event_callback.clone().unwrap_or_else(|| {
+            Arc::new(|_: String, _: serde_json::Value| Box::pin(async {}))
+        });
         match self.event_channels.entry(plugin_id.to_string()) {
             Entry::Occupied(e) => Arc::clone(e.get()),
             Entry::Vacant(e) => {
@@ -209,7 +216,10 @@ impl PluginTcpActor {
                         loop {
                             let event = worker_queue.lock().unwrap().pop_front();
                             match event {
-                                Some((type_, payload)) => cb(type_, payload),
+                                Some((type_, payload)) => {
+                                    let fut = cb(type_, payload);
+                                    fut.await;
+                                }
                                 None => break,
                             }
                         }

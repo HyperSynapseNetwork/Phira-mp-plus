@@ -51,7 +51,9 @@ pub struct WitHostContext {
     /// TCP actor sender for plugin-initiated connections.
     pub tcp: Option<tokio::sync::mpsc::Sender<crate::plugin_tcp::PluginTcpCommand>>,
     /// TCP event callback: forwards tcp:accept/data/disconnect events to plugin's on-api.
-    pub tcp_callback: Option<Arc<dyn Fn(String, serde_json::Value) + Send + Sync>>,
+    /// Returns a boxed future that the event channel worker awaits directly.
+    pub tcp_callback:
+        Option<Arc<dyn Fn(String, serde_json::Value) -> Pin<Box<dyn Future<Output = ()> + Send>> + Send + Sync>>,
     /// Room state query access (for phira-room-state interface).
     pub room_state_query: Option<Arc<dyn Fn(String) -> Result<serde_json::Value, String> + Send + Sync>>,
     /// Plugin handler registry: method → owner + metadata.

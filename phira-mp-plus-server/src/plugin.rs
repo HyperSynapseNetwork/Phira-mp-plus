@@ -12,6 +12,8 @@ use std::collections::HashMap;
 #[cfg(feature = "plugin-system")]
 use std::collections::HashSet;
 use std::path::Path;
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, RwLock as StdRwLock};
 use tokio::sync::{mpsc, oneshot, Mutex as AsyncMutex, RwLock};
@@ -621,7 +623,12 @@ impl PluginManager {
 
     /// Set the TCP event callback that dispatches tcp:accept/receive/disconnect/error
     /// events to the owning plugin via call_plugin_api.
-    pub fn set_tcp_callback(&self, cb: Arc<dyn Fn(String, serde_json::Value) + Send + Sync>) {
+    pub fn set_tcp_callback(
+        &self,
+        cb: Arc<
+            dyn Fn(String, serde_json::Value) -> Pin<Box<dyn Future<Output = ()> + Send>> + Send + Sync,
+        >,
+    ) {
         #[cfg(feature = "plugin-system")]
         self.wasm_services.set_tcp_callback(cb);
         #[cfg(not(feature = "plugin-system"))]

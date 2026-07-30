@@ -101,28 +101,34 @@ impl PlusServer {
 
             // Wire the TCP event callback to dispatch tcp:accept/receive/disconnect/error
             // events to the owning plugin via call_plugin_api.
+            // The worker awaits this future directly — no inner tokio::spawn.
+            use std::pin::Pin;
+            use std::future::Future;
             let pm_for_tcp = Arc::clone(&plugin_manager);
-            let tcp_event_cb: Arc<dyn Fn(String, serde_json::Value) + Send + Sync> =
-                Arc::new(move |event_type, payload| {
-                    let pm = Arc::clone(&pm_for_tcp);
-                    let payload_clone = payload.clone();
-                    tokio::spawn(async move {
-                        // Extract plugin_id from the event payload to dispatch
-                        // to the correct plugin.
-                        if let Some(plugin_id) = payload_clone.get("plugin_id").and_then(|v| v.as_str()) {
-                            let _ = pm
-                                .call_plugin_api(
-                                    plugin_id,
-                                    "tcp:event",
-                                    vec![
-                                        serde_json::json!(event_type),
-                                        payload,
-                                    ],
-                                )
-                                .await;
-                        }
-                    });
-                });
+            let tcp_event_cb: Arc<
+                dyn Fn(String, serde_json::Value) -> Pin<Box<dyn Future<Output = ()> + Send>>
+                    + Send
+                    + Sync,
+            > = Arc::new(move |event_type, payload| {
+                let pm = Arc::clone(&pm_for_tcp);
+                let payload_clone = payload.clone();
+                Box::pin(async move {
+                    // Extract plugin_id from the event payload to dispatch
+                    // to the correct plugin.
+                    if let Some(plugin_id) = payload_clone.get("plugin_id").and_then(|v| v.as_str()) {
+                        let _ = pm
+                            .call_plugin_api(
+                                plugin_id,
+                                "tcp:event",
+                                vec![
+                                    serde_json::json!(event_type),
+                                    payload,
+                                ],
+                            )
+                            .await;
+                    }
+                })
+            });
 
             actor.set_event_callback(Arc::clone(&tcp_event_cb));
             plugin_manager.set_tcp_callback(tcp_event_cb);

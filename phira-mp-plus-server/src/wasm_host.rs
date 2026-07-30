@@ -40,7 +40,8 @@ pub struct WasmPluginServices {
     /// TCP event callback shared with PluginTcpActor. Dispatches
     /// tcp:accept / tcp:receive / tcp:disconnect / tcp:error events
     /// to the owning plugin via call_plugin_api.
-    pub tcp_callback: Mutex<Option<Arc<dyn Fn(String, serde_json::Value) + Send + Sync>>>,
+    pub tcp_callback:
+        Mutex<Option<Arc<dyn Fn(String, serde_json::Value) -> Pin<Box<dyn Future<Output = ()> + Send>> + Send + Sync>>>,
     /// Tracks which handler methods each plugin has registered.
     /// Shared with PluginManager — do not write separately.
     pub handler_owners: Arc<Mutex<HashMap<String, Vec<String>>>>,
@@ -98,7 +99,12 @@ impl WasmPluginServices {
         }
     }
 
-    pub fn set_tcp_callback(&self, cb: Arc<dyn Fn(String, serde_json::Value) + Send + Sync>) {
+    pub fn set_tcp_callback(
+        &self,
+        cb: Arc<
+            dyn Fn(String, serde_json::Value) -> Pin<Box<dyn Future<Output = ()> + Send>> + Send + Sync,
+        >,
+    ) {
         if let Ok(mut guard) = self.tcp_callback.lock() {
             *guard = Some(cb);
         }
