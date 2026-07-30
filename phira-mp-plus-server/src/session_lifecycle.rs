@@ -269,7 +269,7 @@ impl User {
                     self.server
                         .publish_user_disconnected(self.id, self.name.clone())
                         .await;
-                    let _ = self
+                    if let Err(e) = self
                         .server
                         .persistence_worker
                         .enqueue(
@@ -278,14 +278,20 @@ impl User {
                                 user_name: self.name.clone(),
                             },
                         )
-                        .await;
-                    let _ = self
+                        .await
+                    {
+                        warn!(user = self.id, kind = %e.kind(), "UserDisconnect enqueue failed");
+                    }
+                    if let Err(e) = self
                         .server
                         .persistence_worker
                         .enqueue(crate::persistence::message::PersistenceEvent::UserOffline {
                             user_id: self.id,
                         })
-                        .await;
+                        .await
+                    {
+                        warn!(user = self.id, kind = %e.kind(), "UserOffline enqueue failed");
+                    }
                     return;
                 }
             }
@@ -298,7 +304,7 @@ impl User {
         self.server
             .publish_user_disconnected(self.id, self.name.clone())
             .await;
-        let _ = self
+        if let Err(e) = self
             .server
             .persistence_worker
             .enqueue(
@@ -307,7 +313,10 @@ impl User {
                     user_name: self.name.clone(),
                 },
             )
-            .await;
+            .await
+        {
+            warn!(user = self.id, kind = %e.kind(), "UserDisconnect enqueue failed after dangle");
+        }
 
         let weak_self = Arc::downgrade(&self);
         let grace_secs = self.server.config.idle.dangle_grace_secs.max(5);
@@ -362,13 +371,16 @@ impl User {
             if let Some(event) = room_leave_event {
                 self_.server.publish_room_event(event).await;
             }
-            let _ = self_
+            if let Err(e) = self_
                 .server
                 .persistence_worker
                 .enqueue(crate::persistence::message::PersistenceEvent::UserOffline {
                     user_id: self_.id,
                 })
-                .await;
+                .await
+            {
+                warn!(user = self_.id, kind = %e.kind(), "UserOffline enqueue failed in dangle grace");
+            }
         });
     }
 }
