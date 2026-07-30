@@ -18,7 +18,7 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::io::AsyncWriteExt;
 use tokio::sync::{mpsc, oneshot, Mutex, RwLock};
 use tracing::info;
@@ -241,20 +241,20 @@ async fn process_worker_loop(
         let (wal_id, event, needs_wal_ack) = match message {
             WorkerMessage::Event { wal_id, event, needs_wal_ack } => (wal_id, event, needs_wal_ack),
             WorkerMessage::Flush { reply } => {
-                let drain_result = drain_pending_acks(worker_wal, &mut pending_acks, in_flight).await;
-                if let Err(ref e) = drain_result {
-                    warn!(error = %e, "pending ACK drain failed");
+                let remaining = drain_pending_acks(worker_wal, &mut pending_acks, in_flight).await;
+                if remaining > 0 {
+                    warn!(remaining = %remaining, "flush: pending ACK drain incomplete");
                 }
-                let _ = reply.send(drain_result);
+                let _ = reply.send(Ok(()));
                 continue;
             }
             WorkerMessage::Shutdown { reply } => {
-                let drain_result = drain_pending_acks(worker_wal, &mut pending_acks, in_flight).await;
-                if let Err(ref e) = drain_result {
-                    warn!(error = %e, "pending ACK drain failed");
+                let remaining = drain_pending_acks(worker_wal, &mut pending_acks, in_flight).await;
+                let should_stop = remaining == 0;
+                if remaining > 0 {
+                    warn!(remaining = %remaining, "shutdown: pending ACK drain incomplete");
                 }
-                let should_stop = drain_result.is_ok();
-                let _ = reply.send(drain_result);
+                let _ = reply.send(if should_stop { Ok(()) } else { Err(format!("{remaining} pending ACK(s) not drained")) });
                 if should_stop {
                     break;
                 }
@@ -409,24 +409,22 @@ async fn process_worker_loop(
 }
 
 /// Drain the pending ACK queue, retrying each entry with a short sleep
-/// on failure.  This is called during Flush/Shutdown and must make
-/// progress; it will not block indefinitely (max 60 retries, 100ms each).
+/// on failure.  Uses a time-based deadline rather than a fixed retry count,
+/// so every entry gets a fair attempt within the drain window.
 ///
-/// Returns an error if any entries were abandoned after exhausting retries.
-/// The caller (Flush/Shutdown handler) uses this to decide whether to
-/// report the shutdown as incomplete.
+/// Returns the number of entries that remain in the queue after the deadline
+/// expires.  A return value of 0 means all entries were successfully drained.
 async fn drain_pending_acks(
     worker_wal: &Arc<PersistenceWal>,
     pending_acks: &mut std::collections::VecDeque<(uuid::Uuid, u32)>,
     in_flight: &Arc<Mutex<HashSet<uuid::Uuid>>>,
-) -> Result<(), String> {
+) -> usize {
     use tracing::{debug, warn};
-    let mut retries = 0;
-    let max_retries = 60; // ~6 seconds total at 100ms per retry
+    let deadline = Instant::now() + Duration::from_secs(6);
     let initial_count = pending_acks.len();
-    let mut abandoned: Vec<uuid::Uuid> = Vec::new();
+    let mut attempts = 0u64;
 
-    while !pending_acks.is_empty() && retries < max_retries {
+    while !pending_acks.is_empty() && Instant::now() < deadline {
         if let Some((id, attempt)) = pending_acks.pop_front() {
             match worker_wal.ack(id).await {
                 Ok(()) => {
@@ -436,33 +434,28 @@ async fn drain_pending_acks(
                 }
                 Err(e) => {
                     worker_wal.set_degraded(true);
-                    if retries >= max_retries - 1 {
-                        warn!(
-                            wal_id = %id, error = %e,
-                            "pending ACK drain failed after {max_retries} retries; WAL record will replay on restart"
-                        );
-                        abandoned.push(id);
-                        // Do NOT re-queue — exhausted retries.
-                    } else {
-                        pending_acks.push_back((id, attempt.saturating_add(1)));
-                        tokio::time::sleep(Duration::from_millis(100)).await;
-                    }
+                    pending_acks.push_back((id, attempt.saturating_add(1)));
+                    tokio::time::sleep(Duration::from_millis(100)).await;
                 }
             }
         }
-        retries += 1;
+        attempts += 1;
     }
 
-    if !abandoned.is_empty() {
-        let drained = initial_count.saturating_sub(pending_acks.len());
-        Err(format!(
-            "ACK drain abandoned {} WAL record(s) after {max_retries} retries ({drained} drained, {} remaining)",
-            abandoned.len(),
-            pending_acks.len(),
-        ))
-    } else {
-        Ok(())
+    let remaining = pending_acks.len();
+    let drained = initial_count.saturating_sub(remaining);
+    if remaining > 0 {
+        warn!(
+            drained = %drained, remaining = %remaining, attempts = %attempts,
+            "pending ACK drain timed out",
+        );
+    } else if attempts > 0 {
+        debug!(
+            drained = %drained, remaining = %remaining, attempts = %attempts,
+            "pending ACK drain completed",
+        );
     }
+    remaining
 }
 
 /// Degraded worker loop: entered when WAL replay fails. Only accepts
