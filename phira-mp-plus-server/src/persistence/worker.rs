@@ -49,6 +49,9 @@ pub struct PersistenceWorker {
     /// accepted events are never discarded merely because gameplay is quiet.
     suspended: AtomicBool,
     closed: AtomicBool,
+    /// Set when WAL replay events have all been processed (not just parsed).
+    /// Used by `is_healthy()` so readiness checks wait for full replay processing.
+    initial_replay_drained: Arc<AtomicBool>,
     stats: Arc<RwLock<PersistenceStats>>,
     wal: Arc<PersistenceWal>,
     /// WAL IDs of events currently queued but not yet ACKed.
@@ -183,6 +186,7 @@ async fn process_worker_loop(
     worker_dead_letter_path: &Option<std::path::PathBuf>,
     worker_wal: &Arc<PersistenceWal>,
     in_flight: &Arc<Mutex<HashSet<uuid::Uuid>>>,
+    initial_replay_drained: &Arc<AtomicBool>,
 ) {
     use crate::persistence::pipeline::{
         persist_benchmark_report_if_needed, persist_production_event_if_needed,
@@ -206,6 +210,10 @@ async fn process_worker_loop(
         let message = if let Some((wal_id, event)) = replay.pop_front() {
             WorkerMessage::Event { wal_id, event, needs_wal_ack: true }
         } else {
+            // All replayed events have been processed and acknowledged.
+            // Signal that initial WAL replay is fully drained so readiness
+            // checks (is_healthy) can proceed.
+            initial_replay_drained.store(true, Ordering::Release);
             let Some(message) = rx.recv().await else {
                 break;
             };
@@ -606,6 +614,9 @@ impl PersistenceWorker {
         let scanner_stats = Arc::clone(&stats);
         let scanner_in_flight = Arc::clone(&in_flight);
 
+        let initial_replay_drained = Arc::new(AtomicBool::new(false));
+        let worker_initial_replay_drained = Arc::clone(&initial_replay_drained);
+
         crate::supervisor_actor::spawn_critical("persistence-worker", async move {
             // Check WAL instance consistency before replay to detect
             // accidental deletion/truncation of an already-initialized WAL.
@@ -631,6 +642,7 @@ impl PersistenceWorker {
                         &worker_dead_letter_path,
                         &worker_wal,
                         &worker_in_flight,
+                        &worker_initial_replay_drained,
                     )
                     .await;
                 }
@@ -669,6 +681,7 @@ impl PersistenceWorker {
             in_flight,
             suspended: AtomicBool::new(false),
             closed: AtomicBool::new(false),
+            initial_replay_drained,
         })
     }
 
@@ -812,6 +825,7 @@ impl PersistenceWorker {
 
     pub async fn is_healthy(&self) -> bool {
         self.wal.replay_succeeded()
+            && self.initial_replay_drained.load(Ordering::Acquire)
             && !self.wal.is_degraded()
             && !self.closed.load(Ordering::Acquire)
     }

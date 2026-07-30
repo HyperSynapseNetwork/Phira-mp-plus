@@ -503,7 +503,7 @@ impl DbManager {
     ///
     /// Returns rows from `mp_rounds` where `finished_at IS NULL`, ordered by
     /// started_at ascending (oldest first).
-    pub async fn find_unfinished_rounds(&self) -> Vec<UnfinishedRound> {
+    pub async fn find_unfinished_rounds(&self) -> Result<Vec<UnfinishedRound>, sqlx::Error> {
         let Self::Pg(pool) = self;
         let rows = sqlx::query(
             "SELECT round_uuid, room_id, chart_id, chart_name, started_at
@@ -512,9 +512,8 @@ impl DbManager {
                  ORDER BY started_at ASC",
         )
         .fetch_all(pool)
-        .await
-        .unwrap_or_default();
-        rows.iter()
+        .await?;
+        Ok(rows.iter()
             .filter_map(|row| {
                 Some(UnfinishedRound {
                     round_uuid: row.try_get::<String, _>("round_uuid").ok()?,
@@ -524,7 +523,7 @@ impl DbManager {
                     started_at: row.try_get::<i64, _>("started_at").ok()?,
                 })
             })
-            .collect()
+            .collect())
     }
 
     /// Mark an unfinished round as aborted (crash recovery).

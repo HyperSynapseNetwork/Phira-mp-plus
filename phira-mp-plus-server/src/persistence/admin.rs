@@ -40,16 +40,27 @@ impl DbManager {
     }
 
     /// Get the list of persistent empty room IDs from mp_settings.
-    pub async fn get_persistent_rooms(&self) -> Option<Vec<String>> {
+    ///
+    /// Returns `Ok(None)` when the key is not set, `Ok(Some(ids))` on success,
+    /// and `Err(sqlx::Error)` on database failures — allowing callers to
+    /// distinguish "no config" from "database error".
+    pub async fn get_persistent_rooms(&self) -> Result<Option<Vec<String>>, sqlx::Error> {
         let Self::Pg(pool) = self;
         use sqlx::Row;
         let row = sqlx::query(
             "SELECT value::text AS value FROM mp_settings WHERE key = 'persistent_rooms'",
         )
         .fetch_optional(pool)
-        .await
-        .ok()??;
-        let raw = row.try_get::<String, _>("value").ok()?;
-        serde_json::from_str(&raw).ok()
+        .await?;
+        match row {
+            Some(r) => {
+                let raw: String = r.try_get("value")?;
+                let ids: Vec<String> = serde_json::from_str(&raw).map_err(|e| {
+                    sqlx::Error::Decode(Box::new(e))
+                })?;
+                Ok(Some(ids))
+            }
+            None => Ok(None),
+        }
     }
 }

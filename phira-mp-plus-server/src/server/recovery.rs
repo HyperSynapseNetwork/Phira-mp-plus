@@ -1,6 +1,6 @@
 //! Server startup state recovery — crash recovery for unfinished rounds,
-//! schema validation, persistent room restoration, playtime stale session
-//! cleanup, and DLQ replay.
+//! schema validation, persistent room restoration, DLQ replay, and playtime
+//! stale session cleanup.
 //!
 //! After a server restart (planned or crash), in-memory state is empty while
 //! PostgreSQL still holds data from the previous run.  This module re-discovers
@@ -10,8 +10,10 @@
 //!    terminal state and don't wait for a round that will never finish).
 //! 2. Database health is logged (schema version, user / playtime counts).
 //! 3. Persistent empty rooms are recreated from mp_settings.
-//! 4. All open playtime sessions from the previous instance are closed.
-//! 5. Dead-letter queue entries are replayed.
+//! 4. Dead-letter queue entries are replayed (**before** stale session cleanup
+//!    so that old UserAuthenticated events cannot re-set sessions online).
+//! 5. All open playtime sessions from the previous instance are closed (after
+//!    WAL and DLQ replay, with a 1-hour cap on recovered playtime).
 //!
 //! Every step returns `Err` on failure so that `recover_state` propagates
 //! the error and prevents the server from becoming ready.
@@ -34,7 +36,10 @@ use super::state::PlusServerState;
 /// prevent the server from becoming ready.
 pub async fn recover_state(state: &Arc<PlusServerState>, db: &DbManager) -> Result<()> {
     // ── 1. Crash recovery: abort unfinished rounds ──────────────────────
-    let unfinished = db.find_unfinished_rounds().await;
+    let unfinished = db
+        .find_unfinished_rounds()
+        .await
+        .map_err(|e| anyhow::anyhow!("startup recovery: failed to query unfinished rounds: {e}"))?;
     let count = unfinished.len();
     if count > 0 {
         warn!(
@@ -116,11 +121,16 @@ pub async fn recover_state(state: &Arc<PlusServerState>, db: &DbManager) -> Resu
     // ── 5. Persistent empty room restoration ────────────────────────────
     restore_persistent_rooms(state, db).await?;
 
-    // ── 6. Playtime stale session cleanup ───────────────────────────────
-    close_all_stale_playtime_sessions(db).await?;
-
-    // ── 7. Dead-letter queue replay ─────────────────────────────────────
+    // ── 6. Dead-letter queue replay ─────────────────────────────────────
+    // Run DLQ replay BEFORE stale session cleanup so that any
+    // UserAuthenticated events from the DLQ are processed first and can be
+    // properly cleaned up by the session cleanup that follows.
     replay_dead_letter_queue(state).await?;
+
+    // ── 7. Playtime stale session cleanup ───────────────────────────────
+    // Run AFTER WAL replay and DLQ replay so that old UserAuthenticated
+    // events cannot re-set sessions online after cleanup.
+    close_all_stale_playtime_sessions(db).await?;
 
     Ok(())
 }
@@ -135,10 +145,15 @@ pub async fn recover_state(state: &Arc<PlusServerState>, db: &DbManager) -> Resu
 /// step so that a single misconfigured room does not block the entire startup.
 async fn restore_persistent_rooms(state: &Arc<PlusServerState>, db: &DbManager) -> Result<()> {
     let room_ids = match db.get_persistent_rooms().await {
-        Some(ids) => ids,
-        None => {
+        Ok(Some(ids)) => ids,
+        Ok(None) => {
             info!("startup recovery: no persistent empty rooms to restore");
             return Ok(());
+        }
+        Err(e) => {
+            return Err(anyhow::anyhow!(
+                "startup recovery: failed to read persistent rooms from DB: {e}"
+            ));
         }
     };
     info!(
@@ -160,13 +175,15 @@ async fn restore_persistent_rooms(state: &Arc<PlusServerState>, db: &DbManager) 
 ///
 /// Every `session_start` that is still set at startup belongs to a previous
 /// server instance (planned shutdown or crash).  The elapsed time is accrued
-/// to `total_secs` and `session_start` is cleared so the row is ready for
-/// the next normal online/offline cycle.
+/// to `total_secs` (capped at `MAX_RECOVERY_SECS` per session) and
+/// `session_start` is cleared so the row is ready for the next normal
+/// online/offline cycle.
 ///
 /// Returns `Err` on database failure so that recovery is not silently skipped.
+const MAX_RECOVERY_SECS: i64 = 3600; // 1 hour cap per session
 async fn close_all_stale_playtime_sessions(db: &DbManager) -> Result<()> {
     let affected = db
-        .close_all_stale_sessions()
+        .close_all_stale_sessions(MAX_RECOVERY_SECS)
         .await
         .map_err(|e| anyhow::anyhow!("startup recovery: close all stale playtime sessions: {e}"))?;
     if affected > 0 {

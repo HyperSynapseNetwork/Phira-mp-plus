@@ -391,18 +391,26 @@ impl DbManager {
     ///
     /// On startup every `session_start` that is still set belongs to a previous
     /// server instance (planned shutdown or crash).  The elapsed time is accrued
-    /// to `total_secs` and `session_start` is set to NULL so the row is ready
-    /// for the next normal online/offline cycle.
-    pub async fn close_all_stale_sessions(&self) -> std::result::Result<u64, String> {
+    /// to `total_secs` (capped at `max_recovery_secs` per session) and
+    /// `session_start` is set to NULL so the row is ready for the next normal
+    /// online/offline cycle.
+    ///
+    /// The cap (default 3600s = 1 hour) prevents a long outage from being
+    /// counted as playtime upon recovery.
+    pub async fn close_all_stale_sessions(
+        &self,
+        max_recovery_secs: i64,
+    ) -> std::result::Result<u64, String> {
         let Self::Pg(pool) = self;
         let now = now_ms_inline();
         let result = sqlx::query(
             "UPDATE playtime
-             SET total_secs = total_secs + GREATEST(0, ($1 - session_start) / 1000),
+             SET total_secs = total_secs + LEAST(GREATEST(0, ($1 - session_start) / 1000), $2),
                  session_start = NULL
              WHERE session_start IS NOT NULL",
         )
         .bind(now)
+        .bind(max_recovery_secs)
         .execute(pool)
         .await
         .map_err(|e| format!("close all stale playtime sessions: {e}"))?;
