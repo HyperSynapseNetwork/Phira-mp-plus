@@ -146,3 +146,8 @@ round_data_retention_days: 7
 # 而是执行服务端 CLI 命令，并把输出通过聊天消息发回该客户端。
 # 也可通过 CLI admin-id 或 WIT/host admin.* 动态维护。
 admin_phira_ids: []
+
+# ---- Sentry 错误监控 ----
+# 将 sentry_dsn 设为有效的 Sentry DSN 以启用 panic/error 自动上报。
+# 留空或注释掉即禁用。
+sentry_dsn: "https://bfd3336a4f5ee99b6c99122476a335ba@o4511822631600128.ingest.de.sentry.io/4511822679048272"
