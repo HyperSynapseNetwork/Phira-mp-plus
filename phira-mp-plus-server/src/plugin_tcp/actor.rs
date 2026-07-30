@@ -7,6 +7,7 @@
 use crate::plugin_tcp::events::{tcp_connect, tcp_listen};
 use crate::plugin_tcp::{
     CloseMap, ConnectionMap, PluginTcpCommand, PluginTcpInternal, ReadBufMap,
+    MAX_CONNECTIONS_PER_PLUGIN, MAX_LISTENERS_PER_PLUGIN,
 };
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
