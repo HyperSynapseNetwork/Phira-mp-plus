@@ -215,6 +215,10 @@ pub struct PlusConfig {
     pub config_path: String,
     #[serde(default = "default_true")]
     pub cli_enabled: bool,
+    /// Sentry error monitoring DSN. Set to a valid Sentry DSN to enable
+    /// automatic error and panic capture. Leave empty or omit to disable.
+    #[serde(default)]
+    pub sentry_dsn: Option<String>,
     #[serde(default)]
     pub max_rooms: Option<usize>,
     #[serde(default)]

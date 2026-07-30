@@ -123,6 +123,30 @@ async fn main() -> Result<()> {
     let _log_guard = phira_mp_plus_server::logging::init(&args.log_file, log_tx)?;
     config_load.report(&args.config);
 
+    // Sentry error monitoring (SENTRY_DSN env var or config)
+    let _sentry_guard = if let Some(dsn) = &config.sentry_dsn {
+        let dsn = dsn.trim();
+        if !dsn.is_empty() {
+            let guard = sentry::init((dsn.to_string(), sentry::ClientOptions {
+                release: sentry::release_name!(),
+                send_default_pii: true,
+                enable_profiling: true,
+                traces_sample_rate: 0.1,
+                ..Default::default()
+            }));
+            // Integrate sentry with tracing for automatic breadcrumb capture
+            let _ = sentry_tracing::register_sentry_subscriber();
+            info!("sentry error monitoring enabled");
+            Some(guard)
+        } else {
+            debug!("sentry DSN empty, monitoring disabled");
+            None
+        }
+    } else {
+        debug!("sentry DSN not configured, monitoring disabled");
+        None
+    };
+
     let server = PlusServer::new(config).await?;
 
     if let (Some(cmd_rx), Some(out_tx)) = (cmd_rx, out_tx) {
