@@ -336,7 +336,10 @@ async fn run_hf_writer(
                         let _ = reply.send(result);
                     }
                     Some(HfMessage::Shutdown(reply)) => {
-                        drain_overflow(&mut batch, &mut overflow_rx, &stats, overflow_max_age_ms, max_batch_size).await;
+                        // Drain ALL overflow items before the final flush, not just
+                        // one batch-worth.  Using usize::MAX drains until the channel
+                        // is empty (the function breaks on TryRecvError::Empty).
+                        drain_overflow(&mut batch, &mut overflow_rx, &stats, overflow_max_age_ms, usize::MAX).await;
                         let result = flush_and_update_seq(
                             &mut batch, &stats, &db, max_retries, retry_max_age_ms, "shutdown"
                         ).await;
@@ -348,7 +351,8 @@ async fn run_hf_writer(
                     }
                     None => {
                         // Channel closed — flush remaining items and exit.
-                        drain_overflow(&mut batch, &mut overflow_rx, &stats, overflow_max_age_ms, max_batch_size).await;
+                        // Drain ALL overflow before the final flush.
+                        drain_overflow(&mut batch, &mut overflow_rx, &stats, overflow_max_age_ms, usize::MAX).await;
                         if !batch.is_empty() {
                             flush_and_update_seq(
                                 &mut batch, &stats, &db, max_retries, retry_max_age_ms, "closed"
