@@ -98,18 +98,23 @@ pub async fn persist_production_event_if_needed(event: &PersistenceEvent) -> Per
                 db.record_user_disconnect(*user_id, user_name).await
             }
             PersistenceEvent::UserAuthenticated {
+                event_id,
+                session_id,
                 user_id,
                 user_name,
                 language,
                 ip,
-                connected_at: _,
+                connected_at,
             } => {
-                let seen_ok = db.record_user_seen(*user_id, user_name, language, Some(ip.clone())).await.is_ok();
-                if !ip.is_empty() {
-                    db.record_user_ip(*user_id, ip.as_str());
-                }
-                let online_ok = db.set_online(*user_id).await;
-                seen_ok && online_ok
+                db.commit_user_authenticated(
+                    event_id,
+                    session_id,
+                    *user_id,
+                    user_name,
+                    language,
+                    ip,
+                    *connected_at,
+                ).await
             }
             PersistenceEvent::UserSeen {
                 user_id,
