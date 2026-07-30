@@ -180,11 +180,19 @@ async fn close_all_stale_playtime_sessions(db: &DbManager) -> Result<()> {
 /// Replay the dead-letter queue: scan the DLQ JSONL file and re-enqueue
 /// events that were not persisted in the previous run.
 ///
-/// This is a best-effort recovery. Events that cannot be reconstructed are
-/// logged and skipped. The DLQ file path comes from the runtime config.
+/// **Rename-before-read** semantics prevent a race where the persistence
+/// worker appends new records to the active DLQ file while replay reads
+/// it — those new records would be renamed away with the old data and lost.
+/// Instead we rename the active file to a generation-stamped name first;
+/// the worker then writes to a brand-new active DLQ automatically.
 ///
-/// Returns `Err` only when the DLQ file itself cannot be read (indicating a
-/// filesystem or configuration problem).  Individual entry replay failures
+/// If any record fails WAL admission the replaying file is **preserved** so
+/// that no data is silently lost.  A critical error is logged when records
+/// are skipped for any reason.
+///
+/// Returns `Err` only when the DLQ file itself cannot be renamed or read
+/// (indicating a filesystem or configuration problem), or when a critical
+/// unsupported event kind is encountered.  Individual entry replay failures
 /// are logged but do not abort the step.
 async fn replay_dead_letter_queue(state: &Arc<PlusServerState>) -> Result<()> {
     let dlq_path = state
@@ -199,16 +207,46 @@ async fn replay_dead_letter_queue(state: &Arc<PlusServerState>) -> Result<()> {
         return Ok(());
     };
 
-    let content = match tokio::fs::read_to_string(path).await {
-        Ok(c) => c,
+    // ── 1. Rename the active DLQ file BEFORE reading ──────────────────────
+    // Rename first so any concurrent worker append goes to a brand-new
+    // active DLQ file and never races against our read-then-rename cycle.
+    // If enqueue fails for any record the replaying file is preserved so
+    // that records are not silently lost.
+    let timestamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis();
+    let file_name = path
+        .file_name()
+        .map(|n| n.to_string_lossy())
+        .unwrap_or_default();
+    let replaying_name = format!("{file_name}.replaying-{timestamp}");
+    let replaying_path = path.with_file_name(&replaying_name);
+
+    match tokio::fs::rename(path, &replaying_path).await {
+        Ok(()) => info!(
+            "startup recovery: renamed active DLQ to {} for replay",
+            replaying_name,
+        ),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
             info!("startup recovery: no dead-letter file found, skipping DLQ replay");
             return Ok(());
         }
         Err(e) => {
             return Err(anyhow::anyhow!(
-                "startup recovery: failed to read dead-letter file {}: {e}",
+                "startup recovery: failed to rename DLQ file {}: {e}",
                 path.display(),
+            ));
+        }
+    };
+
+    // ── 2. Read from the renamed (stable) file ────────────────────────────
+    let content = match tokio::fs::read_to_string(&replaying_path).await {
+        Ok(c) => c,
+        Err(e) => {
+            return Err(anyhow::anyhow!(
+                "startup recovery: failed to read replaying DLQ file {}: {e}",
+                replaying_path.display(),
             ));
         }
     };
@@ -220,6 +258,7 @@ async fn replay_dead_letter_queue(state: &Arc<PlusServerState>) -> Result<()> {
 
     let mut replayed = 0u32;
     let mut skipped = 0u32;
+    let mut enqueue_failures = 0u32;
     let mut critical_unsupported = false;
 
     for line in content.lines() {
@@ -276,40 +315,61 @@ async fn replay_dead_letter_queue(state: &Arc<PlusServerState>) -> Result<()> {
         if state.persistence_worker.enqueue(event).await.is_err() {
             warn!("startup recovery: failed to re-enqueue DLQ event (kind={kind})");
             skipped += 1;
+            enqueue_failures += 1;
         } else {
             replayed += 1;
         }
     }
 
-    if critical_unsupported {
-        return Err(anyhow::anyhow!(
-            "startup recovery: DLQ contains one or more critical unsupported events"
-        ));
-    }
-
-    // ACK replay: rename the processed DLQ file so it is not replayed on
-    // subsequent restarts.
-    let file_name = path.file_name().map(|n| n.to_string_lossy().to_string());
-    if let Some(file_name) = file_name {
-        let processed_name = format!("{file_name}.processed");
-        let processed_path = path.with_file_name(&processed_name);
-        match tokio::fs::rename(path, &processed_path).await {
-            Ok(()) => info!(
-                "startup recovery: renamed DLQ file to {processed_name} (replay ACK)"
-            ),
-            Err(e) => warn!(
-                "startup recovery: failed to rename processed DLQ file to {processed_name}: {e}"
-            ),
-        }
-    }
-
     if replayed > 0 || skipped > 0 {
         info!(
-            "startup recovery: DLQ replay finished — {replayed} replayed, {skipped} skipped"
+            "startup recovery: DLQ replay finished — {replayed} replayed, {skipped} skipped, \
+             {enqueue_failures} enqueue failure(s)",
         );
     } else {
         info!("startup recovery: no DLQ entries to replay");
     }
+
+    // ── 3. Critical unsupported events prevent the server from starting ───
+    // Keep the replaying file for operator inspection.
+    if critical_unsupported {
+        return Err(anyhow::anyhow!(
+            "startup recovery: DLQ contains one or more critical unsupported events \
+             — replaying file preserved at {}",
+            replaying_path.display(),
+        ));
+    }
+
+    // ── 4. Enqueue failures: preserve the replaying file for retry ────────
+    if enqueue_failures > 0 {
+        error!(
+            "startup recovery: {enqueue_failures} DLQ event(s) failed WAL admission \
+             — replaying file preserved at {}",
+            replaying_path.display(),
+        );
+        return Ok(());
+    }
+
+    // ── 5. Log a critical error if any records were otherwise skipped ─────
+    if skipped > 0 {
+        error!(
+            "startup recovery: {skipped} DLQ entry(ies) were skipped during replay \
+             — data may have been lost",
+        );
+    }
+
+    // ── 6. All records successfully replayed — clean up ───────────────────
+    match tokio::fs::remove_file(&replaying_path).await {
+        Ok(()) => info!(
+            "startup recovery: deleted replayed DLQ file {}",
+            replaying_path.display(),
+        ),
+        Err(e) => warn!(
+            "startup recovery: failed to delete replayed DLQ file {}: {e}",
+            replaying_path.display(),
+        ),
+    }
+
     Ok(())
 }
 
