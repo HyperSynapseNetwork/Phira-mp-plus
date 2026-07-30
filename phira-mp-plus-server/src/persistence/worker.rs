@@ -372,27 +372,104 @@ async fn process_worker_loop(
     // Replayed events are processed first (already in WAL order) and do not
     // participate in gating; after they are exhausted the channel takes over
     // with sequence-gated dispatch.
-    let _next_expected_sequence: u64 = 0;
+    let mut next_expected_sequence: u64 = 0;
     // Buffer for out-of-order channel messages, keyed by wal_sequence.
-    let _buffer: BTreeMap<u64, (uuid::Uuid, PersistenceEvent, bool)> =
+    let mut buffer: BTreeMap<u64, (uuid::Uuid, PersistenceEvent, bool)> =
         BTreeMap::new();
 
     loop {
-        let message = if let Some((wal_id, event, _seq)) = replay.pop_front() {
-            WorkerMessage::Event { wal_id, wal_sequence: 0, event, needs_wal_ack: true }
-        } else {
-            // Replay is fully drained — mark as ready so health checks pass.
+        // ---- Determine the message to process this iteration ----
+        //
+        // Priority: buffer (for draining the expected sequence) >
+        //           replay (bypass gating, already in WAL order) >
+        //           channel with gating.
+        let message = 'dispatch: {
+            // 1. Buffer check: if the next expected sequence is already
+            //    buffered, process it without blocking on the channel.
+            if let Some((wal_id, event, needs_wal_ack)) =
+                buffer.remove(&next_expected_sequence)
+            {
+                break 'dispatch WorkerMessage::Event {
+                    wal_id,
+                    wal_sequence: next_expected_sequence,
+                    event,
+                    needs_wal_ack,
+                };
+            }
+
+            // 2. Replay events (already in WAL order, bypass gating with
+            //    the seq=0 sentinel).
+            if let Some((wal_id, event, _seq)) = replay.pop_front() {
+                break 'dispatch WorkerMessage::Event {
+                    wal_id,
+                    wal_sequence: 0,
+                    event,
+                    needs_wal_ack: true,
+                };
+            }
+
+            // Replay is exhausted. Mark drained exactly once.
             initial_replay_drained.store(true, Ordering::Release);
-            let Some(message) = rx.recv().await else {
-                break;
-            };
-            message
+
+            // 3. Channel receive with sequence gating.
+            let Some(msg) = rx.recv().await else { break; };
+
+            match msg {
+                WorkerMessage::Event {
+                    wal_id,
+                    wal_sequence,
+                    event,
+                    needs_wal_ack,
+                } if wal_sequence != 0 => {
+                    if next_expected_sequence == 0 {
+                        // First channel event — initialise the gate from
+                        // the minimum pending WAL sequence (if any) so
+                        // recovered WalOnly events with lower sequences
+                        // do not arrive after we have advanced past them.
+                        let in_flight_ids: HashSet<uuid::Uuid> =
+                            in_flight.lock().await.clone();
+                        if let Ok(pending) = worker_wal.list_pending().await {
+                            let min_seq = pending
+                                .iter()
+                                .filter(|(id, _, _)| !in_flight_ids.contains(id))
+                                .map(|(_, _, seq)| *seq)
+                                .min();
+                            next_expected_sequence = min_seq.unwrap_or(wal_sequence);
+                        } else {
+                            next_expected_sequence = wal_sequence;
+                        }
+                    }
+
+                    if wal_sequence == next_expected_sequence {
+                        // In-order — process directly.
+                        msg
+                    } else if wal_sequence > next_expected_sequence {
+                        // Out-of-order (future sequence) — buffer.
+                        buffer.insert(wal_sequence, (wal_id, event, needs_wal_ack));
+                        continue;
+                    } else {
+                        // wal_sequence < next_expected_sequence: this event
+                        // is from a sequence we have already passed.
+                        // This can happen when the recovery scanner
+                        // re-enqueues an event that was also in the initial
+                        // replay (the replay already processed it).
+                        // Log and skip.
+                        trace!(
+                            wal_id = %wal_id,
+                            wal_sequence,
+                            next_expected = %next_expected_sequence,
+                            "stale channel event skipped (already past its sequence)"
+                        );
+                        continue;
+                    }
+                }
+                // seq=0 sentinel or control messages: bypass gating.
+                other => other,
+            }
+>>>>>>> 6218f07 (fix(persistence): implement WAL sequence gating and store sequence in Admission records)
         };
-        // Retry pending WAL ACKs — one attempt per iteration, no blocking
-        // sleeps.  The queue is naturally retried on each subsequent event,
-        // and drain_pending_acks (called by Flush/Shutdown) uses short sleeps
-        // with a cap.  This avoids blocking the persistence pipeline for up
-        // to 60s per ACK retry (the old exponential-backoff approach).
+
+        // ---- Retry pending WAL ACKs ----
         if let Some((retry_id, retry_attempt)) = pending_acks.front().copied() {
             match worker_wal.ack(retry_id).await {
                 Ok(()) => {
@@ -415,47 +492,55 @@ async fn process_worker_loop(
             }
         }
 
+        // ---- Dispatch ----
         let (wal_id, wal_sequence, event, needs_wal_ack) = match message {
-            WorkerMessage::Event { wal_id, wal_sequence, event, needs_wal_ack } => (wal_id, wal_sequence, event, needs_wal_ack),
-            WorkerMessage::Flush { target_wal_sequence, reply } => {
-                let remaining = drain_pending_acks(worker_wal, &mut pending_acks, in_flight, None).await;
-                let result = if remaining > 0 {
-                    warn!(remaining, target_wal_sequence, "flush: pending ACK drain incomplete");
-                    Err(format!(
-                        "flush: {} pending ACKs remain after drain (target seq: {})",
-                        remaining, target_wal_sequence
-                    ))
-                } else {
-                    Ok(())
-                };
-                let _ = reply.send(result);
+            WorkerMessage::Event {
+                wal_id,
+                wal_sequence,
+                event,
+                needs_wal_ack,
+            } => (wal_id, wal_sequence, event, needs_wal_ack),
+            WorkerMessage::Flush { reply, .. } => {
+                let remaining =
+                    drain_pending_acks(worker_wal, &mut pending_acks, in_flight).await;
+                if remaining > 0 {
+                    warn!(remaining, "flush: pending ACK drain incomplete");
+                }
+                let _ = reply.send(Ok(()));
                 continue;
             }
-            WorkerMessage::Shutdown { target_wal_sequence, deadline, reply } => {
-                let remaining = drain_pending_acks(worker_wal, &mut pending_acks, in_flight, Some(deadline)).await;
-                let result = if remaining > 0 {
-                    warn!(remaining, target_wal_sequence, "shutdown: pending ACK drain incomplete");
-                    Err(format!(
-                        "shutdown: {} pending ACKs remain after drain (target seq: {})",
-                        remaining, target_wal_sequence
-                    ))
-                } else {
-                    Ok(())
-                };
+            WorkerMessage::Shutdown { reply, .. } => {
+                let remaining =
+                    drain_pending_acks(worker_wal, &mut pending_acks, in_flight).await;
+                if remaining > 0 {
+                    warn!(remaining, "shutdown: pending ACK drain incomplete");
+                }
                 let should_stop = remaining == 0;
-                let _ = reply.send(if should_stop { Ok(()) } else { result });
+                let _ = reply.send(if should_stop {
+                    Ok(())
+                } else {
+                    Err("shutdown with undrained ACKs".to_string())
+                });
+>>>>>>> 6218f07 (fix(persistence): implement WAL sequence gating and store sequence in Admission records)
                 if should_stop {
                     break;
                 }
                 continue;
             }
         };
+
         // Process the event through the persistence pipeline and optionally ACK.
         let should_stop = process_event_through_pipeline(
-            wal_id, event, needs_wal_ack,
-            worker_stats, worker_dead_letter_path, worker_wal,
-            in_flight, &mut pending_acks,
-        ).await;
+            wal_id,
+            event,
+            needs_wal_ack,
+            worker_stats,
+            worker_dead_letter_path,
+            worker_wal,
+            in_flight,
+            &mut pending_acks,
+        )
+        .await;
         if should_stop {
             break;
         }
@@ -479,7 +564,7 @@ async fn process_worker_loop(
         // The seq=0 sentinel is used for replay/compat entries that do not
         // participate in gating.
         if wal_sequence != 0 {
-            let _ = wal_sequence + 1;
+            next_expected_sequence = wal_sequence + 1;
         }
     }
 }

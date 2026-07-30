@@ -14,7 +14,7 @@
 //!   and reports the failure through Supervisor.
 //! - File permissions are enforced to `0o600`.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use serde::{Deserialize, Serialize};
 use crate::persistence::message::PersistenceEvent;
 use sha2::{Digest, Sha256};
@@ -43,6 +43,8 @@ enum WalRecord {
     Admission {
         id: uuid::Uuid,
         event: PersistenceEvent,
+        #[serde(default)]
+        sequence: u64,
     },
     Ack {
         id: uuid::Uuid,
@@ -99,8 +101,8 @@ pub struct PersistenceWal {
     /// Cleared when an ACK operation eventually succeeds.
     degraded: AtomicBool,
     /// Monotonically increasing admission sequence counter.
-    /// Used by the Flush control message to capture a target watermark
-    /// that the worker must reach before replying.
+    /// The single counter for all WAL sequences. Restored from max seen
+    /// during replay so new admits never conflict with replayed entries.
     admit_sequence: std::sync::atomic::AtomicU64,
     /// Total bytes written (approx, updated on admission/ACK).
     total_bytes: std::sync::atomic::AtomicU64,
@@ -110,16 +112,10 @@ pub struct PersistenceWal {
     admission_count: std::sync::atomic::AtomicU64,
     /// Total ACK count since last compact.
     ack_count: std::sync::atomic::AtomicU64,
-    /// Monotonically increasing sequence counter for admit() calls.
-    /// Gives each admitted event a unique, ordered sequence number so the
-    /// worker can process events in WAL order when the periodic recovery
-    /// scanner re-enqueues WalOnly events.
-    next_seq: AtomicU64,
-    /// Maps wal_id -> sequence number for all un-ACKed admissions.
-    /// Updated on admit (insert), cleared on ack (remove), and populated
-    /// during replay from stored WAL records.  The scanner reads sequences
-    /// from this map when enqueueing recovered events.
-    admit_sequences: Mutex<HashMap<uuid::Uuid, u64>>,
+    /// Sequence is stored in the WAL Admission record itself.
+    /// No separate map needed — replay and list_pending read it from
+    /// the parsed frame.  The single admit_sequence counter above tracks
+    /// the next sequence to assign.
 }
 
 impl PersistenceWal {
@@ -134,8 +130,6 @@ impl PersistenceWal {
             truncated_frames: std::sync::atomic::AtomicU64::new(0),
             admission_count: std::sync::atomic::AtomicU64::new(0),
             ack_count: std::sync::atomic::AtomicU64::new(0),
-            next_seq: AtomicU64::new(0),
-            admit_sequences: Mutex::new(HashMap::new()),
         }
     }
 
@@ -314,11 +308,9 @@ impl PersistenceWal {
         self.check_disk_space().await?;
         let id = uuid::Uuid::new_v4();
         let seq = self.admit_sequence.fetch_add(1, Ordering::AcqRel) + 1;
-        let frame = WalFrame::new(WalRecord::Admission { id, event })?;
+        let frame = WalFrame::new(WalRecord::Admission { id, event, sequence: seq })?;
         self.append_frame(&frame).await?;
         self.admission_count.fetch_add(1, Ordering::Release);
-        // Store sequence mapping so scanner and worker can look it up.
-        self.admit_sequences.lock().await.insert(id, seq);
         // Mark marker as active (not clean) so accidental WAL deletion is
         // detectable even after a compact-to-zero followed by new admissions.
         let _ = self.mark_marker_active().await;
@@ -332,7 +324,6 @@ impl PersistenceWal {
         let frame = WalFrame::new(WalRecord::Ack { id })?;
         self.append_frame(&frame).await?;
         self.ack_count.fetch_add(1, Ordering::Release);
-        self.admit_sequences.lock().await.remove(&id);
         Ok(())
     }
 
@@ -431,7 +422,9 @@ impl PersistenceWal {
             })?;
 
             match frame.record {
-                WalRecord::Admission { id, event } => admitted.push((id, event)),
+                WalRecord::Admission { id, event, sequence } => {
+                    admitted.push((id, event, sequence));
+                }
                 WalRecord::Ack { id } => {
                     acked.insert(id);
                 }
@@ -486,36 +479,20 @@ impl PersistenceWal {
         // Used to detect accidental WAL deletion on subsequent starts.
         self.write_instance_marker().await?;
 
-        // Build un-ACKed list and populate sequence mapping.
-        let unacked: Vec<(uuid::Uuid, PersistenceEvent)> = admitted
+        // Build un-ACKed list — sequences come directly from the WAL record.
+        let unacked: Vec<(uuid::Uuid, PersistenceEvent, u64)> = admitted
             .into_iter()
-            .filter(|(id, _)| !acked.contains(id))
+            .filter(|(id, _, _)| !acked.contains(id))
             .collect();
 
-        let mut seq_counter = 0u64;
-        let mut sequences = self.admit_sequences.lock().await;
-        for (id, _) in &unacked {
-            sequences.insert(*id, seq_counter);
-            seq_counter += 1;
-        }
-        // next_seq continues where replay left off so future admit() calls
+        // Restore admit_sequence from max seen so future admit() calls
         // do not conflict with replayed entry sequences.
-        self.next_seq.store(seq_counter, Ordering::Release);
-        drop(sequences);
+        if let Some(max_seq) = unacked.iter().map(|(_, _, seq)| *seq).max() {
+            self.admit_sequence.store(max_seq, Ordering::Release);
+        }
 
         self.replay_succeeded.store(true, Ordering::Release);
-        // Re-read sequences from the map we just populated, using enumerate
-        // as fallback (map should have them all from the loop above).
-        let sequences = self.admit_sequences.lock().await;
-        let result: Vec<_> = unacked
-            .into_iter()
-            .enumerate()
-            .map(|(idx, (id, event))| {
-                let seq = sequences.get(&id).copied().unwrap_or(idx as u64);
-                (id, event, seq)
-            })
-            .collect();
-        Ok(result)
+        Ok(unacked)
     }
 
     /// Write an instance marker file next to the WAL so we can detect
@@ -626,7 +603,7 @@ impl PersistenceWal {
             Err(e) => return Err(format!("read WAL for compact {}: {e}", self.path.display())),
         };
 
-        let mut admitted: Vec<(uuid::Uuid, PersistenceEvent)> = Vec::new();
+        let mut admitted: Vec<(uuid::Uuid, PersistenceEvent, u64)> = Vec::new();
         let mut acked = HashSet::new();
         let mut has_truncated = false;
 
@@ -681,8 +658,8 @@ impl PersistenceWal {
                 )
             })?;
             match &frame.record {
-                WalRecord::Admission { id, event } => {
-                    admitted.push((*id, event.clone()));
+                WalRecord::Admission { id, event, sequence } => {
+                    admitted.push((*id, event.clone(), *sequence));
                 }
                 WalRecord::Ack { id } => {
                     acked.insert(*id);
@@ -690,9 +667,9 @@ impl PersistenceWal {
             }
         }
 
-        let pending: Vec<(uuid::Uuid, PersistenceEvent)> = admitted
+        let pending: Vec<(uuid::Uuid, PersistenceEvent, u64)> = admitted
             .into_iter()
-            .filter(|(id, _)| !acked.contains(id))
+            .filter(|(id, _, _)| !acked.contains(id))
             .collect();
 
         if pending.is_empty() {
@@ -724,10 +701,11 @@ impl PersistenceWal {
             .await
             .map_err(|e| format!("create WAL temp {}: {e}", temp.display()))?;
 
-        for (id, event) in &pending {
+        for (id, event, sequence) in &pending {
             let frame = WalFrame::new(WalRecord::Admission {
                 id: *id,
                 event: event.clone(),
+                sequence: *sequence,
             })?;
             let mut line = serde_json::to_vec(&frame)
                 .map_err(|e| format!("serialize compacted WAL frame: {e}"))?;
@@ -800,10 +778,10 @@ impl PersistenceWal {
     /// WAL).
     ///
     /// Returns the set of (id, event, seq) whose ACK has not yet
-    /// been observed, in file order.  Sequence numbers come from the
-    /// in-memory admit_sequences map (set during replay/admit and
-    /// cleared during ack).  Returns an empty vec when the WAL file
-    /// does not exist or when the WAL is in an un-replayed state.
+    /// been observed, in file order.  Sequence numbers come directly
+    /// from the stored Admission record in the WAL file.
+    /// Returns an empty vec when the WAL file does not exist or when
+    /// the WAL is in an un-replayed state.
     pub async fn list_pending(&self) -> Result<Vec<(uuid::Uuid, PersistenceEvent, u64)>, String> {
         if !self.replay_succeeded.load(Ordering::Acquire) {
             return Ok(Vec::new());
@@ -814,7 +792,7 @@ impl PersistenceWal {
             Err(e) => return Err(format!("read WAL {}: {e}", self.path.display())),
         };
 
-        let mut admitted: Vec<(uuid::Uuid, PersistenceEvent)> = Vec::new();
+        let mut admitted: Vec<(uuid::Uuid, PersistenceEvent, u64)> = Vec::new();
         let mut acked = std::collections::HashSet::new();
 
         for line in bytes.split(|b| *b == b'\n') {
@@ -832,21 +810,18 @@ impl PersistenceWal {
                 continue; // skip checksum failures
             }
             match frame.record {
-                WalRecord::Admission { id, event } => admitted.push((id, event)),
+                WalRecord::Admission { id, event, sequence } => {
+                    admitted.push((id, event, sequence));
+                }
                 WalRecord::Ack { id } => {
                     acked.insert(id);
                 }
             }
         }
 
-        let sequences = self.admit_sequences.lock().await;
         Ok(admitted
             .into_iter()
-            .filter(|(id, _)| !acked.contains(id))
-            .map(|(id, event)| {
-                let seq = sequences.get(&id).copied().unwrap_or(0);
-                (id, event, seq)
-            })
+            .filter(|(id, _, _)| !acked.contains(id))
             .collect())
     }
 
