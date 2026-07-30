@@ -22,9 +22,13 @@ pub(crate) async fn tcp_connect(
     internal_tx: mpsc::Sender<PluginTcpInternal>,
     plugin_read_bytes: Arc<Mutex<HashMap<String, usize>>>,
 ) -> Result<(mpsc::Sender<Vec<u8>>, oneshot::Sender<()>), String> {
-    let stream = TcpStream::connect(addr)
-        .await
-        .map_err(|e| format!("TCP connect to {addr}: {e}"))?;
+    let stream = tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        TcpStream::connect(addr),
+    )
+    .await
+    .map_err(|_| format!("TCP connect to {addr}: timed out after 10s"))?
+    .map_err(|e| format!("TCP connect to {addr}: {e}"))?;
 
     let (data_tx, data_rx) = mpsc::channel::<Vec<u8>>(64);
     let (close_tx, close_rx) = oneshot::channel();

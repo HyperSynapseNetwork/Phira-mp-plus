@@ -619,6 +619,15 @@ impl PluginManager {
         }
     }
 
+    /// Set the TCP event callback that dispatches tcp:accept/receive/disconnect/error
+    /// events to the owning plugin via call_plugin_api.
+    pub fn set_tcp_callback(&self, cb: Arc<dyn Fn(String, serde_json::Value) + Send + Sync>) {
+        #[cfg(feature = "plugin-system")]
+        self.wasm_services.set_tcp_callback(cb);
+        #[cfg(not(feature = "plugin-system"))]
+        let _ = cb;
+    }
+
     pub fn http_handle(&self) -> Option<api::HttpHandle> {
         self.http_handle.try_read().ok().and_then(|g| g.clone())
     }

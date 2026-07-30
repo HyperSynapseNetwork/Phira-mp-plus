@@ -35,6 +35,10 @@ pub struct WasmPluginServices {
     pub state_query: Mutex<Option<api::ServerStateQuery>>,
     /// WASM-only: chat callback set by PluginManager::set_send_chat.
     pub send_chat: Mutex<Option<Arc<dyn Fn(i32, String) + Send + Sync>>>,
+    /// TCP event callback shared with PluginTcpActor. Dispatches
+    /// tcp:accept / tcp:receive / tcp:disconnect / tcp:error events
+    /// to the owning plugin via call_plugin_api.
+    pub tcp_callback: Mutex<Option<Arc<dyn Fn(String, serde_json::Value) + Send + Sync>>>,
     /// Tracks which handler methods each plugin has registered.
     /// Shared with PluginManager — do not write separately.
     pub handler_owners: Arc<Mutex<HashMap<String, Vec<String>>>>,
@@ -56,6 +60,7 @@ impl WasmPluginServices {
             http_handle: Mutex::new(None),
             state_query: Mutex::new(None),
             send_chat: Mutex::new(None),
+            tcp_callback: Mutex::new(None),
             handler_owners,
         }
     }
@@ -88,6 +93,12 @@ impl WasmPluginServices {
     pub fn set_server_state(&self, state: &Weak<crate::server::PlusServerState>) {
         if let Ok(mut s) = self.server_state.lock() {
             *s = Some(state.clone());
+        }
+    }
+
+    pub fn set_tcp_callback(&self, cb: Arc<dyn Fn(String, serde_json::Value) + Send + Sync>) {
+        if let Ok(mut guard) = self.tcp_callback.lock() {
+            *guard = Some(cb);
         }
     }
 }
@@ -171,6 +182,12 @@ impl WitPluginComponent {
             .unwrap_or_else(|e| e.into_inner())
             .clone();
 
+        let tcp_callback = services
+            .tcp_callback
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+
         let plugin_manager = Arc::clone(&server.plugin_manager);
         let forward_plugin = plugin_name.to_string();
         let api_forward: Arc<dyn Fn(&str, &[serde_json::Value]) -> Result<serde_json::Value, String> + Send + Sync> = Arc::new(move |method, args| {
@@ -195,7 +212,7 @@ impl WitPluginComponent {
             timers: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
             timer_callback: None,
             tcp: server.plugin_tcp_tx.clone(),
-            tcp_callback: None,
+            tcp_callback,
             room_state_query: None, // Replaced by direct state_query.call() in phira-room-state
             api_handlers: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
             services_handlers: Some(Arc::clone(&services.api_handlers)),

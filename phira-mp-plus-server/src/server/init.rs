@@ -98,6 +98,34 @@ impl PlusServer {
         let (plugin_tcp_tx, plugin_tcp_rx) = mpsc::channel::<crate::plugin_tcp::PluginTcpCommand>(256);
         {
             let mut actor = crate::plugin_tcp::PluginTcpActor::new(plugin_tcp_rx);
+
+            // Wire the TCP event callback to dispatch tcp:accept/receive/disconnect/error
+            // events to the owning plugin via call_plugin_api.
+            let pm_for_tcp = Arc::clone(&plugin_manager);
+            let tcp_event_cb: Arc<dyn Fn(String, serde_json::Value) + Send + Sync> =
+                Arc::new(move |event_type, payload| {
+                    let pm = Arc::clone(&pm_for_tcp);
+                    tokio::spawn(async move {
+                        // Extract plugin_id from the event payload to dispatch
+                        // to the correct plugin.
+                        if let Some(plugin_id) = payload.get("plugin_id").and_then(|v| v.as_str()) {
+                            let _ = pm
+                                .call_plugin_api(
+                                    plugin_id,
+                                    "tcp:event",
+                                    vec![
+                                        serde_json::json!(event_type),
+                                        payload,
+                                    ],
+                                )
+                                .await;
+                        }
+                    });
+                });
+
+            actor.set_event_callback(Arc::clone(&tcp_event_cb));
+            plugin_manager.set_tcp_callback(tcp_event_cb);
+
             crate::supervisor_actor::spawn_critical("plugin-tcp-actor", async move {
                 actor.run().await;
             });
