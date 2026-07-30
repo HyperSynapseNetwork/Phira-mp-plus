@@ -88,6 +88,7 @@ pub enum PersistenceEvent {
     RoundCompleted {
         round_uuid: String,
         room_id: String,
+        event_id: String,
         results: Vec<crate::room::PlayResult>,
         finished_at: i64,
         aborted_users: Vec<i32>,
@@ -192,12 +193,14 @@ impl PersistenceEvent {
             Self::RoundCompleted {
                 round_uuid,
                 room_id,
+                event_id,
                 results,
                 finished_at,
                 aborted_users,
             } => Some(json!({
                 "round_uuid": round_uuid,
                 "room_id": room_id,
+                "event_id": event_id,
                 "results": results,
                 "finished_at": finished_at,
                 "aborted_users": aborted_users,
