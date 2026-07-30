@@ -961,6 +961,14 @@ impl PersistenceWorker {
     /// Drain every event accepted before this control message.
     pub async fn flush(&self, timeout: Duration) -> Result<(), String> {
         let (reply, rx) = oneshot::channel();
+        {
+            let _send_guard = self.send_gate.lock().await;
+            if self.closed.load(Ordering::Acquire) {
+                return Err("persistence worker is shutting down".to_string());
+            }
+            self.tx
+                .send(WorkerMessage::Flush { reply })
+                .await
                 .map_err(|_| "persistence worker is closed".to_string())?;
         }
         tokio::time::timeout(timeout, rx)
@@ -979,12 +987,22 @@ impl PersistenceWorker {
             if self.closed.swap(true, Ordering::AcqRel) {
                 return Ok(());
             }
-            // Capture the current WAL admission sequence so the worker knows
-            // which events are covered by this shutdown.
-            // Capture an absolute deadline so the worker can abort waiting
-            // for pending ACKs when the caller's timeout would expire.
-            // A failed control operation did not establish that the worker stopped.
-            // Re-open admission so an operator can retry flush/shutdown explicitly.
+            if self
+                .tx
+                .send(WorkerMessage::Shutdown { reply })
+                .await
+                .is_err()
+            {
+                self.closed.store(false, Ordering::Release);
+                return Err("persistence worker is closed".to_string());
+            }
+        }
+        let result = match tokio::time::timeout(timeout, rx).await {
+            Ok(Ok(result)) => result,
+            Ok(Err(_)) => Err("persistence shutdown acknowledgement was dropped".to_string()),
+            Err(_) => Err("persistence shutdown timed out".to_string()),
+        };
+        if let Err(error) = result {
             self.closed.store(false, Ordering::Release);
             return Err(error);
         }
