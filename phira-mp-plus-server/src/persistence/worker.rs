@@ -1023,4 +1023,16 @@ impl PersistenceWorker {
             && !self.closed.load(Ordering::Acquire)
     }
 
+    /// Return the current WAL admission sequence number.
+    /// Used as a fence during DLQ replay to verify all replayed events
+    /// are committed before proceeding to stale session cleanup.
+    pub fn wal_sequence(&self) -> u64 {
+        self.wal.current_sequence()
+    }
+
+    /// Return the number of pending (un-ACKed) WAL entries.
+    /// Used after DLQ replay flush to verify all events are committed.
+    pub async fn pending_wal_count(&self) -> usize {
+        self.wal.list_pending().await.map(|v| v.len()).unwrap_or(0)
+    }
 }

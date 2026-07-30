@@ -252,6 +252,8 @@ struct DlqReplaySummary {
     quarantined: u32,
     enqueue_failures: u32,
     critical_unsupported: bool,
+    /// Enqueue failures for UserAuthenticated or RoundCompleted events.
+    critical_enqueue_failures: u32,
 }
 
 /// Process a single DLQ replaying file: read entries, re-enqueue valid ones,
@@ -277,6 +279,11 @@ async fn process_dlq_file(
     };
 
     const NON_CRITICAL_KINDS: &[&str] = &["round_result", "benchmark.completed"];
+    // Event kinds whose enqueue failure must prevent the server from
+    // becoming ready.  These carry data that cannot be safely recovered
+    // after stale session cleanup (UserAuthenticated) or that represents
+    // a terminal state that must not be lost (RoundCompleted).
+    const CRITICAL_KINDS: &[&str] = &["user_authenticated", "round_completed"];
 
     let mut summary = DlqReplaySummary::default();
     let mut quarantined_lines: Vec<String> = Vec::new();
@@ -335,11 +342,14 @@ async fn process_dlq_file(
             }
         };
 
-        // Enqueue — best effort; failure is logged but does not block recovery.
+        // Enqueue — best effort; failure is logged.
         if state.persistence_worker.enqueue(event).await.is_err() {
             warn!("startup recovery: failed to re-enqueue DLQ event (kind={kind})");
             summary.skipped += 1;
             summary.enqueue_failures += 1;
+            if CRITICAL_KINDS.contains(&kind) {
+                summary.critical_enqueue_failures += 1;
+            }
         } else {
             summary.replayed += 1;
         }
@@ -492,6 +502,7 @@ async fn replay_dead_letter_queue(state: &Arc<PlusServerState>) -> Result<()> {
     let mut total_skipped: u32 = 0;
     let mut total_quarantined: u32 = 0;
     let mut total_enqueue_failures: u32 = 0;
+    let mut total_critical_enqueue_failures: u32 = 0;
     let mut critical_unsupported = false;
 
     for file_path in &all_paths {
@@ -505,6 +516,7 @@ async fn replay_dead_letter_queue(state: &Arc<PlusServerState>) -> Result<()> {
         total_skipped += summary.skipped;
         total_quarantined += summary.quarantined;
         total_enqueue_failures += summary.enqueue_failures;
+        total_critical_enqueue_failures += summary.critical_enqueue_failures;
     }
 
     // Log aggregate stats.
@@ -522,10 +534,17 @@ async fn replay_dead_letter_queue(state: &Arc<PlusServerState>) -> Result<()> {
     }
 
     // ── 4. Flush persistence to ensure enqueued events are committed ───────
-    // This must happen BEFORE stale session cleanup so that recovered
-    // UserAuthenticated events are visible before playtime is finalised.
+    // Capture the current WAL sequence as a fence so we can verify
+    // all replayed events are committed before proceeding to stale
+    // session cleanup. This must happen BEFORE step 6 (stale sessions)
+    // so that recovered UserAuthenticated events are visible before
+    // playtime is finalised.
     if needs_flush {
-        info!("startup recovery: flushing persistence after DLQ replay");
+        let fence_seq = state.persistence_worker.wal_sequence();
+        info!(
+            "startup recovery: flushing persistence after DLQ replay (WAL fence={})",
+            fence_seq,
+        );
         state
             .persistence_worker
             .flush(std::time::Duration::from_secs(30))
@@ -535,6 +554,23 @@ async fn replay_dead_letter_queue(state: &Arc<PlusServerState>) -> Result<()> {
                     "startup recovery: persistence flush failed after DLQ replay: {e}"
                 )
             })?;
+
+        // Verify all events up to the fence have been committed. WalOnly
+        // events may still be pending; the periodic WAL recovery scanner
+        // processes them on its next cycle. Poll until they are committed
+        // or the deadline expires.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        let mut remaining = state.persistence_worker.pending_wal_count().await;
+        while remaining > 0 && std::time::Instant::now() < deadline {
+            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+            remaining = state.persistence_worker.pending_wal_count().await;
+        }
+        if remaining > 0 {
+            return Err(anyhow::anyhow!(
+                "startup recovery: {remaining} WAL entry(ies) still pending after \
+                 DLQ replay flush — persistence has not committed all replayed events",
+            ));
+        }
     }
 
     // ── 5. Critical unsupported events prevent the server from starting ───
@@ -547,7 +583,18 @@ async fn replay_dead_letter_queue(state: &Arc<PlusServerState>) -> Result<()> {
         ));
     }
 
-    // ── 6. Enqueue failures: preserve all replaying files for retry ───────
+    // ── 6. Critical enqueue failures prevent the server from starting ────
+    // UserAuthenticated and RoundCompleted events carry data that must not
+    // be silently lost.  Keep all replaying files for operator retry.
+    if total_critical_enqueue_failures > 0 {
+        return Err(anyhow::anyhow!(
+            "startup recovery: {total_critical_enqueue_failures} critical DLQ event(s) \
+             (UserAuthenticated/RoundCompleted) failed WAL admission — \
+             replaying file(s) preserved",
+        ));
+    }
+
+    // ── 7. Non-critical enqueue failures: preserve files for retry ───────
     if total_enqueue_failures > 0 {
         error!(
             "startup recovery: {total_enqueue_failures} DLQ event(s) failed WAL admission \
@@ -556,7 +603,7 @@ async fn replay_dead_letter_queue(state: &Arc<PlusServerState>) -> Result<()> {
         return Ok(());
     }
 
-    // ── 7. Log warnings for any non-critical losses ────────────────────────
+    // ── 8. Log warnings for any non-critical losses ──────────────────────
     if total_skipped > 0 {
         error!(
             "startup recovery: {total_skipped} DLQ entry(ies) were skipped during replay \
@@ -569,7 +616,7 @@ async fn replay_dead_letter_queue(state: &Arc<PlusServerState>) -> Result<()> {
         );
     }
 
-    // ── 8. All records successfully processed — clean up replaying files ──
+    // ── 9. All records successfully processed — clean up replaying files ─
     for file_path in &all_paths {
         match tokio::fs::remove_file(file_path).await {
             Ok(()) => info!(
