@@ -466,8 +466,10 @@ async fn process_worker_loop(
                 other => Some(other),
             };
             if let Some(val) = result {
+                // val is Some(WorkerMessage) — break with it
                 break 'fetch Some(val);
             }
+            // result was None (out-of-order or stale) — fall through to continue outer loop
             None
         };
 
@@ -513,7 +515,7 @@ async fn process_worker_loop(
                     warn!(remaining, "flush: pending ACK drain incomplete");
                 }
                 let _ = reply.send(Ok(()));
-                continue 'dispatch;
+                continue;
             }
             WorkerMessage::Shutdown { reply, .. } => {
                 let remaining =
@@ -530,7 +532,7 @@ async fn process_worker_loop(
                 if should_stop {
                     break;
                 }
-                continue 'dispatch;
+                continue;
             }
         };
 
@@ -646,11 +648,11 @@ async fn process_degraded_worker_loop(
         match message {
             WorkerMessage::Event { wal_id, needs_wal_ack: _, .. } => {
                 warn!(wal_id = %wal_id, "dropping event in degraded persistence worker");
-                continue 'dispatch;
+                continue;
             }
             WorkerMessage::Flush { reply, .. } => {
                 let _ = reply.send(Ok(()));
-                continue 'dispatch;
+                continue;
             }
             WorkerMessage::Shutdown { reply, .. } => {
                 info!("degraded persistence worker shutting down");
@@ -695,12 +697,12 @@ async fn wal_recovery_scanner(
             Ok(p) => p,
             Err(e) => {
                 tracing::warn!(error = %e, "WAL recovery scanner: list_pending failed");
-                continue 'dispatch;
+                continue;
             }
         };
 
         if pending.is_empty() {
-            continue 'dispatch;
+            continue;
         }
 
         // Snapshot in_flight set to avoid holding the lock across the scan loop.
@@ -709,7 +711,7 @@ async fn wal_recovery_scanner(
         for (wal_id, event, wal_sequence) in &pending {
             // Skip entries that are already queued (in-flight).
             if in_flight_ids.contains(wal_id) {
-                continue 'dispatch;
+                continue;
             }
 
             // Acquire the send_gate before injecting into the channel.

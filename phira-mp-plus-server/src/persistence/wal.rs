@@ -113,7 +113,6 @@ pub struct PersistenceWal {
     /// Total ACK count since last compact.
     ack_count: std::sync::atomic::AtomicU64,
     /// Sequence is stored in the WAL Admission record itself.
-}
 
 impl PersistenceWal {
     pub fn new(path: impl Into<PathBuf>) -> Self {
