@@ -105,8 +105,7 @@ pub fn specs() -> Vec<CommandSpec> {
         })),
         CommandSpec::new("check-config", "core", "验证当前加载的配置并显示脱敏摘要。", "check-config")
             .handler(Arc::new(|state, _args| {
-                let mut lines = vec![format!("  ◆ 配置版本: {}", state.config.config_version)];
-                lines.push(format!("  ◆ 服务端: {} v{}", env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION")));
+                let mut lines = vec![format!("  ◆ 服务端: {} v{}", env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION"))];
                 lines.push(format!("  ◆ TCP 端口: {}", state.config.port));
                 lines.push(format!("  ◆ HTTP: {}:{}", state.config.http_bind_address, state.config.http_port));
                 lines.push(format!("  ◆ 数据库: {}", if state.config.database_url.is_empty() { "本地默认" } else { &state.config.database_url }));

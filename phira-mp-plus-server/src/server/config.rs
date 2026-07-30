@@ -188,10 +188,6 @@ impl Default for ConfigProfile {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct PlusConfig {
-    /// Schema version for config file forward-compatibility.
-    /// Current version: 1. Increment when making backward-incompatible changes.
-    #[serde(default = "default_config_version")]
-    pub config_version: u8,
     #[serde(default)]
     pub profile: ConfigProfile,
     pub port: u16,
@@ -261,8 +257,6 @@ pub struct PlusConfig {
     pub connection_rate_window: u32,
     #[serde(default)]
     pub server_name: Option<String>,
-    #[serde(default)]
-    pub admin_token: Option<String>,
     #[serde(default = "default_phira_api")]
     pub phira_api_endpoint: String,
     #[serde(default = "default_true")]
@@ -293,7 +287,6 @@ impl Default for PlusConfig {
     fn default() -> Self {
         Self {
             port: 12346,
-            config_version: 1,
             profile: ConfigProfile::Development,
             http_port: 12347,
             http_bind_address: default_http_bind_address(),
@@ -311,7 +304,6 @@ impl Default for PlusConfig {
             connection_rate_limit: 30,
             connection_rate_window: 10,
             server_name: None,
-            admin_token: None,
             phira_api_endpoint: "https://phira.5wyxi.com".to_string(),
             chat_enabled: true,
             round_data_retention_days: 7,
@@ -351,19 +343,6 @@ impl PlusConfig {
                 }
             }
         }
-        // PM_ADMIN_TOKEN overrides admin_token.
-        if let Ok(val) = std::env::var("PM_ADMIN_TOKEN") {
-            if !val.trim().is_empty() {
-                self.admin_token = Some(val.trim().to_string());
-            }
-        } else if let Ok(path) = std::env::var("PM_ADMIN_TOKEN_FILE") {
-            if let Ok(val) = std::fs::read_to_string(&path) {
-                let trimmed = val.trim().to_string();
-                if !trimmed.is_empty() {
-                    self.admin_token = Some(trimmed);
-                }
-            }
-        }
         self.phira_api_endpoint = normalize_phira_api_endpoint(&self.phira_api_endpoint)
             .map_err(AppError::ConfigValidation)?;
         Ok(())
@@ -374,7 +353,7 @@ impl PlusConfig {
         let mut value = serde_json::to_value(self).unwrap_or_default();
         // Mask known secret fields
         if let Some(obj) = value.as_object_mut() {
-            for field in &["database_url", "admin_token"] {
+            for field in &["database_url"] {
                 if let Some(val) = obj.get_mut(*field) {
                     let is_non_empty_string = val.as_str().is_some_and(|s| !s.is_empty());
                     if is_non_empty_string {
@@ -610,10 +589,6 @@ pub struct PlusConfigCli {
 }
 
 // ── Default-value helpers ──────────────────────────────────────────
-
-fn default_config_version() -> u8 {
-    1
-}
 
 fn default_http_port() -> u16 {
     12347
@@ -896,7 +871,6 @@ mod tests {
     fn redacted_config_hides_secrets() {
         let mut config = PlusConfig::default();
         config.database_url = "postgres://user:secret@localhost/db".to_string();
-        config.admin_token = Some("my-secret-token".to_string());
         let redacted = config.redacted_string();
         assert!(!redacted.contains("secret"), "redacted config should not contain secret: {redacted}");
         assert!(redacted.contains("****"), "redacted config should mask values");

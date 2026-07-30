@@ -139,9 +139,6 @@ round_data_retention_days: 7
 # 服务器名称（显示在欢迎语等位置）
 # server_name: "My Phira Server"
 
-# 管理员 API 令牌（预留字段）
-# admin_token: "your-secret-token"
-
 # 游戏内管理员 Phira ID。管理员在创建房间弹窗输入 _<CLI命令> 时不会创建房间，
 # 而是执行服务端 CLI 命令，并把输出通过聊天消息发回该客户端。
 # 也可通过 CLI admin-id 或 WIT/host admin.* 动态维护。
