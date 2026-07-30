@@ -387,8 +387,9 @@ async fn process_worker_loop(
             } else {
                 tracing::warn!(
                     wal_id = %wal_id, kind = %kind,
-                    "WAL entry not ACKed (non-durable outcome); will replay on restart"
+                    "WAL entry not ACKed (non-durable outcome); removing from in_flight so scanner can retry"
                 );
+                in_flight.lock().await.remove(&wal_id);
             }
         }
 
