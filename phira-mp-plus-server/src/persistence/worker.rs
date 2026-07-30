@@ -45,7 +45,9 @@ pub struct PersistenceWorker {
     tx: mpsc::Sender<WorkerMessage>,
     /// Serializes event/control insertion so nothing can be accepted behind a
     /// Shutdown marker and then remain unprocessed.
-    send_gate: Mutex<()>,
+    /// Shared with the WAL recovery scanner so it respects the same ordering
+    /// fence.
+    send_gate: Arc<Mutex<()>>,
     /// Idle-mode diagnostic hint. Persistence remains active while idle so
     /// accepted events are never discarded merely because gameplay is quiet.
     suspended: AtomicBool,
@@ -583,11 +585,17 @@ async fn process_degraded_worker_loop(
 ///
 /// The scanner uses `try_send` so it never blocks the persistence pipeline.
 /// If the queue is full, it backs off and retries on the next interval.
+///
+/// The scanner acquires `send_gate` before injecting each event so it
+/// respects the same ordering fence that `enqueue`, `flush`, and `shutdown`
+/// use.  If the gate is contended (another operation in progress), the
+/// scanner skips that event and retries on the next interval.
 async fn wal_recovery_scanner(
     tx: mpsc::Sender<WorkerMessage>,
     wal: Arc<PersistenceWal>,
     stats: Arc<RwLock<PersistenceStats>>,
     in_flight: Arc<Mutex<HashSet<uuid::Uuid>>>,
+    send_gate: Arc<tokio::sync::Mutex<()>>,
 ) {
     let mut interval = tokio::time::interval(Duration::from_secs(5));
     // Start with a jitter so the scanner does not contend with initial replay.
@@ -617,6 +625,22 @@ async fn wal_recovery_scanner(
             if in_flight_ids.contains(wal_id) {
                 continue;
             }
+
+            // Acquire the send_gate before injecting into the channel.
+            // If the gate is contended (flush/shutdown/enqueue in progress),
+            // stop scanning and retry on the next interval.  This prevents
+            // the scanner from bypassing the ordering fence that enqueue,
+            // flush, and shutdown rely on.
+            let _gate = match send_gate.try_lock() {
+                Some(guard) => guard,
+                None => {
+                    tracing::trace!(
+                        wal_id = %wal_id, kind = %kind,
+                        "WAL recovery scanner: send_gate contended, deferring"
+                    );
+                    break;
+                }
+            };
 
             let kind = event.kind();
             let summary = event.summary();
@@ -688,6 +712,8 @@ impl PersistenceWorker {
         let scanner_wal = Arc::clone(&wal);
         let scanner_stats = Arc::clone(&stats);
         let scanner_in_flight = Arc::clone(&in_flight);
+        let send_gate = Arc::new(Mutex::new(()));
+        let scanner_send_gate = Arc::clone(&send_gate);
 
         let initial_replay_drained = Arc::new(AtomicBool::new(false));
         let worker_initial_replay_drained = Arc::clone(&initial_replay_drained);
@@ -752,11 +778,12 @@ impl PersistenceWorker {
             scanner_wal,
             scanner_stats,
             scanner_in_flight,
+            scanner_send_gate,
         ));
 
         Arc::new(Self {
             tx,
-            send_gate: Mutex::new(()),
+            send_gate,
             stats,
             wal,
             in_flight,
