@@ -859,15 +859,23 @@ mod wit_trait_impls {
                 .map_err(|e| format!("handler registry lock: {e}"))?;
             registry.insert(method.clone(), registered);
 
-            // Also register in shared PluginManager registry
+            // Register in shared PluginManager registry with plugin_name prefix
+            // to avoid silent override of another plugin's handler.
+            let shared_key = format!("{}.{}", self.plugin_name, method);
             if let (Some(ref shared), Some(ref forward)) = (&self.ctx.services_handlers, &self.ctx.api_forward) {
+                {
+                    let sh = shared.lock().map_err(|e| format!("handler registry lock: {e}"))?;
+                    if sh.contains_key(&shared_key) {
+                        return Err(format!("handler method '{method}' is already registered by another plugin"));
+                    }
+                }
                 let method_clone = method.clone();
                 let forward_clone = Arc::clone(forward);
                 let handler: api::PluginApiHandler = Arc::new(move |_m, args| {
                     forward_clone(&method_clone, args)
                 });
                 if let Ok(mut sh) = shared.lock() {
-                    sh.insert(method.clone(), handler);
+                    sh.insert(shared_key, handler);
                 }
             }
             // Track handler ownership for cleanup
@@ -887,10 +895,10 @@ mod wit_trait_impls {
             match registry.get(&method) {
                 Some(h) if h.plugin_name == self.plugin_name => {
                     registry.remove(&method);
-                    // Also remove from shared PluginManager registry
+                    // Also remove from shared PluginManager registry (prefixed key)
                     if let Some(ref shared) = self.ctx.services_handlers {
                         if let Ok(mut sh) = shared.lock() {
-                            sh.remove(&method);
+                            sh.remove(&format!("{}.{}", self.plugin_name, method));
                         }
                     }
                     // Remove from handler_owners tracking

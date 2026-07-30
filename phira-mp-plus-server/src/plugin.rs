@@ -1039,12 +1039,13 @@ impl PluginManager {
         }
 
         // Clean up registered handlers from the shared registry
+        // Keys are prefixed with plugin_name to avoid cross-plugin collisions.
         {
             if let Ok(mut owners) = self.handler_owners.lock() {
                 if let Some(methods) = owners.remove(&plugin_name) {
                     if let Ok(mut handlers) = self.api_handlers.lock() {
                         for method in methods {
-                            handlers.remove(&method);
+                            handlers.remove(&format!("{}.{}", plugin_name, method));
                         }
                     }
                 }
