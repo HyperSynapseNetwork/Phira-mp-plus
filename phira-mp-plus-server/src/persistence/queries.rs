@@ -94,6 +94,22 @@ impl DbManager {
             .collect()
     }
 
+    /// Get the latest room snapshot payload for a given room_id from
+    /// mp_room_snapshots. Returns None when the snapshot does not exist.
+    pub async fn get_latest_room_snapshot(&self, room_id: &str) -> Option<Value> {
+        let Self::Pg(pool) = self;
+        let row = sqlx::query(
+            "SELECT payload::text AS payload FROM mp_room_snapshots
+             WHERE room_id = $1 ORDER BY updated_at DESC LIMIT 1",
+        )
+        .bind(room_id)
+        .fetch_optional(pool)
+        .await
+        .ok()??;
+        let raw: String = row.try_get("payload").ok()?;
+        serde_json::from_str(&raw).ok()
+    }
+
     pub async fn query_touch_batches(
         &self,
         since_sequence: i64,

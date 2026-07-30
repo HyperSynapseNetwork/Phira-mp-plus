@@ -28,6 +28,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use crate::db::DbManager;
+use crate::room_actor::RoomSnapshot;
 use anyhow::Result;
 use tracing::{error, info, warn};
 
@@ -246,7 +247,95 @@ async fn restore_persistent_rooms(state: &Arc<PlusServerState>, db: &DbManager) 
     );
     for room_id in &room_ids {
         match state.create_empty_room(room_id, None, true).await {
-            Ok(_) => info!("startup recovery: restored persistent room {room_id}"),
+            Ok(_) => {
+                info!("startup recovery: restored persistent room {room_id}");
+                // Load the latest RoomSnapshot from mp_room_snapshots and
+                // apply lock/cycle/chart/hidden state so the persistent room
+                // reflects its pre-restart configuration.
+                if let Some(payload) = db.get_latest_room_snapshot(room_id).await {
+                    match serde_json::from_value::<RoomSnapshot>(payload) {
+                        Ok(snapshot) => {
+                            // Apply lock state
+                            if let Err(e) = state
+                                .room_commands
+                                .set_lock(state, room_id, snapshot.locked)
+                                .await
+                            {
+                                warn!(
+                                    "startup recovery: failed to set lock for room {room_id}: {e}"
+                                );
+                            }
+                            // Apply cycle state
+                            if let Err(e) = state
+                                .room_commands
+                                .set_cycle(state, room_id, snapshot.cycle)
+                                .await
+                            {
+                                warn!(
+                                    "startup recovery: failed to set cycle for room {room_id}: {e}"
+                                );
+                            }
+                            // Apply hidden state
+                            if let Err(e) = state
+                                .room_commands
+                                .set_hidden(state, room_id, snapshot.hidden)
+                                .await
+                            {
+                                warn!(
+                                    "startup recovery: failed to set hidden for room {room_id}: {e}"
+                                );
+                            }
+                            // Apply chart state
+                            if let Some(chart_id) = snapshot.chart {
+                                let chart_name = snapshot
+                                    .chart_name
+                                    .clone()
+                                    .unwrap_or_else(|| format!("#{chart_id}"));
+                                if let Err(e) = state
+                                    .room_commands
+                                    .set_chart(state, room_id, chart_id, &chart_name, 0)
+                                    .await
+                                {
+                                    warn!(
+                                        "startup recovery: failed to set chart for room {room_id}: {e}"
+                                    );
+                                }
+                            }
+                            // Apply host state
+                            if let Some(host_id) = snapshot.host {
+                                if let Err(e) = state
+                                    .room_commands
+                                    .set_host(state, room_id, Some(host_id))
+                                    .await
+                                {
+                                    warn!(
+                                        "startup recovery: failed to set host for room {room_id}: {e}"
+                                    );
+                                }
+                            }
+                            info!(
+                                "startup recovery: applied snapshot state to room {room_id} \
+                                 (locked={}, cycle={}, hidden={}, chart={:?}, host={:?})",
+                                snapshot.locked,
+                                snapshot.cycle,
+                                snapshot.hidden,
+                                snapshot.chart,
+                                snapshot.host,
+                            );
+                        }
+                        Err(e) => {
+                            warn!(
+                                "startup recovery: failed to parse RoomSnapshot for room {room_id}: {e}"
+                            );
+                        }
+                    }
+                } else {
+                    info!(
+                        "startup recovery: no snapshot found for persistent room {room_id}, \
+                         using defaults"
+                    );
+                }
+            }
             Err(e) => warn!(
                 "startup recovery: failed to restore persistent room {room_id}: {e}"
             ),
