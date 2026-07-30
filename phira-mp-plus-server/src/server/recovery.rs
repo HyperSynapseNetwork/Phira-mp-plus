@@ -33,6 +33,34 @@ use tracing::{error, info, warn};
 
 use super::state::PlusServerState;
 
+/// Stages of the startup recovery sequence, logged in order as each runs.
+enum RecoveryStage {
+    SchemaValidation,
+    WalHealth,
+    DlqReplay,
+    RoundRecovery,
+    RoomRestore,
+    PlaytimeCleanup,
+}
+
+impl std::fmt::Display for RecoveryStage {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::SchemaValidation => write!(f, "schema-validation"),
+            Self::WalHealth => write!(f, "wal-health"),
+            Self::DlqReplay => write!(f, "dlq-replay"),
+            Self::RoundRecovery => write!(f, "round-recovery"),
+            Self::RoomRestore => write!(f, "room-restore"),
+            Self::PlaytimeCleanup => write!(f, "playtime-cleanup"),
+        }
+    }
+}
+
+/// Log entry into a recovery stage.
+fn log_stage(stage: &RecoveryStage) {
+    info!("startup recovery: stage = {stage}");
+}
+
 /// Run all startup recovery steps.
 ///
 /// Must be called **after** the PostgreSQL connection is established and
@@ -43,6 +71,7 @@ use super::state::PlusServerState;
 /// prevent the server from becoming ready.
 pub async fn recover_state(state: &Arc<PlusServerState>, db: &DbManager) -> Result<()> {
     // ── 1. Schema version validation ────────────────────────────────────
+    log_stage(&RecoveryStage::SchemaValidation);
     let schema_version = db.get_schema_version().await;
     match schema_version {
         Some(ver) => info!("startup recovery: schema version = {ver}"),
@@ -64,6 +93,7 @@ pub async fn recover_state(state: &Arc<PlusServerState>, db: &DbManager) -> Resu
     );
 
     // ── 3. WAL health check ─────────────────────────────────────────────
+    log_stage(&RecoveryStage::WalHealth);
     // The PersistenceWorker replays the WAL in a background task. Wait
     // briefly for replay to complete **and drain** (is_healthy returns true
     // only when initial replay has drained), then fail-closed if unhealthy.
@@ -87,6 +117,7 @@ pub async fn recover_state(state: &Arc<PlusServerState>, db: &DbManager) -> Resu
     info!("startup recovery: persistence WAL is healthy");
 
     // ── 4. Dead-letter queue replay + flush ─────────────────────────────
+    log_stage(&RecoveryStage::DlqReplay);
     // Run DLQ replay BEFORE crash recovery so that any RoundCompleted
     // events in the DLQ are committed to PostgreSQL before we decide which
     // rounds are truly unfinished.  Also run BEFORE stale session cleanup
@@ -94,15 +125,18 @@ pub async fn recover_state(state: &Arc<PlusServerState>, db: &DbManager) -> Resu
     replay_dead_letter_queue(state).await?;
 
     // ── 5. Crash recovery: abort truly unfinished rounds ────────────────
+    log_stage(&RecoveryStage::RoundRecovery);
     // Run AFTER WAL replay and DLQ replay so that rounds whose
     // RoundCompleted event was in the WAL or DLQ have their finished_at
     // set in PostgreSQL before we query for unfinished rounds.
     abort_unfinished_rounds(db).await?;
 
     // ── 6. Persistent empty room restoration ────────────────────────────
+    log_stage(&RecoveryStage::RoomRestore);
     restore_persistent_rooms(state, db).await?;
 
     // ── 7. Playtime stale session cleanup ───────────────────────────────
+    log_stage(&RecoveryStage::PlaytimeCleanup);
     // Run AFTER WAL replay, DLQ replay, and crash recovery so that old
     // UserAuthenticated events cannot re-set sessions online after cleanup.
     close_all_stale_playtime_sessions(db).await?;
