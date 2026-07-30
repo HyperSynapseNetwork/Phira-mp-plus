@@ -105,10 +105,11 @@ impl PlusServer {
             let tcp_event_cb: Arc<dyn Fn(String, serde_json::Value) + Send + Sync> =
                 Arc::new(move |event_type, payload| {
                     let pm = Arc::clone(&pm_for_tcp);
+                    let payload_clone = payload.clone();
                     tokio::spawn(async move {
                         // Extract plugin_id from the event payload to dispatch
                         // to the correct plugin.
-                        if let Some(plugin_id) = payload.get("plugin_id").and_then(|v| v.as_str()) {
+                        if let Some(plugin_id) = payload_clone.get("plugin_id").and_then(|v| v.as_str()) {
                             let _ = pm
                                 .call_plugin_api(
                                     plugin_id,

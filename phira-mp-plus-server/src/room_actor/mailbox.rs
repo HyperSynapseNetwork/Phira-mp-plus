@@ -432,6 +432,9 @@ mod tests {
             round_id: None,
             ready_set: None,
             members: super::super::actor::RoomMembers { users: Vec::new(), monitors: Vec::new() },
+            results_keys: None,
+            aborted_users: None,
+            playing_users: None,
         };
 
         gateway

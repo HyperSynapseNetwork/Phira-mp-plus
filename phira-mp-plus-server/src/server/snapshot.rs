@@ -174,20 +174,24 @@ pub(super) fn build_snapshot(
                     serde_json::json!({"kind":"wait_for_ready", "ready_users": ready}),
                 )
             }
-            Some(phira_mp_common::StrippedRoomState::Playing) => (
-                "PLAYING".to_string(),
-                actor_playing,
-                Vec::new(),
-                actor_results_keys.clone(),
-                actor_aborted,
-                actor_results_keys.len(),
-                serde_json::json!({
+            Some(phira_mp_common::StrippedRoomState::Playing) => {
+                let result_count = actor_results_keys.len();
+                let detail = serde_json::json!({
                     "kind":"playing",
-                    "finished_users": actor_results_keys,
-                    "aborted_users": actor_aborted,
-                    "result_count": actor_results_keys.len(),
-                }),
-            ),
+                    "finished_users": &actor_results_keys,
+                    "aborted_users": &actor_aborted,
+                    "result_count": result_count,
+                });
+                (
+                    "PLAYING".to_string(),
+                    actor_playing,
+                    Vec::new(),
+                    actor_results_keys,
+                    actor_aborted,
+                    result_count,
+                    detail,
+                )
+            },
         };
 
     let mut users: Vec<i32> = users_arcs.iter().map(|u| u.id).collect();
