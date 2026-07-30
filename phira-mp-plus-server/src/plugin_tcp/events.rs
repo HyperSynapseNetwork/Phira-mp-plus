@@ -66,7 +66,7 @@ pub(crate) async fn tcp_listen(
 
     let (close_tx, close_rx) = oneshot::channel();
     tokio::spawn(tcp_accept_loop(
-        listener, listener_handle, internal_tx, close_rx, event_channel, read_buf_map, handle_read_bytes, plugin_read_bytes,
+        listener, listener_handle, internal_tx, close_rx, read_buf_map, handle_read_bytes, plugin_read_bytes, event_channel,
     ));
     Ok(close_tx)
 }
