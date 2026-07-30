@@ -11,12 +11,15 @@
 
 use crate::db::DbManager;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::sync::{mpsc, oneshot};
 use tracing::{debug, error, warn};
 
-use super::{now_ms, EnqueueOutcome, HighFrequencyConfig, HighFrequencyItem, HighFrequencyStats};
+use super::{
+    now_ms, EnqueueOutcome, HighFrequencyConfig, HighFrequencyItem, HighFrequencyStats,
+    SequenceTracker,
+};
 
 // ── Internal message type ────────────────────────────────────────────────────
 
@@ -84,6 +87,7 @@ impl HighFrequencyWriter {
             last_accepted_sequence: AtomicU64::new(0),
             committed_sequence: AtomicU64::new(0),
             continuous_committed_watermark: AtomicU64::new(0),
+            sequence_tracker: Mutex::new(SequenceTracker::new()),
         });
         let worker_stats = Arc::clone(&stats);
         let worker_db = Arc::clone(&db);
@@ -158,6 +162,7 @@ impl HighFrequencyWriter {
                         // Overflow full — finally drop
                         self.stats.dropped.fetch_add(1, Ordering::Relaxed);
                         self.stats.dropped_points.fetch_add(points, Ordering::Relaxed);
+                        self.stats.sequence_tracker.lock().unwrap().mark_dropped(seq);
                         warn!("high frequency writer overflow queue full; item dropped (kind={kind})");
                         Ok(EnqueueOutcome::Dropped)
                     } else {
@@ -166,6 +171,7 @@ impl HighFrequencyWriter {
                 } else {
                     self.stats.dropped.fetch_add(1, Ordering::Relaxed);
                     self.stats.dropped_points.fetch_add(points, Ordering::Relaxed);
+                    self.stats.sequence_tracker.lock().unwrap().mark_dropped(seq);
                     warn!("high frequency writer queue full; item dropped (kind={kind})");
                     Ok(EnqueueOutcome::Dropped)
                 }
@@ -173,6 +179,7 @@ impl HighFrequencyWriter {
             Err(mpsc::error::TrySendError::Closed(HfMessage::Item(_item))) => {
                 self.stats.dropped.fetch_add(1, Ordering::Relaxed);
                 self.stats.dropped_points.fetch_add(points, Ordering::Relaxed);
+                self.stats.sequence_tracker.lock().unwrap().mark_dropped(seq);
                 let kind = _item.kind.as_str().to_string();
                 warn!("high frequency writer queue closed; item dropped (kind={kind})");
                 Err("high frequency writer is closed".to_string())
@@ -289,10 +296,24 @@ async fn run_hf_writer(
                             continue;
                         }
                         let result = loop {
-                            let watermark = stats.continuous_committed_watermark.load(Ordering::Acquire);
-                            if watermark >= target_seq {
-                                break Ok(());
+                            // Check the sequence tracker for watermark and
+                            // dropped ranges before attempting any work.
+                            let early = {
+                                let tracker = stats.sequence_tracker.lock().unwrap();
+                                if tracker.watermark() >= target_seq {
+                                    Some(Ok(()))
+                                } else if let Some(dropped) = tracker.find_dropped_up_to(target_seq) {
+                                    Some(Err(
+                                        format!("DataLoss: sequence {dropped} was permanently dropped, creating an unrecoverable gap in committed sequence")
+                                    ))
+                                } else {
+                                    None
+                                }
+                            };
+                            if let Some(r) = early {
+                                break r;
                             }
+
                             // Drain overflow into current batch before flushing
                             drain_overflow(
                                 &mut batch, &mut overflow_rx, &stats, overflow_max_age_ms, max_batch_size,
@@ -300,18 +321,14 @@ async fn run_hf_writer(
                             .await;
 
                             if batch.is_empty() {
-                                // No pending items.  If committed_sequence has
-                                // already passed target_seq, there is an
-                                // unrecoverable gap (items were permanently
-                                // dropped) and the watermark can never reach
-                                // the target.
-                                let committed =
-                                    stats.committed_sequence.load(Ordering::Acquire);
-                                if committed >= target_seq {
+                                // Re-check tracker in case another task completed a flush.
+                                let tracker = stats.sequence_tracker.lock().unwrap();
+                                if tracker.watermark() >= target_seq {
+                                    break Ok(());
+                                }
+                                if let Some(dropped) = tracker.find_dropped_up_to(target_seq) {
                                     break Err(
-                                        "DataLoss: items were permanently dropped, \
-                                         creating an unrecoverable gap in committed sequence"
-                                            .to_string(),
+                                        format!("DataLoss: sequence {dropped} was permanently dropped, creating an unrecoverable gap in committed sequence"),
                                     );
                                 }
                                 // Items still being produced; yield briefly so
@@ -566,12 +583,11 @@ async fn flush_and_update_seq(
         if target_seq > current {
             stats.committed_sequence.store(target_seq, Ordering::Relaxed);
         }
-        // Advance continuous committed watermark when this batch fills from
-        // after the current watermark (i.e. no gaps before the batch).
-        let watermark = stats.continuous_committed_watermark.load(Ordering::Relaxed);
-        if min_seq == watermark + 1 {
-            stats.continuous_committed_watermark.store(target_seq, Ordering::Relaxed);
-        }
+        // Update the sequence tracker with the committed range and derive
+        // the new continuous watermark (handles out-of-order commits and gaps).
+        let mut tracker = stats.sequence_tracker.lock().unwrap();
+        tracker.mark_committed(min_seq, target_seq);
+        stats.continuous_committed_watermark.store(tracker.watermark(), Ordering::Relaxed);
     }
     result
 }

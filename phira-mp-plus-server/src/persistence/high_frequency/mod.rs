@@ -22,6 +22,7 @@
 
 use serde_json::Value;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 pub mod postgres;
@@ -142,6 +143,125 @@ impl HighFrequencyItem {
     }
 }
 
+// ── SequenceTracker ──────────────────────────────────────────────────────────
+
+/// Tracks committed and dropped admission sequence intervals.
+///
+/// Used by the Flush handler to determine the continuous committed watermark
+/// and to detect when a Flush target falls in a permanently dropped range
+/// (DataLoss).  Locked behind `Mutex<SequenceTracker>` in `HighFrequencyStats`.
+#[derive(Debug)]
+pub(crate) struct SequenceTracker {
+    /// Non-overlapping committed intervals [lo, hi], sorted by lo.
+    committed: Vec<(u64, u64)>,
+    /// Non-overlapping dropped intervals [lo, hi], sorted by lo.
+    dropped: Vec<(u64, u64)>,
+    /// Continuous watermark: highest N where [1, N] is fully committed.
+    watermark: u64,
+}
+
+impl SequenceTracker {
+    pub fn new() -> Self {
+        Self {
+            committed: Vec::new(),
+            dropped: Vec::new(),
+            watermark: 0,
+        }
+    }
+
+    /// Current continuous committed watermark.
+    pub fn watermark(&self) -> u64 {
+        self.watermark
+    }
+
+    /// Record that the sequence range [min, max] has been durably committed.
+    pub fn mark_committed(&mut self, min: u64, max: u64) {
+        if min == 0 || max == 0 || min > max {
+            return;
+        }
+        Self::insert_interval(&mut self.committed, min, max);
+        self.advance_watermark();
+    }
+
+    /// Record that `seq` was permanently dropped (never accepted into a queue).
+    pub fn mark_dropped(&mut self, seq: u64) {
+        if seq == 0 {
+            return;
+        }
+        Self::insert_interval(&mut self.dropped, seq, seq);
+    }
+
+    /// Returns `true` if `seq` falls within a dropped interval.
+    pub fn is_dropped(&self, seq: u64) -> bool {
+        self.dropped.iter().any(|&(lo, hi)| lo <= seq && seq <= hi)
+    }
+
+    /// Returns the first dropped sequence in the range `(watermark, target]`,
+    /// or `None` if no dropped sequence blocks the path to `target`.
+    ///
+    /// If a dropped sequence exists between the current watermark and the
+    /// Flush target, the watermark can never reach the target and the caller
+    /// must return DataLoss.
+    pub fn find_dropped_up_to(&self, target: u64) -> Option<u64> {
+        for &(lo, hi) in &self.dropped {
+            if lo > self.watermark && lo <= target {
+                return Some(lo);
+            }
+        }
+        None
+    }
+
+    /// Insert [min, max] into a sorted, non-overlapping interval list,
+    /// merging overlapping or adjacent entries.
+    fn insert_interval(intervals: &mut Vec<(u64, u64)>, mut min: u64, mut max: u64) {
+        let mut i = 0;
+        loop {
+            if i >= intervals.len() {
+                intervals.push((min, max));
+                return;
+            }
+            let (lo, hi) = intervals[i];
+            if hi + 1 >= min && lo <= max + 1 {
+                // Overlap or adjacent — merge
+                min = min.min(lo);
+                max = max.max(hi);
+                intervals.remove(i);
+                continue; // re-check from same index after removal
+            }
+            if lo > max + 1 {
+                // Entirely past our interval — insert before this one
+                intervals.insert(i, (min, max));
+                return;
+            }
+            // lo..hi is entirely before our range — skip
+            i += 1;
+        }
+    }
+
+    /// Recompute `watermark` from the committed and dropped intervals.
+    ///
+    /// Walks consecutive seqs from `watermark + 1` forward through the
+    /// committed intervals.  Stops at the first gap (uncommitted seq) or
+    /// at a dropped seq (permanent gap).
+    fn advance_watermark(&mut self) {
+        let mut seq = self.watermark.wrapping_add(1);
+        loop {
+            if self.is_dropped(seq) {
+                break; // permanent gap — watermark cannot pass this
+            }
+            let committed = self
+                .committed
+                .iter()
+                .any(|&(lo, hi)| lo <= seq && seq <= hi);
+            if !committed {
+                break; // gap (pending items)
+            }
+            seq = seq.wrapping_add(1);
+        }
+        self.watermark = seq.wrapping_sub(1);
+    }
+}
+
 // ── HighFrequencyStats ───────────────────────────────────────────────────────
 
 /// Atomic counters for the [`HighFrequencyWriter`].
@@ -186,6 +306,8 @@ pub struct HighFrequencyStats {
     /// durably committed.  Stays behind `committed_sequence` when gaps exist
     /// (e.g. a batch was dropped, creating a missing sequence).
     pub continuous_committed_watermark: AtomicU64,
+    /// Sequence interval tracker — committed/dropped ranges + watermark.
+    pub(crate) sequence_tracker: Mutex<SequenceTracker>,
 }
 
 impl HighFrequencyStats {
@@ -225,6 +347,7 @@ impl HighFrequencyStats {
         self.last_accepted_sequence.store(0, Ordering::Relaxed);
         self.committed_sequence.store(0, Ordering::Relaxed);
         self.continuous_committed_watermark.store(0, Ordering::Relaxed);
+        *self.sequence_tracker.lock().unwrap() = SequenceTracker::new();
     }
 }
 
@@ -333,6 +456,7 @@ mod tests {
             last_accepted_sequence: AtomicU64::new(99),
             committed_sequence: AtomicU64::new(95),
             continuous_committed_watermark: AtomicU64::new(80),
+            sequence_tracker: Mutex::new(SequenceTracker::new()),
         };
         let snap = stats.snapshot();
         assert_eq!(snap.received, 10);
