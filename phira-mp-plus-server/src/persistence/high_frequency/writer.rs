@@ -516,6 +516,7 @@ async fn flush_and_update_seq(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use super::HighFrequencyKind;
     use crate::db::DbManager;
     use serde_json::json;
     use std::sync::Arc;
