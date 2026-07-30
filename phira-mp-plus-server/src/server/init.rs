@@ -171,7 +171,7 @@ impl PlusServer {
         // plugins are loaded or network connections are accepted, recover any
         // state from the previous server session (unfinished rounds, etc.).
         info!("startup recovery: running postgres state recovery");
-        super::recovery::recover_state(&state, &state.db_manager).await;
+        super::recovery::recover_state(&state, &state.db_manager).await?;
         info!("startup recovery: complete");
         state.room_commands.start_mailbox(Arc::clone(&state), 1024);
         let lost_con_state = Arc::clone(&state);

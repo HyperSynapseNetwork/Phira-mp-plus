@@ -271,6 +271,28 @@ impl DbManager {
             })
             .collect()
     }
+
+    /// Clean up stale playtime sessions that were orphaned by a server crash.
+    ///
+    /// A session is considered stale if `session_start` is older than 24 hours.
+    /// The elapsed time is accrued to `total_secs` and `session_start` is set to
+    /// NULL so the row is ready for the next normal online/offline cycle.
+    pub async fn cleanup_stale_playtime_sessions(&self) -> std::result::Result<u64, String> {
+        let Self::Pg(pool) = self;
+        let now = now_ms_inline();
+        let result = sqlx::query(
+            "UPDATE playtime
+             SET total_secs = total_secs + GREATEST(0, ($1 - session_start) / 1000),
+                 session_start = NULL
+             WHERE session_start IS NOT NULL
+               AND session_start < $1 - 86400000",
+        )
+        .bind(now)
+        .execute(pool)
+        .await
+        .map_err(|e| format!("cleanup stale playtime sessions: {e}"))?;
+        Ok(result.rows_affected())
+    }
 }
 
 impl DbManager {

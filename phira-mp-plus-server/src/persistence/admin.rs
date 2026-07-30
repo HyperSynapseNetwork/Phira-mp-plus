@@ -38,4 +38,18 @@ impl DbManager {
         let raw = row.try_get::<String, _>("value").ok()?;
         serde_json::from_str(&raw).ok()
     }
+
+    /// Get the list of persistent empty room IDs from mp_settings.
+    pub async fn get_persistent_rooms(&self) -> Option<Vec<String>> {
+        let Self::Pg(pool) = self;
+        use sqlx::Row;
+        let row = sqlx::query(
+            "SELECT value::text AS value FROM mp_settings WHERE key = 'persistent_rooms'",
+        )
+        .fetch_optional(pool)
+        .await
+        .ok()??;
+        let raw = row.try_get::<String, _>("value").ok()?;
+        serde_json::from_str(&raw).ok()
+    }
 }
