@@ -473,7 +473,7 @@ async fn process_worker_loop(
             None
         };
 
-        let Some(message) = message else { continue; };
+        let Some(msg) = message else { continue; };
 
 
         // ---- Retry pending WAL ACKs ----
@@ -500,8 +500,7 @@ async fn process_worker_loop(
         }
 
         // ---- Dispatch ----
-        let Some(message) = message else { break; };
-        let (wal_id, wal_sequence, event, needs_wal_ack) = match message {
+        let (wal_id, wal_sequence, event, needs_wal_ack) = match msg {
             WorkerMessage::Event {
                 wal_id,
                 wal_sequence,
