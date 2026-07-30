@@ -346,7 +346,6 @@ impl RoomActor {
             // time has passed since the last enqueue, to avoid flooding the
             // persistence worker on rapid-fire commands.
             let should_enqueue = {
-                let now = std::time::Instant::now();
                 let version = self.actor_state.snapshot_version;
                 let time_ok = self
                     .last_snapshot_enqueue_time
