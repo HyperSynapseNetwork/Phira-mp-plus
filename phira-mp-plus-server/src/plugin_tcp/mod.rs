@@ -17,8 +17,6 @@ use tokio::sync::{mpsc, oneshot};
 pub(crate) use quota::{
     MAX_CONNECTIONS_PER_PLUGIN,
     MAX_LISTENERS_PER_PLUGIN,
-    MAX_READ_BUF_PER_CONNECTION,
-    MAX_READ_BUF_PER_PLUGIN,
 };
 
 /// Synchronous reply channel for WIT host functions — blocks the calling

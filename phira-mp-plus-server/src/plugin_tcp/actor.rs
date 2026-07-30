@@ -11,7 +11,7 @@ use crate::plugin_tcp::{
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use tokio::sync::{mpsc, oneshot};
-use tracing::info;
+use tracing::{info, warn};
 
 struct Connection {
     remote_addr: String,
