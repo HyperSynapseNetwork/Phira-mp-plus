@@ -57,7 +57,11 @@ pub enum PersistenceEvent {
     /// User authenticated event — merged UserSeen + UserOnline for atomic
     /// admission before the auth OK frame is sent.  Blocks until WAL enqueue
     /// succeeds so a user is never authenticated without being persisted.
+    /// Contains event_id and session_id for idempotency — retry/replay cannot
+    /// duplicate login_count.
     UserAuthenticated {
+        event_id: String,
+        session_id: String,
         user_id: i32,
         user_name: String,
         language: String,
@@ -161,12 +165,16 @@ impl PersistenceEvent {
                 "ip": ip,
             })),
             Self::UserAuthenticated {
+                event_id,
+                session_id,
                 user_id,
                 user_name,
                 language,
                 ip,
                 connected_at,
             } => Some(json!({
+                "event_id": event_id,
+                "session_id": session_id,
                 "user_id": user_id,
                 "user_name": user_name,
                 "language": language,
@@ -224,8 +232,8 @@ impl PersistenceEvent {
             Self::UserOffline { user_id } => format!("user_id={user_id}"),
             Self::UserDisconnect { user_id, .. } => format!("user_id={user_id}"),
             Self::UserAuthenticated {
-                user_id, user_name, ..
-            } => format!("user_id={user_id} user_name={user_name}"),
+                event_id, user_id, user_name, ..
+            } => format!("event_id={event_id} user_id={user_id} user_name={user_name}"),
             Self::UserSeen {
                 user_id, user_name, ..
             } => format!("user_id={user_id} user_name={user_name}"),
