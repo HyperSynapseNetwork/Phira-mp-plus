@@ -163,21 +163,13 @@ async fn tcp_read_task(
             result = reader.read(&mut buf) => {
                 match result {
                     Ok(0) => {
-                        // Send Disconnected to actor before cleaning up buffers
+                        // Tell the actor to handle disconnect — actor is the
+                        // sole publisher of plugin events and owns cleanup.
                         let _ = internal_tx.try_send(PluginTcpInternal::Disconnected {
                             handle,
                             plugin_id: cb_plugin_id.clone(),
                             remote_addr: remote_addr.clone(),
                         });
-                        read_buf_map.lock().unwrap().remove(&handle);
-                        if !plugin_id.is_empty() {
-                            let mut prb = plugin_read_bytes.lock().unwrap();
-                            prb.remove(&plugin_id);
-                        }
-                        cb("tcp:disconnect".into(), serde_json::json!({
-                            "handle": handle, "plugin_id": cb_plugin_id.clone(),
-                            "reason": "remote peer closed connection",
-                        }));
                         break;
                     }
                     Ok(n) => {
@@ -243,15 +235,6 @@ async fn tcp_read_task(
                             plugin_id: cb_plugin_id.clone(),
                             remote_addr: remote_addr.clone(),
                         });
-                        read_buf_map.lock().unwrap().remove(&handle);
-                        if !plugin_id.is_empty() {
-                            let mut prb = plugin_read_bytes.lock().unwrap();
-                            prb.remove(&plugin_id);
-                        }
-                        cb("tcp:error".into(), serde_json::json!({
-                            "handle": handle, "plugin_id": cb_plugin_id.clone(),
-                            "error": format!("read: {e}"),
-                        }));
                         break;
                     }
                 }
@@ -259,8 +242,4 @@ async fn tcp_read_task(
             _ = &mut close_rx => break,
         }
     }
-    cb("tcp:disconnect".into(), serde_json::json!({
-        "handle": handle, "plugin_id": cb_plugin_id,
-        "reason": "connection task exited",
-    }));
 }
