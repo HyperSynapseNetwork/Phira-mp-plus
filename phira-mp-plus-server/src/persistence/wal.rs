@@ -16,6 +16,7 @@
 
 use std::collections::{HashMap, HashSet};
 use serde::{Deserialize, Serialize};
+use crate::persistence::message::PersistenceEvent;
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
