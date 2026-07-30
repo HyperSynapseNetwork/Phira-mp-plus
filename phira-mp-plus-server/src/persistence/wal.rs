@@ -25,7 +25,7 @@ use tokio::sync::Mutex;
 use tracing::warn;
 
 /// Current frame format version. Increment when the wire format changes.
-const WAL_FORMAT_VERSION: u8 = 1;
+const WAL_FORMAT_VERSION: u8 = 2;
 
 /// Minimum free disk space (bytes) below which admissions are rejected.
 /// Only checked on Unix (statvfs); unused on Windows.
@@ -43,7 +43,7 @@ enum WalRecord {
     Admission {
         id: uuid::Uuid,
         event: PersistenceEvent,
-        #[serde(default)]
+        #[serde(default, skip_serializing_if = "is_zero")]
         sequence: u64,
     },
     Ack {
@@ -89,6 +89,13 @@ impl WalFrame {
         }
         Ok(())
     }
+}
+
+/// Helper for `#[serde(skip_serializing_if)]` on the `sequence` field.
+/// When `sequence` is 0 (i.e. a v1 record parsed with the default), omit it
+/// from serialization so that v1 checksums continue to verify.
+fn is_zero(n: &u64) -> bool {
+    *n == 0
 }
 
 #[derive(Debug)]
@@ -361,6 +368,8 @@ impl PersistenceWal {
         // Byte offset at which the truncated tail begins (0 if no truncation).
         // Used to physically truncate the file after replay.
         let mut truncated_at: usize = 0;
+        let mut needs_upgrade = false;
+        let mut parsed_records: Vec<WalRecord> = Vec::new();
 
         let mut lines: Vec<&[u8]> = bytes.split(|b| *b == b'\n').collect();
         // If the last byte was not a newline, the final segment may be an
@@ -417,12 +426,36 @@ impl PersistenceWal {
                 )
             })?;
 
+            // Track records for potential v1→v2 WAL upgrade.
+            if frame.ver == 1 {
+                needs_upgrade = true;
+            }
+            parsed_records.push(frame.record.clone());
+
             match frame.record {
                 WalRecord::Admission { id, event, sequence } => {
                     admitted.push((id, event, sequence));
                 }
                 WalRecord::Ack { id } => {
                     acked.insert(id);
+                }
+            }
+        }
+
+        // Assign sequential sequence numbers to v1 admission records (which
+        // have sequence=0 from #[serde(default)]), starting one past the
+        // highest existing v2 sequence so we never collide.
+        let v1_start = if needs_upgrade {
+            admitted.iter().map(|(_, _, seq)| *seq).max().unwrap_or(0) + 1
+        } else {
+            0
+        };
+        if needs_upgrade {
+            let mut next_seq = v1_start;
+            for entry in admitted.iter_mut() {
+                if entry.2 == 0 {
+                    entry.2 = next_seq;
+                    next_seq += 1;
                 }
             }
         }
@@ -480,6 +513,13 @@ impl PersistenceWal {
             .into_iter()
             .filter(|(id, _, _)| !acked.contains(id))
             .collect();
+
+        // Upgrade WAL from v1 to v2 if any v1 frames were encountered.
+        // This must happen before admit_sequence is restored so that the
+        // rewritten records carry their newly assigned sequences.
+        if needs_upgrade {
+            self.upgrade_wal_from_v1(&parsed_records, v1_start).await?;
+        }
 
         // Restore admit_sequence from max seen so future admit() calls
         // do not conflict with replayed entry sequences.
@@ -579,6 +619,69 @@ impl PersistenceWal {
                 self.path.display()
             ));
         }
+        Ok(())
+    }
+
+    /// Upgrade a v1-format WAL to v2, assigning sequential sequence numbers
+    /// to v1 admission records that lack the `sequence` field.
+    ///
+    /// Called during `replay()` when v1 frames are detected.  This is an
+    /// idempotent migration — the WAL is rewritten atomically (write temp,
+    /// fsync, rename, fsync-parent) so a crash during upgrade leaves the
+    /// original v1 file intact.
+    async fn upgrade_wal_from_v1(&self, records: &[WalRecord], v1_start: u64) -> Result<(), String> {
+        let temp = self.path.with_extension("wal.tmp");
+        let mut file = tokio::fs::OpenOptions::new()
+            .create(true)
+            .truncate(true)
+            .write(true)
+            .open(&temp)
+            .await
+            .map_err(|e| format!("create WAL temp for upgrade {}: {e}", temp.display()))?;
+
+        let mut next_seq = v1_start;
+        for record in records {
+            let upgraded = match record {
+                WalRecord::Admission { id, event, sequence } if *sequence == 0 => {
+                    let seq = next_seq;
+                    next_seq += 1;
+                    WalRecord::Admission {
+                        id: *id,
+                        event: event.clone(),
+                        sequence: seq,
+                    }
+                }
+                _ => record.clone(),
+            };
+            let frame = WalFrame::new(upgraded)?;
+            let mut line = serde_json::to_vec(&frame)
+                .map_err(|e| format!("serialize upgraded WAL frame: {e}"))?;
+            line.push(b'\n');
+            file.write_all(&line)
+                .await
+                .map_err(|e| format!("write upgraded WAL: {e}"))?;
+        }
+
+        file.flush()
+            .await
+            .map_err(|e| format!("flush upgraded WAL: {e}"))?;
+        file.sync_all()
+            .await
+            .map_err(|e| format!("sync upgraded WAL: {e}"))?;
+        drop(file);
+
+        tokio::fs::rename(&temp, &self.path)
+            .await
+            .map_err(|e| format!("rename upgraded WAL: {e}"))?;
+
+        if let Some(parent) = self.path.parent() {
+            if let Ok(dir) = tokio::fs::File::open(parent).await {
+                dir.sync_all()
+                    .await
+                    .map_err(|e| format!("sync parent after WAL upgrade: {e}"))?;
+            }
+        }
+
         Ok(())
     }
 
