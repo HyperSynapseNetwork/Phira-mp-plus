@@ -9,11 +9,12 @@
 use crate::persistence::message::PersistenceEvent;
 use crate::persistence::stats::{
     record_dead_letter_failed, record_dead_letter_written, record_dropped, record_queued,
-    record_wal_committed, record_wal_compaction,
-    record_wal_received, PersistenceStats,
+    record_wal_committed, record_wal_compaction, record_wal_only,
+    record_wal_received, record_wal_recovered, PersistenceStats,
 };
 use crate::persistence::wal::PersistenceWal;
 use serde_json::json;
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -50,6 +51,10 @@ pub struct PersistenceWorker {
     closed: AtomicBool,
     stats: Arc<RwLock<PersistenceStats>>,
     wal: Arc<PersistenceWal>,
+    /// WAL IDs of events currently queued but not yet ACKed.
+    /// Shared with the periodic WAL recovery scanner so it can avoid
+    /// re-enqueueing entries that are already in-flight.
+    in_flight: Arc<Mutex<HashSet<uuid::Uuid>>>,
 }
 
 async fn report_dead_letter_durability_failure(error: String) {
@@ -177,6 +182,7 @@ async fn process_worker_loop(
     worker_stats: &Arc<RwLock<PersistenceStats>>,
     worker_dead_letter_path: &Option<std::path::PathBuf>,
     worker_wal: &Arc<PersistenceWal>,
+    in_flight: &Arc<Mutex<HashSet<uuid::Uuid>>>,
 ) {
     use crate::persistence::pipeline::{
         persist_benchmark_report_if_needed, persist_production_event_if_needed,
@@ -216,6 +222,7 @@ async fn process_worker_loop(
                     worker_wal.set_degraded(false);
                     debug!(wal_id = %retry_id, "ACK retry succeeded");
                     pending_acks.pop_front();
+                    in_flight.lock().await.remove(&retry_id);
                 }
                 Err(e) => {
                     worker_wal.set_degraded(true);
@@ -234,7 +241,7 @@ async fn process_worker_loop(
         let (wal_id, event, needs_wal_ack) = match message {
             WorkerMessage::Event { wal_id, event, needs_wal_ack } => (wal_id, event, needs_wal_ack),
             WorkerMessage::Flush { reply } => {
-                let drain_result = drain_pending_acks(worker_wal, &mut pending_acks).await;
+                let drain_result = drain_pending_acks(worker_wal, &mut pending_acks, in_flight).await;
                 if let Err(ref e) = drain_result {
                     warn!(error = %e, "pending ACK drain failed");
                 }
@@ -242,7 +249,7 @@ async fn process_worker_loop(
                 continue;
             }
             WorkerMessage::Shutdown { reply } => {
-                let drain_result = drain_pending_acks(worker_wal, &mut pending_acks).await;
+                let drain_result = drain_pending_acks(worker_wal, &mut pending_acks, in_flight).await;
                 if let Err(ref e) = drain_result {
                     warn!(error = %e, "pending ACK drain failed");
                 }
@@ -373,6 +380,9 @@ async fn process_worker_loop(
                 } else {
                     worker_wal.set_degraded(false);
                     record_wal_committed(worker_stats).await;
+                    // Remove from in_flight set so the recovery scanner
+                    // knows this entry no longer needs attention.
+                    in_flight.lock().await.remove(&wal_id);
                 }
             } else {
                 tracing::warn!(
@@ -408,6 +418,7 @@ async fn process_worker_loop(
 async fn drain_pending_acks(
     worker_wal: &Arc<PersistenceWal>,
     pending_acks: &mut std::collections::VecDeque<(uuid::Uuid, u32)>,
+    in_flight: &Arc<Mutex<HashSet<uuid::Uuid>>>,
 ) -> Result<(), String> {
     use tracing::{debug, warn};
     let mut retries = 0;
@@ -421,6 +432,7 @@ async fn drain_pending_acks(
                 Ok(()) => {
                     worker_wal.set_degraded(false);
                     debug!(wal_id = %id, "pending ACK drained");
+                    in_flight.lock().await.remove(&id);
                 }
                 Err(e) => {
                     worker_wal.set_degraded(true);
@@ -485,6 +497,84 @@ async fn process_degraded_worker_loop(
     }
 }
 
+/// Periodic WAL recovery scanner.
+///
+/// After a successful WAL admit the in-memory queue may be full, leaving the
+/// event safely stored in WAL but not yet dispatched to the persistence
+/// pipeline.  This scanner periodically checks for un-ACKed WAL entries that
+/// are NOT already in-flight, and re-enqueues them so they are processed
+/// during this runtime (rather than waiting for restart replay).
+///
+/// The scanner uses `try_send` so it never blocks the persistence pipeline.
+/// If the queue is full, it backs off and retries on the next interval.
+async fn wal_recovery_scanner(
+    tx: mpsc::Sender<WorkerMessage>,
+    wal: Arc<PersistenceWal>,
+    stats: Arc<RwLock<PersistenceStats>>,
+    in_flight: Arc<Mutex<HashSet<uuid::Uuid>>>,
+) {
+    let mut interval = tokio::time::interval(Duration::from_secs(5));
+    // Start with a jitter so the scanner does not contend with initial replay.
+    interval.tick().await; // first tick completes immediately, skip it
+    interval.tick().await; // wait one full interval before first real scan
+
+    loop {
+        interval.tick().await;
+
+        let pending = match wal.list_pending().await {
+            Ok(p) => p,
+            Err(e) => {
+                tracing::warn!(error = %e, "WAL recovery scanner: list_pending failed");
+                continue;
+            }
+        };
+
+        if pending.is_empty() {
+            continue;
+        }
+
+        // Snapshot in_flight set to avoid holding the lock across the scan loop.
+        let in_flight_ids: HashSet<uuid::Uuid> = in_flight.lock().await.clone();
+
+        for (wal_id, event) in &pending {
+            // Skip entries that are already queued (in-flight).
+            if in_flight_ids.contains(wal_id) {
+                continue;
+            }
+
+            let kind = event.kind();
+            let summary = event.summary();
+            let msg = WorkerMessage::Event {
+                wal_id: *wal_id,
+                event: event.clone(),
+                needs_wal_ack: true,
+            };
+
+            match tx.try_send(msg) {
+                Ok(()) => {
+                    // Event is now queued — add to in_flight so the next scan
+                    // iteration does not re-send it while it is being processed.
+                    in_flight.lock().await.insert(*wal_id);
+                    record_wal_recovered(&stats, kind, summary).await;
+                    tracing::debug!(
+                        wal_id = %wal_id, kind = %kind,
+                        "WAL recovery scanner re-enqueued event"
+                    );
+                }
+                Err(mpsc::error::TrySendError::Full(_)) => {
+                    // Queue is still full — stop scanning and retry next interval.
+                    break;
+                }
+                Err(mpsc::error::TrySendError::Closed(_)) => {
+                    // Worker is shut down — stop scanner entirely.
+                    tracing::info!("WAL recovery scanner stopped (worker channel closed)");
+                    return;
+                }
+            }
+        }
+    }
+}
+
 impl PersistenceWorker {
     pub fn spawn(queue_capacity: usize) -> Arc<Self> {
         Self::spawn_with_journals(
@@ -514,6 +604,14 @@ impl PersistenceWorker {
         let wal = Arc::new(PersistenceWal::new(wal_path));
         let worker_wal = Arc::clone(&wal);
 
+        let in_flight: Arc<Mutex<HashSet<uuid::Uuid>>> =
+            Arc::new(Mutex::new(HashSet::new()));
+        let worker_in_flight = Arc::clone(&in_flight);
+        let scanner_tx = tx.clone();
+        let scanner_wal = Arc::clone(&wal);
+        let scanner_stats = Arc::clone(&stats);
+        let scanner_in_flight = Arc::clone(&in_flight);
+
         crate::supervisor_actor::spawn_critical("persistence-worker", async move {
             // Check WAL instance consistency before replay to detect
             // accidental deletion/truncation of an already-initialized WAL.
@@ -538,6 +636,7 @@ impl PersistenceWorker {
                         &worker_stats,
                         &worker_dead_letter_path,
                         &worker_wal,
+                        &worker_in_flight,
                     )
                     .await;
                 }
@@ -558,11 +657,22 @@ impl PersistenceWorker {
             }
         });
 
+        // Spawn recovery scanner only when the persistence worker is not
+        // degraded.  If the worker entered degraded mode, the scanner will
+        // see a closed channel and stop on its next iteration.
+        tokio::spawn(wal_recovery_scanner(
+            scanner_tx,
+            scanner_wal,
+            scanner_stats,
+            scanner_in_flight,
+        ));
+
         Arc::new(Self {
             tx,
             send_gate: Mutex::new(()),
             stats,
             wal,
+            in_flight,
             suspended: AtomicBool::new(false),
             closed: AtomicBool::new(false),
         })
@@ -640,6 +750,7 @@ impl PersistenceWorker {
         };
         // Send using the reserved permit (infallible).
         permit.send(WorkerMessage::Event { wal_id, event, needs_wal_ack });
+        self.in_flight.lock().await.insert(wal_id);
         record_queued(&self.stats, kind.clone(), summary).await;
         Ok(())
     }

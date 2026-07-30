@@ -240,6 +240,8 @@ pub async fn record_wal_committed(stats: &Arc<RwLock<PersistenceStats>>) {
     stats.write().await.wal_committed += 1;
 }
 
+<<<<<<< HEAD
+=======
 pub async fn record_wal_only(stats: &Arc<RwLock<PersistenceStats>>, kind: String, summary: String) {
     let mut s = stats.write().await;
     s.wal_only += 1;
@@ -252,6 +254,7 @@ pub async fn record_wal_recovered(stats: &Arc<RwLock<PersistenceStats>>, kind: S
     push_trace(&mut s, "wal_recovered", kind, summary);
 }
 
+>>>>>>> bb2076c (feat: add in_flight tracking and WAL recovery scanner)
 pub async fn record_wal_compaction(
     stats: &Arc<RwLock<PersistenceStats>>,
     bytes: u64,
