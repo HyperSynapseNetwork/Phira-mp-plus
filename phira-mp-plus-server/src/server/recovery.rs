@@ -10,8 +10,11 @@
 //!    terminal state and don't wait for a round that will never finish).
 //! 2. Database health is logged (schema version, user / playtime counts).
 //! 3. Persistent empty rooms are recreated from mp_settings.
-//! 4. Stale playtime sessions are cleaned up.
+//! 4. All open playtime sessions from the previous instance are closed.
 //! 5. Dead-letter queue entries are replayed.
+//!
+//! Every step returns `Err` on failure so that `recover_state` propagates
+//! the error and prevents the server from becoming ready.
 
 use std::sync::Arc;
 
@@ -111,10 +114,10 @@ pub async fn recover_state(state: &Arc<PlusServerState>, db: &DbManager) -> Resu
     info!("startup recovery: persistence WAL is healthy");
 
     // ── 5. Persistent empty room restoration ────────────────────────────
-    restore_persistent_rooms(state, db).await;
+    restore_persistent_rooms(state, db).await?;
 
     // ── 6. Playtime stale session cleanup ───────────────────────────────
-    cleanup_stale_playtime_sessions(db).await;
+    close_all_stale_playtime_sessions(db).await?;
 
     // ── 7. Dead-letter queue replay ─────────────────────────────────────
     replay_dead_letter_queue(state).await?;
@@ -126,12 +129,16 @@ pub async fn recover_state(state: &Arc<PlusServerState>, db: &DbManager) -> Resu
 ///
 /// Reads the `persistent_rooms` key from `mp_settings` (a JSON array of room
 /// IDs) and recreates each room via `state.create_empty_room()`.
-async fn restore_persistent_rooms(state: &Arc<PlusServerState>, db: &DbManager) {
+///
+/// Returns `Err` if `get_persistent_rooms` itself fails (indicating a database
+/// problem).  Individual room creation failures are logged but do not abort the
+/// step so that a single misconfigured room does not block the entire startup.
+async fn restore_persistent_rooms(state: &Arc<PlusServerState>, db: &DbManager) -> Result<()> {
     let room_ids = match db.get_persistent_rooms().await {
         Some(ids) => ids,
         None => {
             info!("startup recovery: no persistent empty rooms to restore");
-            return;
+            return Ok(());
         }
     };
     info!(
@@ -146,35 +153,40 @@ async fn restore_persistent_rooms(state: &Arc<PlusServerState>, db: &DbManager) 
             ),
         }
     }
+    Ok(())
 }
 
-/// Clean up stale playtime sessions that were orphaned by a crash.
+/// Close all open playtime sessions from the previous server instance.
 ///
-/// A session is considered stale if `session_start` is older than 24 hours.
-/// The elapsed time is accrued to `total_secs` and `session_start` is cleared.
-async fn cleanup_stale_playtime_sessions(db: &DbManager) {
-    match db.cleanup_stale_playtime_sessions().await {
-        Ok(affected) => {
-            if affected > 0 {
-                info!("startup recovery: cleaned up {affected} stale playtime session(s)");
-            } else {
-                info!("startup recovery: no stale playtime sessions to clean up");
-            }
-        }
-        Err(e) => warn!("startup recovery: failed to clean stale playtime sessions: {e}"),
+/// Every `session_start` that is still set at startup belongs to a previous
+/// server instance (planned shutdown or crash).  The elapsed time is accrued
+/// to `total_secs` and `session_start` is cleared so the row is ready for
+/// the next normal online/offline cycle.
+///
+/// Returns `Err` on database failure so that recovery is not silently skipped.
+async fn close_all_stale_playtime_sessions(db: &DbManager) -> Result<()> {
+    let affected = db
+        .close_all_stale_sessions()
+        .await
+        .map_err(|e| anyhow::anyhow!("startup recovery: close all stale playtime sessions: {e}"))?;
+    if affected > 0 {
+        info!("startup recovery: closed {affected} stale playtime session(s) from previous instance");
+    } else {
+        info!("startup recovery: no stale playtime sessions to close");
     }
+    Ok(())
 }
 
 /// Replay the dead-letter queue: scan the DLQ JSONL file and re-enqueue
 /// events that were not persisted in the previous run.
 ///
-/// Known non-critical event kinds (`round_result`, `benchmark.completed`) are
-/// silently skipped.  Truly unsupported / unparseable event kinds are treated
-/// as **critical failures** — they prevent the server from becoming ready so
-/// operators can investigate.
+/// This is a best-effort recovery. Events that cannot be reconstructed are
+/// logged and skipped. The DLQ file path comes from the runtime config.
 ///
-/// After successful replay the DLQ file is renamed to `<name>.processed` as a
-/// replay ACK, preventing re-processing on subsequent restarts.
+/// Returns `Err` only when the DLQ file itself cannot be read (indicating a
+/// filesystem or configuration problem).  Individual entry replay failures
+/// are logged but do not abort the step.
+>>>>>>> a9541ac (fix: make recovery failures propagate to prevent server from becoming ready)
 async fn replay_dead_letter_queue(state: &Arc<PlusServerState>) -> Result<()> {
     let dlq_path = state
         .config
@@ -195,8 +207,11 @@ async fn replay_dead_letter_queue(state: &Arc<PlusServerState>) -> Result<()> {
             return Ok(());
         }
         Err(e) => {
-            warn!("startup recovery: failed to read dead-letter file: {e}");
-            return Ok(());
+            return Err(anyhow::anyhow!(
+                "startup recovery: failed to read dead-letter file {}: {e}",
+                path.display(),
+            ));
+>>>>>>> a9541ac (fix: make recovery failures propagate to prevent server from becoming ready)
         }
     };
 
@@ -297,7 +312,7 @@ async fn replay_dead_letter_queue(state: &Arc<PlusServerState>) -> Result<()> {
     } else {
         info!("startup recovery: no DLQ entries to replay");
     }
-
+>>>>>>> a9541ac (fix: make recovery failures propagate to prevent server from becoming ready)
     Ok(())
 }
 
