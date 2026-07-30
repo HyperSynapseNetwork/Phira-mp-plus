@@ -27,7 +27,41 @@ pmp-admin backup verify /path/to/backup/dir
 
 ---
 
-## 配置参考
+## 启动恢复
+
+PMP 启动时自动执行恢复流程：
+
+1. **扫描未完成轮次** — 查询 `mp_rounds WHERE finished_at IS NULL`，标记为 aborted
+2. **WAL 健康检查** — 验证 PersistenceWorker WAL 可读，失败时服务 not-ready
+3. **固定时长 playtime 会话修复** — 清理超过 24h 的 stale `session_start`
+4. **持久空房恢复** — 从 `mp_settings` 读取 `persistent_rooms` 列表并重建
+5. **DLQ 重放** — 扫描 dead-letter JSONL 文件，重新入队未处理事件
+
+以上任一步骤失败时，服务进入 **not-ready** 状态（不接收客户端连接），必须人工干预。
+
+## Playing 重连宽限
+
+玩家在 Playing 状态断线时不会立即被踢出房间。宽限时间默认 15 秒，可通过配置：
+
+```yaml
+idle:
+  playing_reconnect_grace_secs: 15  # 0 = 关闭，恢复旧行为
+```
+
+宽限期内：
+- 保留房间成员资格
+- 新 Session 可替换旧 Session
+- timeout 后通过 Actor 执行 `remove_user` + 持久化 offline
+
+## 持久化 admission 顺序
+
+关键事件（UserAuthenticated、RoundCompleted、RoomSnapshot 等）的持久化顺序：
+
+```text
+WAL append/fsync → queue reservation → background worker → PostgreSQL commit → WAL ACK
+```
+
+Queue 满时使用 100ms 有界等待，而非直接在 WAL 前丢事件。非关键事件（调试 telemetry 等）允许 best-effort 丢弃。
 
 PMP 配置支持 YAML 文件、环境变量、CLI 参数三层覆盖（优先 CLI > 环境变量 > YAML）。
 

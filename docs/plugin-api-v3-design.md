@@ -141,7 +141,8 @@ interface phira-handler {
 
     /// Register a handler for a custom API method.
     /// When called, host dispatches `on-api(method, args)` to this plugin.
-    /// Overrides any previous handler for the same method.
+    /// Methods are auto-namespaced as `plugin_name.method` to prevent cross-plugin collisions.
+    /// Registering a method already owned by another plugin returns an error.
     register-handler: func(desc: handler-descriptor) -> result<_, string>;
 
     /// Unregister a previously registered handler.
