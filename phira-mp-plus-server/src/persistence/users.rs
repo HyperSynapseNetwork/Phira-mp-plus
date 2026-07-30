@@ -246,7 +246,7 @@ impl DbManager {
                    user_id, name, language, ip, first_seen_at, last_seen_at,
                    last_connected_at, updated_at, login_count
                )
-               VALUES ($1, $2, $3, $4, $5, $5, $5, $5, 1)
+               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 1)
                ON CONFLICT (user_id) DO UPDATE SET
                  name = EXCLUDED.name,
                  language = EXCLUDED.language,
@@ -254,12 +254,15 @@ impl DbManager {
                  last_seen_at = EXCLUDED.last_seen_at,
                  last_connected_at = EXCLUDED.last_connected_at,
                  updated_at = EXCLUDED.updated_at,
-                 login_count = mp_users.login_count + $6",
+                 login_count = mp_users.login_count + $9",
         )
         .bind(user_id)
         .bind(user_name)
         .bind(language)
         .bind(ip)
+        .bind(now)
+        .bind(now)
+        .bind(connected_at)
         .bind(now)
         .bind(login_inc)
         .execute(&mut *tx)
@@ -286,7 +289,8 @@ impl DbManager {
             .await;
         }
 
-        // 4. Set online (playtime).
+        // 4. Set online (playtime) — use connected_at for session_start so the
+        //    elapsed-time calculation is relative to the actual connection time.
         if sqlx::query(
             "INSERT INTO playtime (user_id, total_secs, session_start) VALUES ($1, 0, $2)
              ON CONFLICT (user_id) DO UPDATE SET
@@ -297,7 +301,7 @@ impl DbManager {
                session_start = $2",
         )
         .bind(user_id)
-        .bind(now)
+        .bind(connected_at)
         .execute(&mut *tx)
         .await
         .is_err()
