@@ -399,7 +399,13 @@ async fn flush_batch(
     }
 
     let items = std::mem::take(batch);
-    let batch_id = super::postgres::batch_uuid();
+    // Derive batch idempotency key from the admission sequence range so that
+    // retrying the same batch always produces the same batch_id.  This lets
+    // the database deduplicate via ON CONFLICT when a partially-succeeded
+    // write is re-attempted.
+    let min_seq = items.iter().map(|i| i.admission_seq).min().unwrap_or(0);
+    let max_seq = items.iter().map(|i| i.admission_seq).max().unwrap_or(0);
+    let batch_id = super::postgres::batch_uuid(min_seq, max_seq);
     let records = super::postgres::extract_runtime_records(&batch_id, &items);
     let record_count = records.len() as u64;
     let point_count: u64 = items.iter().map(|i| i.item_count() as u64).sum();

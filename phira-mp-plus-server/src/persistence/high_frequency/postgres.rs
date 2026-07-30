@@ -10,7 +10,6 @@
 
 use crate::db::{DbManager, RuntimeTelemetryBatchRecord};
 use serde_json::Value;
-use std::sync::atomic::{AtomicU64, Ordering};
 
 use super::{now_ms, HF_SCHEMA_VERSION, HighFrequencyItem};
 
@@ -243,12 +242,12 @@ async fn try_copy_write_inner(
 
 // ── Utilities ────────────────────────────────────────────────────────────────
 
-/// Generate a unique batch identifier for observability.
-pub(crate) fn batch_uuid() -> String {
-    let ts = now_ms();
-    static HF_BATCH_SEQ: AtomicU64 = AtomicU64::new(1);
-    let seq = HF_BATCH_SEQ.fetch_add(1, Ordering::Relaxed);
-    format!("hf-{ts}-{seq}")
+/// Generate a deterministic batch idempotency key from the admission sequence
+/// range of the items in the batch.  The same range always produces the same
+/// key, so retrying the same batch of items is idempotent at the database
+/// level (ON CONFLICT DO NOTHING).
+pub(crate) fn batch_uuid(min_seq: u64, max_seq: u64) -> String {
+    format!("hf-{min_seq}-{max_seq}")
 }
 
 /// Convert HF items to the `RuntimeTelemetryBatchRecord` form expected by
