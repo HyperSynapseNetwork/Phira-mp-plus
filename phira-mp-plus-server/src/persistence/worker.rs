@@ -607,7 +607,6 @@ async fn wal_recovery_scanner(
             // stop scanning and retry on the next interval.  This prevents
             // the scanner from bypassing the ordering fence that enqueue,
             // flush, and shutdown rely on.
-            };
             let kind = event.kind();
             let summary = event.summary();
 
