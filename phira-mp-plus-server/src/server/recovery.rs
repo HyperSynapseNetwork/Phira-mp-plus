@@ -375,6 +375,8 @@ fn reconstruct_event(kind: &str, event: &serde_json::Value) -> Option<crate::per
             let ip = event.get("ip")?.as_str()?;
             let connected_at = event.get("connected_at")?.as_i64()?;
             Some(PersistenceEvent::UserAuthenticated {
+                event_id: event.get("event_id")?.as_str()?.to_string(),
+                session_id: event.get("session_id")?.as_str()?.to_string(),
                 user_id,
                 user_name: user_name.to_string(),
                 language: language.to_string(),
@@ -395,6 +397,7 @@ fn reconstruct_event(kind: &str, event: &serde_json::Value) -> Option<crate::per
             )
             .ok()?;
             Some(PersistenceEvent::RoundCompleted {
+                event_id: event.get("event_id")?.as_str()?.to_string(),
                 round_uuid: round_uuid.to_string(),
                 room_id: room_id.to_string(),
                 results,
