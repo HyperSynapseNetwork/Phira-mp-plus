@@ -592,32 +592,49 @@ impl PersistenceWorker {
                 "persistence worker is shutting down".to_string()).await;
             return Err(event);
         }
-        // Reserve queue capacity BEFORE WAL admit so that a full queue
-        // produces backpressure to the caller instead of admitting to WAL
-        // without being able to process. This avoids the cancellation window
-        // where an event is fsynced to WAL but has no queue slot.
-        let permit = match self.tx.try_reserve() {
-            Ok(permit) => permit,
-            Err(mpsc::error::TrySendError::Full(_)) => {
-                record_dropped(&self.stats, kind, summary,
-                    "persistence worker queue full".to_string()).await;
-                return Err(event);
-            }
-            Err(mpsc::error::TrySendError::Closed(_)) => {
-                record_dropped(&self.stats, kind, summary,
-                    "persistence worker is shutting down".to_string()).await;
-                return Err(event);
-            }
-        };
-        // Queue capacity is reserved — WAL admit is now safe.
+        // WAL admit FIRST — once fsynced to WAL the event is recoverable
+        // on restart even if queue admission fails temporarily.
         let (wal_id, needs_wal_ack) = match self.wal.admit(event.clone()).await {
             Ok(id) => {
-                // Record WAL admission.
                 record_wal_received(&self.stats).await;
                 (id, true)
             }
             Err(error) => {
                 record_dropped(&self.stats, kind, summary, error).await;
+                return Err(event);
+            }
+        };
+        // Reserve queue capacity.  If the queue is full, try a bounded
+        // wait (100 ms) before giving up — the event is already in WAL,
+        // so a timeout is safe and the event will be replayed on restart.
+        let permit = match self.tx.try_reserve() {
+            Ok(permit) => permit,
+            Err(mpsc::error::TrySendError::Full(_)) => {
+                match tokio::time::timeout(
+                    Duration::from_millis(100),
+                    self.tx.reserve(),
+                )
+                .await
+                {
+                    Ok(Ok(permit)) => permit,
+                    Ok(Err(_)) => {
+                        record_dropped(&self.stats, kind, summary,
+                            "persistence worker channel closed during bounded wait".to_string()).await;
+                        return Err(event);
+                    }
+                    Err(_) => {
+                        record_dropped(&self.stats, kind, summary,
+                            "persistence worker queue full after 100ms wait; event preserved in WAL"
+                                .to_string(),
+                        )
+                        .await;
+                        return Err(event);
+                    }
+                }
+            }
+            Err(mpsc::error::TrySendError::Closed(_)) => {
+                record_dropped(&self.stats, kind, summary,
+                    "persistence worker is shutting down".to_string()).await;
                 return Err(event);
             }
         };
