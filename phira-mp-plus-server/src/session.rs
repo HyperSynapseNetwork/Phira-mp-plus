@@ -343,7 +343,7 @@ impl Session {
                                     }
                                     let user = Arc::clone(&this.get().unwrap().user);
                                     let room_state = match user.room.read().await.as_ref() {
-                                        Some(room) => Some(crate::session_room::build_client_room_state(room, user).await),
+                                        Some(room) => Some(crate::session_room::build_client_room_state(room, &user).await),
                                         None => None,
                                     };
                                     debug!("sending auth OK to user {}", user.id);
