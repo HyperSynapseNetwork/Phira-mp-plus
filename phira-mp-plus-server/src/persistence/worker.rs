@@ -8,7 +8,7 @@
 
 use crate::persistence::message::{AdmissionOutcome, PersistenceEvent};
 use crate::persistence::stats::{
-    record_dead_letter_failed, record_dead_letter_written, record_dropped,
+    record_dead_letter_failed, record_dead_letter_written, record_dropped, record_queued,
     record_wal_committed, record_wal_compaction, record_wal_only,
     record_wal_received, record_wal_recovered, PersistenceStats,
 };
@@ -377,7 +377,7 @@ async fn process_worker_loop(
         BTreeMap::new();
 
     loop {
-        let message = if let Some((wal_id, event)) = replay.pop_front() {
+        let message = if let Some((wal_id, event, _seq)) = replay.pop_front() {
             WorkerMessage::Event { wal_id, wal_sequence: 0, event, needs_wal_ack: true }
         } else {
             let Some(message) = rx.recv().await else {
@@ -493,7 +493,7 @@ async fn drain_pending_acks(
                     debug!(wal_id = %id, "pending ACK drained");
                     in_flight.lock().await.remove(&id);
                 }
-                Err(e) => {
+                Err(_e) => {
                     worker_wal.set_degraded(true);
                     pending_acks.push_back((id, attempt.saturating_add(1)));
                     tokio::time::sleep(Duration::from_millis(100)).await;
@@ -538,11 +538,11 @@ async fn process_degraded_worker_loop(
                 warn!(wal_id = %wal_id, "dropping event in degraded persistence worker");
                 continue;
             }
-            WorkerMessage::Flush { reply } => {
+            WorkerMessage::Flush { reply, .. } => {
                 let _ = reply.send(Ok(()));
                 continue;
             }
-            WorkerMessage::Shutdown { reply } => {
+            WorkerMessage::Shutdown { reply, .. } => {
                 info!("degraded persistence worker shutting down");
                 let _ = reply.send(Ok(()));
                 break;
@@ -607,23 +607,23 @@ async fn wal_recovery_scanner(
             // stop scanning and retry on the next interval.  This prevents
             // the scanner from bypassing the ordering fence that enqueue,
             // flush, and shutdown rely on.
+            };
+            let kind = event.kind();
+            let summary = event.summary();
+
             let _gate = match send_gate.try_lock() {
-                Some(guard) => guard,
-                None => {
+                Ok(guard) => guard,
+                Err(_) => {
                     tracing::trace!(
-                        wal_id = %wal_id, kind = %kind,
+                        wal_id = %wal_id, kind,
                         "WAL recovery scanner: send_gate contended, deferring"
                     );
                     break;
                 }
             };
-
-            let kind = event.kind();
-            let summary = event.summary();
             let msg = WorkerMessage::Event {
                 wal_sequence: *wal_sequence,
                 wal_id: *wal_id,
-                wal_sequence: 0,
                 event: event.clone(),
                 needs_wal_ack: true,
             };

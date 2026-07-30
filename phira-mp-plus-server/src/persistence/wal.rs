@@ -14,7 +14,7 @@
 //!   and reports the failure through Supervisor.
 //! - File permissions are enforced to `0o600`.
 
-use crate::persistence::message::PersistenceEvent;
+use std::collections::{HashMap, HashSet};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
@@ -22,7 +22,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use tokio::io::AsyncWriteExt;
 use tokio::sync::Mutex;
-
+use tracing::{info, warn};
 
 /// Current frame format version. Increment when the wire format changes.
 const WAL_FORMAT_VERSION: u8 = 1;
