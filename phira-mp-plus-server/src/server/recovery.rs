@@ -186,7 +186,6 @@ async fn close_all_stale_playtime_sessions(db: &DbManager) -> Result<()> {
 /// Returns `Err` only when the DLQ file itself cannot be read (indicating a
 /// filesystem or configuration problem).  Individual entry replay failures
 /// are logged but do not abort the step.
->>>>>>> a9541ac (fix: make recovery failures propagate to prevent server from becoming ready)
 async fn replay_dead_letter_queue(state: &Arc<PlusServerState>) -> Result<()> {
     let dlq_path = state
         .config
@@ -211,7 +210,6 @@ async fn replay_dead_letter_queue(state: &Arc<PlusServerState>) -> Result<()> {
                 "startup recovery: failed to read dead-letter file {}: {e}",
                 path.display(),
             ));
->>>>>>> a9541ac (fix: make recovery failures propagate to prevent server from becoming ready)
         }
     };
 
@@ -312,7 +310,6 @@ async fn replay_dead_letter_queue(state: &Arc<PlusServerState>) -> Result<()> {
     } else {
         info!("startup recovery: no DLQ entries to replay");
     }
->>>>>>> a9541ac (fix: make recovery failures propagate to prevent server from becoming ready)
     Ok(())
 }
 

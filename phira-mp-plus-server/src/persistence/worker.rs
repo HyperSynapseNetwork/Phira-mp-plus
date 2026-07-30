@@ -11,7 +11,6 @@ use crate::persistence::stats::{
     record_dead_letter_failed, record_dead_letter_written, record_dropped, record_queued,
     record_wal_committed, record_wal_compaction, record_wal_only,
     record_wal_received, PersistenceStats,
->>>>>>> 8f0637a (fix: enqueue returns AdmissionOutcome instead of Err on queue-full after WAL admit)
 };
 use crate::persistence::wal::PersistenceWal;
 use serde_json::json;

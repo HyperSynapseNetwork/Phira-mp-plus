@@ -273,7 +273,6 @@ impl DbManager {
     }
 
     /// Close all open playtime sessions from the previous server instance.
->>>>>>> 8bd77d5 (fix: remove 24h threshold from playtime stale session recovery)
     ///
     /// On startup every `session_start` that is still set belongs to a previous
     /// server instance (planned shutdown or crash).  The elapsed time is accrued
