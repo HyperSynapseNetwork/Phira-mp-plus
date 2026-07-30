@@ -357,9 +357,11 @@ impl User {
             if let Some(room) = room {
                 let room_id = room.id.clone();
                 let was_monitor = self_.monitor.load(Ordering::Relaxed);
-                if room.on_user_leave(&self_).await {
-                    self_.server.rooms.write().await.remove(&room_id);
-                }
+                let _ = self_.server.room_commands.remove_user(
+                    &self_.server,
+                    &room_id.to_string(),
+                    self_.id,
+                ).await;
                 if !was_monitor {
                     room_leave_event = Some(RoomEvent::LeaveRoom {
                         room: room_id,
