@@ -397,13 +397,13 @@ async fn process_worker_loop(
 
     loop {
         // ---- Check pending control (deferred flush/shutdown) ----
-        if let Some(ref pc) = pending_control {
+        if let Some(pc) = pending_control.take() {
             let (target, reply, deadline, should_break) = match pc {
                 PendingControl::FlushReply { target, reply, deadline } => {
-                    (*target, reply, *deadline, false)
+                    (target, reply, deadline, false)
                 }
                 PendingControl::Shutdown { target, reply, deadline } => {
-                    (*target, reply, *deadline, true)
+                    (target, reply, deadline, true)
                 }
             };
             let buffer_remaining = buffer.range(..=target).count();
