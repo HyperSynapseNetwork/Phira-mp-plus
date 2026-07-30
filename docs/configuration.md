@@ -203,9 +203,17 @@ runtime:
       enabled: true
       failure_threshold: 8
       open_duration_ms: 20000
+  high_frequency:
+    channel_capacity: 4096
+    max_batch_size: 256
+    flush_interval_ms: 5000
+    max_retries: 3
+    overflow_capacity: 8192
+    overflow_max_age_ms: 30000
+    retry_max_age_ms: 30000
 ```
 
-生产 Touch/Judge 统一通过 `HighFrequencyWriter` 写入 PostgreSQL（绕过 WAL），启用 PostgreSQL COPY 以最大化吞吐量。仿真 Touch/Judge 仍通过 `PersistenceWorker` 路径经 WAL 写入。
+生产 Touch/Judge 统一通过 `HighFrequencyWriter` 写入 PostgreSQL（绕过 WAL），启用 PostgreSQL COPY 以最大化吞吐量。
 
 普通事件与遥测的数据库写入使用有限重试和稳定幂等键。重试耗尽后，能序列化的失败事件写入 `persistence_dead_letter_path` 指定的 JSONL，并执行 `flush + sync_data`。设置为 `null` 可禁用 dead-letter；此时数据库最终失败会使 Supervisor 进入 degraded。dead-letter 只保全已经完成数据库尝试的失败事件，不是 enqueue-before WAL，无法保证 `kill -9`、进程崩溃或主机掉电时内存队列零丢失，也不会自动 replay。
 
@@ -332,6 +340,7 @@ RUST_LOG=debug ./phira-mp-plus-server
 | `idle.heartbeat_timeout_secs` | `u64` | `15` | 会话心跳超时阈值。 |
 | `idle.auth_timeout_secs` | `u64` | `15` | 未认证连接超时阈值。 |
 | `idle.dangle_grace_secs` | `u64` | `10` | 断线重连宽限时间（秒）。玩家断线后在此时长内重连可恢复。 |
+| `idle.playing_reconnect_grace_secs` | `u64` | `15` | Playing 状态断线重连宽限（秒）。Playing 中断线不立即踢出房间，保留成员资格等待重连。设为 0 恢复旧行为（立即踢出）。 |
 
 ## WASM 运行时限制
 
