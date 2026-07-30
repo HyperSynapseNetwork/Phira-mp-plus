@@ -117,7 +117,7 @@ pub async fn recover_state(state: &Arc<PlusServerState>, db: &DbManager) -> Resu
     cleanup_stale_playtime_sessions(db).await;
 
     // ── 7. Dead-letter queue replay ─────────────────────────────────────
-    replay_dead_letter_queue(state).await;
+    replay_dead_letter_queue(state).await?;
 
     Ok(())
 }
@@ -168,9 +168,14 @@ async fn cleanup_stale_playtime_sessions(db: &DbManager) {
 /// Replay the dead-letter queue: scan the DLQ JSONL file and re-enqueue
 /// events that were not persisted in the previous run.
 ///
-/// This is a best-effort recovery. Events that cannot be reconstructed are
-/// logged and skipped. The DLQ file path comes from the runtime config.
-async fn replay_dead_letter_queue(state: &Arc<PlusServerState>) {
+/// Known non-critical event kinds (`round_result`, `benchmark.completed`) are
+/// silently skipped.  Truly unsupported / unparseable event kinds are treated
+/// as **critical failures** — they prevent the server from becoming ready so
+/// operators can investigate.
+///
+/// After successful replay the DLQ file is renamed to `<name>.processed` as a
+/// replay ACK, preventing re-processing on subsequent restarts.
+async fn replay_dead_letter_queue(state: &Arc<PlusServerState>) -> Result<()> {
     let dlq_path = state
         .config
         .runtime
@@ -180,23 +185,29 @@ async fn replay_dead_letter_queue(state: &Arc<PlusServerState>) {
 
     let Some(path) = dlq_path else {
         info!("startup recovery: no dead-letter path configured, skipping DLQ replay");
-        return;
+        return Ok(());
     };
 
     let content = match tokio::fs::read_to_string(path).await {
         Ok(c) => c,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
             info!("startup recovery: no dead-letter file found, skipping DLQ replay");
-            return;
+            return Ok(());
         }
         Err(e) => {
             warn!("startup recovery: failed to read dead-letter file: {e}");
-            return;
+            return Ok(());
         }
     };
 
+    // Known non-critical event kinds that can be safely skipped during replay.
+    // round_result: low-risk since the client has the result and can re-submit.
+    // benchmark.completed: diagnostic only.
+    const NON_CRITICAL_KINDS: &[&str] = &["round_result", "benchmark.completed"];
+
     let mut replayed = 0u32;
     let mut skipped = 0u32;
+    let mut critical_unsupported = false;
 
     for line in content.lines() {
         let line = line.trim();
@@ -232,8 +243,17 @@ async fn replay_dead_letter_queue(state: &Arc<PlusServerState>) {
 
         let event = match reconstruct_event(kind, event_payload) {
             Some(e) => e,
+            None if NON_CRITICAL_KINDS.contains(&kind) => {
+                warn!("startup recovery: skipping non-critical DLQ entry (kind={kind})");
+                skipped += 1;
+                continue;
+            }
             None => {
-                warn!("startup recovery: skipping DLQ entry with unsupported kind {kind}");
+                error!(
+                    "startup recovery: critical unsupported DLQ entry (kind={kind}) \
+                     — service will not become ready"
+                );
+                critical_unsupported = true;
                 skipped += 1;
                 continue;
             }
@@ -248,6 +268,28 @@ async fn replay_dead_letter_queue(state: &Arc<PlusServerState>) {
         }
     }
 
+    if critical_unsupported {
+        return Err(anyhow::anyhow!(
+            "startup recovery: DLQ contains one or more critical unsupported events"
+        ));
+    }
+
+    // ACK replay: rename the processed DLQ file so it is not replayed on
+    // subsequent restarts.
+    let file_name = path.file_name().map(|n| n.to_string_lossy().to_string());
+    if let Some(file_name) = file_name {
+        let processed_name = format!("{file_name}.processed");
+        let processed_path = path.with_file_name(&processed_name);
+        match tokio::fs::rename(path, &processed_path).await {
+            Ok(()) => info!(
+                "startup recovery: renamed DLQ file to {processed_name} (replay ACK)"
+            ),
+            Err(e) => warn!(
+                "startup recovery: failed to rename processed DLQ file to {processed_name}: {e}"
+            ),
+        }
+    }
+
     if replayed > 0 || skipped > 0 {
         info!(
             "startup recovery: DLQ replay finished — {replayed} replayed, {skipped} skipped"
@@ -255,6 +297,8 @@ async fn replay_dead_letter_queue(state: &Arc<PlusServerState>) {
     } else {
         info!("startup recovery: no DLQ entries to replay");
     }
+
+    Ok(())
 }
 
 /// Attempt to reconstruct a `PersistenceEvent` from the dead-letter record's
@@ -310,6 +354,40 @@ fn reconstruct_event(kind: &str, event: &serde_json::Value) -> Option<crate::per
                 user_name: user_name.to_string(),
                 language: language.to_string(),
                 ip: ip.to_string(),
+            })
+        }
+        "user_authenticated" => {
+            let user_id = event.get("user_id")?.as_i64()? as i32;
+            let user_name = event.get("user_name")?.as_str()?;
+            let language = event.get("language")?.as_str()?;
+            let ip = event.get("ip")?.as_str()?;
+            let connected_at = event.get("connected_at")?.as_i64()?;
+            Some(PersistenceEvent::UserAuthenticated {
+                user_id,
+                user_name: user_name.to_string(),
+                language: language.to_string(),
+                ip: ip.to_string(),
+                connected_at,
+            })
+        }
+        "round_completed" => {
+            let round_uuid = event.get("round_uuid")?.as_str()?;
+            let room_id = event.get("room_id")?.as_str()?;
+            let finished_at = event.get("finished_at")?.as_i64()?;
+            let aborted_users: Vec<i32> = event
+                .get("aborted_users")
+                .and_then(|v| serde_json::from_value(v.clone()).ok())
+                .unwrap_or_default();
+            let results: Vec<crate::room::PlayResult> = serde_json::from_value(
+                event.get("results")?.clone(),
+            )
+            .ok()?;
+            Some(PersistenceEvent::RoundCompleted {
+                round_uuid: round_uuid.to_string(),
+                room_id: room_id.to_string(),
+                results,
+                finished_at,
+                aborted_users,
             })
         }
         "round_result" => {
