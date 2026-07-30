@@ -145,6 +145,12 @@ pub(super) fn build_snapshot(
     let actor_chart = actor_snap.as_ref().and_then(|s| s.chart);
     let actor_chart_name = actor_snap.as_ref().and_then(|s| s.chart_name.clone());
     let actor_round_id = actor_snap.as_ref().and_then(|s| s.round_id.map(|id| id.to_string()));
+    // Use actor snapshot's authoritative fields (P1-B fix): ready_set from
+    // WaitForReady, and results_keys/aborted_users/playing_users from Playing.
+    let actor_ready_set = actor_snap.as_ref().and_then(|s| s.ready_set.clone());
+    let actor_results_keys = actor_snap.as_ref().map(|s| s.results_keys.clone()).unwrap_or_default();
+    let actor_aborted = actor_snap.as_ref().map(|s| s.aborted_users.clone()).unwrap_or_default();
+    let actor_playing = actor_snap.as_ref().map(|s| s.playing_users.clone()).unwrap_or_default();
     let (st, playing_users, ready_users, finished_users, aborted_users, result_count, state_detail) =
         match actor_stripped {
             Some(phira_mp_common::StrippedRoomState::SelectingChart) | None => (
@@ -156,36 +162,32 @@ pub(super) fn build_snapshot(
                 0usize,
                 serde_json::json!({"kind":"select_chart"}),
             ),
-            Some(phira_mp_common::StrippedRoomState::WaitingForReady) => (
-                "WAITING_FOR_READY".to_string(),
-                Vec::new(),
-                users_arcs.iter().map(|u| u.id).collect(),
-                Vec::new(),
-                Vec::new(),
-                0usize,
-                serde_json::json!({"kind":"wait_for_ready", "ready_users": users_arcs.iter().map(|u| u.id).collect::<Vec<_>>()}),
-            ),
-            Some(phira_mp_common::StrippedRoomState::Playing) => {
-                let finished: Vec<i32> = match actor_snap.as_ref() {
-                    Some(s) => s.members.users.clone(),
-                    None => users_arcs.iter().map(|u| u.id).collect(),
-                };
-                let playing: Vec<i32> = Vec::new();
+            Some(phira_mp_common::StrippedRoomState::WaitingForReady) => {
+                let ready = actor_ready_set.unwrap_or_default();
                 (
-                    "PLAYING".to_string(),
-                    playing,
+                    "WAITING_FOR_READY".to_string(),
                     Vec::new(),
-                    finished.clone(),
+                    ready.clone(),
                     Vec::new(),
-                    finished.len(),
-                    serde_json::json!({
-                        "kind":"playing",
-                        "finished_users": finished,
-                        "aborted_users": Vec::<i32>::new(),
-                        "result_count": finished.len(),
-                    }),
+                    Vec::new(),
+                    0usize,
+                    serde_json::json!({"kind":"wait_for_ready", "ready_users": ready}),
                 )
             }
+            Some(phira_mp_common::StrippedRoomState::Playing) => (
+                "PLAYING".to_string(),
+                actor_playing,
+                Vec::new(),
+                actor_results_keys.clone(),
+                actor_aborted,
+                actor_results_keys.len(),
+                serde_json::json!({
+                    "kind":"playing",
+                    "finished_users": actor_results_keys,
+                    "aborted_users": actor_aborted,
+                    "result_count": actor_results_keys.len(),
+                }),
+            ),
         };
 
     let mut users: Vec<i32> = users_arcs.iter().map(|u| u.id).collect();

@@ -15,6 +15,9 @@ use tracing::warn;
 use std::collections::HashMap;
 use std::sync::Arc;
 
+/// Minimum interval (ms) between RoomSnapshot persistence enqueues (P1-E coalescing).
+const ROOM_SNAPSHOT_COALESCE_MS: u64 = 500;
+
 /// 房间状态的只读快照。
 /// Actor 在每次命令执行后生成新快照，外部读路径使用快照而非直接访问 Room。
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -38,6 +41,12 @@ pub struct RoomSnapshot {
     pub round_id: Option<uuid::Uuid>,
     /// IDs of users who have readied up (actor-authoritative, only meaningful in WaitForReady).
     pub ready_set: Option<Vec<i32>>,
+    /// Keys of the results map — user IDs who submitted results (finished playing).
+    pub results_keys: Vec<i32>,
+    /// User IDs who aborted the round.
+    pub aborted_users: Vec<i32>,
+    /// User IDs who are still playing (in members but not finished or aborted).
+    pub playing_users: Vec<i32>,
     /// Actor-authoritative member lists (actor-state members, not Room connection refs).
     pub members: RoomMembers,
 }
@@ -64,6 +73,27 @@ impl RoomSnapshot {
                     Some(started.iter().copied().collect())
                 }
                 _ => None,
+            },
+            results_keys: match &state.state.lifecycle {
+                InternalRoomState::Playing { results, .. } => {
+                    results.keys().copied().collect()
+                }
+                _ => Vec::new(),
+            },
+            aborted_users: match &state.state.lifecycle {
+                InternalRoomState::Playing { aborted, .. } => {
+                    aborted.iter().copied().collect()
+                }
+                _ => Vec::new(),
+            },
+            playing_users: match &state.state.lifecycle {
+                InternalRoomState::Playing { results, aborted } => {
+                    state.state.members.users.iter()
+                        .filter(|u| !results.contains_key(u) && !aborted.contains(u))
+                        .copied()
+                        .collect()
+                }
+                _ => Vec::new(),
             },
             members: state.state.members.clone(),
         }
@@ -130,6 +160,27 @@ impl RoomState {
                 }
                 _ => None,
             },
+            results_keys: match &self.lifecycle {
+                InternalRoomState::Playing { results, .. } => {
+                    results.keys().copied().collect()
+                }
+                _ => Vec::new(),
+            },
+            aborted_users: match &self.lifecycle {
+                InternalRoomState::Playing { aborted, .. } => {
+                    aborted.iter().copied().collect()
+                }
+                _ => Vec::new(),
+            },
+            playing_users: match &self.lifecycle {
+                InternalRoomState::Playing { results, aborted } => {
+                    self.members.users.iter()
+                        .filter(|u| !results.contains_key(u) && !aborted.contains(u))
+                        .copied()
+                        .collect()
+                }
+                _ => Vec::new(),
+            },
             members: self.members.clone(),
         }
     }
@@ -160,6 +211,9 @@ pub struct RoomActorState {
     pub player_data: HashMap<i32, PlayerLiveData>,
     /// 各玩家展示名（actor-authoritative）
     pub display_names: HashMap<i32, String>,
+    /// Monotonic version counter incremented on every state mutation.
+    /// Used for RoomSnapshot persistence coalescing (P1-E).
+    pub snapshot_version: u64,
 }
 
 impl RoomActorState {
@@ -177,6 +231,7 @@ impl RoomActorState {
             created_at,
             player_data: HashMap::new(),
             display_names: HashMap::new(),
+            snapshot_version: 0,
         }
     }
 }
@@ -188,6 +243,10 @@ pub struct RoomActor {
     latest_snapshot: RoomSnapshot,
     /// Actor-owned state (always present).
     pub actor_state: RoomActorState,
+    /// Version last enqueued to the persistence worker (P1-E coalescing).
+    last_enqueued_snapshot_version: u64,
+    /// Timestamp of the last enqueue (P1-E coalescing).
+    last_snapshot_enqueue_time: Option<std::time::Instant>,
 }
 
 impl RoomActor {
@@ -222,6 +281,8 @@ impl RoomActor {
             state,
             latest_snapshot: snapshot,
             actor_state,
+            last_enqueued_snapshot_version: 0,
+            last_snapshot_enqueue_time: None,
         }
     }
 
@@ -234,8 +295,9 @@ impl RoomActor {
     }
 
     /// Refresh snapshot from actor state (always the authority after command
-    /// execution).
+    /// execution). Increments the version counter for coalescing (P1-E).
     pub fn refresh_snapshot_from_state(&mut self) {
+        self.actor_state.snapshot_version += 1;
         self.latest_snapshot = RoomSnapshot::from_actor_state(&self.actor_state);
     }
 
@@ -279,23 +341,40 @@ impl RoomActor {
                 self.room.uuid,
                 self.latest_snapshot.clone(),
             );
-            // Enqueue a RoomSnapshot to the persistence worker for the
-            // mp_room_snapshots table (P0-E audit).
-            if let Ok(payload) = serde_json::to_value(&self.latest_snapshot) {
-                if let Err(e) = self
-                    .state
-                    .persistence_worker
-                    .enqueue(PersistenceEvent::RoomSnapshot {
-                        room_id: self.room.id.to_string(),
-                        payload: Arc::new(payload),
-                    })
-                    .await
-                {
-                    warn!(
-                        room = %self.room.id,
-                        kind = %e.kind(),
-                        "room snapshot enqueue failed"
-                    );
+            // P1-E: Coalesced RoomSnapshot persistence — only enqueue for
+            // persistent rooms when the state version has changed AND enough
+            // time has passed since the last enqueue, to avoid flooding the
+            // persistence worker on rapid-fire commands.
+            let should_enqueue = {
+                let now = std::time::Instant::now();
+                let version = self.actor_state.snapshot_version;
+                let time_ok = self
+                    .last_snapshot_enqueue_time
+                    .map(|t| t.elapsed().as_millis() >= ROOM_SNAPSHOT_COALESCE_MS as u128)
+                    .unwrap_or(true);
+                self.actor_state.state.control.persistent_empty
+                    && version != self.last_enqueued_snapshot_version
+                    && time_ok
+            };
+            if should_enqueue {
+                self.last_enqueued_snapshot_version = self.actor_state.snapshot_version;
+                self.last_snapshot_enqueue_time = Some(std::time::Instant::now());
+                if let Ok(payload) = serde_json::to_value(&self.latest_snapshot) {
+                    if let Err(e) = self
+                        .state
+                        .persistence_worker
+                        .enqueue(PersistenceEvent::RoomSnapshot {
+                            room_id: self.room.id.to_string(),
+                            payload: Arc::new(payload),
+                        })
+                        .await
+                    {
+                        warn!(
+                            room = %self.room.id,
+                            kind = %e.kind(),
+                            "room snapshot enqueue failed"
+                        );
+                    }
                 }
             }
         }
