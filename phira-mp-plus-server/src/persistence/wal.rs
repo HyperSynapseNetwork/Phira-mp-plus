@@ -19,7 +19,7 @@ use serde::{Deserialize, Serialize};
 use crate::persistence::message::PersistenceEvent;
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::io::AsyncWriteExt;
 use tokio::sync::Mutex;
 use tracing::warn;
@@ -113,7 +113,6 @@ pub struct PersistenceWal {
     /// Total ACK count since last compact.
     ack_count: std::sync::atomic::AtomicU64,
     /// Sequence is stored in the WAL Admission record itself.
-    /// the next sequence to assign.
 }
 
 impl PersistenceWal {

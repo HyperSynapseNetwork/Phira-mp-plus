@@ -384,13 +384,13 @@ async fn process_worker_loop(
         //           replay (bypass gating, already in WAL order) >
         //           channel with gating.
         // Priority order: buffer → replay → channel with gating.
-        let message = 'dispatch: {
+        let message: Option<WorkerMessage> = 'fetch: {
             // 1. Buffer check: if the next expected sequence is already
             //    buffered, process it without blocking on the channel.
             if let Some((wal_id, event, needs_wal_ack)) =
                 buffer.remove(&next_expected_sequence)
             {
-                break 'dispatch Some(WorkerMessage::Event {
+                break 'fetch Some(WorkerMessage::Event {
                     wal_id,
                     wal_sequence: next_expected_sequence,
                     event,
@@ -401,7 +401,7 @@ async fn process_worker_loop(
             // 2. Replay events (already in WAL order, bypass gating with
             //    the seq=0 sentinel).
             if let Some((wal_id, event, _seq)) = replay.pop_front() {
-                break 'dispatch Some(WorkerMessage::Event {
+                break 'fetch Some(WorkerMessage::Event {
                     wal_id,
                     wal_sequence: 0,
                     event,
@@ -415,10 +415,10 @@ async fn process_worker_loop(
             // 3. Channel receive with sequence gating.
             let msg = match rx.recv().await {
                 Some(msg) => msg,
-                None => break 'dispatch None,
+                None => break 'fetch None,
             };
 
-            match msg {
+            let result = match msg {
                 WorkerMessage::Event { wal_id, wal_sequence, event, needs_wal_ack } if wal_sequence != 0 => {
                     if next_expected_sequence == 0 {
                         // First channel event — initialise the gate from
@@ -441,11 +441,11 @@ async fn process_worker_loop(
 
                     if wal_sequence == next_expected_sequence {
                         // In-order — process directly.
-                        msg
+                        Some(msg)
                     } else if wal_sequence > next_expected_sequence {
                         // Out-of-order (future sequence) — buffer.
                         buffer.insert(wal_sequence, (wal_id, event, needs_wal_ack));
-                        continue;
+                        None
                     } else {
                         // wal_sequence < next_expected_sequence: this event
                         // is from a sequence we have already passed.
@@ -459,13 +459,20 @@ async fn process_worker_loop(
                             next_expected = %next_expected_sequence,
                             "stale channel event skipped (already past its sequence)"
                         );
-                        continue;
+                        None
                     }
                 }
                 // seq=0 sentinel or control messages: bypass gating.
-                other => other,
+                other => Some(other),
+            };
+            if let Some(val) = result {
+                break 'fetch Some(val);
             }
+            None
         };
+
+        let Some(message) = message else { continue; };
+
 
         // ---- Retry pending WAL ACKs ----
         if let Some((retry_id, retry_attempt)) = pending_acks.front().copied() {
@@ -501,16 +508,16 @@ async fn process_worker_loop(
             } => (wal_id, wal_sequence, event, needs_wal_ack),
             WorkerMessage::Flush { reply, .. } => {
                 let remaining =
-                    drain_pending_acks(worker_wal, &mut pending_acks, in_flight).await;
+                    drain_pending_acks(worker_wal, &mut pending_acks, in_flight, None).await;
                 if remaining > 0 {
                     warn!(remaining, "flush: pending ACK drain incomplete");
                 }
                 let _ = reply.send(Ok(()));
-                continue;
+                continue 'dispatch;
             }
             WorkerMessage::Shutdown { reply, .. } => {
                 let remaining =
-                    drain_pending_acks(worker_wal, &mut pending_acks, in_flight).await;
+                    drain_pending_acks(worker_wal, &mut pending_acks, in_flight, None).await;
                 if remaining > 0 {
                     warn!(remaining, "shutdown: pending ACK drain incomplete");
                 }
@@ -523,7 +530,7 @@ async fn process_worker_loop(
                 if should_stop {
                     break;
                 }
-                continue;
+                continue 'dispatch;
             }
         };
 
@@ -639,11 +646,11 @@ async fn process_degraded_worker_loop(
         match message {
             WorkerMessage::Event { wal_id, needs_wal_ack: _, .. } => {
                 warn!(wal_id = %wal_id, "dropping event in degraded persistence worker");
-                continue;
+                continue 'dispatch;
             }
             WorkerMessage::Flush { reply, .. } => {
                 let _ = reply.send(Ok(()));
-                continue;
+                continue 'dispatch;
             }
             WorkerMessage::Shutdown { reply, .. } => {
                 info!("degraded persistence worker shutting down");
@@ -688,12 +695,12 @@ async fn wal_recovery_scanner(
             Ok(p) => p,
             Err(e) => {
                 tracing::warn!(error = %e, "WAL recovery scanner: list_pending failed");
-                continue;
+                continue 'dispatch;
             }
         };
 
         if pending.is_empty() {
-            continue;
+            continue 'dispatch;
         }
 
         // Snapshot in_flight set to avoid holding the lock across the scan loop.
@@ -702,7 +709,7 @@ async fn wal_recovery_scanner(
         for (wal_id, event, wal_sequence) in &pending {
             // Skip entries that are already queued (in-flight).
             if in_flight_ids.contains(wal_id) {
-                continue;
+                continue 'dispatch;
             }
 
             // Acquire the send_gate before injecting into the channel.
