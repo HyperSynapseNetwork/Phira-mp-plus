@@ -961,19 +961,6 @@ impl PersistenceWorker {
     /// Drain every event accepted before this control message.
     pub async fn flush(&self, timeout: Duration) -> Result<(), String> {
         let (reply, rx) = oneshot::channel();
-        let target_wal_sequence;
-        {
-            let _send_guard = self.send_gate.lock().await;
-            if self.closed.load(Ordering::Acquire) {
-                return Err("persistence worker is shutting down".to_string());
-            }
-            // Capture the current WAL admission sequence so the worker knows
-            // which events are covered by this flush.  Events admitted after
-            // this point have higher sequences and are not included.
-            target_wal_sequence = self.wal.current_sequence();
-            self.tx
-                .send(WorkerMessage::Flush { target_wal_sequence, reply })
-                .await
                 .map_err(|_| "persistence worker is closed".to_string())?;
         }
         tokio::time::timeout(timeout, rx)
@@ -987,8 +974,6 @@ impl PersistenceWorker {
     /// Drain accepted events, flush telemetry, then stop the worker.
     pub async fn shutdown(&self, timeout: Duration) -> Result<(), String> {
         let (reply, rx) = oneshot::channel();
-        let target_wal_sequence;
-        let deadline;
         {
             let _send_guard = self.send_gate.lock().await;
             if self.closed.swap(true, Ordering::AcqRel) {
@@ -996,26 +981,8 @@ impl PersistenceWorker {
             }
             // Capture the current WAL admission sequence so the worker knows
             // which events are covered by this shutdown.
-            target_wal_sequence = self.wal.current_sequence();
             // Capture an absolute deadline so the worker can abort waiting
             // for pending ACKs when the caller's timeout would expire.
-            deadline = Instant::now() + timeout;
-            if self
-                .tx
-                .send(WorkerMessage::Shutdown { target_wal_sequence, deadline, reply })
-                .await
-                .is_err()
-            {
-                self.closed.store(false, Ordering::Release);
-                return Err("persistence worker is closed".to_string());
-            }
-        }
-        let result = match tokio::time::timeout(timeout, rx).await {
-            Ok(Ok(result)) => result,
-            Ok(Err(_)) => Err("persistence shutdown acknowledgement was dropped".to_string()),
-            Err(_) => Err("persistence shutdown timed out".to_string()),
-        };
-        if let Err(error) = result {
             // A failed control operation did not establish that the worker stopped.
             // Re-open admission so an operator can retry flush/shutdown explicitly.
             self.closed.store(false, Ordering::Release);
