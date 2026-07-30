@@ -81,7 +81,7 @@ impl HighFrequencyWriter {
             queue_full_count: AtomicU64::new(0),
             last_database_error_at: AtomicU64::new(0),
             admission_sequence: AtomicU64::new(1),
-            committed_sequence: AtomicU64::new(1),
+            committed_sequence: AtomicU64::new(0),
             continuous_committed_watermark: AtomicU64::new(0),
         });
         let worker_stats = Arc::clone(&stats);

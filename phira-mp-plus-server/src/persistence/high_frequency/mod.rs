@@ -215,7 +215,7 @@ impl HighFrequencyStats {
         self.queue_full_count.store(0, Ordering::Relaxed);
         self.last_database_error_at.store(0, Ordering::Relaxed);
         self.admission_sequence.store(1, Ordering::Relaxed);
-        self.committed_sequence.store(1, Ordering::Relaxed);
+        self.committed_sequence.store(0, Ordering::Relaxed);
         self.continuous_committed_watermark.store(0, Ordering::Relaxed);
     }
 }
