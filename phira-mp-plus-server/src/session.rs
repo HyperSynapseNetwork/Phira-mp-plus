@@ -734,6 +734,17 @@ impl Session {
             let _ = self.user.server.lost_con_tx.try_send(self.id);
         }
     }
+
+    /// Send a command to this session, waiting for capacity (async).
+    /// Closes the connection on error (same as try_send on failure).
+    pub async fn send(&self, cmd: ServerCommand) -> Result<()> {
+        self.stream.send(cmd).await.map_err(|err| {
+            warn!(session = %self.id, user = self.user.id, ?err, "disconnecting slow client (send)");
+            self.stream.close();
+            let _ = self.user.server.lost_con_tx.try_send(self.id);
+            err
+        })
+    }
 }
 
 impl Drop for Session {

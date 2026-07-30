@@ -1,6 +1,7 @@
 use crate::l10n::Language;
 use crate::server::PlusServerState;
 use crate::session::Session;
+use anyhow::{anyhow, Result};
 use fluent::FluentArgs;
 use phira_mp_common::{RoomEvent, ServerCommand, UserInfo};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
@@ -107,6 +108,15 @@ impl User {
             session.try_send(cmd).await;
         } else {
             warn!("sending {:?} to dangling user {}", cmd, self.id);
+        }
+    }
+
+    /// Send a command to this user's session, waiting for capacity (async).
+    /// Returns an error if there is no session or the send queue is closed.
+    pub async fn send(&self, cmd: ServerCommand) -> Result<()> {
+        match self.session.read().await.as_ref().and_then(Weak::upgrade) {
+            Some(session) => session.send(cmd).await,
+            None => Err(anyhow!("no session for user {}", self.id)),
         }
     }
 
