@@ -1,18 +1,24 @@
-//! Server startup state recovery — crash recovery for unfinished rounds,
-//! schema validation, persistent room restoration, DLQ replay, and playtime
-//! stale session cleanup.
+//! Server startup state recovery — WAL drain, DLQ replay, crash recovery for
+//! unfinished rounds, schema validation, persistent room restoration, and
+//! playtime stale session cleanup.
 //!
 //! After a server restart (planned or crash), in-memory state is empty while
 //! PostgreSQL still holds data from the previous run.  This module re-discovers
 //! that data and reconciles the server state so that:
 //!
-//! 1. Unfinished rounds are marked as aborted (so plugins/telemetry see a
-//!    terminal state and don't wait for a round that will never finish).
-//! 2. Database health is logged (schema version, user / playtime counts).
-//! 3. Persistent empty rooms are recreated from mp_settings.
-//! 4. Dead-letter queue entries are replayed (**before** stale session cleanup
-//!    so that old UserAuthenticated events cannot re-set sessions online).
-//! 5. All open playtime sessions from the previous instance are closed (after
+//! 1. Schema version and database health are logged.
+//! 2. The persistence WAL is fully replayed and drained (**before** crash
+//!    recovery so that RoundCompleted events in the WAL are applied to
+//!    PostgreSQL — otherwise rounds that actually completed would be falsely
+//!    marked as aborted).
+//! 3. Dead-letter queue events are replayed and flushed (**before** crash
+//!    recovery for the same reason, and **before** stale session cleanup so
+//!    that old UserAuthenticated events cannot re-set sessions online).
+//! 4. Unfinished rounds (those still without `finished_at` after WAL and DLQ
+//!    replay) are verified against `mp_events` for a completion event and
+//!    aborted only if truly unfinished.
+//! 5. Persistent empty rooms are recreated from mp_settings.
+//! 6. All open playtime sessions from the previous instance are closed (after
 //!    WAL and DLQ replay, with a 1-hour cap on recovered playtime).
 //!
 //! Every step returns `Err` on failure so that `recover_state` propagates
@@ -36,51 +42,7 @@ use super::state::PlusServerState;
 /// Failures are **fatal** — any critical recovery step that fails will
 /// prevent the server from becoming ready.
 pub async fn recover_state(state: &Arc<PlusServerState>, db: &DbManager) -> Result<()> {
-    // ── 1. Crash recovery: abort unfinished rounds ──────────────────────
-    let unfinished = db
-        .find_unfinished_rounds()
-        .await
-        .map_err(|e| anyhow::anyhow!("startup recovery: failed to query unfinished rounds: {e}"))?;
-    let count = unfinished.len();
-    if count > 0 {
-        warn!(
-            "startup recovery: found {count} unfinished round(s) from \
-             previous server session — marking as aborted"
-        );
-        let mut abort_failures = 0u32;
-        for round in &unfinished {
-            warn!(
-                "crash recovery: aborting unfinished round {} (room={}, \
-                 chart_id={}, started_at={})",
-                round.round_uuid, round.room_id, round.chart_id, round.started_at,
-            );
-            if db.abort_round(&round.round_uuid).await {
-                info!(
-                    "crash recovery: successfully aborted round {}",
-                    round.round_uuid
-                );
-            } else {
-                error!(
-                    "crash recovery: failed to abort round {}",
-                    round.round_uuid
-                );
-                abort_failures += 1;
-            }
-        }
-        if abort_failures > 0 {
-            return Err(anyhow::anyhow!(
-                "startup recovery: failed to abort {abort_failures}/{count} unfinished round(s)"
-            ));
-        }
-        info!(
-            "startup recovery: aborted {count} unfinished round(s) from \
-             previous server session"
-        );
-    } else {
-        info!("startup recovery: no unfinished rounds to recover");
-    }
-
-    // ── 2. Schema version validation ────────────────────────────────────
+    // ── 1. Schema version validation ────────────────────────────────────
     let schema_version = db.get_schema_version().await;
     match schema_version {
         Some(ver) => info!("startup recovery: schema version = {ver}"),
@@ -92,7 +54,7 @@ pub async fn recover_state(state: &Arc<PlusServerState>, db: &DbManager) -> Resu
         }
     }
 
-    // ── 3. Database diagnostics ─────────────────────────────────────────
+    // ── 2. Database diagnostics ─────────────────────────────────────────
     let user_count = db.count_users().await;
     let playtime_count = db.count_playtime().await;
     info!(
@@ -101,9 +63,14 @@ pub async fn recover_state(state: &Arc<PlusServerState>, db: &DbManager) -> Resu
         user_count, playtime_count,
     );
 
-    // ── 4. WAL health check ─────────────────────────────────────────────
+    // ── 3. WAL health check ─────────────────────────────────────────────
     // The PersistenceWorker replays the WAL in a background task. Wait
-    // briefly for replay to complete, then fail-closed if unhealthy.
+    // briefly for replay to complete **and drain** (is_healthy returns true
+    // only when initial replay has drained), then fail-closed if unhealthy.
+    // This must happen BEFORE crash recovery so that RoundCompleted events
+    // in the WAL are applied to PostgreSQL before we query for unfinished
+    // rounds — otherwise rounds that actually completed would be falsely
+    // marked as aborted.
     let mut wal_healthy = false;
     for _ in 0..50 {
         if state.persistence_worker.is_healthy().await {
@@ -119,19 +86,101 @@ pub async fn recover_state(state: &Arc<PlusServerState>, db: &DbManager) -> Resu
     }
     info!("startup recovery: persistence WAL is healthy");
 
-    // ── 5. Persistent empty room restoration ────────────────────────────
-    restore_persistent_rooms(state, db).await?;
-
-    // ── 6. Dead-letter queue replay ─────────────────────────────────────
-    // Run DLQ replay BEFORE stale session cleanup so that any
-    // UserAuthenticated events from the DLQ are processed first and can be
-    // properly cleaned up by the session cleanup that follows.
+    // ── 4. Dead-letter queue replay + flush ─────────────────────────────
+    // Run DLQ replay BEFORE crash recovery so that any RoundCompleted
+    // events in the DLQ are committed to PostgreSQL before we decide which
+    // rounds are truly unfinished.  Also run BEFORE stale session cleanup
+    // so that old UserAuthenticated events cannot re-set sessions online.
     replay_dead_letter_queue(state).await?;
 
+    // ── 5. Crash recovery: abort truly unfinished rounds ────────────────
+    // Run AFTER WAL replay and DLQ replay so that rounds whose
+    // RoundCompleted event was in the WAL or DLQ have their finished_at
+    // set in PostgreSQL before we query for unfinished rounds.
+    abort_unfinished_rounds(db).await?;
+
+    // ── 6. Persistent empty room restoration ────────────────────────────
+    restore_persistent_rooms(state, db).await?;
+
     // ── 7. Playtime stale session cleanup ───────────────────────────────
-    // Run AFTER WAL replay and DLQ replay so that old UserAuthenticated
-    // events cannot re-set sessions online after cleanup.
+    // Run AFTER WAL replay, DLQ replay, and crash recovery so that old
+    // UserAuthenticated events cannot re-set sessions online after cleanup.
     close_all_stale_playtime_sessions(db).await?;
+
+    Ok(())
+}
+
+/// Query unfinished rounds after WAL+DLQ replay and abort those that are
+/// truly unfinished.  A round may appear unfinished (finished_at IS NULL)
+/// even after WAL replay if the RoundCompleted event was in the WAL but
+/// the UPDATE to mp_rounds did not complete.  In that case we check for a
+/// `round.completed` event in mp_events before aborting.
+async fn abort_unfinished_rounds(db: &DbManager) -> Result<()> {
+    let unfinished = db
+        .find_unfinished_rounds()
+        .await
+        .map_err(|e| anyhow::anyhow!("startup recovery: failed to query unfinished rounds: {e}"))?;
+    let count = unfinished.len();
+    if count == 0 {
+        info!("startup recovery: no unfinished rounds to recover");
+        return Ok(());
+    }
+
+    let mut aborted: u32 = 0;
+    let mut skipped: u32 = 0;
+    let mut abort_failures: u32 = 0;
+
+    for round in &unfinished {
+        // Safety check: if a round.completed event exists in mp_events
+        // then the round actually completed in the WAL — do NOT abort it.
+        if db.has_round_completion_event(&round.round_uuid).await {
+            warn!(
+                "crash recovery: round {} has a completion event in mp_events \
+                 but finished_at is NULL — skipping abort (round was completed)",
+                round.round_uuid,
+            );
+            skipped += 1;
+            continue;
+        }
+
+        warn!(
+            "crash recovery: aborting unfinished round {} (room={}, \
+             chart_id={}, started_at={})",
+            round.round_uuid, round.room_id, round.chart_id, round.started_at,
+        );
+        if db.abort_round(&round.round_uuid).await {
+            info!(
+                "crash recovery: successfully aborted round {}",
+                round.round_uuid
+            );
+            aborted += 1;
+        } else {
+            error!(
+                "crash recovery: failed to abort round {}",
+                round.round_uuid
+            );
+            abort_failures += 1;
+        }
+    }
+
+    if abort_failures > 0 {
+        return Err(anyhow::anyhow!(
+            "startup recovery: failed to abort {abort_failures}/{count} unfinished round(s) \
+             ({aborted} aborted, {skipped} skipped due to completion event)"
+        ));
+    }
+
+    if aborted > 0 {
+        info!(
+            "startup recovery: aborted {aborted} unfinished round(s) from \
+             previous server session ({skipped} had completion events and were skipped)",
+        );
+    } else if skipped > 0 {
+        info!(
+            "startup recovery: all {skipped} unfinished round(s) had completion events — \
+             none were aborted",
+        );
+    }
 
     Ok(())
 }

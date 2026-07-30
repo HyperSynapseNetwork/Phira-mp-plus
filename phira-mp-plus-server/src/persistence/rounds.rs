@@ -526,6 +526,27 @@ impl DbManager {
             .collect())
     }
 
+    /// Check whether a `round.completed` event exists for the given round.
+    ///
+    /// Used during crash recovery to avoid aborting rounds whose
+    /// `RoundCompleted` event was replayed from the WAL but whose
+    /// `mp_rounds.finished_at` column was not set (defensive safety net).
+    pub async fn has_round_completion_event(&self, round_uuid: &str) -> bool {
+        let Self::Pg(pool) = self;
+        sqlx::query_scalar::<_, Option<i32>>(
+            "SELECT 1 FROM mp_events
+              WHERE kind = 'round.completed'
+                AND payload->>'round_uuid' = $1
+              LIMIT 1",
+        )
+        .bind(round_uuid)
+        .fetch_optional(pool)
+        .await
+        .ok()
+        .flatten()
+        .is_some()
+    }
+
     /// Mark an unfinished round as aborted (crash recovery).
     ///
     /// Sets `finished_at` to the current timestamp and `aborted = true`.
