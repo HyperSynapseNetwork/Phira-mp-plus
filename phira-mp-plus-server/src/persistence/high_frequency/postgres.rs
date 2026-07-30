@@ -286,7 +286,7 @@ pub(crate) fn extract_runtime_records(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use super::HighFrequencyKind;
+    use crate::persistence::high_frequency::HighFrequencyKind;
     use serde_json::json;
 
     fn make_item(kind: HighFrequencyKind, user_id: i32) -> HighFrequencyItem {
