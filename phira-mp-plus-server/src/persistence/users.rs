@@ -272,140 +272,26 @@ impl DbManager {
             .collect()
     }
 
-    /// Atomic commit for a full UserAuthenticated event in a single PG transaction.
+    /// Close all open playtime sessions from the previous server instance.
+>>>>>>> 8bd77d5 (fix: remove 24h threshold from playtime stale session recovery)
     ///
-    /// Combines visit recording (idempotent via `mp_user_visits`), user upsert
-    /// with conditional `login_count` increment, IP history, and playtime
-    /// online-set into one atomic operation.  If the `event_id` has already been
-    /// processed, `login_count` is *not* incremented — making the handler fully
-    /// idempotent against retry/replay.
-    pub async fn commit_user_authenticated(
-        &self,
-        event_id: &str,
-        session_id: &str,
-        user_id: i32,
-        user_name: &str,
-        language: &str,
-        ip: &str,
-        connected_at: i64,
-    ) -> bool {
-        let Self::Pg(pool) = self;
-        let now = now_ms_inline();
-
-        let mut tx = match pool.begin().await {
-            Ok(tx) => tx,
-            Err(_) => return false,
-        };
-
-        // 1. Insert visit record (idempotent guard).
-        let is_new_visit = match sqlx::query(
-            "INSERT INTO mp_user_visits (event_id, session_id, user_id, connected_at, created_at)
-             VALUES ($1, $2, $3, $4, $5)
-             ON CONFLICT (event_id) DO NOTHING",
-        )
-        .bind(event_id)
-        .bind(session_id)
-        .bind(user_id)
-        .bind(connected_at)
-        .bind(now)
-        .execute(&mut *tx)
-        .await
-        {
-            Ok(r) => r.rows_affected() > 0,
-            Err(_) => {
-                let _ = tx.rollback().await;
-                return false;
-            }
-        };
-
-        // 2. Upsert user — only increment login_count when this is a new visit.
-        let login_inc: i64 = if is_new_visit { 1 } else { 0 };
-        if sqlx::query(
-            "INSERT INTO mp_users (
-                   user_id, name, language, ip, first_seen_at, last_seen_at,
-                   last_connected_at, updated_at, login_count
-               )
-               VALUES ($1, $2, $3, $4, $5, $5, $5, $5, 1)
-               ON CONFLICT (user_id) DO UPDATE SET
-                 name = EXCLUDED.name,
-                 language = EXCLUDED.language,
-                 ip = COALESCE(EXCLUDED.ip, mp_users.ip),
-                 last_seen_at = EXCLUDED.last_seen_at,
-                 last_connected_at = EXCLUDED.last_connected_at,
-                 updated_at = EXCLUDED.updated_at,
-                 login_count = mp_users.login_count + $6",
-        )
-        .bind(user_id)
-        .bind(user_name)
-        .bind(language)
-        .bind(ip)
-        .bind(now)
-        .bind(login_inc)
-        .execute(&mut *tx)
-        .await
-        .is_err()
-        {
-            let _ = tx.rollback().await;
-            return false;
-        }
-
-        // 3. Record IP in user_ip_history (best-effort, does not fail the tx).
-        if !ip.is_empty() {
-            let _ = sqlx::query(
-                "INSERT INTO user_ip_history (user_id, ip, first_seen_at, last_seen_at, use_count)
-                 VALUES ($1, $2, $3, $3, 1)
-                 ON CONFLICT (user_id, ip) DO UPDATE SET
-                   last_seen_at = EXCLUDED.last_seen_at,
-                   use_count = user_ip_history.use_count + 1",
-            )
-            .bind(user_id)
-            .bind(ip)
-            .bind(now)
-            .execute(&mut *tx)
-            .await;
-        }
-
-        // 4. Set online (playtime).
-        if sqlx::query(
-            "INSERT INTO playtime (user_id, total_secs, session_start) VALUES ($1, 0, $2)
-             ON CONFLICT (user_id) DO UPDATE SET
-               total_secs = playtime.total_secs + CASE
-                 WHEN playtime.session_start IS NULL THEN 0
-                 ELSE GREATEST(0, ($2 - playtime.session_start) / 1000)
-               END,
-               session_start = $2",
-        )
-        .bind(user_id)
-        .bind(now)
-        .execute(&mut *tx)
-        .await
-        .is_err()
-        {
-            let _ = tx.rollback().await;
-            return false;
-        }
-
-        tx.commit().await.is_ok()
-    }
-    /// Clean up stale playtime sessions that were orphaned by a server crash.
-    ///
-    /// A session is considered stale if `session_start` is older than 24 hours.
-    /// The elapsed time is accrued to `total_secs` and `session_start` is set to
-    /// NULL so the row is ready for the next normal online/offline cycle.
-    pub async fn cleanup_stale_playtime_sessions(&self) -> std::result::Result<u64, String> {
+    /// On startup every `session_start` that is still set belongs to a previous
+    /// server instance (planned shutdown or crash).  The elapsed time is accrued
+    /// to `total_secs` and `session_start` is set to NULL so the row is ready
+    /// for the next normal online/offline cycle.
+    pub async fn close_all_stale_sessions(&self) -> std::result::Result<u64, String> {
         let Self::Pg(pool) = self;
         let now = now_ms_inline();
         let result = sqlx::query(
             "UPDATE playtime
              SET total_secs = total_secs + GREATEST(0, ($1 - session_start) / 1000),
                  session_start = NULL
-             WHERE session_start IS NOT NULL
-               AND session_start < $1 - 86400000",
+             WHERE session_start IS NOT NULL",
         )
         .bind(now)
         .execute(pool)
         .await
-        .map_err(|e| format!("cleanup stale playtime sessions: {e}"))?;
+        .map_err(|e| format!("close all stale playtime sessions: {e}"))?;
         Ok(result.rows_affected())
     }
 }
