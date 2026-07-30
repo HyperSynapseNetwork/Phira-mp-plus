@@ -741,9 +741,11 @@ impl PersistenceWorker {
                 return Err(event);
             }
         };
+        // Register in_flight BEFORE sending so the worker cannot ACK and remove
+        // the entry before our insert completes (race with recovery scanner).
+        self.in_flight.lock().await.insert(wal_id);
         // Send using the reserved permit (infallible).
         permit.send(WorkerMessage::Event { wal_id, event, needs_wal_ack });
-        self.in_flight.lock().await.insert(wal_id);
         record_queued(&self.stats, kind.clone(), summary).await;
         Ok(AdmissionOutcome::Queued)
     }
