@@ -113,8 +113,6 @@ pub struct PersistenceWal {
     /// Total ACK count since last compact.
     ack_count: std::sync::atomic::AtomicU64,
     /// Sequence is stored in the WAL Admission record itself.
-    /// No separate map needed — replay and list_pending read it from
-    /// the parsed frame.  The single admit_sequence counter above tracks
     /// the next sequence to assign.
 }
 

@@ -383,44 +383,43 @@ async fn process_worker_loop(
         // Priority: buffer (for draining the expected sequence) >
         //           replay (bypass gating, already in WAL order) >
         //           channel with gating.
+        // Priority order: buffer → replay → channel with gating.
         let message = 'dispatch: {
             // 1. Buffer check: if the next expected sequence is already
             //    buffered, process it without blocking on the channel.
             if let Some((wal_id, event, needs_wal_ack)) =
                 buffer.remove(&next_expected_sequence)
             {
-                break 'dispatch WorkerMessage::Event {
+                break 'dispatch Some(WorkerMessage::Event {
                     wal_id,
                     wal_sequence: next_expected_sequence,
                     event,
                     needs_wal_ack,
-                };
+                });
             }
 
             // 2. Replay events (already in WAL order, bypass gating with
             //    the seq=0 sentinel).
             if let Some((wal_id, event, _seq)) = replay.pop_front() {
-                break 'dispatch WorkerMessage::Event {
+                break 'dispatch Some(WorkerMessage::Event {
                     wal_id,
                     wal_sequence: 0,
                     event,
                     needs_wal_ack: true,
-                };
+                });
             }
 
             // Replay is exhausted. Mark drained exactly once.
             initial_replay_drained.store(true, Ordering::Release);
 
             // 3. Channel receive with sequence gating.
-            let Some(msg) = rx.recv().await else { break; };
+            let msg = match rx.recv().await {
+                Some(msg) => msg,
+                None => break 'dispatch None,
+            };
 
             match msg {
-                WorkerMessage::Event {
-                    wal_id,
-                    wal_sequence,
-                    event,
-                    needs_wal_ack,
-                } if wal_sequence != 0 => {
+                WorkerMessage::Event { wal_id, wal_sequence, event, needs_wal_ack } if wal_sequence != 0 => {
                     if next_expected_sequence == 0 {
                         // First channel event — initialise the gate from
                         // the minimum pending WAL sequence (if any) so
@@ -466,7 +465,6 @@ async fn process_worker_loop(
                 // seq=0 sentinel or control messages: bypass gating.
                 other => other,
             }
->>>>>>> 6218f07 (fix(persistence): implement WAL sequence gating and store sequence in Admission records)
         };
 
         // ---- Retry pending WAL ACKs ----
@@ -493,6 +491,7 @@ async fn process_worker_loop(
         }
 
         // ---- Dispatch ----
+        let Some(message) = message else { break; };
         let (wal_id, wal_sequence, event, needs_wal_ack) = match message {
             WorkerMessage::Event {
                 wal_id,
@@ -521,7 +520,6 @@ async fn process_worker_loop(
                 } else {
                     Err("shutdown with undrained ACKs".to_string())
                 });
->>>>>>> 6218f07 (fix(persistence): implement WAL sequence gating and store sequence in Admission records)
                 if should_stop {
                     break;
                 }
