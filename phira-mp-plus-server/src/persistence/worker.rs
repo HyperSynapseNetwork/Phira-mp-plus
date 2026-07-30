@@ -555,7 +555,7 @@ async fn wal_recovery_scanner(
                     // Event is now queued — add to in_flight so the next scan
                     // iteration does not re-send it while it is being processed.
                     in_flight.lock().await.insert(*wal_id);
-                    record_wal_recovered(&stats, kind, summary).await;
+                    record_wal_recovered(&stats, kind.clone(), summary).await;
                     tracing::debug!(
                         wal_id = %wal_id, kind = %kind,
                         "WAL recovery scanner re-enqueued event"
