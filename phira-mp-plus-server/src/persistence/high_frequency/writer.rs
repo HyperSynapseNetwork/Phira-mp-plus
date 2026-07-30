@@ -276,11 +276,24 @@ async fn run_hf_writer(
                         }
                     }
                     Some(HfMessage::Flush(reply)) => {
-                        // Drain overflow into current batch before flushing
-                        drain_overflow(&mut batch, &mut overflow_rx, &stats, overflow_max_age_ms, max_batch_size).await;
-                        let result = flush_and_update_seq(
-                            &mut batch, &stats, &db, max_retries, retry_max_age_ms, "explicit_flush"
-                        ).await;
+                        // Capture the admission sequence at the time of the Flush
+                        // call — all items admitted before this point must be
+                        // durably committed before we reply.
+                        let target_seq = stats.admission_sequence.load(Ordering::Acquire);
+                        let result = loop {
+                            let resolved = stats.continuous_committed_watermark.load(Ordering::Acquire);
+                            if resolved >= target_seq {
+                                break Ok(());
+                            }
+                            // Drain overflow into current batch before flushing
+                            drain_overflow(&mut batch, &mut overflow_rx, &stats, overflow_max_age_ms, max_batch_size).await;
+                            let res = flush_and_update_seq(
+                                &mut batch, &stats, &db, max_retries, retry_max_age_ms, "explicit_flush"
+                            ).await;
+                            if let Err(e) = res {
+                                break Err(e);
+                            }
+                        };
                         let _ = reply.send(result);
                     }
                     Some(HfMessage::Shutdown(reply)) => {
