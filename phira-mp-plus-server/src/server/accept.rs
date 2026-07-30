@@ -165,7 +165,7 @@ impl PlusServer {
                     state
                         .publish_user_disconnected(session.user.id, session.user.name.clone())
                         .await;
-                    let _ = state
+                    if let Err(e) = state
                         .persistence_worker
                         .enqueue(
                             crate::persistence::message::PersistenceEvent::UserDisconnect {
@@ -173,13 +173,19 @@ impl PlusServer {
                                 user_name: session.user.name.clone(),
                             },
                         )
-                        .await;
-                    let _ = state
+                        .await
+                    {
+                        warn!(user = session.user.id, kind = %e.kind(), "UserDisconnect enqueue failed during accept cleanup");
+                    }
+                    if let Err(e) = state
                         .persistence_worker
                         .enqueue(crate::persistence::message::PersistenceEvent::UserOffline {
                             user_id: session.user.id,
                         })
-                        .await;
+                        .await
+                    {
+                        warn!(user = session.user.id, kind = %e.kind(), "UserOffline enqueue failed during accept cleanup");
+                    }
                 }
                 return;
             }

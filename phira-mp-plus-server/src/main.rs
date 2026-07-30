@@ -283,7 +283,7 @@ async fn main() -> Result<()> {
                     .state
                     .publish_user_disconnected(user_id, user_name.clone())
                     .await;
-                let _ = server
+                if let Err(e) = server
                     .state
                     .persistence_worker
                     .enqueue(
@@ -292,8 +292,11 @@ async fn main() -> Result<()> {
                             user_name,
                         },
                     )
-                    .await;
-                let _ = server
+                    .await
+                {
+                    warn!(user = user_id, kind = %e.kind(), "UserDisconnect enqueue failed during shutdown");
+                }
+                if let Err(e) = server
                     .state
                     .persistence_worker
                     .enqueue(
@@ -301,7 +304,10 @@ async fn main() -> Result<()> {
                             user_id,
                         },
                     )
-                    .await;
+                    .await
+                {
+                    warn!(user = user_id, kind = %e.kind(), "UserOffline enqueue failed during shutdown");
+                }
             }
         };
         if tokio::time::timeout(lifecycle_budget, lifecycle)
