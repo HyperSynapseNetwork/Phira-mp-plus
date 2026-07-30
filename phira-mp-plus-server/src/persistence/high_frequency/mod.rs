@@ -174,6 +174,12 @@ pub struct HighFrequencyStats {
     // ── Sequence counters (审计 P3) ────────────────────────────────
     /// Monotonic admission sequence number (incremented per accepted item).
     pub admission_sequence: AtomicU64,
+    /// Highest admission sequence assigned so far (0 = none assigned yet).
+    /// Updated right after `admission_sequence` is fetched-and-added so that
+    /// it always reflects the *last* assigned sequence (as opposed to
+    /// `admission_sequence` which is the *next* sequence to assign).
+    /// Used by the Flush handler to determine the target watermark.
+    pub last_accepted_sequence: AtomicU64,
     /// Highest admission_sequence whose batch has been durably committed.
     pub committed_sequence: AtomicU64,
     /// Highest admission_sequence where ALL sequences <= this value have been
@@ -197,6 +203,7 @@ impl HighFrequencyStats {
             queue_full_count: self.queue_full_count.load(Ordering::Relaxed),
             last_database_error_at: self.last_database_error_at.load(Ordering::Relaxed),
             admission_sequence: self.admission_sequence.load(Ordering::Relaxed),
+            last_accepted_sequence: self.last_accepted_sequence.load(Ordering::Relaxed),
             committed_sequence: self.committed_sequence.load(Ordering::Relaxed),
             continuous_committed_watermark: self.continuous_committed_watermark.load(Ordering::Relaxed),
         }
@@ -215,6 +222,7 @@ impl HighFrequencyStats {
         self.queue_full_count.store(0, Ordering::Relaxed);
         self.last_database_error_at.store(0, Ordering::Relaxed);
         self.admission_sequence.store(1, Ordering::Relaxed);
+        self.last_accepted_sequence.store(0, Ordering::Relaxed);
         self.committed_sequence.store(0, Ordering::Relaxed);
         self.continuous_committed_watermark.store(0, Ordering::Relaxed);
     }
@@ -236,6 +244,7 @@ pub struct HighFrequencyStatsSnapshot {
     pub last_database_error_at: u64,
     // ── Sequence counters (审计 P3) ────────────────────────────────
     pub admission_sequence: u64,
+    pub last_accepted_sequence: u64,
     pub committed_sequence: u64,
     pub continuous_committed_watermark: u64,
 }
@@ -321,6 +330,7 @@ mod tests {
             queue_full_count: AtomicU64::new(3),
             last_database_error_at: AtomicU64::new(67890),
             admission_sequence: AtomicU64::new(100),
+            last_accepted_sequence: AtomicU64::new(99),
             committed_sequence: AtomicU64::new(95),
             continuous_committed_watermark: AtomicU64::new(80),
         };
@@ -336,6 +346,7 @@ mod tests {
         assert_eq!(snap.queue_full_count, 3);
         assert_eq!(snap.last_database_error_at, 67890);
         assert_eq!(snap.admission_sequence, 100);
+        assert_eq!(snap.last_accepted_sequence, 99);
         assert_eq!(snap.committed_sequence, 95);
         assert_eq!(snap.continuous_committed_watermark, 80);
     }

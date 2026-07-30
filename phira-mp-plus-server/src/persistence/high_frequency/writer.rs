@@ -81,6 +81,7 @@ impl HighFrequencyWriter {
             queue_full_count: AtomicU64::new(0),
             last_database_error_at: AtomicU64::new(0),
             admission_sequence: AtomicU64::new(1),
+            last_accepted_sequence: AtomicU64::new(0),
             committed_sequence: AtomicU64::new(0),
             continuous_committed_watermark: AtomicU64::new(0),
         });
@@ -136,6 +137,7 @@ impl HighFrequencyWriter {
         // both the main and overflow paths.  The sequence is used by flush to
         // determine committed_sequence.
         let seq = self.stats.admission_sequence.fetch_add(1, Ordering::Relaxed);
+        self.stats.last_accepted_sequence.store(seq, Ordering::Relaxed);
         item.admission_seq = seq;
 
         match self.tx.try_send(HfMessage::Item(item)) {
@@ -276,20 +278,57 @@ async fn run_hf_writer(
                         }
                     }
                     Some(HfMessage::Flush(reply)) => {
-                        // Capture the admission sequence at the time of the Flush
-                        // call — all items admitted before this point must be
-                        // durably committed before we reply.
-                        let target_seq = stats.admission_sequence.load(Ordering::Acquire);
+                        // Target is the *last assigned* sequence, not the *next*
+                        // sequence to assign.  Using admission_sequence here
+                        // would over-shoot by 1 and make the watermark
+                        // unreachable, causing a permanent hang (PMP30 P0-5).
+                        let target_seq = stats.last_accepted_sequence.load(Ordering::Acquire);
+                        if target_seq == 0 {
+                            // No items ever accepted; flush is a no-op.
+                            let _ = reply.send(Ok(()));
+                            continue;
+                        }
                         let result = loop {
-                            let resolved = stats.continuous_committed_watermark.load(Ordering::Acquire);
-                            if resolved >= target_seq {
+                            let watermark = stats.continuous_committed_watermark.load(Ordering::Acquire);
+                            if watermark >= target_seq {
                                 break Ok(());
                             }
                             // Drain overflow into current batch before flushing
-                            drain_overflow(&mut batch, &mut overflow_rx, &stats, overflow_max_age_ms, max_batch_size).await;
+                            drain_overflow(
+                                &mut batch, &mut overflow_rx, &stats, overflow_max_age_ms, max_batch_size,
+                            )
+                            .await;
+
+                            if batch.is_empty() {
+                                // No pending items.  If committed_sequence has
+                                // already passed target_seq, there is an
+                                // unrecoverable gap (items were permanently
+                                // dropped) and the watermark can never reach
+                                // the target.
+                                let committed =
+                                    stats.committed_sequence.load(Ordering::Acquire);
+                                if committed >= target_seq {
+                                    break Err(
+                                        "DataLoss: items were permanently dropped, \
+                                         creating an unrecoverable gap in committed sequence"
+                                            .to_string(),
+                                    );
+                                }
+                                // Items still being produced; yield briefly so
+                                // concurrent enqueuers can make progress.
+                                tokio::time::sleep(Duration::from_millis(10)).await;
+                                continue;
+                            }
+
                             let res = flush_and_update_seq(
-                                &mut batch, &stats, &db, max_retries, retry_max_age_ms, "explicit_flush"
-                            ).await;
+                                &mut batch,
+                                &stats,
+                                &db,
+                                max_retries,
+                                retry_max_age_ms,
+                                "explicit_flush",
+                            )
+                            .await;
                             if let Err(e) = res {
                                 break Err(e);
                             }
