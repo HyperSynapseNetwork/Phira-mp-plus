@@ -6,11 +6,12 @@
 //! Touch/Judge telemetry goes through the HighFrequencyWriter — the single
 //! unified high-frequency persistence path.
 
-use crate::persistence::message::PersistenceEvent;
+use crate::persistence::message::{AdmissionOutcome, PersistenceEvent};
 use crate::persistence::stats::{
     record_dead_letter_failed, record_dead_letter_written, record_dropped, record_queued,
     record_wal_committed, record_wal_compaction, record_wal_only,
-    record_wal_received, record_wal_recovered, PersistenceStats,
+    record_wal_received, PersistenceStats,
+>>>>>>> 8f0637a (fix: enqueue returns AdmissionOutcome instead of Err on queue-full after WAL admit)
 };
 use crate::persistence::wal::PersistenceWal;
 use serde_json::json;
@@ -693,7 +694,7 @@ impl PersistenceWorker {
         }
     }
 
-    pub async fn enqueue(&self, event: PersistenceEvent) -> Result<(), PersistenceEvent> {
+    pub async fn enqueue(&self, event: PersistenceEvent) -> Result<AdmissionOutcome, PersistenceEvent> {
         let kind = event.kind();
         let summary = event.summary();
         let _send_guard = self.send_gate.lock().await;
@@ -733,12 +734,11 @@ impl PersistenceWorker {
                         return Err(event);
                     }
                     Err(_) => {
-                        record_dropped(&self.stats, kind, summary,
-                            "persistence worker queue full after 100ms wait; event preserved in WAL"
-                                .to_string(),
-                        )
-                        .await;
-                        return Err(event);
+                        // WAL has the event — return WalOnly so the caller
+                        // knows the event is safe and the periodic recovery
+                        // scanner will re-enqueue it.
+                        record_wal_only(&self.stats, kind, summary).await;
+                        return Ok(AdmissionOutcome::WalOnly);
                     }
                 }
             }
@@ -752,7 +752,7 @@ impl PersistenceWorker {
         permit.send(WorkerMessage::Event { wal_id, event, needs_wal_ack });
         self.in_flight.lock().await.insert(wal_id);
         record_queued(&self.stats, kind.clone(), summary).await;
-        Ok(())
+        Ok(AdmissionOutcome::Queued)
     }
 
     /// Drain every event accepted before this control message.

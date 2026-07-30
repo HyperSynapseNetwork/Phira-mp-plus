@@ -73,16 +73,10 @@ pub struct PersistenceStats {
     pub wal_received: u64,
     #[serde(default)]
     pub wal_committed: u64,
-
-
     /// Events admitted to WAL only (queue full). Recovered by periodic scanner.
     #[serde(default)]
     pub wal_only: u64,
-    /// Events recovered from WAL by the periodic recovery scanner (queue was
-    /// full at original admit time, later re-enqueued).
-    #[serde(default)]
-    pub wal_recovered: u64,
-
+>>>>>>> 8f0637a (fix: enqueue returns AdmissionOutcome instead of Err on queue-full after WAL admit)
     #[serde(default)]
     pub wal_compactions: u64,
     /// Total bytes processed during WAL compactions.
@@ -246,12 +240,7 @@ pub async fn record_wal_only(stats: &Arc<RwLock<PersistenceStats>>, kind: String
     push_trace(&mut s, "wal_only", kind, summary);
 }
 
-pub async fn record_wal_recovered(stats: &Arc<RwLock<PersistenceStats>>, kind: String, summary: String) {
-    let mut s = stats.write().await;
-    s.wal_recovered += 1;
-    push_trace(&mut s, "wal_recovered", kind, summary);
-}
-
+>>>>>>> 8f0637a (fix: enqueue returns AdmissionOutcome instead of Err on queue-full after WAL admit)
 pub async fn record_wal_compaction(
     stats: &Arc<RwLock<PersistenceStats>>,
     bytes: u64,
