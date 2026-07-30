@@ -11,12 +11,13 @@ pub use actor::PluginTcpActor;
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{mpsc, oneshot, Semaphore};
 
 // ── Resource limits (PMP25 P5) ──────────────────────────────────────
 pub(crate) use quota::{
     MAX_CONNECTIONS_PER_PLUGIN,
     MAX_LISTENERS_PER_PLUGIN,
+    MAX_PENDING_EVENTS_PER_PLUGIN,
 };
 
 /// Synchronous reply channel for WIT host functions — blocks the calling
@@ -93,3 +94,5 @@ pub(crate) type ReadBufMap = Arc<Mutex<HashMap<u64, Vec<u8>>>>;
 /// Per-handle buffered byte count, used for per-connection buffer accounting
 /// at cleanup. Plugin totals are derived by summing per-handle values.
 pub(crate) type HandleReadBytesMap = Arc<Mutex<HashMap<u64, usize>>>;
+/// Per-plugin semaphore for rate-limiting TCP events.
+pub(crate) type EventSemaphoreMap = Arc<Mutex<HashMap<String, Arc<Semaphore>>>>;

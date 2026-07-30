@@ -13,3 +13,6 @@ pub(crate) const MAX_READ_BUF_PER_CONNECTION: usize = 1_048_576; // 1 MB
 
 /// Maximum total buffered read bytes per plugin (across all connections).
 pub(crate) const MAX_READ_BUF_PER_PLUGIN: usize = 4_194_304; // 4 MB
+
+/// Maximum pending events per plugin before rate limiting drops new events.
+pub(crate) const MAX_PENDING_EVENTS_PER_PLUGIN: usize = 64;

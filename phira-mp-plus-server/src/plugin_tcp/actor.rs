@@ -6,12 +6,13 @@
 
 use crate::plugin_tcp::events::{tcp_connect, tcp_listen};
 use crate::plugin_tcp::{
-    CloseMap, ConnectionMap, HandleReadBytesMap, PluginTcpCommand, PluginTcpInternal, ReadBufMap, SyncReply,
-    MAX_CONNECTIONS_PER_PLUGIN, MAX_LISTENERS_PER_PLUGIN,
+    CloseMap, ConnectionMap, EventSemaphoreMap, HandleReadBytesMap, PluginTcpCommand, PluginTcpInternal, ReadBufMap,
+    SyncReply,
+    MAX_CONNECTIONS_PER_PLUGIN, MAX_LISTENERS_PER_PLUGIN, MAX_PENDING_EVENTS_PER_PLUGIN,
 };
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{mpsc, oneshot, Semaphore};
 use tracing::{info, warn};
 
 struct Connection {
@@ -40,6 +41,7 @@ pub struct PluginTcpActor {
     close_map: CloseMap,
     read_buf_map: ReadBufMap,
     event_callback: Option<Arc<dyn Fn(String, serde_json::Value) + Send + Sync>>,
+    event_semaphores: EventSemaphoreMap,
     // ── Resource ownership (PMP25 P5) ───────────────────────────────
     /// handle → owning plugin_id
     handle_owner: HashMap<u64, String>,
@@ -70,6 +72,7 @@ impl PluginTcpActor {
             close_map: Arc::new(Mutex::new(HashMap::new())),
             read_buf_map: Arc::new(Mutex::new(HashMap::new())),
             event_callback: None,
+            event_semaphores: Arc::new(Mutex::new(HashMap::new())),
             handle_owner: HashMap::new(),
             plugin_connections: HashMap::new(),
             plugin_listeners: HashMap::new(),
@@ -183,6 +186,12 @@ impl PluginTcpActor {
         }
     }
 
+    fn ensure_event_semaphore(&self, plugin_id: &str) {
+        let mut map = self.event_semaphores.lock().unwrap();
+        map.entry(plugin_id.to_string())
+            .or_insert_with(|| Arc::new(Semaphore::new(MAX_PENDING_EVENTS_PER_PLUGIN)));
+    }
+
     pub async fn run(&mut self) {
         info!("tcp actor started");
 
@@ -200,6 +209,7 @@ impl PluginTcpActor {
                             // Register accepted connection with listener's plugin
                             let plugin_id = self.handle_owner.get(&listener_handle).cloned();
                             if let Some(ref pid) = plugin_id {
+                                self.ensure_event_semaphore(pid);
                                 if self.count_plugin_connections(pid) >= MAX_CONNECTIONS_PER_PLUGIN {
                                     warn!(%conn_handle, %pid, "inbound connection quota exceeded, dropping");
                                     self.emit_event("tcp:error",
@@ -285,6 +295,8 @@ impl PluginTcpActor {
                     // Pre-reserve the connection slot for quota accuracy
                     *self.plugin_connections.entry(plugin_id.clone()).or_insert(0) += 1;
 
+                    self.ensure_event_semaphore(&plugin_id);
+
                     let cb = self.event_callback.clone();
                     let cm = Arc::clone(&self.conn_map);
                     let rbm = Arc::clone(&self.read_buf_map);
@@ -292,6 +304,7 @@ impl PluginTcpActor {
                     let itx = self.internal_tx.clone();
                     let itx_for_result = self.internal_tx.clone();
                     let prb = Arc::clone(&self.plugin_read_bytes);
+                    let esem = Arc::clone(&self.event_semaphores);
                     let pid = plugin_id.clone();
                     let addr_clone = addr.clone();
 
@@ -299,7 +312,7 @@ impl PluginTcpActor {
                     // block the actor loop.
                     tokio::spawn(async move {
                         let result = tcp_connect(
-                            &addr_clone, handle, pid.clone(), cb, cm, rbm, hrb, itx, prb,
+                            &addr_clone, handle, pid.clone(), cb, cm, rbm, hrb, itx, prb, esem,
                         ).await;
                         let _ = itx_for_result.send(PluginTcpInternal::ConnectCompleted {
                             handle,
@@ -315,12 +328,13 @@ impl PluginTcpActor {
                         return;
                     }
                     let handle = self.alloc_handle();
+                    self.ensure_event_semaphore(&plugin_id);
                     let cb = self.event_callback.clone();
                     let rbm = Arc::clone(&self.read_buf_map);
                     let hrb = Arc::clone(&self.handle_read_bytes);
                     let prb = Arc::clone(&self.plugin_read_bytes);
 
-                    match tcp_listen(&addr, handle, self.internal_tx.clone(), cb, rbm, hrb, prb).await {
+                    match tcp_listen(&addr, handle, self.internal_tx.clone(), cb, rbm, hrb, prb, self.event_semaphores.clone()).await {
                         Ok(close_tx) => {
                             self.handle_owner.insert(handle, plugin_id.clone());
                             *self.plugin_listeners.entry(plugin_id.clone()).or_insert(0) += 1;
