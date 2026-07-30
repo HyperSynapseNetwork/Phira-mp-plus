@@ -183,6 +183,7 @@ async fn save_round_history(
     let event = crate::persistence::PersistenceEvent::RoundCompleted {
         round_uuid: round_id.to_string(),
         room_id: room_ref.id.to_string(),
+        event_id: uuid::Uuid::new_v4().to_string(),
         results: play_results.clone(),
         finished_at,
         aborted_users: aborted.iter().copied().collect(),
@@ -331,19 +332,9 @@ async fn check_all_ready(
                     }).await;
                 }
 
-                // 关闭轮次数据存储
-                if let Some(rid) = rid {
-                    info!("round complete: {}", rid);
-                    if let Some(rs) = &lc.room().round_store {
-                        if let Err(e) = rs.close_round(&rid.to_string()).await {
-                            warn!(
-                                room = %lc.room().id,
-                                round = %rid,
-                                "failed to close round in round store: {e}"
-                            );
-                        }
-                    }
-                }
+                // Round close is now part of the atomic commit_round_completed
+                // transaction inside the PersistenceWorker — no separate
+                // close_round call needed here.
 
                 // 触发 RoundComplete 事件
                 if let Some(pm) = &lc.room().plugin_manager {
@@ -594,7 +585,6 @@ pub(super) async fn force_end_playing(
     };
     if all_done {
         // Save round history directly
-        let rid = state.round.round_id;
         if let InternalRoomState::Playing { .. } = &state.lifecycle {
             let completed_round = save_round_history(
                 lc,
@@ -611,17 +601,9 @@ pub(super) async fn force_end_playing(
                 }).await;
             }
         }
-        if let Some(rid) = rid {
-            if let Some(rs) = &lc.room().round_store {
-                if let Err(e) = rs.close_round(&rid.to_string()).await {
-                    warn!(
-                        room = %lc.room().id,
-                        round = %rid,
-                        "failed to close round in round store: {e}"
-                    );
-                }
-            }
-        }
+        // Round close is now part of the atomic commit_round_completed
+        // transaction inside the PersistenceWorker — no separate
+        // close_round call needed here.
         state.round.round_id = None;
         state.ready_countdown_started_at = None;
         state.playing_timeout_deadline = None;
