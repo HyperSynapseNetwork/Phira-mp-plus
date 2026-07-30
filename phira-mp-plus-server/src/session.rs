@@ -114,7 +114,6 @@ impl Session {
                                 let Some(tx) = tx else { return };
                                 let mut auth_tx = Some(tx);
                                 let retry_send_tx = Arc::clone(&send_tx);
-                                let panicked_clone = Arc::clone(&panicked);
                                 let res: Result<()> = {
                                     let this = Arc::clone(&this);
                                     let server = Arc::clone(&server);
@@ -342,7 +341,7 @@ impl Session {
                                         let tx = crate::session_actor::init_session_mailbox(session);
                                         let _ = session.actor_tx.set(tx);
                                     }
-                                    let user = &this.get().unwrap().user;
+                                    let user = Arc::clone(&this.get().unwrap().user);
                                     let room_state = match user.room.read().await.as_ref() {
                                         Some(room) => Some(crate::session_room::build_client_room_state(room, user).await),
                                         None => None,
