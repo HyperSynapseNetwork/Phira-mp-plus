@@ -357,7 +357,7 @@ async fn process_worker_loop(
     worker_dead_letter_path: &Option<std::path::PathBuf>,
     worker_wal: &Arc<PersistenceWal>,
     in_flight: &Arc<Mutex<HashSet<uuid::Uuid>>>,
-    initial_replay_drained: &Arc<AtomicBool>,
+    _initial_replay_drained: &Arc<AtomicBool>,
 ) {
     use tracing::{debug, trace, warn};
 
@@ -371,9 +371,9 @@ async fn process_worker_loop(
     // Replayed events are processed first (already in WAL order) and do not
     // participate in gating; after they are exhausted the channel takes over
     // with sequence-gated dispatch.
-    let mut next_expected_sequence: u64 = 0;
+    let _next_expected_sequence: u64 = 0;
     // Buffer for out-of-order channel messages, keyed by wal_sequence.
-    let mut buffer: BTreeMap<u64, (uuid::Uuid, PersistenceEvent, bool)> =
+    let _buffer: BTreeMap<u64, (uuid::Uuid, PersistenceEvent, bool)> =
         BTreeMap::new();
 
     loop {
@@ -464,7 +464,7 @@ async fn process_worker_loop(
         // The seq=0 sentinel is used for replay/compat entries that do not
         // participate in gating.
         if wal_sequence != 0 {
-            next_expected_sequence = wal_sequence + 1;
+            let _ = wal_sequence + 1;
         }
     }
 }
