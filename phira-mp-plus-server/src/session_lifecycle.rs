@@ -212,11 +212,10 @@ impl User {
                                         &server, &room_id.to_string(), self_.id,
                                     ).await;
                                 }
-                                if room.on_user_leave(&self_).await {
-                                    self_.server.rooms.write().await.remove(&room_id);
-                                }
-                                self_.server.publish_room_event(
-                                    RoomEvent::LeaveRoom { room: room_id, user: self_.id },
+                                let _ = self_.server.room_commands.remove_user(
+                                    &self_.server,
+                                    &room_id,
+                                    self_.id,
                                 ).await;
                             }
                             let mut users = self_.server.users.write().await;
@@ -225,7 +224,17 @@ impl User {
                             }
                             drop(users);
                             drop(registration_guard);
-                            self_.server.publish_user_disconnected(self_.id, self_.name.clone()).await;
+                            let _ = self_.server.persistence_worker.enqueue(
+                                crate::persistence::message::PersistenceEvent::UserDisconnect {
+                                    user_id: self_.id,
+                                    user_name: self_.name.clone(),
+                                },
+                            ).await;
+                            let _ = self_.server.persistence_worker.enqueue(
+                                crate::persistence::message::PersistenceEvent::UserOffline {
+                                    user_id: self_.id,
+                                },
+                            ).await;
                         },
                     );
                     return;
