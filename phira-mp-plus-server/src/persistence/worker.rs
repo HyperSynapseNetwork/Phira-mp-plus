@@ -128,13 +128,9 @@ async fn process_worker_loop(
         // was dropped — the caller received "acknowledgement was dropped"
         // instead of waiting for the target events to complete.
         if let Some(pc) = pending_control.as_mut() {
-            let (target, deadline, should_break) = match pc {
-                PendingControl::FlushReply { target, deadline, .. } => {
-                    (*target, *deadline, false)
-                }
-                PendingControl::Shutdown { target, deadline, .. } => {
-                    (*target, *deadline, true)
-                }
+            let (target, deadline) = match pc {
+                PendingControl::FlushReply { target, deadline, .. } => (*target, *deadline),
+                PendingControl::Shutdown { target, deadline, .. } => (*target, *deadline),
             };
             let buffer_remaining = buffer.range(..=target).count();
             // Count ALL un-ACKed WAL entries with seq <= target.
