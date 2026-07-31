@@ -352,7 +352,8 @@ impl PersistenceWal {
                 Err(te) => {
                     self.mark_degraded(DEGRADED_CORRUPTION);
                     return Err(format!(
-                        "append WAL {} failed AND truncate-back failed — WAL corrupt: {te}"
+                        "append WAL {} failed AND truncate-back failed — WAL corrupt: {te}",
+                        self.path.display()
                     ));
                 }
             }
