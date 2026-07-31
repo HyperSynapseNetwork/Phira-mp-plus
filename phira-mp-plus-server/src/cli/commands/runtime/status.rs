@@ -90,6 +90,32 @@ impl CliHandler {
                 }
             }
         }
+        // Server instance heartbeat age (seconds since last_alive_at).
+        let instance_id = crate::server_instance::current();
+        let now = crate::db::now_ms();
+        match self
+            .state
+            .db_manager
+            .server_instance_last_alive(instance_id)
+            .await
+        {
+            Ok(Some(last_alive)) => {
+                let age_s = ((now - last_alive).max(0) / 1000) as u64;
+                self.out(format!(
+                    "  {} server instance:   id={} heartbeat_age={}s",
+                    c::dim("│"),
+                    &instance_id[..instance_id.len().min(8)],
+                    age_s,
+                ));
+            }
+            _ => {
+                self.out(format!(
+                    "  {} server instance:   id={} heartbeat_age=n/a",
+                    c::dim("│"),
+                    &instance_id[..instance_id.len().min(8)],
+                ));
+            }
+        }
         self.out(format!(
             "  {} 现有 Room/Session/DB 主逻辑仍未完全迁移；Actor 模型是最终架构，Web 管理 API 不做",
             c::dim("▸")
