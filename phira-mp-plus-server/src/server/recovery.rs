@@ -325,7 +325,12 @@ async fn restore_persistent_rooms(state: &Arc<PlusServerState>, db: &DbManager) 
                                     );
                                 }
                             }
-                            // Apply host state
+                            // Apply host state.  The host_id is the owning
+                            // user; after a restart that user may not be online
+                            // yet, but when they reconnect the room actor hands
+                            // them host rights.  Keeping the stored host is
+                            // correct — it prevents a transient visitor from
+                            // becoming host while the owner is away.
                             if let Some(host_id) = snapshot.host {
                                 if let Err(e) = state
                                     .room_commands
@@ -360,9 +365,20 @@ async fn restore_persistent_rooms(state: &Arc<PlusServerState>, db: &DbManager) 
                     );
                 }
             }
-            Err(e) => warn!(
-                "startup recovery: failed to restore persistent room {room_id}: {e}"
-            ),
+            Err(e) => {
+                // Fail-closed when persistent rooms are required: a
+                // misconfigured/missing persistent room then blocks startup
+                // instead of silently disappearing.
+                if state.config.runtime.persistent_rooms_required {
+                    return Err(anyhow::anyhow!(
+                        "startup recovery: failed to restore required persistent room \
+                         {room_id}: {e}"
+                    ));
+                }
+                warn!(
+                    "startup recovery: failed to restore persistent room {room_id}: {e}"
+                );
+            }
         }
     }
     Ok(())

@@ -97,6 +97,11 @@ pub struct RuntimeConfig {
     /// High-frequency telemetry writer (Touch/Judge) configuration.
     #[serde(default)]
     pub high_frequency: HighFrequencyConfig,
+    /// When true, a failure to restore a configured persistent room aborts
+    /// startup recovery (fail-closed).  Default false: individual room
+    /// restoration failures are logged but do not block startup.
+    #[serde(default)]
+    pub persistent_rooms_required: bool,
 }
 
 impl Default for RuntimeConfig {
@@ -107,6 +112,7 @@ impl Default for RuntimeConfig {
             persistence_wal_path: default_persistence_wal_path(),
             phira_http: PhiraHttpPolicyConfig::default(),
             high_frequency: HighFrequencyConfig::default(),
+            persistent_rooms_required: false,
         }
     }
 }
