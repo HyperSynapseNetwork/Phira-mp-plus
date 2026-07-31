@@ -93,7 +93,18 @@ pub async fn persist_production_event_if_needed(event: &PersistenceEvent) -> Per
                     .await
             }
             PersistenceEvent::UserOffline { user_id, server_instance_id, session_id } => {
-                db.set_offline(*user_id, server_instance_id, session_id).await
+                let affected = db.set_offline(*user_id, server_instance_id, session_id).await;
+                if affected == 0 {
+                    // Strict session generation: the offline event did not
+                    // close any session (session already gone, or a generation
+                    // mismatch after reconnect).  Not an error — the stale
+                    // session is cleaned up by startup recovery.
+                    tracing::debug!(
+                        user_id = *user_id,
+                        "offline event matched no playtime session (generation mismatch or already offline)"
+                    );
+                }
+                affected >= 0
             }
             PersistenceEvent::UserDisconnect { user_id, user_name, .. } => {
                 db.record_user_disconnect(*user_id, user_name).await

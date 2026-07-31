@@ -13,15 +13,19 @@ impl DbManager {
     /// `session_id` match the event's — prevents an old offline event from
     /// closing a newer session after a same-instance reconnect (session
     /// generation protection).
+    ///
+    /// Returns the number of affected rows so the caller can detect a strict
+    /// session-generation mismatch (0 rows = the event did not close the
+    /// current session; -1 on database error).
     pub async fn set_offline(
         &self,
         user_id: i32,
         event_instance_id: &str,
         event_session_id: &str,
-    ) -> bool {
+    ) -> i64 {
         let Self::Pg(pool) = self;
         let now = now_ms_inline();
-        sqlx::query(
+        match sqlx::query(
             "UPDATE playtime
                  SET total_secs = total_secs + GREATEST(0, ($2 - session_start) / 1000),
                      session_start = NULL,
@@ -38,7 +42,10 @@ impl DbManager {
         .bind(event_session_id)
         .execute(pool)
         .await
-        .is_ok()
+        {
+            Ok(r) => r.rows_affected() as i64,
+            Err(_) => -1,
+        }
     }
 
     /// Record a user disconnect and wait for acknowledgement.
