@@ -225,11 +225,12 @@ impl PluginEventChannel {
         } else {
             let mut queue = self.normal.lock().unwrap();
             if queue.len() >= self.max_len {
-                // Merge policy: coalesce with the newest receive for the same
-                // handle instead of dropping, when possible.  On a successful
-                // merge the payload is already incorporated into the queued
-                // event — do NOT push the original payload again (PMP37 P0-G).
-                if merge_receive(&mut queue, &payload) {
+                // Byte budget check applies to MERGE too (P0-D): do not append
+                // merged bytes if they would exceed the cap.
+                let would_exceed = self.total_bytes.load(std::sync::atomic::Ordering::Relaxed)
+                    + incoming_bytes
+                    > crate::plugin_tcp::quota::MAX_PENDING_EVENT_BYTES_PER_PLUGIN;
+                if !would_exceed && merge_receive(&mut queue, &payload) {
                     // Merged bytes grow the buffered total.
                     self.total_bytes.fetch_add(incoming_bytes, std::sync::atomic::Ordering::Relaxed);
                     drop(queue);
