@@ -119,45 +119,58 @@ async fn process_worker_loop(
 
     loop {
         // ---- Check pending control (deferred flush/shutdown) ----
-        if let Some(pc) = pending_control.take() {
-            let (target, reply, deadline, should_break) = match pc {
-                PendingControl::FlushReply { target, reply, deadline } => {
-                    (target, reply, deadline, false)
+        //
+        // IMPORTANT: use as_mut() / as_ref() instead of take() so the
+        // PendingControl is NOT consumed when conditions are not yet met.
+        // Previously take() was used, and if the re-check found the
+        // conditions still unsatisfied without a deadline expiry, the
+        // PendingControl fell out of scope and its oneshot reply sender
+        // was dropped — the caller received "acknowledgement was dropped"
+        // instead of waiting for the target events to complete.
+        if let Some(pc) = pending_control.as_mut() {
+            let (target, deadline, should_break) = match pc {
+                PendingControl::FlushReply { target, deadline, .. } => {
+                    (*target, *deadline, false)
                 }
-                PendingControl::Shutdown { target, reply, deadline } => {
-                    (target, reply, deadline, true)
+                PendingControl::Shutdown { target, deadline, .. } => {
+                    (*target, *deadline, true)
                 }
             };
             let buffer_remaining = buffer.range(..=target).count();
-            // Count ALL un-ACKed WAL entries with seq <= target, including
-            // those currently in-flight (queued in the channel or being
-            // processed by the pipeline).  Previously in_flight entries were
-            // excluded, which created a correctness gap: the fence could
-            // return before events that were queued (but not yet committed
-            // to the database) reached a terminal state.
+            // Count ALL un-ACKed WAL entries with seq <= target.
             let wal_pending = match worker_wal.list_pending().await {
                 Ok(p) => p.iter()
                     .filter(|(_, _, seq)| *seq <= target)
                     .count(),
                 Err(_) => 0,
             };
-            if pending_acks.is_empty() && buffer_remaining == 0 && wal_pending == 0 {
-                let _ = reply.send(Ok(()));
-                pending_control = None;
-                if should_break {
-                    break;
+
+            let ready = pending_acks.is_empty() && buffer_remaining == 0 && wal_pending == 0;
+            let expired = Instant::now() >= deadline;
+
+            if ready || expired {
+                // Take ownership only when we are about to reply.
+                let pc = pending_control.take().unwrap();
+                let (reply, should_break) = match pc {
+                    PendingControl::FlushReply { reply, .. } => (reply, false),
+                    PendingControl::Shutdown { reply, .. } => (reply, true),
+                };
+                if ready {
+                    let _ = reply.send(Ok(()));
+                } else {
+                    warn!(
+                        buffer_remaining, wal_pending,
+                        "pending control deadline exceeded",
+                    );
+                    let _ = reply.send(Err("deadline exceeded".to_string()));
                 }
-            } else if Instant::now() >= deadline {
-                warn!(
-                    buffer_remaining, wal_pending,
-                    "pending control deadline exceeded",
-                );
-                let _ = reply.send(Err("deadline exceeded".to_string()));
                 pending_control = None;
                 if should_break {
                     break;
                 }
             }
+            // If neither ready nor expired, pc stays in pending_control
+            // (we used as_mut(), not take()) and the loop continues.
         }
 
         // ---- Determine the message to process this iteration ----
