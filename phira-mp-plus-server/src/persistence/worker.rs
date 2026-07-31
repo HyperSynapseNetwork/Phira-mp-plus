@@ -165,12 +165,33 @@ async fn process_worker_loop(
             // (we used as_mut(), not take()) and the loop continues.
         }
 
+        // ---- Drain initial replay into the buffer (P0-A) ----
+        //
+        // Replay events are moved into the SAME BTreeMap buffer keyed by their
+        // real wal_sequence, so they flow through the identical sequence gate
+        // as channel events.  Previously replay events bypassed the gate with a
+        // seq=0 sentinel, which let a RetryableFailure on an early replay event
+        // be skipped while later replay events committed — producing a final
+        // out-of-order state (P0-01).
+        if !replay.is_empty() {
+            while let Some((wal_id, event, seq)) = replay.pop_front() {
+                buffer.insert(seq, (wal_id, event, true)); // needs_wal_ack = true
+            }
+            if next_expected_sequence == 0 {
+                // Initialize the gate to the lowest replay sequence so the
+                // buffer is drained in WAL order.
+                if let Some(&min_seq) = buffer.keys().next() {
+                    next_expected_sequence = min_seq;
+                }
+            }
+        }
+
         // ---- Determine the message to process this iteration ----
         //
         // Priority: buffer (for draining the expected sequence) >
-        //           replay (bypass gating, already in WAL order) >
         //           channel with gating.
-        // Priority order: buffer → replay → channel with gating.
+        // Replay events now live in the buffer, so they are handled by the
+        // same priority-1 path.
         let message: Option<WorkerMessage> = 'fetch: {
             // 1. Buffer check: if the next expected sequence is already
             //    buffered, process it without blocking on the channel.
@@ -185,30 +206,7 @@ async fn process_worker_loop(
                 });
             }
 
-            // 2. Replay events (already in WAL order, bypass gating with
-            //    the seq=0 sentinel).
-            if let Some((wal_id, event, _seq)) = replay.pop_front() {
-                break 'fetch Some(WorkerMessage::Event {
-                    wal_id,
-                    wal_sequence: 0,
-                    event,
-                    needs_wal_ack: true,
-                });
-            }
-
-            // Replay deque is exhausted.  Mark drained ONLY if every replayed
-            // event has reached a durable terminal state.  Previously this was
-            // set unconditionally, which let a replayed event that failed
-            // (non-durable, e.g. DB + DLQ both failed) still report the WAL
-            // as healthy — recovery could proceed while an uncommitted event
-            // was pending (P0-F).  The remaining replay WAL IDs are retried by
-            // the recovery scanner; when they eventually reach terminal they
-            // are removed from replay_pending_ids and drained is set then.
-            if replay_pending_ids.lock().await.is_empty() {
-                initial_replay_drained.store(true, Ordering::Release);
-            }
-
-            // 3. Channel receive with sequence gating.
+            // 2. Channel receive with sequence gating.
             let msg = if pending_control.is_some() {
                 // Use a short timeout so we can re-check pending control
                 // conditions when the channel is otherwise idle.
