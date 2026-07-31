@@ -8,7 +8,7 @@ use crate::persistence::stats::{
     record_dead_letter_failed, record_dead_letter_written, record_db_dispatch_failure,
     record_db_dispatch_success, record_processed, record_production_persist_request,
     record_production_persist_skipped, record_benchmark_report_persist_request,
-    record_benchmark_report_persist_skipped, PersistenceStats,
+    record_benchmark_report_persist_skipped, record_wal_committed, PersistenceStats,
 };
 use crate::persistence::wal::PersistenceWal;
 use serde_json::json;
