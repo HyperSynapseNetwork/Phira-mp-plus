@@ -68,27 +68,99 @@ impl DbManager {
     }
 
     /// Record a user disconnect and wait for acknowledgement.
+    ///
     /// Uses the event's occurred_at (preserved through replay) rather than the
-    /// processing time (P1).
-    pub async fn record_user_disconnect(&self, user_id: i32, name: &str, occurred_at: i64) -> bool {
+    /// processing time (P1).  Every time field is advanced monotonically with
+    /// GREATEST so a delayed old disconnect can never roll `last_seen_at`,
+    /// `last_disconnected_at` or `updated_at` back to an earlier value after a
+    /// newer auth (PMP41 P1: Disconnect time fields fully monotonic).
+    ///
+    /// Session generation binding (PMP41 P1): the update only applies when the
+    /// event's `session_id` is still the user's current session generation —
+    /// i.e. it is the latest row in `mp_user_visits`.  A stale disconnect
+    /// replayed after a newer auth therefore cannot overwrite the new session's
+    /// status.  Events that carry no session identity (legacy pre-generation
+    /// events) are allowed through guarded only by the monotonic GREATEST.
+    ///
+    /// Returns the number of affected rows (0 = generation mismatch / unknown
+    /// session; -1 on database error).  On a genuine generation mismatch the
+    /// `SESSION_GENERATION_MISMATCHES` management metric is incremented.
+    pub async fn record_user_disconnect(
+        &self,
+        user_id: i32,
+        name: &str,
+        occurred_at: i64,
+        session_id: &str,
+    ) -> i64 {
         let Self::Pg(pool) = self;
-        sqlx::query(
-            "UPDATE mp_users
+        let affected = sqlx::query(
+            "UPDATE mp_users u
                  SET name = $2,
-                     last_seen_at = $3,
-                     last_disconnected_at = GREATEST(COALESCE(last_disconnected_at, $3), $3),
-                     updated_at = $3
-                 WHERE user_id = $1",
+                     last_seen_at = GREATEST(COALESCE(u.last_seen_at, $3), $3),
+                     last_disconnected_at = GREATEST(COALESCE(u.last_disconnected_at, $3), $3),
+                     updated_at = GREATEST(COALESCE(u.updated_at, $3), $3)
+                 WHERE u.user_id = $1
+                   AND (
+                     $4 = ''
+                     OR EXISTS (
+                       SELECT 1 FROM mp_user_visits v
+                       WHERE v.user_id = u.user_id
+                         AND v.session_id = $4
+                         AND v.visit_id = (
+                           SELECT MAX(visit_id) FROM mp_user_visits WHERE user_id = u.user_id
+                         )
+                     )
+                   )",
         )
         .bind(user_id)
         .bind(name)
         .bind(occurred_at)
+        .bind(session_id)
         .execute(pool)
-        .await
-        .is_ok()
+        .await;
+
+        match affected {
+            Ok(r) => {
+                let rows = r.rows_affected() as i64;
+                // A non-empty session identity that updated nothing means the
+                // event is not the current session generation.  Distinguish a
+                // genuine generation mismatch — a NEWER visit exists with a
+                // different session_id — so the management metric counts real
+                // stale-disconnect replays and not unknown/legacy sessions.
+                if rows == 0 && !session_id.is_empty() {
+                    let newer_session_exists: Option<bool> = sqlx::query_scalar::<_, bool>(
+                        "SELECT EXISTS (
+                            SELECT 1 FROM mp_user_visits v
+                            WHERE v.user_id = $1
+                              AND v.session_id <> $2
+                              AND v.visit_id > (
+                                SELECT visit_id FROM mp_user_visits
+                                WHERE user_id = $1 AND session_id = $2
+                                LIMIT 1
+                              )
+                         )",
+                    )
+                    .bind(user_id)
+                    .bind(session_id)
+                    .fetch_one(pool)
+                    .await
+                    .ok();
+                    if newer_session_exists == Some(true) {
+                        record_session_generation_mismatch();
+                    }
+                }
+                rows
+            }
+            Err(_) => -1,
+        }
     }
 
     /// Record user disconnect with optional name and time.
+    ///
+    /// Fire-and-forget helper with no session identity to bind; it applies the
+    /// monotonic GREATEST guard so times can never roll back (PMP41 P1).  The
+    /// async event path (`record_user_disconnect`) additionally binds the
+    /// session generation.
     pub fn record_user_disconnect_sync(&self, user_id: i32, name: &str) {
         let Self::Pg(pool) = self;
         let pool = pool.clone();
@@ -98,9 +170,9 @@ impl DbManager {
             let _ = sqlx::query(
                 "UPDATE mp_users
                      SET name = $2,
-                         last_seen_at = $3,
-                         last_disconnected_at = $3,
-                         updated_at = $3
+                         last_seen_at = GREATEST(COALESCE(last_seen_at, $3), $3),
+                         last_disconnected_at = GREATEST(COALESCE(last_disconnected_at, $3), $3),
+                         updated_at = GREATEST(COALESCE(updated_at, $3), $3)
                      WHERE user_id = $1",
             )
             .bind(user_id)

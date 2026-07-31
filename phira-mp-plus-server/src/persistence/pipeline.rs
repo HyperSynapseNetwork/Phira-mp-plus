@@ -106,13 +106,27 @@ pub async fn persist_production_event_if_needed(event: &PersistenceEvent) -> Per
                 }
                 affected >= 0
             }
-            PersistenceEvent::UserDisconnect { user_id, user_name, occurred_at, .. } => {
+            PersistenceEvent::UserDisconnect { user_id, user_name, session_id, occurred_at, .. } => {
                 let occurred_at = if *occurred_at > 0 {
                     *occurred_at
                 } else {
                     crate::db::now_ms()
                 };
-                db.record_user_disconnect(*user_id, user_name, occurred_at).await
+                let affected = db
+                    .record_user_disconnect(*user_id, user_name, occurred_at, session_id)
+                    .await;
+                if affected == 0 {
+                    // Session generation binding: the disconnect does not belong
+                    // to the current session (a newer auth superseded it, or the
+                    // session is unknown/legacy).  The update is deliberately
+                    // skipped; a genuine mismatch is counted inside
+                    // record_user_disconnect.  Not an error — no retry.
+                    tracing::debug!(
+                        user_id = *user_id,
+                        "disconnect event did not update mp_users (session generation mismatch or unknown session)"
+                    );
+                }
+                affected >= 0
             }
             PersistenceEvent::UserAuthenticated {
                 event_id,
