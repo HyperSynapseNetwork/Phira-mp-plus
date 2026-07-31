@@ -6,6 +6,21 @@
 use crate::db::DbManager;
 use serde_json::Value;
 use sqlx::Row;
+use std::sync::atomic::{AtomicU64, Ordering};
+
+/// Count of session-generation mismatches observed during auth conflicts.
+/// A non-zero value indicates a reconnect/retry correctness issue worth
+/// surfacing in diagnostics (PMP38 P1).
+static SESSION_GENERATION_MISMATCHES: AtomicU64 = AtomicU64::new(0);
+
+pub fn record_session_generation_mismatch() {
+    SESSION_GENERATION_MISMATCHES.fetch_add(1, Ordering::Relaxed);
+}
+
+/// Current count of session-generation mismatches.
+pub fn session_generation_mismatches() -> u64 {
+    SESSION_GENERATION_MISMATCHES.load(Ordering::Relaxed)
+}
 
 impl DbManager {
     /// Mark a user as offline and wait for PostgreSQL acknowledgement.
@@ -211,11 +226,12 @@ impl DbManager {
             Ok(r) if r.rows_affected() > 0 => true,
             Ok(_) => {
                 // Not inserted — an event_id or session_id conflict.  Look up
-                // the existing visit and verify it belongs to the same user
-                // (idempotent replay) rather than a different user reusing
-                // this session (data integrity error).
-                let existing: Option<i32> = sqlx::query_scalar(
-                    "SELECT user_id FROM mp_user_visits
+                // the existing visit and verify ALL identity fields match
+                // (idempotent replay of the same event) rather than a session
+                // generation mismatch / different user reusing this session
+                // (PMP38 P1: full-field verification).
+                let existing: Option<(i32, String, i64)> = sqlx::query_as(
+                    "SELECT user_id, session_id, connected_at FROM mp_user_visits
                       WHERE event_id = $1 OR session_id = $2
                       LIMIT 1",
                 )
@@ -227,19 +243,25 @@ impl DbManager {
                 .ok()
                 .flatten();
                 match existing {
-                    Some(uid) if uid == user_id => {
-                        // Same user replayed this auth — treat as idempotent
-                        // success, do NOT increment login_count again.
+                    Some((uid, existing_session, existing_connected_at))
+                        if uid == user_id
+                            && existing_session == session_id
+                            && existing_connected_at == connected_at =>
+                    {
+                        // Same user, same session, same connection time — true
+                        // idempotent replay.  Do NOT increment login_count.
                         false
                     }
                     Some(_) => {
-                        // session_id reused by a DIFFERENT user — integrity
-                        // violation.  Do not silently proceed.
+                        // session_id or event_id reused by a DIFFERENT user /
+                        // different session generation — integrity violation.
                         tracing::warn!(
                             session_id,
-                            "mp_user_visits session_id already used by another user; \
+                            event_id,
+                            "mp_user_visits conflict with mismatched identity fields; \
                              refusing to commit conflicting auth"
                         );
+                        record_session_generation_mismatch();
                         let _ = tx.rollback().await;
                         return false;
                     }
