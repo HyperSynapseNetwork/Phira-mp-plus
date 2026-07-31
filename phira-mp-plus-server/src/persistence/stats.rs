@@ -85,6 +85,17 @@ pub struct PersistenceStats {
     /// Total bytes processed during WAL compactions.
     #[serde(default)]
     pub wal_bytes: u64,
+
+    // ── Control-message metrics ─────────────────────────────────────────
+    /// Times a deferred Flush/Shutdown fence was re-checked without completing.
+    #[serde(default)]
+    pub control_deferred: u64,
+    /// Times a deferred control expired its deadline.
+    #[serde(default)]
+    pub control_deadline_exceeded: u64,
+    /// Times a deferred control failed due to a WAL read/corruption error.
+    #[serde(default)]
+    pub control_wal_error: u64,
 }
 
 impl PersistenceStats {
@@ -256,6 +267,18 @@ pub async fn record_wal_compaction(
     let mut s = stats.write().await;
     s.wal_compactions += 1;
     s.wal_bytes += bytes;
+}
+
+pub async fn record_control_deferred(stats: &Arc<RwLock<PersistenceStats>>) {
+    stats.write().await.control_deferred += 1;
+}
+
+pub async fn record_control_deadline_exceeded(stats: &Arc<RwLock<PersistenceStats>>) {
+    stats.write().await.control_deadline_exceeded += 1;
+}
+
+pub async fn record_control_wal_error(stats: &Arc<RwLock<PersistenceStats>>) {
+    stats.write().await.control_wal_error += 1;
 }
 
 fn push_trace(

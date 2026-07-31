@@ -11,6 +11,7 @@ use crate::persistence::message::{AdmissionOutcome, PersistenceEvent};
 use crate::persistence::process::process_event_through_pipeline;
 use crate::persistence::process::ProcessOutcome;
 use crate::persistence::stats::{
+    record_control_deadline_exceeded, record_control_deferred, record_control_wal_error,
     record_dropped, record_queued,
     record_wal_compaction, record_wal_only,
     record_wal_received, record_wal_recovered, PersistenceStats,
@@ -132,6 +133,7 @@ async fn process_worker_loop(
                     // state.  Reply with an error instead of assuming zero
                     // pending (which would let Flush/Shutdown report success
                     // while an uncommitted event is lost).
+                    record_control_wal_error(worker_stats).await;
                     let (reply, should_break) = pending_control.take().unwrap().finish();
                     let _ = reply.send(Err(format!("WAL error during flush/shutdown: {e}")));
                     pending_control = None;
@@ -147,6 +149,9 @@ async fn process_worker_loop(
 
             if ready || expired {
                 // Take ownership only when we are about to reply.
+                if expired {
+                    record_control_deadline_exceeded(worker_stats).await;
+                }
                 let (reply, should_break) = pending_control.take().unwrap().finish();
                 if ready {
                     let _ = reply.send(Ok(()));
@@ -161,6 +166,9 @@ async fn process_worker_loop(
                 if should_break {
                     break;
                 }
+            } else {
+                // Deferred — re-check next iteration.
+                record_control_deferred(worker_stats).await;
             }
             // If neither ready nor expired, pc stays in pending_control
             // (we used as_mut(), not take()) and the loop continues.
