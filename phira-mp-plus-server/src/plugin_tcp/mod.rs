@@ -631,7 +631,7 @@ fn evict_receive_events(state: &mut ChannelState, need_bytes: usize, need_count:
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::plugin_tcp::quota::MAX_EVENT_RAW_BYTES;
+    use crate::plugin_tcp::quota::{MAX_EVENT_RAW_BYTES, MAX_PENDING_EVENT_BYTES_PER_PLUGIN};
 
     fn receive(handle: u64, bytes: Vec<u8>) -> (String, serde_json::Value) {
         (
@@ -790,6 +790,33 @@ mod tests {
 
         // Two separate receive events (not one merged mega-event) (P0-G).
         assert_eq!(ch.pending_count(), 2);
-        assert!(ch.pending_bytes() <= crate::plugin_tcp::quota::MAX_PENDING_EVENT_BYTES_PER_PLUGIN);
+        assert!(ch.pending_bytes() <= MAX_PENDING_EVENT_BYTES_PER_PLUGIN);
+    }
+
+    #[test]
+    fn byte_budget_drops_receive_but_admits_lifecycle() {
+        let ch = PluginEventChannel::new(8);
+
+        // A real receive event exists so a lifecycle push can evict it.
+        let (et, pl) = receive(1, vec![0u8; 4096]);
+        assert_eq!(ch.push(et, pl), PushOutcome::Accepted);
+        // Simulate the rest of the plugin's pending data sitting just under the
+        // 4 MiB cap (accounting is guarded by the same queue-state mutex, P0-G).
+        {
+            let mut state = ch.state.lock().unwrap();
+            state.total_bytes = MAX_PENDING_EVENT_BYTES_PER_PLUGIN - 1;
+        }
+
+        // A further receive would push the total over the cap → dropped.
+        let (et, pl) = receive(2, vec![0u8; 16]);
+        assert_eq!(ch.push(et, pl), PushOutcome::Dropped);
+        assert_eq!(ch.dropped_receive(), 1);
+
+        // A lifecycle event is admitted by evicting the normal receive, never
+        // silently dropped (P0-F).
+        let (et, pl) = lifecycle("tcp:disconnect", 2);
+        assert_eq!(ch.push(et, pl), PushOutcome::Accepted);
+        assert_eq!(ch.lifecycle_overflow(), 0);
+        assert!(ch.pending_bytes() <= MAX_PENDING_EVENT_BYTES_PER_PLUGIN);
     }
 }
