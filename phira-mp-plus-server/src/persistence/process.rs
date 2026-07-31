@@ -306,7 +306,12 @@ pub async fn process_event_through_pipeline(
         if durable {
             match worker_wal.ack(wal_id).await {
                 Ok(()) => {
-                    worker_wal.set_degraded(false);
+                    // Only clear the ACK-degraded flag when the pending retry
+                    // queue is empty — a single success must not mask failures
+                    // still being retried (P0-D: latched degraded state).
+                    if pending_acks.is_empty() {
+                        worker_wal.set_degraded(false);
+                    }
                     record_wal_committed(worker_stats).await;
                     in_flight.lock().await.remove(&wal_id);
                 }

@@ -65,6 +65,10 @@ pub struct PersistenceWorker {
     /// Shared with the periodic WAL recovery scanner so it can avoid
     /// re-enqueueing entries that are already in-flight.
     in_flight: Arc<Mutex<HashSet<uuid::Uuid>>>,
+    /// Current number of entries in the pending-ACK retry queue.  Exposed so
+    /// `is_healthy()` can require zero pending ACKs before reporting healthy
+    /// (P0-D).
+    pending_acks: Arc<AtomicUsize>,
 }
 
 
@@ -85,6 +89,7 @@ async fn process_worker_loop(
     in_flight: &Arc<Mutex<HashSet<uuid::Uuid>>>,
     initial_replay_drained: &Arc<AtomicBool>,
     replay_pending_ids: &Arc<Mutex<HashSet<uuid::Uuid>>>,
+    pending_acks_count: &Arc<AtomicUsize>,
 ) {
     use tracing::{debug, trace, warn};
 
@@ -183,9 +188,14 @@ async fn process_worker_loop(
         if let Some((retry_id, retry_attempt)) = pending_acks.front().copied() {
             match worker_wal.ack(retry_id).await {
                 Ok(()) => {
-                    worker_wal.set_degraded(false);
                     debug!(wal_id = %retry_id, "ACK retry succeeded");
                     pending_acks.pop_front();
+                    // Clear the degraded flag only when the retry queue is now
+                    // empty (P0-D: a single success must not mask other
+                    // pending ACK failures).
+                    if pending_acks.is_empty() {
+                        worker_wal.set_degraded(false);
+                    }
                     in_flight.lock().await.remove(&retry_id);
                 }
                 Err(e) => {
@@ -201,6 +211,8 @@ async fn process_worker_loop(
                 }
             }
         }
+        // Sync the pending-ACK count for health checks (P0-D).
+        pending_acks_count.store(pending_acks.len(), Ordering::Release);
 
         // ---- Drain initial replay into the buffer (P0-A) ----
         //
@@ -535,7 +547,11 @@ async fn drain_pending_acks(
         if let Some((id, attempt)) = pending_acks.pop_front() {
             match worker_wal.ack(id).await {
                 Ok(()) => {
-                    worker_wal.set_degraded(false);
+                    // Latched: clear degraded only when the retry queue is
+                    // fully drained (P0-D).
+                    if pending_acks.is_empty() {
+                        worker_wal.set_degraded(false);
+                    }
                     debug!(wal_id = %id, "pending ACK drained");
                     in_flight.lock().await.remove(&id);
                 }
@@ -766,6 +782,10 @@ impl PersistenceWorker {
             Arc::new(Mutex::new(HashSet::new()));
         let worker_replay_pending_ids = Arc::clone(&replay_pending_ids);
 
+        // Pending-ACK count exposed for health checks (P0-D).
+        let pending_acks_count: Arc<AtomicUsize> = Arc::new(AtomicUsize::new(0));
+        let worker_pending_acks_count = Arc::clone(&pending_acks_count);
+
         crate::supervisor_actor::spawn_critical("persistence-worker", async move {
             // Check WAL instance consistency before replay to detect
             // accidental deletion/truncation of an already-initialized WAL.
@@ -804,6 +824,7 @@ impl PersistenceWorker {
                         &worker_in_flight,
                         &worker_initial_replay_drained,
                         &worker_replay_pending_ids,
+                        &worker_pending_acks_count,
                     )
                     .await;
                 }
@@ -844,6 +865,7 @@ impl PersistenceWorker {
             suspended: AtomicBool::new(false),
             closed: AtomicBool::new(false),
             initial_replay_drained,
+            pending_acks: pending_acks_count,
         })
     }
 
@@ -1008,6 +1030,7 @@ impl PersistenceWorker {
         self.wal.replay_succeeded()
             && self.initial_replay_drained.load(Ordering::Acquire)
             && !self.wal.is_degraded()
+            && self.pending_acks.load(Ordering::Acquire) == 0
             && !self.closed.load(Ordering::Acquire)
     }
 
