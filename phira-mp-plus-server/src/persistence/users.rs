@@ -30,7 +30,7 @@ impl DbManager {
                  WHERE user_id = $1
                    AND session_start IS NOT NULL
                    AND (server_instance_id IS NOT DISTINCT FROM $3)
-                   AND (session_id IS NOT DISTINCT FROM $4 OR $4 = '')",
+                   AND (session_id IS NOT DISTINCT FROM $4)",
         )
         .bind(user_id)
         .bind(now)

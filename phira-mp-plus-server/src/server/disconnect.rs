@@ -90,6 +90,13 @@ pub(crate) async fn run_admin_kick_user(
             .map(|(id, _)| *id);
         session_id.and_then(|id| sessions.remove(&id))
     };
+    // Capture the session id BEFORE clearing the user's session ref below, so
+    // the kick's offline/disconnect events can strictly target this session
+    // (P0-E: strict session generation).
+    let disconnected_session_id = target_session
+        .as_ref()
+        .map(|s| s.id.to_string())
+        .unwrap_or_default();
 
     // Make the eventual transport-lost notification stale before closing.
     *user.session.write().await = None;
@@ -125,7 +132,6 @@ pub(crate) async fn run_admin_kick_user(
     state
         .publish_user_disconnected(target_id, user.name.clone())
         .await;
-    let session_id = user.current_session_id().await;
     if let Err(e) = state
         .persistence_worker
         .enqueue(
@@ -133,7 +139,7 @@ pub(crate) async fn run_admin_kick_user(
                 user_id: target_id,
                 user_name: user.name.clone(),
                 server_instance_id: crate::server_instance::current().to_string(),
-                session_id: session_id.clone(),
+                session_id: disconnected_session_id.clone(),
             },
         )
         .await
@@ -145,7 +151,7 @@ pub(crate) async fn run_admin_kick_user(
         .enqueue(crate::persistence::message::PersistenceEvent::UserOffline {
             user_id: target_id,
             server_instance_id: crate::server_instance::current().to_string(),
-            session_id,
+            session_id: disconnected_session_id.clone(),
         })
         .await
     {
