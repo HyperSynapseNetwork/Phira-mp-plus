@@ -55,6 +55,10 @@ pub enum PersistenceEvent {
         server_instance_id: String,
         #[serde(default)]
         session_id: String,
+        /// Time the disconnect occurred (ms since epoch), preserved through
+        /// replay so delayed offline events use the original disconnect time.
+        #[serde(default)]
+        occurred_at: i64,
     },
     /// User disconnect event (per-disconnect). Low-frequency production write.
     /// Carries server_instance_id + session_id for the same generation
@@ -166,10 +170,12 @@ impl PersistenceEvent {
                 user_id,
                 server_instance_id,
                 session_id,
+                occurred_at,
             } => Some(json!({
                 "user_id": user_id,
                 "server_instance_id": server_instance_id,
                 "session_id": session_id,
+                "occurred_at": occurred_at,
             })),
             Self::UserDisconnect {
                 user_id,
@@ -303,6 +309,7 @@ mod tests {
             user_id: 42,
             server_instance_id: "inst-1".to_string(),
             session_id: "sess-1".to_string(),
+            occurred_at: 1_000_000,
         };
         let payload = event
             .dead_letter_payload()

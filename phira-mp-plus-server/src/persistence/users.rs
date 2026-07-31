@@ -37,9 +37,13 @@ impl DbManager {
         user_id: i32,
         event_instance_id: &str,
         event_session_id: &str,
+        occurred_at: i64,
     ) -> i64 {
         let Self::Pg(pool) = self;
-        let now = now_ms_inline();
+        // Use the event's original disconnect time (preserved through replay)
+        // so a delayed offline event accrues playtime only up to the actual
+        // disconnect, never counting downtime after it (P1).
+        let off_at = if occurred_at > 0 { occurred_at } else { now_ms_inline() };
         match sqlx::query(
             "UPDATE playtime
                  SET total_secs = total_secs + GREATEST(0, ($2 - session_start) / 1000),
@@ -52,7 +56,7 @@ impl DbManager {
                    AND (session_id IS NOT DISTINCT FROM $4)",
         )
         .bind(user_id)
-        .bind(now)
+        .bind(off_at)
         .bind(event_instance_id)
         .bind(event_session_id)
         .execute(pool)
@@ -302,9 +306,9 @@ impl DbManager {
                  name = EXCLUDED.name,
                  language = EXCLUDED.language,
                  ip = COALESCE(EXCLUDED.ip, mp_users.ip),
-                 last_seen_at = EXCLUDED.last_seen_at,
-                 last_connected_at = EXCLUDED.last_connected_at,
-                 updated_at = EXCLUDED.updated_at,
+                 last_seen_at = GREATEST(COALESCE(mp_users.last_seen_at, EXCLUDED.last_seen_at), EXCLUDED.last_seen_at),
+                 last_connected_at = GREATEST(COALESCE(mp_users.last_connected_at, EXCLUDED.last_connected_at), EXCLUDED.last_connected_at),
+                 updated_at = GREATEST(COALESCE(mp_users.updated_at, EXCLUDED.updated_at), EXCLUDED.updated_at),
                  login_count = mp_users.login_count + $9",
         )
         .bind(user_id)

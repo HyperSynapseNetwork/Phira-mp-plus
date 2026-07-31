@@ -92,8 +92,8 @@ pub async fn persist_production_event_if_needed(event: &PersistenceEvent) -> Per
                 db.record_user_room_history(*user_id, room_id, room_uuid, *joined_at)
                     .await
             }
-            PersistenceEvent::UserOffline { user_id, server_instance_id, session_id } => {
-                let affected = db.set_offline(*user_id, server_instance_id, session_id).await;
+            PersistenceEvent::UserOffline { user_id, server_instance_id, session_id, occurred_at } => {
+                let affected = db.set_offline(*user_id, server_instance_id, session_id, *occurred_at).await;
                 if affected == 0 {
                     // Strict session generation: the offline event did not
                     // close any session (session already gone, or a generation

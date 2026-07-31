@@ -877,10 +877,14 @@ fn reconstruct_event(kind: &str, event: &serde_json::Value) -> Option<crate::per
             let session_id = event.get("session_id")
                 .and_then(|v| v.as_str())
                 .unwrap_or_default();
+            let occurred_at = event.get("occurred_at")
+                .and_then(|v| v.as_i64())
+                .unwrap_or(0);
             Some(PersistenceEvent::UserOffline {
                 user_id,
                 server_instance_id: instance_id.to_string(),
                 session_id: session_id.to_string(),
+                occurred_at,
             })
         }
         "user_disconnect" => {
