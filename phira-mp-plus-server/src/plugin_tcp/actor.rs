@@ -354,6 +354,12 @@ impl PluginTcpActor {
                 }
             }
         }
+        // Actor is shutting down — cancel all per-plugin event workers so no
+        // callback task continues to run after the actor is gone (P1: actor
+        // shutdown cancellation).
+        for (_plugin_id, handle) in self.event_workers.drain() {
+            handle.abort();
+        }
         info!("tcp actor stopped");
     }
 
