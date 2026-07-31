@@ -35,6 +35,10 @@ impl PlusServer {
         // 初始化 Supervisor Actor（接受子任务注册与健康检查）
         crate::supervisor_actor::init();
 
+        // 初始化 Server Instance ID（用于区分 crash 后重启的 playtime session）
+        let instance_id = crate::server_instance::init();
+        info!("server instance ID: {instance_id}");
+
         let (lost_con_tx, mut lost_con_rx) = mpsc::channel(1024);
 
         // 初始化扩展管理器

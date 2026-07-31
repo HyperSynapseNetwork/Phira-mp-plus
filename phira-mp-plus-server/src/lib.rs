@@ -63,6 +63,7 @@ pub mod room_actor;
 pub mod round_store;
 pub mod runtime_diagnostics;
 pub mod server;
+pub mod server_instance;
 pub mod server_query;
 pub mod session;
 pub(crate) mod session_actor;

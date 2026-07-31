@@ -9,20 +9,28 @@ use sqlx::Row;
 
 impl DbManager {
     /// Mark a user as online and wait for PostgreSQL acknowledgement.
+    /// Records the current server instance ID so crash recovery can distinguish
+    /// sessions from this instance vs stale sessions from a previous (crashed)
+    /// instance.
     pub async fn set_online(&self, user_id: i32) -> bool {
         let Self::Pg(pool) = self;
         let now = now_ms_inline();
+        let instance_id = crate::server_instance::current();
         sqlx::query(
-            "INSERT INTO playtime (user_id, total_secs, session_start) VALUES ($1, 0, $2)
+            "INSERT INTO playtime (user_id, total_secs, session_start, server_instance_id)
+                 VALUES ($1, 0, $2, $3)
                  ON CONFLICT (user_id) DO UPDATE SET
                    total_secs = playtime.total_secs + CASE
                      WHEN playtime.session_start IS NULL THEN 0
+                     WHEN playtime.server_instance_id IS DISTINCT FROM $3 THEN 0
                      ELSE GREATEST(0, ($2 - playtime.session_start) / 1000)
                    END,
-                   session_start = $2",
+                   session_start = $2,
+                   server_instance_id = $3",
         )
         .bind(user_id)
         .bind(now)
+        .bind(instance_id)
         .execute(pool)
         .await
         .is_ok()
@@ -35,7 +43,8 @@ impl DbManager {
         sqlx::query(
             "UPDATE playtime
                  SET total_secs = total_secs + GREATEST(0, ($2 - session_start) / 1000),
-                     session_start = NULL
+                     session_start = NULL,
+                     server_instance_id = NULL
                  WHERE user_id = $1 AND session_start IS NOT NULL",
         )
         .bind(user_id)
@@ -291,17 +300,25 @@ impl DbManager {
 
         // 4. Set online (playtime) — use connected_at for session_start so the
         //    elapsed-time calculation is relative to the actual connection time.
+        //    Also record server_instance_id so crash recovery can distinguish
+        //    sessions from this instance vs stale sessions from a previous
+        //    (crashed) instance.
+        let instance_id = crate::server_instance::current();
         if sqlx::query(
-            "INSERT INTO playtime (user_id, total_secs, session_start) VALUES ($1, 0, $2)
+            "INSERT INTO playtime (user_id, total_secs, session_start, server_instance_id)
+             VALUES ($1, 0, $2, $3)
              ON CONFLICT (user_id) DO UPDATE SET
                total_secs = playtime.total_secs + CASE
                  WHEN playtime.session_start IS NULL THEN 0
+                 WHEN playtime.server_instance_id IS DISTINCT FROM $3 THEN 0
                  ELSE GREATEST(0, ($2 - playtime.session_start) / 1000)
                END,
-               session_start = $2",
+               session_start = $2,
+               server_instance_id = $3",
         )
         .bind(user_id)
         .bind(connected_at)
+        .bind(instance_id)
         .execute(&mut *tx)
         .await
         .is_err()
@@ -314,11 +331,16 @@ impl DbManager {
     }
     /// Clean up stale playtime sessions that were orphaned by a server crash.
     ///
-    /// On startup every `session_start` that is still set belongs to a previous
-    /// server instance (planned shutdown or crash).  The elapsed time is accrued
-    /// to `total_secs` (capped at `max_recovery_secs` per session) and
-    /// `session_start` is set to NULL so the row is ready for the next normal
-    /// online/offline cycle.
+    /// On startup any `session_start` that is still set belongs to a previous
+    /// server instance (planned shutdown or crash).  Only sessions whose
+    /// `server_instance_id` differs from the current instance are closed —
+    /// sessions re-established by WAL replay (which carry the current instance
+    /// ID) are left active.
+    ///
+    /// The elapsed time is accrued to `total_secs` (capped at
+    /// `max_recovery_secs` per session) and `session_start` and
+    /// `server_instance_id` are set to NULL so the row is ready for the next
+    /// normal online/offline cycle.
     ///
     /// The cap (default 3600s = 1 hour) prevents a long outage from being
     /// counted as playtime upon recovery.
@@ -328,14 +350,18 @@ impl DbManager {
     ) -> std::result::Result<u64, String> {
         let Self::Pg(pool) = self;
         let now = now_ms_inline();
+        let instance_id = crate::server_instance::current();
         let result = sqlx::query(
             "UPDATE playtime
              SET total_secs = total_secs + LEAST(GREATEST(0, ($1 - session_start) / 1000), $2),
-                 session_start = NULL
-             WHERE session_start IS NOT NULL",
+                 session_start = NULL,
+                 server_instance_id = NULL
+             WHERE session_start IS NOT NULL
+               AND (server_instance_id IS DISTINCT FROM $3)",
         )
         .bind(now)
         .bind(max_recovery_secs)
+        .bind(instance_id)
         .execute(pool)
         .await
         .map_err(|e| format!("close all stale playtime sessions: {e}"))?;
