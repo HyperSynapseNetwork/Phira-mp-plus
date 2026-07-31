@@ -30,7 +30,13 @@ enum HfMessage {
         target_seq: u64,
         deadline_ms: i64,
     },
-    Shutdown(oneshot::Sender<Result<(), String>>),
+    Shutdown {
+        reply: oneshot::Sender<Result<(), String>>,
+        /// Absolute deadline (ms since epoch) captured from the caller's
+        /// timeout so the worker does not retry database writes past the
+        /// point where the caller has already given up (P0-K).
+        deadline_ms: i64,
+    },
 }
 
 /// Item stored in the overflow queue when the main channel is full.
@@ -231,15 +237,25 @@ impl HighFrequencyWriter {
     ///
     /// After shutdown the writer is permanently closed, regardless of whether
     /// the final flush succeeds or fails.  Timeout is 10 seconds.
-    pub async fn shutdown(&self) -> Result<(), String> {
+    pub async fn shutdown(&self, timeout: Duration) -> Result<(), String> {
         let (reply, rx) = oneshot::channel();
         if self.closed.swap(true, Ordering::AcqRel) {
             return Ok(());
         }
-        if self.tx.send(HfMessage::Shutdown(reply)).await.is_err() {
+        // Pass the caller's absolute deadline into the worker so it stops
+        // retrying database writes at the same time the caller gives up —
+        // previously the worker could keep working for its own retry window
+        // after the external timeout already elapsed (P0-K).
+        let deadline_ms = now_ms() + timeout.as_millis() as i64;
+        if self
+            .tx
+            .send(HfMessage::Shutdown { reply, deadline_ms })
+            .await
+            .is_err()
+        {
             return Err("high frequency writer is closed".to_string());
         }
-        let result = match tokio::time::timeout(Duration::from_secs(10), rx).await {
+        let result = match tokio::time::timeout(timeout, rx).await {
             Ok(Ok(result)) => result,
             Ok(Err(_)) => Err("high frequency shutdown reply dropped".to_string()),
             Err(_) => Err("high frequency shutdown timed out".to_string()),
@@ -373,13 +389,23 @@ async fn run_hf_writer(
                         };
                         let _ = reply.send(result);
                     }
-                    Some(HfMessage::Shutdown(reply)) => {
+                    Some(HfMessage::Shutdown { reply, deadline_ms }) => {
+                        // If the caller's deadline has already passed, do not
+                        // attempt the flush — report the timeout immediately so
+                        // the worker does not continue working past the point
+                        // where the caller has given up (P0-K).
+                        if now_ms() >= deadline_ms {
+                            let _ = reply.send(Err(
+                                "high frequency shutdown timed out before final flush".to_string()
+                            ));
+                            break;
+                        }
                         // Drain ALL overflow items before the final flush, not just
                         // one batch-worth.  Using usize::MAX drains until the channel
                         // is empty (the function breaks on TryRecvError::Empty).
                         drain_overflow(&mut batch, &mut overflow_rx, &stats, overflow_max_age_ms, usize::MAX).await;
                         let flush_result = flush_and_update_seq(
-                            &mut batch, &stats, &db, max_retries, retry_max_age_ms, None, "shutdown"
+                            &mut batch, &stats, &db, max_retries, retry_max_age_ms, Some(deadline_ms), "shutdown"
                         ).await;
                         // After the final flush, verify that all accepted
                         // sequences are resolved (committed or dropped).
@@ -802,6 +828,6 @@ mod tests {
         let flush_result = writer.flush().await;
         assert!(flush_result.is_err(), "flush expected to fail without DB");
 
-        writer.shutdown().await.ok();
+        writer.shutdown(Duration::from_secs(5)).await.ok();
     }
 }

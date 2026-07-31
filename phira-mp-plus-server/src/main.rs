@@ -388,7 +388,12 @@ async fn main() -> Result<()> {
     }
     let budget = remaining();
     if !budget.is_zero() {
-        if let Err(e) = server.state.high_frequency_writer.shutdown().await {
+        if let Err(e) = server
+            .state
+            .high_frequency_writer
+            .shutdown(std::time::Duration::from_secs(10))
+            .await
+        {
             warn!(%e, "high frequency writer shutdown failed");
         }
     }
