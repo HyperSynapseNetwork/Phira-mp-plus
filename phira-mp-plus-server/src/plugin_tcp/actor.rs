@@ -14,8 +14,12 @@ use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{mpsc, oneshot, Semaphore};
 use tracing::{info, warn};
+
+/// Maximum concurrent event callbacks per plugin.  Prevents a single slow
+/// callback from blocking the entire event channel worker for that plugin.
+const MAX_CONCURRENT_CALLBACKS: usize = 4;
 
 struct Connection {
     remote_addr: String,
@@ -210,6 +214,9 @@ impl PluginTcpActor {
             Entry::Vacant(e) => {
                 let channel = Arc::new(PluginEventChannel::new(MAX_PENDING_EVENTS_PER_PLUGIN));
                 let (worker_queue, worker_notify) = channel.shared();
+                // Semaphore bounds concurrent callbacks so a single slow
+                // callback does not block the entire event channel worker.
+                let semaphore = Arc::new(Semaphore::new(MAX_CONCURRENT_CALLBACKS));
                 let worker_handle = tokio::spawn(async move {
                     loop {
                         worker_notify.notified().await;
@@ -217,8 +224,17 @@ impl PluginTcpActor {
                             let event = worker_queue.lock().unwrap().pop_front();
                             match event {
                                 Some((type_, payload)) => {
-                                    let fut = cb(type_, payload);
-                                    fut.await;
+                                    let permit = Arc::clone(&semaphore);
+                                    let cb = Arc::clone(&cb);
+                                    tokio::spawn(async move {
+                                        // Acquire permit before running callback.
+                                        // If the semaphore is contended, this task
+                                        // waits — draining the queue naturally
+                                        // back-pressures when all permits are held.
+                                        let _acquire = permit.acquire().await;
+                                        let fut = cb(type_, payload);
+                                        fut.await;
+                                    });
                                 }
                                 None => break,
                             }
