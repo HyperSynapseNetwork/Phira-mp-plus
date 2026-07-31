@@ -17,7 +17,7 @@ impl RoomCommandGateway {
         let started = Instant::now();
         let rid = room_id.to_string();
         let result = self
-            .room_mailbox(&rid, |reply| RoomActorCommand::SetHost {
+            .room_mailbox(&rid, None, |reply| RoomActorCommand::SetHost {
                 room_id: rid.clone(),
                 target_id,
                 reply,
@@ -40,7 +40,7 @@ impl RoomCommandGateway {
         room_id: &str,
         locked: bool,
     ) -> Result<Value, String> {
-        self.set_lock_as(state, room_id, locked, 0).await
+        self.set_lock_as(state, room_id, locked, 0, None).await
     }
 
     pub async fn set_lock_as(
@@ -49,14 +49,19 @@ impl RoomCommandGateway {
         room_id: &str,
         locked: bool,
         actor_user_id: i32,
+        deadline: Option<Instant>,
     ) -> Result<Value, String> {
+        // P0-C: non-session callers pass `None` — fall back to the internal
+        // 30s room-mailbox timeout so admin/CLI paths are not deadline-killed.
+        let deadline = deadline.unwrap_or_else(|| Instant::now() + std::time::Duration::from_secs(30));
         let started = Instant::now();
         let rid = room_id.to_string();
         let result = self
-            .room_mailbox(&rid, |reply| RoomActorCommand::SetLock {
+            .room_mailbox(&rid, Some(deadline), |reply| RoomActorCommand::SetLock {
                 room_id: rid.clone(),
                 locked,
                 actor_user_id,
+                deadline,
                 reply,
             })
             .await;
@@ -77,7 +82,7 @@ impl RoomCommandGateway {
         room_id: &str,
         cycle: bool,
     ) -> Result<Value, String> {
-        self.set_cycle_as(state, room_id, cycle, 0).await
+        self.set_cycle_as(state, room_id, cycle, 0, None).await
     }
 
     pub async fn set_cycle_as(
@@ -86,14 +91,17 @@ impl RoomCommandGateway {
         room_id: &str,
         cycle: bool,
         actor_user_id: i32,
+        deadline: Option<Instant>,
     ) -> Result<Value, String> {
+        let deadline = deadline.unwrap_or_else(|| Instant::now() + std::time::Duration::from_secs(30));
         let started = Instant::now();
         let rid = room_id.to_string();
         let result = self
-            .room_mailbox(&rid, |reply| RoomActorCommand::SetCycle {
+            .room_mailbox(&rid, Some(deadline), |reply| RoomActorCommand::SetCycle {
                 room_id: rid.clone(),
                 cycle,
                 actor_user_id,
+                deadline,
                 reply,
             })
             .await;
@@ -116,7 +124,7 @@ impl RoomCommandGateway {
         let started = Instant::now();
         let rid = room_id.to_string();
         let result = self
-            .room_mailbox(&rid, |reply| RoomActorCommand::SetHidden {
+            .room_mailbox(&rid, None, |reply| RoomActorCommand::SetHidden {
                 room_id: rid.clone(),
                 hidden,
                 reply,
@@ -141,7 +149,7 @@ impl RoomCommandGateway {
         let started = Instant::now();
         let rid = room_id.to_string();
         let result = self
-            .room_mailbox(&rid, |reply| RoomActorCommand::SetPersistentEmpty {
+            .room_mailbox(&rid, None, |reply| RoomActorCommand::SetPersistentEmpty {
                 room_id: rid.clone(),
                 persistent_empty,
                 reply,
@@ -166,7 +174,7 @@ impl RoomCommandGateway {
         let started = Instant::now();
         let rid = room_id.to_string();
         let result = self
-            .room_mailbox(&rid, |reply| RoomActorCommand::SetEndpoint {
+            .room_mailbox(&rid, None, |reply| RoomActorCommand::SetEndpoint {
                 room_id: rid.clone(),
                 endpoint: endpoint.clone(),
                 reply,
@@ -193,7 +201,7 @@ impl RoomCommandGateway {
     ) -> Result<Value, String> {
         if let Some(ref ep) = endpoint {
             let result = self
-                .room_mailbox(room_id, |reply| RoomActorCommand::SetEndpoint {
+                .room_mailbox(room_id, None, |reply| RoomActorCommand::SetEndpoint {
                     room_id: room_id.to_string(),
                     endpoint: Some(ep.clone()),
                     reply,
@@ -205,7 +213,7 @@ impl RoomCommandGateway {
         }
         if persistent_empty {
             let result = self
-                .room_mailbox(room_id, |reply| RoomActorCommand::SetPersistentEmpty {
+                .room_mailbox(room_id, None, |reply| RoomActorCommand::SetPersistentEmpty {
                     room_id: room_id.to_string(),
                     persistent_empty: true,
                     reply,

@@ -244,9 +244,14 @@ async fn save_round_history(
 }
 
 /// Check if all users are ready (transition to Playing) or all have finished (transition to SelectChart).
+///
+/// `deadline` is the absolute actor deadline of the command that triggered the
+/// check (P0-F). The durable round-open write is bounded by the remaining
+/// budget so a stalled database cannot wedge the room actor forever.
 async fn check_all_ready(
     lc: &dyn RoomLifecycle,
     as_: &mut crate::room_actor::actor::RoomActorState,
+    deadline: std::time::Instant,
 ) {
     // Clone the lifecycle to check state
     let lifecycle = as_.state.lifecycle.clone();
@@ -297,15 +302,37 @@ async fn check_all_ready(
                             .unwrap_or(0),
                         finished_at: None,
                     };
-                    if let Err(e) = rs.open_round(&meta).await {
+                    // P0-F: bound the durable DB write by the remaining deadline
+                    // so a stalled database cannot wedge the room actor forever.
+                    let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+                    let open_outcome = if remaining.is_zero() {
+                        Err("round open deadline elapsed".to_string())
+                    } else {
+                        match tokio::time::timeout(remaining, rs.open_round(&meta)).await {
+                            Ok(Ok(())) => Ok(()),
+                            Ok(Err(e)) => Err(e.to_string()),
+                            Err(_) => Err("round open timed out".to_string()),
+                        }
+                    };
+                    if let Err(e) = open_outcome {
                         warn!(
                             room = %lc.room().id, round = %round_id,
                             "round store: failed to open round, aborting game start: {e}"
                         );
-                        // Revert state — return to WaitForReady
+                        // P0-F: clear the ready set so the room returns to an
+                        // explicitly retryable WaitingForReady instead of a
+                        // full-ready dead state where no further start can occur.
+                        if let InternalRoomState::WaitForReady { started, admin_started } =
+                            &mut as_.state.lifecycle
+                        {
+                            started.clear();
+                            *admin_started = false;
+                        }
                         as_.state.round.round_id = None;
                         as_.state.control.admin_start_pending = prev_admin_pending;
                         as_.state.ready_countdown_started_at = prev_ready_countdown;
+                        lc.room().send_system_msg_simple("game-start-failed-retry").await;
+                        broadcast_state_change(lc, &as_.state.lifecycle, as_.state.chart).await;
                         return;
                     }
                 }
@@ -459,9 +486,14 @@ async fn check_all_ready(
 
 /// Transition to Playing — unready players are marked aborted.
 /// Used by the ready countdown timer and can be reused for other auto-start paths.
+///
+/// `deadline` bounds the durable round-open write (P0-F) so a stalled database
+/// cannot wedge the room actor. Non-session callers (e.g. the ready-countdown
+/// tick in the mailbox) pass `Instant::now() + 30s`.
 pub(super) async fn force_start_playing(
     lc: &dyn RoomLifecycle,
     state: &mut crate::room_actor::actor::RoomState,
+    deadline: std::time::Instant,
 ) {
     if !matches!(state.lifecycle, InternalRoomState::WaitForReady { .. }) {
         return;
@@ -515,12 +547,32 @@ pub(super) async fn force_start_playing(
                 .unwrap_or(0),
             finished_at: None,
         };
-        if let Err(e) = rs.open_round(&meta).await {
+        // P0-F: bound the durable DB write by the remaining deadline.
+        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+        let open_outcome = if remaining.is_zero() {
+            Err("round open deadline elapsed".to_string())
+        } else {
+            match tokio::time::timeout(remaining, rs.open_round(&meta)).await {
+                Ok(Ok(())) => Ok(()),
+                Ok(Err(e)) => Err(e.to_string()),
+                Err(_) => Err("round open timed out".to_string()),
+            }
+        };
+        if let Err(e) = open_outcome {
             warn!(
                 room = %lc.room().id, round = %round_id,
                 "round store: failed to open round, aborting force start: {e}"
             );
+            // P0-F: clear the ready set so the room returns to an explicitly
+            // retryable WaitingForReady instead of a full-ready dead state.
+            if let InternalRoomState::WaitForReady { started, admin_started } = &mut state.lifecycle {
+                started.clear();
+                *admin_started = false;
+            }
             state.round.round_id = None;
+            state.ready_countdown_started_at = None;
+            lc.room().send_system_msg_simple("game-start-failed-retry").await;
+            broadcast_state_change(lc, &state.lifecycle, state.chart).await;
             return;
         }
     }
@@ -638,8 +690,12 @@ impl RoomCommandHandler {
         let lc: &dyn RoomLifecycle = ctx.lc;
 
         match command {
-            RoomActorCommand::SetLock { room_id, locked, actor_user_id, .. } => {
+            RoomActorCommand::SetLock { room_id, locked, actor_user_id, deadline, .. } => {
                 let as_ = ctx.expect_actor_state();
+                // P0-C/P0-G: never mutate lock state after the absolute actor deadline.
+                if crate::official_client_compat::timing::deadline_expired(*deadline) {
+                    return deadline_refused(*deadline);
+                }
                 as_.state.set_locked(*locked);
                 lc.publish_update(PartialRoomData { lock: Some(*locked), ..Default::default() }).await;
                 lc.dispatch_plugin_event(PluginEvent::RoomModify {
@@ -653,8 +709,12 @@ impl RoomCommandHandler {
                 ok(RoomCommandPayload::LockChanged { room_id: room_id.clone().to_string(), locked: *locked })
             }
 
-            RoomActorCommand::SetCycle { room_id, cycle, actor_user_id, .. } => {
+            RoomActorCommand::SetCycle { room_id, cycle, actor_user_id, deadline, .. } => {
                 let as_ = ctx.expect_actor_state();
+                // P0-C/P0-G: never mutate cycle state after the absolute actor deadline.
+                if crate::official_client_compat::timing::deadline_expired(*deadline) {
+                    return deadline_refused(*deadline);
+                }
                 as_.state.set_cycle(*cycle);
                 lc.publish_update(PartialRoomData { cycle: Some(*cycle), ..Default::default() }).await;
                 lc.dispatch_plugin_event(PluginEvent::RoomModify {
@@ -852,7 +912,7 @@ impl RoomCommandHandler {
                 };
                 as_.state.ready_countdown_started_at = Some(now_ms());
                 broadcast_state_change(lc, &as_.state.lifecycle, as_.state.chart).await;
-                check_all_ready(lc, as_).await;
+                check_all_ready(lc, as_, std::time::Instant::now() + std::time::Duration::from_secs(30)).await;
                 lc.dispatch_plugin_event(PluginEvent::GameStart { user_id: 0, room_id: room_id.clone().to_string() }).await;
                 ok(RoomCommandPayload::RoomStarted { room_id: room_id.clone().to_string() })
             }
@@ -878,10 +938,15 @@ impl RoomCommandHandler {
                 ok(RoomCommandPayload::CancelResult { room_id: room_id.clone().to_string(), canceled })
             }
 
-            RoomActorCommand::SetChart { room_id, chart_id, chart_name, actor_user_id, .. } => {
+            RoomActorCommand::SetChart { room_id, chart_id, chart_name, actor_user_id, deadline, .. } => {
                 let as_ = ctx.expect_actor_state();
                 if !matches!(as_.state.lifecycle, InternalRoomState::SelectChart) {
                     return err("cannot set chart outside SelectChart state");
+                }
+                // P0-C/P0-G: never mutate the selected chart after the absolute
+                // actor deadline.
+                if crate::official_client_compat::timing::deadline_expired(*deadline) {
+                    return deadline_refused(*deadline);
                 }
                 as_.state.chart = Some(*chart_id);
                 as_.state.chart_name = Some(chart_name.clone());
@@ -908,7 +973,7 @@ impl RoomCommandHandler {
                         lc.publish_runtime_event(crate::event_bus::MpEvent::PlayerReadyChanged {
                             room_id: room_id.clone().try_into().unwrap(), user_id: *user_id, ready: true,
                         });
-                        check_all_ready(lc, as_).await;
+                        check_all_ready(lc, as_, *deadline).await;
                         ok(RoomCommandPayload::UserReady { room_id: room_id.clone().to_string(), user_id: *user_id })
                     }
                     // P0-D: official phira-mp returns Ok (silent no-op) for Ready
@@ -961,8 +1026,12 @@ impl RoomCommandHandler {
                 }
             }
 
-            RoomActorCommand::SubmitResult { room_id, user_id, score, accuracy, perfect, good, bad, miss, max_combo, full_combo, std, std_score, .. } => {
+            RoomActorCommand::SubmitResult { room_id, user_id, score, accuracy, perfect, good, bad, miss, max_combo, full_combo, std, std_score, deadline, .. } => {
                 let as_ = ctx.expect_actor_state();
+                // P0-C/P0-G: never insert a result after the absolute actor deadline.
+                if crate::official_client_compat::timing::deadline_expired(*deadline) {
+                    return deadline_refused(*deadline);
+                }
                 let record = crate::server::Record {
                     id: 0, player: *user_id, score: *score, perfect: *perfect,
                     good: *good, bad: *bad, miss: *miss, max_combo: *max_combo,
@@ -990,7 +1059,7 @@ impl RoomCommandHandler {
                     }
                 }
                 lc.send_msg(Message::Played { user: *user_id, score: *score, accuracy: *accuracy, full_combo: *full_combo, perfect: *perfect, good: *good, bad: *bad, miss: *miss, max_combo: *max_combo }).await;
-                check_all_ready(lc, as_).await;
+                check_all_ready(lc, as_, *deadline).await;
                 lc.dispatch_plugin_event(PluginEvent::GameEnd {
                     user_id: *user_id, user_name: String::new(), room_id: room_id.clone().to_string(),
                     score: *score, accuracy: *accuracy, perfect: *perfect,
@@ -999,8 +1068,12 @@ impl RoomCommandHandler {
                 ok(RoomCommandPayload::RoundResultSubmitted { room_id: room_id.clone().to_string(), user_id: *user_id, score: *score })
             }
 
-            RoomActorCommand::AbortRound { room_id, user_id, .. } => {
+            RoomActorCommand::AbortRound { room_id, user_id, deadline, .. } => {
                 let as_ = ctx.expect_actor_state();
+                // P0-C/P0-G: never insert an abort after the absolute actor deadline.
+                if crate::official_client_compat::timing::deadline_expired(*deadline) {
+                    return deadline_refused(*deadline);
+                }
                 match &mut as_.state.lifecycle {
                     InternalRoomState::Playing { results, aborted } => {
                         if results.contains_key(user_id) { return err("already uploaded"); }
@@ -1009,7 +1082,7 @@ impl RoomCommandHandler {
                     _ => return err("not in Playing state"),
                 }
                 lc.send_msg(Message::Abort { user: *user_id }).await;
-                check_all_ready(lc, as_).await;
+                check_all_ready(lc, as_, *deadline).await;
                 ok(RoomCommandPayload::RoundAborted { room_id: room_id.clone().to_string(), user_id: *user_id })
             }
 
@@ -1036,7 +1109,7 @@ impl RoomCommandHandler {
                 };
                 as_.state.ready_countdown_started_at = Some(now_ms());
                 broadcast_state_change(lc, &as_.state.lifecycle, as_.state.chart).await;
-                check_all_ready(lc, as_).await;
+                check_all_ready(lc, as_, *deadline).await;
                 lc.dispatch_plugin_event(PluginEvent::GameStart { user_id: *user_id, room_id: room_id.clone().to_string() }).await;
                 ok(RoomCommandPayload::HostStarted { room_id: room_id.clone().to_string() })
             }
@@ -1079,7 +1152,11 @@ impl RoomCommandHandler {
                 })
             }
 
-            RoomActorCommand::RemoveUser { room_id, user_id, .. } => {
+            RoomActorCommand::RemoveUser { room_id, user_id, deadline, .. } => {
+                // P0-C/P0-G: never mutate membership after the absolute actor deadline.
+                if crate::official_client_compat::timing::deadline_expired(*deadline) {
+                    return deadline_refused(*deadline);
+                }
                 let user = {
                     let users = lc.users().await;
                     let monitors = lc.monitors().await;
@@ -1106,7 +1183,7 @@ impl RoomCommandHandler {
                             data: json!({"action": "leave"}).to_string(),
                         }).await;
                         // Trigger check_all_ready in case the leaving user was in-game.
-                        check_all_ready(lc, as_).await;
+                        check_all_ready(lc, as_, *deadline).await;
                         ok(RoomCommandPayload::UserRemoved {
                             room_id: room_id.clone().to_string(), user_id: *user_id, room_dropped: should_drop,
                         })

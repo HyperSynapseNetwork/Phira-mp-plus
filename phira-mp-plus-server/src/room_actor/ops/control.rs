@@ -21,7 +21,7 @@ impl RoomCommandGateway {
         let started = Instant::now();
         let rid = room_id.to_string();
         let result = self
-            .room_mailbox(&rid, |reply| RoomActorCommand::StartRoom {
+            .room_mailbox(&rid, None, |reply| RoomActorCommand::StartRoom {
                 room_id: rid.clone(),
                 reply,
             })
@@ -51,7 +51,7 @@ impl RoomCommandGateway {
         let started = Instant::now();
         let rid = room_id.to_string();
         let result = self
-            .room_mailbox(&rid, |reply| RoomActorCommand::CancelStart {
+            .room_mailbox(&rid, None, |reply| RoomActorCommand::CancelStart {
                 room_id: rid.clone(),
                 reply,
             })
@@ -80,7 +80,7 @@ impl RoomCommandGateway {
         let started = Instant::now();
         let rid = room_id.to_string();
         let result = self
-            .room_mailbox(&rid, |reply| RoomActorCommand::HostStart {
+            .room_mailbox(&rid, Some(deadline), |reply| RoomActorCommand::HostStart {
                 room_id: rid.clone(),
                 user_id,
                 deadline,

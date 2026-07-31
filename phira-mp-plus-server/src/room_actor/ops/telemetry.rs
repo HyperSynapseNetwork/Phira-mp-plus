@@ -87,7 +87,7 @@ impl RoomCommandGateway {
         let rid = room_id.to_string();
         let uname = name.to_string();
         let result = self
-            .room_mailbox(&rid, |reply| RoomActorCommand::SetDisplayName {
+            .room_mailbox(&rid, None, |reply| RoomActorCommand::SetDisplayName {
                 room_id: rid.clone(),
                 user_id,
                 name: uname,

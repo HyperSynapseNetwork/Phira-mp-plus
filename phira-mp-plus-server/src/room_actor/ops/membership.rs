@@ -17,7 +17,7 @@ impl RoomCommandGateway {
         let started = Instant::now();
         let rid = room_id.to_string();
         let result = self
-            .room_mailbox(&rid, |reply| RoomActorCommand::KickUser {
+            .room_mailbox(&rid, None, |reply| RoomActorCommand::KickUser {
                 room_id: rid.clone(),
                 target_id,
                 reply,
@@ -42,7 +42,7 @@ impl RoomCommandGateway {
     ) -> Result<Value, String> {
         let started = Instant::now();
         let result = self
-            .room_mailbox(room_id, |reply| RoomActorCommand::CloseRoom {
+            .room_mailbox(room_id, None, |reply| RoomActorCommand::CloseRoom {
                 room_id: room_id.to_string(),
                 reply,
             })
@@ -73,7 +73,7 @@ impl RoomCommandGateway {
         let rid = room_id.to_string();
         let uname = user_name.to_string();
         let result = self
-            .room_mailbox(&rid, |reply| RoomActorCommand::AddUser {
+            .room_mailbox(&rid, Some(deadline), |reply| RoomActorCommand::AddUser {
                 room_id: rid.clone(),
                 user_id,
                 user_name: uname,
@@ -94,13 +94,16 @@ impl RoomCommandGateway {
         state: &PlusServerState,
         room_id: &str,
         user_id: i32,
+        deadline: Option<Instant>,
     ) -> Result<Value, String> {
+        let deadline = deadline.unwrap_or_else(|| Instant::now() + std::time::Duration::from_secs(30));
         let started = Instant::now();
         let rid = room_id.to_string();
         let result = self
-            .room_mailbox(&rid, |reply| RoomActorCommand::RemoveUser {
+            .room_mailbox(&rid, Some(deadline), |reply| RoomActorCommand::RemoveUser {
                 room_id: rid.clone(),
                 user_id,
+                deadline,
                 reply,
             })
             .await;
@@ -121,7 +124,7 @@ impl RoomCommandGateway {
         let started = Instant::now();
         let rid = room_id.to_string();
         let result = self
-            .room_mailbox(&rid, |reply| RoomActorCommand::SetLive {
+            .room_mailbox(&rid, None, |reply| RoomActorCommand::SetLive {
                 room_id: rid.clone(),
                 live,
                 reply,

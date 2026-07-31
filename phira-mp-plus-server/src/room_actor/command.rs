@@ -72,12 +72,17 @@ pub(crate) enum RoomActorCommand {
         room_id: String,
         locked: bool,
         actor_user_id: i32,
+        /// Absolute actor deadline (P0-C/P0-G). The handler refuses the state
+        /// transition when the deadline has already passed.
+        deadline: std::time::Instant,
         reply: oneshot::Sender<RoomCommandResult>,
     },
     SetCycle {
         room_id: String,
         cycle: bool,
         actor_user_id: i32,
+        /// Absolute actor deadline (P0-C/P0-G).
+        deadline: std::time::Instant,
         reply: oneshot::Sender<RoomCommandResult>,
     },
     SetHost {
@@ -126,6 +131,9 @@ pub(crate) enum RoomActorCommand {
         chart_id: i32,
         chart_name: String,
         actor_user_id: i32,
+        /// Absolute actor deadline (P0-C/P0-G). The handler refuses to mutate
+        /// the selected chart when the deadline has already passed.
+        deadline: std::time::Instant,
         reply: oneshot::Sender<RoomCommandResult>,
     },
     SetReady {
@@ -156,11 +164,17 @@ pub(crate) enum RoomActorCommand {
         full_combo: bool,
         std: f32,
         std_score: f32,
+        /// Absolute actor deadline (P0-C/P0-G). The handler refuses to insert
+        /// into `results` when the deadline has already passed.
+        deadline: std::time::Instant,
         reply: oneshot::Sender<RoomCommandResult>,
     },
     AbortRound {
         room_id: String,
         user_id: i32,
+        /// Absolute actor deadline (P0-C/P0-G). The handler refuses to insert
+        /// into `aborted` when the deadline has already passed.
+        deadline: std::time::Instant,
         reply: oneshot::Sender<RoomCommandResult>,
     },
     /// Fire-and-forget telemetry variant — no oneshot reply, casts through
@@ -192,6 +206,9 @@ pub(crate) enum RoomActorCommand {
     RemoveUser {
         room_id: String,
         user_id: i32,
+        /// Absolute actor deadline (P0-C/P0-G). The handler refuses to remove
+        /// the user when the deadline has already passed.
+        deadline: std::time::Instant,
         reply: oneshot::Sender<RoomCommandResult>,
     },
     SetLive {

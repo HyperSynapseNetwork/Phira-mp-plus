@@ -26,6 +26,7 @@ user-became-host = { $name } 成為了房主
 host-transferred-to = 房主已轉移給 { $name }
 host-set-to-system = 房主已設為系統？
 admin-started-game = 伺服器已發起遊戲，請加載譜面並點擊準備
+game-start-failed-retry = 遊戲啟動失敗，請重新點擊準備重試
 result-summary = 完成率：{ $passed }/{ $total } 已完成
 result-ranking-title = ▸ { $chart_name } 排行
 result-player-line = #{ $rank }. { $name }  { $score }分  準確率 { $accuracy }%  ±{ $std }ms{ $fc }{ $status }

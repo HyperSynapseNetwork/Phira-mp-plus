@@ -340,7 +340,7 @@ async fn restore_persistent_rooms(state: &Arc<PlusServerState>, db: &DbManager) 
                                     .unwrap_or_else(|| format!("#{chart_id}"));
                                 if let Err(e) = state
                                     .room_commands
-                                    .set_chart(state, room_id, chart_id, &chart_name, 0)
+                                    .set_chart(state, room_id, chart_id, &chart_name, 0, None)
                                     .await
                                 {
                                     warn!(

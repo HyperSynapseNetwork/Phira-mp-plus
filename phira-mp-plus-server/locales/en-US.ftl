@@ -58,6 +58,7 @@ user-became-host = { $name } became the host
 host-transferred-to = Host transferred to { $name }
 host-set-to-system = Host has been set to system
 admin-started-game = The server has started the game. Please load the chart and ready up
+game-start-failed-retry = Failed to start the game. Please ready up again to retry
 result-summary = Results: { $passed }/{ $total } completed
 result-ranking-title = ▸ { $chart_name } Results
 result-player-line = #{ $rank }. { $name }  { $score }pts  Acc { $accuracy }%  ±{ $std }ms{ $fc }{ $status }

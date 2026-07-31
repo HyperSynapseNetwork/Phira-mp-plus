@@ -10,6 +10,10 @@ impl RoomCommandGateway {
     // ── SetChart ──────────────────────────────────────────────────────────
 
     /// Set the selected chart (pre-fetched from Phira API by caller).
+    ///
+    /// `deadline` is the absolute actor deadline for session-originated
+    /// commands; non-session callers (CLI/admin/force-move) pass `None` and the
+    /// gateway falls back to the internal 30s room-mailbox timeout.
     pub async fn set_chart(
         &self,
         state: &PlusServerState,
@@ -17,16 +21,19 @@ impl RoomCommandGateway {
         chart_id: i32,
         chart_name: &str,
         actor_user_id: i32,
+        deadline: Option<Instant>,
     ) -> Result<Value, String> {
+        let deadline = deadline.unwrap_or_else(|| Instant::now() + std::time::Duration::from_secs(30));
         let started = Instant::now();
         let rid = room_id.to_string();
         let cname = chart_name.to_string();
         let result = self
-            .room_mailbox(&rid, |reply| RoomActorCommand::SetChart {
+            .room_mailbox(&rid, Some(deadline), |reply| RoomActorCommand::SetChart {
                 room_id: rid.clone(),
                 chart_id,
                 chart_name: cname,
                 actor_user_id,
+                deadline,
                 reply,
             })
             .await;
@@ -47,7 +54,7 @@ impl RoomCommandGateway {
         let started = Instant::now();
         let rid = room_id.to_string();
         let result = self
-            .room_mailbox(&rid, |reply| RoomActorCommand::SetReady {
+            .room_mailbox(&rid, Some(deadline), |reply| RoomActorCommand::SetReady {
                 room_id: rid.clone(),
                 user_id,
                 deadline,
@@ -71,7 +78,7 @@ impl RoomCommandGateway {
         let started = Instant::now();
         let rid = room_id.to_string();
         let result = self
-            .room_mailbox(&rid, |reply| RoomActorCommand::CancelReady {
+            .room_mailbox(&rid, Some(deadline), |reply| RoomActorCommand::CancelReady {
                 room_id: rid.clone(),
                 user_id,
                 deadline,
@@ -100,11 +107,13 @@ impl RoomCommandGateway {
         full_combo: bool,
         std: f32,
         std_score: f32,
+        deadline: Option<Instant>,
     ) -> Result<Value, String> {
+        let deadline = deadline.unwrap_or_else(|| Instant::now() + std::time::Duration::from_secs(30));
         let started = Instant::now();
         let rid = room_id.to_string();
         let result = self
-            .room_mailbox(&rid, |reply| RoomActorCommand::SubmitResult {
+            .room_mailbox(&rid, Some(deadline), |reply| RoomActorCommand::SubmitResult {
                 room_id: rid.clone(),
                 user_id,
                 score,
@@ -117,6 +126,7 @@ impl RoomCommandGateway {
                 full_combo,
                 std,
                 std_score,
+                deadline,
                 reply,
             })
             .await;
@@ -132,13 +142,16 @@ impl RoomCommandGateway {
         state: &PlusServerState,
         room_id: &str,
         user_id: i32,
+        deadline: Option<Instant>,
     ) -> Result<Value, String> {
+        let deadline = deadline.unwrap_or_else(|| Instant::now() + std::time::Duration::from_secs(30));
         let started = Instant::now();
         let rid = room_id.to_string();
         let result = self
-            .room_mailbox(&rid, |reply| RoomActorCommand::AbortRound {
+            .room_mailbox(&rid, Some(deadline), |reply| RoomActorCommand::AbortRound {
                 room_id: rid.clone(),
                 user_id,
+                deadline,
                 reply,
             })
             .await;

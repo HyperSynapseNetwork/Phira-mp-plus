@@ -8,6 +8,7 @@ use crate::room::InternalRoomState;
 use crate::server::PlusServerState;
 use phira_mp_common::ServerCommand;
 use std::sync::{atomic::Ordering, Arc, Weak};
+use std::time::Instant;
 use tokio::sync::{broadcast, mpsc, oneshot};
 
 enum MailboxAttempt {
@@ -218,6 +219,7 @@ impl RoomCommandGateway {
                                         let lc = crate::room_actor::lifecycle::DefaultRoomLifecycle::new(room, state);
                                         crate::room_actor::handler::force_start_playing(
                                             &lc, &mut as_.state,
+                                            std::time::Instant::now() + Self::COMMAND_TIMEOUT,
                                         ).await;
                                     }
                                 }
@@ -319,11 +321,24 @@ impl RoomCommandGateway {
     /// Route through the per-room mailbox only. Missing, closed, congested or
     /// uncertain mailboxes fail explicitly so the room control plane has one
     /// execution model and one lock ordering.
-    pub(super) async fn room_mailbox<Build>(&self, room_id: &str, build: Build) -> RoomCommandResult
+    ///
+    /// P0-C/P0-G: `deadline` is the absolute actor deadline carried by the
+    /// invoking client command. When `Some(d)`, both the enqueue and the reply
+    /// wait use `d.saturating_duration_since(now)` as their budget so the actor
+    /// never keeps a client's response channel open past its deadline. When
+    /// `None` (non-session paths: CLI/admin/force-move), the mailbox falls back
+    /// to the internal `COMMAND_TIMEOUT` (30s) so non-session callers are not
+    /// accidentally killed by a missing deadline.
+    pub(super) async fn room_mailbox<Build>(
+        &self,
+        room_id: &str,
+        deadline: Option<Instant>,
+        build: Build,
+    ) -> RoomCommandResult
     where
         Build: FnOnce(oneshot::Sender<RoomCommandResult>) -> RoomActorCommand,
     {
-        match self.try_mailbox_send(room_id, build).await {
+        match self.try_mailbox_send(room_id, deadline, build).await {
             MailboxAttempt::Completed(result) => result,
             MailboxAttempt::NotEnqueued => {
                 self.mailbox_failed.fetch_add(1, Ordering::Relaxed);
@@ -338,7 +353,21 @@ impl RoomCommandGateway {
         }
     }
 
-    async fn try_mailbox_send<Build>(&self, room_id: &str, build: Build) -> MailboxAttempt
+    /// Remaining mailbox budget for an optional absolute actor deadline.
+    /// `Some(d)` clamps to the time left before `d`; `None` falls back to the
+    /// internal 30s command timeout.
+    fn mailbox_remaining(deadline: Option<Instant>) -> std::time::Duration {
+        deadline
+            .map(|d| d.saturating_duration_since(Instant::now()))
+            .unwrap_or(Self::COMMAND_TIMEOUT)
+    }
+
+    async fn try_mailbox_send<Build>(
+        &self,
+        room_id: &str,
+        deadline: Option<Instant>,
+        build: Build,
+    ) -> MailboxAttempt
     where
         Build: FnOnce(oneshot::Sender<RoomCommandResult>) -> RoomActorCommand,
     {
@@ -347,11 +376,13 @@ impl RoomCommandGateway {
         };
         let (reply, rx) = oneshot::channel();
         let command = build(reply);
+        let budget = Self::mailbox_remaining(deadline);
 
-        match tokio::time::timeout(Self::COMMAND_TIMEOUT, tx.send(command)).await {
+        match tokio::time::timeout(budget, tx.send(command)).await {
             Ok(Ok(())) => {
                 self.mailbox_enqueued.fetch_add(1, Ordering::Relaxed);
-                match tokio::time::timeout(Self::COMMAND_TIMEOUT, rx).await {
+                let reply_budget = Self::mailbox_remaining(deadline);
+                match tokio::time::timeout(reply_budget, rx).await {
                     Ok(Ok(result)) => MailboxAttempt::Completed(result),
                     Ok(Err(_)) => {
                         self.mailbox_closed.fetch_add(1, Ordering::Relaxed);
