@@ -14,7 +14,7 @@ use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
-use tokio::sync::{mpsc, oneshot, Semaphore};
+use tokio::sync::{mpsc, oneshot};
 use tracing::{info, warn};
 
 /// Maximum concurrent event callbacks per plugin.  Prevents a single slow
@@ -214,33 +214,37 @@ impl PluginTcpActor {
             Entry::Vacant(e) => {
                 let channel = Arc::new(PluginEventChannel::new(MAX_PENDING_EVENTS_PER_PLUGIN));
                 let (worker_queue, worker_notify) = channel.shared();
-                // Semaphore bounds concurrent callbacks so a single slow
-                // callback does not block the entire event channel worker.
-                let semaphore = Arc::new(Semaphore::new(MAX_CONCURRENT_CALLBACKS));
-                let worker_handle = tokio::spawn(async move {
-                    loop {
-                        worker_notify.notified().await;
+                // Use MAX_CONCURRENT_CALLBACKS FIXED worker tasks that directly
+                // await each callback.  This bounds BOTH the number of queued
+                // events (bounded queue) AND the number of in-flight callbacks
+                // (one per worker), unlike the previous design which spawned a
+                // tokio task per event and then waited on a semaphore inside
+                // each task — that could accumulate an unbounded number of
+                // waiting tasks when a slow plugin was fed continuously.
+                let mut worker_handles = Vec::with_capacity(MAX_CONCURRENT_CALLBACKS);
+                for _ in 0..MAX_CONCURRENT_CALLBACKS {
+                    let queue = Arc::clone(&worker_queue);
+                    let notify = Arc::clone(&worker_notify);
+                    let cb = Arc::clone(&cb);
+                    worker_handles.push(tokio::spawn(async move {
                         loop {
-                            let event = worker_queue.lock().unwrap().pop_front();
-                            match event {
-                                Some((type_, payload)) => {
-                                    let permit = Arc::clone(&semaphore);
-                                    let cb = Arc::clone(&cb);
-                                    tokio::spawn(async move {
-                                        // Acquire permit before running callback.
-                                        // If the semaphore is contended, this task
-                                        // waits — draining the queue naturally
-                                        // back-pressures when all permits are held.
-                                        let _acquire = permit.acquire().await;
+                            notify.notified().await;
+                            loop {
+                                let event = queue.lock().unwrap().pop_front();
+                                match event {
+                                    Some((type_, payload)) => {
                                         let fut = cb(type_, payload);
                                         fut.await;
-                                    });
+                                    }
+                                    None => break,
                                 }
-                                None => break,
                             }
                         }
-                    }
-                });
+                    }));
+                }
+                // Track a single handle for abort-on-unload; each worker also
+                // stops when the channel is dropped.
+                let worker_handle = worker_handles.pop().unwrap();
                 self.event_workers.insert(plugin_id.to_string(), worker_handle);
                 e.insert(channel).clone()
             }
