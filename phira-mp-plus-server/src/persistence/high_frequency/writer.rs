@@ -245,13 +245,17 @@ impl HighFrequencyWriter {
             return Ok(());
         }
         let deadline_ms = now_ms() + timeout.as_millis() as i64;
-        // Bound the control send by the caller's remaining budget (P1).
-        match tokio::time::timeout(timeout, self.tx.send(HfMessage::Flush { reply, target_seq, deadline_ms })).await {
+        // A SINGLE absolute deadline covers send + reply: the send phase
+        // consumes from the reply budget (P1).
+        let deadline = std::time::Instant::now() + timeout;
+        let send_timeout = deadline.saturating_duration_since(std::time::Instant::now());
+        match tokio::time::timeout(send_timeout, self.tx.send(HfMessage::Flush { reply, target_seq, deadline_ms })).await {
             Ok(Ok(())) => {}
             Ok(Err(_)) => return Err("high frequency writer is closed".to_string()),
             Err(_) => return Err("high frequency flush send timed out".to_string()),
         }
-        tokio::time::timeout(timeout, rx)
+        let reply_timeout = deadline.saturating_duration_since(std::time::Instant::now());
+        tokio::time::timeout(reply_timeout, rx)
             .await
             .map_err(|_| "high frequency flush timed out".to_string())?
             .map_err(|_| "high frequency flush reply dropped".to_string())?
@@ -285,8 +289,11 @@ impl HighFrequencyWriter {
         // Pass the caller's absolute deadline into the worker so it stops
         // retrying database writes at the same time the caller gives up (P0-K).
         let deadline_ms = now_ms() + timeout.as_millis() as i64;
-        // Bound the control send itself by the caller's remaining budget (P1).
-        match tokio::time::timeout(timeout, self.tx.send(HfMessage::Shutdown { reply, deadline_ms })).await {
+        // A SINGLE absolute deadline covers send + reply: the send phase
+        // consumes from the reply budget (P1).
+        let deadline = std::time::Instant::now() + timeout;
+        let send_timeout = deadline.saturating_duration_since(std::time::Instant::now());
+        match tokio::time::timeout(send_timeout, self.tx.send(HfMessage::Shutdown { reply, deadline_ms })).await {
             Ok(Ok(())) => {}
             Ok(Err(_)) => {
                 // Channel closed — the worker is already gone.  Return to OPEN
@@ -302,7 +309,9 @@ impl HighFrequencyWriter {
             }
         }
         self.shutdown_state.store(SHUTDOWN_CONTROL_SENT, Ordering::Release);
-        let result = match tokio::time::timeout(timeout, rx).await {
+        // Reply wait uses the REMAINING time after the send phase (P1).
+        let reply_timeout = deadline.saturating_duration_since(std::time::Instant::now());
+        let result = match tokio::time::timeout(reply_timeout, rx).await {
             Ok(Ok(result)) => result,
             Ok(Err(_)) => Err("high frequency shutdown reply dropped".to_string()),
             Err(_) => Err("high frequency shutdown timed out".to_string()),
