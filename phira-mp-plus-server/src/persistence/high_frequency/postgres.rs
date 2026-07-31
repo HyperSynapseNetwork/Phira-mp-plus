@@ -246,8 +246,12 @@ async fn try_copy_write_inner(
 /// range of the items in the batch.  The same range always produces the same
 /// key, so retrying the same batch of items is idempotent at the database
 /// level (ON CONFLICT DO NOTHING).
-pub(crate) fn batch_uuid(min_seq: u64, max_seq: u64) -> String {
-    format!("hf-{min_seq}-{max_seq}")
+pub(crate) fn batch_uuid(min_seq: u64, max_seq: u64, instance_id: &str) -> String {
+    // Include the server instance ID so the batch key is unique across boots.
+    // Previously the key was hf-{min}-{max}; since the HF admission sequence
+    // restarts at 1 each boot, a post-restart batch with the same min/max would
+    // collide with a pre-restart batch and be deduplicated incorrectly (P1).
+    format!("hf-{instance_id}-{min_seq}-{max_seq}")
 }
 
 /// Convert HF items to the `RuntimeTelemetryBatchRecord` form expected by
