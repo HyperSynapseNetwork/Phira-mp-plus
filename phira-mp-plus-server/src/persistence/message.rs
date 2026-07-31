@@ -153,12 +153,25 @@ impl PersistenceEvent {
                 "room_uuid": room_uuid,
                 "joined_at": joined_at,
             })),
-            Self::UserOffline { user_id, .. } => {
-                Some(json!({ "user_id": user_id }))
-            }
-            Self::UserDisconnect { user_id, user_name, .. } => Some(json!({
+            Self::UserOffline {
+                user_id,
+                server_instance_id,
+                session_id,
+            } => Some(json!({
+                "user_id": user_id,
+                "server_instance_id": server_instance_id,
+                "session_id": session_id,
+            })),
+            Self::UserDisconnect {
+                user_id,
+                user_name,
+                server_instance_id,
+                session_id,
+            } => Some(json!({
                 "user_id": user_id,
                 "user_name": user_name,
+                "server_instance_id": server_instance_id,
+                "session_id": session_id,
             })),
             Self::UserAuthenticated {
                 event_id,
