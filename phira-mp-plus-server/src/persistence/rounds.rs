@@ -531,9 +531,18 @@ impl DbManager {
     /// Used during crash recovery to avoid aborting rounds whose
     /// `RoundCompleted` event was replayed from the WAL but whose
     /// `mp_rounds.finished_at` column was not set (defensive safety net).
-    pub async fn has_round_completion_event(&self, round_uuid: &str) -> bool {
+    /// Check whether a round has a `round.completed` event in mp_events.
+    ///
+    /// Returns `Err` on database failure so callers can fail-closed.  Previously
+    /// this folded SQL errors into `false`, which caused crash recovery to
+    /// treat a genuinely-completed round (whose completion event could not be
+    /// read due to a transient DB error) as unfinished and abort it (P0-11).
+    pub async fn has_round_completion_event(
+        &self,
+        round_uuid: &str,
+    ) -> std::result::Result<bool, String> {
         let Self::Pg(pool) = self;
-        sqlx::query_scalar::<_, Option<i32>>(
+        let found = sqlx::query_scalar::<_, Option<i32>>(
             "SELECT 1 FROM mp_events
               WHERE kind = 'round.completed'
                 AND payload->>'round_uuid' = $1
@@ -542,9 +551,8 @@ impl DbManager {
         .bind(round_uuid)
         .fetch_optional(pool)
         .await
-        .ok()
-        .flatten()
-        .is_some()
+        .map_err(|e| format!("query round.completed event: {e}"))?;
+        Ok(found.is_some())
     }
 
     /// Mark an unfinished round as aborted (crash recovery).

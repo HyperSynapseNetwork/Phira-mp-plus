@@ -168,7 +168,20 @@ async fn abort_unfinished_rounds(db: &DbManager) -> Result<()> {
     for round in &unfinished {
         // Safety check: if a round.completed event exists in mp_events
         // then the round actually completed in the WAL — do NOT abort it.
-        if db.has_round_completion_event(&round.round_uuid).await {
+        // A database error here must abort recovery (fail-closed): treating
+        // the error as "no completion event" could abort a genuinely
+        // completed round (P0-11).
+        let has_completion = db
+            .has_round_completion_event(&round.round_uuid)
+            .await
+            .map_err(|e| {
+                anyhow::anyhow!(
+                    "startup recovery: failed to check round.completed event for {} \
+                     (fail-closed, not aborting): {e}",
+                    round.round_uuid,
+                )
+            })?;
+        if has_completion {
             warn!(
                 "crash recovery: round {} has a completion event in mp_events \
                  but finished_at is NULL — skipping abort (round was completed)",
