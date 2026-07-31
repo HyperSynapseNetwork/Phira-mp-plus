@@ -138,7 +138,24 @@ async fn process_worker_loop(
                 Ok(p) => p.iter()
                     .filter(|(_, _, seq)| *seq <= target)
                     .count(),
-                Err(_) => 0,
+                Err(e) => {
+                    // Fail-closed: WAL corruption/read error means we cannot
+                    // confirm that all events <= target reached a terminal
+                    // state.  Reply with an error instead of assuming zero
+                    // pending (which would let Flush/Shutdown report success
+                    // while an uncommitted event is lost).
+                    let pc = pending_control.take().unwrap();
+                    let (reply, should_break) = match pc {
+                        PendingControl::FlushReply { reply, .. } => (reply, false),
+                        PendingControl::Shutdown { reply, .. } => (reply, true),
+                    };
+                    let _ = reply.send(Err(format!("WAL error during flush/shutdown: {e}")));
+                    pending_control = None;
+                    if should_break {
+                        break;
+                    }
+                    continue;
+                }
             };
 
             let ready = pending_acks.is_empty() && buffer_remaining == 0 && wal_pending == 0;
@@ -229,13 +246,22 @@ async fn process_worker_loop(
                         // allowed the gate to start past a WalOnly event
                         // that was queued out-of-order, causing it to be
                         // skipped as "stale" when it later arrived.
-                        if let Ok(pending) = worker_wal.list_pending().await {
-                            let min_seq = pending.iter()
-                                .map(|(_, _, seq)| *seq)
-                                .min();
-                            next_expected_sequence = min_seq.unwrap_or(wal_sequence);
-                        } else {
-                            next_expected_sequence = wal_sequence;
+                        match worker_wal.list_pending().await {
+                            Ok(pending) => {
+                                let min_seq = pending.iter()
+                                    .map(|(_, _, seq)| *seq)
+                                    .min();
+                                next_expected_sequence = min_seq.unwrap_or(wal_sequence);
+                            }
+                            Err(e) => {
+                                // Fail-closed: WAL corruption during sequence
+                                // gate init — cannot safely process events.
+                                tracing::error!(
+                                    wal_id = %wal_id, error = %e,
+                                    "sequence gate init failed: WAL corruption"
+                                );
+                                break 'fetch None;
+                            }
                         }
                     }
 
@@ -316,7 +342,12 @@ async fn process_worker_loop(
                     Ok(p) => p.iter()
                         .filter(|(_, _, seq)| *seq <= target_wal_sequence)
                         .count(),
-                    Err(_) => 0,
+                    Err(e) => {
+                        // Fail-closed: cannot confirm all events committed.
+                        warn!(error = %e, "flush failed: WAL read/corruption error");
+                        let _ = reply.send(Err(format!("flush failed: WAL error: {e}")));
+                        continue;
+                    }
                 };
 
                 if pending_acks.is_empty() && buffer_remaining == 0 && wal_pending == 0 {
@@ -344,7 +375,12 @@ async fn process_worker_loop(
                     Ok(p) => p.iter()
                         .filter(|(_, _, seq)| *seq <= target_wal_sequence)
                         .count(),
-                    Err(_) => 0,
+                    Err(e) => {
+                        // Fail-closed: cannot confirm all events committed.
+                        warn!(error = %e, "shutdown failed: WAL read/corruption error");
+                        let _ = reply.send(Err(format!("shutdown failed: WAL error: {e}")));
+                        break;
+                    }
                 };
 
                 if pending_acks.is_empty() && buffer_remaining == 0 && wal_pending == 0 {
@@ -917,7 +953,9 @@ impl PersistenceWorker {
 
     /// Return the number of pending (un-ACKed) WAL entries.
     /// Used after DLQ replay flush to verify all events are committed.
-    pub async fn pending_wal_count(&self) -> usize {
-        self.wal.list_pending().await.map(|v| v.len()).unwrap_or(0)
+    /// Returns `Err` on WAL read/corruption so callers can fail-closed
+    /// instead of treating an unreadable WAL as empty.
+    pub async fn pending_wal_count(&self) -> Result<usize, String> {
+        Ok(self.wal.list_pending().await?.len())
     }
 }

@@ -911,19 +911,59 @@ impl PersistenceWal {
         let mut admitted: Vec<(uuid::Uuid, PersistenceEvent, u64)> = Vec::new();
         let mut acked = std::collections::HashSet::new();
 
-        for line in bytes.split(|b| *b == b'\n') {
+        // Collect all segments first so we can distinguish a trailing
+        // truncated tail (expected after a crash during append) from genuine
+        // mid-file corruption.
+        let mut segments: Vec<&[u8]> = bytes.split(|b| *b == b'\n').collect();
+
+        // If the file does not end with a newline, the final segment may be a
+        // complete-but-unflushed frame OR a truncated tail.  Try to parse it;
+        // only discard if it is genuinely corrupt/truncated.
+        let has_trailing_truncation = bytes.last().map(|&b| b != b'\n').unwrap_or(false);
+        if has_trailing_truncation {
+            if let Some(last) = segments.last() {
+                if !last.is_empty() {
+                    let is_valid = serde_json::from_slice::<WalFrame>(last)
+                        .map(|f| f.verify().is_ok() && f.ver <= WAL_FORMAT_VERSION)
+                        .unwrap_or(false);
+                    if !is_valid {
+                        // Genuinely truncated tail — pop it and move on.
+                        segments.pop();
+                    }
+                }
+            }
+        }
+
+        // Process all remaining segments strictly.  Any corruption here is a
+        // fail-closed condition: the WAL is degraded and the caller must not
+        // proceed as if there were no pending entries (a corrupt admission
+        // silently skipped would let Flush/Shutdown report success while an
+        // uncommitted event is lost).
+        for line in segments {
             if line.is_empty() {
                 continue;
             }
-            let frame: WalFrame = match serde_json::from_slice(line) {
-                Ok(f) => f,
-                Err(_) => continue, // skip truncated/corrupt lines silently
-            };
+            let frame: WalFrame = serde_json::from_slice(line).map_err(|e| {
+                self.degraded.store(true, Ordering::Release);
+                format!(
+                    "corrupt WAL {} during list_pending: {e}",
+                    self.path.display()
+                )
+            })?;
             if frame.ver > WAL_FORMAT_VERSION {
-                continue;
+                self.degraded.store(true, Ordering::Release);
+                return Err(format!(
+                    "WAL {} during list_pending: unsupported format version {}",
+                    self.path.display(),
+                    frame.ver
+                ));
             }
-            if frame.verify().is_err() {
-                continue; // skip checksum failures
+            if let Err(e) = frame.verify() {
+                self.degraded.store(true, Ordering::Release);
+                return Err(format!(
+                    "corrupt WAL {} during list_pending: {e}",
+                    self.path.display()
+                ));
             }
             match frame.record {
                 WalRecord::Admission { id, event, sequence } => {
@@ -1135,6 +1175,70 @@ mod tests {
         wal.replay().await.unwrap();
         assert_eq!(wal.compact().await.unwrap(), 0);
         let _ = tokio::fs::remove_file(path).await;
+    }
+
+    #[tokio::test]
+    async fn list_pending_fails_closed_on_mid_file_corruption() {
+        let path = std::env::temp_dir().join(format!(
+            "pmp-wal-runtime-corrupt-{}.jsonl",
+            uuid::Uuid::new_v4()
+        ));
+        let wal = PersistenceWal::new(&path);
+        wal.replay().await.unwrap();
+
+        let (id1, _) = wal.admit(make_event("first")).await.unwrap();
+        let (id2, _) = wal.admit(make_event("second")).await.unwrap();
+        wal.ack(id1).await.unwrap();
+        wal.ack(id2).await.unwrap();
+
+        // Append a corrupt frame after the valid frames.  The trailing newline
+        // means it is NOT treated as a truncated tail — it is a genuine
+        // corrupt frame that list_pending must fail on.
+        let mut content = tokio::fs::read(&path).await.unwrap();
+        let corrupt = br#"{"ver":2,"record":"admission","id":"00000000-0000-0000-0000-0000000000ff","event":{"ServerEvent":{"kind":"corrupt","payload":{"n":1}}},"sequence":99,"cksum":"0000"}"#;
+        content.extend_from_slice(b"\n");
+        content.extend_from_slice(corrupt);
+        content.extend_from_slice(b"\n");
+        tokio::fs::write(&path, &content).await.unwrap();
+
+        // list_pending must fail closed on corruption (not skip silently).
+        let result = wal.list_pending().await;
+        assert!(result.is_err(), "list_pending must fail on corruption");
+        assert!(wal.is_degraded(), "WAL must be marked degraded on corruption");
+
+        let _ = tokio::fs::remove_file(path).await;
+        let _ = tokio::fs::remove_file(path.with_extension("wal.instance")).await;
+    }
+
+    #[tokio::test]
+    async fn list_pending_tolerates_trailing_truncated_line() {
+        let path = std::env::temp_dir().join(format!(
+            "pmp-wal-runtime-trunc-{}.jsonl",
+            uuid::Uuid::new_v4()
+        ));
+        let wal = PersistenceWal::new(&path);
+        wal.replay().await.unwrap();
+
+        let (id1, _) = wal.admit(make_event("ok")).await.unwrap();
+        wal.ack(id1).await.unwrap();
+
+        // Append a trailing truncated line (crash during append).
+        let mut file = tokio::fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .await
+            .unwrap();
+        use tokio::io::AsyncWriteExt;
+        file.write_all(b"{\"ver\":2,\"record\":\"admission\",\"id\":\"").await.unwrap();
+        drop(file);
+
+        // A trailing truncated line is tolerated; list_pending still succeeds.
+        let result = wal.list_pending().await;
+        assert!(result.is_ok(), "trailing truncation must be tolerated: {result:?}");
+        assert!(!wal.is_degraded());
+
+        let _ = tokio::fs::remove_file(path).await;
+        let _ = tokio::fs::remove_file(path.with_extension("wal.instance")).await;
     }
 
     #[test]

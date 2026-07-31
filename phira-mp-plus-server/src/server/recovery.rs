@@ -683,10 +683,26 @@ async fn replay_dead_letter_queue(state: &Arc<PlusServerState>) -> Result<()> {
         // processes them on its next cycle. Poll until they are committed
         // or the deadline expires.
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
-        let mut remaining = state.persistence_worker.pending_wal_count().await;
+        let mut remaining = match state.persistence_worker.pending_wal_count().await {
+            Ok(n) => n,
+            Err(e) => {
+                return Err(anyhow::anyhow!(
+                    "startup recovery: failed to read WAL pending count after \
+                     DLQ replay flush (fail-closed): {e}",
+                ));
+            }
+        };
         while remaining > 0 && std::time::Instant::now() < deadline {
             tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-            remaining = state.persistence_worker.pending_wal_count().await;
+            remaining = match state.persistence_worker.pending_wal_count().await {
+                Ok(n) => n,
+                Err(e) => {
+                    return Err(anyhow::anyhow!(
+                        "startup recovery: failed to read WAL pending count \
+                         (fail-closed): {e}",
+                    ));
+                }
+            };
         }
         if remaining > 0 {
             return Err(anyhow::anyhow!(
