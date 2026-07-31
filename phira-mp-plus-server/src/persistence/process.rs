@@ -316,7 +316,7 @@ pub async fn process_event_through_pipeline(
                     in_flight.lock().await.remove(&wal_id);
                 }
                 Err(error) => {
-                    worker_wal.set_degraded("ack:pipeline");
+                    worker_wal.mark_degraded(crate::persistence::wal::DEGRADED_ACK);
                     crate::supervisor_actor::report_critical_failure("persistence-wal-ack", error).await;
                     pending_acks.push_back((wal_id, 0));
                 }

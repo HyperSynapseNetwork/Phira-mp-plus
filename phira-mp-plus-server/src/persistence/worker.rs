@@ -199,7 +199,7 @@ async fn process_worker_loop(
                     in_flight.lock().await.remove(&retry_id);
                 }
                 Err(e) => {
-                    worker_wal.set_degraded("ack:retry");
+                    worker_wal.mark_degraded(crate::persistence::wal::DEGRADED_ACK);
                     trace!(
                         wal_id = %retry_id, attempt = %retry_attempt, error = %e,
                         "ACK retry failed, will retry on next iteration"
@@ -579,7 +579,7 @@ async fn drain_pending_acks(
                     in_flight.lock().await.remove(&id);
                 }
                 Err(_e) => {
-                    worker_wal.set_degraded("ack:retry");
+                    worker_wal.mark_degraded(crate::persistence::wal::DEGRADED_ACK);
                     pending_acks.push_back((id, attempt.saturating_add(1)));
                     tokio::time::sleep(Duration::from_millis(100)).await;
                 }
