@@ -102,6 +102,16 @@ pub struct RuntimeConfig {
     /// restoration failures are logged but do not block startup.
     #[serde(default)]
     pub persistent_rooms_required: bool,
+    /// Maximum time to wait for the persistence WAL to replay + drain during
+    /// startup recovery.  Must comfortably exceed the persistence pipeline's
+    /// own retry budget so a transient DB fault can self-heal instead of
+    /// failing startup (PMP37 P0-C).
+    #[serde(default = "default_startup_recovery_timeout_secs")]
+    pub startup_recovery_timeout_secs: u64,
+}
+
+fn default_startup_recovery_timeout_secs() -> u64 {
+    30
 }
 
 impl Default for RuntimeConfig {
@@ -113,6 +123,7 @@ impl Default for RuntimeConfig {
             phira_http: PhiraHttpPolicyConfig::default(),
             high_frequency: HighFrequencyConfig::default(),
             persistent_rooms_required: false,
+            startup_recovery_timeout_secs: default_startup_recovery_timeout_secs(),
         }
     }
 }

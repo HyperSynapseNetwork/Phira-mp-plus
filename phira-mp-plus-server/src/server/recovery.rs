@@ -102,17 +102,40 @@ pub async fn recover_state(state: &Arc<PlusServerState>, db: &DbManager) -> Resu
     // in the WAL are applied to PostgreSQL before we query for unfinished
     // rounds — otherwise rounds that actually completed would be falsely
     // marked as aborted.
+    // P0-C: use a configurable timeout (default 30s) that comfortably exceeds
+    // the persistence pipeline's own retry budget so a transient DB fault can
+    // self-heal instead of failing startup.
+    let recovery_timeout = std::time::Duration::from_secs(
+        state.config.runtime.startup_recovery_timeout_secs.max(1),
+    );
+    let deadline = std::time::Instant::now() + recovery_timeout;
     let mut wal_healthy = false;
-    for _ in 0..50 {
+    let mut last_progress = std::time::Instant::now();
+    loop {
         if state.persistence_worker.is_healthy().await {
             wal_healthy = true;
             break;
         }
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        if std::time::Instant::now() >= deadline {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        // Progress log once per second.
+        if last_progress.elapsed() >= std::time::Duration::from_secs(1) {
+            let pending = state.persistence_worker.pending_wal_count().await.unwrap_or(0);
+            info!(
+                "startup recovery: waiting for persistence WAL (pending={pending}, \
+                 timeout={}s)",
+                state.config.runtime.startup_recovery_timeout_secs,
+            );
+            last_progress = std::time::Instant::now();
+        }
     }
     if !wal_healthy {
         return Err(anyhow::anyhow!(
-            "startup recovery: persistence WAL replay has not completed or is degraded"
+            "startup recovery: persistence WAL replay has not completed or is degraded \
+             (waited {}s)",
+            recovery_timeout.as_secs(),
         ));
     }
     info!("startup recovery: persistence WAL is healthy");
