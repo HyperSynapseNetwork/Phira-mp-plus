@@ -81,6 +81,7 @@ async fn process_worker_loop(
     worker_wal: &Arc<PersistenceWal>,
     in_flight: &Arc<Mutex<HashSet<uuid::Uuid>>>,
     initial_replay_drained: &Arc<AtomicBool>,
+    replay_pending_ids: &Arc<Mutex<HashSet<uuid::Uuid>>>,
 ) {
     use tracing::{debug, trace, warn};
 
@@ -217,8 +218,17 @@ async fn process_worker_loop(
                 });
             }
 
-            // Replay is exhausted. Mark drained exactly once.
-            initial_replay_drained.store(true, Ordering::Release);
+            // Replay deque is exhausted.  Mark drained ONLY if every replayed
+            // event has reached a durable terminal state.  Previously this was
+            // set unconditionally, which let a replayed event that failed
+            // (non-durable, e.g. DB + DLQ both failed) still report the WAL
+            // as healthy — recovery could proceed while an uncommitted event
+            // was pending (P0-F).  The remaining replay WAL IDs are retried by
+            // the recovery scanner; when they eventually reach terminal they
+            // are removed from replay_pending_ids and drained is set then.
+            if replay_pending_ids.lock().await.is_empty() {
+                initial_replay_drained.store(true, Ordering::Release);
+            }
 
             // 3. Channel receive with sequence gating.
             let msg = if pending_control.is_some() {
@@ -445,6 +455,15 @@ async fn process_worker_loop(
                 // or PendingWalAck).  The sequence gate can advance.
                 if wal_sequence != 0 {
                     next_expected_sequence = wal_sequence + 1;
+                }
+                // If this was a replay-derived event that has now reached a
+                // durable terminal state, clear it from the replay pending set.
+                // When the replay deque is exhausted AND the set is empty, all
+                // initial replay events are fully committed — only then is
+                // initial_replay_drained set (P0-F).
+                let removed = replay_pending_ids.lock().await.remove(&wal_id);
+                if removed && replay.is_empty() && replay_pending_ids.lock().await.is_empty() {
+                    initial_replay_drained.store(true, Ordering::Release);
                 }
             }
         }
@@ -711,6 +730,13 @@ impl PersistenceWorker {
 
         let initial_replay_drained = Arc::new(AtomicBool::new(false));
         let worker_initial_replay_drained = Arc::clone(&initial_replay_drained);
+        // Replay-derived WAL IDs that have not yet reached a durable terminal
+        // state.  initial_replay_drained is only set once this set is empty
+        // (all replayed events committed), so recovery does not proceed while
+        // a replayed event is still pending (P0-F).
+        let replay_pending_ids: Arc<Mutex<HashSet<uuid::Uuid>>> =
+            Arc::new(Mutex::new(HashSet::new()));
+        let worker_replay_pending_ids = Arc::clone(&replay_pending_ids);
 
         crate::supervisor_actor::spawn_critical("persistence-worker", async move {
             // Check WAL instance consistency before replay to detect
@@ -735,6 +761,7 @@ impl PersistenceWorker {
                     // scanner does not re-enqueue them while they are being processed.
                     for (wal_id, _, _) in &replay {
                         worker_in_flight.lock().await.insert(*wal_id);
+                        worker_replay_pending_ids.lock().await.insert(*wal_id);
                     }
                     // If WAL had no events to replay, mark drained immediately.
                     if replay.is_empty() {
@@ -748,6 +775,7 @@ impl PersistenceWorker {
                         &worker_wal,
                         &worker_in_flight,
                         &worker_initial_replay_drained,
+                        &worker_replay_pending_ids,
                     )
                     .await;
                 }
