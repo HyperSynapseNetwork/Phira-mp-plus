@@ -419,16 +419,16 @@ async fn main() -> Result<()> {
     // Record the final heartbeat on graceful shutdown so that any playtime
     // sessions left open (e.g. if the client never sent UserOffline) accrue
     // playtime only up to this instant, not up to the next startup (P0-H).
-    {
+    // Respect the shared remaining shutdown budget (P1).
+    let budget = remaining();
+    if !budget.is_zero() {
         let instance_id = phira_mp_plus_server::server_instance::current();
         let now = phira_mp_plus_server::db::now_ms();
-        if let Err(e) = server
-            .state
-            .db_manager
-            .heartbeat_server_instance(instance_id, now)
-            .await
-        {
-            warn!(error = %e, "failed to record final heartbeat on shutdown");
+        let hb = server.state.db_manager.heartbeat_server_instance(instance_id, now);
+        match tokio::time::timeout(budget, hb).await {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => warn!(error = %e, "failed to record final heartbeat on shutdown"),
+            Err(_) => warn!("final heartbeat timed out against shutdown budget"),
         }
     }
 
