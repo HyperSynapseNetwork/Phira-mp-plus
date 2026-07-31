@@ -255,7 +255,7 @@ impl PluginTcpActor {
                                 // Serialize callback delivery for this connection
                                 // (single consumer).  Held across the callback so
                                 // nothing else touches this handle meanwhile.
-                                let _per_conn = conn.lock.lock().await;
+                                let _per_conn = conn.lock().await;
                                 // Pop the front (oldest) event of this connection.
                                 let Some(evt) = channel.pop_event(handle) else {
                                     drop(_per_conn);
@@ -489,23 +489,29 @@ impl PluginTcpActor {
                 }
                 PluginTcpCommand::Send { plugin_id, handle, bytes } => {
                     if let Err(_e) = self.check_owner(handle, &plugin_id) { return; }
-                    let map = self.conn_map.lock().unwrap();
-                    if let Some(tx) = map.get(&handle) {
-                        if let Err(e) = tx.try_send(bytes) {
-                            warn!(%handle, error = %e, "tcp send failed");
-                            let outcome = self.emit_event(&plugin_id, "tcp:error",
-                                serde_json::json!({"handle": handle, "plugin_id": &plugin_id, "error": e.to_string()}));
-                            if matches!(outcome, PushOutcome::Overflow { .. }) {
-                                // The plugin cannot receive error notifications —
-                                // force-close the connection (P0-F).
-                                warn!(%handle, "tcp:error lifecycle event overflowed; closing connection");
-                                self.close_handle(handle);
-                            }
+                    // Drop the conn_map guard BEFORE emitting an error that may
+                    // close the handle — close_handle needs &mut self while the
+                    // guard borrows self.conn_map (E0502).
+                    let send_result = {
+                        let map = self.conn_map.lock().unwrap();
+                        match map.get(&handle) {
+                            Some(tx) => tx.try_send(bytes).map_err(|e| e.to_string()),
+                            None => Err("unknown handle".to_string()),
                         }
-                    } else {
-                        warn!(%handle, "tcp send on unknown handle");
-                        self.emit_event(&plugin_id, "tcp:error",
-                            serde_json::json!({"handle": handle, "plugin_id": &plugin_id, "error": "unknown handle"}));
+                    };
+                    if let Err(e) = send_result {
+                        warn!(%handle, error = %e, "tcp send failed");
+                        let outcome = self.emit_event(
+                            &plugin_id,
+                            "tcp:error",
+                            serde_json::json!({"handle": handle, "plugin_id": &plugin_id, "error": e}),
+                        );
+                        if matches!(outcome, PushOutcome::Overflow { .. }) {
+                            // The plugin cannot receive error notifications —
+                            // force-close the connection (P0-F).
+                            warn!(%handle, "tcp:error lifecycle event overflowed; closing connection");
+                            self.close_handle(handle);
+                        }
                     }
                 }
                 PluginTcpCommand::Close { plugin_id, handle } => {

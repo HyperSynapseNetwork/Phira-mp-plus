@@ -182,8 +182,10 @@ pub(crate) struct QueuedEvent {
 /// Per-connection FIFO mailbox.
 pub(crate) struct ConnectionMailbox {
     /// Serializes callback delivery — only one worker may process events for
-    /// this connection at a time (P0-E single consumer).
-    pub(crate) lock: TokioMutex<()>,
+    /// this connection at a time (P0-E single consumer).  The lock is
+    /// `Arc`-shared so a worker can hold it across the (async) plugin callback
+    /// even though the mailbox itself lives inside the channel's queue state.
+    pub(crate) lock: Arc<TokioMutex<()>>,
     /// FIFO of queued events, in arrival order.
     pub(crate) events: VecDeque<QueuedEvent>,
     /// Sum of raw payload bytes queued for this connection.
@@ -193,7 +195,7 @@ pub(crate) struct ConnectionMailbox {
 impl ConnectionMailbox {
     fn new() -> Self {
         Self {
-            lock: TokioMutex::new(()),
+            lock: Arc::new(TokioMutex::new(())),
             events: VecDeque::new(),
             pending_bytes: 0,
         }
@@ -204,7 +206,7 @@ impl ConnectionMailbox {
 /// under this lock, making budget reservation and rollback atomic (P0-G).
 struct ChannelState {
     /// handle → per-connection mailbox.
-    mailboxes: HashMap<u64, Arc<ConnectionMailbox>>,
+    mailboxes: HashMap<u64, ConnectionMailbox>,
     /// Handles with at least one pending event, in arrival order.
     ready: VecDeque<u64>,
     /// Handles currently claimed by a worker (in-flight).
@@ -397,7 +399,7 @@ impl PluginEventChannel {
         let conn = state
             .mailboxes
             .entry(handle)
-            .or_insert_with(|| Arc::new(ConnectionMailbox::new()));
+            .or_insert_with(ConnectionMailbox::new);
         conn.events.push_back(QueuedEvent {
             event_type,
             payload,
@@ -420,18 +422,19 @@ impl PluginEventChannel {
     }
 
     /// Claim the next ready handle that is not already in-flight, returning it
-    /// together with its mailbox.  The caller MUST acquire `mailbox.lock`
-    /// before popping and call `PluginEventChannel::release_handle` (or
+    /// together with the connection's serialization lock.  The caller MUST
+    /// acquire the returned lock before popping and call
+    /// `PluginEventChannel::release_handle` (or
     /// `PluginEventChannel::remove_connection`) afterwards.
-    pub fn claim_handle(&self) -> Option<(u64, Arc<ConnectionMailbox>)> {
+    pub fn claim_handle(&self) -> Option<(u64, Arc<TokioMutex<()>>)> {
         let mut state = self.state.lock().unwrap();
         let idx = state.ready.iter().position(|h| {
             !state.active.contains(h) && state.mailboxes.contains_key(h)
         })?;
         let handle = state.ready.remove(idx).unwrap();
         state.active.insert(handle);
-        let conn = Arc::clone(state.mailboxes.get(&handle).unwrap());
-        Some((handle, conn))
+        let conn = state.mailboxes.get(&handle).unwrap();
+        Some((handle, Arc::clone(&conn.lock)))
     }
 
     /// Pop the front (oldest) event of a claimed connection's mailbox.  The
@@ -659,7 +662,7 @@ mod tests {
     /// callback → release (or remove on disconnect).
     async fn next_event(ch: &PluginEventChannel) -> Option<(String, serde_json::Value, u64)> {
         let (handle, conn) = ch.claim_handle()?;
-        let _guard = conn.lock.lock().await;
+        let _guard = conn.lock().await;
         let evt = ch.pop_event(handle)?;
         let h = handle;
         if evt.event_type.eq_ignore_ascii_case("tcp:disconnect") {
@@ -735,7 +738,7 @@ mod tests {
         let mut saw_disconnect_5 = false;
         for _ in 0..16 {
             let Some((handle, conn)) = ch.claim_handle() else { break; };
-            let _guard = conn.lock.lock().await;
+            let _guard = conn.lock().await;
             let Some(evt) = ch.pop_event(handle) else { break; };
             if handle == 5 && evt.event_type == "tcp:disconnect" {
                 saw_disconnect_5 = true;
