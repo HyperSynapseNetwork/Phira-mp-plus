@@ -126,6 +126,9 @@ impl PluginEventChannel {
     }
 
     /// Number of events dropped because the queue was full.
+    /// Reserved for a future diagnostics consumer (the counter is still
+    /// incremented on every drop).
+    #[allow(dead_code)]
     pub fn dropped_count(&self) -> u64 {
         self.dropped_count.load(std::sync::atomic::Ordering::Relaxed)
     }
