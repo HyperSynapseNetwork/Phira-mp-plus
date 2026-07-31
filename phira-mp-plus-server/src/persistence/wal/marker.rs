@@ -57,25 +57,47 @@ impl PersistenceWal {
         // A crash mid-write leaves the OLD marker intact (never a torn file).
         use tokio::io::AsyncWriteExt;
         let tmp_path = marker_path.with_extension("wal.instance.tmp");
-        let mut file = tokio::fs::File::create(&tmp_path)
-            .await
-            .map_err(|e| format!("create instance marker tmp {}: {e}", tmp_path.display()))?;
-        file.write_all(&serde_json::to_vec(&marker).map_err(|e| format!("serialize instance marker: {e}"))?)
-            .await
-            .map_err(|e| format!("write instance marker: {e}"))?;
-        file.sync_all()
-            .await
-            .map_err(|e| format!("sync instance marker: {e}"))?;
-        drop(file);
-        tokio::fs::rename(&tmp_path, marker_path)
-            .await
-            .map_err(|e| format!("rename instance marker {} -> {}: {e}", tmp_path.display(), marker_path.display()))?;
-        if let Some(parent) = marker_path.parent().filter(|p| !p.as_os_str().is_empty()) {
-            if let Ok(dir) = tokio::fs::File::open(parent).await {
-                let _ = dir.sync_all().await;
+        let result = async {
+            let mut file = tokio::fs::OpenOptions::new()
+                .create(true)
+                .truncate(true)
+                .write(true)
+                .open(&tmp_path)
+                .await
+                .map_err(|e| format!("create instance marker tmp {}: {e}", tmp_path.display()))?;
+            // Tighten permissions to owner read/write.
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let _ = file
+                    .set_permissions(std::fs::Permissions::from_mode(0o600))
+                    .await;
             }
+            file.write_all(&serde_json::to_vec(&marker).map_err(|e| format!("serialize instance marker: {e}"))?)
+                .await
+                .map_err(|e| format!("write instance marker: {e}"))?;
+            file.sync_all()
+                .await
+                .map_err(|e| format!("sync instance marker: {e}"))?;
+            drop(file);
+            tokio::fs::rename(&tmp_path, marker_path)
+                .await
+                .map_err(|e| format!("rename instance marker {} -> {}: {e}", tmp_path.display(), marker_path.display()))?;
+            // Parent fsync failures are propagated (P1).
+            if let Some(parent) = marker_path.parent().filter(|p| !p.as_os_str().is_empty()) {
+                let dir = tokio::fs::File::open(parent)
+                    .await
+                    .map_err(|e| format!("open marker parent {}: {e}", parent.display()))?;
+                dir.sync_all()
+                    .await
+                    .map_err(|e| format!("sync marker parent {}: {e}", parent.display()))?;
+            }
+            Ok::<(), String>(())
         }
-        Ok(())
+        .await;
+        // Clean up a leftover temp file regardless of outcome.
+        let _ = tokio::fs::remove_file(&tmp_path).await;
+        result
     }
 
     /// Read the max_sequence recorded in the instance marker, if any.
