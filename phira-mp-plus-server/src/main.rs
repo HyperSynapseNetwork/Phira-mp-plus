@@ -414,6 +414,22 @@ async fn main() -> Result<()> {
         }
     }
 
+    // Record the final heartbeat on graceful shutdown so that any playtime
+    // sessions left open (e.g. if the client never sent UserOffline) accrue
+    // playtime only up to this instant, not up to the next startup (P0-H).
+    {
+        let instance_id = phira_mp_plus_server::server_instance::current();
+        let now = phira_mp_plus_server::db::now_ms();
+        if let Err(e) = server
+            .state
+            .db_manager
+            .heartbeat_server_instance(instance_id, now)
+            .await
+        {
+            warn!(error = %e, "failed to record final heartbeat on shutdown");
+        }
+    }
+
     let budget = remaining();
     let stopped = if budget.is_zero() {
         0

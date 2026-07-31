@@ -364,13 +364,24 @@ impl DbManager {
         let Self::Pg(pool) = self;
         let now = now_ms_inline();
         let instance_id = crate::server_instance::current();
+        // Accrue playtime only up to the old instance's last known alive time
+        // (heartbeat), not the recovery's startup time.  Server downtime
+        // between the old instance's death and this recovery is therefore NOT
+        // counted as player playtime (P0-H).  Sessions without an instance
+        // record (pre-migration data) fall back to the startup time, capped at
+        // max_recovery_secs as before.
         let result = sqlx::query(
-            "UPDATE playtime
-             SET total_secs = total_secs + LEAST(GREATEST(0, ($1 - session_start) / 1000), $2),
+            "UPDATE playtime p
+             SET total_secs = p.total_secs + LEAST(
+                   GREATEST(0, (COALESCE(
+                     (SELECT si.last_alive_at FROM mp_server_instances si
+                       WHERE si.instance_id = p.server_instance_id), $1)
+                     - p.session_start) / 1000),
+                   $2),
                  session_start = NULL,
                  server_instance_id = NULL
-             WHERE session_start IS NOT NULL
-               AND (server_instance_id IS DISTINCT FROM $3)",
+             WHERE p.session_start IS NOT NULL
+               AND (p.server_instance_id IS DISTINCT FROM $3)",
         )
         .bind(now)
         .bind(max_recovery_secs)
@@ -379,6 +390,60 @@ impl DbManager {
         .await
         .map_err(|e| format!("close all stale playtime sessions: {e}"))?;
         Ok(result.rows_affected())
+    }
+
+    /// Register the current server instance in `mp_server_instances`.
+    pub async fn register_server_instance(
+        &self,
+        instance_id: &str,
+        now: i64,
+    ) -> std::result::Result<(), String> {
+        let Self::Pg(pool) = self;
+        sqlx::query(
+            "INSERT INTO mp_server_instances (instance_id, created_at, last_alive_at)
+             VALUES ($1, $2, $2)
+             ON CONFLICT (instance_id) DO UPDATE SET last_alive_at = EXCLUDED.last_alive_at",
+        )
+        .bind(instance_id)
+        .bind(now)
+        .execute(pool)
+        .await
+        .map_err(|e| format!("register server instance: {e}"))?;
+        Ok(())
+    }
+
+    /// Update the current instance's heartbeat (last_alive_at).
+    pub async fn heartbeat_server_instance(
+        &self,
+        instance_id: &str,
+        now: i64,
+    ) -> std::result::Result<(), String> {
+        let Self::Pg(pool) = self;
+        sqlx::query(
+            "UPDATE mp_server_instances SET last_alive_at = $2 WHERE instance_id = $1",
+        )
+        .bind(instance_id)
+        .bind(now)
+        .execute(pool)
+        .await
+        .map_err(|e| format!("heartbeat server instance: {e}"))?;
+        Ok(())
+    }
+
+    /// Fetch the last known alive time for a given server instance.
+    pub async fn server_instance_last_alive(
+        &self,
+        instance_id: &str,
+    ) -> std::result::Result<Option<i64>, String> {
+        let Self::Pg(pool) = self;
+        let row: Option<(i64,)> = sqlx::query_as(
+            "SELECT last_alive_at FROM mp_server_instances WHERE instance_id = $1",
+        )
+        .bind(instance_id)
+        .fetch_optional(pool)
+        .await
+        .map_err(|e| format!("fetch server instance last alive: {e}"))?;
+        Ok(row.map(|(v,)| v))
     }
 }
 

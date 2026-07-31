@@ -79,6 +79,33 @@ impl PlusServer {
         // Register DB globally BEFORE PersistenceWorker spawns, so that
         // WAL replay and telemetry batcher can access the database from the start.
         let _ = crate::internal_hooks::DB.set(db_manager.clone());
+        // Register this server instance in mp_server_instances so crash
+        // recovery can accrue playtime only up to this instance's last known
+        // alive time (P0-H).
+        {
+            let now = crate::db::now_ms();
+            if let Err(e) = db_manager
+                .register_server_instance(instance_id, now)
+                .await
+            {
+                warn!("failed to register server instance: {e}");
+            }
+            // Heartbeat: keep last_alive_at fresh so a crash is not counted
+            // as playtime beyond the last heartbeat.
+            let hb_db = db_manager.clone();
+            let hb_id = instance_id.to_string();
+            crate::supervisor_actor::spawn_named("server-instance-heartbeat", async move {
+                let mut interval = tokio::time::interval(std::time::Duration::from_secs(30));
+                interval.tick().await; // skip first immediate tick
+                loop {
+                    interval.tick().await;
+                    let now = crate::db::now_ms();
+                    if let Err(e) = hb_db.heartbeat_server_instance(&hb_id, now).await {
+                        tracing::warn!(error = %e, "server instance heartbeat failed");
+                    }
+                }
+            });
+        }
         let command_registry = Arc::new(crate::command_registry::runtime_registry());
         let event_bus = Arc::new(crate::event_bus::EventBus::new_with_trace(
             crate::runtime_diagnostics::EVENT_BUS_CHANNEL_CAPACITY,
