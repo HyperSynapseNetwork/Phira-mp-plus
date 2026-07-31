@@ -310,13 +310,13 @@ pub async fn process_event_through_pipeline(
                     // queue is empty — a single success must not mask failures
                     // still being retried (P0-D: latched degraded state).
                     if pending_acks.is_empty() {
-                        worker_wal.set_degraded(false);
+                        worker_wal.clear_ack_degraded();
                     }
                     record_wal_committed(worker_stats).await;
                     in_flight.lock().await.remove(&wal_id);
                 }
                 Err(error) => {
-                    worker_wal.set_degraded(true);
+                    worker_wal.set_degraded("ack:pipeline");
                     crate::supervisor_actor::report_critical_failure("persistence-wal-ack", error).await;
                     pending_acks.push_back((wal_id, 0));
                 }

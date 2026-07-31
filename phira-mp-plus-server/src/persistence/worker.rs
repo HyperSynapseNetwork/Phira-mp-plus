@@ -194,12 +194,12 @@ async fn process_worker_loop(
                     // empty (P0-D: a single success must not mask other
                     // pending ACK failures).
                     if pending_acks.is_empty() {
-                        worker_wal.set_degraded(false);
+                        worker_wal.clear_ack_degraded();
                     }
                     in_flight.lock().await.remove(&retry_id);
                 }
                 Err(e) => {
-                    worker_wal.set_degraded(true);
+                    worker_wal.set_degraded("ack:retry");
                     trace!(
                         wal_id = %retry_id, attempt = %retry_attempt, error = %e,
                         "ACK retry failed, will retry on next iteration"
@@ -573,13 +573,13 @@ async fn drain_pending_acks(
                     // Latched: clear degraded only when the retry queue is
                     // fully drained (P0-D).
                     if pending_acks.is_empty() {
-                        worker_wal.set_degraded(false);
+                        worker_wal.clear_ack_degraded();
                     }
                     debug!(wal_id = %id, "pending ACK drained");
                     in_flight.lock().await.remove(&id);
                 }
                 Err(_e) => {
-                    worker_wal.set_degraded(true);
+                    worker_wal.set_degraded("ack:retry");
                     pending_acks.push_back((id, attempt.saturating_add(1)));
                     tokio::time::sleep(Duration::from_millis(100)).await;
                 }

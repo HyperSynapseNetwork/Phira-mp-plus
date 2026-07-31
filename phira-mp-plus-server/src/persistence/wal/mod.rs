@@ -109,6 +109,10 @@ pub struct PersistenceWal {
     /// Set to true when ACK/admit operations fail due to disk or I/O errors.
     /// Cleared when an ACK operation eventually succeeds.
     degraded: AtomicBool,
+    /// Reason the WAL is degraded (corruption / ack / marker / compact).
+    /// Latched: only an ACK reason is cleared by a subsequent ACK success;
+    /// corruption/marker reasons persist until replayed/repaired.
+    degraded_reason: std::sync::Mutex<Option<String>>,
     /// Monotonically increasing admission sequence counter.
     /// The single counter for all WAL sequences. Restored from max seen
     /// during replay so new admits never conflict with replayed entries.
@@ -130,6 +134,7 @@ impl PersistenceWal {
             io_gate: Mutex::new(()),
             replay_succeeded: AtomicBool::new(false),
             degraded: AtomicBool::new(false),
+            degraded_reason: std::sync::Mutex::new(None),
             admit_sequence: std::sync::atomic::AtomicU64::new(0),
             total_bytes: std::sync::atomic::AtomicU64::new(0),
             truncated_frames: std::sync::atomic::AtomicU64::new(0),
@@ -166,14 +171,32 @@ impl PersistenceWal {
         self.replay_succeeded.load(Ordering::Acquire)
     }
 
-    /// Mark the WAL as degraded (e.g. disk full / I/O errors during ACK).
-    pub fn set_degraded(&self, degraded: bool) {
-        self.degraded.store(degraded, Ordering::Release);
+    /// Mark the WAL as degraded with a reason (e.g. "ack:...", "corruption:...",
+    /// "marker:...", "compact:...").  Latched: a later ACK success only clears
+    /// an "ack:" reason; corruption/marker/compact reasons persist.
+    pub fn set_degraded(&self, reason: &str) {
+        self.degraded.store(true, Ordering::Release);
+        *self.degraded_reason.lock().unwrap() = Some(reason.to_string());
     }
 
-    /// Whether the WAL is currently degraded due to disk or I/O errors.
+    /// Clear an ACK-related degraded reason.  Corruption/marker/compact
+    /// reasons are NOT cleared by ACK success (PMP38 P1).
+    pub fn clear_ack_degraded(&self) {
+        let mut guard = self.degraded_reason.lock().unwrap();
+        if guard.as_deref().is_some_and(|r| r.starts_with("ack:")) {
+            *guard = None;
+            self.degraded.store(false, Ordering::Release);
+        }
+    }
+
+    /// Whether the WAL is currently degraded.
     pub fn is_degraded(&self) -> bool {
         self.degraded.load(Ordering::Acquire)
+    }
+
+    /// The reason the WAL is degraded, if any.
+    pub fn degraded_reason(&self) -> Option<String> {
+        self.degraded_reason.lock().unwrap().clone()
     }
 
     async fn ensure_parent(&self) -> Result<(), String> {
@@ -690,7 +713,7 @@ impl PersistenceWal {
                     .and_then(|v| v.get("clean").and_then(|x| x.as_bool()))
                     .unwrap_or(true);
                 if !is_clean {
-                    self.degraded.store(true, Ordering::Release);
+                    self.set_degraded("compact:missing-wal");
                     return Err(format!(
                         "WAL instance marker is active but WAL file {} is missing \
                          (abnormal loss) during compact",
@@ -930,14 +953,14 @@ impl PersistenceWal {
                 continue;
             }
             let frame: WalFrame = serde_json::from_slice(line).map_err(|e| {
-                self.degraded.store(true, Ordering::Release);
+                self.set_degraded("corruption:json");
                 format!(
                     "corrupt WAL {} during list_pending: {e}",
                     self.path.display()
                 )
             })?;
             if frame.ver > WAL_FORMAT_VERSION {
-                self.degraded.store(true, Ordering::Release);
+                self.set_degraded("corruption:version");
                 return Err(format!(
                     "WAL {} during list_pending: unsupported format version {}",
                     self.path.display(),
@@ -945,7 +968,7 @@ impl PersistenceWal {
                 ));
             }
             if let Err(e) = frame.verify() {
-                self.degraded.store(true, Ordering::Release);
+                self.set_degraded("corruption:checksum");
                 return Err(format!(
                     "corrupt WAL {} during list_pending: {e}",
                     self.path.display()
