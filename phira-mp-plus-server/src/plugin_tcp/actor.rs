@@ -246,12 +246,9 @@ impl PluginTcpActor {
                     worker_handles.push(tokio::spawn(async move {
                         loop {
                             notify.notified().await;
-                            loop {
-                                // Claim the next ready connection that is not
-                                // already in-flight.
-                                let Some((handle, conn)) = channel.claim_handle() else {
-                                    break;
-                                };
+                            // Claim the next ready connection that is not
+                            // already in-flight.
+                            while let Some((handle, conn)) = channel.claim_handle() {
                                 // Serialize callback delivery for this connection
                                 // (single consumer).  Held across the callback so
                                 // nothing else touches this handle meanwhile.
