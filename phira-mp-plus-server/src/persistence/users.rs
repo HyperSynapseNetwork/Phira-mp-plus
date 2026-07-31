@@ -49,9 +49,10 @@ impl DbManager {
     }
 
     /// Record a user disconnect and wait for acknowledgement.
-    pub async fn record_user_disconnect(&self, user_id: i32, name: &str) -> bool {
+    /// Uses the event's occurred_at (preserved through replay) rather than the
+    /// processing time (P1).
+    pub async fn record_user_disconnect(&self, user_id: i32, name: &str, occurred_at: i64) -> bool {
         let Self::Pg(pool) = self;
-        let now = now_ms_inline();
         sqlx::query(
             "UPDATE mp_users
                  SET name = $2,
@@ -62,7 +63,7 @@ impl DbManager {
         )
         .bind(user_id)
         .bind(name)
-        .bind(now)
+        .bind(occurred_at)
         .execute(pool)
         .await
         .is_ok()
@@ -381,7 +382,8 @@ impl DbManager {
                      - p.session_start) / 1000),
                    $2),
                  session_start = NULL,
-                 server_instance_id = NULL
+                 server_instance_id = NULL,
+                 session_id = NULL
              WHERE p.session_start IS NOT NULL
                AND (p.server_instance_id IS DISTINCT FROM $3)",
         )

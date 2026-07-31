@@ -314,6 +314,7 @@ async fn main() -> Result<()> {
                             user_name,
                             server_instance_id: phira_mp_plus_server::server_instance::current().to_string(),
                             session_id: session_id.clone(),
+                            occurred_at: phira_mp_plus_server::db::now_ms(),
                         },
                     )
                     .await

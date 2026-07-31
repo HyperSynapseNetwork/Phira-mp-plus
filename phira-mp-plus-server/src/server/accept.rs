@@ -173,6 +173,7 @@ impl PlusServer {
                                 user_name: session.user.name.clone(),
                                 server_instance_id: crate::server_instance::current().to_string(),
                                 session_id: session.id.to_string(),
+                                occurred_at: crate::db::now_ms(),
                             },
                         )
                         .await

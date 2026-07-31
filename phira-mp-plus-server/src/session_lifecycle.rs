@@ -257,6 +257,7 @@ impl User {
                                     user_name: self_.name.clone(),
                                     server_instance_id: crate::server_instance::current().to_string(),
                                     session_id: sid.clone(),
+                                    occurred_at: crate::db::now_ms(),
                                 },
                             ).await;
                             let _ = self_.server.persistence_worker.enqueue(
@@ -310,6 +311,7 @@ impl User {
                                 user_name: self.name.clone(),
                                 server_instance_id: crate::server_instance::current().to_string(),
                                 session_id: sid.clone(),
+                                occurred_at: crate::db::now_ms(),
                             },
                         )
                         .await
@@ -349,6 +351,7 @@ impl User {
                     user_name: self.name.clone(),
                     server_instance_id: crate::server_instance::current().to_string(),
                     session_id: disconnected_session_id.to_string(),
+                    occurred_at: crate::db::now_ms(),
                 },
             )
             .await

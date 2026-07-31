@@ -106,8 +106,13 @@ pub async fn persist_production_event_if_needed(event: &PersistenceEvent) -> Per
                 }
                 affected >= 0
             }
-            PersistenceEvent::UserDisconnect { user_id, user_name, .. } => {
-                db.record_user_disconnect(*user_id, user_name).await
+            PersistenceEvent::UserDisconnect { user_id, user_name, occurred_at, .. } => {
+                let occurred_at = if *occurred_at > 0 {
+                    *occurred_at
+                } else {
+                    crate::db::now_ms()
+                };
+                db.record_user_disconnect(*user_id, user_name, occurred_at).await
             }
             PersistenceEvent::UserAuthenticated {
                 event_id,

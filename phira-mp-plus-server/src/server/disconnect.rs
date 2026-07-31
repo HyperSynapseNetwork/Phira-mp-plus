@@ -140,6 +140,7 @@ pub(crate) async fn run_admin_kick_user(
                 user_name: user.name.clone(),
                 server_instance_id: crate::server_instance::current().to_string(),
                 session_id: disconnected_session_id.clone(),
+                occurred_at: crate::db::now_ms(),
             },
         )
         .await

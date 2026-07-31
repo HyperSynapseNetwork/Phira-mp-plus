@@ -61,6 +61,10 @@ pub enum PersistenceEvent {
         server_instance_id: String,
         #[serde(default)]
         session_id: String,
+        /// Time the disconnect occurred (ms since epoch).  Carried in the event
+        /// so replay preserves the original disconnect time (P1).
+        #[serde(default)]
+        occurred_at: i64,
     },
     /// User authenticated event — merged UserSeen + UserOnline for atomic
     /// admission before the auth OK frame is sent.  Blocks until WAL enqueue
@@ -167,11 +171,13 @@ impl PersistenceEvent {
                 user_name,
                 server_instance_id,
                 session_id,
+                occurred_at,
             } => Some(json!({
                 "user_id": user_id,
                 "user_name": user_name,
                 "server_instance_id": server_instance_id,
                 "session_id": session_id,
+                "occurred_at": occurred_at,
             })),
             Self::UserAuthenticated {
                 event_id,
