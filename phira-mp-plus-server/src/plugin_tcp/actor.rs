@@ -237,7 +237,8 @@ impl PluginTcpActor {
                                 let event = queue.lock().unwrap().pop_front();
                                 match event {
                                     Some((type_, payload)) => {
-                                        let fut = cb(type_, payload);
+                                        let event_type = type_;
+                                        let fut = cb(event_type.clone(), payload);
                                         // Bound each callback so a hung plugin
                                         // cannot pin the worker forever.
                                         if tokio::time::timeout(CALLBACK_TIMEOUT, fut)
@@ -245,7 +246,7 @@ impl PluginTcpActor {
                                             .is_err()
                                         {
                                             tracing::warn!(
-                                                type_,
+                                                event_type,
                                                 "plugin TCP event callback timed out after \
                                                  {CALLBACK_TIMEOUT:?}"
                                             );
