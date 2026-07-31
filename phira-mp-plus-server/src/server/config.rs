@@ -209,6 +209,12 @@ pub struct CompatibilityConfig {
     /// reply 两个阶段。必须明显小于官方客户端约 7 秒的固定等待。
     #[serde(default = "default_session_command_deadline_ms")]
     pub session_command_deadline_ms: u64,
+    /// ProtocolHack 补偿消息延迟（毫秒）。`None` 时回退到
+    /// `minimum_response_latency_ms`（默认 10ms）；设为 `Some(0)` 可做差分测试
+    /// （与官方/无补偿时序对比）。补偿消息在官方响应 flush 之后调度，
+    /// 不阻塞 Room Actor（PMP42 P1 ProtocolHack）。
+    #[serde(default)]
+    pub protocol_hack_delay_ms: Option<u64>,
 }
 
 impl Default for CompatibilityConfig {
@@ -217,6 +223,7 @@ impl Default for CompatibilityConfig {
             official_phira_client: default_official_phira_client(),
             minimum_response_latency_ms: default_minimum_response_latency_ms(),
             session_command_deadline_ms: default_session_command_deadline_ms(),
+            protocol_hack_delay_ms: None,
         }
     }
 }
@@ -621,6 +628,12 @@ impl PlusConfig {
                 "compatibility.minimum_response_latency_ms 不能超过 1000ms".into(),
             ));
         }
+        if self.compatibility.protocol_hack_delay_ms.is_some_and(|ms| ms > 1000) {
+            return Err(AppError::ConfigValidation(
+                "compatibility.protocol_hack_delay_ms 不能超过 1000ms（None 回退到 minimum_response_latency_ms）"
+                    .into(),
+            ));
+        }
         Ok(())
     }
 
@@ -957,6 +970,9 @@ mod tests {
         assert!(config.compatibility.official_phira_client);
         assert_eq!(config.compatibility.minimum_response_latency_ms, 10);
         assert_eq!(config.compatibility.session_command_deadline_ms, 4500);
+        // ProtocolHack 默认回退到 minimum_response_latency_ms（10ms），
+        // 可显式设为 0 做差分测试。
+        assert_eq!(config.compatibility.protocol_hack_delay_ms, None);
     }
 
     #[test]
