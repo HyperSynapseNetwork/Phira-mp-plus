@@ -28,6 +28,44 @@ use tokio::{
 use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 
+/// Deliver a dispatch response honoring the P0-B minimum-latency window (the
+/// caller waits for that separately) and the P0-E critical flush.  Returns
+/// `true` when the packet entered the outbound send queue.  A critical flush
+/// failure closes the transport and enters the existing lost-connection path.
+async fn send_dispatch_response(
+    send_tx: &StreamSender<ServerCommand>,
+    resp: ServerCommand,
+    critical: bool,
+    received_at: Instant,
+    id: Uuid,
+    server: &PlusServerState,
+    panicked: &AtomicBool,
+) -> bool {
+    let result = if critical {
+        send_tx.send_and_flush(resp).await
+    } else {
+        send_tx.send(resp).await
+    };
+    match result {
+        Ok(()) => {
+            ProtocolTrace::get().response_queued.fetch_add(1, Ordering::Relaxed);
+            if critical {
+                ProtocolTrace::get().response_flushed.fetch_add(1, Ordering::Relaxed);
+            }
+            ProtocolTrace::get().record_response_latency(received_at);
+            true
+        }
+        Err(err) => {
+            error!("failed to handle message, aborting connection {id}: {err:?}");
+            panicked.store(true, Ordering::SeqCst);
+            if let Err(err) = server.lost_con_tx.send(id).await {
+                error!("failed to mark lost connection ({id}): {err:?}");
+            }
+            false
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SessionCategory {
     Normal,
@@ -613,57 +651,6 @@ impl Session {
                             .request_received
                             .fetch_add(1, Ordering::Relaxed);
 
-                        // Deliver a dispatch response honoring the minimum
-                        // response latency window and the P0-E critical flush.
-                        // Returns true when the packet entered the outbound queue.
-                        let send_response =
-                            |send_tx: &StreamSender<ServerCommand>,
-                             resp: ServerCommand,
-                             critical: bool| {
-                                // Rebind outer captures as references so `async move`
-                                // moves only the closure parameters (avoids E0373: the
-                                // returned future must not borrow closure-local values).
-                                let id = &id;
-                                let server = &server;
-                                let received_at = &received_at;
-                                let panicked = &panicked;
-                                let send_tx = send_tx;
-                                async move {
-                                    let result = if critical {
-                                        send_tx.send_and_flush(resp).await
-                                    } else {
-                                        send_tx.send(resp).await
-                                    };
-                                    match result {
-                                        Ok(()) => {
-                                            ProtocolTrace::get()
-                                                .response_queued
-                                                .fetch_add(1, Ordering::Relaxed);
-                                            if critical {
-                                                ProtocolTrace::get()
-                                                    .response_flushed
-                                                    .fetch_add(1, Ordering::Relaxed);
-                                            }
-                                            ProtocolTrace::get()
-                                                .record_response_latency(*received_at);
-                                            true
-                                        }
-                                        Err(err) => {
-                                            error!(
-                                                "failed to handle message, aborting connection {id}: {err:?}",
-                                            );
-                                            panicked.store(true, Ordering::SeqCst);
-                                            if let Err(err) = server.lost_con_tx.send(*id).await {
-                                                error!(
-                                                    "failed to mark lost connection ({id}): {err:?}"
-                                                );
-                                            }
-                                            false
-                                        }
-                                    }
-                                }
-                            };
-
                         // 命令速率限制 — on failure return the matching official
                         // error response instead of silently dropping the request
                         // (P0-A).
@@ -701,10 +688,14 @@ impl Session {
                                     .wait_until_minimum(received_at)
                                     .await;
                                     if let Some(resp) = resp {
-                                        send_response(
+                                        send_dispatch_response(
                                             &send_tx,
                                             resp,
                                             critical,
+                                            received_at,
+                                            id,
+                                            &server,
+                                            &panicked,
                                         )
                                         .await;
                                     }
@@ -751,7 +742,16 @@ impl Session {
                                 && matches!(resp, ServerCommand::CreateRoom(Ok(())));
                             // P0-B: never respond before the minimum latency window.
                             compat.wait_until_minimum(received_at).await;
-                            let sent = send_response(&send_tx, resp, critical).await;
+                            let sent = send_dispatch_response(
+                                &send_tx,
+                                resp,
+                                critical,
+                                received_at,
+                                id,
+                                &server,
+                                &panicked,
+                            )
+                            .await;
                             if sent && created_room {
                                 let creating_player = creating_player.expect("checked above");
                                 if let Err(err) = send_tx
