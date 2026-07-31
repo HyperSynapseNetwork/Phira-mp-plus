@@ -10,6 +10,7 @@ pub mod events;
 pub mod high_frequency;
 pub mod message;
 pub mod pipeline;
+pub mod process;
 pub mod queries;
 pub mod rounds;
 pub mod schema;
