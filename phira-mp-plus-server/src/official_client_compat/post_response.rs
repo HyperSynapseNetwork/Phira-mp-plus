@@ -60,7 +60,10 @@ impl PostResponseItem {
     /// Schedule a compensation that delivers `command` to `user`'s session.
     ///
     /// Legacy path for compensation sites that are not yet origin-bound; the
-    /// current session is resolved at delivery time.
+    /// current session is resolved at delivery time. All in-session callers
+    /// have migrated to [`Self::to_origin`] (P0-A); retained for non-session
+    /// (CLI/admin) compensation sites.
+    #[allow(dead_code)]
     pub(crate) fn to_user(
         user: Weak<User>,
         kind: PostResponseKind,
