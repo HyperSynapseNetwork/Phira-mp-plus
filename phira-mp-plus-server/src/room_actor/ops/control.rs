@@ -75,6 +75,7 @@ impl RoomCommandGateway {
         state: &PlusServerState,
         room_id: &str,
         user_id: i32,
+        deadline: Instant,
     ) -> Result<Value, String> {
         let started = Instant::now();
         let rid = room_id.to_string();
@@ -82,6 +83,7 @@ impl RoomCommandGateway {
             .room_mailbox(&rid, |reply| RoomActorCommand::HostStart {
                 room_id: rid.clone(),
                 user_id,
+                deadline,
                 reply,
             })
             .await;

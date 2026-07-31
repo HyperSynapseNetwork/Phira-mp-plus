@@ -116,6 +116,9 @@ pub(crate) enum RoomActorCommand {
     HostStart {
         room_id: String,
         user_id: i32,
+        /// Absolute actor deadline (P0-C/P0-G). The handler refuses the state
+        /// transition when the deadline has already passed.
+        deadline: std::time::Instant,
         reply: oneshot::Sender<RoomCommandResult>,
     },
     SetChart {
@@ -128,11 +131,16 @@ pub(crate) enum RoomActorCommand {
     SetReady {
         room_id: String,
         user_id: i32,
+        /// Absolute actor deadline (P0-C/P0-G). The handler refuses to insert
+        /// into `started` when the deadline has already passed.
+        deadline: std::time::Instant,
         reply: oneshot::Sender<RoomCommandResult>,
     },
     CancelReady {
         room_id: String,
         user_id: i32,
+        /// Absolute actor deadline (P0-C/P0-G).
+        deadline: std::time::Instant,
         reply: oneshot::Sender<RoomCommandResult>,
     },
     SubmitResult {
@@ -176,6 +184,9 @@ pub(crate) enum RoomActorCommand {
         user_id: i32,
         user_name: String,
         monitor: bool,
+        /// Absolute actor deadline (P0-C/P0-G). The handler refuses to add the
+        /// user when the deadline has already passed.
+        deadline: std::time::Instant,
         reply: oneshot::Sender<RoomCommandResult>,
     },
     RemoveUser {

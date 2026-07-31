@@ -625,10 +625,11 @@ impl CliHandler {
 
     /// 强制某玩家准备（管理员操作）
     pub(crate) async fn room_ready_player(&self, room_id: &str, user_id: i32) {
+        let admin_deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
         match self
             .state
             .room_commands
-            .set_ready(&self.state, room_id, user_id)
+            .set_ready(&self.state, room_id, user_id, admin_deadline)
             .await
         {
             Ok(_) => self.out(format!(

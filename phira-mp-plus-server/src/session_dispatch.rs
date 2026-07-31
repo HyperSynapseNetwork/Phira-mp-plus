@@ -22,6 +22,11 @@ pub(crate) async fn process(
     category: SessionCategory,
     cmd: ClientCommand,
 ) -> Option<ServerCommand> {
+    // P0-F: JoinRoom(Ok) is delivered internally by join_room, so the minimum
+    // response latency must be enforced there. Capture the command receipt time
+    // at the dispatch boundary (immediately after session.rs records it) and
+    // thread it down to join_room.
+    let received_at = std::time::Instant::now();
     macro_rules! get_room {
         (~ $d:ident) => {
             // Used by Touches/Judges: these are NoResponseExpected, so a
@@ -70,7 +75,7 @@ pub(crate) async fn process(
         ClientCommand::LeaveRoom => crate::session_actor::route_leave(user, category).await,
         ClientCommand::CreateRoom { id } => crate::session_actor::route_create(user, id).await,
         ClientCommand::JoinRoom { id, monitor } => {
-            crate::session_actor::route_join(user, category, id, monitor).await
+            crate::session_actor::route_join(user, category, id, monitor, received_at).await
         }
         ClientCommand::SelectChart { id } => {
             crate::session_actor::route_select_chart(user, id).await

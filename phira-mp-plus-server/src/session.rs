@@ -861,6 +861,20 @@ impl Session {
             err
         })
     }
+
+    /// Send a command and block until the packet has been flushed to the socket
+    /// (P0-E/P0-F). Critical responses — Authenticate, CreateRoom, JoinRoom,
+    /// RequestStart, Ready, CancelReady, LeaveRoom — must be proven written to
+    /// the wire, not merely queued. A flush failure closes the transport and
+    /// enters the existing lost-connection path.
+    pub async fn send_and_flush(&self, cmd: ServerCommand) -> Result<()> {
+        self.stream.send_and_flush(cmd).await.map_err(|err| {
+            warn!(session = %self.id, user = self.user.id, ?err, "disconnecting slow client (send_and_flush)");
+            self.stream.close();
+            let _ = self.user.server.lost_con_tx.try_send(self.id);
+            err
+        })
+    }
 }
 
 impl Drop for Session {

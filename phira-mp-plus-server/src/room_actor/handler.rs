@@ -69,6 +69,19 @@ fn ok(payload: RoomCommandPayload) -> RoomCommandResult {
     RoomCommandResult::ok(payload, RoomCommandDelivery::PerRoomMailbox)
 }
 
+/// Refuse a room command whose absolute actor deadline has passed (P0-C/P0-G).
+///
+/// Counts the refusal as a blocked late commit and returns the matching error
+/// result so the caller answers the client with the corresponding `Err`
+/// instead of silently dropping or committing after the deadline.
+fn deadline_refused(deadline: std::time::Instant) -> RoomCommandResult {
+    crate::official_client_compat::protocol_trace::ProtocolTrace::get()
+        .late_commit
+        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    warn!(?deadline, "room command arrived after deadline; refusing to commit");
+    err("command deadline elapsed")
+}
+
 /// Helper: broadcast a state change via `on_state_change`.
 async fn broadcast_state_change(lc: &dyn RoomLifecycle, state: &InternalRoomState, chart: Option<i32>) {
     let room_state = state.to_client(chart);
@@ -882,52 +895,70 @@ impl RoomCommandHandler {
                 ok(RoomCommandPayload::ChartSelected { room_id: room_id.clone().to_string(), chart_id: *chart_id })
             }
 
-            RoomActorCommand::SetReady { room_id, user_id, .. } => {
+            RoomActorCommand::SetReady { room_id, user_id, deadline, .. } => {
                 let as_ = ctx.expect_actor_state();
+                // P0-G: never write Ready after the absolute actor deadline.
+                if crate::official_client_compat::timing::deadline_expired(*deadline) {
+                    return deadline_refused(*deadline);
+                }
                 match &mut as_.state.lifecycle {
                     InternalRoomState::WaitForReady { ref mut started, .. } => {
                         if !started.insert(*user_id) { return err("already ready"); }
+                        lc.send_msg(Message::Ready { user: *user_id }).await;
+                        lc.publish_runtime_event(crate::event_bus::MpEvent::PlayerReadyChanged {
+                            room_id: room_id.clone().try_into().unwrap(), user_id: *user_id, ready: true,
+                        });
+                        check_all_ready(lc, as_).await;
+                        ok(RoomCommandPayload::UserReady { room_id: room_id.clone().to_string(), user_id: *user_id })
                     }
-                    _ => return err("not in WaitForReady state"),
+                    // P0-D: official phira-mp returns Ok (silent no-op) for Ready
+                    // outside WaitForReady — NOT an error. Replicate the official
+                    // server's observable behavior.
+                    _ => ok(RoomCommandPayload::UserReady { room_id: room_id.clone().to_string(), user_id: *user_id }),
                 }
-                lc.send_msg(Message::Ready { user: *user_id }).await;
-                lc.publish_runtime_event(crate::event_bus::MpEvent::PlayerReadyChanged {
-                    room_id: room_id.clone().try_into().unwrap(), user_id: *user_id, ready: true,
-                });
-                check_all_ready(lc, as_).await;
-                ok(RoomCommandPayload::UserReady { room_id: room_id.clone().to_string(), user_id: *user_id })
             }
 
-            RoomActorCommand::CancelReady { room_id, user_id, .. } => {
+            RoomActorCommand::CancelReady { room_id, user_id, deadline, .. } => {
                 let as_ = ctx.expect_actor_state();
+                // P0-G: never mutate CancelReady state after the absolute deadline.
+                if crate::official_client_compat::timing::deadline_expired(*deadline) {
+                    return deadline_refused(*deadline);
+                }
                 let was_host = as_.state.control.host_id == Some(*user_id);
                 match &mut as_.state.lifecycle {
                     InternalRoomState::WaitForReady { ref mut started, .. } => {
                         if !started.remove(user_id) { return err("not ready"); }
                         if was_host {
-                            // All users' host cancels the game
-                            if let InternalRoomState::WaitForReady { admin_started, .. } = &as_.state.lifecycle {
-                                if *admin_started {
-                                    if let Some(host) = lc.users().await.iter().find(|u| as_.state.control.host_id == Some(u.id)) {
-                                        host.try_send(ServerCommand::ChangeHost(true)).await;
-                                    }
-                                }
-                            }
+                            // All users' host cancels the game. Official core
+                            // sequence: CancelGame → SelectChart → state change.
+                            let admin_started = matches!(
+                                &as_.state.lifecycle,
+                                InternalRoomState::WaitForReady { admin_started: true, .. }
+                            );
                             as_.state.control.admin_start_pending = false;
                             as_.state.ready_countdown_started_at = None;
                             lc.send_msg(Message::CancelGame { user: *user_id }).await;
                             as_.state.lifecycle = InternalRoomState::SelectChart;
                             broadcast_state_change(lc, &as_.state.lifecycle, as_.state.chart).await;
+                            // P0-D: PMP extension — restore host privileges AFTER
+                            // the official core sequence, never interleaved.
+                            if admin_started {
+                                if let Some(host) = lc.users().await.iter().find(|u| as_.state.control.host_id == Some(u.id)) {
+                                    host.try_send(ServerCommand::ChangeHost(true)).await;
+                                }
+                            }
                         } else {
                             lc.send_msg(Message::CancelReady { user: *user_id }).await;
                         }
+                        lc.publish_runtime_event(crate::event_bus::MpEvent::PlayerReadyChanged {
+                            room_id: room_id.clone().try_into().unwrap(), user_id: *user_id, ready: false,
+                        });
+                        ok(RoomCommandPayload::UserNotReady { room_id: room_id.clone().to_string(), user_id: *user_id })
                     }
-                    _ => return err("not in WaitForReady state"),
+                    // P0-D: official phira-mp returns Ok (silent no-op) for
+                    // CancelReady outside WaitForReady — NOT an error.
+                    _ => ok(RoomCommandPayload::UserNotReady { room_id: room_id.clone().to_string(), user_id: *user_id }),
                 }
-                lc.publish_runtime_event(crate::event_bus::MpEvent::PlayerReadyChanged {
-                    room_id: room_id.clone().try_into().unwrap(), user_id: *user_id, ready: false,
-                });
-                ok(RoomCommandPayload::UserNotReady { room_id: room_id.clone().to_string(), user_id: *user_id })
             }
 
             RoomActorCommand::SubmitResult { room_id, user_id, score, accuracy, perfect, good, bad, miss, max_combo, full_combo, std, std_score, .. } => {
@@ -982,13 +1013,22 @@ impl RoomCommandHandler {
                 ok(RoomCommandPayload::RoundAborted { room_id: room_id.clone().to_string(), user_id: *user_id })
             }
 
-            RoomActorCommand::HostStart { room_id, user_id, .. } => {
+            RoomActorCommand::HostStart { room_id, user_id, deadline, .. } => {
                 let as_ = ctx.expect_actor_state();
                 if !matches!(as_.state.lifecycle, InternalRoomState::SelectChart) {
                     return err("room is not selecting a chart");
                 }
                 if as_.state.control.admin_start_pending { return err("administrative start is already in progress"); }
                 if as_.state.chart.is_none() { return err("no chart selected"); }
+                // P0-G: never transition to WaitForReady after the absolute
+                // actor deadline.
+                if crate::official_client_compat::timing::deadline_expired(*deadline) {
+                    return deadline_refused(*deadline);
+                }
+                // Official RequestStart core sequence (P0-D): reset_game_time →
+                // Message::GameStart → WaitForReady → on_state_change →
+                // check_all_ready. PMP extensions (ready_countdown_started_at,
+                // plugin event) follow the official core.
                 lc.reset_game_time().await;
                 lc.send_msg(Message::GameStart { user: *user_id }).await;
                 as_.state.lifecycle = InternalRoomState::WaitForReady {
@@ -1001,8 +1041,14 @@ impl RoomCommandHandler {
                 ok(RoomCommandPayload::HostStarted { room_id: room_id.clone().to_string() })
             }
 
-            RoomActorCommand::AddUser { room_id, user_id, user_name: _, monitor, .. } => {
+            RoomActorCommand::AddUser { room_id, user_id, user_name: _, monitor, deadline, .. } => {
                 let as_ = ctx.expect_actor_state();
+                // P0-F/P0-G: never commit a late Join after the absolute actor
+                // deadline — the client may already have timed out and retried,
+                // and a second Join would then observe "already in room".
+                if crate::official_client_compat::timing::deadline_expired(*deadline) {
+                    return deadline_refused(*deadline);
+                }
                 let current_count = lc.users().await.len();
                 if current_count >= as_.state.control.max_users && !monitor {
                     return err("room is full");
@@ -1127,5 +1173,35 @@ impl RoomCommandHandler {
                 .and_then(|value| value.get("room_dropped"))
                 .and_then(Value::as_bool)
                 .unwrap_or(false)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn deadline_refused_returns_matching_error() {
+        let result = deadline_refused(std::time::Instant::now() - std::time::Duration::from_secs(1));
+        assert!(!result.is_ok(), "deadline refusal must be an error result");
+        assert_eq!(
+            result.error_message().as_deref(),
+            Some("command deadline elapsed")
+        );
+    }
+
+    #[test]
+    fn deadline_refused_never_commits() {
+        // A future deadline is NOT refused; a past deadline IS refused. This
+        // pins the P0-G precondition used at the SetReady/HostStart commit
+        // points.
+        let future = crate::official_client_compat::timing::deadline_expired(
+            std::time::Instant::now() + std::time::Duration::from_secs(1),
+        );
+        assert!(!future);
+        let past = crate::official_client_compat::timing::deadline_expired(
+            std::time::Instant::now() - std::time::Duration::from_millis(1),
+        );
+        assert!(past);
     }
 }

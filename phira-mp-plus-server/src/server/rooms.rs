@@ -406,12 +406,16 @@ impl PlusServerState {
 
         // Phase 2: AddUser to new room via actor (actor state).
         user.monitor.store(monitor, Ordering::SeqCst);
+        // Admin force-move has no client-facing deadline; use the same budget as
+        // the room mailbox COMMAND_TIMEOUT so the deadline check never fires
+        // before the mailbox would time out on its own.
+        let admin_deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
         let add_result = if same_room {
             // Same room: skip AddUser (would duplicate in members list).
             Ok(serde_json::json!({"monitor": monitor}))
         } else {
             self.room_commands
-                .add_user(self, &rid.to_string(), target_id, &user.name, monitor)
+                .add_user(self, &rid.to_string(), target_id, &user.name, monitor, admin_deadline)
                 .await
         };
 
@@ -429,6 +433,7 @@ impl PlusServerState {
                             target_id,
                             &user.name,
                             was_monitor,
+                            admin_deadline,
                         )
                         .await;
                     if re_add.is_err() {

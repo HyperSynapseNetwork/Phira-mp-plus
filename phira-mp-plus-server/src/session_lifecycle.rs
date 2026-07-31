@@ -133,6 +133,17 @@ impl User {
         }
     }
 
+    /// Send a command and block until it has been flushed to the socket
+    /// (P0-E/P0-F). Used by critical responses such as JoinRoom(Ok) where the
+    /// server must prove the packet reached the wire before committing the
+    /// caller's room state, or roll the state back.
+    pub async fn send_and_flush(&self, cmd: ServerCommand) -> Result<()> {
+        match self.session.read().await.as_ref().and_then(Weak::upgrade) {
+            Some(session) => session.send_and_flush(cmd).await,
+            None => Err(anyhow!("no session for user {}", self.id)),
+        }
+    }
+
     pub async fn dangle(self: Arc<Self>, disconnected_session_id: Uuid) {
         warn!(user = self.id, session = %disconnected_session_id, "user dangling");
 

@@ -67,6 +67,7 @@ impl RoomCommandGateway {
         user_id: i32,
         user_name: &str,
         monitor: bool,
+        deadline: Instant,
     ) -> Result<Value, String> {
         let started = Instant::now();
         let rid = room_id.to_string();
@@ -77,6 +78,7 @@ impl RoomCommandGateway {
                 user_id,
                 user_name: uname,
                 monitor,
+                deadline,
                 reply,
             })
             .await;

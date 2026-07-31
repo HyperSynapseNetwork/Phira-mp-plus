@@ -43,7 +43,7 @@ use phira_mp_common::{
 use std::{
     collections::HashMap,
     sync::{atomic::Ordering, Arc},
-    time::Duration,
+    time::{Duration, Instant},
 };
 use tracing::{debug, debug_span, info, trace, warn, Instrument};
 
@@ -312,6 +312,8 @@ pub async fn join_room(
     category: SessionCategory,
     id: RoomId,
     monitor: bool,
+    deadline: Instant,
+    received_at: Instant,
 ) -> Result<()> {
     let mut room_guard = user.room.write().await;
     if room_guard.is_some() {
@@ -396,7 +398,7 @@ pub async fn join_room(
     // This is the authoritative source — Room.users is derived for broadcast only.
     user.server
         .room_commands
-        .add_user(&user.server, &id.to_string(), user.id, &user.name, monitor)
+        .add_user(&user.server, &id.to_string(), user.id, &user.name, monitor, deadline)
         .await
         .map_err(|e| anyhow!("{}", tr(e)))?;
     // Also add to Room connection mapping (immediate, direct).
@@ -448,14 +450,14 @@ pub async fn join_room(
         user: user.id,
         name: user.name.clone(),
     });
-    if monitor {
-        room.broadcast_players(join).await;
-        room.broadcast_players(message).await;
-    } else {
-        // The joining client first receives JoinRoom(Ok), which already contains
-        // the full user snapshot. Only existing room members need incremental events.
-        room.broadcast_except(user.id, join).await;
-        room.broadcast_except(user.id, message).await;
+    // P0-D: official phira-mp broadcasts OnJoinRoom then Message::JoinRoom to ALL
+    // room members (including the joiner) BEFORE returning JoinRoom(Ok). The
+    // joiner's client updates its roster from these packets and the response
+    // carries the full snapshot, but the packet ORDER must match the official
+    // server. broadcast_except would drop these two packets for the joiner.
+    room.broadcast(join).await;
+    room.broadcast(message).await;
+    if !monitor {
         user.server
             .publish_room_event(RoomEvent::JoinRoom {
                 room: id.clone(),
@@ -512,19 +514,31 @@ pub async fn join_room(
         users: users.into_iter().map(|user| user.to_info()).collect(),
         live: room.is_live(),
     };
+    // P0-F: JoinRoom(Ok) must not arrive before the minimum response latency
+    // window (the official client installs its callback after send) and must be
+    // proven flushed to the socket, not merely queued. Flush failure rolls the
+    // AddUser back so the server state matches the client's view.
+    crate::official_client_compat::timing::CompatTiming::from_config(&user.server.config)
+        .wait_until_minimum(received_at)
+        .await;
     match tokio::time::timeout(
         Duration::from_secs(5),
-        user.send(ServerCommand::JoinRoom(Ok(response))),
+        user.send_and_flush(ServerCommand::JoinRoom(Ok(response))),
     )
     .await
     {
-        Ok(Ok(())) => {}
+        Ok(Ok(())) => {
+            let trace = crate::official_client_compat::protocol_trace::ProtocolTrace::get();
+            trace.response_queued.fetch_add(1, Ordering::Relaxed);
+            trace.response_flushed.fetch_add(1, Ordering::Relaxed);
+            trace.record_response_latency(received_at);
+        }
         _ => {
             // Send failed or timed out — rollback: remove user from room.
             warn!(
                 user = user.id,
                 room = %id,
-                "JoinRoom send failed, rolling back AddUser"
+                "JoinRoom send_and_flush failed, rolling back AddUser"
             );
             let _ = user
                 .server
@@ -550,15 +564,18 @@ pub async fn join_room(
     }
 
     if deferred_wfr {
-        // ProtocolHack: 客户端刚收到 SelectChart，50ms 后发 GameStart
-        // 让客户端切换到 WaitingForReady 状态并显示准备按钮。
-        let user_clone = Arc::clone(&user);
-        tokio::spawn(async move {
-            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-            user_clone.try_send(ServerCommand::Message(Message::GameStart {
-                user: 0,
-            })).await;
-        });
+        // ProtocolHack (P1): 客户端刚收到 SelectChart 快照，需在官方响应 flush
+        // 之后发送 GameStart 让客户端切换到 WaitingForReady 并显示准备按钮。
+        // 统一走 post_response 调度：固定顺序、不阻塞、延迟可配置。
+        crate::official_client_compat::post_response::schedule_post_response(
+            &user.server.config,
+            vec![crate::official_client_compat::post_response::PostResponseItem::to_user(
+                Arc::downgrade(&user),
+                crate::official_client_compat::post_response::PostResponseKind::ChangeState,
+                ServerCommand::Message(Message::GameStart { user: 0 }),
+                "join-reconnect-wait-for-ready",
+            )],
+        );
     }
 
     Ok(())
@@ -736,7 +753,7 @@ pub async fn select_chart(user: Arc<User>, id: i32) -> Result<()> {
     .await
 }
 
-pub async fn request_start(user: Arc<User>) -> Result<()> {
+pub async fn request_start(user: Arc<User>, deadline: Instant) -> Result<()> {
     let room = current_room_in_select_chart(&user).await?;
     if !is_host_for_room(&room, &user).await {
         bail!("{}", tl!("only-host-can-do"));
@@ -761,27 +778,27 @@ pub async fn request_start(user: Arc<User>) -> Result<()> {
     // Route through per-room mailbox for serialized state mutation.
     user.server
         .room_commands
-        .host_start(&user.server, &room.id.to_string(), user.id)
+        .host_start(&user.server, &room.id.to_string(), user.id, deadline)
         .await
         .map_err(|e| anyhow!("{}", tr(e)))?;
     Ok(())
 }
 
-pub async fn ready(user: Arc<User>) -> Result<()> {
+pub async fn ready(user: Arc<User>, deadline: Instant) -> Result<()> {
     let room = current_room(&user).await?;
     user.server
         .room_commands
-        .set_ready(&user.server, &room.id.to_string(), user.id)
+        .set_ready(&user.server, &room.id.to_string(), user.id, deadline)
         .await
         .map_err(|e| anyhow!("{}", tr(e)))?;
     Ok(())
 }
 
-pub async fn cancel_ready(user: Arc<User>) -> Result<()> {
+pub async fn cancel_ready(user: Arc<User>, deadline: Instant) -> Result<()> {
     let room = current_room(&user).await?;
     user.server
         .room_commands
-        .cancel_ready(&user.server, &room.id.to_string(), user.id)
+        .cancel_ready(&user.server, &room.id.to_string(), user.id, deadline)
         .await
         .map_err(|e| anyhow!("{}", tr(e)))?;
     Ok(())

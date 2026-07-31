@@ -98,7 +98,7 @@ pub(crate) fn init_session_mailbox(session: &Arc<Session>) -> mpsc::Sender<Sessi
                     )
                     .await;
                 }
-                SessionActorCmd::Join { meta, user, category, id, monitor, reply } => {
+                SessionActorCmd::Join { meta, user, category, id, monitor, received_at, reply } => {
                     tracing::trace!(cmd_id = meta.command_id, "session actor: join");
                     run_or_deadline(
                         meta.deadline,
@@ -106,7 +106,7 @@ pub(crate) fn init_session_mailbox(session: &Arc<Session>) -> mpsc::Sender<Sessi
                         Some(ServerCommand::JoinRoom(Err(
                             "session command timed out".to_string(),
                         ))),
-                        handle_join(user, category, id, monitor),
+                        handle_join(user, category, id, monitor, meta.deadline, received_at),
                     )
                     .await;
                 }
@@ -130,7 +130,7 @@ pub(crate) fn init_session_mailbox(session: &Arc<Session>) -> mpsc::Sender<Sessi
                         Some(ServerCommand::RequestStart(Err(
                             "session command timed out".to_string(),
                         ))),
-                        handle_request_start(user),
+                        handle_request_start(user, meta.deadline),
                     )
                     .await;
                 }
@@ -142,7 +142,7 @@ pub(crate) fn init_session_mailbox(session: &Arc<Session>) -> mpsc::Sender<Sessi
                         Some(ServerCommand::Ready(Err(
                             "session command timed out".to_string(),
                         ))),
-                        handle_ready(user),
+                        handle_ready(user, meta.deadline),
                     )
                     .await;
                 }
@@ -154,7 +154,7 @@ pub(crate) fn init_session_mailbox(session: &Arc<Session>) -> mpsc::Sender<Sessi
                         Some(ServerCommand::CancelReady(Err(
                             "session command timed out".to_string(),
                         ))),
-                        handle_cancel_ready(user),
+                        handle_cancel_ready(user, meta.deadline),
                     )
                     .await;
                 }
@@ -255,6 +255,10 @@ pub(crate) enum SessionActorCmd {
         category: SessionCategory,
         id: RoomId,
         monitor: bool,
+        /// Command receipt time recorded at the dispatch boundary (P0-F). Used
+        /// to enforce the minimum response latency for the internally-delivered
+        /// JoinRoom(Ok) response.
+        received_at: std::time::Instant,
         reply: tokio::sync::oneshot::Sender<Option<ServerCommand>>,
     },
     SelectChart {
@@ -561,8 +565,10 @@ async fn handle_join(
     category: SessionCategory,
     id: RoomId,
     monitor: bool,
+    deadline: std::time::Instant,
+    received_at: std::time::Instant,
 ) -> Option<ServerCommand> {
-    match crate::session_room::join_room(user, category, id, monitor).await {
+    match crate::session_room::join_room(user, category, id, monitor, deadline, received_at).await {
         Ok(()) => {
             // join_room already sent JoinRoom(Ok) + chat history directly
             None
@@ -576,6 +582,7 @@ pub(crate) async fn route_join(
     category: SessionCategory,
     id: RoomId,
     monitor: bool,
+    received_at: std::time::Instant,
 ) -> Option<ServerCommand> {
     let deadline = command_deadline(&user);
     route_via_mailbox(
@@ -587,6 +594,7 @@ pub(crate) async fn route_join(
             category,
             id,
             monitor,
+            received_at,
             reply,
         },
         |err| Some(ServerCommand::JoinRoom(Err(err))),
@@ -622,9 +630,12 @@ pub(crate) async fn route_select_chart(user: Arc<User>, id: i32) -> Option<Serve
 
 // ── RequestStart ──────────────────────────────────────────────────
 
-async fn handle_request_start(user: Arc<User>) -> Option<ServerCommand> {
+async fn handle_request_start(
+    user: Arc<User>,
+    deadline: std::time::Instant,
+) -> Option<ServerCommand> {
     Some(ServerCommand::RequestStart(
-        crate::session_room::request_start(user)
+        crate::session_room::request_start(user, deadline)
             .await
             .map_err(|e| e.to_string()),
     ))
@@ -647,9 +658,9 @@ pub(crate) async fn route_request_start(user: Arc<User>) -> Option<ServerCommand
 
 // ── Ready / CancelReady ───────────────────────────────────────────
 
-async fn handle_ready(user: Arc<User>) -> Option<ServerCommand> {
+async fn handle_ready(user: Arc<User>, deadline: std::time::Instant) -> Option<ServerCommand> {
     Some(ServerCommand::Ready(
-        crate::session_room::ready(user)
+        crate::session_room::ready(user, deadline)
             .await
             .map_err(|e| e.to_string()),
     ))
@@ -670,9 +681,12 @@ pub(crate) async fn route_ready(user: Arc<User>) -> Option<ServerCommand> {
     .await
 }
 
-async fn handle_cancel_ready(user: Arc<User>) -> Option<ServerCommand> {
+async fn handle_cancel_ready(
+    user: Arc<User>,
+    deadline: std::time::Instant,
+) -> Option<ServerCommand> {
     Some(ServerCommand::CancelReady(
-        crate::session_room::cancel_ready(user)
+        crate::session_room::cancel_ready(user, deadline)
             .await
             .map_err(|e| e.to_string()),
     ))
