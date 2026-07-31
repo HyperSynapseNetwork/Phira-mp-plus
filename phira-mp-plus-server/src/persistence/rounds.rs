@@ -403,6 +403,7 @@ impl DbManager {
         if sqlx::query(
             "UPDATE mp_rounds
                 SET finished_at = $2,
+                    aborted     = FALSE,
                     updated_at  = $2,
                     sequence    = nextval('mp_persist_sequence')
               WHERE round_uuid = $1",
