@@ -227,15 +227,14 @@ async fn process_worker_loop(
                 WorkerMessage::Event { wal_id, wal_sequence, event, needs_wal_ack } if wal_sequence != 0 => {
                     if next_expected_sequence == 0 {
                         // First channel event — initialise the gate from
-                        // the minimum pending WAL sequence (if any) so
-                        // recovered WalOnly events with lower sequences
-                        // do not arrive after we have advanced past them.
-                        let in_flight_ids: HashSet<uuid::Uuid> =
-                            in_flight.lock().await.clone();
+                        // the minimum pending WAL sequence across ALL
+                        // un-ACKed entries (including in_flight ones).
+                        // Previously in_flight entries were excluded, which
+                        // allowed the gate to start past a WalOnly event
+                        // that was queued out-of-order, causing it to be
+                        // skipped as "stale" when it later arrived.
                         if let Ok(pending) = worker_wal.list_pending().await {
-                            let min_seq = pending
-                                .iter()
-                                .filter(|(id, _, _)| !in_flight_ids.contains(id))
+                            let min_seq = pending.iter()
                                 .map(|(_, _, seq)| *seq)
                                 .min();
                             next_expected_sequence = min_seq.unwrap_or(wal_sequence);
@@ -396,8 +395,12 @@ async fn process_worker_loop(
                 // that this event is retried before any later event can be
                 // dispatched out-of-order.
                 //
-                // The event remains pending in WAL and will be re-enqueued
-                // by the recovery scanner on its next interval.
+                // The event was consumed from the channel during processing,
+                // but remains pending in WAL (not ACKed).  Remove it from
+                // in_flight so the periodic recovery scanner can re-enqueue
+                // it on its next interval — without this the entry is stuck
+                // forever (in_flight, not in channel, scanner skips it).
+                in_flight.lock().await.remove(&wal_id);
                 tracing::warn!(
                     wal_id = %wal_id, kind = %kind,
                     "non-durable outcome — retrying on next scanner interval"
