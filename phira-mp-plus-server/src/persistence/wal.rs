@@ -525,6 +525,10 @@ impl PersistenceWal {
         // Used to detect accidental WAL deletion on subsequent starts.
         self.write_instance_marker().await?;
 
+        // Capture the max sequence present in this WAL file BEFORE admitted is
+        // consumed into unacked below.
+        let wal_max = admitted.iter().map(|(_, _, seq)| *seq).max().unwrap_or(0);
+
         // Build un-ACKed list — sequences come directly from the WAL record.
         let unacked: Vec<(uuid::Uuid, PersistenceEvent, u64)> = admitted
             .into_iter()
@@ -543,7 +547,6 @@ impl PersistenceWal {
         //   - the marker's recorded high-water mark (persisted across
         //     compactions so sequences never regress after a compact-to-zero)
         //   - the max sequence present in this WAL file
-        let wal_max = admitted.iter().map(|(_, _, seq)| *seq).max().unwrap_or(0);
         let marker_max = self.read_marker_max_sequence().await;
         let restore_seq = wal_max.max(marker_max);
         self.admit_sequence.store(restore_seq, Ordering::Release);
