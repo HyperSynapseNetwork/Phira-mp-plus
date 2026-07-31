@@ -881,14 +881,19 @@ impl PersistenceWorker {
     /// process them, or for the timeout to expire.
     pub async fn flush(&self, timeout: Duration) -> Result<(), String> {
         let (reply, rx) = oneshot::channel();
-        // Capture the current WAL sequence so the worker can verify that all
-        // events admitted before this point have reached a terminal state.
-        let target = self.wal.current_sequence();
+        let target;
         {
+            // Linearization point (P0-B): acquire send_gate FIRST, then read
+            // the WAL sequence INSIDE the gate.  Previously the sequence was
+            // read before the gate, so a concurrent enqueue that already held
+            // the gate (admit in progress) could complete AFTER the target was
+            // captured but still be excluded from this flush — the caller
+            // would return before that event reached a terminal state.
             let _send_guard = self.send_gate.lock().await;
             if self.closed.load(Ordering::Acquire) {
                 return Err("persistence worker is shutting down".to_string());
             }
+            target = self.wal.current_sequence();
             self.tx
                 .send(WorkerMessage::Flush { target_wal_sequence: target, reply })
                 .await
@@ -906,12 +911,16 @@ impl PersistenceWorker {
     pub async fn shutdown(&self, timeout: Duration) -> Result<(), String> {
         let (reply, rx) = oneshot::channel();
         let deadline = Instant::now() + timeout;
-        let target = self.wal.current_sequence();
+        let target;
         {
+            // Same linearization rule as flush (P0-B): acquire send_gate, then
+            // read the sequence inside the gate so concurrent admissions are
+            // covered by the shutdown target.
             let _send_guard = self.send_gate.lock().await;
             if self.closed.swap(true, Ordering::AcqRel) {
                 return Ok(());
             }
+            target = self.wal.current_sequence();
             if self
                 .tx
                 .send(WorkerMessage::Shutdown { target_wal_sequence: target, deadline, reply })
