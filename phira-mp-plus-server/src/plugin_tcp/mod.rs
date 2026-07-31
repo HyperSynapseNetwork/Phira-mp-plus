@@ -100,6 +100,8 @@ pub(crate) struct PluginEventChannel {
     queue: Arc<Mutex<VecDeque<(String, serde_json::Value)>>>,
     notify: Arc<Notify>,
     max_len: usize,
+    /// Number of events dropped because the channel was full (metrics).
+    dropped_count: std::sync::atomic::AtomicU64,
 }
 
 impl PluginEventChannel {
@@ -108,6 +110,7 @@ impl PluginEventChannel {
             queue: Arc::new(Mutex::new(VecDeque::with_capacity(max_len))),
             notify: Arc::new(Notify::new()),
             max_len,
+            dropped_count: std::sync::atomic::AtomicU64::new(0),
         }
     }
 
@@ -116,9 +119,15 @@ impl PluginEventChannel {
         let mut queue = self.queue.lock().unwrap();
         if queue.len() >= self.max_len {
             queue.pop_front();
+            self.dropped_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         }
         queue.push_back((event_type, payload));
         self.notify.notify_one();
+    }
+
+    /// Number of events dropped because the queue was full.
+    pub fn dropped_count(&self) -> u64 {
+        self.dropped_count.load(std::sync::atomic::Ordering::Relaxed)
     }
 
     /// Shared queue and notify for worker task consumption.

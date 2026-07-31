@@ -21,6 +21,10 @@ use tracing::{info, warn};
 /// callback from blocking the entire event channel worker for that plugin.
 const MAX_CONCURRENT_CALLBACKS: usize = 4;
 
+/// Maximum wall-clock time a single plugin event callback may run before it
+/// is abandoned.  Prevents a hung/hostile plugin from pinning a worker.
+const CALLBACK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
 struct Connection {
     remote_addr: String,
     close_tx: Option<oneshot::Sender<()>>,
@@ -234,7 +238,18 @@ impl PluginTcpActor {
                                 match event {
                                     Some((type_, payload)) => {
                                         let fut = cb(type_, payload);
-                                        fut.await;
+                                        // Bound each callback so a hung plugin
+                                        // cannot pin the worker forever.
+                                        if tokio::time::timeout(CALLBACK_TIMEOUT, fut)
+                                            .await
+                                            .is_err()
+                                        {
+                                            tracing::warn!(
+                                                type_,
+                                                "plugin TCP event callback timed out after \
+                                                 {CALLBACK_TIMEOUT:?}"
+                                            );
+                                        }
                                     }
                                     None => break,
                                 }
