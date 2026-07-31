@@ -205,6 +205,17 @@ impl PluginEventChannel {
     /// receive flood).
     pub fn push(&self, event_type: String, payload: serde_json::Value) {
         let incoming_bytes = event_payload_bytes(&event_type, &payload);
+        // Per-event bound (P1): a single oversized event is dropped immediately.
+        if incoming_bytes > crate::plugin_tcp::quota::MAX_EVENT_RAW_BYTES {
+            self.dropped_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            self.dropped_bytes.fetch_add(incoming_bytes as u64, std::sync::atomic::Ordering::Relaxed);
+            tracing::warn!(
+                event_type,
+                incoming_bytes,
+                "plugin TCP event exceeds MAX_EVENT_RAW_BYTES; dropped"
+            );
+            return;
+        }
         let is_lifecycle = is_lifecycle(&event_type);
         if is_lifecycle {
             let mut queue = self.high.lock().unwrap();

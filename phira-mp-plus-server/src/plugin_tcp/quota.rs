@@ -22,6 +22,10 @@ pub(crate) const MAX_PENDING_EVENTS_PER_PLUGIN: usize = 64;
 /// individual receive payloads are large (PMP38 P0-F).
 pub(crate) const MAX_PENDING_EVENT_BYTES_PER_PLUGIN: usize = 4 * 1024 * 1024; // 4 MiB
 
+/// Maximum raw payload bytes for a SINGLE receive event.  A larger chunk is
+/// dropped immediately (per-event bound, P1).
+pub(crate) const MAX_EVENT_RAW_BYTES: usize = 1024 * 1024; // 1 MiB
+
 /// Per-connection sustained read rate (bytes/sec) for plugin TCP receive.
 /// A token bucket of this size allows full-burst reads; sustained throughput
 /// is throttled to this rate (P1: per-connection rate).
