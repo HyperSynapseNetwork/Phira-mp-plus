@@ -316,15 +316,44 @@ impl PersistenceWal {
         let mut line =
             serde_json::to_vec(frame).map_err(|e| format!("serialize WAL frame: {e}"))?;
         line.push(b'\n');
-        file.write_all(&line)
+
+        // Record the file length before writing so a partial frame can be
+        // truncated back on failure (P0-B).
+        let original_len = file
+            .metadata()
             .await
-            .map_err(|e| format!("append WAL {}: {e}", self.path.display()))?;
-        file.flush()
-            .await
-            .map_err(|e| format!("flush WAL {}: {e}", self.path.display()))?;
-        file.sync_data()
-            .await
-            .map_err(|e| format!("sync WAL {}: {e}", self.path.display()))?;
+            .map(|m| m.len())
+            .unwrap_or(0);
+
+        let write_result = async {
+            file.write_all(&line).await?;
+            file.flush().await?;
+            file.sync_data().await?;
+            Ok::<(), String>(())
+        }
+        .await;
+        if let Err(e) = write_result {
+            // Roll back the partial frame if possible.  If truncation fails,
+            // the WAL is corrupt — mark fatal degraded.
+            let trunc = file
+                .set_len(original_len)
+                .await
+                .map_err(|te| format!("truncate WAL after failed append: {te}"));
+            match trunc {
+                Ok(()) => {
+                    return Err(format!(
+                        "append WAL {} failed (rolled back {original_len} bytes): {e}",
+                        self.path.display()
+                    ));
+                }
+                Err(te) => {
+                    self.mark_degraded(DEGRADED_CORRUPTION);
+                    return Err(format!(
+                        "append WAL {} failed AND truncate-back failed — WAL corrupt: {te}"
+                    ));
+                }
+            }
+        }
 
         self.total_bytes
             .fetch_add(line.len() as u64, Ordering::Release);
