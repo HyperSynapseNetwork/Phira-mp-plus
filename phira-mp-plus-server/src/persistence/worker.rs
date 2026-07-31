@@ -6,6 +6,7 @@
 //! Touch/Judge telemetry goes through the HighFrequencyWriter — the single
 //! unified high-frequency persistence path.
 
+use crate::persistence::control::PendingControl;
 use crate::persistence::message::{AdmissionOutcome, PersistenceEvent};
 use crate::persistence::process::process_event_through_pipeline;
 use crate::persistence::process::ProcessOutcome;
@@ -103,19 +104,7 @@ async fn process_worker_loop(
     // Tracks a deferred control message (Flush/Shutdown) waiting for all
     // events with wal_sequence <= target to reach a terminal state before
     // replying.  Checked on each loop iteration so progress is made through
-    // normal event processing.
-    enum PendingControl {
-        FlushReply {
-            target: u64,
-            reply: oneshot::Sender<Result<(), String>>,
-            deadline: Instant,
-        },
-        Shutdown {
-            target: u64,
-            reply: oneshot::Sender<Result<(), String>>,
-            deadline: Instant,
-        },
-    }
+    // normal event processing.  Type lives in `persistence::control`.
     let mut pending_control: Option<PendingControl> = None;
 
     loop {
@@ -129,10 +118,7 @@ async fn process_worker_loop(
         // was dropped — the caller received "acknowledgement was dropped"
         // instead of waiting for the target events to complete.
         if let Some(pc) = pending_control.as_mut() {
-            let (target, deadline) = match pc {
-                PendingControl::FlushReply { target, deadline, .. } => (*target, *deadline),
-                PendingControl::Shutdown { target, deadline, .. } => (*target, *deadline),
-            };
+            let (target, deadline) = (pc.target(), pc.deadline());
             let buffer_remaining = buffer.range(..=target).count();
             // Count ALL un-ACKed WAL entries with seq <= target.
             let wal_pending = match worker_wal.list_pending().await {
@@ -145,11 +131,7 @@ async fn process_worker_loop(
                     // state.  Reply with an error instead of assuming zero
                     // pending (which would let Flush/Shutdown report success
                     // while an uncommitted event is lost).
-                    let pc = pending_control.take().unwrap();
-                    let (reply, should_break) = match pc {
-                        PendingControl::FlushReply { reply, .. } => (reply, false),
-                        PendingControl::Shutdown { reply, .. } => (reply, true),
-                    };
+                    let (reply, should_break) = pending_control.take().unwrap().finish();
                     let _ = reply.send(Err(format!("WAL error during flush/shutdown: {e}")));
                     pending_control = None;
                     if should_break {
@@ -164,11 +146,7 @@ async fn process_worker_loop(
 
             if ready || expired {
                 // Take ownership only when we are about to reply.
-                let pc = pending_control.take().unwrap();
-                let (reply, should_break) = match pc {
-                    PendingControl::FlushReply { reply, .. } => (reply, false),
-                    PendingControl::Shutdown { reply, .. } => (reply, true),
-                };
+                let (reply, should_break) = pending_control.take().unwrap().finish();
                 if ready {
                     let _ = reply.send(Ok(()));
                 } else {

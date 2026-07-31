@@ -5,6 +5,7 @@
 
 pub mod admin;
 pub mod benchmark;
+pub mod control;
 pub mod diagnostics;
 pub mod events;
 pub mod high_frequency;
