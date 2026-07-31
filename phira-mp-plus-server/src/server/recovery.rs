@@ -264,8 +264,19 @@ async fn restore_persistent_rooms(state: &Arc<PlusServerState>, db: &DbManager) 
                 info!("startup recovery: restored persistent room {room_id}");
                 // Load the latest RoomSnapshot from mp_room_snapshots and
                 // apply lock/cycle/chart/hidden state so the persistent room
-                // reflects its pre-restart configuration.
-                if let Some(payload) = db.get_latest_room_snapshot(room_id).await {
+                // reflects its pre-restart configuration.  A DB/parse error is
+                // fail-closed (recovery aborts) rather than silently skipping
+                // the snapshot restore.
+                let snapshot_opt = db
+                    .get_latest_room_snapshot(room_id)
+                    .await
+                    .map_err(|e| {
+                        anyhow::anyhow!(
+                            "startup recovery: failed to read room snapshot for {room_id} \
+                             (fail-closed): {e}"
+                        )
+                    })?;
+                if let Some(payload) = snapshot_opt {
                     match serde_json::from_value::<RoomSnapshot>(payload) {
                         Ok(snapshot) => {
                             // Apply lock state

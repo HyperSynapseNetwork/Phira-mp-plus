@@ -96,7 +96,15 @@ impl DbManager {
 
     /// Get the latest room snapshot payload for a given room_id from
     /// mp_room_snapshots. Returns None when the snapshot does not exist.
-    pub async fn get_latest_room_snapshot(&self, room_id: &str) -> Option<Value> {
+    /// Fetch the latest room snapshot payload for a room.
+    ///
+    /// Returns `Err` on database/parse failure so the recovery path can
+    /// fail-closed instead of treating an unreadable snapshot as "no snapshot"
+    /// (which could silently skip restoring a persistent room's state).
+    pub async fn get_latest_room_snapshot(
+        &self,
+        room_id: &str,
+    ) -> std::result::Result<Option<Value>, String> {
         let Self::Pg(pool) = self;
         let row = sqlx::query(
             "SELECT payload::text AS payload FROM mp_room_snapshots
@@ -105,9 +113,16 @@ impl DbManager {
         .bind(room_id)
         .fetch_optional(pool)
         .await
-        .ok()??;
-        let raw: String = row.try_get("payload").ok()?;
-        serde_json::from_str(&raw).ok()
+        .map_err(|e| format!("query room snapshot for {room_id}: {e}"))?;
+        let Some(row) = row else {
+            return Ok(None);
+        };
+        let raw: String = row
+            .try_get("payload")
+            .map_err(|e| format!("read room snapshot payload for {room_id}: {e}"))?;
+        let payload: Value = serde_json::from_str(&raw)
+            .map_err(|e| format!("parse room snapshot payload for {room_id}: {e}"))?;
+        Ok(Some(payload))
     }
 
     pub async fn query_touch_batches(
