@@ -114,41 +114,72 @@ impl PersistenceWal {
     }
 
     /// Update the marker to active state (WAL intentionally exists).
-    /// Called after admission/ACK when the marker was previously clean.
+    /// Called after admission when the marker was previously clean or missing.
+    ///
+    /// P0-D: the marker must exist once the WAL holds durable data.  A runtime
+    /// missing marker (manual deletion, partial directory loss, mount failure)
+    /// is abnormal and is recreated ACTIVE with the current high-water
+    /// sequence inside the io_gate (the caller `admit` holds it).  Recreation
+    /// failure degrades the deletion guard — it must NOT return a plain Ok.
+    ///
+    /// An already-ACTIVE marker is verified (parsed) and the MARKER degraded
+    /// reason is cleared, self-healing the case where a rename succeeded but
+    /// the parent fsync failed (audit §9 P0-05).
     pub(crate) async fn mark_marker_active(&self) -> Result<(), String> {
         let marker_path = self.path.with_extension("wal.instance");
         if !marker_path.exists() {
-            return Ok(()); // no marker yet, will be created on first write
-        }
-        // Only rewrite if currently clean — avoids unnecessary I/O.
-        let content = tokio::fs::read_to_string(&marker_path)
-            .await
-            .map_err(|e| format!("read marker: {e}"))?;
-        match serde_json::from_str::<serde_json::Value>(&content) {
-            Ok(val) => {
-                if val.get("clean").and_then(|c| c.as_bool()).unwrap_or(false) {
-                    // Preserve the recorded high-water mark so it survives the
-                    // clean→active rewrite.
-                    let old_max = val
-                        .get("max_sequence")
-                        .and_then(|s| s.as_u64())
-                        .unwrap_or(0);
-                    let r = self.write_marker_inner(&marker_path, false, old_max).await;
-                    if r.is_ok() {
-                        // Marker successfully repaired — clear the marker
-                        // degraded reason (P1).
-                        self.clear_marker_degraded();
-                    }
-                    return r;
+            // WAL has durable data but the deletion guard is missing.  Recreate
+            // it as ACTIVE (clean=false) — a CLEAN marker would mask the loss.
+            let max_sequence = self.admit_sequence.load(Ordering::Acquire);
+            match self.write_marker_inner(&marker_path, false, max_sequence).await {
+                Ok(()) => {
+                    self.clear_marker_degraded();
+                    Ok(())
+                }
+                Err(e) => {
+                    self.mark_degraded(super::DEGRADED_MARKER);
+                    Err(format!(
+                        "recreate active instance marker after runtime loss: {e}"
+                    ))
                 }
             }
-            Err(e) => {
-                // Marker exists but is corrupt/unreadable — mark degraded (P1).
+        } else {
+            // Marker exists — read and verify it.
+            let content = tokio::fs::read_to_string(&marker_path).await.map_err(|e| {
                 self.mark_degraded(super::DEGRADED_MARKER);
-                return Err(format!("marker parse failed: {e}"));
+                format!("read marker: {e}")
+            })?;
+            match serde_json::from_str::<serde_json::Value>(&content) {
+                Ok(val) => {
+                    if val.get("clean").and_then(|c| c.as_bool()).unwrap_or(false) {
+                        // Preserve the recorded high-water mark so it survives
+                        // the clean→active rewrite.
+                        let old_max = val
+                            .get("max_sequence")
+                            .and_then(|s| s.as_u64())
+                            .unwrap_or(0);
+                        let r = self.write_marker_inner(&marker_path, false, old_max).await;
+                        if r.is_ok() {
+                            // Marker successfully rewritten active — clear the
+                            // marker degraded reason (P1).
+                            self.clear_marker_degraded();
+                        }
+                        return r;
+                    }
+                    // Already ACTIVE.  Verified it parses — clear the marker
+                    // degraded reason.  This self-heals the parent-fsync-failure
+                    // case where the marker is actually active on disk while
+                    // MARKER degraded was latched (P0-D / §9 P0-05).
+                    self.clear_marker_degraded();
+                    Ok(())
+                }
+                Err(e) => {
+                    // Marker exists but is corrupt/unreadable — mark degraded.
+                    self.mark_degraded(super::DEGRADED_MARKER);
+                    Err(format!("marker parse failed: {e}"))
+                }
             }
         }
-        Ok(())
     }
 
     /// Check if the instance marker exists but the WAL file is gone or empty.
@@ -191,6 +222,15 @@ impl PersistenceWal {
         let metadata = tokio::fs::metadata(&self.path).await
             .map_err(|e| format!("stat WAL: {e}"))?;
         if metadata.len() == 0 {
+            if is_clean {
+                // P1 (§17/§24): a CLEAN marker + empty WAL is equivalent to
+                // "no WAL".  This can happen when the first admission fails
+                // and rolls back to length 0, leaving an empty file behind
+                // after an unclean exit (no compact ran).  Delete the empty
+                // file and continue — the instance never held durable data.
+                let _ = tokio::fs::remove_file(&self.path).await;
+                return Ok(());
+            }
             return Err(format!(
                 "WAL instance marker exists but WAL file {} is empty (corruption or truncation).",
                 self.path.display()

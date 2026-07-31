@@ -316,6 +316,17 @@ pub async fn process_event_through_pipeline(
                     in_flight.lock().await.remove(&wal_id);
                 }
                 Err(error) => {
+                    // P0-A: corruption/compact are FATAL.  Do NOT queue this
+                    // ACK for retry — retrying would append to an uncertain
+                    // tail.  Signal the worker to halt instead.
+                    if worker_wal.is_fatal() {
+                        crate::supervisor_actor::report_critical_failure(
+                            "persistence-wal-ack",
+                            format!("WAL fatal during ACK: {error}"),
+                        )
+                        .await;
+                        return ProcessOutcome::FatalFailure;
+                    }
                     worker_wal.mark_degraded(crate::persistence::wal::DEGRADED_ACK);
                     crate::supervisor_actor::report_critical_failure("persistence-wal-ack", error).await;
                     pending_acks.push_back((wal_id, 0));

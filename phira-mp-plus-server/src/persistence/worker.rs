@@ -186,6 +186,26 @@ async fn process_worker_loop(
         // iterations too — previously it sat after `let Some(msg) else
         // continue` and was skipped whenever no message arrived).
         if let Some((retry_id, retry_attempt)) = pending_acks.front().copied() {
+            // P0-A: corruption/compact are FATAL — do NOT keep retrying ACK
+            // appends against a possibly-bad tail.  Report the fatal state and
+            // transition the worker into degraded mode (rejects all events).
+            if worker_wal.is_fatal() {
+                tracing::error!(
+                    wal_id = %retry_id,
+                    reasons = ?worker_wal.degraded_reasons(),
+                    "WAL is in a fatal state; stopping ACK retries and halting the worker"
+                );
+                crate::supervisor_actor::report_critical_failure(
+                    "persistence-wal-fatal",
+                    format!(
+                        "WAL entered a fatal state during ACK retry: {:?}",
+                        worker_wal.degraded_reasons()
+                    ),
+                )
+                .await;
+                process_degraded_worker_loop(&mut *rx, worker_wal).await;
+                break;
+            }
             match worker_wal.ack(retry_id).await {
                 Ok(()) => {
                     debug!(wal_id = %retry_id, "ACK retry succeeded");
@@ -436,6 +456,25 @@ async fn process_worker_loop(
             ProcessOutcome::Shutdown => {
                 break;
             }
+            ProcessOutcome::FatalFailure => {
+                // P0-A: the WAL is in a fatal state (corruption/compact).
+                // Halt event processing — reject all events, only accept
+                // Shutdown — so the service does not keep admitting against an
+                // unverifiable WAL.
+                tracing::error!(
+                    kind = %event_kind,
+                    "persistence worker entering fatal mode after a fatal WAL failure"
+                );
+                crate::supervisor_actor::report_critical_failure(
+                    "persistence-wal-fatal",
+                    format!(
+                        "persistence worker halted after fatal WAL state (event kind {event_kind})"
+                    ),
+                )
+                .await;
+                process_degraded_worker_loop(&mut *rx, worker_wal).await;
+                break;
+            }
             ProcessOutcome::RetryableFailure => {
                 // Event did NOT reach a durable terminal state (both DB and
                 // DLQ failed).  The WAL sequence gate MUST NOT advance so
@@ -567,6 +606,16 @@ async fn drain_pending_acks(
     let mut attempts = 0u64;
 
     while !pending_acks.is_empty() && Instant::now() < deadline {
+        // P0-A: in a fatal state (corruption/compact) retrying ACKs is futile
+        // and forbidden — abort the drain immediately rather than burning the
+        // deadline on doomed append attempts.
+        if worker_wal.is_fatal() {
+            warn!(
+                remaining = pending_acks.len(),
+                "pending ACK drain aborted: WAL is in a fatal state"
+            );
+            break;
+        }
         if let Some((id, attempt)) = pending_acks.pop_front() {
             match worker_wal.ack(id).await {
                 Ok(()) => {
@@ -579,6 +628,12 @@ async fn drain_pending_acks(
                     in_flight.lock().await.remove(&id);
                 }
                 Err(_e) => {
+                    // P0-A: if this ACK attempt pushed the WAL into a fatal
+                    // state (e.g. FatalUnknown latched CORRUPTION), do NOT keep
+                    // it queued or mislabel it as a plain ACK degradation.
+                    if worker_wal.is_fatal() {
+                        break;
+                    }
                     worker_wal.mark_degraded(crate::persistence::wal::DEGRADED_ACK);
                     pending_acks.push_back((id, attempt.saturating_add(1)));
                     tokio::time::sleep(Duration::from_millis(100)).await;
@@ -604,15 +659,20 @@ async fn drain_pending_acks(
     remaining
 }
 
-/// Degraded worker loop: entered when WAL replay fails. Only accepts
-/// Shutdown commands; all other messages are logged and discarded so no
-/// data is processed with an unverified WAL.
+/// Degraded worker loop: entered when WAL replay fails OR when the WAL enters
+/// a runtime fatal state (corruption/compact).  Only accepts Shutdown commands;
+/// all other messages are logged and discarded so no data is processed with an
+/// unverified WAL.
+///
+/// When the WAL is in a fatal state (`wal.is_fatal()`), Flush/Shutdown replies
+/// report an error because durability cannot be confirmed (P0-A).
 async fn process_degraded_worker_loop(
     rx: &mut mpsc::Receiver<WorkerMessage>,
+    wal: &Arc<PersistenceWal>,
 ) {
     use tracing::{error, info, warn};
 
-    error!("persistence worker entered degraded mode: WAL replay failed, rejecting all events");
+    error!("persistence worker entered degraded mode: rejecting all events");
 
     loop {
         let Some(message) = rx.recv().await else {
@@ -624,12 +684,28 @@ async fn process_degraded_worker_loop(
                 continue;
             }
             WorkerMessage::Flush { reply, .. } => {
-                let _ = reply.send(Ok(()));
+                // P0-A: a flush cannot confirm durability while the WAL is in
+                // a fatal state — do not report success.
+                let _ = if wal.is_fatal() {
+                    reply.send(Err(
+                        "persistence WAL is in a fatal state; flush cannot confirm durability"
+                            .to_string(),
+                    ))
+                } else {
+                    reply.send(Ok(()))
+                };
                 continue;
             }
             WorkerMessage::Shutdown { reply, .. } => {
                 info!("degraded persistence worker shutting down");
-                let _ = reply.send(Ok(()));
+                let _ = if wal.is_fatal() {
+                    reply.send(Err(
+                        "persistence WAL is in a fatal state; shutdown cannot confirm durability"
+                            .to_string(),
+                    ))
+                } else {
+                    reply.send(Ok(()))
+                };
                 break;
             }
         }
@@ -859,12 +935,12 @@ impl PersistenceWorker {
                     .await;
                     // Fail-closed: enter a degraded loop that only accepts
                     // shutdown/control messages; all events are rejected.
-                    process_degraded_worker_loop(&mut rx).await;
+                    process_degraded_worker_loop(&mut rx, &worker_wal).await;
                 }
             }
             } else {
                 // Instance consistency check failed — enter degraded mode.
-                process_degraded_worker_loop(&mut rx).await;
+                process_degraded_worker_loop(&mut rx, &worker_wal).await;
             }
         });
 
