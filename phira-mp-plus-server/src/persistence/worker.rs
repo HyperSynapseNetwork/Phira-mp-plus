@@ -407,12 +407,15 @@ async fn process_worker_loop(
                 }
             };
             let buffer_remaining = buffer.range(..=target).count();
-            // Exclude in_flight entries to find truly WalOnly events
-            // that have not yet been re-enqueued to the channel.
-            let in_flight_ids: HashSet<uuid::Uuid> = in_flight.lock().await.clone();
+            // Count ALL un-ACKed WAL entries with seq <= target, including
+            // those currently in-flight (queued in the channel or being
+            // processed by the pipeline).  Previously in_flight entries were
+            // excluded, which created a correctness gap: the fence could
+            // return before events that were queued (but not yet committed
+            // to the database) reached a terminal state.
             let wal_pending = match worker_wal.list_pending().await {
                 Ok(p) => p.iter()
-                    .filter(|(id, _, seq)| !in_flight_ids.contains(id) && *seq <= target)
+                    .filter(|(_, _, seq)| *seq <= target)
                     .count(),
                 Err(_) => 0,
             };
@@ -579,10 +582,9 @@ async fn process_worker_loop(
                 drain_pending_acks(worker_wal, &mut pending_acks, in_flight, Some(deadline)).await;
 
                 let buffer_remaining = buffer.range(..=target_wal_sequence).count();
-                let in_flight_ids: HashSet<uuid::Uuid> = in_flight.lock().await.clone();
                 let wal_pending = match worker_wal.list_pending().await {
                     Ok(p) => p.iter()
-                        .filter(|(id, _, seq)| !in_flight_ids.contains(id) && *seq <= target_wal_sequence)
+                        .filter(|(_, _, seq)| *seq <= target_wal_sequence)
                         .count(),
                     Err(_) => 0,
                 };
@@ -608,10 +610,9 @@ async fn process_worker_loop(
                 drain_pending_acks(worker_wal, &mut pending_acks, in_flight, Some(deadline)).await;
 
                 let buffer_remaining = buffer.range(..=target_wal_sequence).count();
-                let in_flight_ids: HashSet<uuid::Uuid> = in_flight.lock().await.clone();
                 let wal_pending = match worker_wal.list_pending().await {
                     Ok(p) => p.iter()
-                        .filter(|(id, _, seq)| !in_flight_ids.contains(id) && *seq <= target_wal_sequence)
+                        .filter(|(_, _, seq)| *seq <= target_wal_sequence)
                         .count(),
                     Err(_) => 0,
                 };
