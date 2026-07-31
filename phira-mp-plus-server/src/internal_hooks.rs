@@ -93,6 +93,20 @@ pub async fn init_internal_hooks(
         }
     });
 
+    // Periodic login_count reconciliation against mp_user_visits (hourly).
+    // Keeps the aggregate counter aligned with the idempotent visit ledger.
+    let reconcile_db = state.db_manager.clone();
+    tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(std::time::Duration::from_secs(3600)).await;
+            match reconcile_db.reconcile_login_counts().await {
+                Ok(0) => {}
+                Ok(n) => info!("reconciled {n} user login_count(s) against mp_user_visits"),
+                Err(e) => warn!(error = %e, "login_count reconciliation failed"),
+            }
+        }
+    });
+
     init_welcome(state, pm).await;
     init_player_tracker(state, http, pm).await;
     init_round_results(state, pm).await;

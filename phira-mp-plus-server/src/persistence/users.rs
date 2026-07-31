@@ -121,6 +121,26 @@ impl DbManager {
             .collect()
     }
 
+    /// Reconcile `mp_users.login_count` against the actual per-user visit count
+    /// in `mp_user_visits` (P1: total visits reconciliation).
+    ///
+    /// Returns the number of user rows corrected.  Runs periodically so that
+    /// transient auth failures or retry paths cannot permanently desync the
+    /// aggregate counter from the idempotent visit ledger.
+    pub async fn reconcile_login_counts(&self) -> std::result::Result<u64, String> {
+        let Self::Pg(pool) = self;
+        let result = sqlx::query(
+            "UPDATE mp_users u
+             SET login_count = v.visits, updated_at = EXTRACT(EPOCH FROM now())::bigint * 1000
+             FROM (SELECT user_id, COUNT(*) AS visits FROM mp_user_visits GROUP BY user_id) v
+             WHERE u.user_id = v.user_id AND u.login_count != v.visits",
+        )
+        .execute(pool)
+        .await
+        .map_err(|e| format!("reconcile login counts: {e}"))?;
+        Ok(result.rows_affected())
+    }
+
     /// Atomic commit for a full UserAuthenticated event in a single PG transaction.
     ///
     /// Combines visit recording (idempotent via `mp_user_visits`), user upsert
