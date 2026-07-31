@@ -326,9 +326,12 @@ impl PersistenceWal {
             .unwrap_or(0);
 
         let write_result = async {
-            file.write_all(&line).await?;
-            file.flush().await?;
-            file.sync_data().await?;
+            file.write_all(&line).await
+                .map_err(|e| format!("append WAL {}: {e}", self.path.display()))?;
+            file.flush().await
+                .map_err(|e| format!("flush WAL {}: {e}", self.path.display()))?;
+            file.sync_data().await
+                .map_err(|e| format!("sync WAL {}: {e}", self.path.display()))?;
             Ok::<(), String>(())
         }
         .await;
