@@ -136,12 +136,14 @@ wasm_runtime:
 | `compatibility.official_phira_client` | `bool` | `true` | 是否针对未修改的官方客户端启用兼容延迟。设为 `false` 可做差分/压测。 |
 | `compatibility.minimum_response_latency_ms` | `u64` | `10` | 请求型命令响应的最低服务端延迟（毫秒），从收到命令开始计时。模拟官方服务端自然调度，保证客户端 `send→install-callback` 顺序不被破坏。 |
 | `compatibility.session_command_deadline_ms` | `u64` | `4500` | 单条普通客户端命令的总业务 deadline（毫秒），覆盖 mailbox 发送与 reply 两个阶段。必须明显小于官方客户端约 7 秒的固定等待；合法范围 `100..=6000`。 |
+| `compatibility.protocol_hack_delay_ms` | `Option<u64>` | `None`（回退到 `minimum_response_latency_ms`） | ProtocolHack 补偿消息延迟（毫秒）。PMP 扩展补偿（ChangeHost/ChangeState/持久房间/回放模拟）在官方响应 flush 之后按固定顺序调度，不阻塞 Room Actor。设为 `0` 可做差分测试（与官方/无补偿时序对比）。 |
 
 ```yaml
 compatibility:
   official_phira_client: true
   minimum_response_latency_ms: 10
   session_command_deadline_ms: 4500
+  # protocol_hack_delay_ms: 10   # 省略时回退到 minimum_response_latency_ms
 ```
 
 语义约束：
