@@ -1206,7 +1206,7 @@ mod tests {
         assert!(result.is_err(), "list_pending must fail on corruption");
         assert!(wal.is_degraded(), "WAL must be marked degraded on corruption");
 
-        let _ = tokio::fs::remove_file(path).await;
+        let _ = tokio::fs::remove_file(&path).await;
         let _ = tokio::fs::remove_file(path.with_extension("wal.instance")).await;
     }
 
@@ -1237,7 +1237,7 @@ mod tests {
         assert!(result.is_ok(), "trailing truncation must be tolerated: {result:?}");
         assert!(!wal.is_degraded());
 
-        let _ = tokio::fs::remove_file(path).await;
+        let _ = tokio::fs::remove_file(&path).await;
         let _ = tokio::fs::remove_file(path.with_extension("wal.instance")).await;
     }
 
