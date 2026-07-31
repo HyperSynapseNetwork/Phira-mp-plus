@@ -14,7 +14,6 @@ pub fn init() -> &'static str {
     let id = uuid::Uuid::new_v4().to_string();
     SERVER_INSTANCE_ID
         .set(id)
-        .ok()
         .expect("server instance ID already initialized");
     SERVER_INSTANCE_ID.get().expect("just set")
 }
