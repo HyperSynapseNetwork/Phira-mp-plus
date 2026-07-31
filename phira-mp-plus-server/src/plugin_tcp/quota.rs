@@ -17,6 +17,11 @@ pub(crate) const MAX_READ_BUF_PER_PLUGIN: usize = 4_194_304; // 4 MB
 /// Maximum pending events per plugin before rate limiting drops new events.
 pub(crate) const MAX_PENDING_EVENTS_PER_PLUGIN: usize = 64;
 
+/// Maximum total payload bytes buffered in a plugin's event channel (across
+/// both queues).  Bounds memory even when event count is within limits but
+/// individual receive payloads are large (PMP38 P0-F).
+pub(crate) const MAX_PENDING_EVENT_BYTES_PER_PLUGIN: usize = 4 * 1024 * 1024; // 4 MiB
+
 /// Per-connection sustained read rate (bytes/sec) for plugin TCP receive.
 /// A token bucket of this size allows full-burst reads; sustained throughput
 /// is throttled to this rate (P1: per-connection rate).

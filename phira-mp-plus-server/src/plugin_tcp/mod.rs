@@ -117,6 +117,24 @@ pub(crate) struct PluginEventChannel {
     dropped_lifecycle: std::sync::atomic::AtomicU64,
     /// Receive events dropped (the droppable category).
     dropped_receive: std::sync::atomic::AtomicU64,
+    /// Total payload bytes currently buffered across both queues (P0-F).
+    total_bytes: std::sync::atomic::AtomicUsize,
+    /// Bytes dropped because the byte budget was exceeded (P0-F).
+    dropped_bytes: std::sync::atomic::AtomicU64,
+}
+
+/// Approximate byte size of an event payload for byte-budget accounting.
+/// Receive payloads are dominated by the `bytes` array; others are small JSON.
+fn event_payload_bytes(event_type: &str, payload: &serde_json::Value) -> usize {
+    if is_lifecycle(event_type) {
+        serde_json::to_vec(payload).map(|v| v.len()).unwrap_or(0)
+    } else {
+        payload
+            .get("bytes")
+            .and_then(|b| b.as_array())
+            .map(|a| a.len())
+            .unwrap_or(0)
+    }
 }
 
 /// Event types that are lifecycle-critical and must never be evicted by a
@@ -168,6 +186,8 @@ impl PluginEventChannel {
             dropped_count: std::sync::atomic::AtomicU64::new(0),
             dropped_lifecycle: std::sync::atomic::AtomicU64::new(0),
             dropped_receive: std::sync::atomic::AtomicU64::new(0),
+            total_bytes: std::sync::atomic::AtomicUsize::new(0),
+            dropped_bytes: std::sync::atomic::AtomicU64::new(0),
         }
     }
 
@@ -178,14 +198,29 @@ impl PluginEventChannel {
     /// are dropped only when the high queue itself is full (never evicted by a
     /// receive flood).
     pub fn push(&self, event_type: String, payload: serde_json::Value) {
+        let incoming_bytes = event_payload_bytes(&event_type, &payload);
         let is_lifecycle = is_lifecycle(&event_type);
         if is_lifecycle {
             let mut queue = self.high.lock().unwrap();
             if queue.len() >= self.max_len {
-                queue.pop_front();
+                if let Some((t, p)) = queue.pop_front() {
+                    let freed = event_payload_bytes(&t, &p);
+                    self.total_bytes.fetch_sub(freed, std::sync::atomic::Ordering::Relaxed);
+                }
                 self.dropped_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 self.dropped_lifecycle.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             }
+            // Byte budget (P0-F): reject the event if it would exceed the cap.
+            if self.total_bytes.load(std::sync::atomic::Ordering::Relaxed)
+                + incoming_bytes
+                > crate::plugin_tcp::quota::MAX_PENDING_EVENT_BYTES_PER_PLUGIN
+            {
+                self.dropped_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                self.dropped_lifecycle.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                self.dropped_bytes.fetch_add(incoming_bytes as u64, std::sync::atomic::Ordering::Relaxed);
+                return;
+            }
+            self.total_bytes.fetch_add(incoming_bytes, std::sync::atomic::Ordering::Relaxed);
             queue.push_back((event_type, payload));
         } else {
             let mut queue = self.normal.lock().unwrap();
@@ -195,14 +230,30 @@ impl PluginEventChannel {
                 // merge the payload is already incorporated into the queued
                 // event — do NOT push the original payload again (PMP37 P0-G).
                 if merge_receive(&mut queue, &payload) {
+                    // Merged bytes grow the buffered total.
+                    self.total_bytes.fetch_add(incoming_bytes, std::sync::atomic::Ordering::Relaxed);
                     drop(queue);
                     self.notify.notify_one();
                     return;
                 }
-                queue.pop_front();
+                if let Some((t, p)) = queue.pop_front() {
+                    let freed = event_payload_bytes(&t, &p);
+                    self.total_bytes.fetch_sub(freed, std::sync::atomic::Ordering::Relaxed);
+                }
                 self.dropped_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 self.dropped_receive.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             }
+            // Byte budget (P0-F): reject if adding would exceed the cap.
+            if self.total_bytes.load(std::sync::atomic::Ordering::Relaxed)
+                + incoming_bytes
+                > crate::plugin_tcp::quota::MAX_PENDING_EVENT_BYTES_PER_PLUGIN
+            {
+                self.dropped_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                self.dropped_receive.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                self.dropped_bytes.fetch_add(incoming_bytes as u64, std::sync::atomic::Ordering::Relaxed);
+                return;
+            }
+            self.total_bytes.fetch_add(incoming_bytes, std::sync::atomic::Ordering::Relaxed);
             queue.push_back((event_type, payload));
         }
         self.notify.notify_one();
@@ -221,6 +272,16 @@ impl PluginEventChannel {
     /// Receive events dropped (the droppable category).
     pub fn dropped_receive(&self) -> u64 {
         self.dropped_receive.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Total payload bytes currently buffered across both queues.
+    pub fn pending_bytes(&self) -> usize {
+        self.total_bytes.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Bytes dropped because the byte budget was exceeded.
+    pub fn dropped_bytes(&self) -> u64 {
+        self.dropped_bytes.load(std::sync::atomic::Ordering::Relaxed)
     }
 
     /// Number of events currently pending in the bounded queues.
