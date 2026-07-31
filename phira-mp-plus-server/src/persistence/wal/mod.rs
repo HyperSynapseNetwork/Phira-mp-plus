@@ -645,7 +645,24 @@ impl PersistenceWal {
         // Re-read WAL state under the same lock.
         let bytes = match tokio::fs::read(&self.path).await {
             Ok(bytes) => bytes,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(0),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                // No WAL file to compact.  Ensure the marker reflects the WAL
+                // absence (clean) so the next boot does not misread it as
+                // accidental deletion (PMP37 P0-A).  Only rewrite if the
+                // marker currently says active.
+                let marker_path = self.path.with_extension("wal.instance");
+                let is_clean = tokio::fs::read_to_string(&marker_path)
+                    .await
+                    .ok()
+                    .and_then(|c| serde_json::from_str::<serde_json::Value>(&c).ok())
+                    .and_then(|v| v.get("clean").and_then(|x| x.as_bool()))
+                    .unwrap_or(true);
+                if !is_clean {
+                    let max_sequence = self.admit_sequence.load(Ordering::Acquire);
+                    let _ = self.write_marker_inner(&marker_path, true, max_sequence).await;
+                }
+                return Ok(0);
+            }
             Err(e) => return Err(format!("read WAL for compact {}: {e}", self.path.display())),
         };
 

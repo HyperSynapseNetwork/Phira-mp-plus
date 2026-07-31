@@ -13,13 +13,19 @@ use std::sync::atomic::Ordering;
 impl PersistenceWal {
     /// Write an instance marker file next to the WAL so we can detect
     /// accidental deletion or truncation on subsequent starts.
+    ///
+    /// The first-boot marker is written CLEAN (no WAL yet).  It only becomes
+    /// active after the first admission (mark_marker_active).  This prevents a
+    /// run that never persists any event from leaving an active marker with no
+    /// WAL file — which the next boot would misread as accidental deletion
+    /// (PMP37 P0-A).
     pub(crate) async fn write_instance_marker(&self) -> Result<(), String> {
         let marker_path = self.path.with_extension("wal.instance");
         if marker_path.exists() {
             return Ok(()); // already initialized
         }
         let max_sequence = self.admit_sequence.load(Ordering::Acquire);
-        self.write_marker_inner(&marker_path, false, max_sequence).await
+        self.write_marker_inner(&marker_path, true, max_sequence).await
     }
 
     /// Write or overwrite the marker with the given clean state and high-water
