@@ -191,6 +191,48 @@ pub enum ConfigProfile {
     Production,
 }
 
+/// 官方 Phira 客户端兼容参数（PMP42 P0-B/P0-C）。
+///
+/// 官方 Phira 客户端是不可修改的兼容目标。PMP 必须复现官方 `phira-mp` 的
+/// 可观察响应时序：
+/// - 响应不能早于客户端安装回调（send→install-callback）；
+/// - 响应不能晚于客户端约 7 秒的固定 deadline。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CompatibilityConfig {
+    /// 是否针对未修改的官方客户端启用兼容延迟。设为 `false` 可做差分/压测。
+    #[serde(default = "default_official_phira_client")]
+    pub official_phira_client: bool,
+    /// 请求型命令响应的最低服务端延迟（毫秒）。从收到命令开始计时。
+    #[serde(default = "default_minimum_response_latency_ms")]
+    pub minimum_response_latency_ms: u64,
+    /// 单条普通客户端命令的总业务 deadline（毫秒），覆盖 mailbox 发送与
+    /// reply 两个阶段。必须明显小于官方客户端约 7 秒的固定等待。
+    #[serde(default = "default_session_command_deadline_ms")]
+    pub session_command_deadline_ms: u64,
+}
+
+impl Default for CompatibilityConfig {
+    fn default() -> Self {
+        Self {
+            official_phira_client: default_official_phira_client(),
+            minimum_response_latency_ms: default_minimum_response_latency_ms(),
+            session_command_deadline_ms: default_session_command_deadline_ms(),
+        }
+    }
+}
+
+fn default_official_phira_client() -> bool {
+    true
+}
+
+fn default_minimum_response_latency_ms() -> u64 {
+    10
+}
+
+fn default_session_command_deadline_ms() -> u64 {
+    4500
+}
+
 impl Default for ConfigProfile {
     fn default() -> Self {
         Self::Development
@@ -298,6 +340,9 @@ pub struct PlusConfig {
     /// OpenUDS (Unix Domain Socket) API configuration.
     #[serde(default)]
     pub openuds: OpenUdsConfig,
+    /// 官方 Phira 客户端兼容参数（PMP42 P0-B/P0-C）。
+    #[serde(default)]
+    pub compatibility: CompatibilityConfig,
 }
 
 impl Default for PlusConfig {
@@ -332,6 +377,7 @@ impl Default for PlusConfig {
             runtime: RuntimeConfig::default(),
             idle: IdleConfig::default(),
             openuds: OpenUdsConfig::default(),
+            compatibility: CompatibilityConfig::default(),
             trusted_forwarded_http_port: 0,
             proxy_allow_cidr: None,
             ready_countdown_secs: default_ready_countdown_secs(),
@@ -562,6 +608,18 @@ impl PlusConfig {
                     "proxy_allow_cidr 无效: {e}"
                 )));
             }
+        }
+        // 官方客户端兼容参数校验：总 deadline 必须明显小于客户端约 7 秒超时。
+        if !(100..=6000).contains(&self.compatibility.session_command_deadline_ms) {
+            return Err(AppError::ConfigValidation(
+                "compatibility.session_command_deadline_ms 必须在 100..=6000ms 范围内（需小于官方客户端约 7 秒 deadline）"
+                    .into(),
+            ));
+        }
+        if self.compatibility.minimum_response_latency_ms > 1000 {
+            return Err(AppError::ConfigValidation(
+                "compatibility.minimum_response_latency_ms 不能超过 1000ms".into(),
+            ));
         }
         Ok(())
     }
@@ -891,5 +949,36 @@ mod tests {
         let redacted = config.redacted_string();
         assert!(!redacted.contains("secret"), "redacted config should not contain secret: {redacted}");
         assert!(redacted.contains("****"), "redacted config should mask values");
+    }
+
+    #[test]
+    fn compatibility_defaults_target_official_client() {
+        let config = PlusConfig::default();
+        assert!(config.compatibility.official_phira_client);
+        assert_eq!(config.compatibility.minimum_response_latency_ms, 10);
+        assert_eq!(config.compatibility.session_command_deadline_ms, 4500);
+    }
+
+    #[test]
+    fn compatibility_validates_deadline_bounds() {
+        let config = PlusConfig {
+            compatibility: crate::CompatibilityConfig {
+                session_command_deadline_ms: 7000, // at or above client ~7s
+                ..Default::default()
+            },
+            database_url: "postgres://localhost/db".to_string(),
+            ..Default::default()
+        };
+        assert!(config.validate().is_err());
+
+        let config = PlusConfig {
+            compatibility: crate::CompatibilityConfig {
+                minimum_response_latency_ms: 2000,
+                ..Default::default()
+            },
+            database_url: "postgres://localhost/db".to_string(),
+            ..Default::default()
+        };
+        assert!(config.validate().is_err());
     }
 }

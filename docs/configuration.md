@@ -123,8 +123,32 @@ wasm_runtime:
 | `server_name` | `String?` | 未设置 | 服务器展示名称，可用于欢迎语等场景。 |
 | `admin_phira_ids` | `Vec<i32>` | `[]` | 游戏内管理员 Phira ID。管理员可在创建房间弹窗输入 `_命令` 执行 CLI 命令。 |
 | `wasm_runtime` | `object` | 见下表 | WASM 插件运行时资源限制。 |
+| `compatibility` | `object` | 见下表 | 官方 Phira 客户端兼容参数（PMP42）。 |
 
 端口校验规则：`port`、`http_port` 和启用后的 `trusted_forwarded_http_port` 不能冲突；设置 `trusted_forwarded_http_port > 0` 时必须同时启用 `http_port`。`trusted_forwarded_http_port` 只解析可信代理写入的 `X-Forwarded-For`，不实现 PROXY v1/v2。`max_rooms` 与 `max_users_per_room` 若设置，必须大于 0；`max_sessions`、`max_pending_auth` 和关闭时限也必须为正。`max_rooms` 同时约束客户端建房与管理端/WIT 创建空房。
+
+### 官方客户端兼容（`compatibility`）
+
+官方 Phira 客户端为不可变兼容目标，PMP 必须复现官方 `phira-mp` 的可观察行为。以下参数控制服务端的响应时序与 Actor 预算（PMP42 P0-B/P0-C）：
+
+| 配置项 | 类型 | 默认值 | 说明 |
+|---|---:|---:|---|
+| `compatibility.official_phira_client` | `bool` | `true` | 是否针对未修改的官方客户端启用兼容延迟。设为 `false` 可做差分/压测。 |
+| `compatibility.minimum_response_latency_ms` | `u64` | `10` | 请求型命令响应的最低服务端延迟（毫秒），从收到命令开始计时。模拟官方服务端自然调度，保证客户端 `send→install-callback` 顺序不被破坏。 |
+| `compatibility.session_command_deadline_ms` | `u64` | `4500` | 单条普通客户端命令的总业务 deadline（毫秒），覆盖 mailbox 发送与 reply 两个阶段。必须明显小于官方客户端约 7 秒的固定等待；合法范围 `100..=6000`。 |
+
+```yaml
+compatibility:
+  official_phira_client: true
+  minimum_response_latency_ms: 10
+  session_command_deadline_ms: 4500
+```
+
+语义约束：
+
+- 最低响应延迟必须在锁外等待（不得在 Actor 锁内 sleep），在发送响应前用 `received_at + minimum_response_latency` 计算剩余等待时间。
+- 超过 `session_command_deadline_ms` 的命令到达 Actor 后不会提交状态，而是返回对应 `ServerCommand` 错误，并计入 `late_commit` 观测计数。
+- 限流、权限拒绝、无房间、mailbox 错误等内部失败会返回命令对应的官方错误响应，不再静默丢弃请求；`silent_response_paths` 观测计数在正常运行时必须为 0。
 
 ### WASM 运行时限制
 

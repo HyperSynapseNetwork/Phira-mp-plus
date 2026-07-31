@@ -87,6 +87,19 @@ persistence_retention_days: 30
 #       failure_threshold: 8
 #       open_duration_ms: 20000
 
+# ---- 官方客户端兼容（PMP42） ----
+
+# 官方 Phira 客户端为不可变兼容目标。PMP 必须复现官方 phira-mp 的可观察行为。
+compatibility:
+  # 是否针对未修改的官方客户端启用兼容延迟。设为 false 可做差分/压测。
+  official_phira_client: true
+  # 请求型命令响应的最低服务端延迟（毫秒），从收到命令开始计时。
+  # 模拟官方服务端自然调度，保证客户端 send→install-callback 顺序不被破坏。
+  minimum_response_latency_ms: 10
+  # 单条普通客户端命令的总业务 deadline（毫秒），覆盖 mailbox 发送与 reply
+  # 两个阶段。必须明显小于官方客户端约 7 秒的固定等待。
+  session_command_deadline_ms: 4500
+
 # ---- 功能开关 ----
 
 # 是否启用聊天功能

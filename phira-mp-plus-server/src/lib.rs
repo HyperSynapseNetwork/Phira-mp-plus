@@ -39,6 +39,7 @@
 pub mod ban;
 pub mod benchmark;
 pub mod cli;
+pub(crate) mod official_client_compat;
 pub mod cli_tui;
 pub mod crypto;
 pub mod command_registry;
