@@ -2,11 +2,22 @@ use anyhow::Result;
 use std::collections::HashMap;
 use std::io::{self, Write};
 use std::path::Path;
+use std::sync::{Mutex, OnceLock};
 use std::time::Instant;
 use tokio::sync::mpsc;
 use tracing::level_filters::LevelFilter;
 use tracing_appender::non_blocking::WorkerGuard;
 use tracing_subscriber::{fmt, prelude::*, EnvFilter};
+
+/// Log-stream channel for OpenUDS external tools.
+///
+/// The sender is stored during `init()`; the OpenUDS server takes the
+/// receiver via [`take_openuds_log_rx`] and forwards formatted log lines to
+/// sessions subscribed to the `"logs"` stream.  Bounded (drop-oldest when the
+/// broker is slow, matching the TUI channel) so the tracing subscriber never
+/// blocks.
+static OPENUDS_LOG_TX: OnceLock<mpsc::Sender<String>> = OnceLock::new();
+static OPENUDS_LOG_RX: OnceLock<Mutex<Option<mpsc::Receiver<String>>>> = OnceLock::new();
 
 enum ChannelWriter {
     Sink,
@@ -196,6 +207,13 @@ pub fn redact_sensitive(message: &str) -> String {
     result
 }
 
+/// Take the OpenUDS log-stream receiver.  Returns `None` on the first call
+/// after the receiver was already claimed, or if `init()` has not run.
+pub fn take_openuds_log_rx() -> Option<mpsc::Receiver<String>> {
+    let lock = OPENUDS_LOG_RX.get_or_init(|| Mutex::new(None));
+    lock.lock().unwrap().take()
+}
+
 pub fn init(file_name: &str, tui_tx: Option<mpsc::Sender<String>>) -> Result<WorkerGuard> {
     let log_dir = Path::new("log");
     if log_dir.exists() && !log_dir.is_dir() {
@@ -217,6 +235,13 @@ pub fn init(file_name: &str, tui_tx: Option<mpsc::Sender<String>>) -> Result<Wor
     let has_tui = tui_tx.is_some();
     let log_format = std::env::var("RUST_LOG_FORMAT").unwrap_or_default();
 
+    // Create the OpenUDS log-stream channel.  The broker task is started by
+    // the OpenUDS server via take_openuds_log_rx(); if no OpenUDS server is
+    // enabled, the sender's channel is never read and the broker never runs.
+    let (openuds_log_tx, openuds_log_rx) = mpsc::channel::<String>(1024);
+    let _ = OPENUDS_LOG_TX.set(openuds_log_tx);
+    *OPENUDS_LOG_RX.get_or_init(|| Mutex::new(None)).lock().unwrap() = Some(openuds_log_rx);
+
     if log_format == "json" {
         // JSON structured output (machine-parseable, for production).
         let json_file_layer = fmt::layer()
@@ -236,12 +261,18 @@ pub fn init(file_name: &str, tui_tx: Option<mpsc::Sender<String>>) -> Result<Wor
         let tui_layer = fmt::layer()
             .with_writer(ChannelWriterFactory(tui_tx))
             .with_ansi(false)
+            .with_filter(filter.clone());
+        // OpenUDS log stream: always human-readable lines for external tools.
+        let openuds_layer = fmt::layer()
+            .with_writer(ChannelWriterFactory(Some(OPENUDS_LOG_TX.get().unwrap().clone())))
+            .with_ansi(false)
             .with_filter(filter);
         tracing_subscriber::registry()
             .with(RateLimitLayer::new(RATE_LIMIT_BURST))
             .with(json_file_layer)
             .with(stdout_layer)
             .with(tui_layer)
+            .with(openuds_layer)
             .init();
     } else {
         // Human-readable text output (default).
@@ -256,12 +287,17 @@ pub fn init(file_name: &str, tui_tx: Option<mpsc::Sender<String>>) -> Result<Wor
         let tui_layer = fmt::layer()
             .with_writer(ChannelWriterFactory(tui_tx))
             .with_ansi(false)
+            .with_filter(filter.clone());
+        let openuds_layer = fmt::layer()
+            .with_writer(ChannelWriterFactory(Some(OPENUDS_LOG_TX.get().unwrap().clone())))
+            .with_ansi(false)
             .with_filter(filter);
         tracing_subscriber::registry()
             .with(RateLimitLayer::new(RATE_LIMIT_BURST))
             .with(file_layer)
             .with(stdout_layer)
             .with(tui_layer)
+            .with(openuds_layer)
             .init();
     }
 

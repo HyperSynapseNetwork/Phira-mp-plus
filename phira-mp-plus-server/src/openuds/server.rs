@@ -73,10 +73,23 @@ pub async fn start(state: Arc<PlusServerState>, config: &OpenUdsConfig) {
         event_dispatcher.run().await;
     });
 
-    // Start stream manager (for touch/judge streams)
-    let _stream_manager = Arc::new(crate::openuds::streams::StreamManager::new(
+    // Start stream manager (for touch/judge/log streams).  Held alive by the
+    // log broker task below (and by any future delivery call sites).
+    let stream_manager = Arc::new(crate::openuds::streams::StreamManager::new(
         Arc::clone(&sessions),
     ));
+
+    // Log-stream broker: forwards formatted server log lines from the tracing
+    // layer to sessions subscribed to "logs".
+    if let Some(log_rx) = crate::logging::take_openuds_log_rx() {
+        let log_stream_manager = Arc::clone(&stream_manager);
+        crate::supervisor_actor::spawn_named("openuds-logs", async move {
+            let mut rx = log_rx;
+            while let Some(line) = rx.recv().await {
+                log_stream_manager.deliver_logs(line).await;
+            }
+        });
+    }
 
     // Start heartbeat
     let heartbeat_sessions = Arc::clone(&sessions);

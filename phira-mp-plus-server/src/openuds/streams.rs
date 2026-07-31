@@ -48,4 +48,19 @@ impl StreamManager {
             }
         }
     }
+
+    /// Deliver a formatted server log line to all sessions subscribed to "logs".
+    pub async fn deliver_logs(&self, line: String) {
+        let sessions = self.sessions.read().await;
+        for (_id, session) in sessions.iter() {
+            if session.is_authenticated() && session.subscribes_to_stream("logs") {
+                let frame = Session::stream_response(
+                    "logs",
+                    0,
+                    serde_json::json!({ "line": line }),
+                );
+                let _ = session.send(frame).await;
+            }
+        }
+    }
 }
