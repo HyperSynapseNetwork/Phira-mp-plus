@@ -65,6 +65,7 @@ fn user_offline_event_kind() {
         user_id: 99,
         server_instance_id: String::new(),
         session_id: String::new(),
+        occurred_at: 0,
     };
     assert_eq!(event.kind(), "user_offline");
     assert!(event.summary().contains("user_id=99"));
