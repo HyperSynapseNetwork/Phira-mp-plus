@@ -215,6 +215,10 @@ impl PluginEventChannel {
                 }
                 self.dropped_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 self.dropped_lifecycle.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                tracing::warn!(
+                    event_type,
+                    "plugin TCP lifecycle event dropped (high queue full)"
+                );
             }
             // Byte budget (P0-F): reject the event if it would exceed the cap.
             if self.total_bytes.load(std::sync::atomic::Ordering::Relaxed)
@@ -224,6 +228,10 @@ impl PluginEventChannel {
                 self.dropped_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 self.dropped_lifecycle.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 self.dropped_bytes.fetch_add(incoming_bytes as u64, std::sync::atomic::Ordering::Relaxed);
+                tracing::warn!(
+                    event_type,
+                    "plugin TCP lifecycle event dropped (byte budget exceeded)"
+                );
                 return;
             }
             self.total_bytes.fetch_add(incoming_bytes, std::sync::atomic::Ordering::Relaxed);
@@ -314,6 +322,13 @@ impl PluginEventChannel {
             .entry(handle)
             .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
             .clone()
+    }
+
+    /// Remove a handle's serialization lock entry after its connection closes
+    /// (reclaims memory; the lock would otherwise live for the plugin's
+    /// lifetime even though connections are transient).
+    pub fn remove_handle_lock(&self, handle: u64) {
+        self.handle_locks.lock().unwrap().remove(&handle);
     }
 
     /// Total payload bytes currently buffered across both queues.

@@ -262,6 +262,16 @@ impl PluginTcpActor {
                                 match event {
                                     Some((type_, payload)) => {
                                         let event_type = type_;
+                                        // Reclaim the handle lock when a
+                                        // connection closes (P1).
+                                        if event_type.eq_ignore_ascii_case("tcp:disconnect") {
+                                            if let Some(h) = payload
+                                                .get("handle")
+                                                .and_then(|x| x.as_u64())
+                                            {
+                                                channel.remove_handle_lock(h);
+                                            }
+                                        }
                                         let fut = cb(event_type.clone(), payload);
                                         // Bound each callback so a hung plugin
                                         // cannot pin the worker forever.
