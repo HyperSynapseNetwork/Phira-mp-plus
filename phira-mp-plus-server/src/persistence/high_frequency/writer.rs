@@ -605,11 +605,39 @@ async fn flush_batch(
         }
 
         // Try COPY-first; fall back to INSERT-based path if COPY fails.
-        let ok = match super::postgres::try_copy_write(db, &records).await {
-            Ok(()) => true,
-            Err(_) => {
-                // Fallback: existing multi-row INSERT with ON CONFLICT DO NOTHING.
-                db.record_runtime_telemetry_batches(records.clone()).await
+        // Each single DB call is bounded by the remaining time to
+        // effective_deadline so a hung COPY/INSERT cannot exceed the
+        // Flush/Shutdown deadline (P0-E).
+        let ok = {
+            let attempt_write = async {
+                match super::postgres::try_copy_write(db, &records).await {
+                    Ok(()) => true,
+                    Err(_) => {
+                        // Fallback: multi-row INSERT with ON CONFLICT DO NOTHING.
+                        db.record_runtime_telemetry_batches(records.clone()).await
+                    }
+                }
+            };
+            match effective_deadline {
+                Some(dl) => {
+                    let remaining_ms = (dl - now_ms()).max(0) as u64;
+                    if remaining_ms > 0 {
+                        match tokio::time::timeout(Duration::from_millis(remaining_ms), attempt_write).await {
+                            Ok(v) => v,
+                            Err(_) => {
+                                warn!(
+                                    attempt = attempt + 1,
+                                    reason,
+                                    "high frequency DB write timed out before deadline"
+                                );
+                                false
+                            }
+                        }
+                    } else {
+                        false // deadline already passed — no time to attempt
+                    }
+                }
+                None => attempt_write.await,
             }
         };
 
