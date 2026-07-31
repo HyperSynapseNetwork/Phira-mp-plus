@@ -111,14 +111,51 @@ pub(crate) struct PluginEventChannel {
     normal: Arc<Mutex<VecDeque<(String, serde_json::Value)>>>,
     notify: Arc<Notify>,
     max_len: usize,
-    /// Number of events dropped because the channel was full (metrics).
+    /// Total events dropped because a queue was full (metrics).
     dropped_count: std::sync::atomic::AtomicU64,
+    /// Lifecycle events dropped (should be ~0 given priority).
+    dropped_lifecycle: std::sync::atomic::AtomicU64,
+    /// Receive events dropped (the droppable category).
+    dropped_receive: std::sync::atomic::AtomicU64,
 }
 
 /// Event types that are lifecycle-critical and must never be evicted by a
 /// receive flood.
 fn is_lifecycle(event_type: &str) -> bool {
     !event_type.eq_ignore_ascii_case("tcp:receive")
+}
+
+/// Merge an incoming `tcp:receive` payload into the newest queued receive for
+/// the same handle (append bytes).  Returns `false` when no merge is possible
+/// (queue empty, newest event is not a receive, different handle, or payload
+/// shape unexpected) — the caller then falls back to dropping the oldest.
+fn merge_receive(
+    queue: &mut VecDeque<(String, serde_json::Value)>,
+    incoming: &serde_json::Value,
+) -> bool {
+    let Some(handle) = incoming.get("handle").and_then(|h| h.as_u64()) else {
+        return false;
+    };
+    let Some(incoming_bytes) = incoming.get("bytes").and_then(|b| b.as_array()) else {
+        return false;
+    };
+    if incoming_bytes.is_empty() {
+        return true; // nothing to add — treat as coalesced
+    }
+    let Some((last_type, last_payload)) = queue.back_mut() else {
+        return false;
+    };
+    if !last_type.eq_ignore_ascii_case("tcp:receive") {
+        return false;
+    }
+    if last_payload.get("handle").and_then(|h| h.as_u64()) != Some(handle) {
+        return false;
+    }
+    if let Some(last_bytes) = last_payload.get_mut("bytes").and_then(|b| b.as_array_mut()) {
+        last_bytes.extend(incoming_bytes.iter().cloned());
+        return true;
+    }
+    false
 }
 
 impl PluginEventChannel {
@@ -129,32 +166,56 @@ impl PluginEventChannel {
             notify: Arc::new(Notify::new()),
             max_len,
             dropped_count: std::sync::atomic::AtomicU64::new(0),
+            dropped_lifecycle: std::sync::atomic::AtomicU64::new(0),
+            dropped_receive: std::sync::atomic::AtomicU64::new(0),
         }
     }
 
     /// Push an event.  Lifecycle events go to the high-priority queue; receive
-    /// events to the normal queue.  When a queue is full the oldest event in
-    /// that queue is dropped (lifecycle events are never dropped by a receive
-    /// flood).
+    /// events to the normal queue.  When a queue is full, a receive event is
+    /// first MERGED with the newest receive for the same handle (bytes
+    /// appended) and only dropped if no merge is possible; lifecycle events
+    /// are dropped only when the high queue itself is full (never evicted by a
+    /// receive flood).
     pub fn push(&self, event_type: String, payload: serde_json::Value) {
         let is_lifecycle = is_lifecycle(&event_type);
-        let mut queue = if is_lifecycle {
-            self.high.lock().unwrap()
+        if is_lifecycle {
+            let mut queue = self.high.lock().unwrap();
+            if queue.len() >= self.max_len {
+                queue.pop_front();
+                self.dropped_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                self.dropped_lifecycle.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            }
+            queue.push_back((event_type, payload));
         } else {
-            self.normal.lock().unwrap()
-        };
-        if queue.len() >= self.max_len {
-            queue.pop_front();
-            self.dropped_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let mut queue = self.normal.lock().unwrap();
+            if queue.len() >= self.max_len {
+                // Merge policy: coalesce with the newest receive for the same
+                // handle instead of dropping, when possible.
+                if !merge_receive(&mut queue, &payload) {
+                    queue.pop_front();
+                    self.dropped_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    self.dropped_receive.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                }
+            }
+            queue.push_back((event_type, payload));
         }
-        queue.push_back((event_type, payload));
-        drop(queue);
         self.notify.notify_one();
     }
 
     /// Number of events dropped because a queue was full.
     pub fn dropped_count(&self) -> u64 {
         self.dropped_count.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Lifecycle events dropped (should be ~0 given priority).
+    pub fn dropped_lifecycle(&self) -> u64 {
+        self.dropped_lifecycle.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Receive events dropped (the droppable category).
+    pub fn dropped_receive(&self) -> u64 {
+        self.dropped_receive.load(std::sync::atomic::Ordering::Relaxed)
     }
 
     /// Number of events currently pending in the bounded queues.

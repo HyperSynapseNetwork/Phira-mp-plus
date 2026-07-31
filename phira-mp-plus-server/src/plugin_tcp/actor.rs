@@ -538,6 +538,8 @@ impl PluginTcpActor {
                             serde_json::json!({
                                 "pending_events": channel.pending_count(),
                                 "dropped_events": channel.dropped_count(),
+                                "dropped_lifecycle": channel.dropped_lifecycle(),
+                                "dropped_receive": channel.dropped_receive(),
                                 "pending_read_bytes": prb.get(plugin_id).copied().unwrap_or(0),
                             }),
                         );
