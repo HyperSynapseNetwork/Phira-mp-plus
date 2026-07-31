@@ -10,7 +10,7 @@
 //! - `super::postgres` — PostgreSQL COPY helpers
 
 use crate::db::DbManager;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::sync::{mpsc, oneshot};
@@ -76,7 +76,17 @@ pub struct HighFrequencyWriter {
     /// shutdown begins, or rejected because shutdown already happened (P0-F).
     /// Tokio mutex so it can be held across awaits in shutdown().
     admission_gate: tokio::sync::Mutex<()>,
+    /// Shutdown lifecycle state (P0-G): Open → Requested → ControlSent →
+    /// Terminated.  A failed send/reply returns to Open so shutdown can be
+    /// retried instead of leaving a fake-terminated handle.
+    shutdown_state: AtomicU8,
 }
+
+// Shutdown state machine values (P0-G).
+const SHUTDOWN_OPEN: u8 = 0;
+const SHUTDOWN_REQUESTED: u8 = 1;
+const SHUTDOWN_CONTROL_SENT: u8 = 2;
+const SHUTDOWN_TERMINATED: u8 = 3;
 
 impl HighFrequencyWriter {
     /// Spawn the background writer task and return a handle.
@@ -134,6 +144,7 @@ impl HighFrequencyWriter {
             closed: AtomicBool::new(false),
             stats,
             admission_gate: tokio::sync::Mutex::new(()),
+            shutdown_state: AtomicU8::new(SHUTDOWN_OPEN),
         }
     }
 
@@ -256,28 +267,52 @@ impl HighFrequencyWriter {
         // closed, so any enqueue that has already admitted is included in the
         // worker's drain, and no new item can be accepted after this point.
         let _gate = self.admission_gate.lock().await;
-        if self.closed.swap(true, Ordering::AcqRel) {
-            return Ok(());
+        // Shutdown state machine (P0-G): only proceed from OPEN.  A second
+        // shutdown while one is in flight returns an error, never a fake Ok.
+        if self
+            .shutdown_state
+            .compare_exchange(
+                SHUTDOWN_OPEN,
+                SHUTDOWN_REQUESTED,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            )
+            .is_err()
+        {
+            return Err("high frequency shutdown already in progress".to_string());
         }
+        self.closed.store(true, Ordering::Release);
         // Pass the caller's absolute deadline into the worker so it stops
-        // retrying database writes at the same time the caller gives up —
-        // previously the worker could keep working for its own retry window
-        // after the external timeout already elapsed (P0-K).
+        // retrying database writes at the same time the caller gives up (P0-K).
         let deadline_ms = now_ms() + timeout.as_millis() as i64;
-        // Bound the control send itself by the caller's remaining budget (P1):
-        // a full channel must not let shutdown overrun the external timeout.
+        // Bound the control send itself by the caller's remaining budget (P1).
         match tokio::time::timeout(timeout, self.tx.send(HfMessage::Shutdown { reply, deadline_ms })).await {
             Ok(Ok(())) => {}
-            Ok(Err(_)) => return Err("high frequency writer is closed".to_string()),
-            Err(_) => return Err("high frequency shutdown send timed out".to_string()),
+            Ok(Err(_)) => {
+                // Channel closed — the worker is already gone.  Return to OPEN
+                // so a retry can proceed if the caller wants.
+                self.shutdown_state.store(SHUTDOWN_OPEN, Ordering::Release);
+                return Err("high frequency writer is closed".to_string());
+            }
+            Err(_) => {
+                // Send timed out — do NOT leave a fake-terminated state.  Return
+                // to OPEN so shutdown can be retried (P0-G).
+                self.shutdown_state.store(SHUTDOWN_OPEN, Ordering::Release);
+                return Err("high frequency shutdown send timed out".to_string());
+            }
         }
+        self.shutdown_state.store(SHUTDOWN_CONTROL_SENT, Ordering::Release);
         let result = match tokio::time::timeout(timeout, rx).await {
             Ok(Ok(result)) => result,
             Ok(Err(_)) => Err("high frequency shutdown reply dropped".to_string()),
             Err(_) => Err("high frequency shutdown timed out".to_string()),
         };
-        // Note: closed stays true regardless of flush outcome.
-        // The handle is permanently dead after shutdown() is called.
+        if result.is_ok() {
+            self.shutdown_state.store(SHUTDOWN_TERMINATED, Ordering::Release);
+        } else {
+            // Reply failed — return to OPEN so the caller can retry.
+            self.shutdown_state.store(SHUTDOWN_OPEN, Ordering::Release);
+        }
         result
     }
 
