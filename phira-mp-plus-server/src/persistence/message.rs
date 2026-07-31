@@ -14,10 +14,15 @@ use std::sync::Arc;
 /// - `WalOnly`: event admitted to WAL only (in-memory queue was full).  The
 ///   event is safely stored in WAL and will be recovered by the periodic WAL
 ///   recovery scanner (or on restart replay) — no data is lost.
+/// - `AdmittedDegraded`: the WAL frame was durably fsync'd (the event is safe
+///   and will be replayed/processed) but the instance marker could not be
+///   updated.  The caller must NOT roll back the event; it only indicates the
+///   deletion guard is temporarily degraded (P0-A).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AdmissionOutcome {
     Queued,
     WalOnly,
+    AdmittedDegraded,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

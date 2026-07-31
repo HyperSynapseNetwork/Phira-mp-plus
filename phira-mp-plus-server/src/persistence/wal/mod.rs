@@ -384,10 +384,23 @@ impl PersistenceWal {
         self.admission_count.fetch_add(1, Ordering::Release);
         // Mark marker as active (not clean) so accidental WAL deletion is
         // detectable even after a compact-to-zero followed by new admissions.
-        // Propagate the error — if the marker cannot be made active, the WAL
-        // deletion guard is broken (P0-E).
-        self.mark_marker_active().await?;
+        // The WAL frame is already durably fsync'd, so a marker failure must
+        // NOT reject the admission (the event is safe).  Instead mark the
+        // deletion guard degraded — the caller sees AdmittedDegraded (P0-A).
+        if let Err(e) = self.mark_marker_active().await {
+            self.mark_degraded(DEGRADED_MARKER);
+            tracing::warn!(
+                wal_id = %id, error = %e,
+                "WAL frame durable but instance marker update failed (guard degraded)"
+            );
+        }
         Ok((id, seq))
+    }
+
+    /// Whether the deletion-guard marker is degraded (admissions are durable
+    /// but accidental-deletion detection is not working).
+    pub fn marker_degraded(&self) -> bool {
+        self.degraded.load(Ordering::Acquire) & DEGRADED_MARKER != 0
     }
 
     pub async fn ack(&self, id: uuid::Uuid) -> Result<(), String> {

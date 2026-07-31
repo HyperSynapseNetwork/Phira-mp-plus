@@ -928,6 +928,9 @@ impl PersistenceWorker {
                 return Err(event);
             }
         };
+        // The event is durable in WAL even if the deletion-guard marker failed
+        // to update; surface that as AdmittedDegraded (P0-A).
+        let marker_degraded = self.wal.marker_degraded();
         // Reserve queue capacity.  If the queue is full, try a bounded
         // wait (100 ms) before giving up — the event is already in WAL,
         // so a timeout is safe and the event will be replayed on restart.
@@ -967,7 +970,11 @@ impl PersistenceWorker {
         self.in_flight.lock().await.insert(wal_id);
         permit.send(WorkerMessage::Event { wal_id, wal_sequence, event, needs_wal_ack });
         record_queued(&self.stats, kind.clone(), summary).await;
-        Ok(AdmissionOutcome::Queued)
+        Ok(if marker_degraded {
+            AdmissionOutcome::AdmittedDegraded
+        } else {
+            AdmissionOutcome::Queued
+        })
     }
     /// Wait for all queued events with a WAL sequence <= the current sequence
     /// to reach a terminal state (ACKed or dead-lettered).
