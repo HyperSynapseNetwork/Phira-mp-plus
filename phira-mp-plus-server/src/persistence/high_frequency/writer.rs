@@ -72,6 +72,10 @@ pub struct HighFrequencyWriter {
     overflow_tx: Option<mpsc::Sender<OverflowItem>>,
     closed: AtomicBool,
     stats: Arc<HighFrequencyStats>,
+    /// Linearizes enqueue vs shutdown: an item is either fully admitted before
+    /// shutdown begins, or rejected because shutdown already happened (P0-F).
+    /// Tokio mutex so it can be held across awaits in shutdown().
+    admission_gate: tokio::sync::Mutex<()>,
 }
 
 impl HighFrequencyWriter {
@@ -129,6 +133,7 @@ impl HighFrequencyWriter {
             overflow_tx,
             closed: AtomicBool::new(false),
             stats,
+            admission_gate: tokio::sync::Mutex::new(()),
         }
     }
 
@@ -140,6 +145,12 @@ impl HighFrequencyWriter {
     /// Returns `Ok(EnqueueOutcome::MainQueue)`, `Ok(EnqueueOutcome::OverflowQueue)`,
     /// `Ok(EnqueueOutcome::Dropped)`, or `Err(String)` when closed.
     pub async fn enqueue(&self, mut item: HighFrequencyItem) -> Result<EnqueueOutcome, String> {
+        // Linearization point with shutdown (P0-F): hold the admission gate so
+        // shutdown cannot interleave between our closed check and the actual
+        // admission.  Either this item is fully admitted before shutdown
+        // begins, or shutdown already happened and it is rejected — never a
+        // half-state where an item lands after the shutdown control.
+        let _gate = self.admission_gate.lock().await;
         if self.closed.load(Ordering::Acquire) {
             self.stats.dropped.fetch_add(1, Ordering::Relaxed);
             self.stats.dropped_points.fetch_add(item.item_count() as u64, Ordering::Relaxed);
@@ -239,6 +250,10 @@ impl HighFrequencyWriter {
     /// the final flush succeeds or fails.  Timeout is 10 seconds.
     pub async fn shutdown(&self, timeout: Duration) -> Result<(), String> {
         let (reply, rx) = oneshot::channel();
+        // Linearize with enqueue (P0-F): hold the admission gate while setting
+        // closed, so any enqueue that has already admitted is included in the
+        // worker's drain, and no new item can be accepted after this point.
+        let _gate = self.admission_gate.lock().await;
         if self.closed.swap(true, Ordering::AcqRel) {
             return Ok(());
         }
