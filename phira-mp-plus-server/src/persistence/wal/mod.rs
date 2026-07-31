@@ -646,10 +646,11 @@ impl PersistenceWal {
         let bytes = match tokio::fs::read(&self.path).await {
             Ok(bytes) => bytes,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                // No WAL file to compact.  Ensure the marker reflects the WAL
-                // absence (clean) so the next boot does not misread it as
-                // accidental deletion (PMP37 P0-A).  Only rewrite if the
-                // marker currently says active.
+                // No WAL file to compact.  This is only safe when the marker
+                // says CLEAN (compact-to-zero or no WAL yet).  An ACTIVE
+                // marker with a missing WAL means the WAL was abnormally lost —
+                // do NOT rewrite it to clean (that would mask the loss); return
+                // Err and mark degraded (PMP38 P0-A).
                 let marker_path = self.path.with_extension("wal.instance");
                 let is_clean = tokio::fs::read_to_string(&marker_path)
                     .await
@@ -658,8 +659,12 @@ impl PersistenceWal {
                     .and_then(|v| v.get("clean").and_then(|x| x.as_bool()))
                     .unwrap_or(true);
                 if !is_clean {
-                    let max_sequence = self.admit_sequence.load(Ordering::Acquire);
-                    let _ = self.write_marker_inner(&marker_path, true, max_sequence).await;
+                    self.degraded.store(true, Ordering::Release);
+                    return Err(format!(
+                        "WAL instance marker is active but WAL file {} is missing \
+                         (abnormal loss) during compact",
+                        self.path.display()
+                    ));
                 }
                 return Ok(0);
             }
