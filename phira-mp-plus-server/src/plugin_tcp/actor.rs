@@ -53,8 +53,10 @@ pub struct PluginTcpActor {
     event_callback: Option<Arc<dyn Fn(String, serde_json::Value) -> Pin<Box<dyn Future<Output = ()> + Send>> + Send + Sync>>,
     /// Per-plugin bounded event channels.
     event_channels: HashMap<String, Arc<PluginEventChannel>>,
-    /// Per-plugin event worker task handles.
-    event_workers: HashMap<String, tokio::task::JoinHandle<()>>,
+    /// Per-plugin event worker task handles.  One entry per worker (there are
+    /// MAX_CONCURRENT_CALLBACKS per plugin) so unload aborts ALL of them —
+    /// previously only one handle was stored and the others leaked (P1).
+    event_workers: HashMap<String, Vec<tokio::task::JoinHandle<()>>>,
     // ── Resource ownership (PMP25 P5) ───────────────────────────────
     /// handle → owning plugin_id
     handle_owner: HashMap<u64, String>,
@@ -133,9 +135,11 @@ impl PluginTcpActor {
         self.plugin_connections.remove(plugin_id);
         self.plugin_listeners.remove(plugin_id);
         let _ = self.plugin_read_bytes.lock().unwrap().remove(plugin_id);
-        // Stop event worker and remove channel for this plugin
-        if let Some(handle) = self.event_workers.remove(plugin_id) {
-            handle.abort();
+        // Stop ALL event workers for this plugin and remove the channel.
+        if let Some(handles) = self.event_workers.remove(plugin_id) {
+            for handle in handles {
+                handle.abort();
+            }
         }
         self.event_channels.remove(plugin_id);
     }
@@ -258,10 +262,9 @@ impl PluginTcpActor {
                         }
                     }));
                 }
-                // Track a single handle for abort-on-unload; each worker also
-                // stops when the channel is dropped.
-                let worker_handle = worker_handles.pop().unwrap();
-                self.event_workers.insert(plugin_id.to_string(), worker_handle);
+                // Track ALL worker handles so unload can abort every task
+                // (previously only one was kept; the others leaked).
+                self.event_workers.insert(plugin_id.to_string(), worker_handles);
                 e.insert(channel).clone()
             }
         }
@@ -354,11 +357,13 @@ impl PluginTcpActor {
                 }
             }
         }
-        // Actor is shutting down — cancel all per-plugin event workers so no
+        // Actor is shutting down — cancel ALL per-plugin event workers so no
         // callback task continues to run after the actor is gone (P1: actor
         // shutdown cancellation).
-        for (_plugin_id, handle) in self.event_workers.drain() {
-            handle.abort();
+        for (_plugin_id, handles) in self.event_workers.drain() {
+            for handle in handles {
+                handle.abort();
+            }
         }
         info!("tcp actor stopped");
     }
