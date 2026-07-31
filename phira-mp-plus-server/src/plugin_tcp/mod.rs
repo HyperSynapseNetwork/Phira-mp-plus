@@ -111,6 +111,11 @@ pub(crate) struct PluginEventChannel {
     normal: Arc<Mutex<VecDeque<(String, serde_json::Value)>>>,
     notify: Arc<Notify>,
     max_len: usize,
+    /// Per-handle serialization locks (P0-E).  A worker peeks the front event's
+    /// handle, acquires its lock BEFORE popping, then pops+processes — this
+    /// closes the race where a second worker could lock a handle first and
+    /// reorder same-connection events.
+    handle_locks: Mutex<HashMap<u64, Arc<tokio::sync::Mutex<()>>>>,
     /// Total events dropped because a queue was full (metrics).
     dropped_count: std::sync::atomic::AtomicU64,
     /// Lifecycle events dropped (should be ~0 given priority).
@@ -183,6 +188,7 @@ impl PluginEventChannel {
             normal: Arc::new(Mutex::new(VecDeque::with_capacity(max_len))),
             notify: Arc::new(Notify::new()),
             max_len,
+            handle_locks: Mutex::new(HashMap::new()),
             dropped_count: std::sync::atomic::AtomicU64::new(0),
             dropped_lifecycle: std::sync::atomic::AtomicU64::new(0),
             dropped_receive: std::sync::atomic::AtomicU64::new(0),
@@ -288,6 +294,26 @@ impl PluginEventChannel {
             self.total_bytes.fetch_sub(freed, std::sync::atomic::Ordering::Relaxed);
         }
         event
+    }
+
+    /// Peek the front event's handle (without popping), used by workers to
+    /// acquire the per-handle lock BEFORE popping (P0-E).
+    pub fn peek_handle(&self) -> Option<u64> {
+        let high = self.high.lock().unwrap();
+        let normal = self.normal.lock().unwrap();
+        high.front()
+            .or_else(|| normal.front())
+            .and_then(|(_, p)| p.get("handle").and_then(|h| h.as_u64()))
+    }
+
+    /// Get (or create) the serialization lock for a handle.
+    pub fn get_handle_lock(&self, handle: u64) -> Arc<tokio::sync::Mutex<()>> {
+        self.handle_locks
+            .lock()
+            .unwrap()
+            .entry(handle)
+            .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
+            .clone()
     }
 
     /// Total payload bytes currently buffered across both queues.
