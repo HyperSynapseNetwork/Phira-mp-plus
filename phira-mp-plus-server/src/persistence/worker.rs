@@ -8,6 +8,7 @@
 
 use crate::persistence::message::{AdmissionOutcome, PersistenceEvent};
 use crate::persistence::process::process_event_through_pipeline;
+use crate::persistence::process::ProcessOutcome;
 use crate::persistence::stats::{
     record_dropped, record_queued,
     record_wal_compaction, record_wal_only,
@@ -358,8 +359,9 @@ async fn process_worker_loop(
             }
         };
 
-        // Process the event through the persistence pipeline and optionally ACK.
-        let should_stop = process_event_through_pipeline(
+        // Process the event through the persistence pipeline and obtain
+        // the outcome that determines whether the sequence gate advances.
+        let outcome = process_event_through_pipeline(
             wal_id,
             event,
             needs_wal_ack,
@@ -370,8 +372,31 @@ async fn process_worker_loop(
             &mut pending_acks,
         )
         .await;
-        if should_stop {
-            break;
+
+        match outcome {
+            ProcessOutcome::Shutdown => {
+                break;
+            }
+            ProcessOutcome::RetryableFailure => {
+                // Event did NOT reach a durable terminal state (both DB and
+                // DLQ failed).  The WAL sequence gate MUST NOT advance so
+                // that this event is retried before any later event can be
+                // dispatched out-of-order.
+                //
+                // The event remains pending in WAL and will be re-enqueued
+                // by the recovery scanner on its next interval.
+                tracing::warn!(
+                    wal_id = %wal_id, kind = %kind,
+                    "non-durable outcome — retrying on next scanner interval"
+                );
+            }
+            _ => {
+                // Terminal outcome (DatabaseCommitted, DurableDeadLetterStored,
+                // or PendingWalAck).  The sequence gate can advance.
+                if wal_sequence != 0 {
+                    next_expected_sequence = wal_sequence + 1;
+                }
+            }
         }
 
         // Auto-compaction: trigger when ACK ratio drops below threshold.
@@ -386,14 +411,6 @@ async fn process_worker_loop(
                     record_wal_compaction(worker_stats, wal_bytes).await;
                 }
             }
-        }
-
-        // Advance the sequence gate so the next loop iteration can dispatch
-        // the next buffered message or the next in-order channel message.
-        // The seq=0 sentinel is used for replay/compat entries that do not
-        // participate in gating.
-        if wal_sequence != 0 {
-            next_expected_sequence = wal_sequence + 1;
         }
     }
 }

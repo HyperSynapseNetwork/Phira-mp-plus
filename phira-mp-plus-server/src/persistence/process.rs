@@ -137,11 +137,34 @@ async fn preserve_failed_event(
     }
 }
 
+/// Structured outcome of processing a single event through the persistence pipeline.
+///
+/// The caller (worker loop) uses this to decide whether to advance the WAL sequence
+/// gate and how to handle failures.  Only terminal outcomes advance the gate.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ProcessOutcome {
+    /// Event was durably committed to PostgreSQL.
+    DatabaseCommitted,
+    /// Event failed database commit but was durably preserved in the dead-letter journal.
+    DurableDeadLetterStored,
+    /// Event was written to WAL (ACK pending) — normal path, gate-safe.
+    PendingWalAck,
+    /// Event could not be committed to DB or DLQ.  The WAL entry remains pending
+    /// and the caller MUST NOT advance the sequence gate — the event should be
+    /// retried in place before any later event is processed.
+    RetryableFailure,
+    /// Event caused a terminal error (e.g. WAL IO failure).  The worker should
+    /// enter degraded mode — all subsequent events are rejected.
+    FatalFailure,
+    /// The event was a Shutdown marker — the worker loop should exit.
+    Shutdown,
+}
+
 /// Process a single event through the persistence pipeline and optionally
 /// acknowledge it in the WAL.
 ///
-/// Returns `true` if the event was a Shutdown marker — the caller should
-/// break the worker loop.
+/// Returns a [`ProcessOutcome`] that the worker loop uses to gate WAL sequence
+/// advancement and handle failures.
 pub async fn process_event_through_pipeline(
     wal_id: uuid::Uuid,
     event: PersistenceEvent,
@@ -159,13 +182,16 @@ pub async fn process_event_through_pipeline(
 
     let kind = event.kind();
     let summary = event.summary();
-    // Track whether this event reached a durable terminal state.
-    // Only durable events get WAL ACKed; non-durable entries remain
-    // in the WAL for replay on restart (crash recovery).
-    let mut durable = false;
+    // Track whether this event reached a durable terminal state through
+    // either database commit or dead-letter storage.  Only terminal events
+    // advance the WAL sequence gate.
+    let durable: bool;
+    let outcome: ProcessOutcome;
+
     match persist_benchmark_report_if_needed(&event).await {
         BenchmarkReportStage::Acknowledged { elapsed_ms } => {
             durable = true;
+            outcome = ProcessOutcome::DatabaseCommitted;
             record_benchmark_report_persist_request(worker_stats).await;
             record_db_dispatch_success(
                 worker_stats,
@@ -175,7 +201,7 @@ pub async fn process_event_through_pipeline(
             .await;
         }
         BenchmarkReportStage::Failed { elapsed_ms, error } => {
-            if preserve_failed_event(
+            let dl_ok = preserve_failed_event(
                 wal_id,
                 worker_dead_letter_path.as_deref(),
                 &event,
@@ -183,10 +209,13 @@ pub async fn process_event_through_pipeline(
                 &error,
                 worker_stats,
             )
-            .await
-            {
-                durable = true;
-            }
+            .await;
+            durable = dl_ok;
+            outcome = if dl_ok {
+                ProcessOutcome::DurableDeadLetterStored
+            } else {
+                ProcessOutcome::RetryableFailure
+            };
             record_benchmark_report_persist_skipped(worker_stats).await;
             record_db_dispatch_failure(
                 worker_stats,
@@ -203,6 +232,7 @@ pub async fn process_event_through_pipeline(
                     elapsed_ms,
                 } => {
                     durable = true;
+                    outcome = ProcessOutcome::DatabaseCommitted;
                     record_production_persist_request(worker_stats).await;
                     record_db_dispatch_success(
                         worker_stats,
@@ -216,7 +246,7 @@ pub async fn process_event_through_pipeline(
                     elapsed_ms,
                     error,
                 } => {
-                    if preserve_failed_event(
+                    let dl_ok = preserve_failed_event(
                         wal_id,
                         worker_dead_letter_path.as_deref(),
                         &event,
@@ -224,10 +254,13 @@ pub async fn process_event_through_pipeline(
                         &error,
                         worker_stats,
                     )
-                    .await
-                    {
-                        durable = true;
-                    }
+                    .await;
+                    durable = dl_ok;
+                    outcome = if dl_ok {
+                        ProcessOutcome::DurableDeadLetterStored
+                    } else {
+                        ProcessOutcome::RetryableFailure
+                    };
                     record_production_persist_request(worker_stats).await;
                     record_db_dispatch_failure(
                         worker_stats,
@@ -238,11 +271,15 @@ pub async fn process_event_through_pipeline(
                     .await;
                 }
                 PersistenceWriteStage::NotApplicable => {
-                    if !matches!(
-                        &event,
-                        PersistenceEvent::Flush
-                            | PersistenceEvent::Shutdown
-                    ) {
+                    if matches!(&event, PersistenceEvent::Shutdown) {
+                        durable = false;
+                        outcome = ProcessOutcome::Shutdown;
+                    } else if matches!(&event, PersistenceEvent::Flush) {
+                        durable = false;
+                        outcome = ProcessOutcome::DatabaseCommitted; // Flush is always terminal
+                    } else {
+                        durable = false;
+                        outcome = ProcessOutcome::DatabaseCommitted;
                         record_production_persist_skipped(worker_stats).await;
                     }
                 }
@@ -250,32 +287,34 @@ pub async fn process_event_through_pipeline(
         }
     }
 
-    match &event {
-        PersistenceEvent::Shutdown => {
+    // Record processing stats for non-control events.
+    match &outcome {
+        ProcessOutcome::Shutdown => {
             debug!(kind = %kind, "persistence worker shutdown requested");
             record_processed(worker_stats, kind, summary).await;
-            return true;
+            return ProcessOutcome::Shutdown;
         }
-        PersistenceEvent::Flush => {
-            debug!(kind = %kind, "persistence worker flush marker received");
+        _ => {
+            record_processed(worker_stats, kind.clone(), summary).await;
         }
-        _ => {}
     }
-    record_processed(worker_stats, kind.clone(), summary).await;
 
-    // Only ACK events that reached a durable terminal state AND used WAL.
+    // WAL ACK for events that reached a durable terminal state.
+    // Non-terminal events stay in the WAL for replay on restart and the
+    // sequence gate does NOT advance (enforced by the caller).
     if needs_wal_ack {
         if durable {
-            if let Err(error) = worker_wal.ack(wal_id).await {
-                worker_wal.set_degraded(true);
-                crate::supervisor_actor::report_critical_failure("persistence-wal-ack", error).await;
-                pending_acks.push_back((wal_id, 0));
-            } else {
-                worker_wal.set_degraded(false);
-                record_wal_committed(worker_stats).await;
-                // Remove from in_flight set so the recovery scanner
-                // knows this entry no longer needs attention.
-                in_flight.lock().await.remove(&wal_id);
+            match worker_wal.ack(wal_id).await {
+                Ok(()) => {
+                    worker_wal.set_degraded(false);
+                    record_wal_committed(worker_stats).await;
+                    in_flight.lock().await.remove(&wal_id);
+                }
+                Err(error) => {
+                    worker_wal.set_degraded(true);
+                    crate::supervisor_actor::report_critical_failure("persistence-wal-ack", error).await;
+                    pending_acks.push_back((wal_id, 0));
+                }
             }
         } else {
             tracing::warn!(
@@ -285,5 +324,5 @@ pub async fn process_event_through_pipeline(
         }
     }
 
-    false
+    outcome
 }
