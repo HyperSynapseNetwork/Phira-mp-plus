@@ -42,11 +42,6 @@ impl PendingControl {
         }
     }
 
-    /// Whether this is a Shutdown (as opposed to Flush) control.
-    pub(crate) fn is_shutdown(&self) -> bool {
-        matches!(self, Self::Shutdown { .. })
-    }
-
     /// Consume the control and return its reply sender plus whether it was a
     /// Shutdown (caller should break the worker loop).
     pub(crate) fn finish(self) -> (oneshot::Sender<Result<(), String>>, bool) {
