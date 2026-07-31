@@ -274,6 +274,21 @@ impl PluginEventChannel {
         self.dropped_receive.load(std::sync::atomic::Ordering::Relaxed)
     }
 
+    /// Pop the next event (high priority first).  Decrements total_bytes so
+    /// the pending-byte budget accounts for consumption (P0-C).
+    pub fn pop(&self) -> Option<(String, serde_json::Value)> {
+        let event = {
+            let mut high = self.high.lock().unwrap();
+            let mut normal = self.normal.lock().unwrap();
+            high.pop_front().or_else(|| normal.pop_front())
+        };
+        if let Some((t, p)) = &event {
+            let freed = event_payload_bytes(t, p);
+            self.total_bytes.fetch_sub(freed, std::sync::atomic::Ordering::Relaxed);
+        }
+        event
+    }
+
     /// Total payload bytes currently buffered across both queues.
     pub fn pending_bytes(&self) -> usize {
         self.total_bytes.load(std::sync::atomic::Ordering::Relaxed)

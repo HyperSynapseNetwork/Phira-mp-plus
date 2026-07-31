@@ -221,7 +221,7 @@ impl PluginTcpActor {
             Entry::Occupied(e) => Arc::clone(e.get()),
             Entry::Vacant(e) => {
                 let channel = Arc::new(PluginEventChannel::new(MAX_PENDING_EVENTS_PER_PLUGIN));
-                let (high_queue, normal_queue, worker_notify) = channel.shared();
+                let (_, _, worker_notify) = channel.shared();
                 // Use MAX_CONCURRENT_CALLBACKS FIXED worker tasks that directly
                 // await each callback.  This bounds BOTH the number of queued
                 // events (bounded queues) AND the number of in-flight callbacks
@@ -237,8 +237,7 @@ impl PluginTcpActor {
                     Arc::new(Mutex::new(HashMap::new()));
                 let mut worker_handles = Vec::with_capacity(MAX_CONCURRENT_CALLBACKS);
                 for _ in 0..MAX_CONCURRENT_CALLBACKS {
-                    let high = Arc::clone(&high_queue);
-                    let normal = Arc::clone(&normal_queue);
+                    let channel = Arc::clone(&channel);
                     let notify = Arc::clone(&worker_notify);
                     let cb = Arc::clone(&cb);
                     let handle_locks = Arc::clone(&handle_locks);
@@ -247,12 +246,9 @@ impl PluginTcpActor {
                             notify.notified().await;
                             loop {
                                 // Drain high-priority (lifecycle) events first,
-                                // then normal (receive) events.
-                                let event = high
-                                    .lock()
-                                    .unwrap()
-                                    .pop_front()
-                                    .or_else(|| normal.lock().unwrap().pop_front());
+                                // then normal (receive) events.  pop() decrements
+                                // total_bytes (P0-C).
+                                let event = channel.pop();
                                 match event {
                                     Some((type_, payload)) => {
                                         let event_type = type_;
