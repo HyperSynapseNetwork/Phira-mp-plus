@@ -538,11 +538,19 @@ impl PersistenceWal {
             self.upgrade_wal_from_v1(&parsed_records, v1_start).await?;
         }
 
-        // Restore admit_sequence from max seen so future admit() calls
-        // do not conflict with replayed entry sequences.
-        if let Some(max_seq) = unacked.iter().map(|(_, _, seq)| *seq).max() {
-            self.admit_sequence.store(max_seq, Ordering::Release);
-        }
+        // Restore admit_sequence from max seen so future admit() calls do not
+        // conflict with replayed entry sequences.  Take the higher of:
+        //   - the marker's recorded high-water mark (persisted across
+        //     compactions so sequences never regress after a compact-to-zero)
+        //   - the max sequence present in this WAL file
+        let wal_max = admitted.iter().map(|(_, _, seq)| *seq).max().unwrap_or(0);
+        let marker_max = self.read_marker_max_sequence().await;
+        let restore_seq = wal_max.max(marker_max);
+        self.admit_sequence.store(restore_seq, Ordering::Release);
+        // Refresh the marker so its max_sequence reflects the restored
+        // high-water mark even on first boot with an existing WAL.
+        let marker_path = self.path.with_extension("wal.instance");
+        let _ = self.write_marker_inner(&marker_path, false).await;
 
         self.replay_succeeded.store(true, Ordering::Release);
         Ok(unacked)
@@ -559,7 +567,13 @@ impl PersistenceWal {
     }
 
     /// Write or overwrite the marker with the given clean state.
+    ///
+    /// Records the current `admit_sequence` as `max_sequence` so a subsequent
+    /// boot can restore the counter to at least this high-water mark — even
+    /// when the WAL has been compacted and no longer contains the historical
+    /// high sequences (P1: sequence numbers must not regress across restarts).
     async fn write_marker_inner(&self, marker_path: &std::path::Path, clean: bool) -> Result<(), String> {
+        let max_sequence = self.admit_sequence.load(Ordering::Acquire);
         let marker = serde_json::json!({
             "version": 1,
             "created_at_ms": std::time::SystemTime::now()
@@ -568,11 +582,25 @@ impl PersistenceWal {
                 .unwrap_or(0),
             "wal_path": self.path.to_string_lossy(),
             "clean": clean,
+            "max_sequence": max_sequence,
         });
         tokio::fs::write(marker_path, serde_json::to_vec(&marker).map_err(|e| format!("serialize instance marker: {e}"))?)
             .await
             .map_err(|e| format!("write instance marker: {e}"))?;
         Ok(())
+    }
+
+    /// Read the max_sequence recorded in the instance marker, if any.
+    /// Returns 0 when the marker is absent or lacks the field.
+    async fn read_marker_max_sequence(&self) -> u64 {
+        let marker_path = self.path.with_extension("wal.instance");
+        let Ok(content) = tokio::fs::read_to_string(&marker_path).await else {
+            return 0;
+        };
+        serde_json::from_str::<serde_json::Value>(&content)
+            .ok()
+            .and_then(|v| v.get("max_sequence").and_then(|s| s.as_u64()))
+            .unwrap_or(0)
     }
 
     /// Update the marker to active state (WAL intentionally exists).
@@ -1175,6 +1203,60 @@ mod tests {
         wal.replay().await.unwrap();
         assert_eq!(wal.compact().await.unwrap(), 0);
         let _ = tokio::fs::remove_file(path).await;
+    }
+
+    #[tokio::test]
+    async fn sequence_does_not_regress_after_compact_to_zero() {
+        let path = std::env::temp_dir().join(format!(
+            "pmp-wal-seq-monotonic-{}.jsonl",
+            uuid::Uuid::new_v4()
+        ));
+        let wal = PersistenceWal::new(&path);
+        wal.replay().await.unwrap();
+
+        let (id1, seq1) = wal.admit(make_event("first")).await.unwrap();
+        let (id2, seq2) = wal.admit(make_event("second")).await.unwrap();
+        assert!(seq2 > seq1);
+        wal.ack(id1).await.unwrap();
+        wal.ack(id2).await.unwrap();
+
+        // Compact to zero: WAL removed, clean marker records max_sequence.
+        assert_eq!(wal.compact().await.unwrap(), 0);
+
+        // Fresh instance replays the (now empty) WAL.  admit_sequence must be
+        // restored from the marker's high-water mark, not reset to 0.
+        let wal2 = PersistenceWal::new(&path);
+        wal2.replay().await.unwrap();
+        let (_, seq3) = wal2.admit(make_event("third")).await.unwrap();
+        assert!(
+            seq3 > seq2,
+            "sequence must not regress after compact-to-zero: seq3={seq3}, seq2={seq2}"
+        );
+
+        let _ = tokio::fs::remove_file(&path).await;
+        let _ = tokio::fs::remove_file(path.with_extension("wal.instance")).await;
+    }
+
+    #[tokio::test]
+    async fn marker_clean_allows_replay_after_compact_to_zero() {
+        // After a clean compact-to-zero the marker is marked clean, so a
+        // missing WAL file is expected (not accidental deletion) and replay
+        // must succeed.
+        let path = std::env::temp_dir().join(format!(
+            "pmp-wal-marker-clean-{}.jsonl",
+            uuid::Uuid::new_v4()
+        ));
+        let wal = PersistenceWal::new(&path);
+        wal.replay().await.unwrap();
+        let (id, _) = wal.admit(make_event("ack-me")).await.unwrap();
+        wal.ack(id).await.unwrap();
+        assert_eq!(wal.compact().await.unwrap(), 0); // removes WAL, writes clean marker
+
+        let wal2 = PersistenceWal::new(&path);
+        let replay = wal2.replay().await;
+        assert!(replay.is_ok(), "clean marker must allow replay with no WAL: {replay:?}");
+
+        let _ = tokio::fs::remove_file(path.with_extension("wal.instance")).await;
     }
 
     #[tokio::test]
