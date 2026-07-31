@@ -985,8 +985,13 @@ impl PersistenceWorker {
     /// process them, or for the timeout to expire.
     pub async fn flush(&self, timeout: Duration) -> Result<(), String> {
         let (reply, rx) = oneshot::channel();
+        // A SINGLE absolute deadline covers send_gate acquisition + control
+        // send + worker processing + reply (PMP41 P1).  Previously only the
+        // reply wait was bounded, so a contended send_gate or a full channel
+        // could hold the caller past its timeout.
+        let deadline = Instant::now() + timeout;
+        let remaining = move || deadline.saturating_duration_since(Instant::now());
         let target;
-        let deadline;
         {
             // Linearization point (P0-B): acquire send_gate FIRST, then read
             // the WAL sequence INSIDE the gate.  Previously the sequence was
@@ -994,50 +999,74 @@ impl PersistenceWorker {
             // the gate (admit in progress) could complete AFTER the target was
             // captured but still be excluded from this flush — the caller
             // would return before that event reached a terminal state.
-            let _send_guard = self.send_gate.lock().await;
+            let _send_guard = tokio::time::timeout(remaining(), self.send_gate.lock())
+                .await
+                .map_err(|_| "persistence flush timed out acquiring send gate".to_string())?;
             if self.closed.load(Ordering::Acquire) {
                 return Err("persistence worker is shutting down".to_string());
             }
             target = self.wal.current_sequence();
-            deadline = Instant::now() + timeout;
-            self.tx
-                .send(WorkerMessage::Flush { target_wal_sequence: target, deadline, reply })
-                .await
-                .map_err(|_| "persistence worker is closed".to_string())?;
+            tokio::time::timeout(
+                remaining(),
+                self.tx.send(WorkerMessage::Flush { target_wal_sequence: target, deadline, reply }),
+            )
+            .await
+            .map_err(|_| "persistence flush timed out sending control".to_string())?
+            .map_err(|_| "persistence worker is closed".to_string())?;
         }
-        tokio::time::timeout(timeout, rx)
+        // Reply wait uses the REMAINING budget after the send phase (PMP41 P1).
+        tokio::time::timeout(remaining(), rx)
             .await
             .map_err(|_| "persistence flush timed out".to_string())?
             .map_err(|_| "persistence flush acknowledgement was dropped".to_string())??;
-        self.wal.compact().await?;
+        // Compact only if the deadline budget is not already exhausted.
+        if Instant::now() < deadline {
+            self.wal.compact().await?;
+        }
         Ok(())
     }
 
     /// Drain accepted events, flush telemetry, then stop the worker.
     pub async fn shutdown(&self, timeout: Duration) -> Result<(), String> {
         let (reply, rx) = oneshot::channel();
+        // A SINGLE absolute deadline covers send_gate acquisition + control
+        // send + worker processing + reply (PMP41 P1), so a contended gate or
+        // full channel cannot hold the caller past its timeout.
         let deadline = Instant::now() + timeout;
+        let remaining = move || deadline.saturating_duration_since(Instant::now());
         let target;
         {
             // Same linearization rule as flush (P0-B): acquire send_gate, then
             // read the sequence inside the gate so concurrent admissions are
             // covered by the shutdown target.
-            let _send_guard = self.send_gate.lock().await;
+            let _send_guard = tokio::time::timeout(remaining(), self.send_gate.lock())
+                .await
+                .map_err(|_| "persistence shutdown timed out acquiring send gate".to_string())?;
             if self.closed.swap(true, Ordering::AcqRel) {
                 return Ok(());
             }
             target = self.wal.current_sequence();
-            if self
-                .tx
-                .send(WorkerMessage::Shutdown { target_wal_sequence: target, deadline, reply })
-                .await
-                .is_err()
+            match tokio::time::timeout(
+                remaining(),
+                self.tx.send(WorkerMessage::Shutdown { target_wal_sequence: target, deadline, reply }),
+            )
+            .await
             {
-                self.closed.store(false, Ordering::Release);
-                return Err("persistence worker is closed".to_string());
+                Ok(Ok(())) => {}
+                Ok(Err(_)) => {
+                    self.closed.store(false, Ordering::Release);
+                    return Err("persistence worker is closed".to_string());
+                }
+                Err(_) => {
+                    // The control was never delivered — release the closed
+                    // latch so the caller may retry shutdown (PMP41 P1).
+                    self.closed.store(false, Ordering::Release);
+                    return Err("persistence shutdown timed out sending control".to_string());
+                }
             }
         }
-        let result = match tokio::time::timeout(timeout, rx).await {
+        // Reply wait uses the REMAINING budget after the send phase (PMP41 P1).
+        let result = match tokio::time::timeout(remaining(), rx).await {
             Ok(Ok(result)) => result,
             Ok(Err(_)) => Err("persistence shutdown acknowledgement was dropped".to_string()),
             Err(_) => Err("persistence shutdown timed out".to_string()),
@@ -1046,7 +1075,9 @@ impl PersistenceWorker {
             self.closed.store(false, Ordering::Release);
             return Err(error);
         }
-        self.wal.compact().await?;
+        if Instant::now() < deadline {
+            self.wal.compact().await?;
+        }
         Ok(())
     }
 
