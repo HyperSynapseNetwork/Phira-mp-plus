@@ -259,26 +259,23 @@ impl PluginTcpActor {
                                         // Serialize per handle so events for the
                                         // same connection stay in stream order
                                         // even across the fixed workers (P0-G).
-                                        // Keep the per-handle Arc alive in an
-                                        // outer binding so the async guard's
-                                        // borrow is valid for its lifetime.
-                                        let mut _handle_lock: Option<Arc<TokioMutex<()>>> =
-                                            None;
+                                        // Bind the per-handle Arc in the outer
+                                        // scope first; the async guard borrows
+                                        // from it, so its lifetime is valid.
                                         let handle = payload
                                             .get("handle")
                                             .and_then(|h| h.as_u64());
-                                        let _per_handle = if let Some(h) = handle {
-                                            let handle_lock = handle_locks
-                                                .lock()
-                                                .unwrap()
-                                                .entry(h)
-                                                .or_insert_with(|| Arc::new(TokioMutex::new(())))
-                                                .clone();
-                                            _handle_lock = Some(handle_lock.clone());
-                                            Some(handle_lock.lock().await)
-                                        } else {
-                                            None
-                                        };
+                                        let _handle_lock: Option<Arc<TokioMutex<()>>> =
+                                            handle.map(|h| {
+                                                handle_locks
+                                                    .lock()
+                                                    .unwrap()
+                                                    .entry(h)
+                                                    .or_insert_with(|| Arc::new(TokioMutex::new(())))
+                                                    .clone()
+                                            });
+                                        let _per_handle =
+                                            _handle_lock.as_ref().map(|l| l.lock().await);
                                         let fut = cb(event_type.clone(), payload);
                                         // Bound each callback so a hung plugin
                                         // cannot pin the worker forever.
