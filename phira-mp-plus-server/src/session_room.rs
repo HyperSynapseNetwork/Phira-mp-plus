@@ -10,7 +10,7 @@
 
 use crate::phira_client::PhiraRetryNoticeTarget;
 use crate::plugin::PluginEvent;
-use crate::session::{SessionCategory, User};
+use crate::session::{CommandOrigin, SessionCategory, User};
 use crate::session_auth::resolve_phira_api_endpoint;
 use crate::tl;
 use anyhow::{anyhow, bail, Result};
@@ -314,7 +314,10 @@ pub async fn join_room(
     monitor: bool,
     deadline: Instant,
     received_at: Instant,
+    origin: &CommandOrigin,
 ) -> Result<()> {
+    // TODO(A3): verify `origin.is_current()` before the AddUser commit point so
+    // a superseded session can never mutate authoritative room state.
     let mut room_guard = user.room.write().await;
     if room_guard.is_some() {
         bail!("{}", tl!("already-in-room"));
@@ -521,9 +524,11 @@ pub async fn join_room(
     crate::official_client_compat::timing::CompatTiming::from_config(&user.server.config)
         .wait_until_minimum(received_at)
         .await;
+    // TODO(A3): confirm the origin-bound flush (was `user.send_and_flush` so it
+    // could hit a NEW session after a reconnect).
     match tokio::time::timeout(
         Duration::from_secs(5),
-        user.send_and_flush(ServerCommand::JoinRoom(Ok(response))),
+        origin.send_and_flush(ServerCommand::JoinRoom(Ok(response))),
     )
     .await
     {
@@ -550,11 +555,13 @@ pub async fn join_room(
     }
 
     // 再发送聊天历史（仅 Chat 消息），让客户端在完整快照后接收增量消息
+    // TODO(A3): history delivery is bound to origin; previously `user.try_send`
+    // could reach a NEW session after a reconnect.
     {
         let history = room.chat_history.read().await;
         for msg in history.iter() {
             if let Message::Chat { user: chat_user, content } = msg {
-                user.try_send(ServerCommand::Message(Message::Chat {
+                let _ = origin.try_send(ServerCommand::Message(Message::Chat {
                     user: *chat_user,
                     content: content.clone(),
                 }))
@@ -567,10 +574,12 @@ pub async fn join_room(
         // ProtocolHack (P1): 客户端刚收到 SelectChart 快照，需在官方响应 flush
         // 之后发送 GameStart 让客户端切换到 WaitingForReady 并显示准备按钮。
         // 统一走 post_response 调度：固定顺序、不阻塞、延迟可配置。
+        // TODO(A3): compensation is bound to the join's origin (was to_user,
+        // which could reach a NEW session after a reconnect).
         crate::official_client_compat::post_response::schedule_post_response(
             &user.server.config,
-            vec![crate::official_client_compat::post_response::PostResponseItem::to_user(
-                Arc::downgrade(&user),
+            vec![crate::official_client_compat::post_response::PostResponseItem::to_origin(
+                origin.clone(),
                 crate::official_client_compat::post_response::PostResponseKind::ChangeState,
                 ServerCommand::Message(Message::GameStart { user: 0 }),
                 "join-reconnect-wait-for-ready",

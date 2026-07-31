@@ -12,9 +12,9 @@
 //! 迁移状态：WriteRouted（Ping、Authenticate、Touches/Judges、
 //! QueryRoomInfo 属于协议快路径，不进入业务命令邮箱）。
 
-use crate::session::{Session, SessionCategory, User};
+use crate::session::{CommandOrigin, Session, SessionCategory, User};
 use phira_mp_common::{RoomId, ServerCommand};
-use std::sync::{Arc, Weak};
+use std::sync::Arc;
 use tokio::sync::mpsc;
 
 /// Channel capacity for each per-session mailbox.
@@ -25,10 +25,19 @@ const SESSION_MAILBOX_CAPACITY: usize = 64;
 pub(crate) fn init_session_mailbox(session: &Arc<Session>) -> mpsc::Sender<SessionActorCmd> {
     let (tx, mut rx) = mpsc::channel::<SessionActorCmd>(SESSION_MAILBOX_CAPACITY);
     let weak_session = Arc::downgrade(session);
+    let session_id = session.id;
     crate::supervisor_actor::spawn_named(format!("session-mailbox-{}", session.id), async move {
         while let Some(cmd) = rx.recv().await {
             // If session is gone, stop processing.
             if weak_session.upgrade().is_none() {
+                break;
+            }
+            // P0-A: a command whose origin session is no longer the user's
+            // current session (a reconnect bumped the generation) must never
+            // execute — its response and compensations are bound to the old
+            // origin. Stop the worker; the origin transport is being torn down.
+            if !worker_should_run(cmd.origin()).await {
+                tracing::debug!(session = %session_id, "origin superseded; stopping mailbox worker");
                 break;
             }
             match cmd {
@@ -106,7 +115,15 @@ pub(crate) fn init_session_mailbox(session: &Arc<Session>) -> mpsc::Sender<Sessi
                         Some(ServerCommand::JoinRoom(Err(
                             "session command timed out".to_string(),
                         ))),
-                        handle_join(user, category, id, monitor, meta.deadline, received_at),
+                        handle_join(
+                            user,
+                            category,
+                            id,
+                            monitor,
+                            meta.deadline,
+                            received_at,
+                            meta.origin.clone(),
+                        ),
                     )
                     .await;
                 }
@@ -202,10 +219,14 @@ pub(crate) struct CommandMeta {
     /// Absolute deadline for the whole send→execute→reply pipeline. The actor
     /// checks it before executing (and MUST NOT commit after it passes).
     pub deadline: std::time::Instant,
+    /// The Session that initiated this command. Every response, error, close
+    /// and post-response compensation is bound to this origin, never to the
+    /// user's current session (P0-A).
+    pub origin: CommandOrigin,
 }
 
 impl CommandMeta {
-    fn new(deadline: std::time::Instant) -> Self {
+    fn new(deadline: std::time::Instant, origin: CommandOrigin) -> Self {
         Self {
             command_id: NEXT_COMMAND_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
             created_at_ms: std::time::SystemTime::now()
@@ -213,8 +234,18 @@ impl CommandMeta {
                 .map(|d| d.as_millis() as u64)
                 .unwrap_or(0),
             deadline,
+            origin,
         }
     }
+}
+
+/// Decision point for the mailbox worker: may this queued command still run?
+/// A stale origin means the user reconnected while the command was queued, so
+/// it must be refused — its response and compensations are bound to the old
+/// session (P0-A). Refusing also stops the worker, because the origin session
+/// is being torn down.
+pub(crate) async fn worker_should_run(origin: &CommandOrigin) -> bool {
+    origin.is_current().await
 }
 
 pub(crate) enum SessionActorCmd {
@@ -295,6 +326,27 @@ pub(crate) enum SessionActorCmd {
     },
 }
 
+impl SessionActorCmd {
+    /// The originating Session every response/compensation for this command is
+    /// bound to (P0-A).
+    pub(crate) fn origin(&self) -> &CommandOrigin {
+        match self {
+            SessionActorCmd::Chat { meta, .. }
+            | SessionActorCmd::Lock { meta, .. }
+            | SessionActorCmd::Cycle { meta, .. }
+            | SessionActorCmd::Leave { meta, .. }
+            | SessionActorCmd::Create { meta, .. }
+            | SessionActorCmd::Join { meta, .. }
+            | SessionActorCmd::SelectChart { meta, .. }
+            | SessionActorCmd::RequestStart { meta, .. }
+            | SessionActorCmd::Ready { meta, .. }
+            | SessionActorCmd::CancelReady { meta, .. }
+            | SessionActorCmd::Played { meta, .. }
+            | SessionActorCmd::Abort { meta, .. } => &meta.origin,
+        }
+    }
+}
+
 // ── Generic route helper ──────────────────────────────────────────
 
 /// Total budget for one ordinary client command, shared across the mailbox
@@ -305,17 +357,9 @@ fn command_deadline(user: &User) -> std::time::Instant {
     std::time::Instant::now() + std::time::Duration::from_millis(budget_ms)
 }
 
-async fn close_uncertain_session(user: &User, reason: &'static str) {
-    tracing::warn!(
-        user = user.id,
-        reason,
-        "session command outcome is uncertain; closing transport"
-    );
-    let session = user.session.read().await.as_ref().and_then(Weak::upgrade);
-    if let Some(session) = session {
-        session.stream.close();
-        let _ = user.server.lost_con_tx.try_send(session.id);
-    }
+async fn close_uncertain_session(origin: &CommandOrigin, reason: &'static str) {
+    tracing::warn!(reason, "session command outcome is uncertain; closing origin transport");
+    origin.close_uncertain().await;
 }
 
 /// Execute a command handler unless the absolute actor deadline has already
@@ -357,24 +401,35 @@ async fn route_via_mailbox<Build, ErrResp>(
     error_response: ErrResp,
 ) -> Option<ServerCommand>
 where
-    Build:
-        FnOnce(Arc<User>, tokio::sync::oneshot::Sender<Option<ServerCommand>>) -> SessionActorCmd,
+    Build: FnOnce(
+            CommandOrigin,
+            Arc<User>,
+            tokio::sync::oneshot::Sender<Option<ServerCommand>>,
+        ) -> SessionActorCmd,
     ErrResp: FnOnce(String) -> Option<ServerCommand>,
 {
-    let tx = {
-        let guard = user.session.read().await;
-        guard
-            .as_ref()
-            .and_then(Weak::upgrade)
-            .and_then(|session| session.actor_tx.get().cloned())
+    // P0-A: capture the originating Session BEFORE touching the mailbox. The
+    // user's *current* session may be replaced by a reconnect at any time; every
+    // response, error, close and compensation for this command stays bound to
+    // the origin captured here, never to the new session.
+    let origin = match user.current_origin().await {
+        Some(origin) => origin,
+        None => return error_response("session mailbox missing".to_string()),
     };
+
+    // Route through the ORIGIN session's mailbox — not `user.session`, which
+    // may already point at a newer session after a reconnect.
+    let tx = origin
+        .session
+        .upgrade()
+        .and_then(|session| session.actor_tx.get().cloned());
     let Some(tx) = tx else {
-        close_uncertain_session(&user, "session mailbox missing").await;
+        close_uncertain_session(&origin, "session mailbox missing").await;
         return error_response("session mailbox missing".to_string());
     };
 
     let (reply, rx) = tokio::sync::oneshot::channel();
-    let cmd = build(Arc::clone(&user), reply);
+    let cmd = build(origin.clone(), Arc::clone(&user), reply);
     let send_budget = deadline.saturating_duration_since(std::time::Instant::now());
     match tokio::time::timeout(send_budget, tx.send(cmd)).await {
         Ok(Ok(())) => {
@@ -382,21 +437,21 @@ where
             match tokio::time::timeout(reply_budget, rx).await {
                 Ok(Ok(result)) => result,
                 Ok(Err(_)) => {
-                    close_uncertain_session(&user, "reply channel closed after enqueue").await;
+                    close_uncertain_session(&origin, "reply channel closed after enqueue").await;
                     error_response("session command reply channel closed".to_string())
                 }
                 Err(_) => {
-                    close_uncertain_session(&user, "reply timed out after enqueue").await;
+                    close_uncertain_session(&origin, "reply timed out after enqueue").await;
                     error_response("session command reply timed out".to_string())
                 }
             }
         }
         Ok(Err(_)) => {
-            close_uncertain_session(&user, "session mailbox closed before enqueue").await;
+            close_uncertain_session(&origin, "session mailbox closed before enqueue").await;
             error_response("session mailbox closed".to_string())
         }
         Err(_) => {
-            close_uncertain_session(&user, "session mailbox enqueue timed out").await;
+            close_uncertain_session(&origin, "session mailbox enqueue timed out").await;
             error_response("session mailbox enqueue timed out".to_string())
         }
     }
@@ -443,8 +498,8 @@ pub(crate) async fn route_chat(
     route_via_mailbox(
         user,
         deadline,
-        |user, reply| SessionActorCmd::Chat {
-            meta: CommandMeta::new(deadline),
+        |origin, user, reply| SessionActorCmd::Chat {
+            meta: CommandMeta::new(deadline, origin),
             user,
             category,
             msg,
@@ -470,8 +525,8 @@ pub(crate) async fn route_lock(user: Arc<User>, lock: bool) -> Option<ServerComm
     route_via_mailbox(
         user,
         deadline,
-        |user, reply| SessionActorCmd::Lock {
-            meta: CommandMeta::new(deadline),
+        |origin, user, reply| SessionActorCmd::Lock {
+            meta: CommandMeta::new(deadline, origin),
             user,
             lock,
             reply,
@@ -494,8 +549,8 @@ pub(crate) async fn route_cycle(user: Arc<User>, cycle: bool) -> Option<ServerCo
     route_via_mailbox(
         user,
         deadline,
-        |user, reply| SessionActorCmd::Cycle {
-            meta: CommandMeta::new(deadline),
+        |origin, user, reply| SessionActorCmd::Cycle {
+            meta: CommandMeta::new(deadline, origin),
             user,
             cycle,
             reply,
@@ -523,8 +578,8 @@ pub(crate) async fn route_leave(
     route_via_mailbox(
         user,
         deadline,
-        |user, reply| SessionActorCmd::Leave {
-            meta: CommandMeta::new(deadline),
+        |origin, user, reply| SessionActorCmd::Leave {
+            meta: CommandMeta::new(deadline, origin),
             user,
             category,
             reply,
@@ -549,8 +604,8 @@ pub(crate) async fn route_create(user: Arc<User>, id: RoomId) -> Option<ServerCo
     route_via_mailbox(
         user,
         deadline,
-        |user, reply| SessionActorCmd::Create {
-            meta: CommandMeta::new(deadline),
+        |origin, user, reply| SessionActorCmd::Create {
+            meta: CommandMeta::new(deadline, origin),
             user,
             id,
             reply,
@@ -567,8 +622,11 @@ async fn handle_join(
     monitor: bool,
     deadline: std::time::Instant,
     received_at: std::time::Instant,
+    origin: CommandOrigin,
 ) -> Option<ServerCommand> {
-    match crate::session_room::join_room(user, category, id, monitor, deadline, received_at).await {
+    match crate::session_room::join_room(user, category, id, monitor, deadline, received_at, &origin)
+        .await
+    {
         Ok(()) => {
             // join_room already sent JoinRoom(Ok) + chat history directly
             None
@@ -588,8 +646,8 @@ pub(crate) async fn route_join(
     route_via_mailbox(
         user,
         deadline,
-        |user, reply| SessionActorCmd::Join {
-            meta: CommandMeta::new(deadline),
+        |origin, user, reply| SessionActorCmd::Join {
+            meta: CommandMeta::new(deadline, origin),
             user,
             category,
             id,
@@ -617,8 +675,8 @@ pub(crate) async fn route_select_chart(user: Arc<User>, id: i32) -> Option<Serve
     route_via_mailbox(
         user,
         deadline,
-        |user, reply| SessionActorCmd::SelectChart {
-            meta: CommandMeta::new(deadline),
+        |origin, user, reply| SessionActorCmd::SelectChart {
+            meta: CommandMeta::new(deadline, origin),
             user,
             id,
             reply,
@@ -646,8 +704,8 @@ pub(crate) async fn route_request_start(user: Arc<User>) -> Option<ServerCommand
     route_via_mailbox(
         user,
         deadline,
-        |user, reply| SessionActorCmd::RequestStart {
-            meta: CommandMeta::new(deadline),
+        |origin, user, reply| SessionActorCmd::RequestStart {
+            meta: CommandMeta::new(deadline, origin),
             user,
             reply,
         },
@@ -671,8 +729,8 @@ pub(crate) async fn route_ready(user: Arc<User>) -> Option<ServerCommand> {
     route_via_mailbox(
         user,
         deadline,
-        |user, reply| SessionActorCmd::Ready {
-            meta: CommandMeta::new(deadline),
+        |origin, user, reply| SessionActorCmd::Ready {
+            meta: CommandMeta::new(deadline, origin),
             user,
             reply,
         },
@@ -697,8 +755,8 @@ pub(crate) async fn route_cancel_ready(user: Arc<User>) -> Option<ServerCommand>
     route_via_mailbox(
         user,
         deadline,
-        |user, reply| SessionActorCmd::CancelReady {
-            meta: CommandMeta::new(deadline),
+        |origin, user, reply| SessionActorCmd::CancelReady {
+            meta: CommandMeta::new(deadline, origin),
             user,
             reply,
         },
@@ -722,8 +780,8 @@ pub(crate) async fn route_played(user: Arc<User>, id: i32) -> Option<ServerComma
     route_via_mailbox(
         user,
         deadline,
-        |user, reply| SessionActorCmd::Played {
-            meta: CommandMeta::new(deadline),
+        |origin, user, reply| SessionActorCmd::Played {
+            meta: CommandMeta::new(deadline, origin),
             user,
             id,
             reply,
@@ -746,8 +804,8 @@ pub(crate) async fn route_abort(user: Arc<User>) -> Option<ServerCommand> {
     route_via_mailbox(
         user,
         deadline,
-        |user, reply| SessionActorCmd::Abort {
-            meta: CommandMeta::new(deadline),
+        |origin, user, reply| SessionActorCmd::Abort {
+            meta: CommandMeta::new(deadline, origin),
             user,
             reply,
         },
@@ -758,11 +816,38 @@ pub(crate) async fn route_abort(user: Arc<User>) -> Option<ServerCommand> {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::OnceLock;
+    use super::*;
+    use std::sync::{OnceLock, Weak};
+    use std::time::Duration;
 
     #[test]
     fn once_lock_pattern_works() {
         let lock = OnceLock::<u8>::new();
         assert!(lock.get().is_none());
+    }
+
+    #[test]
+    fn command_meta_carries_origin() {
+        let origin = CommandOrigin {
+            session: Weak::new(),
+            generation: 7,
+        };
+        let meta = CommandMeta::new(
+            std::time::Instant::now() + Duration::from_secs(1),
+            origin.clone(),
+        );
+        assert_eq!(meta.origin.generation, 7);
+        assert_eq!(meta.origin.session.as_ptr(), origin.session.as_ptr());
+    }
+
+    #[tokio::test]
+    async fn stale_origin_stops_worker_execution() {
+        // A command whose origin session is already dropped must never run —
+        // the worker's P0-A check refuses it before any handler executes.
+        let origin = CommandOrigin {
+            session: Weak::new(),
+            generation: 3,
+        };
+        assert!(!worker_should_run(&origin).await);
     }
 }

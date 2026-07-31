@@ -13,9 +13,10 @@ use crate::session_auth::{
 use anyhow::{anyhow, bail, Result};
 use phira_mp_common::{ClientCommand, Message, ServerCommand, Stream, StreamSender};
 use std::{
+    collections::VecDeque,
     sync::{
         atomic::{AtomicBool, Ordering},
-        Arc, OnceLock,
+        Arc, OnceLock, Weak,
     },
     time::{Duration, Instant},
 };
@@ -79,12 +80,215 @@ enum AuthenticationOutcome {
     Rejected,
 }
 
+/// A stable handle to the Session that initiated a command, captured at route
+/// time. Every response, error, transport close and post-response compensation
+/// for that command is bound to this origin — never to the user's *current*
+/// session, which may have been replaced by a reconnect (P0-A).
+///
+/// Two independent checks guard freshness:
+/// - a generation counter snapshot compared against `user.session_generation`
+///   (bumped by `User::set_session`), and
+/// - pointer identity between the captured weak ref and the weak ref the user
+///   currently stores.
+#[derive(Debug, Clone)]
+pub struct CommandOrigin {
+    pub(crate) session: Weak<Session>,
+    pub(crate) generation: u64,
+}
+
+/// Pure two-part staleness decision, factored out for unit testing: an origin
+/// is current only when its generation snapshot still matches the user's
+/// current generation AND the captured Session is still the one the user is on.
+pub(crate) fn origin_is_current(
+    snapshot_generation: u64,
+    current_generation: u64,
+    same_session: bool,
+) -> bool {
+    snapshot_generation == current_generation && same_session
+}
+
+impl CommandOrigin {
+    pub(crate) async fn is_current(&self) -> bool {
+        let Some(session) = self.session.upgrade() else {
+            return false;
+        };
+        let user = &session.user;
+        let current_generation = user.session_generation.load(Ordering::SeqCst);
+        if self.generation != current_generation {
+            return false;
+        }
+        let current = user.session.read().await.as_ref().and_then(Weak::upgrade);
+        let same_session = current.as_ref().is_some_and(|cur| Arc::ptr_eq(cur, &session));
+        origin_is_current(self.generation, current_generation, same_session)
+    }
+
+    /// Send a best-effort packet to the origin session. Returns `false` and
+    /// drops the packet when the origin is stale — a superseded session must
+    /// never receive a response intended for an old command (P0-A).
+    pub(crate) async fn try_send(&self, cmd: ServerCommand) -> bool {
+        if !self.is_current().await {
+            debug!(generation = self.generation, "dropping response for stale session origin");
+            return false;
+        }
+        let Some(session) = self.session.upgrade() else {
+            debug!("dropping response: origin session already dropped");
+            return false;
+        };
+        session.try_send(cmd).await;
+        true
+    }
+
+    /// Send a critical packet to the origin session, waiting for capacity and
+    /// flushing it to the socket. Returns `Err` when the origin is stale or the
+    /// send queue failed.
+    pub(crate) async fn send_and_flush(&self, cmd: ServerCommand) -> Result<()> {
+        if !self.is_current().await {
+            return Err(anyhow!("stale session origin"));
+        }
+        let Some(session) = self.session.upgrade() else {
+            return Err(anyhow!("origin session gone"));
+        };
+        session.send_and_flush(cmd).await
+    }
+
+    /// Close ONLY this origin's transport. A superseded origin is still safe to
+    /// close — it is the old connection being torn down — while the user's
+    /// current session is never touched (P0-A / P0-D).
+    pub(crate) async fn close_uncertain(&self) {
+        let Some(session) = self.session.upgrade() else {
+            return;
+        };
+        let stale = !self.is_current().await;
+        tracing::warn!(
+            user = session.user.id,
+            session = %session.id,
+            stale,
+            "closing origin transport: uncertain command outcome"
+        );
+        session.stream.close();
+        let _ = session.user.server.lost_con_tx.try_send(session.id);
+    }
+}
+
+/// Minimal outbound sink abstraction so [`SessionOutboundGate`] can be driven
+/// both from `Session` methods (which hold the `Stream`) and from the auth
+/// callback (which holds the `Arc<StreamSender>`).
+pub(crate) trait OutboundSink {
+    async fn sink_send(&self, cmd: ServerCommand) -> Result<()>;
+    async fn sink_send_and_flush(&self, cmd: ServerCommand) -> Result<()>;
+    fn sink_try_send(&self, cmd: ServerCommand) -> Result<()>;
+}
+
+impl OutboundSink for Stream<ServerCommand, ClientCommand> {
+    async fn sink_send(&self, cmd: ServerCommand) -> Result<()> {
+        self.send(cmd).await
+    }
+    async fn sink_send_and_flush(&self, cmd: ServerCommand) -> Result<()> {
+        self.send_and_flush(cmd).await
+    }
+    fn sink_try_send(&self, cmd: ServerCommand) -> Result<()> {
+        self.try_send(cmd)
+    }
+}
+
+impl OutboundSink for StreamSender<ServerCommand> {
+    async fn sink_send(&self, cmd: ServerCommand) -> Result<()> {
+        self.send(cmd).await
+    }
+    async fn sink_send_and_flush(&self, cmd: ServerCommand) -> Result<()> {
+        self.send_and_flush(cmd).await
+    }
+    fn sink_try_send(&self, cmd: ServerCommand) -> Result<()> {
+        self.try_send(cmd)
+    }
+}
+
+/// P0-B: per-session outbound activation barrier. Before the initial
+/// `Authenticate(Ok)` frame is proven flushed, outbound packets (room
+/// broadcasts, extension state, monitor notifications) are buffered here in
+/// FIFO order instead of racing the client's authentication callback. After
+/// activation they pass straight through to the transport.
+pub(crate) struct SessionOutboundGate {
+    activated: AtomicBool,
+    pending: Mutex<VecDeque<ServerCommand>>,
+}
+
+impl SessionOutboundGate {
+    pub(crate) fn new() -> Self {
+        Self {
+            activated: AtomicBool::new(false),
+            pending: Mutex::new(VecDeque::new()),
+        }
+    }
+
+    /// Queue (pre-activation) or forward (post-activation). Returns `Err` only
+    /// when the forwarding send itself fails.
+    pub(crate) async fn send(&self, sink: &impl OutboundSink, cmd: ServerCommand) -> Result<()> {
+        let mut pending = self.pending.lock().await;
+        if self.activated.load(Ordering::SeqCst) {
+            drop(pending);
+            sink.sink_send(cmd).await
+        } else {
+            pending.push_back(cmd);
+            Ok(())
+        }
+    }
+
+    /// Non-blocking variant used by room broadcasts. Pre-activation packets are
+    /// buffered (never fail); post-activation it inherits the transport's
+    /// slow-consumer failure behavior. Returns `true` when the packet was
+    /// accepted (buffered or enqueued).
+    pub(crate) async fn try_send(&self, sink: &impl OutboundSink, cmd: ServerCommand) -> bool {
+        let mut pending = self.pending.lock().await;
+        if self.activated.load(Ordering::SeqCst) {
+            drop(pending);
+            sink.sink_try_send(cmd).is_ok()
+        } else {
+            pending.push_back(cmd);
+            true
+        }
+    }
+
+    pub(crate) async fn send_and_flush(
+        &self,
+        sink: &impl OutboundSink,
+        cmd: ServerCommand,
+    ) -> Result<()> {
+        {
+            let pending = self.pending.lock().await;
+            assert!(
+                self.activated.load(Ordering::SeqCst),
+                "send_and_flush before outbound activation"
+            );
+            drop(pending);
+        }
+        sink.sink_send_and_flush(cmd).await
+    }
+
+    /// Open the barrier and drain buffered packets in FIFO order. Must be called
+    /// only after the `Authenticate(Ok)` frame has been flushed to the socket.
+    pub(crate) async fn activate(&self, sink: &impl OutboundSink) {
+        let mut pending = self.pending.lock().await;
+        self.activated.store(true, Ordering::SeqCst);
+        while let Some(cmd) = pending.pop_front() {
+            if sink.sink_send(cmd).await.is_err() {
+                tracing::warn!(remaining = pending.len(), "outbound gate drain failed");
+                break;
+            }
+        }
+    }
+}
+
 pub struct Session {
     pub id: Uuid,
     pub ip: String,
     pub stream: Stream<ServerCommand, ClientCommand>,
     pub user: Arc<User>,
     pub category: SessionCategory,
+
+    /// P0-B outbound activation barrier. Created before the Stream so the auth
+    /// callback can open it the moment `Authenticate(Ok)` is proven flushed.
+    pub(crate) gate: Arc<SessionOutboundGate>,
 
     /// Per-session actor mailbox sender. Set after authentication.
     pub(crate) actor_tx: OnceLock<mpsc::Sender<crate::session_actor::SessionActorCmd>>,
@@ -109,6 +313,9 @@ impl Session {
         let (tx, rx) = tokio::sync::oneshot::channel::<AuthenticationOutcome>();
         let last_recv: Arc<Mutex<Instant>> = Arc::new(Mutex::new(Instant::now()));
         let server_clone = Arc::clone(&server);
+        // P0-B: outbound activation barrier. Cloned into the Stream callback so
+        // the auth path can open it the moment Authenticate(Ok) is flushed.
+        let gate = Arc::new(SessionOutboundGate::new());
 
         let stream = Stream::<ServerCommand, ClientCommand>::new(
             None,
@@ -121,6 +328,7 @@ impl Session {
                 let last_recv = Arc::clone(&last_recv);
                 let waiting_for_authenticate = Arc::new(AtomicBool::new(true));
                 let panicked = Arc::new(AtomicBool::new(false));
+                let gate = Arc::clone(&gate);
                 move |send_tx, cmd| {
                     let this = Arc::clone(&this);
                     let this_inited = Arc::clone(&this_inited);
@@ -139,6 +347,7 @@ impl Session {
                     let last_recv = Arc::clone(&last_recv);
                     let waiting_for_authenticate = Arc::clone(&waiting_for_authenticate);
                     let panicked = Arc::clone(&panicked);
+                    let gate = Arc::clone(&gate);
                     async move {
                         if panicked.load(Ordering::SeqCst) {
                             return;
@@ -151,6 +360,10 @@ impl Session {
                         if waiting_for_authenticate.load(Ordering::SeqCst) {
                             if let ClientCommand::Authenticate { token } = &cmd {
                                 let Some(tx) = tx else { return };
+                                // P0-B: record the Authenticate receive time at the dispatch
+                                // boundary so the success response obeys the same minimum
+                                // response latency as every other request-type command (§5).
+                                let auth_received_at = Instant::now();
                                 let mut auth_tx = Some(tx);
                                 let retry_send_tx = Arc::clone(&send_tx);
                                 let res: Result<()> = {
@@ -416,6 +629,14 @@ impl Session {
                                         return;
                                     }
                                     debug!("sending auth OK to user {}", user.id);
+                                    // P0-B: the initial Authenticate response must not arrive
+                                    // before the minimum response latency window (the official
+                                    // client installs its Authenticate callback after send).
+                                    crate::official_client_compat::timing::CompatTiming::from_config(
+                                        &server.config,
+                                    )
+                                    .wait_until_minimum(auth_received_at)
+                                    .await;
                                     if let Err(err) = send_tx
                                         .send_and_flush(ServerCommand::Authenticate(Ok((
                                             user.to_info(),
@@ -428,6 +649,14 @@ impl Session {
                                         return;
                                     }
                                     debug!("auth response sent");
+                                    // P0-B: the auth frame is proven flushed; only now open the
+                                    // outbound gate so room broadcasts buffered during the
+                                    // handshake drain AFTER the client installed its callback.
+                                    gate.activate(send_tx.as_ref()).await;
+                                    let auth_trace = crate::official_client_compat::protocol_trace::ProtocolTrace::get();
+                                    auth_trace.response_queued.fetch_add(1, Ordering::Relaxed);
+                                    auth_trace.response_flushed.fetch_add(1, Ordering::Relaxed);
+                                    auth_trace.record_response_latency(auth_received_at);
                                     // ── 后台后置任务 ──────────────────────────────────────
                                     // publish_user_connected 不阻塞客户端认证响应。
                                     let uid = user.id;
@@ -470,6 +699,7 @@ impl Session {
                                 return;
                             } else if let ClientCommand::ConsoleAuthenticate { token } = &cmd {
                                 let Some(tx) = tx else { return };
+                                let auth_received_at = Instant::now();
                                 match authenticate_remote_with_notice(
                                     &server,
                                     token,
@@ -496,12 +726,23 @@ impl Session {
                                             let tx = crate::session_actor::init_session_mailbox(session);
                                             let _ = session.actor_tx.set(tx);
                                         }
-                                        let _ = send_tx
-                                            .send(ServerCommand::Authenticate(Ok((
+                                        crate::official_client_compat::timing::CompatTiming::from_config(
+                                            &server.config,
+                                        )
+                                        .wait_until_minimum(auth_received_at)
+                                        .await;
+                                        if let Err(err) = send_tx
+                                            .send_and_flush(ServerCommand::Authenticate(Ok((
                                                 user.to_info(),
                                                 None,
                                             ))))
-                                            .await;
+                                            .await
+                                        {
+                                            warn!(user = user.id, ?err, "failed to flush console auth response");
+                                            panicked.store(true, Ordering::SeqCst);
+                                            return;
+                                        }
+                                        gate.activate(send_tx.as_ref()).await;
                                         waiting_for_authenticate.store(false, Ordering::SeqCst);
                                     }
                                     Err(err) => {
@@ -518,6 +759,7 @@ impl Session {
                                 return;
                             } else if let ClientCommand::RoomMonitorAuthenticate { key } = &cmd {
                                 let Some(tx) = tx else { return };
+                                let auth_received_at = Instant::now();
                                 if server
                                     .room_monitor
                                     .read()
@@ -559,9 +801,23 @@ impl Session {
                                         }
                                         *server.room_monitor.write().await =
                                             Some(Arc::downgrade(this.get().unwrap()));
-                                        let _ = send_tx
-                                            .send(ServerCommand::Authenticate(Ok((user.to_info(), None))))
-                                            .await;
+                                        crate::official_client_compat::timing::CompatTiming::from_config(
+                                            &server.config,
+                                        )
+                                        .wait_until_minimum(auth_received_at)
+                                        .await;
+                                        if let Err(err) = send_tx
+                                            .send_and_flush(ServerCommand::Authenticate(Ok((
+                                                user.to_info(),
+                                                None,
+                                            ))))
+                                            .await
+                                        {
+                                            warn!(user = user.id, ?err, "failed to flush room monitor auth response");
+                                            panicked.store(true, Ordering::SeqCst);
+                                            return;
+                                        }
+                                        gate.activate(send_tx.as_ref()).await;
                                         waiting_for_authenticate.store(false, Ordering::SeqCst);
                                     }
                                     _ => {
@@ -578,6 +834,7 @@ impl Session {
                                 return;
                             } else if let ClientCommand::GameMonitorAuthenticate { token } = &cmd {
                                 let Some(tx) = tx else { return };
+                                let auth_received_at = Instant::now();
                                 match authenticate_remote_with_notice(
                                     &server,
                                     token,
@@ -616,12 +873,23 @@ impl Session {
                                                 Arc::downgrade(this.get().unwrap()),
                                             )
                                             .await;
-                                        let _ = send_tx
-                                            .send(ServerCommand::Authenticate(Ok((
+                                        crate::official_client_compat::timing::CompatTiming::from_config(
+                                            &server.config,
+                                        )
+                                        .wait_until_minimum(auth_received_at)
+                                        .await;
+                                        if let Err(err) = send_tx
+                                            .send_and_flush(ServerCommand::Authenticate(Ok((
                                                 user.to_info(),
                                                 None,
                                             ))))
-                                            .await;
+                                            .await
+                                        {
+                                            warn!(user = user.id, ?err, "failed to flush game monitor auth response");
+                                            panicked.store(true, Ordering::SeqCst);
+                                            return;
+                                        }
+                                        gate.activate(send_tx.as_ref()).await;
                                         waiting_for_authenticate.store(false, Ordering::SeqCst);
                                     }
                                     Err(err) => {
@@ -821,6 +1089,7 @@ impl Session {
             stream,
             user,
             category,
+            gate,
             actor_tx: OnceLock::new(),
             monitor_task_handle,
             _session_permit: session_permit,
@@ -841,11 +1110,13 @@ impl Session {
     }
 
     pub async fn try_send(&self, cmd: ServerCommand) {
-        if let Err(err) = self.stream.try_send(cmd) {
+        // P0-B: pre-authentication packets are buffered by the gate; post-
+        // authentication this inherits the transport's slow-consumer behavior.
+        if !self.gate.try_send(&self.stream, cmd).await {
             // A full outbound queue means this client is no longer keeping up.
             // Disconnect it instead of allowing one slow consumer to stall a
             // room-wide broadcast or actor command.
-            warn!(session = %self.id, user = self.user.id, ?err, "disconnecting slow client");
+            warn!(session = %self.id, user = self.user.id, "disconnecting slow client");
             self.stream.close();
             let _ = self.user.server.lost_con_tx.try_send(self.id);
         }
@@ -854,7 +1125,7 @@ impl Session {
     /// Send a command to this session, waiting for capacity (async).
     /// Closes the connection on error (same as try_send on failure).
     pub async fn send(&self, cmd: ServerCommand) -> Result<()> {
-        self.stream.send(cmd).await.map_err(|err| {
+        self.gate.send(&self.stream, cmd).await.map_err(|err| {
             warn!(session = %self.id, user = self.user.id, ?err, "disconnecting slow client (send)");
             self.stream.close();
             let _ = self.user.server.lost_con_tx.try_send(self.id);
@@ -868,17 +1139,117 @@ impl Session {
     /// the wire, not merely queued. A flush failure closes the transport and
     /// enters the existing lost-connection path.
     pub async fn send_and_flush(&self, cmd: ServerCommand) -> Result<()> {
-        self.stream.send_and_flush(cmd).await.map_err(|err| {
-            warn!(session = %self.id, user = self.user.id, ?err, "disconnecting slow client (send_and_flush)");
-            self.stream.close();
-            let _ = self.user.server.lost_con_tx.try_send(self.id);
-            err
-        })
+        self.gate
+            .send_and_flush(&self.stream, cmd)
+            .await
+            .map_err(|err| {
+                warn!(session = %self.id, user = self.user.id, ?err, "disconnecting slow client (send_and_flush)");
+                self.stream.close();
+                let _ = self.user.server.lost_con_tx.try_send(self.id);
+                err
+            })
     }
 }
 
 impl Drop for Session {
     fn drop(&mut self) {
         self.monitor_task_handle.abort();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Mutex;
+
+    /// In-memory [`OutboundSink`] recording everything it receives, so the gate
+    /// barrier behavior can be asserted without a live TCP transport.
+    #[derive(Default)]
+    struct TestSink {
+        sent: Mutex<Vec<ServerCommand>>,
+    }
+
+    impl OutboundSink for TestSink {
+        async fn sink_send(&self, cmd: ServerCommand) -> Result<()> {
+            self.sent.lock().unwrap().push(cmd);
+            Ok(())
+        }
+        async fn sink_send_and_flush(&self, cmd: ServerCommand) -> Result<()> {
+            self.sent.lock().unwrap().push(cmd);
+            Ok(())
+        }
+        fn sink_try_send(&self, cmd: ServerCommand) -> Result<()> {
+            self.sent.lock().unwrap().push(cmd);
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn origin_generation_check_requires_matching_generation_and_session() {
+        // Cross-generation => stale even when the session identity still matches.
+        assert!(!origin_is_current(1, 2, true));
+        // Same generation but a different session identity => stale.
+        assert!(!origin_is_current(2, 2, false));
+        // Generation AND identity both match => current.
+        assert!(origin_is_current(2, 2, true));
+    }
+
+    #[tokio::test]
+    async fn origin_with_dropped_session_is_never_current() {
+        let origin = CommandOrigin {
+            session: Weak::new(),
+            generation: 0,
+        };
+        assert!(!origin.is_current().await);
+        assert!(!origin.try_send(ServerCommand::Pong).await);
+        // Must be a no-op — never panic, never touch any live session.
+        origin.close_uncertain().await;
+    }
+
+    #[tokio::test]
+    async fn outbound_gate_buffers_before_activation() {
+        let gate = SessionOutboundGate::new();
+        let sink = TestSink::default();
+        assert!(gate.try_send(&sink, ServerCommand::Pong).await);
+        assert!(gate.send(&sink, ServerCommand::ChangeHost(true)).await.is_ok());
+        assert!(
+            sink.sent.lock().unwrap().is_empty(),
+            "pre-activation packets must be buffered, not forwarded"
+        );
+    }
+
+    #[tokio::test]
+    async fn outbound_gate_activation_drains_fifo_in_order() {
+        let gate = SessionOutboundGate::new();
+        let sink = TestSink::default();
+        gate.try_send(&sink, ServerCommand::ChangeHost(false)).await;
+        gate.send(&sink, ServerCommand::Chat(Ok(()))).await.unwrap();
+        gate.try_send(&sink, ServerCommand::Pong).await;
+        gate.activate(&sink).await;
+
+        let sent = sink.sent.lock().unwrap();
+        assert_eq!(sent.len(), 3);
+        // FIFO: buffered order is preserved after activation.
+        assert!(matches!(sent[0], ServerCommand::ChangeHost(false)));
+        assert!(matches!(sent[1], ServerCommand::Chat(Ok(()))));
+        assert!(matches!(sent[2], ServerCommand::Pong));
+    }
+
+    #[tokio::test]
+    async fn outbound_gate_forwarding_passes_through_after_activation() {
+        let gate = SessionOutboundGate::new();
+        let sink = TestSink::default();
+        gate.try_send(&sink, ServerCommand::Pong).await;
+        gate.activate(&sink).await;
+        assert!(gate.send(&sink, ServerCommand::LockRoom(Ok(()))).await.is_ok());
+        assert_eq!(sink.sent.lock().unwrap().len(), 2);
+    }
+
+    #[tokio::test]
+    #[should_panic(expected = "send_and_flush before outbound activation")]
+    async fn send_and_flush_before_activation_panics() {
+        let gate = SessionOutboundGate::new();
+        let sink = TestSink::default();
+        let _ = gate.send_and_flush(&sink, ServerCommand::Pong).await;
     }
 }

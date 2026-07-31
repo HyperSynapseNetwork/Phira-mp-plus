@@ -4,7 +4,7 @@ use crate::session::Session;
 use anyhow::{anyhow, Result};
 use fluent::FluentArgs;
 use phira_mp_common::{RoomEvent, ServerCommand, UserInfo};
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Weak};
 use std::time::Duration;
 use tokio::sync::{Mutex, RwLock};
@@ -20,6 +20,10 @@ pub struct User {
     pub server: Arc<PlusServerState>,
     pub auth_token: RwLock<Option<String>>,
     pub session: RwLock<Option<Weak<Session>>>,
+    /// Monotonic session-generation counter. Bumped by [`User::set_session`]
+    /// every time the transport is (re)bound, so in-flight commands captured
+    /// against an older generation are immediately stale (P0-A).
+    pub session_generation: AtomicU64,
     pub room: RwLock<Option<Arc<super::room::Room>>>,
 
     pub monitor: AtomicBool,
@@ -47,6 +51,7 @@ impl User {
             server,
             auth_token: RwLock::new(auth_token),
             session: RwLock::default(),
+            session_generation: AtomicU64::new(0),
             room: RwLock::default(),
 
             monitor: AtomicBool::default(),
@@ -97,8 +102,26 @@ impl User {
     }
 
     pub async fn set_session(&self, session: Weak<Session>) {
+        // Bump the generation BEFORE publishing the new weak ref, so any
+        // CommandOrigin captured against the previous session becomes stale
+        // immediately — even in the window before the ref is swapped (P0-A).
+        self.session_generation.fetch_add(1, Ordering::SeqCst);
         *self.session.write().await = Some(session);
         *self.dangle_mark.lock().await = None;
+    }
+
+    /// Capture the current session as a [`CommandOrigin`]: a snapshot of the
+    /// session identity plus its generation counter. Commands routed through the
+    /// mailbox are bound to this origin, so after a reconnect their responses,
+    /// error closes and post-response compensations can never be delivered to —
+    /// or close — the *new* session (P0-A).
+    pub async fn current_origin(&self) -> Option<crate::session::CommandOrigin> {
+        let session = self.session.read().await.as_ref()?.upgrade()?;
+        let generation = self.session_generation.load(Ordering::SeqCst);
+        Some(crate::session::CommandOrigin {
+            session: Arc::downgrade(&session),
+            generation,
+        })
     }
 
     pub async fn set_auth_token(&self, token: Option<String>) {
@@ -137,6 +160,10 @@ impl User {
     /// (P0-E/P0-F). Used by critical responses such as JoinRoom(Ok) where the
     /// server must prove the packet reached the wire before committing the
     /// caller's room state, or roll the state back.
+    ///
+    /// Retained as the origin-free fallback: the join path now sends through
+    /// `CommandOrigin::send_and_flush`, and A3 wires any remaining call sites.
+    #[allow(dead_code)]
     pub async fn send_and_flush(&self, cmd: ServerCommand) -> Result<()> {
         match self.session.read().await.as_ref().and_then(Weak::upgrade) {
             Some(session) => session.send_and_flush(cmd).await,
