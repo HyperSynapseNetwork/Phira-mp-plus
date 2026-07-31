@@ -124,15 +124,28 @@ impl PersistenceWal {
         let content = tokio::fs::read_to_string(&marker_path)
             .await
             .map_err(|e| format!("read marker: {e}"))?;
-        if let Ok(val) = serde_json::from_str::<serde_json::Value>(&content) {
-            if val.get("clean").and_then(|c| c.as_bool()).unwrap_or(false) {
-                // Preserve the recorded high-water mark so it survives the
-                // clean→active rewrite.
-                let old_max = val
-                    .get("max_sequence")
-                    .and_then(|s| s.as_u64())
-                    .unwrap_or(0);
-                return self.write_marker_inner(&marker_path, false, old_max).await;
+        match serde_json::from_str::<serde_json::Value>(&content) {
+            Ok(val) => {
+                if val.get("clean").and_then(|c| c.as_bool()).unwrap_or(false) {
+                    // Preserve the recorded high-water mark so it survives the
+                    // clean→active rewrite.
+                    let old_max = val
+                        .get("max_sequence")
+                        .and_then(|s| s.as_u64())
+                        .unwrap_or(0);
+                    let r = self.write_marker_inner(&marker_path, false, old_max).await;
+                    if r.is_ok() {
+                        // Marker successfully repaired — clear the marker
+                        // degraded reason (P1).
+                        self.clear_marker_degraded();
+                    }
+                    return r;
+                }
+            }
+            Err(e) => {
+                // Marker exists but is corrupt/unreadable — mark degraded (P1).
+                self.mark_degraded(super::DEGRADED_MARKER);
+                return Err(format!("marker parse failed: {e}"));
             }
         }
         Ok(())

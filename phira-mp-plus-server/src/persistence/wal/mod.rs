@@ -185,6 +185,12 @@ impl PersistenceWal {
         self.degraded.fetch_and(!DEGRADED_ACK, Ordering::AcqRel);
     }
 
+    /// Clear the marker-degraded reason (called when the marker is
+    /// successfully written/repaired, P1).
+    pub fn clear_marker_degraded(&self) {
+        self.degraded.fetch_and(!DEGRADED_MARKER, Ordering::AcqRel);
+    }
+
     /// Whether the WAL is currently degraded (any reason set).
     pub fn is_degraded(&self) -> bool {
         self.degraded.load(Ordering::Acquire) != 0
