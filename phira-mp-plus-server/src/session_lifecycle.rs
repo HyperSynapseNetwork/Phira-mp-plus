@@ -265,6 +265,7 @@ impl User {
                                     user_id: self_.id,
                                     server_instance_id: crate::server_instance::current().to_string(),
                                     session_id: sid,
+                                    occurred_at: crate::db::now_ms(),
                                 },
                             ).await;
                         },
@@ -325,6 +326,7 @@ impl User {
                             user_id: self.id,
                             server_instance_id: crate::server_instance::current().to_string(),
                             session_id: sid,
+                            occurred_at: crate::db::now_ms(),
                         })
                         .await
                     {
@@ -426,6 +428,7 @@ impl User {
                     user_id: self_.id,
                     server_instance_id: crate::server_instance::current().to_string(),
                     session_id: disconnected_session_id.to_string(),
+                    occurred_at: crate::db::now_ms(),
                 })
                 .await
             {

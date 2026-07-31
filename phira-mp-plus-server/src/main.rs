@@ -329,6 +329,7 @@ async fn main() -> Result<()> {
                             user_id,
                             server_instance_id: phira_mp_plus_server::server_instance::current().to_string(),
                             session_id,
+                            occurred_at: phira_mp_plus_server::db::now_ms(),
                         },
                     )
                     .await
