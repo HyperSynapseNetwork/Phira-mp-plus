@@ -8,34 +8,6 @@ use serde_json::Value;
 use sqlx::Row;
 
 impl DbManager {
-    /// Mark a user as online and wait for PostgreSQL acknowledgement.
-    /// Records the current server instance ID so crash recovery can distinguish
-    /// sessions from this instance vs stale sessions from a previous (crashed)
-    /// instance.
-    pub async fn set_online(&self, user_id: i32) -> bool {
-        let Self::Pg(pool) = self;
-        let now = now_ms_inline();
-        let instance_id = crate::server_instance::current();
-        sqlx::query(
-            "INSERT INTO playtime (user_id, total_secs, session_start, server_instance_id)
-                 VALUES ($1, 0, $2, $3)
-                 ON CONFLICT (user_id) DO UPDATE SET
-                   total_secs = playtime.total_secs + CASE
-                     WHEN playtime.session_start IS NULL THEN 0
-                     WHEN playtime.server_instance_id IS DISTINCT FROM $3 THEN 0
-                     ELSE GREATEST(0, ($2 - playtime.session_start) / 1000)
-                   END,
-                   session_start = $2,
-                   server_instance_id = $3",
-        )
-        .bind(user_id)
-        .bind(now)
-        .bind(instance_id)
-        .execute(pool)
-        .await
-        .is_ok()
-    }
-
     /// Mark a user as offline and wait for PostgreSQL acknowledgement.
     /// Only closes the playtime session if its `server_instance_id` matches
     /// the event's instance_id (prevents old offline events from replaying
@@ -60,42 +32,6 @@ impl DbManager {
         .is_ok()
     }
 
-    /// Upsert a user record and wait for acknowledgement.
-    /// Increments login_count on conflict to track total visit count.
-    pub async fn record_user_seen(
-        &self,
-        user_id: i32,
-        name: &str,
-        language: &str,
-        ip: Option<String>,
-    ) -> Result<(), sqlx::Error> {
-        let Self::Pg(pool) = self;
-        let now = now_ms_inline();
-        sqlx::query(
-            "INSERT INTO mp_users (
-                   user_id, name, language, ip, first_seen_at, last_seen_at,
-                   last_connected_at, updated_at, login_count
-                 )
-                 VALUES ($1, $2, $3, $4, $5, $5, $5, $5, 1)
-                 ON CONFLICT (user_id) DO UPDATE SET
-                   name = EXCLUDED.name,
-                   language = EXCLUDED.language,
-                   ip = COALESCE(EXCLUDED.ip, mp_users.ip),
-                   last_seen_at = EXCLUDED.last_seen_at,
-                   last_connected_at = EXCLUDED.last_connected_at,
-                   updated_at = EXCLUDED.updated_at,
-                   login_count = mp_users.login_count + 1",
-        )
-        .bind(user_id)
-        .bind(name)
-        .bind(language)
-        .bind(ip)
-        .bind(now)
-        .execute(pool)
-        .await?;
-        Ok(())
-    }
-
     /// Record a user disconnect and wait for acknowledgement.
     pub async fn record_user_disconnect(&self, user_id: i32, name: &str) -> bool {
         let Self::Pg(pool) = self;
@@ -114,29 +50,6 @@ impl DbManager {
         .execute(pool)
         .await
         .is_ok()
-    }
-
-    /// Record a user's IP address in user_ip_history (upsert).
-    /// Called on each connection so we track all IPs a user has used.
-    pub fn record_user_ip(&self, user_id: i32, ip: &str) {
-        let Self::Pg(pool) = self;
-        let pool = pool.clone();
-        let ip = ip.to_string();
-        let now = now_ms_inline();
-        tokio::spawn(async move {
-            let _ = sqlx::query(
-                "INSERT INTO user_ip_history (user_id, ip, first_seen_at, last_seen_at, use_count)
-                 VALUES ($1, $2, $3, $3, 1)
-                 ON CONFLICT (user_id, ip) DO UPDATE SET
-                   last_seen_at = EXCLUDED.last_seen_at,
-                   use_count = user_ip_history.use_count + 1",
-            )
-            .bind(user_id)
-            .bind(&ip)
-            .bind(now)
-            .execute(&pool)
-            .await;
-        });
     }
 
     /// Record user disconnect with optional name and time.

@@ -812,10 +812,12 @@ fn reconstruct_event(kind: &str, event: &serde_json::Value) -> Option<crate::per
                 joined_at,
             })
         }
-        "user_online" => {
-            let user_id = event.get("user_id")?.as_i64()? as i32;
-            Some(PersistenceEvent::UserOnline { user_id })
-        }
+        // "user_online" and "user_seen" are legacy events fully superseded by
+        // UserAuthenticated.  This project carries no historical-baggage
+        // obligation, so stale DLQ entries of these kinds are skipped rather
+        // than replayed (they could otherwise re-mark a user online after a
+        // new instance's stale-session cleanup).
+        "user_online" | "user_seen" => None,
         "user_offline" => {
             let user_id = event.get("user_id")?.as_i64()? as i32;
             let instance_id = event.get("server_instance_id")
@@ -838,18 +840,6 @@ fn reconstruct_event(kind: &str, event: &serde_json::Value) -> Option<crate::per
                 user_id,
                 user_name: user_name.to_string(),
                 server_instance_id: instance_id.to_string(),
-            })
-        }
-        "user_seen" => {
-            let user_id = event.get("user_id")?.as_i64()? as i32;
-            let user_name = event.get("user_name")?.as_str()?;
-            let language = event.get("language")?.as_str()?;
-            let ip = event.get("ip")?.as_str()?;
-            Some(PersistenceEvent::UserSeen {
-                user_id,
-                user_name: user_name.to_string(),
-                language: language.to_string(),
-                ip: ip.to_string(),
             })
         }
         "user_authenticated" => {

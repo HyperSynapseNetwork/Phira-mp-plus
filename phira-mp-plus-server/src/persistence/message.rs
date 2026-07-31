@@ -41,10 +41,6 @@ pub enum PersistenceEvent {
         room_uuid: String,
         joined_at: i64,
     },
-    /// User online status (per-connect). Low-frequency production write.
-    UserOnline {
-        user_id: i32,
-    },
     /// User offline status (per-disconnect). Low-frequency production write.
     /// Carries server_instance_id so that old offline events cannot close
     /// a new session's playtime after reconnect on a different instance.
@@ -82,13 +78,6 @@ pub enum PersistenceEvent {
         #[serde(default)]
         server_instance_id: String,
     },
-    /// User identity/last-seen snapshot captured at authenticated session setup.
-    UserSeen {
-        user_id: i32,
-        user_name: String,
-        language: String,
-        ip: String,
-    },
     /// Round result persistence (migrated from direct SQL in save_round_history).
     /// Contains a single player's result for a completed round. Low-frequency.
     RoundResult {
@@ -118,11 +107,9 @@ impl PersistenceEvent {
             Self::ServerEvent { kind, .. } => kind.clone(),
             Self::BenchmarkReport { .. } => "benchmark.completed".to_string(),
             Self::UserRoomHistory { .. } => "user_room_history".to_string(),
-            Self::UserOnline { .. } => "user_online".to_string(),
             Self::UserOffline { .. } => "user_offline".to_string(),
             Self::UserDisconnect { .. } => "user_disconnect".to_string(),
             Self::UserAuthenticated { .. } => "user_authenticated".to_string(),
-            Self::UserSeen { .. } => "user_seen".to_string(),
             Self::RoundResult { .. } => "round_result".to_string(),
             Self::RoundCompleted { .. } => "round_completed".to_string(),
             Self::Flush => "flush".to_string(),
@@ -161,23 +148,12 @@ impl PersistenceEvent {
                 "room_uuid": room_uuid,
                 "joined_at": joined_at,
             })),
-            Self::UserOnline { user_id } | Self::UserOffline { user_id, .. } => {
+            Self::UserOffline { user_id, .. } => {
                 Some(json!({ "user_id": user_id }))
             }
             Self::UserDisconnect { user_id, user_name, .. } => Some(json!({
                 "user_id": user_id,
                 "user_name": user_name,
-            })),
-            Self::UserSeen {
-                user_id,
-                user_name,
-                language,
-                ip,
-            } => Some(json!({
-                "user_id": user_id,
-                "user_name": user_name,
-                "language": language,
-                "ip": ip,
             })),
             Self::UserAuthenticated {
                 event_id,
@@ -247,15 +223,11 @@ impl PersistenceEvent {
             } => {
                 format!("user_id={user_id} room_id={room_id}")
             }
-            Self::UserOnline { user_id } => format!("user_id={user_id}"),
             Self::UserOffline { user_id, .. } => format!("user_id={user_id}"),
             Self::UserDisconnect { user_id, .. } => format!("user_id={user_id}"),
             Self::UserAuthenticated {
                 event_id, user_id, user_name, ..
             } => format!("event_id={event_id} user_id={user_id} user_name={user_name}"),
-            Self::UserSeen {
-                user_id, user_name, ..
-            } => format!("user_id={user_id} user_name={user_name}"),
             Self::RoundResult { round_uuid, .. } => {
                 format!("round_uuid={round_uuid}")
             }
@@ -297,20 +269,15 @@ mod tests {
     }
 
     #[test]
-    fn dead_letter_payload_preserves_user_seen_fields() {
-        let event = PersistenceEvent::UserSeen {
+    fn dead_letter_payload_preserves_user_offline_fields() {
+        let event = PersistenceEvent::UserOffline {
             user_id: 42,
-            user_name: "tester".to_string(),
-            language: "zh-CN".to_string(),
-            ip: "127.0.0.1".to_string(),
+            server_instance_id: "inst-1".to_string(),
         };
         let payload = event
             .dead_letter_payload()
             .expect("data event must be serializable");
         assert_eq!(payload["user_id"], 42);
-        assert_eq!(payload["user_name"], "tester");
-        assert_eq!(payload["language"], "zh-CN");
-        assert_eq!(payload["ip"], "127.0.0.1");
     }
 
     #[test]

@@ -92,7 +92,6 @@ pub async fn persist_production_event_if_needed(event: &PersistenceEvent) -> Per
                 db.record_user_room_history(*user_id, room_id, room_uuid, *joined_at)
                     .await
             }
-            PersistenceEvent::UserOnline { user_id } => db.set_online(*user_id).await,
             PersistenceEvent::UserOffline { user_id, server_instance_id } => {
                 db.set_offline(*user_id, server_instance_id).await
             }
@@ -119,18 +118,6 @@ pub async fn persist_production_event_if_needed(event: &PersistenceEvent) -> Per
                     *connected_at,
                     server_instance_id,
                 ).await
-            }
-            PersistenceEvent::UserSeen {
-                user_id,
-                user_name,
-                language,
-                ip,
-            } => {
-                let seen_ok = db.record_user_seen(*user_id, user_name, language, Some(ip.clone())).await.is_ok();
-                if !ip.is_empty() {
-                    db.record_user_ip(*user_id, ip.as_str());
-                }
-                seen_ok
             }
             PersistenceEvent::RoundResult {
                 round_uuid,

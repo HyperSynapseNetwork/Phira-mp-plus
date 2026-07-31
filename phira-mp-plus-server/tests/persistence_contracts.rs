@@ -59,14 +59,6 @@ fn user_room_history_enum_constructs() {
 }
 
 #[test]
-fn user_online_event_kind() {
-    use phira_mp_plus_server::persistence::message::PersistenceEvent;
-    let event = PersistenceEvent::UserOnline { user_id: 42 };
-    assert_eq!(event.kind(), "user_online");
-    assert!(event.summary().contains("user_id=42"));
-}
-
-#[test]
 fn user_offline_event_kind() {
     use phira_mp_plus_server::persistence::message::PersistenceEvent;
     let event = PersistenceEvent::UserOffline { user_id: 99, server_instance_id: String::new() };
