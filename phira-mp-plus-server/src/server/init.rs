@@ -209,10 +209,16 @@ impl PlusServer {
         // After DB connection is verified and migrations are applied, but before
         // plugins are loaded or network connections are accepted, recover any
         // state from the previous server session (unfinished rounds, etc.).
+        //
+        // The RoomCommandGateway mailbox MUST be started BEFORE recovery so
+        // that restore_persistent_rooms → init_empty_room → room_mailbox_sender
+        // has the self_ref/state_ref weak references available.  Previously
+        // start_mailbox ran after recover_state, so persistent room
+        // restoration silently failed (room_mailbox_sender = None).
+        state.room_commands.start_mailbox(Arc::clone(&state), 1024);
         info!("startup recovery: running postgres state recovery");
         super::recovery::recover_state(&state, &state.db_manager).await?;
         info!("startup recovery: complete");
-        state.room_commands.start_mailbox(Arc::clone(&state), 1024);
         let lost_con_state = Arc::clone(&state);
         crate::supervisor_actor::spawn_critical("lost-connection-worker", async move {
             while let Some(id) = lost_con_rx.recv().await {
