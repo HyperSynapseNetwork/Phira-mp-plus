@@ -76,17 +76,28 @@ pub struct HighFrequencyWriter {
     /// shutdown begins, or rejected because shutdown already happened (P0-F).
     /// Tokio mutex so it can be held across awaits in shutdown().
     admission_gate: tokio::sync::Mutex<()>,
-    /// Shutdown lifecycle state (P0-G): Open → Requested → ControlSent →
-    /// Terminated.  A failed send/reply returns to Open so shutdown can be
-    /// retried instead of leaving a fake-terminated handle.
+    /// Shutdown lifecycle state (P0-G + PMP41 P1):
+    ///
+    /// `Open → Requested → ControlSent → Terminated*`.  A control send that
+    /// never reached the worker leaves `ControlNotSent`, which is the only
+    /// state from which shutdown may be re-requested.  Once the worker has
+    /// acknowledged (or the caller gave up while the worker is exiting), the
+    /// handle lands in a `Terminated*` state and NEVER returns to `Open` —
+    /// a returned worker cannot be re-started, so pretending it is open would
+    /// let callers retry into a dead channel (PMP41 P1).
     shutdown_state: AtomicU8,
 }
 
-// Shutdown state machine values (P0-G).
+// Shutdown state machine values (P0-G / PMP41 P1).
 const SHUTDOWN_OPEN: u8 = 0;
 const SHUTDOWN_REQUESTED: u8 = 1;
 const SHUTDOWN_CONTROL_SENT: u8 = 2;
-const SHUTDOWN_TERMINATED: u8 = 3;
+const SHUTDOWN_TERMINATED_CLEAN: u8 = 3;
+const SHUTDOWN_TERMINATED_DATA_LOSS: u8 = 4;
+const SHUTDOWN_TERMINATED_FAILED: u8 = 5;
+/// The shutdown control was never delivered to the worker (send failed or
+/// timed out).  The worker may still be alive; shutdown may be retried.
+const SHUTDOWN_CONTROL_NOT_SENT: u8 = 6;
 
 impl HighFrequencyWriter {
     /// Spawn the background writer task and return a handle.
@@ -267,44 +278,70 @@ impl HighFrequencyWriter {
     /// the final flush succeeds or fails.  Timeout is 10 seconds.
     pub async fn shutdown(&self, timeout: Duration) -> Result<(), String> {
         let (reply, rx) = oneshot::channel();
+        // A SINGLE absolute deadline covers admission-gate wait + control send
+        // + worker processing + reply (P1): every phase consumes from the same
+        // budget so a slow send can never push the reply wait past the
+        // caller's timeout.
+        let deadline = std::time::Instant::now() + timeout;
+        // Pass the caller's absolute deadline into the worker so it stops
+        // retrying database writes at the same time the caller gives up (P0-K).
+        let deadline_ms = now_ms() + timeout.as_millis() as i64;
         // Linearize with enqueue (P0-F): hold the admission gate while setting
         // closed, so any enqueue that has already admitted is included in the
         // worker's drain, and no new item can be accepted after this point.
         let _gate = self.admission_gate.lock().await;
-        // Shutdown state machine (P0-G): only proceed from OPEN.  A second
-        // shutdown while one is in flight returns an error, never a fake Ok.
-        if self
-            .shutdown_state
-            .compare_exchange(
-                SHUTDOWN_OPEN,
-                SHUTDOWN_REQUESTED,
-                Ordering::AcqRel,
-                Ordering::Acquire,
-            )
-            .is_err()
-        {
-            return Err("high frequency shutdown already in progress".to_string());
+        // Shutdown state machine (P0-G / PMP41 P1): proceed from OPEN or from
+        // CONTROL_NOT_SENT (the control never reached the worker, so a retry is
+        // meaningful).  A shutdown already in flight, or one that already
+        // terminated, returns an error — never a fake Ok.
+        loop {
+            let cur = self.shutdown_state.load(Ordering::Acquire);
+            match cur {
+                SHUTDOWN_OPEN | SHUTDOWN_CONTROL_NOT_SENT => {
+                    if self
+                        .shutdown_state
+                        .compare_exchange(
+                            cur,
+                            SHUTDOWN_REQUESTED,
+                            Ordering::AcqRel,
+                            Ordering::Acquire,
+                        )
+                        .is_ok()
+                    {
+                        break;
+                    }
+                }
+                SHUTDOWN_REQUESTED | SHUTDOWN_CONTROL_SENT => {
+                    return Err("high frequency shutdown already in progress".to_string());
+                }
+                SHUTDOWN_TERMINATED_CLEAN => {
+                    return Err("high frequency writer already shut down cleanly".to_string());
+                }
+                SHUTDOWN_TERMINATED_DATA_LOSS => {
+                    return Err("high frequency writer already shut down with data loss".to_string());
+                }
+                SHUTDOWN_TERMINATED_FAILED => {
+                    return Err("high frequency writer already shut down with failure".to_string());
+                }
+                _ => return Err("high frequency writer in unknown shutdown state".to_string()),
+            }
         }
         self.closed.store(true, Ordering::Release);
-        // Pass the caller's absolute deadline into the worker so it stops
-        // retrying database writes at the same time the caller gives up (P0-K).
-        let deadline_ms = now_ms() + timeout.as_millis() as i64;
-        // A SINGLE absolute deadline covers send + reply: the send phase
-        // consumes from the reply budget (P1).
-        let deadline = std::time::Instant::now() + timeout;
         let send_timeout = deadline.saturating_duration_since(std::time::Instant::now());
         match tokio::time::timeout(send_timeout, self.tx.send(HfMessage::Shutdown { reply, deadline_ms })).await {
             Ok(Ok(())) => {}
             Ok(Err(_)) => {
-                // Channel closed — the worker is already gone.  Return to OPEN
-                // so a retry can proceed if the caller wants.
-                self.shutdown_state.store(SHUTDOWN_OPEN, Ordering::Release);
+                // Channel closed — the worker is already gone.  The control was
+                // never delivered, so record ControlNotSent (not Open).  Retry
+                // is permitted but will observe the closed channel and fail.
+                self.shutdown_state.store(SHUTDOWN_CONTROL_NOT_SENT, Ordering::Release);
                 return Err("high frequency writer is closed".to_string());
             }
             Err(_) => {
-                // Send timed out — do NOT leave a fake-terminated state.  Return
-                // to OPEN so shutdown can be retried (P0-G).
-                self.shutdown_state.store(SHUTDOWN_OPEN, Ordering::Release);
+                // Send timed out — the control was never placed in the channel.
+                // Record ControlNotSent so a retry may proceed (the worker may
+                // still be alive), but never fake a terminated state.
+                self.shutdown_state.store(SHUTDOWN_CONTROL_NOT_SENT, Ordering::Release);
                 return Err("high frequency shutdown send timed out".to_string());
             }
         }
@@ -316,18 +353,52 @@ impl HighFrequencyWriter {
             Ok(Err(_)) => Err("high frequency shutdown reply dropped".to_string()),
             Err(_) => Err("high frequency shutdown timed out".to_string()),
         };
-        if result.is_ok() {
-            self.shutdown_state.store(SHUTDOWN_TERMINATED, Ordering::Release);
-        } else {
-            // Reply failed — return to OPEN so the caller can retry.
-            self.shutdown_state.store(SHUTDOWN_OPEN, Ordering::Release);
-        }
+        self.shutdown_state
+            .store(classify_shutdown_result(&result), Ordering::Release);
         result
+    }
+
+    /// Current shutdown state as a stable name (diagnostics).
+    pub fn shutdown_state_name(&self) -> &'static str {
+        match self.shutdown_state.load(Ordering::Acquire) {
+            SHUTDOWN_REQUESTED => "requested",
+            SHUTDOWN_CONTROL_SENT => "control_sent",
+            SHUTDOWN_TERMINATED_CLEAN => "terminated_clean",
+            SHUTDOWN_TERMINATED_DATA_LOSS => "terminated_data_loss",
+            SHUTDOWN_TERMINATED_FAILED => "terminated_failed",
+            SHUTDOWN_CONTROL_NOT_SENT => "control_not_sent",
+            _ => "open",
+        }
+    }
+
+    /// Whether the writer has permanently finished shutting down.  A
+    /// terminated writer cannot be re-opened; callers must not retry.
+    pub fn is_terminated(&self) -> bool {
+        matches!(
+            self.shutdown_state.load(Ordering::Acquire),
+            SHUTDOWN_TERMINATED_CLEAN
+                | SHUTDOWN_TERMINATED_DATA_LOSS
+                | SHUTDOWN_TERMINATED_FAILED
+        )
     }
 
     /// Reference to the atomic stats counters.
     pub fn stats(&self) -> Arc<HighFrequencyStats> {
         Arc::clone(&self.stats)
+    }
+}
+
+/// Map a worker's shutdown reply onto the terminal shutdown state.
+///
+/// The worker breaks out of its loop after replying, so the handle can never
+/// return to `Open` here — the channel is about to close.  DataLoss gets its
+/// own state so callers can distinguish "data was permanently lost" from a
+/// generic incomplete shutdown (PMP41 P1).
+fn classify_shutdown_result(result: &Result<(), String>) -> u8 {
+    match result {
+        Ok(()) => SHUTDOWN_TERMINATED_CLEAN,
+        Err(e) if e.contains("DataLoss") => SHUTDOWN_TERMINATED_DATA_LOSS,
+        Err(_) => SHUTDOWN_TERMINATED_FAILED,
     }
 }
 
@@ -825,6 +896,27 @@ mod tests {
     use crate::db::DbManager;
     use serde_json::json;
     use std::sync::Arc;
+
+    #[test]
+    fn classify_shutdown_result_maps_worker_outcomes() {
+        assert_eq!(classify_shutdown_result(&Ok(())), SHUTDOWN_TERMINATED_CLEAN);
+        assert_eq!(
+            classify_shutdown_result(&Err(
+                "DataLoss: sequence 7 was permanently dropped".to_string()
+            )),
+            SHUTDOWN_TERMINATED_DATA_LOSS
+        );
+        assert_eq!(
+            classify_shutdown_result(&Err("high frequency shutdown timed out".to_string())),
+            SHUTDOWN_TERMINATED_FAILED
+        );
+        assert_eq!(
+            classify_shutdown_result(&Err(
+                "high frequency shutdown incomplete: sequences between watermark and 12 are pending".to_string()
+            )),
+            SHUTDOWN_TERMINATED_FAILED
+        );
+    }
 
     fn make_item(kind: HighFrequencyKind, user_id: i32) -> HighFrequencyItem {
         let event_id = uuid::Uuid::new_v4().to_string();
