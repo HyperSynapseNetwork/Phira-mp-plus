@@ -239,10 +239,16 @@ impl DbManager {
         };
 
         // 1. Insert visit record (idempotent guard).
+        // `ON CONFLICT DO NOTHING` (no index specified) catches conflicts on
+        // ANY unique constraint — both event_id and session_id.  Previously
+        // `ON CONFLICT (event_id)` only handled the event_id index, so a retry
+        // that reused an existing session_id with a new event_id raised a hard
+        // error, failing the whole transaction and sending the event to the
+        // dead-letter queue in a loop (P1).
         let is_new_visit = match sqlx::query(
             "INSERT INTO mp_user_visits (event_id, session_id, user_id, connected_at, created_at)
              VALUES ($1, $2, $3, $4, $5)
-             ON CONFLICT (event_id) DO NOTHING",
+             ON CONFLICT DO NOTHING",
         )
         .bind(event_id)
         .bind(session_id)
@@ -252,7 +258,52 @@ impl DbManager {
         .execute(&mut *tx)
         .await
         {
-            Ok(r) => r.rows_affected() > 0,
+            Ok(r) if r.rows_affected() > 0 => true,
+            Ok(_) => {
+                // Not inserted — an event_id or session_id conflict.  Look up
+                // the existing visit and verify it belongs to the same user
+                // (idempotent replay) rather than a different user reusing
+                // this session (data integrity error).
+                let existing: Option<i32> = sqlx::query_scalar(
+                    "SELECT user_id FROM mp_user_visits
+                      WHERE event_id = $1 OR session_id = $2
+                      LIMIT 1",
+                )
+                .bind(event_id)
+                .bind(session_id)
+                .fetch_optional(&mut *tx)
+                .await
+                .map_err(|_| ())
+                .ok()
+                .flatten();
+                match existing {
+                    Some(uid) if uid == user_id => {
+                        // Same user replayed this auth — treat as idempotent
+                        // success, do NOT increment login_count again.
+                        false
+                    }
+                    Some(_) => {
+                        // session_id reused by a DIFFERENT user — integrity
+                        // violation.  Do not silently proceed.
+                        tracing::warn!(
+                            session_id,
+                            "mp_user_visits session_id already used by another user; \
+                             refusing to commit conflicting auth"
+                        );
+                        let _ = tx.rollback().await;
+                        return false;
+                    }
+                    None => {
+                        // Conflict reported but no row found (race) — safest to
+                        // treat as idempotent to avoid a login_count bump.
+                        tracing::warn!(
+                            session_id,
+                            "mp_user_visits conflict but no existing row found; treating as idempotent"
+                        );
+                        false
+                    }
+                }
+            }
             Err(_) => {
                 let _ = tx.rollback().await;
                 return false;
