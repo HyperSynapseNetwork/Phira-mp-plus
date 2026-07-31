@@ -255,6 +255,15 @@ impl PluginTcpActor {
                                     Some(l) => Some(l.lock().await),
                                     None => None,
                                 };
+                                // Re-check the front handle after (potentially)
+                                // waiting for the lock.  If it changed to a
+                                // different handle, we hold the wrong lock —
+                                // release and retry rather than pop an event
+                                // under a mismatched serialization (P0-E).
+                                if channel.peek_handle() != handle {
+                                    drop(_per_handle);
+                                    continue;
+                                }
                                 // Drain high-priority (lifecycle) events first,
                                 // then normal (receive) events.  pop() decrements
                                 // total_bytes (P0-C).
