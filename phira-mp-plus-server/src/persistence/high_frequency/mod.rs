@@ -211,6 +211,25 @@ impl SequenceTracker {
         None
     }
 
+    /// Count the number of permanently dropped sequences in the range
+    /// `(watermark, target]`.
+    ///
+    /// This is the sequence-level counterpart of the `dropped` item counter,
+    /// restricted to sequences that were actually accepted (`<= target`).
+    /// Sequences dropped at enqueue with a sequence past `target` (never
+    /// accepted into a queue) do not inflate the count, so the caller can
+    /// reconcile `accepted == watermark + dropped + pending` exactly.
+    pub fn count_dropped_up_to(&self, target: u64) -> u64 {
+        let mut total = 0u64;
+        for &(lo, hi) in &self.dropped {
+            if lo > self.watermark && lo <= target {
+                let end = hi.min(target);
+                total += (end - lo + 1) as u64;
+            }
+        }
+        total
+    }
+
     /// Insert [min, max] into a sorted, non-overlapping interval list,
     /// merging overlapping or adjacent entries.
     fn insert_interval(intervals: &mut Vec<(u64, u64)>, mut min: u64, mut max: u64) {
@@ -331,6 +350,36 @@ impl HighFrequencyStats {
         }
     }
 
+    /// Compute the shutdown reconciliation counters.
+    ///
+    /// After the writer has stopped, the sequence tracker is stable, so this
+    /// produces an exact split of accepted sequences into committed
+    /// (`watermark`), permanently dropped, and still-pending.  The item-level
+    /// counters (`accepted`/`committed`/`dropped`) are included alongside for
+    /// operators comparing against the runtime metrics.
+    pub fn reconciliation(&self) -> HighFrequencyReconciliation {
+        let snap = self.snapshot();
+        let (watermark, dropped_in_gap) = {
+            let tracker = self.sequence_tracker.lock().unwrap();
+            (
+                tracker.watermark(),
+                tracker.count_dropped_up_to(snap.last_accepted_sequence),
+            )
+        };
+        let pending = snap
+            .last_accepted_sequence
+            .saturating_sub(watermark)
+            .saturating_sub(dropped_in_gap);
+        HighFrequencyReconciliation {
+            accepted: snap.received,
+            committed: snap.committed,
+            dropped: snap.dropped,
+            pending,
+            watermark,
+            last_accepted_sequence: snap.last_accepted_sequence,
+        }
+    }
+
     /// Reset all counters (used after snapshot extraction for cumulative deltas).
     pub fn reset(&self) {
         self.received.store(0, Ordering::Relaxed);
@@ -370,6 +419,30 @@ pub struct HighFrequencyStatsSnapshot {
     pub last_accepted_sequence: u64,
     pub committed_sequence: u64,
     pub continuous_committed_watermark: u64,
+}
+
+/// Shutdown reconciliation for the high-frequency writer.
+///
+/// Produced by [`HighFrequencyStats::reconciliation`] after the writer has
+/// stopped.  Emitted on graceful shutdown so operators can verify how many
+/// items were accepted, durably committed, permanently dropped, and left
+/// pending, alongside the sequence watermark and last accepted sequence.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct HighFrequencyReconciliation {
+    /// Items accepted into a queue (main or overflow) via `enqueue`.
+    pub accepted: u64,
+    /// Items durably committed to PostgreSQL.
+    pub committed: u64,
+    /// Items permanently dropped (enqueue overflow or retry exhaustion).
+    pub dropped: u64,
+    /// Accepted sequences neither committed nor dropped at exit
+    /// (`last_accepted_sequence - watermark - dropped_in_gap`).
+    pub pending: u64,
+    /// Continuous committed watermark — every sequence <= this value is
+    /// durably committed.
+    pub watermark: u64,
+    /// Last admission sequence accepted by the writer.
+    pub last_accepted_sequence: u64,
 }
 
 // ── EnqueueOutcome ───────────────────────────────────────────────────────────
@@ -437,6 +510,67 @@ mod tests {
     fn kind_as_str_returns_lowercase() {
         assert_eq!(HighFrequencyKind::Touch.as_str(), "touch");
         assert_eq!(HighFrequencyKind::Judge.as_str(), "judge");
+    }
+
+    #[test]
+    fn count_dropped_up_to_counts_only_accepted_range() {
+        let mut tracker = SequenceTracker::new();
+        // Seq 1-3 committed, then 4-5 dropped, 6 pending, 7-8 dropped.
+        tracker.mark_committed(1, 3);
+        tracker.mark_dropped(4);
+        tracker.mark_dropped(5);
+        tracker.mark_dropped(7);
+        tracker.mark_dropped(8);
+        assert_eq!(tracker.watermark(), 3);
+        // Dropped in (3, 6] = {4,5} => 2.  Seq 7-8 are past the target.
+        assert_eq!(tracker.count_dropped_up_to(6), 2);
+        // Target past the last dropped seq includes {4,5,7,8} => 4.
+        assert_eq!(tracker.count_dropped_up_to(9), 4);
+        // Target at/below the watermark finds nothing.
+        assert_eq!(tracker.count_dropped_up_to(3), 0);
+        assert_eq!(tracker.count_dropped_up_to(0), 0);
+        // A dropped interval overlapping the watermark range still counts
+        // fully: mark 2 as dropped would already have halted the watermark.
+        let mut t2 = SequenceTracker::new();
+        t2.mark_committed(1, 1);
+        t2.mark_dropped(2);
+        t2.mark_committed(3, 4);
+        assert_eq!(t2.watermark(), 1);
+        assert_eq!(t2.count_dropped_up_to(4), 1);
+    }
+
+    #[test]
+    fn reconciliation_splits_accepted_into_committed_dropped_pending() {
+        let stats = HighFrequencyStats {
+            received: AtomicU64::new(10),
+            committed: AtomicU64::new(6),
+            dropped: AtomicU64::new(2),
+            retrying: AtomicU64::new(0),
+            oldest_batch_at: AtomicU64::new(0),
+            received_points: AtomicU64::new(30),
+            committed_points: AtomicU64::new(18),
+            dropped_points: AtomicU64::new(6),
+            queue_full_count: AtomicU64::new(0),
+            last_database_error_at: AtomicU64::new(0),
+            admission_sequence: AtomicU64::new(11),
+            last_accepted_sequence: AtomicU64::new(10),
+            committed_sequence: AtomicU64::new(10),
+            continuous_committed_watermark: AtomicU64::new(6),
+            sequence_tracker: Mutex::new(SequenceTracker::new()),
+        };
+        // Simulate a shutdown that committed 1-6, dropped 7-8, left 9-10 pending.
+        {
+            let mut t = stats.sequence_tracker.lock().unwrap();
+            t.mark_committed(1, 6);
+            t.mark_dropped(7);
+            t.mark_dropped(8);
+        }
+        let r = stats.reconciliation();
+        assert_eq!(r.accepted, 10);
+        assert_eq!(r.watermark, 6);
+        assert_eq!(r.dropped, 2);
+        assert_eq!(r.pending, 2); // seq 9, 10
+        assert_eq!(r.last_accepted_sequence, 10);
     }
 
     #[test]

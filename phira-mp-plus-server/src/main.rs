@@ -384,10 +384,15 @@ async fn main() -> Result<()> {
 
     // Flush and shutdown the high-frequency writer before the PersistenceWorker
     // so pending Touch/Judge batches are committed to PostgreSQL.
+    // A failed HF flush or shutdown now sets the overall persistence result so
+    // an incomplete HF shutdown (DataLoss, timeout, control not delivered)
+    // cannot be reported as a clean exit (PMP41 P0-H).
+    let mut persistence_ok = true;
     let budget = remaining();
     if !budget.is_zero() {
         if let Err(e) = server.state.high_frequency_writer.flush(budget).await {
             warn!(%e, "high frequency writer flush failed during shutdown");
+            persistence_ok = false;
         }
     }
     let budget = remaining();
@@ -399,10 +404,26 @@ async fn main() -> Result<()> {
             .await
         {
             warn!(%e, "high frequency writer shutdown failed");
+            persistence_ok = false;
         }
     }
 
-    let mut persistence_ok = true;
+    // Emit a reconciliation of what the high-frequency writer accepted,
+    // committed, dropped, and left pending so operators can verify durability
+    // at exit (PMP41 P0-H / §25.8).  The worker has stopped, so the sequence
+    // tracker is stable and this split is exact.
+    let hf_recon = server.state.high_frequency_writer.stats().reconciliation();
+    info!(
+        hf_accepted = hf_recon.accepted,
+        hf_committed = hf_recon.committed,
+        hf_dropped = hf_recon.dropped,
+        hf_pending = hf_recon.pending,
+        hf_watermark = hf_recon.watermark,
+        hf_last_accepted_sequence = hf_recon.last_accepted_sequence,
+        hf_shutdown_state = server.state.high_frequency_writer.shutdown_state_name(),
+        "high frequency writer shutdown reconciliation"
+    );
+
     let budget = remaining();
     if !budget.is_zero() {
         if let Err(error) = server.state.persistence_worker.flush(budget).await {
@@ -449,13 +470,21 @@ async fn main() -> Result<()> {
         Ok(())
     } else {
         // Persistence flush or shutdown did not complete within the graceful
-        // shutdown timeout.  Return a non-zero exit code so systemd, Docker,
-        // and container orchestrators can distinguish an incomplete shutdown
-        // from a clean one.  The server binary still exits; the operator may
+        // shutdown timeout — this now includes the high-frequency writer
+        // (PMP41 P0-H).  Return a non-zero exit code so systemd, Docker, and
+        // container orchestrators can distinguish an incomplete shutdown from
+        // a clean one.  The server binary still exits; the operator may
         // configure a higher graceful_shutdown_timeout_secs if this is a
         // recurring issue.
         Err(anyhow!(
-            "server stopped with persistence errors — data may not be fully durable"
+            "server stopped with persistence errors — data may not be fully durable \
+             (hf accepted={} committed={} dropped={} pending={} watermark={} last_accepted_sequence={})",
+            hf_recon.accepted,
+            hf_recon.committed,
+            hf_recon.dropped,
+            hf_recon.pending,
+            hf_recon.watermark,
+            hf_recon.last_accepted_sequence,
         ))
     }
 }
