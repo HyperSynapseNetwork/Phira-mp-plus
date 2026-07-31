@@ -359,7 +359,9 @@ impl PersistenceWal {
         self.admission_count.fetch_add(1, Ordering::Release);
         // Mark marker as active (not clean) so accidental WAL deletion is
         // detectable even after a compact-to-zero followed by new admissions.
-        let _ = self.mark_marker_active().await;
+        // Propagate the error — if the marker cannot be made active, the WAL
+        // deletion guard is broken (P0-E).
+        self.mark_marker_active().await?;
         Ok((id, seq))
     }
 
@@ -587,9 +589,11 @@ impl PersistenceWal {
         let restore_seq = wal_max.max(marker_max);
         self.admit_sequence.store(restore_seq, Ordering::Release);
         // Refresh the marker so its max_sequence reflects the restored
-        // high-water mark even on first boot with an existing WAL.
+        // high-water mark even on first boot with an existing WAL.  Propagate
+        // the error — an unpersisted high-water mark could allow sequence
+        // regression after a later compact (P0-E).
         let marker_path = self.path.with_extension("wal.instance");
-        let _ = self.write_marker_inner(&marker_path, false, restore_seq).await;
+        self.write_marker_inner(&marker_path, false, restore_seq).await?;
 
         self.replay_succeeded.store(true, Ordering::Release);
         Ok(unacked)

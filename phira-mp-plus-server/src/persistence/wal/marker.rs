@@ -52,12 +52,14 @@ impl PersistenceWal {
             "clean": clean,
             "max_sequence": max_sequence,
         });
-        // Atomic + durable write: write, fsync, then fsync the parent
-        // directory so the marker survives a crash (P0-C).
+        // Atomic + durable write (P0-E): write to a temp sibling, fsync, then
+        // atomically rename over the marker, then fsync the parent directory.
+        // A crash mid-write leaves the OLD marker intact (never a torn file).
         use tokio::io::AsyncWriteExt;
-        let mut file = tokio::fs::File::create(marker_path)
+        let tmp_path = marker_path.with_extension("wal.instance.tmp");
+        let mut file = tokio::fs::File::create(&tmp_path)
             .await
-            .map_err(|e| format!("create instance marker {}: {e}", marker_path.display()))?;
+            .map_err(|e| format!("create instance marker tmp {}: {e}", tmp_path.display()))?;
         file.write_all(&serde_json::to_vec(&marker).map_err(|e| format!("serialize instance marker: {e}"))?)
             .await
             .map_err(|e| format!("write instance marker: {e}"))?;
@@ -65,6 +67,9 @@ impl PersistenceWal {
             .await
             .map_err(|e| format!("sync instance marker: {e}"))?;
         drop(file);
+        tokio::fs::rename(&tmp_path, marker_path)
+            .await
+            .map_err(|e| format!("rename instance marker {} -> {}: {e}", tmp_path.display(), marker_path.display()))?;
         if let Some(parent) = marker_path.parent().filter(|p| !p.as_os_str().is_empty()) {
             if let Ok(dir) = tokio::fs::File::open(parent).await {
                 let _ = dir.sync_all().await;
