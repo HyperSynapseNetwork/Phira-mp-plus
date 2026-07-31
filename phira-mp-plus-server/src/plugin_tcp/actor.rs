@@ -14,7 +14,7 @@ use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{mpsc, oneshot, Mutex as TokioMutex};
 use tracing::{info, warn};
 
 /// Maximum concurrent event callbacks per plugin.  Prevents a single slow
@@ -229,12 +229,19 @@ impl PluginTcpActor {
                 // tokio task per event and then waited on a semaphore inside
                 // each task — that could accumulate an unbounded number of
                 // waiting tasks when a slow plugin was fed continuously.
+                // Per-handle serialization (P0-G): events for the SAME
+                // connection handle must be delivered in FIFO order, while
+                // different handles may be processed concurrently.  Workers
+                // acquire the handle's lock before running its callback.
+                let handle_locks: Arc<Mutex<HashMap<u64, Arc<TokioMutex<()>>>>> =
+                    Arc::new(Mutex::new(HashMap::new()));
                 let mut worker_handles = Vec::with_capacity(MAX_CONCURRENT_CALLBACKS);
                 for _ in 0..MAX_CONCURRENT_CALLBACKS {
                     let high = Arc::clone(&high_queue);
                     let normal = Arc::clone(&normal_queue);
                     let notify = Arc::clone(&worker_notify);
                     let cb = Arc::clone(&cb);
+                    let handle_locks = Arc::clone(&handle_locks);
                     worker_handles.push(tokio::spawn(async move {
                         loop {
                             notify.notified().await;
@@ -249,6 +256,24 @@ impl PluginTcpActor {
                                 match event {
                                     Some((type_, payload)) => {
                                         let event_type = type_;
+                                        // Serialize per handle so events for the
+                                        // same connection stay in stream order
+                                        // even across the fixed workers (P0-G).
+                                        let handle = payload
+                                            .get("handle")
+                                            .and_then(|h| h.as_u64());
+                                        let _per_handle = match handle {
+                                            Some(h) => {
+                                                let lock = handle_locks
+                                                    .lock()
+                                                    .unwrap()
+                                                    .entry(h)
+                                                    .or_insert_with(|| Arc::new(TokioMutex::new(())))
+                                                    .clone();
+                                                Some(lock.lock().await)
+                                            }
+                                            None => None,
+                                        };
                                         let fut = cb(event_type.clone(), payload);
                                         // Bound each callback so a hung plugin
                                         // cannot pin the worker forever.
