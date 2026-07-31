@@ -372,6 +372,13 @@ impl PersistenceWal {
                 // Ensure marker exists for future accidental-deletion detection.
                 if !self.path.with_extension("wal.instance").exists() {
                     self.write_instance_marker().await?;
+                } else {
+                    // Restore admit_sequence from the marker's high-water mark
+                    // so sequence numbers do not regress after a clean
+                    // compact-to-zero (the WAL file is gone but the marker
+                    // records the last assigned sequence).
+                    let marker_max = self.read_marker_max_sequence().await;
+                    self.admit_sequence.store(marker_max, Ordering::Release);
                 }
                 self.replay_succeeded.store(true, Ordering::Release);
                 return Ok(Vec::new());
