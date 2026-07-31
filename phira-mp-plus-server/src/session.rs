@@ -619,37 +619,47 @@ impl Session {
                         let send_response =
                             |send_tx: &StreamSender<ServerCommand>,
                              resp: ServerCommand,
-                             critical: bool| async {
-                                let result = if critical {
-                                    send_tx.send_and_flush(resp).await
-                                } else {
-                                    send_tx.send(resp).await
-                                };
-                                match result {
-                                    Ok(()) => {
-                                        ProtocolTrace::get()
-                                            .response_queued
-                                            .fetch_add(1, Ordering::Relaxed);
-                                        if critical {
+                             critical: bool| {
+                                // Rebind outer captures as references so `async move`
+                                // moves only the closure parameters (avoids E0373: the
+                                // returned future must not borrow closure-local values).
+                                let id = &id;
+                                let server = &server;
+                                let received_at = &received_at;
+                                let panicked = &panicked;
+                                let send_tx = send_tx;
+                                async move {
+                                    let result = if critical {
+                                        send_tx.send_and_flush(resp).await
+                                    } else {
+                                        send_tx.send(resp).await
+                                    };
+                                    match result {
+                                        Ok(()) => {
                                             ProtocolTrace::get()
-                                                .response_flushed
+                                                .response_queued
                                                 .fetch_add(1, Ordering::Relaxed);
+                                            if critical {
+                                                ProtocolTrace::get()
+                                                    .response_flushed
+                                                    .fetch_add(1, Ordering::Relaxed);
+                                            }
+                                            ProtocolTrace::get()
+                                                .record_response_latency(*received_at);
+                                            true
                                         }
-                                        ProtocolTrace::get()
-                                            .record_response_latency(received_at);
-                                        true
-                                    }
-                                    Err(err) => {
-                                        error!(
-                                            "failed to handle message, aborting connection {id}: {err:?}",
-                                        );
-                                        panicked.store(true, Ordering::SeqCst);
-                                        if let Err(err) = server.lost_con_tx.send(id).await {
+                                        Err(err) => {
                                             error!(
-                                                "failed to mark lost connection ({id}): {err:?}"
+                                                "failed to handle message, aborting connection {id}: {err:?}",
                                             );
+                                            panicked.store(true, Ordering::SeqCst);
+                                            if let Err(err) = server.lost_con_tx.send(*id).await {
+                                                error!(
+                                                    "failed to mark lost connection ({id}): {err:?}"
+                                                );
+                                            }
+                                            false
                                         }
-                                        false
                                     }
                                 }
                             };
