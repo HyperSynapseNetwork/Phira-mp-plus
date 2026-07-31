@@ -46,19 +46,31 @@ pub enum PersistenceEvent {
         user_id: i32,
     },
     /// User offline status (per-disconnect). Low-frequency production write.
+    /// Carries server_instance_id so that old offline events cannot close
+    /// a new session's playtime after reconnect on a different instance.
     UserOffline {
         user_id: i32,
+        #[serde(default)]
+        server_instance_id: String,
     },
     /// User disconnect event (per-disconnect). Low-frequency production write.
+    /// Carries server_instance_id for the same session-generation protection.
     UserDisconnect {
         user_id: i32,
         user_name: String,
+        #[serde(default)]
+        server_instance_id: String,
     },
     /// User authenticated event — merged UserSeen + UserOnline for atomic
     /// admission before the auth OK frame is sent.  Blocks until WAL enqueue
     /// succeeds so a user is never authenticated without being persisted.
     /// Contains event_id and session_id for idempotency — retry/replay cannot
     /// duplicate login_count.
+    ///
+    /// The `server_instance_id` is captured when the event is created (not at
+    /// replay time) so that WAL/DLQ replay on a new instance preserves the
+    /// original session ownership — preventing phantom online sessions after
+    /// crash recovery.
     UserAuthenticated {
         event_id: String,
         session_id: String,
@@ -67,6 +79,8 @@ pub enum PersistenceEvent {
         language: String,
         ip: String,
         connected_at: i64,
+        #[serde(default)]
+        server_instance_id: String,
     },
     /// User identity/last-seen snapshot captured at authenticated session setup.
     UserSeen {
@@ -147,10 +161,10 @@ impl PersistenceEvent {
                 "room_uuid": room_uuid,
                 "joined_at": joined_at,
             })),
-            Self::UserOnline { user_id } | Self::UserOffline { user_id } => {
+            Self::UserOnline { user_id } | Self::UserOffline { user_id, .. } => {
                 Some(json!({ "user_id": user_id }))
             }
-            Self::UserDisconnect { user_id, user_name } => Some(json!({
+            Self::UserDisconnect { user_id, user_name, .. } => Some(json!({
                 "user_id": user_id,
                 "user_name": user_name,
             })),
@@ -173,6 +187,7 @@ impl PersistenceEvent {
                 language,
                 ip,
                 connected_at,
+                server_instance_id,
             } => Some(json!({
                 "event_id": event_id,
                 "session_id": session_id,
@@ -181,6 +196,7 @@ impl PersistenceEvent {
                 "language": language,
                 "ip": ip,
                 "connected_at": connected_at,
+                "server_instance_id": server_instance_id,
             })),
             Self::Flush | Self::Shutdown => None,
             Self::RoundResult {
@@ -232,7 +248,7 @@ impl PersistenceEvent {
                 format!("user_id={user_id} room_id={room_id}")
             }
             Self::UserOnline { user_id } => format!("user_id={user_id}"),
-            Self::UserOffline { user_id } => format!("user_id={user_id}"),
+            Self::UserOffline { user_id, .. } => format!("user_id={user_id}"),
             Self::UserDisconnect { user_id, .. } => format!("user_id={user_id}"),
             Self::UserAuthenticated {
                 event_id, user_id, user_name, ..

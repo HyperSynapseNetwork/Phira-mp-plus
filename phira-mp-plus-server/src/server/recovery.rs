@@ -789,14 +789,26 @@ fn reconstruct_event(kind: &str, event: &serde_json::Value) -> Option<crate::per
         }
         "user_offline" => {
             let user_id = event.get("user_id")?.as_i64()? as i32;
-            Some(PersistenceEvent::UserOffline { user_id })
+            let instance_id = event.get("server_instance_id")
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.is_empty())
+                .unwrap_or_else(|| crate::server_instance::current());
+            Some(PersistenceEvent::UserOffline {
+                user_id,
+                server_instance_id: instance_id.to_string(),
+            })
         }
         "user_disconnect" => {
             let user_id = event.get("user_id")?.as_i64()? as i32;
             let user_name = event.get("user_name")?.as_str()?;
+            let instance_id = event.get("server_instance_id")
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.is_empty())
+                .unwrap_or_else(|| crate::server_instance::current());
             Some(PersistenceEvent::UserDisconnect {
                 user_id,
                 user_name: user_name.to_string(),
+                server_instance_id: instance_id.to_string(),
             })
         }
         "user_seen" => {
@@ -817,6 +829,13 @@ fn reconstruct_event(kind: &str, event: &serde_json::Value) -> Option<crate::per
             let language = event.get("language")?.as_str()?;
             let ip = event.get("ip")?.as_str()?;
             let connected_at = event.get("connected_at")?.as_i64()?;
+            // Use the recorded server_instance_id if present (new events),
+            // falling back to the current instance ID for pre-migration DLQ
+            // entries that lack the field.
+            let instance_id = event.get("server_instance_id")
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.is_empty())
+                .unwrap_or_else(|| crate::server_instance::current());
             Some(PersistenceEvent::UserAuthenticated {
                 event_id: event.get("event_id")?.as_str()?.to_string(),
                 session_id: event.get("session_id")?.as_str()?.to_string(),
@@ -825,6 +844,7 @@ fn reconstruct_event(kind: &str, event: &serde_json::Value) -> Option<crate::per
                 language: language.to_string(),
                 ip: ip.to_string(),
                 connected_at,
+                server_instance_id: instance_id.to_string(),
             })
         }
         "round_completed" => {

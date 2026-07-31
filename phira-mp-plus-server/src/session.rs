@@ -355,6 +355,7 @@ impl Session {
                                         .unwrap_or(0);
                                     let event_id = Uuid::new_v4().to_string();
                                     let session_id = this.get().unwrap().id.to_string();
+                                    let instance_id = crate::server_instance::current().to_string();
                                     if let Err(event) = server.persistence_worker.enqueue(
                                         crate::persistence::message::PersistenceEvent::UserAuthenticated {
                                             event_id,
@@ -364,6 +365,7 @@ impl Session {
                                             language: user.lang.0.to_string(),
                                             ip: addr.ip().to_string(),
                                             connected_at,
+                                            server_instance_id: instance_id,
                                         }
                                     ).await {
                                         warn!(

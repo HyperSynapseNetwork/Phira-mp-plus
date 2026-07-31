@@ -93,8 +93,10 @@ pub async fn persist_production_event_if_needed(event: &PersistenceEvent) -> Per
                     .await
             }
             PersistenceEvent::UserOnline { user_id } => db.set_online(*user_id).await,
-            PersistenceEvent::UserOffline { user_id } => db.set_offline(*user_id).await,
-            PersistenceEvent::UserDisconnect { user_id, user_name } => {
+            PersistenceEvent::UserOffline { user_id, server_instance_id } => {
+                db.set_offline(*user_id, server_instance_id).await
+            }
+            PersistenceEvent::UserDisconnect { user_id, user_name, .. } => {
                 db.record_user_disconnect(*user_id, user_name).await
             }
             PersistenceEvent::UserAuthenticated {
@@ -105,6 +107,7 @@ pub async fn persist_production_event_if_needed(event: &PersistenceEvent) -> Per
                 language,
                 ip,
                 connected_at,
+                server_instance_id,
             } => {
                 db.commit_user_authenticated(
                     event_id,
@@ -114,6 +117,7 @@ pub async fn persist_production_event_if_needed(event: &PersistenceEvent) -> Per
                     language,
                     ip,
                     *connected_at,
+                    server_instance_id,
                 ).await
             }
             PersistenceEvent::UserSeen {

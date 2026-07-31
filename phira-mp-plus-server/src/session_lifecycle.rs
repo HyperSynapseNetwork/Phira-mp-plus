@@ -243,6 +243,7 @@ impl User {
                             let _ = self_.server.persistence_worker.enqueue(
                                 crate::persistence::message::PersistenceEvent::UserOffline {
                                     user_id: self_.id,
+                                    server_instance_id: crate::server_instance::current().to_string(),
                                 },
                             ).await;
                         },
@@ -297,6 +298,7 @@ impl User {
                         .persistence_worker
                         .enqueue(crate::persistence::message::PersistenceEvent::UserOffline {
                             user_id: self.id,
+                            server_instance_id: crate::server_instance::current().to_string(),
                         })
                         .await
                     {
@@ -388,6 +390,7 @@ impl User {
                 .persistence_worker
                 .enqueue(crate::persistence::message::PersistenceEvent::UserOffline {
                     user_id: self_.id,
+                    server_instance_id: crate::server_instance::current().to_string(),
                 })
                 .await
             {

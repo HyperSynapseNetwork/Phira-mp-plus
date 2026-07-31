@@ -324,6 +324,7 @@ async fn main() -> Result<()> {
                     .enqueue(
                         phira_mp_plus_server::persistence::message::PersistenceEvent::UserOffline {
                             user_id,
+                            server_instance_id: phira_mp_plus_server::server_instance::current().to_string(),
                         },
                     )
                     .await

@@ -37,7 +37,10 @@ impl DbManager {
     }
 
     /// Mark a user as offline and wait for PostgreSQL acknowledgement.
-    pub async fn set_offline(&self, user_id: i32) -> bool {
+    /// Only closes the playtime session if its `server_instance_id` matches
+    /// the event's instance_id (prevents old offline events from replaying
+    /// and closing a newer session on a different instance).
+    pub async fn set_offline(&self, user_id: i32, event_instance_id: &str) -> bool {
         let Self::Pg(pool) = self;
         let now = now_ms_inline();
         sqlx::query(
@@ -45,10 +48,13 @@ impl DbManager {
                  SET total_secs = total_secs + GREATEST(0, ($2 - session_start) / 1000),
                      session_start = NULL,
                      server_instance_id = NULL
-                 WHERE user_id = $1 AND session_start IS NOT NULL",
+                 WHERE user_id = $1
+                   AND session_start IS NOT NULL
+                   AND (server_instance_id IS NOT DISTINCT FROM $3)",
         )
         .bind(user_id)
         .bind(now)
+        .bind(event_instance_id)
         .execute(pool)
         .await
         .is_ok()
@@ -209,6 +215,10 @@ impl DbManager {
     /// online-set into one atomic operation.  If the `event_id` has already been
     /// processed, `login_count` is *not* incremented — making the handler fully
     /// idempotent against retry/replay.
+    ///
+    /// The `server_instance_id` comes from the event itself (captured at event
+    /// creation time, not read from the global at process time) so that WAL/DLQ
+    /// replay on a new instance preserves the original session ownership.
     pub async fn commit_user_authenticated(
         &self,
         event_id: &str,
@@ -218,6 +228,7 @@ impl DbManager {
         language: &str,
         ip: &str,
         connected_at: i64,
+        server_instance_id: &str,
     ) -> bool {
         let Self::Pg(pool) = self;
         let now = now_ms_inline();
@@ -300,10 +311,12 @@ impl DbManager {
 
         // 4. Set online (playtime) — use connected_at for session_start so the
         //    elapsed-time calculation is relative to the actual connection time.
-        //    Also record server_instance_id so crash recovery can distinguish
-        //    sessions from this instance vs stale sessions from a previous
-        //    (crashed) instance.
-        let instance_id = crate::server_instance::current();
+        //    Use the event's server_instance_id (captured when the event was
+        //    created) so WAL/DLQ replay on a new instance preserves the
+        //    original session ownership.  Previously the global
+        //    server_instance::current() was read here, which caused historical
+        //    auth events replayed on a new instance to be marked as belonging
+        //    to the current instance — producing phantom online sessions.
         if sqlx::query(
             "INSERT INTO playtime (user_id, total_secs, session_start, server_instance_id)
              VALUES ($1, 0, $2, $3)
@@ -318,7 +331,7 @@ impl DbManager {
         )
         .bind(user_id)
         .bind(connected_at)
-        .bind(instance_id)
+        .bind(server_instance_id)
         .execute(&mut *tx)
         .await
         .is_err()
