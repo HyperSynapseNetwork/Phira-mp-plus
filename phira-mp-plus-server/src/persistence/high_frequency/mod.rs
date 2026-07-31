@@ -224,7 +224,7 @@ impl SequenceTracker {
         for &(lo, hi) in &self.dropped {
             if lo > self.watermark && lo <= target {
                 let end = hi.min(target);
-                total += (end - lo + 1) as u64;
+                total += end - lo + 1;
             }
         }
         total
