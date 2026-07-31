@@ -91,17 +91,37 @@ impl PlusServer {
                 warn!("failed to register server instance: {e}");
             }
             // Heartbeat: keep last_alive_at fresh so a crash is not counted
-            // as playtime beyond the last heartbeat.
+            // as playtime beyond the last heartbeat.  After several consecutive
+            // failures report degraded — the crash-recovery playtime accuracy
+            // depends on this row staying fresh.
             let hb_db = db_manager.clone();
             let hb_id = instance_id.to_string();
             crate::supervisor_actor::spawn_named("server-instance-heartbeat", async move {
                 let mut interval = tokio::time::interval(std::time::Duration::from_secs(30));
                 interval.tick().await; // skip first immediate tick
+                let mut consecutive_failures: u32 = 0;
                 loop {
                     interval.tick().await;
                     let now = crate::db::now_ms();
-                    if let Err(e) = hb_db.heartbeat_server_instance(&hb_id, now).await {
-                        tracing::warn!(error = %e, "server instance heartbeat failed");
+                    match hb_db.heartbeat_server_instance(&hb_id, now).await {
+                        Ok(()) => {
+                            consecutive_failures = 0;
+                        }
+                        Err(e) => {
+                            consecutive_failures += 1;
+                            if consecutive_failures >= 3 {
+                                crate::supervisor_actor::report_critical_failure(
+                                    "server-instance-heartbeat",
+                                    format!(
+                                        "server instance heartbeat failed {consecutive_failures} \
+                                         times consecutively: {e}"
+                                    ),
+                                )
+                                .await;
+                            } else {
+                                tracing::warn!(error = %e, "server instance heartbeat failed");
+                            }
+                        }
                     }
                 }
             });
