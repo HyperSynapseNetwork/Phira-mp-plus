@@ -2,9 +2,15 @@
 //!
 //! Extracted from session.rs to keep the session lifecycle separate from
 //! the ClientCommand match dispatch.
+//!
+//! PMP42 P0-A: the official Phira client is an immutable compatibility target.
+//! Every official request-type command MUST receive a matching `ServerCommand`
+//! response. This module therefore maps permission / room / query failures to
+//! the corresponding error response instead of returning a silent `None`.
 
 #![allow(clippy::too_many_arguments)]
 
+use crate::official_client_compat::response::official_error_response;
 use crate::session::{SessionCategory, User};
 use crate::tl;
 use phira_mp_common::{ClientCommand, ServerCommand};
@@ -18,6 +24,8 @@ pub(crate) async fn process(
 ) -> Option<ServerCommand> {
     macro_rules! get_room {
         (~ $d:ident) => {
+            // Used by Touches/Judges: these are NoResponseExpected, so a
+            // missing room simply drops the telemetry — no response is sent.
             let $d = match user.room.read().await.as_ref().map(Arc::clone) {
                 Some(room) => room,
                 None => {
@@ -44,7 +52,9 @@ pub(crate) async fn process(
             ?cmd,
             "command rejected for session category"
         );
-        return None;
+        // P0-A: a permission rejection must produce the official error response
+        // for the command, never a silent drop.
+        return official_error_response(&cmd, "permission denied".to_string());
     }
 
     match cmd {
@@ -71,11 +81,15 @@ pub(crate) async fn process(
         ClientCommand::Played { id } => crate::session_actor::route_played(user, id).await,
         ClientCommand::Abort => crate::session_actor::route_abort(user).await,
         ClientCommand::Touches { frames } => {
+            // NoResponseExpected::Touches — fire-and-forget telemetry, the
+            // official protocol never replies.
             get_room!(~ room);
             crate::session_telemetry::handle_touches(Arc::clone(&user), room, frames).await;
             None
         }
         ClientCommand::Judges { judges } => {
+            // NoResponseExpected::Judges — fire-and-forget telemetry, the
+            // official protocol never replies.
             get_room!(~ room);
             crate::session_telemetry::handle_judges(Arc::clone(&user), room, judges).await;
             None
@@ -83,7 +97,7 @@ pub(crate) async fn process(
         ClientCommand::QueryRoomInfo => {
             match crate::session_room::query_room_info(Arc::clone(&user)).await {
                 Ok(cmd) => Some(cmd),
-                Err(_) => None,
+                Err(err) => Some(ServerCommand::RoomResponse(Err(err.to_string()))),
             }
         }
         ClientCommand::RoomMonitorAuthenticate { .. }
