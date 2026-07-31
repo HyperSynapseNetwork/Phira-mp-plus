@@ -234,10 +234,12 @@ impl HighFrequencyWriter {
             return Ok(());
         }
         let deadline_ms = now_ms() + timeout.as_millis() as i64;
-        self.tx
-            .send(HfMessage::Flush { reply, target_seq, deadline_ms })
-            .await
-            .map_err(|_| "high frequency writer is closed".to_string())?;
+        // Bound the control send by the caller's remaining budget (P1).
+        match tokio::time::timeout(timeout, self.tx.send(HfMessage::Flush { reply, target_seq, deadline_ms })).await {
+            Ok(Ok(())) => {}
+            Ok(Err(_)) => return Err("high frequency writer is closed".to_string()),
+            Err(_) => return Err("high frequency flush send timed out".to_string()),
+        }
         tokio::time::timeout(timeout, rx)
             .await
             .map_err(|_| "high frequency flush timed out".to_string())?
@@ -262,13 +264,12 @@ impl HighFrequencyWriter {
         // previously the worker could keep working for its own retry window
         // after the external timeout already elapsed (P0-K).
         let deadline_ms = now_ms() + timeout.as_millis() as i64;
-        if self
-            .tx
-            .send(HfMessage::Shutdown { reply, deadline_ms })
-            .await
-            .is_err()
-        {
-            return Err("high frequency writer is closed".to_string());
+        // Bound the control send itself by the caller's remaining budget (P1):
+        // a full channel must not let shutdown overrun the external timeout.
+        match tokio::time::timeout(timeout, self.tx.send(HfMessage::Shutdown { reply, deadline_ms })).await {
+            Ok(Ok(())) => {}
+            Ok(Err(_)) => return Err("high frequency writer is closed".to_string()),
+            Err(_) => return Err("high frequency shutdown send timed out".to_string()),
         }
         let result = match tokio::time::timeout(timeout, rx).await {
             Ok(Ok(result)) => result,
