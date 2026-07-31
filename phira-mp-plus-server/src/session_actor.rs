@@ -2,7 +2,12 @@
 //!
 //! 每个 Session 创建时初始化独立 mailbox，命令通过该 Session 的邮箱路由。
 //! 所有有序业务命令必须经过该邮箱。邮箱缺失、关闭、拥塞超时或
-//! 入队后的回复丢失都会关闭当前连接，禁止退回旧处理器改变执行模型。
+//! 入队后的回复丢失都会关闭当前连接（禁止退回旧处理器改变执行模型），
+//! 并返回对应命令的官方错误响应，绝不静默丢弃请求（PMP42 P0-A）。
+//!
+//! PMP42 P0-C：每条命令携带绝对 deadline（`CommandMeta::deadline`），
+//! mailbox 发送与 reply 共享该预算；Actor 在执行前检查 deadline，
+//! 过期命令不提交状态，直接返回对应错误。
 //!
 //! 迁移状态：WriteRouted（Ping、Authenticate、Touches/Judges、
 //! QueryRoomInfo 属于协议快路径，不进入业务命令邮箱）。
@@ -35,51 +40,147 @@ pub(crate) fn init_session_mailbox(session: &Arc<Session>) -> mpsc::Sender<Sessi
                     reply,
                 } => {
                     tracing::trace!(cmd_id = meta.command_id, "session actor: chat");
-                    let _ = reply.send(handle_chat(user, category, msg).await);
+                    run_or_deadline(
+                        meta.deadline,
+                        reply,
+                        Some(ServerCommand::Chat(Err(
+                            "session command timed out".to_string(),
+                        ))),
+                        handle_chat(user, category, msg),
+                    )
+                    .await;
                 }
                 SessionActorCmd::Lock { meta, user, lock, reply } => {
                     tracing::trace!(cmd_id = meta.command_id, "session actor: lock");
-                    let _ = reply.send(handle_lock(user, lock).await);
+                    run_or_deadline(
+                        meta.deadline,
+                        reply,
+                        Some(ServerCommand::LockRoom(Err(
+                            "session command timed out".to_string(),
+                        ))),
+                        handle_lock(user, lock),
+                    )
+                    .await;
                 }
                 SessionActorCmd::Cycle { meta, user, cycle, reply } => {
                     tracing::trace!(cmd_id = meta.command_id, "session actor: cycle");
-                    let _ = reply.send(handle_cycle(user, cycle).await);
+                    run_or_deadline(
+                        meta.deadline,
+                        reply,
+                        Some(ServerCommand::CycleRoom(Err(
+                            "session command timed out".to_string(),
+                        ))),
+                        handle_cycle(user, cycle),
+                    )
+                    .await;
                 }
                 SessionActorCmd::Leave { meta, user, category, reply } => {
                     tracing::trace!(cmd_id = meta.command_id, "session actor: leave");
-                    let _ = reply.send(handle_leave(user, category).await);
+                    run_or_deadline(
+                        meta.deadline,
+                        reply,
+                        Some(ServerCommand::LeaveRoom(Err(
+                            "session command timed out".to_string(),
+                        ))),
+                        handle_leave(user, category),
+                    )
+                    .await;
                 }
                 SessionActorCmd::Create { meta, user, id, reply } => {
                     tracing::trace!(cmd_id = meta.command_id, "session actor: create");
-                    let _ = reply.send(handle_create(user, id).await);
+                    run_or_deadline(
+                        meta.deadline,
+                        reply,
+                        Some(ServerCommand::CreateRoom(Err(
+                            "session command timed out".to_string(),
+                        ))),
+                        handle_create(user, id),
+                    )
+                    .await;
                 }
                 SessionActorCmd::Join { meta, user, category, id, monitor, reply } => {
                     tracing::trace!(cmd_id = meta.command_id, "session actor: join");
-                    let _ = reply.send(handle_join(user, category, id, monitor).await);
+                    run_or_deadline(
+                        meta.deadline,
+                        reply,
+                        Some(ServerCommand::JoinRoom(Err(
+                            "session command timed out".to_string(),
+                        ))),
+                        handle_join(user, category, id, monitor),
+                    )
+                    .await;
                 }
                 SessionActorCmd::SelectChart { meta, user, id, reply } => {
                     tracing::trace!(cmd_id = meta.command_id, "session actor: select_chart");
-                    let _ = reply.send(handle_select_chart(user, id).await);
+                    run_or_deadline(
+                        meta.deadline,
+                        reply,
+                        Some(ServerCommand::SelectChart(Err(
+                            "session command timed out".to_string(),
+                        ))),
+                        handle_select_chart(user, id),
+                    )
+                    .await;
                 }
                 SessionActorCmd::RequestStart { meta, user, reply } => {
                     tracing::trace!(cmd_id = meta.command_id, "session actor: request_start");
-                    let _ = reply.send(handle_request_start(user).await);
+                    run_or_deadline(
+                        meta.deadline,
+                        reply,
+                        Some(ServerCommand::RequestStart(Err(
+                            "session command timed out".to_string(),
+                        ))),
+                        handle_request_start(user),
+                    )
+                    .await;
                 }
                 SessionActorCmd::Ready { meta, user, reply } => {
                     tracing::trace!(cmd_id = meta.command_id, "session actor: ready");
-                    let _ = reply.send(handle_ready(user).await);
+                    run_or_deadline(
+                        meta.deadline,
+                        reply,
+                        Some(ServerCommand::Ready(Err(
+                            "session command timed out".to_string(),
+                        ))),
+                        handle_ready(user),
+                    )
+                    .await;
                 }
                 SessionActorCmd::CancelReady { meta, user, reply } => {
                     tracing::trace!(cmd_id = meta.command_id, "session actor: cancel_ready");
-                    let _ = reply.send(handle_cancel_ready(user).await);
+                    run_or_deadline(
+                        meta.deadline,
+                        reply,
+                        Some(ServerCommand::CancelReady(Err(
+                            "session command timed out".to_string(),
+                        ))),
+                        handle_cancel_ready(user),
+                    )
+                    .await;
                 }
                 SessionActorCmd::Played { meta, user, id, reply } => {
                     tracing::trace!(cmd_id = meta.command_id, "session actor: played");
-                    let _ = reply.send(handle_played(user, id).await);
+                    run_or_deadline(
+                        meta.deadline,
+                        reply,
+                        Some(ServerCommand::Played(Err(
+                            "session command timed out".to_string(),
+                        ))),
+                        handle_played(user, id),
+                    )
+                    .await;
                 }
                 SessionActorCmd::Abort { meta, user, reply } => {
                     tracing::trace!(cmd_id = meta.command_id, "session actor: abort");
-                    let _ = reply.send(handle_abort(user).await);
+                    run_or_deadline(
+                        meta.deadline,
+                        reply,
+                        Some(ServerCommand::Abort(Err(
+                            "session command timed out".to_string(),
+                        ))),
+                        handle_abort(user),
+                    )
+                    .await;
                 }
             }
         }
@@ -93,21 +194,25 @@ pub(crate) fn init_session_mailbox(session: &Arc<Session>) -> mpsc::Sender<Sessi
 static NEXT_COMMAND_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 
 /// Command envelope metadata.
-/// reserved for future diagnostics/metrics integration.
-#[allow(dead_code)]
 pub(crate) struct CommandMeta {
     pub command_id: u64,
+    /// Retained for future diagnostics/metrics integration.
+    #[allow(dead_code)]
     pub created_at_ms: u64,
+    /// Absolute deadline for the whole send→execute→reply pipeline. The actor
+    /// checks it before executing (and MUST NOT commit after it passes).
+    pub deadline: std::time::Instant,
 }
 
 impl CommandMeta {
-    fn new() -> Self {
+    fn new(deadline: std::time::Instant) -> Self {
         Self {
             command_id: NEXT_COMMAND_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
             created_at_ms: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .map(|d| d.as_millis() as u64)
                 .unwrap_or(0),
+            deadline,
         }
     }
 }
@@ -188,8 +293,13 @@ pub(crate) enum SessionActorCmd {
 
 // ── Generic route helper ──────────────────────────────────────────
 
-/// Maximum time spent enqueueing or waiting for one ordered session command.
-const SESSION_COMMAND_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+/// Total budget for one ordinary client command, shared across the mailbox
+/// send and reply stages (PMP42 P0-C). Must stay well below the official
+/// client's ~7s deadline; defaults to 4500ms.
+fn command_deadline(user: &User) -> std::time::Instant {
+    let budget_ms = user.server.config.compatibility.session_command_deadline_ms;
+    std::time::Instant::now() + std::time::Duration::from_millis(budget_ms)
+}
 
 async fn close_uncertain_session(user: &User, reason: &'static str) {
     tracing::warn!(
@@ -204,15 +314,48 @@ async fn close_uncertain_session(user: &User, reason: &'static str) {
     }
 }
 
+/// Execute a command handler unless the absolute actor deadline has already
+/// passed. A late command MUST NOT mutate authoritative state — reply with the
+/// matching error response and count it as a blocked late commit (P0-C).
+async fn run_or_deadline(
+    deadline: std::time::Instant,
+    reply: tokio::sync::oneshot::Sender<Option<ServerCommand>>,
+    error_response: Option<ServerCommand>,
+    handler: impl std::future::Future<Output = Option<ServerCommand>>,
+) {
+    if crate::official_client_compat::timing::deadline_expired(deadline) {
+        crate::official_client_compat::protocol_trace::ProtocolTrace::get()
+            .late_commit
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        tracing::warn!(
+            ?deadline,
+            "session command arrived after deadline; refusing to commit"
+        );
+        let _ = reply.send(error_response);
+    } else {
+        let _ = reply.send(handler.await);
+    }
+}
+
 /// Send a command through the per-session mailbox.
 ///
 /// There is deliberately no direct fallback. Missing, closed or timed-out
-/// mailboxes terminate the transport so non-idempotent room transitions cannot
-/// be replayed through a second execution model.
-async fn route_via_mailbox<Build>(user: Arc<User>, build: Build) -> Option<ServerCommand>
+/// mailboxes close the transport (so non-idempotent room transitions cannot be
+/// replayed through a second execution model) AND return the matching official
+/// error response — a request-type command is never silently dropped (P0-A).
+///
+/// Both the mailbox enqueue and the reply wait share the single absolute
+/// `deadline`; each stage only uses the remaining budget.
+async fn route_via_mailbox<Build, ErrResp>(
+    user: Arc<User>,
+    deadline: std::time::Instant,
+    build: Build,
+    error_response: ErrResp,
+) -> Option<ServerCommand>
 where
     Build:
         FnOnce(Arc<User>, tokio::sync::oneshot::Sender<Option<ServerCommand>>) -> SessionActorCmd,
+    ErrResp: FnOnce(String) -> Option<ServerCommand>,
 {
     let tx = {
         let guard = user.session.read().await;
@@ -223,30 +366,34 @@ where
     };
     let Some(tx) = tx else {
         close_uncertain_session(&user, "session mailbox missing").await;
-        return None;
+        return error_response("session mailbox missing".to_string());
     };
 
     let (reply, rx) = tokio::sync::oneshot::channel();
     let cmd = build(Arc::clone(&user), reply);
-    match tokio::time::timeout(SESSION_COMMAND_TIMEOUT, tx.send(cmd)).await {
-        Ok(Ok(())) => match tokio::time::timeout(SESSION_COMMAND_TIMEOUT, rx).await {
-            Ok(Ok(result)) => result,
-            Ok(Err(_)) => {
-                close_uncertain_session(&user, "reply channel closed after enqueue").await;
-                None
+    let send_budget = deadline.saturating_duration_since(std::time::Instant::now());
+    match tokio::time::timeout(send_budget, tx.send(cmd)).await {
+        Ok(Ok(())) => {
+            let reply_budget = deadline.saturating_duration_since(std::time::Instant::now());
+            match tokio::time::timeout(reply_budget, rx).await {
+                Ok(Ok(result)) => result,
+                Ok(Err(_)) => {
+                    close_uncertain_session(&user, "reply channel closed after enqueue").await;
+                    error_response("session command reply channel closed".to_string())
+                }
+                Err(_) => {
+                    close_uncertain_session(&user, "reply timed out after enqueue").await;
+                    error_response("session command reply timed out".to_string())
+                }
             }
-            Err(_) => {
-                close_uncertain_session(&user, "reply timed out after enqueue").await;
-                None
-            }
-        },
+        }
         Ok(Err(_)) => {
             close_uncertain_session(&user, "session mailbox closed before enqueue").await;
-            None
+            error_response("session mailbox closed".to_string())
         }
         Err(_) => {
             close_uncertain_session(&user, "session mailbox enqueue timed out").await;
-            None
+            error_response("session mailbox enqueue timed out".to_string())
         }
     }
 }
@@ -288,13 +435,19 @@ pub(crate) async fn route_chat(
     category: SessionCategory,
     msg: String,
 ) -> Option<ServerCommand> {
-    route_via_mailbox(user, |user, reply| SessionActorCmd::Chat {
-        meta: CommandMeta::new(),
+    let deadline = command_deadline(&user);
+    route_via_mailbox(
         user,
-        category,
-        msg,
-        reply,
-    })
+        deadline,
+        |user, reply| SessionActorCmd::Chat {
+            meta: CommandMeta::new(deadline),
+            user,
+            category,
+            msg,
+            reply,
+        },
+        |err| Some(ServerCommand::Chat(Err(err))),
+    )
     .await
 }
 
@@ -309,12 +462,18 @@ async fn handle_lock(user: Arc<User>, lock: bool) -> Option<ServerCommand> {
 }
 
 pub(crate) async fn route_lock(user: Arc<User>, lock: bool) -> Option<ServerCommand> {
-    route_via_mailbox(user, |user, reply| SessionActorCmd::Lock {
-        meta: CommandMeta::new(),
+    let deadline = command_deadline(&user);
+    route_via_mailbox(
         user,
-        lock,
-        reply,
-    })
+        deadline,
+        |user, reply| SessionActorCmd::Lock {
+            meta: CommandMeta::new(deadline),
+            user,
+            lock,
+            reply,
+        },
+        |err| Some(ServerCommand::LockRoom(Err(err))),
+    )
     .await
 }
 
@@ -327,12 +486,18 @@ async fn handle_cycle(user: Arc<User>, cycle: bool) -> Option<ServerCommand> {
 }
 
 pub(crate) async fn route_cycle(user: Arc<User>, cycle: bool) -> Option<ServerCommand> {
-    route_via_mailbox(user, |user, reply| SessionActorCmd::Cycle {
-        meta: CommandMeta::new(),
+    let deadline = command_deadline(&user);
+    route_via_mailbox(
         user,
-        cycle,
-        reply,
-    })
+        deadline,
+        |user, reply| SessionActorCmd::Cycle {
+            meta: CommandMeta::new(deadline),
+            user,
+            cycle,
+            reply,
+        },
+        |err| Some(ServerCommand::CycleRoom(Err(err))),
+    )
     .await
 }
 
@@ -350,12 +515,18 @@ pub(crate) async fn route_leave(
     user: Arc<User>,
     category: SessionCategory,
 ) -> Option<ServerCommand> {
-    route_via_mailbox(user, |user, reply| SessionActorCmd::Leave {
-        meta: CommandMeta::new(),
+    let deadline = command_deadline(&user);
+    route_via_mailbox(
         user,
-        category,
-        reply,
-    })
+        deadline,
+        |user, reply| SessionActorCmd::Leave {
+            meta: CommandMeta::new(deadline),
+            user,
+            category,
+            reply,
+        },
+        |err| Some(ServerCommand::LeaveRoom(Err(err))),
+    )
     .await
 }
 
@@ -370,12 +541,18 @@ async fn handle_create(user: Arc<User>, id: RoomId) -> Option<ServerCommand> {
 }
 
 pub(crate) async fn route_create(user: Arc<User>, id: RoomId) -> Option<ServerCommand> {
-    route_via_mailbox(user, |user, reply| SessionActorCmd::Create {
-        meta: CommandMeta::new(),
+    let deadline = command_deadline(&user);
+    route_via_mailbox(
         user,
-        id,
-        reply,
-    })
+        deadline,
+        |user, reply| SessionActorCmd::Create {
+            meta: CommandMeta::new(deadline),
+            user,
+            id,
+            reply,
+        },
+        |err| Some(ServerCommand::CreateRoom(Err(err))),
+    )
     .await
 }
 
@@ -400,14 +577,20 @@ pub(crate) async fn route_join(
     id: RoomId,
     monitor: bool,
 ) -> Option<ServerCommand> {
-    route_via_mailbox(user, |user, reply| SessionActorCmd::Join {
-        meta: CommandMeta::new(),
+    let deadline = command_deadline(&user);
+    route_via_mailbox(
         user,
-        category,
-        id,
-        monitor,
-        reply,
-    })
+        deadline,
+        |user, reply| SessionActorCmd::Join {
+            meta: CommandMeta::new(deadline),
+            user,
+            category,
+            id,
+            monitor,
+            reply,
+        },
+        |err| Some(ServerCommand::JoinRoom(Err(err))),
+    )
     .await
 }
 
@@ -422,12 +605,18 @@ async fn handle_select_chart(user: Arc<User>, id: i32) -> Option<ServerCommand> 
 }
 
 pub(crate) async fn route_select_chart(user: Arc<User>, id: i32) -> Option<ServerCommand> {
-    route_via_mailbox(user, |user, reply| SessionActorCmd::SelectChart {
-        meta: CommandMeta::new(),
+    let deadline = command_deadline(&user);
+    route_via_mailbox(
         user,
-        id,
-        reply,
-    })
+        deadline,
+        |user, reply| SessionActorCmd::SelectChart {
+            meta: CommandMeta::new(deadline),
+            user,
+            id,
+            reply,
+        },
+        |err| Some(ServerCommand::SelectChart(Err(err))),
+    )
     .await
 }
 
@@ -442,11 +631,17 @@ async fn handle_request_start(user: Arc<User>) -> Option<ServerCommand> {
 }
 
 pub(crate) async fn route_request_start(user: Arc<User>) -> Option<ServerCommand> {
-    route_via_mailbox(user, |user, reply| SessionActorCmd::RequestStart {
-        meta: CommandMeta::new(),
+    let deadline = command_deadline(&user);
+    route_via_mailbox(
         user,
-        reply,
-    })
+        deadline,
+        |user, reply| SessionActorCmd::RequestStart {
+            meta: CommandMeta::new(deadline),
+            user,
+            reply,
+        },
+        |err| Some(ServerCommand::RequestStart(Err(err))),
+    )
     .await
 }
 
@@ -461,8 +656,18 @@ async fn handle_ready(user: Arc<User>) -> Option<ServerCommand> {
 }
 
 pub(crate) async fn route_ready(user: Arc<User>) -> Option<ServerCommand> {
-    route_via_mailbox(user, |user, reply| SessionActorCmd::Ready {
-        meta: CommandMeta::new(), user, reply }).await
+    let deadline = command_deadline(&user);
+    route_via_mailbox(
+        user,
+        deadline,
+        |user, reply| SessionActorCmd::Ready {
+            meta: CommandMeta::new(deadline),
+            user,
+            reply,
+        },
+        |err| Some(ServerCommand::Ready(Err(err))),
+    )
+    .await
 }
 
 async fn handle_cancel_ready(user: Arc<User>) -> Option<ServerCommand> {
@@ -474,11 +679,17 @@ async fn handle_cancel_ready(user: Arc<User>) -> Option<ServerCommand> {
 }
 
 pub(crate) async fn route_cancel_ready(user: Arc<User>) -> Option<ServerCommand> {
-    route_via_mailbox(user, |user, reply| SessionActorCmd::CancelReady {
-        meta: CommandMeta::new(),
+    let deadline = command_deadline(&user);
+    route_via_mailbox(
         user,
-        reply,
-    })
+        deadline,
+        |user, reply| SessionActorCmd::CancelReady {
+            meta: CommandMeta::new(deadline),
+            user,
+            reply,
+        },
+        |err| Some(ServerCommand::CancelReady(Err(err))),
+    )
     .await
 }
 
@@ -493,12 +704,18 @@ async fn handle_played(user: Arc<User>, id: i32) -> Option<ServerCommand> {
 }
 
 pub(crate) async fn route_played(user: Arc<User>, id: i32) -> Option<ServerCommand> {
-    route_via_mailbox(user, |user, reply| SessionActorCmd::Played {
-        meta: CommandMeta::new(),
+    let deadline = command_deadline(&user);
+    route_via_mailbox(
         user,
-        id,
-        reply,
-    })
+        deadline,
+        |user, reply| SessionActorCmd::Played {
+            meta: CommandMeta::new(deadline),
+            user,
+            id,
+            reply,
+        },
+        |err| Some(ServerCommand::Played(Err(err))),
+    )
     .await
 }
 
@@ -511,8 +728,18 @@ async fn handle_abort(user: Arc<User>) -> Option<ServerCommand> {
 }
 
 pub(crate) async fn route_abort(user: Arc<User>) -> Option<ServerCommand> {
-    route_via_mailbox(user, |user, reply| SessionActorCmd::Abort {
-        meta: CommandMeta::new(), user, reply }).await
+    let deadline = command_deadline(&user);
+    route_via_mailbox(
+        user,
+        deadline,
+        |user, reply| SessionActorCmd::Abort {
+            meta: CommandMeta::new(deadline),
+            user,
+            reply,
+        },
+        |err| Some(ServerCommand::Abort(Err(err))),
+    )
+    .await
 }
 
 #[cfg(test)]
