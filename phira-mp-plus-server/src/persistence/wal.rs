@@ -253,8 +253,14 @@ impl PersistenceWal {
         Ok(())
     }
 
+    /// Append a frame, acquiring the io_gate for mutual exclusion.
     async fn append_frame(&self, frame: &WalFrame) -> Result<(), String> {
         let _guard = self.io_gate.lock().await;
+        self.append_frame_inner(frame).await
+    }
+
+    /// Append a frame.  Caller MUST hold `io_gate`.
+    async fn append_frame_inner(&self, frame: &WalFrame) -> Result<(), String> {
         self.ensure_parent().await?;
         // Enforce secure permissions on existing file (best-effort).
         self.set_secure_permissions().await;
@@ -310,9 +316,20 @@ impl PersistenceWal {
         }
         self.check_disk_space().await?;
         let id = uuid::Uuid::new_v4();
-        let seq = self.admit_sequence.fetch_add(1, Ordering::AcqRel) + 1;
+
+        // Allocate the sequence number INSIDE the io_gate critical section,
+        // serialized with the append+fsync.  Previously the sequence was
+        // allocated with fetch_add BEFORE append_frame; if the append failed
+        // (disk full, fsync error) the sequence was consumed but no frame was
+        // written, creating a permanent gap that could deadlock the worker's
+        // sequence gating (it would wait forever for a sequence that never
+        // appears).  With load+store inside the gate, a failed append leaves
+        // the counter unchanged — the next admission retries the same sequence.
+        let _guard = self.io_gate.lock().await;
+        let seq = self.admit_sequence.load(Ordering::Acquire) + 1;
         let frame = WalFrame::new(WalRecord::Admission { id, event, sequence: seq })?;
-        self.append_frame(&frame).await?;
+        self.append_frame_inner(&frame).await?;
+        self.admit_sequence.store(seq, Ordering::Release);
         self.admission_count.fetch_add(1, Ordering::Release);
         // Mark marker as active (not clean) so accidental WAL deletion is
         // detectable even after a compact-to-zero followed by new admissions.
@@ -1145,6 +1162,35 @@ mod tests {
         let wal = PersistenceWal::new(&path);
         let result = wal.admit(make_event("before-replay")).await;
         assert!(result.is_err());
+        let _ = tokio::fs::remove_file(path).await;
+    }
+
+    #[tokio::test]
+    async fn failed_admit_does_not_advance_sequence() {
+        // Simulate an append failure by making the WAL path a directory
+        // (open for append will fail with EISDIR).  The sequence counter
+        // must NOT advance, so a subsequent successful admit reuses the
+        // same sequence — no gap.
+        let path = std::env::temp_dir().join(format!(
+            "pmp-wal-gap-{}.jsonl",
+            uuid::Uuid::new_v4()
+        ));
+        let wal = PersistenceWal::new(&path);
+        wal.replay().await.unwrap();
+
+        // Create a directory at the WAL path to force append failure.
+        tokio::fs::create_dir_all(&path).await.unwrap();
+        let result = wal.admit(make_event("will-fail")).await;
+        assert!(result.is_err(), "admit against a directory must fail");
+
+        // Remove the directory so the next admit succeeds.
+        tokio::fs::remove_dir(&path).await.unwrap();
+
+        // First successful admit gets seq 1 (not 2) — proving the failed
+        // admit did not consume a sequence number.
+        let (_, seq) = wal.admit(make_event("ok")).await.unwrap();
+        assert_eq!(seq, 1, "failed admit must not consume a sequence number");
+
         let _ = tokio::fs::remove_file(path).await;
     }
 
