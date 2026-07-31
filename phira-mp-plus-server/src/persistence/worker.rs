@@ -33,6 +33,7 @@ enum WorkerMessage {
     },
     Flush {
         target_wal_sequence: u64,
+        deadline: Instant,
         reply: oneshot::Sender<Result<(), String>>,
     },
     Shutdown {
@@ -326,8 +327,7 @@ async fn process_worker_loop(
                 event,
                 needs_wal_ack,
             } => (wal_id, wal_sequence, event, needs_wal_ack),
-            WorkerMessage::Flush { target_wal_sequence, reply } => {
-                let deadline = Instant::now() + Duration::from_secs(30);
+            WorkerMessage::Flush { target_wal_sequence, deadline, reply } => {
                 drain_pending_acks(worker_wal, &mut pending_acks, in_flight, Some(deadline)).await;
 
                 let buffer_remaining = buffer.range(..=target_wal_sequence).count();
@@ -891,6 +891,7 @@ impl PersistenceWorker {
     pub async fn flush(&self, timeout: Duration) -> Result<(), String> {
         let (reply, rx) = oneshot::channel();
         let target;
+        let deadline;
         {
             // Linearization point (P0-B): acquire send_gate FIRST, then read
             // the WAL sequence INSIDE the gate.  Previously the sequence was
@@ -903,8 +904,9 @@ impl PersistenceWorker {
                 return Err("persistence worker is shutting down".to_string());
             }
             target = self.wal.current_sequence();
+            deadline = Instant::now() + timeout;
             self.tx
-                .send(WorkerMessage::Flush { target_wal_sequence: target, reply })
+                .send(WorkerMessage::Flush { target_wal_sequence: target, deadline, reply })
                 .await
                 .map_err(|_| "persistence worker is closed".to_string())?;
         }
