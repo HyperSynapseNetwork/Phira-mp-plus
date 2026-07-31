@@ -16,3 +16,8 @@ pub(crate) const MAX_READ_BUF_PER_PLUGIN: usize = 4_194_304; // 4 MB
 
 /// Maximum pending events per plugin before rate limiting drops new events.
 pub(crate) const MAX_PENDING_EVENTS_PER_PLUGIN: usize = 64;
+
+/// Per-connection sustained read rate (bytes/sec) for plugin TCP receive.
+/// A token bucket of this size allows full-burst reads; sustained throughput
+/// is throttled to this rate (P1: per-connection rate).
+pub(crate) const MAX_RATE_BYTES_PER_SEC: usize = 5 * 1024 * 1024; // 5 MiB/s

@@ -3,7 +3,9 @@
 //! These functions perform the actual network I/O on behalf of the
 //! PluginTcpActor, sending internal events back to it for state management.
 
-use crate::plugin_tcp::quota::{MAX_READ_BUF_PER_CONNECTION, MAX_READ_BUF_PER_PLUGIN};
+use crate::plugin_tcp::quota::{
+    MAX_READ_BUF_PER_CONNECTION, MAX_READ_BUF_PER_PLUGIN, MAX_RATE_BYTES_PER_SEC,
+};
 use crate::plugin_tcp::{
     ConnectionMap, HandleReadBytesMap, PluginEventChannel, PluginTcpInternal, ReadBufMap,
 };
@@ -148,6 +150,13 @@ async fn tcp_read_task(
     let (mut reader, mut writer) = tokio::io::split(stream);
     let mut buf = vec![0u8; 8192];
 
+    // Per-connection read rate limit (token bucket).  A fast remote cannot
+    // flood the plugin beyond this sustained rate; bursts up to the full
+    // bucket are allowed (P1: per-connection rate).
+    let rate_bytes_per_sec = MAX_RATE_BYTES_PER_SEC as f64;
+    let mut tokens = rate_bytes_per_sec;
+    let mut last_refill = std::time::Instant::now();
+
     loop {
         tokio::select! {
             data = data_rx.recv() => {
@@ -179,6 +188,25 @@ async fn tcp_read_task(
                         break;
                     }
                     Ok(n) => {
+                        // Per-connection rate limit: consume tokens and sleep to
+                        // refill if the sustained rate is exceeded.  This
+                        // throttles a fast remote without dropping data.
+                        let now = std::time::Instant::now();
+                        let elapsed = now.duration_since(last_refill).as_secs_f64();
+                        tokens = (tokens + elapsed * rate_bytes_per_sec)
+                            .min(rate_bytes_per_sec);
+                        last_refill = now;
+                        if tokens < n as f64 {
+                            let deficit = (n as f64 - tokens) / rate_bytes_per_sec;
+                            if deficit > 0.0 {
+                                tokio::time::sleep(std::time::Duration::from_secs_f64(deficit))
+                                    .await;
+                            }
+                            tokens = 0.0;
+                        } else {
+                            tokens -= n as f64;
+                        }
+
                         // Buffer for pull-based recv(), with read buffer limits.
                         // Event delivery goes through a per-plugin bounded queue
                         // (channel), so backpressure is never applied here.
