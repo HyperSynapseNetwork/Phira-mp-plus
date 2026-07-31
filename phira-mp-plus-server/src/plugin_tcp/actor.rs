@@ -274,8 +274,10 @@ impl PluginTcpActor {
                                                     .or_insert_with(|| Arc::new(TokioMutex::new(())))
                                                     .clone()
                                             });
-                                        let _per_handle =
-                                            _handle_lock.as_ref().map(|l| l.lock().await);
+                                        let _per_handle = match _handle_lock.as_ref() {
+                                            Some(l) => Some(l.lock().await),
+                                            None => None,
+                                        };
                                         let fut = cb(event_type.clone(), payload);
                                         // Bound each callback so a hung plugin
                                         // cannot pin the worker forever.
