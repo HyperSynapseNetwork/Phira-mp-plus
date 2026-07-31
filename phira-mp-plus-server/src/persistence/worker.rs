@@ -165,6 +165,34 @@ async fn process_worker_loop(
             // (we used as_mut(), not take()) and the loop continues.
         }
 
+        // ---- Retry pending WAL ACKs (P0-D) ----
+        // Run on every iteration, BEFORE the message fetch, so a pending ACK
+        // is retried even when the channel is idle (the fetch now times out
+        // when pending_acks is non-empty, but this block must run on timeout
+        // iterations too — previously it sat after `let Some(msg) else
+        // continue` and was skipped whenever no message arrived).
+        if let Some((retry_id, retry_attempt)) = pending_acks.front().copied() {
+            match worker_wal.ack(retry_id).await {
+                Ok(()) => {
+                    worker_wal.set_degraded(false);
+                    debug!(wal_id = %retry_id, "ACK retry succeeded");
+                    pending_acks.pop_front();
+                    in_flight.lock().await.remove(&retry_id);
+                }
+                Err(e) => {
+                    worker_wal.set_degraded(true);
+                    trace!(
+                        wal_id = %retry_id, attempt = %retry_attempt, error = %e,
+                        "ACK retry failed, will retry on next iteration"
+                    );
+                    if let Some(mut entry) = pending_acks.pop_front() {
+                        entry.1 = entry.1.saturating_add(1);
+                        pending_acks.push_back(entry);
+                    }
+                }
+            }
+        }
+
         // ---- Drain initial replay into the buffer (P0-A) ----
         //
         // Replay events are moved into the SAME BTreeMap buffer keyed by their
@@ -207,13 +235,16 @@ async fn process_worker_loop(
             }
 
             // 2. Channel receive with sequence gating.
-            let msg = if pending_control.is_some() {
-                // Use a short timeout so we can re-check pending control
-                // conditions when the channel is otherwise idle.
+            // Use a short timeout whenever there is deferred work so the loop
+            // wakes up to retry it even when no new message arrives: pending
+            // control (flush/shutdown fence) or pending WAL ACKs (P0-D —
+            // ACK retry must not depend on new channel messages).
+            let has_deferred_work = pending_control.is_some() || !pending_acks.is_empty();
+            let msg = if has_deferred_work {
                 match tokio::time::timeout(Duration::from_millis(100), rx.recv()).await {
                     Ok(Some(msg)) => msg,
                     Ok(None) => break 'fetch None,
-                    Err(_) => break 'fetch None, // timeout — re-check pending control
+                    Err(_) => break 'fetch None, // timeout — re-check deferred work
                 }
             } else {
                 match rx.recv().await {
@@ -286,30 +317,6 @@ async fn process_worker_loop(
         };
 
         let Some(msg) = message else { continue; };
-
-
-        // ---- Retry pending WAL ACKs ----
-        if let Some((retry_id, retry_attempt)) = pending_acks.front().copied() {
-            match worker_wal.ack(retry_id).await {
-                Ok(()) => {
-                    worker_wal.set_degraded(false);
-                    debug!(wal_id = %retry_id, "ACK retry succeeded");
-                    pending_acks.pop_front();
-                    in_flight.lock().await.remove(&retry_id);
-                }
-                Err(e) => {
-                    worker_wal.set_degraded(true);
-                    trace!(
-                        wal_id = %retry_id, attempt = %retry_attempt, error = %e,
-                        "ACK retry failed, will retry on next iteration"
-                    );
-                    if let Some(mut entry) = pending_acks.pop_front() {
-                        entry.1 = entry.1.saturating_add(1);
-                        pending_acks.push_back(entry);
-                    }
-                }
-            }
-        }
 
         // ---- Dispatch ----
         let (wal_id, wal_sequence, event, needs_wal_ack) = match msg {
@@ -570,9 +577,11 @@ async fn wal_recovery_scanner(
     send_gate: Arc<tokio::sync::Mutex<()>>,
 ) {
     let mut interval = tokio::time::interval(Duration::from_secs(5));
-    // Start with a jitter so the scanner does not contend with initial replay.
-    interval.tick().await; // first tick completes immediately, skip it
-    interval.tick().await; // wait one full interval before first real scan
+    // Consume the immediate first tick, then let the loop's tick drive the
+    // first real scan at t = 5s (one configured period).  Previously two
+    // pre-loop ticks delayed the first scan to 10s, which was too slow to
+    // self-heal a transiently-failed replay event during startup (P0-D).
+    interval.tick().await;
 
     loop {
         interval.tick().await;
