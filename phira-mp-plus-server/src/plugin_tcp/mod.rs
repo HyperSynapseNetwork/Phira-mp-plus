@@ -84,6 +84,11 @@ pub enum PluginTcpCommand {
         plugin_id: String,
         reply: SyncReply<()>,
     },
+    /// Query aggregated per-plugin TCP metrics (pending/dropped events,
+    /// buffered read bytes) for diagnostics.
+    Stats {
+        reply: SyncReply<serde_json::Value>,
+    },
 }
 
 // Shared type aliases for connection/socket tracking, used by actor and events.
@@ -126,11 +131,13 @@ impl PluginEventChannel {
     }
 
     /// Number of events dropped because the queue was full.
-    /// Reserved for a future diagnostics consumer (the counter is still
-    /// incremented on every drop).
-    #[allow(dead_code)]
     pub fn dropped_count(&self) -> u64 {
         self.dropped_count.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Number of events currently pending in the bounded queue.
+    pub fn pending_count(&self) -> usize {
+        self.queue.lock().unwrap().len()
     }
 
     /// Shared queue and notify for worker task consumption.

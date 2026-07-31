@@ -517,6 +517,21 @@ impl PluginTcpActor {
                     self.remove_plugin_handles(&plugin_id);
                     let _ = reply.send(Ok(()));
                 }
+                PluginTcpCommand::Stats { reply } => {
+                    let prb = self.plugin_read_bytes.lock().unwrap();
+                    let mut plugins = serde_json::Map::new();
+                    for (plugin_id, channel) in &self.event_channels {
+                        plugins.insert(
+                            plugin_id.clone(),
+                            serde_json::json!({
+                                "pending_events": channel.pending_count(),
+                                "dropped_events": channel.dropped_count(),
+                                "pending_read_bytes": prb.get(plugin_id).copied().unwrap_or(0),
+                            }),
+                        );
+                    }
+                    let _ = reply.send(Ok(serde_json::Value::Object(plugins)));
+                }
         }
     }
 }

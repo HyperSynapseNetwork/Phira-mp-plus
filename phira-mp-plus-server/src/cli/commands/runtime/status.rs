@@ -57,6 +57,35 @@ impl CliHandler {
             c::dim("│"),
             event_stats.trace_capacity
         ));
+        // Plugin TCP per-plugin metrics (pending/dropped events, buffered bytes).
+        if let Some(tx) = &self.state.plugin_tcp_tx {
+            let (reply, rx) = std::sync::mpsc::channel();
+            if tx
+                .try_send(crate::plugin_tcp::PluginTcpCommand::Stats { reply })
+                .is_ok()
+            {
+                if let Ok(Ok(stats)) = rx.recv_timeout(std::time::Duration::from_secs(2)) {
+                    let mut total_pending: u64 = 0;
+                    let mut total_dropped: u64 = 0;
+                    let mut total_bytes: u64 = 0;
+                    if let serde_json::Value::Object(plugins) = &stats {
+                        for (_pid, v) in plugins {
+                            total_pending += v.get("pending_events").and_then(|x| x.as_u64()).unwrap_or(0);
+                            total_dropped += v.get("dropped_events").and_then(|x| x.as_u64()).unwrap_or(0);
+                            total_bytes += v.get("pending_read_bytes").and_then(|x| x.as_u64()).unwrap_or(0);
+                        }
+                    }
+                    self.out(format!(
+                        "  {} plugin tcp:        plugins={} pending_events={} dropped_events={} pending_read_bytes={}",
+                        c::dim("│"),
+                        plugins.len(),
+                        total_pending,
+                        total_dropped,
+                        total_bytes,
+                    ));
+                }
+            }
+        }
         self.out(format!(
             "  {} 现有 Room/Session/DB 主逻辑仍未完全迁移；Actor 模型是最终架构，Web 管理 API 不做",
             c::dim("▸")
