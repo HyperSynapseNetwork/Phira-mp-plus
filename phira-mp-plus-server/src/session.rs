@@ -3,6 +3,7 @@
 pub use crate::session_lifecycle::User;
 
 use crate::l10n::{Language, LANGUAGE};
+use crate::official_client_compat::protocol_trace::ProtocolTrace;
 use crate::phira_client::PhiraRetryNoticeTarget;
 use crate::server::PlusServerState;
 use crate::session_auth::{
@@ -10,7 +11,7 @@ use crate::session_auth::{
     send_auth_rejection, AuthUserInfo,
 };
 use anyhow::{anyhow, bail, Result};
-use phira_mp_common::{ClientCommand, Message, ServerCommand, Stream};
+use phira_mp_common::{ClientCommand, Message, ServerCommand, Stream, StreamSender};
 use std::{
     sync::{
         atomic::{AtomicBool, Ordering},
@@ -604,7 +605,58 @@ impl Session {
                         }
                         let user = this.get().map(|it| Arc::clone(&it.user)).unwrap();
 
-                        // 命令速率限制
+                        // P0-B: record the command receive time. Responses must
+                        // never arrive earlier than received_at + minimum latency
+                        // (the official client installs its callback after send).
+                        let received_at = Instant::now();
+                        ProtocolTrace::get()
+                            .request_received
+                            .fetch_add(1, Ordering::Relaxed);
+
+                        // Deliver a dispatch response honoring the minimum
+                        // response latency window and the P0-E critical flush.
+                        // Returns true when the packet entered the outbound queue.
+                        let send_response =
+                            |send_tx: &StreamSender<ServerCommand>,
+                             resp: ServerCommand,
+                             critical: bool| async {
+                                let result = if critical {
+                                    send_tx.send_and_flush(resp).await
+                                } else {
+                                    send_tx.send(resp).await
+                                };
+                                match result {
+                                    Ok(()) => {
+                                        ProtocolTrace::get()
+                                            .response_queued
+                                            .fetch_add(1, Ordering::Relaxed);
+                                        if critical {
+                                            ProtocolTrace::get()
+                                                .response_flushed
+                                                .fetch_add(1, Ordering::Relaxed);
+                                        }
+                                        ProtocolTrace::get()
+                                            .record_response_latency(received_at);
+                                        true
+                                    }
+                                    Err(err) => {
+                                        error!(
+                                            "failed to handle message, aborting connection {id}: {err:?}",
+                                        );
+                                        panicked.store(true, Ordering::SeqCst);
+                                        if let Err(err) = server.lost_con_tx.send(id).await {
+                                            error!(
+                                                "failed to mark lost connection ({id}): {err:?}"
+                                            );
+                                        }
+                                        false
+                                    }
+                                }
+                            };
+
+                        // 命令速率限制 — on failure return the matching official
+                        // error response instead of silently dropping the request
+                        // (P0-A).
                         let session_ref = this.get().map(|s| Arc::clone(s));
                         let needs_limiting = matches!(
                             &cmd,
@@ -623,13 +675,57 @@ impl Session {
                                 };
                                 if !session.cmd_limiter.check(category).await {
                                     warn!("command rate limited for user {}", user.id);
+                                    let critical = matches!(
+                                        &cmd,
+                                        ClientCommand::CreateRoom { .. }
+                                            | ClientCommand::JoinRoom { .. }
+                                    );
+                                    let resp =
+                                        crate::official_client_compat::response::official_error_response(
+                                            &cmd,
+                                            "command rate limited".to_string(),
+                                        );
+                                    crate::official_client_compat::timing::CompatTiming::from_config(
+                                        &user.server.config,
+                                    )
+                                    .wait_until_minimum(received_at)
+                                    .await;
+                                    if let Some(resp) = resp {
+                                        send_response(
+                                            &send_tx,
+                                            resp,
+                                            critical,
+                                        )
+                                        .await;
+                                    }
                                     return;
                                 }
                             }
                         }
 
+                        let no_response =
+                            crate::official_client_compat::response::no_response_expected(&cmd);
+                        // JoinRoom(Ok) is delivered internally by join_room; a
+                        // None result for JoinRoom is legitimate, not a silent drop.
+                        let is_join_room = matches!(cmd, ClientCommand::JoinRoom { .. });
+                        // P0-E: critical responses must be flushed to the socket.
+                        let critical = matches!(
+                            &cmd,
+                            ClientCommand::Authenticate { .. }
+                                | ClientCommand::CreateRoom { .. }
+                                | ClientCommand::JoinRoom { .. }
+                                | ClientCommand::RequestStart
+                                | ClientCommand::Ready
+                                | ClientCommand::CancelReady
+                                | ClientCommand::LeaveRoom
+                        );
                         let creating_player = matches!(cmd, ClientCommand::CreateRoom { .. })
                             .then(|| Arc::clone(&user));
+                        let uid = user.id;
+                        let compat =
+                            crate::official_client_compat::timing::CompatTiming::from_config(
+                                &user.server.config,
+                            );
                         let result = LANGUAGE
                             .scope(
                                 Arc::new(user.lang.clone()),
@@ -643,15 +739,10 @@ impl Session {
                         if let Some(resp) = result {
                             let created_room = creating_player.is_some()
                                 && matches!(resp, ServerCommand::CreateRoom(Ok(())));
-                            if let Err(err) = send_tx.send(resp).await {
-                                error!(
-                                    "failed to handle message, aborting connection {id}: {err:?}",
-                                );
-                                panicked.store(true, Ordering::SeqCst);
-                                if let Err(err) = server.lost_con_tx.send(id).await {
-                                    error!("failed to mark lost connection ({id}): {err:?}");
-                                }
-                            } else if created_room {
+                            // P0-B: never respond before the minimum latency window.
+                            compat.wait_until_minimum(received_at).await;
+                            let sent = send_response(&send_tx, resp, critical).await;
+                            if sent && created_room {
                                 let creating_player = creating_player.expect("checked above");
                                 if let Err(err) = send_tx
                                     .send(ServerCommand::Message(Message::CreateRoom {
@@ -669,6 +760,15 @@ impl Session {
                             // ChangeHost through the room mailbox SetHost handler. Sending it
                             // again here duplicates the message and can arrive out of order
                             // (before JoinRoom(Ok)), confusing the client.
+                        } else if no_response.is_none() && !is_join_room {
+                            // A None result that is neither NoResponseExpected nor
+                            // JoinRoom's internally-delivered response is a silent
+                            // drop — count it so CI/observability can assert the
+                            // counter stays at zero (P1).
+                            ProtocolTrace::get()
+                                .silent_response_paths
+                                .fetch_add(1, Ordering::Relaxed);
+                            warn!(user = uid, "silent response path for request-type command");
                         }
                     }
                 }
