@@ -31,7 +31,12 @@ use tracing::debug;
 /// Lower discriminants are emitted first. This order is part of the
 /// compatibility contract — the official client expects host corrections before
 /// state corrections, and state before replay simulation.
+///
+/// Only `ChangeState` is currently wired (join-reconnect WaitForReady
+/// compensation); the remaining kinds are reserved for future compensation
+/// sites and are exercised by the ordering tests, hence `allow(dead_code)`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[allow(dead_code)]
 pub(crate) enum PostResponseKind {
     /// Host correction (`ChangeHost(true/false)`).
     ChangeHost,
@@ -215,6 +220,7 @@ mod tests {
     async fn zero_delay_dispatches_without_waiting() {
         use std::sync::atomic::{AtomicU64, Ordering};
         use std::sync::Arc;
+        use std::time::Duration;
 
         let config = PlusConfig {
             compatibility: crate::CompatibilityConfig {
