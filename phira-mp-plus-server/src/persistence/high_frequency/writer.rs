@@ -222,8 +222,8 @@ impl HighFrequencyWriter {
     /// Flush all items accepted before this call.
     ///
     /// Waits for the background task to write the current batch to the
-    /// database and reply.  Timeout is 5 seconds.
-    pub async fn flush(&self) -> Result<(), String> {
+    /// database and reply, using the caller's timeout as the deadline (P1).
+    pub async fn flush(&self, timeout: Duration) -> Result<(), String> {
         let (reply, rx) = oneshot::channel();
         if self.closed.load(Ordering::Acquire) {
             return Err("high frequency writer is shutting down".to_string());
@@ -233,12 +233,12 @@ impl HighFrequencyWriter {
             // No items ever accepted; flush is a no-op.
             return Ok(());
         }
-        let deadline_ms = now_ms() + 5_000;
+        let deadline_ms = now_ms() + timeout.as_millis() as i64;
         self.tx
             .send(HfMessage::Flush { reply, target_seq, deadline_ms })
             .await
             .map_err(|_| "high frequency writer is closed".to_string())?;
-        tokio::time::timeout(Duration::from_secs(5), rx)
+        tokio::time::timeout(timeout, rx)
             .await
             .map_err(|_| "high frequency flush timed out".to_string())?
             .map_err(|_| "high frequency flush reply dropped".to_string())?
@@ -872,7 +872,7 @@ mod tests {
         assert_eq!(snap.admission_sequence, snap.received + 1);
 
         // Flush will fail (no real DB) — confirm it doesn't panic.
-        let flush_result = writer.flush().await;
+        let flush_result = writer.flush(Duration::from_secs(5)).await;
         assert!(flush_result.is_err(), "flush expected to fail without DB");
 
         writer.shutdown(Duration::from_secs(5)).await.ok();

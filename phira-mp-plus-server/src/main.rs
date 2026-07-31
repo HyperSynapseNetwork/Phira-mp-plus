@@ -385,7 +385,7 @@ async fn main() -> Result<()> {
     // so pending Touch/Judge batches are committed to PostgreSQL.
     let budget = remaining();
     if !budget.is_zero() {
-        if let Err(e) = server.state.high_frequency_writer.flush().await {
+        if let Err(e) = server.state.high_frequency_writer.flush(budget).await {
             warn!(%e, "high frequency writer flush failed during shutdown");
         }
     }
