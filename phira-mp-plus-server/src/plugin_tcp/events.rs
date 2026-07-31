@@ -163,10 +163,22 @@ async fn tcp_read_task(
                 match data {
                     Some(bytes) => {
                         if let Err(e) = writer.write_all(&bytes).await {
-                            event_channel.push("tcp:error".into(), serde_json::json!({
+                            let _outcome = event_channel.push("tcp:error".into(), serde_json::json!({
                                 "handle": handle, "plugin_id": &plugin_id,
                                 "error": format!("write: {e}"),
                             }));
+                            // Complete the lifecycle (error → disconnect) so the
+                            // actor reclaims state and the per-connection
+                            // mailbox is removed (P0-E/P0-F).  Even when the
+                            // error event itself overflowed, the disconnect
+                            // attempt still drives cleanup.
+                            if (internal_tx.send(PluginTcpInternal::Disconnected {
+                                handle,
+                                plugin_id: plugin_id.clone(),
+                                remote_addr: remote_addr.clone(),
+                            }).await).is_err() {
+                                // Actor gone; nothing more to do.
+                            }
                             break;
                         }
                     }

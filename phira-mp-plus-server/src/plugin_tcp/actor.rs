@@ -6,15 +6,15 @@
 
 use crate::plugin_tcp::events::{tcp_connect, tcp_listen};
 use crate::plugin_tcp::{
-    CloseMap, ConnectionMap, HandleReadBytesMap, PluginEventChannel, PluginTcpCommand, PluginTcpInternal, ReadBufMap,
-    SyncReply,
+    CloseMap, ConnectionMap, HandleReadBytesMap, PluginEventChannel, PluginTcpCommand, PluginTcpInternal, PushOutcome,
+    ReadBufMap, SyncReply,
     MAX_CONNECTIONS_PER_PLUGIN, MAX_LISTENERS_PER_PLUGIN, MAX_PENDING_EVENTS_PER_PLUGIN,
 };
 use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
-use tokio::sync::{mpsc, oneshot, Mutex as TokioMutex};
+use tokio::sync::{mpsc, oneshot};
 use tracing::{info, warn};
 
 /// Maximum concurrent event callbacks per plugin.  Prevents a single slow
@@ -206,9 +206,10 @@ impl PluginTcpActor {
         h
     }
 
-    fn emit_event(&self, plugin_id: &str, event_type: &str, payload: serde_json::Value) {
-        if let Some(channel) = self.event_channels.get(plugin_id) {
-            channel.push(event_type.to_string(), payload);
+    fn emit_event(&self, plugin_id: &str, event_type: &str, payload: serde_json::Value) -> PushOutcome {
+        match self.event_channels.get(plugin_id) {
+            Some(channel) => channel.push(event_type.to_string(), payload),
+            None => PushOutcome::Dropped,
         }
     }
 
@@ -221,18 +222,22 @@ impl PluginTcpActor {
             Entry::Occupied(e) => Arc::clone(e.get()),
             Entry::Vacant(e) => {
                 let channel = Arc::new(PluginEventChannel::new(MAX_PENDING_EVENTS_PER_PLUGIN));
-                let (_, _, worker_notify) = channel.shared();
+                let worker_notify = channel.notify();
                 // Use MAX_CONCURRENT_CALLBACKS FIXED worker tasks that directly
                 // await each callback.  This bounds BOTH the number of queued
-                // events (bounded queues) AND the number of in-flight callbacks
+                // events (bounded channel) AND the number of in-flight callbacks
                 // (one per worker), unlike the previous design which spawned a
                 // tokio task per event and then waited on a semaphore inside
                 // each task — that could accumulate an unbounded number of
                 // waiting tasks when a slow plugin was fed continuously.
-                // Per-handle serialization (P0-E): events for the SAME
-                // connection handle must be delivered in FIFO order, while
-                // different handles may be processed concurrently.  Workers
-                // peek the front handle and acquire its lock BEFORE popping.
+                //
+                // Per-connection mailbox (P0-E): events for the SAME connection
+                // are FIFO inside its mailbox; a worker claims a ready handle,
+                // takes its per-connection serialization lock, pops the front
+                // event and runs the callback while holding the lock — so a
+                // disconnect can never run concurrently with a residual receive
+                // of the same connection.  Different connections are processed
+                // concurrently (bounded by the worker count).
                 let mut worker_handles = Vec::with_capacity(MAX_CONCURRENT_CALLBACKS);
                 for _ in 0..MAX_CONCURRENT_CALLBACKS {
                     let channel = Arc::clone(&channel);
@@ -242,61 +247,46 @@ impl PluginTcpActor {
                         loop {
                             notify.notified().await;
                             loop {
-                                // P0-E ordering: PEEK the front event's handle and
-                                // acquire its lock BEFORE popping.  This closes the
-                                // race where a second worker could lock a handle
-                                // first and process a LATER event before an earlier
-                                // one — per-handle FIFO is now guaranteed because
-                                // only the lock holder may pop that handle's events.
-                                let handle = channel.peek_handle();
-                                let _handle_lock: Option<Arc<TokioMutex<()>>> =
-                                    handle.map(|h| channel.get_handle_lock(h));
-                                let _per_handle = match _handle_lock.as_ref() {
-                                    Some(l) => Some(l.lock().await),
-                                    None => None,
+                                // Claim the next ready connection that is not
+                                // already in-flight.
+                                let Some((handle, conn)) = channel.claim_handle() else {
+                                    break;
                                 };
-                                // Re-check the front handle after (potentially)
-                                // waiting for the lock.  If it changed to a
-                                // different handle, we hold the wrong lock —
-                                // release and retry rather than pop an event
-                                // under a mismatched serialization (P0-E).
-                                if channel.peek_handle() != handle {
-                                    drop(_per_handle);
+                                // Serialize callback delivery for this connection
+                                // (single consumer).  Held across the callback so
+                                // nothing else touches this handle meanwhile.
+                                let _per_conn = conn.lock.lock().await;
+                                // Pop the front (oldest) event of this connection.
+                                let Some(evt) = channel.pop_event(handle) else {
+                                    drop(_per_conn);
+                                    channel.release_handle(handle);
+                                    continue;
+                                };
+                                let is_disconnect =
+                                    evt.event_type.eq_ignore_ascii_case("tcp:disconnect");
+                                let event_type = evt.event_type;
+                                let payload = evt.payload;
+                                let fut = cb(event_type.clone(), payload);
+                                // Bound each callback so a hung plugin cannot
+                                // pin the worker forever.
+                                if tokio::time::timeout(CALLBACK_TIMEOUT, fut).await.is_err() {
+                                    tracing::warn!(
+                                        event_type,
+                                        "plugin TCP event callback timed out after \
+                                         {CALLBACK_TIMEOUT:?}"
+                                    );
+                                }
+                                if is_disconnect {
+                                    // Remove the mailbox AFTER the disconnect
+                                    // callback completes (P0-E): no residual
+                                    // receive may run concurrently with it, and
+                                    // its byte/count reservations are reclaimed.
+                                    channel.remove_connection(handle);
+                                    drop(_per_conn);
                                     continue;
                                 }
-                                // Drain high-priority (lifecycle) events first,
-                                // then normal (receive) events.  pop() decrements
-                                // total_bytes (P0-C).
-                                let event = channel.pop();
-                                match event {
-                                    Some((type_, payload)) => {
-                                        let event_type = type_;
-                                        // Reclaim the handle lock when a
-                                        // connection closes (P1).
-                                        if event_type.eq_ignore_ascii_case("tcp:disconnect") {
-                                            if let Some(h) = payload
-                                                .get("handle")
-                                                .and_then(|x| x.as_u64())
-                                            {
-                                                channel.remove_handle_lock(h);
-                                            }
-                                        }
-                                        let fut = cb(event_type.clone(), payload);
-                                        // Bound each callback so a hung plugin
-                                        // cannot pin the worker forever.
-                                        if tokio::time::timeout(CALLBACK_TIMEOUT, fut)
-                                            .await
-                                            .is_err()
-                                        {
-                                            tracing::warn!(
-                                                event_type,
-                                                "plugin TCP event callback timed out after \
-                                                 {CALLBACK_TIMEOUT:?}"
-                                            );
-                                        }
-                                    }
-                                    None => break,
-                                }
+                                drop(_per_conn);
+                                channel.release_handle(handle);
                             }
                         }
                     }));
@@ -329,8 +319,11 @@ impl PluginTcpActor {
                                 self.ensure_event_channel(pid);
                                 if self.count_plugin_connections(pid) >= MAX_CONNECTIONS_PER_PLUGIN {
                                     warn!(%conn_handle, %pid, "inbound connection quota exceeded, dropping");
-                                    self.emit_event(pid, "tcp:error",
+                                    let outcome = self.emit_event(pid, "tcp:error",
                                         serde_json::json!({"handle": conn_handle, "plugin_id": pid, "error": format!("connection quota exceeded for {pid}")}));
+                                    if matches!(outcome, PushOutcome::Overflow { .. }) {
+                                        warn!(%conn_handle, %pid, "quota error lifecycle event overflowed");
+                                    }
                                     let _ = plugin_id_tx.send(String::new());
                                     continue;
                                 }
@@ -346,8 +339,16 @@ impl PluginTcpActor {
                                 if let Some(listener) = self.listeners.get_mut(&listener_handle) {
                                     listener.pending_accepts.push(conn_handle);
                                 }
-                                self.emit_event(pid, "tcp:accept",
+                                let outcome = self.emit_event(pid, "tcp:accept",
                                     serde_json::json!({"listener_handle": listener_handle, "conn_handle": conn_handle, "remote_addr": remote_addr, "plugin_id": pid}));
+                                if matches!(outcome, PushOutcome::Overflow { .. }) {
+                                    // The plugin never learned about this
+                                    // connection — close it (P0-F: no silent drop).
+                                    warn!(%conn_handle, %pid, "tcp:accept lifecycle event overflowed; dropping connection");
+                                    self.close_handle(conn_handle);
+                                    let _ = plugin_id_tx.send(String::new());
+                                    continue;
+                                }
                                 let _ = plugin_id_tx.send(pid.clone());
                             } else {
                                 let _ = plugin_id_tx.send(String::new());
@@ -356,8 +357,17 @@ impl PluginTcpActor {
                         PluginTcpInternal::Disconnected { handle, plugin_id, remote_addr } => {
                             // Remote peer closed — clean up connection state.
                             self.close_handle(handle);
-                            self.emit_event(&plugin_id, "tcp:disconnect",
+                            let outcome = self.emit_event(&plugin_id, "tcp:disconnect",
                                 serde_json::json!({"handle": handle, "plugin_id": &plugin_id, "reason": "remote peer closed connection", "remote_addr": remote_addr}));
+                            if matches!(outcome, PushOutcome::Overflow { .. }) {
+                                // The plugin cannot receive the disconnect
+                                // notification — reclaim the mailbox now so its
+                                // reservations do not leak (P0-F).
+                                warn!(%handle, %plugin_id, "tcp:disconnect lifecycle event overflowed; reclaiming mailbox");
+                                if let Some(channel) = self.event_channels.get(&plugin_id) {
+                                    channel.remove_connection(handle);
+                                }
+                            }
                         }
                         PluginTcpInternal::ConnectCompleted { handle, plugin_id, addr, result } => {
                             if let Some((_, reply)) = self.pending_connects.remove(&handle) {
@@ -483,8 +493,14 @@ impl PluginTcpActor {
                     if let Some(tx) = map.get(&handle) {
                         if let Err(e) = tx.try_send(bytes) {
                             warn!(%handle, error = %e, "tcp send failed");
-                            self.emit_event(&plugin_id, "tcp:error",
+                            let outcome = self.emit_event(&plugin_id, "tcp:error",
                                 serde_json::json!({"handle": handle, "plugin_id": &plugin_id, "error": e.to_string()}));
+                            if matches!(outcome, PushOutcome::Overflow { .. }) {
+                                // The plugin cannot receive error notifications —
+                                // force-close the connection (P0-F).
+                                warn!(%handle, "tcp:error lifecycle event overflowed; closing connection");
+                                self.close_handle(handle);
+                            }
                         }
                     } else {
                         warn!(%handle, "tcp send on unknown handle");
@@ -495,6 +511,11 @@ impl PluginTcpActor {
                 PluginTcpCommand::Close { plugin_id, handle } => {
                     if self.check_owner(handle, &plugin_id).is_ok() {
                         self.close_handle(handle);
+                        // Reclaim the connection's mailbox — the plugin closed
+                        // it, so queued events are no longer wanted (P0-E).
+                        if let Some(channel) = self.event_channels.get(&plugin_id) {
+                            channel.remove_connection(handle);
+                        }
                     }
                 }
                 PluginTcpCommand::Accept { plugin_id, listener_handle, reply } => {
@@ -574,6 +595,7 @@ impl PluginTcpActor {
                                 "dropped_lifecycle": channel.dropped_lifecycle(),
                                 "dropped_receive": channel.dropped_receive(),
                                 "dropped_bytes": channel.dropped_bytes(),
+                                "lifecycle_overflow": channel.lifecycle_overflow(),
                                 "pending_read_bytes": prb.get(plugin_id).copied().unwrap_or(0),
                             }),
                         );

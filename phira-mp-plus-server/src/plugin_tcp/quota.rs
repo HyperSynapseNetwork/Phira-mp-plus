@@ -23,8 +23,19 @@ pub(crate) const MAX_PENDING_EVENTS_PER_PLUGIN: usize = 64;
 pub(crate) const MAX_PENDING_EVENT_BYTES_PER_PLUGIN: usize = 4 * 1024 * 1024; // 4 MiB
 
 /// Maximum raw payload bytes for a SINGLE receive event.  A larger chunk is
-/// dropped immediately (per-event bound, P1).
+/// dropped immediately (per-event bound, P1).  Receive events that are merged
+/// into an existing queued receive must also stay within this bound (P0-G).
 pub(crate) const MAX_EVENT_RAW_BYTES: usize = 1024 * 1024; // 1 MiB
+
+/// Maximum total raw payload bytes buffered for a SINGLE connection's pending
+/// events.  Bounds per-connection memory even when the plugin-wide budget is
+/// not exhausted (P0-G).
+pub(crate) const MAX_PENDING_EVENT_BYTES_PER_CONNECTION: usize = 2 * 1024 * 1024; // 2 MiB
+
+/// Reserved slice of the plugin event budget exclusively for lifecycle events
+/// (accept/connect/error/disconnect).  A receive flood cannot consume this
+/// reserve, so lifecycle events always have room (P0-F).
+pub(crate) const MAX_LIFECYCLE_RESERVED_BYTES: usize = 256 * 1024; // 256 KiB
 
 /// Per-connection sustained read rate (bytes/sec) for plugin TCP receive.
 /// A token bucket of this size allows full-burst reads; sustained throughput
