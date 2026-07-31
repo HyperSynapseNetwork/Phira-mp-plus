@@ -174,7 +174,7 @@ pub async fn process_event_through_pipeline(
     worker_wal: &Arc<PersistenceWal>,
     in_flight: &Arc<Mutex<HashSet<uuid::Uuid>>>,
     pending_acks: &mut std::collections::VecDeque<(uuid::Uuid, u32)>,
-) -> bool {
+) -> ProcessOutcome {
     use crate::persistence::pipeline::{
         persist_benchmark_report_if_needed, persist_production_event_if_needed,
         BenchmarkReportStage, PersistenceWriteStage,

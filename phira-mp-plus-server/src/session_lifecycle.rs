@@ -238,6 +238,7 @@ impl User {
                                 crate::persistence::message::PersistenceEvent::UserDisconnect {
                                     user_id: self_.id,
                                     user_name: self_.name.clone(),
+                                    server_instance_id: crate::server_instance::current().to_string(),
                                 },
                             ).await;
                             let _ = self_.server.persistence_worker.enqueue(
@@ -287,6 +288,7 @@ impl User {
                             crate::persistence::message::PersistenceEvent::UserDisconnect {
                                 user_id: self.id,
                                 user_name: self.name.clone(),
+                                server_instance_id: crate::server_instance::current().to_string(),
                             },
                         )
                         .await
@@ -323,6 +325,7 @@ impl User {
                 crate::persistence::message::PersistenceEvent::UserDisconnect {
                     user_id: self.id,
                     user_name: self.name.clone(),
+                    server_instance_id: crate::server_instance::current().to_string(),
                 },
             )
             .await

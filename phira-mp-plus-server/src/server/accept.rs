@@ -171,6 +171,7 @@ impl PlusServer {
                             crate::persistence::message::PersistenceEvent::UserDisconnect {
                                 user_id: session.user.id,
                                 user_name: session.user.name.clone(),
+                                server_instance_id: crate::server_instance::current().to_string(),
                             },
                         )
                         .await
@@ -181,6 +182,7 @@ impl PlusServer {
                         .persistence_worker
                         .enqueue(crate::persistence::message::PersistenceEvent::UserOffline {
                             user_id: session.user.id,
+                            server_instance_id: crate::server_instance::current().to_string(),
                         })
                         .await
                     {

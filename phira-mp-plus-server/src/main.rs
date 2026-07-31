@@ -312,6 +312,7 @@ async fn main() -> Result<()> {
                         phira_mp_plus_server::persistence::message::PersistenceEvent::UserDisconnect {
                             user_id,
                             user_name,
+                            server_instance_id: phira_mp_plus_server::server_instance::current().to_string(),
                         },
                     )
                     .await

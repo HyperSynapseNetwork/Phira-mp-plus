@@ -373,6 +373,8 @@ async fn process_worker_loop(
 
         // Process the event through the persistence pipeline and obtain
         // the outcome that determines whether the sequence gate advances.
+        // Capture kind before `event` is moved into the pipeline.
+        let event_kind = event.kind();
         let outcome = process_event_through_pipeline(
             wal_id,
             event,
@@ -402,7 +404,7 @@ async fn process_worker_loop(
                 // forever (in_flight, not in channel, scanner skips it).
                 in_flight.lock().await.remove(&wal_id);
                 tracing::warn!(
-                    wal_id = %wal_id, kind = %kind,
+                    wal_id = %wal_id, kind = %event_kind,
                     "non-durable outcome — retrying on next scanner interval"
                 );
             }
