@@ -23,6 +23,7 @@ use tokio::sync::{mpsc, oneshot, Mutex, RwLock};
 use tracing::info;
 
 enum WorkerMessage {
+    Event {
         wal_sequence: u64,
         wal_id: uuid::Uuid,
         event: PersistenceEvent,
