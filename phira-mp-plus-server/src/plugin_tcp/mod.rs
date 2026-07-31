@@ -191,12 +191,17 @@ impl PluginEventChannel {
             let mut queue = self.normal.lock().unwrap();
             if queue.len() >= self.max_len {
                 // Merge policy: coalesce with the newest receive for the same
-                // handle instead of dropping, when possible.
-                if !merge_receive(&mut queue, &payload) {
-                    queue.pop_front();
-                    self.dropped_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                    self.dropped_receive.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                // handle instead of dropping, when possible.  On a successful
+                // merge the payload is already incorporated into the queued
+                // event — do NOT push the original payload again (PMP37 P0-G).
+                if merge_receive(&mut queue, &payload) {
+                    drop(queue);
+                    self.notify.notify_one();
+                    return;
                 }
+                queue.pop_front();
+                self.dropped_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                self.dropped_receive.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             }
             queue.push_back((event_type, payload));
         }
