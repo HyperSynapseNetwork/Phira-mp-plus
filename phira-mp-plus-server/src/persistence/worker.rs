@@ -801,6 +801,16 @@ async fn wal_recovery_scanner(
             }
         };
 
+        // Prune stale in_flight entries: any entry that is in in_flight but NOT
+        // in the WAL pending list was ACKed but never removed — this can happen
+        // if the old scanner code registered in_flight after try_send (the race
+        // is now fixed, but existing stale entries need cleanup).
+        {
+            let pending_ids: HashSet<uuid::Uuid> = pending.iter().map(|(id, _, _)| *id).collect();
+            let mut in_flight_set = in_flight.lock().await;
+            in_flight_set.retain(|id| pending_ids.contains(id));
+        }
+
         if pending.is_empty() {
             continue;
         }
@@ -832,6 +842,12 @@ async fn wal_recovery_scanner(
                     break;
                 }
             };
+            // Register in in_flight BEFORE try_send so there is no window where
+            // the worker could process and ACK this entry before it appears in
+            // the in_flight set — if that happened the in_flight entry would be
+            // stale (never removed) and could accumulate as a memory leak.
+            in_flight.lock().await.insert(*wal_id);
+
             let msg = WorkerMessage::Event {
                 wal_sequence: *wal_sequence,
                 wal_id: *wal_id,
@@ -841,9 +857,6 @@ async fn wal_recovery_scanner(
 
             match tx.try_send(msg) {
                 Ok(()) => {
-                    // Event is now queued — add to in_flight so the next scan
-                    // iteration does not re-send it while it is being processed.
-                    in_flight.lock().await.insert(*wal_id);
                     record_wal_recovered(&stats, kind.clone(), summary).await;
                     tracing::debug!(
                         wal_id = %wal_id, kind = %kind,
@@ -851,11 +864,15 @@ async fn wal_recovery_scanner(
                     );
                 }
                 Err(mpsc::error::TrySendError::Full(_)) => {
-                    // Queue is still full — stop scanning and retry next interval.
+                    // Queue is still full — undo in_flight registration and
+                    // retry next interval.  The event is safely in WAL.
+                    in_flight.lock().await.remove(wal_id);
                     break;
                 }
                 Err(mpsc::error::TrySendError::Closed(_)) => {
                     // Worker is shut down — stop scanner entirely.
+                    // Remove from in_flight since the event was never queued.
+                    in_flight.lock().await.remove(wal_id);
                     tracing::info!("WAL recovery scanner stopped (worker channel closed)");
                     return;
                 }
