@@ -72,7 +72,7 @@ impl DbManager {
             "UPDATE mp_users
                  SET name = $2,
                      last_seen_at = $3,
-                     last_disconnected_at = $3,
+                     last_disconnected_at = GREATEST(COALESCE(last_disconnected_at, $3), $3),
                      updated_at = $3
                  WHERE user_id = $1",
         )
@@ -230,8 +230,8 @@ impl DbManager {
                 // (idempotent replay of the same event) rather than a session
                 // generation mismatch / different user reusing this session
                 // (PMP38 P1: full-field verification).
-                let existing: Option<(i32, String, i64)> = sqlx::query_as(
-                    "SELECT user_id, session_id, connected_at FROM mp_user_visits
+                let existing: Option<(i32, String, i64, String)> = sqlx::query_as(
+                    "SELECT user_id, session_id, connected_at, event_id FROM mp_user_visits
                       WHERE event_id = $1 OR session_id = $2
                       LIMIT 1",
                 )
@@ -243,13 +243,15 @@ impl DbManager {
                 .ok()
                 .flatten();
                 match existing {
-                    Some((uid, existing_session, existing_connected_at))
+                    Some((uid, existing_session, existing_connected_at, existing_event_id))
                         if uid == user_id
                             && existing_session == session_id
-                            && existing_connected_at == connected_at =>
+                            && existing_connected_at == connected_at
+                            && existing_event_id == event_id =>
                     {
-                        // Same user, same session, same connection time — true
-                        // idempotent replay.  Do NOT increment login_count.
+                        // Same user, same session, same connection time, same
+                        // event_id — true idempotent replay.  Do NOT increment
+                        // login_count.
                         false
                     }
                     Some(_) => {
@@ -266,13 +268,17 @@ impl DbManager {
                         return false;
                     }
                     None => {
-                        // Conflict reported but no row found (race) — safest to
-                        // treat as idempotent to avoid a login_count bump.
+                        // Conflict reported but no row found — an anomaly
+                        // (concurrent deletion/race).  Fail-closed: roll back
+                        // rather than silently proceeding (P1).
                         tracing::warn!(
                             session_id,
-                            "mp_user_visits conflict but no existing row found; treating as idempotent"
+                            event_id,
+                            "mp_user_visits conflict but no existing row found; rolling back"
                         );
-                        false
+                        record_session_generation_mismatch();
+                        let _ = tx.rollback().await;
+                        return false;
                     }
                 }
             }
