@@ -46,9 +46,24 @@ impl PersistenceWal {
             "clean": clean,
             "max_sequence": max_sequence,
         });
-        tokio::fs::write(marker_path, serde_json::to_vec(&marker).map_err(|e| format!("serialize instance marker: {e}"))?)
+        // Atomic + durable write: write, fsync, then fsync the parent
+        // directory so the marker survives a crash (P0-C).
+        use tokio::io::AsyncWriteExt;
+        let mut file = tokio::fs::File::create(marker_path)
+            .await
+            .map_err(|e| format!("create instance marker {}: {e}", marker_path.display()))?;
+        file.write_all(&serde_json::to_vec(&marker).map_err(|e| format!("serialize instance marker: {e}"))?)
             .await
             .map_err(|e| format!("write instance marker: {e}"))?;
+        file.sync_all()
+            .await
+            .map_err(|e| format!("sync instance marker: {e}"))?;
+        drop(file);
+        if let Some(parent) = marker_path.parent().filter(|p| !p.as_os_str().is_empty()) {
+            if let Ok(dir) = tokio::fs::File::open(parent).await {
+                let _ = dir.sync_all().await;
+            }
+        }
         Ok(())
     }
 
@@ -111,15 +126,12 @@ impl PersistenceWal {
         let wal_exists = tokio::fs::try_exists(&self.path).await.unwrap_or(false);
         if !wal_exists {
             if is_clean {
-                // Compact-to-zero left the marker as clean.  Re-write it as
-                // active so the next accidental deletion IS detected.
-                // Preserve the recorded high-water mark — re-writing with this
-                // instance's (possibly un-restored) counter would regress it.
-                let old_max = marker
-                    .get("max_sequence")
-                    .and_then(|s| s.as_u64())
-                    .unwrap_or(0);
-                self.write_marker_inner(&marker_path, false, old_max).await?;
+                // Compact-to-zero removed the WAL and marked the marker clean.
+                // KEEP it clean — the marker only becomes active once the first
+                // new admission succeeds (mark_marker_active is called from
+                // admit).  Previously this rewrote clean→active eagerly, so two
+                // consecutive idle restarts would make a legitimately-missing
+                // WAL look like accidental deletion (PMP36 P0-03).
                 return Ok(());
             }
             // Also accept markers created before the "clean" field existed
