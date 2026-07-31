@@ -68,17 +68,21 @@ impl CliHandler {
                     let mut total_pending: u64 = 0;
                     let mut total_dropped: u64 = 0;
                     let mut total_bytes: u64 = 0;
-                    if let serde_json::Value::Object(plugins) = &stats {
-                        for (_pid, v) in plugins {
-                            total_pending += v.get("pending_events").and_then(|x| x.as_u64()).unwrap_or(0);
-                            total_dropped += v.get("dropped_events").and_then(|x| x.as_u64()).unwrap_or(0);
-                            total_bytes += v.get("pending_read_bytes").and_then(|x| x.as_u64()).unwrap_or(0);
+                    let plugin_count = match &stats {
+                        serde_json::Value::Object(plugins) => {
+                            for (_pid, v) in plugins {
+                                total_pending += v.get("pending_events").and_then(|x| x.as_u64()).unwrap_or(0);
+                                total_dropped += v.get("dropped_events").and_then(|x| x.as_u64()).unwrap_or(0);
+                                total_bytes += v.get("pending_read_bytes").and_then(|x| x.as_u64()).unwrap_or(0);
+                            }
+                            plugins.len()
                         }
-                    }
+                        _ => 0,
+                    };
                     self.out(format!(
                         "  {} plugin tcp:        plugins={} pending_events={} dropped_events={} pending_read_bytes={}",
                         c::dim("│"),
-                        plugins.len(),
+                        plugin_count,
                         total_pending,
                         total_dropped,
                         total_bytes,
