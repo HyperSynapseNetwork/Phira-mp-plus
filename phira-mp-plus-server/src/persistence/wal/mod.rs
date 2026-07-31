@@ -706,21 +706,39 @@ impl PersistenceWal {
                 // do NOT rewrite it to clean (that would mask the loss); return
                 // Err and mark degraded (PMP38 P0-A).
                 let marker_path = self.path.with_extension("wal.instance");
-                let is_clean = tokio::fs::read_to_string(&marker_path)
-                    .await
-                    .ok()
-                    .and_then(|c| serde_json::from_str::<serde_json::Value>(&c).ok())
-                    .and_then(|v| v.get("clean").and_then(|x| x.as_bool()))
-                    .unwrap_or(true);
-                if !is_clean {
-                    self.set_degraded("compact:missing-wal");
-                    return Err(format!(
-                        "WAL instance marker is active but WAL file {} is missing \
-                         (abnormal loss) during compact",
-                        self.path.display()
-                    ));
+                let is_clean = match tokio::fs::read_to_string(&marker_path).await {
+                    Ok(c) => serde_json::from_str::<serde_json::Value>(&c)
+                        .ok()
+                        .and_then(|v| v.get("clean").and_then(|x| x.as_bool())),
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                        // No marker at all — never-initialized/fresh instance.
+                        // With no WAL this is the first-boot state: clean.
+                        return Ok(0);
+                    }
+                    Err(e) => {
+                        // Marker exists but is unreadable — fail-closed (P0-G):
+                        // cannot confirm the WAL absence is intentional.
+                        self.set_degraded("compact:marker-unreadable");
+                        return Err(format!(
+                            "WAL marker {} is unreadable during compact: {e}",
+                            marker_path.display()
+                        ));
+                    }
+                };
+                match is_clean {
+                    // Marker exists and is clean.
+                    Some(true) => return Ok(0),
+                    // Marker active, or present but corrupt/parsing failed —
+                    // abnormal — fail-closed instead of assuming clean (P0-G).
+                    _ => {
+                        self.set_degraded("compact:missing-wal");
+                        return Err(format!(
+                            "WAL marker is not clean ({is_clean:?}) but WAL file {} is \
+                             missing (abnormal loss) during compact",
+                            self.path.display()
+                        ));
+                    }
                 }
-                return Ok(0);
             }
             Err(e) => return Err(format!("read WAL for compact {}: {e}", self.path.display())),
         };
