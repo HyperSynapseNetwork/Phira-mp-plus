@@ -259,20 +259,25 @@ impl PluginTcpActor {
                                         // Serialize per handle so events for the
                                         // same connection stay in stream order
                                         // even across the fixed workers (P0-G).
+                                        // Keep the per-handle Arc alive in an
+                                        // outer binding so the async guard's
+                                        // borrow is valid for its lifetime.
+                                        let mut _handle_lock: Option<Arc<TokioMutex<()>>> =
+                                            None;
                                         let handle = payload
                                             .get("handle")
                                             .and_then(|h| h.as_u64());
-                                        let _per_handle = match handle {
-                                            Some(h) => {
-                                                let lock = handle_locks
-                                                    .lock()
-                                                    .unwrap()
-                                                    .entry(h)
-                                                    .or_insert_with(|| Arc::new(TokioMutex::new(())))
-                                                    .clone();
-                                                Some(lock.lock().await)
-                                            }
-                                            None => None,
+                                        let _per_handle = if let Some(h) = handle {
+                                            let handle_lock = handle_locks
+                                                .lock()
+                                                .unwrap()
+                                                .entry(h)
+                                                .or_insert_with(|| Arc::new(TokioMutex::new(())))
+                                                .clone();
+                                            _handle_lock = Some(handle_lock.clone());
+                                            Some(handle_lock.lock().await)
+                                        } else {
+                                            None
                                         };
                                         let fut = cb(event_type.clone(), payload);
                                         // Bound each callback so a hung plugin
