@@ -247,7 +247,10 @@ impl User {
                             }
                             drop(users);
                             drop(registration_guard);
-                            let sid = self_.current_session_id().await;
+                            // Use the fixed session id captured at disconnect
+                            // entry — re-reading the weak ref could return a NEW
+                            // session's id after a reconnect (P0-C).
+                            let sid = disconnected_session_id.to_string();
                             let _ = self_.server.persistence_worker.enqueue(
                                 crate::persistence::message::PersistenceEvent::UserDisconnect {
                                     user_id: self_.id,
@@ -297,7 +300,7 @@ impl User {
                     self.server
                         .publish_user_disconnected(self.id, self.name.clone())
                         .await;
-                    let sid = self.current_session_id().await;
+                    let sid = disconnected_session_id.to_string();
                     if let Err(e) = self
                         .server
                         .persistence_worker
@@ -345,7 +348,7 @@ impl User {
                     user_id: self.id,
                     user_name: self.name.clone(),
                     server_instance_id: crate::server_instance::current().to_string(),
-                    session_id: self.current_session_id().await,
+                    session_id: disconnected_session_id.to_string(),
                 },
             )
             .await
@@ -353,11 +356,9 @@ impl User {
             warn!(user = self.id, kind = %e.kind(), "UserDisconnect enqueue failed after dangle");
         }
 
-        // Capture the session id at disconnect ENTRY, before the session weak
-        // ref can die during the grace window.  The grace closure uses this
-        // fixed id so a stale offline event can never match a NEWER session
-        // (P0-E: strict session generation).
-        let disconnected_session_id = self.current_session_id().await;
+        // The grace closure uses the fixed `disconnected_session_id` param
+        // captured at disconnect entry, so a stale offline event can never
+        // match a NEWER session after a reconnect (P0-C).
         let weak_self = Arc::downgrade(&self);
         let grace_secs = self.server.config.idle.dangle_grace_secs.max(5);
         crate::supervisor_actor::spawn_named(format!("dangle-grace-{}", self.id), async move {
@@ -421,7 +422,7 @@ impl User {
                 .enqueue(crate::persistence::message::PersistenceEvent::UserOffline {
                     user_id: self_.id,
                     server_instance_id: crate::server_instance::current().to_string(),
-                    session_id: disconnected_session_id.clone(),
+                    session_id: disconnected_session_id.to_string(),
                 })
                 .await
             {
