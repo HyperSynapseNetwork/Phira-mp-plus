@@ -445,7 +445,42 @@ async fn process_worker_loop(
                 // Terminal outcome (DatabaseCommitted, DurableDeadLetterStored,
                 // or PendingWalAck).  The sequence gate can advance.
                 if wal_sequence != 0 {
-                    next_expected_sequence = wal_sequence + 1;
+                    let base = wal_sequence + 1;
+                    // P0-B: allow legitimate ACK sequence gaps.  After a
+                    // compaction + restart the WAL may lack an intermediate
+                    // sequence that was ACKed and removed.  If the buffer holds
+                    // a HIGHER sequence and `base` is not itself buffered, check
+                    // whether `base` is a confirmed gap (absent from WAL
+                    // pending) and skip it — otherwise the gate waits forever
+                    // on a sequence that will never appear and later events are
+                    // stuck in the buffer.
+                    if !buffer.contains_key(&base) {
+                        if let Some(&next_in_buffer) =
+                            buffer.range(base..).next().map(|(k, _)| k)
+                        {
+                            let pending: HashSet<u64> =
+                                match worker_wal.list_pending().await {
+                                    Ok(p) => p.iter().map(|(_, _, s)| *s).collect(),
+                                    Err(_) => HashSet::new(),
+                                };
+                            let mut expected = base;
+                            // Skip sequences that are neither buffered nor
+                            // pending in the WAL (i.e. ACKed/compacted gaps).
+                            // Pending WalOnly sequences stop the skip — they
+                            // will arrive via the scanner.
+                            while expected < next_in_buffer
+                                && !buffer.contains_key(&expected)
+                                && !pending.contains(&expected)
+                            {
+                                expected += 1;
+                            }
+                            next_expected_sequence = expected;
+                        } else {
+                            next_expected_sequence = base;
+                        }
+                    } else {
+                        next_expected_sequence = base;
+                    }
                 }
                 // If this was a replay-derived event that has now reached a
                 // durable terminal state, clear it from the replay pending set.
