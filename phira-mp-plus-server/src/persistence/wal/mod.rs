@@ -306,6 +306,30 @@ impl PersistenceWal {
         Ok(())
     }
 
+    /// Append a trailing newline if the WAL does not end with one.  Called
+    /// during replay when a complete valid frame is found without a trailing
+    /// newline (crash between write and newline).  Without normalization the
+    /// next append would write immediately after the frame's `}`, merging two
+    /// frames into one corrupt line (PMP38 P0-B).  Caller MUST hold `io_gate`.
+    async fn append_missing_newline(&self) -> Result<(), String> {
+        let mut file = tokio::fs::OpenOptions::new()
+            .append(true)
+            .open(&self.path)
+            .await
+            .map_err(|e| format!("open WAL {}: {e}", self.path.display()))?;
+        file.write_all(b"\n")
+            .await
+            .map_err(|e| format!("append newline to WAL {}: {e}", self.path.display()))?;
+        file.flush()
+            .await
+            .map_err(|e| format!("flush WAL {}: {e}", self.path.display()))?;
+        file.sync_data()
+            .await
+            .map_err(|e| format!("sync WAL {}: {e}", self.path.display()))?;
+        self.total_bytes.fetch_add(1, Ordering::Release);
+        Ok(())
+    }
+
     /// Return the current admission sequence counter value.
     /// The next admit will receive this value (post-increment).
     pub fn current_sequence(&self) -> u64 {
@@ -407,8 +431,11 @@ impl PersistenceWal {
                 if !last.is_empty() {
                     match serde_json::from_slice::<WalFrame>(last) {
                         Ok(frame) if frame.verify().is_ok() && frame.ver <= WAL_FORMAT_VERSION => {
-                            // Complete valid frame without trailing newline — keep it.
+                            // Complete valid frame without trailing newline — keep it
+                            // and normalize by appending the missing newline so the
+                            // next append does not corrupt it (PMP38 P0-B).
                             lines.push(last);
+                            self.append_missing_newline().await?;
                         }
                         _ => {
                             // Genuinely truncated or corrupt — discard.
