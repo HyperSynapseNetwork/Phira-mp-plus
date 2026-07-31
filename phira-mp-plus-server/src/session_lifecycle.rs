@@ -345,6 +345,7 @@ impl User {
                     user_id: self.id,
                     user_name: self.name.clone(),
                     server_instance_id: crate::server_instance::current().to_string(),
+                    session_id: self.current_session_id().await,
                 },
             )
             .await
