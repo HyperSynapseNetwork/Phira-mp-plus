@@ -15,6 +15,7 @@
 use crate::session::{CommandOrigin, Session, SessionCategory, User};
 use phira_mp_common::{RoomId, ServerCommand};
 use std::sync::Arc;
+use std::time::Instant;
 use tokio::sync::mpsc;
 
 /// Channel capacity for each per-session mailbox.
@@ -67,7 +68,7 @@ pub(crate) fn init_session_mailbox(session: &Arc<Session>) -> mpsc::Sender<Sessi
                         Some(ServerCommand::LockRoom(Err(
                             "session command timed out".to_string(),
                         ))),
-                        handle_lock(user, lock),
+                        handle_lock(user, lock, meta.deadline),
                     )
                     .await;
                 }
@@ -79,7 +80,7 @@ pub(crate) fn init_session_mailbox(session: &Arc<Session>) -> mpsc::Sender<Sessi
                         Some(ServerCommand::CycleRoom(Err(
                             "session command timed out".to_string(),
                         ))),
-                        handle_cycle(user, cycle),
+                        handle_cycle(user, cycle, meta.deadline),
                     )
                     .await;
                 }
@@ -91,7 +92,7 @@ pub(crate) fn init_session_mailbox(session: &Arc<Session>) -> mpsc::Sender<Sessi
                         Some(ServerCommand::LeaveRoom(Err(
                             "session command timed out".to_string(),
                         ))),
-                        handle_leave(user, category),
+                        handle_leave(user, category, meta.deadline),
                     )
                     .await;
                 }
@@ -103,7 +104,7 @@ pub(crate) fn init_session_mailbox(session: &Arc<Session>) -> mpsc::Sender<Sessi
                         Some(ServerCommand::CreateRoom(Err(
                             "session command timed out".to_string(),
                         ))),
-                        handle_create(user, id),
+                        handle_create(user, id, meta.origin.clone()),
                     )
                     .await;
                 }
@@ -135,7 +136,7 @@ pub(crate) fn init_session_mailbox(session: &Arc<Session>) -> mpsc::Sender<Sessi
                         Some(ServerCommand::SelectChart(Err(
                             "session command timed out".to_string(),
                         ))),
-                        handle_select_chart(user, id),
+                        handle_select_chart(user, id, meta.deadline),
                     )
                     .await;
                 }
@@ -183,7 +184,7 @@ pub(crate) fn init_session_mailbox(session: &Arc<Session>) -> mpsc::Sender<Sessi
                         Some(ServerCommand::Played(Err(
                             "session command timed out".to_string(),
                         ))),
-                        handle_played(user, id),
+                        handle_played(user, id, meta.deadline),
                     )
                     .await;
                 }
@@ -195,7 +196,7 @@ pub(crate) fn init_session_mailbox(session: &Arc<Session>) -> mpsc::Sender<Sessi
                         Some(ServerCommand::Abort(Err(
                             "session command timed out".to_string(),
                         ))),
-                        handle_abort(user),
+                        handle_abort(user, meta.deadline),
                     )
                     .await;
                 }
@@ -512,9 +513,9 @@ pub(crate) async fn route_chat(
 
 // ── Lock / Cycle ──────────────────────────────────────────────────
 
-async fn handle_lock(user: Arc<User>, lock: bool) -> Option<ServerCommand> {
+async fn handle_lock(user: Arc<User>, lock: bool, deadline: Instant) -> Option<ServerCommand> {
     Some(ServerCommand::LockRoom(
-        crate::session_room::lock_room(user, lock)
+        crate::session_room::lock_room(user, lock, deadline)
             .await
             .map_err(|e| e.to_string()),
     ))
@@ -536,9 +537,9 @@ pub(crate) async fn route_lock(user: Arc<User>, lock: bool) -> Option<ServerComm
     .await
 }
 
-async fn handle_cycle(user: Arc<User>, cycle: bool) -> Option<ServerCommand> {
+async fn handle_cycle(user: Arc<User>, cycle: bool, deadline: Instant) -> Option<ServerCommand> {
     Some(ServerCommand::CycleRoom(
-        crate::session_room::cycle_room(user, cycle)
+        crate::session_room::cycle_room(user, cycle, deadline)
             .await
             .map_err(|e| e.to_string()),
     ))
@@ -562,9 +563,13 @@ pub(crate) async fn route_cycle(user: Arc<User>, cycle: bool) -> Option<ServerCo
 
 // ── Leave ─────────────────────────────────────────────────────────
 
-async fn handle_leave(user: Arc<User>, category: SessionCategory) -> Option<ServerCommand> {
+async fn handle_leave(
+    user: Arc<User>,
+    category: SessionCategory,
+    deadline: Instant,
+) -> Option<ServerCommand> {
     Some(ServerCommand::LeaveRoom(
-        crate::session_room::leave_room(user, category)
+        crate::session_room::leave_room(user, category, deadline)
             .await
             .map_err(|e| e.to_string()),
     ))
@@ -591,9 +596,9 @@ pub(crate) async fn route_leave(
 
 // ── Create / Join ─────────────────────────────────────────────────
 
-async fn handle_create(user: Arc<User>, id: RoomId) -> Option<ServerCommand> {
+async fn handle_create(user: Arc<User>, id: RoomId, origin: CommandOrigin) -> Option<ServerCommand> {
     Some(ServerCommand::CreateRoom(
-        crate::session_room::create_room(user, id)
+        crate::session_room::create_room(user, id, &origin)
             .await
             .map_err(|e| e.to_string()),
     ))
@@ -662,9 +667,9 @@ pub(crate) async fn route_join(
 
 // ── SelectChart ───────────────────────────────────────────────────
 
-async fn handle_select_chart(user: Arc<User>, id: i32) -> Option<ServerCommand> {
+async fn handle_select_chart(user: Arc<User>, id: i32, deadline: Instant) -> Option<ServerCommand> {
     Some(ServerCommand::SelectChart(
-        crate::session_room::select_chart(user, id)
+        crate::session_room::select_chart(user, id, deadline)
             .await
             .map_err(|e| e.to_string()),
     ))
@@ -767,9 +772,9 @@ pub(crate) async fn route_cancel_ready(user: Arc<User>) -> Option<ServerCommand>
 
 // ── Played / Abort ────────────────────────────────────────────────
 
-async fn handle_played(user: Arc<User>, id: i32) -> Option<ServerCommand> {
+async fn handle_played(user: Arc<User>, id: i32, deadline: Instant) -> Option<ServerCommand> {
     Some(ServerCommand::Played(
-        crate::session_room::played(user, id)
+        crate::session_room::played(user, id, deadline)
             .await
             .map_err(|e| e.to_string()),
     ))
@@ -791,9 +796,9 @@ pub(crate) async fn route_played(user: Arc<User>, id: i32) -> Option<ServerComma
     .await
 }
 
-async fn handle_abort(user: Arc<User>) -> Option<ServerCommand> {
+async fn handle_abort(user: Arc<User>, deadline: Instant) -> Option<ServerCommand> {
     Some(ServerCommand::Abort(
-        crate::session_room::abort(user)
+        crate::session_room::abort(user, deadline)
             .await
             .map_err(|e| e.to_string()),
     ))

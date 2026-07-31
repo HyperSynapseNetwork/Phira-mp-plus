@@ -148,20 +148,42 @@ impl PlusServerState {
     /// mailbox commands. The AddUser handler assigns host to the first
     /// non-monitor joiner. This function serves as an additional safety net
     /// for paths (like force_move) that bypass AddUser.
+    ///
+    /// P0-I: `announce` controls whether a first-host assignment broadcasts
+    /// `ChangeHost(true)` inline (via the actor SetHost handler). The JOIN path
+    /// passes `announce=false`: the actor AddUser already promoted the joiner,
+    /// so this returns whether the user is the host WITHOUT calling set_host —
+    /// the caller (join_room) defers the `ChangeHost(true)` packet to the
+    /// post-response compat queue so it can never arrive before JoinRoom(Ok)
+    /// or reach a new session after a reconnect. Non-join paths (leave_room
+    /// host reassign, force_move) pass `announce=true` and keep the immediate
+    /// set_host broadcast.
     pub async fn assign_room_host_if_missing(
         &self,
         room: &Arc<crate::room::Room>,
         user: &Arc<crate::session::User>,
         monitor: bool,
-        _announce: bool,
+        announce: bool,
     ) -> bool {
         if monitor {
             return false;
         }
-        // Check if room already has a host.
+        // Check if room already has a host. When it does, report whether THIS
+        // user is the current host (used by the join path to decide whether to
+        // schedule the deferred ChangeHost(true)).
         let control = room.control_snapshot();
-        if control.host_id.is_some() || control.system_host {
+        if control.host_id.is_some() {
+            return control.host_id == Some(user.id);
+        }
+        if control.system_host {
             return false;
+        }
+        if !announce {
+            // P0-I: the actor AddUser promotes the first non-monitor joiner
+            // without broadcasting. Never call set_host here — the inline
+            // ChangeHost(true) would arrive before JoinRoom(Ok). Report the
+            // promoted state so the caller schedules the compensation instead.
+            return control.host_id == Some(user.id);
         }
         tracing::info!(
             user = user.id, room = %room.id,
@@ -468,7 +490,7 @@ impl PlusServerState {
         }
 
         // Phase 5: Assign host if missing.
-        self.assign_room_host_if_missing(&target_room, &user, monitor, false)
+        self.assign_room_host_if_missing(&target_room, &user, monitor, true)
             .await;
         self.refresh_room_display_metadata_background(&target_room);
 

@@ -270,13 +270,14 @@ impl User {
                                 // Abort the player's game if room still exists
                                 if let Some(server) = room.server.upgrade() {
                                     let _ = server.room_commands.abort_round(
-                                        &server, &room_id.to_string(), self_.id,
+                                        &server, &room_id.to_string(), self_.id, None,
                                     ).await;
                                 }
                                 let _ = self_.server.room_commands.remove_user(
                                     &self_.server,
                                     &room_id.to_string(),
                                     self_.id,
+                                    None,
                                 ).await;
                             }
                             let mut users = self_.server.users.write().await;
@@ -435,6 +436,7 @@ impl User {
                     &self_.server,
                     &room_id.to_string(),
                     self_.id,
+                    None,
                 ).await;
                 if !was_monitor {
                     room_leave_event = Some(RoomEvent::LeaveRoom {

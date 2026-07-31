@@ -79,6 +79,10 @@ pub(crate) struct ProtocolTrace {
     /// Commands that arrived at the actor after their absolute deadline and
     /// were refused execution. MUST be 0 under normal operation.
     pub late_commit: AtomicU64,
+    /// Post-response compat-queue items dropped because their origin session
+    /// became stale (reconnect bumped the generation) or was torn down. MUST be
+    /// 0 under normal operation (P1 observability).
+    pub compat_queue_drop: AtomicU64,
     /// Server-side response latency histogram (ms buckets).
     pub latency_histogram: LatencyHistogram,
 }
@@ -89,6 +93,7 @@ pub(crate) static PROTOCOL_TRACE: ProtocolTrace = ProtocolTrace {
     response_flushed: AtomicU64::new(0),
     silent_response_paths: AtomicU64::new(0),
     late_commit: AtomicU64::new(0),
+    compat_queue_drop: AtomicU64::new(0),
     latency_histogram: LatencyHistogram::new(),
 };
 

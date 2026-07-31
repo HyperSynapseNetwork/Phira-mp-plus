@@ -942,8 +942,19 @@ impl Session {
                                     warn!("command rate limited for user {}", user.id);
                                     let critical = matches!(
                                         &cmd,
-                                        ClientCommand::CreateRoom { .. }
+                                        ClientCommand::Authenticate { .. }
+                                            | ClientCommand::CreateRoom { .. }
                                             | ClientCommand::JoinRoom { .. }
+                                            | ClientCommand::RequestStart
+                                            | ClientCommand::Ready
+                                            | ClientCommand::CancelReady
+                                            | ClientCommand::LeaveRoom
+                                            | ClientCommand::Chat { .. }
+                                            | ClientCommand::LockRoom { .. }
+                                            | ClientCommand::CycleRoom { .. }
+                                            | ClientCommand::SelectChart { .. }
+                                            | ClientCommand::Played { .. }
+                                            | ClientCommand::Abort
                                     );
                                     let resp =
                                         crate::official_client_compat::response::official_error_response(
@@ -977,7 +988,10 @@ impl Session {
                         // JoinRoom(Ok) is delivered internally by join_room; a
                         // None result for JoinRoom is legitimate, not a silent drop.
                         let is_join_room = matches!(cmd, ClientCommand::JoinRoom { .. });
-                        // P0-E: critical responses must be flushed to the socket.
+                        // P0-E/P0-G: every request-type response must be proven
+                        // flushed to the socket (bounded send_and_flush), not
+                        // merely queued — the official client waits for all of
+                        // these (audit §12).
                         let critical = matches!(
                             &cmd,
                             ClientCommand::Authenticate { .. }
@@ -987,6 +1001,12 @@ impl Session {
                                 | ClientCommand::Ready
                                 | ClientCommand::CancelReady
                                 | ClientCommand::LeaveRoom
+                                | ClientCommand::Chat { .. }
+                                | ClientCommand::LockRoom { .. }
+                                | ClientCommand::CycleRoom { .. }
+                                | ClientCommand::SelectChart { .. }
+                                | ClientCommand::Played { .. }
+                                | ClientCommand::Abort
                         );
                         let creating_player = matches!(cmd, ClientCommand::CreateRoom { .. })
                             .then(|| Arc::clone(&user));
@@ -1034,10 +1054,11 @@ impl Session {
                                 }
                             }
                             // NOTE: Do NOT send ChangeHost(true) after JoinRoom(Ok) here.
-                            // assign_room_host_if_missing() in join_room already broadcasts
-                            // ChangeHost through the room mailbox SetHost handler. Sending it
-                            // again here duplicates the message and can arrive out of order
-                            // (before JoinRoom(Ok)), confusing the client.
+                            // For the join-first-host case, join_room defers the
+                            // ChangeHost(true) packet to the post-response compat queue
+                            // (bound to the origin, after JoinRoom(Ok) is flushed). Sending
+                            // it here would duplicate the message and can arrive out of
+                            // order (before JoinRoom(Ok)), confusing the client.
                         } else if no_response.is_none() && !is_join_room {
                             // A None result that is neither NoResponseExpected nor
                             // JoinRoom's internally-delivered response is a silent
@@ -1134,9 +1155,10 @@ impl Session {
     }
 
     /// Send a command and block until the packet has been flushed to the socket
-    /// (P0-E/P0-F). Critical responses — Authenticate, CreateRoom, JoinRoom,
-    /// RequestStart, Ready, CancelReady, LeaveRoom — must be proven written to
-    /// the wire, not merely queued. A flush failure closes the transport and
+    /// (P0-E/P0-F). Every request-type response — Authenticate, CreateRoom,
+    /// JoinRoom, RequestStart, Ready, CancelReady, LeaveRoom, Chat, LockRoom,
+    /// CycleRoom, SelectChart, Played, Abort — must be proven written to the
+    /// wire, not merely queued (P0-G). A flush failure closes the transport and
     /// enters the existing lost-connection path.
     pub async fn send_and_flush(&self, cmd: ServerCommand) -> Result<()> {
         self.gate

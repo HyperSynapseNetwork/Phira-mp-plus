@@ -43,7 +43,7 @@ use phira_mp_common::{
 use std::{
     collections::HashMap,
     sync::{atomic::Ordering, Arc},
-    time::{Duration, Instant},
+    time::Instant,
 };
 use tracing::{debug, debug_span, info, trace, warn, Instrument};
 
@@ -172,7 +172,7 @@ pub(crate) async fn build_room_data(room: &crate::room::Room) -> phira_mp_common
     }
 }
 
-pub async fn create_room(user: Arc<User>, id: RoomId) -> Result<()> {
+pub async fn create_room(user: Arc<User>, id: RoomId, origin: &CommandOrigin) -> Result<()> {
     let id_text = id.to_string();
     if let Some(command) = id_text.strip_prefix('_') {
         if user.server.is_admin_id(user.id).await {
@@ -265,44 +265,58 @@ pub async fn create_room(user: Arc<User>, id: RoomId) -> Result<()> {
     // assign_room_host_if_missing (for non-monitors) in join_room.
     // CreateRoom(Ok) establishes client room state; do not emit a room event to
     // the creator before that response.
-    user.server
-        .publish_room_event(RoomEvent::CreateRoom {
-            room: id.clone(),
-            data: build_room_data(&room).await,
-        })
-        .await;
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or(0);
-    user.server
-        .record_user_room_history(user.id, id.to_string(), room_uuid.to_string(), now)
-        .await;
+    drop(room_guard);
 
-    info!(user = user.id, room = id.to_string(), room_uuid = %room_uuid, "user create room");
-    info!("房间 '{}' 唯一标识: {}", id, room_uuid);
-
-    user.server
-        .dispatch_plugin_event(PluginEvent::RoomCreate {
-            user_id: user.id,
-            room_id: id.to_string(),
-        })
-        .await;
-
-    user.server
-        .publish_runtime_event(crate::event_bus::MpEvent::RoomCreated {
-            room_id: id.clone(),
-            room_uuid,
-        });
-
-    // Pre-create the mailbox so the first join doesn't pay creation latency.
-    {
-        let id_str = id.to_string();
-        let state = Arc::clone(&user.server);
-        tokio::spawn(async move {
-            let _ = state.room_commands.set_live(&state, &id_str, true).await;
-        });
-    }
+    // P0-H: the official CreateRoom(Ok) + Message::CreateRoom sequence must not
+    // wait on PMP extension work. Room-event persistence, room history, plugin
+    // events, runtime telemetry and mailbox pre-creation are all moved to a
+    // response-after task bound to the create origin. The authoritative commit
+    // (Room::new + registry insert + user.room) above stays synchronous because
+    // the response and subsequent client commands depend on it.
+    let origin = origin.clone();
+    let server = Arc::clone(&user.server);
+    let room_id = id.clone();
+    let room_arc = Arc::clone(&room);
+    let uid = user.id;
+    crate::supervisor_actor::spawn_named(format!("create-room-post-{uid}"), async move {
+        if !origin.is_current().await {
+            tracing::debug!(
+                user = uid,
+                "post-create extension work runs for a superseded session"
+            );
+        }
+        server
+            .publish_room_event(RoomEvent::CreateRoom {
+                room: room_id.clone(),
+                data: build_room_data(&room_arc).await,
+            })
+            .await;
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as i64)
+            .unwrap_or(0);
+        server
+            .record_user_room_history(uid, room_id.to_string(), room_uuid.to_string(), now)
+            .await;
+        tracing::info!(user = uid, room = room_id.to_string(), room_uuid = %room_uuid, "user create room");
+        tracing::info!("房间 '{}' 唯一标识: {}", room_id, room_uuid);
+        server
+            .dispatch_plugin_event(PluginEvent::RoomCreate {
+                user_id: uid,
+                room_id: room_id.to_string(),
+            })
+            .await;
+        server
+            .publish_runtime_event(crate::event_bus::MpEvent::RoomCreated {
+                room_id: room_id.clone(),
+                room_uuid,
+            });
+        // Pre-create the mailbox so the first join doesn't pay creation latency.
+        let _ = server
+            .room_commands
+            .set_live(&server, &room_id.to_string(), true)
+            .await;
+    });
 
     Ok(())
 }
@@ -316,16 +330,28 @@ pub async fn join_room(
     received_at: Instant,
     origin: &CommandOrigin,
 ) -> Result<()> {
-    // TODO(A3): verify `origin.is_current()` before the AddUser commit point so
-    // a superseded session can never mutate authoritative room state.
+    // P0-E: a late Join must never mutate authoritative room state. Every
+    // pre-check step re-tests the absolute deadline; an expired deadline bails
+    // with a deterministic error response (no commit, no connection close).
+    macro_rules! check_deadline {
+        () => {
+            if crate::official_client_compat::timing::deadline_expired(deadline) {
+                bail!("join request timed out");
+            }
+        };
+    }
+    check_deadline!();
+
     let mut room_guard = user.room.write().await;
     if room_guard.is_some() {
         bail!("{}", tl!("already-in-room"));
     }
+    check_deadline!();
     let room = user.server.rooms.read().await.get(&id).map(Arc::clone);
     let Some(room) = room else {
         bail!("{}", tl!("room-not-found"))
     };
+    check_deadline!();
     // Compute effective_monitor from category to prevent Normal/Console sessions
     // from bypassing lock/ban/game-state gates by sending monitor=true.
     let effective_monitor = match category {
@@ -335,6 +361,8 @@ pub async fn join_room(
     if monitor && !effective_monitor {
         bail!("monitor access requires dedicated monitor authentication");
     }
+    check_deadline!();
+
     // Monitors bypass player-only lock/ban/game-state gates.
     // No whitelist check — authentication at connection time is sufficient.
     let mut late_join = false;
@@ -345,6 +373,7 @@ pub async fn join_room(
         if control.locked {
             bail!("{}", tl!("join-room-locked"));
         }
+        check_deadline!();
         if user
             .server
             .ban_manager
@@ -353,6 +382,7 @@ pub async fn join_room(
         {
             bail!("{}", tl!("join-room-banned"));
         }
+        check_deadline!();
         // Read room lifecycle from actor snapshot for game state check.
         let stripped = if let Some(server) = room.server.upgrade() {
             server.room_snapshot(&room.id.to_string())
@@ -378,7 +408,7 @@ pub async fn join_room(
                     need_abort = true;
                 } else {
                     *pending = Some(id.to_string());
-                    let _ = user
+                    let _ = origin
                         .try_send(ServerCommand::Message(Message::Chat {
                             user: 0,
                             content: tl!("join-game-ongoing-warning"),
@@ -388,15 +418,37 @@ pub async fn join_room(
                 }
             }
         }
+        check_deadline!();
         if need_abort {
-            // Route the abort through the actor mailbox.
+            // Route the abort through the actor mailbox (best-effort; the abort
+            // of a stale game must not block the join or outlive its deadline).
             user.server
                 .room_commands
-                .abort_round(&user.server, &room.id.to_string(), user.id)
+                .abort_round(&user.server, &room.id.to_string(), user.id, Some(deadline))
                 .await
                 .ok();
         }
     }
+    check_deadline!();
+
+    // P0-E: verify the origin is still current before the AddUser commit point.
+    // A superseded session (reconnect bumped the generation) must never mutate
+    // authoritative room state — bail with a deterministic error.
+    if !origin.is_current().await {
+        bail!("stale session origin; refusing to join");
+    }
+    check_deadline!();
+
+    // P0-E: room-full pre-check BEFORE the actor AddUser so a full room bails
+    // deterministically instead of running actor AddUser + registry rollback.
+    if !effective_monitor {
+        let max_users = room.control_snapshot().max_users;
+        if room.users().await.len() >= max_users {
+            bail!("{}", tl!("join-room-full"));
+        }
+    }
+    check_deadline!();
+
     // Route user/monitor add through mailbox for actor_state.members tracking.
     // This is the authoritative source — Room.users is derived for broadcast only.
     user.server
@@ -404,15 +456,27 @@ pub async fn join_room(
         .add_user(&user.server, &id.to_string(), user.id, &user.name, monitor, deadline)
         .await
         .map_err(|e| anyhow!("{}", tr(e)))?;
+    // NOTE: after the actor AddUser commits, the deadline is no longer a
+    // pre-check. A late flush below is handled by the remaining-budget timeout
+    // → close_uncertain + bail (P0-D uncertain-after-commit), never a plain
+    // bail that would leave the user committed but the client misled.
+
     // Also add to Room connection mapping (immediate, direct).
     if !room.add_user(Arc::downgrade(&user), monitor).await {
-        // Rollback: remove user from actor members since connection registry failed.
-        let _ = user.server
-            .room_commands
-            .remove_user(&user.server, &id.to_string(), user.id)
-            .await;
-        bail!("{}", tl!("join-room-full"));
+        // P0-E/P0-D: the actor AddUser committed but the direct connection
+        // registry rejected the user — the outcome is UNCERTAIN. Do NOT run a
+        // compensating remove_user (the actor member is authoritative and the
+        // official join broadcast never went out); close the origin transport
+        // and bail so the reconnect Authenticate restores authoritative state.
+        warn!(
+            user = user.id,
+            room = %id,
+            "room.add_user failed after actor AddUser; closing origin transport"
+        );
+        origin.close_uncertain().await;
+        bail!("failed to register user connection");
     }
+
     info!(
         user = user.id,
         room = id.to_string(),
@@ -420,34 +484,21 @@ pub async fn join_room(
         "user join room"
     );
     user.monitor.store(monitor, Ordering::SeqCst);
-    // Route SetLive(true) and set_display_name through mailbox — fire-and-forget
-    // so mailbox creation latency doesn't block the JoinRoom response.
-    {
-        let room_id = id.to_string();
-        let user_name = user.name.clone();
-        let uid = user.id;
-        let server = Arc::clone(&user.server);
-        tokio::spawn(async move {
-            let _ = server.room_commands.set_live(&server, &room_id, true).await;
-            let _ = server.room_commands.set_display_name(&server, &room_id, uid, &user_name).await;
-        });
-    }
-    user.server
+
+    // P0-I: the actor AddUser promotes the first non-monitor joiner to host
+    // WITHOUT broadcasting ChangeHost(true) (§15). Detect the promotion here so
+    // the ChangeHost(true) packet can be deferred to the post-response compat
+    // queue — never delivered before JoinRoom(Ok) and never to a new session.
+    let became_host = user
+        .server
         .assign_room_host_if_missing(&room, &user, monitor, false)
         .await;
+
     *room_guard = Some(Arc::clone(&room));
     // 清除进行中游戏加入确认标记
     user.join_pending_game.write().await.take();
-    let joined_at = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or(0);
-    user.server
-        .record_user_room_history(user.id, id.to_string(), room.uuid.to_string(), joined_at)
-        .await;
     drop(room_guard);
 
-    user.server.refresh_room_display_metadata_background(&room);
     let join = ServerCommand::OnJoinRoom(user.to_info());
     let message = ServerCommand::Message(Message::JoinRoom {
         user: user.id,
@@ -460,31 +511,6 @@ pub async fn join_room(
     // server. broadcast_except would drop these two packets for the joiner.
     room.broadcast(join).await;
     room.broadcast(message).await;
-    if !monitor {
-        user.server
-            .publish_room_event(RoomEvent::JoinRoom {
-                room: id.clone(),
-                user: user.id,
-            })
-            .await;
-    }
-
-    // Protocol-only game monitors are not exposed as players to plugins.
-    // 插件事件可能执行 WASM/HTTP 逻辑，不能阻塞 JoinRoom 响应。
-    if category == SessionCategory::Normal {
-        user.server
-            .dispatch_plugin_event(PluginEvent::RoomJoin {
-                user_id: user.id,
-                room_id: id.to_string(),
-                is_monitor: monitor,
-            })
-            .await;
-        user.server
-            .publish_runtime_event(crate::event_bus::MpEvent::RoomJoined {
-                room_id: room.id.clone(),
-                user_id: user.id,
-            });
-    }
 
     let mut users = room.users().await;
     if category != SessionCategory::GameMonitor {
@@ -509,25 +535,24 @@ pub async fn join_room(
     };
 
     // 先发送 JoinRoom(Ok) 响应，确保客户端先拿到完整快照。
-    // Use send with 5s timeout instead of try_send for this critical init packet.
-    // If the client can't receive it, rollback the AddUser so room state stays
-    // consistent with the client's view.
     let response = JoinRoomResponse {
         state: room_state,
         users: users.into_iter().map(|user| user.to_info()).collect(),
         live: room.is_live(),
     };
     // P0-F: JoinRoom(Ok) must not arrive before the minimum response latency
-    // window (the official client installs its callback after send) and must be
-    // proven flushed to the socket, not merely queued. Flush failure rolls the
-    // AddUser back so the server state matches the client's view.
+    // window (the official client installs its callback after send).
     crate::official_client_compat::timing::CompatTiming::from_config(&user.server.config)
         .wait_until_minimum(received_at)
         .await;
-    // TODO(A3): confirm the origin-bound flush (was `user.send_and_flush` so it
-    // could hit a NEW session after a reconnect).
-    match tokio::time::timeout(
-        Duration::from_secs(5),
+
+    // P0-E/P0-C: the JoinRoom(Ok) flush shares the command's single absolute
+    // deadline — remaining budget only, never an independent 5s constant (§9).
+    // The flush is bound to the ORIGIN session, so after a reconnect it can
+    // never reach (or close) the new session.
+    let remaining = deadline.saturating_duration_since(Instant::now());
+    let flushed = match tokio::time::timeout(
+        remaining,
         origin.send_and_flush(ServerCommand::JoinRoom(Ok(response))),
     )
     .await
@@ -537,26 +562,61 @@ pub async fn join_room(
             trace.response_queued.fetch_add(1, Ordering::Relaxed);
             trace.response_flushed.fetch_add(1, Ordering::Relaxed);
             trace.record_response_latency(received_at);
+            true
         }
         _ => {
-            // Send failed or timed out — rollback: remove user from room.
+            // P0-D/P0-E: after the official join sequence was already broadcast,
+            // a flush failure or timeout is UNCERTAIN. Never run an incomplete
+            // transaction rollback (remove_user would broadcast Leave to a
+            // client that may already have installed the room). Close the origin
+            // transport and bail; the reconnect Authenticate restores state.
             warn!(
                 user = user.id,
                 room = %id,
-                "JoinRoom send_and_flush failed, rolling back AddUser"
+                "JoinRoom send_and_flush failed within deadline; closing origin transport"
             );
-            let _ = user
-                .server
-                .room_commands
-                .remove_user(&user.server, &id.to_string(), user.id)
-                .await;
+            origin.close_uncertain().await;
             bail!("failed to deliver JoinRoom response to client");
         }
+    };
+    let _ = flushed;
+
+    // ── After the official response is proven flushed ────────────────────
+    // P0-I/P0-H: compensations and extension work are response-after. Same
+    // origin compensations are emitted in fixed PostResponseKind order
+    // (ChangeHost before ChangeState) by the compat queue.
+    let mut compensations = Vec::new();
+    if became_host {
+        compensations.push(
+            crate::official_client_compat::post_response::PostResponseItem::to_origin(
+                origin.clone(),
+                crate::official_client_compat::post_response::PostResponseKind::ChangeHost,
+                ServerCommand::ChangeHost(true),
+                "first-user-host",
+            ),
+        );
+    }
+    if deferred_wfr {
+        // ProtocolHack (P1): 客户端刚收到 SelectChart 快照，需在官方响应 flush
+        // 之后发送 GameStart 让客户端切换到 WaitingForReady 并显示准备按钮。
+        compensations.push(
+            crate::official_client_compat::post_response::PostResponseItem::to_origin(
+                origin.clone(),
+                crate::official_client_compat::post_response::PostResponseKind::ChangeState,
+                ServerCommand::Message(Message::GameStart { user: 0 }),
+                "join-reconnect-wait-for-ready",
+            ),
+        );
+    }
+    if !compensations.is_empty() {
+        crate::official_client_compat::post_response::schedule_post_response(
+            &user.server.config,
+            compensations,
+        );
     }
 
-    // 再发送聊天历史（仅 Chat 消息），让客户端在完整快照后接收增量消息
-    // TODO(A3): history delivery is bound to origin; previously `user.try_send`
-    // could reach a NEW session after a reconnect.
+    // 再发送聊天历史（仅 Chat 消息），让客户端在完整快照后接收增量消息。
+    // Delivery is bound to the join's origin, never the user's current session.
     {
         let history = room.chat_history.read().await;
         for msg in history.iter() {
@@ -570,27 +630,56 @@ pub async fn join_room(
         }
     }
 
-    if deferred_wfr {
-        // ProtocolHack (P1): 客户端刚收到 SelectChart 快照，需在官方响应 flush
-        // 之后发送 GameStart 让客户端切换到 WaitingForReady 并显示准备按钮。
-        // 统一走 post_response 调度：固定顺序、不阻塞、延迟可配置。
-        // TODO(A3): compensation is bound to the join's origin (was to_user,
-        // which could reach a NEW session after a reconnect).
-        crate::official_client_compat::post_response::schedule_post_response(
-            &user.server.config,
-            vec![crate::official_client_compat::post_response::PostResponseItem::to_origin(
-                origin.clone(),
-                crate::official_client_compat::post_response::PostResponseKind::ChangeState,
-                ServerCommand::Message(Message::GameStart { user: 0 }),
-                "join-reconnect-wait-for-ready",
-            )],
-        );
-    }
+    // P0-H: room event / plugin / runtime telemetry / history / metadata / live /
+    // display-name are extension work — never block the JoinRoom(Ok) flush or
+    // the actor task. All of it runs in a response-after task.
+    let server = Arc::clone(&user.server);
+    let room_id = id.clone();
+    let room_arc = Arc::clone(&room);
+    let uid = user.id;
+    let uname = user.name.clone();
+    let is_normal = category == SessionCategory::Normal;
+    let joined_at = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0);
+    crate::supervisor_actor::spawn_named(format!("join-post-{uid}"), async move {
+        if !monitor {
+            server
+                .publish_room_event(RoomEvent::JoinRoom {
+                    room: room_id.clone(),
+                    user: uid,
+                })
+                .await;
+        }
+        // Protocol-only game monitors are not exposed as players to plugins.
+        if is_normal {
+            server
+                .dispatch_plugin_event(PluginEvent::RoomJoin {
+                    user_id: uid,
+                    room_id: room_id.to_string(),
+                    is_monitor: monitor,
+                })
+                .await;
+            server
+                .publish_runtime_event(crate::event_bus::MpEvent::RoomJoined {
+                    room_id: room_id.clone(),
+                    user_id: uid,
+                });
+        }
+        server
+            .record_user_room_history(uid, room_id.to_string(), room_arc.uuid.to_string(), joined_at)
+            .await;
+        server.refresh_room_display_metadata_background(&room_arc);
+        // Route SetLive(true) and set_display_name through mailbox — fire-and-forget.
+        let _ = server.room_commands.set_live(&server, &room_id.to_string(), true).await;
+        let _ = server.room_commands.set_display_name(&server, &room_id.to_string(), uid, &uname).await;
+    });
 
     Ok(())
 }
 
-pub async fn leave_room(user: Arc<User>, category: SessionCategory) -> Result<()> {
+pub async fn leave_room(user: Arc<User>, category: SessionCategory, deadline: Instant) -> Result<()> {
     user.join_pending_game.write().await.take();
     let room = current_room(&user).await?;
     let room_id = room.id.clone();
@@ -603,7 +692,7 @@ pub async fn leave_room(user: Arc<User>, category: SessionCategory) -> Result<()
     // Route through mailbox for actor_state.members update and Room cleanup.
     let result = user.server
         .room_commands
-        .remove_user(&user.server, &room.id.to_string(), user.id)
+        .remove_user(&user.server, &room.id.to_string(), user.id, Some(deadline))
         .await;
     let room_dropped = result.as_ref().ok()
         .and_then(|v| v.get("room_dropped"))
@@ -621,7 +710,10 @@ pub async fn leave_room(user: Arc<User>, category: SessionCategory) -> Result<()
         if !remaining.is_empty() {
             let idx = (std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos() as usize) % remaining.len();
             if let Some(next) = remaining.get(idx).cloned() {
-                user.server.assign_room_host_if_missing(&room, &next, false, false).await;
+                // announce=true: reassigning the host after a leave is NOT the
+                // join-first-host path, so set_host broadcasts the ChangeHost
+                // packet immediately (there is no pending JoinRoom(Ok) here).
+                user.server.assign_room_host_if_missing(&room, &next, false, true).await;
             }
         }
     }
@@ -651,7 +743,7 @@ pub async fn leave_room(user: Arc<User>, category: SessionCategory) -> Result<()
     Ok(())
 }
 
-pub async fn lock_room(user: Arc<User>, lock: bool) -> Result<()> {
+pub async fn lock_room(user: Arc<User>, lock: bool, deadline: Instant) -> Result<()> {
     let room = current_room(&user).await?;
     if !is_host_for_room(&room, &user).await {
         bail!("{}", tl!("only-host-can-do"));
@@ -664,7 +756,7 @@ pub async fn lock_room(user: Arc<User>, lock: bool) -> Result<()> {
     );
     user.server
         .room_commands
-        .set_lock_as(&user.server, &room.id.to_string(), lock, user.id)
+        .set_lock_as(&user.server, &room.id.to_string(), lock, user.id, Some(deadline))
         .await
         .map_err(|e| anyhow!("{}", tr(e)))?;
     // Broadcast to all users including the sender (host). The host's client
@@ -675,7 +767,7 @@ pub async fn lock_room(user: Arc<User>, lock: bool) -> Result<()> {
     Ok(())
 }
 
-pub async fn cycle_room(user: Arc<User>, cycle: bool) -> Result<()> {
+pub async fn cycle_room(user: Arc<User>, cycle: bool, deadline: Instant) -> Result<()> {
     let room = current_room(&user).await?;
     if !is_host_for_room(&room, &user).await {
         bail!("{}", tl!("only-host-can-do"));
@@ -688,7 +780,7 @@ pub async fn cycle_room(user: Arc<User>, cycle: bool) -> Result<()> {
     );
     user.server
         .room_commands
-        .set_cycle_as(&user.server, &room.id.to_string(), cycle, user.id)
+        .set_cycle_as(&user.server, &room.id.to_string(), cycle, user.id, Some(deadline))
         .await
         .map_err(|e| anyhow!("{}", tr(e)))?;
     // See lock_room comment — the host's client needs the event too.
@@ -696,10 +788,13 @@ pub async fn cycle_room(user: Arc<User>, cycle: bool) -> Result<()> {
     Ok(())
 }
 
-pub async fn select_chart(user: Arc<User>, id: i32) -> Result<()> {
+pub async fn select_chart(user: Arc<User>, id: i32, deadline: Instant) -> Result<()> {
     let room = current_room_in_select_chart(&user).await?;
     if !is_host_for_room(&room, &user).await {
         bail!("{}", tl!("only-host-can-do"));
+    }
+    if crate::official_client_compat::timing::deadline_expired(deadline) {
+        bail!("select chart timed out");
     }
     let span = debug_span!(
         "select chart",
@@ -711,22 +806,31 @@ pub async fn select_chart(user: Arc<User>, id: i32) -> Result<()> {
         trace!("fetch");
         // Use live_config endpoint first, falling back to config file.
         let endpoint = resolve_phira_api_endpoint(&user.server).await;
-        let chart_name: String = match user
-            .server
-            .phira_client
-            .get_json::<crate::server::Chart>(
+        // P0-H: the external Phira API fetch is bounded by the command's
+        // remaining absolute deadline — a slow/blocked API must never let a
+        // SelectChart commit after the client already timed out.
+        let fetch_budget = deadline.saturating_duration_since(Instant::now());
+        let chart_name: String = match tokio::time::timeout(
+            fetch_budget,
+            user.server.phira_client.get_json::<crate::server::Chart>(
                 &endpoint,
                 None,
                 &format!("/chart/{id}"),
                 None,
                 crate::phira_client::PhiraRetryNoticeTarget::Silent,
-            )
-            .await
+            ),
+        )
+        .await
         {
-            Ok(chart) => chart.name,
-            Err(_) => {
+            Ok(Ok(chart)) => chart.name,
+            Ok(Err(_)) => {
                 tracing::warn!("failed to fetch chart {id} from Phira API; using ID as name");
                 format!("#{id}")
+            }
+            Err(_) => {
+                // Deadline exhausted before the API returned — the client has
+                // already timed out. Do not commit the chart.
+                bail!("select chart timed out fetching chart metadata");
             }
         };
         debug!("chart name: {chart_name}");
@@ -750,10 +854,14 @@ pub async fn select_chart(user: Arc<User>, id: i32) -> Result<()> {
             }
         }
 
+        // P0-C: refuse a late commit — the client has already timed out.
+        if crate::official_client_compat::timing::deadline_expired(deadline) {
+            bail!("select chart timed out");
+        }
         // Route state mutation through RoomActor mailbox for serialized access.
         user.server
             .room_commands
-            .set_chart(&user.server, &room.id.to_string(), id, &chart_name, user.id)
+            .set_chart(&user.server, &room.id.to_string(), id, &chart_name, user.id, Some(deadline))
             .await
             .map_err(|e| anyhow!("{}", tr(e)))?;
         Ok(())
@@ -813,21 +921,29 @@ pub async fn cancel_ready(user: Arc<User>, deadline: Instant) -> Result<()> {
     Ok(())
 }
 
-pub async fn played(user: Arc<User>, id: i32) -> Result<()> {
+pub async fn played(user: Arc<User>, id: i32, deadline: Instant) -> Result<()> {
     let room = current_room(&user).await?;
     // Use live_config endpoint first, falling back to config file.
     let endpoint = resolve_phira_api_endpoint(&user.server).await;
-    let res: crate::server::Record = user
-        .server
-        .phira_client
-        .get_json(
+    // P0-H: the remote record fetch is bounded by the command's remaining
+    // absolute deadline — a slow/blocked Phira API must never let Played commit
+    // after the client already timed out.
+    let fetch_budget = deadline.saturating_duration_since(Instant::now());
+    let res: crate::server::Record = tokio::time::timeout(
+        fetch_budget,
+        user.server.phira_client.get_json(
             &endpoint,
             None,
             &format!("/record/{id}"),
             None,
             PhiraRetryNoticeTarget::User(user.as_ref()),
-        )
-        .await?;
+        ),
+    )
+    .await
+    .map_err(|_| anyhow!("played record fetch timed out"))??;
+    if crate::official_client_compat::timing::deadline_expired(deadline) {
+        bail!("played timed out");
+    }
     if res.player != user.id {
         bail!("{}", tl!("invalid-record"));
     }
@@ -836,6 +952,10 @@ pub async fn played(user: Arc<User>, id: i32) -> Result<()> {
         user = user.id,
         "user played: {res:?}"
     );
+    // P0-C: refuse a late commit — the client has already timed out.
+    if crate::official_client_compat::timing::deadline_expired(deadline) {
+        bail!("played timed out");
+    }
     // Route state mutation through RoomActor mailbox.
     user.server
         .room_commands
@@ -844,17 +964,18 @@ pub async fn played(user: Arc<User>, id: i32) -> Result<()> {
             res.score, res.accuracy, res.perfect, res.good,
             res.bad, res.miss, res.max_combo, res.full_combo,
             res.std, res.std_score,
+            Some(deadline),
         )
         .await
         .map_err(|e| anyhow!("{}", tr(e)))?;
     Ok(())
 }
 
-pub async fn abort(user: Arc<User>) -> Result<()> {
+pub async fn abort(user: Arc<User>, deadline: Instant) -> Result<()> {
     let room = current_room(&user).await?;
     user.server
         .room_commands
-        .abort_round(&user.server, &room.id.to_string(), user.id)
+        .abort_round(&user.server, &room.id.to_string(), user.id, Some(deadline))
         .await
         .map_err(|e| anyhow!("{}", tr(e)))?;
     Ok(())
