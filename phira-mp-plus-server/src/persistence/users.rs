@@ -249,10 +249,12 @@ impl DbManager {
                             && existing_connected_at == connected_at
                             && existing_event_id == event_id =>
                     {
-                        // Same user, same session, same connection time, same
-                        // event_id — true idempotent replay.  Do NOT increment
-                        // login_count.
-                        false
+                        // Precise idempotent replay — the event was already
+                        // fully processed.  Return success IMMEDIATELY as a
+                        // complete no-op: no user upsert, no IP history update,
+                        // no playtime rewrite, no time-field changes (P0-A).
+                        let _ = tx.commit().await;
+                        return true;
                     }
                     Some(_) => {
                         // session_id or event_id reused by a DIFFERENT user /

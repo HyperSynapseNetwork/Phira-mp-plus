@@ -319,11 +319,14 @@ impl PersistenceWal {
 
         // Record the file length before writing so a partial frame can be
         // truncated back on failure (P0-B).
+        // Record the file length before writing so a partial frame can be
+        // truncated back on failure.  If metadata fails we CANNOT confirm the
+        // rollback point — fail-closed: do not write (P0-B).
         let original_len = file
             .metadata()
             .await
-            .map(|m| m.len())
-            .unwrap_or(0);
+            .map_err(|e| format!("stat WAL {} for rollback point: {e}", self.path.display()))?
+            .len();
 
         let write_result = async {
             file.write_all(&line).await
@@ -336,13 +339,25 @@ impl PersistenceWal {
         }
         .await;
         if let Err(e) = write_result {
-            // Roll back the partial frame if possible.  If truncation fails,
-            // the WAL is corrupt — mark fatal degraded.
-            let trunc = file
-                .set_len(original_len)
-                .await
-                .map_err(|te| format!("truncate WAL after failed append: {te}"));
-            match trunc {
+            // Roll back the partial frame durably (P0-C): set_len + sync so the
+            // truncation survives a crash.  If truncation OR the sync fails the
+            // rollback is not durable — mark fatal corruption.
+            let rollback_ok = async {
+                file.set_len(original_len)
+                    .await
+                    .map_err(|te| format!("truncate WAL after failed append: {te}"))?;
+                file.sync_all()
+                    .await
+                    .map_err(|te| format!("sync WAL after rollback: {te}"))?;
+                if let Some(parent) = self.path.parent().filter(|p| !p.as_os_str().is_empty()) {
+                    if let Ok(dir) = tokio::fs::File::open(parent).await {
+                        let _ = dir.sync_all().await;
+                    }
+                }
+                Ok::<(), String>(())
+            }
+            .await;
+            match rollback_ok {
                 Ok(()) => {
                     return Err(format!(
                         "append WAL {} failed (rolled back {original_len} bytes): {e}",
@@ -352,7 +367,7 @@ impl PersistenceWal {
                 Err(te) => {
                     self.mark_degraded(DEGRADED_CORRUPTION);
                     return Err(format!(
-                        "append WAL {} failed AND truncate-back failed — WAL corrupt: {te}",
+                        "append WAL {} failed AND rollback not durable — WAL corrupt: {te}",
                         self.path.display()
                     ));
                 }
@@ -397,6 +412,17 @@ impl PersistenceWal {
     pub async fn admit(&self, event: PersistenceEvent) -> Result<(uuid::Uuid, u64), String> {
         if !self.replay_succeeded.load(Ordering::Acquire) {
             return Err("WAL replay has not succeeded; admissions are rejected".to_string());
+        }
+        // Reason-based admission policy (P0-D): corruption and compact-fatal
+        // degradation reject new admissions (data integrity cannot be
+        // guaranteed).  ACK and MARKER degradation do NOT block admission —
+        // ACK is retried, MARKER yields AdmittedDegraded.
+        let mask = self.degraded.load(Ordering::Acquire);
+        if mask & (DEGRADED_CORRUPTION | DEGRADED_COMPACT) != 0 {
+            return Err(format!(
+                "WAL is degraded ({:?}) — admissions rejected",
+                self.degraded_reasons()
+            ));
         }
         self.check_disk_space().await?;
         let id = uuid::Uuid::new_v4();
