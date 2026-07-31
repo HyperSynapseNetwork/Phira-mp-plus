@@ -276,13 +276,13 @@ async fn main() -> Result<()> {
             .into_values()
             .collect::<Vec<_>>()
     };
-    let mut disconnect_users = std::collections::HashMap::<i32, String>::new();
+    let mut disconnect_users = std::collections::HashMap::<i32, (String, String)>::new();
     for session in &sessions {
         *session.user.session.write().await = None;
         if session.user.id >= 0 {
             disconnect_users
                 .entry(session.user.id)
-                .or_insert_with(|| session.user.name.clone());
+                .or_insert_with(|| (session.user.name.clone(), session.id.to_string()));
         }
         session
             .try_send(phira_mp_common::ServerCommand::Message(
@@ -300,7 +300,7 @@ async fn main() -> Result<()> {
     let lifecycle_budget = remaining();
     if !lifecycle_budget.is_zero() {
         let lifecycle = async {
-            for (user_id, user_name) in disconnect_users {
+            for (user_id, (user_name, session_id)) in disconnect_users {
                 server
                     .state
                     .publish_user_disconnected(user_id, user_name.clone())
@@ -313,6 +313,7 @@ async fn main() -> Result<()> {
                             user_id,
                             user_name,
                             server_instance_id: phira_mp_plus_server::server_instance::current().to_string(),
+                            session_id: session_id.clone(),
                         },
                     )
                     .await
@@ -326,6 +327,7 @@ async fn main() -> Result<()> {
                         phira_mp_plus_server::persistence::message::PersistenceEvent::UserOffline {
                             user_id,
                             server_instance_id: phira_mp_plus_server::server_instance::current().to_string(),
+                            session_id,
                         },
                     )
                     .await

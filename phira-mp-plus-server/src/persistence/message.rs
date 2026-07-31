@@ -42,20 +42,25 @@ pub enum PersistenceEvent {
         joined_at: i64,
     },
     /// User offline status (per-disconnect). Low-frequency production write.
-    /// Carries server_instance_id so that old offline events cannot close
-    /// a new session's playtime after reconnect on a different instance.
+    /// Carries server_instance_id + session_id so that old offline events
+    /// cannot close a NEWER session's playtime after a same-instance reconnect.
     UserOffline {
         user_id: i32,
         #[serde(default)]
         server_instance_id: String,
+        #[serde(default)]
+        session_id: String,
     },
     /// User disconnect event (per-disconnect). Low-frequency production write.
-    /// Carries server_instance_id for the same session-generation protection.
+    /// Carries server_instance_id + session_id for the same generation
+    /// protection.
     UserDisconnect {
         user_id: i32,
         user_name: String,
         #[serde(default)]
         server_instance_id: String,
+        #[serde(default)]
+        session_id: String,
     },
     /// User authenticated event — merged UserSeen + UserOnline for atomic
     /// admission before the auth OK frame is sent.  Blocks until WAL enqueue
@@ -273,6 +278,7 @@ mod tests {
         let event = PersistenceEvent::UserOffline {
             user_id: 42,
             server_instance_id: "inst-1".to_string(),
+            session_id: "sess-1".to_string(),
         };
         let payload = event
             .dead_letter_payload()

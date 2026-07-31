@@ -125,6 +125,7 @@ pub(crate) async fn run_admin_kick_user(
     state
         .publish_user_disconnected(target_id, user.name.clone())
         .await;
+    let session_id = user.current_session_id().await;
     if let Err(e) = state
         .persistence_worker
         .enqueue(
@@ -132,6 +133,7 @@ pub(crate) async fn run_admin_kick_user(
                 user_id: target_id,
                 user_name: user.name.clone(),
                 server_instance_id: crate::server_instance::current().to_string(),
+                session_id: session_id.clone(),
             },
         )
         .await
@@ -143,6 +145,7 @@ pub(crate) async fn run_admin_kick_user(
         .enqueue(crate::persistence::message::PersistenceEvent::UserOffline {
             user_id: target_id,
             server_instance_id: crate::server_instance::current().to_string(),
+            session_id,
         })
         .await
     {

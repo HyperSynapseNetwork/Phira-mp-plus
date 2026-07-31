@@ -9,24 +9,33 @@ use sqlx::Row;
 
 impl DbManager {
     /// Mark a user as offline and wait for PostgreSQL acknowledgement.
-    /// Only closes the playtime session if its `server_instance_id` matches
-    /// the event's instance_id (prevents old offline events from replaying
-    /// and closing a newer session on a different instance).
-    pub async fn set_offline(&self, user_id: i32, event_instance_id: &str) -> bool {
+    /// Only closes the playtime session whose `server_instance_id` AND
+    /// `session_id` match the event's — prevents an old offline event from
+    /// closing a newer session after a same-instance reconnect (session
+    /// generation protection).
+    pub async fn set_offline(
+        &self,
+        user_id: i32,
+        event_instance_id: &str,
+        event_session_id: &str,
+    ) -> bool {
         let Self::Pg(pool) = self;
         let now = now_ms_inline();
         sqlx::query(
             "UPDATE playtime
                  SET total_secs = total_secs + GREATEST(0, ($2 - session_start) / 1000),
                      session_start = NULL,
-                     server_instance_id = NULL
+                     server_instance_id = NULL,
+                     session_id = NULL
                  WHERE user_id = $1
                    AND session_start IS NOT NULL
-                   AND (server_instance_id IS NOT DISTINCT FROM $3)",
+                   AND (server_instance_id IS NOT DISTINCT FROM $3)
+                   AND (session_id IS NOT DISTINCT FROM $4 OR $4 = '')",
         )
         .bind(user_id)
         .bind(now)
         .bind(event_instance_id)
+        .bind(event_session_id)
         .execute(pool)
         .await
         .is_ok()
@@ -302,8 +311,8 @@ impl DbManager {
         //    auth events replayed on a new instance to be marked as belonging
         //    to the current instance — producing phantom online sessions.
         if sqlx::query(
-            "INSERT INTO playtime (user_id, total_secs, session_start, server_instance_id)
-             VALUES ($1, 0, $2, $3)
+            "INSERT INTO playtime (user_id, total_secs, session_start, server_instance_id, session_id)
+             VALUES ($1, 0, $2, $3, $4)
              ON CONFLICT (user_id) DO UPDATE SET
                total_secs = playtime.total_secs + CASE
                  WHEN playtime.session_start IS NULL THEN 0
@@ -311,11 +320,13 @@ impl DbManager {
                  ELSE GREATEST(0, ($2 - playtime.session_start) / 1000)
                END,
                session_start = $2,
-               server_instance_id = $3",
+               server_instance_id = $3,
+               session_id = $4",
         )
         .bind(user_id)
         .bind(connected_at)
         .bind(server_instance_id)
+        .bind(session_id)
         .execute(&mut *tx)
         .await
         .is_err()

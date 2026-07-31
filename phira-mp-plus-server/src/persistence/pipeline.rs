@@ -92,8 +92,8 @@ pub async fn persist_production_event_if_needed(event: &PersistenceEvent) -> Per
                 db.record_user_room_history(*user_id, room_id, room_uuid, *joined_at)
                     .await
             }
-            PersistenceEvent::UserOffline { user_id, server_instance_id } => {
-                db.set_offline(*user_id, server_instance_id).await
+            PersistenceEvent::UserOffline { user_id, server_instance_id, session_id } => {
+                db.set_offline(*user_id, server_instance_id, session_id).await
             }
             PersistenceEvent::UserDisconnect { user_id, user_name, .. } => {
                 db.record_user_disconnect(*user_id, user_name).await

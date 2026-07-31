@@ -58,6 +58,19 @@ impl User {
         }
     }
 
+    /// Current connection session id, if the session reference is still alive.
+    /// Returns an empty string when the session has already been dropped —
+    /// callers treat that as "match any session for this instance" (fallback).
+    pub async fn current_session_id(&self) -> String {
+        self.session
+            .read()
+            .await
+            .as_ref()
+            .and_then(|weak| weak.upgrade())
+            .map(|s| s.id.to_string())
+            .unwrap_or_default()
+    }
+
     pub fn to_info(&self) -> UserInfo {
         UserInfo {
             id: self.id,
@@ -234,17 +247,20 @@ impl User {
                             }
                             drop(users);
                             drop(registration_guard);
+                            let sid = self_.current_session_id().await;
                             let _ = self_.server.persistence_worker.enqueue(
                                 crate::persistence::message::PersistenceEvent::UserDisconnect {
                                     user_id: self_.id,
                                     user_name: self_.name.clone(),
                                     server_instance_id: crate::server_instance::current().to_string(),
+                                    session_id: sid.clone(),
                                 },
                             ).await;
                             let _ = self_.server.persistence_worker.enqueue(
                                 crate::persistence::message::PersistenceEvent::UserOffline {
                                     user_id: self_.id,
                                     server_instance_id: crate::server_instance::current().to_string(),
+                                    session_id: sid,
                                 },
                             ).await;
                         },
@@ -281,6 +297,7 @@ impl User {
                     self.server
                         .publish_user_disconnected(self.id, self.name.clone())
                         .await;
+                    let sid = self.current_session_id().await;
                     if let Err(e) = self
                         .server
                         .persistence_worker
@@ -289,6 +306,7 @@ impl User {
                                 user_id: self.id,
                                 user_name: self.name.clone(),
                                 server_instance_id: crate::server_instance::current().to_string(),
+                                session_id: sid.clone(),
                             },
                         )
                         .await
@@ -301,6 +319,7 @@ impl User {
                         .enqueue(crate::persistence::message::PersistenceEvent::UserOffline {
                             user_id: self.id,
                             server_instance_id: crate::server_instance::current().to_string(),
+                            session_id: sid,
                         })
                         .await
                     {
@@ -388,12 +407,14 @@ impl User {
             if let Some(event) = room_leave_event {
                 self_.server.publish_room_event(event).await;
             }
+            let sid = self_.current_session_id().await;
             if let Err(e) = self_
                 .server
                 .persistence_worker
                 .enqueue(crate::persistence::message::PersistenceEvent::UserOffline {
                     user_id: self_.id,
                     server_instance_id: crate::server_instance::current().to_string(),
+                    session_id: sid,
                 })
                 .await
             {
