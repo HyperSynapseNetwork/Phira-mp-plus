@@ -100,48 +100,81 @@ pub(crate) type ReadBufMap = Arc<Mutex<HashMap<u64, Vec<u8>>>>;
 /// at cleanup. Plugin totals are derived by summing per-handle values.
 pub(crate) type HandleReadBytesMap = Arc<Mutex<HashMap<u64, usize>>>;
 /// Per-plugin bounded event channel for TCP events.
-/// When full, drops the oldest event.
+///
+/// Two queues: a high-priority queue for lifecycle events (accept/disconnect/
+/// error/connect) and a normal queue for `tcp:receive`.  When a queue is full
+/// the OLDEST event in that queue is dropped — a flood of receive events can
+/// never evict a lifecycle event, so the plugin's connection state stays
+/// accurate (PMP36 P1: lifecycle priority).
 pub(crate) struct PluginEventChannel {
-    queue: Arc<Mutex<VecDeque<(String, serde_json::Value)>>>,
+    high: Arc<Mutex<VecDeque<(String, serde_json::Value)>>>,
+    normal: Arc<Mutex<VecDeque<(String, serde_json::Value)>>>,
     notify: Arc<Notify>,
     max_len: usize,
     /// Number of events dropped because the channel was full (metrics).
     dropped_count: std::sync::atomic::AtomicU64,
 }
 
+/// Event types that are lifecycle-critical and must never be evicted by a
+/// receive flood.
+fn is_lifecycle(event_type: &str) -> bool {
+    !event_type.eq_ignore_ascii_case("tcp:receive")
+}
+
 impl PluginEventChannel {
     pub fn new(max_len: usize) -> Self {
         Self {
-            queue: Arc::new(Mutex::new(VecDeque::with_capacity(max_len))),
+            high: Arc::new(Mutex::new(VecDeque::with_capacity(max_len / 2 + 1))),
+            normal: Arc::new(Mutex::new(VecDeque::with_capacity(max_len))),
             notify: Arc::new(Notify::new()),
             max_len,
             dropped_count: std::sync::atomic::AtomicU64::new(0),
         }
     }
 
-    /// Push an event. If the channel is full, drop the oldest event.
+    /// Push an event.  Lifecycle events go to the high-priority queue; receive
+    /// events to the normal queue.  When a queue is full the oldest event in
+    /// that queue is dropped (lifecycle events are never dropped by a receive
+    /// flood).
     pub fn push(&self, event_type: String, payload: serde_json::Value) {
-        let mut queue = self.queue.lock().unwrap();
+        let is_lifecycle = is_lifecycle(&event_type);
+        let mut queue = if is_lifecycle {
+            self.high.lock().unwrap()
+        } else {
+            self.normal.lock().unwrap()
+        };
         if queue.len() >= self.max_len {
             queue.pop_front();
             self.dropped_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         }
         queue.push_back((event_type, payload));
+        drop(queue);
         self.notify.notify_one();
     }
 
-    /// Number of events dropped because the queue was full.
+    /// Number of events dropped because a queue was full.
     pub fn dropped_count(&self) -> u64 {
         self.dropped_count.load(std::sync::atomic::Ordering::Relaxed)
     }
 
-    /// Number of events currently pending in the bounded queue.
+    /// Number of events currently pending in the bounded queues.
     pub fn pending_count(&self) -> usize {
-        self.queue.lock().unwrap().len()
+        self.high.lock().unwrap().len() + self.normal.lock().unwrap().len()
     }
 
-    /// Shared queue and notify for worker task consumption.
-    pub fn shared(&self) -> (Arc<Mutex<VecDeque<(String, serde_json::Value)>>>, Arc<Notify>) {
-        (Arc::clone(&self.queue), Arc::clone(&self.notify))
+    /// Shared queues and notify for worker task consumption.
+    /// Workers must drain `high` before `normal` to honor lifecycle priority.
+    pub fn shared(
+        &self,
+    ) -> (
+        Arc<Mutex<VecDeque<(String, serde_json::Value)>>>,
+        Arc<Mutex<VecDeque<(String, serde_json::Value)>>>,
+        Arc<Notify>,
+    ) {
+        (
+            Arc::clone(&self.high),
+            Arc::clone(&self.normal),
+            Arc::clone(&self.notify),
+        )
     }
 }
