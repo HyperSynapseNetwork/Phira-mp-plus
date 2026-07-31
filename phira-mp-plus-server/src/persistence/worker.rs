@@ -470,23 +470,46 @@ async fn process_worker_loop(
                         if let Some(&next_in_buffer) =
                             buffer.range(base..).next().map(|(k, _)| k)
                         {
-                            let pending: HashSet<u64> =
+                            // Determine the pending set.  A WAL read error here
+                            // must fail-closed (P0-D): keep the gate at base
+                            // (skip nothing — the failed event is retried, not
+                            // bypassed) and report a critical failure.
+                            let pending: Option<HashSet<u64>> =
                                 match worker_wal.list_pending().await {
-                                    Ok(p) => p.iter().map(|(_, _, s)| *s).collect(),
-                                    Err(_) => HashSet::new(),
+                                    Ok(p) => Some(p.iter().map(|(_, _, s)| *s).collect()),
+                                    Err(e) => {
+                                        tracing::error!(
+                                            wal_id = %wal_id, error = %e,
+                                            "sequence-gap check failed: WAL read error; \
+                                             halting gate advancement"
+                                        );
+                                        crate::supervisor_actor::report_critical_failure(
+                                            "persistence-sequence-gap",
+                                            format!(
+                                                "WAL read error during sequence-gap check: {e}"
+                                            ),
+                                        )
+                                        .await;
+                                        None
+                                    }
                                 };
-                            let mut expected = base;
-                            // Skip sequences that are neither buffered nor
-                            // pending in the WAL (i.e. ACKed/compacted gaps).
-                            // Pending WalOnly sequences stop the skip — they
-                            // will arrive via the scanner.
-                            while expected < next_in_buffer
-                                && !buffer.contains_key(&expected)
-                                && !pending.contains(&expected)
-                            {
-                                expected += 1;
+                            if let Some(pending) = pending {
+                                let mut expected = base;
+                                // Skip sequences that are neither buffered nor
+                                // pending in the WAL (i.e. ACKed/compacted gaps).
+                                // Pending WalOnly sequences stop the skip — they
+                                // will arrive via the scanner.
+                                while expected < next_in_buffer
+                                    && !buffer.contains_key(&expected)
+                                    && !pending.contains(&expected)
+                                {
+                                    expected += 1;
+                                }
+                                next_expected_sequence = expected;
+                            } else {
+                                // Fail-closed: do not advance past base.
+                                next_expected_sequence = base;
                             }
-                            next_expected_sequence = expected;
                         } else {
                             next_expected_sequence = base;
                         }
