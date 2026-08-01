@@ -146,8 +146,9 @@ struct AuthAcceptedState {
     /// 本次认证新建并插入 `server.users` 的用户（回滚时需用 `Arc::ptr_eq`
     /// 守卫移除）。
     newly_created: bool,
-    /// reconnect 时被取代的旧 Session；其关闭推迟到 WAL admission 成功
-    /// （DurableAccepted）之后，若 WAL/flush 失败旧连接仍完整可回滚。
+    /// reconnect 时被取代的旧 Session；其关闭推迟到新会话达到
+    /// `AuthPhase::Active` 之后（PMP45 P0-D/P0-C 两阶段交接），此前任何一步
+    /// 失败旧连接仍完整可回滚。
     previous_session: Option<Arc<Session>>,
 }
 
@@ -168,37 +169,107 @@ fn should_rollback_auth(phase: AuthPhase, wal_ok: bool, flush_ok: bool) -> bool 
 /// 客户端。绝不调用 `dangle()` —— 该 Session 从未成为 User 的当前 Session，
 /// 完整断连路径（dangle grace / 离线事件）不适用。
 ///
-/// 顺序很关键：先 `clear_session`（使 lost-connection worker 的 `user_ref`
-/// 判定为 false，从而跳过 dangle），再移除新注册用户，最后发送拒绝并关闭
-/// 传输。
+/// PMP45 语义扩展：
+/// - `bound_identity`：本次认证实际绑定到的 `(session_id, generation)`；
+///   `Some(..)` 表示已 `set_session`，回滚时只精确清除该代际的绑定
+///   （P0-C），`None` 表示尚未绑定（WAL 前失败，旧绑定保持不变）。
+/// - `durable`：`UserAuthenticated` 是否已入队 WAL（阶段 >= DurableAccepted）。
+///   为 true 时必须补发 `UserDisconnect` + `UserOffline` 补偿，否则数据库会
+///   永远显示该用户在线（P0-A）。
+/// - `send_err`：是否发送 `Authenticate(Err)` 拒绝帧。一旦尝试过
+///   `Authenticate(Ok)` flush，结果即不确定——绝不补发 Err（P0-B），只关闭
+///   传输。
+///
+/// 顺序很关键：先 `clear_session_if_matches`（使 lost-connection worker 的
+/// `user_ref` 判定为 false，从而跳过 dangle），再移除新注册用户，再补发
+/// 持久化补偿，最后（可选）发送拒绝并关闭传输。
 async fn rollback_failed_auth(
     server: &PlusServerState,
     send_tx: &StreamSender<ServerCommand>,
     this: &OnceCell<Arc<Session>>,
     user: Option<&Arc<User>>,
     newly_created: bool,
-    bound: bool,
+    bound_identity: Option<(Uuid, u64)>,
+    durable: bool,
+    send_err: bool,
     reason: String,
 ) {
+    let user_id = user.map(|u| u.id).unwrap_or_default();
+    let user_name = user.map(|u| u.name.clone()).unwrap_or_default();
     if let Some(user) = user {
-        // 若已 set_session，撤销绑定（reconnect 路径在 WAL 失败时尚未
-        // set_session，旧绑定保持不变，旧连接可继续存活）。
-        if bound {
-            user.clear_session().await;
+        // PMP45 P0-C: 只清除与本次失败认证精确同代的绑定，绝不误清新会话
+        //（reconnect 路径在 WAL 失败时尚未 set_session，旧绑定保持不变，
+        // 旧连接可继续存活）。
+        if let Some((session_id, generation)) = bound_identity {
+            user.clear_session_if_matches(session_id, generation).await;
         }
         // 本次认证新建的用户：仅当 server.users 仍指向该 User 时移除
         //（Arc::ptr_eq 守卫，与既有代码一致）。
         if newly_created {
-            let mut users = server.users.write().await;
-            if users
-                .get(&user.id)
-                .is_some_and(|current| Arc::ptr_eq(current, user))
-            {
-                users.remove(&user.id);
+            // PMP45 P0-E: 仅当该 User 未被更新的认证接管时才移除注册——
+            // 判定绑定会话是否仍属于本次失败认证（或已无绑定）。
+            let ours = {
+                let binding = user.binding.read().await;
+                let current_session_id = binding
+                    .session
+                    .as_ref()
+                    .and_then(std::sync::Weak::upgrade)
+                    .map(|s| s.id);
+                drop(binding);
+                match bound_identity {
+                    Some((sid, _)) => {
+                        current_session_id.is_none() || current_session_id == Some(sid)
+                    }
+                    None => current_session_id.is_none(),
+                }
+            };
+            if ours {
+                let mut users = server.users.write().await;
+                if users
+                    .get(&user.id)
+                    .is_some_and(|current| Arc::ptr_eq(current, user))
+                {
+                    users.remove(&user.id);
+                }
             }
         }
     }
-    send_auth_rejection(send_tx, reason).await;
+    // PMP45 P0-A: WAL 事实已存在（durable）则补发断连 + 离线补偿，杜绝
+    // “客户端从未完成认证但 DB 显示在线（visit + playtime）”的幻象。
+    if durable {
+        let session_id = this.get().map(|s| s.id.to_string()).unwrap_or_default();
+        let now = crate::db::now_ms();
+        if let Err(e) = server
+            .persistence_worker
+            .enqueue(crate::persistence::message::PersistenceEvent::UserDisconnect {
+                user_id,
+                user_name,
+                server_instance_id: crate::server_instance::current().to_string(),
+                session_id: session_id.clone(),
+                occurred_at: now,
+            })
+            .await
+        {
+            warn!(user = user_id, kind = %e.kind(), "UserDisconnect enqueue failed during auth rollback");
+        }
+        if let Err(e) = server
+            .persistence_worker
+            .enqueue(crate::persistence::message::PersistenceEvent::UserOffline {
+                user_id,
+                server_instance_id: crate::server_instance::current().to_string(),
+                session_id,
+                occurred_at: now,
+            })
+            .await
+        {
+            warn!(user = user_id, kind = %e.kind(), "UserOffline enqueue failed during auth rollback");
+        }
+    }
+    // PMP45 P0-B: 一旦尝试过 Authenticate(Ok) flush，结果即不确定，绝不补发
+    // Err；仅关闭传输交由 lost-connection worker 处理。
+    if send_err {
+        send_auth_rejection(send_tx, reason).await;
+    }
     if let Some(session) = this.get() {
         session.stream.close();
         let _ = server.lost_con_tx.try_send(session.id);
@@ -735,6 +806,15 @@ pub struct Session {
     #[allow(dead_code)]
     pub(crate) gate: Arc<SessionOutboundGate>,
 
+    /// PMP45 P0-D: 认证是否已推进到 Active（Authenticate(Ok) 已 flush 且
+    /// outbound gate 已激活）。`server::accept` 只有看到该标记才会把 Session
+    /// 发布进全局 `state.sessions`——半认证 Session 绝不进入全局表（审计 §9）。
+    pub(crate) active: OnceLock<()>,
+    /// PMP45 P0-D: 认证激活通知。`server::accept` 在发布前等待它（带超时）；
+    /// `mark_active` 用 `notify_one`（存储一个 permit），杜绝检查与等待之间的
+    /// 丢失唤醒。
+    pub(crate) active_notify: Arc<Notify>,
+
     /// PMP44 P0-I/P0-O: 单 Session 出站队列的发送端。认证 Gate、官方响应与
     /// post-response 补偿都汇入这一条 `mpsc` 队列，由唯一的出站任务按严格
     /// FIFO 送写 socket。
@@ -775,6 +855,10 @@ impl Session {
             compat.gate_max_pending_bytes,
             Duration::from_millis(compat.gate_max_auth_duration_ms),
         ));
+
+        // PMP45 P0-D: 认证激活通知。`server::accept` 等待它把 Session 发布进
+        // 全局 sessions 表；`mark_active` 在认证回调推进到 Active 时调用。
+        let active_notify = Arc::new(Notify::new());
 
         // PMP44 P0-I/P0-O: 单 Session 出站队列。发送端保存在 Session 上并克隆进
         // Stream 回调；接收端交给唯一的出站任务，后者在首个命令到达时拿到
@@ -991,9 +1075,9 @@ impl Session {
                                         };
                                         if let Some(existing) = existing_user {
                                             info!("reconnect");
-                                            // PMP44 P0-E: 捕获被取代的旧 Session；其关闭推迟
-                                            // 到 WAL admission 成功（DurableAccepted）之后。
-                                            // 若 WAL/flush 失败，旧连接仍完整可回滚。
+                                            // PMP44 P0-E: 捕获被取代的旧 Session；其关闭推迟到
+                                            // 新会话达到 AuthPhase::Active 之后（PMP45 P0-D/P0-C
+                                            // 两阶段交接）。若中途失败，旧连接仍完整可回滚。
                                             let previous_session = {
                                                 let guard = existing.binding.read().await;
                                                 guard
@@ -1087,7 +1171,7 @@ impl Session {
                                 let Some(AuthAcceptedState {
                                     user,
                                     newly_created,
-                                    mut previous_session,
+                                    previous_session,
                                 }) = auth_resolved.accepted
                                 else {
                                     // Authentication was deliberately rejected and the Session
@@ -1141,7 +1225,9 @@ impl Session {
                                             &this,
                                             Some(&user),
                                             newly_created,
+                                            None,
                                             false,
+                                            true,
                                             "authentication timed out".to_string(),
                                         )
                                         .await;
@@ -1180,7 +1266,9 @@ impl Session {
                                             &this,
                                             Some(&user),
                                             newly_created,
+                                            None,
                                             false,
+                                            true,
                                             "authentication failed: persistence unavailable"
                                                 .to_string(),
                                         )
@@ -1190,8 +1278,9 @@ impl Session {
                                     return;
                                 }
                                 // DurableAccepted：WAL 已成功。现在才把新 Session 绑定为
-                                // User 的当前 Session（set_session + bound_generation），
-                                // 并关闭被取代的旧 Session（reconnect）。
+                                // User 的当前 Session（set_session + bound_generation）。
+                                // 被取代的旧 Session 不在此时关闭——推迟到新会话达到
+                                // AuthPhase::Active 之后（P0-D/P0-C 两阶段交接）。
                                 auth_phase = AuthPhase::DurableAccepted;
                                 debug!(user = user.id, ?auth_phase, "WAL admitted; binding session");
                                 let gen = user
@@ -1200,12 +1289,9 @@ impl Session {
                                 if let Some(session) = this.get() {
                                     let _ = session.bound_generation.set(gen);
                                 }
-                                if let Some(previous) = previous_session.take() {
-                                    if previous.id != id {
-                                        previous.stream.close();
-                                        let _ = server.lost_con_tx.try_send(previous.id);
-                                    }
-                                }
+                                // PMP45 P0-C: 本次认证的精确绑定身份，供后续任意失败回滚
+                                // 只清除该代际，绝不误清新会话。
+                                let bound_identity = Some((this.get().unwrap().id, gen));
                                 debug!("sending auth OK to user {}", user.id);
                                 // P0-B: the initial Authenticate response must not arrive
                                 // before the minimum response latency window (the official
@@ -1235,6 +1321,8 @@ impl Session {
                                             &this,
                                             Some(&user),
                                             newly_created,
+                                            bound_identity,
+                                            true,
                                             true,
                                             "authentication timed out".to_string(),
                                         )
@@ -1257,6 +1345,8 @@ impl Session {
                                             &this,
                                             Some(&user),
                                             newly_created,
+                                            bound_identity,
+                                            true,
                                             true,
                                             "authentication barrier timed out".to_string(),
                                         )
@@ -1302,13 +1392,16 @@ impl Session {
                                 if let Err(err) = flush_result {
                                     warn!(user = user.id, ?err, "failed to flush auth response");
                                     if should_rollback_auth(auth_phase, true, false) {
+                                        // PMP45 P0-B: Ok 已尝试 flush，结果不确定——绝不补发 Err。
                                         rollback_failed_auth(
                                             &server,
                                             &send_tx,
                                             &this,
                                             Some(&user),
                                             newly_created,
+                                            bound_identity,
                                             true,
+                                            false,
                                             format!("authentication failed: {err}"),
                                         )
                                         .await;
@@ -1331,18 +1424,25 @@ impl Session {
                                         "auth deadline elapsed after flush; skipping gate activation"
                                     );
                                     // Authenticate(Ok) 已到达客户端，客户端已进入认证后
-                                    // 状态——此时不应回滚（ResponseFlushed 阶段
-                                    // should_rollback_auth 恒为 false），仅关闭传输，
-                                    // 交正常断连路径（lost-connection worker）接管并执行
-                                    // dangle 清理。
-                                    debug_assert!(
-                                        !should_rollback_auth(auth_phase, true, true),
-                                        "auth already accepted by client; must not roll back"
-                                    );
-                                    if let Some(session) = this.get() {
-                                        session.stream.close();
-                                        let _ = server.lost_con_tx.try_send(session.id);
-                                    }
+                                    // 状态——P0-B：绝不补发 Err。但 WAL 事实已存在
+                                    //（UserAuthenticated 已入队），且 P0-D 之后 accept 尚未
+                                    // 把 Session 发布进 state.sessions，lost-connection worker
+                                    // 找不到它、不会跑 dangle——因此必须由这里补发持久化补偿
+                                    // 并做内存清理（P0-A）。rollback_failed_auth 以
+                                    // durable=true + send_err=false 执行：清绑定（P0-C）、
+                                    // 移除新用户（P0-E）、补发离线/断连事件、关闭传输。
+                                    rollback_failed_auth(
+                                        &server,
+                                        &send_tx,
+                                        &this,
+                                        Some(&user),
+                                        newly_created,
+                                        bound_identity,
+                                        true,
+                                        false,
+                                        "auth deadline elapsed after flush".to_string(),
+                                    )
+                                    .await;
                                     panicked.store(true, Ordering::SeqCst);
                                     return;
                                 }
@@ -1384,22 +1484,47 @@ impl Session {
                                             .activation_drain_failure
                                             .fetch_add(1, Ordering::Relaxed);
                                         // PMP44 P0-G: 认证屏障排空失败 → fail-closed：
-                                        // 不进入 Active，关闭传输，走 lost-connection 路径。
+                                        // 不进入 Active。P0-B：Ok 已 flush——绝不补发 Err；
+                                        // P0-A：WAL 事实已存在且 P0-D 下 accept 不会发布
+                                        // 该 Session，lost-connection worker 不跑 dangle——
+                                        // 必须由这里补发持久化补偿并做内存清理。
                                         warn!(
                                             user = user.id,
                                             ?err,
                                             "outbound gate activation failed; closing session"
                                         );
                                         panicked.store(true, Ordering::SeqCst);
-                                        if let Some(session) = this.get() {
-                                            session.stream.close();
-                                            let _ = server.lost_con_tx.try_send(session.id);
-                                        }
+                                        rollback_failed_auth(
+                                            &server,
+                                            &send_tx,
+                                            &this,
+                                            Some(&user),
+                                            newly_created,
+                                            bound_identity,
+                                            true,
+                                            false,
+                                            format!("outbound gate activation failed: {err}"),
+                                        )
+                                        .await;
                                         return;
                                     }
                                 }
                                 auth_phase = AuthPhase::Active;
                                 debug!(user = user.id, ?auth_phase, "outbound gate activated; session is live");
+                                // PMP45 P0-D/P0-C: 两阶段交接——只有新会话达到 Active 才
+                                // 关闭被取代的旧会话（reconnect）；此前任何一步失败旧连接
+                                // 保持完整可回滚。
+                                if let Some(previous) = previous_session {
+                                    if previous.id != id {
+                                        previous.stream.close();
+                                        let _ = server.lost_con_tx.try_send(previous.id);
+                                    }
+                                }
+                                // PMP45 P0-D: 标记认证完成，`server::accept` 据此把
+                                // Session 发布进全局 sessions 表。
+                                if let Some(session) = this.get() {
+                                    session.mark_active();
+                                }
                                 let auth_trace = crate::official_client_compat::protocol_trace::ProtocolTrace::get();
                                 auth_trace.response_queued.fetch_add(1, Ordering::Relaxed);
                                 auth_trace.response_flushed.fetch_add(1, Ordering::Relaxed);
@@ -1479,6 +1604,9 @@ impl Session {
                                         if let Some(session) = this.get() {
                                             let _ = session.bound_generation.set(gen);
                                         }
+                                        // PMP45 P0-C: 本次认证的精确绑定身份（console 不做
+                                        // WAL，durable=false，无需持久化补偿）。
+                                        let bound_identity = Some((this.get().unwrap().id, gen));
                                         // Initialize per-session mailbox for command routing
                                         if let Some(session) = this.get() {
                                             let tx = crate::session_actor::init_session_mailbox(session);
@@ -1499,6 +1627,8 @@ impl Session {
                                                 &send_tx,
                                                 &this,
                                                 Some(&user),
+                                                false,
+                                                bound_identity,
                                                 false,
                                                 true,
                                                 "authentication timed out".to_string(),
@@ -1526,6 +1656,8 @@ impl Session {
                                                 &send_tx,
                                                 &this,
                                                 Some(&user),
+                                                false,
+                                                bound_identity,
                                                 false,
                                                 true,
                                                 "authentication barrier timed out".to_string(),
@@ -1572,13 +1704,16 @@ impl Session {
                                             };
                                         if let Err(err) = flush_result {
                                             warn!(user = user.id, ?err, "failed to flush console auth response");
+                                            // PMP45 P0-B: Ok 已尝试 flush——绝不补发 Err。
                                             rollback_failed_auth(
                                                 &server,
                                                 &send_tx,
                                                 &this,
                                                 Some(&user),
                                                 false,
-                                                true,
+                                                bound_identity,
+                                                false,
+                                                false,
                                                 format!("console authentication failed: {err}"),
                                             )
                                             .await;
@@ -1624,18 +1759,35 @@ impl Session {
                                                     .activation_drain_failure
                                                     .fetch_add(1, Ordering::Relaxed);
                                                 // PMP44 P0-G: 认证屏障排空失败 → fail-closed。
+                                                // PMP45 P0-B: Ok 已 flush——绝不补发 Err；P0-D 下
+                                                // accept 不发布该 Session，需由这里做内存清理
+                                                //（console 无 WAL，durable=false，无需补偿）。
                                                 warn!(
                                                     user = user.id,
                                                     ?err,
                                                     "console outbound gate activation failed; closing session"
                                                 );
                                                 panicked.store(true, Ordering::SeqCst);
-                                                if let Some(session) = this.get() {
-                                                    session.stream.close();
-                                                    let _ = server.lost_con_tx.try_send(session.id);
-                                                }
+                                                rollback_failed_auth(
+                                                    &server,
+                                                    &send_tx,
+                                                    &this,
+                                                    Some(&user),
+                                                    false,
+                                                    bound_identity,
+                                                    false,
+                                                    false,
+                                                    format!(
+                                                        "console outbound gate activation failed: {err}"
+                                                    ),
+                                                )
+                                                .await;
                                                 return;
                                             }
+                                        }
+                                        // PMP45 P0-D: console 会话达到 Active——通知 accept 发布。
+                                        if let Some(session) = this.get() {
+                                            session.mark_active();
                                         }
                                         waiting_for_authenticate.store(false, Ordering::SeqCst);
                                     }
@@ -1698,6 +1850,9 @@ impl Session {
                                         if let Some(session) = this.get() {
                                             let _ = session.bound_generation.set(gen);
                                         }
+                                        // PMP45 P0-C: 本次认证的精确绑定身份（monitor 不做
+                                        // WAL，durable=false）。
+                                        let bound_identity = Some((this.get().unwrap().id, gen));
                                         if let Some(session) = this.get() {
                                             let tx = crate::session_actor::init_session_mailbox(session);
                                             let _ = session.actor_tx.set(tx);
@@ -1721,6 +1876,8 @@ impl Session {
                                                 &send_tx,
                                                 &this,
                                                 Some(&user),
+                                                false,
+                                                bound_identity,
                                                 false,
                                                 true,
                                                 "authentication timed out".to_string(),
@@ -1750,6 +1907,8 @@ impl Session {
                                                 &send_tx,
                                                 &this,
                                                 Some(&user),
+                                                false,
+                                                bound_identity,
                                                 false,
                                                 true,
                                                 "authentication barrier timed out".to_string(),
@@ -1797,13 +1956,16 @@ impl Session {
                                         if let Err(err) = flush_result {
                                             warn!(user = user.id, ?err, "failed to flush room monitor auth response");
                                             *server.room_monitor.write().await = None;
+                                            // PMP45 P0-B: Ok 已尝试 flush——绝不补发 Err。
                                             rollback_failed_auth(
                                                 &server,
                                                 &send_tx,
                                                 &this,
                                                 Some(&user),
                                                 false,
-                                                true,
+                                                bound_identity,
+                                                false,
+                                                false,
                                                 format!(
                                                     "room monitor authentication failed: {err}"
                                                 ),
@@ -1851,19 +2013,36 @@ impl Session {
                                                     .activation_drain_failure
                                                     .fetch_add(1, Ordering::Relaxed);
                                                 // PMP44 P0-G: 认证屏障排空失败 → fail-closed。
+                                                // PMP45 P0-B: Ok 已 flush——绝不补发 Err；P0-D 下
+                                                // accept 不发布该 Session，需由这里做内存清理。
                                                 warn!(
                                                     user = user.id,
                                                     ?err,
                                                     "room monitor outbound gate activation failed; closing session"
                                                 );
+                                                // 清除 room_monitor 弱引用，避免半认证 monitor 残留。
                                                 *server.room_monitor.write().await = None;
                                                 panicked.store(true, Ordering::SeqCst);
-                                                if let Some(session) = this.get() {
-                                                    session.stream.close();
-                                                    let _ = server.lost_con_tx.try_send(session.id);
-                                                }
+                                                rollback_failed_auth(
+                                                    &server,
+                                                    &send_tx,
+                                                    &this,
+                                                    Some(&user),
+                                                    false,
+                                                    bound_identity,
+                                                    false,
+                                                    false,
+                                                    format!(
+                                                        "room monitor outbound gate activation failed: {err}"
+                                                    ),
+                                                )
+                                                .await;
                                                 return;
                                             }
+                                        }
+                                        // PMP45 P0-D: room monitor 达到 Active——通知 accept 发布。
+                                        if let Some(session) = this.get() {
+                                            session.mark_active();
                                         }
                                         waiting_for_authenticate.store(false, Ordering::SeqCst);
                                     }
@@ -1916,6 +2095,9 @@ impl Session {
                                         if let Some(session) = this.get() {
                                             let _ = session.bound_generation.set(gen);
                                         }
+                                        // PMP45 P0-C: 本次认证的精确绑定身份（monitor 不做
+                                        // WAL，durable=false）。
+                                        let bound_identity = Some((this.get().unwrap().id, gen));
                                         // Initialize per-session mailbox for command routing
                                         if let Some(session) = this.get() {
                                             let tx = crate::session_actor::init_session_mailbox(session);
@@ -1950,6 +2132,8 @@ impl Session {
                                                 &this,
                                                 Some(&user),
                                                 true,
+                                                bound_identity,
+                                                false,
                                                 true,
                                                 "authentication timed out".to_string(),
                                             )
@@ -1979,6 +2163,8 @@ impl Session {
                                                 &this,
                                                 Some(&user),
                                                 true,
+                                                bound_identity,
+                                                false,
                                                 true,
                                                 "authentication barrier timed out".to_string(),
                                             )
@@ -2025,13 +2211,16 @@ impl Session {
                                         if let Err(err) = flush_result {
                                             warn!(user = user.id, ?err, "failed to flush game monitor auth response");
                                             server.game_monitors.write().await.remove(&monitor_id);
+                                            // PMP45 P0-B: Ok 已尝试 flush——绝不补发 Err。
                                             rollback_failed_auth(
                                                 &server,
                                                 &send_tx,
                                                 &this,
                                                 Some(&user),
                                                 true,
-                                                true,
+                                                bound_identity,
+                                                false,
+                                                false,
                                                 format!("game monitor authentication failed: {err}"),
                                             )
                                             .await;
@@ -2083,13 +2272,30 @@ impl Session {
                                                     "game monitor outbound gate activation failed; closing session"
                                                 );
                                                 server.game_monitors.write().await.remove(&monitor_id);
+                                                // PMP45 P0-B: Ok 已 flush——绝不补发 Err；P0-D 下
+                                                // accept 不发布该 Session，需由这里做内存清理并
+                                                // 移除新注册的 monitor（P0-E）。
                                                 panicked.store(true, Ordering::SeqCst);
-                                                if let Some(session) = this.get() {
-                                                    session.stream.close();
-                                                    let _ = server.lost_con_tx.try_send(session.id);
-                                                }
+                                                rollback_failed_auth(
+                                                    &server,
+                                                    &send_tx,
+                                                    &this,
+                                                    Some(&user),
+                                                    true,
+                                                    bound_identity,
+                                                    false,
+                                                    false,
+                                                    format!(
+                                                        "game monitor outbound gate activation failed: {err}"
+                                                    ),
+                                                )
+                                                .await;
                                                 return;
                                             }
+                                        }
+                                        // PMP45 P0-D: game monitor 达到 Active——通知 accept 发布。
+                                        if let Some(session) = this.get() {
+                                            session.mark_active();
                                         }
                                         waiting_for_authenticate.store(false, Ordering::SeqCst);
                                     }
@@ -2350,6 +2556,8 @@ impl Session {
             category,
             bound_generation: std::sync::OnceLock::new(),
             gate,
+            active: OnceLock::new(),
+            active_notify,
             outbound_tx,
             outbound_task_handle,
             actor_tx: OnceLock::new(),
@@ -2365,6 +2573,15 @@ impl Session {
 
     pub fn version(&self) -> u8 {
         self.stream.version()
+    }
+
+    /// PMP45 P0-D: 标记认证完成（Active）。认证回调在 `AuthPhase::Active`
+    /// 时调用；`server::accept` 等待 `active_notify` 才把 Session 发布进全局
+    /// sessions 表。使用 `notify_one`（存储一个 permit），避免 accept 检查
+    /// `active` 与等待之间的丢失唤醒。
+    pub(crate) fn mark_active(&self) {
+        let _ = self.active.set(());
+        self.active_notify.notify_one();
     }
 
     pub fn name(&self) -> &str {

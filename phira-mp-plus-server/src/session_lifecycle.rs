@@ -132,6 +132,28 @@ impl User {
         *self.dangle_mark.lock().await = None;
     }
 
+    /// PMP44 P0-C / PMP45 P0-C: 只清除与给定 `session_id` + `generation` 完全匹配的
+    /// 当前绑定。认证回滚、断连与清理必须只作用于精确代际，绝不清除更新的
+    /// Session（审计 §7）。返回是否实际清除了绑定。
+    pub async fn clear_session_if_matches(&self, session_id: Uuid, generation: u64) -> bool {
+        let mut binding = self.binding.write().await;
+        if binding.generation != generation {
+            return false;
+        }
+        let bound_id = binding
+            .session
+            .as_ref()
+            .and_then(std::sync::Weak::upgrade)
+            .map(|s| s.id);
+        if bound_id != Some(session_id) {
+            return false;
+        }
+        binding.generation += 1;
+        binding.session = None;
+        *self.dangle_mark.lock().await = None;
+        true
+    }
+
     /// Capture the current session as a [`CommandOrigin`]: a snapshot of the
     /// session identity plus its generation counter. Commands routed through the
     /// mailbox are bound to this origin, so after a reconnect their responses,

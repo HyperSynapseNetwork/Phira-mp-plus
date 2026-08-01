@@ -196,6 +196,42 @@ impl PlusServer {
                 return;
             }
 
+            // ── Active 发布屏障（PMP45 P0-D）──────────────────────────
+            // AuthenticationOutcome::Accepted 在 WAL/flush/gate 之前就已发出，
+            // 所以 `Session::new` 返回时认证可能仍在推进。绝不把半认证 Session
+            // 发布进全局 sessions 表：等待认证回调 `mark_active()`（Authenticate
+            // (Ok) 已 flush 且 gate 已激活），超时则放弃发布并关闭传输。
+            //
+            // 等待上限取认证绝对预算（auth_deadline_ms）加 2s 余量：认证回调
+            // 必须在 auth_deadline 内达到 Active 或失败，因此该上限既覆盖整个
+            // 认证窗口，又避免以整个 auth_timeout 挂住容量 permit。
+            let active_wait_timeout = std::time::Duration::from_millis(
+                state.config.compatibility.auth_deadline_ms + 2000,
+            );
+            if session.active.get().is_none() {
+                // notified() 在检查之后创建也是安全的：`mark_active` 用
+                // `notify_one`（无等待者时存储一个 permit），不会丢失唤醒。
+                // future 作用域被限制在本块内，使 `session` 的借用先于后续
+                // `insert(id, session)` 结束。
+                let active_wait = session.active_notify.notified();
+                match tokio::time::timeout(active_wait_timeout, active_wait).await {
+                    Ok(()) => {}
+                    Err(_) => {
+                        // 认证未能在预算内达到 Active——不发布；传输已由认证
+                        // 回滚路径或此处关闭，Session 的 Drop 会释放容量 permit。
+                        warn!(%ip, %id, "session never reached Active; not publishing");
+                        session.user.clear_session_if_matches(
+                            session.id,
+                            session.bound_generation.get().copied().unwrap_or(0),
+                        )
+                        .await;
+                        session.stream.close();
+                        let _ = state.lost_con_tx.try_send(id);
+                        return;
+                    }
+                }
+            }
+
             // The session-capacity permit was reserved before authentication
             // and is now owned by Session, so insertion cannot overrun the limit.
             state.sessions.write().await.insert(id, session);
