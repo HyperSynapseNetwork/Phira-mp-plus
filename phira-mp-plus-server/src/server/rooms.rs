@@ -529,15 +529,18 @@ impl PlusServerState {
         users.extend(target_room.monitors().await);
         let room_state = crate::session_room::build_client_room_state(&target_room, &user).await;
         let is_host = room_state.is_host;
-        user.try_send(ServerCommand::JoinRoom(Ok(
-            phira_mp_common::JoinRoomResponse {
+        // JoinRoom 响应与 ChangeHost 告知均随 JoinRoom(Ok) flush 后到达，
+        // 目标用户 gate 已激活；作为响应/告知传 None（cutover 不剔除）。
+        user.try_send(
+            ServerCommand::JoinRoom(Ok(phira_mp_common::JoinRoomResponse {
                 state: room_state.state,
                 users: users.into_iter().map(|user| user.to_info()).collect(),
                 live: target_room.is_live(),
-            },
-        )))
+            })),
+            None,
+        )
         .await;
-        user.try_send(ServerCommand::ChangeHost(is_host)).await;
+        user.try_send(ServerCommand::ChangeHost(is_host), None).await;
 
         // Phase 8: Record history.
         let now = std::time::SystemTime::now()

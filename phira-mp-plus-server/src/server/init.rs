@@ -313,7 +313,8 @@ impl PlusServer {
                             users.values().cloned().collect::<Vec<_>>()
                         };
                         for user in recipients {
-                            user.try_send(cmd.clone()).await;
+                            // 插件 send_chat 消息非房间状态事件，cutover 不适用。
+                            user.try_send(cmd.clone(), None).await;
                         }
                         return;
                     }
@@ -323,7 +324,8 @@ impl PlusServer {
                         users.get(&uid).cloned()
                     };
                     if let Some(user) = user {
-                        user.try_send(cmd).await;
+                        // 插件 send_chat 消息非房间状态事件，cutover 不适用。
+                        user.try_send(cmd, None).await;
                     }
                 });
             }))

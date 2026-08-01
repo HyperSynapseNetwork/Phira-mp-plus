@@ -686,12 +686,14 @@ async fn cmd_broadcast_user(
 
     match user {
         Some(user) => {
-            user.try_send(phira_mp_common::ServerCommand::Message(
-                phira_mp_common::Message::Chat {
+            user.try_send(
+                phira_mp_common::ServerCommand::Message(phira_mp_common::Message::Chat {
                     user: 0,
                     content: message.to_string(),
-                },
-            ))
+                }),
+                // 管理消息非房间状态事件，cutover 不适用。
+                None,
+            )
             .await;
             Ok(serde_json::json!({"ok": true, "user_id": user_id}))
         }

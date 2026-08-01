@@ -4,7 +4,7 @@ use crate::session::Session;
 use anyhow::{anyhow, Result};
 use fluent::FluentArgs;
 use phira_mp_common::{RoomEvent, ServerCommand, UserInfo};
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Weak};
 use std::time::Duration;
 use tokio::sync::{Mutex, RwLock};
@@ -44,13 +44,6 @@ pub struct User {
     pub admin_cli_pending: Mutex<Option<String>>,
     /// 用户确认加入进行中游戏的房间 ID（第一次请求时设置，第二次直接加入）。
     pub join_pending_game: RwLock<Option<String>>,
-    /// PMP46 Blocker 2: 房间权威状态事件序号的 best-effort 镜像。Room Actor 在
-    /// 每次权威状态变更（`bump_room_event_seq`）时把新序号写入房间内所有成员；
-    /// Session 的 outbound gate 入队时读取它给 `SnapshotCovered` 事件打戳
-    /// （`room_seq`），认证激活时 `room_seq <= snapshot_seq` 才剔除——快照点
-    /// 之后进入 Gate 的事件绝不误删（audit §7.5）。单调不减：镜像只可能高于
-    /// 事件真实序号（过发）而绝不低于（误删），因此 over-send 是安全方向。
-    pub last_room_seq: AtomicU64,
 }
 
 impl User {
@@ -77,7 +70,6 @@ impl User {
             dangle_mark: Mutex::default(),
             admin_cli_pending: Mutex::default(),
             join_pending_game: RwLock::default(),
-            last_room_seq: AtomicU64::new(0),
         }
     }
 
@@ -107,10 +99,14 @@ impl User {
     /// Translates `key` with `args` into the user's language.
     pub async fn send_system_msg(&self, key: &str, args: &FluentArgs<'_>) {
         let content = crate::l10n::translate_system(&self.lang, key, args);
-        self.try_send(ServerCommand::Message(phira_mp_common::Message::Chat {
-            user: 0,
-            content,
-        }))
+        self.try_send(
+            ServerCommand::Message(phira_mp_common::Message::Chat {
+                user: 0,
+                content,
+            }),
+            // 系统消息非状态事件，cutover 不适用。
+            None,
+        )
         .await;
     }
 
@@ -245,7 +241,10 @@ impl User {
             .and_then(|token| token.clone())
     }
 
-    pub async fn try_send(&self, cmd: ServerCommand) {
+    /// `room_seq` 是产生该事件时 Room Actor 的权威状态事件序号（PMP47 B：事件
+    /// 产生时绑定，随出站条目携带，而非出站消费时读共享镜像）。非房间来源或
+    /// 非状态事件（命令响应/Chat/遥测）传 `None`。
+    pub async fn try_send(&self, cmd: ServerCommand, room_seq: Option<u64>) {
         if let Some(session) = self
             .binding
             .read()
@@ -254,7 +253,7 @@ impl User {
             .as_ref()
             .and_then(Weak::upgrade)
         {
-            session.try_send(cmd).await;
+            session.try_send(cmd, room_seq).await;
         } else {
             warn!("sending {:?} to dangling user {}", cmd, self.id);
         }
@@ -262,7 +261,7 @@ impl User {
 
     /// Send a command to this user's session, waiting for capacity (async).
     /// Returns an error if there is no session or the send queue is closed.
-    pub async fn send(&self, cmd: ServerCommand) -> Result<()> {
+    pub async fn send(&self, cmd: ServerCommand, room_seq: Option<u64>) -> Result<()> {
         match self
             .binding
             .read()
@@ -271,7 +270,7 @@ impl User {
             .as_ref()
             .and_then(Weak::upgrade)
         {
-            Some(session) => session.send(cmd).await,
+            Some(session) => session.send(cmd, room_seq).await,
             None => Err(anyhow!("no session for user {}", self.id)),
         }
     }

@@ -21,7 +21,7 @@ use phira_mp_common::{
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::{
-    atomic::Ordering,
+    atomic::{AtomicU64, Ordering},
     Arc, Weak,
 };
 use tokio::sync::RwLock;
@@ -210,6 +210,13 @@ pub struct Room {
     /// 房间创建时间戳（Unix 毫秒）
     pub created_at: i64,
 
+    /// PMP47 B: 房间权威状态事件序号的镜像（emit-time binding）。Room Actor
+    /// 在每次权威状态变更（`bump_room_seq`）时写入；`Room::broadcast` 等广播
+    /// 方法在**事件产生时**读取它给 `SnapshotCovered` 事件打戳（`room_seq`），
+    /// 随出站条目携带，而非出站消费时读共享镜像——避免 N+1 over-stamp。
+    /// `None` 表示非状态事件，cutover 不适用（认证激活时一律发送）。
+    pub last_room_seq: AtomicU64,
+
     /// 最近 N 条聊天消息缓冲区，新人加入时同步 (仅包含 Chat 变体)
     pub chat_history: RwLock<VecDeque<Message>>,
 }
@@ -244,6 +251,7 @@ impl Room {
             play_history: crate::play_history::PlayHistoryStore::new(),
             round_store,
             created_at: now,
+            last_room_seq: AtomicU64::new(0),
             chat_history: RwLock::new(VecDeque::new()),
         }
     }
@@ -327,15 +335,20 @@ impl Room {
     /// Send a message to all users EXCEPT the one with `excluded_user_id`.
     pub async fn send_except(&self, excluded_user_id: i32, msg: Message) {
         let cmd = ServerCommand::Message(msg);
+        // PMP47 B: 事件产生时绑定权威 room_seq（emit-time binding）。
+        let room_seq = Some(self.last_room_seq.load(Ordering::Relaxed));
         for session in self.users().await.into_iter().chain(self.monitors().await) {
             if session.id != excluded_user_id {
-                session.try_send(cmd.clone()).await;
+                session.try_send(cmd.clone(), room_seq).await;
             }
         }
     }
 
     pub async fn broadcast(&self, cmd: ServerCommand) {
         debug!("broadcast {cmd:?}");
+        // PMP47 B: 事件产生时（广播发出时）读取权威 room_seq 并随 Packet 携带，
+        // 而非出站消费时读共享镜像——避免 N+1 over-stamp（audit §7.5）。
+        let room_seq = Some(self.last_room_seq.load(Ordering::Relaxed));
         if let ServerCommand::Message(msg) = &cmd {
             if matches!(msg, Message::Chat { .. }) {
                 let mut buf = self.chat_history.write().await;
@@ -346,11 +359,12 @@ impl Room {
             }
         }
         for session in self.users().await.into_iter().chain(self.monitors().await) {
-            session.try_send(cmd.clone()).await;
+            session.try_send(cmd.clone(), room_seq).await;
         }
     }
 
     pub async fn broadcast_except(&self, excluded_user_id: i32, cmd: ServerCommand) {
+        let room_seq = Some(self.last_room_seq.load(Ordering::Relaxed));
         if let ServerCommand::Message(msg) = &cmd {
             if matches!(msg, Message::Chat { .. }) {
                 let mut buf = self.chat_history.write().await;
@@ -362,20 +376,22 @@ impl Room {
         }
         for session in self.users().await.into_iter().chain(self.monitors().await) {
             if session.id != excluded_user_id {
-                session.try_send(cmd.clone()).await;
+                session.try_send(cmd.clone(), room_seq).await;
             }
         }
     }
 
     pub async fn broadcast_players(&self, cmd: ServerCommand) {
+        let room_seq = Some(self.last_room_seq.load(Ordering::Relaxed));
         for session in self.users().await {
-            session.try_send(cmd.clone()).await;
+            session.try_send(cmd.clone(), room_seq).await;
         }
     }
 
     pub async fn broadcast_monitors(&self, cmd: ServerCommand) {
+        let room_seq = Some(self.last_room_seq.load(Ordering::Relaxed));
         for session in self.monitors().await {
-            session.try_send(cmd.clone()).await;
+            session.try_send(cmd.clone(), room_seq).await;
         }
     }
 
@@ -396,9 +412,11 @@ impl Room {
     ) {
         let users = self.users().await;
         let monitors = self.monitors().await;
+        // PMP47 B: 事件产生时绑定权威 room_seq（emit-time binding）。
+        let room_seq = Some(self.last_room_seq.load(Ordering::Relaxed));
         for user in users.iter().chain(monitors.iter()) {
             let content = translate(&user.lang);
-            user.try_send(ServerCommand::Message(Message::Chat { user: 0, content })).await;
+            user.try_send(ServerCommand::Message(Message::Chat { user: 0, content }), room_seq).await;
         }
     }
 

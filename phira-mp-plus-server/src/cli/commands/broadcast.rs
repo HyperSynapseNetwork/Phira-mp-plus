@@ -79,7 +79,8 @@ impl CliHandler {
         });
         let mut sent = 0usize;
         for user in &users {
-            user.try_send(msg.clone()).await;
+            // 系统广播消息非房间状态事件，cutover 不适用。
+            user.try_send(msg.clone(), None).await;
             sent += 1;
         }
         info!(sent, message = %message, "broadcast to all");
@@ -135,9 +136,13 @@ impl CliHandler {
         };
         if let Some(user) = user {
             let content = format!("[管理员消息] {}", message);
-            user.try_send(phira_mp_common::ServerCommand::Message(
-                phira_mp_common::Message::Chat { user: 0, content },
-            ))
+            // 管理员消息非房间状态事件，cutover 不适用。
+            user.try_send(
+                phira_mp_common::ServerCommand::Message(
+                    phira_mp_common::Message::Chat { user: 0, content },
+                ),
+                None,
+            )
             .await;
             info!(user = user_id, message = %message, "message to user");
             self.out(format!("  {} 已发送给用户 {}", c::green("✓"), user_id));

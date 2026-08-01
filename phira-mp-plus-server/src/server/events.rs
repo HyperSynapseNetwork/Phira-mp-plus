@@ -240,10 +240,14 @@ impl PlusServerState {
         for user in recipients {
             let empty_args = fluent::FluentArgs::new();
             let prefix = crate::l10n::translate_system(&user.lang, "system-broadcast-prefix", &empty_args);
-            user.try_send(ServerCommand::Message(phira_mp_common::Message::Chat {
-                user: 0,
-                content: format!("{prefix} {message}"),
-            }))
+            user.try_send(
+                ServerCommand::Message(phira_mp_common::Message::Chat {
+                    user: 0,
+                    content: format!("{prefix} {message}"),
+                }),
+                // 系统广播消息非房间状态事件，cutover 不适用。
+                None,
+            )
             .await;
             sent += 1;
         }
@@ -265,7 +269,8 @@ impl PlusServerState {
         }
         self.events.publish_room_event(event.clone());
         if let Some(monitor) = self.get_room_monitor().await {
-            monitor.try_send(ServerCommand::RoomEvent(event)).await;
+            // 监控事件非客户端状态事件，cutover 不适用。
+            monitor.try_send(ServerCommand::RoomEvent(event), None).await;
         }
     }
 }

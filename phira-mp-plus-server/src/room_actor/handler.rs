@@ -72,10 +72,18 @@ fn ok(payload: RoomCommandPayload) -> RoomCommandResult {
     RoomCommandResult::ok(payload, RoomCommandDelivery::PerRoomMailbox)
 }
 
-/// PMP46 Blocker 2: 权威状态事件序号递增 + 通知房间内所有连接 Session。
-/// 每次权威状态变更前调用：`room_event_seq` 递增后立即把新值写入每个成员的
-/// `last_room_seq`（best-effort，单调不减）。此后该命令发出的广播/直发事件，
-/// 其 Gate 条目都会以不低于本事件真实序号的 `room_seq` 打戳——认证激活时
+/// PMP47 B: 该房间当前权威状态事件序号。Room 广播总线上每次 `bump_room_seq`
+/// 都会把新序号写入 `Room::last_room_seq`；Handler 的直发（`try_send`）在
+/// **事件产生时**读取它给 `SnapshotCovered` 事件打戳（`room_seq`），随出站
+/// 条目携带，而非出站消费时读共享镜像——避免 N+1 over-stamp（audit §7.5）。
+fn room_seq(lc: &dyn RoomLifecycle) -> Option<u64> {
+    Some(lc.room().last_room_seq.load(std::sync::atomic::Ordering::Relaxed))
+}
+
+/// PMP46 Blocker 2 / PMP47 B: 权威状态事件序号递增 + 写入 Room 广播总线的
+/// `last_room_seq` 镜像。每次权威状态变更前调用：`room_event_seq` 递增后立即
+/// 把新值写入 `Room::last_room_seq`（emit-time binding）。此后该命令发出的
+/// 广播/直发事件，其 Gate 条目都会以本事件真实序号打戳——认证激活时
 /// `room_seq <= snapshot_seq` 才剔除（快照已包含），快照点之后的事件绝不误删
 /// （audit §7.5）。`BindAndSnapshot` 不调用（只读）。
 async fn bump_room_seq(
@@ -83,10 +91,9 @@ async fn bump_room_seq(
     state: &mut crate::room_actor::actor::RoomState,
 ) -> u64 {
     let seq = state.bump_room_event_seq();
-    for u in lc.users().await.into_iter().chain(lc.monitors().await) {
-        u.last_room_seq
-            .store(seq, std::sync::atomic::Ordering::Relaxed);
-    }
+    lc.room()
+        .last_room_seq
+        .store(seq, std::sync::atomic::Ordering::Relaxed);
     seq
 }
 
@@ -363,7 +370,7 @@ async fn check_all_ready(
                     // Finish admin start
                     as_.state.control.admin_start_pending = false;
                     if let Some(host) = lc.users().await.iter().find(|u| as_.state.control.host_id == Some(u.id)) {
-                        host.try_send(ServerCommand::ChangeHost(true)).await;
+                        host.try_send(ServerCommand::ChangeHost(true), room_seq(lc)).await;
                     }
                 }
                 let round_id = uuid::Uuid::new_v4();
@@ -435,7 +442,7 @@ async fn check_all_ready(
                         // 使客户端本地 Ready 状态与服务器收敛（服务器 started 已清空）。
                         for uid in ready_before {
                             if let Some(u) = lc.users().await.into_iter().find(|u| u.id == uid) {
-                                u.try_send(ServerCommand::Message(Message::CancelReady { user: uid })).await;
+                                u.try_send(ServerCommand::Message(Message::CancelReady { user: uid }), room_seq(lc)).await;
                             }
                         }
                         return ReadyCheckOutcome::StartFailed;
@@ -514,7 +521,7 @@ async fn check_all_ready(
                                 let mut args = fluent::FluentArgs::new();
                                 args.set("chart_name", &last.chart_name);
                                 let content = crate::l10n::translate_system(&lang, "result-ranking-title", &args);
-                                user.try_send(ServerCommand::Message(Message::Chat { user: 0, content })).await;
+                                user.try_send(ServerCommand::Message(Message::Chat { user: 0, content }), room_seq(lc)).await;
                             }
                             // 每位玩家两行
                             for (i, rr) in sorted.iter().enumerate() {
@@ -533,7 +540,7 @@ async fn check_all_ready(
                                 args.set("fc", &fc_str);
                                 args.set("status", &status_str);
                                 let content = crate::l10n::translate_system(&lang, "result-player-line", &args);
-                                user.try_send(ServerCommand::Message(Message::Chat { user: 0, content })).await;
+                                user.try_send(ServerCommand::Message(Message::Chat { user: 0, content }), room_seq(lc)).await;
                                 let mut args2 = fluent::FluentArgs::new();
                                 args2.set("perfect", rr.perfect);
                                 args2.set("good", rr.good);
@@ -541,7 +548,7 @@ async fn check_all_ready(
                                 args2.set("miss", rr.miss);
                                 args2.set("max_combo", rr.max_combo);
                                 let content = crate::l10n::translate_system(&lang, "result-detail-line", &args2);
-                                user.try_send(ServerCommand::Message(Message::Chat { user: 0, content })).await;
+                                user.try_send(ServerCommand::Message(Message::Chat { user: 0, content }), room_seq(lc)).await;
                             }
                         }
                     }
@@ -574,10 +581,10 @@ async fn check_all_ready(
                         lc.send_msg(Message::NewHost { user: new_host.id }).await;
                         if let Some(old_uid) = old_id {
                             if let Some(old) = lc.users().await.iter().find(|u| u.id == old_uid) {
-                                old.try_send(ServerCommand::ChangeHost(false)).await;
+                                old.try_send(ServerCommand::ChangeHost(false), room_seq(lc)).await;
                             }
                         }
-                        new_host.try_send(ServerCommand::ChangeHost(true)).await;
+                        new_host.try_send(ServerCommand::ChangeHost(true), room_seq(lc)).await;
                         lc.publish_update(PartialRoomData {
                             host: Some(new_host.id),
                             ..Default::default()
@@ -628,7 +635,7 @@ pub(super) async fn force_start_playing(
         if *admin_started {
             state.control.admin_start_pending = false;
             if let Some(host) = lc.users().await.iter().find(|u| state.control.host_id == Some(u.id)) {
-                host.try_send(ServerCommand::ChangeHost(true)).await;
+                host.try_send(ServerCommand::ChangeHost(true), room_seq(lc)).await;
             }
         }
     }
@@ -698,7 +705,7 @@ pub(super) async fn force_start_playing(
             // PMP44 P0-N: 向此前已 Ready 的用户发送官方 CancelReady，收敛客户端状态。
             for uid in ready_before {
                 if let Some(u) = lc.users().await.into_iter().find(|u| u.id == uid) {
-                    u.try_send(ServerCommand::Message(Message::CancelReady { user: uid })).await;
+                    u.try_send(ServerCommand::Message(Message::CancelReady { user: uid }), room_seq(lc)).await;
                 }
             }
             return;
@@ -948,7 +955,7 @@ impl RoomCommandHandler {
                         if let Some(old_uid) = as_.state.control.host_id {
                             if old_uid != *uid {
                                 if let Some(old) = lc.users().await.iter().find(|u| u.id == old_uid) {
-                                    old.try_send(ServerCommand::ChangeHost(false)).await;
+                                    old.try_send(ServerCommand::ChangeHost(false), room_seq(lc)).await;
                                 }
                             }
                         }
@@ -958,7 +965,7 @@ impl RoomCommandHandler {
                         // Announce
                         lc.send_msg(Message::NewHost { user: *uid }).await;
                         if let Some(u) = lc.users().await.iter().find(|u| u.id == *uid) {
-                            u.try_send(ServerCommand::ChangeHost(true)).await;
+                            u.try_send(ServerCommand::ChangeHost(true), room_seq(lc)).await;
                         }
                         lc.publish_update(PartialRoomData {
                             host: Some(*uid),
@@ -971,7 +978,7 @@ impl RoomCommandHandler {
                         // Notify old host
                         if let Some(old_uid) = as_.state.control.host_id {
                             if let Some(old) = lc.users().await.iter().find(|u| u.id == old_uid) {
-                                old.try_send(ServerCommand::ChangeHost(false)).await;
+                                old.try_send(ServerCommand::ChangeHost(false), room_seq(lc)).await;
                             }
                         }
                         as_.state.control.host_id = None;
@@ -1013,12 +1020,12 @@ impl RoomCommandHandler {
                 lc.room().send_system_msg_simple("room-closed-by-admin").await;
                 for user in lc.users().await {
                     *user.room.write().await = None;
-                    user.try_send(ServerCommand::LeaveRoom(Ok(()))).await;
+                    user.try_send(ServerCommand::LeaveRoom(Ok(())), room_seq(lc)).await;
                     lc.publish_room_event(RoomEvent::LeaveRoom { room: lc.room().id.clone(), user: user.id }).await;
                 }
                 for monitor in lc.monitors().await {
                     *monitor.room.write().await = None;
-                    monitor.try_send(ServerCommand::LeaveRoom(Ok(()))).await;
+                    monitor.try_send(ServerCommand::LeaveRoom(Ok(())), room_seq(lc)).await;
                 }
                 lc.remove_room(&lc.room().id).await;
                 lc.dispatch_plugin_event(PluginEvent::RoomModify {
@@ -1049,7 +1056,7 @@ impl RoomCommandHandler {
                 }
                 let was_monitor = user.monitor.load(std::sync::atomic::Ordering::SeqCst);
                 let should_drop = lc.on_user_leave(&user).await;
-                user.try_send(ServerCommand::LeaveRoom(Ok(()))).await;
+                user.try_send(ServerCommand::LeaveRoom(Ok(())), room_seq(lc)).await;
                 if should_drop { lc.remove_room(&lc.room().id).await; }
                 if !was_monitor {
                     lc.publish_room_event(RoomEvent::LeaveRoom { room: lc.room().id.clone(), user: *target_id }).await;
@@ -1088,7 +1095,7 @@ impl RoomCommandHandler {
 
                 // Temporarily remove host privileges
                 if let Some(host) = lc.users().await.iter().find(|u| as_.state.control.host_id == Some(u.id)) {
-                    host.try_send(ServerCommand::ChangeHost(false)).await;
+                    host.try_send(ServerCommand::ChangeHost(false), room_seq(lc)).await;
                 }
 
                 lc.reset_game_time().await;
@@ -1115,7 +1122,7 @@ impl RoomCommandHandler {
                     if let InternalRoomState::WaitForReady { admin_started, .. } = &as_.state.lifecycle {
                         if *admin_started {
                             if let Some(host) = lc.users().await.iter().find(|u| as_.state.control.host_id == Some(u.id)) {
-                                host.try_send(ServerCommand::ChangeHost(true)).await;
+                                host.try_send(ServerCommand::ChangeHost(true), room_seq(lc)).await;
                             }
                         }
                     }
@@ -1230,7 +1237,7 @@ impl RoomCommandHandler {
                             // the official core sequence, never interleaved.
                             if admin_started {
                                 if let Some(host) = lc.users().await.iter().find(|u| as_.state.control.host_id == Some(u.id)) {
-                                    host.try_send(ServerCommand::ChangeHost(true)).await;
+                                    host.try_send(ServerCommand::ChangeHost(true), room_seq(lc)).await;
                                 }
                             }
                         } else {

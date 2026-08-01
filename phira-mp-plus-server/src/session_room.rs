@@ -195,43 +195,58 @@ pub async fn create_room(
                 match crate::cli::collect_cli_continuation(&mut *pending, command) {
                     Ok(Some(command)) => command,
                     Ok(None) => {
-                        user.try_send(ServerCommand::Message(Message::Chat {
-                            user: 0,
-                            content: "[CLI] 已暂存续行；下一条命令需以 -- 开头".to_string(),
-                        }))
+                        user.try_send(
+                            ServerCommand::Message(Message::Chat {
+                                user: 0,
+                                content: "[CLI] 已暂存续行；下一条命令需以 -- 开头".to_string(),
+                            }),
+                            None,
+                        )
                         .await;
                         bail!("admin CLI command pending");
                     }
                     Err(err) => {
-                        user.try_send(ServerCommand::Message(Message::Chat {
-                            user: 0,
-                            content: format!("[CLI] {err}"),
-                        }))
+                        user.try_send(
+                            ServerCommand::Message(Message::Chat {
+                                user: 0,
+                                content: format!("[CLI] {err}"),
+                            }),
+                            None,
+                        )
                         .await;
                         bail!("admin CLI continuation error");
                     }
                 }
             };
             if command.is_empty() {
-                user.try_send(ServerCommand::Message(Message::Chat {
-                    user: 0,
-                    content: "[CLI] 空命令".to_string(),
-                }))
+                user.try_send(
+                    ServerCommand::Message(Message::Chat {
+                        user: 0,
+                        content: "[CLI] 空命令".to_string(),
+                    }),
+                    None,
+                )
                 .await;
                 bail!("empty admin command");
             }
             let lines =
                 crate::cli::execute_cli_once(Arc::clone(&user.server), command.clone()).await;
-            user.try_send(ServerCommand::Message(Message::Chat {
-                user: 0,
-                content: format!("[CLI] > {command}"),
-            }))
+            user.try_send(
+                ServerCommand::Message(Message::Chat {
+                    user: 0,
+                    content: format!("[CLI] > {command}"),
+                }),
+                None,
+            )
             .await;
             for line in lines {
-                user.try_send(ServerCommand::Message(Message::Chat {
-                    user: 0,
-                    content: format!("[CLI] {line}"),
-                }))
+                user.try_send(
+                    ServerCommand::Message(Message::Chat {
+                        user: 0,
+                        content: format!("[CLI] {line}"),
+                    }),
+                    None,
+                )
                 .await;
             }
             bail!("admin CLI command executed");
@@ -526,10 +541,13 @@ pub async fn join_room(
                 } else {
                     *pending = Some(id.to_string());
                     let _ = origin
-                        .try_send(ServerCommand::Message(Message::Chat {
-                            user: 0,
-                            content: tl!("join-game-ongoing-warning"),
-                        }))
+                        .try_send(
+                            ServerCommand::Message(Message::Chat {
+                                user: 0,
+                                content: tl!("join-game-ongoing-warning"),
+                            }),
+                            None,
+                        )
                         .await;
                     bail!("{}", tl!("join-game-ongoing"));
                 }
@@ -808,11 +826,15 @@ pub async fn join_room(
         let history = room.chat_history.read().await;
         for msg in history.iter() {
             if let Message::Chat { user: chat_user, content } = msg {
-                let _ = origin.try_send(ServerCommand::Message(Message::Chat {
-                    user: *chat_user,
-                    content: content.clone(),
-                }))
-                .await;
+                let _ = origin
+                    .try_send(
+                        ServerCommand::Message(Message::Chat {
+                            user: *chat_user,
+                            content: content.clone(),
+                        }),
+                        None,
+                    )
+                    .await;
             }
         }
     }

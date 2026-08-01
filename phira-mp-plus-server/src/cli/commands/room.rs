@@ -316,12 +316,15 @@ impl CliHandler {
                                             format!("你已被加入该房间的黑名单：{}", reason.trim())
                                         };
                                         target
-                                            .try_send(phira_mp_common::ServerCommand::Message(
-                                                phira_mp_common::Message::Chat {
-                                                    user: 0,
-                                                    content: detail,
-                                                },
-                                            ))
+                                            .try_send(
+                                                phira_mp_common::ServerCommand::Message(
+                                                    phira_mp_common::Message::Chat {
+                                                        user: 0,
+                                                        content: detail,
+                                                    },
+                                                ),
+                                                None,
+                                            )
                                             .await;
                                         removed = self
                                             .state

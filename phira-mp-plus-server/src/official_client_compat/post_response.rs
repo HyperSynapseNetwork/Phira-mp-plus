@@ -196,7 +196,10 @@ impl PostResponseItem {
             }
             PostResponseTarget::User(user, command) => {
                 if let Some(user) = user.upgrade() {
-                    user.try_send(command.clone()).await;
+                    // 非会话（CLI/admin）补偿路径：补偿在响应后投递，目标用户
+                    // 的 gate 已激活，room_seq 无关；传 None（cutover 不剔除，
+                    // 避免误删补偿）。
+                    user.try_send(command.clone(), None).await;
                 }
                 Ok(())
             }

@@ -76,7 +76,11 @@ async fn send_dispatch_response(
         }
     } else {
         outbound_tx
-            .send(OutboundItem::Packet(resp))
+            .send(OutboundItem::Packet {
+                cmd: resp,
+                // 命令响应非房间状态事件（auth/chat/post），cutover 不适用。
+                room_seq: None,
+            })
             .await
             .map_err(|err| anyhow!("outbound channel closed: {err}"))
     };
@@ -389,7 +393,8 @@ impl CommandOrigin {
             debug!("dropping response: origin session already dropped");
             return false;
         };
-        session.try_send(cmd).await;
+        // 命令响应非房间状态事件，cutover 不适用。
+        session.try_send(cmd, None).await;
         true
     }
 
@@ -557,7 +562,15 @@ pub(crate) enum ActivationOutcome {
 pub(crate) enum OutboundItem {
     /// 常规包，按到达顺序送写。认证屏障未打开时由出站任务缓冲进
     /// `SessionOutboundGate`（沿用 P0-G 有界剔除）。
-    Packet(ServerCommand),
+    ///
+    /// `room_seq` 是产生该事件时 Room Actor 的权威 `room_event_seq`（PMP47 B：
+    /// 在事件产生时由 Room Actor 绑定，随出站条目携带，而非出站消费时读共享
+    /// 镜像）。`None` 表示非状态事件（Chat/遥测/系统消息）或非房间来源——
+    /// cutover 不适用，激活时一律发送。
+    Packet {
+        cmd: ServerCommand,
+        room_seq: Option<u64>,
+    },
     /// 需 flush 的临界响应（`Authenticate(Ok)`/`JoinRoom(Ok)`/...）。携带
     /// oneshot 回传 flush 结果，调用方据此保留 P0-E/P0-J 的发送成功判定。
     Critical(ServerCommand, oneshot::Sender<Result<()>>),
@@ -609,18 +622,14 @@ async fn run_outbound_task(
     let mut active = false;
     while let Some(item) = rx.recv().await {
         match item {
-            OutboundItem::Packet(cmd) => {
+            OutboundItem::Packet { cmd, room_seq } => {
                 if !active {
                     // 认证屏障未打开：缓冲进 gate，沿用 P0-G 有界丢弃策略。
-                    // PMP46 Blocker 2: 读取该 Session 对应 User 的 `last_room_seq`
-                    // 镜像作为事件打戳——快照切换剔除据此只删快照已包含的
-                    // `SnapshotCovered` 事件。Session 尚未构造（weak 升级失败）时
-                    // 传 `None`，激活时一律发送（安全方向，over-send 不误删）。
+                    // PMP47 B: `room_seq` 在事件产生时由 Room Actor 绑定并随
+                    // `OutboundItem::Packet` 携带——此处直接使用，绝不回读共享
+                    // 镜像（避免 N+1 over-stamp）。`None` 表示非状态事件或非
+                    // 房间来源，激活时一律发送（安全方向，over-send 不误删）。
                     let mut pending = gate.pending.lock().await;
-                    let room_seq = session_weak
-                        .get()
-                        .and_then(Weak::<Session>::upgrade)
-                        .map(|s| s.user.last_room_seq.load(Ordering::Relaxed));
                     gate.push_bounded(&mut pending, cmd, room_seq);
                 } else {
                     let Some(send_tx) = send_tx_ready.get() else {
@@ -816,9 +825,9 @@ impl SessionOutboundGate {
     /// - 若清空缓冲后新事件仍超字节预算：控制事件溢出 → 置 `overflowed`
     ///   （fail-closed），`activate` 将拒绝激活，认证路径关闭 Session。
     ///
-    /// `room_seq` 是产生该事件时 Room Actor 的权威状态事件序号（来自该
-    /// Session 对应 User 的 `last_room_seq` 镜像，PMP46 Blocker 2）。只对
-    /// `SnapshotCovered` 打戳；`None` 表示镜像不可用或非状态事件——cutover
+    /// `room_seq` 是产生该事件时 Room Actor 的权威状态事件序号（PMP47 B：在
+    /// 事件产生时由 Room Actor 绑定，随 `OutboundItem::Packet` 携带）。只对
+    /// `SnapshotCovered` 打戳；`None` 表示非状态事件或非房间来源——cutover
     /// 不适用，激活时一律发送（绝不误删快照点之后的事件）。
     fn push_bounded(&self, pending: &mut GatePending, cmd: ServerCommand, room_seq: Option<u64>) {
         let seq = pending.next_seq;
@@ -2893,11 +2902,13 @@ impl Session {
                             if created_room {
                                 let creating_player = creating_player.expect("checked above");
                                 if let Err(err) = outbound_tx
-                                    .send(OutboundItem::Packet(ServerCommand::Message(
-                                        Message::CreateRoom {
+                                    .send(OutboundItem::Packet {
+                                        cmd: ServerCommand::Message(Message::CreateRoom {
                                             user: creating_player.id,
-                                        },
-                                    )))
+                                        }),
+                                        // 非状态事件（房间创建通知），cutover 不适用。
+                                        room_seq: None,
+                                    })
                                     .await
                                 {
                                     error!(
@@ -3013,14 +3024,17 @@ impl Session {
         &self.user.name
     }
 
+    /// `room_seq` 是产生该事件时 Room Actor 的权威状态事件序号（PMP47 B：事件
+    /// 产生时绑定，随出站条目携带，而非出站消费时读共享镜像）。非房间来源或
+    /// 非状态事件（命令响应/Chat/遥测）传 `None`。
     #[allow(clippy::unused_async)]
-    pub async fn try_send(&self, cmd: ServerCommand) {
+    pub async fn try_send(&self, cmd: ServerCommand, room_seq: Option<u64>) {
         // PMP44 P0-I: 统一经出站队列。未激活时由出站任务缓冲进 gate（沿用
         // P0-G 有界剔除）；激活后直通送写。通道满说明该客户端跟不上（慢
         // 消费者），断开连接而非拖累 Room Actor 广播（P0-I §13.4）。
         if self
             .outbound_tx
-            .try_send(OutboundItem::Packet(cmd))
+            .try_send(OutboundItem::Packet { cmd, room_seq })
             .is_err()
         {
             warn!(session = %self.id, user = self.user.id, "disconnecting slow client");
@@ -3031,13 +3045,16 @@ impl Session {
 
     /// Send a command to this session, waiting for capacity (async).
     /// Closes the connection on error (same as try_send on failure).
-    pub async fn send(&self, cmd: ServerCommand) -> Result<()> {
-        self.outbound_tx.send(OutboundItem::Packet(cmd)).await.map_err(|err| {
-            warn!(session = %self.id, user = self.user.id, ?err, "disconnecting slow client (send)");
-            self.stream.close();
-            let _ = self.user.server.lost_con_tx.try_send(self.id);
-            anyhow!("outbound channel closed: {err}")
-        })
+    pub async fn send(&self, cmd: ServerCommand, room_seq: Option<u64>) -> Result<()> {
+        self.outbound_tx
+            .send(OutboundItem::Packet { cmd, room_seq })
+            .await
+            .map_err(|err| {
+                warn!(session = %self.id, user = self.user.id, ?err, "disconnecting slow client (send)");
+                self.stream.close();
+                let _ = self.user.server.lost_con_tx.try_send(self.id);
+                anyhow!("outbound channel closed: {err}")
+            })
     }
 
     /// Send a command and block until the packet has been flushed to the socket
@@ -3132,7 +3149,7 @@ mod tests {
             generation: 0,
         };
         assert!(!origin.is_current().await);
-        assert!(!origin.try_send(ServerCommand::Pong).await);
+        assert!(!origin.try_send(ServerCommand::Pong, None).await);
         // Must be a no-op — never panic, never touch any live session.
         origin.close_uncertain().await;
     }
@@ -3321,6 +3338,54 @@ mod tests {
         assert!(matches!(sent[1], ServerCommand::Message(Message::GameStart { .. })));
         assert!(matches!(sent[2], ServerCommand::Pong));
         assert!(matches!(sent[3], ServerCommand::ChangeHost(false)));
+    }
+
+    /// PMP47 B / PMP45 P0-G: 慢消费者（阻塞的出站队列）——缓冲接近上限，控制
+    /// 事件 drop-oldest 剔除与快照切换剔除共存。cutover 只剔除
+    /// `room_seq <= snapshot_seq` 的 SnapshotCovered（快照已包含）；快照点后
+    /// 的增量（`room_seq > snapshot_seq`）与 Chat（`room_seq = None`）在出站
+    /// 队列被压满（drop-oldest 逐出最旧）时仍绝不丢失（audit §7.5 / §11）。
+    #[tokio::test]
+    async fn outbound_gate_cutover_blocked_queue_drops_covered_keeps_delta_and_chat() {
+        let gate = SessionOutboundGate::new(3, 64 * 1024, Duration::from_millis(8000));
+        let sink = TestSink::default();
+
+        // 快照构建前 Room Actor 已广播的状态事件（快照已包含），room_seq <=
+        // snapshot_seq。缓冲被填满（3/3）。
+        {
+            let mut pending = gate.pending.lock().await;
+            gate.push_bounded(&mut pending, ServerCommand::ChangeHost(true), Some(1));
+            gate.push_bounded(&mut pending, ServerCommand::LockRoom(Ok(())), Some(2));
+            gate.push_bounded(&mut pending, ServerCommand::ChangeHost(true), Some(3));
+        }
+        // cutover = BindAndSnapshot 返回的 snapshot_seq（Room Actor 序号，audit §7.5）。
+        let _cutover = gate.begin_room_cutover(3).await;
+
+        // 快照构建期间（出站队列阻塞）Room Actor 继续广播：一条 Chat（cutover
+        // 绝不剔除）与一条快照点后增量（room_seq 4 > 3）。缓冲已满触发
+        // drop-oldest，最旧的 seq 1 / seq 2 被逐出（有界剔除，与快照无关），
+        // 但增量与 Chat 必须保留。
+        {
+            let mut pending = gate.pending.lock().await;
+            gate.push_bounded(
+                &mut pending,
+                ServerCommand::Message(Message::Chat {
+                    user: 7,
+                    content: "hi".into(),
+                }),
+                None,
+            );
+            gate.push_bounded(&mut pending, ServerCommand::ChangeHost(false), Some(4));
+        }
+        gate.activate(&sink).await.unwrap();
+
+        let sent = sink.sent.lock().unwrap();
+        // drop-oldest 逐出 seq 1 / seq 2（阻塞队列的有界剔除）；cutover 剔除
+        // seq 3（room_seq 3 <= 3，快照已包含）；Chat（None）与 ChangeHost(false)
+        // （room_seq 4 > 3，快照点后增量）必须发送。
+        assert_eq!(sent.len(), 2, "only snapshot-covered events are cut over");
+        assert!(matches!(sent[0], ServerCommand::Message(Message::Chat { .. })));
+        assert!(matches!(sent[1], ServerCommand::ChangeHost(false)));
     }
 
     /// PMP45 P0-G: `classify_command` 分类——快照覆盖/非快照/遥测。

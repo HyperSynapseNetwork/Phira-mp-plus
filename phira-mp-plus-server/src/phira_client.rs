@@ -768,7 +768,8 @@ impl PhiraRetryClient {
             }
             PhiraRetryNoticeTarget::User(user) => {
                 self.counters.retry_notices.fetch_add(1, Ordering::Relaxed);
-                user.try_send(cmd).await;
+                // 重试通知非房间状态事件，cutover 不适用。
+                user.try_send(cmd, None).await;
             }
         }
     }

@@ -305,12 +305,16 @@ async fn main() -> Result<()> {
                 .or_insert_with(|| (session.user.name.clone(), session.id.to_string()));
         }
         session
-            .try_send(phira_mp_common::ServerCommand::Message(
-                phira_mp_common::Message::Chat {
-                    user: 0,
-                    content: "服务器正在关闭...".to_string(),
-                },
-            ))
+            .try_send(
+                phira_mp_common::ServerCommand::Message(
+                    phira_mp_common::Message::Chat {
+                        user: 0,
+                        content: "服务器正在关闭...".to_string(),
+                    },
+                ),
+                // 服务器关闭通知非房间状态事件，cutover 不适用。
+                None,
+            )
             .await;
         session.stream.close();
     }
