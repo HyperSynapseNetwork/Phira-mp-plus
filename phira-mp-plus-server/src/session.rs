@@ -2141,11 +2141,14 @@ mod tests {
         assert!(gate.try_send(&sink, ServerCommand::LockRoom(Ok(()))).await);
         gate.activate(&sink).await.unwrap();
 
-        let sent = sink.sent.lock().unwrap();
-        assert_eq!(sent.len(), 3, "oldest control event must be dropped");
-        assert!(matches!(sent[0], ServerCommand::Chat(Ok(()))));
-        assert!(matches!(sent[1], ServerCommand::ChangeHost(false)));
-        assert!(matches!(sent[2], ServerCommand::LockRoom(Ok(()))));
+        {
+            // 作用域限定的锁：guard 必须在后续 `.await` 之前释放（await_holding_lock）。
+            let sent = sink.sent.lock().unwrap();
+            assert_eq!(sent.len(), 3, "oldest control event must be dropped");
+            assert!(matches!(sent[0], ServerCommand::Chat(Ok(()))));
+            assert!(matches!(sent[1], ServerCommand::ChangeHost(false)));
+            assert!(matches!(sent[2], ServerCommand::LockRoom(Ok(()))));
+        }
 
         // 遥测：缓冲满后新 Pong 直接丢弃（coalesce），不触发 drop-oldest。
         let gate2 = SessionOutboundGate::new(2, 64 * 1024, Duration::from_millis(8000));
