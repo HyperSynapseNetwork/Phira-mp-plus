@@ -1478,16 +1478,24 @@ impl RoomCommandHandler {
                         let leave_data = json!({"action": "leave"}).to_string();
                         let check_deadline = std::time::Instant::now()
                             + std::time::Duration::from_secs(30);
-                        // 模块级 async fn——避免闭包/泛型类型推断循环（E0391）。
+                        // 模块级 async fn 并 boxed 为 trait object——让 `spawn_named`
+                        // 的泛型 `F` 立即确定为 `Pin<Box<dyn Future + Send>>`。若不 box，
+                        // `execute_with_actor` 的 opaque future 类型会通过
+                        // `remove_user_response_after` 包含 `room_mailbox_sender` 的
+                        // 具体 future，而该 sender 的 worker spawn 又引用
+                        // `execute_with_actor`——形成 E0391 类型循环。
+                        let resp_after_fut: std::pin::Pin<
+                            Box<dyn std::future::Future<Output = ()> + Send + 'static>,
+                        > = Box::pin(remove_user_response_after(
+                            srv,
+                            plugin_room_id,
+                            plugin_user_id,
+                            leave_data,
+                            check_deadline,
+                        ));
                         crate::supervisor_actor::spawn_named(
                             format!("room-modify-leave-{plugin_room_id}-{plugin_user_id}"),
-                            remove_user_response_after(
-                                srv,
-                                plugin_room_id,
-                                plugin_user_id,
-                                leave_data,
-                                check_deadline,
-                            ),
+                            resp_after_fut,
                         );
                         ok(RoomCommandPayload::UserRemoved {
                             room_id: room_id.clone().to_string(), user_id: *user_id, room_dropped: should_drop,
