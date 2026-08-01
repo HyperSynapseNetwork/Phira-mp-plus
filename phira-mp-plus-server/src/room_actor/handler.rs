@@ -1516,8 +1516,12 @@ impl RoomCommandHandler {
                         );
                     }
                 }
-                let rid: phira_mp_common::RoomId = room_id.clone().try_into()
-                    .map_err(|_| err("invalid room id"))?;
+                // `execute_with_actor` 返回 `RoomCommandResult`（非 `Result`），
+                // 不能使用 `?`——显式 match 处理非法 room id。
+                let rid: phira_mp_common::RoomId = match room_id.clone().try_into() {
+                    Ok(rid) => rid,
+                    Err(_) => return err("invalid room id"),
+                };
                 let client_state = phira_mp_common::ClientRoomState {
                     id: rid,
                     state,
