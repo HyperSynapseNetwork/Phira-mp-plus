@@ -150,6 +150,11 @@ struct AuthAcceptedState {
     /// `AuthPhase::Active` 之后（PMP45 P0-D/P0-C 两阶段交接），此前任何一步
     /// 失败旧连接仍完整可回滚。
     previous_session: Option<Arc<Session>>,
+    /// PMP46 Blocker 1: 旧 Session 被取代前的绑定代际（`previous_session`
+    /// 认证时的 `bound_generation`）。失败重连回滚时用于把 User 绑定精确恢复
+    /// 为 (previous_session, previous_generation)，使旧连接的 origin 判定重新
+    /// 成立。仅 reconnect 路径为 `Some`，新用户路径为 `None`。
+    previous_generation: Option<u64>,
 }
 
 /// PMP44 P0-E: 认证回滚判定（纯逻辑，供单测）。成功路径为
@@ -163,6 +168,14 @@ fn should_rollback_auth(phase: AuthPhase, wal_ok: bool, flush_ok: bool) -> bool 
         AuthPhase::ResponseFlushed => !flush_ok,
         AuthPhase::Active => false,
     }
+}
+
+/// PMP46 Blocker 1: 失败重连回滚是否应恢复旧绑定（纯逻辑，供单测）。
+/// 仅当本次失败认证确实是当前绑定（`clear_session_if_matches` 成功，证明
+/// 无更新的 C 已接管）且存在可恢复的旧绑定（A + previous_generation）时
+/// 才恢复 A；否则让胜出的 C 保持当前绑定，绝不覆盖更年轻的绑定。
+fn should_restore_previous(clear_succeeded: bool, has_previous: bool) -> bool {
+    clear_succeeded && has_previous
 }
 
 /// PMP44 P0-E: 认证失败回滚。撤销绑定、移除新注册用户、关闭新传输并拒绝
@@ -180,6 +193,12 @@ fn should_rollback_auth(phase: AuthPhase, wal_ok: bool, flush_ok: bool) -> bool 
 ///   `Authenticate(Ok)` flush，结果即不确定——绝不补发 Err（P0-B），只关闭
 ///   传输。
 ///
+/// PMP46 Blocker 1 语义扩展：
+/// - `previous`：被本次 reconnect 取代的旧绑定 `(旧 Session, 旧代际)`；
+///   仅 reconnect 路径为 `Some`。当失败认证确实是当前绑定（clear 成功）时
+///   把 User 绑定恢复为 (A, previous_generation)，杜绝旧连接"物理存活但
+///   逻辑 stale"的僵尸状态。非 reconnect 路径为 `None`。
+///
 /// 顺序很关键：先 `clear_session_if_matches`（使 lost-connection worker 的
 /// `user_ref` 判定为 false，从而跳过 dangle），再移除新注册用户，再补发
 /// 持久化补偿，最后（可选）发送拒绝并关闭传输。
@@ -189,6 +208,7 @@ async fn rollback_failed_auth(
     this: &OnceCell<Arc<Session>>,
     user: Option<&Arc<User>>,
     newly_created: bool,
+    previous: Option<(Arc<Session>, u64)>,
     bound_identity: Option<(Uuid, u64)>,
     durable: bool,
     send_err: bool,
@@ -200,8 +220,27 @@ async fn rollback_failed_auth(
         // PMP45 P0-C: 只清除与本次失败认证精确同代的绑定，绝不误清新会话
         //（reconnect 路径在 WAL 失败时尚未 set_session，旧绑定保持不变，
         // 旧连接可继续存活）。
+        let mut cleared_failed_binding = false;
         if let Some((session_id, generation)) = bound_identity {
-            user.clear_session_if_matches(session_id, generation).await;
+            cleared_failed_binding =
+                user.clear_session_if_matches(session_id, generation).await;
+        }
+        // PMP46 Blocker 1: 失败重连恢复旧绑定——B 认证失败且当时确实是当前
+        // 绑定（clear 成功），恢复 A + previous_generation，避免 A 变成
+        // "物理存活但逻辑 stale"的僵尸连接（广播断流、命令被判 stale）。
+        // 仅当 clear 成功才恢复：若更新的 C 已接管（clear 返回 false），
+        // 让 C 胜出，绝不覆盖更年轻的绑定。
+        if should_restore_previous(cleared_failed_binding, previous.is_some()) {
+            if let Some((prev_session, prev_generation)) = &previous {
+                user.restore_binding(Arc::downgrade(prev_session), *prev_generation)
+                    .await;
+                tracing::warn!(
+                    user = user.id,
+                    prev_session = %prev_session.id,
+                    prev_generation = *prev_generation,
+                    "reconnect failed; restored previous session binding"
+                );
+            }
         }
         // 本次认证新建的用户：仅当 server.users 仍指向该 User 时移除
         //（Arc::ptr_eq 守卫，与既有代码一致）。
@@ -1283,12 +1322,19 @@ impl Session {
                                             // PMP44 P0-E: 捕获被取代的旧 Session；其关闭推迟到
                                             // 新会话达到 AuthPhase::Active 之后（PMP45 P0-D/P0-C
                                             // 两阶段交接）。若中途失败，旧连接仍完整可回滚。
-                                            let previous_session = {
+                                            // PMP46 Blocker 1: 同时捕获旧绑定代际——B 认证失败
+                                            // 时需把 User 绑定精确恢复为 (A, previous_generation)。
+                                            // 必须在 set_session 覆盖之前读取（此时代际仍是 A 的）。
+                                            let (previous_session, previous_generation) = {
                                                 let guard = existing.binding.read().await;
-                                                guard
-                                                    .session
-                                                    .as_ref()
-                                                    .and_then(std::sync::Weak::upgrade)
+                                                match guard.session.as_ref().and_then(
+                                                    std::sync::Weak::upgrade,
+                                                ) {
+                                                    Some(session) => {
+                                                        (Some(session), Some(guard.generation))
+                                                    }
+                                                    None => (None, None),
+                                                }
                                             };
                                             let _ = auth_tx.take().unwrap().send(
                                                 AuthenticationOutcome::Accepted(
@@ -1306,6 +1352,7 @@ impl Session {
                                                     user: existing,
                                                     newly_created: false,
                                                     previous_session,
+                                                    previous_generation,
                                                 }),
                                             })
                                         } else {
@@ -1354,6 +1401,7 @@ impl Session {
                                                     user,
                                                     newly_created: true,
                                                     previous_session: None,
+                                                    previous_generation: None,
                                                 }),
                                             })
                                         }
@@ -1377,6 +1425,7 @@ impl Session {
                                     user,
                                     newly_created,
                                     previous_session,
+                                    previous_generation,
                                 }) = auth_resolved.accepted
                                 else {
                                     // Authentication was deliberately rejected and the Session
@@ -1385,6 +1434,16 @@ impl Session {
                                     panicked.store(true, Ordering::SeqCst);
                                     return;
                                 };
+                                // PMP46 Blocker 1: 回滚所需的旧绑定恢复信息（仅 reconnect
+                                // 路径二者均为 Some）。非 reconnect（console/monitor/新用户）
+                                // 路径为 None，回滚不做恢复。
+                                let previous_restore =
+                                    match (&previous_session, previous_generation) {
+                                        (Some(session), Some(generation)) => {
+                                            Some((Arc::clone(session), generation))
+                                        }
+                                        _ => None,
+                                    };
                                 if this.get().is_none() {
                                     // Accepted 已发出但 Session 未构造（oneshot 被丢弃）——
                                     // 防御性终止，不进入成功路径。
@@ -1466,6 +1525,7 @@ impl Session {
                                             &this,
                                             Some(&user),
                                             newly_created,
+                                            previous_restore.clone(),
                                             None,
                                             false,
                                             true,
@@ -1507,6 +1567,7 @@ impl Session {
                                             &this,
                                             Some(&user),
                                             newly_created,
+                                            previous_restore.clone(),
                                             None,
                                             false,
                                             true,
@@ -1562,6 +1623,7 @@ impl Session {
                                             &this,
                                             Some(&user),
                                             newly_created,
+                                            previous_restore.clone(),
                                             bound_identity,
                                             true,
                                             true,
@@ -1586,6 +1648,7 @@ impl Session {
                                             &this,
                                             Some(&user),
                                             newly_created,
+                                            previous_restore.clone(),
                                             bound_identity,
                                             true,
                                             true,
@@ -1640,6 +1703,7 @@ impl Session {
                                             &this,
                                             Some(&user),
                                             newly_created,
+                                            previous_restore.clone(),
                                             bound_identity,
                                             true,
                                             false,
@@ -1678,6 +1742,7 @@ impl Session {
                                         &this,
                                         Some(&user),
                                         newly_created,
+                                        previous_restore.clone(),
                                         bound_identity,
                                         true,
                                         false,
@@ -1741,6 +1806,7 @@ impl Session {
                                             &this,
                                             Some(&user),
                                             newly_created,
+                                            previous_restore.clone(),
                                             bound_identity,
                                             true,
                                             false,
@@ -1869,6 +1935,7 @@ impl Session {
                                                 &this,
                                                 Some(&user),
                                                 false,
+                                                None,
                                                 bound_identity,
                                                 false,
                                                 true,
@@ -1898,6 +1965,7 @@ impl Session {
                                                 &this,
                                                 Some(&user),
                                                 false,
+                                                None,
                                                 bound_identity,
                                                 false,
                                                 true,
@@ -1952,6 +2020,7 @@ impl Session {
                                                 &this,
                                                 Some(&user),
                                                 false,
+                                                None,
                                                 bound_identity,
                                                 false,
                                                 false,
@@ -2015,6 +2084,7 @@ impl Session {
                                                     &this,
                                                     Some(&user),
                                                     false,
+                                                    None,
                                                     bound_identity,
                                                     false,
                                                     false,
@@ -2118,6 +2188,7 @@ impl Session {
                                                 &this,
                                                 Some(&user),
                                                 false,
+                                                None,
                                                 bound_identity,
                                                 false,
                                                 true,
@@ -2149,6 +2220,7 @@ impl Session {
                                                 &this,
                                                 Some(&user),
                                                 false,
+                                                None,
                                                 bound_identity,
                                                 false,
                                                 true,
@@ -2204,6 +2276,7 @@ impl Session {
                                                 &this,
                                                 Some(&user),
                                                 false,
+                                                None,
                                                 bound_identity,
                                                 false,
                                                 false,
@@ -2270,6 +2343,7 @@ impl Session {
                                                     &this,
                                                     Some(&user),
                                                     false,
+                                                    None,
                                                     bound_identity,
                                                     false,
                                                     false,
@@ -2373,6 +2447,7 @@ impl Session {
                                                 &this,
                                                 Some(&user),
                                                 true,
+                                                None,
                                                 bound_identity,
                                                 false,
                                                 true,
@@ -2404,6 +2479,7 @@ impl Session {
                                                 &this,
                                                 Some(&user),
                                                 true,
+                                                None,
                                                 bound_identity,
                                                 false,
                                                 true,
@@ -2459,6 +2535,7 @@ impl Session {
                                                 &this,
                                                 Some(&user),
                                                 true,
+                                                None,
                                                 bound_identity,
                                                 false,
                                                 false,
@@ -2523,6 +2600,7 @@ impl Session {
                                                     &this,
                                                     Some(&user),
                                                     true,
+                                                    None,
                                                     bound_identity,
                                                     false,
                                                     false,
@@ -2955,6 +3033,19 @@ mod tests {
         assert!(!origin_is_current(2, 2, false));
         // Generation AND identity both match => current.
         assert!(origin_is_current(2, 2, true));
+    }
+
+    #[test]
+    fn restore_previous_requires_clear_succeeded_and_previous_binding() {
+        // PMP46 Blocker 1: 旧绑定恢复守卫——只有本次失败认证确实是当前绑定
+        //（`clear_session_if_matches` 成功，证明无更新的 C 接管）且存在可
+        // 恢复的旧绑定（A + previous_generation）时才恢复 A。
+        // clear 失败（更新的 C 已接管）→ 让 C 胜出，不恢复 A。
+        assert!(!should_restore_previous(false, true));
+        // 无旧绑定（新用户 / console / monitor 路径）→ 无可恢复，不恢复。
+        assert!(!should_restore_previous(true, false));
+        // B 确实是当前绑定且 A 存在 → 恢复 A，杜绝僵尸连接。
+        assert!(should_restore_previous(true, true));
     }
 
     #[tokio::test]

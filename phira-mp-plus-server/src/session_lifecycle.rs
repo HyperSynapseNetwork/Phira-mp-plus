@@ -154,6 +154,21 @@ impl User {
         true
     }
 
+    /// PMP46 Blocker 1: 恢复旧绑定到精确 (session, generation) 代际。仅用于
+    /// 失败重连回滚：B 认证失败后把 User 绑定恢复为 A + previous_generation，
+    /// 使 A 的命令 origin 判定（A.bound_generation == binding.generation）
+    /// 重新成立，避免 A 变成"物理存活但逻辑 stale"的僵尸连接。
+    ///
+    /// 与 `set_session` 不同，这里不 bump generation——必须把代际精确恢复到
+    /// A 认证时的 `prev_gen`，否则 A 的 origin 快照（A.bound_generation）会
+    /// 与新的 binding.generation 失配而被误判为 stale（方案 A）。
+    pub async fn restore_binding(&self, session: Weak<Session>, generation: u64) {
+        let mut binding = self.binding.write().await;
+        binding.session = Some(session);
+        binding.generation = generation;
+        *self.dangle_mark.lock().await = None;
+    }
+
     /// Capture the current session as a [`CommandOrigin`]: a snapshot of the
     /// session identity plus its generation counter. Commands routed through the
     /// mailbox are bound to this origin, so after a reconnect their responses,
