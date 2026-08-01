@@ -3,6 +3,7 @@
 pub use crate::session_lifecycle::User;
 
 use crate::l10n::{Language, LANGUAGE};
+use crate::official_client_compat::post_response::PostResponseItem;
 use crate::official_client_compat::protocol_trace::ProtocolTrace;
 use crate::phira_client::PhiraRetryNoticeTarget;
 use crate::server::PlusServerState;
@@ -22,7 +23,7 @@ use std::{
 };
 use tokio::{
     net::TcpStream,
-    sync::{mpsc, Mutex, Notify, OnceCell, OwnedSemaphorePermit},
+    sync::{mpsc, oneshot, Mutex, Notify, OnceCell, OwnedSemaphorePermit},
     task::JoinHandle,
     time,
 };
@@ -38,7 +39,7 @@ use uuid::Uuid;
 /// bounded by the remaining budget — a flush that outlives the deadline is
 /// treated as a send failure (mark panicked, close transport).
 async fn send_dispatch_response(
-    send_tx: &StreamSender<ServerCommand>,
+    outbound_tx: &mpsc::Sender<OutboundItem>,
     resp: ServerCommand,
     critical: bool,
     received_at: Instant,
@@ -48,11 +49,22 @@ async fn send_dispatch_response(
     deadline: Option<Instant>,
 ) -> bool {
     let result = if critical {
-        let fut = send_tx.send_and_flush(resp);
+        let (flush_tx, flush_rx) = oneshot::channel();
+        // PMP44 P0-I: 临界响应经出站队列送写，与认证帧/缓冲事件/补偿共享
+        // 同一 FIFO；oneshot 回传 flush 结果以保留 P0-E/P0-J 语义。
+        let send_fut = async {
+            outbound_tx
+                .send(OutboundItem::Critical(resp, flush_tx))
+                .await
+                .map_err(|err| anyhow!("outbound channel closed: {err}"))?;
+            flush_rx
+                .await
+                .map_err(|_| anyhow!("outbound task stopped during critical flush"))?
+        };
         match deadline {
             Some(d) => {
                 let remaining = d.saturating_duration_since(Instant::now());
-                match tokio::time::timeout(remaining, fut).await {
+                match tokio::time::timeout(remaining, send_fut).await {
                     Ok(r) => r,
                     Err(_) => {
                         // 响应 flush 超出绝对预算——视为发送失败。
@@ -60,16 +72,23 @@ async fn send_dispatch_response(
                     }
                 }
             }
-            None => fut.await,
+            None => send_fut.await,
         }
     } else {
-        send_tx.send(resp).await
+        outbound_tx
+            .send(OutboundItem::Packet(resp))
+            .await
+            .map_err(|err| anyhow!("outbound channel closed: {err}"))
     };
     match result {
         Ok(()) => {
-            ProtocolTrace::get().response_queued.fetch_add(1, Ordering::Relaxed);
+            ProtocolTrace::get()
+                .response_queued
+                .fetch_add(1, Ordering::Relaxed);
             if critical {
-                ProtocolTrace::get().response_flushed.fetch_add(1, Ordering::Relaxed);
+                ProtocolTrace::get()
+                    .response_flushed
+                    .fetch_add(1, Ordering::Relaxed);
             }
             ProtocolTrace::get().record_response_latency(received_at);
             true
@@ -222,7 +241,9 @@ impl CommandOrigin {
         let binding = user.binding.read().await;
         let current_generation = binding.generation;
         let current = binding.session.as_ref().and_then(Weak::upgrade);
-        let same_session = current.as_ref().is_some_and(|cur| Arc::ptr_eq(cur, &session));
+        let same_session = current
+            .as_ref()
+            .is_some_and(|cur| Arc::ptr_eq(cur, &session));
         origin_is_current(self.generation, current_generation, same_session)
     }
 
@@ -231,7 +252,10 @@ impl CommandOrigin {
     /// never receive a response intended for an old command (P0-A).
     pub(crate) async fn try_send(&self, cmd: ServerCommand) -> bool {
         if !self.is_current().await {
-            debug!(generation = self.generation, "dropping response for stale session origin");
+            debug!(
+                generation = self.generation,
+                "dropping response for stale session origin"
+            );
             return false;
         }
         let Some(session) = self.session.upgrade() else {
@@ -365,6 +389,114 @@ pub(crate) enum ActivationOutcome {
     Complete,
 }
 
+/// PMP44 P0-I/P0-O: 单 Session 出站队列条目。
+///
+/// 认证 Gate、官方响应与 post-response 补偿全部汇入这一条 `mpsc` 队列，
+/// 由唯一的出站任务按严格 FIFO 送写 socket——绝不允许后一批补偿越过前一批
+/// （audit §19/§20），也不允许缓冲的房间广播在 `Authenticate(Ok)` 之前到达
+/// 客户端。
+#[derive(Debug)]
+pub(crate) enum OutboundItem {
+    /// 常规包，按到达顺序送写。认证屏障未打开时由出站任务缓冲进
+    /// `SessionOutboundGate`（沿用 P0-G 有界剔除）。
+    Packet(ServerCommand),
+    /// 需 flush 的临界响应（`Authenticate(Ok)`/`JoinRoom(Ok)`/...）。携带
+    /// oneshot 回传 flush 结果，调用方据此保留 P0-E/P0-J 的发送成功判定。
+    Critical(ServerCommand, oneshot::Sender<Result<()>>),
+    /// 出站门激活——此前缓冲的包必须全部送达后才放行直通。携带 oneshot
+    /// 回传排空结果（P0-G fail-closed）。
+    Activate(oneshot::Sender<Result<ActivationOutcome>>),
+    /// P0-O: 一组 post-response 补偿。出站任务按固定 `PostResponseKind` 顺序
+    /// 串行投递；批次间由队列 FIFO 保证绝不乱序。`delay_ms` 为
+    /// `protocol_hack_delay_ms`，在批次投递前于出站任务内等待（顺序保留）。
+    PostResponse {
+        delay_ms: u64,
+        items: Vec<PostResponseItem>,
+    },
+}
+
+/// PMP44 P0-I: 出站通道容量。与 `phira_mp_common::Stream` 内部 send 通道
+/// 一致（1024），保证慢消费者只背压本 Session 的队列，绝不阻塞 Room Actor。
+const OUTBOUND_CHANNEL_CAPACITY: usize = 1024;
+
+/// PMP44 P0-I/P0-O: 单 Session 出站任务。拥有 `StreamSender`，按严格 FIFO
+/// 处理出站队列：
+/// - `Packet`：未激活时缓冲进 gate（P0-G 有界/剔除），激活后直通送写；
+/// - `Critical`：`send_and_flush` 并回传结果（P0-E 证明 flush）；
+/// - `Activate`：在 `Authenticate(Ok)` flush 之后排空 gate 缓冲并放行直通；
+/// - `PostResponse`：先等 `protocol_hack_delay_ms`，再按固定顺序串行投递，
+///   与前后批次保持 FIFO。
+async fn run_outbound_task(
+    mut rx: mpsc::Receiver<OutboundItem>,
+    send_tx_ready: Arc<tokio::sync::OnceCell<Arc<StreamSender<ServerCommand>>>>,
+    gate: Arc<SessionOutboundGate>,
+) {
+    let mut active = false;
+    while let Some(item) = rx.recv().await {
+        match item {
+            OutboundItem::Packet(cmd) => {
+                if !active {
+                    // 认证屏障未打开：缓冲进 gate，沿用 P0-G 有界丢弃策略。
+                    let mut pending = gate.pending.lock().await;
+                    gate.push_bounded(&mut pending, cmd);
+                } else {
+                    let Some(send_tx) = send_tx_ready.get() else {
+                        continue;
+                    };
+                    if send_tx.send(cmd).await.is_err() {
+                        tracing::warn!("outbound task send failed (session teardown?)");
+                    }
+                }
+            }
+            OutboundItem::Critical(cmd, flush_tx) => {
+                let Some(send_tx) = send_tx_ready.get() else {
+                    let _ = flush_tx.send(Err(anyhow!("outbound sender not ready")));
+                    continue;
+                };
+                let result = send_tx.send_and_flush(cmd).await;
+                let _ = flush_tx.send(result);
+            }
+            OutboundItem::Activate(activate_tx) => {
+                let Some(send_tx) = send_tx_ready.get() else {
+                    let _ = activate_tx.send(Err(anyhow!("outbound sender not ready")));
+                    continue;
+                };
+                match gate.activate(send_tx.as_ref()).await {
+                    Ok(outcome) => {
+                        active = true;
+                        let _ = activate_tx.send(Ok(outcome));
+                    }
+                    Err(err) => {
+                        active = false;
+                        let _ = activate_tx.send(Err(err));
+                    }
+                }
+            }
+            OutboundItem::PostResponse { delay_ms, items } => {
+                let Some(send_tx) = send_tx_ready.get() else {
+                    continue;
+                };
+                if delay_ms > 0 {
+                    tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
+                }
+                // 固定顺序（ChangeHost → ChangeState → PersistentRoom → Replay）
+                // 且与前后批次 FIFO——batch A 全部投递完才轮到 batch B。
+                let send_tx = send_tx.as_ref();
+                crate::official_client_compat::post_response::run_post_response_batch(
+                    items,
+                    |item| {
+                        let send_tx = send_tx;
+                        async move {
+                            item.deliver_via(Some(send_tx)).await;
+                        }
+                    },
+                )
+                .await;
+            }
+        }
+    }
+}
+
 /// 高频遥测：握手窗口内可安全 coalesce（丢弃新事件），因为它们只反映
 /// 瞬时状态，后续帧会覆盖。
 fn is_high_frequency_telemetry(cmd: &ServerCommand) -> bool {
@@ -420,7 +552,9 @@ impl SessionOutboundGate {
             if is_high_frequency_telemetry(&cmd) {
                 // 高频遥测：新事件直接丢弃（coalesce），保留既有缓冲。
                 tracing::trace!(?cmd, "outbound gate coalesced high-frequency telemetry");
-                ProtocolTrace::get().gate_dropped.fetch_add(1, Ordering::Relaxed);
+                ProtocolTrace::get()
+                    .gate_dropped
+                    .fetch_add(1, Ordering::Relaxed);
                 return;
             }
             // 控制/状态事件：不得静默丢弃——丢弃最旧缓冲事件（FIFO），
@@ -428,7 +562,9 @@ impl SessionOutboundGate {
             if let Some(oldest) = pending.events.pop_front() {
                 pending.bytes = pending.bytes.saturating_sub(estimated_size(&oldest.cmd));
                 tracing::trace!(?oldest, "outbound gate dropped oldest buffered event");
-                ProtocolTrace::get().gate_dropped.fetch_add(1, Ordering::Relaxed);
+                ProtocolTrace::get()
+                    .gate_dropped
+                    .fetch_add(1, Ordering::Relaxed);
             }
         }
         pending.events.push_back(GateEntry { cmd, seq });
@@ -498,12 +634,20 @@ impl SessionOutboundGate {
             if entry.seq <= cutover {
                 // 快照已包含该事件，剔除以免重复。
                 pending.bytes = pending.bytes.saturating_sub(estimated_size(&entry.cmd));
-                tracing::trace!(seq = entry.seq, "outbound gate dropped snapshot-included event");
-                ProtocolTrace::get().gate_dropped.fetch_add(1, Ordering::Relaxed);
+                tracing::trace!(
+                    seq = entry.seq,
+                    "outbound gate dropped snapshot-included event"
+                );
+                ProtocolTrace::get()
+                    .gate_dropped
+                    .fetch_add(1, Ordering::Relaxed);
                 continue;
             }
             if sink.sink_send(entry.cmd).await.is_err() {
-                tracing::warn!(remaining = pending.events.len(), "outbound gate drain failed");
+                tracing::warn!(
+                    remaining = pending.events.len(),
+                    "outbound gate drain failed"
+                );
                 self.activated.store(false, Ordering::SeqCst);
                 pending.events.clear();
                 pending.bytes = 0;
@@ -554,6 +698,13 @@ pub struct Session {
     /// callback can open it the moment `Authenticate(Ok)` is proven flushed.
     pub(crate) gate: Arc<SessionOutboundGate>,
 
+    /// PMP44 P0-I/P0-O: 单 Session 出站队列的发送端。认证 Gate、官方响应与
+    /// post-response 补偿都汇入这一条 `mpsc` 队列，由唯一的出站任务按严格
+    /// FIFO 送写 socket。
+    pub(crate) outbound_tx: mpsc::Sender<OutboundItem>,
+    /// PMP44 P0-I: 出站任务句柄，Session 销毁时 abort。
+    outbound_task_handle: JoinHandle<()>,
+
     /// Per-session actor mailbox sender. Set after authentication.
     pub(crate) actor_tx: OnceLock<mpsc::Sender<crate::session_actor::SessionActorCmd>>,
     monitor_task_handle: JoinHandle<()>,
@@ -588,6 +739,18 @@ impl Session {
             Duration::from_millis(compat.gate_max_auth_duration_ms),
         ));
 
+        // PMP44 P0-I/P0-O: 单 Session 出站队列。发送端保存在 Session 上并克隆进
+        // Stream 回调；接收端交给唯一的出站任务，后者在首个命令到达时拿到
+        // `send_tx`（经 OnceCell 注入）。
+        let (outbound_tx, outbound_rx) = mpsc::channel::<OutboundItem>(OUTBOUND_CHANNEL_CAPACITY);
+        let outbound_sender_ready =
+            Arc::new(tokio::sync::OnceCell::<Arc<StreamSender<ServerCommand>>>::new());
+        let outbound_task_handle = tokio::spawn(run_outbound_task(
+            outbound_rx,
+            Arc::clone(&outbound_sender_ready),
+            Arc::clone(&gate),
+        ));
+
         let stream = Stream::<ServerCommand, ClientCommand>::new(
             None,
             stream,
@@ -600,6 +763,8 @@ impl Session {
                 let waiting_for_authenticate = Arc::new(AtomicBool::new(true));
                 let panicked = Arc::new(AtomicBool::new(false));
                 let gate = Arc::clone(&gate);
+                let outbound_tx = outbound_tx.clone();
+                let outbound_sender_ready = Arc::clone(&outbound_sender_ready);
                 move |send_tx, cmd| {
                     let this = Arc::clone(&this);
                     let this_inited = Arc::clone(&this_inited);
@@ -619,6 +784,10 @@ impl Session {
                     let waiting_for_authenticate = Arc::clone(&waiting_for_authenticate);
                     let panicked = Arc::clone(&panicked);
                     let gate = Arc::clone(&gate);
+                    // P0-I: 出站任务需要 `send_tx` 才能写 socket；首个命令（通常为
+                    // Authenticate）到达时注入，之后不再变化。
+                    let _ = outbound_sender_ready.set(Arc::clone(&send_tx));
+                    let outbound_tx = outbound_tx.clone();
                     async move {
                         if panicked.load(Ordering::SeqCst) {
                             return;
@@ -1061,12 +1230,30 @@ impl Session {
                                 }
                                 let flush_remaining = auth_deadline
                                     .saturating_duration_since(Instant::now());
+                                // PMP44 P0-I: `Authenticate(Ok)` 经出站队列送写——与
+                                // 缓冲事件/官方响应/补偿共享同一 FIFO，且 oneshot 回传
+                                // flush 结果以保留 P0-E 回滚语义（P0-D 预算不变）。
                                 let flush_result: Result<()> =
                                     match tokio::time::timeout(
                                         flush_remaining,
-                                        send_tx.send_and_flush(ServerCommand::Authenticate(
-                                            Ok((user.to_info(), room_state)),
-                                        )),
+                                        async {
+                                            let (flush_tx, flush_rx) = oneshot::channel();
+                                            outbound_tx
+                                                .send(OutboundItem::Critical(
+                                                    ServerCommand::Authenticate(Ok((
+                                                        user.to_info(),
+                                                        room_state,
+                                                    ))),
+                                                    flush_tx,
+                                                ))
+                                                .await
+                                                .map_err(|err| {
+                                                    anyhow!("outbound channel closed: {err}")
+                                                })?;
+                                            flush_rx.await.map_err(|_| {
+                                                anyhow!("outbound task stopped during auth flush")
+                                            })?
+                                        },
                                     )
                                     .await
                                     {
@@ -1122,13 +1309,44 @@ impl Session {
                                     panicked.store(true, Ordering::SeqCst);
                                     return;
                                 }
-                                match gate.activate(send_tx.as_ref()).await {
-                                    Ok(_) => {}
-                                    Err(_) => {
+                                // PMP44 P0-I: 激活屏障同样经出站队列——出站任务在
+                                // `Authenticate(Ok)` flush 之后才排空缓冲，绝不与认证帧
+                                // 交错。oneshot 回传排空结果（P0-G fail-closed）。
+                                let activate_remaining = auth_deadline
+                                    .saturating_duration_since(Instant::now());
+                                let activate_result: Result<()> =
+                                    match tokio::time::timeout(
+                                        activate_remaining,
+                                        async {
+                                            let (activate_tx, activate_rx) = oneshot::channel();
+                                            outbound_tx
+                                                .send(OutboundItem::Activate(activate_tx))
+                                                .await
+                                                .map_err(|err| {
+                                                    anyhow!("outbound channel closed: {err}")
+                                                })?;
+                                            activate_rx.await.map_err(|_| {
+                                                anyhow!(
+                                                    "outbound task stopped during activation"
+                                                )
+                                            })?.map(|_| ())
+                                        },
+                                    )
+                                    .await
+                                    {
+                                        Ok(r) => r,
+                                        Err(_) => Err(anyhow!(
+                                            "outbound gate activation exceeded deadline"
+                                        )),
+                                    };
+                                match activate_result {
+                                    Ok(()) => {}
+                                    Err(err) => {
                                         // PMP44 P0-G: 认证屏障排空失败 → fail-closed：
                                         // 不进入 Active，关闭传输，走 lost-connection 路径。
                                         warn!(
                                             user = user.id,
+                                            ?err,
                                             "outbound gate activation failed; closing session"
                                         );
                                         panicked.store(true, Ordering::SeqCst);
@@ -1277,15 +1495,32 @@ impl Session {
                                         }
                                         let flush_remaining = auth_deadline
                                             .saturating_duration_since(Instant::now());
+                                        // PMP44 P0-I: Authenticate(Ok) 经出站队列送写。
                                         let flush_result: Result<()> =
                                             match tokio::time::timeout(
                                                 flush_remaining,
-                                                send_tx.send_and_flush(
-                                                    ServerCommand::Authenticate(Ok((
-                                                        user.to_info(),
-                                                        None,
-                                                    ))),
-                                                ),
+                                                async {
+                                                    let (flush_tx, flush_rx) = oneshot::channel();
+                                                    outbound_tx
+                                                        .send(OutboundItem::Critical(
+                                                            ServerCommand::Authenticate(Ok((
+                                                                user.to_info(),
+                                                                None,
+                                                            ))),
+                                                            flush_tx,
+                                                        ))
+                                                        .await
+                                                        .map_err(|err| {
+                                                            anyhow!(
+                                                                "outbound channel closed: {err}"
+                                                            )
+                                                        })?;
+                                                    flush_rx.await.map_err(|_| {
+                                                        anyhow!(
+                                                            "outbound task stopped during auth flush"
+                                                        )
+                                                    })?
+                                                },
                                             )
                                             .await
                                             {
@@ -1309,12 +1544,44 @@ impl Session {
                                             panicked.store(true, Ordering::SeqCst);
                                             return;
                                         }
-                                        match gate.activate(send_tx.as_ref()).await {
-                                            Ok(_) => {}
-                                            Err(_) => {
+                                        // PMP44 P0-I: 激活屏障经出站队列，oneshot 回传排空结果。
+                                        let activate_remaining = auth_deadline
+                                            .saturating_duration_since(Instant::now());
+                                        let activate_result: Result<()> =
+                                            match tokio::time::timeout(
+                                                activate_remaining,
+                                                async {
+                                                    let (activate_tx, activate_rx) =
+                                                        oneshot::channel();
+                                                    outbound_tx
+                                                        .send(OutboundItem::Activate(activate_tx))
+                                                        .await
+                                                        .map_err(|err| {
+                                                            anyhow!(
+                                                                "outbound channel closed: {err}"
+                                                            )
+                                                        })?;
+                                                    activate_rx.await.map_err(|_| {
+                                                        anyhow!(
+                                                            "outbound task stopped during activation"
+                                                        )
+                                                    })?.map(|_| ())
+                                                },
+                                            )
+                                            .await
+                                            {
+                                                Ok(r) => r,
+                                                Err(_) => Err(anyhow!(
+                                                    "console outbound gate activation exceeded deadline"
+                                                )),
+                                            };
+                                        match activate_result {
+                                            Ok(()) => {}
+                                            Err(err) => {
                                                 // PMP44 P0-G: 认证屏障排空失败 → fail-closed。
                                                 warn!(
                                                     user = user.id,
+                                                    ?err,
                                                     "console outbound gate activation failed; closing session"
                                                 );
                                                 panicked.store(true, Ordering::SeqCst);
@@ -1448,15 +1715,32 @@ impl Session {
                                         }
                                         let flush_remaining = auth_deadline
                                             .saturating_duration_since(Instant::now());
+                                        // PMP44 P0-I: Authenticate(Ok) 经出站队列送写。
                                         let flush_result: Result<()> =
                                             match tokio::time::timeout(
                                                 flush_remaining,
-                                                send_tx.send_and_flush(
-                                                    ServerCommand::Authenticate(Ok((
-                                                        user.to_info(),
-                                                        None,
-                                                    ))),
-                                                ),
+                                                async {
+                                                    let (flush_tx, flush_rx) = oneshot::channel();
+                                                    outbound_tx
+                                                        .send(OutboundItem::Critical(
+                                                            ServerCommand::Authenticate(Ok((
+                                                                user.to_info(),
+                                                                None,
+                                                            ))),
+                                                            flush_tx,
+                                                        ))
+                                                        .await
+                                                        .map_err(|err| {
+                                                            anyhow!(
+                                                                "outbound channel closed: {err}"
+                                                            )
+                                                        })?;
+                                                    flush_rx.await.map_err(|_| {
+                                                        anyhow!(
+                                                            "outbound task stopped during auth flush"
+                                                        )
+                                                    })?
+                                                },
                                             )
                                             .await
                                             {
@@ -1483,12 +1767,44 @@ impl Session {
                                             panicked.store(true, Ordering::SeqCst);
                                             return;
                                         }
-                                        match gate.activate(send_tx.as_ref()).await {
-                                            Ok(_) => {}
-                                            Err(_) => {
+                                        // PMP44 P0-I: 激活屏障经出站队列，oneshot 回传排空结果。
+                                        let activate_remaining = auth_deadline
+                                            .saturating_duration_since(Instant::now());
+                                        let activate_result: Result<()> =
+                                            match tokio::time::timeout(
+                                                activate_remaining,
+                                                async {
+                                                    let (activate_tx, activate_rx) =
+                                                        oneshot::channel();
+                                                    outbound_tx
+                                                        .send(OutboundItem::Activate(activate_tx))
+                                                        .await
+                                                        .map_err(|err| {
+                                                            anyhow!(
+                                                                "outbound channel closed: {err}"
+                                                            )
+                                                        })?;
+                                                    activate_rx.await.map_err(|_| {
+                                                        anyhow!(
+                                                            "outbound task stopped during activation"
+                                                        )
+                                                    })?.map(|_| ())
+                                                },
+                                            )
+                                            .await
+                                            {
+                                                Ok(r) => r,
+                                                Err(_) => Err(anyhow!(
+                                                    "room monitor outbound gate activation exceeded deadline"
+                                                )),
+                                            };
+                                        match activate_result {
+                                            Ok(()) => {}
+                                            Err(err) => {
                                                 // PMP44 P0-G: 认证屏障排空失败 → fail-closed。
                                                 warn!(
                                                     user = user.id,
+                                                    ?err,
                                                     "room monitor outbound gate activation failed; closing session"
                                                 );
                                                 *server.room_monitor.write().await = None;
@@ -1623,15 +1939,32 @@ impl Session {
                                         }
                                         let flush_remaining = auth_deadline
                                             .saturating_duration_since(Instant::now());
+                                        // PMP44 P0-I: Authenticate(Ok) 经出站队列送写。
                                         let flush_result: Result<()> =
                                             match tokio::time::timeout(
                                                 flush_remaining,
-                                                send_tx.send_and_flush(
-                                                    ServerCommand::Authenticate(Ok((
-                                                        user.to_info(),
-                                                        None,
-                                                    ))),
-                                                ),
+                                                async {
+                                                    let (flush_tx, flush_rx) = oneshot::channel();
+                                                    outbound_tx
+                                                        .send(OutboundItem::Critical(
+                                                            ServerCommand::Authenticate(Ok((
+                                                                user.to_info(),
+                                                                None,
+                                                            ))),
+                                                            flush_tx,
+                                                        ))
+                                                        .await
+                                                        .map_err(|err| {
+                                                            anyhow!(
+                                                                "outbound channel closed: {err}"
+                                                            )
+                                                        })?;
+                                                    flush_rx.await.map_err(|_| {
+                                                        anyhow!(
+                                                            "outbound task stopped during auth flush"
+                                                        )
+                                                    })?
+                                                },
                                             )
                                             .await
                                             {
@@ -1656,12 +1989,44 @@ impl Session {
                                             panicked.store(true, Ordering::SeqCst);
                                             return;
                                         }
-                                        match gate.activate(send_tx.as_ref()).await {
-                                            Ok(_) => {}
-                                            Err(_) => {
+                                        // PMP44 P0-I: 激活屏障经出站队列，oneshot 回传排空结果。
+                                        let activate_remaining = auth_deadline
+                                            .saturating_duration_since(Instant::now());
+                                        let activate_result: Result<()> =
+                                            match tokio::time::timeout(
+                                                activate_remaining,
+                                                async {
+                                                    let (activate_tx, activate_rx) =
+                                                        oneshot::channel();
+                                                    outbound_tx
+                                                        .send(OutboundItem::Activate(activate_tx))
+                                                        .await
+                                                        .map_err(|err| {
+                                                            anyhow!(
+                                                                "outbound channel closed: {err}"
+                                                            )
+                                                        })?;
+                                                    activate_rx.await.map_err(|_| {
+                                                        anyhow!(
+                                                            "outbound task stopped during activation"
+                                                        )
+                                                    })?.map(|_| ())
+                                                },
+                                            )
+                                            .await
+                                            {
+                                                Ok(r) => r,
+                                                Err(_) => Err(anyhow!(
+                                                    "game monitor outbound gate activation exceeded deadline"
+                                                )),
+                                            };
+                                        match activate_result {
+                                            Ok(()) => {}
+                                            Err(err) => {
                                                 // PMP44 P0-G: 认证屏障排空失败 → fail-closed。
                                                 warn!(
                                                     user = user.id,
+                                                    ?err,
                                                     "game monitor outbound gate activation failed; closing session"
                                                 );
                                                 server.game_monitors.write().await.remove(&monitor_id);
@@ -1777,7 +2142,7 @@ impl Session {
                                     .await;
                                     if let Some(resp) = resp {
                                         send_dispatch_response(
-                                            &send_tx,
+                                            &outbound_tx,
                                             resp,
                                             critical,
                                             received_at,
@@ -1848,7 +2213,7 @@ impl Session {
                                 .wait_until_minimum_bounded(received_at, Some(absolute_deadline))
                                 .await;
                             let sent = send_dispatch_response(
-                                &send_tx,
+                                &outbound_tx,
                                 resp,
                                 critical,
                                 received_at,
@@ -1860,10 +2225,12 @@ impl Session {
                             .await;
                             if sent && created_room {
                                 let creating_player = creating_player.expect("checked above");
-                                if let Err(err) = send_tx
-                                    .send(ServerCommand::Message(Message::CreateRoom {
-                                        user: creating_player.id,
-                                    }))
+                                if let Err(err) = outbound_tx
+                                    .send(OutboundItem::Packet(ServerCommand::Message(
+                                        Message::CreateRoom {
+                                            user: creating_player.id,
+                                        },
+                                    )))
                                     .await
                                 {
                                     error!(
@@ -1930,6 +2297,8 @@ impl Session {
             category,
             bound_generation: std::sync::OnceLock::new(),
             gate,
+            outbound_tx,
+            outbound_task_handle,
             actor_tx: OnceLock::new(),
             monitor_task_handle,
             _session_permit: session_permit,
@@ -1949,13 +2318,16 @@ impl Session {
         &self.user.name
     }
 
+    #[allow(clippy::unused_async)]
     pub async fn try_send(&self, cmd: ServerCommand) {
-        // P0-B: pre-authentication packets are buffered by the gate; post-
-        // authentication this inherits the transport's slow-consumer behavior.
-        if !self.gate.try_send(&self.stream, cmd).await {
-            // A full outbound queue means this client is no longer keeping up.
-            // Disconnect it instead of allowing one slow consumer to stall a
-            // room-wide broadcast or actor command.
+        // PMP44 P0-I: 统一经出站队列。未激活时由出站任务缓冲进 gate（沿用
+        // P0-G 有界剔除）；激活后直通送写。通道满说明该客户端跟不上（慢
+        // 消费者），断开连接而非拖累 Room Actor 广播（P0-I §13.4）。
+        if self
+            .outbound_tx
+            .try_send(OutboundItem::Packet(cmd))
+            .is_err()
+        {
             warn!(session = %self.id, user = self.user.id, "disconnecting slow client");
             self.stream.close();
             let _ = self.user.server.lost_con_tx.try_send(self.id);
@@ -1965,11 +2337,11 @@ impl Session {
     /// Send a command to this session, waiting for capacity (async).
     /// Closes the connection on error (same as try_send on failure).
     pub async fn send(&self, cmd: ServerCommand) -> Result<()> {
-        self.gate.send(&self.stream, cmd).await.map_err(|err| {
+        self.outbound_tx.send(OutboundItem::Packet(cmd)).await.map_err(|err| {
             warn!(session = %self.id, user = self.user.id, ?err, "disconnecting slow client (send)");
             self.stream.close();
             let _ = self.user.server.lost_con_tx.try_send(self.id);
-            err
+            anyhow!("outbound channel closed: {err}")
         })
     }
 
@@ -1977,24 +2349,34 @@ impl Session {
     /// (P0-E/P0-F). Every request-type response — Authenticate, CreateRoom,
     /// JoinRoom, RequestStart, Ready, CancelReady, LeaveRoom, Chat, LockRoom,
     /// CycleRoom, SelectChart, Played, Abort — must be proven written to the
-    /// wire, not merely queued (P0-G). A flush failure closes the transport and
-    /// enters the existing lost-connection path.
+    /// wire, not merely queued (P0-G). The flush runs inside the single
+    /// per-session outbound task (P0-I), so it is ordered against buffered
+    /// events and post-response compensations. A flush failure closes the
+    /// transport and enters the existing lost-connection path.
     pub async fn send_and_flush(&self, cmd: ServerCommand) -> Result<()> {
-        self.gate
-            .send_and_flush(&self.stream, cmd)
+        let (flush_tx, flush_rx) = oneshot::channel();
+        self.outbound_tx
+            .send(OutboundItem::Critical(cmd, flush_tx))
             .await
             .map_err(|err| {
                 warn!(session = %self.id, user = self.user.id, ?err, "disconnecting slow client (send_and_flush)");
                 self.stream.close();
                 let _ = self.user.server.lost_con_tx.try_send(self.id);
-                err
-            })
+                anyhow!("outbound channel closed: {err}")
+            })?;
+        flush_rx.await.map_err(|_| {
+            warn!(session = %self.id, user = self.user.id, "outbound task stopped during critical flush");
+            self.stream.close();
+            let _ = self.user.server.lost_con_tx.try_send(self.id);
+            anyhow!("outbound task stopped during critical flush")
+        })?
     }
 }
 
 impl Drop for Session {
     fn drop(&mut self) {
         self.monitor_task_handle.abort();
+        self.outbound_task_handle.abort();
     }
 }
 
@@ -2083,7 +2465,10 @@ mod tests {
         let gate = test_gate();
         let sink = TestSink::default();
         assert!(gate.try_send(&sink, ServerCommand::Pong).await);
-        assert!(gate.send(&sink, ServerCommand::ChangeHost(true)).await.is_ok());
+        assert!(gate
+            .send(&sink, ServerCommand::ChangeHost(true))
+            .await
+            .is_ok());
         assert!(
             sink.sent.lock().unwrap().is_empty(),
             "pre-activation packets must be buffered, not forwarded"
@@ -2113,7 +2498,10 @@ mod tests {
         let sink = TestSink::default();
         gate.try_send(&sink, ServerCommand::Pong).await;
         gate.activate(&sink).await.unwrap();
-        assert!(gate.send(&sink, ServerCommand::LockRoom(Ok(()))).await.is_ok());
+        assert!(gate
+            .send(&sink, ServerCommand::LockRoom(Ok(())))
+            .await
+            .is_ok());
         assert_eq!(sink.sent.lock().unwrap().len(), 2);
     }
 
@@ -2161,7 +2549,10 @@ mod tests {
 
         // 至少发生了 1 次 drop（drop-oldest 或 telemetry coalesce）。
         let dropped_after = ProtocolTrace::get().gate_dropped.load(Ordering::Relaxed);
-        assert!(dropped_after > dropped_before, "gate_dropped must have incremented");
+        assert!(
+            dropped_after > dropped_before,
+            "gate_dropped must have incremented"
+        );
     }
 
     /// PMP44 P0-G: 排空期间发送失败 → activate 返回 Err，屏障保持未激活，
@@ -2232,14 +2623,30 @@ mod tests {
         // Authenticating 阶段 WAL 失败 → 必须回滚。
         assert!(should_rollback_auth(AuthPhase::Authenticating, false, true));
         // DurableAccepted 阶段 flush 失败 → 必须回滚。
-        assert!(should_rollback_auth(AuthPhase::DurableAccepted, true, false));
+        assert!(should_rollback_auth(
+            AuthPhase::DurableAccepted,
+            true,
+            false
+        ));
         // ResponseFlushed 阶段 flush 失败（防御性）→ 必须回滚。
-        assert!(should_rollback_auth(AuthPhase::ResponseFlushed, true, false));
+        assert!(should_rollback_auth(
+            AuthPhase::ResponseFlushed,
+            true,
+            false
+        ));
 
         // 成功路径全部不回滚。
         assert!(!should_rollback_auth(AuthPhase::Authenticating, true, true));
-        assert!(!should_rollback_auth(AuthPhase::DurableAccepted, true, true));
-        assert!(!should_rollback_auth(AuthPhase::ResponseFlushed, true, true));
+        assert!(!should_rollback_auth(
+            AuthPhase::DurableAccepted,
+            true,
+            true
+        ));
+        assert!(!should_rollback_auth(
+            AuthPhase::ResponseFlushed,
+            true,
+            true
+        ));
         // 已激活（Active）后，即使下游异常也不回滚。
         assert!(!should_rollback_auth(AuthPhase::Active, false, false));
     }
