@@ -310,7 +310,11 @@ impl CommandOrigin {
 /// callback (which holds the `Arc<StreamSender>`).
 pub(crate) trait OutboundSink {
     async fn sink_send(&self, cmd: ServerCommand) -> Result<()>;
+    /// P0-I 后生产路径统一经 per-session 出站通道，`send_and_flush`/`try_send`
+    /// 仅测试与 gate 内部使用。
+    #[allow(dead_code)]
     async fn sink_send_and_flush(&self, cmd: ServerCommand) -> Result<()>;
+    #[allow(dead_code)]
     fn sink_try_send(&self, cmd: ServerCommand) -> Result<()>;
 }
 
@@ -573,6 +577,10 @@ impl SessionOutboundGate {
 
     /// Queue (pre-activation) or forward (post-activation). Returns `Err` only
     /// when the forwarding send itself fails.
+    ///
+    /// P0-I 后生产路径统一经 per-session 出站通道，此方法仅测试与 gate 直驱
+    /// 使用。
+    #[allow(dead_code)]
     pub(crate) async fn send(&self, sink: &impl OutboundSink, cmd: ServerCommand) -> Result<()> {
         let mut pending = self.pending.lock().await;
         if self.activated.load(Ordering::SeqCst) {
@@ -588,6 +596,9 @@ impl SessionOutboundGate {
     /// buffered (never fail); post-activation it inherits the transport's
     /// slow-consumer failure behavior. Returns `true` when the packet was
     /// accepted (buffered or enqueued).
+    ///
+    /// P0-I 后生产路径统一经 per-session 出站通道，此方法仅测试使用。
+    #[allow(dead_code)]
     pub(crate) async fn try_send(&self, sink: &impl OutboundSink, cmd: ServerCommand) -> bool {
         let mut pending = self.pending.lock().await;
         if self.activated.load(Ordering::SeqCst) {
@@ -599,6 +610,8 @@ impl SessionOutboundGate {
         }
     }
 
+    /// P0-I 后生产路径统一经 per-session 出站通道，此方法仅测试使用。
+    #[allow(dead_code)]
     pub(crate) async fn send_and_flush(
         &self,
         sink: &impl OutboundSink,
@@ -696,6 +709,9 @@ pub struct Session {
 
     /// P0-B outbound activation barrier. Created before the Stream so the auth
     /// callback can open it the moment `Authenticate(Ok)` is proven flushed.
+    /// 构造后仅保留引用（出站任务持有同一 Arc）；`Session` 自身不再经此字段
+    /// 读取 gate。
+    #[allow(dead_code)]
     pub(crate) gate: Arc<SessionOutboundGate>,
 
     /// PMP44 P0-I/P0-O: 单 Session 出站队列的发送端。认证 Gate、官方响应与

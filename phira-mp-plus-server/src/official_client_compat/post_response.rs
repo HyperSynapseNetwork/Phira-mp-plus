@@ -122,6 +122,9 @@ impl PostResponseItem {
     }
 
     /// 排序键（固定投递顺序）。
+    /// 当前由 `run_post_response_batch` 直接读取字段排序；保留此方法供
+    /// 测试与未来调用点使用。
+    #[allow(dead_code)]
     pub(crate) fn kind(&self) -> PostResponseKind {
         self.kind
     }
