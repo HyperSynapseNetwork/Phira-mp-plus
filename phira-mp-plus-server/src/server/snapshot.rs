@@ -101,10 +101,10 @@ fn user_snapshot(
     in_room: bool,
 ) -> UserSnapshot {
     let has_session = user
-        .session
+        .binding
         .try_read()
         .ok()
-        .and_then(|session| session.as_ref().and_then(|weak| weak.upgrade()))
+        .and_then(|binding| binding.session.as_ref().and_then(|weak| weak.upgrade()))
         .is_some();
     UserSnapshot {
         id: user.id,

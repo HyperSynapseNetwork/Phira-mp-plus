@@ -373,8 +373,8 @@ pub fn send_welcome(user_id: i32, user_name: &str, online: usize, state: &PlusSe
     // non-deterministic send order when tasks ran concurrently.
     if let Ok(users) = state.users.try_read() {
         if let Some(user) = users.get(&user_id) {
-            if let Ok(session) = user.session.try_read() {
-                if let Some(Some(session)) = session.as_ref().map(|w| w.upgrade()) {
+            if let Ok(binding) = user.binding.try_read() {
+                if let Some(Some(session)) = binding.session.as_ref().map(|w| w.upgrade()) {
                     use phira_mp_common::{Message, ServerCommand};
                     if let Ok(handle) = tokio::runtime::Handle::try_current() {
                         handle.spawn(async move {

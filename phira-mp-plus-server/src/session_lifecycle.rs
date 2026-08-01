@@ -4,13 +4,26 @@ use crate::session::Session;
 use anyhow::{anyhow, Result};
 use fluent::FluentArgs;
 use phira_mp_common::{RoomEvent, ServerCommand, UserInfo};
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Weak};
 use std::time::Duration;
 use tokio::sync::{Mutex, RwLock};
 use tokio::time;
 use tracing::{debug, warn};
 use uuid::Uuid;
+
+/// The current transport binding for a [`User`]: the generation counter and the
+/// weak session ref live in ONE lock so a reader can never observe a session
+/// and a generation from different binds (P0-B torn read). Bumped on every bind
+/// and on clear; in-flight `CommandOrigin`s captured against an older generation
+/// are immediately stale.
+#[derive(Default)]
+pub(crate) struct SessionBinding {
+    /// Monotonic generation counter. Bumped on every bind and on clear.
+    pub generation: u64,
+    /// Weak ref to the currently bound Session.
+    pub session: Option<Weak<Session>>,
+}
 
 pub struct User {
     pub id: i32,
@@ -19,11 +32,9 @@ pub struct User {
 
     pub server: Arc<PlusServerState>,
     pub auth_token: RwLock<Option<String>>,
-    pub session: RwLock<Option<Weak<Session>>>,
-    /// Monotonic session-generation counter. Bumped by [`User::set_session`]
-    /// every time the transport is (re)bound, so in-flight commands captured
-    /// against an older generation are immediately stale (P0-A).
-    pub session_generation: AtomicU64,
+    /// Atomically-bound current transport. Generation + weak ref share one lock
+    /// so no reader can observe a torn (old session, new generation) pair (P0-B).
+    pub(crate) binding: RwLock<SessionBinding>,
     pub room: RwLock<Option<Arc<super::room::Room>>>,
 
     pub monitor: AtomicBool,
@@ -50,8 +61,7 @@ impl User {
 
             server,
             auth_token: RwLock::new(auth_token),
-            session: RwLock::default(),
-            session_generation: AtomicU64::new(0),
+            binding: RwLock::default(),
             room: RwLock::default(),
 
             monitor: AtomicBool::default(),
@@ -67,9 +77,10 @@ impl User {
     /// Returns an empty string when the session has already been dropped —
     /// callers treat that as "match any session for this instance" (fallback).
     pub async fn current_session_id(&self) -> String {
-        self.session
+        self.binding
             .read()
             .await
+            .session
             .as_ref()
             .and_then(|weak| weak.upgrade())
             .map(|s| s.id.to_string())
@@ -101,12 +112,23 @@ impl User {
         self.send_system_msg(key, &args).await;
     }
 
-    pub async fn set_session(&self, session: Weak<Session>) {
-        // Bump the generation BEFORE publishing the new weak ref, so any
-        // CommandOrigin captured against the previous session becomes stale
-        // immediately — even in the window before the ref is swapped (P0-A).
-        self.session_generation.fetch_add(1, Ordering::SeqCst);
-        *self.session.write().await = Some(session);
+    /// Atomically bind `session` as the current transport. Bumps the generation
+    /// in the same critical section and returns the generation assigned to this
+    /// Session (the caller stores it on the Session as its bound generation, P0-A).
+    pub async fn set_session(&self, session: Weak<Session>) -> u64 {
+        let mut binding = self.binding.write().await;
+        binding.generation += 1;
+        binding.session = Some(session);
+        *self.dangle_mark.lock().await = None;
+        binding.generation
+    }
+
+    /// Atomically clear the current transport (shutdown/kick). Bumps generation
+    /// so any in-flight origin captured against the previous binding dies.
+    pub async fn clear_session(&self) {
+        let mut binding = self.binding.write().await;
+        binding.generation += 1;
+        binding.session = None;
         *self.dangle_mark.lock().await = None;
     }
 
@@ -116,11 +138,11 @@ impl User {
     /// error closes and post-response compensations can never be delivered to —
     /// or close — the *new* session (P0-A).
     pub async fn current_origin(&self) -> Option<crate::session::CommandOrigin> {
-        let session = self.session.read().await.as_ref()?.upgrade()?;
-        let generation = self.session_generation.load(Ordering::SeqCst);
+        let binding = self.binding.read().await;
+        let session = binding.session.as_ref()?.upgrade()?;
         Some(crate::session::CommandOrigin {
             session: Arc::downgrade(&session),
-            generation,
+            generation: binding.generation,
         })
     }
 
@@ -140,7 +162,14 @@ impl User {
     }
 
     pub async fn try_send(&self, cmd: ServerCommand) {
-        if let Some(session) = self.session.read().await.as_ref().and_then(Weak::upgrade) {
+        if let Some(session) = self
+            .binding
+            .read()
+            .await
+            .session
+            .as_ref()
+            .and_then(Weak::upgrade)
+        {
             session.try_send(cmd).await;
         } else {
             warn!("sending {:?} to dangling user {}", cmd, self.id);
@@ -150,7 +179,14 @@ impl User {
     /// Send a command to this user's session, waiting for capacity (async).
     /// Returns an error if there is no session or the send queue is closed.
     pub async fn send(&self, cmd: ServerCommand) -> Result<()> {
-        match self.session.read().await.as_ref().and_then(Weak::upgrade) {
+        match self
+            .binding
+            .read()
+            .await
+            .session
+            .as_ref()
+            .and_then(Weak::upgrade)
+        {
             Some(session) => session.send(cmd).await,
             None => Err(anyhow!("no session for user {}", self.id)),
         }
@@ -165,7 +201,14 @@ impl User {
     /// `CommandOrigin::send_and_flush`, and A3 wires any remaining call sites.
     #[allow(dead_code)]
     pub async fn send_and_flush(&self, cmd: ServerCommand) -> Result<()> {
-        match self.session.read().await.as_ref().and_then(Weak::upgrade) {
+        match self
+            .binding
+            .read()
+            .await
+            .session
+            .as_ref()
+            .and_then(Weak::upgrade)
+        {
             Some(session) => session.send_and_flush(cmd).await,
             None => Err(anyhow!("no session for user {}", self.id)),
         }
@@ -182,9 +225,10 @@ impl User {
             None
         };
         let is_current_session = self
-            .session
+            .binding
             .read()
             .await
+            .session
             .as_ref()
             .and_then(Weak::upgrade)
             .is_some_and(|session| session.id == disconnected_session_id);

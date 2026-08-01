@@ -99,7 +99,7 @@ pub(crate) async fn run_admin_kick_user(
         .unwrap_or_default();
 
     // Make the eventual transport-lost notification stale before closing.
-    *user.session.write().await = None;
+    user.clear_session().await;
     let mut users = state.users.write().await;
     if users
         .get(&target_id)

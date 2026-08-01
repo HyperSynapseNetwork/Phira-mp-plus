@@ -21,12 +21,14 @@ pub(crate) async fn process(
     user: Arc<User>,
     category: SessionCategory,
     cmd: ClientCommand,
+    origin: crate::session::CommandOrigin,
+    received_at: std::time::Instant,
+    deadline: std::time::Instant,
 ) -> Option<ServerCommand> {
     // P0-F: JoinRoom(Ok) is delivered internally by join_room, so the minimum
-    // response latency must be enforced there. Capture the command receipt time
-    // at the dispatch boundary (immediately after session.rs records it) and
-    // thread it down to join_room.
-    let received_at = std::time::Instant::now();
+    // response latency must be enforced there. `received_at` is the network
+    // receive point captured in session.rs; `deadline` is derived from it at the
+    // same boundary (P0-J) — never re-created here.
     macro_rules! get_room {
         (~ $d:ident) => {
             // Used by Touches/Judges: these are NoResponseExpected, so a
@@ -68,23 +70,53 @@ pub(crate) async fn process(
             "repeated-authenticate"
         )))),
         ClientCommand::Chat { message } => {
-            crate::session_actor::route_chat(user, category, message.into_inner()).await
+            crate::session_actor::route_chat(
+                user,
+                category,
+                message.into_inner(),
+                origin,
+                deadline,
+            )
+            .await
         }
-        ClientCommand::LockRoom { lock } => crate::session_actor::route_lock(user, lock).await,
-        ClientCommand::CycleRoom { cycle } => crate::session_actor::route_cycle(user, cycle).await,
-        ClientCommand::LeaveRoom => crate::session_actor::route_leave(user, category).await,
-        ClientCommand::CreateRoom { id } => crate::session_actor::route_create(user, id).await,
+        ClientCommand::LockRoom { lock } => {
+            crate::session_actor::route_lock(user, lock, origin, deadline).await
+        }
+        ClientCommand::CycleRoom { cycle } => {
+            crate::session_actor::route_cycle(user, cycle, origin, deadline).await
+        }
+        ClientCommand::LeaveRoom => {
+            crate::session_actor::route_leave(user, category, origin, deadline).await
+        }
+        ClientCommand::CreateRoom { id } => {
+            crate::session_actor::route_create(user, id, origin, deadline).await
+        }
         ClientCommand::JoinRoom { id, monitor } => {
-            crate::session_actor::route_join(user, category, id, monitor, received_at).await
+            crate::session_actor::route_join(
+                user,
+                category,
+                id,
+                monitor,
+                received_at,
+                origin,
+                deadline,
+            )
+            .await
         }
         ClientCommand::SelectChart { id } => {
-            crate::session_actor::route_select_chart(user, id).await
+            crate::session_actor::route_select_chart(user, id, origin, deadline).await
         }
-        ClientCommand::RequestStart => crate::session_actor::route_request_start(user).await,
-        ClientCommand::Ready => crate::session_actor::route_ready(user).await,
-        ClientCommand::CancelReady => crate::session_actor::route_cancel_ready(user).await,
-        ClientCommand::Played { id } => crate::session_actor::route_played(user, id).await,
-        ClientCommand::Abort => crate::session_actor::route_abort(user).await,
+        ClientCommand::RequestStart => {
+            crate::session_actor::route_request_start(user, origin, deadline).await
+        }
+        ClientCommand::Ready => crate::session_actor::route_ready(user, origin, deadline).await,
+        ClientCommand::CancelReady => {
+            crate::session_actor::route_cancel_ready(user, origin, deadline).await
+        }
+        ClientCommand::Played { id } => {
+            crate::session_actor::route_played(user, id, origin, deadline).await
+        }
+        ClientCommand::Abort => crate::session_actor::route_abort(user, origin, deadline).await,
         ClientCommand::Touches { frames } => {
             // NoResponseExpected::Touches — fire-and-forget telemetry, the
             // official protocol never replies.

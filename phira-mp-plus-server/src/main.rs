@@ -278,7 +278,7 @@ async fn main() -> Result<()> {
     };
     let mut disconnect_users = std::collections::HashMap::<i32, (String, String)>::new();
     for session in &sessions {
-        *session.user.session.write().await = None;
+        session.user.clear_session().await;
         if session.user.id >= 0 {
             disconnect_users
                 .entry(session.user.id)

@@ -274,8 +274,9 @@ impl PlusServer {
                 if let Some(session) = session_opt {
                     session.stream.close();
                     let user_ref = {
-                        let session_guard = session.user.session.read().await;
+                        let session_guard = session.user.binding.read().await;
                         session_guard
+                            .session
                             .as_ref()
                             .is_some_and(|it| it.ptr_eq(&Arc::downgrade(&session)))
                     };

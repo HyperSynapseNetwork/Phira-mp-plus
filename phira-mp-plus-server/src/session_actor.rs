@@ -350,14 +350,6 @@ impl SessionActorCmd {
 
 // ── Generic route helper ──────────────────────────────────────────
 
-/// Total budget for one ordinary client command, shared across the mailbox
-/// send and reply stages (PMP42 P0-C). Must stay well below the official
-/// client's ~7s deadline; defaults to 4500ms.
-fn command_deadline(user: &User) -> std::time::Instant {
-    let budget_ms = user.server.config.compatibility.session_command_deadline_ms;
-    std::time::Instant::now() + std::time::Duration::from_millis(budget_ms)
-}
-
 async fn close_uncertain_session(origin: &CommandOrigin, reason: &'static str) {
     tracing::warn!(reason, "session command outcome is uncertain; closing origin transport");
     origin.close_uncertain().await;
@@ -396,6 +388,7 @@ async fn run_or_deadline(
 /// Both the mailbox enqueue and the reply wait share the single absolute
 /// `deadline`; each stage only uses the remaining budget.
 async fn route_via_mailbox<Build, ErrResp>(
+    origin: CommandOrigin,
     user: Arc<User>,
     deadline: std::time::Instant,
     build: Build,
@@ -409,17 +402,14 @@ where
         ) -> SessionActorCmd,
     ErrResp: FnOnce(String) -> Option<ServerCommand>,
 {
-    // P0-A: capture the originating Session BEFORE touching the mailbox. The
-    // user's *current* session may be replaced by a reconnect at any time; every
-    // response, error, close and compensation for this command stays bound to
-    // the origin captured here, never to the new session.
-    let origin = match user.current_origin().await {
-        Some(origin) => origin,
-        None => return error_response("session mailbox missing".to_string()),
-    };
-
-    // Route through the ORIGIN session's mailbox — not `user.session`, which
-    // may already point at a newer session after a reconnect.
+    // P0-A: the origin is captured at the network boundary (session.rs), NOT by
+    // re-reading the user's current binding here. The user's *current* session
+    // may be replaced by a reconnect at any time; every response, error, close
+    // and compensation for this command stays bound to the origin captured at
+    // receive time, never to the new session.
+    //
+    // Route through the ORIGIN session's mailbox — not `user.binding`, which may
+    // already point at a newer session after a reconnect.
     let tx = origin
         .session
         .upgrade()
@@ -494,9 +484,11 @@ pub(crate) async fn route_chat(
     user: Arc<User>,
     category: SessionCategory,
     msg: String,
+    origin: CommandOrigin,
+    deadline: std::time::Instant,
 ) -> Option<ServerCommand> {
-    let deadline = command_deadline(&user);
     route_via_mailbox(
+        origin,
         user,
         deadline,
         |origin, user, reply| SessionActorCmd::Chat {
@@ -521,9 +513,14 @@ async fn handle_lock(user: Arc<User>, lock: bool, deadline: Instant) -> Option<S
     ))
 }
 
-pub(crate) async fn route_lock(user: Arc<User>, lock: bool) -> Option<ServerCommand> {
-    let deadline = command_deadline(&user);
+pub(crate) async fn route_lock(
+    user: Arc<User>,
+    lock: bool,
+    origin: CommandOrigin,
+    deadline: std::time::Instant,
+) -> Option<ServerCommand> {
     route_via_mailbox(
+        origin,
         user,
         deadline,
         |origin, user, reply| SessionActorCmd::Lock {
@@ -545,9 +542,14 @@ async fn handle_cycle(user: Arc<User>, cycle: bool, deadline: Instant) -> Option
     ))
 }
 
-pub(crate) async fn route_cycle(user: Arc<User>, cycle: bool) -> Option<ServerCommand> {
-    let deadline = command_deadline(&user);
+pub(crate) async fn route_cycle(
+    user: Arc<User>,
+    cycle: bool,
+    origin: CommandOrigin,
+    deadline: std::time::Instant,
+) -> Option<ServerCommand> {
     route_via_mailbox(
+        origin,
         user,
         deadline,
         |origin, user, reply| SessionActorCmd::Cycle {
@@ -578,9 +580,11 @@ async fn handle_leave(
 pub(crate) async fn route_leave(
     user: Arc<User>,
     category: SessionCategory,
+    origin: CommandOrigin,
+    deadline: std::time::Instant,
 ) -> Option<ServerCommand> {
-    let deadline = command_deadline(&user);
     route_via_mailbox(
+        origin,
         user,
         deadline,
         |origin, user, reply| SessionActorCmd::Leave {
@@ -604,9 +608,14 @@ async fn handle_create(user: Arc<User>, id: RoomId, origin: CommandOrigin) -> Op
     ))
 }
 
-pub(crate) async fn route_create(user: Arc<User>, id: RoomId) -> Option<ServerCommand> {
-    let deadline = command_deadline(&user);
+pub(crate) async fn route_create(
+    user: Arc<User>,
+    id: RoomId,
+    origin: CommandOrigin,
+    deadline: std::time::Instant,
+) -> Option<ServerCommand> {
     route_via_mailbox(
+        origin,
         user,
         deadline,
         |origin, user, reply| SessionActorCmd::Create {
@@ -646,9 +655,11 @@ pub(crate) async fn route_join(
     id: RoomId,
     monitor: bool,
     received_at: std::time::Instant,
+    origin: CommandOrigin,
+    deadline: std::time::Instant,
 ) -> Option<ServerCommand> {
-    let deadline = command_deadline(&user);
     route_via_mailbox(
+        origin,
         user,
         deadline,
         |origin, user, reply| SessionActorCmd::Join {
@@ -675,9 +686,14 @@ async fn handle_select_chart(user: Arc<User>, id: i32, deadline: Instant) -> Opt
     ))
 }
 
-pub(crate) async fn route_select_chart(user: Arc<User>, id: i32) -> Option<ServerCommand> {
-    let deadline = command_deadline(&user);
+pub(crate) async fn route_select_chart(
+    user: Arc<User>,
+    id: i32,
+    origin: CommandOrigin,
+    deadline: std::time::Instant,
+) -> Option<ServerCommand> {
     route_via_mailbox(
+        origin,
         user,
         deadline,
         |origin, user, reply| SessionActorCmd::SelectChart {
@@ -704,9 +720,13 @@ async fn handle_request_start(
     ))
 }
 
-pub(crate) async fn route_request_start(user: Arc<User>) -> Option<ServerCommand> {
-    let deadline = command_deadline(&user);
+pub(crate) async fn route_request_start(
+    user: Arc<User>,
+    origin: CommandOrigin,
+    deadline: std::time::Instant,
+) -> Option<ServerCommand> {
     route_via_mailbox(
+        origin,
         user,
         deadline,
         |origin, user, reply| SessionActorCmd::RequestStart {
@@ -729,9 +749,13 @@ async fn handle_ready(user: Arc<User>, deadline: std::time::Instant) -> Option<S
     ))
 }
 
-pub(crate) async fn route_ready(user: Arc<User>) -> Option<ServerCommand> {
-    let deadline = command_deadline(&user);
+pub(crate) async fn route_ready(
+    user: Arc<User>,
+    origin: CommandOrigin,
+    deadline: std::time::Instant,
+) -> Option<ServerCommand> {
     route_via_mailbox(
+        origin,
         user,
         deadline,
         |origin, user, reply| SessionActorCmd::Ready {
@@ -755,9 +779,13 @@ async fn handle_cancel_ready(
     ))
 }
 
-pub(crate) async fn route_cancel_ready(user: Arc<User>) -> Option<ServerCommand> {
-    let deadline = command_deadline(&user);
+pub(crate) async fn route_cancel_ready(
+    user: Arc<User>,
+    origin: CommandOrigin,
+    deadline: std::time::Instant,
+) -> Option<ServerCommand> {
     route_via_mailbox(
+        origin,
         user,
         deadline,
         |origin, user, reply| SessionActorCmd::CancelReady {
@@ -780,9 +808,14 @@ async fn handle_played(user: Arc<User>, id: i32, deadline: Instant) -> Option<Se
     ))
 }
 
-pub(crate) async fn route_played(user: Arc<User>, id: i32) -> Option<ServerCommand> {
-    let deadline = command_deadline(&user);
+pub(crate) async fn route_played(
+    user: Arc<User>,
+    id: i32,
+    origin: CommandOrigin,
+    deadline: std::time::Instant,
+) -> Option<ServerCommand> {
     route_via_mailbox(
+        origin,
         user,
         deadline,
         |origin, user, reply| SessionActorCmd::Played {
@@ -804,9 +837,13 @@ async fn handle_abort(user: Arc<User>, deadline: Instant) -> Option<ServerComman
     ))
 }
 
-pub(crate) async fn route_abort(user: Arc<User>) -> Option<ServerCommand> {
-    let deadline = command_deadline(&user);
+pub(crate) async fn route_abort(
+    user: Arc<User>,
+    origin: CommandOrigin,
+    deadline: std::time::Instant,
+) -> Option<ServerCommand> {
     route_via_mailbox(
+        origin,
         user,
         deadline,
         |origin, user, reply| SessionActorCmd::Abort {

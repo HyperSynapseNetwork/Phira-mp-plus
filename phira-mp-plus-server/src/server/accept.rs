@@ -151,7 +151,7 @@ impl PlusServer {
             // Authentication may complete while the main task has already begun
             // shutdown. Never publish a late session into the authoritative map.
             if state.shutting_down.load(Ordering::Acquire) {
-                *session.user.session.write().await = None;
+                session.user.clear_session().await;
                 session.stream.close();
                 if session.user.id >= 0 {
                     let mut users = state.users.write().await;

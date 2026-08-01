@@ -330,8 +330,8 @@ fn server_state_query_dispatch(
             let list = users
                 .iter()
                 .filter_map(|(user_id, user)| {
-                    let session = user.session.try_read().ok()?;
-                    let session = session.as_ref()?.upgrade()?;
+                    let binding = user.binding.try_read().ok()?;
+                    let session = binding.session.as_ref()?.upgrade()?;
                     Some(serde_json::json!({
                         "id": user_id,
                         "name": session.name(),
@@ -349,10 +349,10 @@ fn server_state_query_dispatch(
                 .ok_or_else(|| "user_id required".to_string())?;
             let users = crate::read_lock!(state.users);
             let online = users.get(&user_id).is_some_and(|user| {
-                user.session
+                user.binding
                     .try_read()
                     .ok()
-                    .and_then(|session| session.as_ref().and_then(|weak| weak.upgrade()))
+                    .and_then(|binding| binding.session.as_ref().and_then(|weak| weak.upgrade()))
                     .is_some()
             });
             Ok(serde_json::json!(online))
@@ -368,10 +368,10 @@ fn server_state_query_dispatch(
             match user {
                 Some(user) => {
                     let name = user
-                        .session
+                        .binding
                         .try_read()
                         .ok()
-                        .and_then(|s| s.as_ref().and_then(|w| w.upgrade()))
+                        .and_then(|b| b.session.as_ref().and_then(|w| w.upgrade()))
                         .map(|s| s.name().to_string())
                         .unwrap_or_default();
                     Ok(serde_json::json!({"id": user_id, "name": name}))

@@ -86,8 +86,8 @@ enum AuthenticationOutcome {
 /// session, which may have been replaced by a reconnect (P0-A).
 ///
 /// Two independent checks guard freshness:
-/// - a generation counter snapshot compared against `user.session_generation`
-///   (bumped by `User::set_session`), and
+/// - a generation counter snapshot compared against the user's current binding
+///   generation (`user.binding.generation`, bumped by `User::set_session`), and
 /// - pointer identity between the captured weak ref and the weak ref the user
 ///   currently stores.
 #[derive(Debug, Clone)]
@@ -113,11 +113,9 @@ impl CommandOrigin {
             return false;
         };
         let user = &session.user;
-        let current_generation = user.session_generation.load(Ordering::SeqCst);
-        if self.generation != current_generation {
-            return false;
-        }
-        let current = user.session.read().await.as_ref().and_then(Weak::upgrade);
+        let binding = user.binding.read().await;
+        let current_generation = binding.generation;
+        let current = binding.session.as_ref().and_then(Weak::upgrade);
         let same_session = current.as_ref().is_some_and(|cur| Arc::ptr_eq(cur, &session));
         origin_is_current(self.generation, current_generation, same_session)
     }
@@ -285,6 +283,12 @@ pub struct Session {
     pub stream: Stream<ServerCommand, ClientCommand>,
     pub user: Arc<User>,
     pub category: SessionCategory,
+
+    /// The generation this Session was bound to its user with, set exactly once
+    /// during authentication (P0-A). Network commands captured against this
+    /// Session use this generation — never the user's current generation, which
+    /// advances past this Session after a reconnect.
+    pub bound_generation: std::sync::OnceLock<u64>,
 
     /// P0-B outbound activation barrier. Created before the Stream so the auth
     /// callback can open it the moment `Authenticate(Ok)` is proven flushed.
@@ -506,8 +510,11 @@ impl Session {
                                             // otherwise remain active until heartbeat timeout and
                                             // issue commands concurrently with the new session.
                                             let previous_session = {
-                                                let guard = existing.session.read().await;
-                                                guard.as_ref().and_then(std::sync::Weak::upgrade)
+                                                let guard = existing.binding.read().await;
+                                                guard
+                                                    .session
+                                                    .as_ref()
+                                                    .and_then(std::sync::Weak::upgrade)
                                             };
                                             let _ = auth_tx.take().unwrap().send(
                                                 AuthenticationOutcome::Accepted(
@@ -516,9 +523,12 @@ impl Session {
                                                 ),
                                             );
                                             this_inited.notified().await;
-                                            existing
+                                            let gen = existing
                                                 .set_session(Arc::downgrade(this.get().unwrap()))
                                                 .await;
+                                            if let Some(session) = this.get() {
+                                                let _ = session.bound_generation.set(gen);
+                                            }
                                             if let Some(previous) = previous_session {
                                                 if previous.id != id {
                                                     previous.stream.close();
@@ -565,8 +575,12 @@ impl Session {
                                                 ),
                                             );
                                             this_inited.notified().await;
-                                            user.set_session(Arc::downgrade(this.get().unwrap()))
+                                            let gen = user
+                                                .set_session(Arc::downgrade(this.get().unwrap()))
                                                 .await;
+                                            if let Some(session) = this.get() {
+                                                let _ = session.bound_generation.set(gen);
+                                            }
                                             {
                                                 let mut guard = server.users.write().await;
                                                 guard.insert(user_info.id, Arc::clone(&user));
@@ -720,7 +734,12 @@ impl Session {
                                             SessionCategory::Console,
                                         ));
                                         this_inited.notified().await;
-                                        user.set_session(Arc::downgrade(this.get().unwrap())).await;
+                                        let gen = user
+                                            .set_session(Arc::downgrade(this.get().unwrap()))
+                                            .await;
+                                        if let Some(session) = this.get() {
+                                            let _ = session.bound_generation.set(gen);
+                                        }
                                         // Initialize per-session mailbox for command routing
                                         if let Some(session) = this.get() {
                                             let tx = crate::session_actor::init_session_mailbox(session);
@@ -794,7 +813,12 @@ impl Session {
                                             SessionCategory::RoomMonitor,
                                         ));
                                         this_inited.notified().await;
-                                        user.set_session(Arc::downgrade(this.get().unwrap())).await;
+                                        let gen = user
+                                            .set_session(Arc::downgrade(this.get().unwrap()))
+                                            .await;
+                                        if let Some(session) = this.get() {
+                                            let _ = session.bound_generation.set(gen);
+                                        }
                                         if let Some(session) = this.get() {
                                             let tx = crate::session_actor::init_session_mailbox(session);
                                             let _ = session.actor_tx.set(tx);
@@ -856,7 +880,12 @@ impl Session {
                                             SessionCategory::GameMonitor,
                                         ));
                                         this_inited.notified().await;
-                                        user.set_session(Arc::downgrade(this.get().unwrap())).await;
+                                        let gen = user
+                                            .set_session(Arc::downgrade(this.get().unwrap()))
+                                            .await;
+                                        if let Some(session) = this.get() {
+                                            let _ = session.bound_generation.set(gen);
+                                        }
                                         // Initialize per-session mailbox for command routing
                                         if let Some(session) = this.get() {
                                             let tx = crate::session_actor::init_session_mailbox(session);
@@ -918,6 +947,29 @@ impl Session {
                         ProtocolTrace::get()
                             .request_received
                             .fetch_add(1, Ordering::Relaxed);
+
+                        // P0-A: capture the ACTUAL session that received this
+                        // command as its origin, and derive the absolute deadline
+                        // from the network receive point (P0-J). After a reconnect
+                        // the user's binding points at a NEW session; routing
+                        // against this captured origin keeps responses, error
+                        // closes and compensations bound to THIS session — never
+                        // the replacement. The bound generation is the one this
+                        // Session was bound with at auth time, not the user's
+                        // current generation which advances past this Session.
+                        let actual_session = this.get().map(Arc::clone).unwrap();
+                        let origin = crate::session::CommandOrigin {
+                            session: Arc::downgrade(&actual_session),
+                            generation: actual_session
+                                .bound_generation
+                                .get()
+                                .copied()
+                                .unwrap_or(0),
+                        };
+                        let absolute_deadline = received_at
+                            + std::time::Duration::from_millis(
+                                user.server.config.compatibility.session_command_deadline_ms,
+                            );
 
                         // 命令速率限制 — on failure return the matching official
                         // error response instead of silently dropping the request
@@ -1020,8 +1072,11 @@ impl Session {
                                 Arc::new(user.lang.clone()),
                                 crate::session_dispatch::process(
                                     user,
-                                    this.get().unwrap().category,
+                                    actual_session.category,
                                     cmd,
+                                    origin,
+                                    received_at,
+                                    absolute_deadline,
                                 ),
                             )
                             .await;
@@ -1110,6 +1165,7 @@ impl Session {
             stream,
             user,
             category,
+            bound_generation: std::sync::OnceLock::new(),
             gate,
             actor_tx: OnceLock::new(),
             monitor_task_handle,
