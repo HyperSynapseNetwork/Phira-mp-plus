@@ -802,19 +802,11 @@ async fn remove_user_response_after(
         data: leave_data,
     })
     .await;
-    let _ = srv
-        .room_commands
-        .room_mailbox(
-            &plugin_room_id,
-            None,
-            |reply: tokio::sync::oneshot::Sender<RoomCommandResult>| -> RoomActorCommand {
-                RoomActorCommand::CheckAllReady {
-                    room_id: plugin_room_id.clone(),
-                    deadline: check_deadline,
-                    reply,
-                }
-            },
-        )
+    // 经专用 gateway 方法 fire-and-forget 重入（不用泛型 room_mailbox，避免
+    // `execute_with_actor` 的 opaque future 因 reply 类型间接依赖自身返回类型
+    // 触发 E0391 类型循环）。
+    srv.room_commands
+        .fire_check_all_ready(&srv, &plugin_room_id, check_deadline)
         .await;
 }
 

@@ -308,7 +308,11 @@ pub(crate) enum RoomActorCommand {
         room_id: String,
         /// 响应后检查的绝对 deadline。非会话内部路径，使用 30s 兜底。
         deadline: std::time::Instant,
-        reply: oneshot::Sender<RoomCommandResult>,
+        /// fire-and-forget：发起方丢弃 reply 接收端，无客户端等待。用
+        /// `Sender<()>` 而非 `Sender<RoomCommandResult>`——避免 `RoomActorCommand`
+        /// 通过 reply 类型依赖 `RoomCommandResult`（即 `execute_with_actor` 的
+        /// 返回类型），消除 async opaque future 的 E0391 类型循环。
+        reply: oneshot::Sender<()>,
     },
 }
 
@@ -370,9 +374,12 @@ impl RoomActorCommand {
             | Self::AddJudges { reply, .. }
             | Self::SetDisplayName { reply, .. }
             | Self::SetPersistentEmpty { reply, .. }
-            | Self::BindAndSnapshot { reply, .. }
-            | Self::CheckAllReady { reply, .. } => {
+            | Self::BindAndSnapshot { reply, .. } => {
                 let _ = reply.send(result);
+            }
+            // CheckAllReady 是 fire-and-forget（Sender<()>）——确认已执行即可。
+            Self::CheckAllReady { reply, .. } => {
+                let _ = reply.send(());
             }
             // Telemetry variants are fire-and-forget — no reply channel.
             Self::TelemetryTouches { .. } | Self::TelemetryJudges { .. } => {}
