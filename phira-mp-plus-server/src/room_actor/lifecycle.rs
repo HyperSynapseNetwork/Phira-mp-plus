@@ -39,6 +39,10 @@ pub trait RoomLifecycle: Send + Sync {
     /// Get a reference to the server state.
     fn server_state(&self) -> &PlusServerState;
 
+    /// PMP44 P0-M: 获取 `PlusServerState` 的 owned `Arc`，用于把插件事件
+    /// 派发拆到 Actor reply 之后的后台任务（response-after）。
+    fn server_state_arc(&self) -> Arc<PlusServerState>;
+
     // ── Broadcast / send ──────────────────────────────────────────
 
     /// Broadcast a `ServerCommand` to all users and monitors.
@@ -87,26 +91,31 @@ pub trait RoomLifecycle: Send + Sync {
 }
 
 /// Default implementation of [`RoomLifecycle`] that wraps a `Room` broadcast
-/// bus and a `PlusServerState` reference.
-pub struct DefaultRoomLifecycle<'a> {
+/// bus and a `PlusServerState` Arc (PMP44 P0-M: 持有 owned `Arc`，这样插件
+/// 事件可以克隆出独立引用放到 Actor reply 之后的后台任务里执行)。
+pub struct DefaultRoomLifecycle {
     room: Arc<Room>,
-    state: &'a PlusServerState,
+    state: Arc<PlusServerState>,
 }
 
-impl<'a> DefaultRoomLifecycle<'a> {
-    pub fn new(room: Arc<Room>, state: &'a PlusServerState) -> Self {
+impl DefaultRoomLifecycle {
+    pub fn new(room: Arc<Room>, state: Arc<PlusServerState>) -> Self {
         Self { room, state }
     }
 }
 
 #[async_trait]
-impl<'a> RoomLifecycle for DefaultRoomLifecycle<'a> {
+impl RoomLifecycle for DefaultRoomLifecycle {
     fn room(&self) -> &Arc<Room> {
         &self.room
     }
 
     fn server_state(&self) -> &PlusServerState {
-        self.state
+        &*self.state
+    }
+
+    fn server_state_arc(&self) -> Arc<PlusServerState> {
+        Arc::clone(&self.state)
     }
 
     async fn broadcast(&self, cmd: ServerCommand) {

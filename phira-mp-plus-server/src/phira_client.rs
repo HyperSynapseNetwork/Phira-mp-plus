@@ -374,6 +374,9 @@ enum PhiraHttpFailureKind {
     RetryableStatus,
     NonRetryableStatus,
     Decode,
+    /// 认证/命令绝对预算耗尽（PMP44 P0-D）——重试与退避不得把总耗时
+    /// 推到官方客户端约 7 秒 deadline 之后。
+    Timeout,
 }
 
 pub enum PhiraRetryNoticeTarget<'a> {
@@ -446,6 +449,7 @@ impl PhiraRetryClient {
         path: &str,
         bearer: Option<&str>,
         target: PhiraRetryNoticeTarget<'_>,
+        deadline: Option<std::time::Instant>,
     ) -> Result<T>
     where
         T: DeserializeOwned,
@@ -469,6 +473,18 @@ impl PhiraRetryClient {
         let endpoint_key = path.clone();
 
         for attempt in 0..=self.policy.max_retries {
+            // PMP44 P0-D: 认证绝对预算内的每一次请求发送前都检查剩余预算；
+            // 预算耗尽立即失败，而不是让重试把总耗时推到官方客户端 deadline 之后。
+            if let Some(d) = deadline {
+                let remaining = d.saturating_duration_since(std::time::Instant::now());
+                if remaining.is_zero() {
+                    self.record_failure_kind(
+                        PhiraHttpFailureKind::Timeout,
+                        "deadline elapsed".to_string(),
+                    );
+                    bail!("Phira API deadline elapsed");
+                }
+            }
             let mut request = self.client.get(&url);
             if let Some(token) = bearer {
                 request = request.header(reqwest::header::AUTHORIZATION, format!("Bearer {token}"));
@@ -501,7 +517,7 @@ impl PhiraRetryClient {
                     if retryable && attempt < self.policy.max_retries {
                         self.counters.retry_attempts.fetch_add(1, Ordering::Relaxed);
                         self.send_retry_notice(&target).await;
-                        time::sleep(self.policy.backoff_delay(attempt)).await;
+                        self.bounded_backoff_sleep(deadline, attempt).await;
                         continue;
                     }
                     if retryable {
@@ -528,7 +544,7 @@ impl PhiraRetryClient {
                 Err(err) if phira_error_retryable(&err) && attempt < self.policy.max_retries => {
                     self.counters.retry_attempts.fetch_add(1, Ordering::Relaxed);
                     self.send_retry_notice(&target).await;
-                    time::sleep(self.policy.backoff_delay(attempt)).await;
+                    self.bounded_backoff_sleep(deadline, attempt).await;
                 }
                 Err(err) => {
                     self.circuit_breaker.record_failure();
@@ -565,6 +581,7 @@ impl PhiraRetryClient {
             "/me",
             Some(bearer),
             PhiraRetryNoticeTarget::Silent,
+            None,
         )
         .await
         .ok()
@@ -583,6 +600,7 @@ impl PhiraRetryClient {
             &format!("/chart/{chart_id}"),
             None,
             PhiraRetryNoticeTarget::Silent,
+            None,
         )
         .await
         .ok()
@@ -700,10 +718,28 @@ impl PhiraRetryClient {
             &format!("/user/{user_id}"),
             None,
             PhiraRetryNoticeTarget::Silent,
+            None,
         )
         .await
         .ok()
         .map(|info| info.name)
+    }
+
+    /// PMP44 P0-D: 重试退避 sleep 受绝对预算约束——绝不睡过 deadline。
+    /// 预算已耗尽时本轮直接跳过退避（下一次循环的请求前检查会拒绝请求）。
+    async fn bounded_backoff_sleep(
+        &self,
+        deadline: Option<std::time::Instant>,
+        attempt: usize,
+    ) {
+        if let Some(d) = deadline {
+            let remaining = d.saturating_duration_since(std::time::Instant::now());
+            if !remaining.is_zero() {
+                tokio::time::sleep(remaining.min(self.policy.backoff_delay(attempt))).await;
+            }
+        } else {
+            time::sleep(self.policy.backoff_delay(attempt)).await;
+        }
     }
 
     async fn send_retry_notice(&self, target: &PhiraRetryNoticeTarget<'_>) {
@@ -753,6 +789,9 @@ impl PhiraRetryClient {
             }
             PhiraHttpFailureKind::Decode => {
                 self.counters.decode_errors.fetch_add(1, Ordering::Relaxed);
+            }
+            PhiraHttpFailureKind::Timeout => {
+                self.counters.status_errors.fetch_add(1, Ordering::Relaxed);
             }
         }
         if let Ok(mut last) = self.counters.last_error.write() {

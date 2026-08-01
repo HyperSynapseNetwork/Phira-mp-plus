@@ -215,8 +215,10 @@ impl RoomCommandGateway {
                                     if elapsed >= timeout_ms {
                                         // 超时 —— 强制开赛
                                         let room = Arc::clone(&actor.room);
-                                        let state: &crate::server::PlusServerState = &*actor.state;
-                                        let lc = crate::room_actor::lifecycle::DefaultRoomLifecycle::new(room, state);
+                                        let lc = crate::room_actor::lifecycle::DefaultRoomLifecycle::new(
+                                            room,
+                                            Arc::clone(&actor.state),
+                                        );
                                         crate::room_actor::handler::force_start_playing(
                                             &lc, &mut as_.state,
                                             std::time::Instant::now() + Self::COMMAND_TIMEOUT,
@@ -235,8 +237,10 @@ impl RoomCommandGateway {
                                     if now >= deadline {
                                         as_.state.playing_timeout_deadline = None;
                                         let room = Arc::clone(&actor.room);
-                                        let state: &crate::server::PlusServerState = &*actor.state;
-                                        let lc = crate::room_actor::lifecycle::DefaultRoomLifecycle::new(room, state);
+                                        let lc = crate::room_actor::lifecycle::DefaultRoomLifecycle::new(
+                                            room,
+                                            Arc::clone(&actor.state),
+                                        );
                                         crate::room_actor::handler::force_end_playing(
                                             &lc, &mut as_.state,
                                         ).await;

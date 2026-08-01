@@ -172,7 +172,20 @@ pub(crate) async fn build_room_data(room: &crate::room::Room) -> phira_mp_common
     }
 }
 
-pub async fn create_room(user: Arc<User>, id: RoomId, origin: &CommandOrigin) -> Result<()> {
+pub async fn create_room(
+    user: Arc<User>,
+    id: RoomId,
+    deadline: Instant,
+    origin: &CommandOrigin,
+) -> Result<()> {
+    // PMP44 P0-J: 绝对预算已耗尽时拒绝创建——不得在客户端已超时之后
+    // 拿到 user.room 写锁或写入 rooms 注册表。
+    if crate::official_client_compat::timing::deadline_expired(deadline) {
+        crate::official_client_compat::protocol_trace::ProtocolTrace::get()
+            .late_commit
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        bail!("create room timed out");
+    }
     let id_text = id.to_string();
     if let Some(command) = id_text.strip_prefix('_') {
         if user.server.is_admin_id(user.id).await {
@@ -556,8 +569,9 @@ pub async fn join_room(
     };
     // P0-F: JoinRoom(Ok) must not arrive before the minimum response latency
     // window (the official client installs its callback after send).
+    // PMP44 P0-J: 最低响应时延等待被绝对预算截断——后续 flush 的超时强制同一 deadline。
     crate::official_client_compat::timing::CompatTiming::from_config(&user.server.config)
-        .wait_until_minimum(received_at)
+        .wait_until_minimum_bounded(received_at, Some(deadline))
         .await;
 
     // P0-E/P0-C: the JoinRoom(Ok) flush shares the command's single absolute
@@ -872,6 +886,7 @@ pub async fn select_chart(
                 &format!("/chart/{id}"),
                 None,
                 crate::phira_client::PhiraRetryNoticeTarget::Silent,
+                None,
             ),
         )
         .await
@@ -1030,6 +1045,7 @@ pub async fn played(
             &format!("/record/{id}"),
             None,
             PhiraRetryNoticeTarget::User(user.as_ref()),
+            None,
         ),
     )
     .await

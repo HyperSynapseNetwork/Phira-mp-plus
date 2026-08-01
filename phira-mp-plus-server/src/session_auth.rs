@@ -40,6 +40,7 @@ pub(crate) async fn authenticate_remote_with_notice(
     server: &PlusServerState,
     token: &str,
     target: PhiraRetryNoticeTarget<'_>,
+    deadline: Option<std::time::Instant>,
 ) -> Result<AuthUserInfo> {
     if token.len() > 128 {
         bail!("invalid token");
@@ -53,6 +54,7 @@ pub(crate) async fn authenticate_remote_with_notice(
             "/me",
             Some(token),
             target,
+            deadline,
         )
         .await
 }

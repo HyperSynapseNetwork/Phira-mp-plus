@@ -56,7 +56,13 @@ pub(crate) fn init_session_mailbox(session: &Arc<Session>) -> mpsc::Sender<Sessi
                         Some(ServerCommand::Chat(Err(
                             "session command timed out".to_string(),
                         ))),
-                        handle_chat(user, category, msg),
+                        handle_chat(
+                            user,
+                            category,
+                            msg,
+                            meta.deadline,
+                            meta.origin.clone(),
+                        ),
                     )
                     .await;
                 }
@@ -104,7 +110,7 @@ pub(crate) fn init_session_mailbox(session: &Arc<Session>) -> mpsc::Sender<Sessi
                         Some(ServerCommand::CreateRoom(Err(
                             "session command timed out".to_string(),
                         ))),
-                        handle_create(user, id, meta.origin.clone()),
+                        handle_create(user, id, meta.deadline, meta.origin.clone()),
                     )
                     .await;
                 }
@@ -358,6 +364,11 @@ async fn close_uncertain_session(origin: &CommandOrigin, reason: &'static str) {
 /// Execute a command handler unless the absolute actor deadline has already
 /// passed. A late command MUST NOT mutate authoritative state — reply with the
 /// matching error response and count it as a blocked late commit (P0-C).
+///
+/// PMP44 P0-J: the handler is wrapped in the REMAINING budget. A handler that
+/// outlives its absolute deadline (e.g. an external Phira fetch, persistence
+/// admission or plugin callback) is aborted and the error response is returned
+/// instead of committing after the client already timed out.
 async fn run_or_deadline(
     deadline: std::time::Instant,
     reply: tokio::sync::oneshot::Sender<Option<ServerCommand>>,
@@ -373,8 +384,24 @@ async fn run_or_deadline(
             "session command arrived after deadline; refusing to commit"
         );
         let _ = reply.send(error_response);
-    } else {
-        let _ = reply.send(handler.await);
+        return;
+    }
+    let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+    match tokio::time::timeout(remaining, handler).await {
+        Ok(result) => {
+            let _ = reply.send(result);
+        }
+        Err(_) => {
+            // The handler outlived its absolute deadline — abort it and refuse.
+            crate::official_client_compat::protocol_trace::ProtocolTrace::get()
+                .late_commit
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            tracing::warn!(
+                ?deadline,
+                "session command handler exceeded deadline; aborting"
+            );
+            let _ = reply.send(error_response);
+        }
     }
 }
 
@@ -454,10 +481,21 @@ async fn handle_chat(
     user: Arc<User>,
     _category: SessionCategory,
     content: String,
+    deadline: std::time::Instant,
+    _origin: CommandOrigin,
 ) -> Option<ServerCommand> {
     use anyhow::Result;
     if !user.server.live_config.read().await.chat_enabled {
         return Some(ServerCommand::Chat(Err(crate::tl!("chat-disabled"))));
+    }
+    // PMP44 P0-J: 绝对预算已耗尽时拒绝提交（persistence enqueue + room
+    // broadcast 都不得在客户端已超时之后执行）。
+    if crate::official_client_compat::timing::deadline_expired(deadline) {
+        crate::official_client_compat::protocol_trace::ProtocolTrace::get()
+            .late_commit
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        tracing::warn!(?deadline, "chat command arrived after deadline; refusing to commit");
+        return Some(ServerCommand::Chat(Err("chat timed out".to_string())));
     }
     let res: Result<()> = async {
         let room = user.room.read().await.as_ref().map(Arc::clone)
@@ -611,9 +649,14 @@ pub(crate) async fn route_leave(
 
 // ── Create / Join ─────────────────────────────────────────────────
 
-async fn handle_create(user: Arc<User>, id: RoomId, origin: CommandOrigin) -> Option<ServerCommand> {
+async fn handle_create(
+    user: Arc<User>,
+    id: RoomId,
+    deadline: std::time::Instant,
+    origin: CommandOrigin,
+) -> Option<ServerCommand> {
     Some(ServerCommand::CreateRoom(
-        crate::session_room::create_room(user, id, &origin)
+        crate::session_room::create_room(user, id, deadline, &origin)
             .await
             .map_err(|e| e.to_string()),
     ))

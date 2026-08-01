@@ -33,6 +33,10 @@ use uuid::Uuid;
 /// caller waits for that separately) and the P0-E critical flush.  Returns
 /// `true` when the packet entered the outbound send queue.  A critical flush
 /// failure closes the transport and enters the existing lost-connection path.
+///
+/// PMP44 P0-J: when an absolute `deadline` is present, the critical flush is
+/// bounded by the remaining budget — a flush that outlives the deadline is
+/// treated as a send failure (mark panicked, close transport).
 async fn send_dispatch_response(
     send_tx: &StreamSender<ServerCommand>,
     resp: ServerCommand,
@@ -41,9 +45,23 @@ async fn send_dispatch_response(
     id: Uuid,
     server: &PlusServerState,
     panicked: &AtomicBool,
+    deadline: Option<Instant>,
 ) -> bool {
     let result = if critical {
-        send_tx.send_and_flush(resp).await
+        let fut = send_tx.send_and_flush(resp);
+        match deadline {
+            Some(d) => {
+                let remaining = d.saturating_duration_since(Instant::now());
+                match tokio::time::timeout(remaining, fut).await {
+                    Ok(r) => r,
+                    Err(_) => {
+                        // 响应 flush 超出绝对预算——视为发送失败。
+                        Err(anyhow!("response flush exceeded deadline"))
+                    }
+                }
+            }
+            None => fut.await,
+        }
     } else {
         send_tx.send(resp).await
     };
@@ -375,6 +393,13 @@ impl Session {
                                 // boundary so the success response obeys the same minimum
                                 // response latency as every other request-type command (§5).
                                 let auth_received_at = Instant::now();
+                                // PMP44 P0-D: 认证绝对预算从网络接收点开始计时，覆盖
+                                // Phira API + 重试 + 退避 + WAL admission + 最低响应时延
+                                // + 响应 flush。必须早于官方客户端约 7 秒 deadline。
+                                let auth_deadline = auth_received_at
+                                    + std::time::Duration::from_millis(
+                                        server.config.compatibility.auth_deadline_ms,
+                                    );
                                 let mut auth_tx = Some(tx);
                                 let retry_send_tx = Arc::clone(&send_tx);
                                 let res: Result<()> = {
@@ -439,6 +464,7 @@ impl Session {
                                                     PhiraRetryNoticeTarget::Stream(
                                                         retry_send_tx.as_ref(),
                                                     ),
+                                                    Some(auth_deadline),
                                                 )
                                                 .await
                                             {
@@ -622,6 +648,24 @@ impl Session {
                                     // ── 阻塞持久化：认证成功但尚未响应客户端 ──────────────
                                     // 在发送 Authenticate(Ok) 之前先持久化用户记录，
                                     // 确保 WAL admission 成功后才放行客户端。
+                                    // PMP44 P0-D: WAL admission 前检查绝对预算——预算耗尽
+                                    // 则认证失败，绝不入队（避免“服务端已注册用户但客户端
+                                    // 早已超时”的幻象）。
+                                    if crate::official_client_compat::timing::deadline_expired(
+                                        auth_deadline,
+                                    ) {
+                                        warn!(
+                                            user = user.id,
+                                            "auth deadline elapsed before WAL admission"
+                                        );
+                                        send_auth_rejection(
+                                            &send_tx,
+                                            "authentication timed out".to_string(),
+                                        )
+                                        .await;
+                                        panicked.store(true, Ordering::SeqCst);
+                                        return;
+                                    }
                                     let connected_at = std::time::SystemTime::now()
                                         .duration_since(std::time::UNIX_EPOCH)
                                         .map(|d| d.as_millis() as i64)
@@ -653,18 +697,49 @@ impl Session {
                                     // P0-B: the initial Authenticate response must not arrive
                                     // before the minimum response latency window (the official
                                     // client installs its Authenticate callback after send).
+                                    // PMP44 P0-D: 最低响应时延等待不睡过 auth_deadline。
                                     crate::official_client_compat::timing::CompatTiming::from_config(
                                         &server.config,
                                     )
-                                    .wait_until_minimum(auth_received_at)
+                                    .wait_until_minimum_bounded(
+                                        auth_received_at,
+                                        Some(auth_deadline),
+                                    )
                                     .await;
-                                    if let Err(err) = send_tx
-                                        .send_and_flush(ServerCommand::Authenticate(Ok((
-                                            user.to_info(),
-                                            room_state,
-                                        ))))
+                                    // PMP44 P0-D: flush 前检查——绝不发送 Authenticate(Ok)
+                                    // 于预算之外。
+                                    if crate::official_client_compat::timing::deadline_expired(
+                                        auth_deadline,
+                                    ) {
+                                        warn!(
+                                            user = user.id,
+                                            "auth deadline elapsed before response flush"
+                                        );
+                                        send_auth_rejection(
+                                            &send_tx,
+                                            "authentication timed out".to_string(),
+                                        )
+                                        .await;
+                                        panicked.store(true, Ordering::SeqCst);
+                                        return;
+                                    }
+                                    let flush_remaining = auth_deadline
+                                        .saturating_duration_since(Instant::now());
+                                    let flush_result: Result<()> =
+                                        match tokio::time::timeout(
+                                            flush_remaining,
+                                            send_tx.send_and_flush(ServerCommand::Authenticate(
+                                                Ok((user.to_info(), room_state)),
+                                            )),
+                                        )
                                         .await
-                                    {
+                                        {
+                                            Ok(r) => r,
+                                            Err(_) => Err(anyhow!(
+                                                "auth response flush exceeded deadline"
+                                            )),
+                                        };
+                                    if let Err(err) = flush_result {
                                         warn!(user = user.id, ?err, "failed to flush auth response");
                                         panicked.store(true, Ordering::SeqCst);
                                         return;
@@ -673,6 +748,17 @@ impl Session {
                                     // P0-B: the auth frame is proven flushed; only now open the
                                     // outbound gate so room broadcasts buffered during the
                                     // handshake drain AFTER the client installed its callback.
+                                    // PMP44 P0-D: 预算耗尽则不再激活 gate。
+                                    if crate::official_client_compat::timing::deadline_expired(
+                                        auth_deadline,
+                                    ) {
+                                        warn!(
+                                            user = user.id,
+                                            "auth deadline elapsed after flush; skipping gate activation"
+                                        );
+                                        panicked.store(true, Ordering::SeqCst);
+                                        return;
+                                    }
                                     gate.activate(send_tx.as_ref()).await;
                                     let auth_trace = crate::official_client_compat::protocol_trace::ProtocolTrace::get();
                                     auth_trace.response_queued.fetch_add(1, Ordering::Relaxed);
@@ -721,10 +807,15 @@ impl Session {
                             } else if let ClientCommand::ConsoleAuthenticate { token } = &cmd {
                                 let Some(tx) = tx else { return };
                                 let auth_received_at = Instant::now();
+                                let auth_deadline = auth_received_at
+                                    + std::time::Duration::from_millis(
+                                        server.config.compatibility.auth_deadline_ms,
+                                    );
                                 match authenticate_remote_with_notice(
                                     &server,
                                     token,
                                     PhiraRetryNoticeTarget::Stream(send_tx.as_ref()),
+                                    Some(auth_deadline),
                                 )
                                 .await
                                 {
@@ -752,18 +843,51 @@ impl Session {
                                             let tx = crate::session_actor::init_session_mailbox(session);
                                             let _ = session.actor_tx.set(tx);
                                         }
+                                        // PMP44 P0-D: flush 前检查绝对预算——绝不发送
+                                        // Authenticate(Ok) 于预算之外。
+                                        if crate::official_client_compat::timing::deadline_expired(
+                                            auth_deadline,
+                                        ) {
+                                            warn!(
+                                                user = user.id,
+                                                "console auth deadline elapsed before response flush"
+                                            );
+                                            send_auth_rejection(
+                                                &send_tx,
+                                                "authentication timed out".to_string(),
+                                            )
+                                            .await;
+                                            panicked.store(true, Ordering::SeqCst);
+                                            return;
+                                        }
                                         crate::official_client_compat::timing::CompatTiming::from_config(
                                             &server.config,
                                         )
-                                        .wait_until_minimum(auth_received_at)
+                                        .wait_until_minimum_bounded(
+                                            auth_received_at,
+                                            Some(auth_deadline),
+                                        )
                                         .await;
-                                        if let Err(err) = send_tx
-                                            .send_and_flush(ServerCommand::Authenticate(Ok((
-                                                user.to_info(),
-                                                None,
-                                            ))))
+                                        let flush_remaining = auth_deadline
+                                            .saturating_duration_since(Instant::now());
+                                        let flush_result: Result<()> =
+                                            match tokio::time::timeout(
+                                                flush_remaining,
+                                                send_tx.send_and_flush(
+                                                    ServerCommand::Authenticate(Ok((
+                                                        user.to_info(),
+                                                        None,
+                                                    ))),
+                                                ),
+                                            )
                                             .await
-                                        {
+                                            {
+                                                Ok(r) => r,
+                                                Err(_) => Err(anyhow!(
+                                                    "console auth response flush exceeded deadline"
+                                                )),
+                                            };
+                                        if let Err(err) = flush_result {
                                             warn!(user = user.id, ?err, "failed to flush console auth response");
                                             panicked.store(true, Ordering::SeqCst);
                                             return;
@@ -786,6 +910,10 @@ impl Session {
                             } else if let ClientCommand::RoomMonitorAuthenticate { key } = &cmd {
                                 let Some(tx) = tx else { return };
                                 let auth_received_at = Instant::now();
+                                let auth_deadline = auth_received_at
+                                    + std::time::Duration::from_millis(
+                                        server.config.compatibility.auth_deadline_ms,
+                                    );
                                 if server
                                     .room_monitor
                                     .read()
@@ -832,18 +960,51 @@ impl Session {
                                         }
                                         *server.room_monitor.write().await =
                                             Some(Arc::downgrade(this.get().unwrap()));
+                                        // PMP44 P0-D: flush 前检查绝对预算——绝不发送
+                                        // Authenticate(Ok) 于预算之外。
+                                        if crate::official_client_compat::timing::deadline_expired(
+                                            auth_deadline,
+                                        ) {
+                                            warn!(
+                                                user = user.id,
+                                                "room monitor auth deadline elapsed before response flush"
+                                            );
+                                            send_auth_rejection(
+                                                &send_tx,
+                                                "authentication timed out".to_string(),
+                                            )
+                                            .await;
+                                            panicked.store(true, Ordering::SeqCst);
+                                            return;
+                                        }
                                         crate::official_client_compat::timing::CompatTiming::from_config(
                                             &server.config,
                                         )
-                                        .wait_until_minimum(auth_received_at)
+                                        .wait_until_minimum_bounded(
+                                            auth_received_at,
+                                            Some(auth_deadline),
+                                        )
                                         .await;
-                                        if let Err(err) = send_tx
-                                            .send_and_flush(ServerCommand::Authenticate(Ok((
-                                                user.to_info(),
-                                                None,
-                                            ))))
+                                        let flush_remaining = auth_deadline
+                                            .saturating_duration_since(Instant::now());
+                                        let flush_result: Result<()> =
+                                            match tokio::time::timeout(
+                                                flush_remaining,
+                                                send_tx.send_and_flush(
+                                                    ServerCommand::Authenticate(Ok((
+                                                        user.to_info(),
+                                                        None,
+                                                    ))),
+                                                ),
+                                            )
                                             .await
-                                        {
+                                            {
+                                                Ok(r) => r,
+                                                Err(_) => Err(anyhow!(
+                                                    "room monitor auth response flush exceeded deadline"
+                                                )),
+                                            };
+                                        if let Err(err) = flush_result {
                                             warn!(user = user.id, ?err, "failed to flush room monitor auth response");
                                             panicked.store(true, Ordering::SeqCst);
                                             return;
@@ -866,10 +1027,15 @@ impl Session {
                             } else if let ClientCommand::GameMonitorAuthenticate { token } = &cmd {
                                 let Some(tx) = tx else { return };
                                 let auth_received_at = Instant::now();
+                                let auth_deadline = auth_received_at
+                                    + std::time::Duration::from_millis(
+                                        server.config.compatibility.auth_deadline_ms,
+                                    );
                                 match authenticate_remote_with_notice(
                                     &server,
                                     token,
                                     PhiraRetryNoticeTarget::Stream(send_tx.as_ref()),
+                                    Some(auth_deadline),
                                 )
                                 .await
                                 {
@@ -909,18 +1075,51 @@ impl Session {
                                                 Arc::downgrade(this.get().unwrap()),
                                             )
                                             .await;
+                                        // PMP44 P0-D: flush 前检查绝对预算——绝不发送
+                                        // Authenticate(Ok) 于预算之外。
+                                        if crate::official_client_compat::timing::deadline_expired(
+                                            auth_deadline,
+                                        ) {
+                                            warn!(
+                                                user = user.id,
+                                                "game monitor auth deadline elapsed before response flush"
+                                            );
+                                            send_auth_rejection(
+                                                &send_tx,
+                                                "authentication timed out".to_string(),
+                                            )
+                                            .await;
+                                            panicked.store(true, Ordering::SeqCst);
+                                            return;
+                                        }
                                         crate::official_client_compat::timing::CompatTiming::from_config(
                                             &server.config,
                                         )
-                                        .wait_until_minimum(auth_received_at)
+                                        .wait_until_minimum_bounded(
+                                            auth_received_at,
+                                            Some(auth_deadline),
+                                        )
                                         .await;
-                                        if let Err(err) = send_tx
-                                            .send_and_flush(ServerCommand::Authenticate(Ok((
-                                                user.to_info(),
-                                                None,
-                                            ))))
+                                        let flush_remaining = auth_deadline
+                                            .saturating_duration_since(Instant::now());
+                                        let flush_result: Result<()> =
+                                            match tokio::time::timeout(
+                                                flush_remaining,
+                                                send_tx.send_and_flush(
+                                                    ServerCommand::Authenticate(Ok((
+                                                        user.to_info(),
+                                                        None,
+                                                    ))),
+                                                ),
+                                            )
                                             .await
-                                        {
+                                            {
+                                                Ok(r) => r,
+                                                Err(_) => Err(anyhow!(
+                                                    "game monitor auth response flush exceeded deadline"
+                                                )),
+                                            };
+                                        if let Err(err) = flush_result {
                                             warn!(user = user.id, ?err, "failed to flush game monitor auth response");
                                             panicked.store(true, Ordering::SeqCst);
                                             return;
@@ -1023,7 +1222,10 @@ impl Session {
                                     crate::official_client_compat::timing::CompatTiming::from_config(
                                         &user.server.config,
                                     )
-                                    .wait_until_minimum(received_at)
+                                    .wait_until_minimum_bounded(
+                                        received_at,
+                                        Some(absolute_deadline),
+                                    )
                                     .await;
                                     if let Some(resp) = resp {
                                         send_dispatch_response(
@@ -1034,6 +1236,7 @@ impl Session {
                                             id,
                                             &server,
                                             &panicked,
+                                            Some(absolute_deadline),
                                         )
                                         .await;
                                     }
@@ -1091,7 +1294,11 @@ impl Session {
                             let created_room = creating_player.is_some()
                                 && matches!(resp, ServerCommand::CreateRoom(Ok(())));
                             // P0-B: never respond before the minimum latency window.
-                            compat.wait_until_minimum(received_at).await;
+                            // PMP44 P0-J: 等待被绝对预算截断——flush 的超时随后
+                            // 强制同一 deadline。
+                            compat
+                                .wait_until_minimum_bounded(received_at, Some(absolute_deadline))
+                                .await;
                             let sent = send_dispatch_response(
                                 &send_tx,
                                 resp,
@@ -1100,6 +1307,7 @@ impl Session {
                                 id,
                                 &server,
                                 &panicked,
+                                Some(absolute_deadline),
                             )
                             .await;
                             if sent && created_room {

@@ -55,6 +55,29 @@ impl CompatTiming {
             tokio::time::sleep(remaining).await;
         }
     }
+
+    /// PMP44 P0-D/P0-J: bounded minimum-latency wait. When an absolute deadline
+    /// is present, the wait is capped so it never extends past the deadline —
+    /// the caller's subsequent flush is then bounded by the same deadline.
+    /// No-op when the window already passed, the compat layer is disabled, or
+    /// the deadline has already elapsed.
+    pub(crate) async fn wait_until_minimum_bounded(
+        &self,
+        received_at: Instant,
+        deadline: Option<Instant>,
+    ) {
+        let remaining_min = self.remaining_minimum_latency(received_at);
+        if remaining_min.is_zero() {
+            return;
+        }
+        let wait = match deadline {
+            Some(d) => remaining_min.min(d.saturating_duration_since(Instant::now())),
+            None => remaining_min,
+        };
+        if !wait.is_zero() {
+            tokio::time::sleep(wait).await;
+        }
+    }
 }
 
 /// Whether an absolute actor deadline has already passed.
@@ -118,6 +141,33 @@ mod tests {
         let received = Instant::now();
         timing.wait_until_minimum(received).await;
         // After waiting, the elapsed time must be at least the minimum latency.
+        assert!(received.elapsed() >= Duration::from_millis(20));
+    }
+
+    #[tokio::test]
+    async fn bounded_wait_never_sleeps_past_deadline() {
+        // PMP44 P0-D: 最低响应时延等待必须被绝对预算截断——绝不睡过 deadline。
+        let timing = CompatTiming {
+            official_phira_client: true,
+            minimum_response_latency: Duration::from_millis(200),
+        };
+        let received = Instant::now();
+        let deadline = Instant::now() + Duration::from_millis(20);
+        timing.wait_until_minimum_bounded(received, Some(deadline)).await;
+        // 等待被预算截断：不会等到完整 200ms 最低时延。
+        assert!(received.elapsed() < Duration::from_millis(100));
+        // 至少睡到接近 deadline 的预算点（允许调度误差）。
+        assert!(received.elapsed() >= Duration::from_millis(15));
+    }
+
+    #[tokio::test]
+    async fn bounded_wait_without_deadline_keeps_full_floor() {
+        let timing = CompatTiming {
+            official_phira_client: true,
+            minimum_response_latency: Duration::from_millis(20),
+        };
+        let received = Instant::now();
+        timing.wait_until_minimum_bounded(received, None).await;
         assert!(received.elapsed() >= Duration::from_millis(20));
     }
 

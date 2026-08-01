@@ -99,6 +99,9 @@ compatibility:
   # 单条普通客户端命令的总业务 deadline（毫秒），覆盖 mailbox 发送与 reply
   # 两个阶段。必须明显小于官方客户端约 7 秒的固定等待。
   session_command_deadline_ms: 4500
+  # 认证绝对预算（毫秒）。认证流程（Phira API + 重试 + 退避 + WAL admission +
+  # 最低响应时延 + 响应 flush）共用该预算，必须早于官方客户端约 7 秒 deadline。
+  auth_deadline_ms: 5000
   # ProtocolHack 补偿消息延迟（毫秒）。省略时回退到 minimum_response_latency_ms
   # （默认 10ms）；设为 0 可做差分测试（与官方/无补偿时序对比）。
   # 补偿消息（ChangeHost/ChangeState/持久房间/回放模拟）在官方响应 flush 后

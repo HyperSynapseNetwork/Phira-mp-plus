@@ -209,6 +209,11 @@ pub struct CompatibilityConfig {
     /// reply 两个阶段。必须明显小于官方客户端约 7 秒的固定等待。
     #[serde(default = "default_session_command_deadline_ms")]
     pub session_command_deadline_ms: u64,
+    /// 总认证绝对预算（毫秒）。认证流程（Phira API + 重试 + 退避 + WAL admission +
+    /// 最低响应时延 + 响应 flush）共用该预算，必须早于官方客户端约 7 秒 deadline。
+    /// 默认 5000ms，范围 1000..=6500ms。
+    #[serde(default = "default_auth_deadline_ms")]
+    pub auth_deadline_ms: u64,
     /// ProtocolHack 补偿消息延迟（毫秒）。`None` 时回退到
     /// `minimum_response_latency_ms`（默认 10ms）；设为 `Some(0)` 可做差分测试
     /// （与官方/无补偿时序对比）。补偿消息在官方响应 flush 之后调度，
@@ -223,6 +228,7 @@ impl Default for CompatibilityConfig {
             official_phira_client: default_official_phira_client(),
             minimum_response_latency_ms: default_minimum_response_latency_ms(),
             session_command_deadline_ms: default_session_command_deadline_ms(),
+            auth_deadline_ms: default_auth_deadline_ms(),
             protocol_hack_delay_ms: None,
         }
     }
@@ -238,6 +244,10 @@ fn default_minimum_response_latency_ms() -> u64 {
 
 fn default_session_command_deadline_ms() -> u64 {
     4500
+}
+
+fn default_auth_deadline_ms() -> u64 {
+    5000
 }
 
 impl Default for ConfigProfile {
@@ -623,6 +633,14 @@ impl PlusConfig {
                     .into(),
             ));
         }
+        // 认证绝对预算必须早于官方客户端约 7 秒 deadline，同时给 Phira API
+        // 重试/退避留出合理空间（PMP44 P0-D）。
+        if !(1000..=6500).contains(&self.compatibility.auth_deadline_ms) {
+            return Err(AppError::ConfigValidation(
+                "compatibility.auth_deadline_ms 必须在 1000..=6500ms 范围内（需早于官方客户端约 7 秒 deadline）"
+                    .into(),
+            ));
+        }
         if self.compatibility.minimum_response_latency_ms > 1000 {
             return Err(AppError::ConfigValidation(
                 "compatibility.minimum_response_latency_ms 不能超过 1000ms".into(),
@@ -970,6 +988,8 @@ mod tests {
         assert!(config.compatibility.official_phira_client);
         assert_eq!(config.compatibility.minimum_response_latency_ms, 10);
         assert_eq!(config.compatibility.session_command_deadline_ms, 4500);
+        // PMP44 P0-D: 认证绝对预算默认 5000ms，必须早于官方客户端约 7 秒 deadline。
+        assert_eq!(config.compatibility.auth_deadline_ms, 5000);
         // ProtocolHack 默认回退到 minimum_response_latency_ms（10ms），
         // 可显式设为 0 做差分测试。
         assert_eq!(config.compatibility.protocol_hack_delay_ms, None);
@@ -990,6 +1010,36 @@ mod tests {
         let config = PlusConfig {
             compatibility: crate::CompatibilityConfig {
                 minimum_response_latency_ms: 2000,
+                ..Default::default()
+            },
+            database_url: "postgres://localhost/db".to_string(),
+            ..Default::default()
+        };
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn auth_deadline_default_is_5000() {
+        let config = PlusConfig::default();
+        assert_eq!(config.compatibility.auth_deadline_ms, 5000);
+    }
+
+    #[test]
+    fn auth_deadline_rejects_out_of_range() {
+        // 低于下限（1000ms）必须校验失败。
+        let config = PlusConfig {
+            compatibility: crate::CompatibilityConfig {
+                auth_deadline_ms: 999,
+                ..Default::default()
+            },
+            database_url: "postgres://localhost/db".to_string(),
+            ..Default::default()
+        };
+        assert!(config.validate().is_err());
+        // 达到/超过官方客户端约 7 秒 deadline 必须校验失败。
+        let config = PlusConfig {
+            compatibility: crate::CompatibilityConfig {
+                auth_deadline_ms: 6501,
                 ..Default::default()
             },
             database_url: "postgres://localhost/db".to_string(),

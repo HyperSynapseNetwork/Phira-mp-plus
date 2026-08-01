@@ -908,6 +908,7 @@ impl CliHandler {
                         &format!("/chart/{cid}"),
                         None,
                         crate::phira_client::PhiraRetryNoticeTarget::Silent,
+                        None,
                     )
                     .await
                 {

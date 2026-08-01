@@ -322,9 +322,8 @@ impl RoomActor {
         use super::context::RoomCommandContext;
         use super::lifecycle::DefaultRoomLifecycle;
 
-        let state: &PlusServerState = &*self.state;
         let room = Arc::clone(&self.room);
-        let lc = DefaultRoomLifecycle::new(room, state);
+        let lc = DefaultRoomLifecycle::new(room, Arc::clone(&self.state));
         let ctx = RoomCommandContext::new(&lc, &mut self.actor_state);
         let result = RoomCommandHandler::execute_with_actor(ctx, &command).await;
         let should_stop = RoomCommandHandler::should_stop_room_mailbox(&command, &result);

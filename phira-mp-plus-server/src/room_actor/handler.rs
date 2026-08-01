@@ -755,14 +755,27 @@ impl RoomCommandHandler {
                 }
                 as_.state.set_locked(*locked);
                 lc.publish_update(PartialRoomData { lock: Some(*locked), ..Default::default() }).await;
-                lc.dispatch_plugin_event(PluginEvent::RoomModify {
-                    user_id: *actor_user_id, room_id: room_id.clone().to_string(),
-                    data: json!({"action":"lock","value":locked}).to_string(),
-                }).await;
                 lc.publish_runtime_event(crate::event_bus::MpEvent::RoomLocked {
                     room_id: room_id.clone().try_into().unwrap(),
                     locked: *locked,
                 });
+                // PMP44 P0-M: 插件事件是 response-after——权威状态提交 + 官方消息
+                // 同步返回后，插件回调绝不阻塞 Actor reply。
+                let srv = lc.server_state_arc();
+                let plugin_room_id = room_id.to_string();
+                let plugin_user_id = *actor_user_id;
+                let plugin_locked = *locked;
+                crate::supervisor_actor::spawn_named(
+                    format!("room-modify-lock-{plugin_room_id}-{plugin_user_id}"),
+                    async move {
+                        srv.dispatch_plugin_event(PluginEvent::RoomModify {
+                            user_id: plugin_user_id,
+                            room_id: plugin_room_id,
+                            data: json!({"action":"lock","value":plugin_locked}).to_string(),
+                        })
+                        .await;
+                    },
+                );
                 ok(RoomCommandPayload::LockChanged { room_id: room_id.clone().to_string(), locked: *locked })
             }
 
@@ -779,14 +792,26 @@ impl RoomCommandHandler {
                 }
                 as_.state.set_cycle(*cycle);
                 lc.publish_update(PartialRoomData { cycle: Some(*cycle), ..Default::default() }).await;
-                lc.dispatch_plugin_event(PluginEvent::RoomModify {
-                    user_id: *actor_user_id, room_id: room_id.clone().to_string(),
-                    data: json!({"action":"cycle","value":cycle}).to_string(),
-                }).await;
                 lc.publish_runtime_event(crate::event_bus::MpEvent::RoomCycled {
                     room_id: room_id.clone().try_into().unwrap(),
                     cycle: *cycle,
                 });
+                // PMP44 P0-M: 插件事件是 response-after——绝不阻塞 Actor reply。
+                let srv = lc.server_state_arc();
+                let plugin_room_id = room_id.to_string();
+                let plugin_user_id = *actor_user_id;
+                let plugin_cycle = *cycle;
+                crate::supervisor_actor::spawn_named(
+                    format!("room-modify-cycle-{plugin_room_id}-{plugin_user_id}"),
+                    async move {
+                        srv.dispatch_plugin_event(PluginEvent::RoomModify {
+                            user_id: plugin_user_id,
+                            room_id: plugin_room_id,
+                            data: json!({"action":"cycle","value":plugin_cycle}).to_string(),
+                        })
+                        .await;
+                    },
+                );
                 ok(RoomCommandPayload::CycleChanged { room_id: room_id.clone().to_string(), cycle: *cycle })
             }
 
@@ -1202,7 +1227,20 @@ impl RoomCommandHandler {
                 as_.state.ready_countdown_started_at = Some(now_ms());
                 broadcast_state_change(lc, &as_.state.lifecycle, as_.state.chart).await;
                 check_all_ready(lc, as_, *deadline).await;
-                lc.dispatch_plugin_event(PluginEvent::GameStart { user_id: *user_id, room_id: room_id.clone().to_string() }).await;
+                // PMP44 P0-M: GameStart 插件事件是 response-after——绝不阻塞 Actor reply。
+                let srv = lc.server_state_arc();
+                let plugin_room_id = room_id.to_string();
+                let plugin_user_id = *user_id;
+                crate::supervisor_actor::spawn_named(
+                    format!("room-gamestart-{plugin_room_id}-{plugin_user_id}"),
+                    async move {
+                        srv.dispatch_plugin_event(PluginEvent::GameStart {
+                            user_id: plugin_user_id,
+                            room_id: plugin_room_id,
+                        })
+                        .await;
+                    },
+                );
                 ok(RoomCommandPayload::HostStarted { room_id: room_id.clone().to_string() })
             }
 
@@ -1238,10 +1276,23 @@ impl RoomCommandHandler {
                         as_.state.control.host_id = Some(*user_id);
                     }
                 }
-                lc.dispatch_plugin_event(PluginEvent::RoomModify {
-                    user_id: *user_id, room_id: room_id.clone().to_string(),
-                    data: json!({"action": if *monitor { "monitor_join" } else { "join" }}).to_string(),
-                }).await;
+                // PMP44 P0-M: 插件事件是 response-after——成员变更（join）是权威
+                // 状态提交，插件回调绝不阻塞 Actor reply。
+                let srv = lc.server_state_arc();
+                let plugin_room_id = room_id.to_string();
+                let plugin_user_id = *user_id;
+                let plugin_action = if *monitor { "monitor_join" } else { "join" };
+                crate::supervisor_actor::spawn_named(
+                    format!("room-modify-add-{plugin_room_id}-{plugin_user_id}"),
+                    async move {
+                        srv.dispatch_plugin_event(PluginEvent::RoomModify {
+                            user_id: plugin_user_id,
+                            room_id: plugin_room_id,
+                            data: json!({"action": plugin_action}).to_string(),
+                        })
+                        .await;
+                    },
+                );
                 ok(RoomCommandPayload::UserAdded {
                     room_id: room_id.clone().to_string(), user_id: *user_id,
                     monitor: *monitor,
