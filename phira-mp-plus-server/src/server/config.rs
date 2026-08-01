@@ -214,6 +214,17 @@ pub struct CompatibilityConfig {
     /// 默认 5000ms，范围 1000..=6500ms。
     #[serde(default = "default_auth_deadline_ms")]
     pub auth_deadline_ms: u64,
+    /// 出站认证屏障（SessionOutboundGate）缓冲事件数量上限。认证握手期间房间
+    /// 广播进入该缓冲；超过上限则直接丢弃高频事件（或按分类策略处理），防止
+    /// 慢认证连接造成无界内存增长。默认 256。
+    #[serde(default = "default_gate_max_pending_events")]
+    pub gate_max_pending_events: usize,
+    /// 缓冲字节上限（粗估：每 ServerCommand 近似估算）。默认 1 MiB。
+    #[serde(default = "default_gate_max_pending_bytes")]
+    pub gate_max_pending_bytes: usize,
+    /// 认证屏障最大持续时间（毫秒）。超过后强制关闭认证（fail-closed）。默认 8000。
+    #[serde(default = "default_gate_max_auth_duration_ms")]
+    pub gate_max_auth_duration_ms: u64,
     /// ProtocolHack 补偿消息延迟（毫秒）。`None` 时回退到
     /// `minimum_response_latency_ms`（默认 10ms）；设为 `Some(0)` 可做差分测试
     /// （与官方/无补偿时序对比）。补偿消息在官方响应 flush 之后调度，
@@ -229,6 +240,9 @@ impl Default for CompatibilityConfig {
             minimum_response_latency_ms: default_minimum_response_latency_ms(),
             session_command_deadline_ms: default_session_command_deadline_ms(),
             auth_deadline_ms: default_auth_deadline_ms(),
+            gate_max_pending_events: default_gate_max_pending_events(),
+            gate_max_pending_bytes: default_gate_max_pending_bytes(),
+            gate_max_auth_duration_ms: default_gate_max_auth_duration_ms(),
             protocol_hack_delay_ms: None,
         }
     }
@@ -248,6 +262,18 @@ fn default_session_command_deadline_ms() -> u64 {
 
 fn default_auth_deadline_ms() -> u64 {
     5000
+}
+
+fn default_gate_max_pending_events() -> usize {
+    256
+}
+
+fn default_gate_max_pending_bytes() -> usize {
+    1_048_576
+}
+
+fn default_gate_max_auth_duration_ms() -> u64 {
+    8000
 }
 
 impl Default for ConfigProfile {
@@ -652,6 +678,24 @@ impl PlusConfig {
                     .into(),
             ));
         }
+        // PMP44 P0-G: 出站认证屏障缓冲与超时上限校验。数量/字节上限用于
+        // 防止慢认证连接造成无界内存增长；持续时间上限用于 fail-closed
+        // 强制关闭认证。
+        if !(64..=4096).contains(&self.compatibility.gate_max_pending_events) {
+            return Err(AppError::ConfigValidation(
+                "compatibility.gate_max_pending_events 必须在 64..=4096 范围内".into(),
+            ));
+        }
+        if !((64 * 1024)..=(8 * 1024 * 1024)).contains(&self.compatibility.gate_max_pending_bytes) {
+            return Err(AppError::ConfigValidation(
+                "compatibility.gate_max_pending_bytes 必须在 64KiB..=8MiB 范围内".into(),
+            ));
+        }
+        if !(1000..=15000).contains(&self.compatibility.gate_max_auth_duration_ms) {
+            return Err(AppError::ConfigValidation(
+                "compatibility.gate_max_auth_duration_ms 必须在 1000..=15000ms 范围内".into(),
+            ));
+        }
         Ok(())
     }
 
@@ -993,6 +1037,10 @@ mod tests {
         // ProtocolHack 默认回退到 minimum_response_latency_ms（10ms），
         // 可显式设为 0 做差分测试。
         assert_eq!(config.compatibility.protocol_hack_delay_ms, None);
+        // PMP44 P0-G: 认证屏障默认上限——256 事件 / 1 MiB / 8000ms。
+        assert_eq!(config.compatibility.gate_max_pending_events, 256);
+        assert_eq!(config.compatibility.gate_max_pending_bytes, 1_048_576);
+        assert_eq!(config.compatibility.gate_max_auth_duration_ms, 8000);
     }
 
     #[test]
@@ -1046,5 +1094,45 @@ mod tests {
             ..Default::default()
         };
         assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn gate_config_rejects_out_of_range() {
+        // 事件数量低于下限（64）必须校验失败。
+        let config = PlusConfig {
+            compatibility: crate::CompatibilityConfig {
+                gate_max_pending_events: 16,
+                ..Default::default()
+            },
+            database_url: "postgres://localhost/db".to_string(),
+            ..Default::default()
+        };
+        assert!(config.validate().is_err());
+        // 字节上限低于下限（64KiB）必须校验失败。
+        let config = PlusConfig {
+            compatibility: crate::CompatibilityConfig {
+                gate_max_pending_bytes: 1024,
+                ..Default::default()
+            },
+            database_url: "postgres://localhost/db".to_string(),
+            ..Default::default()
+        };
+        assert!(config.validate().is_err());
+        // 认证屏障持续时间超出上限（15000ms）必须校验失败。
+        let config = PlusConfig {
+            compatibility: crate::CompatibilityConfig {
+                gate_max_auth_duration_ms: 16000,
+                ..Default::default()
+            },
+            database_url: "postgres://localhost/db".to_string(),
+            ..Default::default()
+        };
+        assert!(config.validate().is_err());
+        // 默认值必须在合法范围内（补全 database_url 以满足 validate 前置条件）。
+        let config = PlusConfig {
+            database_url: "postgres://localhost/db".to_string(),
+            ..Default::default()
+        };
+        assert!(config.validate().is_ok());
     }
 }

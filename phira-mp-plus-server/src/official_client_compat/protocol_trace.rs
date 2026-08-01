@@ -86,6 +86,10 @@ pub(crate) struct ProtocolTrace {
     /// Room-actor commits refused because the originating Session was superseded
     /// (P0-C). MUST be 0 under normal operation.
     pub stale_commit_prevented: AtomicU64,
+    /// PMP44 P0-G/P0-H: SessionOutboundGate 丢弃的缓冲事件（高频遥测 coalesce、
+    /// 控制事件 drop-oldest、以及快照切换屏障 cutover 剔除的快照内事件）。
+    /// 握手窗口内因速率限制丢弃是预期的；稳态活跃后应趋近 0。
+    pub gate_dropped: AtomicU64,
     /// Server-side response latency histogram (ms buckets).
     pub latency_histogram: LatencyHistogram,
 }
@@ -98,6 +102,7 @@ pub(crate) static PROTOCOL_TRACE: ProtocolTrace = ProtocolTrace {
     late_commit: AtomicU64::new(0),
     compat_queue_drop: AtomicU64::new(0),
     stale_commit_prevented: AtomicU64::new(0),
+    gate_dropped: AtomicU64::new(0),
     latency_histogram: LatencyHistogram::new(),
 };
 
@@ -139,5 +144,8 @@ mod tests {
             .request_received
             .fetch_add(1, Ordering::Relaxed);
         assert!(trace.request_received.load(Ordering::Relaxed) >= 1);
+        // PMP44 P0-G: gate 丢弃计数器可读可自增。
+        trace.gate_dropped.fetch_add(1, Ordering::Relaxed);
+        assert!(trace.gate_dropped.load(Ordering::Relaxed) >= 1);
     }
 }

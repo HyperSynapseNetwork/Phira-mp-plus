@@ -319,17 +319,120 @@ impl OutboundSink for StreamSender<ServerCommand> {
 /// broadcasts, extension state, monitor notifications) are buffered here in
 /// FIFO order instead of racing the client's authentication callback. After
 /// activation they pass straight through to the transport.
+///
+/// PMP44 P0-G: the buffer is bounded — telemetry (Touches/Judges/Pong) is
+/// coalesced (dropped) when over the limit, control/state events drop the
+/// oldest buffered entry to make room for the newest. PMP44 P0-H: a snapshot
+/// cutover token marks the boundary between events already reflected in the
+/// upcoming room snapshot (dropped at activation) and the delta that must be
+/// sent.
 pub(crate) struct SessionOutboundGate {
     activated: AtomicBool,
-    pending: Mutex<VecDeque<ServerCommand>>,
+    pending: Mutex<GatePending>,
+    /// 认证屏障开始时间（构建 gate 时）。超过 `max_auth_duration` 未激活则
+    /// 判定认证失败（fail-closed）。
+    created_at: Instant,
+    max_pending_events: usize,
+    max_pending_bytes: usize,
+    max_auth_duration: Duration,
+}
+
+/// PMP44 P0-G: 认证屏障的待发缓冲。`bytes` 是各条目 `estimated_size` 之和的
+/// 粗估，与 `events.len()` 一起构成双重上限。P0-H 的序号状态也放在这里，
+/// 与缓冲内容同受 `pending` 互斥锁保护。
+struct GatePending {
+    events: VecDeque<GateEntry>,
+    bytes: usize,
+    /// P0-H: 单调递增的事件序号（入队时分配）。
+    next_seq: u64,
+    /// P0-H: 快照切换序号。`seq <= cutover_seq` 的缓冲事件在激活时被丢弃
+    /// （已包含在即将构建的快照中），`seq > cutover_seq` 的事件正常发送。
+    cutover_seq: u64,
+}
+
+/// P0-H: 带序号的事件条目，激活时用于快照切换剔除。
+#[derive(Debug)]
+struct GateEntry {
+    cmd: ServerCommand,
+    seq: u64,
+}
+
+/// `activate` 的结果。`Err` 分支即“排空期间发生发送错误”——屏障已重置为
+/// 未激活并清空剩余缓冲，调用方必须 fail-closed（关闭传输）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ActivationOutcome {
+    /// 全部缓冲事件成功转发（或按快照切换剔除后转发），屏障正式打开。
+    Complete,
+}
+
+/// 高频遥测：握手窗口内可安全 coalesce（丢弃新事件），因为它们只反映
+/// 瞬时状态，后续帧会覆盖。
+fn is_high_frequency_telemetry(cmd: &ServerCommand) -> bool {
+    matches!(
+        cmd,
+        ServerCommand::Touches { .. } | ServerCommand::Judges { .. } | ServerCommand::Pong
+    )
+}
+
+/// 粗估每个 `ServerCommand` 在缓冲中占用的字节数。Touches/Judges 的负载经
+/// `Arc` 共享，增量成本主要是枚举本体；但为保持 fail-closed 的保守估算，
+/// 对高频遥测额外加上较大的固定开销（帧/判定序列通常较大）。
+fn estimated_size(cmd: &ServerCommand) -> usize {
+    std::mem::size_of::<ServerCommand>()
+        + match cmd {
+            ServerCommand::Touches { .. } | ServerCommand::Judges { .. } => 1024,
+            _ => 128,
+        }
 }
 
 impl SessionOutboundGate {
-    pub(crate) fn new() -> Self {
+    pub(crate) fn new(
+        max_pending_events: usize,
+        max_pending_bytes: usize,
+        max_auth_duration: Duration,
+    ) -> Self {
         Self {
             activated: AtomicBool::new(false),
-            pending: Mutex::new(VecDeque::new()),
+            pending: Mutex::new(GatePending {
+                events: VecDeque::new(),
+                bytes: 0,
+                next_seq: 1,
+                cutover_seq: 0,
+            }),
+            created_at: Instant::now(),
+            max_pending_events,
+            max_pending_bytes,
+            max_auth_duration,
         }
+    }
+
+    /// 入队（未激活时）。受 `max_pending_events` / `max_pending_bytes` 约束：
+    /// - 高频遥测（Touches/Judges/Pong）：超限时直接丢弃（coalesce）；
+    /// - 控制/状态事件：超限时丢弃最旧缓冲条目（FIFO）腾出空间再入队，
+    ///   保留最新控制状态。
+    fn push_bounded(&self, pending: &mut GatePending, cmd: ServerCommand) {
+        let seq = pending.next_seq;
+        pending.next_seq += 1;
+        let size = estimated_size(&cmd);
+        let over_limit = pending.events.len() >= self.max_pending_events
+            || pending.bytes.saturating_add(size) > self.max_pending_bytes;
+        if over_limit {
+            if is_high_frequency_telemetry(&cmd) {
+                // 高频遥测：新事件直接丢弃（coalesce），保留既有缓冲。
+                tracing::trace!(?cmd, "outbound gate coalesced high-frequency telemetry");
+                ProtocolTrace::get().gate_dropped.fetch_add(1, Ordering::Relaxed);
+                return;
+            }
+            // 控制/状态事件：不得静默丢弃——丢弃最旧缓冲事件（FIFO），
+            // 既保持有界，又让客户端始终收到最新控制状态。
+            if let Some(oldest) = pending.events.pop_front() {
+                pending.bytes = pending.bytes.saturating_sub(estimated_size(&oldest.cmd));
+                tracing::trace!(?oldest, "outbound gate dropped oldest buffered event");
+                ProtocolTrace::get().gate_dropped.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+        pending.events.push_back(GateEntry { cmd, seq });
+        pending.bytes += size;
     }
 
     /// Queue (pre-activation) or forward (post-activation). Returns `Err` only
@@ -340,7 +443,7 @@ impl SessionOutboundGate {
             drop(pending);
             sink.sink_send(cmd).await
         } else {
-            pending.push_back(cmd);
+            self.push_bounded(&mut pending, cmd);
             Ok(())
         }
     }
@@ -355,7 +458,7 @@ impl SessionOutboundGate {
             drop(pending);
             sink.sink_try_send(cmd).is_ok()
         } else {
-            pending.push_back(cmd);
+            self.push_bounded(&mut pending, cmd);
             true
         }
     }
@@ -378,15 +481,59 @@ impl SessionOutboundGate {
 
     /// Open the barrier and drain buffered packets in FIFO order. Must be called
     /// only after the `Authenticate(Ok)` frame has been flushed to the socket.
-    pub(crate) async fn activate(&self, sink: &impl OutboundSink) {
+    ///
+    /// PMP44 P0-H: 排空时剔除 `seq <= cutover_seq` 的事件——快照在
+    /// `begin_snapshot_cutover` 之后构建，凡是被快照反映的状态变更必然有
+    /// `seq <= cutover`，不得重复下发；`seq > cutover`（快照构建期间到达）
+    /// 的事件才是客户端需要的增量。
+    ///
+    /// PMP44 P0-G: 若任一 `sink_send` 失败，立即 fail-closed——重置为未激活、
+    /// 清空剩余缓冲并返回 `Err`，由调用方关闭传输走 lost-connection 路径，
+    /// 绝不留下“已激活但丢了一半事件”的中间态。
+    pub(crate) async fn activate(&self, sink: &impl OutboundSink) -> Result<ActivationOutcome> {
         let mut pending = self.pending.lock().await;
         self.activated.store(true, Ordering::SeqCst);
-        while let Some(cmd) = pending.pop_front() {
-            if sink.sink_send(cmd).await.is_err() {
-                tracing::warn!(remaining = pending.len(), "outbound gate drain failed");
-                break;
+        let cutover = pending.cutover_seq;
+        while let Some(entry) = pending.events.pop_front() {
+            if entry.seq <= cutover {
+                // 快照已包含该事件，剔除以免重复。
+                pending.bytes = pending.bytes.saturating_sub(estimated_size(&entry.cmd));
+                tracing::trace!(seq = entry.seq, "outbound gate dropped snapshot-included event");
+                ProtocolTrace::get().gate_dropped.fetch_add(1, Ordering::Relaxed);
+                continue;
+            }
+            if sink.sink_send(entry.cmd).await.is_err() {
+                tracing::warn!(remaining = pending.events.len(), "outbound gate drain failed");
+                self.activated.store(false, Ordering::SeqCst);
+                pending.events.clear();
+                pending.bytes = 0;
+                return Err(anyhow!("outbound gate drain failed; fail-closed"));
             }
         }
+        Ok(ActivationOutcome::Complete)
+    }
+
+    /// PMP44 P0-H: 开始一次快照切换。返回的 `cutover` 是当前已入队事件的
+    /// 最大序号——调用方必须在 `build_client_room_state` 之前调用。激活时
+    /// `seq <= cutover` 的缓冲事件被视为快照已包含而被丢弃。
+    pub(crate) async fn begin_snapshot_cutover(&self) -> u64 {
+        let mut pending = self.pending.lock().await;
+        // next_seq 指向下一个待分配序号，减一即最后已入队事件的序号；
+        // 尚无任何事件时（next_seq=1）cutover=0，不会误删后续事件。
+        pending.cutover_seq = pending.next_seq.saturating_sub(1);
+        pending.cutover_seq
+    }
+
+    /// PMP44 P0-G: 认证屏障持续时间是否超过上限。超时未激活即判定认证
+    /// 失败（fail-closed），防止慢认证连接无界占住缓冲。
+    pub(crate) fn auth_duration_exceeded(&self) -> bool {
+        self.created_at.elapsed() > self.max_auth_duration
+    }
+
+    /// 当前屏障是否已激活（测试辅助；仅测试构建可见）。
+    #[cfg(test)]
+    pub(crate) fn is_activated(&self) -> bool {
+        self.activated.load(Ordering::SeqCst)
     }
 }
 
@@ -432,7 +579,14 @@ impl Session {
         let server_clone = Arc::clone(&server);
         // P0-B: outbound activation barrier. Cloned into the Stream callback so
         // the auth path can open it the moment Authenticate(Ok) is flushed.
-        let gate = Arc::new(SessionOutboundGate::new());
+        // PMP44 P0-G: 缓冲数量/字节/持续时间上限取自 config.compatibility，
+        // 防止慢认证连接造成无界内存增长。
+        let compat = &server.config.compatibility;
+        let gate = Arc::new(SessionOutboundGate::new(
+            compat.gate_max_pending_events,
+            compat.gate_max_pending_bytes,
+            Duration::from_millis(compat.gate_max_auth_duration_ms),
+        ));
 
         let stream = Stream::<ServerCommand, ClientCommand>::new(
             None,
@@ -748,7 +902,16 @@ impl Session {
                                     let _ = session.actor_tx.set(tx);
                                 }
                                 let room_state = match user.room.read().await.as_ref() {
-                                    Some(room) => Some(crate::session_room::build_client_room_state(room, &user).await),
+                                    Some(room) => {
+                                        // PMP44 P0-H: 构建房间快照前先记录快照切换屏障。
+                                        // 握手期间缓冲进 gate 且序号 <= cutover 的事件
+                                        // 已被快照反映（它们改变了状态），激活时将被剔除，
+                                        // 避免客户端收到重复事件；快照构建期间到达的事件
+                                        //（seq > cutover）才是需要下发的增量。仅在确有
+                                        // 快照要构建时调用，避免无快照时误删缓冲事件。
+                                        let _cutover = gate.begin_snapshot_cutover().await;
+                                        Some(crate::session_room::build_client_room_state(room, &user).await)
+                                    }
                                     None => None,
                                 };
                                 // ── 阻塞持久化：认证成功但尚未响应客户端 ──────────────
@@ -874,6 +1037,28 @@ impl Session {
                                     panicked.store(true, Ordering::SeqCst);
                                     return;
                                 }
+                                // PMP44 P0-G: 认证屏障超时未激活 → fail-closed，
+                                // 视为认证失败并回滚。
+                                if gate.auth_duration_exceeded() {
+                                    warn!(
+                                        user = user.id,
+                                        "outbound gate auth duration exceeded before response flush"
+                                    );
+                                    if should_rollback_auth(auth_phase, true, false) {
+                                        rollback_failed_auth(
+                                            &server,
+                                            &send_tx,
+                                            &this,
+                                            Some(&user),
+                                            newly_created,
+                                            true,
+                                            "authentication barrier timed out".to_string(),
+                                        )
+                                        .await;
+                                    }
+                                    panicked.store(true, Ordering::SeqCst);
+                                    return;
+                                }
                                 let flush_remaining = auth_deadline
                                     .saturating_duration_since(Instant::now());
                                 let flush_result: Result<()> =
@@ -937,7 +1122,23 @@ impl Session {
                                     panicked.store(true, Ordering::SeqCst);
                                     return;
                                 }
-                                gate.activate(send_tx.as_ref()).await;
+                                match gate.activate(send_tx.as_ref()).await {
+                                    Ok(_) => {}
+                                    Err(_) => {
+                                        // PMP44 P0-G: 认证屏障排空失败 → fail-closed：
+                                        // 不进入 Active，关闭传输，走 lost-connection 路径。
+                                        warn!(
+                                            user = user.id,
+                                            "outbound gate activation failed; closing session"
+                                        );
+                                        panicked.store(true, Ordering::SeqCst);
+                                        if let Some(session) = this.get() {
+                                            session.stream.close();
+                                            let _ = server.lost_con_tx.try_send(session.id);
+                                        }
+                                        return;
+                                    }
+                                }
                                 auth_phase = AuthPhase::Active;
                                 debug!(user = user.id, ?auth_phase, "outbound gate activated; session is live");
                                 let auth_trace = crate::official_client_compat::protocol_trace::ProtocolTrace::get();
@@ -1055,6 +1256,25 @@ impl Session {
                                             Some(auth_deadline),
                                         )
                                         .await;
+                                        // PMP44 P0-G: 认证屏障超时未激活 → fail-closed。
+                                        if gate.auth_duration_exceeded() {
+                                            warn!(
+                                                user = user.id,
+                                                "console auth gate duration exceeded before response flush"
+                                            );
+                                            rollback_failed_auth(
+                                                &server,
+                                                &send_tx,
+                                                &this,
+                                                Some(&user),
+                                                false,
+                                                true,
+                                                "authentication barrier timed out".to_string(),
+                                            )
+                                            .await;
+                                            panicked.store(true, Ordering::SeqCst);
+                                            return;
+                                        }
                                         let flush_remaining = auth_deadline
                                             .saturating_duration_since(Instant::now());
                                         let flush_result: Result<()> =
@@ -1089,7 +1309,22 @@ impl Session {
                                             panicked.store(true, Ordering::SeqCst);
                                             return;
                                         }
-                                        gate.activate(send_tx.as_ref()).await;
+                                        match gate.activate(send_tx.as_ref()).await {
+                                            Ok(_) => {}
+                                            Err(_) => {
+                                                // PMP44 P0-G: 认证屏障排空失败 → fail-closed。
+                                                warn!(
+                                                    user = user.id,
+                                                    "console outbound gate activation failed; closing session"
+                                                );
+                                                panicked.store(true, Ordering::SeqCst);
+                                                if let Some(session) = this.get() {
+                                                    session.stream.close();
+                                                    let _ = server.lost_con_tx.try_send(session.id);
+                                                }
+                                                return;
+                                            }
+                                        }
                                         waiting_for_authenticate.store(false, Ordering::SeqCst);
                                     }
                                     Err(err) => {
@@ -1190,6 +1425,27 @@ impl Session {
                                             Some(auth_deadline),
                                         )
                                         .await;
+                                        // PMP44 P0-G: 认证屏障超时未激活 → fail-closed。
+                                        if gate.auth_duration_exceeded() {
+                                            warn!(
+                                                user = user.id,
+                                                "room monitor auth gate duration exceeded before response flush"
+                                            );
+                                            // 清除 room_monitor 弱引用，避免半认证 monitor 残留。
+                                            *server.room_monitor.write().await = None;
+                                            rollback_failed_auth(
+                                                &server,
+                                                &send_tx,
+                                                &this,
+                                                Some(&user),
+                                                false,
+                                                true,
+                                                "authentication barrier timed out".to_string(),
+                                            )
+                                            .await;
+                                            panicked.store(true, Ordering::SeqCst);
+                                            return;
+                                        }
                                         let flush_remaining = auth_deadline
                                             .saturating_duration_since(Instant::now());
                                         let flush_result: Result<()> =
@@ -1227,7 +1483,23 @@ impl Session {
                                             panicked.store(true, Ordering::SeqCst);
                                             return;
                                         }
-                                        gate.activate(send_tx.as_ref()).await;
+                                        match gate.activate(send_tx.as_ref()).await {
+                                            Ok(_) => {}
+                                            Err(_) => {
+                                                // PMP44 P0-G: 认证屏障排空失败 → fail-closed。
+                                                warn!(
+                                                    user = user.id,
+                                                    "room monitor outbound gate activation failed; closing session"
+                                                );
+                                                *server.room_monitor.write().await = None;
+                                                panicked.store(true, Ordering::SeqCst);
+                                                if let Some(session) = this.get() {
+                                                    session.stream.close();
+                                                    let _ = server.lost_con_tx.try_send(session.id);
+                                                }
+                                                return;
+                                            }
+                                        }
                                         waiting_for_authenticate.store(false, Ordering::SeqCst);
                                     }
                                     _ => {
@@ -1328,6 +1600,27 @@ impl Session {
                                             Some(auth_deadline),
                                         )
                                         .await;
+                                        // PMP44 P0-G: 认证屏障超时未激活 → fail-closed。
+                                        if gate.auth_duration_exceeded() {
+                                            warn!(
+                                                user = user.id,
+                                                "game monitor auth gate duration exceeded before response flush"
+                                            );
+                                            // 移除半认证 game monitor 的映射与注册。
+                                            server.game_monitors.write().await.remove(&monitor_id);
+                                            rollback_failed_auth(
+                                                &server,
+                                                &send_tx,
+                                                &this,
+                                                Some(&user),
+                                                true,
+                                                true,
+                                                "authentication barrier timed out".to_string(),
+                                            )
+                                            .await;
+                                            panicked.store(true, Ordering::SeqCst);
+                                            return;
+                                        }
                                         let flush_remaining = auth_deadline
                                             .saturating_duration_since(Instant::now());
                                         let flush_result: Result<()> =
@@ -1363,7 +1656,23 @@ impl Session {
                                             panicked.store(true, Ordering::SeqCst);
                                             return;
                                         }
-                                        gate.activate(send_tx.as_ref()).await;
+                                        match gate.activate(send_tx.as_ref()).await {
+                                            Ok(_) => {}
+                                            Err(_) => {
+                                                // PMP44 P0-G: 认证屏障排空失败 → fail-closed。
+                                                warn!(
+                                                    user = user.id,
+                                                    "game monitor outbound gate activation failed; closing session"
+                                                );
+                                                server.game_monitors.write().await.remove(&monitor_id);
+                                                panicked.store(true, Ordering::SeqCst);
+                                                if let Some(session) = this.get() {
+                                                    session.stream.close();
+                                                    let _ = server.lost_con_tx.try_send(session.id);
+                                                }
+                                                return;
+                                            }
+                                        }
                                         waiting_for_authenticate.store(false, Ordering::SeqCst);
                                     }
                                     Err(err) => {
@@ -1749,9 +2058,29 @@ mod tests {
         assert!(origin.to_room_origin().is_none());
     }
 
+    /// PMP44 P0-G: 测试用默认上限的 gate（数量 8 / 字节 64KiB / 时长 8000ms）。
+    fn test_gate() -> SessionOutboundGate {
+        SessionOutboundGate::new(8, 64 * 1024, Duration::from_millis(8000))
+    }
+
+    /// 一个永远失败的 sink，用于验证排空失败时的 fail-closed 行为。
+    struct FailingSink;
+
+    impl OutboundSink for FailingSink {
+        async fn sink_send(&self, _cmd: ServerCommand) -> Result<()> {
+            Err(anyhow!("sink failure"))
+        }
+        async fn sink_send_and_flush(&self, _cmd: ServerCommand) -> Result<()> {
+            Err(anyhow!("sink failure"))
+        }
+        fn sink_try_send(&self, _cmd: ServerCommand) -> Result<()> {
+            Err(anyhow!("sink failure"))
+        }
+    }
+
     #[tokio::test]
     async fn outbound_gate_buffers_before_activation() {
-        let gate = SessionOutboundGate::new();
+        let gate = test_gate();
         let sink = TestSink::default();
         assert!(gate.try_send(&sink, ServerCommand::Pong).await);
         assert!(gate.send(&sink, ServerCommand::ChangeHost(true)).await.is_ok());
@@ -1763,12 +2092,12 @@ mod tests {
 
     #[tokio::test]
     async fn outbound_gate_activation_drains_fifo_in_order() {
-        let gate = SessionOutboundGate::new();
+        let gate = test_gate();
         let sink = TestSink::default();
         gate.try_send(&sink, ServerCommand::ChangeHost(false)).await;
         gate.send(&sink, ServerCommand::Chat(Ok(()))).await.unwrap();
         gate.try_send(&sink, ServerCommand::Pong).await;
-        gate.activate(&sink).await;
+        gate.activate(&sink).await.unwrap();
 
         let sent = sink.sent.lock().unwrap();
         assert_eq!(sent.len(), 3);
@@ -1780,10 +2109,10 @@ mod tests {
 
     #[tokio::test]
     async fn outbound_gate_forwarding_passes_through_after_activation() {
-        let gate = SessionOutboundGate::new();
+        let gate = test_gate();
         let sink = TestSink::default();
         gate.try_send(&sink, ServerCommand::Pong).await;
-        gate.activate(&sink).await;
+        gate.activate(&sink).await.unwrap();
         assert!(gate.send(&sink, ServerCommand::LockRoom(Ok(()))).await.is_ok());
         assert_eq!(sink.sent.lock().unwrap().len(), 2);
     }
@@ -1791,9 +2120,99 @@ mod tests {
     #[tokio::test]
     #[should_panic(expected = "send_and_flush before outbound activation")]
     async fn send_and_flush_before_activation_panics() {
-        let gate = SessionOutboundGate::new();
+        let gate = test_gate();
         let sink = TestSink::default();
         let _ = gate.send_and_flush(&sink, ServerCommand::Pong).await;
+    }
+
+    /// PMP44 P0-G: 缓冲超过数量上限时，控制事件丢弃最旧（保留最新），
+    /// 高频遥测直接 coalesce。
+    #[tokio::test]
+    async fn outbound_gate_bounded_control_keeps_latest_telemetry_dropped() {
+        // 事件上限 3：控制事件满后继续入队应丢弃最旧。
+        let gate = SessionOutboundGate::new(3, 64 * 1024, Duration::from_millis(8000));
+        let sink = TestSink::default();
+        let dropped_before = ProtocolTrace::get().gate_dropped.load(Ordering::Relaxed);
+
+        assert!(gate.try_send(&sink, ServerCommand::ChangeHost(true)).await);
+        assert!(gate.try_send(&sink, ServerCommand::Chat(Ok(()))).await);
+        assert!(gate.try_send(&sink, ServerCommand::ChangeHost(false)).await);
+        // 第四条控制事件触发 drop-oldest：丢弃最旧的 ChangeHost(true)。
+        assert!(gate.try_send(&sink, ServerCommand::LockRoom(Ok(()))).await);
+        gate.activate(&sink).await.unwrap();
+
+        let sent = sink.sent.lock().unwrap();
+        assert_eq!(sent.len(), 3, "oldest control event must be dropped");
+        assert!(matches!(sent[0], ServerCommand::Chat(Ok(()))));
+        assert!(matches!(sent[1], ServerCommand::ChangeHost(false)));
+        assert!(matches!(sent[2], ServerCommand::LockRoom(Ok(()))));
+
+        // 遥测：缓冲满后新 Pong 直接丢弃（coalesce），不触发 drop-oldest。
+        let gate2 = SessionOutboundGate::new(2, 64 * 1024, Duration::from_millis(8000));
+        let sink2 = TestSink::default();
+        assert!(gate2.try_send(&sink2, ServerCommand::Pong).await);
+        assert!(gate2.try_send(&sink2, ServerCommand::Pong).await);
+        assert!(gate2.try_send(&sink2, ServerCommand::Pong).await); // coalesced
+        gate2.activate(&sink2).await.unwrap();
+        assert_eq!(sink2.sent.lock().unwrap().len(), 2);
+
+        // 至少发生了 1 次 drop（drop-oldest 或 telemetry coalesce）。
+        let dropped_after = ProtocolTrace::get().gate_dropped.load(Ordering::Relaxed);
+        assert!(dropped_after > dropped_before, "gate_dropped must have incremented");
+    }
+
+    /// PMP44 P0-G: 排空期间发送失败 → activate 返回 Err，屏障保持未激活，
+    /// 剩余缓冲被清空（fail-closed）。
+    #[tokio::test]
+    async fn outbound_gate_activation_failure_fail_closed() {
+        let gate = test_gate();
+        let sink = FailingSink;
+        assert!(gate.try_send(&sink, ServerCommand::Pong).await);
+        assert!(gate.try_send(&sink, ServerCommand::ChangeHost(true)).await);
+        let result = gate.activate(&sink).await;
+        assert!(result.is_err());
+        assert!(
+            !gate.is_activated(),
+            "failed activation must leave the gate closed"
+        );
+        // 失败后缓冲已清空：新的未激活 send 仍会进入缓冲（不会直通 sink）。
+        let sink2 = TestSink::default();
+        assert!(gate.try_send(&sink2, ServerCommand::Pong).await);
+        assert!(sink2.sent.lock().unwrap().is_empty());
+    }
+
+    /// PMP44 P0-H: 快照切换屏障——`seq <= cutover` 的缓冲事件（快照已包含）
+    /// 在激活时被剔除；`seq > cutover`（快照构建期间到达）的事件正常发送。
+    #[tokio::test]
+    async fn outbound_gate_cutover_drops_snapshot_events_sends_delta() {
+        let gate = test_gate();
+        let sink = TestSink::default();
+        // 快照构建前已缓冲的事件（已被快照反映）。
+        assert!(gate.try_send(&sink, ServerCommand::ChangeHost(true)).await);
+        assert!(gate.try_send(&sink, ServerCommand::Chat(Ok(()))).await);
+        // cutover 值为最后已入队事件的序号；在 build_client_room_state 之前调用。
+        let _cutover = gate.begin_snapshot_cutover().await;
+        // 快照构建期间到达的事件（快照未包含，必须发送）。
+        assert!(gate.try_send(&sink, ServerCommand::Pong).await);
+        assert!(gate.try_send(&sink, ServerCommand::ChangeHost(false)).await);
+        gate.activate(&sink).await.unwrap();
+
+        let sent = sink.sent.lock().unwrap();
+        assert_eq!(sent.len(), 2, "snapshot-included events must be dropped");
+        assert!(matches!(sent[0], ServerCommand::Pong));
+        assert!(matches!(sent[1], ServerCommand::ChangeHost(false)));
+    }
+
+    /// PMP44 P0-G: 认证屏障超时未激活 → auth_duration_exceeded。
+    #[tokio::test]
+    async fn outbound_gate_auth_duration_exceeded_reports() {
+        // 零时长屏障：短暂等待后必然超时（避免 Instant 分辨率导致的抖动）。
+        let gate = SessionOutboundGate::new(8, 64 * 1024, Duration::from_millis(0));
+        time::sleep(Duration::from_millis(1)).await;
+        assert!(gate.auth_duration_exceeded());
+        // 长持续时间在刚创建时未超时。
+        let fresh = SessionOutboundGate::new(8, 64 * 1024, Duration::from_secs(60));
+        assert!(!fresh.auth_duration_exceeded());
     }
 
     /// PMP44 P0-E: 认证阶段按

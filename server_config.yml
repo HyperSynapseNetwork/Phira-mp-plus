@@ -102,6 +102,12 @@ compatibility:
   # 认证绝对预算（毫秒）。认证流程（Phira API + 重试 + 退避 + WAL admission +
   # 最低响应时延 + 响应 flush）共用该预算，必须早于官方客户端约 7 秒 deadline。
   auth_deadline_ms: 5000
+  # PMP44 P0-G: 出站认证屏障（SessionOutboundGate）缓冲上限。认证握手期间
+  # 房间广播进入该缓冲；超过上限丢弃高频事件（或按 drop-oldest 策略处理）。
+  gate_max_pending_events: 256
+  gate_max_pending_bytes: 1048576
+  # 认证屏障最大持续时间（毫秒）。超过后强制关闭认证（fail-closed）。
+  gate_max_auth_duration_ms: 8000
   # ProtocolHack 补偿消息延迟（毫秒）。省略时回退到 minimum_response_latency_ms
   # （默认 10ms）；设为 0 可做差分测试（与官方/无补偿时序对比）。
   # 补偿消息（ChangeHost/ChangeState/持久房间/回放模拟）在官方响应 flush 后
