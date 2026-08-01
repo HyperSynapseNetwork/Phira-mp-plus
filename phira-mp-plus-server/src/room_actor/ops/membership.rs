@@ -164,14 +164,11 @@ impl RoomCommandGateway {
 
     // ── CheckAllReady (fire-and-forget) ────────────────────────────────────
 
-    /// PMP45 P0-O: 响应后 fire-and-forget 的 `check_all_ready` 重入。RemoveUser
-    /// 在回复之后经此命令在 Actor 排序点执行 DB 轮次检查（插件回调 + 轮次
-    /// 持久化不阻塞原回复，audit §26）。
+    /// PMP45 P0-O: 响应后 fire-and-forget 的 `check_all_ready` 重入。
     ///
-    /// 不使用泛型 `room_mailbox`（其 `Build: FnOnce(Sender<RoomCommandResult>)
-    /// -> RoomActorCommand` 会让 `execute_with_actor` 的 opaque future 因
-    /// `CheckAllReady.reply: Sender<RoomCommandResult>` 间接依赖自身返回类型而
-    /// 触发 E0391 类型循环）——改用 `Sender<()>` + 直接 sender，彻底解耦。
+    /// 暂未使用（RemoveUser 当前同步执行 check_all_ready 以避免 E0391 类型
+    /// 循环）；保留供未来在 Actor 排序点异步重入检查使用。
+    #[allow(dead_code)]
     pub async fn fire_check_all_ready(
         &self,
         state: &PlusServerState,

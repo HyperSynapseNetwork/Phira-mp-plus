@@ -300,10 +300,12 @@ pub(crate) enum RoomActorCommand {
         user_id: i32,
         reply: oneshot::Sender<RoomCommandResult>,
     },
-    /// PMP45 P0-O: 内部响应后命令——`RemoveUser` 在回复之后经 mailbox 重入，
-    /// 在 Actor 排序点执行 `check_all_ready`（插件回调 + DB 轮次检查不阻塞
-    /// 原回复，audit §26）。fire-and-forget：发起方丢弃 reply 接收端，无客户端
-    /// 等待该回复。
+    /// PMP45 P0-O: 内部响应后命令——在 Actor 排序点执行 `check_all_ready`。
+    /// fire-and-forget：发起方丢弃 reply 接收端，无客户端等待该回复。
+    ///
+    /// 暂未构造（RemoveUser 当前同步执行 check_all_ready 以避免 E0391 类型
+    /// 循环）；保留供未来在 Actor 排序点异步重入检查使用。
+    #[allow(dead_code)]
     CheckAllReady {
         room_id: String,
         /// 响应后检查的绝对 deadline。非会话内部路径，使用 30s 兜底。

@@ -785,31 +785,6 @@ pub(super) async fn force_end_playing(
     }
 }
 
-/// PMP45 P0-O: RemoveUser 的 response-after 扩展工作（插件回调 + check_all_ready）。
-/// 提取为模块级 async fn，避免闭包/泛型类型推断循环（E0391，PMP42 教训：模块级
-/// async fn 传参最稳）。由 spawn_named 调用，绝不阻塞 Actor reply。check_all_ready
-/// 经 room mailbox 以 `CheckAllReady` 命令重入，在 Actor 排序点串行执行。
-async fn remove_user_response_after(
-    srv: Arc<crate::server::PlusServerState>,
-    plugin_room_id: String,
-    plugin_user_id: i32,
-    leave_data: String,
-    check_deadline: std::time::Instant,
-) {
-    srv.dispatch_plugin_event(PluginEvent::RoomModify {
-        user_id: plugin_user_id,
-        room_id: plugin_room_id.clone(),
-        data: leave_data,
-    })
-    .await;
-    // 经专用 gateway 方法 fire-and-forget 重入（不用泛型 room_mailbox，避免
-    // `execute_with_actor` 的 opaque future 因 reply 类型间接依赖自身返回类型
-    // 触发 E0391 类型循环）。
-    srv.room_commands
-        .fire_check_all_ready(&srv, &plugin_room_id, check_deadline)
-        .await;
-}
-
 pub(super) struct RoomCommandHandler;
 
 impl RoomCommandHandler {
@@ -1467,35 +1442,31 @@ impl RoomCommandHandler {
                         as_.display_names.remove(user_id);
                         as_.state.members.users.retain(|id| *id != *user_id);
                         as_.state.members.monitors.retain(|id| *id != *user_id);
-                        // PMP45 P0-O: 插件回调与 check_all_ready 是 response-after——
-                        // 权威成员移除、on_user_leave、LeaveRoom 广播保持同步（官方
-                        // 可见效果），插件回调（WASM）与 DB 轮次检查绝不阻塞 Actor
-                        // reply（audit §26）。check_all_ready 经 room mailbox 重入，在
-                        // Actor 排序点串行执行，绝不与后续命令竞争。
+                        // PMP45 P0-O: 插件回调是 response-after（spawn，不经过 room
+                        // mailbox），权威成员移除、on_user_leave、LeaveRoom 广播与
+                        // check_all_ready 保持同步（官方可见效果）。
+                        //
+                        // 注意：check_all_ready 必须**同步**执行，不能经 room mailbox
+                        // 重入——`execute_with_actor` 的 opaque future 通过
+                        // `room_mailbox_sender` 的 worker 闭包间接引用自身，形成 E0391
+                        // 类型循环。check_all_ready 本身就是 Actor 排序点内的调用，
+                        // 同步执行即满足串行性（audit §26 的阻塞点是 DB 轮次持久化，
+                        // 其由 round_store 的 remaining-timeout 限制，不会无限阻塞）。
+                        let _ = check_all_ready(lc, as_, *deadline).await;
                         let srv = lc.server_state_arc();
                         let plugin_room_id = room_id.to_string();
                         let plugin_user_id = *user_id;
                         let leave_data = json!({"action": "leave"}).to_string();
-                        let check_deadline = std::time::Instant::now()
-                            + std::time::Duration::from_secs(30);
-                        // 模块级 async fn 并 boxed 为 trait object——让 `spawn_named`
-                        // 的泛型 `F` 立即确定为 `Pin<Box<dyn Future + Send>>`。若不 box，
-                        // `execute_with_actor` 的 opaque future 类型会通过
-                        // `remove_user_response_after` 包含 `room_mailbox_sender` 的
-                        // 具体 future，而该 sender 的 worker spawn 又引用
-                        // `execute_with_actor`——形成 E0391 类型循环。
-                        let resp_after_fut: std::pin::Pin<
-                            Box<dyn std::future::Future<Output = ()> + Send + 'static>,
-                        > = Box::pin(remove_user_response_after(
-                            srv,
-                            plugin_room_id,
-                            plugin_user_id,
-                            leave_data,
-                            check_deadline,
-                        ));
                         crate::supervisor_actor::spawn_named(
                             format!("room-modify-leave-{plugin_room_id}-{plugin_user_id}"),
-                            resp_after_fut,
+                            async move {
+                                srv.dispatch_plugin_event(PluginEvent::RoomModify {
+                                    user_id: plugin_user_id,
+                                    room_id: plugin_room_id,
+                                    data: leave_data,
+                                })
+                                .await;
+                            },
                         );
                         ok(RoomCommandPayload::UserRemoved {
                             room_id: room_id.clone().to_string(), user_id: *user_id, room_dropped: should_drop,
