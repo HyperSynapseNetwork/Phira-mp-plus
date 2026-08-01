@@ -123,6 +123,22 @@ async fn main() -> Result<()> {
     let _log_guard = phira_mp_plus_server::logging::init(&args.log_file, log_tx)?;
     config_load.report(&args.config);
 
+    // PMP44 P1 §33: 启动时序可观测性 —— 打印生效的官方客户端兼容时序参数，
+    // 便于运维在启动时一眼核对兼容时间线（最低响应时延 / 命令 deadline /
+    // 认证 deadline / ProtocolHack 补偿延迟）。
+    info!(
+        compat_official_phira_client = config.compatibility.official_phira_client,
+        minimum_response_latency_ms = config.compatibility.minimum_response_latency_ms,
+        session_command_deadline_ms = config.compatibility.session_command_deadline_ms,
+        auth_deadline_ms = config.compatibility.auth_deadline_ms,
+        protocol_hack_delay_ms = config.compatibility.protocol_hack_delay_ms,
+        "启动时序参数（官方客户端兼容）: min_latency={}ms, cmd_deadline={}ms, auth_deadline={}ms, hack_delay={:?}",
+        config.compatibility.minimum_response_latency_ms,
+        config.compatibility.session_command_deadline_ms,
+        config.compatibility.auth_deadline_ms,
+        config.compatibility.protocol_hack_delay_ms,
+    );
+
     // Sentry error monitoring (SENTRY_DSN env var or config)
     let _sentry_guard = if let Some(dsn) = &config.sentry_dsn {
         let dsn = dsn.trim();

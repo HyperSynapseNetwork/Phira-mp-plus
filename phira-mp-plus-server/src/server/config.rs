@@ -678,6 +678,20 @@ impl PlusConfig {
                     .into(),
             ));
         }
+        // PMP44 P1 §33: 官方兼容模式下最低响应时延不能误设 0。官方客户端在
+        // send 之后才安装 Authenticate 回调，0ms 最低时延会让响应先于回调安装、
+        // 与回调安装竞态；必须设置正数最低时延或关闭官方兼容。例外：显式设置
+        // protocol_hack_delay_ms = Some(0) 用于差分测试（与官方/无补偿时序对比）
+        // 时用户有意为零延迟，放行。
+        if self.compatibility.official_phira_client
+            && self.compatibility.minimum_response_latency_ms == 0
+            && self.compatibility.protocol_hack_delay_ms != Some(0)
+        {
+            return Err(AppError::ConfigValidation(
+                "compatibility.official_phira_client=true 时 minimum_response_latency_ms 不能为 0：官方客户端在 send 之后才安装 Authenticate 回调，0ms 最低时延会与回调安装竞态。请设置正数最低时延或关闭官方兼容；差分测试可显式设置 protocol_hack_delay_ms=0"
+                    .into(),
+            ));
+        }
         // PMP44 P0-G: 出站认证屏障缓冲与超时上限校验。数量/字节上限用于
         // 防止慢认证连接造成无界内存增长；持续时间上限用于 fail-closed
         // 强制关闭认证。
@@ -1130,6 +1144,43 @@ mod tests {
         assert!(config.validate().is_err());
         // 默认值必须在合法范围内（补全 database_url 以满足 validate 前置条件）。
         let config = PlusConfig {
+            database_url: "postgres://localhost/db".to_string(),
+            ..Default::default()
+        };
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn official_compat_rejects_zero_min_latency_unless_hack_zero() {
+        // PMP44 P1 §33: 默认配置（补全 database_url 以满足前置校验）必须通过。
+        let config = PlusConfig {
+            database_url: "postgres://localhost/db".to_string(),
+            ..Default::default()
+        };
+        assert!(config.validate().is_ok());
+
+        // official_phira_client=true 且 minimum_response_latency_ms=0 且
+        // protocol_hack_delay_ms=None（回退到 0ms 地板）必须校验失败。
+        let config = PlusConfig {
+            compatibility: crate::CompatibilityConfig {
+                official_phira_client: true,
+                minimum_response_latency_ms: 0,
+                protocol_hack_delay_ms: None,
+                ..Default::default()
+            },
+            database_url: "postgres://localhost/db".to_string(),
+            ..Default::default()
+        };
+        assert!(config.validate().is_err());
+
+        // 显式 protocol_hack_delay_ms=Some(0)（差分测试）表示用户有意零延迟，放行。
+        let config = PlusConfig {
+            compatibility: crate::CompatibilityConfig {
+                official_phira_client: true,
+                minimum_response_latency_ms: 0,
+                protocol_hack_delay_ms: Some(0),
+                ..Default::default()
+            },
             database_url: "postgres://localhost/db".to_string(),
             ..Default::default()
         };
