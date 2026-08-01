@@ -49,6 +49,10 @@ impl CompatTiming {
     /// Sleep (never under a lock) until the minimum response latency window has
     /// elapsed since `received_at`. No-op when the window already passed or the
     /// compat layer is disabled.
+    ///
+    /// Superseded by [`Self::wait_until_minimum_bounded`] (PMP44 P0-D/P0-J);
+    /// retained for tests and future non-deadline callers.
+    #[allow(dead_code)]
     pub(crate) async fn wait_until_minimum(&self, received_at: Instant) {
         let remaining = self.remaining_minimum_latency(received_at);
         if !remaining.is_zero() {
