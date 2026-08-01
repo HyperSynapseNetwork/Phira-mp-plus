@@ -11,6 +11,12 @@ use std::sync::{atomic::Ordering, Arc, Weak};
 use std::time::Instant;
 use tokio::sync::{broadcast, mpsc, oneshot};
 
+/// PMP44 P1 §26: lifecycle 维护周期（代际检查 / stale 清理 / Ready 倒计时 /
+/// Playing 超时）。`biased` select 下 control 分支始终优先，可能长期饿死
+/// `lifecycle_tick` 分支；control 分支内用同一常量做 deadline 检查兜底，
+/// 保证维护至少按此周期运行。
+const LIFECYCLE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(1);
+
 enum MailboxAttempt {
     Completed(RoomCommandResult),
     NotEnqueued,
@@ -158,8 +164,14 @@ impl RoomCommandGateway {
                     );
                 }
 
-                let mut lifecycle_tick = tokio::time::interval(std::time::Duration::from_secs(1));
+                let mut lifecycle_tick = tokio::time::interval(LIFECYCLE_INTERVAL);
                 lifecycle_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+                // PMP44 P1 §26: 记录上次 lifecycle 维护的时间。`biased` select
+                // 下 control 分支始终优先，若仅靠 `lifecycle_tick.tick()` 触发，
+                // 持续的控制命令压力会饿死该分支（Ready 倒计时 / Playing 超时 /
+                // stale 清理永不运行）。control 分支内按 `elapsed` 做 deadline
+                // 兜底，保证维护至少按 `LIFECYCLE_INTERVAL` 周期运行。
+                let mut last_tick = tokio::time::Instant::now();
                 loop {
                     tokio::select! {
                         biased;
@@ -172,6 +184,21 @@ impl RoomCommandGateway {
                             if should_stop {
                                 break;
                             }
+                            // PMP44 P1 §26: control 分支内检查 lifecycle tick 是否到期——
+                            // 若已超期立即让出执行维护，避免 biased select 饿死维护。
+                            // 注：`tick()` 只在周期边界触发，此处按 elapsed 判断可能
+                            // 略早（一个周期内）运行维护；这是可接受的——维护至少按
+                            // 周期频率运行，deadline 检查正是为了防止饥饿。
+                            if last_tick.elapsed() >= LIFECYCLE_INTERVAL {
+                                if run_lifecycle_maintenance(
+                                    &mut actor,
+                                    &worker_rid,
+                                    &worker_room_uuid,
+                                ).await {
+                                    break;
+                                }
+                                last_tick = tokio::time::Instant::now();
+                            }
                         }
                         // 审计 P0: telemetry 命令通过独立 channel 非阻塞接收。
                         telemetry = telemetry_rx.recv() => {
@@ -181,72 +208,14 @@ impl RoomCommandGateway {
                             actor.execute_telemetry(telemetry).await;
                         }
                         _ = lifecycle_tick.tick() => {
-                            let generation_is_current = {
-                                let rooms = actor.state.rooms.read().await;
-                                rooms
-                                    .get(&worker_rid)
-                                    .map(|current| current.uuid == worker_room_uuid)
-                                    .unwrap_or(false)
-                            };
-                            if !generation_is_current {
+                            if run_lifecycle_maintenance(
+                                &mut actor,
+                                &worker_rid,
+                                &worker_room_uuid,
+                            ).await {
                                 break;
                             }
-                            // Prune stale player_data and display_names entries for users no
-                            // longer in this room. Users may leave through direct paths (dangle/
-                            // leave_room) that bypass the actor mailbox, so periodic cleanup is
-                            // necessary to prevent unbounded HashMap growth over time.
-                            let as_ = &mut actor.actor_state;
-                            // Collect current member IDs from actor state (authoritative).
-                            let current_ids: std::collections::HashSet<i32> = {
-                                let members = &as_.state.members;
-                                members.users.iter().chain(members.monitors.iter()).copied().collect()
-                            };
-                            as_.player_data.retain(|&k, _| current_ids.contains(&k));
-                            as_.display_names.retain(|&k, _| current_ids.contains(&k));
-
-                            // 准备倒计时：检查是否超时
-                            if let InternalRoomState::WaitForReady { .. } = &as_.state.lifecycle {
-                                if let Some(started_at) = as_.state.ready_countdown_started_at {
-                                    let elapsed = std::time::SystemTime::now()
-                                        .duration_since(std::time::UNIX_EPOCH)
-                                        .map(|d| d.as_millis() as i64)
-                                        .unwrap_or(0) - started_at;
-                                    let timeout_ms = (actor.state.config.ready_countdown_secs.max(10) * 1000) as i64;
-                                    if elapsed >= timeout_ms {
-                                        // 超时 —— 强制开赛
-                                        let room = Arc::clone(&actor.room);
-                                        let lc = crate::room_actor::lifecycle::DefaultRoomLifecycle::new(
-                                            room,
-                                            Arc::clone(&actor.state),
-                                        );
-                                        crate::room_actor::handler::force_start_playing(
-                                            &lc, &mut as_.state,
-                                            std::time::Instant::now() + Self::COMMAND_TIMEOUT,
-                                        ).await;
-                                    }
-                                }
-                            }
-
-                            // 对局超时：检查 Playing 状态下是否超过截止时间
-                            if let InternalRoomState::Playing { .. } = &as_.state.lifecycle {
-                                if let Some(deadline) = as_.state.playing_timeout_deadline {
-                                    let now = std::time::SystemTime::now()
-                                        .duration_since(std::time::UNIX_EPOCH)
-                                        .map(|d| d.as_millis() as i64)
-                                        .unwrap_or(0);
-                                    if now >= deadline {
-                                        as_.state.playing_timeout_deadline = None;
-                                        let room = Arc::clone(&actor.room);
-                                        let lc = crate::room_actor::lifecycle::DefaultRoomLifecycle::new(
-                                            room,
-                                            Arc::clone(&actor.state),
-                                        );
-                                        crate::room_actor::handler::force_end_playing(
-                                            &lc, &mut as_.state,
-                                        ).await;
-                                    }
-                                }
-                            }
+                            last_tick = tokio::time::Instant::now();
                         }
                     }
                 }
@@ -406,6 +375,85 @@ impl RoomCommandGateway {
             Err(_) => MailboxAttempt::NotEnqueued,
         }
     }
+}
+
+/// PMP44 P1 §26: 周期性 lifecycle 维护。从 select 循环中抽出以便 control
+/// 分支和 `lifecycle_tick.tick()` 分支共用，避免 `biased` select 下该维护被
+/// 持续控制命令饿死。内容包括：房间代际检查（过期则返回 `true` 停止 worker）、
+/// stale player_data / display_names 清理、Ready 倒计时超时强制开赛、
+/// Playing 超时强制结束。
+async fn run_lifecycle_maintenance(
+    actor: &mut RoomActor,
+    worker_rid: &phira_mp_common::RoomId,
+    worker_room_uuid: &uuid::Uuid,
+) -> bool {
+    let generation_is_current = {
+        let rooms = actor.state.rooms.read().await;
+        rooms
+            .get(worker_rid)
+            .map(|current| current.uuid == *worker_room_uuid)
+            .unwrap_or(false)
+    };
+    if !generation_is_current {
+        return true;
+    }
+    // Prune stale player_data and display_names entries for users no
+    // longer in this room. Users may leave through direct paths (dangle/
+    // leave_room) that bypass the actor mailbox, so periodic cleanup is
+    // necessary to prevent unbounded HashMap growth over time.
+    let as_ = &mut actor.actor_state;
+    // Collect current member IDs from actor state (authoritative).
+    let current_ids: std::collections::HashSet<i32> = {
+        let members = &as_.state.members;
+        members.users.iter().chain(members.monitors.iter()).copied().collect()
+    };
+    as_.player_data.retain(|&k, _| current_ids.contains(&k));
+    as_.display_names.retain(|&k, _| current_ids.contains(&k));
+
+    // 准备倒计时：检查是否超时
+    if let InternalRoomState::WaitForReady { .. } = &as_.state.lifecycle {
+        if let Some(started_at) = as_.state.ready_countdown_started_at {
+            let elapsed = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis() as i64)
+                .unwrap_or(0) - started_at;
+            let timeout_ms = (actor.state.config.ready_countdown_secs.max(10) * 1000) as i64;
+            if elapsed >= timeout_ms {
+                // 超时 —— 强制开赛
+                let room = Arc::clone(&actor.room);
+                let lc = crate::room_actor::lifecycle::DefaultRoomLifecycle::new(
+                    room,
+                    Arc::clone(&actor.state),
+                );
+                crate::room_actor::handler::force_start_playing(
+                    &lc, &mut as_.state,
+                    std::time::Instant::now() + RoomCommandGateway::COMMAND_TIMEOUT,
+                ).await;
+            }
+        }
+    }
+
+    // 对局超时：检查 Playing 状态下是否超过截止时间
+    if let InternalRoomState::Playing { .. } = &as_.state.lifecycle {
+        if let Some(deadline) = as_.state.playing_timeout_deadline {
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis() as i64)
+                .unwrap_or(0);
+            if now >= deadline {
+                as_.state.playing_timeout_deadline = None;
+                let room = Arc::clone(&actor.room);
+                let lc = crate::room_actor::lifecycle::DefaultRoomLifecycle::new(
+                    room,
+                    Arc::clone(&actor.state),
+                );
+                crate::room_actor::handler::force_end_playing(
+                    &lc, &mut as_.state,
+                ).await;
+            }
+        }
+    }
+    false
 }
 #[cfg(test)]
 mod tests {

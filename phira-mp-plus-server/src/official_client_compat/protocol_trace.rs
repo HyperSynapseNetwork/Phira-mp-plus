@@ -90,6 +90,23 @@ pub(crate) struct ProtocolTrace {
     /// 控制事件 drop-oldest、以及快照切换屏障 cutover 剔除的快照内事件）。
     /// 握手窗口内因速率限制丢弃是预期的；稳态活跃后应趋近 0。
     pub gate_dropped: AtomicU64,
+    /// PMP44 P1 §33: 跨会话命令——命令到达时其 origin session 已非该用户
+    /// 当前绑定（重连抬升代际），被 `worker_should_run` 拒绝执行。正常运行时
+    /// 应趋近 0（仅在重连竞态窗口出现）。
+    pub cross_session_command: AtomicU64,
+    /// PMP44 P1 §33: 出站认证屏障激活（drain）失败次数。`SessionOutboundGate`
+    /// 排空缓冲期间发送失败、或激活超时，会话 fail-closed 关闭传输。正常应趋近 0。
+    pub activation_drain_failure: AtomicU64,
+    /// PMP44 P1 §33: gauge——认证屏障当前缓冲的事件数。`push_bounded` 每次
+    /// 入队/丢弃后、`activate` 排空后 `.store()` 当前值。
+    pub auth_barrier_pending_events: AtomicU64,
+    /// PMP44 P1 §33: gauge——认证屏障当前缓冲的字节粗估（`GatePending.bytes`）。
+    /// 与 `auth_barrier_pending_events` 一起提供预认证缓冲的实时视图。
+    pub auth_barrier_pending_bytes: AtomicU64,
+    /// PMP44 P1 §33: 快照切换屏障在激活时剔除的缓冲事件数（`seq <= cutover`，
+    /// 已包含在即将构建的快照中）。与 `gate_dropped` 度量不同：后者是
+    /// 有界丢弃策略（coalesce / drop-oldest），此处专指 cutover 剔除。
+    pub snapshot_duplicate_event: AtomicU64,
     /// Server-side response latency histogram (ms buckets).
     pub latency_histogram: LatencyHistogram,
 }
@@ -103,6 +120,11 @@ pub(crate) static PROTOCOL_TRACE: ProtocolTrace = ProtocolTrace {
     compat_queue_drop: AtomicU64::new(0),
     stale_commit_prevented: AtomicU64::new(0),
     gate_dropped: AtomicU64::new(0),
+    cross_session_command: AtomicU64::new(0),
+    activation_drain_failure: AtomicU64::new(0),
+    auth_barrier_pending_events: AtomicU64::new(0),
+    auth_barrier_pending_bytes: AtomicU64::new(0),
+    snapshot_duplicate_event: AtomicU64::new(0),
     latency_histogram: LatencyHistogram::new(),
 };
 
@@ -147,5 +169,30 @@ mod tests {
         // PMP44 P0-G: gate 丢弃计数器可读可自增。
         trace.gate_dropped.fetch_add(1, Ordering::Relaxed);
         assert!(trace.gate_dropped.load(Ordering::Relaxed) >= 1);
+        // PMP44 P1 §33: 新增观测计数器全部可读可自增。
+        trace.cross_session_command.fetch_add(1, Ordering::Relaxed);
+        assert!(trace.cross_session_command.load(Ordering::Relaxed) >= 1);
+        trace.activation_drain_failure.fetch_add(1, Ordering::Relaxed);
+        assert!(trace.activation_drain_failure.load(Ordering::Relaxed) >= 1);
+        trace
+            .auth_barrier_pending_events
+            .store(1, Ordering::Relaxed);
+        assert!(
+            trace
+                .auth_barrier_pending_events
+                .load(Ordering::Relaxed)
+                >= 1
+        );
+        trace
+            .auth_barrier_pending_bytes
+            .store(1, Ordering::Relaxed);
+        assert!(
+            trace
+                .auth_barrier_pending_bytes
+                .load(Ordering::Relaxed)
+                >= 1
+        );
+        trace.snapshot_duplicate_event.fetch_add(1, Ordering::Relaxed);
+        assert!(trace.snapshot_duplicate_event.load(Ordering::Relaxed) >= 1);
     }
 }

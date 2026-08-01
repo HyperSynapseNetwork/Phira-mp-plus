@@ -256,7 +256,15 @@ impl CommandMeta {
 /// session (P0-A). Refusing also stops the worker, because the origin session
 /// is being torn down.
 pub(crate) async fn worker_should_run(origin: &CommandOrigin) -> bool {
-    origin.is_current().await
+    let current = origin.is_current().await;
+    if !current {
+        // PMP44 P1 §33: origin session 已非该用户当前绑定（重连抬升代际），
+        // 命令被拒绝执行（P0-A）——跨会话命令观测计数 +1。
+        crate::official_client_compat::protocol_trace::ProtocolTrace::get()
+            .cross_session_command
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+    current
 }
 
 pub(crate) enum SessionActorCmd {

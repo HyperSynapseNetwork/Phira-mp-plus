@@ -568,6 +568,21 @@ impl SessionOutboundGate {
         }
         pending.events.push_back(GateEntry { cmd, seq });
         pending.bytes += size;
+        // PMP44 P1 §33: 每次入队/丢弃后更新认证屏障 gauge（事件数 / 字节粗估），
+        // 提供预认证缓冲的实时观测视图。
+        Self::store_pending_gauges(pending);
+    }
+
+    /// PMP44 P1 §33: 将认证屏障当前缓冲状态写入 gauge 计数器。在 `push_bounded`
+    /// 每次入队/丢弃后、`activate` 排空后调用。
+    fn store_pending_gauges(pending: &GatePending) {
+        let trace = ProtocolTrace::get();
+        trace
+            .auth_barrier_pending_events
+            .store(pending.events.len() as u64, Ordering::Relaxed);
+        trace
+            .auth_barrier_pending_bytes
+            .store(pending.bytes as u64, Ordering::Relaxed);
     }
 
     /// Queue (pre-activation) or forward (post-activation). Returns `Err` only
@@ -646,8 +661,12 @@ impl SessionOutboundGate {
                     seq = entry.seq,
                     "outbound gate dropped snapshot-included event"
                 );
-                ProtocolTrace::get()
-                    .gate_dropped
+                let trace = ProtocolTrace::get();
+                trace.gate_dropped.fetch_add(1, Ordering::Relaxed);
+                // PMP44 P1 §33: cutover 剔除专用计数——与 `gate_dropped`（有界
+                // 丢弃策略）度量不同，此处专指快照切换屏障剔除的快照内事件。
+                trace
+                    .snapshot_duplicate_event
                     .fetch_add(1, Ordering::Relaxed);
                 continue;
             }
@@ -659,9 +678,16 @@ impl SessionOutboundGate {
                 self.activated.store(false, Ordering::SeqCst);
                 pending.events.clear();
                 pending.bytes = 0;
+                // PMP44 P1 §33: fail-closed 后缓冲已清空，更新 gauge。
+                Self::store_pending_gauges(&pending);
                 return Err(anyhow!("outbound gate drain failed; fail-closed"));
             }
         }
+        // 排空完成，缓冲为空；发送路径未逐条扣减 `bytes`，这里归零避免 gauge
+        // 报出陈旧字节数。
+        pending.bytes = 0;
+        // PMP44 P1 §33: 排空后缓冲为空，更新 gauge（0 / 0）。
+        Self::store_pending_gauges(&pending);
         Ok(ActivationOutcome::Complete)
     }
 
@@ -1353,6 +1379,10 @@ impl Session {
                                 match activate_result {
                                     Ok(()) => {}
                                     Err(err) => {
+                                        // PMP44 P1 §33: 认证屏障排空失败观测计数。
+                                        ProtocolTrace::get()
+                                            .activation_drain_failure
+                                            .fetch_add(1, Ordering::Relaxed);
                                         // PMP44 P0-G: 认证屏障排空失败 → fail-closed：
                                         // 不进入 Active，关闭传输，走 lost-connection 路径。
                                         warn!(
@@ -1589,6 +1619,10 @@ impl Session {
                                         match activate_result {
                                             Ok(()) => {}
                                             Err(err) => {
+                                                // PMP44 P1 §33: 认证屏障排空失败观测计数。
+                                                ProtocolTrace::get()
+                                                    .activation_drain_failure
+                                                    .fetch_add(1, Ordering::Relaxed);
                                                 // PMP44 P0-G: 认证屏障排空失败 → fail-closed。
                                                 warn!(
                                                     user = user.id,
@@ -1812,6 +1846,10 @@ impl Session {
                                         match activate_result {
                                             Ok(()) => {}
                                             Err(err) => {
+                                                // PMP44 P1 §33: 认证屏障排空失败观测计数。
+                                                ProtocolTrace::get()
+                                                    .activation_drain_failure
+                                                    .fetch_add(1, Ordering::Relaxed);
                                                 // PMP44 P0-G: 认证屏障排空失败 → fail-closed。
                                                 warn!(
                                                     user = user.id,
@@ -2034,6 +2072,10 @@ impl Session {
                                         match activate_result {
                                             Ok(()) => {}
                                             Err(err) => {
+                                                // PMP44 P1 §33: 认证屏障排空失败观测计数。
+                                                ProtocolTrace::get()
+                                                    .activation_drain_failure
+                                                    .fetch_add(1, Ordering::Relaxed);
                                                 // PMP44 P0-G: 认证屏障排空失败 → fail-closed。
                                                 warn!(
                                                     user = user.id,
