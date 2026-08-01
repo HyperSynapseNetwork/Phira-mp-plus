@@ -72,6 +72,24 @@ fn ok(payload: RoomCommandPayload) -> RoomCommandResult {
     RoomCommandResult::ok(payload, RoomCommandDelivery::PerRoomMailbox)
 }
 
+/// PMP46 Blocker 2: 权威状态事件序号递增 + 通知房间内所有连接 Session。
+/// 每次权威状态变更前调用：`room_event_seq` 递增后立即把新值写入每个成员的
+/// `last_room_seq`（best-effort，单调不减）。此后该命令发出的广播/直发事件，
+/// 其 Gate 条目都会以不低于本事件真实序号的 `room_seq` 打戳——认证激活时
+/// `room_seq <= snapshot_seq` 才剔除（快照已包含），快照点之后的事件绝不误删
+/// （audit §7.5）。`BindAndSnapshot` 不调用（只读）。
+async fn bump_room_seq(
+    lc: &dyn RoomLifecycle,
+    state: &mut crate::room_actor::actor::RoomState,
+) -> u64 {
+    let seq = state.bump_room_event_seq();
+    for u in lc.users().await.into_iter().chain(lc.monitors().await) {
+        u.last_room_seq
+            .store(seq, std::sync::atomic::Ordering::Relaxed);
+    }
+    seq
+}
+
 /// Refuse a room command whose absolute actor deadline has passed (P0-C/P0-G).
 ///
 /// Counts the refusal as a blocked late commit and returns the matching error
@@ -590,6 +608,9 @@ pub(super) async fn force_start_playing(
     if !matches!(state.lifecycle, InternalRoomState::WaitForReady { .. }) {
         return;
     }
+    // PMP46 Blocker 2: 强制开赛推进 lifecycle，递增序号保证其广播的 ChangeState
+    // 不会被认证 cutover 误删（audit §7.5）。
+    let _seq = bump_room_seq(lc, &mut *state).await;
     state.ready_countdown_started_at = None;
 
     // Collect unready players to abort
@@ -736,6 +757,9 @@ pub(super) async fn force_end_playing(
     if !matches!(state.lifecycle, InternalRoomState::Playing { .. }) {
         return;
     }
+    // PMP46 Blocker 2: 强制结算推进 lifecycle，递增序号保证其广播的 ChangeState
+    // 不会被认证 cutover 误删（audit §7.5）。
+    let _seq = bump_room_seq(lc, &mut *state).await;
     // Remove unfinished and un-aborted players by adding them to aborted
     if let InternalRoomState::Playing { ref mut results, ref mut aborted } = &mut state.lifecycle {
         let users = lc.users().await;
@@ -808,6 +832,8 @@ impl RoomCommandHandler {
                 if origin_stale(lc, origin, *actor_user_id).await {
                     return refuse_stale_origin();
                 }
+                // PMP46 Blocker 2: 权威状态变更前递增序号（audit §7.5）。
+                let _seq = bump_room_seq(lc, &mut as_.state).await;
                 as_.state.set_locked(*locked);
                 lc.publish_update(PartialRoomData { lock: Some(*locked), ..Default::default() }).await;
                 lc.publish_runtime_event(crate::event_bus::MpEvent::RoomLocked {
@@ -845,6 +871,8 @@ impl RoomCommandHandler {
                 if origin_stale(lc, origin, *actor_user_id).await {
                     return refuse_stale_origin();
                 }
+                // PMP46 Blocker 2: 权威状态变更前递增序号（audit §7.5）。
+                let _seq = bump_room_seq(lc, &mut as_.state).await;
                 as_.state.set_cycle(*cycle);
                 lc.publish_update(PartialRoomData { cycle: Some(*cycle), ..Default::default() }).await;
                 lc.publish_runtime_event(crate::event_bus::MpEvent::RoomCycled {
@@ -872,6 +900,8 @@ impl RoomCommandHandler {
 
             RoomActorCommand::SetHidden { room_id, hidden, .. } => {
                 let as_ = ctx.expect_actor_state();
+                // PMP46 Blocker 2: 权威状态变更前递增序号（audit §7.5）。
+                let _seq = bump_room_seq(lc, &mut as_.state).await;
                 as_.state.set_hidden(*hidden);
                 lc.dispatch_plugin_event(PluginEvent::RoomModify {
                     user_id: 0, room_id: room_id.clone().to_string(),
@@ -882,6 +912,8 @@ impl RoomCommandHandler {
 
             RoomActorCommand::SetHost { room_id, target_id, .. } => {
                 let as_ = ctx.expect_actor_state();
+                // PMP46 Blocker 2: 权威状态变更前递增序号（audit §7.5）。
+                let _seq = bump_room_seq(lc, &mut as_.state).await;
                 // Find the target user (if any) and get display name from actor_state
                 let (_host_id, host_name, system_host) = match target_id {
                     Some(uid) => {
@@ -963,6 +995,8 @@ impl RoomCommandHandler {
 
             RoomActorCommand::SetEndpoint { room_id, endpoint, .. } => {
                 let as_ = ctx.expect_actor_state();
+                // PMP46 Blocker 2: 权威状态变更前递增序号（audit §7.5）。
+                let _seq = bump_room_seq(lc, &mut as_.state).await;
                 let endpoint = endpoint.clone();
                 as_.state.control.phira_api_endpoint = endpoint.clone();
                 ok(RoomCommandPayload::EndpointChanged {
@@ -971,6 +1005,11 @@ impl RoomCommandHandler {
             }
 
             RoomActorCommand::CloseRoom { room_id: _, .. } => {
+                // PMP46 Blocker 2: 权威状态变更前递增序号（audit §7.5）。
+                {
+                    let as_ = ctx.expect_actor_state();
+                    let _seq = bump_room_seq(lc, &mut as_.state).await;
+                }
                 lc.room().send_system_msg_simple("room-closed-by-admin").await;
                 for user in lc.users().await {
                     *user.room.write().await = None;
@@ -1003,6 +1042,11 @@ impl RoomCommandHandler {
                         crate::l10n::translate_system(lang, "user-kicked-from-room", &a)
                     },
                 ).await;
+                // PMP46 Blocker 2: 权威成员移除前递增序号（audit §7.5）。
+                {
+                    let as_ = ctx.expect_actor_state();
+                    let _seq = bump_room_seq(lc, &mut as_.state).await;
+                }
                 let was_monitor = user.monitor.load(std::sync::atomic::Ordering::SeqCst);
                 let should_drop = lc.on_user_leave(&user).await;
                 user.try_send(ServerCommand::LeaveRoom(Ok(()))).await;
@@ -1037,6 +1081,8 @@ impl RoomCommandHandler {
                     return err("no chart selected");
                 }
 
+                // PMP46 Blocker 2: 权威状态变更前递增序号（audit §7.5）。
+                let _seq = bump_room_seq(lc, &mut as_.state).await;
                 as_.state.control.admin_start_pending = true;
                 broadcast_state_change(lc, &as_.state.lifecycle, as_.state.chart).await;
 
@@ -1063,6 +1109,8 @@ impl RoomCommandHandler {
                 let as_ = ctx.expect_actor_state();
                 let canceled = matches!(as_.state.lifecycle, InternalRoomState::WaitForReady { .. });
                 if canceled {
+                    // PMP46 Blocker 2: 权威状态变更前递增序号（audit §7.5）。
+                    let _seq = bump_room_seq(lc, &mut as_.state).await;
                     // Restore host privileges if admin_started
                     if let InternalRoomState::WaitForReady { admin_started, .. } = &as_.state.lifecycle {
                         if *admin_started {
@@ -1095,6 +1143,8 @@ impl RoomCommandHandler {
                 if origin_stale(lc, origin, *actor_user_id).await {
                     return refuse_stale_origin();
                 }
+                // PMP46 Blocker 2: 权威状态变更前递增序号（audit §7.5）。
+                let _seq = bump_room_seq(lc, &mut as_.state).await;
                 as_.state.chart = Some(*chart_id);
                 as_.state.chart_name = Some(chart_name.clone());
                 lc.send_msg(Message::SelectChart { user: *actor_user_id, name: chart_name.clone(), id: *chart_id }).await;
@@ -1118,6 +1168,8 @@ impl RoomCommandHandler {
                 if origin_stale(lc, origin, *user_id).await {
                     return refuse_stale_origin();
                 }
+                // PMP46 Blocker 2: 权威状态变更前递增序号（audit §7.5）。
+                let _seq = bump_room_seq(lc, &mut as_.state).await;
                 match &mut as_.state.lifecycle {
                     InternalRoomState::WaitForReady { ref mut started, .. } => {
                         if !started.insert(*user_id) { return err("already ready"); }
@@ -1156,6 +1208,8 @@ impl RoomCommandHandler {
                 if origin_stale(lc, origin, *user_id).await {
                     return refuse_stale_origin();
                 }
+                // PMP46 Blocker 2: 权威状态变更前递增序号（audit §7.5）。
+                let _seq = bump_room_seq(lc, &mut as_.state).await;
                 let was_host = as_.state.control.host_id == Some(*user_id);
                 match &mut as_.state.lifecycle {
                     InternalRoomState::WaitForReady { ref mut started, .. } => {
@@ -1204,6 +1258,8 @@ impl RoomCommandHandler {
                 if origin_stale(lc, origin, *user_id).await {
                     return refuse_stale_origin();
                 }
+                // PMP46 Blocker 2: 权威状态变更前递增序号（audit §7.5）。
+                let _seq = bump_room_seq(lc, &mut as_.state).await;
                 let record = crate::server::Record {
                     id: 0, player: *user_id, score: *score, perfect: *perfect,
                     good: *good, bad: *bad, miss: *miss, max_combo: *max_combo,
@@ -1279,6 +1335,8 @@ impl RoomCommandHandler {
                 if origin_stale(lc, origin, *user_id).await {
                     return refuse_stale_origin();
                 }
+                // PMP46 Blocker 2: 权威状态变更前递增序号（audit §7.5）。
+                let _seq = bump_room_seq(lc, &mut as_.state).await;
                 match &mut as_.state.lifecycle {
                     InternalRoomState::Playing { results, aborted } => {
                         if results.contains_key(user_id) { return err("already uploaded"); }
@@ -1308,6 +1366,8 @@ impl RoomCommandHandler {
                 if origin_stale(lc, origin, *user_id).await {
                     return refuse_stale_origin();
                 }
+                // PMP46 Blocker 2: 权威状态变更前递增序号（audit §7.5）。
+                let _seq = bump_room_seq(lc, &mut as_.state).await;
                 // Official RequestStart core sequence (P0-D): reset_game_time →
                 // Message::GameStart → WaitForReady → on_state_change →
                 // check_all_ready. PMP extensions (ready_countdown_started_at,
@@ -1372,6 +1432,8 @@ impl RoomCommandHandler {
                 if current_count >= as_.state.control.max_users && !monitor {
                     return err("room is full");
                 }
+                // PMP46 Blocker 2: 权威状态变更前递增序号（audit §7.5）。
+                let _seq = bump_room_seq(lc, &mut as_.state).await;
                 if !as_.state.live {
                     as_.state.live = true;
                     tracing::info!(room = %lc.room().id, "room goes live via add_user");
@@ -1427,6 +1489,11 @@ impl RoomCommandHandler {
                     users.iter().find(|u| u.id == *user_id).cloned()
                         .or_else(|| monitors.iter().find(|u| u.id == *user_id).cloned())
                 };
+                // PMP46 Blocker 2: 权威成员移除前递增序号（audit §7.5）。
+                {
+                    let as_ = ctx.expect_actor_state();
+                    let _seq = bump_room_seq(lc, &mut as_.state).await;
+                }
                 match user {
                     Some(user) => {
                         let was_monitor = user.monitor.load(std::sync::atomic::Ordering::SeqCst);
@@ -1501,6 +1568,8 @@ impl RoomCommandHandler {
 
             RoomActorCommand::SetLive { room_id, live, .. } => {
                 let as_ = ctx.expect_actor_state();
+                // PMP46 Blocker 2: 权威状态变更前递增序号（audit §7.5）。
+                let _seq = bump_room_seq(lc, &mut as_.state).await;
                 let changed = as_.state.live != *live;
                 as_.state.live = *live;
                 if changed && *live {
@@ -1516,6 +1585,8 @@ impl RoomCommandHandler {
                 // PMP45 P0-K: 设置房间 degraded 标志——Join 补偿失败时置 true
                 //（AddUser 将拒绝新的 Join，直到操作员 / 未来的 reconcile 清空），
                 // 也可由操作员显式置回 false 恢复 Join。
+                // PMP46 Blocker 2: 权威状态变更前递增序号（audit §7.5）。
+                let _seq = bump_room_seq(lc, &mut as_.state).await;
                 let changed = as_.state.degraded != *degraded;
                 as_.state.degraded = *degraded;
                 if changed {
@@ -1530,6 +1601,8 @@ impl RoomCommandHandler {
 
             RoomActorCommand::SetDisplayName { room_id, user_id, name, .. } => {
                 let as_ = ctx.expect_actor_state();
+                // PMP46 Blocker 2: 权威状态变更前递增序号（audit §7.5）。
+                let _seq = bump_room_seq(lc, &mut as_.state).await;
                 as_.display_names.insert(*user_id, name.clone());
                 ok(RoomCommandPayload::DisplayNameSet {
                     room_id: room_id.clone().to_string(), user_id: *user_id, name: name.clone(),
@@ -1538,6 +1611,8 @@ impl RoomCommandHandler {
 
             RoomActorCommand::SetPersistentEmpty { room_id, persistent_empty, .. } => {
                 let as_ = ctx.expect_actor_state();
+                // PMP46 Blocker 2: 权威状态变更前递增序号（audit §7.5）。
+                let _seq = bump_room_seq(lc, &mut as_.state).await;
                 as_.state.control.persistent_empty = *persistent_empty;
                 ok(RoomCommandPayload::PersistentEmptyChanged {
                     room_id: room_id.clone().to_string(),
@@ -1623,6 +1698,9 @@ impl RoomCommandHandler {
                 // cutover token：网关 command_seq。快照反映所有
                 // `command_id <= token` 命令提交后的权威状态。
                 let token = lc.server_state().room_commands.command_seq();
+                // PMP46 Blocker 2: 快照时刻的权威状态事件序号——认证路径以它
+                // 对齐 Gate cutover，绝不使用 Gate 自身序号（两者无关，audit §7.5）。
+                let snapshot_seq = as_.state.room_event_seq;
                 ok(RoomCommandPayload::BindAndSnapshot(BindAndSnapshotData {
                     room_id: room_id.to_string(),
                     state: as_.state.lifecycle.stripped(),
@@ -1642,6 +1720,7 @@ impl RoomCommandHandler {
                         })
                         .collect(),
                     token,
+                    snapshot_seq,
                 }))
             }
             // 审计 P0: Telemetry fire-and-forget variants are handled by
@@ -1663,6 +1742,9 @@ impl RoomCommandHandler {
             // reply 接收端，无客户端等待。
             RoomActorCommand::CheckAllReady { deadline, .. } => {
                 let as_ = ctx.expect_actor_state();
+                // PMP46 Blocker 2: check_all_ready 可能推进 lifecycle（开赛/结算），
+                // 递增序号保证其广播的 ChangeState 不会被认证 cutover 误删。
+                let _seq = bump_room_seq(lc, &mut as_.state).await;
                 let _outcome = check_all_ready(lc, as_, *deadline).await;
                 ok(RoomCommandPayload::Empty)
             }

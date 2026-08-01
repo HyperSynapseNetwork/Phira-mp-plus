@@ -11,11 +11,13 @@ impl RoomCommandGateway {
 
     /// PMP45 P0-F: 原子认证快照。把 `BindAndSnapshot` 路由进房间 mailbox，让
     /// Room Actor 在自身的排序点一次性捕获 `ClientRoomState`（state / members
-    /// / display_names 全部来自 actor_state），并返回快照数据与 cutover token。
+    /// / display_names 全部来自 actor_state），并返回快照数据与权威
+    /// `snapshot_seq`（room_event_seq，PMP46 Blocker 2）。
     ///
     /// `deadline` 为绝对 actor 截止（认证绝对预算）；`None` 时回退到 mailbox
     /// 内部 30s 超时。失败（mailbox 不可用/超时/拒绝）返回 `Err`，认证路径
-    /// 回退到非原子的 `session_room::build_client_room_state`。
+    /// fail-closed（audit §7.5）——绝不回退到非原子的
+    /// `session_room::build_client_room_state` 进入 Active。
     pub async fn bind_and_snapshot(
         &self,
         state: &PlusServerState,

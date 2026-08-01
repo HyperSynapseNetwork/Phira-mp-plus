@@ -156,6 +156,11 @@ pub struct BindAndSnapshotData {
     /// Room Actor 构建快照时的网关 command_seq（actor 排序点）。供认证路径
     /// 观测与 cutover 对齐参考。
     pub token: u64,
+    /// PMP46 Blocker 2: 快照时刻的 Room Actor 权威状态事件序号。认证路径以它
+    /// 调用 `gate.begin_room_cutover(snapshot_seq)`，激活时只剔除
+    /// `room_seq <= snapshot_seq` 的缓冲事件——Room Actor 序号与 Gate 自身
+    /// 序号是两个无关数字，绝不能用 Gate 序号对齐快照（audit §7.5）。
+    pub snapshot_seq: u64,
 }
 
 /// `BindAndSnapshotData.users` 的单个成员。

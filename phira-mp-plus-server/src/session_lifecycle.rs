@@ -4,7 +4,7 @@ use crate::session::Session;
 use anyhow::{anyhow, Result};
 use fluent::FluentArgs;
 use phira_mp_common::{RoomEvent, ServerCommand, UserInfo};
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Weak};
 use std::time::Duration;
 use tokio::sync::{Mutex, RwLock};
@@ -44,6 +44,13 @@ pub struct User {
     pub admin_cli_pending: Mutex<Option<String>>,
     /// 用户确认加入进行中游戏的房间 ID（第一次请求时设置，第二次直接加入）。
     pub join_pending_game: RwLock<Option<String>>,
+    /// PMP46 Blocker 2: 房间权威状态事件序号的 best-effort 镜像。Room Actor 在
+    /// 每次权威状态变更（`bump_room_event_seq`）时把新序号写入房间内所有成员；
+    /// Session 的 outbound gate 入队时读取它给 `SnapshotCovered` 事件打戳
+    /// （`room_seq`），认证激活时 `room_seq <= snapshot_seq` 才剔除——快照点
+    /// 之后进入 Gate 的事件绝不误删（audit §7.5）。单调不减：镜像只可能高于
+    /// 事件真实序号（过发）而绝不低于（误删），因此 over-send 是安全方向。
+    pub last_room_seq: AtomicU64,
 }
 
 impl User {
@@ -70,6 +77,7 @@ impl User {
             dangle_mark: Mutex::default(),
             admin_cli_pending: Mutex::default(),
             join_pending_game: RwLock::default(),
+            last_room_seq: AtomicU64::new(0),
         }
     }
 

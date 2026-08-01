@@ -146,6 +146,12 @@ pub struct RoomState {
     pub ready_countdown_started_at: Option<i64>,
     /// 对局超时截止时间（毫秒时间戳）。None 表示未启用超时或已超时。
     pub playing_timeout_deadline: Option<i64>,
+    /// PMP46 Blocker 2: Room Actor 权威状态事件序号。每次权威状态变更递增；
+    /// `BindAndSnapshot` 返回快照时刻的该序号作为 `snapshot_seq`。发往 Session
+    /// Gate 的状态事件携带它，认证激活时 `room_seq <= snapshot_seq` 才可剔除。
+    /// Room Actor 序号与 Gate 自身序号是两个无关数字，绝不能用 Gate 序号对齐
+    /// 快照（audit §7）。
+    pub room_event_seq: u64,
 }
 
 impl RoomState {
@@ -208,6 +214,15 @@ impl RoomState {
 
     pub fn set_hidden(&mut self, hidden: bool) {
         self.control.hidden = hidden;
+    }
+
+    /// PMP46 Blocker 2: 权威状态事件序号递增（返回新值）。每次权威状态变更前
+    /// 调用——`BindAndSnapshot` 返回快照时刻的该序号作为 `snapshot_seq`；发往
+    /// Session Gate 的状态事件以它打戳，认证激活时 `room_seq <= snapshot_seq`
+    /// 才剔除（快照已包含），快照点之后的事件绝不误删（audit §7.5）。
+    pub fn bump_room_event_seq(&mut self) -> u64 {
+        self.room_event_seq += 1;
+        self.room_event_seq
     }
 }
 
@@ -281,6 +296,7 @@ impl RoomActor {
                 degraded: false,
                 ready_countdown_started_at: None,
                 playing_timeout_deadline: None,
+                room_event_seq: 0,
             },
             room.created_at,
         );

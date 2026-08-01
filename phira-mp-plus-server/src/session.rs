@@ -492,8 +492,10 @@ struct GatePending {
     bytes: usize,
     /// P0-H: 单调递增的事件序号（入队时分配）。
     next_seq: u64,
-    /// P0-H: 快照切换序号。`seq <= cutover_seq` 的缓冲事件在激活时被丢弃
-    /// （已包含在即将构建的快照中），`seq > cutover_seq` 的事件正常发送。
+    /// PMP46 Blocker 2: 快照切换序号（Room Actor 权威 `snapshot_seq`，不是
+    /// Gate 自身序号）。`room_seq <= cutover_seq` 的 `SnapshotCovered` 缓冲
+    /// 事件在激活时被丢弃（快照已包含），`room_seq > cutover_seq` 的事件正常
+    /// 发送。由 `begin_room_cutover` 设置。
     cutover_seq: u64,
 }
 
@@ -513,9 +515,15 @@ enum GateEventClass {
 #[derive(Debug)]
 struct GateEntry {
     cmd: ServerCommand,
+    /// P0-H: Gate 自身单调序号（入队时分配）。仅用于观测/调试；快照切换
+    /// 判定改用 `room_seq`（PMP46 Blocker 2）。
     seq: u64,
     /// PMP45 P0-G: cutover 剔除只作用于 `SnapshotCovered`。
     class: GateEventClass,
+    /// PMP46 Blocker 2: 产生该状态事件的 Room Actor 权威事件序号。`None` 表示
+    /// 非状态事件（Chat/遥测/系统消息）或镜像不可用——cutover 不适用于它们，
+    /// 一律发送（快照点之后的事件绝不误删，audit §7.5）。
+    room_seq: Option<u64>,
 }
 
 /// `activate` 的结果。`Err` 分支即“排空期间发生发送错误”——屏障已重置为
@@ -591,8 +599,16 @@ async fn run_outbound_task(
             OutboundItem::Packet(cmd) => {
                 if !active {
                     // 认证屏障未打开：缓冲进 gate，沿用 P0-G 有界丢弃策略。
+                    // PMP46 Blocker 2: 读取该 Session 对应 User 的 `last_room_seq`
+                    // 镜像作为事件打戳——快照切换剔除据此只删快照已包含的
+                    // `SnapshotCovered` 事件。Session 尚未构造（weak 升级失败）时
+                    // 传 `None`，激活时一律发送（安全方向，over-send 不误删）。
                     let mut pending = gate.pending.lock().await;
-                    gate.push_bounded(&mut pending, cmd);
+                    let room_seq = session_weak
+                        .get()
+                        .and_then(Weak::<Session>::upgrade)
+                        .map(|s| s.user.last_room_seq.load(Ordering::Relaxed));
+                    gate.push_bounded(&mut pending, cmd, room_seq);
                 } else {
                     let Some(send_tx) = send_tx_ready.get() else {
                         continue;
@@ -786,11 +802,21 @@ impl SessionOutboundGate {
     ///   保留最新控制状态（P0-H：旧逻辑只弹一个，新事件较大时仍会超预算）。
     /// - 若清空缓冲后新事件仍超字节预算：控制事件溢出 → 置 `overflowed`
     ///   （fail-closed），`activate` 将拒绝激活，认证路径关闭 Session。
-    fn push_bounded(&self, pending: &mut GatePending, cmd: ServerCommand) {
+    ///
+    /// `room_seq` 是产生该事件时 Room Actor 的权威状态事件序号（来自该
+    /// Session 对应 User 的 `last_room_seq` 镜像，PMP46 Blocker 2）。只对
+    /// `SnapshotCovered` 打戳；`None` 表示镜像不可用或非状态事件——cutover
+    /// 不适用，激活时一律发送（绝不误删快照点之后的事件）。
+    fn push_bounded(&self, pending: &mut GatePending, cmd: ServerCommand, room_seq: Option<u64>) {
         let seq = pending.next_seq;
         pending.next_seq += 1;
         let class = classify_command(&cmd);
         let size = real_size(&cmd);
+        let entry_room_seq = if class == GateEventClass::SnapshotCovered {
+            room_seq
+        } else {
+            None
+        };
         let over_limit = pending.events.len() >= self.max_pending_events
             || pending.bytes.saturating_add(size) > self.max_pending_bytes;
         if over_limit {
@@ -839,7 +865,12 @@ impl SessionOutboundGate {
         }
         pending
             .events
-            .push_back(GateEntry { cmd, seq, class });
+            .push_back(GateEntry {
+                cmd,
+                seq,
+                class,
+                room_seq: entry_room_seq,
+            });
         pending.bytes += size;
         // PMP44 P1 §33: 每次入队/丢弃后更新认证屏障 gauge（事件数 / 字节粗估），
         // 提供预认证缓冲的实时观测视图。
@@ -870,7 +901,7 @@ impl SessionOutboundGate {
             drop(pending);
             sink.sink_send(cmd).await
         } else {
-            self.push_bounded(&mut pending, cmd);
+            self.push_bounded(&mut pending, cmd, None);
             Ok(())
         }
     }
@@ -888,7 +919,7 @@ impl SessionOutboundGate {
             drop(pending);
             sink.sink_try_send(cmd).is_ok()
         } else {
-            self.push_bounded(&mut pending, cmd);
+            self.push_bounded(&mut pending, cmd, None);
             true
         }
     }
@@ -914,14 +945,17 @@ impl SessionOutboundGate {
     /// Open the barrier and drain buffered packets in FIFO order. Must be called
     /// only after the `Authenticate(Ok)` frame has been flushed to the socket.
     ///
-    /// PMP44 P0-H: 排空时剔除 `seq <= cutover_seq` 的事件——快照在
-    /// `begin_snapshot_cutover` 之后构建，凡是被快照反映的状态变更必然有
-    /// `seq <= cutover`，不得重复下发；`seq > cutover`（快照构建期间到达）
-    /// 的事件才是客户端需要的增量。
+    /// PMP44 P0-H + PMP46 Blocker 2: 排空时剔除
+    /// `room_seq <= cutover_seq` 的 `SnapshotCovered` 事件——快照在
+    /// `begin_room_cutover` 之前由 Room Actor 在自身排序点捕获，凡是被快照
+    /// 反映的状态变更必然有 `room_seq <= snapshot_seq`（cutover），不得重复
+    /// 下发；`room_seq > cutover`（快照点之后到达）的事件才是客户端需要的
+    /// 增量，绝不能用 Gate 自身 `seq` 判定（audit §7 的 T1-T6 窗口）。
     ///
     /// PMP45 P0-G: cutover 剔除只作用于 `SnapshotCovered` 事件——Chat/语义/
     /// 遥测事件无论序号一律发送（修复 §11 的认证窗口聊天丢失）；遥测仍可被
-    /// 有界剔除丢弃，但绝不由 cutover 丢弃。
+    /// 有界剔除丢弃，但绝不由 cutover 丢弃。`room_seq = None` 的
+    /// `SnapshotCovered`（镜像不可用）同样一律发送（安全方向，over-send）。
     ///
     /// PMP45 P0-H: 控制事件溢出（`overflowed`）时直接返回 `Err`（fail-closed）
     /// ——不激活状态不完整的连接，认证路径关闭 Session，客户端重新
@@ -949,12 +983,21 @@ impl SessionOutboundGate {
         // socket 而非仅进入发送队列（audit §23）。缺这一步时，Activate 报告成功
         // 后客户端可能只收到 Authenticate(Ok)，恢复状态仍在队列中。
         while let Some(entry) = pending.events.pop_front() {
-            // PMP45 P0-G: 只对快照覆盖的状态类事件做 cutover 剔除。
-            if entry.class == GateEventClass::SnapshotCovered && entry.seq <= cutover {
+            // PMP45 P0-G / PMP46 Blocker 2: 只对快照覆盖的状态类事件做 cutover
+            // 剔除，且必须携带 Room Actor 的权威 `room_seq`：`room_seq <=
+            // snapshot_seq`（cutover）才视为快照已包含。绝不以 Gate 自身 `seq`
+            // 判定——Gate seq 与 Room Actor seq 是两个无关数字，快照点之后进入
+            // Gate 的事件若用 Gate seq 判定会被误删（audit §7 的 T1-T6 窗口）。
+            // `room_seq = None`（非状态事件 / 镜像不可用）一律发送。
+            if entry.class == GateEventClass::SnapshotCovered
+                && entry.room_seq.is_some_and(|r| r <= cutover)
+            {
                 // 快照已包含该事件，剔除以免重复。
                 pending.bytes = pending.bytes.saturating_sub(real_size(&entry.cmd));
                 tracing::trace!(
                     seq = entry.seq,
+                    room_seq = entry.room_seq,
+                    cutover,
                     "outbound gate dropped snapshot-included event"
                 );
                 let trace = ProtocolTrace::get();
@@ -995,20 +1038,18 @@ impl SessionOutboundGate {
         Ok(ActivationOutcome::Complete)
     }
 
-    /// PMP44 P0-H: 开始一次快照切换。返回的 `cutover` 是当前已入队事件的
-    /// 最大序号。调用时机：
+    /// PMP46 Blocker 2: 以 Room Actor 的权威 `snapshot_seq` 开始一次快照切换。
+    /// `snapshot_seq` 来自 `BindAndSnapshotData.snapshot_seq`——Room Actor 在
+    /// 自身排序点构建快照时的 `room_event_seq`。激活时只剔除
+    /// `room_seq <= snapshot_seq` 的 `SnapshotCovered` 缓冲事件（快照已包含），
+    /// 快照点之后的事件（`room_seq > snapshot_seq`）正常发送。
     ///
-    /// - PMP45 P0-F 路径：收到 Room Actor 的 `BindAndSnapshot` 快照后调用，
-    ///   使激活时只剔除早于该快照点的 `SnapshotCovered` 事件；
-    /// - 兜底路径：在 `build_client_room_state` 之前调用。
-    ///
-    /// 激活时 `seq <= cutover` 的缓冲事件被视为快照已包含而被丢弃（仅限
-    /// `SnapshotCovered`，PMP45 P0-G）。
-    pub(crate) async fn begin_snapshot_cutover(&self) -> u64 {
+    /// 注意：绝不使用 Gate 自身 `next_seq`——Gate seq 是每个 Session 自己的
+    /// 入队计数，与 Room Actor 序号无关；用它对齐快照会造成 T1-T6 的确定性
+    /// 丢失窗口（audit §7）。
+    pub(crate) async fn begin_room_cutover(&self, snapshot_seq: u64) -> u64 {
         let mut pending = self.pending.lock().await;
-        // next_seq 指向下一个待分配序号，减一即最后已入队事件的序号；
-        // 尚无任何事件时（next_seq=1）cutover=0，不会误删后续事件。
-        pending.cutover_seq = pending.next_seq.saturating_sub(1);
+        pending.cutover_seq = snapshot_seq;
         pending.cutover_seq
     }
 
@@ -1457,14 +1498,15 @@ impl Session {
                                 }
                                 let room_state = match user.room.read().await.as_ref() {
                                     Some(room) => {
-                                        // PMP45 P0-F: 优先经 Room Actor 原子快照
-                                        // （`BindAndSnapshot`）。Room Actor 在自身排序点
-                                        // 一次性捕获 state/members/display_names，返回一致
-                                        // 快照与 cutover token；收到快照后再对齐 gate cutover，
-                                        // 使激活时只剔除快照已包含的 `SnapshotCovered` 事件
-                                        //（P0-G），Chat/语义事件绝不丢失（§11）。若 mailbox
-                                        // 不可用/超时/失败，回退到非原子的
-                                        // `build_client_room_state`（保留作为兜底路径）。
+                                        // PMP45 P0-F / PMP46 Blocker 2: 优先经 Room Actor
+                                        // 原子快照（`BindAndSnapshot`）。Room Actor 在自身
+                                        // 排序点一次性捕获 state/members/display_names，返回
+                                        // 一致快照与权威 `snapshot_seq`（room_event_seq）；
+                                        // 收到快照后调用 `gate.begin_room_cutover(snapshot_seq)`
+                                        // 对齐快照点，激活时只剔除快照已包含的
+                                        // `SnapshotCovered` 事件（P0-G），Chat/语义事件绝不
+                                        // 丢失（§11）。快照点之后进入 Gate 的状态事件以更高的
+                                        // `room_seq` 打戳，绝不误删（audit §7.5）。
                                         match user
                                             .server
                                             .room_commands
@@ -1477,17 +1519,15 @@ impl Session {
                                             .await
                                         {
                                             Ok(data) => {
-                                                // cutover token：Room Actor 构建快照时的网关
-                                                // command_seq（actor 排序点）。cutover 在收到
-                                                // 快照后对齐到当前已入队事件（含全部早于快照
-                                                // 点的事件）。
                                                 debug!(
                                                     user = user.id,
                                                     room = %room.id,
                                                     token = data.token,
+                                                    snapshot_seq = data.snapshot_seq,
                                                     "auth snapshot captured at room-actor sequencing point"
                                                 );
-                                                let _cutover = gate.begin_snapshot_cutover().await;
+                                                let _cutover =
+                                                    gate.begin_room_cutover(data.snapshot_seq).await;
                                                 Some(data.into_client_room_state())
                                             }
                                             Err(err) => {
@@ -1495,10 +1535,34 @@ impl Session {
                                                     user = user.id,
                                                     room = %room.id,
                                                     %err,
-                                                    "BindAndSnapshot unavailable; falling back to non-atomic client room state"
+                                                    "BindAndSnapshot failed for existing room; failing auth closed (audit §7.5)"
                                                 );
-                                                let _cutover = gate.begin_snapshot_cutover().await;
-                                                Some(crate::session_room::build_client_room_state(room, &user).await)
+                                                // PMP46 Blocker 2: 已有房间的重连认证，
+                                                // BindAndSnapshot 失败即 fail-closed——绝不回退
+                                                // 到非原子的 `build_client_room_state` 进入 Active
+                                                //（非原子多读与认证窗口内的后续事件可能分叉，
+                                                // audit §7.4/§7.5）。此处 WAL 尚未 admission
+                                                //（durable=false）且 Authenticate(Ok) 从未 flush
+                                                //（send_err=true），可安全发送 Authenticate(Err)
+                                                // 并关闭传输，让客户端重试。
+                                                if should_rollback_auth(auth_phase, false, true) {
+                                                    rollback_failed_auth(
+                                                        &server,
+                                                        &send_tx,
+                                                        &this,
+                                                        Some(&user),
+                                                        newly_created,
+                                                        previous_restore.clone(),
+                                                        None,
+                                                        false,
+                                                        true,
+                                                        "authentication failed: room snapshot unavailable"
+                                                            .to_string(),
+                                                    )
+                                                    .await;
+                                                }
+                                                panicked.store(true, Ordering::SeqCst);
+                                                return;
                                             }
                                         }
                                     }
@@ -3206,31 +3270,39 @@ mod tests {
         assert!(sink2.sent.lock().unwrap().is_empty());
     }
 
-    /// PMP44 P0-H / PMP45 P0-G: 快照切换屏障——`seq <= cutover` 的
-    /// **SnapshotCovered** 缓冲事件（快照已包含）在激活时被剔除；`seq >
-    /// cutover`（快照构建期间到达）的事件正常发送。Chat 是 `NonSnapshot`，
-    /// 无论序号一律发送（修复 §11 的认证窗口聊天丢失）。
+    /// PMP44 P0-H / PMP45 P0-G / PMP46 Blocker 2: 快照切换屏障——`room_seq <=
+    /// cutover`（snapshot_seq）的 **SnapshotCovered** 缓冲事件（快照已包含）
+    /// 在激活时被剔除；`room_seq > cutover`（快照点之后到达）的事件正常发送。
+    /// Chat 是 `NonSnapshot`，无论序号一律发送（修复 §11 的认证窗口聊天丢失）。
     #[tokio::test]
     async fn outbound_gate_cutover_drops_snapshot_events_sends_delta() {
         let gate = test_gate();
         let sink = TestSink::default();
-        // 快照构建前已缓冲的事件（已被快照反映）。
-        assert!(gate.try_send(&sink, ServerCommand::ChangeHost(true)).await);
-        assert!(gate.try_send(&sink, ServerCommand::Chat(Ok(()))).await);
-        assert!(gate
-            .try_send(&sink, ServerCommand::Message(Message::GameStart { user: 7 }))
-            .await);
-        // cutover 值为最后已入队事件的序号；在 build_client_room_state 之前调用。
-        let _cutover = gate.begin_snapshot_cutover().await;
+        // 快照构建前已缓冲的事件（已被快照反映），携带 Room Actor 权威 room_seq。
+        {
+            let mut pending = gate.pending.lock().await;
+            gate.push_bounded(&mut pending, ServerCommand::ChangeHost(true), Some(5));
+            gate.push_bounded(&mut pending, ServerCommand::Chat(Ok(())), None);
+            gate.push_bounded(
+                &mut pending,
+                ServerCommand::Message(Message::GameStart { user: 7 }),
+                None,
+            );
+        }
+        // cutover = BindAndSnapshot 返回的 snapshot_seq（Room Actor 序号，audit §7.5）。
+        let _cutover = gate.begin_room_cutover(5).await;
         // 快照构建期间到达的事件（快照未包含，必须发送）。
-        assert!(gate.try_send(&sink, ServerCommand::Pong).await);
-        assert!(gate.try_send(&sink, ServerCommand::ChangeHost(false)).await);
+        {
+            let mut pending = gate.pending.lock().await;
+            gate.push_bounded(&mut pending, ServerCommand::Pong, None);
+            gate.push_bounded(&mut pending, ServerCommand::ChangeHost(false), Some(6));
+        }
         gate.activate(&sink).await.unwrap();
 
         let sent = sink.sent.lock().unwrap();
-        // ChangeHost(true) 是 SnapshotCovered 且 seq <= cutover → 剔除；
+        // ChangeHost(true) 是 SnapshotCovered 且 room_seq 5 <= cutover 5 → 剔除；
         // Chat(Ok) 与 Message::GameStart 是 NonSnapshot → 必须发送（P0-G）；
-        // Pong 是 Telemetry → 发送；ChangeHost(false) 是 cutover 后增量 → 发送。
+        // Pong 是 Telemetry → 发送；ChangeHost(false) 是快照点后增量（room_seq 6）→ 发送。
         assert_eq!(sent.len(), 4, "only snapshot-covered events are cut over");
         assert!(matches!(sent[0], ServerCommand::Chat(Ok(()))));
         assert!(matches!(sent[1], ServerCommand::Message(Message::GameStart { .. })));
