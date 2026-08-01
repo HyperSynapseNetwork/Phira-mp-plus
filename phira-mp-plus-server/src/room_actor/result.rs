@@ -133,6 +133,81 @@ pub enum RoomCommandPayload {
         room_id: String,
         persistent_empty: bool,
     },
+    /// PMP45 P0-F: 原子认证快照（`BindAndSnapshot` 命令的 payload）。
+    BindAndSnapshot(BindAndSnapshotData),
+}
+
+/// PMP45 P0-F: `BindAndSnapshot` 原子快照的可序列化负载。与
+/// `phira_mp_common::ClientRoomState` 同构（`ClientRoomState` 本身不实现
+/// serde，因此以本结构体经 room mailbox 的 JSON 桥回传，认证路径再重建为
+/// `ClientRoomState`）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct BindAndSnapshotData {
+    pub room_id: String,
+    pub state: phira_mp_common::StrippedRoomState,
+    pub chart: Option<i32>,
+    pub live: bool,
+    pub locked: bool,
+    pub cycle: bool,
+    pub is_host: bool,
+    pub is_ready: bool,
+    pub users: Vec<BindAndSnapshotUser>,
+    /// Room Actor 构建快照时的网关 command_seq（actor 排序点）。供认证路径
+    /// 观测与 cutover 对齐参考。
+    pub token: u64,
+}
+
+/// `BindAndSnapshotData.users` 的单个成员。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct BindAndSnapshotUser {
+    pub id: i32,
+    pub name: String,
+    pub monitor: bool,
+}
+
+impl BindAndSnapshotData {
+    /// 重建 `phira_mp_common::ClientRoomState`（认证响应的快照负载）。
+    pub fn into_client_room_state(self) -> phira_mp_common::ClientRoomState {
+        let state = match self.state {
+            phira_mp_common::StrippedRoomState::SelectingChart => {
+                phira_mp_common::RoomState::SelectChart(self.chart)
+            }
+            phira_mp_common::StrippedRoomState::WaitingForReady => {
+                phira_mp_common::RoomState::WaitingForReady
+            }
+            phira_mp_common::StrippedRoomState::Playing => phira_mp_common::RoomState::Playing,
+        };
+        // room_id 来自 Room Actor 权威房间，必定合法；`_` 仅作防御性兜底。
+        let id = self.room_id.clone().try_into().unwrap_or_else(|_| {
+            phira_mp_common::RoomId::try_from("_".to_string())
+                .expect("`_` is always a valid room id")
+        });
+        phira_mp_common::ClientRoomState {
+            id,
+            state,
+            live: self.live,
+            locked: self.locked,
+            cycle: self.cycle,
+            is_host: self.is_host,
+            is_ready: self.is_ready,
+            users: self
+                .users
+                .into_iter()
+                .map(|u| {
+                    (
+                        u.id,
+                        phira_mp_common::UserInfo {
+                            id: u.id,
+                            name: u.name,
+                            monitor: u.monitor,
+                        },
+                    )
+                })
+                .collect(),
+        }
+    }
 }
 
 impl RoomCommandPayload {
@@ -228,6 +303,9 @@ impl RoomCommandPayload {
             }),
             Self::PersistentEmptyChanged { room_id, persistent_empty } => json!({
                 "ok": true, "room_id": room_id, "persistent_empty": persistent_empty,
+            }),
+            Self::BindAndSnapshot(data) => json!({
+                "ok": true, "snapshot": data,
             }),
         }
     }

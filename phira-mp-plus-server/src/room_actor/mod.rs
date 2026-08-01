@@ -74,7 +74,10 @@ mod ops;
 mod result;
 
 pub use self::actor::{RoomMembers, RoomSnapshot, RoomState, RoundInfo};
-pub use self::result::{RoomCommandDelivery, RoomCommandPayload, RoomCommandResult};
+pub use self::result::{
+    BindAndSnapshotData, BindAndSnapshotUser, RoomCommandDelivery, RoomCommandPayload,
+    RoomCommandResult,
+};
 
 use self::command::RoomActorCommand;
 use crate::server::PlusServerState;
@@ -82,7 +85,7 @@ use phira_mp_common::ServerCommand;
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{HashMap, VecDeque},
-    sync::atomic::{AtomicBool, AtomicU64, AtomicUsize},
+    sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
     sync::{RwLock as StdRwLock, Weak},
 };
 use tokio::sync::{broadcast, mpsc};
@@ -234,6 +237,14 @@ impl RoomCommandGateway {
         }
         let mailboxes = self.room_mailboxes.read().ok()?;
         mailboxes.get(room_id).map(|entry| entry.monitor_telemetry_tx.clone())
+    }
+
+    /// PMP45 P0-F: 网关单调命令序号（Room Actor 排序点观测）。`finish_command`
+    /// 在每条命令完成后 `fetch_add`；`BindAndSnapshot` 处理器读取它作为
+    /// cutover token——快照反映的是所有 `command_id <= token` 命令提交后的
+    /// 权威状态。
+    pub fn command_seq(&self) -> u64 {
+        self.command_seq.load(Ordering::Relaxed)
     }
 }
 

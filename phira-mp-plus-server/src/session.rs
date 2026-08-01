@@ -434,11 +434,16 @@ pub(crate) struct SessionOutboundGate {
     max_pending_events: usize,
     max_pending_bytes: usize,
     max_auth_duration: Duration,
+    /// PMP45 P0-H: 控制/语义事件溢出标记。当某条非遥测事件即使清空整个缓冲
+    /// 仍超字节预算时置位；`activate` 检测到它直接返回 `Err`（fail-closed），
+    /// 认证路径关闭 Session 让客户端重新 Authenticate，绝不激活一个状态不
+    /// 完整的连接（audit §10）。
+    overflowed: AtomicBool,
 }
 
-/// PMP44 P0-G: 认证屏障的待发缓冲。`bytes` 是各条目 `estimated_size` 之和的
-/// 粗估，与 `events.len()` 一起构成双重上限。P0-H 的序号状态也放在这里，
-/// 与缓冲内容同受 `pending` 互斥锁保护。
+/// PMP44 P0-G: 认证屏障的待发缓冲。`bytes` 是各条目 `real_size`（wire 编码
+/// 实际字节数，PMP45 P0-H）之和，与 `events.len()` 一起构成双重上限。P0-H
+/// 的序号状态也放在这里，与缓冲内容同受 `pending` 互斥锁保护。
 struct GatePending {
     events: VecDeque<GateEntry>,
     bytes: usize,
@@ -449,11 +454,25 @@ struct GatePending {
     cutover_seq: u64,
 }
 
-/// P0-H: 带序号的事件条目，激活时用于快照切换剔除。
+/// PMP45 P0-G: 缓冲事件的分类。cutover 剔除只作用于快照完整覆盖的状态类
+/// 事件；Chat/语义事件与高频遥测无论序号一律发送（遥测仍受有界剔除约束）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum GateEventClass {
+    /// 快照完整覆盖的状态类事件（lock/cycle/host/chart/state/ready/members）。
+    SnapshotCovered,
+    /// 快照不包含的语义/聊天事件（Chat/系统消息/GameStart/Ready 历史/Played/Abort）。
+    NonSnapshot,
+    /// 高频遥测（Touches/Judges/Pong）。
+    Telemetry,
+}
+
+/// P0-H: 带序号与分类的事件条目，激活时用于快照切换剔除。
 #[derive(Debug)]
 struct GateEntry {
     cmd: ServerCommand,
     seq: u64,
+    /// PMP45 P0-G: cutover 剔除只作用于 `SnapshotCovered`。
+    class: GateEventClass,
 }
 
 /// `activate` 的结果。`Err` 分支即“排空期间发生发送错误”——屏障已重置为
@@ -576,15 +595,48 @@ fn is_high_frequency_telemetry(cmd: &ServerCommand) -> bool {
     )
 }
 
-/// 粗估每个 `ServerCommand` 在缓冲中占用的字节数。Touches/Judges 的负载经
-/// `Arc` 共享，增量成本主要是枚举本体；但为保持 fail-closed 的保守估算，
-/// 对高频遥测额外加上较大的固定开销（帧/判定序列通常较大）。
-fn estimated_size(cmd: &ServerCommand) -> usize {
-    std::mem::size_of::<ServerCommand>()
-        + match cmd {
-            ServerCommand::Touches { .. } | ServerCommand::Judges { .. } => 1024,
-            _ => 128,
-        }
+/// PMP45 P0-G: 对 `ServerCommand` 分类，决定 cutover 剔除是否适用。
+///
+/// `SnapshotCovered`：这些命令改变的状态（lock/cycle/host/chart/state/
+/// membership）全部进入 `ClientRoomState`，激活时若 `seq <= cutover` 可安全
+/// 剔除（快照已包含）。
+/// `NonSnapshot`：Chat 与一切语义/瞬时事件（GameStart/Ready/CancelReady/
+/// Played/Abort/CancelGame/StartPlaying/GameEnd 及各命令响应）——快照不包含
+/// 它们，cutover 绝不丢弃，否则聊天/语义消息会在认证窗口内永久丢失（§11）。
+/// `Telemetry`：高频遥测，仅受有界剔除约束。
+fn classify_command(cmd: &ServerCommand) -> GateEventClass {
+    if is_high_frequency_telemetry(cmd) {
+        return GateEventClass::Telemetry;
+    }
+    match cmd {
+        // 快照完整覆盖：状态变更全部进入 ClientRoomState。
+        ServerCommand::ChangeHost(_)
+        | ServerCommand::ChangeState(_)
+        | ServerCommand::LockRoom(_)
+        | ServerCommand::CycleRoom(_)
+        | ServerCommand::SelectChart(_)
+        | ServerCommand::OnJoinRoom(_)
+        | ServerCommand::Message(Message::JoinRoom { .. })
+        | ServerCommand::Message(Message::LeaveRoom { .. })
+        | ServerCommand::Message(Message::NewHost { .. })
+        | ServerCommand::Message(Message::LockRoom { .. })
+        | ServerCommand::Message(Message::CycleRoom { .. })
+        | ServerCommand::Message(Message::SelectChart { .. }) => GateEventClass::SnapshotCovered,
+        // 其余（Chat/系统消息/GameStart/Ready/CancelReady/Played/Abort/
+        // CancelGame/StartPlaying/GameEnd 及一切响应）不在快照覆盖范围内。
+        _ => GateEventClass::NonSnapshot,
+    }
+}
+
+/// PMP45 P0-H: 测量 `ServerCommand` 的真实 wire 编码字节数（§29/P1，取代旧的
+/// 固定 +128/+1024 粗估）。`ServerCommand` 实现 `BinaryData`，`encode_packet`
+/// 为公开 API；编码失败（类型层几乎不可能）时保守回退为枚举本体大小。
+fn real_size(cmd: &ServerCommand) -> usize {
+    let mut buf = Vec::new();
+    match phira_mp_common::encode_packet(cmd, &mut buf) {
+        Ok(()) => buf.len(),
+        Err(_) => std::mem::size_of::<ServerCommand>(),
+    }
 }
 
 impl SessionOutboundGate {
@@ -605,21 +657,25 @@ impl SessionOutboundGate {
             max_pending_events,
             max_pending_bytes,
             max_auth_duration,
+            overflowed: AtomicBool::new(false),
         }
     }
 
     /// 入队（未激活时）。受 `max_pending_events` / `max_pending_bytes` 约束：
     /// - 高频遥测（Touches/Judges/Pong）：超限时直接丢弃（coalesce）；
-    /// - 控制/状态事件：超限时丢弃最旧缓冲条目（FIFO）腾出空间再入队，
-    ///   保留最新控制状态。
+    /// - 控制/语义/聊天事件：**循环**丢弃最旧缓冲条目（FIFO）腾出空间再入队，
+    ///   保留最新控制状态（P0-H：旧逻辑只弹一个，新事件较大时仍会超预算）。
+    /// - 若清空缓冲后新事件仍超字节预算：控制事件溢出 → 置 `overflowed`
+    ///   （fail-closed），`activate` 将拒绝激活，认证路径关闭 Session。
     fn push_bounded(&self, pending: &mut GatePending, cmd: ServerCommand) {
         let seq = pending.next_seq;
         pending.next_seq += 1;
-        let size = estimated_size(&cmd);
+        let class = classify_command(&cmd);
+        let size = real_size(&cmd);
         let over_limit = pending.events.len() >= self.max_pending_events
             || pending.bytes.saturating_add(size) > self.max_pending_bytes;
         if over_limit {
-            if is_high_frequency_telemetry(&cmd) {
+            if class == GateEventClass::Telemetry {
                 // 高频遥测：新事件直接丢弃（coalesce），保留既有缓冲。
                 tracing::trace!(?cmd, "outbound gate coalesced high-frequency telemetry");
                 ProtocolTrace::get()
@@ -627,17 +683,44 @@ impl SessionOutboundGate {
                     .fetch_add(1, Ordering::Relaxed);
                 return;
             }
-            // 控制/状态事件：不得静默丢弃——丢弃最旧缓冲事件（FIFO），
-            // 既保持有界，又让客户端始终收到最新控制状态。
-            if let Some(oldest) = pending.events.pop_front() {
-                pending.bytes = pending.bytes.saturating_sub(estimated_size(&oldest.cmd));
-                tracing::trace!(?oldest, "outbound gate dropped oldest buffered event");
-                ProtocolTrace::get()
-                    .gate_dropped
-                    .fetch_add(1, Ordering::Relaxed);
+            // 控制/语义/聊天事件：不得静默丢弃——循环丢弃最旧缓冲事件（FIFO）
+            // 直到新事件能放入，既保持有界，又让客户端始终收到最新控制状态。
+            loop {
+                if pending.events.len() < self.max_pending_events
+                    && pending.bytes.saturating_add(size) <= self.max_pending_bytes
+                {
+                    break;
+                }
+                match pending.events.pop_front() {
+                    Some(oldest) => {
+                        pending.bytes = pending.bytes.saturating_sub(real_size(&oldest.cmd));
+                        tracing::trace!(?oldest, "outbound gate dropped oldest buffered event");
+                        ProtocolTrace::get()
+                            .gate_dropped
+                            .fetch_add(1, Ordering::Relaxed);
+                    }
+                    None => {
+                        // 缓冲已空且新事件单独仍超字节预算：控制事件溢出 →
+                        // fail-closed。不放入缓冲（超预算单事件），交由
+                        // `activate` 拒绝激活。
+                        self.overflowed.store(true, Ordering::SeqCst);
+                        ProtocolTrace::get()
+                            .gate_control_overflow
+                            .fetch_add(1, Ordering::Relaxed);
+                        tracing::warn!(
+                            ?cmd,
+                            size,
+                            "outbound gate control overflow; session will fail-closed"
+                        );
+                        Self::store_pending_gauges(pending);
+                        return;
+                    }
+                }
             }
         }
-        pending.events.push_back(GateEntry { cmd, seq });
+        pending
+            .events
+            .push_back(GateEntry { cmd, seq, class });
         pending.bytes += size;
         // PMP44 P1 §33: 每次入队/丢弃后更新认证屏障 gauge（事件数 / 字节粗估），
         // 提供预认证缓冲的实时观测视图。
@@ -717,17 +800,36 @@ impl SessionOutboundGate {
     /// `seq <= cutover`，不得重复下发；`seq > cutover`（快照构建期间到达）
     /// 的事件才是客户端需要的增量。
     ///
+    /// PMP45 P0-G: cutover 剔除只作用于 `SnapshotCovered` 事件——Chat/语义/
+    /// 遥测事件无论序号一律发送（修复 §11 的认证窗口聊天丢失）；遥测仍可被
+    /// 有界剔除丢弃，但绝不由 cutover 丢弃。
+    ///
+    /// PMP45 P0-H: 控制事件溢出（`overflowed`）时直接返回 `Err`（fail-closed）
+    /// ——不激活状态不完整的连接，认证路径关闭 Session，客户端重新
+    /// Authenticate 获取完整快照（audit §10）。
+    ///
     /// PMP44 P0-G: 若任一 `sink_send` 失败，立即 fail-closed——重置为未激活、
     /// 清空剩余缓冲并返回 `Err`，由调用方关闭传输走 lost-connection 路径，
     /// 绝不留下“已激活但丢了一半事件”的中间态。
     pub(crate) async fn activate(&self, sink: &impl OutboundSink) -> Result<ActivationOutcome> {
         let mut pending = self.pending.lock().await;
+        // PMP45 P0-H: 控制事件溢出 → fail-closed。Authenticate(Ok) 可能已
+        // flush（P0-B 下绝不补发 Err），但绝不打开一个缺失关键状态的连接。
+        if self.overflowed.load(Ordering::SeqCst) {
+            tracing::warn!("outbound gate control overflow; refusing activation (fail-closed)");
+            self.activated.store(false, Ordering::SeqCst);
+            pending.events.clear();
+            pending.bytes = 0;
+            Self::store_pending_gauges(&pending);
+            return Err(anyhow!("outbound gate control overflow; fail-closed"));
+        }
         self.activated.store(true, Ordering::SeqCst);
         let cutover = pending.cutover_seq;
         while let Some(entry) = pending.events.pop_front() {
-            if entry.seq <= cutover {
+            // PMP45 P0-G: 只对快照覆盖的状态类事件做 cutover 剔除。
+            if entry.class == GateEventClass::SnapshotCovered && entry.seq <= cutover {
                 // 快照已包含该事件，剔除以免重复。
-                pending.bytes = pending.bytes.saturating_sub(estimated_size(&entry.cmd));
+                pending.bytes = pending.bytes.saturating_sub(real_size(&entry.cmd));
                 tracing::trace!(
                     seq = entry.seq,
                     "outbound gate dropped snapshot-included event"
@@ -763,8 +865,12 @@ impl SessionOutboundGate {
     }
 
     /// PMP44 P0-H: 开始一次快照切换。返回的 `cutover` 是当前已入队事件的
-    /// 最大序号——调用方必须在 `build_client_room_state` 之前调用。激活时
-    /// `seq <= cutover` 的缓冲事件被视为快照已包含而被丢弃。
+    /// 最大序号。调用时机：
+    /// - PMP45 P0-F 路径：收到 Room Actor 的 `BindAndSnapshot` 快照后调用，
+    ///   使激活时只剔除早于该快照点的 `SnapshotCovered` 事件；
+    /// - 兜底路径：在 `build_client_room_state` 之前调用。
+    /// 激活时 `seq <= cutover` 的缓冲事件被视为快照已包含而被丢弃（仅限
+    /// `SnapshotCovered`，PMP45 P0-G）。
     pub(crate) async fn begin_snapshot_cutover(&self) -> u64 {
         let mut pending = self.pending.lock().await;
         // next_seq 指向下一个待分配序号，减一即最后已入队事件的序号；
@@ -1193,14 +1299,50 @@ impl Session {
                                 }
                                 let room_state = match user.room.read().await.as_ref() {
                                     Some(room) => {
-                                        // PMP44 P0-H: 构建房间快照前先记录快照切换屏障。
-                                        // 握手期间缓冲进 gate 且序号 <= cutover 的事件
-                                        // 已被快照反映（它们改变了状态），激活时将被剔除，
-                                        // 避免客户端收到重复事件；快照构建期间到达的事件
-                                        //（seq > cutover）才是需要下发的增量。仅在确有
-                                        // 快照要构建时调用，避免无快照时误删缓冲事件。
-                                        let _cutover = gate.begin_snapshot_cutover().await;
-                                        Some(crate::session_room::build_client_room_state(room, &user).await)
+                                        // PMP45 P0-F: 优先经 Room Actor 原子快照
+                                        // （`BindAndSnapshot`）。Room Actor 在自身排序点
+                                        // 一次性捕获 state/members/display_names，返回一致
+                                        // 快照与 cutover token；收到快照后再对齐 gate cutover，
+                                        // 使激活时只剔除快照已包含的 `SnapshotCovered` 事件
+                                        //（P0-G），Chat/语义事件绝不丢失（§11）。若 mailbox
+                                        // 不可用/超时/失败，回退到非原子的
+                                        // `build_client_room_state`（保留作为兜底路径）。
+                                        match user
+                                            .server
+                                            .room_commands
+                                            .bind_and_snapshot(
+                                                &user.server,
+                                                &room.id.to_string(),
+                                                user.id,
+                                                Some(auth_deadline),
+                                            )
+                                            .await
+                                        {
+                                            Ok(data) => {
+                                                // cutover token：Room Actor 构建快照时的网关
+                                                // command_seq（actor 排序点）。cutover 在收到
+                                                // 快照后对齐到当前已入队事件（含全部早于快照
+                                                // 点的事件）。
+                                                debug!(
+                                                    user = user.id,
+                                                    room = %room.id,
+                                                    token = data.token,
+                                                    "auth snapshot captured at room-actor sequencing point"
+                                                );
+                                                let _cutover = gate.begin_snapshot_cutover().await;
+                                                Some(data.into_client_room_state())
+                                            }
+                                            Err(err) => {
+                                                warn!(
+                                                    user = user.id,
+                                                    room = %room.id,
+                                                    %err,
+                                                    "BindAndSnapshot unavailable; falling back to non-atomic client room state"
+                                                );
+                                                let _cutover = gate.begin_snapshot_cutover().await;
+                                                Some(crate::session_room::build_client_room_state(room, &user).await)
+                                            }
+                                        }
                                     }
                                     None => None,
                                 };
@@ -2845,8 +2987,10 @@ mod tests {
         assert!(sink2.sent.lock().unwrap().is_empty());
     }
 
-    /// PMP44 P0-H: 快照切换屏障——`seq <= cutover` 的缓冲事件（快照已包含）
-    /// 在激活时被剔除；`seq > cutover`（快照构建期间到达）的事件正常发送。
+    /// PMP44 P0-H / PMP45 P0-G: 快照切换屏障——`seq <= cutover` 的
+    /// **SnapshotCovered** 缓冲事件（快照已包含）在激活时被剔除；`seq >
+    /// cutover`（快照构建期间到达）的事件正常发送。Chat 是 `NonSnapshot`，
+    /// 无论序号一律发送（修复 §11 的认证窗口聊天丢失）。
     #[tokio::test]
     async fn outbound_gate_cutover_drops_snapshot_events_sends_delta() {
         let gate = test_gate();
@@ -2854,6 +2998,9 @@ mod tests {
         // 快照构建前已缓冲的事件（已被快照反映）。
         assert!(gate.try_send(&sink, ServerCommand::ChangeHost(true)).await);
         assert!(gate.try_send(&sink, ServerCommand::Chat(Ok(()))).await);
+        assert!(gate
+            .try_send(&sink, ServerCommand::Message(Message::GameStart { user: 7 }))
+            .await);
         // cutover 值为最后已入队事件的序号；在 build_client_room_state 之前调用。
         let _cutover = gate.begin_snapshot_cutover().await;
         // 快照构建期间到达的事件（快照未包含，必须发送）。
@@ -2862,9 +3009,100 @@ mod tests {
         gate.activate(&sink).await.unwrap();
 
         let sent = sink.sent.lock().unwrap();
-        assert_eq!(sent.len(), 2, "snapshot-included events must be dropped");
-        assert!(matches!(sent[0], ServerCommand::Pong));
-        assert!(matches!(sent[1], ServerCommand::ChangeHost(false)));
+        // ChangeHost(true) 是 SnapshotCovered 且 seq <= cutover → 剔除；
+        // Chat(Ok) 与 Message::GameStart 是 NonSnapshot → 必须发送（P0-G）；
+        // Pong 是 Telemetry → 发送；ChangeHost(false) 是 cutover 后增量 → 发送。
+        assert_eq!(sent.len(), 4, "only snapshot-covered events are cut over");
+        assert!(matches!(sent[0], ServerCommand::Chat(Ok(()))));
+        assert!(matches!(sent[1], ServerCommand::Message(Message::GameStart { .. })));
+        assert!(matches!(sent[2], ServerCommand::Pong));
+        assert!(matches!(sent[3], ServerCommand::ChangeHost(false)));
+    }
+
+    /// PMP45 P0-G: `classify_command` 分类——快照覆盖/非快照/遥测。
+    #[test]
+    fn gate_classify_command_splits_snapshot_vs_semantic_vs_telemetry() {
+        assert_eq!(
+            classify_command(&ServerCommand::ChangeState(
+                phira_mp_common::RoomState::WaitingForReady
+            )),
+            GateEventClass::SnapshotCovered
+        );
+        assert_eq!(
+            classify_command(&ServerCommand::Message(Message::LockRoom { lock: true })),
+            GateEventClass::SnapshotCovered
+        );
+        assert_eq!(
+            classify_command(&ServerCommand::OnJoinRoom(phira_mp_common::UserInfo {
+                id: 1,
+                name: "p".into(),
+                monitor: false,
+            })),
+            GateEventClass::SnapshotCovered
+        );
+        // Chat 与语义消息：cutover 绝不丢弃。
+        assert_eq!(
+            classify_command(&ServerCommand::Message(Message::Chat {
+                user: 1,
+                content: "hi".into(),
+            })),
+            GateEventClass::NonSnapshot
+        );
+        assert_eq!(
+            classify_command(&ServerCommand::Message(Message::Ready { user: 1 })),
+            GateEventClass::NonSnapshot
+        );
+        assert_eq!(
+            classify_command(&ServerCommand::Message(Message::Played {
+                user: 1, score: 0, accuracy: 0.0, full_combo: false,
+                perfect: 0, good: 0, bad: 0, miss: 0, max_combo: 0,
+            })),
+            GateEventClass::NonSnapshot
+        );
+        assert_eq!(classify_command(&ServerCommand::Chat(Ok(()))), GateEventClass::NonSnapshot);
+        // 遥测。
+        assert_eq!(classify_command(&ServerCommand::Pong), GateEventClass::Telemetry);
+        assert_eq!(
+            classify_command(&ServerCommand::Touches {
+                player: 1,
+                frames: std::sync::Arc::new(vec![]),
+            }),
+            GateEventClass::Telemetry
+        );
+    }
+
+    /// PMP45 P0-H: 控制事件溢出 → fail-closed。单条非遥测事件单独超过字节
+    /// 预算时，`push_bounded` 置 `overflowed`，`activate` 返回 `Err`。
+    #[tokio::test]
+    async fn outbound_gate_control_overflow_fail_closed() {
+        // 字节预算极小（4 字节）；一条 100 字符的 Chat（NonSnapshot）必然
+        // 放不下。遥测不会触发 overflow（coalesce），因此用 Chat 验证。
+        let gate = SessionOutboundGate::new(8, 4, Duration::from_millis(8000));
+        let sink = TestSink::default();
+        let dropped_before = ProtocolTrace::get().gate_control_overflow.load(Ordering::Relaxed);
+
+        // 缓冲为空时入队超预算的语义事件：单事件即超预算 → overflowed。
+        assert!(gate
+            .try_send(
+                &sink,
+                ServerCommand::Message(Message::Chat {
+                    user: 1,
+                    content: "x".repeat(100),
+                }),
+            )
+            .await);
+        let dropped_after = ProtocolTrace::get().gate_control_overflow.load(Ordering::Relaxed);
+        assert!(
+            dropped_after > dropped_before,
+            "gate_control_overflow must increment"
+        );
+        // 缓冲被清空，未入队。
+        assert!(gate.pending.try_lock().unwrap().events.is_empty());
+
+        // activate 检测到溢出 → fail-closed Err，绝不激活不完整连接。
+        let result = gate.activate(&sink).await;
+        assert!(result.is_err());
+        assert!(!gate.is_activated());
     }
 
     /// PMP44 P0-G: 认证屏障超时未激活 → auth_duration_exceeded。

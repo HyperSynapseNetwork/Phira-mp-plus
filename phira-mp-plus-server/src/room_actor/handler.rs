@@ -13,12 +13,13 @@
 
 use super::{
     command::{RoomActorCommand, RoomOrigin}, context::RoomCommandContext,
-    lifecycle::RoomLifecycle, RoomCommandDelivery, RoomCommandPayload, RoomCommandResult,
+    lifecycle::RoomLifecycle, BindAndSnapshotData, BindAndSnapshotUser, RoomCommandDelivery,
+    RoomCommandPayload, RoomCommandResult,
 };
 use crate::official_client_compat::protocol_trace::ProtocolTrace;
 use crate::plugin::PluginEvent;
 use crate::room::InternalRoomState;
-use phira_mp_common::{Message, PartialRoomData, RoomEvent, ServerCommand};
+use phira_mp_common::{Message, PartialRoomData, RoomEvent, ServerCommand, UserInfo};
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -1449,6 +1450,107 @@ impl RoomCommandHandler {
                     room_id: room_id.clone().to_string(),
                     persistent_empty: *persistent_empty,
                 })
+            }
+
+            RoomActorCommand::BindAndSnapshot { room_id, user_id, .. } => {
+                let as_ = ctx.expect_actor_state();
+                // PMP45 P0-F: 原子快照——state/lock/cycle/host/chart/live/ready
+                // 全部从 actor 权威状态在同一排序点派生，绝不跨多次独立读取混用
+                // 不同时间点（P0-09）。成员列表以 `actor_state.members` 为主，
+                // 再并入 room 连接注册表（`lc.users()`/`lc.monitors()`）以覆盖
+                // 未走 AddUser 的创建者（`Room::new` 直接加入注册表、从不进
+                // actor members 的 pre-existing 差异）。两者都在本命令执行点
+                // 读取，仍保持单点一致。
+                let state = as_.state.lifecycle.to_client(as_.state.chart);
+                let is_ready = matches!(
+                    &as_.state.lifecycle,
+                    InternalRoomState::WaitForReady { started, .. } if started.contains(user_id)
+                );
+                let mut users: HashMap<i32, UserInfo> = HashMap::new();
+                {
+                    let server = lc.server_state();
+                    let users_guard = server.users.read().await;
+                    for id in &as_.state.members.users {
+                        let name = as_.display_names.get(id).cloned()
+                            .or_else(|| users_guard.get(id).map(|u| u.name.clone()))
+                            .unwrap_or_else(|| id.to_string());
+                        users.insert(*id, UserInfo { id: *id, name, monitor: false });
+                    }
+                    for id in &as_.state.members.monitors {
+                        let name = as_.display_names.get(id).cloned()
+                            .or_else(|| users_guard.get(id).map(|u| u.name.clone()))
+                            .unwrap_or_else(|| id.to_string());
+                        users.insert(*id, UserInfo { id: *id, name, monitor: true });
+                    }
+                }
+                // 并入连接注册表（覆盖创建者等未走 AddUser 的成员）。
+                for u in lc.users().await {
+                    if !users.contains_key(&u.id) {
+                        let name = as_.display_names
+                            .get(&u.id)
+                            .cloned()
+                            .unwrap_or_else(|| u.name.clone());
+                        users.insert(
+                            u.id,
+                            UserInfo {
+                                id: u.id,
+                                name,
+                                monitor: u.monitor.load(std::sync::atomic::Ordering::SeqCst),
+                            },
+                        );
+                    }
+                }
+                for u in lc.monitors().await {
+                    if !users.contains_key(&u.id) {
+                        let name = as_.display_names
+                            .get(&u.id)
+                            .cloned()
+                            .unwrap_or_else(|| u.name.clone());
+                        users.insert(
+                            u.id,
+                            UserInfo {
+                                id: u.id,
+                                name,
+                                monitor: true,
+                            },
+                        );
+                    }
+                }
+                let rid: phira_mp_common::RoomId = room_id.clone().try_into()
+                    .map_err(|_| err("invalid room id"))?;
+                let client_state = phira_mp_common::ClientRoomState {
+                    id: rid,
+                    state,
+                    live: as_.state.live,
+                    locked: as_.state.control.locked,
+                    cycle: as_.state.control.cycle,
+                    is_host: as_.state.control.host_id == Some(*user_id),
+                    is_ready,
+                    users,
+                };
+                // cutover token：网关 command_seq。快照反映所有
+                // `command_id <= token` 命令提交后的权威状态。
+                let token = lc.server_state().room_commands.command_seq();
+                ok(RoomCommandPayload::BindAndSnapshot(BindAndSnapshotData {
+                    room_id: room_id.to_string(),
+                    state: as_.state.lifecycle.stripped(),
+                    chart: as_.state.chart,
+                    live: as_.state.live,
+                    locked: as_.state.control.locked,
+                    cycle: as_.state.control.cycle,
+                    is_host: as_.state.control.host_id == Some(*user_id),
+                    is_ready,
+                    users: client_state
+                        .users
+                        .into_iter()
+                        .map(|(id, info)| BindAndSnapshotUser {
+                            id,
+                            name: info.name,
+                            monitor: info.monitor,
+                        })
+                        .collect(),
+                    token,
+                }))
             }
             // 审计 P0: Telemetry fire-and-forget variants are handled by
             // execute_telemetry on the fast path; they should not arrive here.

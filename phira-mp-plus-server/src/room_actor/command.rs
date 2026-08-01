@@ -41,6 +41,8 @@ pub(super) enum RoomCommandKind {
     SetDisplayName,
     TelemetryTouches,
     TelemetryJudges,
+    /// PMP45 P0-F: 原子认证快照。认证路径经 room mailbox 获取一致快照。
+    BindAndSnapshot,
 }
 
 impl RoomCommandKind {
@@ -70,6 +72,7 @@ impl RoomCommandKind {
             Self::SetPersistentEmpty => "set_persistent_empty",
             Self::TelemetryTouches => "telemetry_touches",
             Self::TelemetryJudges => "telemetry_judges",
+            Self::BindAndSnapshot => "bind_and_snapshot",
         }
     }
 
@@ -273,6 +276,16 @@ pub(crate) enum RoomActorCommand {
         persistent_empty: bool,
         reply: oneshot::Sender<RoomCommandResult>,
     },
+    /// PMP45 P0-F: 原子认证快照。Room Actor 在自身的排序点一次性捕获
+    /// `ClientRoomState`（state / members / display_names 全部来自
+    /// `actor_state`），并返回网关 command_seq 作为 cutover token。认证路径
+    /// 用它作为快照切换对齐点（P0-G 之后 cutover 只剔除 `SnapshotCovered`
+    /// 事件）。
+    BindAndSnapshot {
+        room_id: String,
+        user_id: i32,
+        reply: oneshot::Sender<RoomCommandResult>,
+    },
 }
 
 impl RoomActorCommand {
@@ -302,6 +315,7 @@ impl RoomActorCommand {
             Self::SetPersistentEmpty { .. } => RoomCommandKind::SetPersistentEmpty,
             Self::TelemetryTouches { .. } => RoomCommandKind::TelemetryTouches,
             Self::TelemetryJudges { .. } => RoomCommandKind::TelemetryJudges,
+            Self::BindAndSnapshot { .. } => RoomCommandKind::BindAndSnapshot,
         }
     }
 
@@ -328,7 +342,8 @@ impl RoomActorCommand {
             | Self::AddTouches { reply, .. }
             | Self::AddJudges { reply, .. }
             | Self::SetDisplayName { reply, .. }
-            | Self::SetPersistentEmpty { reply, .. } => {
+            | Self::SetPersistentEmpty { reply, .. }
+            | Self::BindAndSnapshot { reply, .. } => {
                 let _ = reply.send(result);
             }
             // Telemetry variants are fire-and-forget — no reply channel.
@@ -355,6 +370,7 @@ mod tests {
         assert_eq!(RoomCommandKind::KickUser.action(), "kick");
         assert_eq!(RoomCommandKind::StartRoom.action(), "start");
         assert_eq!(RoomCommandKind::CancelStart.action(), "cancel");
+        assert_eq!(RoomCommandKind::BindAndSnapshot.action(), "bind_and_snapshot");
     }
 
     #[test]

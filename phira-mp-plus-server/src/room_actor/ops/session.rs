@@ -1,12 +1,53 @@
 use super::super::{
     command::{RoomActorCommand, RoomCommandKind, RoomOrigin},
-    RoomCommandGateway,
+    BindAndSnapshotData, RoomCommandGateway,
 };
 use crate::server::PlusServerState;
 use serde_json::Value;
 use std::time::Instant;
 
 impl RoomCommandGateway {
+    // ── BindAndSnapshot (PMP45 P0-F) ────────────────────────────────────────
+
+    /// PMP45 P0-F: 原子认证快照。把 `BindAndSnapshot` 路由进房间 mailbox，让
+    /// Room Actor 在自身的排序点一次性捕获 `ClientRoomState`（state / members
+    /// / display_names 全部来自 actor_state），并返回快照数据与 cutover token。
+    ///
+    /// `deadline` 为绝对 actor 截止（认证绝对预算）；`None` 时回退到 mailbox
+    /// 内部 30s 超时。失败（mailbox 不可用/超时/拒绝）返回 `Err`，认证路径
+    /// 回退到非原子的 `session_room::build_client_room_state`。
+    pub async fn bind_and_snapshot(
+        &self,
+        state: &PlusServerState,
+        room_id: &str,
+        user_id: i32,
+        deadline: Option<Instant>,
+    ) -> Result<BindAndSnapshotData, String> {
+        let started = Instant::now();
+        let rid = room_id.to_string();
+        let result = self
+            .room_mailbox(&rid, deadline, |reply| RoomActorCommand::BindAndSnapshot {
+                room_id: rid.clone(),
+                user_id,
+                reply,
+            })
+            .await;
+        let result = self
+            .finish_command(
+                state,
+                RoomCommandKind::BindAndSnapshot.action(),
+                room_id,
+                started,
+                result,
+            );
+        let payload = result
+            .into_payload()
+            .ok_or_else(|| "bind_and_snapshot failed".to_string())?;
+        serde_json::from_value(payload["snapshot"].clone())
+            .map_err(|e| format!("bind_and_snapshot payload decode failed: {e}"))
+    }
+
+
     // ── SetChart ──────────────────────────────────────────────────────────
 
     /// Set the selected chart (pre-fetched from Phira API by caller).

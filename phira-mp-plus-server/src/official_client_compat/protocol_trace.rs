@@ -107,6 +107,10 @@ pub(crate) struct ProtocolTrace {
     /// 已包含在即将构建的快照中）。与 `gate_dropped` 度量不同：后者是
     /// 有界丢弃策略（coalesce / drop-oldest），此处专指 cutover 剔除。
     pub snapshot_duplicate_event: AtomicU64,
+    /// PMP45 P0-H: 控制事件溢出次数——某条非遥测事件即使清空整个认证缓冲
+    /// 仍超字节预算，`push_bounded` 置 `overflowed`、`activate` fail-closed。
+    /// 正常运行时必须为 0（状态不完整的会话绝不允许激活）。
+    pub gate_control_overflow: AtomicU64,
     /// Server-side response latency histogram (ms buckets).
     pub latency_histogram: LatencyHistogram,
 }
@@ -125,6 +129,7 @@ pub(crate) static PROTOCOL_TRACE: ProtocolTrace = ProtocolTrace {
     auth_barrier_pending_events: AtomicU64::new(0),
     auth_barrier_pending_bytes: AtomicU64::new(0),
     snapshot_duplicate_event: AtomicU64::new(0),
+    gate_control_overflow: AtomicU64::new(0),
     latency_histogram: LatencyHistogram::new(),
 };
 
