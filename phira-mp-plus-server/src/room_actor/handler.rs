@@ -804,13 +804,17 @@ async fn remove_user_response_after(
     .await;
     let _ = srv
         .room_commands
-        .room_mailbox(&plugin_room_id, None, |reply| {
-            RoomActorCommand::CheckAllReady {
-                room_id: plugin_room_id.clone(),
-                deadline: check_deadline,
-                reply,
-            }
-        })
+        .room_mailbox(
+            &plugin_room_id,
+            None,
+            |reply: tokio::sync::oneshot::Sender<RoomCommandResult>| -> RoomActorCommand {
+                RoomActorCommand::CheckAllReady {
+                    room_id: plugin_room_id.clone(),
+                    deadline: check_deadline,
+                    reply,
+                }
+            },
+        )
         .await;
 }
 
