@@ -3149,7 +3149,7 @@ mod tests {
             generation: 0,
         };
         assert!(!origin.is_current().await);
-        assert!(!origin.try_send(ServerCommand::Pong, None).await);
+        assert!(!origin.try_send(ServerCommand::Pong).await);
         // Must be a no-op — never panic, never touch any live session.
         origin.close_uncertain().await;
     }

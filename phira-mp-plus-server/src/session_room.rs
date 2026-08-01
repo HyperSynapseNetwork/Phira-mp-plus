@@ -541,13 +541,10 @@ pub async fn join_room(
                 } else {
                     *pending = Some(id.to_string());
                     let _ = origin
-                        .try_send(
-                            ServerCommand::Message(Message::Chat {
-                                user: 0,
-                                content: tl!("join-game-ongoing-warning"),
-                            }),
-                            None,
-                        )
+                        .try_send(ServerCommand::Message(Message::Chat {
+                            user: 0,
+                            content: tl!("join-game-ongoing-warning"),
+                        }))
                         .await;
                     bail!("{}", tl!("join-game-ongoing"));
                 }
@@ -827,13 +824,10 @@ pub async fn join_room(
         for msg in history.iter() {
             if let Message::Chat { user: chat_user, content } = msg {
                 let _ = origin
-                    .try_send(
-                        ServerCommand::Message(Message::Chat {
-                            user: *chat_user,
-                            content: content.clone(),
-                        }),
-                        None,
-                    )
+                    .try_send(ServerCommand::Message(Message::Chat {
+                        user: *chat_user,
+                        content: content.clone(),
+                    }))
                     .await;
             }
         }
