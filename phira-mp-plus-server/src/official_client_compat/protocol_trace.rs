@@ -83,6 +83,9 @@ pub(crate) struct ProtocolTrace {
     /// became stale (reconnect bumped the generation) or was torn down. MUST be
     /// 0 under normal operation (P1 observability).
     pub compat_queue_drop: AtomicU64,
+    /// Room-actor commits refused because the originating Session was superseded
+    /// (P0-C). MUST be 0 under normal operation.
+    pub stale_commit_prevented: AtomicU64,
     /// Server-side response latency histogram (ms buckets).
     pub latency_histogram: LatencyHistogram,
 }
@@ -94,6 +97,7 @@ pub(crate) static PROTOCOL_TRACE: ProtocolTrace = ProtocolTrace {
     silent_response_paths: AtomicU64::new(0),
     late_commit: AtomicU64::new(0),
     compat_queue_drop: AtomicU64::new(0),
+    stale_commit_prevented: AtomicU64::new(0),
     latency_histogram: LatencyHistogram::new(),
 };
 

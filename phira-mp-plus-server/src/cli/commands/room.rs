@@ -629,7 +629,7 @@ impl CliHandler {
         match self
             .state
             .room_commands
-            .set_ready(&self.state, room_id, user_id, admin_deadline)
+            .set_ready(&self.state, room_id, user_id, admin_deadline, None)
             .await
         {
             Ok(_) => self.out(format!(
@@ -917,7 +917,7 @@ impl CliHandler {
                 // Route chart selection through the gateway.
                 self.state
                     .room_commands
-                    .set_chart(&self.state, room_id, cid, &chart_name, 0, None)
+                    .set_chart(&self.state, room_id, cid, &chart_name, 0, None, None)
                     .await
                     .ok();
                 self.out(format!("  {} 谱面已切换为 ID {}", c::green("✓"), cid));

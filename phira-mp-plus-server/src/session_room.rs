@@ -424,7 +424,13 @@ pub async fn join_room(
             // of a stale game must not block the join or outlive its deadline).
             user.server
                 .room_commands
-                .abort_round(&user.server, &room.id.to_string(), user.id, Some(deadline))
+                .abort_round(
+                    &user.server,
+                    &room.id.to_string(),
+                    user.id,
+                    Some(deadline),
+                    origin.to_room_origin(),
+                )
                 .await
                 .ok();
         }
@@ -453,7 +459,15 @@ pub async fn join_room(
     // This is the authoritative source — Room.users is derived for broadcast only.
     user.server
         .room_commands
-        .add_user(&user.server, &id.to_string(), user.id, &user.name, monitor, deadline)
+        .add_user(
+            &user.server,
+            &id.to_string(),
+            user.id,
+            &user.name,
+            monitor,
+            deadline,
+            origin.to_room_origin(),
+        )
         .await
         .map_err(|e| anyhow!("{}", tr(e)))?;
     // NOTE: after the actor AddUser commits, the deadline is no longer a
@@ -679,7 +693,12 @@ pub async fn join_room(
     Ok(())
 }
 
-pub async fn leave_room(user: Arc<User>, category: SessionCategory, deadline: Instant) -> Result<()> {
+pub async fn leave_room(
+    user: Arc<User>,
+    category: SessionCategory,
+    deadline: Instant,
+    origin: &CommandOrigin,
+) -> Result<()> {
     user.join_pending_game.write().await.take();
     let room = current_room(&user).await?;
     let room_id = room.id.clone();
@@ -692,7 +711,13 @@ pub async fn leave_room(user: Arc<User>, category: SessionCategory, deadline: In
     // Route through mailbox for actor_state.members update and Room cleanup.
     let result = user.server
         .room_commands
-        .remove_user(&user.server, &room.id.to_string(), user.id, Some(deadline))
+        .remove_user(
+            &user.server,
+            &room.id.to_string(),
+            user.id,
+            Some(deadline),
+            origin.to_room_origin(),
+        )
         .await;
     let room_dropped = result.as_ref().ok()
         .and_then(|v| v.get("room_dropped"))
@@ -743,7 +768,12 @@ pub async fn leave_room(user: Arc<User>, category: SessionCategory, deadline: In
     Ok(())
 }
 
-pub async fn lock_room(user: Arc<User>, lock: bool, deadline: Instant) -> Result<()> {
+pub async fn lock_room(
+    user: Arc<User>,
+    lock: bool,
+    deadline: Instant,
+    origin: &CommandOrigin,
+) -> Result<()> {
     let room = current_room(&user).await?;
     if !is_host_for_room(&room, &user).await {
         bail!("{}", tl!("only-host-can-do"));
@@ -756,7 +786,14 @@ pub async fn lock_room(user: Arc<User>, lock: bool, deadline: Instant) -> Result
     );
     user.server
         .room_commands
-        .set_lock_as(&user.server, &room.id.to_string(), lock, user.id, Some(deadline))
+        .set_lock_as(
+            &user.server,
+            &room.id.to_string(),
+            lock,
+            user.id,
+            Some(deadline),
+            origin.to_room_origin(),
+        )
         .await
         .map_err(|e| anyhow!("{}", tr(e)))?;
     // Broadcast to all users including the sender (host). The host's client
@@ -767,7 +804,12 @@ pub async fn lock_room(user: Arc<User>, lock: bool, deadline: Instant) -> Result
     Ok(())
 }
 
-pub async fn cycle_room(user: Arc<User>, cycle: bool, deadline: Instant) -> Result<()> {
+pub async fn cycle_room(
+    user: Arc<User>,
+    cycle: bool,
+    deadline: Instant,
+    origin: &CommandOrigin,
+) -> Result<()> {
     let room = current_room(&user).await?;
     if !is_host_for_room(&room, &user).await {
         bail!("{}", tl!("only-host-can-do"));
@@ -780,7 +822,14 @@ pub async fn cycle_room(user: Arc<User>, cycle: bool, deadline: Instant) -> Resu
     );
     user.server
         .room_commands
-        .set_cycle_as(&user.server, &room.id.to_string(), cycle, user.id, Some(deadline))
+        .set_cycle_as(
+            &user.server,
+            &room.id.to_string(),
+            cycle,
+            user.id,
+            Some(deadline),
+            origin.to_room_origin(),
+        )
         .await
         .map_err(|e| anyhow!("{}", tr(e)))?;
     // See lock_room comment — the host's client needs the event too.
@@ -788,7 +837,12 @@ pub async fn cycle_room(user: Arc<User>, cycle: bool, deadline: Instant) -> Resu
     Ok(())
 }
 
-pub async fn select_chart(user: Arc<User>, id: i32, deadline: Instant) -> Result<()> {
+pub async fn select_chart(
+    user: Arc<User>,
+    id: i32,
+    deadline: Instant,
+    origin: &CommandOrigin,
+) -> Result<()> {
     let room = current_room_in_select_chart(&user).await?;
     if !is_host_for_room(&room, &user).await {
         bail!("{}", tl!("only-host-can-do"));
@@ -861,7 +915,15 @@ pub async fn select_chart(user: Arc<User>, id: i32, deadline: Instant) -> Result
         // Route state mutation through RoomActor mailbox for serialized access.
         user.server
             .room_commands
-            .set_chart(&user.server, &room.id.to_string(), id, &chart_name, user.id, Some(deadline))
+            .set_chart(
+                &user.server,
+                &room.id.to_string(),
+                id,
+                &chart_name,
+                user.id,
+                Some(deadline),
+                origin.to_room_origin(),
+            )
             .await
             .map_err(|e| anyhow!("{}", tr(e)))?;
         Ok(())
@@ -870,7 +932,11 @@ pub async fn select_chart(user: Arc<User>, id: i32, deadline: Instant) -> Result
     .await
 }
 
-pub async fn request_start(user: Arc<User>, deadline: Instant) -> Result<()> {
+pub async fn request_start(
+    user: Arc<User>,
+    deadline: Instant,
+    origin: &CommandOrigin,
+) -> Result<()> {
     let room = current_room_in_select_chart(&user).await?;
     if !is_host_for_room(&room, &user).await {
         bail!("{}", tl!("only-host-can-do"));
@@ -895,33 +961,60 @@ pub async fn request_start(user: Arc<User>, deadline: Instant) -> Result<()> {
     // Route through per-room mailbox for serialized state mutation.
     user.server
         .room_commands
-        .host_start(&user.server, &room.id.to_string(), user.id, deadline)
+        .host_start(
+            &user.server,
+            &room.id.to_string(),
+            user.id,
+            deadline,
+            origin.to_room_origin(),
+        )
         .await
         .map_err(|e| anyhow!("{}", tr(e)))?;
     Ok(())
 }
 
-pub async fn ready(user: Arc<User>, deadline: Instant) -> Result<()> {
+pub async fn ready(user: Arc<User>, deadline: Instant, origin: &CommandOrigin) -> Result<()> {
     let room = current_room(&user).await?;
     user.server
         .room_commands
-        .set_ready(&user.server, &room.id.to_string(), user.id, deadline)
+        .set_ready(
+            &user.server,
+            &room.id.to_string(),
+            user.id,
+            deadline,
+            origin.to_room_origin(),
+        )
         .await
         .map_err(|e| anyhow!("{}", tr(e)))?;
     Ok(())
 }
 
-pub async fn cancel_ready(user: Arc<User>, deadline: Instant) -> Result<()> {
+pub async fn cancel_ready(
+    user: Arc<User>,
+    deadline: Instant,
+    origin: &CommandOrigin,
+) -> Result<()> {
     let room = current_room(&user).await?;
     user.server
         .room_commands
-        .cancel_ready(&user.server, &room.id.to_string(), user.id, deadline)
+        .cancel_ready(
+            &user.server,
+            &room.id.to_string(),
+            user.id,
+            deadline,
+            origin.to_room_origin(),
+        )
         .await
         .map_err(|e| anyhow!("{}", tr(e)))?;
     Ok(())
 }
 
-pub async fn played(user: Arc<User>, id: i32, deadline: Instant) -> Result<()> {
+pub async fn played(
+    user: Arc<User>,
+    id: i32,
+    deadline: Instant,
+    origin: &CommandOrigin,
+) -> Result<()> {
     let room = current_room(&user).await?;
     // Use live_config endpoint first, falling back to config file.
     let endpoint = resolve_phira_api_endpoint(&user.server).await;
@@ -965,17 +1058,24 @@ pub async fn played(user: Arc<User>, id: i32, deadline: Instant) -> Result<()> {
             res.bad, res.miss, res.max_combo, res.full_combo,
             res.std, res.std_score,
             Some(deadline),
+            origin.to_room_origin(),
         )
         .await
         .map_err(|e| anyhow!("{}", tr(e)))?;
     Ok(())
 }
 
-pub async fn abort(user: Arc<User>, deadline: Instant) -> Result<()> {
+pub async fn abort(user: Arc<User>, deadline: Instant, origin: &CommandOrigin) -> Result<()> {
     let room = current_room(&user).await?;
     user.server
         .room_commands
-        .abort_round(&user.server, &room.id.to_string(), user.id, Some(deadline))
+        .abort_round(
+            &user.server,
+            &room.id.to_string(),
+            user.id,
+            Some(deadline),
+            origin.to_room_origin(),
+        )
         .await
         .map_err(|e| anyhow!("{}", tr(e)))?;
     Ok(())

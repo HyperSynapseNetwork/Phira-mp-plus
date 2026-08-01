@@ -68,7 +68,7 @@ pub(crate) fn init_session_mailbox(session: &Arc<Session>) -> mpsc::Sender<Sessi
                         Some(ServerCommand::LockRoom(Err(
                             "session command timed out".to_string(),
                         ))),
-                        handle_lock(user, lock, meta.deadline),
+                        handle_lock(user, lock, meta.deadline, meta.origin.clone()),
                     )
                     .await;
                 }
@@ -80,7 +80,7 @@ pub(crate) fn init_session_mailbox(session: &Arc<Session>) -> mpsc::Sender<Sessi
                         Some(ServerCommand::CycleRoom(Err(
                             "session command timed out".to_string(),
                         ))),
-                        handle_cycle(user, cycle, meta.deadline),
+                        handle_cycle(user, cycle, meta.deadline, meta.origin.clone()),
                     )
                     .await;
                 }
@@ -92,7 +92,7 @@ pub(crate) fn init_session_mailbox(session: &Arc<Session>) -> mpsc::Sender<Sessi
                         Some(ServerCommand::LeaveRoom(Err(
                             "session command timed out".to_string(),
                         ))),
-                        handle_leave(user, category, meta.deadline),
+                        handle_leave(user, category, meta.deadline, meta.origin.clone()),
                     )
                     .await;
                 }
@@ -136,7 +136,7 @@ pub(crate) fn init_session_mailbox(session: &Arc<Session>) -> mpsc::Sender<Sessi
                         Some(ServerCommand::SelectChart(Err(
                             "session command timed out".to_string(),
                         ))),
-                        handle_select_chart(user, id, meta.deadline),
+                        handle_select_chart(user, id, meta.deadline, meta.origin.clone()),
                     )
                     .await;
                 }
@@ -148,7 +148,7 @@ pub(crate) fn init_session_mailbox(session: &Arc<Session>) -> mpsc::Sender<Sessi
                         Some(ServerCommand::RequestStart(Err(
                             "session command timed out".to_string(),
                         ))),
-                        handle_request_start(user, meta.deadline),
+                        handle_request_start(user, meta.deadline, meta.origin.clone()),
                     )
                     .await;
                 }
@@ -160,7 +160,7 @@ pub(crate) fn init_session_mailbox(session: &Arc<Session>) -> mpsc::Sender<Sessi
                         Some(ServerCommand::Ready(Err(
                             "session command timed out".to_string(),
                         ))),
-                        handle_ready(user, meta.deadline),
+                        handle_ready(user, meta.deadline, meta.origin.clone()),
                     )
                     .await;
                 }
@@ -172,7 +172,7 @@ pub(crate) fn init_session_mailbox(session: &Arc<Session>) -> mpsc::Sender<Sessi
                         Some(ServerCommand::CancelReady(Err(
                             "session command timed out".to_string(),
                         ))),
-                        handle_cancel_ready(user, meta.deadline),
+                        handle_cancel_ready(user, meta.deadline, meta.origin.clone()),
                     )
                     .await;
                 }
@@ -184,7 +184,7 @@ pub(crate) fn init_session_mailbox(session: &Arc<Session>) -> mpsc::Sender<Sessi
                         Some(ServerCommand::Played(Err(
                             "session command timed out".to_string(),
                         ))),
-                        handle_played(user, id, meta.deadline),
+                        handle_played(user, id, meta.deadline, meta.origin.clone()),
                     )
                     .await;
                 }
@@ -196,7 +196,7 @@ pub(crate) fn init_session_mailbox(session: &Arc<Session>) -> mpsc::Sender<Sessi
                         Some(ServerCommand::Abort(Err(
                             "session command timed out".to_string(),
                         ))),
-                        handle_abort(user, meta.deadline),
+                        handle_abort(user, meta.deadline, meta.origin.clone()),
                     )
                     .await;
                 }
@@ -505,9 +505,14 @@ pub(crate) async fn route_chat(
 
 // ── Lock / Cycle ──────────────────────────────────────────────────
 
-async fn handle_lock(user: Arc<User>, lock: bool, deadline: Instant) -> Option<ServerCommand> {
+async fn handle_lock(
+    user: Arc<User>,
+    lock: bool,
+    deadline: Instant,
+    origin: CommandOrigin,
+) -> Option<ServerCommand> {
     Some(ServerCommand::LockRoom(
-        crate::session_room::lock_room(user, lock, deadline)
+        crate::session_room::lock_room(user, lock, deadline, &origin)
             .await
             .map_err(|e| e.to_string()),
     ))
@@ -534,9 +539,14 @@ pub(crate) async fn route_lock(
     .await
 }
 
-async fn handle_cycle(user: Arc<User>, cycle: bool, deadline: Instant) -> Option<ServerCommand> {
+async fn handle_cycle(
+    user: Arc<User>,
+    cycle: bool,
+    deadline: Instant,
+    origin: CommandOrigin,
+) -> Option<ServerCommand> {
     Some(ServerCommand::CycleRoom(
-        crate::session_room::cycle_room(user, cycle, deadline)
+        crate::session_room::cycle_room(user, cycle, deadline, &origin)
             .await
             .map_err(|e| e.to_string()),
     ))
@@ -569,9 +579,10 @@ async fn handle_leave(
     user: Arc<User>,
     category: SessionCategory,
     deadline: Instant,
+    origin: CommandOrigin,
 ) -> Option<ServerCommand> {
     Some(ServerCommand::LeaveRoom(
-        crate::session_room::leave_room(user, category, deadline)
+        crate::session_room::leave_room(user, category, deadline, &origin)
             .await
             .map_err(|e| e.to_string()),
     ))
@@ -678,9 +689,14 @@ pub(crate) async fn route_join(
 
 // ── SelectChart ───────────────────────────────────────────────────
 
-async fn handle_select_chart(user: Arc<User>, id: i32, deadline: Instant) -> Option<ServerCommand> {
+async fn handle_select_chart(
+    user: Arc<User>,
+    id: i32,
+    deadline: Instant,
+    origin: CommandOrigin,
+) -> Option<ServerCommand> {
     Some(ServerCommand::SelectChart(
-        crate::session_room::select_chart(user, id, deadline)
+        crate::session_room::select_chart(user, id, deadline, &origin)
             .await
             .map_err(|e| e.to_string()),
     ))
@@ -712,9 +728,10 @@ pub(crate) async fn route_select_chart(
 async fn handle_request_start(
     user: Arc<User>,
     deadline: std::time::Instant,
+    origin: CommandOrigin,
 ) -> Option<ServerCommand> {
     Some(ServerCommand::RequestStart(
-        crate::session_room::request_start(user, deadline)
+        crate::session_room::request_start(user, deadline, &origin)
             .await
             .map_err(|e| e.to_string()),
     ))
@@ -741,9 +758,13 @@ pub(crate) async fn route_request_start(
 
 // ── Ready / CancelReady ───────────────────────────────────────────
 
-async fn handle_ready(user: Arc<User>, deadline: std::time::Instant) -> Option<ServerCommand> {
+async fn handle_ready(
+    user: Arc<User>,
+    deadline: std::time::Instant,
+    origin: CommandOrigin,
+) -> Option<ServerCommand> {
     Some(ServerCommand::Ready(
-        crate::session_room::ready(user, deadline)
+        crate::session_room::ready(user, deadline, &origin)
             .await
             .map_err(|e| e.to_string()),
     ))
@@ -771,9 +792,10 @@ pub(crate) async fn route_ready(
 async fn handle_cancel_ready(
     user: Arc<User>,
     deadline: std::time::Instant,
+    origin: CommandOrigin,
 ) -> Option<ServerCommand> {
     Some(ServerCommand::CancelReady(
-        crate::session_room::cancel_ready(user, deadline)
+        crate::session_room::cancel_ready(user, deadline, &origin)
             .await
             .map_err(|e| e.to_string()),
     ))
@@ -800,9 +822,14 @@ pub(crate) async fn route_cancel_ready(
 
 // ── Played / Abort ────────────────────────────────────────────────
 
-async fn handle_played(user: Arc<User>, id: i32, deadline: Instant) -> Option<ServerCommand> {
+async fn handle_played(
+    user: Arc<User>,
+    id: i32,
+    deadline: Instant,
+    origin: CommandOrigin,
+) -> Option<ServerCommand> {
     Some(ServerCommand::Played(
-        crate::session_room::played(user, id, deadline)
+        crate::session_room::played(user, id, deadline, &origin)
             .await
             .map_err(|e| e.to_string()),
     ))
@@ -829,9 +856,13 @@ pub(crate) async fn route_played(
     .await
 }
 
-async fn handle_abort(user: Arc<User>, deadline: Instant) -> Option<ServerCommand> {
+async fn handle_abort(
+    user: Arc<User>,
+    deadline: Instant,
+    origin: CommandOrigin,
+) -> Option<ServerCommand> {
     Some(ServerCommand::Abort(
-        crate::session_room::abort(user, deadline)
+        crate::session_room::abort(user, deadline, &origin)
             .await
             .map_err(|e| e.to_string()),
     ))

@@ -171,7 +171,7 @@ async fn cmd_room_ready(
         .map(|v| v as i32)
         .ok_or_else(|| "user_id required".to_string())?;
     let admin_deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
-    state.room_commands.set_ready(state, room_id, user_id, admin_deadline).await
+    state.room_commands.set_ready(state, room_id, user_id, admin_deadline, None).await
 }
 
 async fn cmd_room_lock(

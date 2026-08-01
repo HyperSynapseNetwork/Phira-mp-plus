@@ -166,6 +166,13 @@ impl CommandOrigin {
         session.stream.close();
         let _ = session.user.server.lost_con_tx.try_send(session.id);
     }
+
+    /// PMP44 P0-C: project this origin into the lightweight room-actor token.
+    /// `None` when the origin session is already dropped (the command must not
+    /// commit against authoritative room state).
+    pub(crate) fn to_room_origin(&self) -> crate::room_actor::command::RoomOrigin {
+        self.session.upgrade().map(|s| (s.id, self.generation))
+    }
 }
 
 /// Minimal outbound sink abstraction so [`SessionOutboundGate`] can be driven
@@ -1282,6 +1289,17 @@ mod tests {
         assert!(!origin.try_send(ServerCommand::Pong).await);
         // Must be a no-op — never panic, never touch any live session.
         origin.close_uncertain().await;
+    }
+
+    #[test]
+    fn to_room_origin_of_dropped_session_is_none() {
+        // PMP44 P0-C: an origin whose session is already dropped projects to
+        // `None`, so the room actor treats it as a non-session token.
+        let origin = CommandOrigin {
+            session: Weak::new(),
+            generation: 5,
+        };
+        assert!(origin.to_room_origin().is_none());
     }
 
     #[tokio::test]

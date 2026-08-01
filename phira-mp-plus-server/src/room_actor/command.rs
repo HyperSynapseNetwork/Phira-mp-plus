@@ -4,6 +4,17 @@ use crate::plugin::{JudgeEventItem, TouchEventPoint};
 use super::RoomCommandResult;
 use tokio::sync::oneshot;
 
+/// Origin identity of the Session that issued a room command (PMP44 P0-C).
+/// Session-originated commands carry `Some((session_id, generation))`; the
+/// per-room actor re-validates this against the user's current binding at its
+/// commit point, so a reconnect during mailbox wait makes the command stale
+/// before any authoritative state is mutated. Non-session callers
+/// (CLI/admin/recovery/plugin) pass `None`.
+///
+/// `pub(crate)`: `session.rs` (outside the `room_actor` module tree) projects a
+/// `CommandOrigin` into this token via `CommandOrigin::to_room_origin`.
+pub(crate) type RoomOrigin = Option<(uuid::Uuid, u64)>;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum RoomCommandKind {
     SetLock,
@@ -75,6 +86,9 @@ pub(crate) enum RoomActorCommand {
         /// Absolute actor deadline (P0-C/P0-G). The handler refuses the state
         /// transition when the deadline has already passed.
         deadline: std::time::Instant,
+        /// PMP44 P0-C: origin Session (id + generation) that issued this
+        /// command; re-validated at the commit point.
+        origin: RoomOrigin,
         reply: oneshot::Sender<RoomCommandResult>,
     },
     SetCycle {
@@ -83,6 +97,8 @@ pub(crate) enum RoomActorCommand {
         actor_user_id: i32,
         /// Absolute actor deadline (P0-C/P0-G).
         deadline: std::time::Instant,
+        /// PMP44 P0-C: origin Session (id + generation).
+        origin: RoomOrigin,
         reply: oneshot::Sender<RoomCommandResult>,
     },
     SetHost {
@@ -124,6 +140,8 @@ pub(crate) enum RoomActorCommand {
         /// Absolute actor deadline (P0-C/P0-G). The handler refuses the state
         /// transition when the deadline has already passed.
         deadline: std::time::Instant,
+        /// PMP44 P0-C: origin Session (id + generation).
+        origin: RoomOrigin,
         reply: oneshot::Sender<RoomCommandResult>,
     },
     SetChart {
@@ -134,6 +152,8 @@ pub(crate) enum RoomActorCommand {
         /// Absolute actor deadline (P0-C/P0-G). The handler refuses to mutate
         /// the selected chart when the deadline has already passed.
         deadline: std::time::Instant,
+        /// PMP44 P0-C: origin Session (id + generation).
+        origin: RoomOrigin,
         reply: oneshot::Sender<RoomCommandResult>,
     },
     SetReady {
@@ -142,6 +162,8 @@ pub(crate) enum RoomActorCommand {
         /// Absolute actor deadline (P0-C/P0-G). The handler refuses to insert
         /// into `started` when the deadline has already passed.
         deadline: std::time::Instant,
+        /// PMP44 P0-C: origin Session (id + generation).
+        origin: RoomOrigin,
         reply: oneshot::Sender<RoomCommandResult>,
     },
     CancelReady {
@@ -149,6 +171,8 @@ pub(crate) enum RoomActorCommand {
         user_id: i32,
         /// Absolute actor deadline (P0-C/P0-G).
         deadline: std::time::Instant,
+        /// PMP44 P0-C: origin Session (id + generation).
+        origin: RoomOrigin,
         reply: oneshot::Sender<RoomCommandResult>,
     },
     SubmitResult {
@@ -167,6 +191,8 @@ pub(crate) enum RoomActorCommand {
         /// Absolute actor deadline (P0-C/P0-G). The handler refuses to insert
         /// into `results` when the deadline has already passed.
         deadline: std::time::Instant,
+        /// PMP44 P0-C: origin Session (id + generation).
+        origin: RoomOrigin,
         reply: oneshot::Sender<RoomCommandResult>,
     },
     AbortRound {
@@ -175,6 +201,8 @@ pub(crate) enum RoomActorCommand {
         /// Absolute actor deadline (P0-C/P0-G). The handler refuses to insert
         /// into `aborted` when the deadline has already passed.
         deadline: std::time::Instant,
+        /// PMP44 P0-C: origin Session (id + generation).
+        origin: RoomOrigin,
         reply: oneshot::Sender<RoomCommandResult>,
     },
     /// Fire-and-forget telemetry variant — no oneshot reply, casts through
@@ -201,6 +229,8 @@ pub(crate) enum RoomActorCommand {
         /// Absolute actor deadline (P0-C/P0-G). The handler refuses to add the
         /// user when the deadline has already passed.
         deadline: std::time::Instant,
+        /// PMP44 P0-C: origin Session (id + generation).
+        origin: RoomOrigin,
         reply: oneshot::Sender<RoomCommandResult>,
     },
     RemoveUser {
@@ -209,6 +239,8 @@ pub(crate) enum RoomActorCommand {
         /// Absolute actor deadline (P0-C/P0-G). The handler refuses to remove
         /// the user when the deadline has already passed.
         deadline: std::time::Instant,
+        /// PMP44 P0-C: origin Session (id + generation).
+        origin: RoomOrigin,
         reply: oneshot::Sender<RoomCommandResult>,
     },
     SetLive {

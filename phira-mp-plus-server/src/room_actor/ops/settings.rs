@@ -1,5 +1,5 @@
 use super::super::{
-    command::{RoomActorCommand, RoomCommandKind},
+    command::{RoomActorCommand, RoomCommandKind, RoomOrigin},
     RoomCommandGateway,
 };
 use crate::server::PlusServerState;
@@ -40,7 +40,7 @@ impl RoomCommandGateway {
         room_id: &str,
         locked: bool,
     ) -> Result<Value, String> {
-        self.set_lock_as(state, room_id, locked, 0, None).await
+        self.set_lock_as(state, room_id, locked, 0, None, None).await
     }
 
     pub async fn set_lock_as(
@@ -50,6 +50,7 @@ impl RoomCommandGateway {
         locked: bool,
         actor_user_id: i32,
         deadline: Option<Instant>,
+        origin: RoomOrigin,
     ) -> Result<Value, String> {
         // P0-C: non-session callers pass `None` — fall back to the internal
         // 30s room-mailbox timeout so admin/CLI paths are not deadline-killed.
@@ -62,6 +63,7 @@ impl RoomCommandGateway {
                 locked,
                 actor_user_id,
                 deadline,
+                origin,
                 reply,
             })
             .await;
@@ -82,7 +84,7 @@ impl RoomCommandGateway {
         room_id: &str,
         cycle: bool,
     ) -> Result<Value, String> {
-        self.set_cycle_as(state, room_id, cycle, 0, None).await
+        self.set_cycle_as(state, room_id, cycle, 0, None, None).await
     }
 
     pub async fn set_cycle_as(
@@ -92,6 +94,7 @@ impl RoomCommandGateway {
         cycle: bool,
         actor_user_id: i32,
         deadline: Option<Instant>,
+        origin: RoomOrigin,
     ) -> Result<Value, String> {
         let deadline = deadline.unwrap_or_else(|| Instant::now() + std::time::Duration::from_secs(30));
         let started = Instant::now();
@@ -102,6 +105,7 @@ impl RoomCommandGateway {
                 cycle,
                 actor_user_id,
                 deadline,
+                origin,
                 reply,
             })
             .await;

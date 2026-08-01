@@ -12,14 +12,16 @@
 //! - `users()` / `monitors()` / `on_user_leave()` — user management
 
 use super::{
-    command::RoomActorCommand, context::RoomCommandContext, lifecycle::RoomLifecycle,
-    RoomCommandDelivery, RoomCommandPayload, RoomCommandResult,
+    command::{RoomActorCommand, RoomOrigin}, context::RoomCommandContext,
+    lifecycle::RoomLifecycle, RoomCommandDelivery, RoomCommandPayload, RoomCommandResult,
 };
+use crate::official_client_compat::protocol_trace::ProtocolTrace;
 use crate::plugin::PluginEvent;
 use crate::room::InternalRoomState;
 use phira_mp_common::{Message, PartialRoomData, RoomEvent, ServerCommand};
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 use tracing::{debug, info, warn};
 
 /// Calculate and set the playing timeout deadline based on chart duration + offset.
@@ -80,6 +82,56 @@ fn deadline_refused(deadline: std::time::Instant) -> RoomCommandResult {
         .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     warn!(?deadline, "room command arrived after deadline; refusing to commit");
     err("command deadline elapsed")
+}
+
+/// Pure staleness decision for an origin token vs a user's current binding
+/// snapshot. A `None` origin (non-session caller — CLI/admin/recovery) is never
+/// stale. A session origin is stale when the binding generation moved OR the
+/// bound session id no longer matches the origin session id (PMP44 P0-C).
+fn origin_token_stale(
+    origin: &RoomOrigin,
+    binding_generation: u64,
+    bound_session_id: Option<uuid::Uuid>,
+) -> bool {
+    let Some((session_id, generation)) = origin else {
+        return false; // non-session callers (CLI/admin/recovery) are never stale
+    };
+    // Stale when either the generation moved OR the bound session no longer
+    // matches the origin session id.
+    binding_generation != *generation || bound_session_id != Some(*session_id)
+}
+
+/// PMP44 P0-C: re-validate the originating Session's generation against the
+/// user's CURRENT binding at the room-actor commit point. A reconnect while the
+/// command waited in the room mailbox bumps the generation, so a stale origin
+/// (old session + old generation) must never mutate authoritative room state.
+async fn origin_stale(lc: &dyn RoomLifecycle, origin: &RoomOrigin, user_id: i32) -> bool {
+    let state = lc.server_state();
+    let user = {
+        let users = state.users.read().await;
+        users.get(&user_id).map(Arc::clone)
+    };
+    let Some(user) = user else {
+        return true; // user no longer registered → stale
+    };
+    let binding = user.binding.read().await;
+    let bound_session_id = binding
+        .session
+        .as_ref()
+        .and_then(std::sync::Weak::upgrade)
+        .map(|s| s.id);
+    origin_token_stale(origin, binding.generation, bound_session_id)
+}
+
+/// Refuse a room command whose originating Session was superseded while the
+/// command waited in the room mailbox (PMP44 P0-C). Counts the refusal so CI
+/// can assert it stays 0 under normal operation.
+fn refuse_stale_origin() -> RoomCommandResult {
+    ProtocolTrace::get()
+        .stale_commit_prevented
+        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    warn!("room command origin session superseded; refusing to commit");
+    err("stale session origin; command refused")
 }
 
 /// Helper: broadcast a state change via `on_state_change`.
@@ -690,11 +742,16 @@ impl RoomCommandHandler {
         let lc: &dyn RoomLifecycle = ctx.lc;
 
         match command {
-            RoomActorCommand::SetLock { room_id, locked, actor_user_id, deadline, .. } => {
+            RoomActorCommand::SetLock { room_id, locked, actor_user_id, deadline, origin, .. } => {
                 let as_ = ctx.expect_actor_state();
                 // P0-C/P0-G: never mutate lock state after the absolute actor deadline.
                 if crate::official_client_compat::timing::deadline_expired(*deadline) {
                     return deadline_refused(*deadline);
+                }
+                // PMP44 P0-C: the originating session was superseded while the
+                // command was queued — refuse the commit.
+                if origin_stale(lc, &origin, *actor_user_id).await {
+                    return refuse_stale_origin();
                 }
                 as_.state.set_locked(*locked);
                 lc.publish_update(PartialRoomData { lock: Some(*locked), ..Default::default() }).await;
@@ -709,11 +766,16 @@ impl RoomCommandHandler {
                 ok(RoomCommandPayload::LockChanged { room_id: room_id.clone().to_string(), locked: *locked })
             }
 
-            RoomActorCommand::SetCycle { room_id, cycle, actor_user_id, deadline, .. } => {
+            RoomActorCommand::SetCycle { room_id, cycle, actor_user_id, deadline, origin, .. } => {
                 let as_ = ctx.expect_actor_state();
                 // P0-C/P0-G: never mutate cycle state after the absolute actor deadline.
                 if crate::official_client_compat::timing::deadline_expired(*deadline) {
                     return deadline_refused(*deadline);
+                }
+                // PMP44 P0-C: the originating session was superseded while the
+                // command was queued — refuse the commit.
+                if origin_stale(lc, &origin, *actor_user_id).await {
+                    return refuse_stale_origin();
                 }
                 as_.state.set_cycle(*cycle);
                 lc.publish_update(PartialRoomData { cycle: Some(*cycle), ..Default::default() }).await;
@@ -938,7 +1000,7 @@ impl RoomCommandHandler {
                 ok(RoomCommandPayload::CancelResult { room_id: room_id.clone().to_string(), canceled })
             }
 
-            RoomActorCommand::SetChart { room_id, chart_id, chart_name, actor_user_id, deadline, .. } => {
+            RoomActorCommand::SetChart { room_id, chart_id, chart_name, actor_user_id, deadline, origin, .. } => {
                 let as_ = ctx.expect_actor_state();
                 if !matches!(as_.state.lifecycle, InternalRoomState::SelectChart) {
                     return err("cannot set chart outside SelectChart state");
@@ -947,6 +1009,11 @@ impl RoomCommandHandler {
                 // actor deadline.
                 if crate::official_client_compat::timing::deadline_expired(*deadline) {
                     return deadline_refused(*deadline);
+                }
+                // PMP44 P0-C: the originating session was superseded while the
+                // command was queued — refuse the commit.
+                if origin_stale(lc, &origin, *actor_user_id).await {
+                    return refuse_stale_origin();
                 }
                 as_.state.chart = Some(*chart_id);
                 as_.state.chart_name = Some(chart_name.clone());
@@ -960,11 +1027,16 @@ impl RoomCommandHandler {
                 ok(RoomCommandPayload::ChartSelected { room_id: room_id.clone().to_string(), chart_id: *chart_id })
             }
 
-            RoomActorCommand::SetReady { room_id, user_id, deadline, .. } => {
+            RoomActorCommand::SetReady { room_id, user_id, deadline, origin, .. } => {
                 let as_ = ctx.expect_actor_state();
                 // P0-G: never write Ready after the absolute actor deadline.
                 if crate::official_client_compat::timing::deadline_expired(*deadline) {
                     return deadline_refused(*deadline);
+                }
+                // PMP44 P0-C: the originating session was superseded while the
+                // command was queued — refuse the commit.
+                if origin_stale(lc, &origin, *user_id).await {
+                    return refuse_stale_origin();
                 }
                 match &mut as_.state.lifecycle {
                     InternalRoomState::WaitForReady { ref mut started, .. } => {
@@ -983,11 +1055,16 @@ impl RoomCommandHandler {
                 }
             }
 
-            RoomActorCommand::CancelReady { room_id, user_id, deadline, .. } => {
+            RoomActorCommand::CancelReady { room_id, user_id, deadline, origin, .. } => {
                 let as_ = ctx.expect_actor_state();
                 // P0-G: never mutate CancelReady state after the absolute deadline.
                 if crate::official_client_compat::timing::deadline_expired(*deadline) {
                     return deadline_refused(*deadline);
+                }
+                // PMP44 P0-C: the originating session was superseded while the
+                // command was queued — refuse the commit.
+                if origin_stale(lc, &origin, *user_id).await {
+                    return refuse_stale_origin();
                 }
                 let was_host = as_.state.control.host_id == Some(*user_id);
                 match &mut as_.state.lifecycle {
@@ -1026,11 +1103,16 @@ impl RoomCommandHandler {
                 }
             }
 
-            RoomActorCommand::SubmitResult { room_id, user_id, score, accuracy, perfect, good, bad, miss, max_combo, full_combo, std, std_score, deadline, .. } => {
+            RoomActorCommand::SubmitResult { room_id, user_id, score, accuracy, perfect, good, bad, miss, max_combo, full_combo, std, std_score, deadline, origin, .. } => {
                 let as_ = ctx.expect_actor_state();
                 // P0-C/P0-G: never insert a result after the absolute actor deadline.
                 if crate::official_client_compat::timing::deadline_expired(*deadline) {
                     return deadline_refused(*deadline);
+                }
+                // PMP44 P0-C: the originating session was superseded while the
+                // command was queued — refuse the commit.
+                if origin_stale(lc, &origin, *user_id).await {
+                    return refuse_stale_origin();
                 }
                 let record = crate::server::Record {
                     id: 0, player: *user_id, score: *score, perfect: *perfect,
@@ -1068,11 +1150,16 @@ impl RoomCommandHandler {
                 ok(RoomCommandPayload::RoundResultSubmitted { room_id: room_id.clone().to_string(), user_id: *user_id, score: *score })
             }
 
-            RoomActorCommand::AbortRound { room_id, user_id, deadline, .. } => {
+            RoomActorCommand::AbortRound { room_id, user_id, deadline, origin, .. } => {
                 let as_ = ctx.expect_actor_state();
                 // P0-C/P0-G: never insert an abort after the absolute actor deadline.
                 if crate::official_client_compat::timing::deadline_expired(*deadline) {
                     return deadline_refused(*deadline);
+                }
+                // PMP44 P0-C: the originating session was superseded while the
+                // command was queued — refuse the commit.
+                if origin_stale(lc, &origin, *user_id).await {
+                    return refuse_stale_origin();
                 }
                 match &mut as_.state.lifecycle {
                     InternalRoomState::Playing { results, aborted } => {
@@ -1086,7 +1173,7 @@ impl RoomCommandHandler {
                 ok(RoomCommandPayload::RoundAborted { room_id: room_id.clone().to_string(), user_id: *user_id })
             }
 
-            RoomActorCommand::HostStart { room_id, user_id, deadline, .. } => {
+            RoomActorCommand::HostStart { room_id, user_id, deadline, origin, .. } => {
                 let as_ = ctx.expect_actor_state();
                 if !matches!(as_.state.lifecycle, InternalRoomState::SelectChart) {
                     return err("room is not selecting a chart");
@@ -1097,6 +1184,11 @@ impl RoomCommandHandler {
                 // actor deadline.
                 if crate::official_client_compat::timing::deadline_expired(*deadline) {
                     return deadline_refused(*deadline);
+                }
+                // PMP44 P0-C: the originating session was superseded while the
+                // command was queued — refuse the commit.
+                if origin_stale(lc, &origin, *user_id).await {
+                    return refuse_stale_origin();
                 }
                 // Official RequestStart core sequence (P0-D): reset_game_time →
                 // Message::GameStart → WaitForReady → on_state_change →
@@ -1114,13 +1206,18 @@ impl RoomCommandHandler {
                 ok(RoomCommandPayload::HostStarted { room_id: room_id.clone().to_string() })
             }
 
-            RoomActorCommand::AddUser { room_id, user_id, user_name: _, monitor, deadline, .. } => {
+            RoomActorCommand::AddUser { room_id, user_id, user_name: _, monitor, deadline, origin, .. } => {
                 let as_ = ctx.expect_actor_state();
                 // P0-F/P0-G: never commit a late Join after the absolute actor
                 // deadline — the client may already have timed out and retried,
                 // and a second Join would then observe "already in room".
                 if crate::official_client_compat::timing::deadline_expired(*deadline) {
                     return deadline_refused(*deadline);
+                }
+                // PMP44 P0-C: the originating session was superseded while the
+                // command was queued — a stale Join must never add a member.
+                if origin_stale(lc, &origin, *user_id).await {
+                    return refuse_stale_origin();
                 }
                 let current_count = lc.users().await.len();
                 if current_count >= as_.state.control.max_users && !monitor {
@@ -1152,10 +1249,15 @@ impl RoomCommandHandler {
                 })
             }
 
-            RoomActorCommand::RemoveUser { room_id, user_id, deadline, .. } => {
+            RoomActorCommand::RemoveUser { room_id, user_id, deadline, origin, .. } => {
                 // P0-C/P0-G: never mutate membership after the absolute actor deadline.
                 if crate::official_client_compat::timing::deadline_expired(*deadline) {
                     return deadline_refused(*deadline);
+                }
+                // PMP44 P0-C: the originating session was superseded while the
+                // command was queued — refuse the commit.
+                if origin_stale(lc, &origin, *user_id).await {
+                    return refuse_stale_origin();
                 }
                 let user = {
                     let users = lc.users().await;
@@ -1256,6 +1358,24 @@ impl RoomCommandHandler {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn origin_token_stale_pure_predicate() {
+        // Non-session callers (None origin) are never stale — even when the
+        // binding generation moved or the bound session is unknown.
+        assert!(!origin_token_stale(&None, 0, None));
+        assert!(!origin_token_stale(&None, 7, Some(uuid::Uuid::nil())));
+
+        let sid = uuid::Uuid::new_v4();
+        // Matching generation AND session id => current.
+        assert!(!origin_token_stale(&Some((sid, 3)), 3, Some(sid)));
+        // Generation moved (reconnect) => stale.
+        assert!(origin_token_stale(&Some((sid, 3)), 4, Some(sid)));
+        // Bound session id no longer matches => stale.
+        assert!(origin_token_stale(&Some((sid, 3)), 3, Some(uuid::Uuid::new_v4())));
+        // No bound session => stale.
+        assert!(origin_token_stale(&Some((sid, 3)), 3, None));
+    }
 
     #[test]
     fn deadline_refused_returns_matching_error() {

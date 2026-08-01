@@ -63,7 +63,9 @@
 
 pub mod actor;
 mod audit;
-mod command;
+/// `pub(crate)`: `session.rs` names `crate::room_actor::command::RoomOrigin`
+/// when projecting a `CommandOrigin` into the room-actor token (PMP44 P0-C).
+pub(crate) mod command;
 mod context;
 mod handler;
 mod lifecycle;

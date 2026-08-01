@@ -262,7 +262,7 @@ impl PlusServerState {
             };
             let _ = state
                 .room_commands
-                .set_chart(state, &room.id.to_string(), chart_id, &name, 0, None)
+                .set_chart(state, &room.id.to_string(), chart_id, &name, 0, None, None)
                 .await;
             room.publish_update(phira_mp_common::PartialRoomData {
                 chart: Some(chart_id),
@@ -406,7 +406,7 @@ impl PlusServerState {
                 let old_id_text = old_room_val.id.to_string();
                 let remove_result = self
                     .room_commands
-                    .remove_user(self, &old_id_text, target_id, None)
+                    .remove_user(self, &old_id_text, target_id, None, None)
                     .await;
                 match remove_result {
                     Ok(val) => val
@@ -437,7 +437,15 @@ impl PlusServerState {
             Ok(serde_json::json!({"monitor": monitor}))
         } else {
             self.room_commands
-                .add_user(self, &rid.to_string(), target_id, &user.name, monitor, admin_deadline)
+                .add_user(
+                    self,
+                    &rid.to_string(),
+                    target_id,
+                    &user.name,
+                    monitor,
+                    admin_deadline,
+                    None,
+                )
                 .await
         };
 
@@ -456,6 +464,7 @@ impl PlusServerState {
                             &user.name,
                             was_monitor,
                             admin_deadline,
+                            None,
                         )
                         .await;
                     if re_add.is_err() {

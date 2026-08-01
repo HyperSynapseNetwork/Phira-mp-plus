@@ -1,5 +1,5 @@
 use super::super::{
-    command::{RoomActorCommand, RoomCommandKind},
+    command::{RoomActorCommand, RoomCommandKind, RoomOrigin},
     RoomCommandGateway,
 };
 use crate::server::PlusServerState;
@@ -76,6 +76,7 @@ impl RoomCommandGateway {
         room_id: &str,
         user_id: i32,
         deadline: Instant,
+        origin: RoomOrigin,
     ) -> Result<Value, String> {
         let started = Instant::now();
         let rid = room_id.to_string();
@@ -84,6 +85,7 @@ impl RoomCommandGateway {
                 room_id: rid.clone(),
                 user_id,
                 deadline,
+                origin,
                 reply,
             })
             .await;

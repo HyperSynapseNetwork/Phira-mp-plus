@@ -1,5 +1,5 @@
 use super::super::{
-    command::{RoomActorCommand, RoomCommandKind},
+    command::{RoomActorCommand, RoomCommandKind, RoomOrigin},
     RoomCommandGateway,
 };
 use crate::server::PlusServerState;
@@ -14,6 +14,8 @@ impl RoomCommandGateway {
     /// `deadline` is the absolute actor deadline for session-originated
     /// commands; non-session callers (CLI/admin/force-move) pass `None` and the
     /// gateway falls back to the internal 30s room-mailbox timeout.
+    /// `origin` is the issuing Session (id + generation) for session-originated
+    /// commands; non-session callers pass `None` (PMP44 P0-C).
     pub async fn set_chart(
         &self,
         state: &PlusServerState,
@@ -22,6 +24,7 @@ impl RoomCommandGateway {
         chart_name: &str,
         actor_user_id: i32,
         deadline: Option<Instant>,
+        origin: RoomOrigin,
     ) -> Result<Value, String> {
         let deadline = deadline.unwrap_or_else(|| Instant::now() + std::time::Duration::from_secs(30));
         let started = Instant::now();
@@ -34,6 +37,7 @@ impl RoomCommandGateway {
                 chart_name: cname,
                 actor_user_id,
                 deadline,
+                origin,
                 reply,
             })
             .await;
@@ -50,6 +54,7 @@ impl RoomCommandGateway {
         room_id: &str,
         user_id: i32,
         deadline: Instant,
+        origin: RoomOrigin,
     ) -> Result<Value, String> {
         let started = Instant::now();
         let rid = room_id.to_string();
@@ -58,6 +63,7 @@ impl RoomCommandGateway {
                 room_id: rid.clone(),
                 user_id,
                 deadline,
+                origin,
                 reply,
             })
             .await;
@@ -74,6 +80,7 @@ impl RoomCommandGateway {
         room_id: &str,
         user_id: i32,
         deadline: Instant,
+        origin: RoomOrigin,
     ) -> Result<Value, String> {
         let started = Instant::now();
         let rid = room_id.to_string();
@@ -82,6 +89,7 @@ impl RoomCommandGateway {
                 room_id: rid.clone(),
                 user_id,
                 deadline,
+                origin,
                 reply,
             })
             .await;
@@ -108,6 +116,7 @@ impl RoomCommandGateway {
         std: f32,
         std_score: f32,
         deadline: Option<Instant>,
+        origin: RoomOrigin,
     ) -> Result<Value, String> {
         let deadline = deadline.unwrap_or_else(|| Instant::now() + std::time::Duration::from_secs(30));
         let started = Instant::now();
@@ -127,6 +136,7 @@ impl RoomCommandGateway {
                 std,
                 std_score,
                 deadline,
+                origin,
                 reply,
             })
             .await;
@@ -143,6 +153,7 @@ impl RoomCommandGateway {
         room_id: &str,
         user_id: i32,
         deadline: Option<Instant>,
+        origin: RoomOrigin,
     ) -> Result<Value, String> {
         let deadline = deadline.unwrap_or_else(|| Instant::now() + std::time::Duration::from_secs(30));
         let started = Instant::now();
@@ -152,6 +163,7 @@ impl RoomCommandGateway {
                 room_id: rid.clone(),
                 user_id,
                 deadline,
+                origin,
                 reply,
             })
             .await;
