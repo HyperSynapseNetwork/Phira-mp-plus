@@ -130,11 +130,15 @@ async fn main() -> Result<()> {
         compat_official_phira_client = config.compatibility.official_phira_client,
         minimum_response_latency_ms = config.compatibility.minimum_response_latency_ms,
         session_command_deadline_ms = config.compatibility.session_command_deadline_ms,
+        commit_response_reserve_ms = config.compatibility.commit_response_reserve_ms,
         auth_deadline_ms = config.compatibility.auth_deadline_ms,
         protocol_hack_delay_ms = config.compatibility.protocol_hack_delay_ms,
-        "启动时序参数（官方客户端兼容）: min_latency={}ms, cmd_deadline={}ms, auth_deadline={}ms, hack_delay={:?}",
+        "启动时序参数（官方客户端兼容）: min_latency={}ms, cmd_deadline={}ms (commit={}ms+response={}ms), auth_deadline={}ms, hack_delay={:?}",
         config.compatibility.minimum_response_latency_ms,
         config.compatibility.session_command_deadline_ms,
+        config.compatibility.session_command_deadline_ms
+            .saturating_sub(config.compatibility.commit_response_reserve_ms),
+        config.compatibility.commit_response_reserve_ms,
         config.compatibility.auth_deadline_ms,
         config.compatibility.protocol_hack_delay_ms,
     );

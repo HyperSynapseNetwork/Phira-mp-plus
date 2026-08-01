@@ -76,7 +76,7 @@ mod result;
 pub use self::actor::{RoomMembers, RoomSnapshot, RoomState, RoundInfo};
 pub use self::result::{
     BindAndSnapshotData, BindAndSnapshotUser, RoomCommandDelivery, RoomCommandPayload,
-    RoomCommandResult,
+    RoomCommandResult, RoomCommandTerminal,
 };
 
 use self::command::RoomActorCommand;

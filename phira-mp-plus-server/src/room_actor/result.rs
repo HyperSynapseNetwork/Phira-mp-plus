@@ -311,6 +311,23 @@ impl RoomCommandPayload {
     }
 }
 
+/// PMP45 P0-J: 房间命令结果的终态分类（terminal classification，audit §16）。
+///
+/// 权威提交是不可逆的——即使后续响应 flush 失败，已提交状态也成立。调用方
+/// 必须依据该分类决定：
+/// - `Committed`：进入不确定/断连终端（关闭 origin 传输，客户端 reconnect 恢复
+///   权威状态），绝不能假装命令从未发生（否则客户端重试会导致状态重复提交）。
+/// - `Rejected`/`Stale`：未提交任何权威状态，可安全发送普通错误响应。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RoomCommandTerminal {
+    /// 结果为 `Ok` —— 权威状态已提交（即使响应失败状态也成立）。
+    Committed,
+    /// 结果为 `Err`（deadline 拒绝 / 校验失败）—— 未提交任何权威状态。
+    Rejected,
+    /// `origin_stale` 拒绝（`stale session origin`）—— 未提交任何权威状态。
+    Stale,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "status", rename_all = "snake_case")]
 pub enum RoomCommandResult {
@@ -356,6 +373,25 @@ impl RoomCommandResult {
         matches!(self, Self::Ok { .. })
     }
 
+    /// PMP45 P0-J: 把结果分类为终态。`Ok` → `Committed`；`Err` 的
+    /// `stale session origin`（`refuse_stale_origin` 返回的错误串）→ `Stale`；
+    /// 其余 `Err`（deadline 拒绝 `command deadline elapsed` / 校验失败 /
+    /// mailbox 错误）→ `Rejected`。错误串是本 crate 内部稳定的契约
+    /// （`room_actor/handler.rs` 的 `refuse_stale_origin`），据此区分 stale
+    /// 与普通拒绝——两者都未提交状态，但来源不同。
+    pub fn terminal(&self) -> RoomCommandTerminal {
+        match self {
+            Self::Ok { .. } => RoomCommandTerminal::Committed,
+            Self::Err { error, .. } => {
+                if error.contains("stale session origin") {
+                    RoomCommandTerminal::Stale
+                } else {
+                    RoomCommandTerminal::Rejected
+                }
+            }
+        }
+    }
+
     pub fn delivery(&self) -> RoomCommandDelivery {
         match self {
             Self::Ok { delivery, .. } | Self::Err { delivery, .. } => *delivery,
@@ -395,6 +431,30 @@ impl RoomCommandResult {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn terminal_classification_pins_p0j_semantics() {
+        // PMP45 P0-J: Ok → Committed（权威状态已提交，即使响应失败状态也成立）。
+        let committed = RoomCommandResult::from_untyped(
+            Ok(serde_json::json!({"ok": true})),
+            RoomCommandDelivery::PerRoomMailbox,
+        );
+        assert_eq!(committed.terminal(), RoomCommandTerminal::Committed);
+        // stale session origin（refuse_stale_origin 的错误串）→ Stale，未提交。
+        let stale = RoomCommandResult::from_untyped(
+            Err("stale session origin; command refused".to_string()),
+            RoomCommandDelivery::PerRoomMailbox,
+        );
+        assert_eq!(stale.terminal(), RoomCommandTerminal::Stale);
+        // 其余 Err（deadline 拒绝 / 校验失败 / mailbox 错误）→ Rejected，未提交。
+        let rejected = RoomCommandResult::from_untyped(
+            Err("command deadline elapsed".to_string()),
+            RoomCommandDelivery::PerRoomMailbox,
+        );
+        assert_eq!(rejected.terminal(), RoomCommandTerminal::Rejected);
+        let mailbox_err = RoomCommandResult::mailbox_error("room mailbox unavailable");
+        assert_eq!(mailbox_err.terminal(), RoomCommandTerminal::Rejected);
+    }
 
     #[test]
     fn success_round_trips_to_untyped_payload() {

@@ -24,11 +24,17 @@ pub(crate) async fn process(
     origin: crate::session::CommandOrigin,
     received_at: std::time::Instant,
     deadline: std::time::Instant,
+    commit_deadline: std::time::Instant,
 ) -> Option<ServerCommand> {
     // P0-F: JoinRoom(Ok) is delivered internally by join_room, so the minimum
     // response latency must be enforced there. `received_at` is the network
     // receive point captured in session.rs; `deadline` is derived from it at the
     // same boundary (P0-J) — never re-created here.
+    //
+    // PMP45 P0-I: `deadline` 是 response deadline（enqueue/reply 等待与响应
+    // flush 共用）；`commit_deadline` = `deadline` - `commit_response_reserve_ms`，
+    // handler 的权威提交（RoomActor 提交 / user.room / WAL）必须在其前完成。
+    // 两者都在网络边界一次性派生，这里只透传，绝不重新计算。
     macro_rules! get_room {
         (~ $d:ident) => {
             // Used by Touches/Judges: these are NoResponseExpected, so a
@@ -76,20 +82,22 @@ pub(crate) async fn process(
                 message.into_inner(),
                 origin,
                 deadline,
+                commit_deadline,
             )
             .await
         }
         ClientCommand::LockRoom { lock } => {
-            crate::session_actor::route_lock(user, lock, origin, deadline).await
+            crate::session_actor::route_lock(user, lock, origin, deadline, commit_deadline).await
         }
         ClientCommand::CycleRoom { cycle } => {
-            crate::session_actor::route_cycle(user, cycle, origin, deadline).await
+            crate::session_actor::route_cycle(user, cycle, origin, deadline, commit_deadline).await
         }
         ClientCommand::LeaveRoom => {
-            crate::session_actor::route_leave(user, category, origin, deadline).await
+            crate::session_actor::route_leave(user, category, origin, deadline, commit_deadline)
+                .await
         }
         ClientCommand::CreateRoom { id } => {
-            crate::session_actor::route_create(user, id, origin, deadline).await
+            crate::session_actor::route_create(user, id, origin, deadline, commit_deadline).await
         }
         ClientCommand::JoinRoom { id, monitor } => {
             crate::session_actor::route_join(
@@ -100,23 +108,29 @@ pub(crate) async fn process(
                 received_at,
                 origin,
                 deadline,
+                commit_deadline,
             )
             .await
         }
         ClientCommand::SelectChart { id } => {
-            crate::session_actor::route_select_chart(user, id, origin, deadline).await
+            crate::session_actor::route_select_chart(user, id, origin, deadline, commit_deadline)
+                .await
         }
         ClientCommand::RequestStart => {
-            crate::session_actor::route_request_start(user, origin, deadline).await
+            crate::session_actor::route_request_start(user, origin, deadline, commit_deadline).await
         }
-        ClientCommand::Ready => crate::session_actor::route_ready(user, origin, deadline).await,
+        ClientCommand::Ready => {
+            crate::session_actor::route_ready(user, origin, deadline, commit_deadline).await
+        }
         ClientCommand::CancelReady => {
-            crate::session_actor::route_cancel_ready(user, origin, deadline).await
+            crate::session_actor::route_cancel_ready(user, origin, deadline, commit_deadline).await
         }
         ClientCommand::Played { id } => {
-            crate::session_actor::route_played(user, id, origin, deadline).await
+            crate::session_actor::route_played(user, id, origin, deadline, commit_deadline).await
         }
-        ClientCommand::Abort => crate::session_actor::route_abort(user, origin, deadline).await,
+        ClientCommand::Abort => {
+            crate::session_actor::route_abort(user, origin, deadline, commit_deadline).await
+        }
         ClientCommand::Touches { frames } => {
             // NoResponseExpected::Touches — fire-and-forget telemetry, the
             // official protocol never replies.

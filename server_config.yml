@@ -101,6 +101,12 @@ compatibility:
   # 单条普通客户端命令的总业务 deadline（毫秒），覆盖 mailbox 发送与 reply
   # 两个阶段。必须明显小于官方客户端约 7 秒的固定等待。
   session_command_deadline_ms: 4500
+  # PMP45 P0-I: 权威提交后保留的响应/发送/flush 预算（毫秒）。总命令 deadline
+  # 拆分为 commit budget（= 总预算 - 本值）与 response budget（= 本值）。
+  # authoritative 提交必须在 commit deadline 前完成，留下本值时间用于最小响应
+  # 时延与 flush——避免「服务端已提交、客户端已超时」。范围 200..=2500ms，
+  # 且必须严格小于 session_command_deadline_ms。
+  commit_response_reserve_ms: 1000
   # 认证绝对预算（毫秒）。认证流程（Phira API + 重试 + 退避 + WAL admission +
   # 最低响应时延 + 响应 flush）共用该预算，必须早于官方客户端约 7 秒 deadline。
   auth_deadline_ms: 5000

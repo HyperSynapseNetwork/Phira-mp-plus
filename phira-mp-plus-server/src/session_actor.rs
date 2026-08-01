@@ -56,6 +56,8 @@ pub(crate) fn init_session_mailbox(session: &Arc<Session>) -> mpsc::Sender<Sessi
                     tracing::trace!(cmd_id = meta.command_id, "session actor: chat");
                     run_or_deadline(
                         meta.deadline,
+                        meta.commit_deadline,
+                        &meta.origin,
                         reply,
                         Some(ServerCommand::Chat(Err(
                             "session command timed out".to_string(),
@@ -64,7 +66,7 @@ pub(crate) fn init_session_mailbox(session: &Arc<Session>) -> mpsc::Sender<Sessi
                             user,
                             category,
                             msg,
-                            meta.deadline,
+                            meta.commit_deadline,
                             meta.origin.clone(),
                         ),
                     )
@@ -74,11 +76,13 @@ pub(crate) fn init_session_mailbox(session: &Arc<Session>) -> mpsc::Sender<Sessi
                     tracing::trace!(cmd_id = meta.command_id, "session actor: lock");
                     run_or_deadline(
                         meta.deadline,
+                        meta.commit_deadline,
+                        &meta.origin,
                         reply,
                         Some(ServerCommand::LockRoom(Err(
                             "session command timed out".to_string(),
                         ))),
-                        handle_lock(user, lock, meta.deadline, meta.origin.clone()),
+                        handle_lock(user, lock, meta.commit_deadline, meta.origin.clone()),
                     )
                     .await;
                 }
@@ -86,11 +90,13 @@ pub(crate) fn init_session_mailbox(session: &Arc<Session>) -> mpsc::Sender<Sessi
                     tracing::trace!(cmd_id = meta.command_id, "session actor: cycle");
                     run_or_deadline(
                         meta.deadline,
+                        meta.commit_deadline,
+                        &meta.origin,
                         reply,
                         Some(ServerCommand::CycleRoom(Err(
                             "session command timed out".to_string(),
                         ))),
-                        handle_cycle(user, cycle, meta.deadline, meta.origin.clone()),
+                        handle_cycle(user, cycle, meta.commit_deadline, meta.origin.clone()),
                     )
                     .await;
                 }
@@ -98,11 +104,13 @@ pub(crate) fn init_session_mailbox(session: &Arc<Session>) -> mpsc::Sender<Sessi
                     tracing::trace!(cmd_id = meta.command_id, "session actor: leave");
                     run_or_deadline(
                         meta.deadline,
+                        meta.commit_deadline,
+                        &meta.origin,
                         reply,
                         Some(ServerCommand::LeaveRoom(Err(
                             "session command timed out".to_string(),
                         ))),
-                        handle_leave(user, category, meta.deadline, meta.origin.clone()),
+                        handle_leave(user, category, meta.commit_deadline, meta.origin.clone()),
                     )
                     .await;
                 }
@@ -110,11 +118,13 @@ pub(crate) fn init_session_mailbox(session: &Arc<Session>) -> mpsc::Sender<Sessi
                     tracing::trace!(cmd_id = meta.command_id, "session actor: create");
                     run_or_deadline(
                         meta.deadline,
+                        meta.commit_deadline,
+                        &meta.origin,
                         reply,
                         Some(ServerCommand::CreateRoom(Err(
                             "session command timed out".to_string(),
                         ))),
-                        handle_create(user, id, meta.deadline, meta.origin.clone()),
+                        handle_create(user, id, meta.commit_deadline, meta.origin.clone()),
                     )
                     .await;
                 }
@@ -122,6 +132,8 @@ pub(crate) fn init_session_mailbox(session: &Arc<Session>) -> mpsc::Sender<Sessi
                     tracing::trace!(cmd_id = meta.command_id, "session actor: join");
                     run_or_deadline(
                         meta.deadline,
+                        meta.commit_deadline,
+                        &meta.origin,
                         reply,
                         Some(ServerCommand::JoinRoom(Err(
                             "session command timed out".to_string(),
@@ -131,6 +143,7 @@ pub(crate) fn init_session_mailbox(session: &Arc<Session>) -> mpsc::Sender<Sessi
                             category,
                             id,
                             monitor,
+                            meta.commit_deadline,
                             meta.deadline,
                             received_at,
                             meta.origin.clone(),
@@ -142,11 +155,13 @@ pub(crate) fn init_session_mailbox(session: &Arc<Session>) -> mpsc::Sender<Sessi
                     tracing::trace!(cmd_id = meta.command_id, "session actor: select_chart");
                     run_or_deadline(
                         meta.deadline,
+                        meta.commit_deadline,
+                        &meta.origin,
                         reply,
                         Some(ServerCommand::SelectChart(Err(
                             "session command timed out".to_string(),
                         ))),
-                        handle_select_chart(user, id, meta.deadline, meta.origin.clone()),
+                        handle_select_chart(user, id, meta.commit_deadline, meta.origin.clone()),
                     )
                     .await;
                 }
@@ -154,11 +169,13 @@ pub(crate) fn init_session_mailbox(session: &Arc<Session>) -> mpsc::Sender<Sessi
                     tracing::trace!(cmd_id = meta.command_id, "session actor: request_start");
                     run_or_deadline(
                         meta.deadline,
+                        meta.commit_deadline,
+                        &meta.origin,
                         reply,
                         Some(ServerCommand::RequestStart(Err(
                             "session command timed out".to_string(),
                         ))),
-                        handle_request_start(user, meta.deadline, meta.origin.clone()),
+                        handle_request_start(user, meta.commit_deadline, meta.origin.clone()),
                     )
                     .await;
                 }
@@ -166,11 +183,13 @@ pub(crate) fn init_session_mailbox(session: &Arc<Session>) -> mpsc::Sender<Sessi
                     tracing::trace!(cmd_id = meta.command_id, "session actor: ready");
                     run_or_deadline(
                         meta.deadline,
+                        meta.commit_deadline,
+                        &meta.origin,
                         reply,
                         Some(ServerCommand::Ready(Err(
                             "session command timed out".to_string(),
                         ))),
-                        handle_ready(user, meta.deadline, meta.origin.clone()),
+                        handle_ready(user, meta.commit_deadline, meta.origin.clone()),
                     )
                     .await;
                 }
@@ -178,11 +197,13 @@ pub(crate) fn init_session_mailbox(session: &Arc<Session>) -> mpsc::Sender<Sessi
                     tracing::trace!(cmd_id = meta.command_id, "session actor: cancel_ready");
                     run_or_deadline(
                         meta.deadline,
+                        meta.commit_deadline,
+                        &meta.origin,
                         reply,
                         Some(ServerCommand::CancelReady(Err(
                             "session command timed out".to_string(),
                         ))),
-                        handle_cancel_ready(user, meta.deadline, meta.origin.clone()),
+                        handle_cancel_ready(user, meta.commit_deadline, meta.origin.clone()),
                     )
                     .await;
                 }
@@ -190,11 +211,13 @@ pub(crate) fn init_session_mailbox(session: &Arc<Session>) -> mpsc::Sender<Sessi
                     tracing::trace!(cmd_id = meta.command_id, "session actor: played");
                     run_or_deadline(
                         meta.deadline,
+                        meta.commit_deadline,
+                        &meta.origin,
                         reply,
                         Some(ServerCommand::Played(Err(
                             "session command timed out".to_string(),
                         ))),
-                        handle_played(user, id, meta.deadline, meta.origin.clone()),
+                        handle_played(user, id, meta.commit_deadline, meta.origin.clone()),
                     )
                     .await;
                 }
@@ -202,11 +225,13 @@ pub(crate) fn init_session_mailbox(session: &Arc<Session>) -> mpsc::Sender<Sessi
                     tracing::trace!(cmd_id = meta.command_id, "session actor: abort");
                     run_or_deadline(
                         meta.deadline,
+                        meta.commit_deadline,
+                        &meta.origin,
                         reply,
                         Some(ServerCommand::Abort(Err(
                             "session command timed out".to_string(),
                         ))),
-                        handle_abort(user, meta.deadline, meta.origin.clone()),
+                        handle_abort(user, meta.commit_deadline, meta.origin.clone()),
                     )
                     .await;
                 }
@@ -227,9 +252,16 @@ pub(crate) struct CommandMeta {
     /// Retained for future diagnostics/metrics integration.
     #[allow(dead_code)]
     pub created_at_ms: u64,
-    /// Absolute deadline for the whole send→execute→reply pipeline. The actor
-    /// checks it before executing (and MUST NOT commit after it passes).
+    /// Absolute deadline for the whole send→execute→reply pipeline (RESPONSE
+    /// deadline). `route_via_mailbox` 的 enqueue/reply 等待与 `run_or_deadline`
+    /// 的 handler 超时都使用它。
     pub deadline: std::time::Instant,
+    /// PMP45 P0-I: 权威提交截止（= `deadline` 减去 `commit_response_reserve_ms`）。
+    /// handler 的所有权威状态变更（RoomActor 提交 / user.room / WAL / 官方广播）
+    /// 必须在 `commit_deadline` 前完成，留下 response budget
+    /// （`deadline` - `commit_deadline`）供最小响应时延与响应 flush——避免
+    /// 「服务端已提交、客户端已超时」（audit §17）。
+    pub commit_deadline: std::time::Instant,
     /// The Session that initiated this command. Every response, error, close
     /// and post-response compensation is bound to this origin, never to the
     /// user's current session (P0-A).
@@ -237,7 +269,11 @@ pub(crate) struct CommandMeta {
 }
 
 impl CommandMeta {
-    fn new(deadline: std::time::Instant, origin: CommandOrigin) -> Self {
+    fn new(
+        deadline: std::time::Instant,
+        commit_deadline: std::time::Instant,
+        origin: CommandOrigin,
+    ) -> Self {
         Self {
             command_id: NEXT_COMMAND_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
             created_at_ms: std::time::SystemTime::now()
@@ -245,6 +281,7 @@ impl CommandMeta {
                 .map(|d| d.as_millis() as u64)
                 .unwrap_or(0),
             deadline,
+            commit_deadline,
             origin,
         }
     }
@@ -381,19 +418,33 @@ async fn close_uncertain_session(origin: &CommandOrigin, reason: &'static str) {
 /// outlives its absolute deadline (e.g. an external Phira fetch, persistence
 /// admission or plugin callback) is aborted and the error response is returned
 /// instead of committing after the client already timed out.
+///
+/// PMP45 P0-I/P0-J (audit §16/§17):
+/// - `deadline` 是 RESPONSE deadline：handler 的总执行超时与 reply 等待用它。
+/// - `commit_deadline` 是 COMMIT deadline（= `deadline` - `commit_response_reserve_ms`）：
+///   handler 的权威状态提交必须在其前完成。开始执行前先检查它——过期则安全拒绝
+///   （尚未提交任何状态，`late_commit` +1，不关闭 origin）。
+/// - 若 handler 已开始但 `deadline`（response）到期：结果**不确定**——handler
+///   可能已提交权威状态（RoomActor 提交 / user.room 变更 / WAL 写入 / 官方广播）。
+///   中止 future 不会回滚这些提交；发普通「超时」错误会让客户端误以为命令未发生
+///   而重试，导致状态重复提交。正确行为：进入不确定终端——关闭 origin 传输
+///   （`close_uncertain_session`）让客户端 reconnect 恢复权威状态，错误响应为
+///   best-effort，并计数 `commit_without_response`。
 async fn run_or_deadline(
     deadline: std::time::Instant,
+    commit_deadline: std::time::Instant,
+    origin: &CommandOrigin,
     reply: tokio::sync::oneshot::Sender<Option<ServerCommand>>,
     error_response: Option<ServerCommand>,
     handler: impl std::future::Future<Output = Option<ServerCommand>>,
 ) {
-    if crate::official_client_compat::timing::deadline_expired(deadline) {
+    if crate::official_client_compat::timing::deadline_expired(commit_deadline) {
         crate::official_client_compat::protocol_trace::ProtocolTrace::get()
             .late_commit
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         tracing::warn!(
-            ?deadline,
-            "session command arrived after deadline; refusing to commit"
+            ?commit_deadline,
+            "session command arrived after commit deadline; refusing to commit"
         );
         let _ = reply.send(error_response);
         return;
@@ -404,14 +455,22 @@ async fn run_or_deadline(
             let _ = reply.send(result);
         }
         Err(_) => {
-            // The handler outlived its absolute deadline — abort it and refuse.
+            // The handler started but outlived its RESPONSE deadline — the
+            // outcome is UNCERTAIN: it may have committed authoritative state.
+            // Do NOT reply with a plain "timed out" that implies rollback.
             crate::official_client_compat::protocol_trace::ProtocolTrace::get()
-                .late_commit
+                .commit_without_response
                 .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             tracing::warn!(
                 ?deadline,
-                "session command handler exceeded deadline; aborting"
+                ?commit_deadline,
+                "session command handler exceeded response deadline; outcome uncertain"
             );
+            close_uncertain_session(
+                origin,
+                "session command exceeded deadline; outcome uncertain",
+            )
+            .await;
             let _ = reply.send(error_response);
         }
     }
@@ -602,13 +661,14 @@ pub(crate) async fn route_chat(
     msg: String,
     origin: CommandOrigin,
     deadline: std::time::Instant,
+    commit_deadline: std::time::Instant,
 ) -> Option<ServerCommand> {
     let result = route_via_mailbox(
         origin.clone(),
         user,
         deadline,
         |origin, user, reply| SessionActorCmd::Chat {
-            meta: CommandMeta::new(deadline, origin),
+            meta: CommandMeta::new(deadline, commit_deadline, origin),
             user,
             category,
             msg,
@@ -644,13 +704,14 @@ pub(crate) async fn route_lock(
     lock: bool,
     origin: CommandOrigin,
     deadline: std::time::Instant,
+    commit_deadline: std::time::Instant,
 ) -> Option<ServerCommand> {
     let result = route_via_mailbox(
         origin.clone(),
         user,
         deadline,
         |origin, user, reply| SessionActorCmd::Lock {
-            meta: CommandMeta::new(deadline, origin),
+            meta: CommandMeta::new(deadline, commit_deadline, origin),
             user,
             lock,
             reply,
@@ -683,13 +744,14 @@ pub(crate) async fn route_cycle(
     cycle: bool,
     origin: CommandOrigin,
     deadline: std::time::Instant,
+    commit_deadline: std::time::Instant,
 ) -> Option<ServerCommand> {
     let result = route_via_mailbox(
         origin.clone(),
         user,
         deadline,
         |origin, user, reply| SessionActorCmd::Cycle {
-            meta: CommandMeta::new(deadline, origin),
+            meta: CommandMeta::new(deadline, commit_deadline, origin),
             user,
             cycle,
             reply,
@@ -724,13 +786,14 @@ pub(crate) async fn route_leave(
     category: SessionCategory,
     origin: CommandOrigin,
     deadline: std::time::Instant,
+    commit_deadline: std::time::Instant,
 ) -> Option<ServerCommand> {
     let result = route_via_mailbox(
         origin.clone(),
         user,
         deadline,
         |origin, user, reply| SessionActorCmd::Leave {
-            meta: CommandMeta::new(deadline, origin),
+            meta: CommandMeta::new(deadline, commit_deadline, origin),
             user,
             category,
             reply,
@@ -765,13 +828,14 @@ pub(crate) async fn route_create(
     id: RoomId,
     origin: CommandOrigin,
     deadline: std::time::Instant,
+    commit_deadline: std::time::Instant,
 ) -> Option<ServerCommand> {
     let result = route_via_mailbox(
         origin.clone(),
         user,
         deadline,
         |origin, user, reply| SessionActorCmd::Create {
-            meta: CommandMeta::new(deadline, origin),
+            meta: CommandMeta::new(deadline, commit_deadline, origin),
             user,
             id,
             reply,
@@ -792,11 +856,21 @@ async fn handle_join(
     id: RoomId,
     monitor: bool,
     deadline: std::time::Instant,
+    response_deadline: std::time::Instant,
     received_at: std::time::Instant,
     origin: CommandOrigin,
 ) -> Option<ServerCommand> {
-    match crate::session_room::join_room(user, category, id, monitor, deadline, received_at, &origin)
-        .await
+    match crate::session_room::join_room(
+        user,
+        category,
+        id,
+        monitor,
+        deadline,
+        response_deadline,
+        received_at,
+        &origin,
+    )
+    .await
     {
         Ok(()) => {
             // join_room already sent JoinRoom(Ok) + chat history directly
@@ -814,13 +888,14 @@ pub(crate) async fn route_join(
     received_at: std::time::Instant,
     origin: CommandOrigin,
     deadline: std::time::Instant,
+    commit_deadline: std::time::Instant,
 ) -> Option<ServerCommand> {
     let result = route_via_mailbox(
         origin.clone(),
         user,
         deadline,
         |origin, user, reply| SessionActorCmd::Join {
-            meta: CommandMeta::new(deadline, origin),
+            meta: CommandMeta::new(deadline, commit_deadline, origin),
             user,
             category,
             id,
@@ -858,13 +933,14 @@ pub(crate) async fn route_select_chart(
     id: i32,
     origin: CommandOrigin,
     deadline: std::time::Instant,
+    commit_deadline: std::time::Instant,
 ) -> Option<ServerCommand> {
     let result = route_via_mailbox(
         origin.clone(),
         user,
         deadline,
         |origin, user, reply| SessionActorCmd::SelectChart {
-            meta: CommandMeta::new(deadline, origin),
+            meta: CommandMeta::new(deadline, commit_deadline, origin),
             user,
             id,
             reply,
@@ -897,13 +973,14 @@ pub(crate) async fn route_request_start(
     user: Arc<User>,
     origin: CommandOrigin,
     deadline: std::time::Instant,
+    commit_deadline: std::time::Instant,
 ) -> Option<ServerCommand> {
     let result = route_via_mailbox(
         origin.clone(),
         user,
         deadline,
         |origin, user, reply| SessionActorCmd::RequestStart {
-            meta: CommandMeta::new(deadline, origin),
+            meta: CommandMeta::new(deadline, commit_deadline, origin),
             user,
             reply,
         },
@@ -935,13 +1012,14 @@ pub(crate) async fn route_ready(
     user: Arc<User>,
     origin: CommandOrigin,
     deadline: std::time::Instant,
+    commit_deadline: std::time::Instant,
 ) -> Option<ServerCommand> {
     let result = route_via_mailbox(
         origin.clone(),
         user,
         deadline,
         |origin, user, reply| SessionActorCmd::Ready {
-            meta: CommandMeta::new(deadline, origin),
+            meta: CommandMeta::new(deadline, commit_deadline, origin),
             user,
             reply,
         },
@@ -971,13 +1049,14 @@ pub(crate) async fn route_cancel_ready(
     user: Arc<User>,
     origin: CommandOrigin,
     deadline: std::time::Instant,
+    commit_deadline: std::time::Instant,
 ) -> Option<ServerCommand> {
     let result = route_via_mailbox(
         origin.clone(),
         user,
         deadline,
         |origin, user, reply| SessionActorCmd::CancelReady {
-            meta: CommandMeta::new(deadline, origin),
+            meta: CommandMeta::new(deadline, commit_deadline, origin),
             user,
             reply,
         },
@@ -1011,13 +1090,14 @@ pub(crate) async fn route_played(
     id: i32,
     origin: CommandOrigin,
     deadline: std::time::Instant,
+    commit_deadline: std::time::Instant,
 ) -> Option<ServerCommand> {
     let result = route_via_mailbox(
         origin.clone(),
         user,
         deadline,
         |origin, user, reply| SessionActorCmd::Played {
-            meta: CommandMeta::new(deadline, origin),
+            meta: CommandMeta::new(deadline, commit_deadline, origin),
             user,
             id,
             reply,
@@ -1048,13 +1128,14 @@ pub(crate) async fn route_abort(
     user: Arc<User>,
     origin: CommandOrigin,
     deadline: std::time::Instant,
+    commit_deadline: std::time::Instant,
 ) -> Option<ServerCommand> {
     let result = route_via_mailbox(
         origin.clone(),
         user,
         deadline,
         |origin, user, reply| SessionActorCmd::Abort {
-            meta: CommandMeta::new(deadline, origin),
+            meta: CommandMeta::new(deadline, commit_deadline, origin),
             user,
             reply,
         },
@@ -1086,12 +1167,14 @@ mod tests {
             session: Weak::new(),
             generation: 7,
         };
-        let meta = CommandMeta::new(
-            std::time::Instant::now() + Duration::from_secs(1),
-            origin.clone(),
-        );
+        let deadline = std::time::Instant::now() + Duration::from_secs(1);
+        let commit_deadline = deadline - Duration::from_millis(1000);
+        let meta = CommandMeta::new(deadline, commit_deadline, origin.clone());
         assert_eq!(meta.origin.generation, 7);
         assert_eq!(meta.origin.session.as_ptr(), origin.session.as_ptr());
+        // PMP45 P0-I: commit deadline 必须早于 response deadline（response budget
+        // = deadline - commit_deadline，保留给最小响应时延与 flush）。
+        assert!(meta.commit_deadline < meta.deadline);
     }
 
     #[tokio::test]

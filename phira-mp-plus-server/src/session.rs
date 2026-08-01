@@ -2492,6 +2492,21 @@ impl Session {
                             + std::time::Duration::from_millis(
                                 user.server.config.compatibility.session_command_deadline_ms,
                             );
+                        // PMP45 P0-I: 在唯一网络接收点拆分 commit 与 response
+                        // deadline（绝不在此处之外重复减去 reserve）。`absolute_deadline`
+                        // 仍是 response deadline——`send_dispatch_response` /
+                        // `wait_until_minimum_bounded` / flush 全部继续使用它。
+                        // `commit_deadline` 提前 reserve 毫秒，authoritative 提交
+                        // 必须在它之前完成，留下 response budget 供最小响应时延与
+                        // flush（audit §17：actor 在 deadline-1ms 提交后无时间 flush →
+                        // 「服务端已提交、客户端已超时」）。`checked_sub` 防御性
+                        // 兜底：配置已校验 reserve < 总 deadline，但极端配置下
+                        // 回退到接收点（立即拒绝，安全侧）。
+                        let commit_deadline = absolute_deadline
+                            .checked_sub(std::time::Duration::from_millis(
+                                user.server.config.compatibility.commit_response_reserve_ms,
+                            ))
+                            .unwrap_or(received_at);
 
                         // 命令速率限制 — on failure return the matching official
                         // error response instead of silently dropping the request
@@ -2603,6 +2618,7 @@ impl Session {
                                     origin,
                                     received_at,
                                     absolute_deadline,
+                                    commit_deadline,
                                 ),
                             )
                             .await;

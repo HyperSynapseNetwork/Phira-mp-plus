@@ -209,6 +209,15 @@ pub struct CompatibilityConfig {
     /// reply 两个阶段。必须明显小于官方客户端约 7 秒的固定等待。
     #[serde(default = "default_session_command_deadline_ms")]
     pub session_command_deadline_ms: u64,
+    /// PMP45 P0-I: 权威提交后保留的响应/发送/flush 预算（毫秒）。总
+    /// `session_command_deadline_ms` 拆分为 commit budget（= 总预算 - 本值）
+    /// 与 response budget（= 本值）。authoritative 提交（RoomActor 提交 /
+    /// user.room 变更 / WAL 写入 / 官方广播）必须在 commit deadline 前完成，
+    /// 留下至少本值的时间用于最小响应时延与响应 flush——避免「服务端已提交、
+    /// 客户端已超时」（audit §17/P0-I）。默认 1000ms，范围 200..=2500ms，
+    /// 且必须严格小于 `session_command_deadline_ms`。
+    #[serde(default = "default_commit_response_reserve_ms")]
+    pub commit_response_reserve_ms: u64,
     /// 总认证绝对预算（毫秒）。认证流程（Phira API + 重试 + 退避 + WAL admission +
     /// 最低响应时延 + 响应 flush）共用该预算，必须早于官方客户端约 7 秒 deadline。
     /// 默认 5000ms，范围 1000..=6500ms。
@@ -239,6 +248,7 @@ impl Default for CompatibilityConfig {
             official_phira_client: default_official_phira_client(),
             minimum_response_latency_ms: default_minimum_response_latency_ms(),
             session_command_deadline_ms: default_session_command_deadline_ms(),
+            commit_response_reserve_ms: default_commit_response_reserve_ms(),
             auth_deadline_ms: default_auth_deadline_ms(),
             gate_max_pending_events: default_gate_max_pending_events(),
             gate_max_pending_bytes: default_gate_max_pending_bytes(),
@@ -258,6 +268,10 @@ fn default_minimum_response_latency_ms() -> u64 {
 
 fn default_session_command_deadline_ms() -> u64 {
     4500
+}
+
+fn default_commit_response_reserve_ms() -> u64 {
+    1000
 }
 
 fn default_auth_deadline_ms() -> u64 {
@@ -659,6 +673,24 @@ impl PlusConfig {
                     .into(),
             ));
         }
+        // PMP45 P0-I: 提交后响应预算范围校验。该值把总命令 deadline 拆分为
+        // commit budget 与 response budget，必须保证权威提交后仍留有足够
+        // 响应/flush 时间（audit §17）。
+        if !(200..=2500).contains(&self.compatibility.commit_response_reserve_ms) {
+            return Err(AppError::ConfigValidation(
+                "compatibility.commit_response_reserve_ms 必须在 200..=2500ms 范围内".into(),
+            ));
+        }
+        // PMP45 P0-I 跨字段校验：reserve 必须严格小于总命令 deadline。否则
+        // commit deadline 落在接收点之前，命令永远无法提交（P0-I 拆分失效）。
+        if self.compatibility.commit_response_reserve_ms
+            >= self.compatibility.session_command_deadline_ms
+        {
+            return Err(AppError::ConfigValidation(
+                "compatibility.commit_response_reserve_ms 必须严格小于 session_command_deadline_ms：否则 commit deadline 落在接收点之前，命令永远无法提交"
+                    .into(),
+            ));
+        }
         // 认证绝对预算必须早于官方客户端约 7 秒 deadline，同时给 Phira API
         // 重试/退避留出合理空间（PMP44 P0-D）。
         if !(1000..=6500).contains(&self.compatibility.auth_deadline_ms) {
@@ -1046,6 +1078,9 @@ mod tests {
         assert!(config.compatibility.official_phira_client);
         assert_eq!(config.compatibility.minimum_response_latency_ms, 10);
         assert_eq!(config.compatibility.session_command_deadline_ms, 4500);
+        // PMP45 P0-I: 提交后响应预算默认 1000ms（总 deadline 拆分为 3500ms
+        // commit budget + 1000ms response budget）。
+        assert_eq!(config.compatibility.commit_response_reserve_ms, 1000);
         // PMP44 P0-D: 认证绝对预算默认 5000ms，必须早于官方客户端约 7 秒 deadline。
         assert_eq!(config.compatibility.auth_deadline_ms, 5000);
         // ProtocolHack 默认回退到 minimum_response_latency_ms（10ms），
@@ -1078,6 +1113,48 @@ mod tests {
             ..Default::default()
         };
         assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn commit_response_reserve_validates_bounds_and_cross_field() {
+        // 低于下限（200ms）必须校验失败。
+        let config = PlusConfig {
+            compatibility: crate::CompatibilityConfig {
+                commit_response_reserve_ms: 199,
+                ..Default::default()
+            },
+            database_url: "postgres://localhost/db".to_string(),
+            ..Default::default()
+        };
+        assert!(config.validate().is_err());
+        // 高于上限（2500ms）必须校验失败。
+        let config = PlusConfig {
+            compatibility: crate::CompatibilityConfig {
+                commit_response_reserve_ms: 2501,
+                ..Default::default()
+            },
+            database_url: "postgres://localhost/db".to_string(),
+            ..Default::default()
+        };
+        assert!(config.validate().is_err());
+        // PMP45 P0-I 跨字段：reserve 大于等于总命令 deadline 时 commit deadline
+        // 落在接收点之前，命令永远无法提交——必须校验失败。
+        let config = PlusConfig {
+            compatibility: crate::CompatibilityConfig {
+                session_command_deadline_ms: 1000,
+                commit_response_reserve_ms: 1000,
+                ..Default::default()
+            },
+            database_url: "postgres://localhost/db".to_string(),
+            ..Default::default()
+        };
+        assert!(config.validate().is_err());
+        // 默认值必须在合法范围内（补全 database_url 以满足 validate 前置条件）。
+        let config = PlusConfig {
+            database_url: "postgres://localhost/db".to_string(),
+            ..Default::default()
+        };
+        assert!(config.validate().is_ok());
     }
 
     #[test]

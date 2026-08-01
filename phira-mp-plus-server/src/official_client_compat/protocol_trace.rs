@@ -6,11 +6,14 @@
 //! request_received → … → response_queued → (critical) → response_flushed
 //! ```
 //!
-//! Two counters must stay at zero in production:
+//! Three counters must stay at zero in production:
 //! - `silent_response_paths`: a request-type command produced no response and
 //!   was not a `NoResponseExpected` (Touches/Judges) path.
 //! - `late_commit`: a command reached the actor after its absolute deadline and
 //!   was refused execution.
+//! - `commit_without_response`: a command handler exceeded its response deadline
+//!   and may have committed authoritative state without a response (PMP45 P0-J);
+//!   the origin transport is closed so the client reconnects to recover state.
 //!
 //! The latency histogram records the server-side response latency from command
 //! receipt to the point the response is queued, bucketed in milliseconds.
@@ -79,6 +82,12 @@ pub(crate) struct ProtocolTrace {
     /// Commands that arrived at the actor after their absolute deadline and
     /// were refused execution. MUST be 0 under normal operation.
     pub late_commit: AtomicU64,
+    /// PMP45 P0-J (audit §16/§17): 命令 handler 在 response deadline 内未完成
+    /// （超时中止）——它可能已提交权威状态（RoomActor 提交 / user.room 变更 /
+    /// WAL 写入 / 官方广播），但客户端未收到响应。中止 future 不会回滚这些
+    /// 提交，因此进入不确定终端（关闭 origin 传输，客户端 reconnect 恢复权威
+    /// 状态）。正常运行时必须为 0（仅在极端慢 handler 时出现）。
+    pub commit_without_response: AtomicU64,
     /// Post-response compat-queue items dropped because their origin session
     /// became stale (reconnect bumped the generation) or was torn down. MUST be
     /// 0 under normal operation (P1 observability).
@@ -121,6 +130,7 @@ pub(crate) static PROTOCOL_TRACE: ProtocolTrace = ProtocolTrace {
     response_flushed: AtomicU64::new(0),
     silent_response_paths: AtomicU64::new(0),
     late_commit: AtomicU64::new(0),
+    commit_without_response: AtomicU64::new(0),
     compat_queue_drop: AtomicU64::new(0),
     stale_commit_prevented: AtomicU64::new(0),
     gate_dropped: AtomicU64::new(0),
@@ -199,5 +209,8 @@ mod tests {
         );
         trace.snapshot_duplicate_event.fetch_add(1, Ordering::Relaxed);
         assert!(trace.snapshot_duplicate_event.load(Ordering::Relaxed) >= 1);
+        // PMP45 P0-J: 不确定终端（提交后无响应）计数器可读可自增。
+        trace.commit_without_response.fetch_add(1, Ordering::Relaxed);
+        assert!(trace.commit_without_response.load(Ordering::Relaxed) >= 1);
     }
 }

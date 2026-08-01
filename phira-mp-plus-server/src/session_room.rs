@@ -340,11 +340,16 @@ pub async fn join_room(
     id: RoomId,
     monitor: bool,
     deadline: Instant,
+    response_deadline: Instant,
     received_at: Instant,
     origin: &CommandOrigin,
 ) -> Result<()> {
+    // PMP45 P0-I: `deadline` 是 COMMIT deadline（= response deadline 减去
+    // `commit_response_reserve_ms`）——所有权威状态提交（add_user 等）必须在它
+    // 之前完成；`response_deadline` 是 RESPONSE deadline，供最低响应时延等待与
+    // JoinRoom(Ok) flush 使用（响应预算独立于提交预算，audit §17）。
     // P0-E: a late Join must never mutate authoritative room state. Every
-    // pre-check step re-tests the absolute deadline; an expired deadline bails
+    // pre-check step re-tests the commit deadline; an expired deadline bails
     // with a deterministic error response (no commit, no connection close).
     macro_rules! check_deadline {
         () => {
@@ -483,10 +488,10 @@ pub async fn join_room(
         )
         .await
         .map_err(|e| anyhow!("{}", tr(e)))?;
-    // NOTE: after the actor AddUser commits, the deadline is no longer a
-    // pre-check. A late flush below is handled by the remaining-budget timeout
-    // → close_uncertain + bail (P0-D uncertain-after-commit), never a plain
-    // bail that would leave the user committed but the client misled.
+    // NOTE: after the actor AddUser commits, `deadline`（commit）不再是预检查。
+    // 后续 flush 使用 `response_deadline`（PMP45 P0-I）的 remaining-budget
+    // 超时 → close_uncertain + bail（P0-D uncertain-after-commit），绝不普通
+    // bail——那会让用户已提交而客户端被误导。
 
     // Also add to Room connection mapping (immediate, direct).
     if !room.add_user(Arc::downgrade(&user), monitor).await {
@@ -499,6 +504,13 @@ pub async fn join_room(
             room = %id,
             "room.add_user failed after actor AddUser; compensating actor remove_user"
         );
+        // PMP45 P0-J/P0-14（audit §16.2/§18）：补偿使用「内部清理 deadline」
+        // （`Instant::now() + 200ms`），而不是命令的原始 deadline——补偿必须
+        // 在 handler 内完整跑完，绝不能被响应预算或外层 `run_or_deadline` 超时
+        // 取消（取消会留下 Ghost member）。200ms 远小于 response budget
+        //（默认 1000ms），处于安全范围内。
+        let cleanup_deadline =
+            Instant::now() + std::time::Duration::from_millis(200);
         let compensation = user
             .server
             .room_commands
@@ -506,7 +518,7 @@ pub async fn join_room(
                 &user.server,
                 &id.to_string(),
                 user.id,
-                Some(deadline),
+                Some(cleanup_deadline),
                 origin.to_room_origin(),
             )
             .await;
@@ -590,16 +602,18 @@ pub async fn join_room(
     };
     // P0-F: JoinRoom(Ok) must not arrive before the minimum response latency
     // window (the official client installs its callback after send).
-    // PMP44 P0-J: 最低响应时延等待被绝对预算截断——后续 flush 的超时强制同一 deadline。
+    // PMP45 P0-I: 最低响应时延等待与 JoinRoom(Ok) flush 共用 RESPONSE deadline
+    //（`response_deadline`，完整预算）——权威提交已用 `deadline`（commit），
+    // 响应预算独立保留给本 flush，避免「服务端已提交、客户端已超时」（audit §17）。
     crate::official_client_compat::timing::CompatTiming::from_config(&user.server.config)
-        .wait_until_minimum_bounded(received_at, Some(deadline))
+        .wait_until_minimum_bounded(received_at, Some(response_deadline))
         .await;
 
-    // P0-E/P0-C: the JoinRoom(Ok) flush shares the command's single absolute
-    // deadline — remaining budget only, never an independent 5s constant (§9).
-    // The flush is bound to the ORIGIN session, so after a reconnect it can
-    // never reach (or close) the new session.
-    let remaining = deadline.saturating_duration_since(Instant::now());
+    // P0-E/P0-C: the JoinRoom(Ok) flush uses the RESPONSE deadline — remaining
+    // budget only, never an independent 5s constant (§9). The flush is bound to
+    // the ORIGIN session, so after a reconnect it can never reach (or close)
+    // the new session.
+    let remaining = response_deadline.saturating_duration_since(Instant::now());
     let flushed = match tokio::time::timeout(
         remaining,
         origin.send_and_flush(ServerCommand::JoinRoom(Ok(response))),
