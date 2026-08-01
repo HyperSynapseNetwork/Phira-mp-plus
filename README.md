@@ -2,7 +2,7 @@
 
 ![Phira-mp+ banner](docs/logo/phira-mp-plus-banner.png)
 
-> Phira-mp + 是基于 phira-mp 开发的Phira多人游戏服务端，使用Rust开发，支持WASM插件系统，旨在提供稳定，高性能，高拓展性的Phira多人游戏服务端。
+> Phira-mp + 是基于 phira-mp 开发的Phira多人游戏服务端，使用Rust开发，支持WASM插件系统，旨在提供稳定，高性能，高拓展性的Phira多人游戏服务端。使用AI开发。
 
 [![License](https://img.shields.io/badge/License-AGPLv3-blue.svg)](LICENSE)
 [![Build](https://github.com/HyperSynapseNetwork/Phira-mp-plus/actions/workflows/build.yml/badge.svg)](https://github.com/HyperSynapseNetwork/Phira-mp-plus/actions/workflows/build.yml)
