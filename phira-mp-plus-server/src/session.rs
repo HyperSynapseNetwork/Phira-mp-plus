@@ -98,6 +98,94 @@ enum AuthenticationOutcome {
     Rejected,
 }
 
+/// PMP44 P0-E: 认证阶段。只有进入 `Active` 后，该 Session 才算正式成为
+/// User 的当前 Session；之前任何一步失败都必须撤销绑定与注册，不得留下
+/// 半认证 Session。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum AuthPhase {
+    /// 远端认证/用户构建完成，WAL admission 尚未成功。
+    Authenticating,
+    /// WAL admission 成功（UserAuthenticated 已入队），但 Authenticate(Ok)
+    /// 尚未 flush。
+    DurableAccepted,
+    /// Authenticate(Ok) 已 flush，但 OutboundGate 尚未激活。
+    ResponseFlushed,
+    /// Gate 激活完成，正式接管连接。
+    Active,
+}
+
+/// PMP44 P0-E: 认证闭包回传的中间状态。`accepted` 为 `None` 表示认证被
+/// 主动拒绝（封禁/远端失败/token 无效），Session 从未构造，无需回滚注册。
+struct AuthResolved {
+    accepted: Option<AuthAcceptedState>,
+}
+
+/// 认证成功（`AuthenticationOutcome::Accepted` 已发出）后的持久化决策状态，
+/// 供外层 WAL/flush 阶段做回滚判断。
+struct AuthAcceptedState {
+    user: Arc<User>,
+    /// 本次认证新建并插入 `server.users` 的用户（回滚时需用 `Arc::ptr_eq`
+    /// 守卫移除）。
+    newly_created: bool,
+    /// reconnect 时被取代的旧 Session；其关闭推迟到 WAL admission 成功
+    /// （DurableAccepted）之后，若 WAL/flush 失败旧连接仍完整可回滚。
+    previous_session: Option<Arc<Session>>,
+}
+
+/// PMP44 P0-E: 认证回滚判定（纯逻辑，供单测）。成功路径为
+/// Authenticating --WAL 成功--> DurableAccepted --flush 成功--> ResponseFlushed
+/// --gate 成功--> Active。在 `phase` 处若下一步失败则必须回滚；只有
+/// `ResponseFlushed` 之后才允许不再回滚（Authenticate(Ok) 已到达客户端）。
+fn should_rollback_auth(phase: AuthPhase, wal_ok: bool, flush_ok: bool) -> bool {
+    match phase {
+        AuthPhase::Authenticating => !wal_ok,
+        AuthPhase::DurableAccepted => !flush_ok,
+        AuthPhase::ResponseFlushed => !flush_ok,
+        AuthPhase::Active => false,
+    }
+}
+
+/// PMP44 P0-E: 认证失败回滚。撤销绑定、移除新注册用户、关闭新传输并拒绝
+/// 客户端。绝不调用 `dangle()` —— 该 Session 从未成为 User 的当前 Session，
+/// 完整断连路径（dangle grace / 离线事件）不适用。
+///
+/// 顺序很关键：先 `clear_session`（使 lost-connection worker 的 `user_ref`
+/// 判定为 false，从而跳过 dangle），再移除新注册用户，最后发送拒绝并关闭
+/// 传输。
+async fn rollback_failed_auth(
+    server: &PlusServerState,
+    send_tx: &StreamSender<ServerCommand>,
+    this: &OnceCell<Arc<Session>>,
+    user: Option<&Arc<User>>,
+    newly_created: bool,
+    bound: bool,
+    reason: String,
+) {
+    if let Some(user) = user {
+        // 若已 set_session，撤销绑定（reconnect 路径在 WAL 失败时尚未
+        // set_session，旧绑定保持不变，旧连接可继续存活）。
+        if bound {
+            user.clear_session().await;
+        }
+        // 本次认证新建的用户：仅当 server.users 仍指向该 User 时移除
+        //（Arc::ptr_eq 守卫，与既有代码一致）。
+        if newly_created {
+            let mut users = server.users.write().await;
+            if users
+                .get(&user.id)
+                .is_some_and(|current| Arc::ptr_eq(current, user))
+            {
+                users.remove(&user.id);
+            }
+        }
+    }
+    send_auth_rejection(send_tx, reason).await;
+    if let Some(session) = this.get() {
+        session.stream.close();
+        let _ = server.lost_con_tx.try_send(session.id);
+    }
+}
+
 /// A stable handle to the Session that initiated a command, captured at route
 /// time. Every response, error, transport close and post-response compensation
 /// for that command is bound to this origin — never to the user's *current*
@@ -402,7 +490,11 @@ impl Session {
                                     );
                                 let mut auth_tx = Some(tx);
                                 let retry_send_tx = Arc::clone(&send_tx);
-                                let res: Result<()> = {
+                                // PMP44 P0-E: 认证阶段机——跟踪认证推进到哪一步，
+                                // 任何一步失败都必须回滚（撤销 set_session / 移除
+                                // 新注册用户 / 关闭传输 / 拒绝客户端）。
+                                let mut auth_phase = AuthPhase::Authenticating;
+                                let res: Result<AuthResolved> = {
                                     let this = Arc::clone(&this);
                                     let server = Arc::clone(&server);
                                     let auth_tx = &mut auth_tx;
@@ -443,7 +535,7 @@ impl Session {
                                                     let _ =
                                                         tx.send(AuthenticationOutcome::Rejected);
                                                 }
-                                                return Ok(());
+                                                return Ok(AuthResolved { accepted: None });
                                             }
                                             debug!("cache hit for user {}", entry.user_id);
                                             AuthUserInfo {
@@ -461,9 +553,10 @@ impl Session {
                                                     None,
                                                     "/me",
                                                     Some(&token),
-                                                    PhiraRetryNoticeTarget::Stream(
-                                                        retry_send_tx.as_ref(),
-                                                    ),
+                                                    // PMP44 P0-F: 认证握手窗口内只记录重试
+                                                    // 日志，绝不向官方客户端发送 PMP 扩展
+                                                    // Chat 包。
+                                                    PhiraRetryNoticeTarget::StreamLogOnly,
                                                     Some(auth_deadline),
                                                 )
                                                 .await
@@ -508,7 +601,7 @@ impl Session {
                                                                 AuthenticationOutcome::Rejected,
                                                             );
                                                         }
-                                                        return Ok(());
+                                                        return Ok(AuthResolved { accepted: None });
                                                     }
                                                     info
                                                 }
@@ -523,7 +616,7 @@ impl Session {
                                                         let _ = tx
                                                             .send(AuthenticationOutcome::Rejected);
                                                     }
-                                                    return Ok(());
+                                                    return Ok(AuthResolved { accepted: None });
                                                 }
                                             }
                                         };
@@ -539,9 +632,9 @@ impl Session {
                                         };
                                         if let Some(existing) = existing_user {
                                             info!("reconnect");
-                                            // Replace the transport atomically. The old socket can
-                                            // otherwise remain active until heartbeat timeout and
-                                            // issue commands concurrently with the new session.
+                                            // PMP44 P0-E: 捕获被取代的旧 Session；其关闭推迟
+                                            // 到 WAL admission 成功（DurableAccepted）之后。
+                                            // 若 WAL/flush 失败，旧连接仍完整可回滚。
                                             let previous_session = {
                                                 let guard = existing.binding.read().await;
                                                 guard
@@ -556,21 +649,17 @@ impl Session {
                                                 ),
                                             );
                                             this_inited.notified().await;
-                                            let gen = existing
-                                                .set_session(Arc::downgrade(this.get().unwrap()))
-                                                .await;
-                                            if let Some(session) = this.get() {
-                                                let _ = session.bound_generation.set(gen);
-                                            }
-                                            if let Some(previous) = previous_session {
-                                                if previous.id != id {
-                                                    previous.stream.close();
-                                                    let _ = server
-                                                        .lost_con_tx
-                                                        .try_send(previous.id);
-                                                }
-                                            }
+                                            // 注意：set_session 推迟到外层 WAL admission 成功
+                                            // 之后（DurableAccepted 阶段），这样 WAL 失败可
+                                            // 完整撤销绑定，不影响旧会话。
                                             existing.set_auth_token(Some(token.to_string())).await;
+                                            Ok(AuthResolved {
+                                                accepted: Some(AuthAcceptedState {
+                                                    user: existing,
+                                                    newly_created: false,
+                                                    previous_session,
+                                                }),
+                                            })
                                         } else {
                                             if let Some(reason) =
                                                 server.ban_manager.ban_reason(user_info.id).await
@@ -588,7 +677,7 @@ impl Session {
                                                     .take()
                                                     .unwrap()
                                                     .send(AuthenticationOutcome::Rejected);
-                                                return Ok(());
+                                                return Ok(AuthResolved { accepted: None });
                                             }
                                             let user = Arc::new(User::new(
                                                 user_info.id,
@@ -608,201 +697,292 @@ impl Session {
                                                 ),
                                             );
                                             this_inited.notified().await;
-                                            let gen = user
-                                                .set_session(Arc::downgrade(this.get().unwrap()))
-                                                .await;
-                                            if let Some(session) = this.get() {
-                                                let _ = session.bound_generation.set(gen);
-                                            }
                                             {
                                                 let mut guard = server.users.write().await;
                                                 guard.insert(user_info.id, Arc::clone(&user));
                                             }
+                                            Ok(AuthResolved {
+                                                accepted: Some(AuthAcceptedState {
+                                                    user,
+                                                    newly_created: true,
+                                                    previous_session: None,
+                                                }),
+                                            })
                                         }
-                                        Ok(())
                                     }
                                 }
                                 .await;
-                                if let Err(err) = res {
-                                    warn!("failed to authenticate: {err:?}");
-                                    send_auth_rejection(&send_tx, err.to_string()).await;
-                                    if let Some(tx) = auth_tx.take() {
-                                        let _ = tx.send(AuthenticationOutcome::Rejected);
-                                    }
-                                    panicked.store(true, Ordering::SeqCst);
-                                } else if this.get().is_none() {
-                                    // Authentication was deliberately rejected and the Session was
-                                    // never initialized. Do not fall through into the success path.
-                                    panicked.store(true, Ordering::SeqCst);
-                                } else {
-                                    // Initialize per-session mailbox
-                                    if let Some(session) = this.get() {
-                                        let tx = crate::session_actor::init_session_mailbox(session);
-                                        let _ = session.actor_tx.set(tx);
-                                    }
-                                    let user = Arc::clone(&this.get().unwrap().user);
-                                    let room_state = match user.room.read().await.as_ref() {
-                                        Some(room) => Some(crate::session_room::build_client_room_state(room, &user).await),
-                                        None => None,
-                                    };
-                                    // ── 阻塞持久化：认证成功但尚未响应客户端 ──────────────
-                                    // 在发送 Authenticate(Ok) 之前先持久化用户记录，
-                                    // 确保 WAL admission 成功后才放行客户端。
-                                    // PMP44 P0-D: WAL admission 前检查绝对预算——预算耗尽
-                                    // 则认证失败，绝不入队（避免“服务端已注册用户但客户端
-                                    // 早已超时”的幻象）。
-                                    if crate::official_client_compat::timing::deadline_expired(
-                                        auth_deadline,
-                                    ) {
-                                        warn!(
-                                            user = user.id,
-                                            "auth deadline elapsed before WAL admission"
-                                        );
-                                        send_auth_rejection(
-                                            &send_tx,
-                                            "authentication timed out".to_string(),
-                                        )
-                                        .await;
-                                        panicked.store(true, Ordering::SeqCst);
-                                        return;
-                                    }
-                                    let connected_at = std::time::SystemTime::now()
-                                        .duration_since(std::time::UNIX_EPOCH)
-                                        .map(|d| d.as_millis() as i64)
-                                        .unwrap_or(0);
-                                    let event_id = Uuid::new_v4().to_string();
-                                    let session_id = this.get().unwrap().id.to_string();
-                                    let instance_id = crate::server_instance::current().to_string();
-                                    if let Err(event) = server.persistence_worker.enqueue(
-                                        crate::persistence::message::PersistenceEvent::UserAuthenticated {
-                                            event_id,
-                                            session_id,
-                                            user_id: user.id,
-                                            user_name: user.name.clone(),
-                                            language: user.lang.0.to_string(),
-                                            ip: addr.ip().to_string(),
-                                            connected_at,
-                                            server_instance_id: instance_id,
+                                // 主动拒绝（封禁/远端失败/token 无效）：Session 从未构造。
+                                let auth_resolved = match res {
+                                    Err(err) => {
+                                        warn!("failed to authenticate: {err:?}");
+                                        send_auth_rejection(&send_tx, err.to_string()).await;
+                                        if let Some(tx) = auth_tx.take() {
+                                            let _ = tx.send(AuthenticationOutcome::Rejected);
                                         }
-                                    ).await {
-                                        warn!(
-                                            user = user.id,
-                                            kind = %event.kind(),
-                                            "UserAuthenticated enqueue failed — rejecting auth"
-                                        );
                                         panicked.store(true, Ordering::SeqCst);
                                         return;
                                     }
-                                    debug!("sending auth OK to user {}", user.id);
-                                    // P0-B: the initial Authenticate response must not arrive
-                                    // before the minimum response latency window (the official
-                                    // client installs its Authenticate callback after send).
-                                    // PMP44 P0-D: 最低响应时延等待不睡过 auth_deadline。
-                                    crate::official_client_compat::timing::CompatTiming::from_config(
-                                        &server.config,
-                                    )
-                                    .wait_until_minimum_bounded(
-                                        auth_received_at,
-                                        Some(auth_deadline),
-                                    )
-                                    .await;
-                                    // PMP44 P0-D: flush 前检查——绝不发送 Authenticate(Ok)
-                                    // 于预算之外。
-                                    if crate::official_client_compat::timing::deadline_expired(
-                                        auth_deadline,
-                                    ) {
-                                        warn!(
-                                            user = user.id,
-                                            "auth deadline elapsed before response flush"
-                                        );
-                                        send_auth_rejection(
+                                    Ok(resolved) => resolved,
+                                };
+                                let Some(AuthAcceptedState {
+                                    user,
+                                    newly_created,
+                                    mut previous_session,
+                                }) = auth_resolved.accepted
+                                else {
+                                    // Authentication was deliberately rejected and the Session
+                                    // was never initialized. Do not fall through into the
+                                    // success path.
+                                    panicked.store(true, Ordering::SeqCst);
+                                    return;
+                                };
+                                if this.get().is_none() {
+                                    // Accepted 已发出但 Session 未构造（oneshot 被丢弃）——
+                                    // 防御性终止，不进入成功路径。
+                                    panicked.store(true, Ordering::SeqCst);
+                                    return;
+                                }
+                                // Initialize per-session mailbox
+                                if let Some(session) = this.get() {
+                                    let tx = crate::session_actor::init_session_mailbox(session);
+                                    let _ = session.actor_tx.set(tx);
+                                }
+                                let room_state = match user.room.read().await.as_ref() {
+                                    Some(room) => Some(crate::session_room::build_client_room_state(room, &user).await),
+                                    None => None,
+                                };
+                                // ── 阻塞持久化：认证成功但尚未响应客户端 ──────────────
+                                // 在发送 Authenticate(Ok) 之前先持久化用户记录，
+                                // 确保 WAL admission 成功后才放行客户端。
+                                // PMP44 P0-D: WAL admission 前检查绝对预算——预算耗尽
+                                // 则认证失败，绝不入队（避免“服务端已注册用户但客户端
+                                // 早已超时”的幻象）。当前仍处于 Authenticating 阶段
+                                //（尚未 set_session）。
+                                if crate::official_client_compat::timing::deadline_expired(
+                                    auth_deadline,
+                                ) {
+                                    warn!(
+                                        user = user.id,
+                                        "auth deadline elapsed before WAL admission"
+                                    );
+                                    if should_rollback_auth(auth_phase, false, true) {
+                                        rollback_failed_auth(
+                                            &server,
                                             &send_tx,
+                                            &this,
+                                            Some(&user),
+                                            newly_created,
+                                            false,
                                             "authentication timed out".to_string(),
                                         )
                                         .await;
-                                        panicked.store(true, Ordering::SeqCst);
-                                        return;
                                     }
-                                    let flush_remaining = auth_deadline
-                                        .saturating_duration_since(Instant::now());
-                                    let flush_result: Result<()> =
-                                        match tokio::time::timeout(
-                                            flush_remaining,
-                                            send_tx.send_and_flush(ServerCommand::Authenticate(
-                                                Ok((user.to_info(), room_state)),
-                                            )),
-                                        )
-                                        .await
-                                        {
-                                            Ok(r) => r,
-                                            Err(_) => Err(anyhow!(
-                                                "auth response flush exceeded deadline"
-                                            )),
-                                        };
-                                    if let Err(err) = flush_result {
-                                        warn!(user = user.id, ?err, "failed to flush auth response");
-                                        panicked.store(true, Ordering::SeqCst);
-                                        return;
-                                    }
-                                    debug!("auth response sent");
-                                    // P0-B: the auth frame is proven flushed; only now open the
-                                    // outbound gate so room broadcasts buffered during the
-                                    // handshake drain AFTER the client installed its callback.
-                                    // PMP44 P0-D: 预算耗尽则不再激活 gate。
-                                    if crate::official_client_compat::timing::deadline_expired(
-                                        auth_deadline,
-                                    ) {
-                                        warn!(
-                                            user = user.id,
-                                            "auth deadline elapsed after flush; skipping gate activation"
-                                        );
-                                        panicked.store(true, Ordering::SeqCst);
-                                        return;
-                                    }
-                                    gate.activate(send_tx.as_ref()).await;
-                                    let auth_trace = crate::official_client_compat::protocol_trace::ProtocolTrace::get();
-                                    auth_trace.response_queued.fetch_add(1, Ordering::Relaxed);
-                                    auth_trace.response_flushed.fetch_add(1, Ordering::Relaxed);
-                                    auth_trace.record_response_latency(auth_received_at);
-                                    // ── 后台后置任务 ──────────────────────────────────────
-                                    // publish_user_connected 不阻塞客户端认证响应。
-                                    let uid = user.id;
-                                    let uname = user.name.clone();
-                                    let uip = addr.ip().to_string();
-                                    let ulang = user.lang.0.to_string();
-                                    let state = Arc::clone(&server);
-                                    crate::supervisor_actor::spawn_named(
-                                        format!("auth-post-{uid}"),
-                                        async move {
-                                            state.publish_user_connected(
-                                                uid, uname, uip, ulang,
-                                            ).await;
-                                        },
-                                    );
-                                    // Welcome chat follows auth frame immediately (sync, fast)
-                                    let online = server.users.read().await.len();
-                                    crate::internal_hooks::track_player(user.id, &user.name);
-                                    crate::internal_hooks::send_welcome(
-                                        user.id,
-                                        &user.name,
-                                        online,
-                                        &server,
-                                    );
-                                    // Room monitor notification (后台)
-                                    let srv = Arc::clone(&server);
-                                    crate::supervisor_actor::spawn_named(
-                                        format!("room-monitor-visit-{}", user.id),
-                                        async move {
-                                            if let Some(mon) = srv.get_room_monitor().await {
-                                                mon.stream
-                                                    .send(ServerCommand::UserVisit(user.id))
-                                                    .await
-                                                    .ok();
-                                            }
-                                        },
-                                    );
-                                    waiting_for_authenticate.store(false, Ordering::SeqCst);
+                                    panicked.store(true, Ordering::SeqCst);
+                                    return;
                                 }
+                                let connected_at = std::time::SystemTime::now()
+                                    .duration_since(std::time::UNIX_EPOCH)
+                                    .map(|d| d.as_millis() as i64)
+                                    .unwrap_or(0);
+                                let event_id = Uuid::new_v4().to_string();
+                                let session_id = this.get().unwrap().id.to_string();
+                                let instance_id = crate::server_instance::current().to_string();
+                                if let Err(event) = server.persistence_worker.enqueue(
+                                    crate::persistence::message::PersistenceEvent::UserAuthenticated {
+                                        event_id,
+                                        session_id,
+                                        user_id: user.id,
+                                        user_name: user.name.clone(),
+                                        language: user.lang.0.to_string(),
+                                        ip: addr.ip().to_string(),
+                                        connected_at,
+                                        server_instance_id: instance_id,
+                                    }
+                                ).await {
+                                    warn!(
+                                        user = user.id,
+                                        kind = %event.kind(),
+                                        "UserAuthenticated enqueue failed — rejecting auth"
+                                    );
+                                    if should_rollback_auth(auth_phase, false, true) {
+                                        rollback_failed_auth(
+                                            &server,
+                                            &send_tx,
+                                            &this,
+                                            Some(&user),
+                                            newly_created,
+                                            false,
+                                            "authentication failed: persistence unavailable"
+                                                .to_string(),
+                                        )
+                                        .await;
+                                    }
+                                    panicked.store(true, Ordering::SeqCst);
+                                    return;
+                                }
+                                // DurableAccepted：WAL 已成功。现在才把新 Session 绑定为
+                                // User 的当前 Session（set_session + bound_generation），
+                                // 并关闭被取代的旧 Session（reconnect）。
+                                auth_phase = AuthPhase::DurableAccepted;
+                                debug!(user = user.id, ?auth_phase, "WAL admitted; binding session");
+                                let gen = user
+                                    .set_session(Arc::downgrade(this.get().unwrap()))
+                                    .await;
+                                if let Some(session) = this.get() {
+                                    let _ = session.bound_generation.set(gen);
+                                }
+                                if let Some(previous) = previous_session.take() {
+                                    if previous.id != id {
+                                        previous.stream.close();
+                                        let _ = server.lost_con_tx.try_send(previous.id);
+                                    }
+                                }
+                                debug!("sending auth OK to user {}", user.id);
+                                // P0-B: the initial Authenticate response must not arrive
+                                // before the minimum response latency window (the official
+                                // client installs its Authenticate callback after send).
+                                // PMP44 P0-D: 最低响应时延等待不睡过 auth_deadline。
+                                crate::official_client_compat::timing::CompatTiming::from_config(
+                                    &server.config,
+                                )
+                                .wait_until_minimum_bounded(
+                                    auth_received_at,
+                                    Some(auth_deadline),
+                                )
+                                .await;
+                                // PMP44 P0-D: flush 前检查——绝不发送 Authenticate(Ok)
+                                // 于预算之外。
+                                if crate::official_client_compat::timing::deadline_expired(
+                                    auth_deadline,
+                                ) {
+                                    warn!(
+                                        user = user.id,
+                                        "auth deadline elapsed before response flush"
+                                    );
+                                    if should_rollback_auth(auth_phase, true, false) {
+                                        rollback_failed_auth(
+                                            &server,
+                                            &send_tx,
+                                            &this,
+                                            Some(&user),
+                                            newly_created,
+                                            true,
+                                            "authentication timed out".to_string(),
+                                        )
+                                        .await;
+                                    }
+                                    panicked.store(true, Ordering::SeqCst);
+                                    return;
+                                }
+                                let flush_remaining = auth_deadline
+                                    .saturating_duration_since(Instant::now());
+                                let flush_result: Result<()> =
+                                    match tokio::time::timeout(
+                                        flush_remaining,
+                                        send_tx.send_and_flush(ServerCommand::Authenticate(
+                                            Ok((user.to_info(), room_state)),
+                                        )),
+                                    )
+                                    .await
+                                    {
+                                        Ok(r) => r,
+                                        Err(_) => Err(anyhow!(
+                                            "auth response flush exceeded deadline"
+                                        )),
+                                    };
+                                if let Err(err) = flush_result {
+                                    warn!(user = user.id, ?err, "failed to flush auth response");
+                                    if should_rollback_auth(auth_phase, true, false) {
+                                        rollback_failed_auth(
+                                            &server,
+                                            &send_tx,
+                                            &this,
+                                            Some(&user),
+                                            newly_created,
+                                            true,
+                                            format!("authentication failed: {err}"),
+                                        )
+                                        .await;
+                                    }
+                                    panicked.store(true, Ordering::SeqCst);
+                                    return;
+                                }
+                                debug!("auth response sent");
+                                // ResponseFlushed：认证帧已证明 flush，只有现在才打开
+                                // outbound gate，使握手期间缓冲的房间广播在客户端安装
+                                // 回调后 drain。
+                                auth_phase = AuthPhase::ResponseFlushed;
+                                debug!(user = user.id, ?auth_phase, "auth frame flushed; pending gate activation");
+                                // PMP44 P0-D: 预算耗尽则不再激活 gate。
+                                if crate::official_client_compat::timing::deadline_expired(
+                                    auth_deadline,
+                                ) {
+                                    warn!(
+                                        user = user.id,
+                                        "auth deadline elapsed after flush; skipping gate activation"
+                                    );
+                                    // Authenticate(Ok) 已到达客户端，客户端已进入认证后
+                                    // 状态——此时不应回滚（ResponseFlushed 阶段
+                                    // should_rollback_auth 恒为 false），仅关闭传输，
+                                    // 交正常断连路径（lost-connection worker）接管并执行
+                                    // dangle 清理。
+                                    debug_assert!(
+                                        !should_rollback_auth(auth_phase, true, true),
+                                        "auth already accepted by client; must not roll back"
+                                    );
+                                    if let Some(session) = this.get() {
+                                        session.stream.close();
+                                        let _ = server.lost_con_tx.try_send(session.id);
+                                    }
+                                    panicked.store(true, Ordering::SeqCst);
+                                    return;
+                                }
+                                gate.activate(send_tx.as_ref()).await;
+                                auth_phase = AuthPhase::Active;
+                                debug!(user = user.id, ?auth_phase, "outbound gate activated; session is live");
+                                let auth_trace = crate::official_client_compat::protocol_trace::ProtocolTrace::get();
+                                auth_trace.response_queued.fetch_add(1, Ordering::Relaxed);
+                                auth_trace.response_flushed.fetch_add(1, Ordering::Relaxed);
+                                auth_trace.record_response_latency(auth_received_at);
+                                // ── 后台后置任务 ──────────────────────────────────────
+                                // publish_user_connected 不阻塞客户端认证响应。
+                                let uid = user.id;
+                                let uname = user.name.clone();
+                                let uip = addr.ip().to_string();
+                                let ulang = user.lang.0.to_string();
+                                let state = Arc::clone(&server);
+                                crate::supervisor_actor::spawn_named(
+                                    format!("auth-post-{uid}"),
+                                    async move {
+                                        state.publish_user_connected(
+                                            uid, uname, uip, ulang,
+                                        ).await;
+                                    },
+                                );
+                                // Welcome chat follows auth frame immediately (sync, fast)
+                                let online = server.users.read().await.len();
+                                crate::internal_hooks::track_player(user.id, &user.name);
+                                crate::internal_hooks::send_welcome(
+                                    user.id,
+                                    &user.name,
+                                    online,
+                                    &server,
+                                );
+                                // Room monitor notification (后台)
+                                let srv = Arc::clone(&server);
+                                crate::supervisor_actor::spawn_named(
+                                    format!("room-monitor-visit-{}", user.id),
+                                    async move {
+                                        if let Some(mon) = srv.get_room_monitor().await {
+                                            mon.stream
+                                                .send(ServerCommand::UserVisit(user.id))
+                                                .await
+                                                .ok();
+                                        }
+                                    },
+                                );
+                                waiting_for_authenticate.store(false, Ordering::SeqCst);
                                 return;
                             } else if let ClientCommand::ConsoleAuthenticate { token } = &cmd {
                                 let Some(tx) = tx else { return };
@@ -814,7 +994,9 @@ impl Session {
                                 match authenticate_remote_with_notice(
                                     &server,
                                     token,
-                                    PhiraRetryNoticeTarget::Stream(send_tx.as_ref()),
+                                    // PMP44 P0-F: 认证握手窗口内只记录重试日志，绝不向
+                                    // 官方客户端发送 PMP 扩展 Chat 包。
+                                    PhiraRetryNoticeTarget::StreamLogOnly,
                                     Some(auth_deadline),
                                 )
                                 .await
@@ -844,7 +1026,8 @@ impl Session {
                                             let _ = session.actor_tx.set(tx);
                                         }
                                         // PMP44 P0-D: flush 前检查绝对预算——绝不发送
-                                        // Authenticate(Ok) 于预算之外。
+                                        // Authenticate(Ok) 于预算之外。PMP44 P0-E:
+                                        // console 会话不做 WAL，flush 失败同样回滚。
                                         if crate::official_client_compat::timing::deadline_expired(
                                             auth_deadline,
                                         ) {
@@ -852,8 +1035,13 @@ impl Session {
                                                 user = user.id,
                                                 "console auth deadline elapsed before response flush"
                                             );
-                                            send_auth_rejection(
+                                            rollback_failed_auth(
+                                                &server,
                                                 &send_tx,
+                                                &this,
+                                                Some(&user),
+                                                false,
+                                                true,
                                                 "authentication timed out".to_string(),
                                             )
                                             .await;
@@ -889,6 +1077,16 @@ impl Session {
                                             };
                                         if let Err(err) = flush_result {
                                             warn!(user = user.id, ?err, "failed to flush console auth response");
+                                            rollback_failed_auth(
+                                                &server,
+                                                &send_tx,
+                                                &this,
+                                                Some(&user),
+                                                false,
+                                                true,
+                                                format!("console authentication failed: {err}"),
+                                            )
+                                            .await;
                                             panicked.store(true, Ordering::SeqCst);
                                             return;
                                         }
@@ -961,7 +1159,8 @@ impl Session {
                                         *server.room_monitor.write().await =
                                             Some(Arc::downgrade(this.get().unwrap()));
                                         // PMP44 P0-D: flush 前检查绝对预算——绝不发送
-                                        // Authenticate(Ok) 于预算之外。
+                                        // Authenticate(Ok) 于预算之外。PMP44 P0-E:
+                                        // monitor 不做 WAL，flush 失败同样回滚。
                                         if crate::official_client_compat::timing::deadline_expired(
                                             auth_deadline,
                                         ) {
@@ -969,8 +1168,15 @@ impl Session {
                                                 user = user.id,
                                                 "room monitor auth deadline elapsed before response flush"
                                             );
-                                            send_auth_rejection(
+                                            // 清除 room_monitor 弱引用，避免半认证 monitor 残留。
+                                            *server.room_monitor.write().await = None;
+                                            rollback_failed_auth(
+                                                &server,
                                                 &send_tx,
+                                                &this,
+                                                Some(&user),
+                                                false,
+                                                true,
                                                 "authentication timed out".to_string(),
                                             )
                                             .await;
@@ -1006,6 +1212,19 @@ impl Session {
                                             };
                                         if let Err(err) = flush_result {
                                             warn!(user = user.id, ?err, "failed to flush room monitor auth response");
+                                            *server.room_monitor.write().await = None;
+                                            rollback_failed_auth(
+                                                &server,
+                                                &send_tx,
+                                                &this,
+                                                Some(&user),
+                                                false,
+                                                true,
+                                                format!(
+                                                    "room monitor authentication failed: {err}"
+                                                ),
+                                            )
+                                            .await;
                                             panicked.store(true, Ordering::SeqCst);
                                             return;
                                         }
@@ -1034,7 +1253,9 @@ impl Session {
                                 match authenticate_remote_with_notice(
                                     &server,
                                     token,
-                                    PhiraRetryNoticeTarget::Stream(send_tx.as_ref()),
+                                    // PMP44 P0-F: 认证握手窗口内只记录重试日志，绝不向
+                                    // 官方客户端发送 PMP 扩展 Chat 包。
+                                    PhiraRetryNoticeTarget::StreamLogOnly,
                                     Some(auth_deadline),
                                 )
                                 .await
@@ -1076,7 +1297,8 @@ impl Session {
                                             )
                                             .await;
                                         // PMP44 P0-D: flush 前检查绝对预算——绝不发送
-                                        // Authenticate(Ok) 于预算之外。
+                                        // Authenticate(Ok) 于预算之外。PMP44 P0-E:
+                                        // monitor 不做 WAL，flush 失败同样回滚。
                                         if crate::official_client_compat::timing::deadline_expired(
                                             auth_deadline,
                                         ) {
@@ -1084,8 +1306,15 @@ impl Session {
                                                 user = user.id,
                                                 "game monitor auth deadline elapsed before response flush"
                                             );
-                                            send_auth_rejection(
+                                            // 移除半认证 game monitor 的映射与注册。
+                                            server.game_monitors.write().await.remove(&monitor_id);
+                                            rollback_failed_auth(
+                                                &server,
                                                 &send_tx,
+                                                &this,
+                                                Some(&user),
+                                                true,
+                                                true,
                                                 "authentication timed out".to_string(),
                                             )
                                             .await;
@@ -1121,6 +1350,17 @@ impl Session {
                                             };
                                         if let Err(err) = flush_result {
                                             warn!(user = user.id, ?err, "failed to flush game monitor auth response");
+                                            server.game_monitors.write().await.remove(&monitor_id);
+                                            rollback_failed_auth(
+                                                &server,
+                                                &send_tx,
+                                                &this,
+                                                Some(&user),
+                                                true,
+                                                true,
+                                                format!("game monitor authentication failed: {err}"),
+                                            )
+                                            .await;
                                             panicked.store(true, Ordering::SeqCst);
                                             return;
                                         }
@@ -1555,5 +1795,31 @@ mod tests {
         let gate = SessionOutboundGate::new();
         let sink = TestSink::default();
         let _ = gate.send_and_flush(&sink, ServerCommand::Pong).await;
+    }
+
+    /// PMP44 P0-E: 认证阶段按
+    /// Authenticating → DurableAccepted → ResponseFlushed → Active 单向推进；
+    /// 任一步失败（WAL 失败 / flush 失败）都必须回滚，只有进入 Active 后
+    /// 才不再回滚。
+    #[test]
+    fn phase_progresses_correctly() {
+        // 阶段推进顺序（声明顺序即判别值顺序）。
+        assert!(AuthPhase::Authenticating < AuthPhase::DurableAccepted);
+        assert!(AuthPhase::DurableAccepted < AuthPhase::ResponseFlushed);
+        assert!(AuthPhase::ResponseFlushed < AuthPhase::Active);
+
+        // Authenticating 阶段 WAL 失败 → 必须回滚。
+        assert!(should_rollback_auth(AuthPhase::Authenticating, false, true));
+        // DurableAccepted 阶段 flush 失败 → 必须回滚。
+        assert!(should_rollback_auth(AuthPhase::DurableAccepted, true, false));
+        // ResponseFlushed 阶段 flush 失败（防御性）→ 必须回滚。
+        assert!(should_rollback_auth(AuthPhase::ResponseFlushed, true, false));
+
+        // 成功路径全部不回滚。
+        assert!(!should_rollback_auth(AuthPhase::Authenticating, true, true));
+        assert!(!should_rollback_auth(AuthPhase::DurableAccepted, true, true));
+        assert!(!should_rollback_auth(AuthPhase::ResponseFlushed, true, true));
+        // 已激活（Active）后，即使下游异常也不回滚。
+        assert!(!should_rollback_auth(AuthPhase::Active, false, false));
     }
 }

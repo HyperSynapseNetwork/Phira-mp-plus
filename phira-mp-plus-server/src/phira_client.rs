@@ -385,6 +385,11 @@ pub enum PhiraRetryNoticeTarget<'a> {
     /// sending chat messages to real players.
     Silent,
     Stream(&'a StreamSender<ServerCommand>),
+    /// PMP44 P0-F: 官方客户端认证序列隔离。认证握手窗口内（Authenticate(Ok)
+    /// 送达前）绝不向客户端发送 PMP 扩展 Chat 包，只记录重试计数与日志。
+    /// 无字段的单元变体：`StreamSender` 在 phira_mp_common 内部构造，
+    /// 测试无法获得实例；且该变体本就不发送任何包，携带 sender 无意义。
+    StreamLogOnly,
     User(&'a crate::session::User),
 }
 
@@ -749,6 +754,12 @@ impl PhiraRetryClient {
         });
         match target {
             PhiraRetryNoticeTarget::Silent => {}
+            // PMP44 P0-F: 认证预授权窗口内只记录重试计数与日志，绝不向官方
+            // 客户端发送非 Authenticate 包（否则会破坏官方认证序列）。
+            PhiraRetryNoticeTarget::StreamLogOnly => {
+                self.counters.retry_notices.fetch_add(1, Ordering::Relaxed);
+                warn!("Phira API retry (pre-auth): no client notice sent");
+            }
             PhiraRetryNoticeTarget::Stream(sender) => {
                 self.counters.retry_notices.fetch_add(1, Ordering::Relaxed);
                 if let Err(err) = sender.send(cmd).await {
@@ -946,5 +957,22 @@ mod tests {
         let policy = cfg.into_policy();
         assert!(policy.timeout.as_millis() >= 5000, "default timeout >= 5s");
         assert!(policy.max_retries >= 1, "default retries >= 1");
+    }
+
+    /// PMP44 P0-F: `StreamLogOnly` 只递增重试计数并记录日志，绝不向任何
+    /// 传输发送包（官方客户端在认证握手窗口内不得收到 PMP 扩展 Chat）。
+    /// 该变体不携带 sender，因此无需构造 `StreamSender` 即可验证。
+    #[tokio::test]
+    async fn stream_log_only_notice_counts_without_sending() {
+        let client = PhiraRetryClient::new(PhiraHttpPolicy::default()).unwrap();
+        let before = client.counters.retry_notices.load(Ordering::Relaxed);
+        client
+            .send_retry_notice(&PhiraRetryNoticeTarget::StreamLogOnly)
+            .await;
+        assert_eq!(
+            client.counters.retry_notices.load(Ordering::Relaxed),
+            before + 1,
+            "StreamLogOnly must still count the retry for operator observability"
+        );
     }
 }
