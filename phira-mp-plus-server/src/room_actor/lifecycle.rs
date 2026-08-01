@@ -11,9 +11,8 @@
 //! ```ignore
 //! use super::lifecycle::{RoomLifecycle, DefaultRoomLifecycle};
 //!
-//! let state: &PlusServerState = &*server_arc;
 //! let room = Arc::clone(&self.room);
-//! let lc = DefaultRoomLifecycle::new(room, state);
+//! let lc = DefaultRoomLifecycle::new(room, Arc::clone(&server_arc));
 //! handler::do_something(&lc, &mut as_).await;
 //! ```
 
