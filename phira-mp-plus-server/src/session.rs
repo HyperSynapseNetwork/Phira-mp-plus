@@ -866,9 +866,11 @@ impl SessionOutboundGate {
 
     /// PMP44 P0-H: 开始一次快照切换。返回的 `cutover` 是当前已入队事件的
     /// 最大序号。调用时机：
+    ///
     /// - PMP45 P0-F 路径：收到 Room Actor 的 `BindAndSnapshot` 快照后调用，
     ///   使激活时只剔除早于该快照点的 `SnapshotCovered` 事件；
     /// - 兜底路径：在 `build_client_room_state` 之前调用。
+    ///
     /// 激活时 `seq <= cutover` 的缓冲事件被视为快照已包含而被丢弃（仅限
     /// `SnapshotCovered`，PMP45 P0-G）。
     pub(crate) async fn begin_snapshot_cutover(&self) -> u64 {

@@ -1484,37 +1484,32 @@ impl RoomCommandHandler {
                     }
                 }
                 // 并入连接注册表（覆盖创建者等未走 AddUser 的成员）。
+                // 用 `entry().or_insert_with` 避免 contains_key+insert 双查（map_entry）。
                 for u in lc.users().await {
-                    if !users.contains_key(&u.id) {
+                    users.entry(u.id).or_insert_with(|| {
                         let name = as_.display_names
                             .get(&u.id)
                             .cloned()
                             .unwrap_or_else(|| u.name.clone());
-                        users.insert(
-                            u.id,
-                            UserInfo {
-                                id: u.id,
-                                name,
-                                monitor: u.monitor.load(std::sync::atomic::Ordering::SeqCst),
-                            },
-                        );
-                    }
+                        UserInfo {
+                            id: u.id,
+                            name,
+                            monitor: u.monitor.load(std::sync::atomic::Ordering::SeqCst),
+                        }
+                    });
                 }
                 for u in lc.monitors().await {
-                    if !users.contains_key(&u.id) {
+                    users.entry(u.id).or_insert_with(|| {
                         let name = as_.display_names
                             .get(&u.id)
                             .cloned()
                             .unwrap_or_else(|| u.name.clone());
-                        users.insert(
-                            u.id,
-                            UserInfo {
-                                id: u.id,
-                                name,
-                                monitor: true,
-                            },
-                        );
-                    }
+                        UserInfo {
+                            id: u.id,
+                            name,
+                            monitor: true,
+                        }
+                    });
                 }
                 // `execute_with_actor` 返回 `RoomCommandResult`（非 `Result`），
                 // 不能使用 `?`——显式 match 处理非法 room id。
