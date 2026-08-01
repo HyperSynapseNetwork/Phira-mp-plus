@@ -488,12 +488,7 @@ async fn run_outbound_task(
                 let send_tx = send_tx.as_ref();
                 crate::official_client_compat::post_response::run_post_response_batch(
                     items,
-                    |item| {
-                        let send_tx = send_tx;
-                        async move {
-                            item.deliver_via(Some(send_tx)).await;
-                        }
-                    },
+                    |item| async move { item.deliver_via(Some(send_tx)).await },
                 )
                 .await;
             }
