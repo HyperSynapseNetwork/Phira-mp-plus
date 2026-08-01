@@ -35,3 +35,6 @@ phira-mp/Cargo.lock
 *.patch
 PMP_PRODUCTION_PRODUCTIZATION_AUDIT.md
 0 * * * *
+
+# Claude Code MCP config (local only, do not commit)
+.mcp.json
