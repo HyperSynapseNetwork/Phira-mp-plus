@@ -1,5 +1,7 @@
 # Phira-mp+
 
+![Phira-mp+ banner](docs/logo/phira-mp-plus-banner.png)
+
 > Phira+ 架构中的实时多人游戏运行时 — 高并发会话、房间状态、可信插件与可靠事件持久化。
 
 [![License](https://img.shields.io/badge/License-AGPLv3-blue.svg)](LICENSE)
