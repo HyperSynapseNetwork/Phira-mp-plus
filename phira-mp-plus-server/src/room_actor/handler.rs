@@ -785,6 +785,35 @@ pub(super) async fn force_end_playing(
     }
 }
 
+/// PMP45 P0-O: RemoveUser 的 response-after 扩展工作（插件回调 + check_all_ready）。
+/// 提取为模块级 async fn，避免闭包/泛型类型推断循环（E0391，PMP42 教训：模块级
+/// async fn 传参最稳）。由 spawn_named 调用，绝不阻塞 Actor reply。check_all_ready
+/// 经 room mailbox 以 `CheckAllReady` 命令重入，在 Actor 排序点串行执行。
+async fn remove_user_response_after(
+    srv: Arc<crate::server::PlusServerState>,
+    plugin_room_id: String,
+    plugin_user_id: i32,
+    leave_data: String,
+    check_deadline: std::time::Instant,
+) {
+    srv.dispatch_plugin_event(PluginEvent::RoomModify {
+        user_id: plugin_user_id,
+        room_id: plugin_room_id.clone(),
+        data: leave_data,
+    })
+    .await;
+    let _ = srv
+        .room_commands
+        .room_mailbox(&plugin_room_id, None, |reply| {
+            RoomActorCommand::CheckAllReady {
+                room_id: plugin_room_id.clone(),
+                deadline: check_deadline,
+                reply,
+            }
+        })
+        .await;
+}
+
 pub(super) struct RoomCommandHandler;
 
 impl RoomCommandHandler {
@@ -1453,26 +1482,16 @@ impl RoomCommandHandler {
                         let leave_data = json!({"action": "leave"}).to_string();
                         let check_deadline = std::time::Instant::now()
                             + std::time::Duration::from_secs(30);
+                        // 模块级 async fn——避免闭包/泛型类型推断循环（E0391）。
                         crate::supervisor_actor::spawn_named(
                             format!("room-modify-leave-{plugin_room_id}-{plugin_user_id}"),
-                            async move {
-                                srv.dispatch_plugin_event(PluginEvent::RoomModify {
-                                    user_id: plugin_user_id,
-                                    room_id: plugin_room_id.clone(),
-                                    data: leave_data,
-                                })
-                                .await;
-                                let _ = srv
-                                    .room_commands
-                                    .room_mailbox(&plugin_room_id, None, |reply| {
-                                        RoomActorCommand::CheckAllReady {
-                                            room_id: plugin_room_id.clone(),
-                                            deadline: check_deadline,
-                                            reply,
-                                        }
-                                    })
-                                    .await;
-                            },
+                            remove_user_response_after(
+                                srv,
+                                plugin_room_id,
+                                plugin_user_id,
+                                leave_data,
+                                check_deadline,
+                            ),
                         );
                         ok(RoomCommandPayload::UserRemoved {
                             room_id: room_id.clone().to_string(), user_id: *user_id, room_dropped: should_drop,
