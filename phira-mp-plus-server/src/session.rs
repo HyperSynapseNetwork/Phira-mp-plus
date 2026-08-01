@@ -495,7 +495,6 @@ impl Session {
                                 // 新注册用户 / 关闭传输 / 拒绝客户端）。
                                 let mut auth_phase = AuthPhase::Authenticating;
                                 let res: Result<AuthResolved> = {
-                                    let this = Arc::clone(&this);
                                     let server = Arc::clone(&server);
                                     let auth_tx = &mut auth_tx;
                                     async move {
