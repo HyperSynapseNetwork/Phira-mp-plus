@@ -750,7 +750,7 @@ impl RoomCommandHandler {
                 }
                 // PMP44 P0-C: the originating session was superseded while the
                 // command was queued — refuse the commit.
-                if origin_stale(lc, &origin, *actor_user_id).await {
+                if origin_stale(lc, origin, *actor_user_id).await {
                     return refuse_stale_origin();
                 }
                 as_.state.set_locked(*locked);
@@ -774,7 +774,7 @@ impl RoomCommandHandler {
                 }
                 // PMP44 P0-C: the originating session was superseded while the
                 // command was queued — refuse the commit.
-                if origin_stale(lc, &origin, *actor_user_id).await {
+                if origin_stale(lc, origin, *actor_user_id).await {
                     return refuse_stale_origin();
                 }
                 as_.state.set_cycle(*cycle);
@@ -1012,7 +1012,7 @@ impl RoomCommandHandler {
                 }
                 // PMP44 P0-C: the originating session was superseded while the
                 // command was queued — refuse the commit.
-                if origin_stale(lc, &origin, *actor_user_id).await {
+                if origin_stale(lc, origin, *actor_user_id).await {
                     return refuse_stale_origin();
                 }
                 as_.state.chart = Some(*chart_id);
@@ -1035,7 +1035,7 @@ impl RoomCommandHandler {
                 }
                 // PMP44 P0-C: the originating session was superseded while the
                 // command was queued — refuse the commit.
-                if origin_stale(lc, &origin, *user_id).await {
+                if origin_stale(lc, origin, *user_id).await {
                     return refuse_stale_origin();
                 }
                 match &mut as_.state.lifecycle {
@@ -1063,7 +1063,7 @@ impl RoomCommandHandler {
                 }
                 // PMP44 P0-C: the originating session was superseded while the
                 // command was queued — refuse the commit.
-                if origin_stale(lc, &origin, *user_id).await {
+                if origin_stale(lc, origin, *user_id).await {
                     return refuse_stale_origin();
                 }
                 let was_host = as_.state.control.host_id == Some(*user_id);
@@ -1111,7 +1111,7 @@ impl RoomCommandHandler {
                 }
                 // PMP44 P0-C: the originating session was superseded while the
                 // command was queued — refuse the commit.
-                if origin_stale(lc, &origin, *user_id).await {
+                if origin_stale(lc, origin, *user_id).await {
                     return refuse_stale_origin();
                 }
                 let record = crate::server::Record {
@@ -1158,7 +1158,7 @@ impl RoomCommandHandler {
                 }
                 // PMP44 P0-C: the originating session was superseded while the
                 // command was queued — refuse the commit.
-                if origin_stale(lc, &origin, *user_id).await {
+                if origin_stale(lc, origin, *user_id).await {
                     return refuse_stale_origin();
                 }
                 match &mut as_.state.lifecycle {
@@ -1187,7 +1187,7 @@ impl RoomCommandHandler {
                 }
                 // PMP44 P0-C: the originating session was superseded while the
                 // command was queued — refuse the commit.
-                if origin_stale(lc, &origin, *user_id).await {
+                if origin_stale(lc, origin, *user_id).await {
                     return refuse_stale_origin();
                 }
                 // Official RequestStart core sequence (P0-D): reset_game_time →
@@ -1216,7 +1216,7 @@ impl RoomCommandHandler {
                 }
                 // PMP44 P0-C: the originating session was superseded while the
                 // command was queued — a stale Join must never add a member.
-                if origin_stale(lc, &origin, *user_id).await {
+                if origin_stale(lc, origin, *user_id).await {
                     return refuse_stale_origin();
                 }
                 let current_count = lc.users().await.len();
@@ -1256,7 +1256,7 @@ impl RoomCommandHandler {
                 }
                 // PMP44 P0-C: the originating session was superseded while the
                 // command was queued — refuse the commit.
-                if origin_stale(lc, &origin, *user_id).await {
+                if origin_stale(lc, origin, *user_id).await {
                     return refuse_stale_origin();
                 }
                 let user = {
