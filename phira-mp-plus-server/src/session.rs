@@ -174,6 +174,11 @@ fn should_rollback_auth(phase: AuthPhase, wal_ok: bool, flush_ok: bool) -> bool 
 /// 仅当本次失败认证确实是当前绑定（`clear_session_if_matches` 成功，证明
 /// 无更新的 C 已接管）且存在可恢复的旧绑定（A + previous_generation）时
 /// 才恢复 A；否则让胜出的 C 保持当前绑定，绝不覆盖更年轻的绑定。
+///
+/// 生产路径已被 PMP47 `replace_binding_if_matches` 的原子语义取代（单一写锁内
+/// 完成检查与替换）；保留此纯函数仅供单测固定「B 是当前且 A 存在才恢复」的
+/// 判定语义。
+#[allow(dead_code)]
 fn should_restore_previous(clear_succeeded: bool, has_previous: bool) -> bool {
     clear_succeeded && has_previous
 }
@@ -217,30 +222,38 @@ async fn rollback_failed_auth(
     let user_id = user.map(|u| u.id).unwrap_or_default();
     let user_name = user.map(|u| u.name.clone()).unwrap_or_default();
     if let Some(user) = user {
-        // PMP45 P0-C: 只清除与本次失败认证精确同代的绑定，绝不误清新会话
-        //（reconnect 路径在 WAL 失败时尚未 set_session，旧绑定保持不变，
-        // 旧连接可继续存活）。
-        let mut cleared_failed_binding = false;
-        if let Some((session_id, generation)) = bound_identity {
-            cleared_failed_binding =
-                user.clear_session_if_matches(session_id, generation).await;
-        }
-        // PMP46 Blocker 1: 失败重连恢复旧绑定——B 认证失败且当时确实是当前
-        // 绑定（clear 成功），恢复 A + previous_generation，避免 A 变成
-        // "物理存活但逻辑 stale"的僵尸连接（广播断流、命令被判 stale）。
-        // 仅当 clear 成功才恢复：若更新的 C 已接管（clear 返回 false），
-        // 让 C 胜出，绝不覆盖更年轻的绑定。
-        if should_restore_previous(cleared_failed_binding, previous.is_some()) {
-            if let Some((prev_session, prev_generation)) = &previous {
-                user.restore_binding(Arc::downgrade(prev_session), *prev_generation)
+        // PMP47 A 原子加固: 单一写锁内「检查并替换」。仅当失败的 B 仍是当前
+        // 绑定且存在旧 A 时，一步恢复 A（绝不覆盖更新的 C）；B 曾绑定但无旧 A
+        // 可恢复时，仍清除 B 的失效绑定（reconnect 路径在 WAL 失败时尚未
+        // set_session，旧绑定保持，旧连接可继续存活）。
+        match (&bound_identity, &previous) {
+            (Some((b_sid, b_gen)), Some((prev_session, prev_gen))) => {
+                let replaced = user
+                    .replace_binding_if_matches(
+                        *b_sid,
+                        *b_gen,
+                        Arc::downgrade(prev_session),
+                        *prev_gen,
+                    )
                     .await;
-                tracing::warn!(
-                    user = user.id,
-                    prev_session = %prev_session.id,
-                    prev_generation = *prev_generation,
-                    "reconnect failed; restored previous session binding"
-                );
+                if replaced {
+                    tracing::warn!(
+                        user = user.id,
+                        prev_session = %prev_session.id,
+                        prev_generation = *prev_gen,
+                        "reconnect failed; atomically restored previous session binding"
+                    );
+                } else {
+                    tracing::debug!(
+                        user = user.id,
+                        "reconnect failed; a newer session took over, not restoring old"
+                    );
+                }
             }
+            (Some((session_id, generation)), None) => {
+                user.clear_session_if_matches(*session_id, *generation).await;
+            }
+            (None, _) => {}
         }
         // 本次认证新建的用户：仅当 server.users 仍指向该 User 时移除
         //（Arc::ptr_eq 守卫，与既有代码一致）。

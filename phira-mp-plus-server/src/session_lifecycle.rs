@@ -177,6 +177,45 @@ impl User {
         *self.dangle_mark.lock().await = None;
     }
 
+    /// PMP47 A 原子加固: 在**单一写锁内**完成「检查并替换」绑定。
+    ///
+    /// 仅当当前绑定仍精确等于 `old_session_id + old_generation`（即失败的 B
+    /// 仍是当前绑定，没有被更新的 C 接管）时，原子替换为
+    /// `new_session + new_generation`（恢复旧 A），返回 `true`；否则不修改任何
+    /// 状态，返回 `false`（更新的 C 胜出，绝不覆盖更年轻的绑定）。
+    ///
+    /// 消除了 PMP46 `clear_session_if_matches`（清除 B）与 `restore_binding`
+    /// （恢复 A）两个独立写锁之间的竞态窗口：两锁之间若有新认证 C 接管，旧
+    /// 实现会在第二个锁里盲目覆盖 C。
+    ///
+    /// 与 `restore_binding` 一样不 bump generation——必须把代际精确恢复到 A 的
+    /// `prev_generation`，A 的命令 origin 判定（A.bound_generation ==
+    /// binding.generation）才重新成立。
+    pub async fn replace_binding_if_matches(
+        &self,
+        old_session_id: Uuid,
+        old_generation: u64,
+        new_session: Weak<Session>,
+        new_generation: u64,
+    ) -> bool {
+        let mut binding = self.binding.write().await;
+        if binding.generation != old_generation {
+            return false;
+        }
+        let bound_id = binding
+            .session
+            .as_ref()
+            .and_then(std::sync::Weak::upgrade)
+            .map(|s| s.id);
+        if bound_id != Some(old_session_id) {
+            return false;
+        }
+        binding.session = Some(new_session);
+        binding.generation = new_generation;
+        *self.dangle_mark.lock().await = None;
+        true
+    }
+
     /// Capture the current session as a [`CommandOrigin`]: a snapshot of the
     /// session identity plus its generation counter. Commands routed through the
     /// mailbox are bound to this origin, so after a reconnect their responses,
