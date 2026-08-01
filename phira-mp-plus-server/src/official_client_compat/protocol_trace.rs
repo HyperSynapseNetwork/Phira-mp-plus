@@ -120,6 +120,17 @@ pub(crate) struct ProtocolTrace {
     /// 仍超字节预算，`push_bounded` 置 `overflowed`、`activate` fail-closed。
     /// 正常运行时必须为 0（状态不完整的会话绝不允许激活）。
     pub gate_control_overflow: AtomicU64,
+    /// PMP45 P1: 认证已入 WAL（DurableAccepted）但从未达到 Active 的次数——
+    /// WAL 事实存在而客户端未完成认证，伴随持久化 Offline 补偿。正常应趋近 0
+    ///（仅失败认证出现）。
+    pub auth_durable_but_not_active: AtomicU64,
+    /// PMP45 P1: 半认证 Session 发布尝试次数——`accept` 等待 Active 超时后未
+    /// 发布。正常应趋近 0（半认证 Session 绝不允许进入全局 sessions 表）。
+    pub provisional_sessions: AtomicU64,
+    /// PMP45 P1: 关键补偿（ChangeHost/ChangeState 等状态修正）被丢弃的次数。
+    /// 区别于 `compat_queue_drop`（所有补偿）——专指客户端建立正确房间状态所
+    /// 必需的关键修正，正常必须为 0。
+    pub critical_compat_drop: AtomicU64,
     /// Server-side response latency histogram (ms buckets).
     pub latency_histogram: LatencyHistogram,
 }
@@ -140,6 +151,9 @@ pub(crate) static PROTOCOL_TRACE: ProtocolTrace = ProtocolTrace {
     auth_barrier_pending_bytes: AtomicU64::new(0),
     snapshot_duplicate_event: AtomicU64::new(0),
     gate_control_overflow: AtomicU64::new(0),
+    auth_durable_but_not_active: AtomicU64::new(0),
+    provisional_sessions: AtomicU64::new(0),
+    critical_compat_drop: AtomicU64::new(0),
     latency_histogram: LatencyHistogram::new(),
 };
 

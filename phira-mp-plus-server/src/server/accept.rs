@@ -219,6 +219,9 @@ impl PlusServer {
                     Err(_) => {
                         // 认证未能在预算内达到 Active——不发布；传输已由认证
                         // 回滚路径或此处关闭，Session 的 Drop 会释放容量 permit。
+                        crate::official_client_compat::protocol_trace::ProtocolTrace::get()
+                            .provisional_sessions
+                            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                         warn!(%ip, %id, "session never reached Active; not publishing");
                         session.user.clear_session_if_matches(
                             session.id,

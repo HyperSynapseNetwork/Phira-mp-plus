@@ -175,9 +175,18 @@ impl PostResponseItem {
                     }
                     Ok(())
                 } else {
-                    crate::official_client_compat::protocol_trace::ProtocolTrace::get()
+                    let trace =
+                        crate::official_client_compat::protocol_trace::ProtocolTrace::get();
+                    trace
                         .compat_queue_drop
                         .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    // PMP45 P1: 关键补偿（ChangeHost/ChangeState）被丢弃是状态不完整
+                    // 信号——必须为 0。
+                    if self.is_critical() {
+                        trace
+                            .critical_compat_drop
+                            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    }
                     debug!(
                         reason = self.reason,
                         "dropping stale post-response compensation"

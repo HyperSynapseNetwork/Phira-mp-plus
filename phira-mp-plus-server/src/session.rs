@@ -237,6 +237,10 @@ async fn rollback_failed_auth(
     // PMP45 P0-A: WAL 事实已存在（durable）则补发断连 + 离线补偿，杜绝
     // “客户端从未完成认证但 DB 显示在线（visit + playtime）”的幻象。
     if durable {
+        // PMP45 P1: WAL 已入但认证未达 Active——观测计数（正常趋近 0）。
+        ProtocolTrace::get()
+            .auth_durable_but_not_active
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let session_id = this.get().map(|s| s.id.to_string()).unwrap_or_default();
         let now = crate::db::now_ms();
         if let Err(e) = server
@@ -521,6 +525,10 @@ const POST_RESPONSE_MAX_DELAY_MS: u64 = 1000;
 /// 即视为连接损坏，关闭 origin Session 让客户端重连。
 const POST_RESPONSE_ITEM_TIMEOUT_MS: u64 = 500;
 
+/// PMP45 P1: 普通出站 Packet 的发送预算。慢消费者（send queue 持续拥塞）在
+/// 该时间内未完成发送即判定跟不上，关闭 Session——绝不阻塞后续 Critical 响应。
+const OUTBOUND_PACKET_SEND_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(2000);
+
 /// PMP44 P0-I/P0-O: 单 Session 出站任务。拥有 `StreamSender`，按严格 FIFO
 /// 处理出站队列：
 /// - `Packet`：未激活时缓冲进 gate（P0-G 有界/剔除），激活后直通送写；
@@ -550,8 +558,27 @@ async fn run_outbound_task(
                     let Some(send_tx) = send_tx_ready.get() else {
                         continue;
                     };
-                    if send_tx.send(cmd).await.is_err() {
-                        tracing::warn!("outbound task send failed (session teardown?)");
+                    // PMP45 P1: 普通 Packet 也有发送预算——慢消费者（send queue 持续
+                    // 拥塞）不得无限拖住 outbound task，否则后续 Critical 响应
+                    // （JoinRoom(Ok)/CreateRoom(Ok)）被堵在队列后（audit §31）。
+                    // 超时视为该客户端跟不上，关闭 Session 走 lost-connection 路径。
+                    match tokio::time::timeout(
+                        OUTBOUND_PACKET_SEND_TIMEOUT,
+                        send_tx.send(cmd),
+                    )
+                    .await
+                    {
+                        Ok(Ok(())) => {}
+                        Ok(Err(err)) => {
+                            tracing::warn!(?err, "outbound task send failed (session teardown?)");
+                        }
+                        Err(_) => {
+                            tracing::warn!("outbound Packet send timed out; disconnecting slow client");
+                            if let Some(session) = session_weak.get().and_then(Weak::upgrade) {
+                                session.stream.close();
+                                let _ = session.user.server.lost_con_tx.try_send(session.id);
+                            }
+                        }
                     }
                 }
             }
@@ -878,6 +905,10 @@ impl SessionOutboundGate {
         }
         self.activated.store(true, Ordering::SeqCst);
         let cutover = pending.cutover_seq;
+        // PMP45 P1: flush fence——激活排空缓冲时，快照覆盖的关键恢复状态包
+        //（ChangeState/ChangeHost/成员变化）直接 `send_and_flush`，确认真正写入
+        // socket 而非仅进入发送队列（audit §23）。缺这一步时，Activate 报告成功
+        // 后客户端可能只收到 Authenticate(Ok)，恢复状态仍在队列中。
         while let Some(entry) = pending.events.pop_front() {
             // PMP45 P0-G: 只对快照覆盖的状态类事件做 cutover 剔除。
             if entry.class == GateEventClass::SnapshotCovered && entry.seq <= cutover {
@@ -896,7 +927,15 @@ impl SessionOutboundGate {
                     .fetch_add(1, Ordering::Relaxed);
                 continue;
             }
-            if sink.sink_send(entry.cmd).await.is_err() {
+            // PMP45 P1 flush fence: 关键恢复状态包（快照覆盖的 ChangeState/
+            // ChangeHost/成员变化）直接 flush 到 socket，确认真正落线而非仅入队
+            //（audit §23）。其余（Chat/遥测等）用非阻塞 send 即可。
+            let send_result = if entry.class == GateEventClass::SnapshotCovered {
+                sink.sink_send_and_flush(entry.cmd).await
+            } else {
+                sink.sink_send(entry.cmd).await
+            };
+            if send_result.is_err() {
                 tracing::warn!(
                     remaining = pending.events.len(),
                     "outbound gate drain failed"
