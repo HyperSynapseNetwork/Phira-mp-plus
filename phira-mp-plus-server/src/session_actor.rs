@@ -1,9 +1,13 @@
 //! Session actor 每连接独立邮箱（迁移中）。
 //!
 //! 每个 Session 创建时初始化独立 mailbox，命令通过该 Session 的邮箱路由。
-//! 所有有序业务命令必须经过该邮箱。邮箱缺失、关闭、拥塞超时或
-//! 入队后的回复丢失都会关闭当前连接（禁止退回旧处理器改变执行模型），
-//! 并返回对应命令的官方错误响应，绝不静默丢弃请求（PMP42 P0-A）。
+//! 所有有序业务命令必须经过该邮箱。
+//!
+//! PMP44 P0-K：路由结果区分「确定未入队」与「入队后不确定」。确定未入队
+//! （邮箱缺失、关闭、入队超时）不关闭连接——调用方在原 deadline 内先发送
+//! 官方错误响应，客户端据此可重试（audit §17.1）；入队后回复丢失（通道
+//! 关闭/超时）才关闭 origin 传输（结果不确定，actor 可能已提交），并返回
+//! best-effort 错误响应。绝不静默丢弃请求（PMP42 P0-A）。
 //!
 //! PMP42 P0-C：每条命令携带绝对 deadline（`CommandMeta::deadline`），
 //! mailbox 发送与 reply 共享该预算；Actor 在执行前检查 deadline，
@@ -405,29 +409,96 @@ async fn run_or_deadline(
     }
 }
 
+/// PMP44 P0-K: 路由结果——区分确定未入队与入队后不确定。
+///
+/// `route_via_mailbox` 不再对“确定未入队”的情况关闭 origin 传输（audit §17.1：
+/// 关闭会先于错误响应杀掉连接，客户端只看到断连而收不到官方 Err）。
+enum MailboxRouteResult {
+    /// 命令确定未入队（mailbox 缺失/关闭/入队超时），未修改任何权威状态。
+    /// 调用方应在原 Session deadline 内先发送对应官方 Err，再按策略关闭。
+    NotEnqueued,
+    /// 命令已入队并返回了结果。
+    Completed(Option<ServerCommand>),
+    /// 命令已入队但结果不确定（reply 关闭/超时）——origin 已被关闭，
+    /// 不要再假装能发送业务 Err。
+    Uncertain,
+}
+
+/// PMP44 P0-K: 纯决策——把邮箱阶段的失败归类为「确定未入队」还是「入队后
+/// 不确定」。仅用于失败分支；`enqueued=true, reply_ok=true` 是成功路径，调用方
+/// 持有真实 handler 结果直接构造 `Completed(result)`，不经过本分类器（此时返回
+/// 的 `Completed(None)` 只是占位，绝不会被使用）。
+fn classify_mailbox_failure(enqueued: bool, reply_ok: bool) -> MailboxRouteResult {
+    if !enqueued {
+        MailboxRouteResult::NotEnqueued
+    } else if reply_ok {
+        MailboxRouteResult::Completed(None)
+    } else {
+        MailboxRouteResult::Uncertain
+    }
+}
+
+/// PMP44 P0-K: 把 `route_via_mailbox` 的路由结果翻译为 dispatch 层最终响应的
+/// `Option<ServerCommand>`（保持各 `route_xxx` 外签名不变）。
+///
+/// - `Completed` 原样透传 handler 结果。
+/// - `NotEnqueued`：命令确定未入队——传输未被关闭，先发官方 Err 让客户端知道
+///   失败原因（可重试）；若 origin 已被 reconnect 取代（旧会话正在拆毁），直接
+///   丢弃响应（OriginStale：不发送 Err 也不关闭）。
+/// - `Uncertain`：origin 已被 `route_via_mailbox` 关闭，返回的 Err 只是
+///   best-effort（发送失败会自然进入 lost-connection 路径，符合 audit
+///   “不确定结果关闭 origin 合理，但不应再假装能够发送业务 Err”）。
+async fn translate_route_result(
+    origin: &CommandOrigin,
+    result: MailboxRouteResult,
+    error_response: impl FnOnce(String) -> Option<ServerCommand>,
+) -> Option<ServerCommand> {
+    match result {
+        MailboxRouteResult::Completed(result) => result,
+        MailboxRouteResult::NotEnqueued => {
+            if !origin.is_current().await {
+                tracing::debug!(
+                    generation = origin.generation,
+                    "route: origin superseded; dropping not-enqueued error response"
+                );
+                None
+            } else {
+                error_response("session command could not be enqueued".to_string())
+            }
+        }
+        MailboxRouteResult::Uncertain => {
+            error_response("session command outcome uncertain".to_string())
+        }
+    }
+}
+
 /// Send a command through the per-session mailbox.
 ///
-/// There is deliberately no direct fallback. Missing, closed or timed-out
-/// mailboxes close the transport (so non-idempotent room transitions cannot be
-/// replayed through a second execution model) AND return the matching official
-/// error response — a request-type command is never silently dropped (P0-A).
+/// There is deliberately no direct fallback. The result distinguishes whether
+/// the command was enqueued so the caller can decide how to answer (PMP44 P0-K):
+///
+/// - Deterministic not-enqueued failures (mailbox missing, channel closed before
+///   enqueue, enqueue timeout) do NOT close the transport — the caller must send
+///   the official error response within the origin deadline so the client learns
+///   the failure instead of only seeing a disconnect (§17.1).
+/// - After a successful enqueue, a lost reply (channel closed or timeout) is
+///   genuinely uncertain — the actor may have committed — so the origin transport
+///   is closed and the caller's error response is best-effort.
 ///
 /// Both the mailbox enqueue and the reply wait share the single absolute
 /// `deadline`; each stage only uses the remaining budget.
-async fn route_via_mailbox<Build, ErrResp>(
+async fn route_via_mailbox<Build>(
     origin: CommandOrigin,
     user: Arc<User>,
     deadline: std::time::Instant,
     build: Build,
-    error_response: ErrResp,
-) -> Option<ServerCommand>
+) -> MailboxRouteResult
 where
     Build: FnOnce(
             CommandOrigin,
             Arc<User>,
             tokio::sync::oneshot::Sender<Option<ServerCommand>>,
         ) -> SessionActorCmd,
-    ErrResp: FnOnce(String) -> Option<ServerCommand>,
 {
     // P0-A: the origin is captured at the network boundary (session.rs), NOT by
     // re-reading the user's current binding here. The user's *current* session
@@ -442,8 +513,10 @@ where
         .upgrade()
         .and_then(|session| session.actor_tx.get().cloned());
     let Some(tx) = tx else {
-        close_uncertain_session(&origin, "session mailbox missing").await;
-        return error_response("session mailbox missing".to_string());
+        // PMP44 P0-K: 邮箱缺失——命令确定未入队。不在此关闭传输：origin session
+        // 可能仍活着，关闭会先于错误响应杀掉连接（§17.1）。若 origin 已被取代，
+        // translate_route_result 会检测到并直接丢弃响应（OriginStale）。
+        return classify_mailbox_failure(false, false);
     };
 
     let (reply, rx) = tokio::sync::oneshot::channel();
@@ -453,25 +526,22 @@ where
         Ok(Ok(())) => {
             let reply_budget = deadline.saturating_duration_since(std::time::Instant::now());
             match tokio::time::timeout(reply_budget, rx).await {
-                Ok(Ok(result)) => result,
+                Ok(Ok(result)) => MailboxRouteResult::Completed(result),
                 Ok(Err(_)) => {
+                    // 入队后 reply 通道关闭——actor 可能已提交，结果不确定。
                     close_uncertain_session(&origin, "reply channel closed after enqueue").await;
-                    error_response("session command reply channel closed".to_string())
+                    classify_mailbox_failure(true, false)
                 }
                 Err(_) => {
+                    // 入队后 reply 超时——actor 可能已提交，结果不确定。
                     close_uncertain_session(&origin, "reply timed out after enqueue").await;
-                    error_response("session command reply timed out".to_string())
+                    classify_mailbox_failure(true, false)
                 }
             }
         }
-        Ok(Err(_)) => {
-            close_uncertain_session(&origin, "session mailbox closed before enqueue").await;
-            error_response("session mailbox closed".to_string())
-        }
-        Err(_) => {
-            close_uncertain_session(&origin, "session mailbox enqueue timed out").await;
-            error_response("session mailbox enqueue timed out".to_string())
-        }
+        // 邮箱已关闭 / 入队超时：Tokio 取消语义保证消息未被入队——确定未入队，
+        // 不关闭传输，调用方先发送官方 Err。
+        Ok(Err(_)) | Err(_) => classify_mailbox_failure(false, false),
     }
 }
 
@@ -525,8 +595,8 @@ pub(crate) async fn route_chat(
     origin: CommandOrigin,
     deadline: std::time::Instant,
 ) -> Option<ServerCommand> {
-    route_via_mailbox(
-        origin,
+    let result = route_via_mailbox(
+        origin.clone(),
         user,
         deadline,
         |origin, user, reply| SessionActorCmd::Chat {
@@ -536,6 +606,11 @@ pub(crate) async fn route_chat(
             msg,
             reply,
         },
+    )
+    .await;
+    translate_route_result(
+        &origin,
+        result,
         |err| Some(ServerCommand::Chat(Err(err))),
     )
     .await
@@ -562,8 +637,8 @@ pub(crate) async fn route_lock(
     origin: CommandOrigin,
     deadline: std::time::Instant,
 ) -> Option<ServerCommand> {
-    route_via_mailbox(
-        origin,
+    let result = route_via_mailbox(
+        origin.clone(),
         user,
         deadline,
         |origin, user, reply| SessionActorCmd::Lock {
@@ -572,6 +647,11 @@ pub(crate) async fn route_lock(
             lock,
             reply,
         },
+    )
+    .await;
+    translate_route_result(
+        &origin,
+        result,
         |err| Some(ServerCommand::LockRoom(Err(err))),
     )
     .await
@@ -596,8 +676,8 @@ pub(crate) async fn route_cycle(
     origin: CommandOrigin,
     deadline: std::time::Instant,
 ) -> Option<ServerCommand> {
-    route_via_mailbox(
-        origin,
+    let result = route_via_mailbox(
+        origin.clone(),
         user,
         deadline,
         |origin, user, reply| SessionActorCmd::Cycle {
@@ -606,6 +686,11 @@ pub(crate) async fn route_cycle(
             cycle,
             reply,
         },
+    )
+    .await;
+    translate_route_result(
+        &origin,
+        result,
         |err| Some(ServerCommand::CycleRoom(Err(err))),
     )
     .await
@@ -632,8 +717,8 @@ pub(crate) async fn route_leave(
     origin: CommandOrigin,
     deadline: std::time::Instant,
 ) -> Option<ServerCommand> {
-    route_via_mailbox(
-        origin,
+    let result = route_via_mailbox(
+        origin.clone(),
         user,
         deadline,
         |origin, user, reply| SessionActorCmd::Leave {
@@ -642,6 +727,11 @@ pub(crate) async fn route_leave(
             category,
             reply,
         },
+    )
+    .await;
+    translate_route_result(
+        &origin,
+        result,
         |err| Some(ServerCommand::LeaveRoom(Err(err))),
     )
     .await
@@ -668,8 +758,8 @@ pub(crate) async fn route_create(
     origin: CommandOrigin,
     deadline: std::time::Instant,
 ) -> Option<ServerCommand> {
-    route_via_mailbox(
-        origin,
+    let result = route_via_mailbox(
+        origin.clone(),
         user,
         deadline,
         |origin, user, reply| SessionActorCmd::Create {
@@ -678,6 +768,11 @@ pub(crate) async fn route_create(
             id,
             reply,
         },
+    )
+    .await;
+    translate_route_result(
+        &origin,
+        result,
         |err| Some(ServerCommand::CreateRoom(Err(err))),
     )
     .await
@@ -712,8 +807,8 @@ pub(crate) async fn route_join(
     origin: CommandOrigin,
     deadline: std::time::Instant,
 ) -> Option<ServerCommand> {
-    route_via_mailbox(
-        origin,
+    let result = route_via_mailbox(
+        origin.clone(),
         user,
         deadline,
         |origin, user, reply| SessionActorCmd::Join {
@@ -725,6 +820,11 @@ pub(crate) async fn route_join(
             received_at,
             reply,
         },
+    )
+    .await;
+    translate_route_result(
+        &origin,
+        result,
         |err| Some(ServerCommand::JoinRoom(Err(err))),
     )
     .await
@@ -751,8 +851,8 @@ pub(crate) async fn route_select_chart(
     origin: CommandOrigin,
     deadline: std::time::Instant,
 ) -> Option<ServerCommand> {
-    route_via_mailbox(
-        origin,
+    let result = route_via_mailbox(
+        origin.clone(),
         user,
         deadline,
         |origin, user, reply| SessionActorCmd::SelectChart {
@@ -761,6 +861,11 @@ pub(crate) async fn route_select_chart(
             id,
             reply,
         },
+    )
+    .await;
+    translate_route_result(
+        &origin,
+        result,
         |err| Some(ServerCommand::SelectChart(Err(err))),
     )
     .await
@@ -785,8 +890,8 @@ pub(crate) async fn route_request_start(
     origin: CommandOrigin,
     deadline: std::time::Instant,
 ) -> Option<ServerCommand> {
-    route_via_mailbox(
-        origin,
+    let result = route_via_mailbox(
+        origin.clone(),
         user,
         deadline,
         |origin, user, reply| SessionActorCmd::RequestStart {
@@ -794,6 +899,11 @@ pub(crate) async fn route_request_start(
             user,
             reply,
         },
+    )
+    .await;
+    translate_route_result(
+        &origin,
+        result,
         |err| Some(ServerCommand::RequestStart(Err(err))),
     )
     .await
@@ -818,8 +928,8 @@ pub(crate) async fn route_ready(
     origin: CommandOrigin,
     deadline: std::time::Instant,
 ) -> Option<ServerCommand> {
-    route_via_mailbox(
-        origin,
+    let result = route_via_mailbox(
+        origin.clone(),
         user,
         deadline,
         |origin, user, reply| SessionActorCmd::Ready {
@@ -827,6 +937,11 @@ pub(crate) async fn route_ready(
             user,
             reply,
         },
+    )
+    .await;
+    translate_route_result(
+        &origin,
+        result,
         |err| Some(ServerCommand::Ready(Err(err))),
     )
     .await
@@ -849,8 +964,8 @@ pub(crate) async fn route_cancel_ready(
     origin: CommandOrigin,
     deadline: std::time::Instant,
 ) -> Option<ServerCommand> {
-    route_via_mailbox(
-        origin,
+    let result = route_via_mailbox(
+        origin.clone(),
         user,
         deadline,
         |origin, user, reply| SessionActorCmd::CancelReady {
@@ -858,6 +973,11 @@ pub(crate) async fn route_cancel_ready(
             user,
             reply,
         },
+    )
+    .await;
+    translate_route_result(
+        &origin,
+        result,
         |err| Some(ServerCommand::CancelReady(Err(err))),
     )
     .await
@@ -884,8 +1004,8 @@ pub(crate) async fn route_played(
     origin: CommandOrigin,
     deadline: std::time::Instant,
 ) -> Option<ServerCommand> {
-    route_via_mailbox(
-        origin,
+    let result = route_via_mailbox(
+        origin.clone(),
         user,
         deadline,
         |origin, user, reply| SessionActorCmd::Played {
@@ -894,6 +1014,11 @@ pub(crate) async fn route_played(
             id,
             reply,
         },
+    )
+    .await;
+    translate_route_result(
+        &origin,
+        result,
         |err| Some(ServerCommand::Played(Err(err))),
     )
     .await
@@ -916,8 +1041,8 @@ pub(crate) async fn route_abort(
     origin: CommandOrigin,
     deadline: std::time::Instant,
 ) -> Option<ServerCommand> {
-    route_via_mailbox(
-        origin,
+    let result = route_via_mailbox(
+        origin.clone(),
         user,
         deadline,
         |origin, user, reply| SessionActorCmd::Abort {
@@ -925,6 +1050,11 @@ pub(crate) async fn route_abort(
             user,
             reply,
         },
+    )
+    .await;
+    translate_route_result(
+        &origin,
+        result,
         |err| Some(ServerCommand::Abort(Err(err))),
     )
     .await
@@ -965,5 +1095,27 @@ mod tests {
             generation: 3,
         };
         assert!(!worker_should_run(&origin).await);
+    }
+
+    /// PMP44 P0-K: 邮箱失败分类——确定未入队（NotEnqueued）与入队后不确定
+    /// （Uncertain）必须严格区分，前者不得关闭传输。
+    #[test]
+    fn classify_mailbox_failure_pins_p0k_semantics() {
+        // 未入队（enqueued=false）：确定未入队——调用方必须能先发送官方 Err。
+        assert!(matches!(
+            classify_mailbox_failure(false, false),
+            MailboxRouteResult::NotEnqueued
+        ));
+        // 入队后回复丢失（enqueued=true, reply_ok=false）：结果不确定。
+        assert!(matches!(
+            classify_mailbox_failure(true, false),
+            MailboxRouteResult::Uncertain
+        ));
+        // 成功路径（enqueued=true, reply_ok=true）：调用方持有真实结果，
+        // 构造 Completed(result)；分类器占位 Completed(None) 不会被使用。
+        assert!(matches!(
+            classify_mailbox_failure(true, true),
+            MailboxRouteResult::Completed(_)
+        ));
     }
 }

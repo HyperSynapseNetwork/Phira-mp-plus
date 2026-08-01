@@ -295,16 +295,31 @@ async fn save_round_history(
     Some(event)
 }
 
+/// PMP44 P0-N: Ready 检查结果——区分等待、成功开始、开始失败。
+enum ReadyCheckOutcome {
+    /// 尚未全员 Ready（或不在 WaitForReady），没有新的开赛尝试。
+    Waiting,
+    /// 全员 Ready（或 admin 强开）且持久化 open_round 成功，房间已进入 Playing。
+    Started,
+    /// 全员 Ready 但持久化 open_round 失败——房间退回 WaitingForReady，此前
+    /// 已 Ready 的客户端必须收到 CancelReady 以收敛本地 Ready 状态（audit §18）。
+    StartFailed,
+}
+
 /// Check if all users are ready (transition to Playing) or all have finished (transition to SelectChart).
 ///
 /// `deadline` is the absolute actor deadline of the command that triggered the
 /// check (P0-F). The durable round-open write is bounded by the remaining
 /// budget so a stalled database cannot wedge the room actor forever.
+///
+/// PMP44 P0-N: 返回 [`ReadyCheckOutcome`] 供调用方区分等待/成功/失败——round
+/// open 失败时此前已 Ready 的用户会收到 CancelReady，避免客户端与服务器
+/// Ready 状态发散。
 async fn check_all_ready(
     lc: &dyn RoomLifecycle,
     as_: &mut crate::room_actor::actor::RoomActorState,
     deadline: std::time::Instant,
-) {
+) -> ReadyCheckOutcome {
     // Clone the lifecycle to check state
     let lifecycle = as_.state.lifecycle.clone();
     match &lifecycle {
@@ -371,6 +386,18 @@ async fn check_all_ready(
                             room = %lc.room().id, round = %round_id,
                             "round store: failed to open round, aborting game start: {e}"
                         );
+                        // PMP44 P0-N: 记录本次开赛尝试前已 Ready 的用户——round
+                        // open 失败后这些用户的服务端 Ready 状态将被清除，必须向
+                        // 客户端发送 CancelReady 收敛本地状态。
+                        let ready_before: Vec<i32> = {
+                            if let InternalRoomState::WaitForReady { started, .. } =
+                                &as_.state.lifecycle
+                            {
+                                started.iter().copied().collect()
+                            } else {
+                                Vec::new()
+                            }
+                        };
                         // P0-F: clear the ready set so the room returns to an
                         // explicitly retryable WaitingForReady instead of a
                         // full-ready dead state where no further start can occur.
@@ -385,7 +412,14 @@ async fn check_all_ready(
                         as_.state.ready_countdown_started_at = prev_ready_countdown;
                         lc.room().send_system_msg_simple("game-start-failed-retry").await;
                         broadcast_state_change(lc, &as_.state.lifecycle, as_.state.chart).await;
-                        return;
+                        // PMP44 P0-N: 向此前所有已 Ready 的用户发送官方 CancelReady，
+                        // 使客户端本地 Ready 状态与服务器收敛（服务器 started 已清空）。
+                        for uid in ready_before {
+                            if let Some(u) = lc.users().await.into_iter().find(|u| u.id == uid) {
+                                u.try_send(ServerCommand::Message(Message::CancelReady { user: uid })).await;
+                            }
+                        }
+                        return ReadyCheckOutcome::StartFailed;
                     }
                 }
 
@@ -402,7 +436,10 @@ async fn check_all_ready(
                 };
                 set_playing_deadline(as_, lc.server_state());
                 broadcast_state_change(lc, &as_.state.lifecycle, as_.state.chart).await;
+                return ReadyCheckOutcome::Started;
             }
+            // 未满员（或非 admin 强开）——仍处于 WaitForReady。
+            ReadyCheckOutcome::Waiting
         }
         InternalRoomState::Playing { results, aborted } => {
             if lc.users().await.into_iter()
@@ -531,8 +568,10 @@ async fn check_all_ready(
                 }
                 broadcast_state_change(lc, &as_.state.lifecycle, as_.state.chart).await;
             }
+            // Playing 分支的完成结算不是一次“开赛”，视为 Waiting（无新的 Started）。
+            ReadyCheckOutcome::Waiting
         }
-        _ => {}
+        _ => ReadyCheckOutcome::Waiting,
     }
 }
 
@@ -615,6 +654,15 @@ pub(super) async fn force_start_playing(
                 room = %lc.room().id, round = %round_id,
                 "round store: failed to open round, aborting force start: {e}"
             );
+            // PMP44 P0-N: 记录强制开赛尝试前已 Ready 的用户——round open 失败后
+            // 这些用户的服务端 Ready 状态将被清除，必须向客户端发送 CancelReady 收敛。
+            let ready_before: Vec<i32> = {
+                if let InternalRoomState::WaitForReady { started, .. } = &state.lifecycle {
+                    started.iter().copied().collect()
+                } else {
+                    Vec::new()
+                }
+            };
             // P0-F: clear the ready set so the room returns to an explicitly
             // retryable WaitingForReady instead of a full-ready dead state.
             if let InternalRoomState::WaitForReady { started, admin_started } = &mut state.lifecycle {
@@ -625,6 +673,12 @@ pub(super) async fn force_start_playing(
             state.ready_countdown_started_at = None;
             lc.room().send_system_msg_simple("game-start-failed-retry").await;
             broadcast_state_change(lc, &state.lifecycle, state.chart).await;
+            // PMP44 P0-N: 向此前已 Ready 的用户发送官方 CancelReady，收敛客户端状态。
+            for uid in ready_before {
+                if let Some(u) = lc.users().await.into_iter().find(|u| u.id == uid) {
+                    u.try_send(ServerCommand::Message(Message::CancelReady { user: uid })).await;
+                }
+            }
             return;
         }
     }
@@ -999,7 +1053,7 @@ impl RoomCommandHandler {
                 };
                 as_.state.ready_countdown_started_at = Some(now_ms());
                 broadcast_state_change(lc, &as_.state.lifecycle, as_.state.chart).await;
-                check_all_ready(lc, as_, std::time::Instant::now() + std::time::Duration::from_secs(30)).await;
+                let _ = check_all_ready(lc, as_, std::time::Instant::now() + std::time::Duration::from_secs(30)).await;
                 lc.dispatch_plugin_event(PluginEvent::GameStart { user_id: 0, room_id: room_id.clone().to_string() }).await;
                 ok(RoomCommandPayload::RoomStarted { room_id: room_id.clone().to_string() })
             }
@@ -1070,7 +1124,7 @@ impl RoomCommandHandler {
                         lc.publish_runtime_event(crate::event_bus::MpEvent::PlayerReadyChanged {
                             room_id: room_id.clone().try_into().unwrap(), user_id: *user_id, ready: true,
                         });
-                        check_all_ready(lc, as_, *deadline).await;
+                        let _ = check_all_ready(lc, as_, *deadline).await;
                         ok(RoomCommandPayload::UserReady { room_id: room_id.clone().to_string(), user_id: *user_id })
                     }
                     // P0-D: official phira-mp returns Ok (silent no-op) for Ready
@@ -1166,7 +1220,7 @@ impl RoomCommandHandler {
                     }
                 }
                 lc.send_msg(Message::Played { user: *user_id, score: *score, accuracy: *accuracy, full_combo: *full_combo, perfect: *perfect, good: *good, bad: *bad, miss: *miss, max_combo: *max_combo }).await;
-                check_all_ready(lc, as_, *deadline).await;
+                let _ = check_all_ready(lc, as_, *deadline).await;
                 lc.dispatch_plugin_event(PluginEvent::GameEnd {
                     user_id: *user_id, user_name: String::new(), room_id: room_id.clone().to_string(),
                     score: *score, accuracy: *accuracy, perfect: *perfect,
@@ -1194,7 +1248,7 @@ impl RoomCommandHandler {
                     _ => return err("not in Playing state"),
                 }
                 lc.send_msg(Message::Abort { user: *user_id }).await;
-                check_all_ready(lc, as_, *deadline).await;
+                let _ = check_all_ready(lc, as_, *deadline).await;
                 ok(RoomCommandPayload::RoundAborted { room_id: room_id.clone().to_string(), user_id: *user_id })
             }
 
@@ -1226,7 +1280,7 @@ impl RoomCommandHandler {
                 };
                 as_.state.ready_countdown_started_at = Some(now_ms());
                 broadcast_state_change(lc, &as_.state.lifecycle, as_.state.chart).await;
-                check_all_ready(lc, as_, *deadline).await;
+                let _ = check_all_ready(lc, as_, *deadline).await;
                 // PMP44 P0-M: GameStart 插件事件是 response-after——绝不阻塞 Actor reply。
                 let srv = lc.server_state_arc();
                 let plugin_room_id = room_id.to_string();
@@ -1336,12 +1390,35 @@ impl RoomCommandHandler {
                             data: json!({"action": "leave"}).to_string(),
                         }).await;
                         // Trigger check_all_ready in case the leaving user was in-game.
-                        check_all_ready(lc, as_, *deadline).await;
+                        let _ = check_all_ready(lc, as_, *deadline).await;
                         ok(RoomCommandPayload::UserRemoved {
                             room_id: room_id.clone().to_string(), user_id: *user_id, room_dropped: should_drop,
                         })
                     }
-                    None => err("user not found in room"),
+                    None => {
+                        // PMP44 P0-L: 连接注册表找不到该用户，但 Actor 成员可能已由
+                        // AddUser 提交（连接注册表拒绝的 Ghost member，例如并发加入
+                        // 恰好把房间撑满）。此时仍要清理 Actor 成员，撤销半提交的
+                        // AddUser，使 join_room 的补偿 remove_user 成功（结果确定，
+                        // 不产生 Ghost member）。Ghost member 没有连接注册条目，故不
+                        // 广播 LeaveRoom（房间内无人可见该成员），也不删除房间。
+                        let as_ = ctx.expect_actor_state();
+                        if as_.state.members.users.contains(user_id)
+                            || as_.state.members.monitors.contains(user_id)
+                        {
+                            as_.player_data.remove(user_id);
+                            as_.display_names.remove(user_id);
+                            as_.state.members.users.retain(|id| *id != *user_id);
+                            as_.state.members.monitors.retain(|id| *id != *user_id);
+                            ok(RoomCommandPayload::UserRemoved {
+                                room_id: room_id.clone().to_string(),
+                                user_id: *user_id,
+                                room_dropped: false,
+                            })
+                        } else {
+                            err("user not found in room")
+                        }
+                    }
                 }
             }
 

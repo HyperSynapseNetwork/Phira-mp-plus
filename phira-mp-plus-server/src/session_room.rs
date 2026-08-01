@@ -490,17 +490,38 @@ pub async fn join_room(
 
     // Also add to Room connection mapping (immediate, direct).
     if !room.add_user(Arc::downgrade(&user), monitor).await {
-        // P0-E/P0-D: the actor AddUser committed but the direct connection
-        // registry rejected the user — the outcome is UNCERTAIN. Do NOT run a
-        // compensating remove_user (the actor member is authoritative and the
-        // official join broadcast never went out); close the origin transport
-        // and bail so the reconnect Authenticate restores authoritative state.
+        // PMP44 P0-L: Actor AddUser 已提交成员但连接注册表拒绝该用户——在官方
+        // Join 广播（OnJoinRoom/Message::JoinRoom）发出前执行补偿，撤销 Actor
+        // 成员，避免 Ghost member（audit §16：actor 有成员但 user.room 为空、
+        // 注册表为空）。
         warn!(
             user = user.id,
             room = %id,
-            "room.add_user failed after actor AddUser; closing origin transport"
+            "room.add_user failed after actor AddUser; compensating actor remove_user"
         );
-        origin.close_uncertain().await;
+        let compensation = user
+            .server
+            .room_commands
+            .remove_user(
+                &user.server,
+                &id.to_string(),
+                user.id,
+                Some(deadline),
+                origin.to_room_origin(),
+            )
+            .await;
+        if compensation.is_err() {
+            // 补偿也失败：结果不确定（actor 成员可能仍在）——关闭 origin 传输，
+            // 走 lost-connection 路径，客户端 reconnect Authenticate 恢复权威状态。
+            warn!(
+                user = user.id,
+                room = %id,
+                "compensating remove_user also failed; closing origin transport"
+            );
+            origin.close_uncertain().await;
+            bail!("failed to register user connection");
+        }
+        // 补偿成功：结果确定（未提交成员），发送错误给客户端，客户端可重试 Join。
         bail!("failed to register user connection");
     }
 
