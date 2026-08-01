@@ -22,14 +22,18 @@
 //!
 //! Invariants:
 //! - Compensation never blocks the Room Actor (enqueue is non-blocking
-//!   `try_send`; a full outbound queue only drops that session's compensation,
-//!   counted in `compat_queue_drop`).
+//!   `try_send`; a full outbound queue means the client can never receive a
+//!   state-complete connection — PMP45 P0-M closes that session so it
+//!   reconnects and re-authenticates, and counts `compat_queue_drop`).
 //! - Fixed emission order: [`PostResponseKind`] ascending (ChangeHost first).
+//! - Critical compensation flush failure / per-item stall closes the origin
+//!   session (PMP45 P0-M) — the transport is broken, the client must reconnect.
 //! - The caller MUST invoke `schedule_post_response` only after the official
 //!   response has been flushed to the socket.
 
 use crate::server::config::PlusConfig;
 use crate::session::{CommandOrigin, OutboundItem, Session, User};
+use anyhow::anyhow;
 use phira_mp_common::{ServerCommand, StreamSender};
 use std::future::Future;
 use std::sync::{Arc, Weak};
@@ -141,19 +145,35 @@ impl PostResponseItem {
     /// 由出站任务（持有 `send_tx`）调用：目标 origin 仍 current 时直写 command
     /// 到 socket；stale 则丢弃并计入 `compat_queue_drop`。`send_tx` 为 `None`
     /// 表示非会话（CLI/admin）补偿路径——经 `User` 路由，无需 StreamSender。
-    pub(crate) async fn deliver_via(&self, send_tx: Option<&StreamSender<ServerCommand>>) {
+    ///
+    /// PMP45 P0-M: 返回 `Result`。临界补偿（`ChangeHost`/`ChangeState`）的
+    /// `send_and_flush` 失败时返回 `Err`——连接已损坏，由 outbound task 关闭
+    /// origin Session 让客户端重连（audit §23：此前 `let _ =` 静默吞掉 flush
+    /// 错误，客户端可能停留在状态不完整的连接上）。
+    pub(crate) async fn deliver_via(
+        &self,
+        send_tx: Option<&StreamSender<ServerCommand>>,
+    ) -> Result<(), anyhow::Error> {
         debug!(kind = ?self.kind, reason = self.reason, "post-response compensation dispatch");
         match &self.target {
             PostResponseTarget::Origin(origin, command) => {
                 let Some(send_tx) = send_tx else {
-                    return;
+                    return Ok(());
                 };
                 if origin.is_current().await {
                     if self.is_critical() {
-                        let _ = send_tx.send_and_flush(command.clone()).await;
+                        if let Err(err) = send_tx.send_and_flush(command.clone()).await {
+                            // PMP45 P0-M: 关键补偿 flush 失败——返回失败给调用方，
+                            // 由 outbound task 关闭 origin Session（连接已损坏，
+                            // 客户端必须重连恢复权威状态）。
+                            return Err(anyhow!(
+                                "critical compensation flush failed: {err}"
+                            ));
+                        }
                     } else {
                         let _ = send_tx.send(command.clone()).await;
                     }
+                    Ok(())
                 } else {
                     crate::official_client_compat::protocol_trace::ProtocolTrace::get()
                         .compat_queue_drop
@@ -162,12 +182,14 @@ impl PostResponseItem {
                         reason = self.reason,
                         "dropping stale post-response compensation"
                     );
+                    Ok(())
                 }
             }
             PostResponseTarget::User(user, command) => {
                 if let Some(user) = user.upgrade() {
                     user.try_send(command.clone()).await;
                 }
+                Ok(())
             }
         }
     }
@@ -175,15 +197,22 @@ impl PostResponseItem {
 
 /// P0-O: 按固定 [`PostResponseKind`] 顺序串行投递一组补偿（同 kind 保持插入
 /// 序）。`deliver` 闭包逐条执行；批次间由出站队列 FIFO 保证绝不乱序。
+///
+/// PMP45 P0-M: `deliver` 返回 `Result`——任一条补偿投递失败（flush 错误 /
+/// 超时）即终止整批：该 Session 已损坏，后续补偿无意义。由调用方（outbound
+/// task）负责关闭 origin Session。
 pub(crate) async fn run_post_response_batch<D, F>(items: Vec<PostResponseItem>, mut deliver: D)
 where
     D: FnMut(PostResponseItem) -> F,
-    F: Future<Output = ()> + Send,
+    F: Future<Output = Result<(), anyhow::Error>> + Send,
 {
     let mut items = items;
     items.sort_by_key(|it| it.kind);
     for item in items {
-        deliver(item).await;
+        if deliver(item).await.is_err() {
+            // PMP45 P0-M: 投递失败即终止批次（连接已损坏）。
+            break;
+        }
     }
 }
 
@@ -207,8 +236,10 @@ fn protocol_hack_delay_ms(config: &PlusConfig) -> u64 {
 /// and drains batches strictly FIFO — batch A fully completes before batch B, so
 /// a later batch's `ChangeState` can never overtake an earlier batch's
 /// `ChangeHost`. The enqueue is non-blocking (`try_send`), so the Room Actor
-/// never waits on compensation work; a full outbound queue drops the batch and
-/// counts `compat_queue_drop`.
+/// never waits on compensation work; a full outbound queue means the client can
+/// never receive a state-complete connection — PMP45 P0-M closes that Session
+/// (counts `compat_queue_drop`) so the client reconnects and re-authenticates
+/// (audit §22).
 ///
 /// Non-session (CLI/admin) compensations (`to_user`) have no outbound task and
 /// are still delivered by a spawned task (legacy path).
@@ -274,14 +305,20 @@ pub(crate) fn schedule_post_response(config: &PlusConfig, items: Vec<PostRespons
             })
             .is_err()
         {
-            // 出站队列拥塞（慢消费者）——补偿不可达，计入 compat_queue_drop。
+            // PMP45 P0-M: 关键补偿批次因出站队列拥塞被丢弃——已知状态不完整的
+            // 连接不能继续维持。关闭该 Session，客户端重连 Authenticate 恢复
+            // 权威状态（audit §22：此前仅计入 compat_queue_drop 就丢弃，关键的
+            // ChangeHost/ChangeState 修正可能永久丢失）。
             crate::official_client_compat::protocol_trace::ProtocolTrace::get()
                 .compat_queue_drop
                 .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             warn!(
                 session = %session.id,
-                "post-response compensation dropped: outbound queue full"
+                "post-response compensation dropped (queue full); closing session"
             );
+            session.stream.close();
+            let _ = session.user.server.lost_con_tx.try_send(session.id);
+            continue;
         }
     }
     // 非会话（CLI/admin）补偿：无出站任务，仍由独立任务投递（legacy）。
@@ -386,6 +423,7 @@ mod tests {
             let order = Arc::clone(&order_clone);
             async move {
                 order.lock().unwrap().push(item.kind());
+                Ok::<(), anyhow::Error>(())
             }
         })
         .await;

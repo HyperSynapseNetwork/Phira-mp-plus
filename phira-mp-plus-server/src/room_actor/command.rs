@@ -46,6 +46,8 @@ pub(super) enum RoomCommandKind {
     TelemetryJudges,
     /// PMP45 P0-F: 原子认证快照。认证路径经 room mailbox 获取一致快照。
     BindAndSnapshot,
+    /// PMP45 P0-O: 内部响应后检查（`RemoveUser` 触发，fire-and-forget）。
+    CheckAllReady,
 }
 
 impl RoomCommandKind {
@@ -77,6 +79,7 @@ impl RoomCommandKind {
             Self::TelemetryTouches => "telemetry_touches",
             Self::TelemetryJudges => "telemetry_judges",
             Self::BindAndSnapshot => "bind_and_snapshot",
+            Self::CheckAllReady => "check_all_ready",
         }
     }
 
@@ -297,6 +300,16 @@ pub(crate) enum RoomActorCommand {
         user_id: i32,
         reply: oneshot::Sender<RoomCommandResult>,
     },
+    /// PMP45 P0-O: 内部响应后命令——`RemoveUser` 在回复之后经 mailbox 重入，
+    /// 在 Actor 排序点执行 `check_all_ready`（插件回调 + DB 轮次检查不阻塞
+    /// 原回复，audit §26）。fire-and-forget：发起方丢弃 reply 接收端，无客户端
+    /// 等待该回复。
+    CheckAllReady {
+        room_id: String,
+        /// 响应后检查的绝对 deadline。非会话内部路径，使用 30s 兜底。
+        deadline: std::time::Instant,
+        reply: oneshot::Sender<RoomCommandResult>,
+    },
 }
 
 impl RoomActorCommand {
@@ -328,6 +341,7 @@ impl RoomActorCommand {
             Self::TelemetryTouches { .. } => RoomCommandKind::TelemetryTouches,
             Self::TelemetryJudges { .. } => RoomCommandKind::TelemetryJudges,
             Self::BindAndSnapshot { .. } => RoomCommandKind::BindAndSnapshot,
+            Self::CheckAllReady { .. } => RoomCommandKind::CheckAllReady,
         }
     }
 
@@ -356,7 +370,8 @@ impl RoomActorCommand {
             | Self::AddJudges { reply, .. }
             | Self::SetDisplayName { reply, .. }
             | Self::SetPersistentEmpty { reply, .. }
-            | Self::BindAndSnapshot { reply, .. } => {
+            | Self::BindAndSnapshot { reply, .. }
+            | Self::CheckAllReady { reply, .. } => {
                 let _ = reply.send(result);
             }
             // Telemetry variants are fire-and-forget — no reply channel.

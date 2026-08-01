@@ -1232,11 +1232,39 @@ impl RoomCommandHandler {
                 }
                 lc.send_msg(Message::Played { user: *user_id, score: *score, accuracy: *accuracy, full_combo: *full_combo, perfect: *perfect, good: *good, bad: *bad, miss: *miss, max_combo: *max_combo }).await;
                 let _ = check_all_ready(lc, as_, *deadline).await;
-                lc.dispatch_plugin_event(PluginEvent::GameEnd {
-                    user_id: *user_id, user_name: String::new(), room_id: room_id.clone().to_string(),
-                    score: *score, accuracy: *accuracy, perfect: *perfect,
-                    good: *good, bad: *bad, miss: *miss, max_combo: *max_combo, full_combo: *full_combo,
-                }).await;
+                // PMP45 P0-O: GameEnd 插件事件是 response-after——插件回调（WASM）
+                // 绝不阻塞 Actor reply（audit §26）。权威提交（results 插入 +
+                // Played 消息 + check_all_ready）保持同步。
+                let srv = lc.server_state_arc();
+                let plugin_room_id = room_id.to_string();
+                let plugin_user_id = *user_id;
+                let plugin_score = *score;
+                let plugin_accuracy = *accuracy;
+                let plugin_perfect = *perfect;
+                let plugin_good = *good;
+                let plugin_bad = *bad;
+                let plugin_miss = *miss;
+                let plugin_max_combo = *max_combo;
+                let plugin_full_combo = *full_combo;
+                crate::supervisor_actor::spawn_named(
+                    format!("room-gameend-{plugin_room_id}-{plugin_user_id}"),
+                    async move {
+                        srv.dispatch_plugin_event(PluginEvent::GameEnd {
+                            user_id: plugin_user_id,
+                            user_name: String::new(),
+                            room_id: plugin_room_id,
+                            score: plugin_score,
+                            accuracy: plugin_accuracy,
+                            perfect: plugin_perfect,
+                            good: plugin_good,
+                            bad: plugin_bad,
+                            miss: plugin_miss,
+                            max_combo: plugin_max_combo,
+                            full_combo: plugin_full_combo,
+                        })
+                        .await;
+                    },
+                );
                 ok(RoomCommandPayload::RoundResultSubmitted { room_id: room_id.clone().to_string(), user_id: *user_id, score: *score })
             }
 
@@ -1414,12 +1442,38 @@ impl RoomCommandHandler {
                         as_.display_names.remove(user_id);
                         as_.state.members.users.retain(|id| *id != *user_id);
                         as_.state.members.monitors.retain(|id| *id != *user_id);
-                        lc.dispatch_plugin_event(PluginEvent::RoomModify {
-                            user_id: *user_id, room_id: room_id.clone().to_string(),
-                            data: json!({"action": "leave"}).to_string(),
-                        }).await;
-                        // Trigger check_all_ready in case the leaving user was in-game.
-                        let _ = check_all_ready(lc, as_, *deadline).await;
+                        // PMP45 P0-O: 插件回调与 check_all_ready 是 response-after——
+                        // 权威成员移除、on_user_leave、LeaveRoom 广播保持同步（官方
+                        // 可见效果），插件回调（WASM）与 DB 轮次检查绝不阻塞 Actor
+                        // reply（audit §26）。check_all_ready 经 room mailbox 重入，在
+                        // Actor 排序点串行执行，绝不与后续命令竞争。
+                        let srv = lc.server_state_arc();
+                        let plugin_room_id = room_id.to_string();
+                        let plugin_user_id = *user_id;
+                        let leave_data = json!({"action": "leave"}).to_string();
+                        let check_deadline = std::time::Instant::now()
+                            + std::time::Duration::from_secs(30);
+                        crate::supervisor_actor::spawn_named(
+                            format!("room-modify-leave-{plugin_room_id}-{plugin_user_id}"),
+                            async move {
+                                srv.dispatch_plugin_event(PluginEvent::RoomModify {
+                                    user_id: plugin_user_id,
+                                    room_id: plugin_room_id.clone(),
+                                    data: leave_data,
+                                })
+                                .await;
+                                let _ = srv
+                                    .room_commands
+                                    .room_mailbox(&plugin_room_id, None, |reply| {
+                                        RoomActorCommand::CheckAllReady {
+                                            room_id: plugin_room_id.clone(),
+                                            deadline: check_deadline,
+                                            reply,
+                                        }
+                                    })
+                                    .await;
+                            },
+                        );
                         ok(RoomCommandPayload::UserRemoved {
                             room_id: room_id.clone().to_string(), user_id: *user_id, room_dropped: should_drop,
                         })
@@ -1609,6 +1663,14 @@ impl RoomCommandHandler {
                 ok(RoomCommandPayload::TouchesCached {
                     room_id: String::new(), user_id: 0,
                 })
+            }
+            // PMP45 P0-O: 内部响应后检查（RemoveUser 触发，fire-and-forget）。
+            // 在 Actor 排序点执行 check_all_ready，与其它命令串行；发起方丢弃
+            // reply 接收端，无客户端等待。
+            RoomActorCommand::CheckAllReady { deadline, .. } => {
+                let as_ = ctx.expect_actor_state();
+                let _outcome = check_all_ready(lc, as_, *deadline).await;
+                ok(RoomCommandPayload::Empty)
             }
         }
     }

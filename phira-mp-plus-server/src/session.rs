@@ -513,17 +513,30 @@ pub(crate) enum OutboundItem {
 /// 一致（1024），保证慢消费者只背压本 Session 的队列，绝不阻塞 Room Actor。
 const OUTBOUND_CHANNEL_CAPACITY: usize = 1024;
 
+/// PMP45 P0-M: post-response 补偿批次的延迟上限（ms）。补偿只是修正，不能
+/// 让出站任务无限等待——慢 socket 会拖住后续 Critical 响应（audit §24）。
+const POST_RESPONSE_MAX_DELAY_MS: u64 = 1000;
+
+/// PMP45 P0-M: 单条补偿投递（critical `send_and_flush`）的预算（ms）。超时
+/// 即视为连接损坏，关闭 origin Session 让客户端重连。
+const POST_RESPONSE_ITEM_TIMEOUT_MS: u64 = 500;
+
 /// PMP44 P0-I/P0-O: 单 Session 出站任务。拥有 `StreamSender`，按严格 FIFO
 /// 处理出站队列：
 /// - `Packet`：未激活时缓冲进 gate（P0-G 有界/剔除），激活后直通送写；
 /// - `Critical`：`send_and_flush` 并回传结果（P0-E 证明 flush）；
 /// - `Activate`：在 `Authenticate(Ok)` flush 之后排空 gate 缓冲并放行直通；
-/// - `PostResponse`：先等 `protocol_hack_delay_ms`，再按固定顺序串行投递，
-///   与前后批次保持 FIFO。
+/// - `PostResponse`：先等 `protocol_hack_delay_ms`（PMP45 P0-M 有上限），再按
+///   固定顺序串行投递，与前后批次保持 FIFO；投递失败/超时关闭 origin Session。
+///
+/// PMP45 P0-M: `session_weak` 是延迟绑定的 `Weak<Session>`（`Session::new`
+/// 在 Session 构造完成后写入），用于补偿投递失败时关闭 origin Session——
+/// 出站任务自身不持有 Session，避免引用环。
 async fn run_outbound_task(
     mut rx: mpsc::Receiver<OutboundItem>,
     send_tx_ready: Arc<tokio::sync::OnceCell<Arc<StreamSender<ServerCommand>>>>,
     gate: Arc<SessionOutboundGate>,
+    session_weak: Arc<std::sync::OnceLock<Weak<Session>>>,
 ) {
     let mut active = false;
     while let Some(item) = rx.recv().await {
@@ -570,15 +583,55 @@ async fn run_outbound_task(
                 let Some(send_tx) = send_tx_ready.get() else {
                     continue;
                 };
-                if delay_ms > 0 {
-                    tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
+                // PMP45 P0-M: 补偿延迟有上限——慢 socket 不能让出站任务无限
+                // 阻塞，否则后续 Critical 响应（JoinRoom(Ok)/CreateRoom(Ok)）
+                // 被拖住（audit §24）。
+                let bounded_delay = delay_ms.min(POST_RESPONSE_MAX_DELAY_MS);
+                if bounded_delay > 0 {
+                    tokio::time::sleep(std::time::Duration::from_millis(bounded_delay)).await;
                 }
                 // 固定顺序（ChangeHost → ChangeState → PersistentRoom → Replay）
                 // 且与前后批次 FIFO——batch A 全部投递完才轮到 batch B。
                 let send_tx = send_tx.as_ref();
+                let session_weak = Arc::clone(&session_weak);
                 crate::official_client_compat::post_response::run_post_response_batch(
                     items,
-                    |item| async move { item.deliver_via(Some(send_tx)).await },
+                    move |item| {
+                        let session_weak = Arc::clone(&session_weak);
+                        async move {
+                            // PMP45 P0-M: 单条补偿有预算（500ms）。超时/失败都
+                            // 视为连接损坏——关闭 origin Session，客户端重连
+                            // Authenticate 恢复权威状态；后续补偿无意义，终止批次。
+                            let item_result = tokio::time::timeout(
+                                std::time::Duration::from_millis(POST_RESPONSE_ITEM_TIMEOUT_MS),
+                                item.deliver_via(Some(send_tx)),
+                            )
+                            .await;
+                            let outcome = match item_result {
+                                Ok(Ok(())) => Ok(()),
+                                Ok(Err(err)) => Err(anyhow!("{err}")),
+                                Err(_) => Err(anyhow!("delivery timed out")),
+                            };
+                            if let Err(err) = outcome {
+                                tracing::warn!(
+                                    %err,
+                                    "post-response compensation delivery failed; closing origin session"
+                                );
+                                if let Some(session) =
+                                    session_weak.get().and_then(Weak::upgrade)
+                                {
+                                    session.stream.close();
+                                    let _ = session
+                                        .user
+                                        .server
+                                        .lost_con_tx
+                                        .try_send(session.id);
+                                }
+                                return Err(err);
+                            }
+                            Ok(())
+                        }
+                    },
                 )
                 .await;
             }
@@ -974,10 +1027,15 @@ impl Session {
         let (outbound_tx, outbound_rx) = mpsc::channel::<OutboundItem>(OUTBOUND_CHANNEL_CAPACITY);
         let outbound_sender_ready =
             Arc::new(tokio::sync::OnceCell::<Arc<StreamSender<ServerCommand>>>::new());
+        // PMP45 P0-M: 延迟绑定的 `Weak<Session>`——Session 在下方构造完成后
+        // 写入。出站任务只经它关闭 origin Session，不持有强引用（避免引用环）。
+        let outbound_session_weak =
+            Arc::new(std::sync::OnceLock::<Weak<Session>>::new());
         let outbound_task_handle = tokio::spawn(run_outbound_task(
             outbound_rx,
             Arc::clone(&outbound_sender_ready),
             Arc::clone(&gate),
+            Arc::clone(&outbound_session_weak),
         ));
 
         let stream = Stream::<ServerCommand, ClientCommand>::new(
@@ -2631,18 +2689,14 @@ impl Session {
                             compat
                                 .wait_until_minimum_bounded(received_at, Some(absolute_deadline))
                                 .await;
-                            let sent = send_dispatch_response(
-                                &outbound_tx,
-                                resp,
-                                critical,
-                                received_at,
-                                id,
-                                &server,
-                                &panicked,
-                                Some(absolute_deadline),
-                            )
-                            .await;
-                            if sent && created_room {
+                            // PMP45 P0-N: 官方顺序——`Message::CreateRoom` 先于
+                            // `CreateRoom(Ok)` 到达客户端。经 P0-I 出站队列 FIFO：
+                            // 先入队 `Packet(Message::CreateRoom)`，再 flush
+                            // `CreateRoom(Ok)`，Message 必然先被写出（官方 phira-mp
+                            // 同样是 CreateRoom 消息先行，PMP44 曾把 post-create
+                            // 事件放到响应之后——违反该顺序，客户端可能错过房间
+                            // 创建通知）。
+                            if created_room {
                                 let creating_player = creating_player.expect("checked above");
                                 if let Err(err) = outbound_tx
                                     .send(OutboundItem::Packet(ServerCommand::Message(
@@ -2653,10 +2707,24 @@ impl Session {
                                     .await
                                 {
                                     error!(
-                                        "failed to deliver post-create room event to {id}: {err:?}"
+                                        "failed to deliver pre-response create-room event to {id}: {err:?}"
                                     );
                                 }
                             }
+                            // `Message::CreateRoom` 已先入队；`send_dispatch_response`
+                            // 失败时 `send_dispatch_response` 内部已关闭传输并走
+                            // lost-connection 路径，此处无需再依据 `sent` 分支。
+                            let _sent = send_dispatch_response(
+                                &outbound_tx,
+                                resp,
+                                critical,
+                                received_at,
+                                id,
+                                &server,
+                                &panicked,
+                                Some(absolute_deadline),
+                            )
+                            .await;
                             // NOTE: Do NOT send ChangeHost(true) after JoinRoom(Ok) here.
                             // For the join-first-host case, join_room defers the
                             // ChangeHost(true) packet to the post-response compat queue
@@ -2726,6 +2794,9 @@ impl Session {
             cmd_limiter: crate::rate_limiter::CommandRateLimiter::new(),
         });
         let _ = this.set(Arc::clone(&res));
+        // PMP45 P0-M: Session 构造完成，向出站任务注入 Weak（P0-M 补偿投递
+        // 失败时据此关闭 origin Session）。
+        let _ = outbound_session_weak.set(Arc::downgrade(&res));
         this_inited.notify_one();
 
         Ok(res)
