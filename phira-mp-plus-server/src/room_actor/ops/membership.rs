@@ -138,4 +138,28 @@ impl RoomCommandGateway {
             .into_untyped()
     }
 
+
+    // ── SetDegraded ─────────────────────────────────────────────────────────
+
+    /// PMP45 P0-K: 设置房间 degraded 标志。Join 补偿失败后置 true 以阻塞后续
+    /// Join（Ghost member 清理延后）；操作员 / 未来的 reconcile 可置 false 恢复。
+    pub async fn set_degraded(
+        &self,
+        state: &PlusServerState,
+        room_id: &str,
+        degraded: bool,
+    ) -> Result<Value, String> {
+        let started = Instant::now();
+        let rid = room_id.to_string();
+        let result = self
+            .room_mailbox(&rid, None, |reply| RoomActorCommand::SetDegraded {
+                room_id: rid.clone(),
+                degraded,
+                reply,
+            })
+            .await;
+        self.finish_command(state, RoomCommandKind::SetDegraded.action(), room_id, started, result)
+            .into_untyped()
+    }
+
 }

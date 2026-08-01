@@ -36,6 +36,9 @@ pub(super) enum RoomCommandKind {
     AddUser,
     RemoveUser,
     SetLive,
+    /// PMP45 P0-K: 设置房间 degraded 标志（Join 补偿失败后阻塞后续 Join，
+    /// 直到操作员 / 未来 reconcile 清空）。
+    SetDegraded,
     AddTouches,
     AddJudges,
     SetDisplayName,
@@ -66,6 +69,7 @@ impl RoomCommandKind {
             Self::AddUser => "add_user",
             Self::RemoveUser => "remove_user",
             Self::SetLive => "set_live",
+            Self::SetDegraded => "set_degraded",
             Self::AddTouches => "add_touches",
             Self::AddJudges => "add_judges",
             Self::SetDisplayName => "set_display_name",
@@ -251,6 +255,13 @@ pub(crate) enum RoomActorCommand {
         live: bool,
         reply: oneshot::Sender<RoomCommandResult>,
     },
+    /// PMP45 P0-K: 设置房间 degraded 标志。Join 补偿失败后置 true 阻塞后续
+    /// Join；操作员 / 未来 reconcile 可置 false 恢复。
+    SetDegraded {
+        room_id: String,
+        degraded: bool,
+        reply: oneshot::Sender<RoomCommandResult>,
+    },
     #[allow(dead_code)]
     AddTouches {
         room_id: String,
@@ -309,6 +320,7 @@ impl RoomActorCommand {
             Self::AddUser { .. } => RoomCommandKind::AddUser,
             Self::RemoveUser { .. } => RoomCommandKind::RemoveUser,
             Self::SetLive { .. } => RoomCommandKind::SetLive,
+            Self::SetDegraded { .. } => RoomCommandKind::SetDegraded,
             Self::AddTouches { .. } => RoomCommandKind::AddTouches,
             Self::AddJudges { .. } => RoomCommandKind::AddJudges,
             Self::SetDisplayName { .. } => RoomCommandKind::SetDisplayName,
@@ -339,6 +351,7 @@ impl RoomActorCommand {
             | Self::AddUser { reply, .. }
             | Self::RemoveUser { reply, .. }
             | Self::SetLive { reply, .. }
+            | Self::SetDegraded { reply, .. }
             | Self::AddTouches { reply, .. }
             | Self::AddJudges { reply, .. }
             | Self::SetDisplayName { reply, .. }

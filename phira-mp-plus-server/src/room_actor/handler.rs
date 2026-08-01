@@ -1125,8 +1125,18 @@ impl RoomCommandHandler {
                         lc.publish_runtime_event(crate::event_bus::MpEvent::PlayerReadyChanged {
                             room_id: room_id.clone().try_into().unwrap(), user_id: *user_id, ready: true,
                         });
-                        let _ = check_all_ready(lc, as_, *deadline).await;
-                        ok(RoomCommandPayload::UserReady { room_id: room_id.clone().to_string(), user_id: *user_id })
+                        match check_all_ready(lc, as_, *deadline).await {
+                            ReadyCheckOutcome::Started | ReadyCheckOutcome::Waiting => {
+                                ok(RoomCommandPayload::UserReady { room_id: room_id.clone().to_string(), user_id: *user_id })
+                            }
+                            ReadyCheckOutcome::StartFailed => {
+                                // PMP45 P0-L: round open 失败——服务器已清空 started，
+                                // 触发用户不得收到 Ready(Ok)（否则官方客户端本地
+                                // is_ready=true 与服务器分叉，audit §20）。返回错误，
+                                // 客户端据此撤销本地 Ready 状态。
+                                err("round start failed")
+                            }
+                        }
                     }
                     // P0-D: official phira-mp returns Ok (silent no-op) for Ready
                     // outside WaitForReady — NOT an error. Replicate the official
@@ -1281,7 +1291,19 @@ impl RoomCommandHandler {
                 };
                 as_.state.ready_countdown_started_at = Some(now_ms());
                 broadcast_state_change(lc, &as_.state.lifecycle, as_.state.chart).await;
-                let _ = check_all_ready(lc, as_, *deadline).await;
+                let start_outcome = check_all_ready(lc, as_, *deadline).await;
+                // PMP45 P0-L: round open 失败时返回 Err——发起者不得收到
+                // HostStarted(Ok)（否则客户端认为开赛成功而服务器已退回
+                // WaitForReady 并清空 started，Ready 状态分叉，audit §21）。
+                if matches!(&start_outcome, ReadyCheckOutcome::StartFailed) {
+                    return err("round start failed");
+                }
+                if let ReadyCheckOutcome::Waiting = &start_outcome {
+                    // 全员未满但 transition 已发生? HostStart 总是把发起者加入
+                    // started 并立即 check；正常情况下应是 Started 或 StartFailed。
+                    // Waiting 属异常，保守返回成功但记录。
+                    tracing::warn!("HostStart: unexpected Waiting outcome");
+                }
                 // PMP44 P0-M: GameStart 插件事件是 response-after——绝不阻塞 Actor reply。
                 let srv = lc.server_state_arc();
                 let plugin_room_id = room_id.to_string();
@@ -1301,6 +1323,12 @@ impl RoomCommandHandler {
 
             RoomActorCommand::AddUser { room_id, user_id, user_name: _, monitor, deadline, origin, .. } => {
                 let as_ = ctx.expect_actor_state();
+                // PMP45 P0-K: 房间处于 degraded（Join 补偿失败遗留 Ghost member，
+                // 成员状态不确定）——在操作员 / 未来 reconcile 清空之前拒绝新的
+                // AddUser（Join），避免在未知成员集合上继续提交。
+                if as_.state.degraded {
+                    return err("room join reconciliation pending");
+                }
                 // P0-F/P0-G: never commit a late Join after the absolute actor
                 // deadline — the client may already have timed out and retried,
                 // and a second Join would then observe "already in room".
@@ -1433,6 +1461,23 @@ impl RoomCommandHandler {
                 ok(RoomCommandPayload::LiveChanged {
                     room_id: room_id.clone().to_string(), live: *live,
                 })
+            }
+
+            RoomActorCommand::SetDegraded { room_id, degraded, .. } => {
+                let as_ = ctx.expect_actor_state();
+                // PMP45 P0-K: 设置房间 degraded 标志——Join 补偿失败时置 true
+                //（AddUser 将拒绝新的 Join，直到操作员 / 未来的 reconcile 清空），
+                // 也可由操作员显式置回 false 恢复 Join。
+                let changed = as_.state.degraded != *degraded;
+                as_.state.degraded = *degraded;
+                if changed {
+                    tracing::warn!(
+                        room = %room_id,
+                        degraded = *degraded,
+                        "room degraded flag changed via set_degraded"
+                    );
+                }
+                ok(RoomCommandPayload::Empty)
             }
 
             RoomActorCommand::SetDisplayName { room_id, user_id, name, .. } => {

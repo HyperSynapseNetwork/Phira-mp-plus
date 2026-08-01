@@ -334,6 +334,105 @@ pub async fn create_room(
     Ok(())
 }
 
+/// PMP45 P0-K: Join 补偿守护——future 被取消（run_or_deadline 超时）时在 Drop
+/// 中派发补偿 remove_user，杜绝 Ghost member（audit §19）。在连接映射成功
+/// 后 disarm，避免双重补偿。
+///
+/// async Drop 不可用，因此 Drop 体通过 `supervisor_actor::spawn_named` 派发一个
+/// best-effort 任务执行补偿；若补偿也失败，房间置 degraded，阻塞后续 Join 直到
+/// 操作员 / 未来 reconcile 清空。
+struct JoinCompensationGuard {
+    server: Arc<crate::server::PlusServerState>,
+    room_id: String,
+    user_id: i32,
+    /// 补偿 remove_user 携带的 room-actor origin token。保留原始 origin 使补偿
+    /// 与 join 同源：若会话仍绑定则该补偿通过 P0-C stale 检查；若会话已被
+    /// reconnect 取代则被拒绝 → 房间置 degraded（安全兜底）。
+    room_origin: crate::room_actor::command::RoomOrigin,
+    /// Actor AddUser 已提交成员——只有从此刻起的取消才需要补偿。
+    committed: bool,
+    /// 连接映射成功（或补偿已同步完成）——撤销 Drop 补偿，避免双重补偿。
+    disarmed: bool,
+}
+
+impl JoinCompensationGuard {
+    fn new(
+        server: Arc<crate::server::PlusServerState>,
+        room_id: String,
+        user_id: i32,
+        room_origin: crate::room_actor::command::RoomOrigin,
+    ) -> Self {
+        Self {
+            server,
+            room_id,
+            user_id,
+            room_origin,
+            committed: false,
+            disarmed: false,
+        }
+    }
+
+    /// Actor AddUser 已提交成员——从现在起，任何提前取消都必须补偿。
+    fn mark_committed(&mut self) {
+        self.committed = true;
+    }
+
+    /// 连接映射成功（或补偿已同步完成）——撤销 Drop 补偿，避免双重补偿。
+    fn disarm(&mut self) {
+        self.disarmed = true;
+    }
+}
+
+impl Drop for JoinCompensationGuard {
+    fn drop(&mut self) {
+        if !self.committed || self.disarmed {
+            return;
+        }
+        let server = Arc::clone(&self.server);
+        let room_id = self.room_id.clone();
+        let user_id = self.user_id;
+        let room_origin = self.room_origin;
+        warn!(
+            user = user_id,
+            room = %room_id,
+            "join_room cancelled mid-flight; spawning compensating remove_user"
+        );
+        crate::supervisor_actor::spawn_named(
+            format!("join-compensate-{user_id}-{room_id}"),
+            async move {
+                // PMP45 P0-K: 补偿使用「内部清理 deadline」（200ms）而非命令原始
+                // deadline——补偿必须在 handler 内完整跑完，绝不能被响应预算或外层
+                // run_or_deadline 超时取消（取消会留下 Ghost member，audit §16.2）。
+                let cleanup_deadline =
+                    Instant::now() + std::time::Duration::from_millis(200);
+                let compensation = server
+                    .room_commands
+                    .remove_user(
+                        &server,
+                        &room_id,
+                        user_id,
+                        Some(cleanup_deadline),
+                        room_origin,
+                    )
+                    .await;
+                if compensation.is_err() {
+                    // 补偿也失败：Ghost member 遗留——房间置 degraded，阻塞后续
+                    // Join，直到操作员 / 未来 reconcile 清空。
+                    warn!(
+                        user = user_id,
+                        room = %room_id,
+                        "drop-guard compensating remove_user failed; marking room degraded"
+                    );
+                    let _ = server
+                        .room_commands
+                        .set_degraded(&server, &room_id, true)
+                        .await;
+                }
+            },
+        );
+    }
+}
+
 pub async fn join_room(
     user: Arc<User>,
     category: SessionCategory,
@@ -473,6 +572,17 @@ pub async fn join_room(
     }
     check_deadline!();
 
+    // PMP45 P0-K: Join 补偿守护——arm 于 Actor AddUser 提交之前。若
+    // `run_or_deadline` 在 AddUser 提交后、连接映射完成前取消本 future，Drop 会
+    // 派发补偿 remove_user（audit §19：AddUser 与连接映射是两个操作，取消发生在
+    // 两者之间时原有补偿代码不运行，会留下 Ghost member）。连接映射成功后 disarm。
+    let mut join_guard = JoinCompensationGuard::new(
+        Arc::clone(&user.server),
+        id.to_string(),
+        user.id,
+        origin.to_room_origin(),
+    );
+
     // Route user/monitor add through mailbox for actor_state.members tracking.
     // This is the authoritative source — Room.users is derived for broadcast only.
     user.server
@@ -488,6 +598,8 @@ pub async fn join_room(
         )
         .await
         .map_err(|e| anyhow!("{}", tr(e)))?;
+    // Actor AddUser 已提交成员——从现在起，任何提前取消都必须触发 Drop 补偿。
+    join_guard.mark_committed();
     // NOTE: after the actor AddUser commits, `deadline`（commit）不再是预检查。
     // 后续 flush 使用 `response_deadline`（PMP45 P0-I）的 remaining-budget
     // 超时 → close_uncertain + bail（P0-D uncertain-after-commit），绝不普通
@@ -523,19 +635,31 @@ pub async fn join_room(
             )
             .await;
         if compensation.is_err() {
-            // 补偿也失败：结果不确定（actor 成员可能仍在）——关闭 origin 传输，
-            // 走 lost-connection 路径，客户端 reconnect Authenticate 恢复权威状态。
+            // PMP45 P0-K: 补偿也失败——Ghost member 遗留，房间进入 degraded，
+            // 不再接受新的 Join，直到操作员 / 未来 reconcile 清空。结果不确定
+            //（actor 成员可能仍在）——关闭 origin 传输，走 lost-connection 路径，
+            // 客户端 reconnect Authenticate 恢复权威状态。
             warn!(
                 user = user.id,
                 room = %id,
-                "compensating remove_user also failed; closing origin transport"
+                "compensating remove_user also failed; marking room degraded and closing origin transport"
             );
+            let _ = user
+                .server
+                .room_commands
+                .set_degraded(&user.server, &id.to_string(), true)
+                .await;
+            join_guard.disarm();
             origin.close_uncertain().await;
             bail!("failed to register user connection");
         }
-        // 补偿成功：结果确定（未提交成员），发送错误给客户端，客户端可重试 Join。
+        // 补偿成功：结果确定（未提交成员），撤销 Drop 补偿，发送错误给客户端，
+        // 客户端可重试 Join。
+        join_guard.disarm();
         bail!("failed to register user connection");
     }
+    // 连接映射成功——actor 成员与连接注册表齐备，撤销 Drop 补偿。
+    join_guard.disarm();
 
     info!(
         user = user.id,

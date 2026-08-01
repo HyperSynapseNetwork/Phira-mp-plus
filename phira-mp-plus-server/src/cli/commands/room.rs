@@ -832,6 +832,25 @@ impl CliHandler {
                     Err(e) => self.out(format!("  {} {}", c::red("✗"), e)),
                 }
             }
+            "degraded" => {
+                // PMP45 P0-K: 操作员清空房间 degraded 标志（Join 补偿失败后房间
+                // 阻塞新的 Join）。置 false 恢复 Join；也可手动置 true 主动停摆。
+                let v = parse_cli_bool(value);
+                match self
+                    .state
+                    .room_commands
+                    .set_degraded(&self.state, room_id, v)
+                    .await
+                {
+                    Ok(_) => self.out(format!(
+                        "  {} 房间 {} 的 degraded 标志已置为 {}",
+                        c::green("✓"),
+                        room_id,
+                        if v { "true" } else { "false" }
+                    )),
+                    Err(e) => self.out(format!("  {} {}", c::red("✗"), e)),
+                }
+            }
             "phira_api_endpoint" => match crate::server::parse_room_endpoint_value(value) {
                 Ok(endpoint) => match self
                     .state
@@ -925,7 +944,7 @@ impl CliHandler {
             }
             _ => {
                 self.out(format!("  {} 未知字段: {}", c::red("✗"), field));
-                self.out(format!("  {} 支持: lock, cycle, hidden, persistent, host, chart-id, phira_api_endpoint", c::dim("▸")));
+                self.out(format!("  {} 支持: lock, cycle, hidden, persistent, degraded, host, chart-id, phira_api_endpoint", c::dim("▸")));
             }
         }
     }

@@ -51,6 +51,11 @@ pub struct RoomSnapshot {
     pub playing_users: Vec<i32>,
     /// Actor-authoritative member lists (actor-state members, not Room connection refs).
     pub members: RoomMembers,
+    /// PMP45 P0-K: degraded 标志——Join 补偿失败（Ghost member 待清理）时房间
+    /// 不再接受新的 Join，直到操作员 / 未来 reconcile 清空。`#[serde(default)]`
+    /// 保证旧的持久化快照可解析。
+    #[serde(default)]
+    pub degraded: bool,
 }
 
 impl RoomSnapshot {
@@ -98,6 +103,7 @@ impl RoomSnapshot {
                 _ => Vec::new(),
             },
             members: state.state.members.clone(),
+            degraded: state.state.degraded,
         }
     }
 }
@@ -133,6 +139,9 @@ pub struct RoomState {
     pub chart_name: Option<String>,
     pub round: RoundInfo,
     pub live: bool,
+    /// PMP45 P0-K: degraded 标志——Join 补偿失败（Ghost member 待清理）时置
+    /// true，AddUser 将拒绝新的 Join，直到被显式清空（操作员 / 未来 reconcile）。
+    pub degraded: bool,
     /// 准备倒计时开始时间（毫秒时间戳）。None 表示未启动倒计时。
     pub ready_countdown_started_at: Option<i64>,
     /// 对局超时截止时间（毫秒时间戳）。None 表示未启用超时或已超时。
@@ -184,6 +193,7 @@ impl RoomState {
                 _ => Vec::new(),
             },
             members: self.members.clone(),
+            degraded: self.degraded,
         }
     }
 
@@ -268,6 +278,7 @@ impl RoomActor {
                     round_uuid: None,
                 },
                 live: false,
+                degraded: false,
                 ready_countdown_started_at: None,
                 playing_timeout_deadline: None,
             },

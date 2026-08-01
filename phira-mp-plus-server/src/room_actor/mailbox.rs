@@ -518,6 +518,7 @@ mod tests {
             results_keys: Vec::new(),
             aborted_users: Vec::new(),
             playing_users: Vec::new(),
+            degraded: false,
         };
 
         gateway
