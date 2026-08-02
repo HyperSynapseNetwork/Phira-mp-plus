@@ -54,8 +54,8 @@ impl CliHandler {
                         c::dim("▸")
                     ));
                 } else if args.len() == 2 {
-                    // 没给用户 ID = 进入准备状态（同 room start）
-                    self.room_start(args[1]).await;
+                    // 没给用户 ID = 进入准备状态（等待玩家 ready，不 admin 强开）
+                    self.room_enter_ready_phase(args[1]).await;
                 } else {
                     let uid: i32 = match args[2].parse() {
                         Ok(id) => id,
@@ -626,6 +626,25 @@ impl CliHandler {
         }
     }
 
+    /// 让房间进入准备阶段（WaitForReady），等待所有玩家 ready（或
+    /// `ready_countdown_secs` 倒计时超时）后再开赛。与 `room start`（admin
+    /// 强开）不同：不跳过玩家准备检查。
+    pub(crate) async fn room_enter_ready_phase(&self, room_id: &str) {
+        match self
+            .state
+            .room_commands
+            .enter_ready_phase(&self.state, room_id)
+            .await
+        {
+            Ok(_) => self.out(format!(
+                "  {} 房间 {} 已进入准备阶段，等待玩家准备",
+                c::green("✓"),
+                c::bold(room_id)
+            )),
+            Err(e) => self.out(format!("  {} 无法进入准备阶段: {}", c::red("✗"), e)),
+        }
+    }
+
     /// 强制某玩家准备（管理员操作）
     pub(crate) async fn room_ready_player(&self, room_id: &str, user_id: i32) {
         let admin_deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
@@ -780,12 +799,16 @@ impl CliHandler {
                     .set_lock(&self.state, room_id, v)
                     .await
                 {
-                    Ok(_) => self.out(format!(
-                        "  {} 房间 {} 已{}锁定",
-                        c::green("✓"),
-                        room_id,
-                        if v { "" } else { "解除" }
-                    )),
+                    Ok(_) => {
+                        self.out(format!(
+                            "  {} 房间 {} 已{}锁定",
+                            c::green("✓"),
+                            room_id,
+                            if v { "" } else { "解除" }
+                        ));
+                        // 与独立 `room lock` 一致：广播给游戏客户端，使锁状态即时生效。
+                        room.send(phira_mp_common::Message::LockRoom { lock: v }).await;
+                    }
                     Err(e) => self.out(format!("  {} {}", c::red("✗"), e)),
                 }
             }
@@ -797,12 +820,16 @@ impl CliHandler {
                     .set_cycle(&self.state, room_id, v)
                     .await
                 {
-                    Ok(_) => self.out(format!(
-                        "  {} 房间 {} 已{}轮换",
-                        c::green("✓"),
-                        room_id,
-                        if v { "开启" } else { "关闭" }
-                    )),
+                    Ok(_) => {
+                        self.out(format!(
+                            "  {} 房间 {} 已{}轮换",
+                            c::green("✓"),
+                            room_id,
+                            if v { "开启" } else { "关闭" }
+                        ));
+                        // 与独立 `room cycle` 一致：广播给游戏客户端，使轮换状态即时生效。
+                        room.send(phira_mp_common::Message::CycleRoom { cycle: v }).await;
+                    }
                     Err(e) => self.out(format!("  {} {}", c::red("✗"), e)),
                 }
             }

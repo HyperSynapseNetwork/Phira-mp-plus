@@ -37,6 +37,34 @@ impl RoomCommandGateway {
     }
 
 
+    /// 让房间进入准备阶段（CLI `room ready`，无用户 ID）。
+    ///
+    /// 与 [`Self::start_room`]（admin 强开）不同：本方法以
+    /// `admin_started=false` 进入 `WaitForReady`，不跳过玩家准备检查——游戏在
+    /// 所有玩家 ready（或 `ready_countdown_secs` 倒计时超时）后才开始。
+    pub async fn enter_ready_phase(
+        &self,
+        state: &PlusServerState,
+        room_id: &str,
+    ) -> Result<Value, String> {
+        let started = Instant::now();
+        let rid = room_id.to_string();
+        let result = self
+            .room_mailbox(&rid, None, |reply| RoomActorCommand::EnterReadyPhase {
+                room_id: rid.clone(),
+                reply,
+            })
+            .await;
+        self.finish_command(
+            state,
+            RoomCommandKind::EnterReadyPhase.action(),
+            room_id,
+            started,
+            result,
+        )
+        .into_untyped()
+    }
+
     /// Cancel a pending admin-start wait state.
     ///
     /// Flip `WaitForReady -> SelectChart` first and drop the room state lock

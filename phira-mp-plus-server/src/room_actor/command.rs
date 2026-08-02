@@ -28,6 +28,10 @@ pub(super) enum RoomCommandKind {
     StartRoom,
     CancelStart,
     HostStart,
+    /// PMP48: CLI `room ready`——进入准备阶段（WaitForReady，admin_started=false），
+    /// 等待所有玩家 ready（或 ready_countdown 超时）。与 `StartRoom`（admin 强开）
+    /// 不同：不跳过玩家准备检查，不立即开赛。
+    EnterReadyPhase,
     SetChart,
     SetReady,
     CancelReady,
@@ -63,6 +67,7 @@ impl RoomCommandKind {
             Self::StartRoom => "start",
             Self::CancelStart => "cancel",
             Self::HostStart => "host_start",
+            Self::EnterReadyPhase => "enter_ready_phase",
             Self::SetChart => "set_chart",
             Self::SetReady => "set_ready",
             Self::CancelReady => "cancel_ready",
@@ -137,6 +142,12 @@ pub(crate) enum RoomActorCommand {
         reply: oneshot::Sender<RoomCommandResult>,
     },
     StartRoom {
+        room_id: String,
+        reply: oneshot::Sender<RoomCommandResult>,
+    },
+    /// PMP48: 进入准备阶段（CLI `room ready`，admin_started=false）。非会话
+    /// （CLI/admin）路径，无 deadline/origin——与 `StartRoom` 同类。
+    EnterReadyPhase {
         room_id: String,
         reply: oneshot::Sender<RoomCommandResult>,
     },
@@ -329,6 +340,7 @@ impl RoomActorCommand {
             Self::CloseRoom { .. } => RoomCommandKind::CloseRoom,
             Self::KickUser { .. } => RoomCommandKind::KickUser,
             Self::StartRoom { .. } => RoomCommandKind::StartRoom,
+            Self::EnterReadyPhase { .. } => RoomCommandKind::EnterReadyPhase,
             Self::CancelStart { .. } => RoomCommandKind::CancelStart,
             Self::HostStart { .. } => RoomCommandKind::HostStart,
             Self::SetChart { .. } => RoomCommandKind::SetChart,
@@ -361,6 +373,7 @@ impl RoomActorCommand {
             | Self::CloseRoom { reply, .. }
             | Self::KickUser { reply, .. }
             | Self::StartRoom { reply, .. }
+            | Self::EnterReadyPhase { reply, .. }
             | Self::CancelStart { reply, .. }
             | Self::HostStart { reply, .. }
             | Self::SetChart { reply, .. }
@@ -406,6 +419,7 @@ mod tests {
         assert_eq!(RoomCommandKind::CloseRoom.action(), "close");
         assert_eq!(RoomCommandKind::KickUser.action(), "kick");
         assert_eq!(RoomCommandKind::StartRoom.action(), "start");
+        assert_eq!(RoomCommandKind::EnterReadyPhase.action(), "enter_ready_phase");
         assert_eq!(RoomCommandKind::CancelStart.action(), "cancel");
         assert_eq!(RoomCommandKind::BindAndSnapshot.action(), "bind_and_snapshot");
     }

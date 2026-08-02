@@ -1118,6 +1118,50 @@ impl RoomCommandHandler {
                 ok(RoomCommandPayload::RoomStarted { room_id: room_id.clone().to_string() })
             }
 
+            RoomActorCommand::EnterReadyPhase { room_id, .. } => {
+                let as_ = ctx.expect_actor_state();
+                // 进入准备阶段：仅 SelectChart 可进入；与 StartRoom（admin 强开）
+                // 不同，这里 `admin_started=false`，不跳过玩家准备检查。
+                if !matches!(as_.state.lifecycle, InternalRoomState::SelectChart) {
+                    return err("room is not selecting a chart");
+                }
+                if as_.state.control.admin_start_pending {
+                    return err("administrative start is already in progress");
+                }
+                if as_.state.chart.is_none() {
+                    return err("no chart selected");
+                }
+                // PMP46 Blocker 2: 权威状态变更前递增序号（audit §7.5）。
+                let _seq = bump_room_seq(lc, &mut as_.state).await;
+                // 官方 RequestStart 核心序列（P0-D）：reset_game_time →
+                // Message::GameStart → WaitForReady → on_state_change。PMP
+                // 扩展（ready_countdown）紧随其后；不调用 check_all_ready——
+                // 单人/空房不应在无玩家 ready 时立即开赛，由 SetReady / 倒计时
+                // 超时（run_lifecycle_maintenance）驱动后续开赛。
+                lc.reset_game_time().await;
+                lc.send_msg(Message::GameStart { user: 0 }).await;
+                as_.state.lifecycle = InternalRoomState::WaitForReady {
+                    started: HashSet::new(),
+                    admin_started: false,
+                };
+                as_.state.ready_countdown_started_at = Some(now_ms());
+                broadcast_state_change(lc, &as_.state.lifecycle, as_.state.chart).await;
+                // PMP44 P0-M: GameStart 插件事件是 response-after——绝不阻塞 Actor reply。
+                let srv = lc.server_state_arc();
+                let plugin_room_id = room_id.to_string();
+                crate::supervisor_actor::spawn_named(
+                    format!("room-gamestart-{plugin_room_id}-admin-ready"),
+                    async move {
+                        srv.dispatch_plugin_event(PluginEvent::GameStart {
+                            user_id: 0,
+                            room_id: plugin_room_id,
+                        })
+                        .await;
+                    },
+                );
+                ok(RoomCommandPayload::RoomStarted { room_id: room_id.clone().to_string() })
+            }
+
             RoomActorCommand::CancelStart { room_id, .. } => {
                 let as_ = ctx.expect_actor_state();
                 let canceled = matches!(as_.state.lifecycle, InternalRoomState::WaitForReady { .. });
