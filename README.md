@@ -69,18 +69,21 @@ PMP 服务端采用 [AGPL-3.0](LICENSE) 开源。
 sudo apt update && sudo apt install -y postgresql
 sudo systemctl start postgresql
 
-# 2. 下载 phira-mp-plus-server-linux-glibc 并赋予执行权限
+# 2. 配置数据库（database_url 必填，不能留空）
+sudo -u postgres psql -c "ALTER USER postgres PASSWORD 'your_password';"
+sudo -u postgres createdb phira_mp_plus
+
+# 3. 下载 phira-mp-plus-server-linux-glibc 并赋予执行权限
 chmod +x phira-mp-plus-server-linux-glibc
 
-# 3. 启动（database_url 留空时自动连本地 PostgreSQL）
-./phira-mp-plus-server-linux-glibc
-
-# 也可指定配置文件和数据库连接串：
-# ./phira-mp-plus-server-linux-glibc --config my_config.yml
-# PM_DATABASE_URL="postgres://user:pass@host:5432/phira_mp_plus" ./phira-mp-plus-server-linux-glibc
+# 4. 启动（默认配置 + PM_DATABASE_URL 指定数据库即可）
+PM_DATABASE_URL="postgres://postgres:your_password@localhost:5432/phira_mp_plus" ./phira-mp-plus-server-linux-glibc
+# （如需自定义其它配置，可用 --config 指定 server_config.yml）
 ```
 
-> PostgreSQL 默认使用 Unix socket peer auth（无需密码），数据库不存在时自动创建。
+> `database_url` **必填**（留空会启动失败）：PMP 需要 PostgreSQL 连接。
+> 数据库需先创建（`createdb`），PMP 启动后自动 sqlx 迁移建表。
+> 以非 postgres 用户运行时，`localhost` 走密码认证，需先设置 postgres 密码（`ALTER USER`）。
 
 ### Docker 部署（推荐）
 
