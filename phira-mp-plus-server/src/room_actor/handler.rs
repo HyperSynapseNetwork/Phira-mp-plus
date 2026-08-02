@@ -185,8 +185,13 @@ async fn broadcast_state_change(lc: &dyn RoomLifecycle, state: &InternalRoomStat
     });
 }
 
-/// Save round history and produce a RoundData event.
-/// Returns Some(RoundData) if there was a Playing round to save.
+/// Save round history and produce the in-memory PlayRound for this round.
+/// Returns Some(PlayRound) if there was a Playing round to save.
+///
+/// The returned PlayRound is the authoritative in-memory record of the round
+/// that just completed — the settlement ranking must render THIS round's
+/// results, not a re-read of `play_history.last()`, so a slow/failed WAL
+/// admission can never make the ranking fall back to an earlier round.
 async fn save_round_history(
     lc: &dyn RoomLifecycle,
     lifecycle: &mut InternalRoomState,
@@ -194,7 +199,7 @@ async fn save_round_history(
     chart: Option<i32>,
     chart_name: Option<&str>,
     display_names: &HashMap<i32, String>,
-) -> Option<phira_mp_common::RoundData> {
+) -> Option<crate::room::PlayRound> {
     let round_id = current_round_id.unwrap_or(uuid::Uuid::nil());
     let (chart_id, chart_name_str, results, aborted) = {
         match &*lifecycle {
@@ -305,24 +310,21 @@ async fn save_round_history(
         results: play_results,
         persistence_status,
     };
-    let event = crate::room::protocol_round(&round);
 
-    // Only add to in-memory play_history if all results were durably queued.
-    // The PersistenceWorker guarantees eventual writes via WAL + retry +
-    // dead-letter, so a successful enqueue means the data is safe.
-    if !any_failed {
-        room_ref.play_history.push(round).await;
-    } else {
-        // Round still dispatched as a RoomEvent so clients see the result,
-        // but the in-memory history will not have this entry for subsequent
-        // queries (e.g. room history CLI command).
+    // In-memory play_history is the settlement/display cache and must always
+    // reflect the round that just completed. The durable store is the WAL/DB
+    // (via the RoundCompleted event above) — a failed admission must NOT leave
+    // the settlement ranking pointing at an earlier round. PersistenceStatus
+    // still records the admission outcome so callers can observe durability.
+    room_ref.play_history.push(round.clone()).await;
+    if any_failed {
         warn!(
             room = %room_ref.id,
             round_id = %round_id,
-            "round results not fully persisted; skipping play_history push"
+            "round not durably persisted (PendingAdmission); kept in-memory for settlement"
         );
     }
-    Some(event)
+    Some(round)
 }
 
 /// PMP44 P0-N: Ready 检查结果——区分等待、成功开始、开始失败。
@@ -484,10 +486,10 @@ async fn check_all_ready(
                     as_.state.chart_name.as_deref(),
                     &as_.display_names,
                 ).await;
-                if let Some(round) = completed_round {
+                if let Some(round) = &completed_round {
                     lc.publish_room_event(RoomEvent::StartRound {
                         room: lc.room().id.clone(),
-                        round,
+                        round: crate::room::protocol_round(round),
                     }).await;
                 }
 
@@ -513,9 +515,10 @@ async fn check_all_ready(
                     });
                 }
 
-                // 发送结算排行（本地化）
+                // 发送结算排行（本地化）——以刚结算的 round 为准，不依赖
+                // play_history 缓存（结算显示的是当前局真实成绩，绝不被旧轮覆盖）。
                 {
-                    if let Some(last) = lc.room().play_history.last().await {
+                    if let Some(last) = &completed_round {
                         let mut sorted = last.results.clone();
                         sorted.sort_by(|a, b| b.score.cmp(&a.score));
                         for user in lc.users().await.into_iter().chain(lc.monitors().await) {
@@ -800,10 +803,10 @@ pub(super) async fn force_end_playing(
                 state.chart_name.as_deref(),
                 &std::collections::HashMap::new(), // display_names not available here
             ).await;
-            if let Some(round) = completed_round {
+            if let Some(round) = &completed_round {
                 lc.publish_room_event(RoomEvent::StartRound {
                     room: lc.room().id.clone(),
-                    round,
+                    round: crate::room::protocol_round(round),
                 }).await;
             }
         }
