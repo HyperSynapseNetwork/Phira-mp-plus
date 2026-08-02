@@ -11,7 +11,9 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
-use tracing::{debug, info, warn};
+#[cfg(feature = "sentry")]
+use tracing::debug;
+use tracing::{info, warn};
 
 #[derive(Parser, Debug)]
 #[command(
@@ -167,7 +169,7 @@ async fn main() -> Result<()> {
         None
     };
     #[cfg(not(feature = "sentry"))]
-    let _sentry_guard = None;
+    let _sentry_guard = ();
 
     let server = PlusServer::new(config).await?;
 

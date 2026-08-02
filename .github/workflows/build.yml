@@ -124,7 +124,7 @@ jobs:
         name: Setup System
         run: ${{ matrix.setup }}
       - name: cargo build
-        run: cargo build --locked --release --target ${{ matrix.target }}
+        run: cargo build --locked --release --features sentry --target ${{ matrix.target }}
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact }}
