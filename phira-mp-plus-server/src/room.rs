@@ -291,7 +291,7 @@ impl Room {
                     cycle: snap.cycle,
                     hidden: snap.hidden,
                     persistent_empty: snap.persistent_empty,
-                    system_host: false,
+                    system_host: snap.system_host,
                     phira_api_endpoint: None,
                     admin_start_pending: false,
                     max_users: 100,

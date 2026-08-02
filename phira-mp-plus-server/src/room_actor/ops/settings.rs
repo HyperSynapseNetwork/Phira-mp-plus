@@ -198,11 +198,15 @@ impl RoomCommandGateway {
     /// 失败时由调用方负责回滚 registry。
     pub async fn init_empty_room(
         &self,
-        _state: &PlusServerState,
+        state: &PlusServerState,
         room_id: &str,
         endpoint: Option<String>,
         persistent_empty: bool,
     ) -> Result<Value, String> {
+        // 空房间保持系统房主（host=-1）：首个加入者不应自动成为房主。
+        self.set_host(state, room_id, None)
+            .await
+            .map_err(|e| format!("init_empty_room: set system host failed: {e}"))?;
         if let Some(ref ep) = endpoint {
             let result = self
                 .room_mailbox(room_id, None, |reply| RoomActorCommand::SetEndpoint {
