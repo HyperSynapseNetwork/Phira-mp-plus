@@ -132,6 +132,10 @@ fn origin_token_stale(
 /// command waited in the room mailbox bumps the generation, so a stale origin
 /// (old session + old generation) must never mutate authoritative room state.
 async fn origin_stale(lc: &dyn RoomLifecycle, origin: &RoomOrigin, user_id: i32) -> bool {
+    // CLI/admin/recovery callers carry no session origin — never stale.
+    if origin.is_none() {
+        return false;
+    }
     let state = lc.server_state();
     let user = {
         let users = state.users.read().await;
