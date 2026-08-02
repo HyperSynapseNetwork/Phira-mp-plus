@@ -2,9 +2,6 @@ name: Update Lockfile
 on:
   push:
     branches: [main]
-    paths:
-      - 'Cargo.toml'
-      - 'phira-mp-plus-server/Cargo.toml'
 jobs:
   generate:
     runs-on: ubuntu-latest
