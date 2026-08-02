@@ -505,6 +505,7 @@ mod tests {
             locked: false,
             cycle: false,
             host: None,
+            system_host: false,
             hidden: false,
             live: false,
             created_at: 0,
