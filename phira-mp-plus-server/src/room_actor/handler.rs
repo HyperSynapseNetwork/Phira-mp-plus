@@ -481,7 +481,7 @@ async fn check_all_ready(
                     &as_.display_names,
                 ).await;
                 if let Some(round) = completed_round {
-                    lc.publish_room_event(RoomEvent::NewRound {
+                    lc.publish_room_event(RoomEvent::StartRound {
                         room: lc.room().id.clone(),
                         round,
                     }).await;
@@ -797,7 +797,7 @@ pub(super) async fn force_end_playing(
                 &std::collections::HashMap::new(), // display_names not available here
             ).await;
             if let Some(round) = completed_round {
-                lc.publish_room_event(RoomEvent::NewRound {
+                lc.publish_room_event(RoomEvent::StartRound {
                     room: lc.room().id.clone(),
                     round,
                 }).await;
@@ -1271,6 +1271,14 @@ impl RoomCommandHandler {
                     good: *good, bad: *bad, miss: *miss, max_combo: *max_combo,
                     accuracy: *accuracy, full_combo: *full_combo, std: *std, std_score: *std_score,
                 };
+                // player_score 域事件用协议 Record（字段与 server::Record 一致）。
+                let event_record = phira_mp_common::Record {
+                    id: record.id, player: record.player, score: record.score,
+                    perfect: record.perfect, good: record.good, bad: record.bad,
+                    miss: record.miss, max_combo: record.max_combo,
+                    accuracy: record.accuracy, full_combo: record.full_combo,
+                    std: record.std, std_score: record.std_score,
+                };
                 match &mut as_.state.lifecycle {
                     InternalRoomState::Playing { results, aborted } => {
                         if aborted.contains(user_id) { return err("user aborted"); }
@@ -1278,6 +1286,10 @@ impl RoomCommandHandler {
                     }
                     _ => return err("not in Playing state"),
                 }
+                lc.publish_room_event(RoomEvent::PlayerScore {
+                    room: lc.room().id.clone(),
+                    record: event_record,
+                }).await;
                 // 首个完成者出现后延长对局超时（给其他玩家追赶时间）
                 if let InternalRoomState::Playing { results, .. } = &as_.state.lifecycle {
                     let users = lc.users().await;

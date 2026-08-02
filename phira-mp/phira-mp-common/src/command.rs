@@ -379,7 +379,8 @@ pub enum RoomEvent {
     UpdateRoom { room: RoomId, data: PartialRoomData },
     JoinRoom { room: RoomId, user: i32 },
     LeaveRoom { room: RoomId, user: i32 },
-    NewRound { room: RoomId, round: RoundData },
+    PlayerScore { room: RoomId, record: Record },
+    StartRound { room: RoomId, round: RoundData },
 }
 
 impl RoomEvent {
@@ -389,7 +390,8 @@ impl RoomEvent {
             Self::UpdateRoom { .. } => "update_room",
             Self::JoinRoom { .. } => "join_room",
             Self::LeaveRoom { .. } => "leave_room",
-            Self::NewRound { .. } => "new_round",
+            Self::PlayerScore { .. } => "player_score",
+            Self::StartRound { .. } => "start_round",
         }
     }
 
@@ -411,7 +413,11 @@ impl RoomEvent {
                 "room": room.0.to_string(),
                 "user": user,
             }),
-            Self::NewRound { room, round } => json!({
+            Self::PlayerScore { room, record } => json!({
+                "room": room.0.to_string(),
+                "record": record,
+            }),
+            Self::StartRound { room, round } => json!({
                 "room": room.0.to_string(),
                 "round": round,
             }),
