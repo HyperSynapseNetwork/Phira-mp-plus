@@ -37,13 +37,17 @@ jobs:
           PATCH=$((CURRENT_C + 1))
           NEW_VERSION="${MAJOR}.${MINOR}.${PATCH}"
           echo "current=$CURRENT_C computed=$PATCH"
+          # 无条件同步 lockfile：依赖变更时由 auto-patch 自动更新并提交
+          cargo generate-lockfile
           if [[ "$CURRENT_C" != "$PATCH" && "${{ github.ref }}" == "refs/heads/main" && "${{ github.event_name }}" == "push" ]]; then
             python scripts/sync-workspace-version.py "$NEW_VERSION"
-            cargo generate-lockfile
-            git config user.name "github-actions"
-            git config user.email "actions@github.com"
-            git add phira-mp-plus-server/Cargo.toml phira-plugin-sdk/Cargo.toml Cargo.lock
-            git commit -m "chore: auto bump patch to $NEW_VERSION [skip ci]"
+          fi
+          git config user.name "github-actions"
+          git config user.email "actions@github.com"
+          git add phira-mp-plus-server/Cargo.toml phira-plugin-sdk/Cargo.toml Cargo.lock
+          if ! git diff --cached --quiet; then
+            git commit -m "chore: sync version + lockfile [skip ci]"
+            git pull --rebase origin main
             git push
           fi
           echo "build_ref=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"

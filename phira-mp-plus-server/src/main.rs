@@ -143,7 +143,9 @@ async fn main() -> Result<()> {
         config.compatibility.protocol_hack_delay_ms,
     );
 
-    // Sentry error monitoring (SENTRY_DSN env var or config)
+    // Sentry error monitoring (SENTRY_DSN env var or config).
+    // Only compiled with the `sentry` feature (Release builds omit it).
+    #[cfg(feature = "sentry")]
     let _sentry_guard = if let Some(dsn) = &config.sentry_dsn {
         let dsn = dsn.trim();
         if !dsn.is_empty() {
@@ -164,6 +166,8 @@ async fn main() -> Result<()> {
         debug!("sentry DSN not configured, monitoring disabled");
         None
     };
+    #[cfg(not(feature = "sentry"))]
+    let _sentry_guard = None;
 
     let server = PlusServer::new(config).await?;
 
