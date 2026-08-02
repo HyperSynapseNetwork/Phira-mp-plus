@@ -57,17 +57,12 @@ jobs:
           sed -i "s/^version = \".*\"/version = \"${{ steps.version.outputs.version }}\"/" phira-mp-plus-server/Cargo.toml
           sed -i "s/^version = \".*\"/version = \"${{ steps.version.outputs.version }}\"/" phira-plugin-sdk/Cargo.toml
 
-      - uses: actions-rust-lang/setup-rust-toolchain@v1
-
-      - name: 同步 lockfile
-        run: cargo generate-lockfile
-
       - name: 提交并打标签
         run: |
           TAG="${{ steps.version.outputs.tag }}"
           git config user.name "github-actions"
           git config user.email "actions@github.com"
-          git add phira-mp-plus-server/Cargo.toml phira-plugin-sdk/Cargo.toml Cargo.lock
+          git add phira-mp-plus-server/Cargo.toml phira-plugin-sdk/Cargo.toml
           git commit -m "chore: bump version to $TAG"
           git tag -a "$TAG" -m "Version $TAG"
           git push --follow-tags
