@@ -2875,11 +2875,14 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d91e4790d8c2f43a6645ee2cb12aac2db79221fddd035b94c8166b88ea094408"
 dependencies = [
  "cfg_aliases",
+ "httpdate",
+ "reqwest",
  "sentry-backtrace",
  "sentry-contexts",
  "sentry-core",
  "sentry-panic",
  "sentry-tracing",
+ "tokio",
 ]
 
 [[package]]
