@@ -27,13 +27,12 @@
 
 | 分类 | 文档 |
 |------|------|
-| **配置** | [配置说明](docs/configuration.md) · [JSON Schema](docs/operations/config-schema.json) |
-| **运维** | [运维手册](docs/operations.md) |
-| **插件** | [插件开发指南](docs/plugin-dev.md)（含 WIT ABI、示例） |
-| **开发** | [架构](docs/development/architecture.md) · [CLI 手册](docs/cli.md) · [测试指南](docs/development/testing.md) · [CLI 错误码 (EN)](docs/development/error-codes.en.md) · [产品概览 (EN)](docs/overview.en.md) · [兼容矩阵 (EN)](docs/compatibility-matrix.en.md) |
-| **API** | [事件 API](docs/api.md) |
-| **OpenUDS** | [OpenUDS 接口](docs/ppb-uds-interface.md) — Unix Domain Socket 管理 API |
-| **压测** | [基准测试](docs/cli.md#基准测试) |
+| **功能总览** | [PMP 相对 Phira-mp 新增功能](docs/features.md)（含兼容矩阵） |
+| **部署与运维** | [部署/配置/运维](docs/deployment.md) · [配置 JSON Schema](docs/operations/config-schema.json) |
+| **对外 API** | [HTTP/SSE/WS · 插件 API · 能力表 · OpenUDS](docs/api.md) |
+| **CLI 手册** | [CLI 命令参考](docs/cli.md)（含[基准测试](docs/cli.md#基准测试)） |
+| **插件开发** | [插件开发指南](docs/plugin-dev.md)（含 WIT ABI、示例） |
+| **开发** | [架构](docs/development/architecture.md) · [测试指南](docs/development/testing.md) · [CLI 错误码 (EN)](docs/development/error-codes.en.md) |
 
 ## 许可
 
@@ -172,7 +171,7 @@ PM_DATABASE_URL="postgres://user:pass@host:5432/phira_mp_plus" ./phira-mp-plus-s
 > sudo -u postgres psql -c "CREATE DATABASE phira_mp_plus;"
 > ```
 
-配置加载规则：默认读取 `server_config.yml`，也可通过 `--config <FILE>` 指定；配置文件缺失时使用内置默认值，配置文件存在但格式、字段名或取值无效时拒绝启动。只有用户显式提供的命令行参数才覆盖 YAML，避免 CLI 默认值意外覆盖配置文件。完整说明见 [docs/configuration.md](docs/configuration.md)。
+配置加载规则：默认读取 `server_config.yml`，也可通过 `--config <FILE>` 指定；配置文件缺失时使用内置默认值，配置文件存在但格式、字段名或取值无效时拒绝启动。只有用户显式提供的命令行参数才覆盖 YAML，避免 CLI 默认值意外覆盖配置文件。完整说明见 [docs/deployment.md](docs/deployment.md)。
 
 ### 命令行参数
 
@@ -191,7 +190,7 @@ phira-mp-plus-server [OPTIONS]
   -h, --help                 显示帮助
   -V, --version              显示版本
 
-空载模式仅改变非关键后台活动的调度偏好，不会暂停权威持久化或可靠插件事件。更多配置项见 [docs/configuration.md](docs/configuration.md)。
+空载模式仅改变非关键后台活动的调度偏好，不会暂停权威持久化或可靠插件事件。更多配置项见 [docs/deployment.md](docs/deployment.md)。
 ```
 
 ## 项目结构
@@ -216,14 +215,14 @@ Phira-mp-plus/
 ├── log/                             # 运行日志（每小时轮转）
 │
 ├── docs/                            # 文档
-│   ├── api/                         #   自动生成的 API 文档
-│   │   ├── plugin-api.md            #     WIT 插件 API 参考
-│   │   └── capability-table.md      #     capability 映射表
-│   ├── cli.md                       #    CLI 命令参考
-│   ├── configuration.md             #    配置说明
-│   ├── plugin-dev.md                #    插件开发指南
-│   ├── operations.md                #    运维手册
-│   └── development/                 #    开发文档
+│   ├── features.md                  #   功能总览（相对 Phira-mp 新增 + 兼容矩阵）
+│   ├── deployment.md                #   部署/配置/运维
+│   ├── api.md                       #   对外 API（HTTP/SSE/WS + 插件 API + 能力表 + OpenUDS）
+│   ├── cli.md                       #   CLI 命令参考
+│   ├── plugin-dev.md                #   插件开发指南
+│   ├── operations/
+│   │   └── config-schema.json       #   配置 JSON Schema
+│   └── development/                 #   开发文档
 │
 ├── phira-mp-plus-server/            # 服务端核心 (crate)
 │   ├── Cargo.toml

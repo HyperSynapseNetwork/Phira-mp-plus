@@ -36,10 +36,11 @@ fn read_doc_required(filename: &str) -> String {
 #[test]
 fn required_docs_exist() {
     for doc in &[
-        "cli.md",
-        "configuration.md",
-        "plugin-dev.md",
+        "features.md",
+        "deployment.md",
         "api.md",
+        "cli.md",
+        "plugin-dev.md",
     ] {
         let path = workspace_root().join("docs").join(doc);
         assert!(
@@ -165,24 +166,24 @@ fn server_config_no_benchmark_token_examples() {
     );
 }
 
-// ── docs/configuration.md checks ────────────────────────────────────
+// ── docs/deployment.md checks ───────────────────────────────────────
 
 #[test]
 fn configuration_no_unsupported_telemetry_modes() {
-    let content = read_doc_required("configuration.md");
+    let content = read_doc_required("deployment.md");
     assert!(
         !content.contains("dual_write"),
-        "configuration.md must not contain dual_write (removed from codebase)"
+        "deployment.md must not contain dual_write (removed from codebase)"
     );
     assert!(
         !content.contains("fallback_only") || content.contains("legacy"),
-        "configuration.md must not recommend fallback_only without legacy marker"
+        "deployment.md must not recommend fallback_only without legacy marker"
     );
 }
 
 #[test]
 fn configuration_docs_do_not_show_real_benchmark_token_example() {
-    let content = read_doc_required("configuration.md");
+    let content = read_doc_required("deployment.md");
     for token in &[
         "benchmark-bind",
         "benchmark-auth",
@@ -193,7 +194,7 @@ fn configuration_docs_do_not_show_real_benchmark_token_example() {
     ] {
         assert!(
             !content.contains(token),
-            "configuration.md must not contain '{}' (real benchmark token)",
+            "deployment.md must not contain '{}' (real benchmark token)",
             token
         );
     }
