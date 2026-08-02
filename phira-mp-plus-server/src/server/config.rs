@@ -20,6 +20,16 @@ pub struct Chart {
     /// Download URL for the .phira chart file (zip).
     #[serde(default)]
     pub file: Option<String>,
+    #[serde(default)]
+    pub level: String,
+    #[serde(default)]
+    pub difficulty: f32,
+    #[serde(default)]
+    pub charter: String,
+    #[serde(default)]
+    pub composer: String,
+    #[serde(default)]
+    pub rating: Option<f32>,
 }
 
 /// Record information from the Phira API

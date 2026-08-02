@@ -1051,30 +1051,34 @@ pub async fn select_chart(
         // remaining absolute deadline — a slow/blocked API must never let a
         // SelectChart commit after the client already timed out.
         let fetch_budget = deadline.saturating_duration_since(Instant::now());
-        let chart_name: String = match tokio::time::timeout(
-            fetch_budget,
-            user.server.phira_client.get_json::<crate::server::Chart>(
-                &endpoint,
-                None,
-                &format!("/chart/{id}"),
-                None,
-                crate::phira_client::PhiraRetryNoticeTarget::Silent,
-                None,
-            ),
-        )
-        .await
-        {
-            Ok(Ok(chart)) => chart.name,
-            Ok(Err(_)) => {
-                tracing::warn!("failed to fetch chart {id} from Phira API; using ID as name");
-                format!("#{id}")
-            }
-            Err(_) => {
-                // Deadline exhausted before the API returned — the client has
-                // already timed out. Do not commit the chart.
-                bail!("select chart timed out fetching chart metadata");
-            }
-        };
+        let (chart_name, chart_meta): (String, Option<(String, String, String, Option<f32>)>) =
+            match tokio::time::timeout(
+                fetch_budget,
+                user.server.phira_client.get_json::<crate::server::Chart>(
+                    &endpoint,
+                    None,
+                    &format!("/chart/{id}"),
+                    None,
+                    crate::phira_client::PhiraRetryNoticeTarget::Silent,
+                    None,
+                ),
+            )
+            .await
+            {
+                Ok(Ok(chart)) => (
+                    chart.name,
+                    Some((chart.charter, chart.composer, chart.level, chart.rating)),
+                ),
+                Ok(Err(_)) => {
+                    tracing::warn!("failed to fetch chart {id} from Phira API; using ID as name");
+                    (format!("#{id}"), None)
+                }
+                Err(_) => {
+                    // Deadline exhausted before the API returned — the client has
+                    // already timed out. Do not commit the chart.
+                    bail!("select chart timed out fetching chart metadata");
+                }
+            };
         debug!("chart name: {chart_name}");
 
         // 异步获取谱面时长（只下 info.txt，不拖整个 zip）
@@ -1114,6 +1118,18 @@ pub async fn select_chart(
             )
             .await
             .map_err(|e| anyhow!("{}", tr(e)))?;
+        // 广播谱面信息（谱师/曲师/难度/评分）
+        if let Some((charter, composer, level, rating)) = chart_meta {
+            if !charter.is_empty() || !composer.is_empty() {
+                let rating_part = rating.map(|r| format!("    评分: {r:.3}")).unwrap_or_default();
+                let content = format!(
+                    "谱师:{}    曲师:{}    难度: {}{}",
+                    charter, composer, level, rating_part
+                );
+                room.broadcast(ServerCommand::Message(Message::Chat { user: 0, content }))
+                    .await;
+            }
+        }
         Ok(())
     }
     .instrument(span)
