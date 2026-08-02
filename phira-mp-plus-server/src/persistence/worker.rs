@@ -117,13 +117,9 @@ async fn process_worker_loop(
     loop {
         // ---- Check pending control (deferred flush/shutdown) ----
         //
-        // IMPORTANT: use as_mut() / as_ref() instead of take() so the
-        // PendingControl is NOT consumed when conditions are not yet met.
-        // Previously take() was used, and if the re-check found the
-        // conditions still unsatisfied without a deadline expiry, the
-        // PendingControl fell out of scope and its oneshot reply sender
-        // was dropped — the caller received "acknowledgement was dropped"
-        // instead of waiting for the target events to complete.
+        // IMPORTANT: use as_mut()/as_ref() (NOT take()) so PendingControl is
+        // not consumed when conditions are unmet — take() would drop the
+        // oneshot sender and reply "acknowledgement was dropped" prematurely.
         if let Some(pc) = pending_control.as_mut() {
             let (target, deadline) = (pc.target(), pc.deadline());
             let buffer_remaining = buffer.range(..=target).count();
@@ -180,11 +176,9 @@ async fn process_worker_loop(
         }
 
         // ---- Retry pending WAL ACKs (P0-D) ----
-        // Run on every iteration, BEFORE the message fetch, so a pending ACK
-        // is retried even when the channel is idle (the fetch now times out
-        // when pending_acks is non-empty, but this block must run on timeout
-        // iterations too — previously it sat after `let Some(msg) else
-        // continue` and was skipped whenever no message arrived).
+        // Runs every iteration BEFORE the message fetch so a pending ACK is
+        // retried even when the channel is idle; if it sat after the fetch it
+        // would be skipped whenever no message arrived.
         if let Some((retry_id, retry_attempt)) = pending_acks.front().copied() {
             // P0-A: corruption/compact are FATAL — do NOT keep retrying ACK
             // appends against a possibly-bad tail.  Report the fatal state and
@@ -236,12 +230,10 @@ async fn process_worker_loop(
 
         // ---- Drain initial replay into the buffer (P0-A) ----
         //
-        // Replay events are moved into the SAME BTreeMap buffer keyed by their
-        // real wal_sequence, so they flow through the identical sequence gate
-        // as channel events.  Previously replay events bypassed the gate with a
-        // seq=0 sentinel, which let a RetryableFailure on an early replay event
-        // be skipped while later replay events committed — producing a final
-        // out-of-order state (P0-01).
+        // Replay events share the SAME sequence-gated buffer as channel events,
+        // keyed by their real wal_sequence; a seq=0 sentinel would let an early
+        // replay failure be skipped while later events commit — out-of-order
+        // state (P0-01).
         if !replay.is_empty() {
             while let Some((wal_id, event, seq)) = replay.pop_front() {
                 buffer.insert(seq, (wal_id, event, true)); // needs_wal_ack = true
@@ -297,13 +289,10 @@ async fn process_worker_loop(
             let result = match msg {
                 WorkerMessage::Event { wal_id, wal_sequence, event, needs_wal_ack } if wal_sequence != 0 => {
                     if next_expected_sequence == 0 {
-                        // First channel event — initialise the gate from
-                        // the minimum pending WAL sequence across ALL
-                        // un-ACKed entries (including in_flight ones).
-                        // Previously in_flight entries were excluded, which
-                        // allowed the gate to start past a WalOnly event
-                        // that was queued out-of-order, causing it to be
-                        // skipped as "stale" when it later arrived.
+                        // First channel event — initialise the gate from the
+                        // minimum pending WAL sequence across ALL un-ACKed
+                        // entries (incl. in_flight); excluding in_flight could
+                        // skip a WalOnly event queued out-of-order as "stale".
                         match worker_wal.list_pending().await {
                             Ok(pending) => {
                                 let min_seq = pending.iter()
@@ -735,10 +724,9 @@ async fn wal_recovery_scanner(
     send_gate: Arc<tokio::sync::Mutex<()>>,
 ) {
     let mut interval = tokio::time::interval(Duration::from_secs(5));
-    // Consume the immediate first tick, then let the loop's tick drive the
-    // first real scan at t = 5s (one configured period).  Previously two
-    // pre-loop ticks delayed the first scan to 10s, which was too slow to
-    // self-heal a transiently-failed replay event during startup (P0-D).
+    // Consume the immediate first tick so the loop's tick drives the first
+    // real scan at t = 5s (one configured period); two pre-loop ticks would
+    // delay it to 10s, too slow to self-heal a failed replay at startup (P0-D).
     interval.tick().await;
 
     loop {
@@ -752,10 +740,8 @@ async fn wal_recovery_scanner(
             }
         };
 
-        // Prune stale in_flight entries: any entry that is in in_flight but NOT
-        // in the WAL pending list was ACKed but never removed — this can happen
-        // if the old scanner code registered in_flight after try_send (the race
-        // is now fixed, but existing stale entries need cleanup).
+        // Prune stale in_flight entries: any entry in in_flight but NOT in the
+        // WAL pending list was ACKed but never removed.
         {
             let pending_ids: HashSet<uuid::Uuid> = pending.iter().map(|(id, _, _)| *id).collect();
             let mut in_flight_set = in_flight.lock().await;
@@ -1021,23 +1007,19 @@ impl PersistenceWorker {
                 {
                     Ok(Ok(permit)) => permit,
                     Ok(Err(_)) => {
-                        // WAL has the event — return WalOnly so the caller
-                        // knows the event is safe and will replayed on restart.
+                        // Event already in WAL — WalOnly; safe, replayed on restart.
                         record_wal_only(&self.stats, kind, summary).await;
                         return Ok(AdmissionOutcome::WalOnly);
                     }
                     Err(_) => {
-                        // WAL has the event — return WalOnly so the caller
-                        // knows the event is safe and the periodic recovery
-                        // scanner will re-enqueue it.
+                        // Event already in WAL — WalOnly; safe, scanner re-enqueues it.
                         record_wal_only(&self.stats, kind, summary).await;
                         return Ok(AdmissionOutcome::WalOnly);
                     }
                 }
             }
             Err(mpsc::error::TrySendError::Closed(_)) => {
-                // WAL has the event — return WalOnly so the caller knows the
-                // event is safe and will be replayed on restart.
+                // Event already in WAL — WalOnly; safe, replayed on restart.
                 record_wal_only(&self.stats, kind, summary).await;
                 return Ok(AdmissionOutcome::WalOnly);
             }
@@ -1062,19 +1044,18 @@ impl PersistenceWorker {
     pub async fn flush(&self, timeout: Duration) -> Result<(), String> {
         let (reply, rx) = oneshot::channel();
         // A SINGLE absolute deadline covers send_gate acquisition + control
-        // send + worker processing + reply (PMP41 P1).  Previously only the
-        // reply wait was bounded, so a contended send_gate or a full channel
-        // could hold the caller past its timeout.
+        // send + worker processing + reply (PMP41 P1); bounding only the reply
+        // wait would let a contended send_gate or full channel exceed the
+        // caller's timeout.
         let deadline = Instant::now() + timeout;
         let remaining = move || deadline.saturating_duration_since(Instant::now());
         let target;
         {
             // Linearization point (P0-B): acquire send_gate FIRST, then read
-            // the WAL sequence INSIDE the gate.  Previously the sequence was
-            // read before the gate, so a concurrent enqueue that already held
-            // the gate (admit in progress) could complete AFTER the target was
-            // captured but still be excluded from this flush — the caller
-            // would return before that event reached a terminal state.
+            // the WAL sequence INSIDE the gate; reading it before the gate
+            // would let a concurrent enqueue excluded from this flush complete
+            // after the target was captured, so the caller would return before
+            // that event reached a terminal state.
             let _send_guard = tokio::time::timeout(remaining(), self.send_gate.lock())
                 .await
                 .map_err(|_| "persistence flush timed out acquiring send gate".to_string())?;

@@ -280,12 +280,9 @@ impl DbManager {
         };
 
         // 1. Insert visit record (idempotent guard).
-        // `ON CONFLICT DO NOTHING` (no index specified) catches conflicts on
-        // ANY unique constraint — both event_id and session_id.  Previously
-        // `ON CONFLICT (event_id)` only handled the event_id index, so a retry
-        // that reused an existing session_id with a new event_id raised a hard
-        // error, failing the whole transaction and sending the event to the
-        // dead-letter queue in a loop (P1).
+        // `ON CONFLICT DO NOTHING` (no index) catches conflicts on ANY unique
+        // constraint (event_id AND session_id); specifying only (event_id)
+        // would hard-error a retry reusing a session_id and loop the DLQ (P1).
         let is_new_visit = match sqlx::query(
             "INSERT INTO mp_user_visits (event_id, session_id, user_id, connected_at, created_at)
              VALUES ($1, $2, $3, $4, $5)
@@ -416,14 +413,10 @@ impl DbManager {
             .await;
         }
 
-        // 4. Set online (playtime) — use connected_at for session_start so the
-        //    elapsed-time calculation is relative to the actual connection time.
-        //    Use the event's server_instance_id (captured when the event was
-        //    created) so WAL/DLQ replay on a new instance preserves the
-        //    original session ownership.  Previously the global
-        //    server_instance::current() was read here, which caused historical
-        //    auth events replayed on a new instance to be marked as belonging
-        //    to the current instance — producing phantom online sessions.
+        // 4. Set online (playtime) — use connected_at for session_start and the
+        //    event's captured server_instance_id so WAL/DLQ replay on a new
+        //    instance preserves original session ownership (reading the global
+        //    server_instance::current() here would create phantom online sessions).
         if sqlx::query(
             "INSERT INTO playtime (user_id, total_secs, session_start, server_instance_id, session_id)
              VALUES ($1, 0, $2, $3, $4)

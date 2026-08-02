@@ -278,8 +278,8 @@ impl PlusServerState {
     /// 等到 reqwest 超时。加入房间、强制迁移、设置 endpoint 等协议关键路径不能等待它，
     /// 否则客户端会先看到 timeout，随后重连才发现服务端其实已经把用户放进房间。
     ///
-    /// After Phase 2 Work C, the room override is no longer directly readable
-    /// from Room. We use the server's default endpoint.
+    /// The room override is no longer directly readable from Room — use the
+    /// server's default endpoint.
     ///
     /// NOTE: Accepts `&Arc<Self>` so the background task can clone the Arc.
     /// Called as `server.refresh_room_display_metadata_background(&room)` where

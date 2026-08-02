@@ -748,7 +748,6 @@ pub(super) async fn force_start_playing(
     }
     broadcast_state_change(lc, &state.lifecycle, state.chart).await;
 
-    // Remove old open_round call — moved above
     lc.dispatch_plugin_event(PluginEvent::GameStart {
         user_id: 0,
         room_id: lc.room().id.to_string(),

@@ -4,10 +4,10 @@
 //! 协议 (phira_mp_common::Stream) 进行完整的认证与房间命令交互。
 //! 收集命令延迟和吞吐量指标。
 //!
-//! ## 改进 (PMP27 迭代)
+//! ## 设计
 //!
 //! - **Per-Room 编排器**: 用 `RoomCoordinator`（基于 `watch` 通道）
-//!   替换全局 `Barrier`，每个房间独立同步阶段
+//!   每个房间独立同步阶段
 //! - **阶段**: auth -> create -> join -> select -> start -> ready -> play -> finish
 //! - **取消令牌**: 第一个客户端失败会设置 `cancelled` 标志，避免死锁
 //! - **SteadyState**: 正确的房间分组（host 创建、joiners 加入），

@@ -203,12 +203,11 @@ impl PersistenceWal {
         let wal_exists = tokio::fs::try_exists(&self.path).await.unwrap_or(false);
         if !wal_exists {
             if is_clean {
-                // Compact-to-zero removed the WAL and marked the marker clean.
-                // KEEP it clean — the marker only becomes active once the first
-                // new admission succeeds (mark_marker_active is called from
-                // admit).  Previously this rewrote clean→active eagerly, so two
-                // consecutive idle restarts would make a legitimately-missing
-                // WAL look like accidental deletion (PMP36 P0-03).
+                // Compact-to-zero removed the WAL and left the marker clean.
+                // KEEP it clean — the marker only becomes active after the
+                // first new admission succeeds; eagerly rewriting clean→active
+                // would make two idle restarts look like accidental deletion
+                // (PMP36 P0-03).
                 return Ok(());
             }
             // Also accept markers created before the "clean" field existed

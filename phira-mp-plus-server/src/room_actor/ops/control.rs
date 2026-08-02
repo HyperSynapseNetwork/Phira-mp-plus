@@ -39,10 +39,8 @@ impl RoomCommandGateway {
 
     /// Cancel a pending admin-start wait state.
     ///
-    /// The old inline version sent `CancelGame` while holding the room state write
-    /// lock.  Step 17 keeps the external behavior but narrows the critical section:
-    /// it flips `WaitForReady -> SelectChart` first, drops the lock, and only then
-    /// sends client/control messages and publishes state changes.
+    /// Flip `WaitForReady -> SelectChart` first and drop the room state lock
+    /// before sending client/control messages — keep the critical section narrow.
     pub async fn cancel_start(
         &self,
         state: &PlusServerState,

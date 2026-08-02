@@ -257,11 +257,10 @@ impl PlusServer {
         // plugins are loaded or network connections are accepted, recover any
         // state from the previous server session (unfinished rounds, etc.).
         //
-        // The RoomCommandGateway mailbox MUST be started BEFORE recovery so
-        // that restore_persistent_rooms → init_empty_room → room_mailbox_sender
-        // has the self_ref/state_ref weak references available.  Previously
-        // start_mailbox ran after recover_state, so persistent room
-        // restoration silently failed (room_mailbox_sender = None).
+        // The RoomCommandGateway mailbox MUST start BEFORE recovery so
+        // restore_persistent_rooms → init_empty_room → room_mailbox_sender has
+        // the self_ref/state_ref weak references available; starting it after
+        // recover_state silently failed persistent room restoration.
         state.room_commands.start_mailbox(Arc::clone(&state), 1024);
         info!("startup recovery: running postgres state recovery");
         super::recovery::recover_state(&state, &state.db_manager).await?;

@@ -985,10 +985,8 @@ pub async fn lock_room(
         )
         .await
         .map_err(|e| anyhow!("{}", tr(e)))?;
-    // Broadcast to all users including the sender (host). The host's client
+    // Broadcast to all users including the sender (host): the host's client
     // needs Message::LockRoom to update its local lock state in the UI.
-    // The old send_except approach (recent commit) broke this: the host saw
-    // the command succeed but the lock icon never changed in their own client.
     room.send(Message::LockRoom { lock }).await;
     Ok(())
 }

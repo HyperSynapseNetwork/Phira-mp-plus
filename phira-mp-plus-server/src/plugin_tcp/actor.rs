@@ -224,12 +224,8 @@ impl PluginTcpActor {
                 let channel = Arc::new(PluginEventChannel::new(MAX_PENDING_EVENTS_PER_PLUGIN));
                 let worker_notify = channel.notify();
                 // Use MAX_CONCURRENT_CALLBACKS FIXED worker tasks that directly
-                // await each callback.  This bounds BOTH the number of queued
-                // events (bounded channel) AND the number of in-flight callbacks
-                // (one per worker), unlike the previous design which spawned a
-                // tokio task per event and then waited on a semaphore inside
-                // each task — that could accumulate an unbounded number of
-                // waiting tasks when a slow plugin was fed continuously.
+                // await each callback: this bounds BOTH queued events (bounded
+                // channel) AND in-flight callbacks (one per worker).
                 //
                 // Per-connection mailbox (P0-E): events for the SAME connection
                 // are FIFO inside its mailbox; a worker claims a ready handle,

@@ -14,21 +14,16 @@
 //! principle as the original `std::net::TcpStream::peek` approach, but
 //! without converting to a blocking stream.
 //!
-//! # Bugs fixed from PMP22 audit
+//! # Design notes
 //!
-//! 1. **v1 `PROXY ` prefix duplication** — the old `read_proxy_v1` called
-//!    `header.extend_from_slice(b"PROXY ")` after peek had already confirmed
-//!    the prefix, doubling it.  The new v1 reader pushes each byte exactly
-//!    once (the peek is non-consuming).
-//! 2. **`tokio::TcpStream -> std::TcpStream` nonblocking mode** — the old
-//!    code converted to `std::net::TcpStream` via `into_std()` which left the
-//!    socket in `O_NONBLOCK` mode, causing `WouldBlock` on `read_exact`.
-//!    The rewrite is pure tokio async — no conversion at all.
-//! 3. **Error branch `127.0.0.1:1` panic** — removed.  Errors are returned
-//!    cleanly via [`ProxyError`].
-//! 4. **Rate limiting on proxy IP only** — the caller now also rate-limits
-//!    the forwarded client IP after proxy header parsing.
-//! 5. **No timeout** — all reads are bounded by a [`Duration`] parameter.
+//! - The v1 reader pushes each byte exactly once (peek is non-consuming), so
+//!   the `PROXY ` prefix is never duplicated.
+//! - Pure tokio async throughout — no `std::net::TcpStream` conversion, so the
+//!   socket never leaves async non-blocking mode.
+//! - Errors are returned cleanly via [`ProxyError`]; no panics.
+//! - The forwarded client IP is rate-limited after proxy header parsing, not
+//!   just the proxy address.
+//! - All reads are bounded by a [`Duration`] parameter.
 
 use std::fmt;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};

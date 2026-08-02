@@ -10,10 +10,8 @@ use serde_json::Value;
 
 /// Return the embedded sqlx migrator.
 ///
-/// Uses `sqlx::migrate!("migrations")` which embeds migration SQL at compile
-/// time.  The old approach (`env!("CARGO_MANIFEST_DIR")/migrations`) resolved
-/// to a source-tree absolute path that did not exist in Docker runtime images,
-/// causing silent migration failures in production containers.
+/// Uses `sqlx::migrate!("migrations")` to embed migration SQL at compile
+/// time — no runtime filesystem access, so migrations work in Docker images.
 #[cfg(feature = "postgres")]
 pub fn migrator() -> sqlx::migrate::Migrator {
     // `./migrations` resolves relative to CARGO_MANIFEST_DIR at compile time.

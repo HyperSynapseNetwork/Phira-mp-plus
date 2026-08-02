@@ -25,39 +25,17 @@
 //! 8. live 状态由 SetLive 命令管理 ✅
 //! 9. members/monitors 由 AddUser/RemoveUser 命令管理 ✅
 //!
-//! ## Phase 2, Work D — Gateway unification audit (2026-07-23)
+//! All room mutations MUST route through `RoomCommandGateway` (per-room
+//! mailbox) rather than touching `state.rooms` / `room.*` directly.
 //!
-//! All entry points audited for direct room mutation bypasses:
-//!
-//! ### Already unified (route through RoomCommandGateway)
-//! - **WIT plugin path** (wit_host.rs): All room mgmt methods call
-//!   `query_api_result` → `state_query.call()` → `server_state_query_dispatch`
-//!   → `s.room_commands.*` → mailbox.  No direct `state.rooms` access.
-//! - **HTTP plugin path** (plugin_http.rs): Handlers call `pm.call_plugin_api()`
-//!   → plugin `on_api` → same WIT path above.
-//! - **Session path** (session_room.rs): lock/cycle/select_chart/start/ready/
-//!   cancel_ready/played/abort all use `user.server.room_commands.*`.
-//! - **CLI path**: All room mutations except chart-id use
-//!   `state.room_commands.*`.
-//! - **State query dispatch** (server/query.rs): All room mutation methods
-//!   route through `s.room_commands.*`.
-//!
-//! ### Fixed in this audit
-//! - **CLI `room set chart-id`** (cli/commands/room.rs): Now uses
-//!   `room_commands.set_chart()` instead of directly writing `room.chart`
-//!   and calling `room.send()` / `room.on_state_change()` /
-//!   `room.publish_update()`.
-//!
-//! ### Bypasses without a gateway equivalent (TODO)
-//! - `room.create_empty` in state query dispatch: Calls `s.create_empty_room()`
-//!   directly.  No `RoomActorCommand::CreateRoom` variant exists.
-//! - ~~`set_room_persistent_empty` in PlusServer: Now routes through
-//!   gateway via `RoomActorCommand::SetPersistentEmpty`.~~
-//! - `send_room_chat` in state query dispatch: Calls `room.send()` directly.
-//!   Read-only w.r.t. room state (message broadcast), but bypasses mailbox.
+//! Known bypasses without a gateway equivalent (TODO):
+//! - `room.create_empty` in state query dispatch → `s.create_empty_room()`
+//!   directly; no `RoomActorCommand::CreateRoom` variant exists.
+//! - `send_room_chat` in state query dispatch → `room.send()` directly
+//!   (read-only message broadcast, but bypasses the mailbox).
 //! - `create_empty_room` / `force_move_user_to_room` / `assign_room_host_if_missing`
-//!   in PlusServer: Direct Room manipulation without a gateway path.
-//!   These are complex multi-step operations that may need new command variants.
+//!   in PlusServer: direct Room manipulation; complex multi-step operations that
+//!   may need new command variants.
 
 #![allow(clippy::too_many_arguments, clippy::type_complexity)]
 

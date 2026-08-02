@@ -559,14 +559,11 @@ impl PersistenceWal {
         self.check_disk_space().await?;
         let id = uuid::Uuid::new_v4();
 
-        // Allocate the sequence number INSIDE the io_gate critical section,
-        // serialized with the append+fsync.  Previously the sequence was
-        // allocated with fetch_add BEFORE append_frame; if the append failed
-        // (disk full, fsync error) the sequence was consumed but no frame was
-        // written, creating a permanent gap that could deadlock the worker's
-        // sequence gating (it would wait forever for a sequence that never
-        // appears).  With load+store inside the gate, a failed append leaves
-        // the counter unchanged — the next admission retries the same sequence.
+        // Allocate the sequence INSIDE the io_gate critical section, serialized
+        // with append+fsync: a pre-gate fetch_add would consume a sequence on a
+        // failed append, leaving a permanent gap that deadlocks the worker's
+        // sequence gating.  Load+store inside the gate leaves the counter
+        // unchanged on failure — the next admission retries the same sequence.
         let _guard = self.io_gate.lock().await;
         let seq = self.admit_sequence.load(Ordering::Acquire) + 1;
         let frame = WalFrame::new(WalRecord::Admission { id, event, sequence: seq })?;

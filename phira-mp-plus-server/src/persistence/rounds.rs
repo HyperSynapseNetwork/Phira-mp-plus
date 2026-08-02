@@ -534,10 +534,9 @@ impl DbManager {
     /// `mp_rounds.finished_at` column was not set (defensive safety net).
     /// Check whether a round has a `round.completed` event in mp_events.
     ///
-    /// Returns `Err` on database failure so callers can fail-closed.  Previously
-    /// this folded SQL errors into `false`, which caused crash recovery to
-    /// treat a genuinely-completed round (whose completion event could not be
-    /// read due to a transient DB error) as unfinished and abort it (P0-11).
+    /// Returns `Err` on database failure so callers can fail-closed — folding
+    /// SQL errors into `false` would let crash recovery abort a genuinely
+    /// completed round on a transient DB error (P0-11).
     pub async fn has_round_completion_event(
         &self,
         round_uuid: &str,

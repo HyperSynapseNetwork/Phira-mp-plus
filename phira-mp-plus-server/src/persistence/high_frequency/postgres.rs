@@ -247,10 +247,9 @@ async fn try_copy_write_inner(
 /// key, so retrying the same batch of items is idempotent at the database
 /// level (ON CONFLICT DO NOTHING).
 pub(crate) fn batch_uuid(min_seq: u64, max_seq: u64, instance_id: &str) -> String {
-    // Include the server instance ID so the batch key is unique across boots.
-    // Previously the key was hf-{min}-{max}; since the HF admission sequence
-    // restarts at 1 each boot, a post-restart batch with the same min/max would
-    // collide with a pre-restart batch and be deduplicated incorrectly (P1).
+    // Include the server instance ID so the batch key is unique across boots:
+    // the HF admission sequence restarts at 1 each boot, so a bare hf-{min}-{max}
+    // key would collide with a pre-restart batch and be deduplicated wrongly (P1).
     format!("hf-{instance_id}-{min_seq}-{max_seq}")
 }
 
