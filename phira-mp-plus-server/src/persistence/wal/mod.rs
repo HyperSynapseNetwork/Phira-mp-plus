@@ -459,16 +459,22 @@ impl PersistenceWal {
         // moves the tail, so [original_len, EOF) is exactly what this append
         // attempt wrote.
         let tail = match async {
-            let cur_len = file.metadata().await?.len();
+            let cur_len = file
+                .metadata()
+                .await
+                .map_err(|e| e.to_string())?
+                .len();
             if cur_len < original_len {
                 return Err(
                     "WAL is shorter than the pre-append length; the tail cannot be classified"
                         .to_string(),
                 );
             }
-            file.seek(SeekFrom::Start(original_len)).await?;
+            file.seek(SeekFrom::Start(original_len))
+                .await
+                .map_err(|e| e.to_string())?;
             let mut buf = Vec::new();
-            file.read_to_end(&mut buf).await?;
+            file.read_to_end(&mut buf).await.map_err(|e| e.to_string())?;
             Ok::<Vec<u8>, String>(buf)
         }
         .await
@@ -517,8 +523,8 @@ impl PersistenceWal {
         // replay).
         if is_valid_frame(&tail) {
             return match async {
-                file.write_all(b"\n").await?;
-                file.sync_data().await?;
+                file.write_all(b"\n").await.map_err(|e| e.to_string())?;
+                file.sync_data().await.map_err(|e| e.to_string())?;
                 Ok::<(), String>(())
             }
             .await
