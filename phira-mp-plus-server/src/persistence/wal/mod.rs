@@ -6,8 +6,9 @@
 //!
 //! # Production guarantees
 //!
-//! - All I/O (admit, ack, compact) is serialized through `io_gate` so replay
-//!   and compaction see a consistent point-in-time snapshot.
+//! - All I/O (admit, ack, compact, replay, and the `list_pending` read) is
+//!   serialized through `io_gate` so every reader — including the periodic
+//!   recovery scanner — sees a consistent point-in-time snapshot.
 //! - Compact reads, writes temp, fsync, rename, and fsync-parent inside a
 //!   single critical section — no concurrent admission/ACK can be lost.
 //! - Replay failure is **fail-closed**: the WAL rejects further admissions
@@ -347,6 +348,11 @@ impl PersistenceWal {
 
         let mut file = tokio::fs::OpenOptions::new()
             .create(true)
+            // read(true) so a failed append can read the tail back through the
+            // SAME handle (classify_append_failure) instead of re-opening the
+            // file — a re-open can race with page-cache propagation and miss
+            // bytes this append just wrote (PMP46 blocker 2).
+            .read(true)
             .append(true)
             .open(&self.path)
             .await
@@ -420,9 +426,22 @@ impl PersistenceWal {
     /// Classify the state of the WAL tail after a failed write/flush/sync.
     /// Caller MUST hold `io_gate` and pass the open `file` handle.
     ///
-    /// Reads the region written since `original_len` and distinguishes:
-    /// - a complete, checksum-valid frame → re-sync and return
+    /// Reads the region written since `original_len` THROUGH THE SAME OPEN
+    /// HANDLE that performed the append (seek + read), never by re-opening the
+    /// file.  Re-opening can race with page-cache propagation and observe a
+    /// stale (or missing) tail for bytes this append just wrote, which would
+    /// misclassify a durable frame as a rollback candidate and truncate it
+    /// (PMP46 blocker 2 / flaky
+    /// `classify_complete_frame_as_admitted_degraded`).
+    ///
+    /// Distinguishes:
+    /// - a complete, checksum-valid frame ending in `\n` → re-sync and return
     ///   [`AppendOutcome::AdmittedDegraded`];
+    /// - a complete, checksum-valid frame MISSING its trailing newline → append
+    ///   the delimiter, re-sync, and return [`AppendOutcome::AdmittedDegraded`]
+    ///   (the frame is durable; without normalization the next append would
+    ///   merge two frames into one corrupt line — the same hazard
+    ///   `append_missing_newline` repairs during replay);
     /// - a truncated frame → durable rollback and return
     ///   [`AppendOutcome::Rejected`];
     /// - an unreadable/unconfirmable tail → [`AppendOutcome::FatalUnknown`]
@@ -433,44 +452,94 @@ impl PersistenceWal {
         original_len: u64,
         write_err: &str,
     ) -> AppendOutcome {
-        let bytes = match tokio::fs::read(&self.path).await {
-            Ok(bytes) => bytes,
+        use std::io::SeekFrom;
+        use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
+
+        // Read the tail via the open handle.  Under `io_gate` no other writer
+        // moves the tail, so [original_len, EOF) is exactly what this append
+        // attempt wrote.
+        let tail = match async {
+            let cur_len = file.metadata().await?.len();
+            if cur_len < original_len {
+                return Err(
+                    "WAL is shorter than the pre-append length; the tail cannot be classified"
+                        .to_string(),
+                );
+            }
+            file.seek(SeekFrom::Start(original_len)).await?;
+            let mut buf = Vec::new();
+            file.read_to_end(&mut buf).await?;
+            Ok::<Vec<u8>, String>(buf)
+        }
+        .await
+        {
+            Ok(buf) => buf,
             Err(e) => {
                 return AppendOutcome::FatalUnknown(format!(
-                    "append WAL {} failed ({write_err}) and the tail cannot be read to classify: {e}",
+                    "append WAL {} failed ({write_err}) and the tail cannot be read via the \
+                     open handle to classify: {e}",
                     self.path.display()
                 ));
             }
         };
-        // The bytes written by the failed append are the region after the
-        // pre-append length.  Guard against an inconsistent length.
-        let start = (original_len as usize).min(bytes.len());
-        let tail = &bytes[start..];
 
         if tail.is_empty() {
-            // Nothing observable was written (or a prior set_len already
-            // truncated).  Make the truncation durable and report Rejected.
+            // Nothing observable was written.  Make the truncation durable and
+            // report Rejected.
             return self.durable_rollback(file, original_len, write_err).await;
         }
 
-        // A complete, checksum-valid frame may actually have been written in
-        // full before the sync failed.  If so, do NOT roll it back — the event
-        // is durable on disk; re-sync to confirm (P0-B).
-        match serde_json::from_slice::<WalFrame>(tail) {
-            Ok(frame) if frame.verify().is_ok() && frame.ver <= WAL_FORMAT_VERSION => {
-                match file.sync_data().await {
-                    Ok(()) => AppendOutcome::AdmittedDegraded,
-                    Err(se) => AppendOutcome::FatalUnknown(format!(
-                        "append WAL {} failed ({write_err}); complete frame present but re-sync failed: {se}",
-                        self.path.display()
-                    )),
-                }
-            }
-            _ => {
-                // Truncated / corrupt frame — attempt a durable rollback.
-                self.durable_rollback(file, original_len, write_err).await
-            }
+        // Does this byte slice decode to a complete, checksum-valid frame?
+        let is_valid_frame = |bytes: &[u8]| -> bool {
+            serde_json::from_slice::<WalFrame>(bytes)
+                .map(|f| f.verify().is_ok() && f.ver <= WAL_FORMAT_VERSION)
+                .unwrap_or(false)
+        };
+
+        // Complete frame WITH trailing newline — the frame is fully durable;
+        // re-sync to confirm (P0-B) and do NOT roll it back.
+        if tail.last() == Some(&b'\n') && is_valid_frame(&tail[..tail.len() - 1]) {
+            return match file.sync_data().await {
+                Ok(()) => AppendOutcome::AdmittedDegraded,
+                Err(se) => AppendOutcome::FatalUnknown(format!(
+                    "append WAL {} failed ({write_err}); complete frame present but re-sync \
+                     failed: {se}",
+                    self.path.display()
+                )),
+            };
         }
+
+        // Complete frame WITHOUT the trailing newline (crash between the frame
+        // write and the delimiter).  The frame is durable and must NOT be
+        // rolled back, but leaving it unterminated would merge the next append
+        // into it.  Append the missing delimiter via the same handle and
+        // re-sync (PMP46: same hazard `append_missing_newline` repairs during
+        // replay).
+        if is_valid_frame(&tail) {
+            return match async {
+                file.write_all(b"\n").await?;
+                file.sync_data().await?;
+                Ok::<(), String>(())
+            }
+            .await
+            {
+                Ok(()) => {
+                    // NB: do NOT add total_bytes here — the caller
+                    // (append_frame_inner) already credits `line.len()`, which
+                    // includes this newline, so the frame's bytes plus the
+                    // delimiter account exactly for the file growth.
+                    AppendOutcome::AdmittedDegraded
+                }
+                Err(e) => AppendOutcome::FatalUnknown(format!(
+                    "append WAL {} failed ({write_err}); complete frame present but appending \
+                     the missing newline failed: {e}",
+                    self.path.display()
+                )),
+            };
+        }
+
+        // Truncated / corrupt frame — attempt a durable rollback.
+        self.durable_rollback(file, original_len, write_err).await
     }
 
     /// Durably roll back a failed append: set_len + sync_all + parent sync.
@@ -482,6 +551,28 @@ impl PersistenceWal {
         original_len: u64,
         write_err: &str,
     ) -> AppendOutcome {
+        // Guard: set_len() only ever TRUNCATES.  If the file is already shorter
+        // than the rollback point, set_len(original_len) would EXTEND the file
+        // with zero bytes — that is WAL corruption, not recovery.  The tail
+        // state is then unknowable: fail closed (P0-A).
+        let cur_len = match file.metadata().await {
+            Ok(m) => m.len(),
+            Err(e) => {
+                return AppendOutcome::FatalUnknown(format!(
+                    "append WAL {} failed AND the current length cannot be read to roll back: \
+                     {write_err}; stat error: {e}",
+                    self.path.display()
+                ));
+            }
+        };
+        if cur_len < original_len {
+            return AppendOutcome::FatalUnknown(format!(
+                "append WAL {} failed AND the WAL is shorter than the rollback point \
+                 ({cur_len} < {original_len}) — tail state unknown",
+                self.path.display()
+            ));
+        }
+
         let rollback_ok = async {
             file.set_len(original_len)
                 .await
@@ -1213,11 +1304,13 @@ impl PersistenceWal {
 
     /// List unacknowledged admissions with their sequence numbers.
     ///
-    /// Unlike `replay()`, this is a pure read — it does not set
-    /// `replay_succeeded`, truncate trailing garbage, write instance
-    /// markers, or mutate any WAL state.  It is safe to call at any
-    /// time after a successful `replay()` (or on an empty/never-used
-    /// WAL).
+    /// Unlike `replay()`, this read does not set `replay_succeeded`, truncate
+    /// trailing garbage, write instance markers, or mutate any WAL state.  It
+    /// acquires `io_gate` so the byte snapshot is a consistent point-in-time
+    /// view — it never observes an append mid-`write_all` (a torn tail that
+    /// would otherwise be mis-classified as a trailing truncation).  Safe to
+    /// call at any time after a successful `replay()` (or on an empty/never
+    /// used WAL).
     ///
     /// Returns the set of (id, event, seq) whose ACK has not yet
     /// been observed, in file order.  Sequence numbers come directly
@@ -1228,6 +1321,8 @@ impl PersistenceWal {
         if !self.replay_succeeded.load(Ordering::Acquire) {
             return Ok(Vec::new());
         }
+        // Serialize with writers so we never read a half-written append tail.
+        let _guard = self.io_gate.lock().await;
         let bytes = match tokio::fs::read(&self.path).await {
             Ok(bytes) => bytes,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
@@ -1925,6 +2020,7 @@ mod tests {
         // complete, checksum-valid frame without syncing, then classify.
         use tokio::io::AsyncWriteExt;
         let mut file = tokio::fs::OpenOptions::new()
+            .read(true)
             .append(true)
             .open(&path)
             .await
@@ -1970,6 +2066,7 @@ mod tests {
         // Simulate a partial write (crash during append).
         use tokio::io::AsyncWriteExt;
         let mut file = tokio::fs::OpenOptions::new()
+            .read(true)
             .append(true)
             .open(&path)
             .await
@@ -1989,6 +2086,61 @@ mod tests {
         // The file must be durably rolled back to the original length.
         let len = tokio::fs::metadata(&path).await.unwrap().len();
         assert_eq!(len, original_len, "the WAL must be truncated back durably");
+
+        let _ = tokio::fs::remove_file(path.with_extension("wal.instance")).await;
+        let _ = tokio::fs::remove_file(path).await;
+    }
+
+    #[tokio::test]
+    async fn classify_complete_frame_without_newline_normalizes() {
+        let path =
+            std::env::temp_dir().join(format!("pmp-wal-cls-nonl-{}.jsonl", uuid::Uuid::new_v4()));
+        let wal = PersistenceWal::new(&path);
+        wal.replay().await.unwrap();
+        let (id, _) = wal.admit(make_event("base")).await.unwrap();
+        wal.ack(id).await.unwrap();
+        let original_len = tokio::fs::metadata(&path).await.unwrap().len();
+
+        // Simulate a write that delivered the complete frame JSON but NOT the
+        // trailing newline before the sync failed (crash between frame and
+        // delimiter).  classify must KEEP the frame and append the missing
+        // newline — leaving it unterminated would merge the next append into a
+        // single corrupt line (PMP46 / PMP38 P0-B).
+        use tokio::io::AsyncWriteExt;
+        let mut file = tokio::fs::OpenOptions::new()
+            .read(true)
+            .append(true)
+            .open(&path)
+            .await
+            .unwrap();
+        let frame = WalFrame::new(WalRecord::Ack {
+            id: uuid::Uuid::new_v4(),
+        })
+        .unwrap();
+        let line = serde_json::to_vec(&frame).unwrap();
+        // Write the frame JSON WITHOUT the trailing '\n'.
+        file.write_all(&line).await.unwrap();
+
+        let outcome = wal
+            .classify_append_failure(&mut file, original_len, "simulated sync failure")
+            .await;
+        assert!(
+            matches!(&outcome, AppendOutcome::AdmittedDegraded),
+            "a complete frame without a trailing newline must classify as AdmittedDegraded, got {outcome:?}"
+        );
+        assert!(!wal.is_fatal(), "AdmittedDegraded must not latch fatal");
+        // The frame must be present AND terminated with exactly one newline so
+        // the next append does not merge two frames.
+        let bytes = tokio::fs::read(&path).await.unwrap();
+        assert_eq!(
+            bytes.len() as u64,
+            original_len + line.len() as u64 + 1,
+            "the confirmed frame must remain with exactly one trailing newline"
+        );
+        assert_eq!(bytes.last(), Some(&b'\n'), "the tail must end with a newline");
+        // Replay must see the normalized frame and report no pending work.
+        let replay = wal.replay().await.unwrap();
+        assert_eq!(replay.len(), 0, "the normalized ack frame must replay cleanly");
 
         let _ = tokio::fs::remove_file(path.with_extension("wal.instance")).await;
         let _ = tokio::fs::remove_file(path).await;
