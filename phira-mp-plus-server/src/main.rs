@@ -117,8 +117,8 @@ async fn main() -> Result<()> {
     std::fs::create_dir_all("data")?;
     std::fs::create_dir_all(&config.plugins_dir)?;
     if let Err(e) = config.validate() {
-        print_startup_guidance("配置验证", &e);
-        return Err(e);
+        print_startup_guidance("配置验证", &e.to_string());
+        return Err(e.into());
     }
 
     let cli_enabled = config.cli_enabled;
@@ -177,7 +177,7 @@ async fn main() -> Result<()> {
     let server = match PlusServer::new(config).await {
         Ok(server) => server,
         Err(e) => {
-            print_startup_guidance("服务器启动", &e);
+            print_startup_guidance("服务器启动", &e.to_string());
             return Err(e);
         }
     };
@@ -552,9 +552,9 @@ impl ConfigLoad {
 }
 
 /// 启动失败时输出引导信息（常见配置问题 → 解决方案）。
-fn print_startup_guidance(stage: &str, err: &anyhow::Error) {
-    eprintln!("\n⚠️  启动失败（{stage}）: {err:#}");
-    let msg = format!("{err}").to_lowercase();
+fn print_startup_guidance(stage: &str, err_text: &str) {
+    eprintln!("\n⚠️  启动失败（{stage}）: {err_text}");
+    let msg = err_text.to_lowercase();
     if msg.contains("database_url") || msg.contains("postgres") || msg.contains("连接失败") {
         eprintln!("  ─ 解决方案 ─");
         eprintln!("  1. 安装 PostgreSQL：sudo apt install postgresql && sudo systemctl start postgresql");
