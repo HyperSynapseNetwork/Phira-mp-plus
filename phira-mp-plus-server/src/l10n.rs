@@ -33,9 +33,8 @@ fn make_bundle(source: &str) -> Bundle {
     let langid: LanguageIdentifier = "en-US".parse().expect("valid langid");
     let mut bundle = FluentBundle::new_concurrent(vec![langid]);
     bundle.add_resource(res).expect("failed to add resource");
-    // Fluent 默认在带变量的 pattern 里每个 placeable 前后插入双向隔离字符
-    // \u{2068}(FSI)/\u{2069}(PDI)，部分客户端把它们渲染成方块豆腐块
-    // （金丝雀反馈：结算屏幕乱码）。统一关闭隔离。
+    // Fluent 默认在 placeable 前后插入双向隔离字符（\u{2068}/\u{2069}），
+    // 部分客户端会渲染成方块，统一关闭。
     bundle.set_use_isolating(false);
     bundle
 }
