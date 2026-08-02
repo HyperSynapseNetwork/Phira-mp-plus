@@ -6,6 +6,7 @@
 mod actors;
 mod commands;
 mod events;
+mod latency;
 mod persistence;
 mod phira;
 mod rooms;
@@ -30,13 +31,14 @@ impl CliHandler {
             "actors" => self.print_runtime_actors().await,
             "schema" => self.print_runtime_schema().await,
             "persistence" => self.print_runtime_persistence().await,
+            "latency" => self.print_runtime_latency().await,
             _ => {
                 self.out(format!(
                     "  {} 未知 runtime 子命令: {}",
                     c::red("✗"),
                     c::yellow(sub)
                 ));
-                self.out(format!("  {} 可用: runtime status | phira | commands | events | persistence | schema | actors | rooms", c::dim("▸")));
+                self.out(format!("  {} 可用: runtime status | phira | commands | events | persistence | schema | actors | rooms | latency", c::dim("▸")));
             }
         }
     }

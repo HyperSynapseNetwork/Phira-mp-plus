@@ -24,7 +24,7 @@ use std::time::{Duration, Instant};
 /// Millisecond bucket boundaries (upper bound exclusive). Bucket `i` covers
 /// `[boundaries[i-1], boundaries[i])`; the final bucket covers
 /// `[last_boundary, +∞)`.
-const LATENCY_BOUNDARIES_MS: [u64; 8] = [1, 5, 10, 50, 100, 500, 1_000, 5_000];
+pub(crate) const LATENCY_BOUNDARIES_MS: [u64; 8] = [1, 5, 10, 50, 100, 500, 1_000, 5_000];
 
 /// Simple fixed-bucket latency histogram (all fields const-constructible).
 #[derive(Debug)]
@@ -62,6 +62,11 @@ impl LatencyHistogram {
     #[cfg(test)]
     pub(crate) fn total(&self) -> u64 {
         self.counts.iter().map(|c| c.load(Ordering::Relaxed)).sum()
+    }
+
+    /// Snapshot of per-bucket counts (length = LATENCY_BOUNDARIES_MS.len() + 1).
+    pub(crate) fn snapshot(&self) -> Vec<u64> {
+        self.counts.iter().map(|c| c.load(Ordering::Relaxed)).collect()
     }
 }
 
