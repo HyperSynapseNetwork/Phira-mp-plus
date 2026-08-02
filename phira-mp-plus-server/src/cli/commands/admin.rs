@@ -189,6 +189,7 @@ impl CliHandler {
         }
 
         // Get the auth state from the global reference
+        #[cfg(unix)]
         match crate::openuds::get_auth_state() {
             Some(auth_state) => {
                 if auth_state.approve_pending(pending_id).await {
@@ -208,5 +209,10 @@ impl CliHandler {
                 ));
             }
         }
+        #[cfg(not(unix))]
+        self.out(format!(
+            "  {} OpenUDS 仅支持 Unix 平台（Windows 不可用）",
+            c::red("✗")
+        ));
     }
 }

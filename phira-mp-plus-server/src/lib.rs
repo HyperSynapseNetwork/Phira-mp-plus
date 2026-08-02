@@ -72,6 +72,7 @@ mod session_auth;
 pub mod session_dispatch;
 pub mod session_permissions;
 pub mod session_room;
+#[cfg(unix)]
 pub mod openuds;
 mod session_lifecycle;
 mod session_telemetry;

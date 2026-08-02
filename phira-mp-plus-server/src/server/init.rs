@@ -443,7 +443,8 @@ impl PlusServer {
             });
         }
 
-        // OpenUDS: start Unix Domain Socket API server if enabled
+        // OpenUDS: start Unix Domain Socket API server if enabled (Unix only)
+        #[cfg(unix)]
         if state.config.openuds.enabled {
             let uds_state = Arc::clone(&state);
             let uds_config = state.config.openuds.clone();
