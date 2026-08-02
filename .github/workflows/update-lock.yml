@@ -2,6 +2,8 @@ name: Update Lockfile
 on:
   push:
     branches: [main]
+permissions:
+  contents: write
 jobs:
   generate:
     runs-on: ubuntu-latest
@@ -20,5 +22,6 @@ jobs:
             echo "lockfile unchanged"
           else
             git commit -m "chore: regenerate Cargo.lock"
+            git pull --rebase origin main
             git push origin HEAD:main
           fi
