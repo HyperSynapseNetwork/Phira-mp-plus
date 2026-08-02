@@ -1061,7 +1061,8 @@ impl RoomCommandHandler {
                     let _seq = bump_room_seq(lc, &mut as_.state).await;
                 }
                 let was_monitor = user.monitor.load(std::sync::atomic::Ordering::SeqCst);
-                let should_drop = lc.on_user_leave(&user).await;
+                let should_drop = lc.on_user_leave(&user).await
+                    && !lc.room().control_snapshot().persistent_empty;
                 user.try_send(ServerCommand::LeaveRoom(Ok(())), room_seq(lc)).await;
                 if should_drop { lc.remove_room(&lc.room().id).await; }
                 if !was_monitor {
@@ -1567,7 +1568,8 @@ impl RoomCommandHandler {
                 match user {
                     Some(user) => {
                         let was_monitor = user.monitor.load(std::sync::atomic::Ordering::SeqCst);
-                        let should_drop = lc.on_user_leave(&user).await;
+                        let should_drop = lc.on_user_leave(&user).await
+                            && !lc.room().control_snapshot().persistent_empty;
                         if should_drop { lc.remove_room(&lc.room().id).await; }
                         if !was_monitor {
                             lc.publish_room_event(RoomEvent::LeaveRoom { room: lc.room().id.clone(), user: *user_id }).await;
