@@ -609,6 +609,7 @@ impl PlusConfig {
             || !(1..=256).contains(&self.wasm_runtime.max_event_concurrency)
             || !(16..=1_000_000).contains(&self.wasm_runtime.event_queue_capacity)
             || !(1..=300_000).contains(&self.wasm_runtime.call_timeout_ms)
+            || !(1..=300_000).contains(&self.wasm_runtime.init_timeout_ms)
         {
             return Err(AppError::ConfigValidation(
                 "wasm_runtime 的超时、大小、并发或队列限制超出安全范围".into(),
@@ -1036,6 +1037,8 @@ mod tests {
         assert!(PlusConfig { wasm_runtime: WasmRuntimeConfig { event_queue_capacity: 0, ..Default::default() }, ..Default::default() }.validate().is_err());
 
         assert!(PlusConfig { wasm_runtime: WasmRuntimeConfig { call_timeout_ms: 0, ..Default::default() }, ..Default::default() }.validate().is_err());
+
+        assert!(PlusConfig { wasm_runtime: WasmRuntimeConfig { init_timeout_ms: 0, ..Default::default() }, ..Default::default() }.validate().is_err());
     }
 
     #[test]

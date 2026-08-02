@@ -642,6 +642,7 @@ cli_enabled: true
 # wasm_runtime:
 #   max_memory_mb: 64
 #   call_timeout_ms: 2000
+#   init_timeout_ms: 10000
 
 # ---- 定制 ----
 

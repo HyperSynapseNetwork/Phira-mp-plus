@@ -168,6 +168,7 @@ round_data_retention_days: 7
 #   max_event_concurrency: 8  # 单个有序事件内并行执行的插件数
 #   event_queue_capacity: 2048
 #   call_timeout_ms: 2000
+#   init_timeout_ms: 10000
 
 # ---- 定制 / 管理 ----
 

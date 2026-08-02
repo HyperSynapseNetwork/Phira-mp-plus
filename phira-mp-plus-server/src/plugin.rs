@@ -45,11 +45,16 @@ pub struct WasmRuntimeConfig {
     /// Bounded queue for reliable low/medium-frequency plugin events.
     #[serde(default = "default_wasm_event_queue_capacity")]
     pub event_queue_capacity: usize,
-    /// Wall-clock observation deadline around plugin init/event/API tasks. Fuel
-    /// limits guest CPU. A timed-out blocking host call cannot be force-killed
-    /// in-process, so the per-plugin execution gate remains occupied until it exits.
+    /// Wall-clock observation deadline for each plugin call/event/API task.
+    /// Fuel limits guest CPU. A timed-out blocking host call cannot be
+    /// force-killed in-process, so the per-plugin execution gate remains
+    /// occupied until it exits.
     #[serde(default = "default_wasm_call_timeout_ms")]
     pub call_timeout_ms: u64,
+    /// One-time wall-clock deadline for plugin init (WASM load + setup),
+    /// decoupled from the per-call deadline.
+    #[serde(default = "default_wasm_init_timeout_ms")]
+    pub init_timeout_ms: u64,
 }
 
 const fn default_wasm_memory_mb() -> usize {
@@ -79,6 +84,9 @@ const fn default_wasm_event_queue_capacity() -> usize {
 const fn default_wasm_call_timeout_ms() -> u64 {
     2_000
 }
+const fn default_wasm_init_timeout_ms() -> u64 {
+    10_000
+}
 
 impl Default for WasmRuntimeConfig {
     fn default() -> Self {
@@ -93,6 +101,7 @@ impl Default for WasmRuntimeConfig {
             max_event_concurrency: default_wasm_event_concurrency(),
             event_queue_capacity: default_wasm_event_queue_capacity(),
             call_timeout_ms: default_wasm_call_timeout_ms(),
+            init_timeout_ms: default_wasm_init_timeout_ms(),
         }
     }
 }
@@ -717,7 +726,7 @@ impl PluginManager {
                 self.runtime.clone(),
             ));
             let init_timeout =
-                std::time::Duration::from_millis(self.runtime.call_timeout_ms.max(1));
+                std::time::Duration::from_millis(self.runtime.init_timeout_ms.max(1));
             let plugin = match tokio::time::timeout(
                 init_timeout,
                 tokio::task::spawn_blocking(move || {
@@ -740,7 +749,7 @@ impl PluginManager {
                     self.wasm_services.remove_capabilities(&stable_id);
                     return Err(format!(
                         "plugin init exceeded {} ms",
-                        self.runtime.call_timeout_ms
+                        self.runtime.init_timeout_ms
                     ));
                 }
             };
