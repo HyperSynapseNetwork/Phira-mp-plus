@@ -176,6 +176,13 @@ impl PlusServerState {
         // user is the current host (used by the join path to decide whether to
         // schedule the deferred ChangeHost(true)).
         let control = room.control_snapshot();
+        tracing::debug!(
+            room = %room.id,
+            user = user.id,
+            host_id = ?control.host_id,
+            system_host = control.system_host,
+            "assign_room_host_if_missing check"
+        );
         if control.host_id.is_some() {
             return control.host_id == Some(user.id);
         }

@@ -694,6 +694,7 @@ pub async fn join_room(
         .server
         .assign_room_host_if_missing(&room, &user, monitor, false)
         .await;
+    tracing::debug!(user = user.id, room = %room.id, became_host, "join became_host");
 
     *room_guard = Some(Arc::clone(&room));
     // 清除进行中游戏加入确认标记
