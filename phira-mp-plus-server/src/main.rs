@@ -116,7 +116,10 @@ async fn main() -> Result<()> {
     config.normalize()?;
     std::fs::create_dir_all("data")?;
     std::fs::create_dir_all(&config.plugins_dir)?;
-    config.validate()?;
+    if let Err(e) = config.validate() {
+        print_startup_guidance("配置验证", &e);
+        return Err(e);
+    }
 
     let cli_enabled = config.cli_enabled;
     let (cmd_tx, cmd_rx) = optional_channel(cli_enabled);
@@ -171,7 +174,13 @@ async fn main() -> Result<()> {
     #[cfg(not(feature = "sentry"))]
     let _sentry_guard = ();
 
-    let server = PlusServer::new(config).await?;
+    let server = match PlusServer::new(config).await {
+        Ok(server) => server,
+        Err(e) => {
+            print_startup_guidance("服务器启动", &e);
+            return Err(e);
+        }
+    };
 
     if let (Some(cmd_rx), Some(out_tx)) = (cmd_rx, out_tx) {
         let state = Arc::clone(&server.state);
@@ -540,6 +549,32 @@ impl ConfigLoad {
             Self::Missing => info!(path, "configuration file not found; using defaults"),
         }
     }
+}
+
+/// 启动失败时输出引导信息（常见配置问题 → 解决方案）。
+fn print_startup_guidance(stage: &str, err: &anyhow::Error) {
+    eprintln!("\n⚠️  启动失败（{stage}）: {err:#}");
+    let msg = format!("{err}").to_lowercase();
+    if msg.contains("database_url") || msg.contains("postgres") || msg.contains("连接失败") {
+        eprintln!("  ─ 解决方案 ─");
+        eprintln!("  1. 安装 PostgreSQL：sudo apt install postgresql && sudo systemctl start postgresql");
+        eprintln!("  2. 设置 postgres 密码：sudo -u postgres psql -c \"ALTER USER postgres PASSWORD '你的密码';\"");
+        eprintln!("  3. 建库：sudo -u postgres createdb phira_mp_plus");
+        eprintln!("  4. 启动时指定连接：PM_DATABASE_URL=\"postgres://postgres:你的密码@localhost:5432/phira_mp_plus\" ./phira-mp-plus-server-linux-glibc");
+    } else if msg.contains("wal") {
+        eprintln!("  ─ 解决方案 ─");
+        eprintln!("  检查 data/ 目录权限（PMP 需要读写 WAL）；确认 persistence_wal_path 可写、磁盘有空间");
+    } else if msg.contains("config") || stage == "配置验证" {
+        eprintln!("  ─ 解决方案 ─");
+        eprintln!("  检查配置文件字段（参考 docs/deployment.md）；可用 --config 指定，或 PM_DATABASE_URL 环境变量覆盖 database_url");
+    } else if msg.contains("permission") || msg.contains("denied") || msg.contains("拒绝") {
+        eprintln!("  ─ 解决方案 ─");
+        eprintln!("  检查运行用户对 data/ 和插件目录的写权限");
+    } else {
+        eprintln!("  ─ 排查 ─");
+        eprintln!("  参考 docs/deployment.md 与 docs/operations.md；或查看 log/ 目录日志");
+    }
+    eprintln!();
 }
 
 fn load_config(path: &str) -> Result<(PlusConfig, ConfigLoad)> {
