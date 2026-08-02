@@ -1,208 +1,214 @@
-# PMP 相对 Phira-mp 新增功能（详细）
+# PMP 相对 Phira-mp 新增功能（完整版）
 
-> 本文档逐一说明 Phira-mp-plus（PMP）在官方 [Phira-mp](https://github.com/TeamFlos/phira-mp) 基础上新增的**每个功能与行为**。
-> 官方 Phira-mp 是基础多人游戏服务器（TCP 协议 + 房间 + 游玩轮次），无持久化、插件、管理、可观测性、本地化、HTTP API。
-> 以下所有条目均为 PMP 相对官方新增或增强的能力。
-
----
-
-## 一、房间管理
-
-### 1.1 房间创建 / 加入 / 离开
-- 房间 ID 为 1-20 字符字符串（`Varchar<20>`）
-- 创建房间、按 ID 加入、离开房间，均有原子事务与补偿（加入失败回滚，不残留 ghost member）
-- 官方客户端顺序兼容：`OnJoinRoom` 广播 → `Message::JoinRoom` → `JoinRoom(Ok)`（P0-D 固定顺序）
-
-### 1.2 Playing 状态下加入（官方不支持/行为不同）
-- 房间 `Playing` 状态时，其他用户仍可加入：
-  - 有 `join_pending_game`（游戏开始前已申请加入）→ **晚加入（late_join）**，进入对局
-  - 否则 → 提示 `join-game-ongoing-warning`（「该房间游戏进行中，请再次确认以加入」），客户端确认后以 `late_join` 加入
-- 晚加入者可能在超时被标记 `aborted`（若未在截止前提交成绩）
-
-### 1.3 房间锁定 / 循环 / 隐藏
-- **锁定（lock）**：禁止新成员加入（已有成员不受影响）
-- **循环（cycle）**：整局结束后自动开始下一轮（房主轮换）
-- **隐藏（hide）**：房间不出现在公开房间列表（`rooms.list` 过滤 `_` 前缀与隐藏标记）
-- 三个状态可由房主 / 管理员 / CLI 切换，变更广播到客户端
-
-### 1.4 房主管理
-- 房主转移（手动 / 系统房主）
-- 首名成员自动成为房主（`assign_room_host_if_missing`）
-- 房主离开时房主转移 / 解散策略
-
-### 1.5 监视者（Monitor）
-- 监视者可加入任意房间旁观（不参与游玩）
-- 监视者消息（状态、事件）与普通成员区分
-
-### 1.6 持久房间
-- 房间状态快照（`mp_room_snapshots`）持久化到 PostgreSQL
-- 服务器重启后恢复房间（图表、成员、状态）
+> 本文档基于代码逐项梳理 PMP（Phira-mp-plus）在官方 [Phira-mp](https://github.com/TeamFlos/phira-mp) 基础上新增的**所有功能与行为**。
+> 官方 Phira-mp 是基础多人游戏服务器（TCP 协议 + 房间 + 游玩轮次）。以下所有条目均为 PMP 新增或增强。
 
 ---
 
-## 二、游玩轮次
+## 一、协议命令（`phira-mp-common/src/command.rs`）
 
-### 2.1 准备 / 取消准备
-- `Ready` / `CancelReady`，服务端记录 `started` 集合
-- 管理员的 `force_start` 跳过准备检查
-- 开赛失败（round store 打开失败）→ 回滚到 `WaitingForReady` + 发 `CancelReady` 收敛客户端
+### 1.1 ClientCommand（客户端 → 服务器）
+- **Ping**：心跳，服务器回 `Pong`
+- **Authenticate { token: Varchar<32> }**：Phira 认证 token 登录（`/me` 校验 + WAL 持久化 + 认证屏障）
+- **Chat { message: Varchar<200> }**：房间聊天，200 字符上限
+- **Touches { frames }**：高频触控帧（fire-and-forget，不回复），坐标 f16 压缩
+- **Judges { judges }**：判定事件流（Perfect/Good/Bad/Miss/HoldPerfect/HoldGood）
+- **CreateRoom { id: RoomId }**：建房（20 字符，字母数字 + `-` `_`）
+- **JoinRoom { id, monitor }**：加入房间；`monitor=true` 需专属 monitor 认证
+- **LeaveRoom / LockRoom / CycleRoom**：离开 / 锁定 / 循环（后两者仅房主）
+- **SelectChart { id }**：选谱（仅房主，需 SelectChart 状态）
+- **RequestStart**：房主请求开赛（进入 WaitForReady）
+- **Ready / CancelReady**：准备 / 取消准备
+- **Played { id }**：提交游玩成绩（服务器按 record id 从 Phira API 拉取真实成绩并校验 player）
+- **Abort**：对局弃权
+- **ConsoleAuthenticate**：控制台客户端认证（权限受限）
+- **RoomMonitorAuthenticate { key }**：房间 monitor 认证（派生密钥）
+- **QueryRoomInfo**：查询全服房间列表（monitor/console 专用）
+- **GameMonitorAuthenticate**：游戏 monitor 认证（负 user id 标识，可旁观看）
 
-### 2.2 开赛（Playing 状态）
-- 所有成员准备 / 管理员强制开赛 → 进入 `Playing`
-- 未准备成员在开局时标记 `aborted`（不参与本轮）
+### 1.2 ServerCommand（服务器 → 客户端）
+- `Pong`、`Authenticate`、`Chat`、`Touches`、`Judges`、`Message`、`ChangeState`、`ChangeHost`
+- `CreateRoom/JoinRoom/OnJoinRoom/LeaveRoom/LockRoom/CycleRoom/SelectChart/RequestStart/Ready/CancelReady/Played/Abort`
+- `RoomResponse`（房间 monitor 快照）、`RoomEvent`、`UserVisit`（通知 monitor 新用户上线）
 
-### 2.3 游玩数据
-- Touches / Judges 高频遥测，经 high-frequency writer 批量持久化
-- 游玩超时（`playing_timeout`），超时强制结算
+### 1.3 Message（房间广播语义事件）
+- `Chat`、`CreateRoom`、`JoinRoom`、`LeaveRoom`、`NewHost`、`SelectChart`、`GameStart`、`Ready`、`CancelReady`、`CancelGame`、`StartPlaying`、`Played`、`GameEnd`、`Abort`、`LockRoom`、`CycleRoom`
 
-### 2.4 成绩提交（SubmitResult）
-- 玩家提交成绩（分数、准确率、Perfect/Good/Bad/Miss、MaxCombo、全连、std）
-- 幂等（重复提交拒绝）、deadline 内提交
-- **首个完成者延长游玩超时**（给其他玩家追赶时间）
-- 提交后广播 `Played`、触发结算检查
-
-### 2.5 结算排行（本地化）
-- 整局所有玩家完成 / 放弃 → 结算排行
-- 排行显示：名次、名字、分数、准确率、±std、全连（FC）、放弃标记
-- 详细行：Perfect/Good/Bad/Miss/MaxCombo
-- **按每位用户的语言本地化**（zh-CN/zh-TW/en-US）
-- 结算显示**当前轮**结果（不依赖持久化成功，防止读旧轮）
-
-### 2.6 放弃（Abort）
-- 玩家可主动放弃（`AbortRound`），标记 `aborted`
-- 放弃玩家结算显示 `放弃` + 0 分
-- 中途离开 / 超时未提交 → 自动标记 `aborted`
-
-### 2.7 循环模式（Cycle）
-- 整局完成自动开始下一轮，房主轮换
+### 1.4 RoomState / RoomEvent
+- `RoomState`：SelectChart / WaitingForReady / Playing
+- `RoomEvent`：CreateRoom / UpdateRoom / JoinRoom / LeaveRoom / **PlayerScore / StartRound**（对应 SSE 事件名）
 
 ---
 
-## 三、会话与认证
+## 二、房间 / 游玩语义
 
-### 3.1 认证状态机
-- `Authenticating → DurableAccepted → ResponseFlushed → Active`，每步失败可回滚
-- 认证绝对 deadline（默认 5000ms），覆盖 API + 重试 + WAL + 最低响应延迟 + flush
-- 持久化失败 → fail-closed 拒绝（`persistence unavailable`）
-
-### 3.2 认证缓存
-- token SHA-256 哈希作为缓存键，缓存命中毫秒级响应
-- 缓存命中时仍做封禁检查
-
-### 3.3 重连恢复
-- Session origin / 代际（generation）贯穿：重连后旧命令不响应新连接
-- 旧 Session 延迟关闭（新会话 Active 后）
-- 原子恢复：单写锁内「检查并替换」绑定（`replace_binding_if_matches`）
-
-### 3.4 断线宽限 / 心跳
-- 断线宽限（`dangle_grace_secs`）、心跳超时（`heartbeat_timeout_secs`）
-- 超时断开 + 持久化补偿（`UserDisconnect`/`UserOffline`）
-
-### 3.5 会话代际防护
-- 会话绑定代际，防止旧会话误清新会话（playtime/session_id 防护）
-
----
-
-## 四、管理与 CLI
-
-### 4.1 CLI 命令
-`room list | create-empty | info | start | ready | cancel | lock | cycle | kick | host | force-move | hide | unhide | close | set | history | rounds | round | uuid | ban | unban | banlist`
-
-- **room set**：lock / cycle / hidden / persistent / degraded / api_endpoint / host / chart
-- **force-move**：强制转移用户到另一房间（`send_and_flush` 保证加入通知送达）
-- 详细命令见 `docs/cli.md`
-
-### 4.2 封禁
-- **用户 ID 封禁**：带理由，认证时拒绝并显示理由
-- **IP 封禁**：认证路径拒绝 + 显示理由（默认「IP 地址被封禁」）
-- 封禁列表、解除封禁、IP 封禁基于用户连接历史
-
-### 4.3 房间管理
-- 强制解散、最大人数动态调整、回放录制开关、房间创建开关
-- 房间降级标记（`degraded`）管理
+- **建房**：`max_rooms` 上限、`room_creation_enabled` 动态开关、ID 占用校验；房间 UUID；建房后异步扩展工作（事件、历史、插件）
+- **加入**：会话类别区分（Normal/Console/Monitor，防绕过）；锁定/黑名单/满员/游戏状态校验
+- **Playing 状态下加入**：首次提示「进行中加入确认」，确认后 `late_join` 加入进行中对局（异步 abort 旧对局）
+- **加入后**：广播 OnJoinRoom + JoinRoom → JoinRoom(Ok)（完整快照+live）→ 回放聊天历史 → ChangeHost 补偿
+- **离开**：房主离开随机转移；广播 LeaveRoom
+- **锁定/循环**：仅房主，全员广播
+- **选谱**：仅房主；从 Phira API 拉谱面名（失败回退 `#id`）；HTTP Range 下载 `info.txt` 解析谱面时长并缓存
+- **开赛**：`RequestStart`（房主）、管理员强开、`CancelStart`；全员 Ready / 强开 → Playing
+- **准备倒计时**（默认 60s）：超时自动开赛，未 Ready 标记 aborted
+- **对局超时**（默认 +60s）：首个完成者延长一个偏移；超时未完成者标记 aborted 并结算
+- **结算**：全员完成/abort → WAL 持久化 RoundCompleted → 广播 StartRound + **本地化结算排行**（成绩/准确率/std/FC/判定/弃权）→ GameEnd → 回 SelectChart
+- **循环模式**：整局结束房主按用户列表轮转
+- **房主管理**：`SetHost`、首个非 monitor 加入者成为房主、系统房主（host=-1）
+- **监视者**：房间 monitor（接收 RoomEvent/UserVisit）、游戏 monitor（实时 Touches/Judges）；绕过锁定/人数/状态门槛
+- **隐藏房间**：`-` 前缀默认隐藏、`SetHidden` 动态切换；不出现在公开列表
+- **持久空房间**：`create_empty_room`、`set_persistent_empty`；快照 debounce 500ms 持久化；启动恢复
+- **force-move**：绕过限制强移用户（RemoveUser→AddUser→广播→JoinRoom(Ok) critical flush→房主指派），失败回滚
+- **踢人/关房**：`KickUser`、`CloseRoom`
+- **degraded 标志**：Join 补偿失败置 true，阻塞新加入，CLI 清空
+- **显示名**：后台从 Phira `/me` 刷新（并发闸门 8）
+- **聊天历史**：内存保留最近 50 条，新成员回放
+- **Ghost member 防护**：Join 中断派发补偿 remove_user；原子 BindAndSnapshot + room_seq cutover
 
 ---
 
-## 五、插件系统
+## 三、会话 / 认证
 
-### 5.1 WASM 插件
-- wasmtime + WIT/component-model，受信任沙箱
-- 资源限制：内存（默认 64MB）、fuel、栈（2MB）、HTTP 超时/字节、文件大小、并发（默认 8）、队列（2048）
-- 插件超时：init（默认 10s）/ 调用（默认 2s）独立预算
-- 插件事件：`GameEnd`、`RoundComplete`、房间事件（response-after，不阻塞 Actor）
-
-### 5.2 插件 HTTP / SSE
-- 插件声明 HTTP 路径 + SSE 流，PMP 动态挂载
-- `sse:translate` 回调翻译事件
-- 通用 `/api/events` SSE
-
----
-
-## 六、官方客户端兼容层
-
-- **CommandOrigin 贯穿**：命令真实 Session 贯穿网络 → session actor → room actor → 响应
-- **双 deadline**：commit/response 预算分离（`commit_response_reserve_ms`）
-- **Outbound Gate**：认证屏障缓冲、快照 cutover 原子切换、事件 `room_seq` 绑定
-- **最小响应延迟**：默认 0（官方客户端 rcall 无竞态）
-- **协议 Hack**：固定顺序补偿（ChangeHost→ChangeState→PersistentRoom→Replay）
-- **Golden 协议测试**：59 个协议变体判别值/字节布局固定
-- 错误语义：deadline 过期、origin 过期、幂等冲突等均有明确错误码
+- **认证状态机**：Authenticating → WAL 入队 → DurableAccepted → Auth(Ok) flush → ResponseFlushed → Gate 激活 → Active；每步失败回滚（清绑定/移除用户/补发补偿/关传输）
+- **认证预算**（默认 5000ms）：覆盖 API + 重试 + 退避 + WAL + 最低响应时延 + flush
+- **token 认证缓存**：SHA256(token) 缓存（上限 4096，LRU，重启恢复）；缓存命中跳过 `/me`
+- **IP 封禁检查**：认证路径发 `Authenticate(Err(reason))`（不静默断连）
+- **重连**：旧 Session + 代际捕获，新会话 Active 后才关旧连接（两阶段交接）；失败原子恢复旧绑定
+- **代际**：`SessionBinding{generation, session}` 原子；`CommandOrigin` 绑定所有响应到发起会话，重连后旧命令不投递
+- **断线**：`dangle_grace_secs` 宽限恢复；Playing 独立 `playing_reconnect_grace_secs`；代际守卫防竞态
+- **每会话出站队列 + 认证屏障**：认证帧 flush 前缓冲（有界 256 事件/1MiB/8s）；cutover 剔除快照已含事件但不丢 Chat/语义
+- **每会话业务命令邮箱**：`run_or_deadline` 区分 commit/response deadline；不确定结果 close_uncertain
+- **命令权限**：Normal/Console/Monitor 权限区分，拒绝映射官方错误响应（绝不静默）
+- **速率限制**：Chat 10/3s、RoomOp 20/6s、Api 12/3s
+- **会话容量**：`max_sessions`（4096）+ `max_pending_auth`（256）
+- **欢迎语**：本地化欢迎消息（`welcome-config.json` 可配占位符）
+- **登录统计**：`mp_user_visits`（幂等）、playtime 累计、login_count 对账
 
 ---
 
-## 七、持久化与数据安全
+## 四、游戏内 CLI 命令
 
-- **WAL**：所有权威事件先写 WAL（`data/persistence-worker.wal.jsonl`），带 SHA-256 checksum
-- **fail-closed**：WAL 损坏/恢复不确定 → 拒绝启动/认证，不静默丢数据
-- **PostgreSQL**：`mp_users`、`mp_rounds`、房间快照、回放、高频数据
-- **原子恢复**：启动 replay、dead-letter 重放、abort 未完成 round
-- **参数化 SQL**：全部防注入
-- **关闭校验**：持久化未确认 → 非零退出码
+- **`_` 房间名快捷方式**：管理员在房间名输入框创建名为 `_<command>` 的房间执行 CLI：`_`→空格（`_room_list`→`room list`）、`__` 转义字面量；结果以 `[CLI]` 前缀 Chat 消息回显
+- **多行续行**：命令 `--` 结尾暂存，下一条 `--` 开头续接
+- 支持全部管理 CLI 命令
 
 ---
 
-## 八、HTTP / SSE API（对外）
+## 五、管理 CLI（`cli/`）
 
-- `/api/rooms`：房间列表（兼容 gooophira/tphira-mp 格式：`rooms/total` + `roomid/cycle/lock/host/state/chart/players`）
-- `/api/rooms/listen`：SSE 房间事件流（create_room/update_room/join_room/leave_room/player_score/start_round）
-- `/api/events`：通用 SSE
-- 管理 API（token 鉴权，`X-Admin-Token`/`Authorization`）
-
----
-
-## 九、可观测性
-
-- **ProtocolTrace metrics**：请求/响应时序、认证屏障、慢路径、异常路径计数器（20+ 项）
-- **响应延迟直方图**：命令处理耗时分布
-- **Sentry**：错误/panic 上报（可选 feature，Build 产物带，Release 默认关）
-- **协议追踪**：request_received → response_queued → flushed
+**核心/生命周期**：`exit/quit`、`help`、`status`、`check-config`、`doctor`、`config reload`
+**用户**：`users`、`kick`、`admin-id list/add/remove/set`
+**封禁**：`ban [reason]`、`ban ip`、`unban`、`banlist`、`ip-history`
+**广播**：`broadcast all|room|user`
+**房间**：`rooms/room list`、`room create-empty`、`room info`、`room start/ready/cancel/kick/host`、`room force-move`、`room hide/unhide`、`room close`、`room lock/cycle`、`room set <field>`（lock/cycle/hidden/persistent/degraded/host/chart/api_endpoint）、`room history/rounds/round/uuid`、`room ban/unban/banlist`、`force-start`
+**插件**：`plugin list/enable/disable/remove/reload/info/call`（WASM 插件可动态注册 CLI 命令）
+**扩展**：`extension list/get`
+**杂项**：`roomcreation on|off`、`approve openuds`、`welcome-config`、`player-count`、`round-last`
+**基准**：`benchmark list/run/suite/compare/cleanup`
+**运行时**：`runtime status/phira/commands/events/rooms/actors/schema/persistence`
+**WAL/死信**：`wal inspect`、`dead-letter list/replay`
 
 ---
 
-## 十、本地化
+## 六、HTTP / SSE / WebSocket（`plugin_http.rs`）
 
-- Fluent 三语：zh-CN / zh-TW / en-US
-- 系统消息、结算排行、封禁理由、CLI 输出按用户语言
-
----
-
-## 十一、性能
-
-- **High-Frequency Writer**：Touches/Judges 批量写 PostgreSQL（独立 worker）
-- **基准测试模式**：`benchmark` 子命令
-- 延迟优化：握手/响应路径的 deadline 与 gate 设计
+监听 `http_port`（默认 12347）；可选 `trusted_forwarded_http_port`
+- **GET /health/live**：存活探针
+- **GET /health/ready**：就绪探针（supervisor degraded → 503）
+- **GET /api/events**：SSE 主事件流（15s keep-alive；ready + 房间事件）
+- **GET /api/ws**：WebSocket（二进制帧承载 SseEvent）
+- **ANY /{path} catch-all**：插件动态注册路由（路径参数、JSON body 转发）
+- **插件 SSE 流**：`sse.register_stream` + `sse:translate` 回调
 
 ---
 
-## 十二、网络与 PROXY 协议
+## 七、插件 / WASM
 
-- **PROXY 协议 v1/v2**（HAProxy 标准）：反向代理 / 负载均衡后获取**真实客户端 IP**
-  - v1（文本）：`PROXY TCP4 192.168.1.1 10.0.0.1 12345 80\r\n`
-  - v2（二进制）：12 字节签名 + 地址族数据
-- **可信 CIDR**（`proxy_trusted_cidrs`）：仅对可信来源解析 PROXY 头，非可信来源跳过（防伪造）
-- 非消费式 peek 解析（不破坏非 PROXY 直连）
-- 真实 IP 用于：IP 封禁、速率限制、认证记录
-- `trusted_forwarded_http_port`：HTTP 端口透传（与游戏端口分离）
+- **PluginEvent（11 种）**：UserConnect/UserDisconnect/RoomCreate/RoomJoin/RoomLeave/RoomModify/GameStart/GameEnd/PlayerTouches/PlayerJudges/RoundComplete（可靠投递有界队列）
+- **WIT 世界 `phira-plugin-v3`**：导出 init/get-info/cleanup/on-event/on-api
+- **宿主 API（按能力门控）**：
+  - `phira-host`：log、generate_uuid、api_call、send_chat、http_request（SSRF 防护）
+  - `phira-query`：get_user/get_room/list_rooms/在线用户等
+  - `phira-room-mgmt`：建空房/踢人/转移房主/锁/隐藏/关房
+  - `phira-user-mgmt`：踢用户/封禁/解封
+  - `phira-messaging`：send-to-user/room/all
+  - `phira-persistence`：query-events/snapshots/touches/judges/playtime
+  - `phira-admin`、`phira-config`、`phira-crypto`、`phira-timer`、`phira-tcp`（连接/监听/收发）、`phira-room-state`、`phira-handler`、`phira-runtime`
+- **通用 api_call / ServerStateQuery**：约 60+ 方法名（http.register_route、sse.register_stream、rooms.history 等）
+- **能力清单**：`.capabilities.json`（14 个可声明能力）；未知能力拒绝加载
+- **WasmRuntimeConfig**：内存 64MB、fuel、栈 2MB、HTTP 超时、并发 8、队列 2048、调用超时 2s、init 超时 10s
+- **插件状态**：Loaded/Enabled/Disabled/Error(quarantined)
+
+---
+
+## 八、持久化（`persistence/`）
+
+- **PostgreSQL 21 张表**：playtime、room_history、mp_users、mp_room_snapshots、mp_events、mp_user_room_history、mp_rounds、mp_round_touch/judge_batches、mp_round_player_data、mp_round_results、mp_runtime_telemetry_*、mp_runtime_persistence_meta、mp_runtime_retention_policies、mp_runtime_benchmark_reports、mp_settings、user_ip_history、mp_user_visits、mp_server_instances、_pmp_schema_version
+- **WAL**：`persistence-worker.wal.jsonl`（SHA-256 校验，fsync 后入队）；marker 检测意外删除；启动重放未 ack；自动压缩（pending<25% 且 >256KiB）
+- **死信**：`persistence-dead-letter.jsonl`（DB 重试耗尽后写入）；启动重放 + 畸形隔离
+- **持久化 worker**：有界队列（2048）+ WAL 先写；queue 满 100ms 返回 WalOnly（不丢）；5s 恢复扫描器
+- **高频写入**：Touch/Judge 绕过 WAL 批量（256 条/500ms）COPY 入库
+- **轮次持久化**：RoundStore 事务；RoundCompleted 原子事务（幂等）
+- **保留策略**：`persistence_retention_days`(30)、`touch_judge_retention_days`
+- **启动恢复（fail-closed）**：Schema 校验 → WAL 健康（30s）→ DLQ 重放 → 未完成轮次 abort → 持久房间恢复 → playtime 清理
+- **后台任务**：WAL 扫描 5s、playtime 刷新 60s、login 对账 1h、保留清理 1h、实例心跳 30s、认证缓存持久化 60s
+
+---
+
+## 九、网络（PROXY 协议等）
+
+- **PROXY 协议 v1/v2**：v1 文本、v2 二进制（12 字节签名）；`TcpStream::peek` 非消费读取（非 PROXY 直连零消耗）；超时 3s
+- **可信 CIDR（proxy_allow_cidr）**：可信代理解析真实 IP；真实 IP 独立限流 + 用于认证/封禁
+- **转发头 HTTP 监听**：`trusted_forwarded_http_port` 信任 `X-Forwarded-For`
+- **TCP accept**：零协议读（慢/恶意连接不阻塞）；session_gate(4096) + pre_auth_gate(256)；Active 发布屏障
+- **断连处理**：banned 用户先发本地化封禁原因再断连；管理员踢人串行化 + 补偿
+
+---
+
+## 十、配置项（`server/config.rs`）
+
+- **profile**：Development/Staging/Production（Production 更严校验）
+- **网络**：port(12346)、http_port(12347)、trusted_forwarded_http_port、proxy_allow_cidr、连接限流
+- **容量**：max_rooms、max_users_per_room(100)、max_sessions(4096)、max_pending_auth(256)
+- **游玩**：ready_countdown_secs(60)、playing_timeout_offset_secs(60)、room_creation_enabled、chat_enabled
+- **Phira 上游**：phira_api_endpoint、HTTP 重试/退避/熔断
+- **WASM**：wasm_runtime（见插件节）
+- **运行时**：persistence_queue_capacity、WAL/DLQ 路径、persistent_rooms_required、startup_recovery_timeout(30s)
+- **保留**：round_data_retention_days(7)、persistence_retention_days(30)、touch_judge_retention_days
+- **断线**：heartbeat_timeout(15s)、auth_timeout(15s)、dangle_grace(10s)、playing_reconnect_grace(15s)
+- **兼容性**：official_phira_client、minimum_response_latency_ms(0)、session_command_deadline_ms(4500)、commit_response_reserve_ms(1000)、auth_deadline_ms(5000)、gate 上限、protocol_hack_delay_ms
+- **其他**：monitors、admin_phira_ids、sentry_dsn、plugins_dir、cli_enabled、openuds、graceful_shutdown_timeout
+- **覆盖顺序**：YAML < 环境变量（PM_DATABASE_URL）< CLI 参数
+
+---
+
+## 十一、可观测性
+
+- **ProtocolTrace 全局计数器**：请求/响应时序、认证屏障、慢路径；**生产必须为 0**：silent_response_paths/late_commit/commit_without_response/compat_queue_drop/stale_commit_prevented/gate_control_overflow/critical_compat_drop
+- **延迟直方图**：9 桶（1/5/10/50/100/500/1000/5000ms）
+- **EventBus / RoomCommandGateway / PersistenceWorker 统计**：队列/延迟/计数
+- **日志**：每小时滚动 + stdout + TUI + OpenUDS；JSON 结构化；脱敏（token/password）
+- **Sentry**：`sentry_dsn` + `sentry` feature（Release 默认关）
+- **supervisor actor**：后台任务健康检查；critical 任务退出 → degraded；有序关机
+
+---
+
+## 十二、本地化（`l10n.rs`、`locales/`）
+
+- **语言**：en-US（57 key）、zh-CN（57 key）、zh-TW（30 key，缺失回退英文）
+- Fluent `.ftl`，`set_use_isolating(false)` 去双向隔离字符
+- **key 分类**：房间管理/会话认证/CLI/服务器/系统广播
+- **语言来源**：Phira `/me` 的 language 字段；task-local `LANGUAGE` 作用域
+
+---
+
+## 十三、性能 / 其它
+
+- **高频遥测**：Touch/Judge 独立通道批量写 PG；慢 monitor 有界 broadcast 不阻塞热路径
+- **基准测试**：11 场景 × 4 预设；真实二进制协议客户端压测；Mock Phira HTTP（故障注入）；报告指标（延迟/CPU/RSS/DB rows/s）
+- **OpenUDS（Unix Domain Socket API）**：`/var/run/pmp-openuds.sock`；命令（room/player/server/broadcast/plugin/runtime）+ 事件流（user.online/offline、room.*、round.*、touches/judges/logs）
+- **备份/恢复**（pmp-admin）：backup create/verify（config + WAL + dead-letter + extensions + SHA-256 manifest）
+- **ServerStats / Web 快照**：房间/用户富快照（状态、ready/finished/aborted、当前轮、历史）
 
 ---
 
@@ -211,7 +217,7 @@
 | 项 | 官方 | PMP |
 |---|---|---|
 | 数据库 | 无 | PostgreSQL 必填（`database_url`/`PM_DATABASE_URL`） |
-| 持久化文件 | 无 | `data/`（WAL、快照、回放） |
+| 持久化文件 | 无 | `data/`（WAL、快照、死信、回放） |
 | 插件 | 无 | `plugins/`（WASM） |
-| 端口 | 游戏端口 | 游戏 + HTTP 双端口 |
+| 端口 | 游戏端口 | 游戏 + HTTP 双端口 + OpenUDS |
 | 依赖 | 仅 Rust | PostgreSQL + 可选 Sentry |
