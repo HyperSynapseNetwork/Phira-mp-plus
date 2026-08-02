@@ -1051,7 +1051,7 @@ pub async fn select_chart(
         // remaining absolute deadline — a slow/blocked API must never let a
         // SelectChart commit after the client already timed out.
         let fetch_budget = deadline.saturating_duration_since(Instant::now());
-        let (chart_name, chart_meta): (String, Option<(String, String, String, Option<f32>)>) =
+        let (chart_name, chart_meta): (String, Option<(String, String, String, Option<f32>, Option<String>)>) =
             match tokio::time::timeout(
                 fetch_budget,
                 user.server.phira_client.get_json::<crate::server::Chart>(
@@ -1067,7 +1067,13 @@ pub async fn select_chart(
             {
                 Ok(Ok(chart)) => (
                     chart.name,
-                    Some((chart.charter, chart.composer, chart.level, chart.rating)),
+                    Some((
+                        chart.charter,
+                        chart.composer,
+                        chart.level,
+                        chart.rating,
+                        chart.chart_updated,
+                    )),
                 ),
                 Ok(Err(_)) => {
                     tracing::warn!("failed to fetch chart {id} from Phira API; using ID as name");
@@ -1119,12 +1125,16 @@ pub async fn select_chart(
             .await
             .map_err(|e| anyhow!("{}", tr(e)))?;
         // 广播谱面信息（谱师/曲师/难度/评分）
-        if let Some((charter, composer, level, rating)) = chart_meta {
+        if let Some((charter, composer, level, rating, chart_updated)) = chart_meta {
             if !charter.is_empty() || !composer.is_empty() {
                 let rating_part = rating.map(|r| format!("    评分: {r:.3}")).unwrap_or_default();
+                let updated_part = chart_updated
+                    .as_deref()
+                    .map(|s| format!("    谱面更新: {}", &s[..s.len().min(10)]))
+                    .unwrap_or_default();
                 let content = format!(
-                    "谱师:{}    曲师:{}    难度: {}{}",
-                    charter, composer, level, rating_part
+                    "谱师:{}    曲师:{}    难度: {}{}{}",
+                    charter, composer, level, rating_part, updated_part
                 );
                 room.broadcast(ServerCommand::Message(Message::Chat { user: 0, content }))
                     .await;

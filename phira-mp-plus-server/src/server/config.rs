@@ -30,6 +30,8 @@ pub struct Chart {
     pub composer: String,
     #[serde(default)]
     pub rating: Option<f32>,
+    #[serde(default, rename = "chartUpdated")]
+    pub chart_updated: Option<String>,
 }
 
 /// Record information from the Phira API

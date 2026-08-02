@@ -48,7 +48,7 @@
 - **加入后**：广播 OnJoinRoom + JoinRoom → JoinRoom(Ok)（完整快照+live）→ 回放聊天历史 → ChangeHost 补偿
 - **离开**：房主离开随机转移；广播 LeaveRoom
 - **锁定/循环**：仅房主，全员广播
-- **选谱**：仅房主；从 Phira API 拉谱面名（失败回退 `#id`）；HTTP Range 下载 `info.txt` 解析谱面时长并缓存
+- **选谱**：仅房主；从 Phira API 拉谱面元数据（谱面名/谱师/曲师/难度/评分/更新日期，失败回退 `#id`）；HTTP Range 下载 `info.txt` 解析谱面时长并缓存；**选谱后广播谱面信息**（`谱师:... 曲师:... 难度:AT Lv.15 评分:0.918 谱面更新:...`）
 - **开赛**：`RequestStart`（房主）、管理员强开、`CancelStart`；全员 Ready / 强开 → Playing
 - **准备倒计时**（默认 60s）：超时自动开赛，未 Ready 标记 aborted
 - **对局超时**（默认 +60s）：首个完成者延长一个偏移；超时未完成者标记 aborted 并结算
