@@ -8,8 +8,8 @@ use crate::official_client_compat::protocol_trace::ProtocolTrace;
 use crate::phira_client::PhiraRetryNoticeTarget;
 use crate::server::PlusServerState;
 use crate::session_auth::{
-    authenticate_remote_with_notice, ban_rejection_message, resolve_phira_api_endpoint,
-    send_auth_rejection, AuthUserInfo,
+    authenticate_remote_with_notice, ban_rejection_message, ip_ban_rejection_message,
+    resolve_phira_api_endpoint, send_auth_rejection, AuthUserInfo,
 };
 use anyhow::{anyhow, bail, Result};
 use phira_mp_common::{ClientCommand, Message, ServerCommand, Stream, StreamSender};
@@ -1249,6 +1249,35 @@ impl Session {
                                     let server = Arc::clone(&server);
                                     let auth_tx = &mut auth_tx;
                                     async move {
+                                        // ── IP ban check (pre-auth) ────────────────
+                                        // The accept layer used to drop IP-banned
+                                        // connections silently, so the client only saw
+                                        // a timeout with no explanation. Rejecting
+                                        // here mirrors the user-ban path: send
+                                        // `Authenticate(Err(reason))` so the client
+                                        // can display the ban reason, then report
+                                        // `Rejected` so the session is never built.
+                                        // The language is the default: the client has
+                                        // not authenticated yet, so its locale is
+                                        // unknown.
+                                        if server.ban_manager.is_ip_banned(&addr.ip()).await {
+                                            warn!(
+                                                ip = %addr.ip(),
+                                                "connection rejected: IP banned (auth)"
+                                            );
+                                            let rejection = ip_ban_rejection_message();
+                                            send_auth_rejection(
+                                                retry_send_tx.as_ref(),
+                                                rejection,
+                                            )
+                                            .await;
+                                            if let Some(tx) = auth_tx.take() {
+                                                let _ = tx.send(
+                                                    AuthenticationOutcome::Rejected,
+                                                );
+                                            }
+                                            return Ok(AuthResolved { accepted: None });
+                                        }
                                         let token = token.clone().into_inner();
                                         if token.len() > 32 {
                                             bail!("invalid token");

@@ -119,11 +119,14 @@ impl PlusServer {
                 }
             };
 
-            // ── IP ban check (uses real client IP from PROXY if applicable) ──
-            if state.ban_manager.is_ip_banned(&addr.ip()).await {
-                trace!(ip = %addr.ip(), "connection rejected: IP banned");
-                return;
-            }
+            // ── IP ban check moved to the auth path ───────────────────────
+            // The accept layer no longer silently drops IP-banned connections:
+            // closing the TCP stream without a response makes the official
+            // client wait until timeout with no explanation. The check now runs
+            // in the session `Authenticate` path, which sends
+            // `Authenticate(Err(reason))` so the client can display the ban
+            // reason. The real client IP (PROXY-resolved above) is preserved on
+            // `addr`, which is passed into `Session::new` for that check.
 
             let session = match tokio::time::timeout(
                 std::time::Duration::from_secs(auth_timeout),

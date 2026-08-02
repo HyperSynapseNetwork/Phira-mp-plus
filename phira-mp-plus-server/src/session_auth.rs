@@ -83,6 +83,18 @@ pub(crate) fn ban_rejection_message(language: &str, reason: &str) -> String {
         .collect()
 }
 
+/// Format the pre-auth rejection message for an IP-banned client.
+///
+/// Runs before the client has authenticated, so its language is unknown — the
+/// default language is used. Mirrors the user-ban rejection but with an
+/// IP-specific default reason (the IP ban entry's admin-supplied reason is not
+/// surfaced at this layer).
+pub(crate) fn ip_ban_rejection_message() -> String {
+    let lang = Language::default();
+    let reason = crate::l10n::try_translate(&lang.0, "auth-banned-ip-reason");
+    ban_rejection_message(&lang.0.to_string(), &reason)
+}
+
 pub(crate) async fn send_auth_rejection(send_tx: &StreamSender<ServerCommand>, message: String) {
     time::sleep(AUTH_FAILURE_RESPONSE_DELAY).await;
     match time::timeout(
@@ -99,7 +111,7 @@ pub(crate) async fn send_auth_rejection(send_tx: &StreamSender<ServerCommand>, m
 
 #[cfg(test)]
 mod tests {
-    use super::ban_rejection_message;
+    use super::{ban_rejection_message, ip_ban_rejection_message};
 
     #[test]
     fn ban_rejection_includes_reason_in_client_language() {
@@ -112,5 +124,12 @@ mod tests {
     fn ban_rejection_uses_default_reason_when_empty() {
         let message = ban_rejection_message("en-US", "   ");
         assert!(message.contains("Violation of server rules"));
+    }
+
+    #[test]
+    fn ip_ban_rejection_uses_ip_specific_reason_in_default_language() {
+        let message = ip_ban_rejection_message();
+        assert!(message.contains("IP address is banned"));
+        assert!(message.contains("banned from this server"));
     }
 }
