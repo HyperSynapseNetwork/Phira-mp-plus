@@ -1467,12 +1467,13 @@ impl RoomCommandHandler {
                     as_.state.members.monitors.push(*user_id);
                 } else {
                     as_.state.members.users.push(*user_id);
-                    // First non-monitor user becomes host when no host is set.
-                    // This applies to both player-created rooms (set during actor
-                    // init from creator_id) and server-created empty rooms.
-                    if as_.state.control.host_id.is_none() {
-                        as_.state.control.host_id = Some(*user_id);
-                    }
+                    // Host is NEVER auto-assigned to the first joiner here.
+                    // Player-created rooms get their host at actor init (from
+                    // `creator_id`); server-created empty rooms and rooms
+                    // explicitly set to the system host (`room host <id> ?`)
+                    // keep `host_id = None` so they report host -1. A joiner
+                    // must never silently take over a system-hosted room, and
+                    // joining an empty room must not make the joiner host.
                 }
                 // PMP44 P0-M: 插件事件是 response-after——成员变更（join）是权威
                 // 状态提交，插件回调绝不阻塞 Actor reply。

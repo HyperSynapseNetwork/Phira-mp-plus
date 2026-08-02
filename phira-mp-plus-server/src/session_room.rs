@@ -289,8 +289,10 @@ pub async fn create_room(
     // in room.users(), causing a 2-person room to appear as 3 or the welcome
     // message to report 2 users when there is only 1.
     *room_guard = Some(Arc::clone(&room));
-    // Host is assigned by the first AddUser command (for monitors) or by
-    // assign_room_host_if_missing (for non-monitors) in join_room.
+    // Host is set at actor init from creator_id (player-created rooms) or via
+    // SetHost (admin). Server-created empty rooms keep host_id = None and
+    // report host -1 (system host); joining an empty room never makes the
+    // joiner host.
     // CreateRoom(Ok) establishes client room state; do not emit a room event to
     // the creator before that response.
     drop(room_guard);
@@ -918,7 +920,10 @@ pub async fn leave_room(
         warn!("{}", err_msg);
         return Err(anyhow::anyhow!(err_msg));
     }
-    if !room_dropped && !was_monitor {
+    // Only attempt host reassignment when the room actually has a real host to
+    // transfer. Empty rooms that keep the system host (`host_id = None`) must
+    // not get a random host assigned when a member leaves — the host stays -1.
+    if !room_dropped && !was_monitor && room.control_snapshot().host_id.is_some() {
         // Reassign host to a random remaining user if host leaves.
         let remaining = room.users().await;
         if !remaining.is_empty() {

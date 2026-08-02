@@ -39,7 +39,9 @@ impl PlusServerState {
 
     // ── Room creation ────────────────────────────────────────────────
 
-    /// 创建无人持久空房间。该房间没有初始房主，首个加入的普通玩家会静默成为房主。
+    /// 创建无人持久空房间。该房间没有初始房主，房主保持系统（host=-1）；
+    /// 首个加入的普通玩家**不会**静默成为房主（房主只能由房主创建者或
+    /// 管理员 `room host` 设置）。
     ///
     /// TODO(Phase2-WorkD): This method bypasses RoomCommandGateway — it creates
     /// the Room struct directly and inserts it into state.rooms. No mailbox
@@ -145,9 +147,11 @@ impl PlusServerState {
     /// 如果房间没有真实房主或系统 `?` 房主，让指定普通玩家成为房主。
     ///
     /// After actor cutover, host is always managed via actor snapshot and
-    /// mailbox commands. The AddUser handler assigns host to the first
-    /// non-monitor joiner. This function serves as an additional safety net
-    /// for paths (like force_move) that bypass AddUser.
+    /// mailbox commands. Host is set at actor init (player-created rooms from
+    /// `creator_id`) or via SetHost (admin). The AddUser handler never assigns
+    /// host to a joiner — empty/system-hosted rooms keep `host_id = None`
+    /// (host -1). This function serves as an additional safety net for paths
+    /// (like force_move) that bypass AddUser.
     ///
     /// P0-I: `announce` controls whether a first-host assignment broadcasts
     /// `ChangeHost(true)` inline (via the actor SetHost handler). The JOIN path
