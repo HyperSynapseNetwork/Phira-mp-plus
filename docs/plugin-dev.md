@@ -318,7 +318,7 @@ PMP 插件状态机：`加载 → 验证 → 启用 → 运行 → 禁用 → �
 | `tcp` | 发起 TCP 连接 |
 | `max_concurrent_calls` | 并发 API 调用数（默认 1） |
 
-默认拒绝所有权限。
+缺省授予 `default_capabilities` 集合（`state.read`、`send`、`ext`、`config`、`http`、`room.manage`、`admin`、`crypto`、`timer`、`tcp`、`room-state` 等）——manifest 声明的能力用于显式覆盖/收紧。**动态**能力请求（`request-capability`）默认拒绝。
 
 ### 构建与部署
 
