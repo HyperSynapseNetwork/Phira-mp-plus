@@ -1,6 +1,32 @@
-# PMP 相对 Phira-mp 新增功能（完整版）
+# PMP 功能总览
 
-> 本文档基于代码逐项梳理 PMP（Phira-mp-plus）在官方 [Phira-mp](https://github.com/TeamFlos/phira-mp) 基础上新增的**所有功能与行为**。
+## 是什么 / 不是什么
+
+**是什么**：Phira-mp+（PMP）是 Phira+ 架构中的实时多人游戏运行时。它负责 TCP 游戏协议、会话管理、房间状态机、游戏轮次、可信 WASM 插件执行，以及可靠的事件持久化。
+
+```
+PMP (game runtime) → PostgreSQL
+                                        ↑
+                                    WASM plugins
+```
+
+**不是什么**：PMP **不是**面向公网的 Web 网关。以下职责**不属于** PMP：
+
+- 公共用户账号与 OAuth
+- Web API 网关
+- TLS 终结与限速
+- 管理面板前端
+- CDN 与 WAF
+
+PMP 运行在可信内网，并内置 HTTP/SSE/WS 接口用于兼容、诊断与内部集成。
+
+**目标读者**：自托管 Phira 服务端运维者、Phira+ 服务部署者、插件开发者（可信生态）。
+
+**当前状态**：生产前加固候选（v0.4.x），适用于受控预发与内部灰度测试，不适用于公开生产发布。
+
+---
+
+> 以下内容基于代码逐项梳理 PMP（Phira-mp-plus）在官方 [Phira-mp](https://github.com/TeamFlos/phira-mp) 基础上新增的**所有功能与行为**。
 > 官方 Phira-mp 是基础多人游戏服务器（TCP 协议 + 房间 + 游玩轮次）。以下所有条目均为 PMP 新增或增强。
 
 ---
@@ -105,7 +131,7 @@
 **扩展**：`extension list/get`
 **杂项**：`roomcreation on|off`、`approve openuds`、`welcome-config`、`player-count`、`round-last`
 **基准**：`benchmark list/run/suite/compare/cleanup`
-**运行时**：`runtime status/phira/commands/events/rooms/actors/schema/persistence`
+**运行时**：`runtime status/phira/commands/events/rooms/actors/schema/persistence/latency`
 **WAL/死信**：`wal inspect`、`dead-letter list/replay`
 
 ---
@@ -186,6 +212,7 @@
 
 - **ProtocolTrace 全局计数器**：请求/响应时序、认证屏障、慢路径；**生产必须为 0**：silent_response_paths/late_commit/commit_without_response/compat_queue_drop/stale_commit_prevented/gate_control_overflow/critical_compat_drop
 - **延迟直方图**：9 桶（1/5/10/50/100/500/1000/5000ms）
+- **`runtime latency` CLI**：在管理控制台打印响应延迟直方图（服务端命令处理，`命令收到→响应`），以 `█` 条形图渲染各桶计数与百分比（`< 1ms` / `1–5ms` / … / `≥ 5000ms`）
 - **EventBus / RoomCommandGateway / PersistenceWorker 统计**：队列/延迟/计数
 - **日志**：每小时滚动 + stdout + TUI + OpenUDS；JSON 结构化；脱敏（token/password）
 - **Sentry**：`sentry_dsn` + `sentry` feature（Release 默认关）
@@ -221,3 +248,50 @@
 | 插件 | 无 | `plugins/`（WASM） |
 | 端口 | 游戏端口 | 游戏 + HTTP 双端口 + OpenUDS |
 | 依赖 | 仅 Rust | PostgreSQL + 可选 Sentry |
+
+---
+
+## 兼容矩阵
+
+> 最后更新：2026-07-19
+
+### 服务端版本
+
+PMP 使用 SemVer（`major.minor.patch`）。当前：`0.4.x`（pre-production）。
+
+| 组件 | 版本方案 | 当前 |
+|-----------|---------------|---------|
+| 服务端 | SemVer | `0.4.x` |
+| 游戏协议 | Integer | `1` |
+| WIT ABI | Integer | `2` |
+| 配置 Schema | Integer | `1` |
+| DB Schema | Integer | `1` |
+| 事件 Schema | Integer | `1` |
+
+### 升级规则
+
+| 升级类型 | 可滚动升级 | 说明 |
+|-------------|-----------------|-------|
+| Patch（0.4.1 → 0.4.2） | ✅ | 仅修复 bug，无 schema 变更 |
+| Minor（0.4 → 0.5） | ⚠️ | 查看 changelog 是否有破坏性变更 |
+| Major（0.x → 1.0） | ❌ | 需要完整迁移 |
+
+### 数据库兼容性
+
+- DB schema 在同一 minor 版本内向前兼容
+- Schema 迁移采用 expand/contract 模式
+- 回滚：旧服务端版本必须能读取旧列
+- 降级可能需要手动逆向迁移
+
+### 协议兼容性
+
+- 游戏协议版本 `1` 稳定
+- 客户端必须在连接时协商协议版本
+- 服务端拒绝协议版本不支持的客户端
+
+### 插件兼容性
+
+- WIT ABI `v2` 是唯一受支持的 ABI
+- ABI 版本变更需要插件重新编译
+- 服务端在加载时校验插件 WIT ABI
+- 破坏性 ABI 变更会递增 WIT ABI 版本
