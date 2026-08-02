@@ -8,7 +8,7 @@
 //!
 //! This module is the single place that schedules those compensation messages.
 //! Each item records its reason for observability (`tracing::debug`). The delay
-//! defaults to `minimum_response_latency_ms` (10ms) and can be set to 0 via
+//! defaults to `minimum_response_latency_ms` (0ms) and can be set explicitly via
 //! `compatibility.protocol_hack_delay_ms` for differential testing against the
 //! official server.
 //!

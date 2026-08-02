@@ -94,10 +94,9 @@ compatibility:
   # 是否针对未修改的官方客户端启用兼容延迟。设为 false 可做差分/压测。
   official_phira_client: true
   # 请求型命令响应的最低服务端延迟（毫秒），从收到命令开始计时。
-  # 模拟官方服务端自然调度，保证客户端 send→install-callback 顺序不被破坏。
-  # PMP44 P1 §33: 官方兼容开启时不能设为 0（会竞态回调安装）；差分测试例外，
-  # 可显式设置 protocol_hack_delay_ms: 0 放行。
-  minimum_response_latency_ms: 10
+  # 默认 0：官方客户端 rcall 在 send 后本地注册回调（微秒级），远快于
+  # 网络响应往返，无回调安装竞态。
+  minimum_response_latency_ms: 0
   # 单条普通客户端命令的总业务 deadline（毫秒），覆盖 mailbox 发送与 reply
   # 两个阶段。必须明显小于官方客户端约 7 秒的固定等待。
   session_command_deadline_ms: 4500
@@ -117,7 +116,7 @@ compatibility:
   # 认证屏障最大持续时间（毫秒）。超过后强制关闭认证（fail-closed）。
   gate_max_auth_duration_ms: 8000
   # ProtocolHack 补偿消息延迟（毫秒）。省略时回退到 minimum_response_latency_ms
-  # （默认 10ms）；设为 0 可做差分测试（与官方/无补偿时序对比）。
+  # （默认 0ms）；设为 0 可做差分测试（与官方/无补偿时序对比）。
   # 补偿消息（ChangeHost/ChangeState/持久房间/回放模拟）在官方响应 flush 后
   # 按固定顺序调度，不阻塞 Room Actor。
   # protocol_hack_delay_ms: 10

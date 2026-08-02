@@ -203,6 +203,8 @@ pub struct CompatibilityConfig {
     #[serde(default = "default_official_phira_client")]
     pub official_phira_client: bool,
     /// 请求型命令响应的最低服务端延迟（毫秒）。从收到命令开始计时。
+    /// 默认 0：官方客户端 rcall 在 send 后本地注册回调（微秒级），远快于
+    /// 网络响应往返，无回调安装竞态。
     #[serde(default = "default_minimum_response_latency_ms")]
     pub minimum_response_latency_ms: u64,
     /// 单条普通客户端命令的总业务 deadline（毫秒），覆盖 mailbox 发送与
@@ -235,7 +237,7 @@ pub struct CompatibilityConfig {
     #[serde(default = "default_gate_max_auth_duration_ms")]
     pub gate_max_auth_duration_ms: u64,
     /// ProtocolHack 补偿消息延迟（毫秒）。`None` 时回退到
-    /// `minimum_response_latency_ms`（默认 10ms）；设为 `Some(0)` 可做差分测试
+    /// `minimum_response_latency_ms`（默认 0ms）；设为 `Some(0)` 可做差分测试
     /// （与官方/无补偿时序对比）。补偿消息在官方响应 flush 之后调度，
     /// 不阻塞 Room Actor（PMP42 P1 ProtocolHack）。
     #[serde(default)]
@@ -263,7 +265,7 @@ fn default_official_phira_client() -> bool {
 }
 
 fn default_minimum_response_latency_ms() -> u64 {
-    10
+    0
 }
 
 fn default_session_command_deadline_ms() -> u64 {
@@ -711,20 +713,9 @@ impl PlusConfig {
                     .into(),
             ));
         }
-        // PMP44 P1 §33: 官方兼容模式下最低响应时延不能误设 0。官方客户端在
-        // send 之后才安装 Authenticate 回调，0ms 最低时延会让响应先于回调安装、
-        // 与回调安装竞态；必须设置正数最低时延或关闭官方兼容。例外：显式设置
-        // protocol_hack_delay_ms = Some(0) 用于差分测试（与官方/无补偿时序对比）
-        // 时用户有意为零延迟，放行。
-        if self.compatibility.official_phira_client
-            && self.compatibility.minimum_response_latency_ms == 0
-            && self.compatibility.protocol_hack_delay_ms != Some(0)
-        {
-            return Err(AppError::ConfigValidation(
-                "compatibility.official_phira_client=true 时 minimum_response_latency_ms 不能为 0：官方客户端在 send 之后才安装 Authenticate 回调，0ms 最低时延会与回调安装竞态。请设置正数最低时延或关闭官方兼容；差分测试可显式设置 protocol_hack_delay_ms=0"
-                    .into(),
-            ));
-        }
+        // 官方客户端（phira-mp-client）rcall 在 send 后本地注册回调（微秒级），
+        // 远快于网络响应往返，min_latency=0 无回调安装竞态。
+
         // PMP44 P0-G: 出站认证屏障缓冲与超时上限校验。数量/字节上限用于
         // 防止慢认证连接造成无界内存增长；持续时间上限用于 fail-closed
         // 强制关闭认证。
@@ -1079,14 +1070,14 @@ mod tests {
     fn compatibility_defaults_target_official_client() {
         let config = PlusConfig::default();
         assert!(config.compatibility.official_phira_client);
-        assert_eq!(config.compatibility.minimum_response_latency_ms, 10);
+        assert_eq!(config.compatibility.minimum_response_latency_ms, 0);
         assert_eq!(config.compatibility.session_command_deadline_ms, 4500);
         // PMP45 P0-I: 提交后响应预算默认 1000ms（总 deadline 拆分为 3500ms
         // commit budget + 1000ms response budget）。
         assert_eq!(config.compatibility.commit_response_reserve_ms, 1000);
         // PMP44 P0-D: 认证绝对预算默认 5000ms，必须早于官方客户端约 7 秒 deadline。
         assert_eq!(config.compatibility.auth_deadline_ms, 5000);
-        // ProtocolHack 默认回退到 minimum_response_latency_ms（10ms），
+        // ProtocolHack 默认回退到 minimum_response_latency_ms（0ms），
         // 可显式设为 0 做差分测试。
         assert_eq!(config.compatibility.protocol_hack_delay_ms, None);
         // PMP44 P0-G: 认证屏障默认上限——256 事件 / 1 MiB / 8000ms。
@@ -1239,8 +1230,7 @@ mod tests {
         };
         assert!(config.validate().is_ok());
 
-        // official_phira_client=true 且 minimum_response_latency_ms=0 且
-        // protocol_hack_delay_ms=None（回退到 0ms 地板）必须校验失败。
+        // min_latency=0 允许：客户端 rcall 本地注册回调先于网络响应，无竞态。
         let config = PlusConfig {
             compatibility: crate::CompatibilityConfig {
                 official_phira_client: true,
@@ -1251,7 +1241,7 @@ mod tests {
             database_url: "postgres://localhost/db".to_string(),
             ..Default::default()
         };
-        assert!(config.validate().is_err());
+        assert!(config.validate().is_ok());
 
         // 显式 protocol_hack_delay_ms=Some(0)（差分测试）表示用户有意零延迟，放行。
         let config = PlusConfig {
