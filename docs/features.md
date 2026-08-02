@@ -233,7 +233,7 @@ PMP 运行在可信内网，并内置 HTTP/SSE/WS 接口用于兼容、诊断与
 
 - **高频遥测**：Touch/Judge 独立通道批量写 PG；慢 monitor 有界 broadcast 不阻塞热路径
 - **基准测试**：11 场景 × 4 预设；真实二进制协议客户端压测；Mock Phira HTTP（故障注入）；报告指标（延迟/CPU/RSS/DB rows/s）
-- **OpenUDS（Unix Domain Socket API）**：`/var/run/pmp-openuds.sock`；命令（room/player/server/broadcast/plugin/runtime）+ 事件流（user.online/offline、room.*、round.*、touches/judges/logs）
+- **OpenUDS（Unix Domain Socket API）**：`/var/run/pmp-openuds.sock`；命令（room/player/server/broadcast/plugin/runtime）+ 事件流（user.online/offline、room.*、round.*、touches/judges/logs）；**仅 Unix 平台——Windows 版本不编译/不支持 UDS**
 - **备份/恢复**（pmp-admin）：backup create/verify（config + WAL + dead-letter + extensions + SHA-256 manifest）
 - **ServerStats / Web 快照**：房间/用户富快照（状态、ready/finished/aborted、当前轮、历史）
 
