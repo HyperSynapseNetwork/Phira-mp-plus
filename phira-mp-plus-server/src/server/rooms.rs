@@ -529,17 +529,33 @@ impl PlusServerState {
         users.extend(target_room.monitors().await);
         let room_state = crate::session_room::build_client_room_state(&target_room, &user).await;
         let is_host = room_state.is_host;
-        // JoinRoom 响应与 ChangeHost 告知均随 JoinRoom(Ok) flush 后到达，
-        // 目标用户 gate 已激活；作为响应/告知传 None（cutover 不剔除）。
-        user.try_send(
-            ServerCommand::JoinRoom(Ok(phira_mp_common::JoinRoomResponse {
-                state: room_state.state,
-                users: users.into_iter().map(|user| user.to_info()).collect(),
-                live: target_room.is_live(),
-            })),
-            None,
+        // JoinRoom(Ok) 是「加入新房间」的关键响应：必须经 Critical 路径
+        // `send_and_flush` 证明真正 flush 到 socket 才返回（P0-E/P0-F），与正常
+        // join_room 的 `origin.send_and_flush(JoinRoom(Ok))` 一致。不能用
+        // `try_send`（best-effort `OutboundItem::Packet`）：出站队列拥塞时会静默
+        // 丢弃并断开 Session，被转移用户收不到通知、客户端卡住直到重连。响应
+        // 非房间状态事件，room_seq 传 None（cutover 不适用，绝不剔除）。
+        let join_ok = ServerCommand::JoinRoom(Ok(phira_mp_common::JoinRoomResponse {
+            state: room_state.state,
+            users: users.into_iter().map(|user| user.to_info()).collect(),
+            live: target_room.is_live(),
+        }));
+        match tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            user.send_and_flush(join_ok),
         )
-        .await;
+        .await
+        {
+            Ok(Ok(())) => {}
+            Ok(Err(err)) => {
+                warn!(target_id, room = %rid, "force_move: JoinRoom(Ok) send failed: {err}");
+            }
+            Err(_) => {
+                warn!(target_id, room = %rid, "force_move: JoinRoom(Ok) flush timed out");
+            }
+        }
+        // ChangeHost 是状态告知（非响应），随 JoinRoom(Ok) flush 后经 FIFO 到达；
+        // 作为告知传 None（cutover 不剔除）。
         user.try_send(ServerCommand::ChangeHost(is_host), None).await;
 
         // Phase 8: Record history.

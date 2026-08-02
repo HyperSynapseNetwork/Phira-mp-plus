@@ -280,9 +280,12 @@ impl User {
     /// server must prove the packet reached the wire before committing the
     /// caller's room state, or roll the state back.
     ///
-    /// Retained as the origin-free fallback: the join path now sends through
-    /// `CommandOrigin::send_and_flush`, and A3 wires any remaining call sites.
-    #[allow(dead_code)]
+    /// Origin-free variant: the client-initiated join path sends through
+    /// `CommandOrigin::send_and_flush` (bound to the originating session); the
+    /// admin force-move path (`force_move_user_to_room`) uses this method to
+    /// flush `JoinRoom(Ok)` to the transferred user's current session so the
+    /// join notification is guaranteed on the wire, never dropped by a
+    /// best-effort `try_send`.
     pub async fn send_and_flush(&self, cmd: ServerCommand) -> Result<()> {
         match self
             .binding

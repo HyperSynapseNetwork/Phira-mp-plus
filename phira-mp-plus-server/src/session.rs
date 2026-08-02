@@ -3556,4 +3556,38 @@ mod tests {
         // 已激活（Active）后，即使下游异常也不回滚。
         assert!(!should_rollback_auth(AuthPhase::Active, false, false));
     }
+
+    /// PMP47 B / force-move 回归: `JoinRoom(Ok)` 响应是 NonSnapshot（命令响应，
+    /// room_seq=None），即使快照切换 cutover 已设置也绝不剔除——被强制转移的
+    /// 用户即使处于认证窗口（gate 未激活、响应被缓冲），激活时也会收到
+    /// 「加入新房间」响应，而不是被 gate 误删后卡住直到重连。
+    #[tokio::test]
+    async fn outbound_gate_force_move_join_room_ok_survives_cutover() {
+        let gate = test_gate();
+        let sink = TestSink::default();
+        let join_ok = ServerCommand::JoinRoom(Ok(phira_mp_common::JoinRoomResponse {
+            state: phira_mp_common::RoomState::WaitingForReady,
+            users: vec![phira_mp_common::UserInfo {
+                id: 42,
+                name: "moved".into(),
+                monitor: false,
+            }],
+            live: true,
+        }));
+        // 快照已捕获（cutover 序号高企）：缓冲区内有一条快照覆盖的状态事件，
+        // 其后紧跟着被转移用户的 JoinRoom(Ok) 响应（room_seq=None）。
+        {
+            let mut pending = gate.pending.lock().await;
+            gate.push_bounded(&mut pending, ServerCommand::ChangeHost(true), Some(9));
+            gate.push_bounded(&mut pending, join_ok, None);
+        }
+        let _cutover = gate.begin_room_cutover(9).await;
+        gate.activate(&sink).await.unwrap();
+
+        let sent = sink.sent.lock().unwrap();
+        // ChangeHost(true)（SnapshotCovered, room_seq 9 <= cutover 9）被快照剔除；
+        // JoinRoom(Ok) 是命令响应（NonSnapshot, room_seq=None）→ 必须发送。
+        assert_eq!(sent.len(), 1, "JoinRoom(Ok) must survive the cutover");
+        assert!(matches!(sent[0], ServerCommand::JoinRoom(Ok(_))));
+    }
 }
