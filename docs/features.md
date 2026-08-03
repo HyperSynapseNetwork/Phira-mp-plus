@@ -186,7 +186,7 @@
 
 - **ProtocolTrace 全局计数器**：请求/响应时序、认证屏障、慢路径；**生产必须为 0**：silent_response_paths/late_commit/commit_without_response/compat_queue_drop/stale_commit_prevented/gate_control_overflow/critical_compat_drop
 - **延迟直方图**：9 桶（1/5/10/50/100/500/1000/5000ms）
-- **`runtime latency` CLI**：在管理控制台打印响应延迟直方图（服务端命令处理，`命令收到→响应`），以 `█` 条形图渲染各桶计数与百分比（`< 1ms` / `1–5ms` / … / `≥ 5000ms`）
+- **`runtime latency` CLI**：在管理控制台打印两个直方图——响应延迟（命令收到→响应）与**握手延迟**（收到认证→AuthOK 发出），以 `█` 条形图渲染各桶计数与百分比（`< 1ms` / `1–5ms` / … / `≥ 5000ms`）
 - **EventBus / RoomCommandGateway / PersistenceWorker 统计**：队列/延迟/计数
 - **日志**：每小时滚动 + stdout + TUI + OpenUDS；JSON 结构化；脱敏（token/password）
 - **Sentry**：`sentry_dsn` + `sentry` feature（Release 默认关）
