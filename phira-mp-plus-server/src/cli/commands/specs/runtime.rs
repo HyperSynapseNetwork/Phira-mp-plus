@@ -14,12 +14,15 @@ pub fn specs() -> Vec<CommandSpec> {
             "runtime status",
         )
         .handler(Arc::new(|state, _args| {
-            let rooms = state.rooms.try_read().map(|r| r.len()).unwrap_or(0);
-            vec![format!(
-                "  Runtime: {} rooms | {} commands | ABI=WIT component v2",
-                rooms,
-                state.command_registry.iter().count()
-            )]
+            let state = Arc::clone(state);
+            Box::pin(async move {
+                let rooms = state.rooms.try_read().map(|r| r.len()).unwrap_or(0);
+                vec![format!(
+                    "  Runtime: {} rooms | {} commands | ABI=WIT component v2",
+                    rooms,
+                    state.command_registry.iter().count()
+                )]
+            })
         })),
         CommandSpec::new(
             "runtime commands",
@@ -29,8 +32,11 @@ pub fn specs() -> Vec<CommandSpec> {
         )
         .developer()
         .handler(Arc::new(|state, _args| {
-            let (p, a, d) = state.command_registry.command_surface_counts();
-            vec![format!("  Registry: {p} primary, {a} advanced, {d} dev")]
+            let state = Arc::clone(state);
+            Box::pin(async move {
+                let (p, a, d) = state.command_registry.command_surface_counts();
+                vec![format!("  Registry: {p} primary, {a} advanced, {d} dev")]
+            })
         })),
         CommandSpec::new(
             "runtime roadmap",

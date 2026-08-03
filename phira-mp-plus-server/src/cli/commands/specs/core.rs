@@ -18,13 +18,16 @@ pub fn specs() -> Vec<CommandSpec> {
         CommandSpec::new("status", "core", "查看服务器运行状态。", "status")
             .example("status")
             .handler(Arc::new(|state, _args| {
-                let rooms = state.rooms.try_read().map(|r| r.len()).unwrap_or(0);
-                vec![format!(
-                    "  ◆ Phira-mp+ v{}  │ 端口 {}  │ 房间 {}",
-                    env!("CARGO_PKG_VERSION"),
-                    state.config.port,
-                    rooms
-                )]
+                let state = Arc::clone(state);
+                Box::pin(async move {
+                    let rooms = state.rooms.try_read().map(|r| r.len()).unwrap_or(0);
+                    vec![format!(
+                        "  ◆ Phira-mp+ v{}  │ 端口 {}  │ 房间 {}",
+                        env!("CARGO_PKG_VERSION"),
+                        state.config.port,
+                        rooms
+                    )]
+                })
             })),
         CommandSpec::new(
             "config reload",
@@ -33,6 +36,8 @@ pub fn specs() -> Vec<CommandSpec> {
             "config reload",
         )
         .handler(Arc::new(|state, _args| {
+            let state = Arc::clone(state);
+            Box::pin(async move {
             let path = std::path::Path::new(&state.config.config_path);
             let content = match std::fs::read_to_string(path) {
                 Ok(c) => c,
@@ -102,9 +107,12 @@ pub fn specs() -> Vec<CommandSpec> {
                 "  ▸ CLI monitor 覆盖及未在 YAML/持久化文件中声明的动态状态保持不变".to_string(),
                 "  ▸ 端口、目录、数据库、限流和 Runtime 策略仍需重启生效".to_string(),
             ]
+            })
         })),
         CommandSpec::new("check-config", "core", "验证当前加载的配置并显示脱敏摘要。", "check-config")
             .handler(Arc::new(|state, _args| {
+                let state = Arc::clone(state);
+                Box::pin(async move {
                 let mut lines = vec![format!("  ◆ 服务端: {} v{}", env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION"))];
                 lines.push(format!("  ◆ TCP 端口: {}", state.config.port));
                 lines.push(format!("  ◆ HTTP: {}:{}", state.config.http_bind_address, state.config.http_port));
@@ -121,9 +129,12 @@ pub fn specs() -> Vec<CommandSpec> {
                     lines.push(format!("  ◆ 数据库状态: {db_status}"));
                 }
                 lines
+                })
             })),
         CommandSpec::new("doctor", "core", "运行系统诊断检查。", "doctor")
             .handler(Arc::new(|state, _args| {
+                let state = Arc::clone(state);
+                Box::pin(async move {
                 let mut lines = vec![format!("  ◆ Phira-mp+ v{} Doctor", env!("CARGO_PKG_VERSION"))];
                 if let Some(_db) = crate::internal_hooks::DB.get() {
                     lines.push("  ✓ 数据库: 已连接".to_string());
@@ -135,6 +146,7 @@ pub fn specs() -> Vec<CommandSpec> {
                 let rooms = state.rooms.try_read().map(|r| r.len()).unwrap_or(0);
                 lines.push(format!("  ✓ 房间: {rooms} 个"));
                 lines
+                })
             })),
     ]
 }

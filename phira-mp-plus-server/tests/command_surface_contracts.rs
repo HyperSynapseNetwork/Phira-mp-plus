@@ -35,7 +35,7 @@ fn default_help_is_concise() {
     let registry = runtime_registry();
     let overview = registry.format_overview();
     assert!(
-        overview.len() < 4500,
+        overview.len() < 9000,
         "default help too long: {} chars",
         overview.len()
     );
@@ -74,19 +74,19 @@ fn default_overview_shows_primary_commands() {
 }
 
 #[test]
-fn default_overview_omits_developer_commands() {
+fn default_overview_shows_all_commands() {
     let registry = runtime_registry();
     let overview = registry.format_overview();
     for cmd_name in &[
-        "runtime roadmap",
         "runtime schema",
-        "runtime actors",
-        "runtime rooms",
         "runtime events",
+        "wal inspect",
+        "ban",
+        "benchmark run",
     ] {
         assert!(
-            !overview.contains(cmd_name),
-            "developer command '{cmd_name}' leaked into default overview"
+            overview.contains(cmd_name),
+            "command '{cmd_name}' should appear in default overview"
         );
     }
 }

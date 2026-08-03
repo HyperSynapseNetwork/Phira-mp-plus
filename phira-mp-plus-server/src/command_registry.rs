@@ -6,12 +6,22 @@
 //! CLI/TUI/admin_/WIT execution on a single path.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::Arc;
 
 use crate::server::PlusServerState;
 
 /// Handler signature for a registered CLI command.
-pub type CommandHandler = Arc<dyn Fn(&PlusServerState, &[&str]) -> Vec<String> + Send + Sync>;
+///
+/// Commands receive the server state plus the remaining argument tokens and
+/// return the output lines to display. Handlers may be async; the returned
+/// future is `'static` so the handler can move owned state into it.
+pub type CommandHandler = Arc<
+    dyn Fn(&Arc<PlusServerState>, &[&str]) -> Pin<Box<dyn Future<Output = Vec<String>> + Send>>
+        + Send
+        + Sync,
+>;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CommandArgSpec {
@@ -463,7 +473,6 @@ impl CommandRegistry {
         lines.push("Phira-mp+ 管理命令".to_string());
         lines.push("-".repeat(50));
         lines.push("提示：help <命令> 查看详情".to_string());
-        lines.push("提示：help advanced / help dev 查看其它命令".to_string());
         lines.push("提示：游戏内管理员入口仍使用 _ 命令，__ 表示字面量下划线".to_string());
         lines.push(String::new());
 
@@ -471,20 +480,28 @@ impl CommandRegistry {
             let visible: Vec<&CommandSpec> = self
                 .commands
                 .values()
-                .filter(|cmd| cmd.group == group && cmd.audience == CommandAudience::Primary)
+                .filter(|cmd| cmd.group == group)
                 .collect();
             if visible.is_empty() {
                 continue;
             }
             lines.push(format!("> {group}"));
             for spec in &visible {
-                lines.push(format!("    {:<32} {}", spec.usage, spec.description));
+                let marker = match spec.audience {
+                    CommandAudience::Primary => " ",
+                    CommandAudience::Advanced => "advanced",
+                    CommandAudience::Developer => "dev",
+                };
+                lines.push(format!(
+                    "    {:<32} {:<9} {}",
+                    spec.usage, marker, spec.description
+                ));
             }
             lines.push(String::new());
         }
 
         lines.push("-".repeat(50));
-        lines.push("help <命令> 查看详情 * help advanced / dev 查看更多".to_string());
+        lines.push("help <命令> 查看详情".to_string());
         lines.join("\n")
     }
 
@@ -618,10 +635,10 @@ impl CommandRegistry {
     /// Execute a command by name with the given server state and arguments.
     ///
     /// Returns `Some(output_lines)` if a registered handler was found and executed,
-    /// or `None` if no handler is registered (caller should fall back to old dispatch).
-    pub fn execute(
+    /// or `None` if no handler is registered (caller should fall back to plugin/unknown).
+    pub async fn execute(
         &self,
-        state: &PlusServerState,
+        state: &Arc<PlusServerState>,
         command: &str,
         args: &[&str],
     ) -> Option<Vec<String>> {
@@ -632,7 +649,7 @@ impl CommandRegistry {
             let candidate = normalize_command_name(&tokens[..command_len].join(" "));
             if let Some(spec) = self.commands.get(&candidate) {
                 if let Some(handler) = &spec.handler {
-                    return Some(handler(state, &tokens[command_len..]));
+                    return Some(handler(state, &tokens[command_len..]).await);
                 }
             }
         }

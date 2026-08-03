@@ -133,10 +133,11 @@ impl CliHandler {
             }
             _ => {
                 // Try Runtime CommandRegistry (unified execution path)
-                if let Some(output) =
-                    self.state
-                        .command_registry
-                        .execute(&self.state, command, args)
+                if let Some(output) = self
+                    .state
+                    .command_registry
+                    .execute(&self.state, command, args)
+                    .await
                 {
                     for line in output {
                         self.out(line);
