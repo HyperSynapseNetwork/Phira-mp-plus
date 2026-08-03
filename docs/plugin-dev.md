@@ -124,6 +124,8 @@ cp target/wasm32-unknown-unknown/release/my_plugin.component.wasm \
 
 缺少 sidecar 时仅获得兼容性默认能力，不包含 `http`、`room.manage` 或 `admin`。插件应显式提交最小 capability 清单，不要依赖默认集合。
 
+>TODON:支持第一次安装任意插件时通过CLI审批其申请的权限
+
 ## 资源与超时语义
 
 - 每次 guest 调用有 fuel 预算，线性内存、实例、内存与表数量受 Store limiter 限制。
@@ -946,18 +948,3 @@ cleanup
 4. 加 `phira-handler` 动态注册接口
 5. 更新权限检查
 6. 示例插件：一个 50 行的 TCP echo server 验证完整链路
-
-## 与 PDFP 的关系（仅供参考，不进入 API）
-
-```text
-PDFP FederationAdapter 插件 =
-  phira-tcp-v3     ← 联邦连接传输
-  phira-crypto     ← 节点签名、证书验证
-  phira-timer      ← 心跳、租约刷新
-  phira-room-state ← 规范化房间状态导出
-  phira-handler    ← ServiceMethod 注册
-  插件自身逻辑     ← CBOR、ULEB128、事件链、会话状态机
-
-没有任何一个 API 是专为 PDFP 设计的。
-PDFP 只是这些通用积木的一个组合结果。
-```
