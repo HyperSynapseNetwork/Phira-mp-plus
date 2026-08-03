@@ -138,6 +138,8 @@ pub(crate) struct ProtocolTrace {
     pub critical_compat_drop: AtomicU64,
     /// Server-side response latency histogram (ms buckets).
     pub latency_histogram: LatencyHistogram,
+    /// Handshake latency histogram: auth_received_at → AuthOK flush (ms buckets).
+    pub handshake_latency_histogram: LatencyHistogram,
 }
 
 pub(crate) static PROTOCOL_TRACE: ProtocolTrace = ProtocolTrace {
@@ -160,6 +162,7 @@ pub(crate) static PROTOCOL_TRACE: ProtocolTrace = ProtocolTrace {
     provisional_sessions: AtomicU64::new(0),
     critical_compat_drop: AtomicU64::new(0),
     latency_histogram: LatencyHistogram::new(),
+    handshake_latency_histogram: LatencyHistogram::new(),
 };
 
 impl ProtocolTrace {
@@ -169,6 +172,11 @@ impl ProtocolTrace {
 
     pub(crate) fn record_response_latency(&self, received_at: Instant) {
         self.latency_histogram.record(received_at.elapsed());
+    }
+
+    /// Record handshake latency (auth_received_at → AuthOK flush).
+    pub(crate) fn record_handshake_latency(&self, auth_received_at: Instant) {
+        self.handshake_latency_histogram.record(auth_received_at.elapsed());
     }
 }
 

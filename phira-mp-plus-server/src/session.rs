@@ -1957,6 +1957,7 @@ impl Session {
                                 auth_trace.response_queued.fetch_add(1, Ordering::Relaxed);
                                 auth_trace.response_flushed.fetch_add(1, Ordering::Relaxed);
                                 auth_trace.record_response_latency(auth_received_at);
+                                auth_trace.record_handshake_latency(auth_received_at);
                                 // ── 后台后置任务 ──────────────────────────────────────
                                 // publish_user_connected 不阻塞客户端认证响应。
                                 let uid = user.id;
