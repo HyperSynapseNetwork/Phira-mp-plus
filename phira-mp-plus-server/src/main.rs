@@ -271,10 +271,23 @@ async fn main() -> Result<()> {
     // Graceful shutdown on SIGINT (Ctrl+C) / SIGTERM so the WAL flush runs to
     // completion instead of leaving a torn tail frame (which would otherwise
     // be detected as corruption on the next start).
+    //
+    // The SIGTERM future is built OUTSIDE the select: `tokio::select!` has no
+    // rule for a `#[cfg]` attribute on an individual branch, so the cfg is
+    // applied here and the branch in the select is unconditional.  On
+    // non-Unix platforms there is no SIGTERM, so the future never resolves
+    // and the branch simply never fires.
     #[cfg(unix)]
-    let mut sigterm = tokio::signal::unix::signal(
-        tokio::signal::unix::SignalKind::terminate(),
-    )?;
+    let sigterm_fut = {
+        let mut signal = tokio::signal::unix::signal(
+            tokio::signal::unix::SignalKind::terminate(),
+        )?;
+        async move {
+            let _ = signal.recv().await;
+        }
+    };
+    #[cfg(not(unix))]
+    let sigterm_fut = std::future::pending::<()>();
     loop {
         tokio::select! {
             result = server.accept() => {
@@ -291,8 +304,7 @@ async fn main() -> Result<()> {
                 server.state.shutdown.notify_waiters();
                 break;
             }
-            #[cfg(unix)]
-            _ = sigterm.recv() => {
+            _ = sigterm_fut => {
                 info!("SIGTERM received; starting graceful shutdown");
                 server.state.shutdown.notify_waiters();
                 break;
