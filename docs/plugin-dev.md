@@ -1,7 +1,5 @@
 # Phira-mp+ 插件开发指南
 
-> 旧版 JSON 内存桥 ABI（abi-json-v1）已移除。所有插件必须使用 WIT 组件模型（abi-wit-v3）。
->
 > 完整 API 参考和 Capability 映射表请查看 [对外 API 文档](api.md)（含插件 API 与能力表，自动生成）。
 
 ## 快速开始
