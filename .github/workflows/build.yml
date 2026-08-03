@@ -54,16 +54,7 @@ jobs:
 
   check:
     needs: auto-patch
-    strategy:
-      matrix:
-        include:
-          - os: ubuntu-latest
-            target: ""
-            setup: ""
-          - os: windows-latest
-            target: x86_64-pc-windows-msvc
-            setup: ""
-    runs-on: ${{ matrix.os }}
+    runs-on: ubuntu-latest
     permissions:
       contents: read
     steps:
@@ -74,20 +65,38 @@ jobs:
       - uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
           components: clippy
-          target: ${{ matrix.target }}
       - uses: Swatinem/rust-cache@v2
         with:
           cache-on-failure: true
       - name: Workspace version consistency
         run: python scripts/sync-workspace-version.py --check
       - name: Check
-        run: cargo check --locked --workspace --all-targets --all-features ${{ matrix.target != '' && format('--target {0}', matrix.target) || '' }}
+        run: cargo check --locked --workspace --all-targets --all-features
       - name: Tests
-        if: matrix.os == 'ubuntu-latest'
         run: cargo test --locked --workspace --all-features
       - name: Clippy
-        if: matrix.os == 'ubuntu-latest'
         run: cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
+
+  # Windows 编译验证独立于 Linux build——失败不阻塞 build（Linux 产物照出）。
+  check-windows:
+    needs: auto-patch
+    runs-on: windows-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.auto-patch.outputs.build_ref }}
+          fetch-depth: 0
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          target: x86_64-pc-windows-msvc
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: check-windows
+          cache-on-failure: true
+      - name: Check (Windows)
+        run: cargo check --locked --workspace --all-targets --all-features --target x86_64-pc-windows-msvc
 
   build:
     needs: [auto-patch, check]
