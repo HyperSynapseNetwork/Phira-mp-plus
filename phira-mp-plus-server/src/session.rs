@@ -1658,6 +1658,7 @@ impl Session {
                                 let event_id = Uuid::new_v4().to_string();
                                 let session_id = this.get().unwrap().id.to_string();
                                 let instance_id = crate::server_instance::current().to_string();
+                                let wal_enqueue_started = std::time::Instant::now();
                                 if let Err(event) = server.persistence_worker.enqueue(
                                     crate::persistence::message::PersistenceEvent::UserAuthenticated {
                                         event_id,
@@ -1694,6 +1695,11 @@ impl Session {
                                     panicked.store(true, Ordering::SeqCst);
                                     return;
                                 }
+                                info!(
+                                    user = user.id,
+                                    wal_enqueue_ms = wal_enqueue_started.elapsed().as_millis() as u64,
+                                    "auth WAL enqueue (fsync) duration"
+                                );
                                 // DurableAccepted：WAL 已成功。现在才把新 Session 绑定为
                                 // User 的当前 Session（set_session + bound_generation）。
                                 // 被取代的旧 Session 不在此时关闭——推迟到新会话达到
