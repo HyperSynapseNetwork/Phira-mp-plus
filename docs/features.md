@@ -74,10 +74,10 @@ PMP 运行在可信内网，并内置 HTTP/SSE/WS 接口用于兼容、诊断与
 - **加入后**：广播 OnJoinRoom + JoinRoom → JoinRoom(Ok)（完整快照+live）→ 回放聊天历史 → ChangeHost 补偿
 - **离开**：房主离开随机转移；广播 LeaveRoom
 - **锁定/循环**：仅房主，全员广播
-- **选谱**：仅房主；从 Phira API 拉谱面元数据（谱面名/谱师/曲师/难度/评分/更新日期，失败回退 `#id`）；HTTP Range 下载 `info.txt` 解析谱面时长并缓存；**选谱后广播谱面信息**（`谱师:... 曲师:... 难度:AT Lv.15 评分:0.918 谱面更新:...`）
+- **选谱**：仅房主；从 Phira API 拉谱面元数据（谱面名/谱师/曲师/难度/评分/更新日期，失败回退 `#id`）；HTTP Range 下载 `info.txt` 解析谱面时长并缓存到内存 `chart_duration_cache`——**仅内存、不持久化**（重启清空，首次选谱后重新解析）；该缓存用于**对局超时**计算（见下），未命中时回退 120s；**选谱后广播谱面信息**（`谱师:... 曲师:... 难度:AT Lv.15 评分:0.918 谱面更新:...`）
 - **开赛**：`RequestStart`（房主）、管理员强开、`CancelStart`；全员 Ready / 强开 → Playing
 - **准备倒计时**（默认 60s）：超时自动开赛，未 Ready 标记 aborted
-- **对局超时**（默认 +60s）：首个完成者延长一个偏移；超时未完成者标记 aborted 并结算
+- **对局超时**（默认 `playing_timeout_offset_secs`=60）：基础 deadline = **谱面时长 + offset**（时长来自选谱缓存，未命中回退 120s）；开赛后首个完成者将 deadline **顺延一个 offset**（给其余玩家追赶）；无论是否有人完成，到达 deadline 即 `force_end_playing`：**所有未完成且未 abort 的玩家标记 aborted → 结算**——即无人完成时到点全体 aborted 结算；该 deadline 由正常开赛（`set_playing_deadline`）与倒计时强开（`force_start_playing`）两条路径各自计算一次（双冗余）
 - **结算**：全员完成/abort → WAL 持久化 RoundCompleted → 广播 StartRound + **本地化结算排行**（成绩/准确率/std/FC/判定/弃权）→ GameEnd → 回 SelectChart
 - **循环模式**：整局结束房主按用户列表轮转
 - **房主管理**：`SetHost`、首个非 monitor 加入者成为房主、系统房主（host=-1）

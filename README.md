@@ -59,7 +59,13 @@ PMP 服务端采用 [AGPL-3.0](LICENSE) 开源。
 
 ### 下载发行版（推荐）
 
-从 [Releases](https://github.com/HyperSynapseNetwork/Phira-mp-plus/releases) 或 CI 构建产物下载 `phira-mp-plus-server-linux-glibc`（Linux）或 `phira-mp-plus-server-linux-musl`（Linux musl，更便携）。
+从 [Releases](https://github.com/HyperSynapseNetwork/Phira-mp-plus/releases) 或 CI 构建产物下载：
+- `phira-mp-plus-server-linux-glibc`（Linux glibc，通用）
+- `phira-mp-plus-server-linux`（Linux musl，更便携）
+- `phira-mp-plus-server-linux-arm64-glibc`（Linux ARM64）
+- `phira-mp-plus-server-windows-x86_64`（Windows x86_64）
+
+> **平台说明**：Windows 版本**不编译、不支持 OpenUDS**（Unix Domain Socket 是 Unix 特性，模块已 `#[cfg(unix)]` 排除）；其余功能与 Linux 版一致。
 
 **环境配置：**
 
