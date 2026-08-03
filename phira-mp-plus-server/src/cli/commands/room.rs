@@ -310,10 +310,21 @@ impl CliHandler {
                                         .find(|user| user.id == uid);
                                     let mut removed = false;
                                     if let Some(target) = target {
+                                        let lang = target.lang.clone();
                                         let detail = if reason.trim().is_empty() {
-                                            "你已被加入该房间的黑名单".to_string()
+                                            crate::l10n::translate_system(
+                                                &lang,
+                                                "room-ban-notice",
+                                                &fluent::FluentArgs::new(),
+                                            )
                                         } else {
-                                            format!("你已被加入该房间的黑名单：{}", reason.trim())
+                                            let mut args = fluent::FluentArgs::new();
+                                            args.set("reason", reason.trim());
+                                            crate::l10n::translate_system(
+                                                &lang,
+                                                "room-ban-notice-reason",
+                                                &args,
+                                            )
                                         };
                                         target
                                             .try_send(

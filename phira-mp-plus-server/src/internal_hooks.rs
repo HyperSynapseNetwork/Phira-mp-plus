@@ -507,6 +507,10 @@ async fn init_welcome(_state: &PlusServerState, pm: &PluginManager) {
                     "  ◆ 欢迎语配置".to_string(),
                     "  │ data/welcome-config.json".to_string(),
                 ];
+                if cfg.messages.is_empty() {
+                    out.push("  │ （未配置 → 使用内置国际化默认欢迎语，按用户语言）".to_string());
+                    out.push("  │ 自定义：编辑 welcome-config.json，或配置 welcome_ftl_dir".to_string());
+                }
                 for (i, msg) in cfg.messages.iter().enumerate() {
                     out.push(format!("  │ [{i}] {msg}"));
                 }

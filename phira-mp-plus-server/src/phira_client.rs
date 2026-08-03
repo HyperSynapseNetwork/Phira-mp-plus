@@ -748,10 +748,6 @@ impl PhiraRetryClient {
     }
 
     async fn send_retry_notice(&self, target: &PhiraRetryNoticeTarget<'_>) {
-        let cmd = ServerCommand::Message(Message::Chat {
-            user: 0,
-            content: PHIRA_RETRY_NOTICE.to_string(),
-        });
         match target {
             PhiraRetryNoticeTarget::Silent => {}
             // PMP44 P0-F: 认证预授权窗口内只记录重试计数与日志，绝不向官方
@@ -762,12 +758,23 @@ impl PhiraRetryClient {
             }
             PhiraRetryNoticeTarget::Stream(sender) => {
                 self.counters.retry_notices.fetch_add(1, Ordering::Relaxed);
+                let cmd = ServerCommand::Message(Message::Chat {
+                    user: 0,
+                    content: PHIRA_RETRY_NOTICE.to_string(),
+                });
                 if let Err(err) = sender.send(cmd).await {
                     warn!("failed to send Phira retry notice: {err:?}");
                 }
             }
             PhiraRetryNoticeTarget::User(user) => {
                 self.counters.retry_notices.fetch_add(1, Ordering::Relaxed);
+                let lang = user.lang.clone();
+                let content = crate::l10n::translate_system(
+                    &lang,
+                    "phira-retry-notice",
+                    &fluent::FluentArgs::new(),
+                );
+                let cmd = ServerCommand::Message(Message::Chat { user: 0, content });
                 // 重试通知非房间状态事件，cutover 不适用。
                 user.try_send(cmd, None).await;
             }

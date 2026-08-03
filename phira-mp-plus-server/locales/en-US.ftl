@@ -87,3 +87,12 @@ welcome-rank-line = #{ $rank } { $name }  { $hours }h
 chart-info-line = Charter:{ $charter }    Composer:{ $composer }    Difficulty: { $level }{ $rating }{ $updated }
 chart-rating =     Rating: { $rating }
 chart-updated =     Chart updated: { $date }
+
+# ── Room ban notice ──
+
+room-ban-notice = You have been banned from this room
+room-ban-notice-reason = You have been banned from this room: { $reason }
+
+# ── Phira retry notice ──
+
+phira-retry-notice = Phira server connection is unstable, retrying for a smooth experience

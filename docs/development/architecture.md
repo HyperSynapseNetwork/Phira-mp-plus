@@ -28,7 +28,7 @@ Client → Session Actor → Room Actor Mailbox → Room State
 |------|-------------|
 | Session | Mailbox 化，命令路径单写者 |
 | Room 控制面 | Mailbox 化（16 个命令） |
-| Room 数据面 | 迁移中（状态分散在 RwLock） |
+| Room 数据面 | 经 Room Actor mailbox 串行化，状态字段由状态锁保护 |
 | Supervisor | 关键任务注册与健康跟踪 |
 
 ### 数据持久化

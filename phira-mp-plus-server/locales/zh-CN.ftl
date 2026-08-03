@@ -87,3 +87,12 @@ welcome-rank-line = #{ $rank } { $name }  { $hours }h
 chart-info-line = 谱师:{ $charter }    曲师:{ $composer }    难度: { $level }{ $rating }{ $updated }
 chart-rating =     评分: { $rating }
 chart-updated =     谱面更新: { $date }
+
+# ── 房间黑名单通知 ──
+
+room-ban-notice = 你已被加入该房间的黑名单
+room-ban-notice-reason = 你已被加入该房间的黑名单：{ $reason }
+
+# ── Phira 重试通知 ──
+
+phira-retry-notice = Phira服务器连接不稳定，正在重试以确保你的流畅体验
