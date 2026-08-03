@@ -3,7 +3,6 @@
 use crate::ban::BanManager;
 use crate::extensions::ExtensionManager;
 use crate::plugin::PluginManager;
-use std::collections::HashMap;
 use crate::plugin_http::{PluginHttpServer, SseHub};
 use anyhow::Result;
 use phira_mp_plus_server_api as api;

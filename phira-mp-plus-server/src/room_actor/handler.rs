@@ -1255,8 +1255,9 @@ impl RoomCommandHandler {
                 ok(RoomCommandPayload::ChartSelected { room_id: room_id.clone().to_string(), chart_id: *chart_id })
             }
 
-            RoomActorCommand::SetChartDuration { room_id: _, duration, .. } => {
+            RoomActorCommand::SetChartDuration { room_id, duration, .. } => {
                 let as_ = ctx.expect_actor_state();
+                debug!(room = %room_id, duration = ?duration, "chart duration set");
                 as_.state.chart_duration = *duration;
                 ok(RoomCommandPayload::ChartDurationSet)
             }
