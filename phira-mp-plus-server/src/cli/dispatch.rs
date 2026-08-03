@@ -60,6 +60,14 @@ impl CliHandler {
                 self.status().await;
                 true
             }
+            "version" => {
+                self.out(format!(
+                    "  {} PMP v{}",
+                    c::green("◆"),
+                    env!("CARGO_PKG_VERSION")
+                ));
+                true
+            }
             "benchmark" => {
                 self.dispatch_benchmark_command(args).await;
                 true
