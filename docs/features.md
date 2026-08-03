@@ -103,9 +103,9 @@
 **房间**：`rooms/room list`、`room create-empty`、`room info`、`room start/ready/cancel/kick/host`、`room force-move`、`room hide/unhide`、`room close`、`room lock/cycle`、`room set <field>`（lock/cycle/hidden/persistent/degraded/host/chart/api_endpoint）、`room history/rounds/round/uuid`、`room ban/unban/banlist`、`force-start`
 **插件**：`plugin list/enable/disable/remove/reload/info/call`（WASM 插件可动态注册 CLI 命令）
 **扩展**：`extension list/get`
-**杂项**：`roomcreation on|off`、`approve openuds`、`welcome-config`、`player-count`、`round-last`
+**杂项**：`roomcreation on|off`、`approve openuds`、`welcome-config`、`player-count`
 **基准**：`benchmark list/run/suite/compare/cleanup`
-**运行时**：`runtime status/phira/commands/events/rooms/actors/schema/persistence/latency`
+**运行时**：`runtime status/phira/commands/events/schema/persistence/latency`
 **WAL/死信**：`wal inspect`、`dead-letter list/replay`
 
 ---

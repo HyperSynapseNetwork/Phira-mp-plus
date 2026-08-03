@@ -230,7 +230,7 @@ pub fn with_cli<F>(
     f: F,
 ) -> Pin<Box<dyn Future<Output = Vec<String>> + Send>>
 where
-    F: for<'a> FnOnce(&'a CliHandler) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> + Send,
+    F: for<'a> FnOnce(&'a CliHandler) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> + Send + 'static,
 {
     let state = Arc::clone(state);
     Box::pin(async move { run_with_cli(&state, f).await })

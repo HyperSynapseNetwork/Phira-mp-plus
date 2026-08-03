@@ -459,7 +459,7 @@ WAL 提供本地节点持久性，不是复制。它无法在宿主机文件系�
 #### 创建备份
 
 ```bash
-pmp-admin backup /path/to/backup/dir
+pmp-admin backup create /path/to/backup/dir
 ```
 
 备份内容：
@@ -560,14 +560,14 @@ PMP 配置支持 YAML 文件、环境变量、CLI 参数三层覆盖（优先 CL
 
 ```bash
 # 1. 备份当前状态
-pmp-admin backup /tmp/pre-upgrade-backup
+pmp-admin backup create /tmp/pre-upgrade-backup
 
 # 2. 替换二进制
 cp phira-mp-plus-server /usr/local/bin/
 systemctl restart pmp
 
 # 3. 验证
-pmp-admin status
+systemctl status pmp
 journalctl -u pmp -n 50
 ```
 
@@ -579,7 +579,7 @@ cp phira-mp-plus-server.bak /usr/local/bin/
 systemctl restart pmp
 
 # 2. 如需恢复数据
-pmp-admin backup restore /tmp/pre-upgrade-backup
+手动将备份解压回目标目录后重启 PMP（pmp-admin 仅提供 `backup create` / `backup verify`）
 ```
 
 #### 迁移注意事项
@@ -609,8 +609,8 @@ pmp-admin backup restore /tmp/pre-upgrade-backup
 #### 服务器无法启动
 
 ```bash
-# 检查配置
-pmp-admin check-config
+# 检查配置（服务器交互式控制台内执行 check-config）
+# 无服务器时直接检查 server_config.yml
 
 # 检查端口占用
 ss -tlnp | grep 12346
@@ -621,8 +621,8 @@ journalctl -u pmp -n 100 --no-pager
 
 #### 玩家无法连接
 
-1. `pmp-admin status` 确认服务器运行
-2. `pmp-admin rooms` 查看房间列表
+1. `systemctl status pmp` 确认服务器运行
+2. 在服务器交互式控制台执行 `rooms` 查看房间列表
 3. 检查防火墙端口
 4. 检查认证服务可用性
 

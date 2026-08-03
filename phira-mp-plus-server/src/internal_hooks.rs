@@ -295,8 +295,7 @@ pub fn send_welcome(user_id: i32, user_name: &str, online: usize, state: &PlusSe
         .users
         .try_read()
         .ok()
-        .and_then(|g| g.get(&user_id))
-        .map(|u| u.lang.clone())
+        .and_then(|g| g.get(&user_id).map(|u| u.lang.clone()))
         .unwrap_or_default();
     let show_time = WELCOME.lock().unwrap().show_time;
     let messages = welcome_messages_for(&lang, state);

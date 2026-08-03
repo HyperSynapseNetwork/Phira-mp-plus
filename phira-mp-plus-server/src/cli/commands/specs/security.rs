@@ -23,28 +23,40 @@ fn ban_or_ip(global: bool) -> CommandHandler {
             let sub: Vec<String> = target.iter().map(|s| s.to_string()).collect();
             if *global {
                 if is_ip {
+                    let sub = sub.clone();
                     crate::cli::with_cli(&state, move |h| {
-                        let sub_refs: Vec<&str> = sub.iter().map(|s| s.as_str()).collect();
-                        Box::pin(async move { h.dispatch_ban_ip_command(&sub_refs).await })
+                        Box::pin(async move {
+                            let sub_refs: Vec<&str> = sub.iter().map(|s| s.as_str()).collect();
+                            h.dispatch_ban_ip_command(&sub_refs).await
+                        })
                     })
                     .await
                 } else {
+                    let sub = sub.clone();
                     crate::cli::with_cli(&state, move |h| {
-                        let sub_refs: Vec<&str> = sub.iter().map(|s| s.as_str()).collect();
-                        Box::pin(async move { h.dispatch_global_ban_command(&sub_refs).await })
+                        Box::pin(async move {
+                            let sub_refs: Vec<&str> = sub.iter().map(|s| s.as_str()).collect();
+                            h.dispatch_global_ban_command(&sub_refs).await
+                        })
                     })
                     .await
                 }
             } else if is_ip {
+                let sub = sub.clone();
                 crate::cli::with_cli(&state, move |h| {
-                    let sub_refs: Vec<&str> = sub.iter().map(|s| s.as_str()).collect();
-                    Box::pin(async move { h.dispatch_unban_ip_command(&sub_refs).await })
+                    Box::pin(async move {
+                        let sub_refs: Vec<&str> = sub.iter().map(|s| s.as_str()).collect();
+                        h.dispatch_unban_ip_command(&sub_refs).await
+                    })
                 })
                 .await
             } else {
+                let sub = sub.clone();
                 crate::cli::with_cli(&state, move |h| {
-                    let sub_refs: Vec<&str> = sub.iter().map(|s| s.as_str()).collect();
-                    Box::pin(async move { h.dispatch_global_unban_command(&sub_refs).await })
+                    Box::pin(async move {
+                        let sub_refs: Vec<&str> = sub.iter().map(|s| s.as_str()).collect();
+                        h.dispatch_global_unban_command(&sub_refs).await
+                    })
                 })
                 .await
             }

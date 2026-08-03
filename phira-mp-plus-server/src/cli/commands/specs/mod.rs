@@ -32,9 +32,11 @@ where
         + Sync
         + 'static,
 {
+    let f = Arc::new(f);
     Arc::new(move |state, _args| {
         let state = Arc::clone(state);
-        Box::pin(async move { crate::cli::with_cli(&state, |h| f(h)).await })
+        let f = Arc::clone(&f);
+        Box::pin(async move { crate::cli::with_cli(&state, move |h| f(h)).await })
     })
 }
 
@@ -49,13 +51,12 @@ where
         + Sync
         + 'static,
 {
+    let f = Arc::new(f);
     Arc::new(move |state, args| {
         let state = Arc::clone(state);
         let args: Vec<String> = args.iter().map(|s| s.to_string()).collect();
-        let f_ref = &f;
-        Box::pin(async move {
-            crate::cli::with_cli(&state, move |h| f_ref(h, args)).await
-        })
+        let f = Arc::clone(&f);
+        Box::pin(async move { crate::cli::with_cli(&state, move |h| f(h, args)).await })
     })
 }
 

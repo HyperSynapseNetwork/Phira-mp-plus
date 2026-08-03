@@ -33,7 +33,7 @@ TUI 快捷键：`Tab` 补全、`Ctrl+A/E` 跳到行首/行尾、`Ctrl+B/F` 左�
 - `<必填参数>` — 尖括号表示必须提供
 - `[可选参数]` — 方括号表示可选
 - `[默认值]` — 方括号内等号表示默认值
-- 级别说明：**Primary** 基础管理（`help` 默认显示）| **Advanced** 高级操作 | **Developer** 开发诊断
+- 级别说明（仅标注用途）：**Primary** 基础管理 | **Advanced** 高级操作 | **Developer** 开发诊断。`help` 默认显示全部命令
 
 ---
 
@@ -41,14 +41,14 @@ TUI 快捷键：`Tab` 补全、`Ctrl+A/E` 跳到行首/行尾、`Ctrl+B/F` 左�
 
 ### `help [command|all|advanced|dev]`
 
-查看命令帮助。
+查看命令帮助。`help` 无参数时显示全部命令清单。
 
 | 参数 | 类型 | 说明 |
 |------|------|------|
 | `command` | `str` (可选) | 要查看详情的命令名，如 `help room close` |
-| `all` | 字面量 | 显示所有命令 |
-| `advanced` | 字面量 | 显示高级命令 |
-| `dev` | 字面量 | 显示开发命令 |
+| `all` | 字面量 | 完整视图（含命令级别统计） |
+| `advanced` | 字面量 | 仅显示高级命令 |
+| `dev` | 字面量 | 仅显示开发诊断命令 |
 
 **输出:** 命令清单或指定命令的详细说明（用法、参数、别名、示例）
 
@@ -170,16 +170,55 @@ help groups
 | 参数 | 类型 | 说明 |
 |------|------|------|
 | `room_id` | `str` | 房间名 |
-| `field` | `str` | 支持字段：`lock` `cycle` `hidden` `persistent` `host` `chart-id` `phira_api_endpoint` |
+| `field` | `str` | 支持字段：`lock` `cycle` `hidden` `persistent` `degraded` `host` `chart-id` `phira_api_endpoint` |
 | `value` | 因字段而异 | `lock`/`cycle`/`hidden` 接受 `true`/`false`，`host` 接受用户 ID 或 `?` |
 
 **输出:** 执行结果消息
 
 ---
 
+### `room ready <room_id> [user_id]`
+
+让房间进入准备状态，或强制指定玩家准备。
+
+| 参数 | 类型 | 说明 |
+|------|------|------|
+| `room_id` | `str` | 房间名 |
+| `user_id` | `int` (可选) | 不指定则房间进入准备状态；指定则强制该玩家准备 |
+
+**输出:** 准备状态结果
+
+---
+
+### `room lock <room_id> [true|false]`
+
+锁定/解锁房间。
+
+| 参数 | 类型 | 说明 |
+|------|------|------|
+| `room_id` | `str` | 房间名 |
+| 值 | `bool` (可选, 默认 `true`) | 锁定或解锁 |
+
+**输出:** 结果消息
+
+---
+
+### `room cycle <room_id> [true|false]`
+
+开启/关闭房主轮换。
+
+| 参数 | 类型 | 说明 |
+|------|------|------|
+| `room_id` | `str` | 房间名 |
+| 值 | `bool` (可选, 默认 `true`) | 开启或关闭轮换 |
+
+**输出:** 结果消息
+
+---
+
 ### `room start <room_id>`
 
-服务端强制发起房间游戏；客户端完成谱面加载并准备后正式开始。兼容旧命令 `force-start <room_id>`，也可使用 `room force-start <room_id>`。
+服务端强制发起房间游戏；客户端完成谱面加载并准备后正式开始。兼容旧命令 `force-start <room_id>`。
 
 | 参数 | 类型 | 说明 |
 |------|------|------|
@@ -722,21 +761,7 @@ help groups
 
 ---
 
-### `runtime rooms`
 
-查看房间命令通道与 Actor 迁移状态。仅 developer。
-
-**输出:** 房间 mailbox 命中/缺失/关闭/拥塞/不确定结果统计和已注册房间通道；fallback 字段仅为旧诊断结构兼容，不代表仍存在 inline 执行路径
-
----
-
-### `runtime actors`
-
-查看 Actor 模型迁移蓝图。仅 developer。
-
-**输出:** 每个 Actor 边界的名称、职责、状态和下一步
-
----
 
 ### `runtime latency`
 
@@ -789,29 +814,7 @@ help groups
 
 ---
 
-### `playtime <user_id>`
 
-查询指定用户的游玩时间。
-
-| 参数 | 类型 | 说明 |
-|------|------|------|
-| `user_id` | `int` | 用户 Phira ID |
-
-**输出:** 该用户的游玩时长
-
----
-
-### `round-last <room_id>`
-
-查看房间最近一轮结算结果。
-
-| 参数 | 类型 | 说明 |
-|------|------|------|
-| `room_id` | `str` | 房间名 |
-
-**输出:** 最近一轮的排行数据（玩家成绩、准确率等）
-
----
 
 ### `welcome-config`
 
