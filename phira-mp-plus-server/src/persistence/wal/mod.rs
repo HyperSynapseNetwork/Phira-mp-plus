@@ -1414,20 +1414,56 @@ impl PersistenceWal {
         // mid-file corruption.
         let mut segments: Vec<&[u8]> = bytes.split(|b| *b == b'\n').collect();
 
-        // If the file does not end with a newline, the final segment may be a
-        // complete-but-unflushed frame OR a truncated tail.  Try to parse it;
-        // only discard if it is genuinely corrupt/truncated.
-        let has_trailing_truncation = bytes.last().map(|&b| b != b'\n').unwrap_or(false);
-        if has_trailing_truncation {
-            if let Some(last) = segments.last() {
-                if !last.is_empty() {
-                    let is_valid = serde_json::from_slice::<WalFrame>(last)
+        // Tail leniency (PMP47, symmetric with `replay()`): a hard kill tears
+        // only the FINAL frame.  It can leave the final line in two forms:
+        //  1. a partial frame with no trailing newline (handled below), or
+        //  2. a newline-terminated line whose body fails parse/checksum (the
+        //     delimiter flushed but the frame body did not).
+        // Both are crash artifacts, auto-dropped at the tail; corruption in
+        // any EARLIER line — or a WAL whose sole content is the corrupt line —
+        // still fails closed.  Without this, a torn final frame would latch
+        // CORRUPTION at runtime (the 5s recovery scanner calls list_pending),
+        // rejecting all further admissions and auth until manual WAL deletion.
+        let file_ends_with_newline = bytes.last().map(|&b| b == b'\n').unwrap_or(true);
+        if file_ends_with_newline {
+            // File ends with a newline, so the final split segment is "".  The
+            // final NON-empty line is the only torn-write candidate.  Drop it
+            // ONLY when an earlier non-empty line proves the damage is isolated
+            // to the tail.
+            if segments.len() >= 2 {
+                let mut last_real_idx = segments.len() - 1;
+                while last_real_idx > 0 && segments[last_real_idx].is_empty() {
+                    last_real_idx -= 1;
+                }
+                let has_intact_prefix = segments[..last_real_idx].iter().any(|l| !l.is_empty());
+                if has_intact_prefix && !segments[last_real_idx].is_empty() {
+                    let last_real = segments[last_real_idx];
+                    let is_valid = serde_json::from_slice::<WalFrame>(last_real)
                         .map(|f| f.verify().is_ok() && f.ver <= WAL_FORMAT_VERSION)
                         .unwrap_or(false);
                     if !is_valid {
-                        // Genuinely truncated tail — pop it and move on.
-                        segments.pop();
+                        // Hard-kill torn final frame — drop it from the read.
+                        self.truncated_frames.fetch_add(1, Ordering::Release);
+                        warn!(
+                            "WAL {} had a corrupt final frame (skipped by list_pending); \
+                             expected after a hard kill that tore the tail write",
+                            self.path.display(),
+                        );
+                        segments.truncate(last_real_idx);
                     }
+                }
+            }
+        } else if let Some(last) = segments.last() {
+            // If the file does not end with a newline, the final segment may be
+            // a complete-but-unflushed frame OR a truncated tail.  Try to parse
+            // it; only discard if it is genuinely corrupt/truncated.
+            if !last.is_empty() {
+                let is_valid = serde_json::from_slice::<WalFrame>(last)
+                    .map(|f| f.verify().is_ok() && f.ver <= WAL_FORMAT_VERSION)
+                    .unwrap_or(false);
+                if !is_valid {
+                    // Genuinely truncated tail — pop it and move on.
+                    segments.pop();
                 }
             }
         }
@@ -1743,19 +1779,24 @@ mod tests {
         wal.ack(id1).await.unwrap();
         wal.ack(id2).await.unwrap();
 
-        // Append a corrupt frame after the valid frames.  The trailing newline
-        // means it is NOT treated as a truncated tail — it is a genuine
-        // corrupt frame that list_pending must fail on.
+        // Append a corrupt frame BETWEEN valid frames: valid admission, then
+        // corrupt, then a trailing valid ACK.  The corrupt line is NOT the
+        // final line, so it is genuine mid-file corruption — list_pending
+        // must fail closed (PMP47 tail leniency only covers the LAST line).
         let mut content = tokio::fs::read(&path).await.unwrap();
         let corrupt = br#"{"ver":2,"record":"admission","id":"00000000-0000-0000-0000-0000000000ff","event":{"ServerEvent":{"kind":"corrupt","payload":{"n":1}}},"sequence":99,"cksum":"0000"}"#;
         content.extend_from_slice(b"\n");
         content.extend_from_slice(corrupt);
         content.extend_from_slice(b"\n");
+        let valid_ack = br#"{"ver":2,"record":"ack","id":"00000000-0000-0000-0000-000000000001","cksum":"dummy"}"#;
+        content.extend_from_slice(valid_ack);
+        content.extend_from_slice(b"\n");
         tokio::fs::write(&path, &content).await.unwrap();
 
-        // list_pending must fail closed on corruption (not skip silently).
+        // list_pending must fail closed on MID-file corruption (not skip
+        // silently) — only the final line enjoys the torn-write leniency.
         let result = wal.list_pending().await;
-        assert!(result.is_err(), "list_pending must fail on corruption");
+        assert!(result.is_err(), "list_pending must fail on mid-file corruption");
         assert!(wal.is_degraded(), "WAL must be marked degraded on corruption");
 
         let _ = tokio::fs::remove_file(&path).await;
@@ -1788,6 +1829,44 @@ mod tests {
         let result = wal.list_pending().await;
         assert!(result.is_ok(), "trailing truncation must be tolerated: {result:?}");
         assert!(!wal.is_degraded());
+
+        let _ = tokio::fs::remove_file(&path).await;
+        let _ = tokio::fs::remove_file(path.with_extension("wal.instance")).await;
+    }
+
+    #[tokio::test]
+    async fn list_pending_tolerates_hard_kill_torn_final_newline_frame() {
+        // A hard kill can tear the FINAL frame even when the trailing newline
+        // was flushed (checksum mismatch with the delimiter present).  The 5s
+        // recovery scanner calls list_pending — without this leniency a torn
+        // final frame latches CORRUPTION at runtime and rejects all further
+        // admissions/auth until manual WAL deletion.  With an intact prefix it
+        // must be skipped, not fail-closed (PMP47 tail rule, symmetric with
+        // replay()).
+        let path = std::env::temp_dir().join(format!(
+            "pmp-wal-runtime-torn-{}.jsonl",
+            uuid::Uuid::new_v4()
+        ));
+        let wal = PersistenceWal::new(&path);
+        wal.replay().await.unwrap();
+
+        let (id1, _) = wal.admit(make_event("ok")).await.unwrap();
+        wal.ack(id1).await.unwrap();
+
+        // Append a newline-terminated final line that is valid JSON but fails
+        // checksum — the hard-kill torn-write signature.
+        let torn = br#"{"ver":2,"record":"admission","id":"00000000-0000-0000-0000-0000000000ff","event":{"ServerEvent":{"kind":"torn","payload":{"n":1}}},"sequence":99,"cksum":"0000"}"#;
+        let mut content = tokio::fs::read(&path).await.unwrap();
+        content.extend_from_slice(torn);
+        content.push(b'\n');
+        tokio::fs::write(&path, &content).await.unwrap();
+
+        let result = wal.list_pending().await;
+        assert!(
+            result.is_ok(),
+            "torn final frame must be tolerated by list_pending: {result:?}"
+        );
+        assert!(!wal.is_degraded(), "torn final frame must not latch corruption");
 
         let _ = tokio::fs::remove_file(&path).await;
         let _ = tokio::fs::remove_file(path.with_extension("wal.instance")).await;
