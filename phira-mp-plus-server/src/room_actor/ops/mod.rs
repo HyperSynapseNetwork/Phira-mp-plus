@@ -1,6 +1,6 @@
 //! Existing room operation adapters behind the Runtime gateway.
 
-use super::super::{
+use super::{
     command::{RoomActorCommand, RoomCommandKind},
     RoomCommandGateway,
 };
