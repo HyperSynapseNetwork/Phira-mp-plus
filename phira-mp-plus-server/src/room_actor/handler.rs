@@ -1353,11 +1353,31 @@ impl RoomCommandHandler {
             }
 
             RoomActorCommand::SubmitResult { room_id, user_id, score, accuracy, perfect, good, bad, miss, max_combo, full_combo, std, std_score, deadline, origin, .. } => {
-                let as_ = ctx.expect_actor_state();
                 // P0-C/P0-G: never insert a result after the absolute actor deadline.
                 if crate::official_client_compat::timing::deadline_expired(*deadline) {
+                    // 迟到的成绩被拒绝（返回 deadline 错误给客户端），但绝不能因此
+                    // 卡死房间：result 缺失会让 check_all_ready 的 `all(已提交||aborted)`
+                    // 永不满足 → 房间停留在 Playing。把该玩家标记 aborted（成绩作废、
+                    // 结算继续），并触发 check_all_ready 推进结算。
+                    let mut mark = false;
+                    {
+                        let as_ = ctx.expect_actor_state();
+                        if let InternalRoomState::Playing { results, aborted } = &mut as_.state.lifecycle {
+                            if !results.contains_key(user_id) && !aborted.contains(user_id) {
+                                aborted.insert(*user_id);
+                                mark = true;
+                            }
+                        }
+                    }
+                    if mark {
+                        let as_ = ctx.expect_actor_state();
+                        let _seq = bump_room_seq(lc, &mut as_.state).await;
+                        lc.send_msg(Message::Abort { user: *user_id }).await;
+                        let _ = check_all_ready(lc, as_, *deadline).await;
+                    }
                     return deadline_refused(*deadline);
                 }
+                let as_ = ctx.expect_actor_state();
                 // PMP44 P0-C: the originating session was superseded while the
                 // command was queued — refuse the commit.
                 if origin_stale(lc, origin, *user_id).await {
