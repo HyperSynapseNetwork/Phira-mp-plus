@@ -1072,6 +1072,41 @@ impl RoomCommandHandler {
                 let as_ = ctx.expect_actor_state();
                 as_.player_data.remove(target_id);
                 as_.display_names.remove(target_id);
+                // Host transfer when the kicked user was the host (same
+                // choke-point rule as RemoveUser): hand the host to the next
+                // remaining user, or revert to the system host for an empty
+                // persistent room.
+                if !should_drop && as_.state.control.host_id == Some(*target_id) {
+                    let remaining = lc.users().await;
+                    if let Some(next) = remaining.into_iter().next() {
+                        let _seq = bump_room_seq(lc, &mut as_.state).await;
+                        as_.state.control.host_id = Some(next.id);
+                        as_.state.control.system_host = false;
+                        let next_name = next.name.clone();
+                        lc.room().send_system_msg(
+                            &|lang| {
+                                let mut a = fluent::FluentArgs::new();
+                                a.set("name", &next_name);
+                                crate::l10n::translate_system(lang, "host-transferred-to", &a)
+                            },
+                        ).await;
+                        lc.send_msg(Message::NewHost { user: next.id }).await;
+                        next.try_send(ServerCommand::ChangeHost(true), room_seq(lc)).await;
+                        lc.publish_update(PartialRoomData {
+                            host: Some(next.id),
+                            ..Default::default()
+                        }).await;
+                    } else if as_.state.control.persistent_empty {
+                        let _seq = bump_room_seq(lc, &mut as_.state).await;
+                        as_.state.control.host_id = None;
+                        as_.state.control.system_host = true;
+                        lc.send_msg(Message::NewHost { user: -1 }).await;
+                        lc.publish_update(PartialRoomData {
+                            host: Some(-1),
+                            ..Default::default()
+                        }).await;
+                    }
+                }
                 lc.dispatch_plugin_event(PluginEvent::RoomModify {
                     user_id: *target_id, room_id: room_id.clone().to_string(),
                     data: json!({"action":"kicked"}).to_string(),
@@ -1581,6 +1616,53 @@ impl RoomCommandHandler {
                         as_.display_names.remove(user_id);
                         as_.state.members.users.retain(|id| *id != *user_id);
                         as_.state.members.monitors.retain(|id| *id != *user_id);
+                        // Host transfer on host leave.  This is the single choke
+                        // point for ALL removal paths (explicit LeaveRoom, host
+                        // disconnect, dangle-grace) — every one funnels through
+                        // RemoveUser — so the host is transferred here, not in
+                        // session_room.rs.  Previously the reassignment lived in
+                        // session_room.rs but only for the explicit-leave path:
+                        // a disconnecting host was never reassigned, and even the
+                        // leave path was broken because `host_id` was never
+                        // cleared (assign_room_host_if_missing bails when
+                        // `host_id.is_some()`).
+                        if !should_drop && as_.state.control.host_id == Some(*user_id) {
+                            let remaining = lc.users().await;
+                            if let Some(next) = remaining.into_iter().next() {
+                                // Transfer host to the next remaining user.  The
+                                // old host has already left the room, so no
+                                // ChangeHost(false) to them.
+                                let _seq = bump_room_seq(lc, &mut as_.state).await;
+                                as_.state.control.host_id = Some(next.id);
+                                as_.state.control.system_host = false;
+                                let next_name = next.name.clone();
+                                lc.room().send_system_msg(
+                                    &|lang| {
+                                        let mut a = fluent::FluentArgs::new();
+                                        a.set("name", &next_name);
+                                        crate::l10n::translate_system(lang, "host-transferred-to", &a)
+                                    },
+                                ).await;
+                                lc.send_msg(Message::NewHost { user: next.id }).await;
+                                next.try_send(ServerCommand::ChangeHost(true), room_seq(lc)).await;
+                                lc.publish_update(PartialRoomData {
+                                    host: Some(next.id),
+                                    ..Default::default()
+                                }).await;
+                            } else if as_.state.control.persistent_empty {
+                                // Room became empty but is persistent — revert to
+                                // the system host (-1) so the room stays joinable
+                                // as an empty room with host "?".
+                                let _seq = bump_room_seq(lc, &mut as_.state).await;
+                                as_.state.control.host_id = None;
+                                as_.state.control.system_host = true;
+                                lc.send_msg(Message::NewHost { user: -1 }).await;
+                                lc.publish_update(PartialRoomData {
+                                    host: Some(-1),
+                                    ..Default::default()
+                                }).await;
+                            }
+                        }
                         // PMP45 P0-O: 插件回调是 response-after（spawn，不经过 room
                         // mailbox），权威成员移除、on_user_leave、LeaveRoom 广播与
                         // check_all_ready 保持同步（官方可见效果）。

@@ -921,22 +921,11 @@ pub async fn leave_room(
         warn!("{}", err_msg);
         return Err(anyhow::anyhow!(err_msg));
     }
-    // Only attempt host reassignment when the room actually has a real host to
-    // transfer. Empty rooms that keep the system host (`host_id = None`) must
-    // not get a random host assigned when a member leaves — the host stays -1.
-    if !room_dropped && !was_monitor && room.control_snapshot().host_id.is_some() {
-        // Reassign host to a random remaining user if host leaves.
-        let remaining = room.users().await;
-        if !remaining.is_empty() {
-            let idx = (std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos() as usize) % remaining.len();
-            if let Some(next) = remaining.get(idx).cloned() {
-                // announce=true: reassigning the host after a leave is NOT the
-                // join-first-host path, so set_host broadcasts the ChangeHost
-                // packet immediately (there is no pending JoinRoom(Ok) here).
-                user.server.assign_room_host_if_missing(&room, &next, false, true).await;
-            }
-        }
-    }
+    // Host transfer on leave is handled inside the actor's RemoveUser handler
+    // (the single choke point shared by explicit LeaveRoom, host disconnect,
+    // dangle-grace, and kick) — the previous block here only covered the
+    // explicit-leave path and was broken because `host_id` was never cleared,
+    // so assign_room_host_if_missing bailed when `host_id.is_some()`.
     if category == SessionCategory::Normal && !was_monitor && !room_dropped {
         user.server
             .publish_room_event(RoomEvent::LeaveRoom {
