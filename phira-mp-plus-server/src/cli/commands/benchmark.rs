@@ -2,11 +2,6 @@ use super::super::*;
 
 impl CliHandler {
     pub(in crate::cli) async fn dispatch_benchmark_command(&self, args: &[&str]) {
-        if matches!(args.first().copied(), Some("cleanup")) {
-            self.dispatch_benchmark_cleanup_command().await;
-            return;
-        }
-
         // ── Phase 4.4: New benchmark commands ──
 
         // benchmark list — list available scenarios and presets
@@ -46,14 +41,6 @@ impl CliHandler {
         self.out(format!("  {} Unknown benchmark command. Use `benchmark run --help` for usage.", c::yellow("?")));
     }
 
-    pub(in crate::cli) async fn dispatch_benchmark_cleanup_command(&self) {
-        self.state
-            .rooms
-            .write()
-            .await
-            .retain(|rid, _| !rid.to_string().starts_with("bench-"));
-        self.out(format!("  {} 已清理 bench-* 压测房间", c::green("✓")));
-    }
 
 }
 

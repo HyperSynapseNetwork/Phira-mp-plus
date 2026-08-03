@@ -3,13 +3,11 @@
 //! This module is intentionally split by diagnostic domain so `runtime` does
 //! not become the next CLI junk drawer after `cli.rs` was reduced.
 
-mod actors;
 mod commands;
 mod events;
 mod latency;
 mod persistence;
 mod phira;
-mod rooms;
 mod schema;
 mod status;
 
@@ -27,8 +25,6 @@ impl CliHandler {
             "phira" => self.print_runtime_phira(),
             "commands" => self.print_runtime_commands(),
             "events" => self.print_runtime_events(),
-            "rooms" => self.print_runtime_rooms(),
-            "actors" => self.print_runtime_actors().await,
             "schema" => self.print_runtime_schema().await,
             "persistence" => self.print_runtime_persistence().await,
             "latency" => self.print_runtime_latency().await,
@@ -38,7 +34,10 @@ impl CliHandler {
                     c::red("✗"),
                     c::yellow(sub)
                 ));
-                self.out(format!("  {} 可用: runtime status | phira | commands | events | persistence | schema | actors | rooms | latency", c::dim("▸")));
+                self.out(format!(
+                    "  {} 可用: runtime status | phira | commands | events | persistence | schema | latency",
+                    c::dim("▸")
+                ));
             }
         }
     }

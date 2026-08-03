@@ -405,7 +405,6 @@ impl CommandRegistry {
             "room history",
             "room uuid",
             "room start",
-            "room force-start",
             "force-start",
             "room cancel",
             "room hide",

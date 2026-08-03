@@ -15,6 +15,11 @@ pub fn specs() -> Vec<CommandSpec> {
             .example("help all")
             .example("help groups"),
         CommandSpec::new("exit", "core", "关闭服务器。", "exit").example("exit"),
+        CommandSpec::new("version", "core", "显示服务器版本号。", "version")
+            .example("version")
+            .handler(Arc::new(|_state, _args| {
+                Box::pin(async move { vec![format!("  ◆ PMP v{}", env!("CARGO_PKG_VERSION"))] })
+            })),
         CommandSpec::new("status", "core", "查看服务器运行状态。", "status")
             .example("status")
             .handler(Arc::new(|state, _args| {
@@ -131,6 +136,40 @@ pub fn specs() -> Vec<CommandSpec> {
                 lines
                 })
             })),
+        CommandSpec::new(
+            "roomcreation",
+            "core",
+            "开关玩家建房功能（无参数显示状态）。",
+            "roomcreation [on|off]",
+        )
+        .handler(Arc::new(|state, args| {
+            let state = Arc::clone(state);
+            let args: Vec<String> = args.iter().map(|s| s.to_string()).collect();
+            Box::pin(async move {
+                let arg_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+                match arg_refs.first().copied() {
+                    Some("on" | "enable" | "1") => {
+                        crate::cli::with_cli(&state, |h| {
+                            Box::pin(async move { h.toggle_room_creation(true).await })
+                        })
+                        .await
+                    }
+                    Some("off" | "disable" | "0") => {
+                        crate::cli::with_cli(&state, |h| {
+                            Box::pin(async move { h.toggle_room_creation(false).await })
+                        })
+                        .await
+                    }
+                    _ => {
+                        let enabled = state.live_config.read().await.room_creation_enabled;
+                        vec![format!(
+                            "  ◆ 玩家建房：{}",
+                            if enabled { "已开启" } else { "已关闭" }
+                        )]
+                    }
+                }
+            })
+        })),
         CommandSpec::new("doctor", "core", "运行系统诊断检查。", "doctor")
             .handler(Arc::new(|state, _args| {
                 let state = Arc::clone(state);

@@ -124,8 +124,8 @@ fn help_dev_shows_developer_commands() {
     let dev = registry.format_dev();
     assert!(!dev.is_empty(), "dev view should have commands");
     assert!(
-        dev.contains("runtime roadmap"),
-        "dev view should show runtime roadmap"
+        dev.contains("runtime schema"),
+        "dev view should show runtime schema"
     );
 }
 
@@ -204,10 +204,7 @@ fn canonical_namespaces_exist() {
 #[test]
 fn developer_commands_have_developer_audience() {
     let registry = runtime_registry();
-    for name in &[
-        "runtime roadmap",
-        "runtime schema",
-    ] {
+    for name in &["runtime schema", "runtime latency"] {
         let spec = registry.get(name).expect("{name} should be in registry");
         assert_eq!(
             spec.audience,

@@ -1,11 +1,21 @@
 //! Benchmark command specifications.
 
-use crate::command_registry::{CommandArgSpec, CommandSpec};
+use crate::command_registry::{CommandArgSpec, CommandHandler, CommandSpec};
+
+use super::with_args;
+
+/// Wrap a `benchmark <sub>` dispatch as a handler.
+fn benchmark_sub(sub: &'static str) -> CommandHandler {
+    with_args(move |h, args| {
+        let mut full = vec![sub];
+        full.extend(args.iter().copied());
+        Box::pin(async move { h.dispatch_benchmark_command(&full).await })
+    })
+}
 
 pub fn specs() -> Vec<CommandSpec> {
     let mut out = Vec::new();
 
-    // ── Phase 4.4 benchmark commands ──
     out.push(
         CommandSpec::new(
             "benchmark list",
@@ -14,7 +24,8 @@ pub fn specs() -> Vec<CommandSpec> {
             "benchmark list",
         )
         .advanced()
-        .example("benchmark list"),
+        .example("benchmark list")
+        .handler(benchmark_sub("list")),
     );
     out.push(
         CommandSpec::new(
@@ -32,7 +43,8 @@ pub fn specs() -> Vec<CommandSpec> {
         .arg(CommandArgSpec::optional("--seed", "随机种子（用于可复现性）"))
         .arg(CommandArgSpec::optional("--output", "输出格式：text（默认）|json|markdown"))
         .example("benchmark run --scenario room-lifecycle --clients 50 --rooms 5 --duration 30")
-        .example("benchmark run --scenario hot-room --clients 100 --duration 10m"),
+        .example("benchmark run --scenario hot-room --clients 100 --duration 10m")
+        .handler(benchmark_sub("run")),
     );
     out.push(
         CommandSpec::new(
@@ -44,7 +56,8 @@ pub fn specs() -> Vec<CommandSpec> {
         .advanced()
         .arg(CommandArgSpec::optional("--preset", "预设参数集：quick|standard（默认）|stress|soak"))
         .example("benchmark suite --preset standard")
-        .example("benchmark suite --preset quick"),
+        .example("benchmark suite --preset quick")
+        .handler(benchmark_sub("suite")),
     );
     out.push(
         CommandSpec::new(
@@ -56,7 +69,8 @@ pub fn specs() -> Vec<CommandSpec> {
         .advanced()
         .arg(CommandArgSpec::required("old.json", "原始基准测试报告 JSON 文件"))
         .arg(CommandArgSpec::required("new.json", "新基准测试报告 JSON 文件"))
-        .example("benchmark compare old.json new.json"),
+        .example("benchmark compare old.json new.json")
+        .handler(benchmark_sub("compare")),
     );
 
     out

@@ -2,6 +2,8 @@
 
 use crate::plugin::PluginEvent;
 use crate::server::PlusServerState;
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::Arc;
 use tokio::sync::{mpsc, RwLock};
 use tracing::info;
@@ -200,6 +202,40 @@ pub struct CliHandler {
     out_tx: mpsc::Sender<String>,
 }
 
+/// 执行一个 CliHandler 命令方法并把其 `out` 输出收集为返回行。
+///
+/// registry 的 async handler 不能直接持有 `CliHandler`，这里临时构造一个
+/// 通过 out 通道收集输出，从而复用现有命令方法而无需改动其内部逻辑。
+async fn run_with_cli<F>(state: &Arc<PlusServerState>, f: F) -> Vec<String>
+where
+    F: for<'a> FnOnce(&'a CliHandler) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>>,
+{
+    let (out_tx, mut out_rx) = mpsc::channel::<String>(1024);
+    let handler = CliHandler::new(Arc::clone(state), out_tx);
+    f(&handler).await;
+    drop(handler);
+    let mut lines = Vec::new();
+    while let Ok(Some(line)) = out_rx.try_recv() {
+        lines.push(line);
+    }
+    lines
+}
+
+/// 将 CliHandler 命令方法包装为 registry handler 的执行体。
+///
+/// 返回的 Future 捕获独立的 `Arc<PlusServerState>`，可直接作为
+/// `CommandHandler` 闭包的返回值。
+pub fn with_cli<F>(
+    state: &Arc<PlusServerState>,
+    f: F,
+) -> Pin<Box<dyn Future<Output = Vec<String>> + Send>>
+where
+    F: for<'a> FnOnce(&'a CliHandler) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>>,
+{
+    let state = Arc::clone(state);
+    Box::pin(async move { run_with_cli(&state, f).await })
+}
+
 impl CliHandler {
     pub fn new(state: Arc<PlusServerState>, out_tx: mpsc::Sender<String>) -> Self {
         Self {
@@ -393,7 +429,7 @@ impl CliHandler {
         ));
     }
 
-    async fn list_users(&self) {
+    pub(in crate::cli) async fn list_users(&self) {
         let users = self.state.users.read().await;
         let player_count = users.values().filter(|user| user.id > 0).count();
         if player_count == 0 {
@@ -457,7 +493,7 @@ impl CliHandler {
         }
     }
 
-    async fn list_rooms(&self) {
+    pub(in crate::cli) async fn list_rooms(&self) {
         let rooms: Vec<Arc<crate::room::Room>> = {
             let guard = self.state.rooms.read().await;
             guard.values().map(Arc::clone).collect()
@@ -572,7 +608,7 @@ impl CliHandler {
         }
     }
 
-    async fn admin_ids(&self, args: &[&str]) {
+    pub(in crate::cli) async fn admin_ids(&self, args: &[&str]) {
         let sub = args.first().copied().unwrap_or("list");
         match sub {
             "list" | "" => {
@@ -642,31 +678,7 @@ impl CliHandler {
         }
     }
 
-    async fn status(&self) {
-        let users = self
-            .state
-            .users
-            .read()
-            .await
-            .values()
-            .filter(|user| user.id > 0)
-            .count();
-        let rooms = self.state.rooms.read().await.len();
-        let sessions = self.state.sessions.read().await.len();
-        let plugins = self.state.plugin_manager.list_plugins().await.len();
-        self.out(format!(
-            "  {} Phira-mp+ v{}  │ 端口 {}  │ 用户 {} 会话 {} 房间 {} 插件 {}",
-            c::bold("◆"),
-            env!("CARGO_PKG_VERSION"),
-            self.state.config.port,
-            users,
-            sessions,
-            rooms,
-            plugins
-        ));
-    }
-
-    async fn ban_user(&self, target: &str, reason: &str) {
+    pub(in crate::cli) async fn ban_user(&self, target: &str, reason: &str) {
         let uid: i32 = match target.parse() {
             Ok(id) => id,
             Err(_) => {
@@ -693,7 +705,7 @@ impl CliHandler {
         }
     }
 
-    async fn unban_user(&self, target: &str) {
+    pub(in crate::cli) async fn unban_user(&self, target: &str) {
         let uid: i32 = match target.parse() {
             Ok(id) => id,
             Err(_) => {
@@ -708,7 +720,7 @@ impl CliHandler {
     }
 
     /// 切换玩家建房开关
-    async fn toggle_room_creation(&self, enabled: bool) {
+    pub(in crate::cli) async fn toggle_room_creation(&self, enabled: bool) {
         self.state.live_config.write().await.room_creation_enabled = enabled;
         self.out(format!(
             "  {} 玩家建房已{}",
@@ -717,7 +729,7 @@ impl CliHandler {
         ));
     }
 
-    async fn ban_list(&self) {
+    pub(in crate::cli) async fn ban_list(&self) {
         let list = self.state.ban_manager.list_banned().await;
         if list.is_empty() {
             self.out(format!("  {} 黑名单为空", c::dim("·")));
@@ -738,7 +750,7 @@ impl CliHandler {
         }
     }
 
-    async fn list_extensions(&self) {
+    pub(in crate::cli) async fn list_extensions(&self) {
         let user_fields = self.state.extensions.list_user_fields().await;
         let room_fields = self.state.extensions.list_room_fields().await;
 
@@ -761,7 +773,7 @@ impl CliHandler {
         }
     }
 
-    async fn get_extension(&self, id: &str, key: &str) {
+    pub(in crate::cli) async fn get_extension(&self, id: &str, key: &str) {
         if let Ok(uid) = id.parse::<i32>() {
             if let Some(val) = self.state.extensions.get_user_extra(uid, key).await {
                 self.out(format!(

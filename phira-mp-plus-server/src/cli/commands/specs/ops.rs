@@ -3,6 +3,8 @@
 use crate::command_registry::CommandSpec;
 use std::sync::Arc;
 
+use super::with_args;
+
 pub fn specs() -> Vec<CommandSpec> {
     vec![
         CommandSpec::new("wal inspect", "ops", "查看 WAL 状态统计。", "wal inspect")
@@ -21,7 +23,7 @@ pub fn specs() -> Vec<CommandSpec> {
         CommandSpec::new("dead-letter list", "ops", "列出 dead-letter 记录摘要。", "dead-letter list [limit]")
             .handler(Arc::new(|state, args| {
                 let state = Arc::clone(state);
-                let args = args.to_vec();
+                let args: Vec<String> = args.iter().map(|s| s.to_string()).collect();
                 Box::pin(async move {
                     let limit = args.first().and_then(|v| v.parse::<usize>().ok()).unwrap_or(10);
                     let mut lines = vec![format!("  ◆ dead-letter 最近 {limit} 条")];
@@ -85,5 +87,18 @@ pub fn specs() -> Vec<CommandSpec> {
                     lines
                 })
             })),
+        CommandSpec::new(
+            "approve openuds",
+            "ops",
+            "批准挂起的 OpenUDS 连接（仅 Unix）。",
+            "approve openuds <pending_id>",
+        )
+        .handler(with_args(|h, args| {
+            Box::pin(async move {
+                let mut full = vec!["openuds"];
+                full.extend(args.iter().copied());
+                h.dispatch_approve_command(&full).await
+            })
+        })),
     ]
 }

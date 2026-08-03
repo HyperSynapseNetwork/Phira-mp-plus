@@ -2,8 +2,18 @@
 //!
 //! These provide status and diagnostic views into the Runtime system.
 
-use crate::command_registry::CommandSpec;
-use std::sync::Arc;
+use crate::command_registry::{CommandHandler, CommandSpec};
+
+use super::with_args;
+
+/// Wrap a `runtime <sub>` dispatch as a handler.
+fn runtime_sub(sub: &'static str) -> CommandHandler {
+    with_args(move |h, args| {
+        let mut full = vec![sub];
+        full.extend(args.iter().copied());
+        Box::pin(async move { h.dispatch_runtime_command(&full).await })
+    })
+}
 
 pub fn specs() -> Vec<CommandSpec> {
     vec![
@@ -13,17 +23,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "查看 Runtime 诊断信息。",
             "runtime status",
         )
-        .handler(Arc::new(|state, _args| {
-            let state = Arc::clone(state);
-            Box::pin(async move {
-                let rooms = state.rooms.try_read().map(|r| r.len()).unwrap_or(0);
-                vec![format!(
-                    "  Runtime: {} rooms | {} commands | ABI=WIT component v2",
-                    rooms,
-                    state.command_registry.iter().count()
-                )]
-            })
-        })),
+        .handler(runtime_sub("status")),
         CommandSpec::new(
             "runtime commands",
             "runtime",
@@ -31,64 +31,46 @@ pub fn specs() -> Vec<CommandSpec> {
             "runtime commands",
         )
         .developer()
-        .handler(Arc::new(|state, _args| {
-            let state = Arc::clone(state);
-            Box::pin(async move {
-                let (p, a, d) = state.command_registry.command_surface_counts();
-                vec![format!("  Registry: {p} primary, {a} advanced, {d} dev")]
-            })
-        })),
-        CommandSpec::new(
-            "runtime roadmap",
-            "runtime",
-            "查看 Runtime 总目标工作板。",
-            "runtime roadmap",
-        )
-        .developer(),
+        .handler(runtime_sub("commands")),
         CommandSpec::new(
             "runtime phira",
             "runtime",
             "查看统一 Phira HTTP RetryClient 统计和策略。",
             "runtime phira",
         )
-        .developer(),
+        .developer()
+        .handler(runtime_sub("phira")),
         CommandSpec::new(
             "runtime events",
             "runtime",
             "查看事件总线统计与最近事件。",
             "runtime events",
         )
-        .developer(),
+        .developer()
+        .handler(runtime_sub("events")),
         CommandSpec::new(
             "runtime persistence",
             "runtime",
             "查看持久化 Worker 与遥测批处理器统计。",
             "runtime persistence",
         )
-        .advanced(),
+        .advanced()
+        .handler(runtime_sub("persistence")),
         CommandSpec::new(
             "runtime schema",
             "runtime",
             "查看持久化 schema 说明。",
             "runtime schema",
         )
-        .developer(),
+        .developer()
+        .handler(runtime_sub("schema")),
         CommandSpec::new(
-            "runtime rooms",
+            "runtime latency",
             "runtime",
-            "查看房间命令通道与 Actor 迁移状态。",
-            "runtime rooms",
+            "打印延迟直方图（响应 + 握手）。",
+            "runtime latency",
         )
-        .developer(),
-        CommandSpec::new(
-            "runtime actors",
-            "runtime",
-            "查看 Actor 模型迁移蓝图。",
-            "runtime actors",
-        )
-        .developer(),
+        .developer()
+        .handler(runtime_sub("latency")),
     ]
-    .into_iter()
-    .map(|spec| spec.example("runtime status"))
-    .collect()
 }
