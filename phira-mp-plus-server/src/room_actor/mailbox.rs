@@ -453,6 +453,18 @@ async fn run_lifecycle_maintenance(
             }
         }
     }
+    // Ready 倒计时强开（force_start_playing）和 Playing 超时强结
+    // （force_end_playing）都直接改 actor_state，绕过 execute_command——
+    // 若不在此刷新 snapshot 缓存，外部读（current_room_in_select_chart /
+    // request_start / room info）会看到过期的 lifecycle（如 Playing 或
+    // WaitForReady），导致房主游玩结束后请求开赛被拒为 invalid room state
+    //（PMP28 回归）。
+    actor.refresh_snapshot_from_state();
+    actor.state.room_commands.store_snapshot_if_current(
+        worker_rid,
+        worker_room_uuid.clone(),
+        actor.snapshot().clone(),
+    );
     false
 }
 #[cfg(test)]

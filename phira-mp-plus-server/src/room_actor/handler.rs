@@ -1176,8 +1176,21 @@ impl RoomCommandHandler {
                 // 超时（run_lifecycle_maintenance）驱动后续开赛。
                 lc.reset_game_time().await;
                 lc.send_msg(Message::GameStart { user: 0 }).await;
+                // 官方 RequestStart 把发起者（host）加入 started（session.rs
+                // `started: once(host)`）——host 发起开赛时自己天然 ready。PMP
+                // 的 EnterReadyPhase 是 CLI 命令，若 started 为空，广播
+                // ChangeState(WaitingForReady) 后房主客户端 is_ready=is_host=true
+                // 但服务器不知道房主已 ready，check_all_ready 判房主未 ready 而
+                // Waiting，只能靠倒计时强开。这里把当前房主加入 started，与官方
+                // host 发起 RequestStart 的语义对齐（非 admin 强开，跳过
+                // admin_started 检查）。
+                let mut started = HashSet::new();
+                if let Some(host_id) = as_.state.control.host_id {
+                    started.insert(host_id);
+                    lc.send_msg(Message::Ready { user: host_id }).await;
+                }
                 as_.state.lifecycle = InternalRoomState::WaitForReady {
-                    started: HashSet::new(),
+                    started,
                     admin_started: false,
                 };
                 as_.state.ready_countdown_started_at = Some(now_ms());
