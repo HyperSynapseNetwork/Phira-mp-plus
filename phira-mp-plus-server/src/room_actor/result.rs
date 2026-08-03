@@ -84,6 +84,7 @@ pub enum RoomCommandPayload {
         room_id: String,
         chart_id: i32,
     },
+    ChartDurationSet,
     UserReady {
         room_id: String,
         user_id: i32,
@@ -274,6 +275,7 @@ impl RoomCommandPayload {
             Self::ChartSelected { room_id, chart_id } => json!({
                 "ok": true, "room_id": room_id, "chart_id": chart_id,
             }),
+            Self::ChartDurationSet => json!({ "ok": true }),
             Self::UserReady { room_id, user_id } => json!({
                 "ok": true, "room_id": room_id, "user_id": user_id,
             }),

@@ -108,8 +108,6 @@ pub struct PlusServerState {
     pub db_manager: crate::db::DbManager,
     /// Plugin TCP actor command sender (PMP25: production-wired).
     pub plugin_tcp_tx: Option<tokio::sync::mpsc::Sender<crate::plugin_tcp::PluginTcpCommand>>,
-    /// 谱面时长缓存：chart_id → 秒。选谱时异步填充。
-    pub chart_duration_cache: RwLock<std::collections::HashMap<i32, f64>>,
 }
 
 /// Phira-mp+ 服务器

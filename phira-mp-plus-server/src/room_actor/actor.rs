@@ -148,6 +148,9 @@ pub struct RoomState {
     pub ready_countdown_started_at: Option<i64>,
     /// 对局超时截止时间（毫秒时间戳）。None 表示未启用超时或已超时。
     pub playing_timeout_deadline: Option<i64>,
+    /// 当前谱面时长（秒）。选谱时异步解析写入，结算时清空（PMP48：谱面
+    /// 时时可能更新，不长期缓存——每次选谱解析，每轮结算后释放）。
+    pub chart_duration: Option<f64>,
     /// PMP46 Blocker 2: Room Actor 权威状态事件序号。每次权威状态变更递增；
     /// `BindAndSnapshot` 返回快照时刻的该序号作为 `snapshot_seq`。发往 Session
     /// Gate 的状态事件携带它，认证激活时 `room_seq <= snapshot_seq` 才可剔除。
@@ -299,6 +302,7 @@ impl RoomActor {
                 degraded: false,
                 ready_countdown_started_at: None,
                 playing_timeout_deadline: None,
+                chart_duration: None,
                 room_event_seq: 0,
             },
             room.created_at,

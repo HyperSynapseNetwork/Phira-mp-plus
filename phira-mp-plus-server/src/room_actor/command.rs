@@ -33,6 +33,8 @@ pub(super) enum RoomCommandKind {
     /// 不同：不跳过玩家准备检查，不立即开赛。
     EnterReadyPhase,
     SetChart,
+    /// PMP48: 写入/清空当前谱面时长（对局超时计算用）。
+    SetChartDuration,
     SetReady,
     CancelReady,
     SubmitResult,
@@ -69,6 +71,7 @@ impl RoomCommandKind {
             Self::HostStart => "host_start",
             Self::EnterReadyPhase => "enter_ready_phase",
             Self::SetChart => "set_chart",
+            Self::SetChartDuration => "set_chart_duration",
             Self::SetReady => "set_ready",
             Self::CancelReady => "cancel_ready",
             Self::SubmitResult => "submit_result",
@@ -175,6 +178,12 @@ pub(crate) enum RoomActorCommand {
         deadline: std::time::Instant,
         /// PMP44 P0-C: origin Session (id + generation).
         origin: RoomOrigin,
+        reply: oneshot::Sender<RoomCommandResult>,
+    },
+    /// 写入/清空当前谱面时长（秒），供对局超时计算（PMP48：选谱解析、结算释放）。
+    SetChartDuration {
+        room_id: String,
+        duration: Option<f64>,
         reply: oneshot::Sender<RoomCommandResult>,
     },
     SetReady {
@@ -344,6 +353,7 @@ impl RoomActorCommand {
             Self::CancelStart { .. } => RoomCommandKind::CancelStart,
             Self::HostStart { .. } => RoomCommandKind::HostStart,
             Self::SetChart { .. } => RoomCommandKind::SetChart,
+            Self::SetChartDuration { .. } => RoomCommandKind::SetChartDuration,
             Self::SetReady { .. } => RoomCommandKind::SetReady,
             Self::CancelReady { .. } => RoomCommandKind::CancelReady,
             Self::SubmitResult { .. } => RoomCommandKind::SubmitResult,
@@ -377,6 +387,7 @@ impl RoomActorCommand {
             | Self::CancelStart { reply, .. }
             | Self::HostStart { reply, .. }
             | Self::SetChart { reply, .. }
+            | Self::SetChartDuration { reply, .. }
             | Self::SetReady { reply, .. }
             | Self::CancelReady { reply, .. }
             | Self::SubmitResult { reply, .. }

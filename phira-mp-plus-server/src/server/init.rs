@@ -240,7 +240,6 @@ impl PlusServer {
             admin_ids: RwLock::new(admin_ids),
             room_monitor: RwLock::new(None),
             game_monitors: SafeMap::default(),
-            chart_duration_cache: RwLock::new(HashMap::new()),
             events,
             db_manager,
         });

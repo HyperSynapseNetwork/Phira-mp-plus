@@ -37,12 +37,7 @@ fn set_playing_deadline(
         return; // 超时未启用
     }
     let chart_id = as_.state.chart.unwrap_or(0);
-    let duration_secs = state
-        .chart_duration_cache
-        .try_read()
-        .ok()
-        .and_then(|c| c.get(&chart_id).copied())
-        .unwrap_or(120.0); // fallback: 120s
+    let duration_secs = as_.state.chart_duration.unwrap_or(120.0);
     let total_ms = (duration_secs + offset_secs as f64) * 1000.0;
     let deadline = now_ms() + total_ms as i64;
     as_.state.playing_timeout_deadline = Some(deadline);
@@ -564,6 +559,7 @@ async fn check_all_ready(
                 as_.state.round.round_id = None;
                 as_.state.ready_countdown_started_at = None;
                 as_.state.playing_timeout_deadline = None;
+                as_.state.chart_duration = None;
                 as_.state.lifecycle = InternalRoomState::SelectChart;
                 if as_.state.control.cycle && !as_.state.control.system_host {
                     debug!(room = lc.room().id.to_string(), "cycling");
@@ -739,12 +735,7 @@ pub(super) async fn force_start_playing(
         let offset_secs = server_state.config.playing_timeout_offset_secs;
         if offset_secs > 0 {
             let chart_id = state.chart.unwrap_or(0);
-            let duration_secs = server_state
-                .chart_duration_cache
-                .try_read()
-                .ok()
-                .and_then(|c| c.get(&chart_id).copied())
-                .unwrap_or(120.0);
+            let duration_secs = state.chart_duration.unwrap_or(120.0);
             let total_ms = (duration_secs + offset_secs as f64) * 1000.0;
             state.playing_timeout_deadline = Some(now_ms() + total_ms as i64);
             debug!(
@@ -816,6 +807,7 @@ pub(super) async fn force_end_playing(
         state.round.round_id = None;
         state.ready_countdown_started_at = None;
         state.playing_timeout_deadline = None;
+        state.chart_duration = None;
         lc.send_msg(Message::GameEnd).await;
         state.lifecycle = InternalRoomState::SelectChart;
         broadcast_state_change(lc, &state.lifecycle, state.chart).await;
@@ -1261,6 +1253,12 @@ impl RoomCommandHandler {
                     chart_id: *chart_id,
                 });
                 ok(RoomCommandPayload::ChartSelected { room_id: room_id.clone().to_string(), chart_id: *chart_id })
+            }
+
+            RoomActorCommand::SetChartDuration { room_id: _, duration, .. } => {
+                let as_ = ctx.expect_actor_state();
+                as_.state.chart_duration = *duration;
+                ok(RoomCommandPayload::ChartDurationSet)
             }
 
             RoomActorCommand::SetReady { room_id, user_id, deadline, origin, .. } => {
