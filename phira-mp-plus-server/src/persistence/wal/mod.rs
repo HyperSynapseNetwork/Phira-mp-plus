@@ -12,7 +12,9 @@
 //! - Compact reads, writes temp, fsync, rename, and fsync-parent inside a
 //!   single critical section — no concurrent admission/ACK can be lost.
 //! - Replay failure is **fail-closed**: the WAL rejects further admissions
-//!   and reports the failure through Supervisor.
+//!   and reports the failure through Supervisor.  The sole exception is a
+//!   hard-kill torn TAIL — the final line may be auto-cleaned when an intact
+//!   prefix proves the damage is isolated to the last write (PMP47).
 //! - File permissions are enforced to `0o600`.
 
 mod marker;
@@ -749,8 +751,21 @@ impl PersistenceWal {
     /// replay fails immediately. The caller must NOT proceed with an empty replay
     /// — data integrity cannot be guaranteed.
     ///
-    /// Truncated trailing bytes (last line incomplete) are silently discarded
-    /// because a crash during append produces exactly this pattern.
+    /// # Tail leniency (hard-kill torn writes)
+    ///
+    /// A hard kill tears only the FINAL frame.  Replay therefore tolerates a
+    /// damaged tail in two forms, both treated as crash artifacts:
+    ///
+    /// - Truncated trailing bytes (last line incomplete) are silently discarded
+    ///   because a crash during append produces exactly this pattern.
+    /// - A newline-terminated final line that fails parse/checksum (the
+    ///   delimiter flushed but the frame body did not, PMP47) is truncated to
+    ///   the preceding intact prefix.
+    ///
+    /// A corrupt final line is auto-cleaned ONLY when an earlier non-empty line
+    /// is intact — that prefix proves the damage is isolated to the tail.  A WAL
+    /// whose sole content is a corrupt line has no such proof and still fails
+    /// closed.  Corruption in any non-final line likewise fails closed.
     pub async fn replay(&self) -> Result<Vec<(uuid::Uuid, PersistenceEvent, u64)>, String> {
         let _guard = self.io_gate.lock().await;
         // Check instance consistency first: if marker exists but WAL is gone
@@ -790,6 +805,9 @@ impl PersistenceWal {
         let mut admitted = Vec::new();
         let mut acked = HashSet::new();
         let mut has_truncated = false;
+        // Set when the FINAL line was a complete-but-corrupt newline-terminated
+        // frame auto-cleaned as a hard-kill torn write (vs. a truncated tail).
+        let mut torn_final_line = false;
         // Byte offset at which the truncated tail begins (0 if no truncation).
         // Used to physically truncate the file after replay.
         let mut truncated_at: usize = 0;
@@ -797,11 +815,30 @@ impl PersistenceWal {
         let mut parsed_records: Vec<WalRecord> = Vec::new();
 
         let mut lines: Vec<&[u8]> = bytes.split(|b| *b == b'\n').collect();
-        // If the last byte was not a newline, the final segment may be an
-        // incomplete write OR a complete frame whose trailing newline was
-        // not flushed before a crash. Try to parse and verify it first;
-        // only discard if actually corrupt.
+        // Byte offset at which each split segment begins.  Used to compute the
+        // truncation point when the final line is torn by a hard kill.
+        let mut line_starts: Vec<usize> = Vec::with_capacity(lines.len());
+        {
+            let mut off = 0usize;
+            for ln in &lines {
+                line_starts.push(off);
+                off += ln.len() + 1;
+            }
+        }
+
+        // A hard kill (SIGKILL, crash, power loss) can tear the FINAL frame
+        // mid-append.  It shows up in two physical forms:
+        //   1. a partial frame with no trailing newline (below), or
+        //   2. a complete line ending in '\n' whose body is corrupt — parse or
+        //      checksum failure — because the delimiter flushed but the frame
+        //      body did not (PMP47).
+        // Both are auto-cleaned at the tail; corruption in any EARLIER line —
+        // or in a WAL with no intact prefix — still fails replay closed.
         if bytes.last().map(|&b| b != b'\n').unwrap_or(false) {
+            // If the last byte was not a newline, the final segment may be an
+            // incomplete write OR a complete frame whose trailing newline was
+            // not flushed before a crash. Try to parse and verify it first;
+            // only discard if actually corrupt.
             if let Some(last) = lines.pop() {
                 if !last.is_empty() {
                     match serde_json::from_slice::<WalFrame>(last) {
@@ -818,6 +855,31 @@ impl PersistenceWal {
                             truncated_at = bytes.len().saturating_sub(last.len());
                         }
                     }
+                }
+            }
+        } else if lines.len() >= 2 {
+            // File ends with a newline, so the final split segment is "".  The
+            // final NON-empty line is the only candidate for a torn write that
+            // delivered the delimiter but not an intact frame.  Auto-clean it
+            // ONLY when an earlier non-empty line exists — an intact prefix
+            // proves the damage is isolated to the tail.  A WAL whose sole
+            // content is the corrupt line has no such proof and still fails
+            // closed in the strict loop below.
+            let mut last_real_idx = lines.len() - 1;
+            while last_real_idx > 0 && lines[last_real_idx].is_empty() {
+                last_real_idx -= 1;
+            }
+            let has_intact_prefix = lines[..last_real_idx].iter().any(|l| !l.is_empty());
+            if has_intact_prefix && !lines[last_real_idx].is_empty() {
+                let last_real = lines[last_real_idx];
+                let is_valid = serde_json::from_slice::<WalFrame>(last_real)
+                    .map(|f| f.verify().is_ok() && f.ver <= WAL_FORMAT_VERSION)
+                    .unwrap_or(false);
+                if !is_valid {
+                    has_truncated = true;
+                    torn_final_line = true;
+                    truncated_at = line_starts[last_real_idx];
+                    lines.truncate(last_real_idx);
                 }
             }
         }
@@ -896,12 +958,21 @@ impl PersistenceWal {
 
         if has_truncated {
             self.truncated_frames.fetch_add(1, Ordering::Release);
-            warn!(
-                "WAL {} had trailing truncated bytes (discarded); this is expected after a crash \
-                 (total truncated frames: {})",
-                self.path.display(),
-                self.truncated_frames.load(Ordering::Acquire),
-            );
+            if torn_final_line {
+                warn!(
+                    "WAL {} had a corrupt final frame (auto-cleaned); this is expected after a \
+                     hard kill that tore the tail write (total truncated frames: {})",
+                    self.path.display(),
+                    self.truncated_frames.load(Ordering::Acquire),
+                );
+            } else {
+                warn!(
+                    "WAL {} had trailing truncated bytes (discarded); this is expected after a crash \
+                     (total truncated frames: {})",
+                    self.path.display(),
+                    self.truncated_frames.load(Ordering::Acquire),
+                );
+            }
             // Physically truncate the file at the last valid offset.
             // Without this, new frames may be appended after the corrupted
             // tail, causing the next restart to encounter a complete bad
@@ -1786,6 +1857,65 @@ mod tests {
         tokio::fs::write(&path, b"not valid json\n").await.unwrap();
         let wal = PersistenceWal::new(&path);
         assert!(wal.replay().await.is_err());
+        assert!(!wal.replay_succeeded());
+        let _ = tokio::fs::remove_file(path).await;
+    }
+
+    #[tokio::test]
+    async fn hard_kill_torn_final_frame_is_auto_cleaned() {
+        // A hard kill can tear the FINAL frame even when the trailing newline
+        // was flushed: the body fails checksum (or won't parse) while the line
+        // terminator is present.  With an intact prefix before it, replay must
+        // truncate the corrupt final line instead of failing closed — the
+        // server boots without manual WAL cleanup.
+        let path =
+            std::env::temp_dir().join(format!("pmp-wal-torn-final-{}.jsonl", uuid::Uuid::new_v4()));
+        let wal = PersistenceWal::new(&path);
+        wal.replay().await.unwrap();
+        let (id, _) = wal.admit(make_event("intact-prefix")).await.unwrap();
+        wal.ack(id).await.unwrap();
+        let intact_prefix = tokio::fs::read(&path).await.unwrap();
+
+        // Append a newline-terminated final line that is valid JSON but fails
+        // checksum — the hard-kill torn-write signature.
+        let torn = br#"{"ver":2,"record":"admission","id":"00000000-0000-0000-0000-0000000000ff","event":{"ServerEvent":{"kind":"torn","payload":{"n":1}}},"sequence":99,"cksum":"0000"}"#;
+        let mut content = intact_prefix.clone();
+        content.extend_from_slice(torn);
+        content.push(b'\n');
+        tokio::fs::write(&path, &content).await.unwrap();
+
+        let replay = wal.replay().await;
+        assert!(replay.is_ok(), "corrupt final frame must auto-clean: {replay:?}");
+        // The intact prefix was fully ACKed; nothing remains pending.
+        assert_eq!(replay.unwrap().len(), 0);
+        // The file must be physically truncated back to the intact prefix so
+        // the next append does not merge into a corrupt tail.
+        let after = tokio::fs::read(&path).await.unwrap();
+        assert_eq!(after, intact_prefix, "WAL must be truncated to the intact prefix");
+        assert_eq!(
+            wal.truncated_frames_count(),
+            1,
+            "the torn final frame must be counted"
+        );
+
+        let _ = tokio::fs::remove_file(path.with_extension("wal.instance")).await;
+        let _ = tokio::fs::remove_file(path).await;
+    }
+
+    #[tokio::test]
+    async fn hard_kill_torn_final_frame_without_prefix_fails_closed() {
+        // A single corrupt line with no intact prefix is NOT auto-cleaned —
+        // there is no evidence the damage is isolated to the tail, so replay
+        // fails closed (cannot distinguish from wholesale corruption).
+        let path = std::env::temp_dir().join(format!(
+            "pmp-wal-torn-noprefix-{}.jsonl",
+            uuid::Uuid::new_v4()
+        ));
+        let corrupt = r#"{"ver":2,"record":"admission","id":"00000000-0000-0000-0000-0000000000ff","event":{"ServerEvent":{"kind":"bad","payload":{"n":1}}},"sequence":99,"cksum":"0000"}"#;
+        tokio::fs::write(&path, format!("{corrupt}\n")).await.unwrap();
+        let wal = PersistenceWal::new(&path);
+        let result = wal.replay().await;
+        assert!(result.is_err(), "no intact prefix must fail closed: {result:?}");
         assert!(!wal.replay_succeeded());
         let _ = tokio::fs::remove_file(path).await;
     }
