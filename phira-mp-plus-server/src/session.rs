@@ -124,13 +124,13 @@ enum AuthenticationOutcome {
 /// PMP44 P0-E: 认证阶段。只有进入 `Active` 后，该 Session 才算正式成为
 /// User 的当前 Session；之前任何一步失败都必须撤销绑定与注册，不得留下
 /// 半认证 Session。
+///
+/// WAL 异步后移后不再有 `DurableAccepted` 阶段——`UserAuthenticated` 持久化
+/// 在 `Active` 之后异步入队，不阻塞握手关键路径。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum AuthPhase {
-    /// 远端认证/用户构建完成，WAL admission 尚未成功。
+    /// 远端认证/用户构建完成，但 Authenticate(Ok) 尚未 flush。
     Authenticating,
-    /// WAL admission 成功（UserAuthenticated 已入队），但 Authenticate(Ok)
-    /// 尚未 flush。
-    DurableAccepted,
     /// Authenticate(Ok) 已 flush，但 OutboundGate 尚未激活。
     ResponseFlushed,
     /// Gate 激活完成，正式接管连接。
@@ -162,13 +162,13 @@ struct AuthAcceptedState {
 }
 
 /// PMP44 P0-E: 认证回滚判定（纯逻辑，供单测）。成功路径为
-/// Authenticating --WAL 成功--> DurableAccepted --flush 成功--> ResponseFlushed
-/// --gate 成功--> Active。在 `phase` 处若下一步失败则必须回滚；只有
-/// `ResponseFlushed` 之后才允许不再回滚（Authenticate(Ok) 已到达客户端）。
-fn should_rollback_auth(phase: AuthPhase, wal_ok: bool, flush_ok: bool) -> bool {
+/// Authenticating --flush 成功--> ResponseFlushed --gate 成功--> Active。
+/// 在 `phase` 处若下一步失败则必须回滚；只有 `ResponseFlushed` 之后才允许
+/// 不再回滚（Authenticate(Ok) 已到达客户端）。WAL 异步后移后不再依赖
+/// WAL admission 结果（`UserAuthenticated` 在 Active 之后才入队）。
+fn should_rollback_auth(phase: AuthPhase, flush_ok: bool) -> bool {
     match phase {
-        AuthPhase::Authenticating => !wal_ok,
-        AuthPhase::DurableAccepted => !flush_ok,
+        AuthPhase::Authenticating => !flush_ok,
         AuthPhase::ResponseFlushed => !flush_ok,
         AuthPhase::Active => false,
     }
@@ -1596,7 +1596,7 @@ impl Session {
                                                 //（durable=false）且 Authenticate(Ok) 从未 flush
                                                 //（send_err=true），可安全发送 Authenticate(Err)
                                                 // 并关闭传输，让客户端重试。
-                                                if should_rollback_auth(auth_phase, false, true) {
+                                                if should_rollback_auth(auth_phase, false) {
                                                     rollback_failed_auth(
                                                         &server,
                                                         &send_tx,
@@ -1619,21 +1619,20 @@ impl Session {
                                     }
                                     None => None,
                                 };
-                                // ── 阻塞持久化：认证成功但尚未响应客户端 ──────────────
-                                // 在发送 Authenticate(Ok) 之前先持久化用户记录，
-                                // 确保 WAL admission 成功后才放行客户端。
-                                // PMP44 P0-D: WAL admission 前检查绝对预算——预算耗尽
-                                // 则认证失败，绝不入队（避免“服务端已注册用户但客户端
-                                // 早已超时”的幻象）。当前仍处于 Authenticating 阶段
-                                //（尚未 set_session）。
+                                // ── 会话绑定前预算检查 ──────────────────────────
+                                // WAL 异步后移：UserAuthenticated 持久化不再阻塞握手，
+                                // 在 Active 之后异步入队。此处只检查认证预算是否耗尽
+                                //（Authenticating 阶段，Authenticate(Ok) 尚未 flush，
+                                // 预算耗尽则认证失败回滚，避免“服务端已绑定但客户端
+                                // 早已超时”的幻象）。
                                 if crate::official_client_compat::timing::deadline_expired(
                                     auth_deadline,
                                 ) {
                                     warn!(
                                         user = user.id,
-                                        "auth deadline elapsed before WAL admission"
+                                        "auth deadline elapsed before session binding"
                                     );
-                                    if should_rollback_auth(auth_phase, false, true) {
+                                    if should_rollback_auth(auth_phase, false) {
                                         rollback_failed_auth(
                                             &server,
                                             &send_tx,
@@ -1651,61 +1650,12 @@ impl Session {
                                     panicked.store(true, Ordering::SeqCst);
                                     return;
                                 }
-                                let connected_at = std::time::SystemTime::now()
-                                    .duration_since(std::time::UNIX_EPOCH)
-                                    .map(|d| d.as_millis() as i64)
-                                    .unwrap_or(0);
-                                let event_id = Uuid::new_v4().to_string();
-                                let session_id = this.get().unwrap().id.to_string();
-                                let instance_id = crate::server_instance::current().to_string();
-                                let wal_enqueue_started = std::time::Instant::now();
-                                if let Err(event) = server.persistence_worker.enqueue(
-                                    crate::persistence::message::PersistenceEvent::UserAuthenticated {
-                                        event_id,
-                                        session_id,
-                                        user_id: user.id,
-                                        user_name: user.name.clone(),
-                                        language: user.lang.0.to_string(),
-                                        ip: addr.ip().to_string(),
-                                        connected_at,
-                                        server_instance_id: instance_id,
-                                    }
-                                ).await {
-                                    warn!(
-                                        user = user.id,
-                                        kind = %event.kind(),
-                                        "UserAuthenticated enqueue failed — rejecting auth"
-                                    );
-                                    if should_rollback_auth(auth_phase, false, true) {
-                                        rollback_failed_auth(
-                                            &server,
-                                            &send_tx,
-                                            &this,
-                                            Some(&user),
-                                            newly_created,
-                                            previous_restore.clone(),
-                                            None,
-                                            false,
-                                            true,
-                                            "authentication failed: persistence unavailable"
-                                                .to_string(),
-                                        )
-                                        .await;
-                                    }
-                                    panicked.store(true, Ordering::SeqCst);
-                                    return;
-                                }
-                                info!(
-                                    user = user.id,
-                                    wal_enqueue_ms = wal_enqueue_started.elapsed().as_millis() as u64,
-                                    "auth WAL enqueue (fsync) duration"
-                                );
-                                // DurableAccepted：WAL 已成功。现在才把新 Session 绑定为
+                                // WAL 异步后移：`UserAuthenticated` 事件在认证达到
+                                // `Active` 之后异步入队（见下方 auth-wal spawn），握手
+                                // 关键路径不再执行 WAL 写 + fsync。现在把新 Session 绑定为
                                 // User 的当前 Session（set_session + bound_generation）。
                                 // 被取代的旧 Session 不在此时关闭——推迟到新会话达到
                                 // AuthPhase::Active 之后（P0-D/P0-C 两阶段交接）。
-                                auth_phase = AuthPhase::DurableAccepted;
-                                debug!(user = user.id, ?auth_phase, "WAL admitted; binding session");
                                 let gen = user
                                     .set_session(Arc::downgrade(this.get().unwrap()))
                                     .await;
@@ -1737,7 +1687,7 @@ impl Session {
                                         user = user.id,
                                         "auth deadline elapsed before response flush"
                                     );
-                                    if should_rollback_auth(auth_phase, true, false) {
+                                    if should_rollback_auth(auth_phase, false) {
                                         rollback_failed_auth(
                                             &server,
                                             &send_tx,
@@ -1746,7 +1696,7 @@ impl Session {
                                             newly_created,
                                             previous_restore.clone(),
                                             bound_identity,
-                                            true,
+                                            false,
                                             true,
                                             "authentication timed out".to_string(),
                                         )
@@ -1762,7 +1712,7 @@ impl Session {
                                         user = user.id,
                                         "outbound gate auth duration exceeded before response flush"
                                     );
-                                    if should_rollback_auth(auth_phase, true, false) {
+                                    if should_rollback_auth(auth_phase, false) {
                                         rollback_failed_auth(
                                             &server,
                                             &send_tx,
@@ -1771,7 +1721,7 @@ impl Session {
                                             newly_created,
                                             previous_restore.clone(),
                                             bound_identity,
-                                            true,
+                                            false,
                                             true,
                                             "authentication barrier timed out".to_string(),
                                         )
@@ -1816,7 +1766,7 @@ impl Session {
                                     };
                                 if let Err(err) = flush_result {
                                     warn!(user = user.id, ?err, "failed to flush auth response");
-                                    if should_rollback_auth(auth_phase, true, false) {
+                                    if should_rollback_auth(auth_phase, false) {
                                         // PMP45 P0-B: Ok 已尝试 flush，结果不确定——绝不补发 Err。
                                         rollback_failed_auth(
                                             &server,
@@ -1826,7 +1776,7 @@ impl Session {
                                             newly_created,
                                             previous_restore.clone(),
                                             bound_identity,
-                                            true,
+                                            false,
                                             false,
                                             format!("authentication failed: {err}"),
                                         )
@@ -1850,13 +1800,14 @@ impl Session {
                                         "auth deadline elapsed after flush; skipping gate activation"
                                     );
                                     // Authenticate(Ok) 已到达客户端，客户端已进入认证后
-                                    // 状态——P0-B：绝不补发 Err。但 WAL 事实已存在
-                                    //（UserAuthenticated 已入队），且 P0-D 之后 accept 尚未
-                                    // 把 Session 发布进 state.sessions，lost-connection worker
-                                    // 找不到它、不会跑 dangle——因此必须由这里补发持久化补偿
-                                    // 并做内存清理（P0-A）。rollback_failed_auth 以
-                                    // durable=true + send_err=false 执行：清绑定（P0-C）、
-                                    // 移除新用户（P0-E）、补发离线/断连事件、关闭传输。
+                                    // 状态——P0-B：绝不补发 Err。WAL 异步后移下
+                                    // UserAuthenticated 尚未入队（异步 spawn 在 Active 后），
+                                    // 且 P0-D 之后 accept 尚未把 Session 发布进
+                                    // state.sessions，lost-connection worker 找不到它、不会跑
+                                    // dangle——因此必须由这里做内存清理并关闭传输；持久化
+                                    // 记录缺失由客户端重连重新认证补齐。rollback_failed_auth
+                                    // 以 durable=false + send_err=false 执行：清绑定（P0-C）、
+                                    // 移除新用户（P0-E）、关闭传输。
                                     rollback_failed_auth(
                                         &server,
                                         &send_tx,
@@ -1865,7 +1816,7 @@ impl Session {
                                         newly_created,
                                         previous_restore.clone(),
                                         bound_identity,
-                                        true,
+                                        false,
                                         false,
                                         "auth deadline elapsed after flush".to_string(),
                                     )
@@ -1912,9 +1863,10 @@ impl Session {
                                             .fetch_add(1, Ordering::Relaxed);
                                         // PMP44 P0-G: 认证屏障排空失败 → fail-closed：
                                         // 不进入 Active。P0-B：Ok 已 flush——绝不补发 Err；
-                                        // P0-A：WAL 事实已存在且 P0-D 下 accept 不会发布
-                                        // 该 Session，lost-connection worker 不跑 dangle——
-                                        // 必须由这里补发持久化补偿并做内存清理。
+                                        // WAL 异步后移下 UserAuthenticated 尚未入队，且 P0-D
+                                        // 下 accept 不会发布该 Session，lost-connection worker
+                                        // 不跑 dangle——由这里做内存清理并关闭传输，记录缺失
+                                        // 由客户端重连重新认证补齐。
                                         warn!(
                                             user = user.id,
                                             ?err,
@@ -1929,7 +1881,7 @@ impl Session {
                                             newly_created,
                                             previous_restore.clone(),
                                             bound_identity,
-                                            true,
+                                            false,
                                             false,
                                             format!("outbound gate activation failed: {err}"),
                                         )
@@ -1953,6 +1905,49 @@ impl Session {
                                 if let Some(session) = this.get() {
                                     session.mark_active();
                                 }
+                                // ── WAL 异步后移：UserAuthenticated 持久化不阻塞握手 ──
+                                // 认证已达成 Active（AuthOK 已 flush、gate 已激活），
+                                // 客户端认证完成；现在异步把上线事件写入 WAL，失败仅
+                                // 记录日志——用户已在线，记录缺失由下次认证补齐（WAL
+                                // 低持久化要求，握手关键路径不再等待 fsync）。
+                                let wal_user_id = user.id;
+                                let wal_user_name = user.name.clone();
+                                let wal_lang = user.lang.0.to_string();
+                                let wal_ip = addr.ip().to_string();
+                                let wal_instance = crate::server_instance::current().to_string();
+                                let wal_session_id = this
+                                    .get()
+                                    .map(|s| s.id.to_string())
+                                    .unwrap_or_default();
+                                let wal_state = Arc::clone(&server);
+                                crate::supervisor_actor::spawn_named(
+                                    format!("auth-wal-{}-{}", wal_user_id, Uuid::new_v4()),
+                                    async move {
+                                        let connected_at = std::time::SystemTime::now()
+                                            .duration_since(std::time::UNIX_EPOCH)
+                                            .map(|d| d.as_millis() as i64)
+                                            .unwrap_or(0);
+                                        let event = crate::persistence::message::PersistenceEvent::UserAuthenticated {
+                                            event_id: Uuid::new_v4().to_string(),
+                                            session_id: wal_session_id,
+                                            user_id: wal_user_id,
+                                            user_name: wal_user_name,
+                                            language: wal_lang,
+                                            ip: wal_ip,
+                                            connected_at,
+                                            server_instance_id: wal_instance,
+                                        };
+                                        if let Err(e) =
+                                            wal_state.persistence_worker.enqueue(event).await
+                                        {
+                                            tracing::warn!(
+                                                user = wal_user_id,
+                                                kind = %e.kind(),
+                                                "async UserAuthenticated enqueue failed"
+                                            );
+                                        }
+                                    },
+                                );
                                 let auth_trace = crate::official_client_compat::protocol_trace::ProtocolTrace::get();
                                 auth_trace.response_queued.fetch_add(1, Ordering::Relaxed);
                                 auth_trace.response_flushed.fetch_add(1, Ordering::Relaxed);
@@ -3523,45 +3518,25 @@ mod tests {
     }
 
     /// PMP44 P0-E: 认证阶段按
-    /// Authenticating → DurableAccepted → ResponseFlushed → Active 单向推进；
-    /// 任一步失败（WAL 失败 / flush 失败）都必须回滚，只有进入 Active 后
-    /// 才不再回滚。
+    /// Authenticating → ResponseFlushed → Active 单向推进；
+    /// flush 失败必须回滚，只有进入 Active 后才不再回滚。
+    /// WAL 异步后移：不再有 DurableAccepted 阶段，回滚判定不依赖 WAL。
     #[test]
     fn phase_progresses_correctly() {
         // 阶段推进顺序（声明顺序即判别值顺序）。
-        assert!(AuthPhase::Authenticating < AuthPhase::DurableAccepted);
-        assert!(AuthPhase::DurableAccepted < AuthPhase::ResponseFlushed);
+        assert!(AuthPhase::Authenticating < AuthPhase::ResponseFlushed);
         assert!(AuthPhase::ResponseFlushed < AuthPhase::Active);
 
-        // Authenticating 阶段 WAL 失败 → 必须回滚。
-        assert!(should_rollback_auth(AuthPhase::Authenticating, false, true));
-        // DurableAccepted 阶段 flush 失败 → 必须回滚。
-        assert!(should_rollback_auth(
-            AuthPhase::DurableAccepted,
-            true,
-            false
-        ));
+        // Authenticating 阶段 flush 失败 → 必须回滚。
+        assert!(should_rollback_auth(AuthPhase::Authenticating, false));
         // ResponseFlushed 阶段 flush 失败（防御性）→ 必须回滚。
-        assert!(should_rollback_auth(
-            AuthPhase::ResponseFlushed,
-            true,
-            false
-        ));
+        assert!(should_rollback_auth(AuthPhase::ResponseFlushed, false));
 
         // 成功路径全部不回滚。
-        assert!(!should_rollback_auth(AuthPhase::Authenticating, true, true));
-        assert!(!should_rollback_auth(
-            AuthPhase::DurableAccepted,
-            true,
-            true
-        ));
-        assert!(!should_rollback_auth(
-            AuthPhase::ResponseFlushed,
-            true,
-            true
-        ));
+        assert!(!should_rollback_auth(AuthPhase::Authenticating, true));
+        assert!(!should_rollback_auth(AuthPhase::ResponseFlushed, true));
         // 已激活（Active）后，即使下游异常也不回滚。
-        assert!(!should_rollback_auth(AuthPhase::Active, false, false));
+        assert!(!should_rollback_auth(AuthPhase::Active, false));
     }
 
     /// PMP47 B / force-move 回归: `JoinRoom(Ok)` 响应是 NonSnapshot（命令响应，

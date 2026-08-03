@@ -157,7 +157,7 @@ help groups
 | 参数 | 类型 | 说明 |
 |------|------|------|
 | `room_id` | `str` | 房间名 |
-| `user_id` | `int` / `?` | 用户 ID，`?` 表示系统房主 |
+| `user_id` | `int` / `?` | 用户 ID；`?`、`system`、`-`、`none`、`null` 均表示**系统房主**（host -1） |
 
 **输出:** `房主已转移给 <user_name>` 或 `房主已设为系统 ?`
 
@@ -171,9 +171,14 @@ help groups
 |------|------|------|
 | `room_id` | `str` | 房间名 |
 | `field` | `str` | 支持字段：`lock` `cycle` `hidden` `persistent` `degraded` `host` `chart-id` `phira_api_endpoint` |
-| `value` | 因字段而异 | `lock`/`cycle`/`hidden` 接受 `true`/`false`，`host` 接受用户 ID 或 `?` |
+| `value` | 因字段而异 | `lock`/`cycle`/`hidden`/`persistent`/`degraded` 接受 `true`/`false`；`host` 接受用户 ID、`?`/`system`（系统房主） |
 
 **输出:** 执行结果消息
+
+**字段说明:**
+- `persistent true`：把房间转为**持久空房间**（房间空置后保留，服务器重启自动恢复）；`persistent false` 取消
+- `degraded true`：清除房间持久化降级状态
+- `host ?` / `host system`：设为系统房主（host -1）
 
 ---
 
