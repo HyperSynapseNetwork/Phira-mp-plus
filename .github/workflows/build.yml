@@ -54,7 +54,16 @@ jobs:
 
   check:
     needs: auto-patch
-    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: ""
+            setup: ""
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            setup: ""
+    runs-on: ${{ matrix.os }}
     permissions:
       contents: read
     steps:
@@ -65,16 +74,19 @@ jobs:
       - uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
           components: clippy
+          target: ${{ matrix.target }}
       - uses: Swatinem/rust-cache@v2
         with:
           cache-on-failure: true
       - name: Workspace version consistency
         run: python scripts/sync-workspace-version.py --check
       - name: Check
-        run: cargo check --locked --workspace --all-targets --all-features
+        run: cargo check --locked --workspace --all-targets --all-features ${{ matrix.target != '' && format('--target {0}', matrix.target) || '' }}
       - name: Tests
+        if: matrix.os == 'ubuntu-latest'
         run: cargo test --locked --workspace --all-features
       - name: Clippy
+        if: matrix.os == 'ubuntu-latest'
         run: cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
       - name: Audit (advisory)
         run: cargo install cargo-audit --locked && cargo audit --deny warnings || echo "cargo audit 存在已知 advisory（rsa/no-fix, fxhash/paste/rustls-pemfile 不再维护, lru unsound）"
@@ -104,6 +116,12 @@ jobs:
             setup: sudo apt-get update && sudo apt-get install -y gcc-aarch64-linux-gnu
             env:
               CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            artifact: phira-mp-plus-server-windows-x86_64
+            artifact-path: target/x86_64-pc-windows-msvc/release/phira-mp-plus-server.exe
+            setup: ""
+            env: {}
     runs-on: ${{ matrix.os }}
     permissions:
       contents: read
