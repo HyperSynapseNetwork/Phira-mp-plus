@@ -461,7 +461,7 @@ async fn run_lifecycle_maintenance(
     //（PMP28 回归）。
     actor.refresh_snapshot_from_state();
     actor.state.room_commands.store_snapshot_if_current(
-        worker_rid,
+        &worker_rid.to_string(),
         worker_room_uuid.clone(),
         actor.snapshot().clone(),
     );
