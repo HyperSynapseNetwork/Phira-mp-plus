@@ -30,7 +30,7 @@ use tokio::sync::Mutex;
 use tracing::warn;
 
 /// Current frame format version. Increment when the wire format changes.
-const WAL_FORMAT_VERSION: u8 = 2;
+const WAL_FORMAT_VERSION: u8 = 3;
 
 /// Degraded-reason bit flags (P0-F): each has an independent recovery
 /// condition, and an ACK success clears only the ACK bit.
@@ -82,8 +82,19 @@ impl WalFrame {
     }
 
     fn compute_checksum(ver: u8, record: &WalRecord) -> Result<String, String> {
-        let payload = serde_json::to_vec(record)
+        // 归一化浮点后再算 checksum（PMP47/浮点 round-trip 修复）：payload 里
+        // 的 f32 字段经 `serialize_f32` 提升成 f64（如 0.18517304956912994），
+        // 而 verify 时从 JSON 文本反序列化走 zmij 最短表示（0.18517304956912992）
+        // ——写入与 verify 对同一浮点产生不同文本，合法帧被误判 corrupt
+        // （checksum mismatch），运行时 WAL 被标 degraded、auth 全拒。这里先
+        // 序列化成文本再反序列化回 Value，使浮点统一为「文本解析的 f64」，
+        // 写入与 verify 的字节一致。帧内容本身不变，只影响 checksum 的输入。
+        let text = serde_json::to_string(record)
             .map_err(|e| format!("serialize record for checksum: {e}"))?;
+        let normalized: serde_json::Value = serde_json::from_str(&text)
+            .map_err(|e| format!("normalize record for checksum: {e}"))?;
+        let payload = serde_json::to_vec(&normalized)
+            .map_err(|e| format!("serialize normalized record for checksum: {e}"))?;
         let mut hasher = Sha256::new();
         hasher.update([ver]);
         hasher.update(&payload);
