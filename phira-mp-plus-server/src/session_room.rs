@@ -1124,20 +1124,38 @@ pub async fn select_chart(
             )
             .await
             .map_err(|e| anyhow!("{}", tr(e)))?;
-        // 广播谱面信息（谱师/曲师/难度/评分）
+        // 广播谱面信息（谱师/曲师/难度/评分）——按用户语言本地化
         if let Some((charter, composer, level, rating, chart_updated)) = chart_meta {
             if !charter.is_empty() || !composer.is_empty() {
-                let rating_part = rating.map(|r| format!("    评分: {r:.3}")).unwrap_or_default();
-                let updated_part = chart_updated
-                    .as_deref()
-                    .map(|s| format!("    谱面更新: {}", &s[..s.len().min(10)]))
-                    .unwrap_or_default();
-                let content = format!(
-                    "谱师:{}    曲师:{}    难度: {}{}{}",
-                    charter, composer, level, rating_part, updated_part
-                );
-                room.broadcast(ServerCommand::Message(Message::Chat { user: 0, content }))
-                    .await;
+                let room_seq =
+                    Some(room.last_room_seq.load(std::sync::atomic::Ordering::Relaxed));
+                for user in room.users().await.into_iter().chain(room.monitors().await) {
+                    let lang = user.lang.clone();
+                    let rating_part = rating
+                        .map(|r| {
+                            let mut a = fluent::FluentArgs::new();
+                            a.set("rating", format!("{r:.3}"));
+                            crate::l10n::translate_system(&lang, "chart-rating", &a)
+                        })
+                        .unwrap_or_default();
+                    let updated_part = chart_updated
+                        .as_deref()
+                        .map(|s| {
+                            let mut a = fluent::FluentArgs::new();
+                            a.set("date", &s[..s.len().min(10)]);
+                            crate::l10n::translate_system(&lang, "chart-updated", &a)
+                        })
+                        .unwrap_or_default();
+                    let mut args = fluent::FluentArgs::new();
+                    args.set("charter", &charter);
+                    args.set("composer", &composer);
+                    args.set("level", &level);
+                    args.set("rating", &rating_part);
+                    args.set("updated", &updated_part);
+                    let content = crate::l10n::translate_system(&lang, "chart-info-line", &args);
+                    user.try_send(ServerCommand::Message(Message::Chat { user: 0, content }), room_seq)
+                        .await;
+                }
             }
         }
         Ok(())

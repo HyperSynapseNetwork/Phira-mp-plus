@@ -71,3 +71,19 @@ room-closed-by-admin = 房间已被管理员关闭
 user-kicked-from-room = 用户 { $name } 已被管理员踢出房间
 user-moved-to-room = 用户 { $name } 已被管理员强制转移到本房间
 system-broadcast-prefix = [系统广播]
+
+# ── 欢迎语 ──
+
+welcome-message = 欢迎 [user_name] 来到 HSN Phira-mp+！当前在线 [player-count] 人。以-开头的房间会被隐藏。可以前往 https://phira.htadiy.com/ 使用更多相关功能哦。也欢迎加入我们的QQ交流群1049578201！\n您在本服务器上游玩了[playtime]\n--------------------------------------------------\n游玩时间排行榜：[top_playtime]\n--------------------------------------------------\n活跃房间：[active_rooms]
+welcome-no-rooms = 暂无房间
+welcome-locked = 锁定
+welcome-cycling = 循环
+welcome-room-line = { $room }{ $flags }(房主:{ $host } [{ $players }/{ $max }])
+welcome-playtime-value = { $hours }h
+welcome-rank-line = #{ $rank } { $name }  { $hours }h
+
+# ── 谱面信息 ──
+
+chart-info-line = 谱师:{ $charter }    曲师:{ $composer }    难度: { $level }{ $rating }{ $updated }
+chart-rating =     评分: { $rating }
+chart-updated =     谱面更新: { $date }

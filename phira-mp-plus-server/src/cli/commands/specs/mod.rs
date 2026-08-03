@@ -39,9 +39,12 @@ where
 }
 
 /// Wrap an argument-taking `CliHandler` method as a `CommandHandler`.
+///
+/// The closure receives the command arguments as owned `Vec<String>` so the
+/// returned future can move them without borrowing the outer handler closure.
 pub fn with_args<F>(f: F) -> CommandHandler
 where
-    F: for<'a> Fn(&'a CliHandler, &'a [&'a str]) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>>
+    F: for<'a> Fn(&'a CliHandler, Vec<String>) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>>
         + Send
         + Sync
         + 'static,
@@ -49,9 +52,9 @@ where
     Arc::new(move |state, args| {
         let state = Arc::clone(state);
         let args: Vec<String> = args.iter().map(|s| s.to_string()).collect();
+        let f_ref = &f;
         Box::pin(async move {
-            let arg_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
-            crate::cli::with_cli(&state, move |h| f(h, &arg_refs)).await
+            crate::cli::with_cli(&state, move |h| f_ref(h, args)).await
         })
     })
 }

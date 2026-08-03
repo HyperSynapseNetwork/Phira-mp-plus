@@ -10,7 +10,10 @@ pub fn specs() -> Vec<CommandSpec> {
             .handler(no_arg(|h| Box::pin(async move { h.list_users().await }))),
         CommandSpec::new("kick", "users", "踢出在线用户。", "kick <user_id>")
             .handler(with_args(|h, args| {
-                Box::pin(async move { h.dispatch_user_kick_command(args).await })
+                Box::pin(async move {
+                    let arg_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+                    h.dispatch_user_kick_command(&arg_refs).await
+                })
             })),
         CommandSpec::new(
             "broadcast all",
@@ -20,9 +23,10 @@ pub fn specs() -> Vec<CommandSpec> {
         )
         .handler(with_args(|h, args| {
             Box::pin(async move {
-                let mut full = vec!["all"];
-                full.extend(args.iter().copied());
-                h.dispatch_broadcast_command(&full).await
+                let mut full: Vec<String> = vec!["all".to_string()];
+                full.extend(args.iter().cloned());
+                let arg_refs: Vec<&str> = full.iter().map(|s| s.as_str()).collect();
+                h.dispatch_broadcast_command(&arg_refs).await
             })
         })),
         CommandSpec::new(
@@ -33,9 +37,10 @@ pub fn specs() -> Vec<CommandSpec> {
         )
         .handler(with_args(|h, args| {
             Box::pin(async move {
-                let mut full = vec!["room"];
-                full.extend(args.iter().copied());
-                h.dispatch_broadcast_command(&full).await
+                let mut full: Vec<String> = vec!["room".to_string()];
+                full.extend(args.iter().cloned());
+                let arg_refs: Vec<&str> = full.iter().map(|s| s.as_str()).collect();
+                h.dispatch_broadcast_command(&arg_refs).await
             })
         })),
         CommandSpec::new(
@@ -46,9 +51,10 @@ pub fn specs() -> Vec<CommandSpec> {
         )
         .handler(with_args(|h, args| {
             Box::pin(async move {
-                let mut full = vec!["user"];
-                full.extend(args.iter().copied());
-                h.dispatch_broadcast_command(&full).await
+                let mut full: Vec<String> = vec!["user".to_string()];
+                full.extend(args.iter().cloned());
+                let arg_refs: Vec<&str> = full.iter().map(|s| s.as_str()).collect();
+                h.dispatch_broadcast_command(&arg_refs).await
             })
         })),
     ];
@@ -61,7 +67,10 @@ pub fn specs() -> Vec<CommandSpec> {
         )
         .advanced()
         .handler(with_args(|h, args| {
-            Box::pin(async move { h.admin_ids(args).await })
+            Box::pin(async move {
+                let arg_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+                h.admin_ids(&arg_refs).await
+            })
         })),
     );
     out

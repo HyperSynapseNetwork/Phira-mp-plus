@@ -387,6 +387,11 @@ pub struct PlusConfig {
     pub connection_rate_window: u32,
     #[serde(default)]
     pub server_name: Option<String>,
+    /// 可选：欢迎语国际化（Fluent .ftl）文件目录。目录内按
+    /// `welcome-{lang}.ftl` 命名（如 welcome-zh-CN.ftl），每条含 `welcome-message`
+    /// 键作为欢迎语模板。未配置或文件缺失时回退到内置默认欢迎语。
+    #[serde(default)]
+    pub welcome_ftl_dir: Option<String>,
     #[serde(default = "default_phira_api")]
     pub phira_api_endpoint: String,
     #[serde(default = "default_true")]
@@ -437,6 +442,7 @@ impl Default for PlusConfig {
             connection_rate_limit: 30,
             connection_rate_window: 10,
             server_name: None,
+            welcome_ftl_dir: None,
             phira_api_endpoint: "https://phira.5wyxi.com".to_string(),
             chat_enabled: true,
             round_data_retention_days: 7,

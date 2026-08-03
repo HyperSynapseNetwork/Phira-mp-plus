@@ -95,9 +95,10 @@ pub fn specs() -> Vec<CommandSpec> {
         )
         .handler(with_args(|h, args| {
             Box::pin(async move {
-                let mut full = vec!["openuds"];
-                full.extend(args.iter().copied());
-                h.dispatch_approve_command(&full).await
+                let mut full: Vec<String> = vec!["openuds".to_string()];
+                full.extend(args.iter().cloned());
+                let arg_refs: Vec<&str> = full.iter().map(|s| s.as_str()).collect();
+                h.dispatch_approve_command(&arg_refs).await
             })
         })),
     ]

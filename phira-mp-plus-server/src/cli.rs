@@ -208,14 +208,14 @@ pub struct CliHandler {
 /// 通过 out 通道收集输出，从而复用现有命令方法而无需改动其内部逻辑。
 async fn run_with_cli<F>(state: &Arc<PlusServerState>, f: F) -> Vec<String>
 where
-    F: for<'a> FnOnce(&'a CliHandler) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>>,
+    F: for<'a> FnOnce(&'a CliHandler) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> + Send,
 {
     let (out_tx, mut out_rx) = mpsc::channel::<String>(1024);
     let handler = CliHandler::new(Arc::clone(state), out_tx);
     f(&handler).await;
     drop(handler);
     let mut lines = Vec::new();
-    while let Ok(Some(line)) = out_rx.try_recv() {
+    while let Ok(line) = out_rx.try_recv() {
         lines.push(line);
     }
     lines
@@ -230,7 +230,7 @@ pub fn with_cli<F>(
     f: F,
 ) -> Pin<Box<dyn Future<Output = Vec<String>> + Send>>
 where
-    F: for<'a> FnOnce(&'a CliHandler) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>>,
+    F: for<'a> FnOnce(&'a CliHandler) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> + Send,
 {
     let state = Arc::clone(state);
     Box::pin(async move { run_with_cli(&state, f).await })

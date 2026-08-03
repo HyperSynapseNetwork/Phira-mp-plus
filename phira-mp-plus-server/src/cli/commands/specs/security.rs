@@ -15,35 +15,38 @@ fn ban_or_ip(global: bool) -> CommandHandler {
         Box::pin(async move {
             let arg_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
             let is_ip = arg_refs.first().copied() == Some("ip");
-            let target = if is_ip { &arg_refs[1..] } else { &arg_refs[..] };
+            let target: Vec<&str> = if is_ip {
+                arg_refs[1..].to_vec()
+            } else {
+                arg_refs[..].to_vec()
+            };
+            let sub: Vec<String> = target.iter().map(|s| s.to_string()).collect();
             if *global {
                 if is_ip {
-                    let sub: Vec<&str> = target.to_vec();
                     crate::cli::with_cli(&state, move |h| {
-                        Box::pin(async move { h.dispatch_ban_ip_command(&sub).await })
+                        let sub_refs: Vec<&str> = sub.iter().map(|s| s.as_str()).collect();
+                        Box::pin(async move { h.dispatch_ban_ip_command(&sub_refs).await })
                     })
                     .await
                 } else {
-                    let sub: Vec<&str> = target.to_vec();
                     crate::cli::with_cli(&state, move |h| {
-                        Box::pin(async move { h.dispatch_global_ban_command(&sub).await })
+                        let sub_refs: Vec<&str> = sub.iter().map(|s| s.as_str()).collect();
+                        Box::pin(async move { h.dispatch_global_ban_command(&sub_refs).await })
                     })
                     .await
                 }
+            } else if is_ip {
+                crate::cli::with_cli(&state, move |h| {
+                    let sub_refs: Vec<&str> = sub.iter().map(|s| s.as_str()).collect();
+                    Box::pin(async move { h.dispatch_unban_ip_command(&sub_refs).await })
+                })
+                .await
             } else {
-                if is_ip {
-                    let sub: Vec<&str> = target.to_vec();
-                    crate::cli::with_cli(&state, move |h| {
-                        Box::pin(async move { h.dispatch_unban_ip_command(&sub).await })
-                    })
-                    .await
-                } else {
-                    let sub: Vec<&str> = target.to_vec();
-                    crate::cli::with_cli(&state, move |h| {
-                        Box::pin(async move { h.dispatch_global_unban_command(&sub).await })
-                    })
-                    .await
-                }
+                crate::cli::with_cli(&state, move |h| {
+                    let sub_refs: Vec<&str> = sub.iter().map(|s| s.as_str()).collect();
+                    Box::pin(async move { h.dispatch_global_unban_command(&sub_refs).await })
+                })
+                .await
             }
         })
     })
@@ -80,9 +83,17 @@ pub fn specs() -> Vec<CommandSpec> {
                     }
                 })
             })),
-        CommandSpec::new("ip-history", "security", "查看某用户使用过的 IP (按次数排序)。", "ip-history <user_id>")
-            .handler(with_args(|h, args| {
-                Box::pin(async move { h.dispatch_user_ip_history(args).await })
-            })),
+        CommandSpec::new(
+            "ip-history",
+            "security",
+            "查看某用户使用过的 IP (按次数排序)。",
+            "ip-history <user_id>",
+        )
+        .handler(with_args(|h, args| {
+            Box::pin(async move {
+                let arg_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+                h.dispatch_user_ip_history(&arg_refs).await
+            })
+        })),
     ]
 }

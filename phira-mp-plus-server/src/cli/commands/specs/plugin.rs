@@ -7,9 +7,12 @@ use super::with_args;
 /// Wrap a `plugin <sub>` dispatch as a handler.
 fn plugin_sub(sub: &'static str) -> CommandHandler {
     with_args(move |h, args| {
-        let mut full = vec![sub];
-        full.extend(args.iter().copied());
-        Box::pin(async move { h.dispatch_plugin_command(&full).await })
+        Box::pin(async move {
+            let mut full: Vec<String> = vec![sub.to_string()];
+            full.extend(args.iter().cloned());
+            let arg_refs: Vec<&str> = full.iter().map(|s| s.as_str()).collect();
+            h.dispatch_plugin_command(&arg_refs).await
+        })
     })
 }
 

@@ -71,3 +71,19 @@ room-closed-by-admin = Room has been closed by admin
 user-kicked-from-room = User { $name } has been kicked from the room
 user-moved-to-room = User { $name } has been moved to this room by admin
 system-broadcast-prefix = [Broadcast]
+
+# ── Welcome message ──
+
+welcome-message = Welcome [user_name] to HSN Phira-mp+! Currently [player-count] online. Rooms starting with - are hidden. Check out https://phira.htadiy.com/ for more features. Join our QQ group 1049578201!\nYou have played for [playtime] on this server\n--------------------------------------------------\nPlaytime leaderboard: [top_playtime]\n--------------------------------------------------\nActive rooms: [active_rooms]
+welcome-no-rooms = No active rooms
+welcome-locked = locked
+welcome-cycling = cycling
+welcome-room-line = { $room }{ $flags }(Host:{ $host } [{ $players }/{ $max }])
+welcome-playtime-value = { $hours }h
+welcome-rank-line = #{ $rank } { $name }  { $hours }h
+
+# ── Chart info ──
+
+chart-info-line = Charter:{ $charter }    Composer:{ $composer }    Difficulty: { $level }{ $rating }{ $updated }
+chart-rating =     Rating: { $rating }
+chart-updated =     Chart updated: { $date }

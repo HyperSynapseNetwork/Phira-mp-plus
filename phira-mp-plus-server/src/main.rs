@@ -354,13 +354,16 @@ async fn main() -> Result<()> {
                 .entry(session.user.id)
                 .or_insert_with(|| (session.user.name.clone(), session.id.to_string()));
         }
+        let lang = session.user.lang.clone();
+        let content = phira_mp_plus_server::l10n::translate_system(
+            &lang,
+            "server-shutting-down",
+            &fluent::FluentArgs::new(),
+        );
         session
             .try_send(
                 phira_mp_common::ServerCommand::Message(
-                    phira_mp_common::Message::Chat {
-                        user: 0,
-                        content: "服务器正在关闭...".to_string(),
-                    },
+                    phira_mp_common::Message::Chat { user: 0, content },
                 ),
                 // 服务器关闭通知非房间状态事件，cutover 不适用。
                 None,

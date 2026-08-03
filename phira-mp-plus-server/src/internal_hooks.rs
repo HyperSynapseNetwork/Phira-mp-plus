@@ -1,4 +1,5 @@
 //! 内置功能（欢迎语、玩家追踪、游玩统计）
+use crate::l10n::Language;
 use crate::plugin::PluginManager;
 use crate::plugin_http::PluginHttpServer;
 use crate::server::PlusServerState;
@@ -109,7 +110,6 @@ pub async fn init_internal_hooks(
 
     init_welcome(state, pm).await;
     init_player_tracker(state, http, pm).await;
-    init_round_results(state, pm).await;
     info!("internal hooks initialized");
 }
 
@@ -127,19 +127,25 @@ struct WelcomeConfig {
 impl Default for WelcomeConfig {
     fn default() -> Self {
         Self {
-            messages: vec![
-                "欢迎 [user_name] 来到 HSN Phira-mp+！当前在线 [player-count] 人。以-开头的房间会被隐藏。可以前往 https://phira.htadiy.com/ 使用更多相关功能哦。也欢迎加入我们的QQ交流群1049578201！".into(),
-                "您在本服务器上游玩了[playtime]".into(),
-                "--------------------------------------------------".into(),
-                "游玩时间排行榜：[top_playtime]".into(),
-                "--------------------------------------------------".into(),
-                "活跃房间：[active_rooms]".into(),
-            ],
+            // 空 messages = 使用内置国际化（l10n）欢迎语模板；仅当 l10n 不可用时
+            // 才回退到内置默认文本（见 builtin_welcome_messages）。
+            messages: vec![],
             show_time: true,
             time_format: "%Y-%m-%d %H:%M".into(),
         }
     }
 }
+
+/// 内置默认欢迎语模板（最终回退，中文）。三语默认模板位于 locales/*.ftl 的
+/// `welcome-message` 键。
+const FALLBACK_WELCOME_MESSAGES: &[&str] = &[
+    "欢迎 [user_name] 来到 HSN Phira-mp+！当前在线 [player-count] 人。以-开头的房间会被隐藏。可以前往 https://phira.htadiy.com/ 使用更多相关功能哦。也欢迎加入我们的QQ交流群1049578201！",
+    "您在本服务器上游玩了[playtime]",
+    "--------------------------------------------------",
+    "游玩时间排行榜：[top_playtime]",
+    "--------------------------------------------------",
+    "活跃房间：[active_rooms]",
+];
 
 /// 预编译的欢迎语片段，避免每次连接时做字符串 replace。
 #[derive(Debug, Clone)]
@@ -173,17 +179,51 @@ static WELCOME: once_cell::sync::Lazy<Arc<Mutex<WelcomeConfig>>> =
         Arc::new(Mutex::new(cfg))
     });
 
-/// 预编译的欢迎语模板（一次启动时编译，避免每次连接做字符串搜索和 replace）。
-static WELCOME_SEGMENTS: once_cell::sync::Lazy<Arc<Mutex<Vec<Vec<WelcomeSegment>>>>> =
-    once_cell::sync::Lazy::new(|| {
-        let cfg = WELCOME.lock().unwrap();
-        Arc::new(Mutex::new(
-            cfg.messages
-                .iter()
-                .map(|msg| compile_template(msg, cfg.show_time))
-                .collect(),
-        ))
-    });
+/// 解析欢迎语专用 .ftl 文件中的 `welcome-message` 键（单行值，`\n` 分隔多行）。
+fn parse_welcome_ftl(content: &str) -> Option<Vec<String>> {
+    for line in content.lines() {
+        let line = line.trim();
+        if let Some(rest) = line.strip_prefix("welcome-message") {
+            let rest = rest.trim_start();
+            if let Some(val) = rest.strip_prefix('=') {
+                let val = val.trim();
+                if !val.is_empty() {
+                    return Some(val.split("\\n").map(|s| s.to_string()).collect());
+                }
+            }
+        }
+    }
+    None
+}
+
+/// 按语言获取欢迎语模板消息列表。
+///
+/// 优先级：管理员 welcome-config.json 显式 messages > 可选 `welcome_ftl_dir`
+/// 下的 `welcome-{lang}.ftl` > 内置 l10n `welcome-message` 键 > 内置默认文本。
+fn welcome_messages_for(lang: &Language, state: &PlusServerState) -> Vec<String> {
+    let cfg = WELCOME.lock().unwrap();
+    if !cfg.messages.is_empty() {
+        return cfg.messages.clone();
+    }
+    if let Some(dir) = &state.config.welcome_ftl_dir {
+        let lang_tag = lang.0.to_string();
+        let path = std::path::Path::new(dir).join(format!("welcome-{lang_tag}.ftl"));
+        if let Ok(content) = std::fs::read_to_string(&path) {
+            if let Some(msgs) = parse_welcome_ftl(&content) {
+                return msgs;
+            }
+        }
+    }
+    let template = crate::l10n::translate_system(lang, "welcome-message", &fluent::FluentArgs::new());
+    // l10n 缺失时 translate_system 返回键名本身。
+    if !template.is_empty() && template != "welcome-message" {
+        return template
+            .split('\n')
+            .map(|s| s.trim_end().to_string())
+            .collect();
+    }
+    FALLBACK_WELCOME_MESSAGES.iter().map(|s| s.to_string()).collect()
+}
 
 /// 将单个模板字符串预编译为片段列表。
 /// 运行时只需遍历片段拼接动态值，无需扫描 / replace。
@@ -251,7 +291,19 @@ fn compile_template(tpl: &str, show_time: bool) -> Vec<WelcomeSegment> {
 
 pub fn send_welcome(user_id: i32, user_name: &str, online: usize, state: &PlusServerState) -> usize {
     use std::time::{SystemTime, UNIX_EPOCH};
-    let compiled = WELCOME_SEGMENTS.lock().unwrap();
+    let lang = state
+        .users
+        .try_read()
+        .ok()
+        .and_then(|g| g.get(&user_id))
+        .map(|u| u.lang.clone())
+        .unwrap_or_default();
+    let show_time = WELCOME.lock().unwrap().show_time;
+    let messages = welcome_messages_for(&lang, state);
+    let compiled: Vec<Vec<WelcomeSegment>> = messages
+        .iter()
+        .map(|msg| compile_template(msg, show_time))
+        .collect();
     let mut texts: Vec<String> = Vec::with_capacity(compiled.len());
 
     for segments in compiled.iter() {
@@ -272,14 +324,28 @@ pub fn send_welcome(user_id: i32, user_name: &str, online: usize, state: &PlusSe
                 WelcomeSegment::Playtime => {
                     let pt = ensure_playtime_cache().lock().unwrap();
                     let secs = pt.get(&user_id).copied().unwrap_or(0);
-                    text.push_str(&format!("{:.1}h", secs as f64 / 3600.0));
+                    let mut args = fluent::FluentArgs::new();
+                    args.set("hours", format!("{:.1}", secs as f64 / 3600.0));
+                    text.push_str(&crate::l10n::translate_system(
+                        &lang,
+                        "welcome-playtime-value",
+                        &args,
+                    ));
                 }
                 WelcomeSegment::PlaytimeId(uid) => {
                     let pt = ensure_playtime_cache().lock().unwrap();
                     let secs = pt.get(uid).copied().unwrap_or(0);
-                    text.push_str(&format!("{:.1}h", secs as f64 / 3600.0));
+                    let mut args = fluent::FluentArgs::new();
+                    args.set("hours", format!("{:.1}", secs as f64 / 3600.0));
+                    text.push_str(&crate::l10n::translate_system(
+                        &lang,
+                        "welcome-playtime-value",
+                        &args,
+                    ));
                 }
                 WelcomeSegment::ActiveRooms => {
+                    let no_rooms =
+                        crate::l10n::translate_system(&lang, "welcome-no-rooms", &fluent::FluentArgs::new());
                     let rooms_guard = state.rooms.try_read();
                     let room_list: Vec<String> = match rooms_guard {
                         Ok(ref rooms) => {
@@ -289,7 +355,7 @@ pub fn send_welcome(user_id: i32, user_name: &str, online: usize, state: &PlusSe
                                 .take(10)
                                 .collect();
                             if visible_rooms.is_empty() {
-                                vec!["暂无房间".into()]
+                                vec![no_rooms]
                             } else {
                                 let users_guard = state.users.try_read();
                                 visible_rooms
@@ -313,25 +379,40 @@ pub fn send_welcome(user_id: i32, user_name: &str, online: usize, state: &PlusSe
                                         let cycling = control.cycle;
                                         let mut flags = Vec::new();
                                         if locked {
-                                            flags.push("锁定");
+                                            flags.push(crate::l10n::translate_system(
+                                                &lang,
+                                                "welcome-locked",
+                                                &fluent::FluentArgs::new(),
+                                            ));
                                         }
                                         if cycling {
-                                            flags.push("循环");
+                                            flags.push(crate::l10n::translate_system(
+                                                &lang,
+                                                "welcome-cycling",
+                                                &fluent::FluentArgs::new(),
+                                            ));
                                         }
                                         let flag_str = if flags.is_empty() {
                                             String::new()
                                         } else {
                                             format!(" [{}]", flags.join(","))
                                         };
-                                        format!(
-                                            "{}{}(房主:{} [{}/{}])",
-                                            id, flag_str, host_name, players, max,
+                                        let mut args = fluent::FluentArgs::new();
+                                        args.set("room", id.to_string());
+                                        args.set("flags", &flag_str);
+                                        args.set("host", &host_name);
+                                        args.set("players", players as i64);
+                                        args.set("max", max as i64);
+                                        crate::l10n::translate_system(
+                                            &lang,
+                                            "welcome-room-line",
+                                            &args,
                                         )
                                     })
                                     .collect()
                             }
                         }
-                        _ => vec!["暂无房间".into()],
+                        _ => vec![no_rooms],
                     };
                     text.push_str(&room_list.join("; "));
                 }
@@ -356,7 +437,11 @@ pub fn send_welcome(user_id: i32, user_name: &str, online: usize, state: &PlusSe
                                     // a user connects (track_player is called on auth).
                                 })
                                 .unwrap_or_default();
-                            format!("#{} {}: {:.1}h", i + 1, name, *secs as f64 / 3600.0)
+                            let mut args = fluent::FluentArgs::new();
+                            args.set("rank", (i + 1) as i64);
+                            args.set("name", &name);
+                            args.set("hours", format!("{:.1}", *secs as f64 / 3600.0));
+                            crate::l10n::translate_system(&lang, "welcome-rank-line", &args)
                         })
                         .collect();
                     text.push_str(&top.join(" | "));
@@ -412,8 +497,6 @@ pub fn send_welcome(user_id: i32, user_name: &str, online: usize, state: &PlusSe
 
 async fn init_welcome(_state: &PlusServerState, pm: &PluginManager) {
     save_json("data/welcome-config.json", &*WELCOME.lock().unwrap());
-    // 强制在启动时预编译 segments（而非等到首次连接时）
-    drop(WELCOME_SEGMENTS.lock().unwrap());
     let _ = pm
         .register_cli_command(crate::plugin::CliCommand {
             name: "welcome-config".into(),
@@ -513,19 +596,6 @@ pub fn playtime_disconnect(_user_id: i32) {}
 //  结算排行
 // ════════════════════════════════════
 
-async fn init_round_results(_state: &PlusServerState, pm: &PluginManager) {
-    let _ = pm
-        .register_cli_command(crate::plugin::CliCommand {
-            name: "round-last".into(),
-            description: "查看房间最近一轮结算 (查询 room history)".into(),
-            usage: "round-last <房间ID>".into(),
-            handler: Arc::new(|args| {
-                let room_id = args.first().cloned().unwrap_or_default();
-                vec![format!("  ◆ round-last: use 'room history {room_id}'")]
-            }),
-        })
-        .await;
-}
 
 // ════════════════════════════════════
 //  辅助
