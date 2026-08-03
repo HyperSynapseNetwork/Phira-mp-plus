@@ -33,10 +33,18 @@ impl CliHandler {
             } else {
                 0.0
             };
-            let bar_len = (30.0 * *count as f64 / max_count as f64).round() as usize;
-            let bar = "█".repeat(bar_len);
+            // `█` 是全角字符（终端占 2 列），不能依赖 `{:<30}` 的字符宽度填充——
+            // 那样 bar 的实际列宽随 bar_len 奇偶变化，后续数值会错位。按列宽
+            // 手动补空格，使 bar 恒占 30 列（上限 15 个 `█`）。
+            let bar_len = (15.0 * *count as f64 / max_count as f64).round() as usize;
+            let bar_blocks = "█".repeat(bar_len);
+            let bar = if bar_len >= 15 {
+                bar_blocks
+            } else {
+                format!("{}{}", bar_blocks, " ".repeat(30 - bar_len * 2))
+            };
             self.out(format!(
-                "  {} {:<12} {:<30} {:>6} ({:>5.1}%)",
+                "  {} {:<12} {} {:>6} ({:>5.1}%)",
                 c::dim("│"),
                 range,
                 bar,
