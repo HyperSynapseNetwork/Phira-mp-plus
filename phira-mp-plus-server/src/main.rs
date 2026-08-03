@@ -272,23 +272,28 @@ async fn main() -> Result<()> {
     // completion instead of leaving a torn tail frame (which would otherwise
     // be detected as corruption on the next start).
     //
-    // The SIGTERM future is built OUTSIDE the select: `tokio::select!` has no
-    // rule for a `#[cfg]` attribute on an individual branch, so the cfg is
-    // applied here and the branch in the select is unconditional.  On
+    // The SIGTERM future is built INSIDE the loop: `tokio::select!` has no
+    // rule for a `#[cfg]` attribute on an individual branch (and moving a
+    // single future into `select!` consumes it, so it cannot be reused across
+    // loop iterations), so the cfg is applied to the expression that builds
+    // the future here and the branch in the select is unconditional.  On
     // non-Unix platforms there is no SIGTERM, so the future never resolves
     // and the branch simply never fires.
     #[cfg(unix)]
-    let sigterm_fut = {
-        let mut signal = tokio::signal::unix::signal(
-            tokio::signal::unix::SignalKind::terminate(),
-        )?;
-        async move {
-            let _ = signal.recv().await;
-        }
-    };
-    #[cfg(not(unix))]
-    let sigterm_fut = std::future::pending::<()>();
+    let mut signal = tokio::signal::unix::signal(
+        tokio::signal::unix::SignalKind::terminate(),
+    )?;
     loop {
+        let sigterm_fut = {
+            #[cfg(unix)]
+            {
+                signal.recv()
+            }
+            #[cfg(not(unix))]
+            {
+                std::future::pending::<()>()
+            }
+        };
         tokio::select! {
             result = server.accept() => {
                 if let Err(err) = result {
