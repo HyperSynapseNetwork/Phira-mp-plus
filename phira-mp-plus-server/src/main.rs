@@ -268,6 +268,13 @@ async fn main() -> Result<()> {
         "server started"
     );
 
+    // Graceful shutdown on SIGINT (Ctrl+C) / SIGTERM so the WAL flush runs to
+    // completion instead of leaving a torn tail frame (which would otherwise
+    // be detected as corruption on the next start).
+    #[cfg(unix)]
+    let mut sigterm = tokio::signal::unix::signal(
+        tokio::signal::unix::SignalKind::terminate(),
+    )?;
     loop {
         tokio::select! {
             result = server.accept() => {
@@ -277,6 +284,17 @@ async fn main() -> Result<()> {
             }
             _ = server.state.shutdown.notified() => {
                 info!("shutdown requested");
+                break;
+            }
+            _ = tokio::signal::ctrl_c() => {
+                info!("SIGINT received; starting graceful shutdown");
+                server.state.shutdown.notify_waiters();
+                break;
+            }
+            #[cfg(unix)]
+            _ = sigterm.recv() => {
+                info!("SIGTERM received; starting graceful shutdown");
+                server.state.shutdown.notify_waiters();
                 break;
             }
         }
