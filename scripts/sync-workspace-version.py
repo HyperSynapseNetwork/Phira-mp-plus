@@ -17,7 +17,13 @@ VERSION_RE = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+(?:[-+][0-9A-Za-z.-]+)?$")
 
 
 def toml_version(path: Path) -> str:
-    match = re.search(r'^version\s*=\s*"([^"]+)"', path.read_text(), re.MULTILINE)
+    # Cargo.toml 可能含 UTF-8 中文注释；显式以 UTF-8 读取，避免 Windows
+    # 默认编码（cp1252）解码失败。
+    match = re.search(
+        r'^version\s*=\s*"([^"]+)"',
+        path.read_text(encoding="utf-8"),
+        re.MULTILINE,
+    )
     if match is None:
         raise RuntimeError(f"package version not found: {path}")
     return match.group(1)
