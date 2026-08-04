@@ -5,6 +5,24 @@ use std::sync::Arc;
 
 pub fn specs() -> Vec<CommandSpec> {
     vec![
+        CommandSpec::new(
+            "update",
+            "core",
+            "自动更新：检查/更新/强制/开关。",
+            "update check|apply|force|auto [on|off]",
+        )
+        .advanced()
+        .handler(Arc::new(|_state, _args| {
+            Box::pin(async move {
+                vec![
+                    "  ◆ 自动更新命令:".to_string(),
+                    "  │ update check          — 检查新版本".to_string(),
+                    "  │ update apply          — 手动更新（检查在线玩家与空闲）".to_string(),
+                    "  │ update force          — 强制立刻更新".to_string(),
+                    "  │ update auto [on|off]  — 开关自动更新".to_string(),
+                ]
+            })
+        })),
         CommandSpec::new("update check", "core", "检查是否有新版本。", "update check")
             .advanced()
             .handler(Arc::new(|state, _args| {
