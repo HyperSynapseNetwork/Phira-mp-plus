@@ -9,6 +9,7 @@ anyhow = { workspace = true }
 async-trait = "0.1"
 chrono = { workspace = true }
 flate2 = { workspace = true }
+lofty = { workspace = true }
 clap = { version = "4.5.58", features = ["derive", "env"] }
 crossterm = "0.28"
 ratatui = "0.28"

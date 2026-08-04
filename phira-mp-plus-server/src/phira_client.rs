@@ -24,6 +24,24 @@ pub const PHIRA_LEGACY_502_MARKER: &str = "认证失败 502错误";
 pub const PHIRA_LEGACY_502_TEXT: &str =
     "认证失败 502错误 Phira服务器太烂了，我们正在重试以保证你的流畅体验 /拜谢";
 
+/// zip 中央目录条目（只取谱面时长解析所需的字段）。
+struct ZipEntry {
+    compression: u16,
+    compressed_size: u32,
+    uncompressed_size: u32,
+    fn_len: u16,
+    extra_len: u16,
+    local_offset: u32,
+}
+
+/// 用 lofty 探针解析音频时长（MP3/FLAC/WAV/OGG），返回秒。
+fn probe_audio_duration(audio: &[u8]) -> Option<f64> {
+    let mut cursor = std::io::Cursor::new(audio);
+    lofty::read_from(&mut cursor)
+        .ok()
+        .map(|t| t.properties().duration().as_secs_f64())
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct PhiraHttpPolicyConfig {
     /// Per-request timeout in milliseconds.
@@ -611,10 +629,11 @@ impl PhiraRetryClient {
         .ok()
     }
 
-    /// Fetch chart duration by downloading just info.txt from the .phira zip
-    /// via HTTP Range requests. Returns seconds, or None if unavailable.
+    /// Fetch chart duration by downloading just the audio file from the
+    /// .phira zip via HTTP Range requests and probing it with lofty
+    /// (MP3/FLAC/WAV/OGG). Returns seconds, or None if unavailable.
     pub async fn fetch_chart_duration(&self, file_url: &str) -> Option<f64> {
-        // 1. Download last 64KB to find EOCD + central directory
+        // 1. Download last 64KB to find EOCD + central directory offset
         let tail = self
             .client
             .get(file_url)
@@ -633,6 +652,9 @@ impl PhiraRetryClient {
 
         let central_offset = u64::from_le_bytes([eocd[16], eocd[17], eocd[18], eocd[19], 0, 0, 0, 0]);
         let central_size = u64::from_le_bytes([eocd[12], eocd[13], eocd[14], eocd[15], 0, 0, 0, 0]);
+        if central_size == 0 {
+            return None;
+        }
 
         // 3. Download central directory
         let central = self
@@ -646,69 +668,79 @@ impl PhiraRetryClient {
             .await
             .ok()?;
 
-        // 4. Walk central directory entries to find info.txt
+        // 4. Walk central directory, pick the largest audio entry (正曲，排除 preview)
+        const AUDIO_EXTS: [&str; 8] = [".mp3", ".flac", ".wav", ".ogg", ".oga", ".opus", ".m4a", ".aac"];
+        let mut best: Option<ZipEntry> = None;
         let mut pos = 0usize;
         while pos + 46 <= central.len() {
             if &central[pos..pos + 4] != b"PK\x01\x02" {
                 break;
             }
-            let compression = u16::from_le_bytes([central[pos + 10], central[pos + 11]]);
-            let compressed_size =
-                u32::from_le_bytes([central[pos + 20], central[pos + 21], central[pos + 22], central[pos + 23]]);
-            let uncompressed_size =
-                u32::from_le_bytes([central[pos + 24], central[pos + 25], central[pos + 26], central[pos + 27]]);
-            let fn_len = u16::from_le_bytes([central[pos + 28], central[pos + 29]]);
-            let extra_len = u16::from_le_bytes([central[pos + 30], central[pos + 31]]);
-            let _comment_len = u16::from_le_bytes([central[pos + 32], central[pos + 33]]);
-            let local_offset =
-                u32::from_le_bytes([central[pos + 42], central[pos + 43], central[pos + 44], central[pos + 45]]);
-
-            let filename = String::from_utf8_lossy(&central[pos + 46..pos + 46 + fn_len as usize]);
-            let entry_size = 46 + fn_len as usize + extra_len as usize;
-            pos += entry_size;
-
-            if filename.as_ref() != "info.txt" {
+            let entry = ZipEntry {
+                compression: u16::from_le_bytes([central[pos + 10], central[pos + 11]]),
+                compressed_size: u32::from_le_bytes([
+                    central[pos + 20], central[pos + 21], central[pos + 22], central[pos + 23],
+                ]),
+                uncompressed_size: u32::from_le_bytes([
+                    central[pos + 24], central[pos + 25], central[pos + 26], central[pos + 27],
+                ]),
+                fn_len: u16::from_le_bytes([central[pos + 28], central[pos + 29]]),
+                extra_len: u16::from_le_bytes([central[pos + 30], central[pos + 31]]),
+                local_offset: u32::from_le_bytes([
+                    central[pos + 42], central[pos + 43], central[pos + 44], central[pos + 45],
+                ]),
+            };
+            let filename = String::from_utf8_lossy(&central[pos + 46..pos + 46 + entry.fn_len as usize]);
+            pos += 46 + entry.fn_len as usize + entry.extra_len as usize;
+            if !AUDIO_EXTS.iter().any(|e| filename.to_ascii_lowercase().ends_with(e)) {
                 continue;
             }
-
-            // 5. Download local file header + compressed info.txt
-            let range_end = local_offset as u64 + 30 + 256 + compressed_size as u64;
-            let raw = self
-                .client
-                .get(file_url)
-                .header(RANGE, format!("bytes={}-{}", local_offset, range_end))
-                .send()
-                .await
-                .ok()?
-                .bytes()
-                .await
-                .ok()?;
-
-            let lh_fn_len = u16::from_le_bytes([raw[26], raw[27]]);
-            let lh_extra_len = u16::from_le_bytes([raw[28], raw[29]]);
-            let data_start = 30 + lh_fn_len as usize + lh_extra_len as usize;
-            let compressed = &raw[data_start..data_start + compressed_size as usize];
-
-            // 6. Decompress and parse EditTime
-            let content: Vec<u8> = if compression == 0 {
-                compressed[..uncompressed_size as usize].to_vec()
-            } else {
-                use std::io::Read;
-                let mut decoder = flate2::read::DeflateDecoder::new(compressed);
-                let mut buf = Vec::with_capacity(uncompressed_size as usize);
-                let _ = decoder.read_to_end(&mut buf).ok()?;
-                buf
-            };
-
-            for line in content.split(|&b| b == b'\n') {
-                if line.starts_with(b"EditTime:") {
-                    let s = std::str::from_utf8(&line[9..]).ok()?.trim();
-                    return s.parse::<f64>().ok();
-                }
+            if best
+                .as_ref()
+                .map(|b| entry.uncompressed_size > b.uncompressed_size)
+                .unwrap_or(true)
+            {
+                best = Some(entry);
             }
-            return None;
         }
-        None
+        let entry = best?;
+
+        // 5. Download local file header + compressed audio（4KB 缓冲覆盖文件名/extra）
+        let range_end = entry.local_offset as u64
+            + 30
+            + std::cmp::max(4096u64, entry.fn_len as u64 + entry.extra_len as u64 + 64)
+            + entry.compressed_size as u64;
+        let raw = self
+            .client
+            .get(file_url)
+            .header(RANGE, format!("bytes={}-{}", entry.local_offset, range_end))
+            .send()
+            .await
+            .ok()?
+            .bytes()
+            .await
+            .ok()?;
+
+        let lh_fn_len = u16::from_le_bytes([raw[26], raw[27]]);
+        let lh_extra_len = u16::from_le_bytes([raw[28], raw[29]]);
+        let data_start = 30 + lh_fn_len as usize + lh_extra_len as usize;
+        let compressed = &raw[data_start..data_start + entry.compressed_size as usize];
+
+        // 6. Decompress（stored 直读 / deflate 解压）
+        let audio: Vec<u8> = if entry.compression == 0 {
+            compressed[..entry.uncompressed_size as usize].to_vec()
+        } else if entry.compression == 8 {
+            use std::io::Read;
+            let mut decoder = flate2::read::DeflateDecoder::new(compressed);
+            let mut buf = Vec::with_capacity(entry.uncompressed_size as usize);
+            decoder.read_to_end(&mut buf).ok()?;
+            buf
+        } else {
+            return None;
+        };
+
+        // 7. Probe duration（lofty 支持 MP3/FLAC/WAV/OGG）
+        probe_audio_duration(&audio)
     }
 
     /// Fetch user name by Phira user ID (unauthenticated).
