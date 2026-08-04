@@ -69,30 +69,6 @@ pub fn specs() -> Vec<CommandSpec> {
         .advanced()
         .handler(room_sub("force-move")),
         CommandSpec::new(
-            "room add-player",
-            "rooms",
-            "添加远程玩家（无本地 session 的虚拟 User）到房间。",
-            "room add-player <room_id> <player_id> [name]",
-        )
-        .advanced()
-        .handler(room_sub("add-player")),
-        CommandSpec::new(
-            "room remote-ready",
-            "rooms",
-            "远程玩家强制准备。",
-            "room remote-ready <room_id> <player_id>",
-        )
-        .advanced()
-        .handler(room_sub("remote-ready")),
-        CommandSpec::new(
-            "room remote-abort",
-            "rooms",
-            "远程玩家弃权。",
-            "room remote-abort <room_id> <player_id>",
-        )
-        .advanced()
-        .handler(room_sub("remote-abort")),
-        CommandSpec::new(
             "room hide",
             "rooms",
             "隐藏房间，使其不出现在 Web API 与欢迎语。",

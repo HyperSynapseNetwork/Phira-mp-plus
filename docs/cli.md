@@ -297,50 +297,6 @@ help groups
 
 ---
 
-### `room add-player <room_id> <player_id> [name]`
-
-添加一个远程玩家到房间（PDFP Lite 联邦前置）。远程玩家是没有本地
-session 的虚拟 User——它在其它服务器上登录，本服务器只把它作为房间
-成员参与对局。房间成员仍由 room_actor 权威管理，广播对远程玩家按设计
-丢弃（它没有本地连接）。
-
-| 参数 | 类型 | 说明 |
-|------|------|------|
-| `room_id` | `str` | 房间名 |
-| `player_id` | `int` | 远程玩家 ID（必须为正整数） |
-| `name` | `str` (可选) | 显示名，缺省为 `remote_<player_id>` |
-
-**输出:** 添加结果。房间不存在、玩家 ID 已被本地 session 占用、玩家已在
-房间、房间已满等场景返回明确错误。
-
----
-
-### `room remote-ready <room_id> <player_id>`
-
-远程玩家强制准备（经 room_actor）。
-
-| 参数 | 类型 | 说明 |
-|------|------|------|
-| `room_id` | `str` | 房间名 |
-| `player_id` | `int` | 远程玩家 ID |
-
-**输出:** 准备结果
-
----
-
-### `room remote-abort <room_id> <player_id>`
-
-远程玩家弃权（经 room_actor，进行中游戏标记 aborted）。
-
-| 参数 | 类型 | 说明 |
-|------|------|------|
-| `room_id` | `str` | 房间名 |
-| `player_id` | `int` | 远程玩家 ID |
-
-**输出:** 弃权结果
-
----
-
 ### `room history <room_id>`
 
 查看房间游玩历史。
