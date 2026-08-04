@@ -409,7 +409,7 @@ admin.set_ids
 - 可用 `room hide <房间ID>` / `room unhide <房间ID>` 手动切换。
 - 也可用 `room set <房间ID> hidden true|false` 修改。
 - WASM/host API 可用 `room.set_hidden`、`room.is_hidden` 管理。
-- 隐藏房间不会出现在 `GET /api/rooms`、`GET /api/rooms/<name>`、`[active_rooms]` 欢迎语占位符和房间 SSE 初始公开快照中。
+- 隐藏房间不会出现在房间列表（`rooms.list`，插件挂载的 `GET /api/rooms` 等端点基于此列表）、`[active_rooms]` 欢迎语占位符和房间 SSE 初始公开快照中。
 - 隐藏只影响公开展示，不等于权限隔离；管理员命令和有权限插件仍可定向管理该房间。
 
 ### TUI / 终端相关配置

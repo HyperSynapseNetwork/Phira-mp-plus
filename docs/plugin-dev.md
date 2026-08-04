@@ -265,7 +265,7 @@ fn on_api(method: String, args: Vec<JsonValue>) -> ApiResult {
 
 #### phira-user-mgmt / phira-messaging / phira-persistence / phira-admin / phira-config / phira-runtime
 
-全部 53 个函数的详细签名见 [WIT 定义文件](../wit/phira-plugin.wit)。
+全部 53 个函数的详细签名见 [WIT 定义文件](https://github.com/HyperSynapseNetwork/Phira-mp-plus/blob/main/wit/phira-plugin.wit)。
 
 ---
 
@@ -378,7 +378,7 @@ wit_bindgen::generate!({
 });
 ```
 
-完整 host API 列表见 [WIT 定义文件](../wit/phira-plugin.wit)。
+完整 host API 列表见 [WIT 定义文件](https://github.com/HyperSynapseNetwork/Phira-mp-plus/blob/main/wit/phira-plugin.wit)。
 # WIT ABI 规范
 
 > 本文档由 `wit_abi_contracts::generate_wit_docs()` 自动生成规范，请勿手动编辑。
