@@ -239,19 +239,6 @@ interface phira-room-mgmt {
 
     /// Set room-level phira_api_endpoint override.
     set-room-phira-api-endpoint: func(room-id: string, endpoint: option<string>) -> api-result;
-
-    /// Add a remote player (a virtual user without a local session) to a room.
-    /// Remote players model a federated peer's participants (PDFP federation).
-    add-remote-player: func(room-id: string, player-id: u32, player-name: string) -> api-result;
-
-    /// Mark a remote player as ready to start the round.
-    remote-ready: func(room-id: string, player-id: u32) -> api-result;
-
-    /// Mark a remote player as having abandoned the round.
-    remote-abort: func(room-id: string, player-id: u32) -> api-result;
-
-    /// Remove a remote player from a room and clean up its virtual user.
-    remote-leave: func(room-id: string, player-id: u32) -> api-result;
 }
 
 /// User management and moderation.

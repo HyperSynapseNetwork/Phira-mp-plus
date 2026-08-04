@@ -179,10 +179,6 @@ pub fn required_capability(method: &str) -> Option<&'static str> {
         | "room.set_persistent_empty"
         | "room.set_phira_api_endpoint"
         | "room.clear_phira_api_endpoint"
-        | "room.add_remote_player"
-        | "room.remote_ready"
-        | "room.remote_abort"
-        | "room.remote_leave"
         | "room.close" => Some("room.manage"),
         value
             if value.starts_with("room.")

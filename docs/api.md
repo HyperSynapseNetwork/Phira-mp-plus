@@ -59,7 +59,7 @@ WASM 插件可在运行时通过 `http.register_route` 动态注册路由。路�
 | phira-host | 6 | 核心主机 API |
 | phira-events | 0 | 事件类型定义 |
 | phira-query | 8 | 用户/房间数据查询 |
-| phira-room-mgmt | 12 | 房间管理操作 |
+| phira-room-mgmt | 8 | 房间管理操作 |
 | phira-user-mgmt | 5 | 用户管理与封禁 |
 | phira-messaging | 3 | 消息发送与广播 |
 | phira-persistence | 6 | 持久化数据查询 |
@@ -387,55 +387,6 @@ Set room-level phira_api_endpoint override.
 **参数**:
 - `room-id`: `string`
 - `endpoint`: `option<string>`
-
-**返回值**: `api-result`
-
-**所需 Capability**: `room.manage`
-
-#### `add-remote-player`
-
-Add a remote player (a virtual user without a local session) to a room.
-
-**参数**:
-- `room-id`: `string`
-- `player-id`: `u32`
-- `player-name`: `string`
-
-**返回值**: `api-result`
-
-**所需 Capability**: `room.manage`
-
-#### `remote-ready`
-
-Mark a remote player as ready to start the round.
-
-**参数**:
-- `room-id`: `string`
-- `player-id`: `u32`
-
-**返回值**: `api-result`
-
-**所需 Capability**: `room.manage`
-
-#### `remote-abort`
-
-Mark a remote player as having abandoned the round.
-
-**参数**:
-- `room-id`: `string`
-- `player-id`: `u32`
-
-**返回值**: `api-result`
-
-**所需 Capability**: `room.manage`
-
-#### `remote-leave`
-
-Remove a remote player from a room and clean up its virtual user.
-
-**参数**:
-- `room-id`: `string`
-- `player-id`: `u32`
 
 **返回值**: `api-result`
 
@@ -980,7 +931,7 @@ Get registered command stats.
 | `plugin.call` | （无） | ✅ |
 | `plugin.register` | （无） | ✅ |
 | `http` | phira-host.`http-request` | ❌ 需 manifest |
-| `room.manage` | phira-room-mgmt.`create-empty-room`, phira-room-mgmt.`kick-from-room`, phira-room-mgmt.`transfer-host`, phira-room-mgmt.`set-host`, phira-room-mgmt.`set-room-lock`, phira-room-mgmt.`set-room-hidden`, phira-room-mgmt.`close-room`, phira-room-mgmt.`set-room-phira-api-endpoint`, phira-room-mgmt.`add-remote-player`, phira-room-mgmt.`remote-ready`, phira-room-mgmt.`remote-abort`, phira-room-mgmt.`remote-leave` | ❌ 需 manifest |
+| `room.manage` | phira-room-mgmt.`create-empty-room`, phira-room-mgmt.`kick-from-room`, phira-room-mgmt.`transfer-host`, phira-room-mgmt.`set-host`, phira-room-mgmt.`set-room-lock`, phira-room-mgmt.`set-room-hidden`, phira-room-mgmt.`close-room`, phira-room-mgmt.`set-room-phira-api-endpoint` | ❌ 需 manifest |
 | `admin` | phira-user-mgmt.`kick-user`, phira-user-mgmt.`ban-user`, phira-user-mgmt.`unban-user`, phira-user-mgmt.`get-ban-list`, phira-user-mgmt.`is-banned`, phira-admin.`list-admin-ids`, phira-admin.`is-admin`, phira-admin.`add-admin-id`, phira-admin.`remove-admin-id`, phira-admin.`set-admin-ids` | ❌ 需 manifest |
 | `crypto` | phira-crypto.`sign`, phira-crypto.`verify`, phira-crypto.`sha256` | ❌ 需 manifest |
 | `timer` | （无） | ❌ 需 manifest |
