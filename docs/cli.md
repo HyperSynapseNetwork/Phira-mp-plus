@@ -906,6 +906,12 @@ help groups
 GitHub Release；检测到新版本且无在线玩家超过 `min_idle_minutes` 时自动
 下载替换并尝试重启。检查失败静默降级（只记 warn），不影响运行。
 
+### `update [check|apply|force|auto]`
+
+自动更新命令入口。无子命令时显示全部可用子命令。
+
+**子命令:** `update check`（检查版本）、`update apply`（手动更新）、`update force`（强制立刻更新）、`update auto [on|off]`（开关自动更新）
+
 ### `update check`
 
 检查 GitHub 最新 Release 并与当前版本对比。
