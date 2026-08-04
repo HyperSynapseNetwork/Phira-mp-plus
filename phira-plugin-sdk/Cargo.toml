@@ -1,6 +1,6 @@
 [package]
 name = "phira-plugin-sdk"
-version = "0.5.2106"
+version = "0.5.2107"
 edition = "2021"
 description = "Phira-mp+ WASM plugin development SDK"
 license = "Apache-2.0"
