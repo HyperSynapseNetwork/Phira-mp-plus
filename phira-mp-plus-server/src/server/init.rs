@@ -28,7 +28,7 @@ impl PlusServer {
         // 统一使用 0.0.0.0 确保两平台局域网 IP 都能连。
         let addr =
             std::net::SocketAddr::new(std::net::Ipv4Addr::UNSPECIFIED.into(), config.port);
-        let listener = TcpListener::bind(addr).await?;
+        let listener = bind_listener_with_retry(addr).await?;
         info!("Phira-mp+ listening on tcp://{}", addr);
 
         // 初始化 Supervisor Actor（接受子任务注册与健康检查）
@@ -242,6 +242,7 @@ impl PlusServer {
             events,
             db_manager,
             last_all_offline_at: tokio::sync::Mutex::new(std::time::Instant::now()),
+            pending_update: tokio::sync::Mutex::new(None),
         });
         // Wire PersistenceWorker into ExtensionManager for persistence
         state
@@ -453,5 +454,27 @@ impl PlusServer {
         }
 
         Ok(Self { state, listener })
+    }
+}
+
+/// 自动更新接管时旧进程刚退出、监听端口可能尚未释放，短暂重试窗口保证
+/// 新进程能绑定成功（正常启动首次即成功，无额外延迟）。
+const BIND_RETRY_WINDOW_MS: u64 = 3000;
+const BIND_RETRY_INTERVAL_MS: u64 = 200;
+
+async fn bind_listener_with_retry(addr: std::net::SocketAddr) -> Result<TcpListener> {
+    let deadline =
+        std::time::Instant::now() + std::time::Duration::from_millis(BIND_RETRY_WINDOW_MS);
+    loop {
+        match TcpListener::bind(addr).await {
+            Ok(listener) => return Ok(listener),
+            Err(e) if std::time::Instant::now() < deadline => {
+                warn!(
+                    "监听端口 {addr} 绑定失败（旧进程可能尚未退出），{BIND_RETRY_INTERVAL_MS}ms 后重试: {e}"
+                );
+                tokio::time::sleep(std::time::Duration::from_millis(BIND_RETRY_INTERVAL_MS)).await;
+            }
+            Err(e) => return Err(e.into()),
+        }
     }
 }

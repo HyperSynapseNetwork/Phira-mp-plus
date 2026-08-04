@@ -111,6 +111,9 @@ pub struct PlusServerState {
     pub plugin_tcp_tx: Option<tokio::sync::mpsc::Sender<crate::plugin_tcp::PluginTcpCommand>>,
     /// 最近一次所有真实玩家（id>0）全部下线的时间戳。自动更新据此判定空闲时长。
     pub last_all_offline_at: Mutex<Instant>,
+    /// 预约更新目标版本号（`update schedule` 设置 / run_checker 自动预约）。
+    /// `None` = 无预约；后台执行器在下线满 `min_idle_minutes` 后据此自动更新。
+    pub pending_update: Mutex<Option<String>>,
 }
 
 /// Phira-mp+ 服务器

@@ -903,14 +903,16 @@ help groups
 ## 自动更新
 
 自动更新默认关闭。启用后服务器启动时与每隔 `check_interval_secs` 检查
-GitHub Release；检测到新版本且无在线玩家超过 `min_idle_minutes` 时自动
-下载替换并尝试重启。检查失败静默降级（只记 warn），不影响运行。
+GitHub Release；检测到新版本时自动"预约"（写入 `pending_update`，幂等，
+不重复预约），下线满 `min_idle_minutes` 分钟后由后台执行器自动下载替换
+并尝试重启。手动 `update schedule` 与自动更新统一走该预约流程。
+检查失败静默降级（只记 warn），不影响运行。
 
-### `update [check|apply|force|auto]`
+### `update [check|apply|force|schedule|cancel|auto]`
 
 自动更新命令入口。无子命令时显示全部可用子命令。
 
-**子命令:** `update check`（检查版本）、`update apply`（手动更新）、`update force`（强制立刻更新）、`update auto [on|off]`（开关自动更新）
+**子命令:** `update check`（检查版本）、`update apply`（立即更新，不预约）、`update force`（强制立刻更新）、`update schedule`（预约更新）、`update cancel`（取消预约）、`update auto [on|off]`（开关自动更新）
 
 ### `update check`
 
@@ -925,8 +927,9 @@ update check
 
 ### `update apply`
 
-手动启动更新流程：检查在线玩家与空闲时长，满足条件则下载并替换可执行
-文件、尝试重启；有玩家在线或最近下线未满 `min_idle_minutes` 时给出原因。
+**立即**启动更新流程（不预约）：检查在线玩家与空闲时长，满足条件则下载并
+替换可执行文件、尝试重启；有玩家在线或最近下线未满 `min_idle_minutes`
+时只返回原因、不预约。需要自动执行时可改用 `update schedule` 预约。
 
 **输出:** 更新结果或拒绝原因
 
@@ -935,6 +938,33 @@ update check
 强制立即更新，跳过在线玩家与空闲时长检查。
 
 **输出:** 更新结果或失败原因
+
+### `update schedule`
+
+预约更新：检查 GitHub 最新 Release，有新版本则记录为预约目标
+（`pending_update`），下线满 `min_idle_minutes` 分钟后由后台执行器自动
+执行（与自动更新同一流程）。无新版本时返回"已是最新"。
+
+预约幂等：若已存在相同或更新版本的预约，不覆盖、不重复预约，返回当前
+预约版本；仅当新版本高于已预约版本时才更新预约。
+
+**输出:** 预约结果或拒绝原因
+
+**示例:**
+```
+update schedule
+```
+
+### `update cancel`
+
+取消预约更新（清除 `pending_update`）。无预约时提示"当前无预约更新"。
+
+**输出:** 取消结果
+
+**示例:**
+```
+update cancel
+```
 
 ### `update auto [on|off]`
 

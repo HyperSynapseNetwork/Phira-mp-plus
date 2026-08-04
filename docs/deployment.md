@@ -216,17 +216,21 @@ auto_update:
 
 注意事项：
 
-- 下载的资产文件名需匹配当前平台（x86_64 匹配 `linux-glibc`，aarch64 匹配
-  `linux-arm64-glibc`），否则回退到通用 `phira-mp-plus-server`；下载内容校验非空。
-- 替换可执行文件后以相同参数尝试 spawn 新进程。systemd / Docker 部署建议由
-  服务管理器重启服务以完成接管；直接 spawn 的进程在旧进程仍占用监听端口时
-  可能启动失败，属预期边界。
+- 资产选择按平台精确匹配：优先 `linux-musl`（纯静态、无 glibc 依赖，兼容旧版
+  Linux），x86_64 无 musl 时回退 `linux-glibc`，aarch64 无 musl 时回退
+  `linux-arm64-glibc`；全部未命中返回明确错误、不下载错误资产。下载内容校验非空。
+- 替换可执行文件后以相同参数 spawn 新进程接管，随后当前进程退出以释放监听
+  端口（直接运行由新进程接管；systemd `Restart=on-failure` / Docker
+  `restart: unless-stopped` 由服务管理器重启，二进制已替换）。新进程启动时若
+  端口尚未释放，listener 绑定处有约 3 秒重试窗口保证接管。
 - 更新流程在替换二进制后向 `data/update/updated-version` 写入目标版本号；
   下次启动时若与当前版本一致，会输出一次"更新完成：已更新到 vX"提示并清除
   标记（不一致则告警并清除，不重复提示）。
 - 检查失败（网络/API 错误）静默降级，只记 warn，不影响启动与运行。
-- 手动更新：`update check` 查看新版本；`update apply` 空闲时更新；
-  `update force` 跳过在线玩家检查强制更新。
+- 手动更新：`update check` 查看新版本；`update schedule` 预约更新（下线满
+  `min_idle_minutes` 后自动执行）；`update apply` 立即更新（不满足空闲条件
+  只返回原因，不预约）；`update force` 跳过在线玩家检查强制更新；
+  `update cancel` 取消预约更新。
 
 ### WASM 运行时限制
 

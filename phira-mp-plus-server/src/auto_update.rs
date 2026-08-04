@@ -1,8 +1,14 @@
 //! 自动更新：检查 GitHub Release、下载新版本、替换可执行文件并尝试重启。
 //!
-//! 默认关闭，需在配置 `auto_update.enabled: true` 显式开启。开启后由
-//! `run_checker` 在启动时与按间隔检查；有新版本且满足空闲条件才自动应用。
-//! 检查失败只记 warn（静默降级），不影响服务器启动与运行。
+//! 手动（`update schedule`）与自动更新统一走"预约"流程：有新版本时写入
+//! `state.pending_update`（幂等，不重复预约），后台执行器在无在线玩家且
+//! 下线满 `min_idle_minutes` 分钟后自动应用。`update apply` 保留立即尝试
+//! 语义（空闲不满只返回原因，不预约）。检查失败只记 warn（静默降级），
+//! 不影响服务器启动与运行。
+//!
+//! 资产选择优先 `linux-musl`（纯静态、无 glibc 依赖，兼容旧版 Linux）；
+//! 替换二进制后 spawn 新进程接管，当前进程退出以释放监听端口（直接运行
+//! 由新进程接管，systemd/Docker 由服务管理器重启）。
 
 use anyhow::{anyhow, bail, Result};
 use serde::Deserialize;
@@ -15,6 +21,11 @@ use crate::server::PlusServerState;
 
 /// 已成功应用过的 Release tag（进程级），避免同一版本反复下载替换。
 static LAST_APPLIED_TAG: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
+/// 更新替换成功后当前进程的退出码。非零以触发 systemd `Restart=on-failure`
+/// 重启（二进制已替换，重启即运行新版本）；Docker `restart: unless-stopped`
+/// 无视退出码都会重启容器；直接运行场景由新 spawn 的进程完成接管。
+const EXIT_CODE_RESTART: i32 = 10;
 
 /// 更新完成标记文件：替换二进制后写入目标版本号；新进程启动时据此输出
 /// "更新完成"一次性提示（校验一致后删除）。
@@ -95,6 +106,15 @@ pub fn is_newer(latest: &[u64], current: &[u64]) -> bool {
     false
 }
 
+/// 比较两个版本 tag（均支持 `v` 前缀）：`a` 严格比 `b` 新才为真。
+/// 任一版本无法解析时返回 `false`（保守处理，不覆盖预约）。
+pub fn is_newer_tag(a: &str, b: &str) -> bool {
+    match (parse_version(a), parse_version(b)) {
+        (Some(a), Some(b)) => is_newer(&a, &b),
+        _ => false,
+    }
+}
+
 #[derive(Deserialize)]
 struct GithubRelease {
     tag_name: String,
@@ -169,26 +189,43 @@ pub async fn check(repo: &str) -> Result<UpdateInfo> {
     })
 }
 
-/// 选择匹配当前平台的发布资产；找不到特定平台资产时回退到通用名
-/// `phira-mp-plus-server`。
+/// 选择匹配当前平台的发布资产。
+///
+/// 优先 `linux-musl`（纯静态、无 glibc 依赖，兼容任意 Linux 版本）；
+/// x86_64 无 musl 产物时回退 glibc，aarch64 无 musl 时回退
+/// `linux-arm64-glibc`。按优先级逐个 needle 精确匹配（`linux-musl` 在
+/// `linux-glibc` 之前），避免误选 glibc 构建在旧 glibc 服务器无法运行。
+/// 全部未命中返回 `None`，调用方给出明确错误、不下载错误资产。
 fn pick_asset(assets: &[ReleaseAsset]) -> Option<&ReleaseAsset> {
     #[cfg(all(target_arch = "x86_64", target_os = "linux"))]
-    let needles: &[&str] = &["linux-glibc", "x86_64-glibc", "amd64-linux"];
+    let needles: &[&str] = &[
+        "linux-musl",
+        "x86_64-musl",
+        "amd64-musl",
+        "linux-glibc",
+        "x86_64-glibc",
+        "amd64-linux",
+    ];
     #[cfg(all(target_arch = "aarch64", target_os = "linux"))]
-    let needles: &[&str] = &["linux-arm64-glibc", "aarch64-glibc", "arm64-linux"];
+    let needles: &[&str] = &[
+        "linux-arm64-musl",
+        "aarch64-musl",
+        "arm64-musl",
+        "linux-arm64-glibc",
+        "aarch64-glibc",
+        "arm64-linux",
+    ];
     #[cfg(not(any(
         all(target_arch = "x86_64", target_os = "linux"),
         all(target_arch = "aarch64", target_os = "linux")
     )))]
     let needles: &[&str] = &["linux"];
-    assets
-        .iter()
-        .find(|a| needles.iter().any(|n| a.name.contains(n)))
-        .or_else(|| {
-            assets
-                .iter()
-                .find(|a| a.name.contains("phira-mp-plus-server"))
-        })
+    for needle in needles {
+        if let Some(asset) = assets.iter().find(|a| a.name.contains(needle)) {
+            return Some(asset);
+        }
+    }
+    None
 }
 
 /// 下载发布资产到内存（大文件直接读入内存，用于替换自身）。
@@ -248,10 +285,12 @@ fn replace_executable(tmp_path: &str, target: &std::path::Path) -> Result<()> {
     }
 }
 
-/// 手动/自动触发更新流程。
+/// 立即执行更新流程（`update apply`/`update force` 与预约执行器共用）。
 ///
 /// - 先查最新版本；无新版返回"已是最新"。
-/// - `force=false` 时检查在线玩家（id>0）与空闲时长（min_idle_minutes）。
+/// - `force=false` 是"立即"语义：检查在线玩家（id>0）与空闲时长
+///   （min_idle_minutes），不满足只返回原因、不预约；满足则立即执行。
+/// - `force=true` 跳过全部检查（预约执行器/`update force` 使用）。
 /// - 下载匹配平台的资产 → 写到 `data/update/` → 替换当前可执行文件 →
 ///   以相同参数 spawn 新进程接管。
 pub async fn apply(state: &Arc<PlusServerState>, force: bool) -> Result<String> {
@@ -320,18 +359,44 @@ pub async fn apply(state: &Arc<PlusServerState>, force: bool) -> Result<String> 
         info.latest_version.trim_start_matches('v'),
     );
 
-    // 以相同参数 spawn 新进程接管。旧进程保持运行，待服务管理器（systemd /
-    // Docker）重启后即使用已替换的新二进制。
-    let args: Vec<String> = std::env::args().skip(1).collect();
-    match tokio::process::Command::new(&current_exe).args(&args).spawn() {
-        Ok(_child) => info!(target: "auto_update", "已启动新版本进程"),
-        Err(e) => warn!(target: "auto_update", "启动新版本进程失败: {e}"),
-    }
-
     *LAST_APPLIED_TAG.lock().unwrap_or_else(|e| e.into_inner()) = Some(info.release_tag.clone());
 
+    // 以相同参数 spawn 新进程接管，然后让当前（旧）进程退出以释放监听端口。
+    // - 直接运行：新进程（已替换的二进制）成功 bind 后接管服务。
+    // - systemd/Docker：非零退出码触发服务管理器重启（二进制已替换）。
+    // 新进程启动时若端口尚未释放（旧进程刚退出），listener 绑定处有短暂重试。
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let spawn_ok = match std::process::Command::new(&current_exe)
+        .args(&args)
+        // stdin 置空：避免新进程继承 CLI 终端输入；stdout/stderr 继承便于日志续传。
+        .stdin(std::process::Stdio::null())
+        .spawn()
+    {
+        Ok(_child) => true,
+        Err(e) => {
+            warn!(target: "auto_update", "启动新版本进程失败: {e}");
+            false
+        }
+    };
+
+    if spawn_ok {
+        info!(
+            target: "auto_update",
+            "更新完成（v{} → {}），已启动新版本进程，旧进程退出以完成接管",
+            info.current_version,
+            info.latest_version
+        );
+        // 硬退出前 flush，避免缓冲的日志/输出丢失。
+        {
+            use std::io::Write;
+            let _ = std::io::stdout().flush();
+            let _ = std::io::stderr().flush();
+        }
+        std::process::exit(EXIT_CODE_RESTART);
+    }
+
     Ok(format!(
-        "更新完成（v{} → {}），正在重启",
+        "更新完成（v{} → {}），但启动新进程失败，请手动重启服务",
         info.current_version, info.latest_version
     ))
 }
@@ -340,8 +405,12 @@ pub async fn apply(state: &Arc<PlusServerState>, force: bool) -> Result<String> 
 ///
 /// `enabled`/`check_interval_secs` 每次循环重新读取 `live_config`，
 /// 支持 `update auto on|off` 与 `config reload` 运行时切换。
+///
+/// 检测到新版本时只做预约（写入 `pending_update`，幂等），不立即更新；
+/// 同一循环内调用 `try_execute_pending`，满足空闲条件时执行预约更新。
 pub async fn run_checker(state: Arc<PlusServerState>, config: AutoUpdateConfig) {
     check_once(&state, config.enabled).await;
+    try_execute_pending(&state).await;
     loop {
         let interval_secs = {
             let lc = state.live_config.read().await;
@@ -350,6 +419,7 @@ pub async fn run_checker(state: Arc<PlusServerState>, config: AutoUpdateConfig) 
         tokio::time::sleep(Duration::from_secs(interval_secs)).await;
         let enabled = state.live_config.read().await.auto_update.enabled;
         check_once(&state, enabled).await;
+        try_execute_pending(&state).await;
     }
 }
 
@@ -358,20 +428,50 @@ async fn check_once(state: &Arc<PlusServerState>, enabled: bool) {
     match check(&repo).await {
         Ok(info) if info.update_available => {
             if enabled {
-                info!(
-                    target: "auto_update",
-                    "检测到新版本 v{} → {}，尝试自动更新",
-                    info.current_version,
-                    info.latest_version
-                );
-                match apply(state, false).await {
-                    Ok(msg) => info!(target: "auto_update", "{msg}"),
-                    Err(e) => warn!(target: "auto_update", "自动更新失败: {e}"),
+                // 该版本已应用过（进程内，等待服务重启生效），不重复预约。
+                let applied = {
+                    let last = LAST_APPLIED_TAG.lock().unwrap_or_else(|e| e.into_inner());
+                    last.as_deref() == Some(info.release_tag.as_str())
+                };
+                if applied {
+                    info!(
+                        target: "auto_update",
+                        "版本 {} 已应用，等待服务重启生效",
+                        info.latest_version
+                    );
+                    return;
+                }
+                // 自动更新统一走预约流程：写入 pending_update，不立即更新；
+                // 空闲满后由 try_execute_pending 执行。幂等：仅当无预约或
+                // 新版本高于已预约版本时才更新预约，否则跳过（不覆盖不重置）。
+                let min_idle = state.live_config.read().await.auto_update.min_idle_minutes;
+                let mut pending = state.pending_update.lock().await;
+                let newer = pending
+                    .as_deref()
+                    .map(|cur| is_newer_tag(&info.latest_version, cur))
+                    .unwrap_or(true);
+                if newer {
+                    info!(
+                        target: "auto_update",
+                        "检测到新版本 v{} → {}，已预约更新（下线满 {} 分钟后自动执行）",
+                        info.current_version,
+                        info.latest_version,
+                        min_idle
+                    );
+                    *pending = Some(info.latest_version);
+                } else {
+                    info!(
+                        target: "auto_update",
+                        "检测到新版本 v{} → {}，已有预约（{}），不重复预约",
+                        info.current_version,
+                        info.latest_version,
+                        pending.as_deref().unwrap_or("")
+                    );
                 }
             } else {
                 info!(
                     target: "auto_update",
-                    "发现新版本 v{} → {}，可执行 `update apply` 更新",
+                    "发现新版本 v{} → {}，可执行 `update schedule` 预约或 `update apply` 立即更新",
                     info.current_version,
                     info.latest_version
                 );
@@ -379,6 +479,92 @@ async fn check_once(state: &Arc<PlusServerState>, enabled: bool) {
         }
         Ok(_) => debug!(target: "auto_update", "已是最新版本"),
         Err(e) => warn!(target: "auto_update", "检查更新失败（静默降级）: {e}"),
+    }
+}
+
+/// 后台执行器：每次检查周期处理预约更新。
+///
+/// `pending_update` 非空时：
+/// - 无在线玩家（id>0）且离线满 `min_idle_minutes` → 以 force 模式调用
+///   `apply`（预约到了就直接更新，跳过空闲再次判定），成功后清除预约。
+/// - 不满足 → 记录日志，等下个周期再判。
+/// - 执行前校验：最新版本已应用过（`LAST_APPLIED_TAG`）或已无更新
+///   （预约期间手动更新过）→ 直接清除预约，避免重复下载同一版本。
+async fn try_execute_pending(state: &Arc<PlusServerState>) {
+    // 克隆后锁随即释放（临时 guard 在语句结束处 drop）。
+    let target = state.pending_update.lock().await.clone();
+    let Some(target) = target else {
+        return;
+    };
+
+    // 空闲判定：无在线玩家（id>0）且离线满 min_idle_minutes。
+    let players_online = {
+        let users = state.users.read().await;
+        users.values().filter(|u| u.id > 0).count()
+    };
+    if players_online > 0 {
+        info!(
+            target: "auto_update",
+            "预约更新待执行：有玩家在线（{players_online} 人），等待空闲"
+        );
+        return;
+    }
+    let (idle_minutes, offline_elapsed) = {
+        let lc = state.live_config.read().await;
+        let idle_minutes = lc.auto_update.min_idle_minutes;
+        let elapsed = state.last_all_offline_at.lock().await.elapsed();
+        (idle_minutes, elapsed)
+    };
+    let idle = Duration::from_secs(idle_minutes * 60);
+    if offline_elapsed < idle {
+        let remain = (idle - offline_elapsed).as_secs();
+        info!(
+            target: "auto_update",
+            "预约更新待执行：无玩家满 {idle_minutes} 分钟后将更新（还需约 {remain} 秒）"
+        );
+        return;
+    }
+
+    // 执行前校验：重新查最新版本，避免重复下载已应用过的版本。
+    let repo = state.live_config.read().await.auto_update.github_repo.clone();
+    match check(&repo).await {
+        Ok(info) if info.update_available => {
+            // 最新版本已应用过（进程内）→ 清除预约，不重复下载。
+            let applied = {
+                let last = LAST_APPLIED_TAG.lock().unwrap_or_else(|e| e.into_inner());
+                last.as_deref() == Some(info.release_tag.as_str())
+            };
+            if applied {
+                info!(
+                    target: "auto_update",
+                    "最新版本 {} 已应用过，清除预约",
+                    info.latest_version
+                );
+                *state.pending_update.lock().await = None;
+                return;
+            }
+        }
+        Ok(_) => {
+            info!(target: "auto_update", "已是最新版本，清除预约");
+            *state.pending_update.lock().await = None;
+            return;
+        }
+        Err(e) => {
+            warn!(target: "auto_update", "预约更新前检查失败（保留预约待重试）: {e}");
+            return;
+        }
+    }
+
+    info!(
+        target: "auto_update",
+        "预约更新条件满足（目标 v{target}），开始更新"
+    );
+    match apply(state, true).await {
+        Ok(msg) => {
+            info!(target: "auto_update", "{msg}");
+            *state.pending_update.lock().await = None;
+        }
+        Err(e) => warn!(target: "auto_update", "预约更新执行失败（保留预约待重试）: {e}"),
     }
 }
 

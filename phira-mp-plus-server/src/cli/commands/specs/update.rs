@@ -1,4 +1,4 @@
-//! 自动更新命令：update check / apply / force / auto。
+//! 自动更新命令：update check / apply / force / schedule / cancel / auto。
 
 use crate::command_registry::CommandSpec;
 use std::sync::Arc;
@@ -8,8 +8,8 @@ pub fn specs() -> Vec<CommandSpec> {
         CommandSpec::new(
             "update",
             "core",
-            "自动更新：检查/更新/强制/开关。",
-            "update check|apply|force|auto [on|off]",
+            "自动更新：检查/立即更新/强制/预约/取消/开关。",
+            "update check|apply|force|schedule|cancel|auto [on|off]",
         )
         .advanced()
         .handler(Arc::new(|_state, _args| {
@@ -17,8 +17,10 @@ pub fn specs() -> Vec<CommandSpec> {
                 vec![
                     "  ◆ 自动更新命令:".to_string(),
                     "  │ update check          — 检查新版本".to_string(),
-                    "  │ update apply          — 手动更新（检查在线玩家与空闲）".to_string(),
+                    "  │ update apply          — 立即更新（检查在线玩家与空闲，不预约）".to_string(),
                     "  │ update force          — 强制立刻更新".to_string(),
+                    "  │ update schedule       — 预约更新（下线满 min_idle 后自动执行）".to_string(),
+                    "  │ update cancel         — 取消预约更新".to_string(),
                     "  │ update auto [on|off]  — 开关自动更新".to_string(),
                 ]
             })
@@ -47,7 +49,7 @@ pub fn specs() -> Vec<CommandSpec> {
                     }
                 })
             })),
-        CommandSpec::new("update apply", "core", "手动更新（检查在线玩家与空闲时长）。", "update apply")
+        CommandSpec::new("update apply", "core", "立即更新（检查在线玩家与空闲时长，不预约）。", "update apply")
             .advanced()
             .handler(Arc::new(|state, _args| {
                 let state = Arc::clone(state);
@@ -55,6 +57,59 @@ pub fn specs() -> Vec<CommandSpec> {
                     match crate::auto_update::apply(&state, false).await {
                         Ok(msg) => vec![format!("  ✓ {msg}")],
                         Err(e) => vec![format!("  ✗ 更新失败: {e}")],
+                    }
+                })
+            })),
+        CommandSpec::new("update schedule", "core", "预约更新：有新版时预约，下线满 min_idle 后自动执行。", "update schedule")
+            .advanced()
+            .handler(Arc::new(|state, _args| {
+                let state = Arc::clone(state);
+                Box::pin(async move {
+                    let repo = state.live_config.read().await.auto_update.github_repo.clone();
+                    match crate::auto_update::check(&repo).await {
+                        Ok(info) if info.update_available => {
+                            let min_idle = state
+                                .live_config
+                                .read()
+                                .await
+                                .auto_update
+                                .min_idle_minutes;
+                            let mut pending = state.pending_update.lock().await;
+                            // 幂等：已有相同或更新版本的预约时不覆盖，避免重复预约。
+                            let newer = pending
+                                .as_deref()
+                                .map(|cur| {
+                                    crate::auto_update::is_newer_tag(&info.latest_version, cur)
+                                })
+                                .unwrap_or(true);
+                            if newer {
+                                *pending = Some(info.latest_version.clone());
+                                vec![format!(
+                                    "  ✓ 已预约更新到 {}，下线满 {min_idle} 分钟后自动执行",
+                                    info.latest_version
+                                )]
+                            } else {
+                                vec![format!(
+                                    "  ✓ 已预约到 {}（当前预约），不重复预约",
+                                    pending.as_deref().unwrap_or("")
+                                )]
+                            }
+                        }
+                        Ok(info) => vec![format!("  ✓ 已是最新版本（v{}）", info.current_version)],
+                        Err(e) => vec![format!("  ✗ 检查更新失败: {e}")],
+                    }
+                })
+            })),
+        CommandSpec::new("update cancel", "core", "取消预约更新。", "update cancel")
+            .advanced()
+            .handler(Arc::new(|state, _args| {
+                let state = Arc::clone(state);
+                Box::pin(async move {
+                    let had = state.pending_update.lock().await.take().is_some();
+                    if had {
+                        vec!["  ✓ 已取消预约更新".to_string()]
+                    } else {
+                        vec!["  ◆ 当前无预约更新".to_string()]
                     }
                 })
             })),
