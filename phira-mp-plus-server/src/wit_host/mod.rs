@@ -311,6 +311,43 @@ mod wit_trait_impls {
             }
             query_api_result(self, method, &args)
         }
+        fn add_remote_player(
+            &mut self,
+            room_id: String,
+            player_id: u32,
+            player_name: String,
+        ) -> types::ApiResult {
+            query_api_result(
+                self,
+                "room.add_remote_player",
+                &[
+                    serde_json::json!(room_id),
+                    serde_json::json!(player_id as i32),
+                    serde_json::json!(player_name),
+                ],
+            )
+        }
+        fn remote_ready(&mut self, room_id: String, player_id: u32) -> types::ApiResult {
+            query_api_result(
+                self,
+                "room.remote_ready",
+                &[serde_json::json!(room_id), serde_json::json!(player_id as i32)],
+            )
+        }
+        fn remote_abort(&mut self, room_id: String, player_id: u32) -> types::ApiResult {
+            query_api_result(
+                self,
+                "room.remote_abort",
+                &[serde_json::json!(room_id), serde_json::json!(player_id as i32)],
+            )
+        }
+        fn remote_leave(&mut self, room_id: String, player_id: u32) -> types::ApiResult {
+            query_api_result(
+                self,
+                "room.remote_leave",
+                &[serde_json::json!(room_id), serde_json::json!(player_id as i32)],
+            )
+        }
     }
 
     // ── phira-user-mgmt ──

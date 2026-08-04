@@ -484,6 +484,54 @@ impl PlusServerState {
         }))
     }
 
+    /// 移除远程玩家：先经 room_actor 权威退出（on_user_leave 清 room 指向并
+    /// 移除房间弱引用、广播 LeaveRoom、必要时转移 host），再清理全局 users 注册表。
+    ///
+    /// 只接受 `remote` 标志的虚拟 User——本地 session 用户应走 `room.kick`，
+    /// 避免插件借此踢掉真实玩家。
+    pub async fn remove_remote_player(
+        self: &Arc<Self>,
+        room_id: &str,
+        player_id: i32,
+    ) -> Result<Value, String> {
+        if player_id <= 0 {
+            return Err(format!("invalid player_id: {player_id}"));
+        }
+        let rid: RoomId = room_id
+            .to_string()
+            .try_into()
+            .map_err(|_| "invalid room_id".to_string())?;
+        {
+            let rooms = self.rooms.read().await;
+            rooms
+                .get(&rid)
+                .ok_or_else(|| format!("room not found: {room_id}"))?;
+        }
+        let user = {
+            let users = self.users.read().await;
+            users.get(&player_id).map(Arc::clone)
+        }
+        .ok_or_else(|| format!("player {player_id} not found"))?;
+        if !user.remote.load(Ordering::SeqCst) {
+            return Err(format!("player {player_id} has a local session; use room.kick"));
+        }
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        self.room_commands
+            .remove_user(self, room_id, player_id, Some(deadline), None)
+            .await?;
+        // on_user_leave 已把 user 从房间弱引用移除并清 user.room；这里清理全局
+        // 注册表（与 disconnect.rs 一致：ptr 校验避免误删被替换的用户）。
+        let mut users = self.users.write().await;
+        if users.get(&player_id).is_some_and(|u| Arc::ptr_eq(u, &user)) {
+            users.remove(&player_id);
+        }
+        Ok(serde_json::json!({
+            "ok": true,
+            "room_id": room_id,
+            "user_id": player_id,
+        }))
+    }
+
     // ── Force move user ──────────────────────────────────────────────
 
     /// 管理员强制把用户迁移到指定房间，绕过房间人数、锁定、进行中等普通加入限制。

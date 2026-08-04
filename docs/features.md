@@ -129,7 +129,7 @@
 - **宿主 API（按能力门控）**：
   - `phira-host`：log、generate_uuid、api_call、send_chat、http_request（SSRF 防护）
   - `phira-query`：get_user/get_room/list_rooms/在线用户等
-  - `phira-room-mgmt`：建空房/踢人/转移房主/锁/隐藏/关房
+  - `phira-room-mgmt`：建空房/踢人/转移房主/锁/隐藏/关房/远程玩家（add/ready/abort/leave）
   - `phira-user-mgmt`：踢用户/封禁/解封
   - `phira-messaging`：send-to-user/room/all
   - `phira-persistence`：query-events/snapshots/touches/judges/playtime

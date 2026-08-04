@@ -242,7 +242,7 @@ fn on_api(method: String, args: Vec<JsonValue>) -> ApiResult {
 | `on-event` | `func(event: plugin-event) -> result<bool, string>` | 事件处理 |
 | `on-api` | `func(method: string, args: list<json-value>) -> api-result` | API 调用入口 |
 
-### 宿主导入（12 个接口，53 个函数）
+### 宿主导入（15 个接口，69 个函数）
 
 #### phira-host
 
@@ -261,11 +261,11 @@ fn on_api(method: String, args: Vec<JsonValue>) -> ApiResult {
 
 #### phira-room-mgmt
 
-`create-empty-room` / `kick-from-room` / `transfer-host` / `set-host` / `set-room-lock` / `set-room-hidden` / `close-room` / `set-room-phira-api-endpoint`
+`create-empty-room` / `kick-from-room` / `transfer-host` / `set-host` / `set-room-lock` / `set-room-hidden` / `close-room` / `set-room-phira-api-endpoint` / `add-remote-player` / `remote-ready` / `remote-abort` / `remote-leave`
 
 #### phira-user-mgmt / phira-messaging / phira-persistence / phira-admin / phira-config / phira-runtime
 
-全部 53 个函数的详细签名见 [WIT 定义文件](../wit/phira-plugin.wit)。
+全部 69 个函数的详细签名见 [WIT 定义文件](../wit/phira-plugin.wit)。
 
 ---
 
@@ -471,6 +471,10 @@ Room management operations.
 - `set-room-hidden`
 - `close-room`
 - `set-room-phira-api-endpoint`
+- `add-remote-player`
+- `remote-ready`
+- `remote-abort`
+- `remote-leave`
 
 ### `phira-user-mgmt`
 
