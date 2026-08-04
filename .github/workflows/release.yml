@@ -172,5 +172,6 @@ jobs:
             phira-mp-plus-server-linux-musl
             phira-mp-plus-server-linux-glibc
             phira-mp-plus-server-linux-arm64-glibc
+            phira-mp-plus-server-windows-x86_64
             phira-plugin-sdk.tar.gz
           prerelease: false
