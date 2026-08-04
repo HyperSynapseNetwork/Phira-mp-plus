@@ -111,18 +111,6 @@ jobs:
             env:
               CC_x86_64_unknown_linux_musl: musl-gcc
               CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER: musl-gcc
-          - os: ubuntu-latest
-            target: x86_64-unknown-linux-gnu
-            artifact: phira-mp-plus-server-linux-glibc
-            artifact-path: target/x86_64-unknown-linux-gnu/release/phira-mp-plus-server
-            env: {}
-          - os: ubuntu-latest
-            target: aarch64-unknown-linux-gnu
-            artifact: phira-mp-plus-server-linux-arm64-glibc
-            artifact-path: target/aarch64-unknown-linux-gnu/release/phira-mp-plus-server
-            setup: sudo apt-get update && sudo apt-get install -y gcc-aarch64-linux-gnu
-            env:
-              CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
           - os: windows-latest
             target: x86_64-pc-windows-msvc
             artifact: phira-mp-plus-server-windows-x86_64

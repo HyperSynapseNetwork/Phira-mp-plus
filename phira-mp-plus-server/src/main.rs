@@ -614,7 +614,7 @@ fn print_startup_guidance(stage: &str, err_text: &str) {
         eprintln!("  1. 安装 PostgreSQL：sudo apt install postgresql && sudo systemctl start postgresql");
         eprintln!("  2. 设置 postgres 密码：sudo -u postgres psql -c \"ALTER USER postgres PASSWORD '你的密码';\"");
         eprintln!("  3. 建库：sudo -u postgres createdb phira_mp_plus");
-        eprintln!("  4. 启动时指定连接：PM_DATABASE_URL=\"postgres://postgres:你的密码@localhost:5432/phira_mp_plus\" ./phira-mp-plus-server-linux-glibc");
+        eprintln!("  4. 启动时指定连接：PM_DATABASE_URL=\"postgres://postgres:你的密码@localhost:5432/phira_mp_plus\" ./phira-mp-plus-server-linux-musl");
     } else if msg.contains("wal") {
         eprintln!("  ─ 解决方案 ─");
         eprintln!("  检查 data/ 目录权限（PMP 需要读写 WAL）；确认 persistence_wal_path 可写、磁盘有空间");

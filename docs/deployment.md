@@ -30,7 +30,7 @@ sudo -u postgres createdb phira_mp_plus
 ### 启动（环境变量方式）
 
 ```bash
-PM_DATABASE_URL="postgres://postgres:your_password@localhost:5432/phira_mp_plus" ./phira-mp-plus-server-linux-glibc
+PM_DATABASE_URL="postgres://postgres:your_password@localhost:5432/phira_mp_plus" ./phira-mp-plus-server-linux-musl
 # （如需自定义其它配置，可用 --config 指定 server_config.yml）
 ```
 
@@ -216,9 +216,10 @@ auto_update:
 
 注意事项：
 
-- 资产选择按平台精确匹配：优先 `linux-musl`（纯静态、无 glibc 依赖，兼容旧版
-  Linux），x86_64 无 musl 时回退 `linux-glibc`，aarch64 无 musl 时回退
-  `linux-arm64-glibc`；全部未命中返回明确错误、不下载错误资产。下载内容校验非空。
+- 资产选择按平台精确匹配：Linux 产物统一为静态 musl（x86_64 用
+  `linux-musl`，aarch64 用 `linux-arm64-musl`，纯静态、无 glibc 依赖、兼容
+  任意 Linux 版本），Release 不再发布 glibc 构建；全部未命中返回明确错误、
+  不下载错误资产。下载内容校验非空。
 - 替换可执行文件后以相同参数 spawn 新进程接管，随后当前进程退出以释放监听
   端口（直接运行由新进程接管；systemd `Restart=on-failure` / Docker
   `restart: unless-stopped` 由服务管理器重启，二进制已替换）。新进程启动时若

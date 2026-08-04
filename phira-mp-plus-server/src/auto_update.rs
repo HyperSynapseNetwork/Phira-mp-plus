@@ -191,30 +191,15 @@ pub async fn check(repo: &str) -> Result<UpdateInfo> {
 
 /// 选择匹配当前平台的发布资产。
 ///
-/// 优先 `linux-musl`（纯静态、无 glibc 依赖，兼容任意 Linux 版本）；
-/// x86_64 无 musl 产物时回退 glibc，aarch64 无 musl 时回退
-/// `linux-arm64-glibc`。按优先级逐个 needle 精确匹配（`linux-musl` 在
-/// `linux-glibc` 之前），避免误选 glibc 构建在旧 glibc 服务器无法运行。
-/// 全部未命中返回 `None`，调用方给出明确错误、不下载错误资产。
+/// Linux 产物统一为静态 musl（x86_64/aarch64 各一件，纯静态、无 glibc
+/// 依赖，兼容任意 Linux 版本）；Release 不再发布 glibc 构建。按优先级逐个
+/// needle 精确匹配。全部未命中返回 `None`，调用方给出明确错误、不下载
+/// 错误资产。
 fn pick_asset(assets: &[ReleaseAsset]) -> Option<&ReleaseAsset> {
     #[cfg(all(target_arch = "x86_64", target_os = "linux"))]
-    let needles: &[&str] = &[
-        "linux-musl",
-        "x86_64-musl",
-        "amd64-musl",
-        "linux-glibc",
-        "x86_64-glibc",
-        "amd64-linux",
-    ];
+    let needles: &[&str] = &["linux-musl", "x86_64-musl", "amd64-musl"];
     #[cfg(all(target_arch = "aarch64", target_os = "linux"))]
-    let needles: &[&str] = &[
-        "linux-arm64-musl",
-        "aarch64-musl",
-        "arm64-musl",
-        "linux-arm64-glibc",
-        "aarch64-glibc",
-        "arm64-linux",
-    ];
+    let needles: &[&str] = &["linux-arm64-musl", "aarch64-musl", "arm64-musl"];
     #[cfg(not(any(
         all(target_arch = "x86_64", target_os = "linux"),
         all(target_arch = "aarch64", target_os = "linux")
