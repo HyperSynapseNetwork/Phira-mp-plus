@@ -351,14 +351,16 @@ pub async fn apply(state: &Arc<PlusServerState>, force: bool) -> Result<String> 
     // - systemd/Docker：非零退出码触发服务管理器重启（二进制已替换）。
     // 新进程启动时若端口尚未释放（旧进程刚退出），listener 绑定处有短暂重试。
     let args: Vec<String> = std::env::args().skip(1).collect();
-    // 重启进程以无控制台模式运行：stdin 已置空，交互控制台无法工作，
-    // 且会触发低兼容终端提示（读 EOF 默认取消导致新进程自杀）。
-    let mut spawn_args = vec!["--no-cli".to_string()];
-    spawn_args.extend(args);
+    // stdin 重开到 /dev/tty：让重启进程继续附着同一终端，管理控制台可用。
+    // 无控制终端（systemd/后台运行）时回退 /dev/null（控制台读 EOF 退出，服务照常）。
+    // PMP_RESTARTED 标记让新进程跳过交互提示（如低兼容终端确认）。
+    let stdin = std::fs::File::open("/dev/tty")
+        .unwrap_or_else(|_| std::fs::File::open("/dev/null").expect("open /dev/null"));
     let spawn_ok = match std::process::Command::new(&current_exe)
-        .args(&spawn_args)
-        // stdout/stderr 继承便于日志续传。
-        .stdin(std::process::Stdio::null())
+        .args(&args)
+        .env("PMP_RESTARTED", "1")
+        .stdin(stdin)
+        // stdout/stderr 默认继承，日志续传。
         .spawn()
     {
         Ok(_child) => true,

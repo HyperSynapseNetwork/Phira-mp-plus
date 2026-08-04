@@ -218,12 +218,12 @@ async fn main() -> Result<()> {
                     || term == "ansi"
                     || term == "cons25";
                 if is_low_compat && !has_tmux {
-                    // 仅交互终端提示；stdin 非 TTY（如自动更新 spawn 的新进程）跳过，
-                    // 避免读 EOF 默认取消导致新进程控制台自杀。
-                    // 首次选 y 写入 data/low-compat-ack，之后不再提示。
+                    // 交互终端才提示；自动更新重启进程（PMP_RESTARTED）跳过，
+                    // 避免打断重启。首次选 y 写入 data/low-compat-ack，之后不再提示。
                     use std::io::IsTerminal;
                     let ack_path = std::path::Path::new("data").join("low-compat-ack");
-                    if std::io::stdin().is_terminal() && !ack_path.exists() {
+                    let restarted = std::env::var_os("PMP_RESTARTED").is_some();
+                    if std::io::stdin().is_terminal() && !ack_path.exists() && !restarted {
                         eprintln!("\n  ⚠ 当前终端兼容性较低，管理控制台将以降级模式运行。");
                         eprintln!("  💡 建议安装 tmux 以获得完整的 TUI 体验：");
                         if std::fs::metadata("/etc/debian_version").is_ok() {
