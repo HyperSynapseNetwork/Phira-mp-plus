@@ -82,18 +82,14 @@ jobs:
             env:
               CC_x86_64_unknown_linux_musl: musl-gcc
               CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER: musl-gcc
-          - os: ubuntu-latest
+          - os: ubuntu-24.04-arm
             target: aarch64-unknown-linux-musl
             artifact-name: phira-mp-plus-server-linux-arm64-musl
             artifact-path: target/aarch64-unknown-linux-musl/release/phira-mp-plus-server
-            builder: zigbuild
-            setup: |
-              curl -sSfL https://ziglang.org/download/0.15.2/zig-x86_64-linux-0.15.2.tar.xz -o /tmp/zig.tar.xz
-              sudo tar xJf /tmp/zig.tar.xz -C /opt
-              sudo ln -sf /opt/zig-x86_64-linux-0.15.2/zig /usr/local/bin/zig
-              curl -sSfL https://github.com/rust-cross/cargo-zigbuild/releases/download/v0.23.0/cargo-zigbuild-x86_64-unknown-linux-gnu.tar.xz -o /tmp/cz.tar.xz
-              sudo tar xJf /tmp/cz.tar.xz -C /usr/local/bin
-            env: {}
+            setup: sudo apt-get update && sudo apt-get install -y musl-tools
+            env:
+              CC_aarch64_unknown_linux_musl: musl-gcc
+              CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER: musl-gcc
           - os: windows-latest
             target: x86_64-pc-windows-msvc
             artifact-name: phira-mp-plus-server-windows-x86_64
@@ -115,12 +111,7 @@ jobs:
         name: Install system dependencies
         run: ${{ matrix.setup }}
       - name: Build release binary
-        run: |
-          if [ "${{ matrix.builder }}" = "zigbuild" ]; then
-            cargo zigbuild --locked --release --target ${{ matrix.target }}
-          else
-            cargo build --locked --release --target ${{ matrix.target }}
-          fi
+        run: cargo build --locked --release --target ${{ matrix.target }}
       - run: cp ${{ matrix.artifact-path }} ${{ matrix.artifact-name }}
       - name: Smoke test (linux x86_64)
         if: matrix.target == 'x86_64-unknown-linux-musl'
