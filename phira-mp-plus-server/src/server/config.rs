@@ -174,6 +174,9 @@ pub struct LiveConfig {
     /// 是否允许玩家建房（CLI 可动态切换）。
     #[serde(default = "default_room_creation_enabled")]
     pub room_creation_enabled: bool,
+    /// 自动更新配置（`update auto on|off` 运行时切换 enabled）。
+    #[serde(default)]
+    pub auto_update: AutoUpdateConfig,
 }
 
 impl LiveConfig {
@@ -189,6 +192,7 @@ impl LiveConfig {
             connection_rate_window: config.connection_rate_window,
             runtime: config.runtime.clone(),
             room_creation_enabled: config.room_creation_enabled,
+            auto_update: config.auto_update.clone(),
         }
     }
 }
@@ -419,6 +423,9 @@ pub struct PlusConfig {
     /// 官方 Phira 客户端兼容参数（PMP42 P0-B/P0-C）。
     #[serde(default)]
     pub compatibility: CompatibilityConfig,
+    /// 自动更新配置。
+    #[serde(default)]
+    pub auto_update: AutoUpdateConfig,
 }
 
 impl Default for PlusConfig {
@@ -455,6 +462,7 @@ impl Default for PlusConfig {
             idle: IdleConfig::default(),
             openuds: OpenUdsConfig::default(),
             compatibility: CompatibilityConfig::default(),
+            auto_update: AutoUpdateConfig::default(),
             trusted_forwarded_http_port: 0,
             proxy_allow_cidr: None,
             ready_countdown_secs: default_ready_countdown_secs(),
@@ -908,6 +916,51 @@ fn default_openuds_heartbeat_interval_secs() -> u64 {
     60
 }
 
+// ── AutoUpdate Config ──────────────────────────────────────────
+
+/// 自动更新配置。默认关闭，需显式开启。
+///
+/// 开启后，服务器启动时与每隔 `check_interval_secs` 检查 GitHub Release；
+/// 有新版本且无在线玩家超过 `min_idle_minutes` 时才自动下载替换并重启。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AutoUpdateConfig {
+    /// 自动更新总开关。默认关。
+    #[serde(default)]
+    pub enabled: bool,
+    /// 检查新版本的间隔（秒）。
+    #[serde(default = "default_auto_update_check_interval_secs")]
+    pub check_interval_secs: u64,
+    /// 无在线玩家达到此分钟数才允许自动更新。
+    #[serde(default = "default_auto_update_min_idle_minutes")]
+    pub min_idle_minutes: u64,
+    /// 更新来源 GitHub 仓库（owner/repo）。
+    #[serde(default = "default_auto_update_github_repo")]
+    pub github_repo: String,
+}
+
+impl Default for AutoUpdateConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            check_interval_secs: default_auto_update_check_interval_secs(),
+            min_idle_minutes: default_auto_update_min_idle_minutes(),
+            github_repo: default_auto_update_github_repo(),
+        }
+    }
+}
+
+fn default_auto_update_check_interval_secs() -> u64 {
+    3600
+}
+
+fn default_auto_update_min_idle_minutes() -> u64 {
+    10
+}
+
+fn default_auto_update_github_repo() -> String {
+    "HyperSynapseNetwork/Phira-mp-plus".to_string()
+}
+
 fn default_phira_api() -> String {
     "https://phira.5wyxi.com".to_string()
 }
@@ -944,7 +997,7 @@ fn default_graceful_shutdown_timeout_secs() -> u64 {
 
 #[cfg(test)]
 mod tests {
-    use super::{PlusConfig, PlusConfigCli};
+    use super::{LiveConfig, PlusConfig, PlusConfigCli};
     use crate::plugin::WasmRuntimeConfig;
     use crate::RuntimeConfig;
 
@@ -1073,6 +1126,24 @@ mod tests {
 
         config.runtime.persistence_dead_letter_path = None;
         assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn auto_update_defaults_are_disabled_and_live_round_trips() {
+        let config = PlusConfig::default();
+        assert!(!config.auto_update.enabled);
+        assert_eq!(config.auto_update.check_interval_secs, 3600);
+        assert_eq!(config.auto_update.min_idle_minutes, 10);
+        assert_eq!(
+            config.auto_update.github_repo,
+            "HyperSynapseNetwork/Phira-mp-plus"
+        );
+        let live = LiveConfig::from_full(&config);
+        assert!(!live.auto_update.enabled);
+        // 部分 YAML 缺失 auto_update 时使用默认值。
+        let parsed: PlusConfig = serde_yaml::from_str("port: 23456\n").unwrap();
+        assert!(!parsed.auto_update.enabled);
+        assert_eq!(parsed.auto_update.github_repo, config.auto_update.github_repo);
     }
 
     #[test]

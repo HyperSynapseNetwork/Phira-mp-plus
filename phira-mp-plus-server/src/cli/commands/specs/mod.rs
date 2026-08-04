@@ -19,6 +19,7 @@ pub mod plugin;
 pub mod room;
 pub mod runtime;
 pub mod security;
+pub mod update;
 pub mod user;
 
 /// Wrap a no-argument `CliHandler` method as a `CommandHandler`.
@@ -72,5 +73,6 @@ pub fn all_specs() -> Vec<crate::command_registry::CommandSpec> {
     out.extend(security::specs());
     out.extend(ops::specs());
     out.extend(extensions::specs());
+    out.extend(update::specs());
     out
 }

@@ -241,6 +241,7 @@ impl PlusServer {
             game_monitors: SafeMap::default(),
             events,
             db_manager,
+            last_all_offline_at: tokio::sync::Mutex::new(std::time::Instant::now()),
         });
         // Wire PersistenceWorker into ExtensionManager for persistence
         state

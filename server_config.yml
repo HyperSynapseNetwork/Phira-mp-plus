@@ -169,6 +169,18 @@ round_data_retention_days: 7
 #   call_timeout_ms: 2000
 #   init_timeout_ms: 10000
 
+# ---- 自动更新 ----
+
+# 自动更新默认关闭，需显式开启。开启后启动时与每隔 check_interval_secs 检查
+# GitHub 最新 Release；检测到新版本且无在线玩家超过 min_idle_minutes 时，
+# 自动下载匹配平台的资产、替换自身可执行文件并尝试重启。
+# 也可通过 CLI `update auto on|off` 运行时开关。
+# auto_update:
+#   enabled: false
+#   check_interval_secs: 3600
+#   min_idle_minutes: 10
+#   github_repo: "HyperSynapseNetwork/Phira-mp-plus"
+
 # ---- 定制 / 管理 ----
 
 # 服务器名称（显示在欢迎语等位置）

@@ -8,6 +8,7 @@ use crate::plugin::PluginManager;
 use crate::plugin_http::SseHub;
 use phira_mp_common::RoomId;
 use std::collections::HashSet;
+use std::time::Instant;
 use uuid::Uuid;
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Weak};
@@ -108,6 +109,8 @@ pub struct PlusServerState {
     pub db_manager: crate::db::DbManager,
     /// Plugin TCP actor command sender (PMP25: production-wired).
     pub plugin_tcp_tx: Option<tokio::sync::mpsc::Sender<crate::plugin_tcp::PluginTcpCommand>>,
+    /// 最近一次所有真实玩家（id>0）全部下线的时间戳。自动更新据此判定空闲时长。
+    pub last_all_offline_at: Mutex<Instant>,
 }
 
 /// Phira-mp+ 服务器

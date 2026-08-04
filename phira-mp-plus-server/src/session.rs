@@ -288,6 +288,7 @@ async fn rollback_failed_auth(
                     users.remove(&user.id);
                 }
             }
+            server.note_user_offline().await;
         }
     }
     // PMP45 P0-A: WAL 事实已存在（durable）则补发断连 + 离线补偿，杜绝

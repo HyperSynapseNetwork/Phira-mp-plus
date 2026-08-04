@@ -164,6 +164,7 @@ wasm_runtime:
 | `admin_phira_ids` | `Vec<i32>` | `[]` | 游戏内管理员 Phira ID。管理员可在创建房间弹窗输入 `_命令` 执行 CLI 命令。 |
 | `wasm_runtime` | `object` | 见下表 | WASM 插件运行时资源限制。 |
 | `compatibility` | `object` | 见下表 | 官方 Phira 客户端兼容参数（PMP42）。 |
+| `auto_update` | `object` | 见下表 | 自动更新配置（默认关闭）。 |
 
 端口校验规则：`port`、`http_port` 和启用后的 `trusted_forwarded_http_port` 不能冲突；设置 `trusted_forwarded_http_port > 0` 时必须同时启用 `http_port`。`trusted_forwarded_http_port` 只解析可信代理写入的 `X-Forwarded-For`，不实现 PROXY v1/v2。`max_rooms` 与 `max_users_per_room` 若设置，必须大于 0；`max_sessions`、`max_pending_auth` 和关闭时限也必须为正。`max_rooms` 同时约束客户端建房与管理端/WIT 创建空房。
 
@@ -191,6 +192,41 @@ compatibility:
 - 最低响应延迟必须在锁外等待（不得在 Actor 锁内 sleep），在发送响应前用 `received_at + minimum_response_latency` 计算剩余等待时间。
 - 超过 `session_command_deadline_ms` 的命令到达 Actor 后不会提交状态，而是返回对应 `ServerCommand` 错误，并计入 `late_commit` 观测计数。
 - 限流、权限拒绝、无房间、mailbox 错误等内部失败会返回命令对应的官方错误响应，不再静默丢弃请求；`silent_response_paths` 观测计数在正常运行时必须为 0。
+
+### 自动更新（`auto_update`）
+
+自动更新默认关闭，需显式开启。开启后服务器启动时与每隔 `check_interval_secs`
+检查 GitHub 最新 Release；检测到新版本且无在线玩家超过 `min_idle_minutes` 时，
+自动下载匹配当前平台的资产、替换自身可执行文件并尝试重启。
+
+| 配置项 | 类型 | 默认值 | 说明 |
+|---|---:|---:|---|
+| `auto_update.enabled` | `bool` | `false` | 自动更新总开关。可通过 CLI `update auto on\|off` 运行时切换。 |
+| `auto_update.check_interval_secs` | `u64` | `3600` | 检查新版本间隔（秒）。 |
+| `auto_update.min_idle_minutes` | `u64` | `10` | 无在线玩家达到此分钟数才允许自动更新。 |
+| `auto_update.github_repo` | `String` | `HyperSynapseNetwork/Phira-mp-plus` | 更新来源 GitHub 仓库（owner/repo）。 |
+
+```yaml
+auto_update:
+  enabled: false          # 默认关，需显式开启
+  check_interval_secs: 3600
+  min_idle_minutes: 10
+  github_repo: "HyperSynapseNetwork/Phira-mp-plus"
+```
+
+注意事项：
+
+- 下载的资产文件名需匹配当前平台（x86_64 匹配 `linux-glibc`，aarch64 匹配
+  `linux-arm64-glibc`），否则回退到通用 `phira-mp-plus-server`；下载内容校验非空。
+- 替换可执行文件后以相同参数尝试 spawn 新进程。systemd / Docker 部署建议由
+  服务管理器重启服务以完成接管；直接 spawn 的进程在旧进程仍占用监听端口时
+  可能启动失败，属预期边界。
+- 更新流程在替换二进制后向 `data/update/updated-version` 写入目标版本号；
+  下次启动时若与当前版本一致，会输出一次"更新完成：已更新到 vX"提示并清除
+  标记（不一致则告警并清除，不重复提示）。
+- 检查失败（网络/API 错误）静默降级，只记 warn，不影响启动与运行。
+- 手动更新：`update check` 查看新版本；`update apply` 空闲时更新；
+  `update force` 跳过在线玩家检查强制更新。
 
 ### WASM 运行时限制
 

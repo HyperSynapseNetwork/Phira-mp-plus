@@ -110,6 +110,8 @@ pub(crate) async fn run_admin_kick_user(
     drop(users);
     drop(registration_guard);
 
+    state.note_user_offline().await;
+
     if let Some(session) = target_session {
         let mut args = fluent::FluentArgs::new();
         args.set("reason", reason);
@@ -161,4 +163,15 @@ pub(crate) async fn run_admin_kick_user(
     }
 
     Ok(serde_json::json!({"ok": true, "reason": reason}))
+}
+
+impl PlusServerState {
+    /// 每次玩家从 `users` 表移除后调用：若已无真实玩家（id>0），
+    /// 刷新 `last_all_offline_at`。自动更新据此判定空闲时长（min_idle_minutes）。
+    pub async fn note_user_offline(&self) {
+        let has_players = self.users.read().await.values().any(|u| u.id > 0);
+        if !has_players {
+            *self.last_all_offline_at.lock().await = std::time::Instant::now();
+        }
+    }
 }

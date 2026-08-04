@@ -416,6 +416,7 @@ impl User {
                                 users.remove(&self_.id);
                             }
                             drop(users);
+                            self_.server.note_user_offline().await;
                             drop(registration_guard);
                             // Use the fixed session id captured at disconnect
                             // entry — re-reading the weak ref could return a NEW
@@ -459,6 +460,7 @@ impl User {
                         users.remove(&self.id);
                     }
                     drop(users);
+                    self.server.note_user_offline().await;
                     drop(registration_guard);
 
                     if !was_monitor {
@@ -586,6 +588,7 @@ impl User {
                 users.remove(&self_.id);
             }
             drop(users);
+            self_.server.note_user_offline().await;
             drop(registration_guard);
 
             if let Some(event) = room_leave_event {

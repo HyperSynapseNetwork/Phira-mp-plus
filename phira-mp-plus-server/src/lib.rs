@@ -36,6 +36,7 @@
 )]
 
 // backup module not part of server runtime — see src/bin/pmp-admin.rs
+pub mod auto_update;
 pub mod ban;
 pub mod benchmark;
 pub mod cli;

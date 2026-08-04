@@ -190,6 +190,16 @@ async fn main() -> Result<()> {
         info!("CLI management console started");
     }
 
+    // 自动更新检查器：启动时检查一次，之后按配置间隔定期检查。
+    // 检查失败只记 warn（静默降级），不影响启动。
+    {
+        let state = Arc::clone(&server.state);
+        let cfg = state.config.auto_update.clone();
+        phira_mp_plus_server::supervisor_actor::spawn_named("auto-update-checker", async move {
+            phira_mp_plus_server::auto_update::run_checker(state, cfg).await;
+        });
+    }
+
     let console_handle = match (cmd_tx, out_rx, log_rx) {
         (Some(cmd_tx), Some(out_rx), Some(log_rx)) => {
             let mode = terminal.console_mode();
@@ -267,6 +277,12 @@ async fn main() -> Result<()> {
         http_port = server.state.config.http_port,
         "server started"
     );
+
+    // 自动更新完成标记：上一次更新替换二进制后写入目标版本，此处校验并输出
+    // "更新完成"一次性提示，随后清除标记。
+    if let Some(msg) = phira_mp_plus_server::auto_update::check_updated_version_notice() {
+        info!(target: "auto_update", "{msg}");
+    }
 
     // Graceful shutdown on SIGINT (Ctrl+C) / SIGTERM so the WAL flush runs to
     // completion instead of leaving a torn tail frame (which would otherwise
@@ -702,6 +718,18 @@ cli_enabled: true
 
 # 是否允许玩家建房（false 时只有管理员可通过 CLI 创建房间）
 # room_creation_enabled: true
+
+# ---- 自动更新 ----
+
+# 自动更新默认关闭，需显式开启。开启后启动时与每隔 check_interval_secs 检查
+# GitHub 最新 Release；检测到新版本且无在线玩家超过 min_idle_minutes 时，
+# 自动下载匹配平台的资产、替换自身可执行文件并尝试重启。
+# 也可通过 CLI `update auto on|off` 运行时开关。
+# auto_update:
+#   enabled: false
+#   check_interval_secs: 3600
+#   min_idle_minutes: 10
+#   github_repo: "HyperSynapseNetwork/Phira-mp-plus"
 
 # ---- 限速 ----
 

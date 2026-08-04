@@ -165,6 +165,7 @@ impl PlusServer {
                         users.remove(&session.user.id);
                     }
                     drop(users);
+                    state.note_user_offline().await;
                     state
                         .publish_user_disconnected(session.user.id, session.user.name.clone())
                         .await;

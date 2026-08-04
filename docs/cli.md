@@ -900,3 +900,49 @@ help groups
 
 ---
 
+## 自动更新
+
+自动更新默认关闭。启用后服务器启动时与每隔 `check_interval_secs` 检查
+GitHub Release；检测到新版本且无在线玩家超过 `min_idle_minutes` 时自动
+下载替换并尝试重启。检查失败静默降级（只记 warn），不影响运行。
+
+### `update check`
+
+检查 GitHub 最新 Release 并与当前版本对比。
+
+**输出:** 当前版本、最新版本、是否有更新、发布页链接
+
+**示例:**
+```
+update check
+```
+
+### `update apply`
+
+手动启动更新流程：检查在线玩家与空闲时长，满足条件则下载并替换可执行
+文件、尝试重启；有玩家在线或最近下线未满 `min_idle_minutes` 时给出原因。
+
+**输出:** 更新结果或拒绝原因
+
+### `update force`
+
+强制立即更新，跳过在线玩家与空闲时长检查。
+
+**输出:** 更新结果或失败原因
+
+### `update auto [on|off]`
+
+开关自动更新（修改运行时 `live_config.auto_update.enabled`，无需重启）。
+无参数时显示当前状态。
+
+| 参数 | 类型 | 说明 |
+|------|------|------|
+| `on`/`off` | 字面量 (可选) | 开启 / 关闭自动更新；省略则显示状态 |
+
+**示例:**
+```
+update auto
+update auto on
+update auto off
+```
+
