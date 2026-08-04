@@ -351,9 +351,13 @@ pub async fn apply(state: &Arc<PlusServerState>, force: bool) -> Result<String> 
     // - systemd/Docker：非零退出码触发服务管理器重启（二进制已替换）。
     // 新进程启动时若端口尚未释放（旧进程刚退出），listener 绑定处有短暂重试。
     let args: Vec<String> = std::env::args().skip(1).collect();
+    // 重启进程以无控制台模式运行：stdin 已置空，交互控制台无法工作，
+    // 且会触发低兼容终端提示（读 EOF 默认取消导致新进程自杀）。
+    let mut spawn_args = vec!["--no-cli".to_string()];
+    spawn_args.extend(args);
     let spawn_ok = match std::process::Command::new(&current_exe)
-        .args(&args)
-        // stdin 置空：避免新进程继承 CLI 终端输入；stdout/stderr 继承便于日志续传。
+        .args(&spawn_args)
+        // stdout/stderr 继承便于日志续传。
         .stdin(std::process::Stdio::null())
         .spawn()
     {

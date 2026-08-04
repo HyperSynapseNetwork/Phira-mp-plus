@@ -218,30 +218,39 @@ async fn main() -> Result<()> {
                     || term == "ansi"
                     || term == "cons25";
                 if is_low_compat && !has_tmux {
-                    eprintln!("\n  ⚠ 当前终端兼容性较低，管理控制台将以降级模式运行。");
-                    eprintln!("  💡 建议安装 tmux 以获得完整的 TUI 体验：");
-                    if std::fs::metadata("/etc/debian_version").is_ok() {
-                        eprintln!("     apt install tmux");
-                    } else if std::fs::metadata("/etc/redhat-release").is_ok() {
-                        eprintln!("     yum install tmux");
-                    } else if std::fs::metadata("/etc/arch-release").is_ok() {
-                        eprintln!("     pacman -S tmux");
-                    } else if std::path::Path::new("/usr/local/bin/brew").exists() {
-                        eprintln!("     brew install tmux");
-                    } else {
-                        eprintln!("     # 请使用系统包管理器安装 tmux");
-                    }
-                    eprint!("\n  输入 y 继续启动 [y/N]: ");
-                    use std::io::Write;
-                    let _ = std::io::stdout().flush();
-                    let mut input = String::new();
-                    let proceed = std::io::stdin()
-                        .read_line(&mut input)
-                        .map(|_| input.trim().to_lowercase() == "y")
-                        .unwrap_or(false);
-                    if !proceed {
-                        eprintln!("  已取消启动。");
-                        return;
+                    // 仅交互终端提示；stdin 非 TTY（如自动更新 spawn 的新进程）跳过，
+                    // 避免读 EOF 默认取消导致新进程控制台自杀。
+                    // 首次选 y 写入 data/low-compat-ack，之后不再提示。
+                    use std::io::IsTerminal;
+                    let ack_path = std::path::Path::new("data").join("low-compat-ack");
+                    if std::io::stdin().is_terminal() && !ack_path.exists() {
+                        eprintln!("\n  ⚠ 当前终端兼容性较低，管理控制台将以降级模式运行。");
+                        eprintln!("  💡 建议安装 tmux 以获得完整的 TUI 体验：");
+                        if std::fs::metadata("/etc/debian_version").is_ok() {
+                            eprintln!("     apt install tmux");
+                        } else if std::fs::metadata("/etc/redhat-release").is_ok() {
+                            eprintln!("     yum install tmux");
+                        } else if std::fs::metadata("/etc/arch-release").is_ok() {
+                            eprintln!("     pacman -S tmux");
+                        } else if std::path::Path::new("/usr/local/bin/brew").exists() {
+                            eprintln!("     brew install tmux");
+                        } else {
+                            eprintln!("     # 请使用系统包管理器安装 tmux");
+                        }
+                        eprint!("\n  输入 y 继续启动 [y/N]: ");
+                        use std::io::Write;
+                        let _ = std::io::stdout().flush();
+                        let mut input = String::new();
+                        let proceed = std::io::stdin()
+                            .read_line(&mut input)
+                            .map(|_| input.trim().to_lowercase() == "y")
+                            .unwrap_or(false);
+                        if !proceed {
+                            eprintln!("  已取消启动。");
+                            return;
+                        }
+                        let _ = std::fs::create_dir_all("data");
+                        let _ = std::fs::write(&ack_path, b"1");
                     }
                 }
                 match mode {
