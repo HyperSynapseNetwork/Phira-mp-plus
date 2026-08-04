@@ -40,6 +40,11 @@ pub struct User {
     pub monitor: AtomicBool,
     pub game_time: AtomicU32,
 
+    /// 远程玩家（PDFP Lite 联邦）：无本地 session 的虚拟 User。`try_send`
+    /// 对其按设计丢弃消息；断线/离线路径（`dangle`、UserDisconnect）由
+    /// 本地 session 触发，永远不会到达远程玩家。
+    pub remote: AtomicBool,
+
     pub dangle_mark: Mutex<Option<Arc<()>>>,
     pub admin_cli_pending: Mutex<Option<String>>,
     /// 用户确认加入进行中游戏的房间 ID（第一次请求时设置，第二次直接加入）。
@@ -66,6 +71,7 @@ impl User {
 
             monitor: AtomicBool::default(),
             game_time: AtomicU32::default(),
+            remote: AtomicBool::default(),
 
             dangle_mark: Mutex::default(),
             admin_cli_pending: Mutex::default(),
@@ -254,7 +260,8 @@ impl User {
             .and_then(Weak::upgrade)
         {
             session.try_send(cmd, room_seq).await;
-        } else {
+        } else if !self.remote.load(Ordering::Relaxed) {
+            // 远程玩家无本地 session，房间广播对其按设计丢弃——不当作悬垂告警。
             warn!("sending {:?} to dangling user {}", cmd, self.id);
         }
     }

@@ -129,6 +129,68 @@ impl CliHandler {
                     self.room_force_move(args[1], uid, monitor).await;
                 }
             }
+            "add-player" => {
+                if args.len() < 3 {
+                    self.out(format!(
+                        "  {} {} room add-player <房间ID> <玩家ID> [名字]",
+                        c::yellow("?"),
+                        c::bold("用法")
+                    ));
+                    self.out(format!(
+                        "  {} 添加一个无本地 session 的远程玩家（PDFP Lite 联邦）",
+                        c::dim("▸")
+                    ));
+                } else {
+                    let pid: i32 = match args[2].parse() {
+                        Ok(id) => id,
+                        Err(_) => {
+                            self.out(format!("  {} 无效的玩家ID", c::red("✗")));
+                            return;
+                        }
+                    };
+                    let name = args
+                        .get(3)
+                        .map(|s| s.to_string())
+                        .unwrap_or_else(|| format!("remote_{pid}"));
+                    self.room_add_player(args[1], pid, &name).await;
+                }
+            }
+            "remote-ready" => {
+                if args.len() < 3 {
+                    self.out(format!(
+                        "  {} {} room remote-ready <房间ID> <玩家ID>",
+                        c::yellow("?"),
+                        c::bold("用法")
+                    ));
+                } else {
+                    let pid: i32 = match args[2].parse() {
+                        Ok(id) => id,
+                        Err(_) => {
+                            self.out(format!("  {} 无效的玩家ID", c::red("✗")));
+                            return;
+                        }
+                    };
+                    self.room_remote_ready(args[1], pid).await;
+                }
+            }
+            "remote-abort" => {
+                if args.len() < 3 {
+                    self.out(format!(
+                        "  {} {} room remote-abort <房间ID> <玩家ID>",
+                        c::yellow("?"),
+                        c::bold("用法")
+                    ));
+                } else {
+                    let pid: i32 = match args[2].parse() {
+                        Ok(id) => id,
+                        Err(_) => {
+                            self.out(format!("  {} 无效的玩家ID", c::red("✗")));
+                            return;
+                        }
+                    };
+                    self.room_remote_abort(args[1], pid).await;
+                }
+            }
             "hide" => {
                 if args.len() < 2 {
                     self.out(format!(
@@ -433,7 +495,7 @@ impl CliHandler {
                     c::red("✗"),
                     c::yellow(sub)
                 ));
-                self.out(format!("  {} 可用: room list|create-empty|info|start|ready|cancel|lock|cycle|kick|host|force-move|hide|unhide|close|set|history|rounds|round|uuid|ban|unban|banlist", c::dim("▸")));
+                self.out(format!("  {} 可用: room list|create-empty|info|start|ready|cancel|lock|cycle|kick|host|force-move|add-player|remote-ready|remote-abort|hide|unhide|close|set|history|rounds|round|uuid|ban|unban|banlist", c::dim("▸")));
             }
         }
     }
@@ -771,6 +833,65 @@ impl CliHandler {
                 user_id,
                 c::bold(room_id),
                 if monitor { "（旁观）" } else { "" }
+            )),
+            Err(e) => self.out(format!("  {} {}", c::red("✗"), e)),
+        }
+    }
+
+    /// 添加远程玩家（无本地 session 的虚拟 User）到房间。
+    pub(crate) async fn room_add_player(&self, room_id: &str, player_id: i32, player_name: &str) {
+        match self
+            .state
+            .add_remote_player(room_id, player_id, player_name)
+            .await
+        {
+            Ok(value) => {
+                let name = value
+                    .get("user_name")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or(player_name);
+                self.out(format!(
+                    "  {} 远程玩家 {} ({}) 已加入房间 {}",
+                    c::green("✓"),
+                    name,
+                    player_id,
+                    c::bold(room_id)
+                ));
+            }
+            Err(e) => self.out(format!("  {} {}", c::red("✗"), e)),
+        }
+    }
+
+    /// 远程玩家强制准备（经 room_actor）。
+    pub(crate) async fn room_remote_ready(&self, room_id: &str, player_id: i32) {
+        let admin_deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        match self
+            .state
+            .room_commands
+            .set_ready(&self.state, room_id, player_id, admin_deadline, None)
+            .await
+        {
+            Ok(_) => self.out(format!(
+                "  {} 远程玩家 #{} 已准备",
+                c::green("✓"),
+                player_id
+            )),
+            Err(e) => self.out(format!("  {} {}", c::red("✗"), e)),
+        }
+    }
+
+    /// 远程玩家弃权（经 room_actor，进行中游戏标记 aborted）。
+    pub(crate) async fn room_remote_abort(&self, room_id: &str, player_id: i32) {
+        match self
+            .state
+            .room_commands
+            .abort_round(&self.state, room_id, player_id, None, None)
+            .await
+        {
+            Ok(_) => self.out(format!(
+                "  {} 远程玩家 #{} 已弃权",
+                c::green("✓"),
+                player_id
             )),
             Err(e) => self.out(format!("  {} {}", c::red("✗"), e)),
         }

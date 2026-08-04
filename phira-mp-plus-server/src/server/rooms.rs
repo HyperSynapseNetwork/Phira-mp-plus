@@ -1,6 +1,6 @@
 //! Room management methods on PlusServerState.
 
-use phira_mp_common::{RoomEvent, RoomId, ServerCommand};
+use phira_mp_common::{Message, RoomEvent, RoomId, ServerCommand};
 use serde_json::Value;
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Weak};
@@ -369,6 +369,119 @@ impl PlusServerState {
         if self.persistence_worker.enqueue(worker_event).await.is_err() {
             warn!("record_user_room_history: worker enqueue failed, data kept in memory only");
         }
+    }
+
+    // ── Remote players (PDFP Lite federation) ─────────────────────────
+
+    /// 注册一个"远程玩家"（无本地 session 的虚拟 User）并加入房间。
+    ///
+    /// PDFP Lite 联邦前置：远端服务器的玩家在本服务器以 `auth_token=None`
+    /// 的虚拟 User 表示，房间成员仍由 room_actor 权威管理（`add_user`）。
+    /// `remote` 标志使其可区分：`try_send` 对其静默丢弃消息，断线/离线路径
+    /// （`dangle`/UserDisconnect）由本地 session 触发、永远不会到达远程玩家。
+    pub async fn add_remote_player(
+        self: &Arc<Self>,
+        room_id: &str,
+        player_id: i32,
+        player_name: &str,
+    ) -> Result<Value, String> {
+        // 0 是系统身份，负 id 保留给 monitor 会话——远程玩家必须是正 id。
+        if player_id <= 0 {
+            return Err(format!("invalid player_id: {player_id}"));
+        }
+        let rid: RoomId = room_id
+            .to_string()
+            .try_into()
+            .map_err(|_| "invalid room_id".to_string())?;
+        let room = {
+            let rooms = self.rooms.read().await;
+            rooms
+                .get(&rid)
+                .map(Arc::clone)
+                .ok_or_else(|| format!("room not found: {room_id}"))?
+        };
+
+        // 注册门内创建/复用虚拟 User。同一 id 已存在且带本地 session 时拒绝——
+        // 一个 id 不能同时代表本地连接与远程玩家，否则成员解析/广播会互相覆盖。
+        let user = {
+            let _gate = self.user_registration_gate.lock().await;
+            let mut users = self.users.write().await;
+            match users.get(&player_id).map(Arc::clone) {
+                Some(existing) => {
+                    if !existing.remote.load(Ordering::SeqCst) {
+                        return Err(format!(
+                            "player {player_id} already exists with a local session"
+                        ));
+                    }
+                    existing
+                }
+                None => {
+                    let user = Arc::new(crate::session::User::new(
+                        player_id,
+                        player_name.to_string(),
+                        crate::l10n::Language::default(),
+                        Arc::clone(self),
+                        None,
+                    ));
+                    user.remote.store(true, Ordering::SeqCst);
+                    users.insert(player_id, Arc::clone(&user));
+                    user
+                }
+            }
+        };
+
+        // 已在房间成员中则拒绝（幂等防重入；远程玩家在连接注册表与 actor
+        // members 中都有条目，这里以连接注册表为准做去重检查）。user.room
+        // 单值不变量：远程玩家同时只能在一个房间，跨房间重复加入会悬挂旧
+        // 房间的成员条目。
+        if room.users().await.iter().any(|u| u.id == player_id) {
+            return Err(format!("player {player_id} already in room {room_id}"));
+        }
+        if user.room.read().await.is_some() {
+            return Err(format!(
+                "player {player_id} is already in another room; remove it first"
+            ));
+        }
+
+        // 房间满预检（与 join 路径一致），再经 room_actor 提交成员。
+        let max_users = room.control_snapshot().max_users;
+        if room.users().await.len() >= max_users {
+            return Err("room is full".to_string());
+        }
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        self.room_commands
+            .add_user(self, room_id, player_id, player_name, false, deadline, None)
+            .await?;
+
+        // 同步连接注册表（broadcast 用）与 user.room 指向。注册表拒绝时
+        // 回滚 actor 成员，避免 Ghost member（同 join 路径的补偿逻辑）。
+        if !room.add_user(Arc::downgrade(&user), false).await {
+            let _ = self
+                .room_commands
+                .remove_user(self, room_id, player_id, None, None)
+                .await;
+            return Err("room is full".to_string());
+        }
+        *user.room.write().await = Some(Arc::clone(&room));
+
+        // 与普通 join 路径一致：向房间内广播 OnJoinRoom + JoinRoom，使本地
+        // 客户端的玩家名单即时反映远程玩家。远程玩家自身无 session，broadcast
+        // 对其 try_send 静默丢弃。
+        room.broadcast(ServerCommand::OnJoinRoom(user.to_info()))
+            .await;
+        room.broadcast(ServerCommand::Message(Message::JoinRoom {
+            user: player_id,
+            name: user.name.clone(),
+        }))
+        .await;
+
+        Ok(serde_json::json!({
+            "ok": true,
+            "room_id": room_id,
+            "user_id": player_id,
+            "user_name": user.name.clone(),
+            "remote": true,
+        }))
     }
 
     // ── Force move user ──────────────────────────────────────────────
