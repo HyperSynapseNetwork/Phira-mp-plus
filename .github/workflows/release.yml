@@ -90,6 +90,9 @@ jobs:
             env:
               CC_aarch64_unknown_linux_musl: musl-gcc
               CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER: musl-gcc
+              # aarch64 上 GCC 默认用 outline atomics（LSE），链接引用 getauxval
+              # 而 musl 无此符号 → jemalloc configure 原子测试失败。禁用它。
+              CFLAGS: -mno-outline-atomics
           - os: windows-latest
             target: x86_64-pc-windows-msvc
             artifact-name: phira-mp-plus-server-windows-x86_64
