@@ -35,11 +35,25 @@ struct ZipEntry {
 }
 
 /// 用 lofty 探针解析音频时长（MP3/FLAC/WAV/OGG），返回秒。
+/// lofty 的 Probe API 只接受文件路径，音频先落临时文件再解析。
 fn probe_audio_duration(audio: &[u8]) -> Option<f64> {
-    let mut cursor = std::io::Cursor::new(audio);
-    lofty::read_from(&mut cursor)
+    use lofty::prelude::*;
+    use lofty::probe::Probe;
+
+    static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    // pid + 自增序号保证并发房间同时解析时不冲突
+    let path = std::env::temp_dir().join(format!(
+        "pmp-audio-{}-{}.bin",
+        std::process::id(),
+        SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    ));
+    std::fs::write(&path, audio).ok()?;
+    let result = Probe::open(&path)
         .ok()
-        .map(|t| t.properties().duration().as_secs_f64())
+        .and_then(|p| p.read().ok())
+        .map(|t| t.properties().duration().as_secs_f64());
+    let _ = std::fs::remove_file(&path);
+    result
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
