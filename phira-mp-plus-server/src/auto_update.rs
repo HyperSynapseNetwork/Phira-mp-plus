@@ -386,9 +386,17 @@ pub async fn apply(state: &Arc<PlusServerState>, force: bool) -> Result<String> 
             info.current_version,
             info.latest_version
         );
-        // 硬退出前 flush，避免缓冲的日志/输出丢失。
+        // 硬退出前向 stdout 直接打印完成确认并 flush：CLI（apply/force）与
+        // 预约执行器都会在返回值打印前退出，tracing 若只写文件则终端无提示，
+        // 必须显式输出（println! 在 exit 下不保证 flush，需手动 flush）。
         {
             use std::io::Write;
+            let _ = writeln!(
+                std::io::stdout(),
+                "  ✓ 更新完成（v{} → {}），正在重启接管",
+                info.current_version,
+                info.latest_version
+            );
             let _ = std::io::stdout().flush();
             let _ = std::io::stderr().flush();
         }
