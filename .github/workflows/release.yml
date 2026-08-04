@@ -122,6 +122,16 @@ jobs:
         run: |
           chmod +x ${{ matrix.artifact-name }}
           ./${{ matrix.artifact-name }} --version
+      - name: Verify linux-musl is statically linked
+        if: matrix.target == 'x86_64-unknown-linux-musl'
+        run: |
+          if file ${{ matrix.artifact-name }} | grep -qi static; then
+            echo "musl 构建确认为静态链接（旧 glibc 服务器可运行）"
+          else
+            echo "::error::musl 构建并非静态链接，在旧 glibc 服务器将无法运行"
+            file ${{ matrix.artifact-name }}
+            exit 1
+          fi
       - name: Generate provenance
         if: matrix.os == 'ubuntu-latest'
         uses: actions/attest-build-provenance@v1
