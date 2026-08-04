@@ -132,6 +132,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     permissions:
       contents: read
+      attestations: write
     env: ${{ matrix.env }}
     steps:
       - uses: actions/checkout@v4
