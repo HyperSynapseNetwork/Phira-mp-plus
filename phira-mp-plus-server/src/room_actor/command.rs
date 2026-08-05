@@ -364,6 +364,7 @@ impl RoomActorCommand {
             Self::HostStart { .. } => RoomCommandKind::HostStart,
             Self::SetChart { .. } => RoomCommandKind::SetChart,
             Self::SetChartDuration { .. } => RoomCommandKind::SetChartDuration,
+            Self::RegisterProgress { .. } => RoomCommandKind::RegisterProgress,
             Self::SetReady { .. } => RoomCommandKind::SetReady,
             Self::CancelReady { .. } => RoomCommandKind::CancelReady,
             Self::SubmitResult { .. } => RoomCommandKind::SubmitResult,
@@ -398,6 +399,7 @@ impl RoomActorCommand {
             | Self::HostStart { reply, .. }
             | Self::SetChart { reply, .. }
             | Self::SetChartDuration { reply, .. }
+            | Self::RegisterProgress { reply, .. }
             | Self::SetReady { reply, .. }
             | Self::CancelReady { reply, .. }
             | Self::SubmitResult { reply, .. }

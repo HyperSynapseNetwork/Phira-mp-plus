@@ -841,7 +841,7 @@ pub async fn join_room(
     // 响应后 spawn，不阻塞 join 主路径。
     if late_join {
         let server = Arc::clone(&user.server);
-        let room_id = id.clone();
+        let room_id = id.to_string();
         let uid = user.id;
         tokio::spawn(async move {
             let _ = server

@@ -85,7 +85,11 @@ pub(super) async fn send_progress_notice(
         user = lc.monitors().await.into_iter().find(|u| u.id == user_id);
     }
     if let Some(user) = user {
-        user.send_system_msg("room-progress-notice", &args).await;
+        // 同步构建文案再发送，避免 FluentArgs（含非 Send 的 dyn FluentType）
+        // 跨 await 被持有导致 future 不满足 Send。
+        let content = crate::l10n::translate_system(&user.lang, "room-progress-notice", &args);
+        user.try_send(ServerCommand::Message(Message::Chat { user: 0, content }), None)
+            .await;
     }
 }
 
