@@ -74,7 +74,7 @@ system-broadcast-prefix = [系統廣播]
 
 # ── 歡迎語 ──
 
-welcome-message = 歡迎 [user_name] 來到 HSN Phira-mp+！當前在線 [player-count] 人。以-開頭的房间會被隱藏。可以前往 https://phira.htadiy.com/ 使用更多相關功能哦。也歡迎加入我們的QQ交流群1049578201！\n您在本伺服器上游玩了[playtime]\n--------------------------------------------------\n遊玩時間排行榜：[top_playtime]\n--------------------------------------------------\n活躍房間：[active_rooms]
+welcome-message = 歡迎 [user_name] 來到 HSN Phira-mp+！當前在線 [player-count] 人。以-開頭的房间會被隱藏，可以進入遊戲中的房間哦。可以前往 https://phira.htadiy.com/ 使用更多相關功能哦。也歡迎加入我們的QQ交流群1049578201！\n您在本伺服器上游玩了[playtime]\n--------------------------------------------------\n遊玩時間排行榜：[top_playtime]\n--------------------------------------------------\n活躍房間：[active_rooms]
 welcome-no-rooms = 暫無房間
 welcome-locked = 鎖定
 welcome-cycling = 循環

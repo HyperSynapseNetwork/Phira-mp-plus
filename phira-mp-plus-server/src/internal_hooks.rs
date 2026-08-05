@@ -139,7 +139,7 @@ impl Default for WelcomeConfig {
 /// 内置默认欢迎语模板（最终回退，中文）。三语默认模板位于 locales/*.ftl 的
 /// `welcome-message` 键。
 const FALLBACK_WELCOME_MESSAGES: &[&str] = &[
-    "欢迎 [user_name] 来到 HSN Phira-mp+！当前在线 [player-count] 人。以-开头的房间会被隐藏。可以前往 https://phira.htadiy.com/ 使用更多相关功能哦。也欢迎加入我们的QQ交流群1049578201！",
+    "欢迎 [user_name] 来到 HSN Phira-mp+！当前在线 [player-count] 人。以-开头的房间会被隐藏，可以进入游戏中的房间哦。可以前往 https://phira.htadiy.com/ 使用更多相关功能哦。也欢迎加入我们的QQ交流群1049578201！",
     "您在本服务器上游玩了[playtime]",
     "--------------------------------------------------",
     "游玩时间排行榜：[top_playtime]",

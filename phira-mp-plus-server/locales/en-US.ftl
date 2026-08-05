@@ -74,7 +74,7 @@ system-broadcast-prefix = [Broadcast]
 
 # ── Welcome message ──
 
-welcome-message = Welcome [user_name] to HSN Phira-mp+! Currently [player-count] online. Rooms starting with - are hidden. Check out https://phira.htadiy.com/ for more features. Join our QQ group 1049578201!\nYou have played for [playtime] on this server\n--------------------------------------------------\nPlaytime leaderboard: [top_playtime]\n--------------------------------------------------\nActive rooms: [active_rooms]
+welcome-message = Welcome [user_name] to HSN Phira-mp+! Currently [player-count] online. Rooms starting with - are hidden, you can join in-progress rooms! Check out https://phira.htadiy.com/ for more features. Join our QQ group 1049578201!\nYou have played for [playtime] on this server\n--------------------------------------------------\nPlaytime leaderboard: [top_playtime]\n--------------------------------------------------\nActive rooms: [active_rooms]
 welcome-no-rooms = No active rooms
 welcome-locked = locked
 welcome-cycling = cycling
