@@ -1307,7 +1307,7 @@ impl RoomCommandHandler {
                 ok(RoomCommandPayload::ChartDurationSet)
             }
 
-            RoomActorCommand::RegisterProgress { room_id, user_id, .. } => {
+            RoomActorCommand::RegisterProgress { room_id: _, user_id, .. } => {
                 let as_ = ctx.expect_actor_state();
                 // 复核：仅游玩中的房间注册进度通知；已结算（非 Playing）则忽略。
                 if matches!(as_.state.lifecycle, InternalRoomState::Playing { .. }) {
