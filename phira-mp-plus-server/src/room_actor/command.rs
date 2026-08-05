@@ -35,6 +35,8 @@ pub(super) enum RoomCommandKind {
     SetChart,
     /// PMP48: 写入/清空当前谱面时长（对局超时计算用）。
     SetChartDuration,
+    /// 加入游玩中房间后注册进度通知订阅（每 30 秒推送一次，轮次结束清除）。
+    RegisterProgress,
     SetReady,
     CancelReady,
     SubmitResult,
@@ -72,6 +74,7 @@ impl RoomCommandKind {
             Self::EnterReadyPhase => "enter_ready_phase",
             Self::SetChart => "set_chart",
             Self::SetChartDuration => "set_chart_duration",
+            Self::RegisterProgress => "register_progress",
             Self::SetReady => "set_ready",
             Self::CancelReady => "cancel_ready",
             Self::SubmitResult => "submit_result",
@@ -184,6 +187,13 @@ pub(crate) enum RoomActorCommand {
     SetChartDuration {
         room_id: String,
         duration: Option<f64>,
+        reply: oneshot::Sender<RoomCommandResult>,
+    },
+    /// 加入游玩中房间后注册进度通知订阅：actor 复核 Playing 后注册并立即
+    /// 发送第一次进度通知，之后由 mailbox 周期维护每 30 秒推送一次。
+    RegisterProgress {
+        room_id: String,
+        user_id: i32,
         reply: oneshot::Sender<RoomCommandResult>,
     },
     SetReady {

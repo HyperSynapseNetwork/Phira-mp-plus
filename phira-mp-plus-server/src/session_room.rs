@@ -836,6 +836,21 @@ pub async fn join_room(
         }
     }
 
+    // 加入游玩中房间 → 注册进度通知订阅（actor 复核 Playing 后立即推送
+    // 第一次，之后每 30 秒由 mailbox 周期推送；轮次结束/离开房间自动停止）。
+    // 响应后 spawn，不阻塞 join 主路径。
+    if late_join {
+        let server = Arc::clone(&user.server);
+        let room_id = id.clone();
+        let uid = user.id;
+        tokio::spawn(async move {
+            let _ = server
+                .room_commands
+                .register_progress(&server, &room_id, uid)
+                .await;
+        });
+    }
+
     // P0-H: room event / plugin / runtime telemetry / history / metadata / live /
     // display-name are extension work — never block the JoinRoom(Ok) flush or
     // the actor task. All of it runs in a response-after task.

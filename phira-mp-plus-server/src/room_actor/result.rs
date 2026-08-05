@@ -85,6 +85,8 @@ pub enum RoomCommandPayload {
         chart_id: i32,
     },
     ChartDurationSet,
+    /// 进度通知订阅注册成功（加入游玩中房间）。
+    ProgressRegistered,
     UserReady {
         room_id: String,
         user_id: i32,
@@ -276,6 +278,7 @@ impl RoomCommandPayload {
                 "ok": true, "room_id": room_id, "chart_id": chart_id,
             }),
             Self::ChartDurationSet => json!({ "ok": true }),
+            Self::ProgressRegistered => json!({ "ok": true }),
             Self::UserReady { room_id, user_id } => json!({
                 "ok": true, "room_id": room_id, "user_id": user_id,
             }),

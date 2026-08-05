@@ -40,4 +40,31 @@ impl RoomCommandGateway {
         )
         .into_untyped()
     }
+
+    /// 注册进度通知订阅：加入游玩中房间时调用。actor 复核 Playing 后注册
+    /// 并立即发送第一次进度通知，之后每 30 秒由 mailbox 周期推送一次。
+    pub async fn register_progress(
+        &self,
+        state: &crate::server::PlusServerState,
+        room_id: &str,
+        user_id: i32,
+    ) -> Result<Value, String> {
+        let started = Instant::now();
+        let rid = room_id.to_string();
+        let result = self
+            .room_mailbox(&rid, None, |reply| RoomActorCommand::RegisterProgress {
+                room_id: rid.clone(),
+                user_id,
+                reply,
+            })
+            .await;
+        self.finish_command(
+            state,
+            RoomCommandKind::RegisterProgress.action(),
+            room_id,
+            started,
+            result,
+        )
+        .into_untyped()
+    }
 }

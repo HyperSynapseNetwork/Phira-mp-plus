@@ -54,6 +54,41 @@ fn now_ms() -> i64 {
         .unwrap_or(0)
 }
 
+/// 向订阅者发送一次游戏进度通知（进度条 + 百分比 + 剩余分钟）。
+/// 仅在 Playing 且已记录游玩开始时间时发送；用户不在房间则跳过。
+pub(super) async fn send_progress_notice(
+    lc: &dyn RoomLifecycle,
+    as_: &crate::room_actor::actor::RoomActorState,
+    user_id: i32,
+) {
+    if !matches!(as_.state.lifecycle, InternalRoomState::Playing { .. }) {
+        return;
+    }
+    let Some(started) = as_.state.playing_started_at else { return };
+    let now = now_ms();
+    let dur = as_.state.chart_duration.unwrap_or(120.0);
+    let elapsed = ((now - started) as f64 / 1000.0).max(0.0);
+    let ratio = (elapsed / dur).clamp(0.0, 1.0);
+    let percent = (ratio * 100.0).round() as i64;
+    let filled = (ratio * 20.0).round() as usize; // 进度条宽度 20
+    let bar = format!("{}{}", ">".repeat(filled), " ".repeat(20 - filled));
+    let remaining = ((dur - elapsed) / 60.0).max(0.0);
+
+    let mut args = fluent::FluentArgs::new();
+    args.set("bar", bar);
+    args.set("percent", percent);
+    args.set("remaining", format!("{remaining:.1}"));
+
+    // 用户在房间（玩家或观战者）才发送；否则可能已离开。
+    let mut user = lc.users().await.into_iter().find(|u| u.id == user_id);
+    if user.is_none() {
+        user = lc.monitors().await.into_iter().find(|u| u.id == user_id);
+    }
+    if let Some(user) = user {
+        user.send_system_msg("room-progress-notice", &args).await;
+    }
+}
+
 /// Helper: build an error result.
 fn err(msg: &str) -> RoomCommandResult {
     RoomCommandResult::Err {
@@ -461,6 +496,7 @@ async fn check_all_ready(
                     results: HashMap::new(),
                     aborted: HashSet::new(),
                 };
+                as_.state.playing_started_at = Some(now_ms());
                 set_playing_deadline(as_, lc.server_state());
                 broadcast_state_change(lc, &as_.state.lifecycle, as_.state.chart).await;
                 return ReadyCheckOutcome::Started;
@@ -560,6 +596,8 @@ async fn check_all_ready(
                 as_.state.ready_countdown_started_at = None;
                 as_.state.playing_timeout_deadline = None;
                 as_.state.chart_duration = None;
+                as_.state.playing_started_at = None;
+                as_.state.progress_subscribers.clear();
                 as_.state.lifecycle = InternalRoomState::SelectChart;
                 if as_.state.control.cycle && !as_.state.control.system_host {
                     debug!(room = lc.room().id.to_string(), "cycling");
@@ -729,6 +767,7 @@ pub(super) async fn force_start_playing(
         aborted.insert(id);
     }
     state.lifecycle = InternalRoomState::Playing { results, aborted };
+    state.playing_started_at = Some(now_ms());
     // Set playing timeout
     let server_state = lc.server_state();
     {
@@ -808,6 +847,8 @@ pub(super) async fn force_end_playing(
         state.ready_countdown_started_at = None;
         state.playing_timeout_deadline = None;
         state.chart_duration = None;
+        state.playing_started_at = None;
+        state.progress_subscribers.clear();
         lc.send_msg(Message::GameEnd).await;
         state.lifecycle = InternalRoomState::SelectChart;
         broadcast_state_change(lc, &state.lifecycle, state.chart).await;
@@ -1262,6 +1303,16 @@ impl RoomCommandHandler {
                 ok(RoomCommandPayload::ChartDurationSet)
             }
 
+            RoomActorCommand::RegisterProgress { room_id, user_id, .. } => {
+                let as_ = ctx.expect_actor_state();
+                // 复核：仅游玩中的房间注册进度通知；已结算（非 Playing）则忽略。
+                if matches!(as_.state.lifecycle, InternalRoomState::Playing { .. }) {
+                    as_.state.progress_subscribers.insert(*user_id, 0); // 0 → 立即发第一次
+                    send_progress_notice(lc, as_, *user_id).await;
+                }
+                ok(RoomCommandPayload::ProgressRegistered)
+            }
+
             RoomActorCommand::SetReady { room_id, user_id, deadline, origin, .. } => {
                 let as_ = ctx.expect_actor_state();
                 // P0-G: never write Ready after the absolute actor deadline.
@@ -1648,6 +1699,8 @@ impl RoomCommandHandler {
                         as_.display_names.remove(user_id);
                         as_.state.members.users.retain(|id| *id != *user_id);
                         as_.state.members.monitors.retain(|id| *id != *user_id);
+                        // 用户离开房间 → 停止进度通知。
+                        as_.state.progress_subscribers.remove(user_id);
                         // Host transfer on host leave.  This is the single choke
                         // point for ALL removal paths (explicit LeaveRoom, host
                         // disconnect, dangle-grace) — every one funnels through

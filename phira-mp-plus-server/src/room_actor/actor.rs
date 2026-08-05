@@ -151,6 +151,13 @@ pub struct RoomState {
     /// 当前谱面时长（秒）。选谱时异步解析写入，结算时清空（PMP48：谱面
     /// 时时可能更新，不长期缓存——每次选谱解析，每轮结算后释放）。
     pub chart_duration: Option<f64>,
+    /// 本轮游玩开始时间（毫秒时间戳）。进入 Playing 时设置，结算/超时清除。
+    /// 进度通知按谱面时长 + 该时间计算进度百分比与剩余分钟（deadline 会被
+    /// 首个玩家完成时延长，不能反推开始时间）。
+    pub playing_started_at: Option<i64>,
+    /// 进度通知订阅者：user_id → 上次通知时间（毫秒）。加入游玩中房间时
+    /// 注册，轮次结束或用户离开时移除；mailbox 周期维护每 30 秒推送一次。
+    pub progress_subscribers: HashMap<i32, i64>,
     /// PMP46 Blocker 2: Room Actor 权威状态事件序号。每次权威状态变更递增；
     /// `BindAndSnapshot` 返回快照时刻的该序号作为 `snapshot_seq`。发往 Session
     /// Gate 的状态事件携带它，认证激活时 `room_seq <= snapshot_seq` 才可剔除。
@@ -303,6 +310,8 @@ impl RoomActor {
                 ready_countdown_started_at: None,
                 playing_timeout_deadline: None,
                 chart_duration: None,
+                playing_started_at: None,
+                progress_subscribers: HashMap::new(),
                 room_event_seq: 0,
             },
             room.created_at,

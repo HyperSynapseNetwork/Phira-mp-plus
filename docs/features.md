@@ -45,10 +45,11 @@
 - **建房**：`max_rooms` 上限、`room_creation_enabled` 动态开关、ID 占用校验；房间 UUID；建房后异步扩展工作（事件、历史、插件）
 - **加入**：会话类别区分（Normal/Console/Monitor，防绕过）；锁定/黑名单/满员/游戏状态校验
 - **Playing 状态下加入**：首次提示「进行中加入确认」，确认后 `late_join` 加入进行中对局（异步 abort 旧对局）
+- **游玩进度通知**：加入游玩中房间后立即推送一次 `游玩进程:[进度条]XX%    还剩X.X分钟`（进度条 20 格 + 百分比 + 剩余分钟，按谱面时长 + 游玩开始时间计算），之后每 30 秒推送一次，直到轮次结束或用户离开房间
 - **加入后**：广播 OnJoinRoom + JoinRoom → JoinRoom(Ok)（完整快照+live）→ 回放聊天历史 → ChangeHost 补偿
 - **离开**：房主离开随机转移；广播 LeaveRoom
 - **锁定/循环**：仅房主，全员广播
-- **选谱**：仅房主；从 Phira API 拉谱面元数据（谱面名/谱师/曲师/难度/评分/更新日期，失败回退 `#id`）；HTTP Range 下载 `info.txt` 解析谱面时长——**谱面时时可能更新，不长期缓存**：每次选谱解析、写入房间级 `chart_duration`，结算后释放，下轮重新解析；该时长用于**对局超时**计算（见下），未解析到时回退 120s；**选谱后广播谱面信息**（`谱师:... 曲师:... 难度:AT Lv.15 评分:0.918 谱面更新:...`）
+- **选谱**：仅房主；从 Phira API 拉谱面元数据（谱面名/谱师/曲师/难度/评分/更新日期，失败回退 `#id`）；HTTP Range 下载 zip 内音频文件，lofty 探针解析谱面时长（MP3/FLAC/WAV/OGG）——**谱面时时可能更新，不长期缓存**：每次选谱解析、写入房间级 `chart_duration`，结算后释放，下轮重新解析；该时长用于**对局超时**计算（见下），未解析到时回退 120s；**选谱后广播谱面信息**（`谱师:... 曲师:... 难度:AT Lv.15 评分:0.918 谱面更新:...`）
 - **开赛**：`RequestStart`（房主）、管理员强开、`CancelStart`；全员 Ready / 强开 → Playing
 - **准备倒计时**（默认 60s）：超时自动开赛，未 Ready 标记 aborted
 - **对局超时**（默认 `playing_timeout_offset_secs`=60）：基础 deadline = **谱面时长 + offset**（时长来自选谱缓存，未命中回退 120s）；开赛后首个完成者将 deadline **顺延一个 offset**（给其余玩家追赶）；无论是否有人完成，到达 deadline 即 `force_end_playing`：**所有未完成且未 abort 的玩家标记 aborted → 结算**——即无人完成时到点全体 aborted 结算；该 deadline 由正常开赛（`set_playing_deadline`）与倒计时强开（`force_start_playing`）两条路径各自计算一次（双冗余）

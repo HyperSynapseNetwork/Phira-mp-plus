@@ -453,6 +453,34 @@ async fn run_lifecycle_maintenance(
             }
         }
     }
+    // 进度通知：Playing 状态下每 30 秒给订阅者推送一次；非 Playing（轮次
+    // 已结束）时清空订阅者。订阅者由加入游玩中房间时 RegisterProgress 注册。
+    if let InternalRoomState::Playing { .. } = &as_.state.lifecycle {
+        if !as_.state.progress_subscribers.is_empty() {
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis() as i64)
+                .unwrap_or(0);
+            let room = Arc::clone(&actor.room);
+            let lc = crate::room_actor::lifecycle::DefaultRoomLifecycle::new(
+                room,
+                Arc::clone(&actor.state),
+            );
+            let due: Vec<i32> = as_.state
+                .progress_subscribers
+                .iter()
+                .filter(|(_, &last)| now - last >= 30_000)
+                .map(|(&uid, _)| uid)
+                .collect();
+            for uid in due {
+                crate::room_actor::handler::send_progress_notice(&lc, as_, uid).await;
+                as_.state.progress_subscribers.insert(uid, now);
+            }
+        }
+    } else {
+        as_.state.progress_subscribers.clear();
+    }
+
     // Ready 倒计时强开（force_start_playing）和 Playing 超时强结
     // （force_end_playing）都直接改 actor_state，绕过 execute_command——
     // 若不在此刷新 snapshot 缓存，外部读（current_room_in_select_chart /
