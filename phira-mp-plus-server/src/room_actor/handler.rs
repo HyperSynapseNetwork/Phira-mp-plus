@@ -1307,8 +1307,9 @@ impl RoomCommandHandler {
                 ok(RoomCommandPayload::ChartDurationSet)
             }
 
-            RoomActorCommand::RegisterProgress { room_id: _, user_id, .. } => {
+            RoomActorCommand::RegisterProgress { room_id, user_id, .. } => {
                 let as_ = ctx.expect_actor_state();
+                debug!(room = %room_id, user = %user_id, "register progress subscriber");
                 // 复核：仅游玩中的房间注册进度通知；已结算（非 Playing）则忽略。
                 if matches!(as_.state.lifecycle, InternalRoomState::Playing { .. }) {
                     as_.state.progress_subscribers.insert(*user_id, 0); // 0 → 立即发第一次
