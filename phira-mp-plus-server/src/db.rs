@@ -101,15 +101,14 @@ impl DbManager {
         if secs <= 0 {
             return;
         }
-        if let DbManager::Pg(pool) = self {
-            let _ = sqlx::query(
-                "UPDATE playtime SET total_secs = playtime.total_secs + $1 WHERE user_id = $2",
-            )
-            .bind(secs)
-            .bind(user_id)
-            .execute(pool)
-            .await;
-        }
+        let DbManager::Pg(pool) = self;
+        let _ = sqlx::query(
+            "UPDATE playtime SET total_secs = playtime.total_secs + $1 WHERE user_id = $2",
+        )
+        .bind(secs)
+        .bind(user_id)
+        .execute(pool)
+        .await;
     }
 
     pub async fn cleanup_expired(&self, retention_days: u32, touch_judge_retention_days: u32) {
