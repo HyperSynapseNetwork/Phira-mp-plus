@@ -1034,6 +1034,7 @@ PMP 通过 Unix Domain Socket 暴露全部管理能力给外部工具（PPB、We
 | `room.force_move` | `{room_id, user_id, monitor?}` | 强制移入 |
 | `room.info` | `{room_id}` | 房间详情 |
 | `room.list` | `{filters?}` | 房间列表 |
+| `room.history` | `{room_id}` | 房间游玩历史（rounds + 完整记录，上限 `play_history_cache_size`） |
 
 #### 玩家管理
 

@@ -42,6 +42,7 @@ pub async fn dispatch_command(
         "room.force_move" => cmd_room_force_move(state, params).await,
         "room.info" => cmd_room_info(state, params).await,
         "room.list" => cmd_room_list(state, params).await,
+        "room.history" => cmd_room_history(state, params).await,
 
         // ── Player commands ────────────────────────────────────────
         "player.ban" => cmd_player_ban(state, params).await,
@@ -326,6 +327,33 @@ async fn cmd_room_info(
         "monitors": monitors_data,
         "player_count": users_data.len(),
         "monitor_count": monitors_data.len(),
+    }))
+}
+
+async fn cmd_room_history(
+    state: &Arc<PlusServerState>,
+    params: &Value,
+) -> Result<Value, String> {
+    let room_id = params
+        .get("room_id")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "room_id required".to_string())?;
+    let rid: RoomId = room_id
+        .to_string()
+        .try_into()
+        .map_err(|_| "invalid room_id".to_string())?;
+
+    let room = {
+        let rooms = state.rooms.read().await;
+        rooms
+            .get(&rid)
+            .map(Arc::clone)
+            .ok_or_else(|| "room not found".to_string())?
+    };
+
+    Ok(serde_json::json!({
+        "room_id": rid.to_string(),
+        "rounds": crate::server::snapshot::room_history_json(&room),
     }))
 }
 

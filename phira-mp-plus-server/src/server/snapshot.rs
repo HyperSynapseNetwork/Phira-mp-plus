@@ -227,27 +227,7 @@ pub(super) fn build_snapshot(
         .recent_sync()
         .iter()
         .map(|r| {
-            let results: Vec<Value> = r
-                .results
-                .iter()
-                .map(|res| {
-                    serde_json::json!({
-                        "player": res.user_id,
-                        "user_id": res.user_id,
-                        "user_name": res.user_name.clone(),
-                        "score": res.score,
-                        "accuracy": res.accuracy,
-                        "perfect": res.perfect,
-                        "good": res.good,
-                        "bad": res.bad,
-                        "miss": res.miss,
-                        "max_combo": res.max_combo,
-                        "full_combo": res.full_combo,
-                        "aborted": res.aborted,
-                        "std_score": res.std_score,
-                    })
-                })
-                .collect();
+            let results: Vec<Value> = r.results.iter().map(result_json).collect();
             RoundInfo {
                 round_id: r.round_id.to_string(),
                 chart: r.chart_id,
@@ -309,4 +289,46 @@ pub(super) fn build_snapshot(
             round_history: rounds,
         },
     }
+}
+
+/// 单个轮次结果的记录 JSON。字段与快照 `rounds[].records[]` 对齐
+/// （含 `std`），是 OpenUDS / 插件查询历史记录的单一序列化来源。
+pub(crate) fn result_json(res: &crate::room::PlayResult) -> Value {
+    serde_json::json!({
+        "player": res.user_id,
+        "user_id": res.user_id,
+        "user_name": res.user_name.clone(),
+        "score": res.score,
+        "accuracy": res.accuracy,
+        "perfect": res.perfect,
+        "good": res.good,
+        "bad": res.bad,
+        "miss": res.miss,
+        "max_combo": res.max_combo,
+        "full_combo": res.full_combo,
+        "aborted": res.aborted,
+        "std": res.std,
+        "std_score": res.std_score,
+    })
+}
+
+/// 序列化房间游玩历史（rounds + 完整记录）为 JSON。
+/// 供 OpenUDS `room.history` 与插件 `api_call("room.history")` 查询使用；
+/// 上限受 `play_history_cache_size` 配置约束。
+pub(crate) fn room_history_json(room: &crate::room::Room) -> Vec<Value> {
+    room.play_history
+        .recent_sync()
+        .iter()
+        .map(|r| {
+            let results: Vec<Value> = r.results.iter().map(result_json).collect();
+            serde_json::json!({
+                "round_id": r.round_id.to_string(),
+                "chart": r.chart_id,
+                "chart_id": r.chart_id,
+                "chart_name": r.chart_name.clone(),
+                "records": results.clone(),
+                "results": results,
+            })
+        })
+        .collect()
 }
