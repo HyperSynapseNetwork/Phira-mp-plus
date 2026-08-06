@@ -170,7 +170,7 @@
 
 - **profile**：Development/Staging/Production（Production 更严校验）
 - **网络**：port(12346)、http_port(12347)、trusted_forwarded_http_port、proxy_allow_cidr、连接限流
-- **容量**：max_rooms、max_users_per_room(100)、max_sessions(4096)、max_pending_auth(256)
+- **容量**：max_rooms、max_users_per_room(100)、max_sessions(4096)、max_pending_auth(256)、play_history_cache_size(100，每房内存保留最近游玩轮次上限)
 - **游玩**：ready_countdown_secs(60)、playing_timeout_offset_secs(60)、room_creation_enabled、chat_enabled
 - **Phira 上游**：phira_api_endpoint、HTTP 重试/退避/熔断
 - **WASM**：wasm_runtime（见插件节）

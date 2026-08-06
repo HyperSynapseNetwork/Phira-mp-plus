@@ -279,6 +279,7 @@ pub async fn create_room(
         max_users,
         Some(Arc::clone(&user.server.round_store)),
         Some(user.id),
+        user.server.config.play_history_cache_size,
     ));
     map_guard.insert(id.clone(), Arc::clone(&room));
     let room_uuid = room.uuid;

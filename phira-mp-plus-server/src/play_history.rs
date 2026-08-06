@@ -8,32 +8,33 @@ use tokio::sync::RwLock;
 
 use crate::room::PlayRound;
 
-/// Rounds kept in memory for instant display.
-const MEMORY_CACHE_SIZE: usize = 10;
-
 #[derive(Debug)]
 pub struct PlayHistoryStore {
     /// Recent rounds kept in memory.
     recent: RwLock<VecDeque<PlayRound>>,
+    /// 内存保留的最近轮次上限（房间信息 `rounds` 展示用；配置项
+    /// `play_history_cache_size`，默认 100）。
+    cap: usize,
 }
 
 impl Default for PlayHistoryStore {
     fn default() -> Self {
-        Self::new()
+        Self::new(100)
     }
 }
 
 impl PlayHistoryStore {
-    pub fn new() -> Self {
+    pub fn new(cap: usize) -> Self {
         Self {
-            recent: RwLock::new(VecDeque::with_capacity(MEMORY_CACHE_SIZE + 1)),
+            recent: RwLock::new(VecDeque::with_capacity(cap + 1)),
+            cap: cap.max(1),
         }
     }
 
     /// Push a new round. Drops oldest if memory cache is full.
     pub async fn push(&self, round: PlayRound) {
         let mut recent = self.recent.write().await;
-        if recent.len() >= MEMORY_CACHE_SIZE {
+        if recent.len() >= self.cap {
             recent.pop_front();
         }
         recent.push_back(round);
@@ -45,7 +46,7 @@ impl PlayHistoryStore {
     }
 
     /// Sync read of in-memory rounds only (for non-async query contexts).
-    /// Returns at most `MEMORY_CACHE_SIZE` most recent rounds.
+    /// Returns at most `cap` most recent rounds.
     pub fn recent_sync(&self) -> Vec<PlayRound> {
         self.recent
             .try_read()

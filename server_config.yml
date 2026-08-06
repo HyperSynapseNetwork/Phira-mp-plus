@@ -142,6 +142,9 @@ cli_enabled: true
 # 每房间最大玩家数（不设则使用默认 100）
 # max_users_per_room: 100
 
+# 每房间内存保留的最近游玩轮次上限（房间信息 rounds 展示用，默认 100）
+# play_history_cache_size: 100
+
 # ---- 限速 / 数据保留 ----
 
 # 连接速率限制（每个窗口内允许的连接次数）

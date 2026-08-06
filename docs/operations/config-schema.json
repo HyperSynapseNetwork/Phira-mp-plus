@@ -14,6 +14,7 @@
     "max_pending_auth": { "type": "integer", "minimum": 1, "default": 256 },
     "max_rooms": { "oneOf": [{ "type": "null" }, { "type": "integer", "minimum": 1 }], "default": null },
     "max_users_per_room": { "oneOf": [{ "type": "null" }, { "type": "integer", "minimum": 1 }], "default": null },
+    "play_history_cache_size": { "type": "integer", "minimum": 1, "default": 100 },
     "graceful_shutdown_timeout_secs": { "type": "integer", "minimum": 1, "maximum": 300, "default": 15 },
     "connection_rate_limit": { "type": "integer", "minimum": 1, "default": 30 },
     "connection_rate_window": { "type": "integer", "minimum": 1, "default": 10 },

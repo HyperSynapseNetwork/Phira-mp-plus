@@ -235,6 +235,7 @@ impl Room {
         _max_users: usize,
         round_store: Option<Arc<crate::round_store::RoundStore>>,
         creator_id: Option<i32>,
+        play_history_cap: usize,
     ) -> Self {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -248,7 +249,7 @@ impl Room {
             server,
             users: vec![host].into(),
             monitors: Vec::new().into(),
-            play_history: crate::play_history::PlayHistoryStore::new(),
+            play_history: crate::play_history::PlayHistoryStore::new(play_history_cap),
             round_store,
             created_at: now,
             last_room_seq: AtomicU64::new(0),
@@ -262,6 +263,7 @@ impl Room {
         server: Weak<crate::server::PlusServerState>,
         max_users: usize,
         round_store: Option<Arc<crate::round_store::RoundStore>>,
+        play_history_cap: usize,
     ) -> Self {
         let mut room = Self::new(
             id,
@@ -271,6 +273,7 @@ impl Room {
             max_users,
             round_store,
             None,
+            play_history_cap,
         );
         room.users = Vec::new().into();
         room

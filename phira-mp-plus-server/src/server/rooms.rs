@@ -70,6 +70,7 @@ impl PlusServerState {
             Arc::downgrade(self),
             max_users,
             Some(Arc::clone(&self.round_store)),
+            self.config.play_history_cache_size,
         ));
         // PMP25 P4: 先插入 registry，再通过 RoomActorInit 一次性初始化属性。
         // 初始化失败时回滚删除 room。
