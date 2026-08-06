@@ -144,7 +144,7 @@
 
 ## 八、持久化（`persistence/`）
 
-- **PostgreSQL 21 张表**：playtime、room_history、mp_users、mp_room_snapshots、mp_events、mp_user_room_history、mp_rounds、mp_round_touch/judge_batches、mp_round_player_data、mp_round_results、mp_runtime_telemetry_*、mp_runtime_persistence_meta、mp_runtime_retention_policies、mp_runtime_benchmark_reports、mp_settings、user_ip_history、mp_user_visits、mp_server_instances、_pmp_schema_version
+- **PostgreSQL 18 张表**：playtime、mp_users、mp_room_snapshots、mp_events、mp_user_room_history、mp_rounds、mp_round_player_data（合并触控/判定，UUID 主键 + 嵌套批）、mp_round_results、mp_runtime_telemetry_*、mp_runtime_persistence_meta、mp_runtime_retention_policies、mp_runtime_benchmark_reports、mp_settings、user_ip_history、mp_user_visits、mp_server_instances、_pmp_schema_version
 - **WAL**：`persistence-worker.wal.jsonl`（SHA-256 校验，fsync 后入队）；marker 检测意外删除；启动重放未 ack；自动压缩（pending<25% 且 >256KiB）
 - **死信**：`persistence-dead-letter.jsonl`（DB 重试耗尽后写入）；启动重放 + 畸形隔离
 - **持久化 worker**：有界队列（2048）+ WAL 先写；queue 满 100ms 返回 WalOnly（不丢）；5s 恢复扫描器
@@ -290,10 +290,9 @@
 | `mp_user_visits` | 用户访问记录 |
 | `mp_user_room_history` | 用户房间历史 |
 | `user_ip_history` | 用户 IP 历史（明文） |
-| `room_history` | 房间历史 |
 | `mp_rounds` | 轮次记录 |
 | `mp_round_results` | 轮次玩家结果 |
-| `mp_round_player_data` / `mp_round_touch_batches` / `mp_round_judge_batches` | 轮次玩家数据 / 触控 / 判定批 |
+| `mp_round_player_data` | 轮次玩家数据：聚合 touches/judges + 嵌套原始批（touch_batches/judge_batches），data_uuid 主键 |
 | `mp_room_snapshots` | 持久房间快照 |
 | `mp_events` | 领域事件 |
 | `mp_server_instances` | 服务器实例跟踪 |
