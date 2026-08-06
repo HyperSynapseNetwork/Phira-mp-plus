@@ -71,7 +71,9 @@ pub(super) async fn send_progress_notice(
     let ratio = (elapsed / dur).clamp(0.0, 1.0);
     let percent = (ratio * 100.0).round() as i64;
     let filled = (ratio * 20.0).round() as usize; // 进度条宽度 20
-    let bar = format!("{}{}", ">".repeat(filled), " ".repeat(20 - filled));
+    // 用等宽块字符 █（填充）/░（空）——空格与 > 宽度不一致会导致空的部分
+    // 视觉上更短，进度看似不成比例。
+    let bar = format!("{}{}", "█".repeat(filled), "░".repeat(20 - filled));
     let remaining = ((dur - elapsed) / 60.0).max(0.0);
 
     let mut args = fluent::FluentArgs::new();
