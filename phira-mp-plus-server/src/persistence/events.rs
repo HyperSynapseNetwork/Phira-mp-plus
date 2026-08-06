@@ -31,21 +31,6 @@ impl DbManager {
         let Ok(mut transaction) = pool.begin().await else {
                 return false;
             };
-            let compatibility_insert = sqlx::query(
-                "INSERT INTO room_history (user_id, room_id, room_uuid, joined_at)
-                 VALUES ($1, $2, $3, $4)
-                 ON CONFLICT (user_id, room_uuid, joined_at) DO NOTHING",
-            )
-            .bind(user_id)
-            .bind(room_id)
-            .bind(room_uuid)
-            .bind(joined_at)
-            .execute(&mut *transaction)
-            .await;
-            let compatibility_insert = match compatibility_insert {
-                Ok(result) => result,
-                Err(_) => return false,
-            };
             let runtime_insert = sqlx::query(
                 "INSERT INTO mp_user_room_history
                    (user_id, room_id, room_uuid, joined_at, created_at)
@@ -62,7 +47,7 @@ impl DbManager {
                 Ok(result) => result,
                 Err(_) => return false,
             };
-            if compatibility_insert.rows_affected() == 0 && runtime_insert.rows_affected() == 0 {
+            if runtime_insert.rows_affected() == 0 {
                 return transaction.commit().await.is_ok();
             }
             let payload = serde_json::json!({

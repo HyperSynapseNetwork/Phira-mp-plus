@@ -135,9 +135,14 @@ impl DbManager {
         let Self::Pg(pool) = self;
         let limit = limit.clamp(1, 500);
         let mut q = String::from(
-            "SELECT sequence, round_uuid, player_id, payload::text AS payload, count, created_at,
-                        first_game_time, last_game_time
-                 FROM mp_round_touch_batches WHERE sequence > $1"
+            "SELECT (b->>'seq')::bigint AS sequence, round_uuid, player_id,
+                    (b->>'count')::int AS count,
+                    (b->>'first_game_time')::float8 AS first_game_time,
+                    (b->>'last_game_time')::float8 AS last_game_time,
+                    (b->'payload')::text AS payload,
+                    created_at
+             FROM mp_round_player_data, jsonb_array_elements(touch_batches) AS b
+             WHERE (b->>'seq')::bigint > $1"
         );
         let mut bind_count = 1u8;
         if round_uuid.is_some() {
@@ -148,7 +153,7 @@ impl DbManager {
             bind_count += 1;
             q.push_str(&format!(" AND player_id = ${bind_count}"));
         }
-        q.push_str(" ORDER BY sequence ASC LIMIT $");
+        q.push_str(" ORDER BY (b->>'seq')::bigint ASC LIMIT $");
         bind_count += 1;
         q.push_str(&bind_count.to_string());
         let mut query = sqlx::query(&q).bind(since_sequence);
@@ -186,9 +191,14 @@ impl DbManager {
         let Self::Pg(pool) = self;
         let limit = limit.clamp(1, 500);
         let mut q = String::from(
-            "SELECT sequence, round_uuid, player_id, payload::text AS payload, count, created_at,
-                        first_game_time, last_game_time
-                 FROM mp_round_judge_batches WHERE sequence > $1"
+            "SELECT (b->>'seq')::bigint AS sequence, round_uuid, player_id,
+                    (b->>'count')::int AS count,
+                    (b->>'first_game_time')::float8 AS first_game_time,
+                    (b->>'last_game_time')::float8 AS last_game_time,
+                    (b->'payload')::text AS payload,
+                    created_at
+             FROM mp_round_player_data, jsonb_array_elements(judge_batches) AS b
+             WHERE (b->>'seq')::bigint > $1"
         );
         let mut bind_count = 1u8;
         if round_uuid.is_some() {
@@ -199,7 +209,7 @@ impl DbManager {
             bind_count += 1;
             q.push_str(&format!(" AND player_id = ${bind_count}"));
         }
-        q.push_str(" ORDER BY sequence ASC LIMIT $");
+        q.push_str(" ORDER BY (b->>'seq')::bigint ASC LIMIT $");
         bind_count += 1;
         q.push_str(&bind_count.to_string());
         let mut query = sqlx::query(&q).bind(since_sequence);

@@ -171,9 +171,9 @@ async fn try_copy_write_inner(
         let Some(round_uuid) = record.round_uuid.as_deref() else {
             continue;
         };
-        let (field, batch_table) = match record.kind.as_str() {
-            "touch" => ("touches", "mp_round_touch_batches"),
-            "judge" => ("judges", "mp_round_judge_batches"),
+        let (field, batch_field) = match record.kind.as_str() {
+            "touch" => ("touches", "touch_batches"),
+            "judge" => ("judges", "judge_batches"),
             _ => continue,
         };
 
@@ -195,40 +195,40 @@ async fn try_copy_write_inner(
             }
         }
 
-        let canonical_sql = format!(
+        // 每条批分配一个单调 sequence（供增量轮询），并嵌套进统一表。
+        let seq: i64 = sqlx::query_scalar("SELECT nextval('mp_persist_sequence')")
+            .fetch_one(&mut *transaction)
+            .await
+            .map_err(|e| format!("nextval seq: {e}"))?;
+        let batch_element = serde_json::json!({
+            "seq": seq,
+            "count": items.len(),
+            "first_game_time": first_game_time,
+            "last_game_time": last_game_time,
+            "payload": items,
+        });
+        let batch_json =
+            serde_json::to_string(&batch_element).unwrap_or_else(|_| "[]".to_string());
+
+        // 统一 upsert：聚合 touches/judges 与原始批数组一起追加。
+        let unified_sql = format!(
             "INSERT INTO mp_round_player_data \
-               (round_uuid, player_id, {field}, created_at, updated_at, sequence) \
-             VALUES ($1, $2, $3::jsonb, $4, $4, nextval('mp_persist_sequence')) \
+               (data_uuid, round_uuid, player_id, {field}, {batch_field}, created_at, updated_at, sequence) \
+             VALUES (gen_random_uuid()::text, $1, $2, $3::jsonb, $4::jsonb, $5, $5, nextval('mp_persist_sequence')) \
              ON CONFLICT (round_uuid, player_id) DO UPDATE SET \
                {field} = mp_round_player_data.{field} || $3::jsonb, \
-               updated_at = $4, sequence = nextval('mp_persist_sequence')"
+               {batch_field} = mp_round_player_data.{batch_field} || $4::jsonb, \
+               updated_at = $5, sequence = nextval('mp_persist_sequence')"
         );
-        sqlx::query(&canonical_sql)
+        sqlx::query(&unified_sql)
             .bind(round_uuid)
             .bind(record.player_id)
             .bind(&payload_json)
+            .bind(&batch_json)
             .bind(now)
             .execute(&mut *transaction)
             .await
-            .map_err(|e| format!("canonical update {round_uuid}: {e}"))?;
-
-        let batch_sql = format!(
-            "INSERT INTO {batch_table} \
-               (round_uuid, player_id, count, first_game_time, last_game_time, \
-                payload, created_at, sequence) \
-             VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, nextval('mp_persist_sequence'))"
-        );
-        sqlx::query(&batch_sql)
-            .bind(round_uuid)
-            .bind(record.player_id)
-            .bind(i32::try_from(items.len()).unwrap_or(i32::MAX))
-            .bind(first_game_time)
-            .bind(last_game_time)
-            .bind(&payload_json)
-            .bind(now)
-            .execute(&mut *transaction)
-            .await
-            .map_err(|e| format!("batch insert {round_uuid}: {e}"))?;
+            .map_err(|e| format!("unified update {round_uuid}: {e}"))?;
     }
 
     // ── Commit ──────────────────────────────────────────────────────────

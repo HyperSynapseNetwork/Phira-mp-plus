@@ -1,7 +1,7 @@
 //! Round persistence — round lifecycle, touches, judges, results.
 //!
-//! Extracted from db.rs. Writes to mp_rounds, mp_round_touch_batches,
-//! mp_round_judge_batches, mp_round_player_data, mp_round_results.
+//! Extracted from db.rs. Writes to mp_rounds, mp_round_player_data
+//!（触控/判定合并后的统一表：聚合 + 嵌套原始批）、mp_round_results。
 
 use crate::db::DbManager;
 use sqlx::Row;
@@ -16,18 +16,6 @@ pub struct UnfinishedRound {
     pub started_at: i64,
 }
 
-fn telemetry_time_range<I>(times: I) -> (Option<f64>, Option<f64>)
-where
-    I: IntoIterator<Item = f64>,
-{
-    let mut first = None;
-    let mut last = None;
-    for time in times {
-        first = Some(first.map_or(time, |v: f64| v.min(time)));
-        last = Some(last.map_or(time, |v: f64| v.max(time)));
-    }
-    (first, last)
-}
 
 fn now_ms() -> i64 {
     std::time::SystemTime::now()
@@ -142,117 +130,6 @@ impl DbManager {
         transaction.commit().await.is_ok()
     }
 
-    pub async fn append_touches(
-        &self,
-        round_uuid: &str,
-        player_id: i32,
-        data: &[crate::plugin::TouchEventPoint],
-    ) -> bool {
-        if data.is_empty() {
-            return true;
-        }
-        let Self::Pg(pool) = self;
-        let payload_json = serde_json::to_string(data).unwrap_or_else(|_| "[]".to_string());
-        let (first_game_time, last_game_time) =
-            telemetry_time_range(data.iter().map(|point| point.time as f64));
-        let now = now_ms();
-        let Ok(mut transaction) = pool.begin().await else {
-            return false;
-        };
-        if sqlx::query(
-            "INSERT INTO mp_round_player_data
-                   (round_uuid, player_id, touches, created_at, updated_at, sequence)
-                 VALUES ($1, $2, $3::jsonb, $4, $4, nextval('mp_persist_sequence'))
-                 ON CONFLICT (round_uuid, player_id) DO UPDATE SET
-                   touches = mp_round_player_data.touches || $3::jsonb,
-                   updated_at = $4, sequence = nextval('mp_persist_sequence')",
-        )
-        .bind(round_uuid)
-        .bind(player_id)
-        .bind(&payload_json)
-        .bind(now)
-        .execute(&mut *transaction)
-        .await
-        .is_err()
-        {
-            return false;
-        }
-        if sqlx::query(
-            "INSERT INTO mp_round_touch_batches
-                   (round_uuid, player_id, count, first_game_time, last_game_time, payload, created_at, sequence)
-                 VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, nextval('mp_persist_sequence'))"
-        )
-        .bind(round_uuid)
-        .bind(player_id)
-        .bind(i32::try_from(data.len()).unwrap_or(i32::MAX))
-        .bind(first_game_time)
-        .bind(last_game_time)
-        .bind(&payload_json)
-        .bind(now)
-        .execute(&mut *transaction)
-        .await
-        .is_err()
-        {
-            return false;
-        }
-        transaction.commit().await.is_ok()
-    }
-
-    pub async fn append_judges(
-        &self,
-        round_uuid: &str,
-        player_id: i32,
-        data: &[crate::plugin::JudgeEventItem],
-    ) -> bool {
-        if data.is_empty() {
-            return true;
-        }
-        let Self::Pg(pool) = self;
-        let payload_json = serde_json::to_string(data).unwrap_or_else(|_| "[]".to_string());
-        let (first_game_time, last_game_time) =
-            telemetry_time_range(data.iter().map(|item| item.time as f64));
-        let now = now_ms();
-        let Ok(mut transaction) = pool.begin().await else {
-            return false;
-        };
-        if sqlx::query(
-            "INSERT INTO mp_round_player_data
-                   (round_uuid, player_id, judges, created_at, updated_at, sequence)
-                 VALUES ($1, $2, $3::jsonb, $4, $4, nextval('mp_persist_sequence'))
-                 ON CONFLICT (round_uuid, player_id) DO UPDATE SET
-                   judges = mp_round_player_data.judges || $3::jsonb,
-                   updated_at = $4, sequence = nextval('mp_persist_sequence')",
-        )
-        .bind(round_uuid)
-        .bind(player_id)
-        .bind(&payload_json)
-        .bind(now)
-        .execute(&mut *transaction)
-        .await
-        .is_err()
-        {
-            return false;
-        }
-        if sqlx::query(
-            "INSERT INTO mp_round_judge_batches
-                   (round_uuid, player_id, count, first_game_time, last_game_time, payload, created_at, sequence)
-                 VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, nextval('mp_persist_sequence'))"
-        )
-        .bind(round_uuid)
-        .bind(player_id)
-        .bind(i32::try_from(data.len()).unwrap_or(i32::MAX))
-        .bind(first_game_time)
-        .bind(last_game_time)
-        .bind(&payload_json)
-        .bind(now)
-        .execute(&mut *transaction)
-        .await
-        .is_err()
-        {
-            return false;
-        }
-        transaction.commit().await.is_ok()
-    }
 
     pub async fn record_round_result(
         &self,

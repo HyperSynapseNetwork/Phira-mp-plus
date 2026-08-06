@@ -131,13 +131,11 @@ impl DbManager {
         }
         if touch_judge_retention_days > 0 {
             let cutoff = now().saturating_sub(touch_judge_retention_days as i64 * 86_400_000);
-            for sql in [
-                "DELETE FROM mp_round_player_data WHERE updated_at < $1",
-                "DELETE FROM mp_round_touch_batches WHERE created_at < $1",
-                "DELETE FROM mp_round_judge_batches WHERE created_at < $1",
-            ] {
-                let _ = sqlx::query(sql).bind(cutoff).execute(pool).await;
-            }
+            // 触控/判定已合并进 mp_round_player_data（batch 表已删除）。
+            let _ = sqlx::query("DELETE FROM mp_round_player_data WHERE updated_at < $1")
+                .bind(cutoff)
+                .execute(pool)
+                .await;
         }
         let round_meta_retention_days = match (retention_days, touch_judge_retention_days) {
             (0, _) | (_, 0) => 0,
@@ -240,20 +238,16 @@ async fn init_tables(pool: &sqlx::PgPool) -> Result<()> {
 
     // Older versions allowed duplicate room-history rows. Normalize them
     // before adding natural-key indexes used by retry-safe transactional writes.
-    for cleanup in [
-        "DELETE FROM room_history newer USING room_history older
-         WHERE newer.id > older.id
-           AND newer.user_id = older.user_id
-           AND newer.room_uuid = older.room_uuid
-           AND newer.joined_at = older.joined_at",
+    // （room_history 兼容表已由 merge 迁移删除，仅处理 mp_user_room_history）
+    sqlx::query(
         "DELETE FROM mp_user_room_history newer USING mp_user_room_history older
          WHERE newer.id > older.id
            AND newer.user_id = older.user_id
            AND newer.room_uuid = older.room_uuid
            AND newer.joined_at = older.joined_at",
-    ] {
-        sqlx::query(cleanup).execute(pool).await?;
-    }
+    )
+    .execute(pool)
+    .await?;
 
     // Migration-awareness marker for existing tooling that inspects _pmp_schema_version.
     let _ = sqlx::query(

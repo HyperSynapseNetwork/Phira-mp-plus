@@ -89,36 +89,6 @@ impl RoundStore {
         Ok(())
     }
 
-    // ── 数据追加 ──
-
-    /// 追加触控数据到指定轮次+玩家
-    pub async fn append_touches(
-        &self,
-        round_uuid: &str,
-        player_id: i32,
-        data: &[TouchEventPoint],
-    ) -> bool {
-        if data.is_empty() {
-            return true;
-        }
-        let db = crate::internal_hooks::DB.get().expect("DB not initialized");
-        db.append_touches(round_uuid, player_id, data).await
-    }
-
-    /// 追加判定数据到指定轮次+玩家
-    pub async fn append_judges(
-        &self,
-        round_uuid: &str,
-        player_id: i32,
-        data: &[JudgeEventItem],
-    ) -> bool {
-        if data.is_empty() {
-            return true;
-        }
-        let db = crate::internal_hooks::DB.get().expect("DB not initialized");
-        db.append_judges(round_uuid, player_id, data).await
-    }
-
     // ── 数据读取 ──
 
     /// 读取指定轮次+玩家的全部触控和判定数据
