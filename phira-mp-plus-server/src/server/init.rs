@@ -211,6 +211,7 @@ impl PlusServer {
             ban_manager,
             shutdown: Notify::new(),
             shutting_down: AtomicBool::new(false),
+            accept_new_connections: AtomicBool::new(true),
             connection_limiter: crate::rate_limiter::ConnectionRateLimiter::new(
                 rate_limit,
                 rate_window,

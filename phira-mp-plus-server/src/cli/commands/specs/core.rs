@@ -170,6 +170,45 @@ pub fn specs() -> Vec<CommandSpec> {
                 }
             })
         })),
+        CommandSpec::new(
+            "connections",
+            "core",
+            "开关新用户连接（重连不算，运维维护时防止新玩家进入）。",
+            "connections [on|off]",
+        )
+        .advanced()
+        .handler(Arc::new(|state, args| {
+            let state = Arc::clone(state);
+            let args: Vec<String> = args.iter().map(|s| s.to_string()).collect();
+            Box::pin(async move {
+                let arg_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+                use std::sync::atomic::Ordering;
+                match arg_refs.first().copied() {
+                    Some("on" | "enable" | "1") => {
+                        state.accept_new_connections.store(true, Ordering::Release);
+                        vec!["  ✓ 新用户连接已开启".to_string()]
+                    }
+                    Some("off" | "disable" | "0") => {
+                        state.accept_new_connections.store(false, Ordering::Release);
+                        vec![
+                            "  ✓ 新用户连接已关闭（已连接用户重连不受影响）".to_string(),
+                        ]
+                    }
+                    _ => {
+                        let enabled =
+                            state.accept_new_connections.load(Ordering::Acquire);
+                        vec![format!(
+                            "  ◆ 新用户连接：{}",
+                            if enabled {
+                                "已开启"
+                            } else {
+                                "已关闭（重连不受影响）"
+                            }
+                        )]
+                    }
+                }
+            })
+        })),
         CommandSpec::new("doctor", "core", "运行系统诊断检查。", "doctor")
             .handler(Arc::new(|state, _args| {
                 let state = Arc::clone(state);

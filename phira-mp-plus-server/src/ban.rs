@@ -64,6 +64,10 @@ impl BanManager {
             .extensions
             .register_room_field("blacklist", "[]", "mp", "房间黑名单用户ID列表 (JSON)")
             .await;
+        let _ = self
+            .extensions
+            .register_room_field("whitelist", "[]", "mp", "房间白名单用户ID列表 (JSON)")
+            .await;
         self.repair_reasons().await;
         info!("blacklist manager initialized");
     }
@@ -301,6 +305,63 @@ impl BanManager {
             .await
             .and_then(|json| serde_json::from_str(&json).ok())
             .unwrap_or_default()
+    }
+
+    // ── Room Whitelist（允许名单：非空时仅名单内用户 + 房主/管理员可加入）──
+
+    /// 读取房间白名单用户 ID 列表。
+    pub async fn room_whitelist(&self, room_uuid: &str) -> Vec<i32> {
+        self.extensions
+            .get_room_extra(room_uuid, "whitelist")
+            .await
+            .and_then(|json| serde_json::from_str(&json).ok())
+            .unwrap_or_default()
+    }
+
+    /// 将用户加入房间白名单。
+    pub async fn whitelist_add_user(&self, room_uuid: &str, user_id: i32) -> Result<(), String> {
+        let mut list = self.room_whitelist(room_uuid).await;
+        if list.contains(&user_id) {
+            return Err(format!("用户 {user_id} 已在房间白名单中"));
+        }
+        list.push(user_id);
+        let json = serde_json::to_string(&list).map_err(|e| format!("serialize whitelist: {e}"))?;
+        self.extensions
+            .set_room_extra(room_uuid, "whitelist", json)
+            .await?;
+        self.extensions.persist().await?;
+        Ok(())
+    }
+
+    /// 将用户移出房间白名单。
+    pub async fn whitelist_remove_user(&self, room_uuid: &str, user_id: i32) -> Result<(), String> {
+        let mut list = self.room_whitelist(room_uuid).await;
+        let before = list.len();
+        list.retain(|&id| id != user_id);
+        if list.len() == before {
+            return Err(format!("用户 {user_id} 不在房间白名单中"));
+        }
+        let json = serde_json::to_string(&list).map_err(|e| format!("serialize whitelist: {e}"))?;
+        self.extensions
+            .set_room_extra(room_uuid, "whitelist", json)
+            .await?;
+        self.extensions.persist().await?;
+        Ok(())
+    }
+
+    /// 清空房间白名单（恢复开放）。
+    pub async fn clear_room_whitelist(&self, room_uuid: &str) -> Result<(), String> {
+        self.extensions
+            .set_room_extra(room_uuid, "whitelist", "[]".to_string())
+            .await?;
+        self.extensions.persist().await?;
+        Ok(())
+    }
+
+    /// 白名单是否允许该用户加入：白名单为空（开放）或包含该用户 → 允许。
+    pub async fn is_room_whitelisted(&self, room_uuid: &str, user_id: i32) -> bool {
+        let list = self.room_whitelist(room_uuid).await;
+        list.is_empty() || list.contains(&user_id)
     }
 
     async fn repair_reasons(&self) {

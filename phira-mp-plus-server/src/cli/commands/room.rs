@@ -416,6 +416,128 @@ impl CliHandler {
                     }
                 }
             }
+            "whitelist-add" => {
+                if args.len() < 3 {
+                    self.out(format!(
+                        "  {} {} room whitelist add <房间ID> <用户ID>",
+                        c::yellow("?"),
+                        c::bold("用法")
+                    ));
+                } else {
+                    let uid: i32 = match args[2].parse() {
+                        Ok(id) => id,
+                        Err(_) => {
+                            self.out(format!("  {} 无效的用户ID", c::red("✗")));
+                            return;
+                        }
+                    };
+                    let room_uuid = self.find_room(args[1]).await.map(|r| r.uuid.to_string());
+                    match room_uuid {
+                        Some(uuid) => {
+                            match self.state.ban_manager.whitelist_add_user(&uuid, uid).await {
+                                Ok(_) => {
+                                    self.out(format!(
+                                        "  {} 用户 {} 已加入房间 {} 的白名单",
+                                        c::green("✓"),
+                                        uid,
+                                        args[1]
+                                    ));
+                                    // 黑名单优先：同时被 ban 的用户仍无法加入。
+                                    if self.state.ban_manager.is_room_banned(&uuid, uid).await {
+                                        self.out(format!(
+                                            "  {} 该用户同时在房间黑名单中，黑名单优先（仍无法加入）",
+                                            c::yellow("⚠")
+                                        ));
+                                    }
+                                }
+                                Err(e) => self.out(format!("  {} {}", c::red("✗"), e)),
+                            }
+                        }
+                        None => self.out(format!("  {} 未找到房间 {}", c::red("✗"), args[1])),
+                    }
+                }
+            }
+            "whitelist-remove" => {
+                if args.len() < 3 {
+                    self.out(format!(
+                        "  {} {} room whitelist remove <房间ID> <用户ID>",
+                        c::yellow("?"),
+                        c::bold("用法")
+                    ));
+                } else {
+                    let uid: i32 = match args[2].parse() {
+                        Ok(id) => id,
+                        Err(_) => {
+                            self.out(format!("  {} 无效的用户ID", c::red("✗")));
+                            return;
+                        }
+                    };
+                    let room_uuid = self.find_room(args[1]).await.map(|r| r.uuid.to_string());
+                    match room_uuid {
+                        Some(uuid) => {
+                            match self.state.ban_manager.whitelist_remove_user(&uuid, uid).await {
+                                Ok(_) => self.out(format!(
+                                    "  {} 用户 {} 已移出房间 {} 的白名单",
+                                    c::green("✓"),
+                                    uid,
+                                    args[1]
+                                )),
+                                Err(e) => self.out(format!("  {} {}", c::red("✗"), e)),
+                            }
+                        }
+                        None => self.out(format!("  {} 未找到房间 {}", c::red("✗"), args[1])),
+                    }
+                }
+            }
+            "whitelist-list" => {
+                if args.len() < 2 {
+                    self.out(format!(
+                        "  {} {} room whitelist list <房间ID>",
+                        c::yellow("?"),
+                        c::bold("用法")
+                    ));
+                } else {
+                    let room_uuid = self.find_room(args[1]).await.map(|r| r.uuid.to_string());
+                    match room_uuid {
+                        Some(uuid) => {
+                            let list = self.state.ban_manager.room_whitelist(&uuid).await;
+                            if list.is_empty() {
+                                self.out(format!("  ◆ 房间 {} 白名单为空（开放加入）", args[1]));
+                            } else {
+                                self.out(format!("  ◆ 房间 {} 白名单（{} 人）:", args[1], list.len()));
+                                for id in list {
+                                    self.out(format!("    · 用户 #{id}"));
+                                }
+                            }
+                        }
+                        None => self.out(format!("  {} 未找到房间 {}", c::red("✗"), args[1])),
+                    }
+                }
+            }
+            "whitelist-clear" => {
+                if args.len() < 2 {
+                    self.out(format!(
+                        "  {} {} room whitelist clear <房间ID>",
+                        c::yellow("?"),
+                        c::bold("用法")
+                    ));
+                } else {
+                    let room_uuid = self.find_room(args[1]).await.map(|r| r.uuid.to_string());
+                    match room_uuid {
+                        Some(uuid) => {
+                            match self.state.ban_manager.clear_room_whitelist(&uuid).await {
+                                Ok(_) => self.out(format!(
+                                    "  {} 房间 {} 白名单已清空（恢复开放加入）",
+                                    c::green("✓"),
+                                    args[1]
+                                )),
+                                Err(e) => self.out(format!("  {} {}", c::red("✗"), e)),
+                            }
+                        }
+                        None => self.out(format!("  {} 未找到房间 {}", c::red("✗"), args[1])),
+                    }
+                }
+            }
             "uuid" => {
                 if args.len() < 2 {
                     self.out(format!(

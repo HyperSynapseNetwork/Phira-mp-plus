@@ -1708,6 +1708,8 @@ impl RoomCommandHandler {
                         as_.state.members.monitors.retain(|id| *id != *user_id);
                         // 用户离开房间 → 停止进度通知。
                         as_.state.progress_subscribers.remove(user_id);
+                        // 离开房间 → 累计在房游玩时长。
+                        crate::internal_hooks::playtime_room_leave(*user_id, lc.server_state());
                         // Host transfer on host leave.  This is the single choke
                         // point for ALL removal paths (explicit LeaveRoom, host
                         // disconnect, dangle-grace) — every one funnels through

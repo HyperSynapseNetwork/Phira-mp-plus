@@ -1410,6 +1410,31 @@ impl Session {
                                             let guard = server.users.write().await;
                                             guard.get(&user_info.id).map(Arc::clone)
                                         };
+                                        // 运维门禁：禁止新用户连接时，拒绝不在 server.users
+                                        // 中的新用户；已在 map 中的用户（重连）放行。
+                                        if !server
+                                            .accept_new_connections
+                                            .load(std::sync::atomic::Ordering::Acquire)
+                                            && existing_user.is_none()
+                                        {
+                                            let lang = user_info
+                                                .language
+                                                .parse::<crate::l10n::Language>()
+                                                .unwrap_or_default();
+                                            send_auth_rejection(
+                                                retry_send_tx.as_ref(),
+                                                crate::l10n::try_translate(
+                                                    &lang.0,
+                                                    "auth-not-accepting",
+                                                ),
+                                            )
+                                            .await;
+                                            let _ = auth_tx
+                                                .take()
+                                                .unwrap()
+                                                .send(AuthenticationOutcome::Rejected);
+                                            return Ok(AuthResolved { accepted: None });
+                                        }
                                         if let Some(existing) = existing_user {
                                             info!("reconnect");
                                             // PMP44 P0-E: 捕获被取代的旧 Session；其关闭推迟到

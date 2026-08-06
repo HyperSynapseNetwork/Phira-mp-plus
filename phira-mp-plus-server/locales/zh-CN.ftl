@@ -21,6 +21,8 @@ repeated-authenticate = 重复的认证请求
 auth-invalid-token = 无效的认证令牌
 auth-server-unreachable = 认证服务器不可达，请稍后重试
 auth-banned = 你已被此服务器封禁。原因：{ $reason }
+
+auth-not-accepting = 服务器暂不接受新用户连接，请稍后再试（已在线用户重连不受影响）
 auth-banned-default-reason = 违反服务器规则
 auth-banned-ip-reason = IP 地址被封禁
 auth-cache-hit = 认证缓存命中，用户 { $user_id }
@@ -45,6 +47,8 @@ server-shutting-down = 服务器正在关闭...
 server-started = 服务器已在端口 { $port } 启动（HTTP 端口 { $http_port }）
 server-stats = 用户：{ $users } | 房间：{ $rooms } | 会话：{ $sessions } | 插件：{ $plugins }
 join-room-banned = 你已被此房间封禁
+
+join-room-not-whitelisted = 该房间已开启白名单，你不在允许列表中
 
 join-game-ongoing-warning = 该房间游戏进行中，请再次确认以加入
 server-room-limit-reached = 服务器房间数已达上限（最多 { $limit }）

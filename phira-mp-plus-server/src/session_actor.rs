@@ -625,6 +625,33 @@ async fn handle_chat(
     if !user.server.live_config.read().await.chat_enabled {
         return Some(ServerCommand::Chat(Err(crate::tl!("chat-disabled"))));
     }
+    // 管理员通过聊天直接执行原生 CLI 命令（`/` 前缀，空格原生语法）。
+    // 聊天无字符限制，无需 `_` 房间名转换语法；命令不广播给房间。
+    if let Some(command) = content.strip_prefix('/') {
+        if user.server.is_admin_id(user.id).await {
+            let cmd = command.trim().to_string();
+            let lines = crate::cli::execute_cli_once(Arc::clone(&user.server), cmd.clone()).await;
+            user.try_send(
+                ServerCommand::Message(phira_mp_common::Message::Chat {
+                    user: 0,
+                    content: format!("[CLI] > {cmd}"),
+                }),
+                None,
+            )
+            .await;
+            for line in lines {
+                user.try_send(
+                    ServerCommand::Message(phira_mp_common::Message::Chat {
+                        user: 0,
+                        content: format!("[CLI] {line}"),
+                    }),
+                    None,
+                )
+                .await;
+            }
+            return Some(ServerCommand::Chat(Ok(())));
+        }
+    }
     // PMP44 P0-J: 绝对预算已耗尽时拒绝提交（persistence enqueue + room
     // broadcast 都不得在客户端已超时之后执行）。
     if crate::official_client_compat::timing::deadline_expired(deadline) {

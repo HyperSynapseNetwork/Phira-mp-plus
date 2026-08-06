@@ -96,6 +96,22 @@ impl DbManager {
         }
     }
 
+    /// 累加游玩时长（房间内时间，秒）：`total_secs` 直接加，不经过连接时长模型。
+    pub async fn add_playtime_seconds(&self, user_id: i32, secs: i64) {
+        if secs <= 0 {
+            return;
+        }
+        if let DbManager::Pg(pool) = self {
+            let _ = sqlx::query(
+                "UPDATE playtime SET total_secs = playtime.total_secs + $1 WHERE user_id = $2",
+            )
+            .bind(secs)
+            .bind(user_id)
+            .execute(pool)
+            .await;
+        }
+    }
+
     pub async fn cleanup_expired(&self, retention_days: u32, touch_judge_retention_days: u32) {
         let Self::Pg(pool) = self;
         let now = || {

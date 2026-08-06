@@ -173,6 +173,38 @@ pub fn specs() -> Vec<CommandSpec> {
         .advanced()
         .handler(room_sub("banlist")),
         CommandSpec::new(
+            "room whitelist add",
+            "rooms",
+            "将用户加入房间白名单（非空时仅白名单用户 + 房主/管理员可加入）。",
+            "room whitelist add <room_id> <user_id>",
+        )
+        .advanced()
+        .handler(room_sub("whitelist-add")),
+        CommandSpec::new(
+            "room whitelist remove",
+            "rooms",
+            "将用户移出房间白名单。",
+            "room whitelist remove <room_id> <user_id>",
+        )
+        .advanced()
+        .handler(room_sub("whitelist-remove")),
+        CommandSpec::new(
+            "room whitelist list",
+            "rooms",
+            "查看房间白名单。",
+            "room whitelist list <room_id>",
+        )
+        .advanced()
+        .handler(room_sub("whitelist-list")),
+        CommandSpec::new(
+            "room whitelist clear",
+            "rooms",
+            "清空房间白名单（恢复开放）。",
+            "room whitelist clear <room_id>",
+        )
+        .advanced()
+        .handler(room_sub("whitelist-clear")),
+        CommandSpec::new(
             "force-start",
             "rooms",
             "服务端强制发起房间游戏（room start 别名）。",

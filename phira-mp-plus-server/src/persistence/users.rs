@@ -413,19 +413,15 @@ impl DbManager {
             .await;
         }
 
-        // 4. Set online (playtime) — use connected_at for session_start and the
-        //    event's captured server_instance_id so WAL/DLQ replay on a new
-        //    instance preserves original session ownership (reading the global
-        //    server_instance::current() here would create phantom online sessions).
+        // 4. Set online (playtime) — ensure the playtime row exists. 游玩时长改为
+        //    房间内时间：离开房间时由 playtime_room_leave 累加（internal_hooks），
+        //    连接时长不再累加（原来在此按 session_start 累加连接时长）。
+        //    session_start/instance_id 仍写入以保证实例归属正确。
         if sqlx::query(
             "INSERT INTO playtime (user_id, total_secs, session_start, server_instance_id, session_id)
              VALUES ($1, 0, $2, $3, $4)
              ON CONFLICT (user_id) DO UPDATE SET
-               total_secs = playtime.total_secs + CASE
-                 WHEN playtime.session_start IS NULL THEN 0
-                 WHEN playtime.server_instance_id IS DISTINCT FROM $3 THEN 0
-                 ELSE GREATEST(0, ($2 - playtime.session_start) / 1000)
-               END,
+               total_secs = playtime.total_secs,
                session_start = $2,
                server_instance_id = $3,
                session_id = $4",

@@ -516,6 +516,17 @@ pub async fn join_room(
         {
             bail!("{}", tl!("join-room-banned"));
         }
+        // 白名单：非空时仅名单内用户（+ 房主 + 管理员）可加入。
+        if !user
+            .server
+            .ban_manager
+            .is_room_whitelisted(&room.uuid.to_string(), user.id)
+            .await
+            && Some(user.id) != control.host_id
+            && !user.server.is_admin_id(user.id).await
+        {
+            bail!("{}", tl!("join-room-not-whitelisted"));
+        }
         check_deadline!();
         // Read room lifecycle from actor snapshot for game state check.
         let stripped = if let Some(server) = room.server.upgrade() {
@@ -835,6 +846,9 @@ pub async fn join_room(
             }
         }
     }
+
+    // 记录进房时间（游玩时长按房间内时间统计）。
+    crate::internal_hooks::playtime_room_enter(user.id, &user.server);
 
     // 加入游玩中房间 → 注册进度通知订阅（actor 复核 Playing 后立即推送
     // 第一次，之后每 30 秒由 mailbox 周期推送；轮次结束/离开房间自动停止）。

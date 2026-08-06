@@ -303,6 +303,9 @@ impl User {
     pub async fn dangle(self: Arc<Self>, disconnected_session_id: Uuid) {
         warn!(user = self.id, session = %disconnected_session_id, "user dangling");
 
+        // 断开连接：若在房间则累计在房游玩时长（幂等，RemoveUser 也会调用）。
+        crate::internal_hooks::playtime_disconnect(self.id, &self.server);
+
         // Normal-user registration and disconnect finalization share one gate.
         // This prevents a reconnect from racing an offline transition.
         let registration_guard = if self.id >= 0 {

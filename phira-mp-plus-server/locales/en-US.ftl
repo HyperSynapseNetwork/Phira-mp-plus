@@ -21,6 +21,7 @@ repeated-authenticate = Repeated authentication request
 auth-invalid-token = Invalid authentication token
 auth-server-unreachable = Authentication server unreachable, please try again later
 auth-banned = You have been banned from this server. Reason: { $reason }
+auth-not-accepting = The server is temporarily not accepting new connections. Please try again later (existing users can still reconnect)
 auth-banned-default-reason = Violation of server rules
 auth-banned-ip-reason = IP address is banned
 auth-cache-hit = Authentication cache hit for user { $user_id }
@@ -45,6 +46,8 @@ server-shutting-down = Server is shutting down...
 server-started = Server started on port { $port } (HTTP port { $http_port })
 server-stats = Users: { $users } | Rooms: { $rooms } | Sessions: { $sessions } | Plugins: { $plugins }
 join-room-banned = You are banned from this room
+
+join-room-not-whitelisted = This room has a whitelist enabled and you are not on it
 
 join-game-ongoing-warning = This room is in-game. Confirm again to join.
 server-room-limit-reached = Server room limit reached (max { $limit })

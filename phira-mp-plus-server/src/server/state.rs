@@ -70,6 +70,9 @@ pub struct PlusServerState {
     pub shutdown: Notify,
     /// Persistent lifecycle flag used by accept/auth tasks during ordered shutdown.
     pub shutting_down: AtomicBool,
+    /// 运维门禁：false 时拒绝**新用户**连接（server.users 中不存在的用户），
+    /// 已连接用户重连不受影响。`connections on|off` 切换，config reload 不重置。
+    pub accept_new_connections: AtomicBool,
     /// 连接速率限制器（按 IP）
     pub connection_limiter: crate::rate_limiter::ConnectionRateLimiter,
     /// 可信代理连接速率限制器（独立于普通客户端，使用更高限额）

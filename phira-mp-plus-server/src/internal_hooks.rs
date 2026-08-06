@@ -472,17 +472,20 @@ pub fn send_welcome(user_id: i32, user_name: &str, online: usize, state: &PlusSe
                         let client = Arc::clone(&state.phira_client);
                         let endpoint = state.config.phira_api_endpoint.clone();
                         handle.spawn(async move {
-                            let uids: Vec<i32> = {
+                            // 按时长排序取 top-10（对齐排行榜显示），确保 top 用户
+                            // 名字被预取——原实现 HashMap 无序 take(50) 会漏掉 top-10。
+                            let mut uids: Vec<(i32, i64)> = {
                                 let pt = ensure_playtime_cache().lock().unwrap();
-                                pt.keys().copied().take(50).collect()
+                                pt.iter().map(|(&uid, &secs)| (uid, secs)).collect()
                             };
-                            for uid in uids {
+                            uids.sort_by(|a, b| b.1.cmp(&a.1));
+                            for (uid, _) in uids.iter().take(10) {
                                 {
                                     let guard = PLAYERS.lock().unwrap();
-                                    if guard.contains_key(&uid) { continue; }
+                                    if guard.contains_key(uid) { continue; }
                                 }
-                                if let Some(name) = client.fetch_user_by_id(&endpoint, uid).await {
-                                    track_player(uid, &name);
+                                if let Some(name) = client.fetch_user_by_id(&endpoint, *uid).await {
+                                    track_player(*uid, &name);
                                 }
                             }
                         });
@@ -575,25 +578,50 @@ async fn init_player_tracker(
 }
 
 // ════════════════════════════════════
-//  游玩时间统计 (removed — single source of truth is PostgreSQL via PersistenceWorker)
+//  游玩时间统计（房间内时间）
 // ════════════════════════════════════
 
-/// No-op: playtime is tracked purely through UserOnline/UserOffline persistence
-/// events updating the PostgreSQL `playtime` table.
+/// 进房时间追踪：user_id → 进房时间戳（毫秒 epoch）。游玩时长按「在房间内」
+/// 的时间统计（非连接时长）：进房记录，离开/断开时累加到 playtime 表。
+static ROOM_ENTER_AT: once_cell::sync::Lazy<Mutex<HashMap<i32, i64>>> =
+    once_cell::sync::Lazy::new(|| Mutex::new(HashMap::new()));
+
+fn now_ms_epoch() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
+}
+
+/// 连接建立：无需记录（游玩时间只算房间内）。
 pub fn playtime_connect(_user_id: i32) {}
 
-/// No-op: playtime is tracked purely through UserOnline/UserOffline persistence
-/// events updating the PostgreSQL `playtime` table.
-pub fn playtime_room_enter(_user_id: i32) {}
+/// 进入房间：记录进房时间。
+pub fn playtime_room_enter(user_id: i32, _state: &PlusServerState) {
+    ROOM_ENTER_AT.lock().unwrap().insert(user_id, now_ms_epoch());
+}
 
-/// No-op: playtime is tracked purely through UserOnline/UserOffline persistence
-/// events updating the PostgreSQL `playtime` table.
-pub fn playtime_room_leave(_user_id: i32) {}
+/// 离开房间：把在房时长累加到 playtime 表（异步落库，允许近似）。
+/// 幂等：未在房（如服务器重启丢失记录）时直接跳过。
+pub fn playtime_room_leave(user_id: i32, state: &PlusServerState) {
+    let start = ROOM_ENTER_AT.lock().unwrap().remove(&user_id);
+    if let Some(start) = start {
+        let secs = ((now_ms_epoch() - start) / 1000).max(0);
+        if secs > 0 {
+            let db = state.db_manager.clone();
+            if let Ok(handle) = tokio::runtime::Handle::try_current() {
+                handle.spawn(async move {
+                    db.add_playtime_seconds(user_id, secs).await;
+                });
+            }
+        }
+    }
+}
 
-/// No-op: playtime is tracked purely through UserOnline/UserOffline persistence
-/// events updating the PostgreSQL `playtime` table. The UserOffline persistence
-/// event handles the actual playtime accumulation.
-pub fn playtime_disconnect(_user_id: i32) {}
+/// 断开连接：等同于离开房间（若仍在房）。
+pub fn playtime_disconnect(user_id: i32, state: &PlusServerState) {
+    playtime_room_leave(user_id, state);
+}
 
 // ════════════════════════════════════
 //  结算排行
