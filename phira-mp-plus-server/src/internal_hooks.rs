@@ -33,13 +33,18 @@ fn ensure_playtime_cache_last_refresh() -> &'static Mutex<Instant> {
 /// Load the playtime cache from PostgreSQL on startup.
 async fn load_playtime_cache(state: &PlusServerState) {
     let rows = state.db_manager.top_playtime(100000).await;
+    let hide = &state.config.playtime_leaderboard_hide;
     let mut cache = ensure_playtime_cache().lock().unwrap();
     for row in rows {
         if let (Some(user_id), Some(secs)) = (
             row.get("user_id").and_then(|v| v.as_i64()),
             row.get("total_playtime").and_then(|v| v.as_i64()),
         ) {
-            cache.insert(user_id as i32, secs);
+            let uid = user_id as i32;
+            if hide.contains(&uid) {
+                continue; // 排行榜过滤用户（测试站 Bot 等）
+            }
+            cache.insert(uid, secs);
         }
     }
     *ensure_playtime_cache_last_refresh().lock().unwrap() = Instant::now();
@@ -47,8 +52,8 @@ async fn load_playtime_cache(state: &PlusServerState) {
 }
 
 /// Refresh the playtime cache from PostgreSQL using the static DB handle.
-/// Called periodically to keep the cache fresh.
-async fn refresh_playtime_cache() {
+/// Called periodically to keep the cache fresh. `hide` = 排行榜过滤用户。
+async fn refresh_playtime_cache(hide: &[i32]) {
     let Some(db) = DB.get() else {
         warn!("playtime cache refresh: DB not initialized");
         return;
@@ -61,7 +66,11 @@ async fn refresh_playtime_cache() {
             row.get("user_id").and_then(|v| v.as_i64()),
             row.get("total_playtime").and_then(|v| v.as_i64()),
         ) {
-            cache.insert(user_id as i32, secs);
+            let uid = user_id as i32;
+            if hide.contains(&uid) {
+                continue;
+            }
+            cache.insert(uid, secs);
         }
     }
     *ensure_playtime_cache_last_refresh().lock().unwrap() = Instant::now();
@@ -87,10 +96,11 @@ pub async fn init_internal_hooks(
     load_playtime_cache(state).await;
 
     // Spawn periodic playtime cache refresh every 60s.
-    tokio::spawn(async {
+    let hide = state.config.playtime_leaderboard_hide.clone();
+    tokio::spawn(async move {
         loop {
             tokio::time::sleep(std::time::Duration::from_secs(60)).await;
-            refresh_playtime_cache().await;
+            refresh_playtime_cache(&hide).await;
         }
     });
 

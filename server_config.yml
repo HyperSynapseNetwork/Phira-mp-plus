@@ -191,6 +191,9 @@ round_data_retention_days: 7
 # 也可通过 CLI admin-id 或 WIT/host admin.* 动态维护。
 admin_phira_ids: []
 
+# 游玩时间排行榜过滤用户（不显示的 Phira ID，如测试站 Bot）。
+playtime_leaderboard_hide: []
+
 # ---- Sentry 错误监控 ----
 # 将 sentry_dsn 设为有效的 Sentry DSN 以启用 panic/error 自动上报。
 # 留空或注释掉即禁用。

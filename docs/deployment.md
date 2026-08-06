@@ -162,6 +162,7 @@ wasm_runtime:
 | `sentry_dsn` | `String?` | 未设置 | Sentry 错误监控 DSN。设置有效的 Sentry DSN 可启用自动错误和 Panic 捕获，留空或省略则不启用。 |
 | `server_name` | `String?` | 未设置 | 服务器展示名称，可用于欢迎语等场景。 |
 | `admin_phira_ids` | `Vec<i32>` | `[]` | 游戏内管理员 Phira ID。管理员可在创建房间弹窗输入 `_命令` 执行 CLI 命令。 |
+| `playtime_leaderboard_hide` | `Vec<i32>` | `[]` | 游玩时间排行榜过滤用户（不显示的 Phira ID，如测试站 Bot），欢迎语排行榜与查询均不显示。 |
 | `wasm_runtime` | `object` | 见下表 | WASM 插件运行时资源限制。 |
 | `compatibility` | `object` | 见下表 | 官方 Phira 客户端兼容参数（PMP42）。 |
 | `auto_update` | `object` | 见下表 | 自动更新配置（默认关闭）。 |
@@ -378,6 +379,16 @@ room set <房间ID> host ?
 admin_phira_ids:
   - 123456
   - 234567
+```
+
+### 游玩时间排行榜过滤
+
+不想让某些用户（如测试站 Bot）出现在排行榜时，用 `playtime_leaderboard_hide`：
+
+```yaml
+playtime_leaderboard_hide:
+  - 999999
+  - 888888
 ```
 
 也可在 TUI/CLI 中维护：
