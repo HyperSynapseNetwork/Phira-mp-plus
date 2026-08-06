@@ -13,21 +13,16 @@
 
 ### 核心特性
 
-- **有界连接接入** — TCP accept 与认证解耦，认证并发和在线会话由信号量预留，慢认证连接不会串行阻塞全局 accept
-- **WASM 插件边界** — 基于 wasmtime 组件模型（WIT ABI v2），逐插件 capability、fuel、线性内存/实例/表限制、有界事件队列与超时 quarantine 已接线
-- **可靠生命周期** — 插件事件和持久化使用有界队列；Flush/Shutdown 带确认；数据库重试耗尽后写入本地 dead-letter；后台任务由 Supervisor 统一跟踪并在关闭时取消和等待
-- **严格命令入口** — Session 与 Room 管理命令只经 mailbox 执行；mailbox 缺失、关闭、拥塞或结果不确定时显式失败，不再切换到直接处理路径
-- **一致房间控制面** — host/lock/cycle/hidden/endpoint/容量等控制字段共享同一快照和 generation。ActorState 已是快照权威来源，全部 17 个命令走 actor_state
-- **慢消费者隔离** — 会话发送采用有界队列和非阻塞路径；网络读取与业务处理通过有界命令队列解耦
-- **内部接口** — 房间信息 HTTP、SSE、WebSocket 和插件动态路由
-- **插件 TCP 连接 API** — 供 WASM 插件通过句柄建立和管理 TCP 连接（connect/listen/send/close），纯明文，无 TLS
-- **jemalloc 分配器** — Linux 下使用 jemalloc 替代 musl malloc，降低长期运行中的 RSS 膨胀风险
+- **WAL 先行 + 崩溃恢复**：权威事件落盘确认后才回包，崩溃后重放不丢数据、失败不静默（fail-closed）
+- **Actor 模型**：每房间独立 mailbox 串行化状态 + 快照缓存，无锁高并发
+- **WASM 插件系统**：WIT component 动态加载，插件可注册 HTTP/SSE、订阅事件、调 host API，运行时热加载
+- **丰富的拓展功能**：PMP相对于原版Phira-mp提供了大量新功能以优化用户与运维体验，详见[功能总览](docs/features.md)与[CLI 手册](docs/cli.md)
 
 ## 文档
 
 | 分类 | 文档 |
 |------|------|
-| **功能总览** | [PMP 相对 Phira-mp 新增功能](docs/features.md)（含兼容矩阵） |
+| **功能总览** | [PMP 相对 Phira-mp 新增功能](docs/features.md) |
 | **部署与运维** | [部署/配置/运维](docs/deployment.md) · [配置 JSON Schema](docs/operations/config-schema.json) |
 | **对外 API** | [HTTP/SSE/WS · 插件 API · 能力表 · OpenUDS](docs/api.md) |
 | **CLI 手册** | [CLI 命令参考](docs/cli.md)（含[基准测试](docs/cli.md#基准测试)） |
