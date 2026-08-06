@@ -226,6 +226,82 @@
 
 ---
 
+## 十五、数据存储总览（房间 / 用户 / 持久化）
+
+### 房间数据（内存状态，非持久化）
+
+房间是 **Actor 模型**：权威状态在 `RoomActorState`（每房间独占），外部只读走快照缓存。
+
+| 数据 | 说明 |
+|---|---|
+| `id` / `uuid` | 房间名（玩家可见）/ 唯一标识 |
+| `creator_id` | 建房者（房主回退标识） |
+| `lifecycle` | `SelectChart` / `WaitForReady{started, admin_started}` / `Playing{results, aborted}` |
+| `control` | host_id、locked、cycle、hidden、persistent_empty、system_host、phira_api_endpoint、max_users、generation |
+| `members` | users（玩家）+ monitors（观战），弱引用 |
+| `chart` / `chart_name` | 当前谱面 ID 与名称 |
+| `round` | round_id / round_uuid（当前轮） |
+| 计时 | `ready_countdown_started_at`、`playing_timeout_deadline`、`chart_duration`（秒）、`playing_started_at` |
+| `progress_subscribers` | 进度通知订阅者（user_id → 上次通知时间） |
+| `live` / `degraded` | 活跃标志 / 降级（Join 补偿失败阻塞） |
+| `play_history` | 历史游玩记录（**不持久化**，房间解散即清除） |
+| `room_event_seq` | 权威状态事件序号（快照 cutover 用） |
+
+### 用户数据（内存 + 持久化）
+
+| 数据 | 内存/持久化 | 说明 |
+|---|---|---|
+| `id`（Phira ID）| 内存 | 唯一标识 |
+| `name` | 内存 + 持久化（`mp_users`、事件）| 用户名 |
+| `language` | 内存 + 持久化 | 语言（l10n） |
+| `auth_token` | **仅内存** | Phira token，不下盘；认证缓存只存其 SHA256 hash |
+| `binding`（session generation）| 内存 | 会话代际（重连/代际失效判定） |
+| `room` | 内存 | 当前所在房间（弱引用） |
+| `monitor` | 内存 | 观战者标志 |
+| `dangle_mark` / `admin_cli_pending` / `join_pending_game` | 内存 | 断开宽限 / CLI 续行 / 进行中加入确认 |
+| 游玩时长 | 持久化（`playtime`）| 房间内时间（进房计时、离开/断开累加） |
+| 在线/访问记录 | 持久化（`mp_users`、`mp_user_visits`）| |
+| 房间历史 | 持久化（`mp_user_room_history`）| |
+| IP 历史 | 持久化（`user_ip_history`，明文）| 供 `ban_ip` / 审核 |
+| 轮次结果 | 持久化（`mp_round_results`）| 按轮次 |
+| 认证缓存 | 持久化（`data/extensions.json` auth_cache）| token SHA256 → {user_id, name, language, cached_at}，LRU 上限 |
+
+### 持久化数据（非配置类）
+
+**`data/` 文件：**
+
+| 文件 | 内容 | 说明 |
+|---|---|---|
+| `data/persistence-worker.wal.jsonl` | WAL：认证 / 轮次结果 / 房间事件 | 先落盘再回包，崩溃重放；落库后截断 |
+| `data/persistence-dead-letter.jsonl` | 死信队列 | 落库失败重试 / 轮转 |
+| `data/extensions.json` | 扩展数据存储 | user_data、room_data（含黑/白名单）、auth_cache |
+| `data/update/` | 更新下载的二进制 + `updated-version` 标记 | 更新完成后清理 |
+| `data/plugins/` | WASM 插件文件 | 运行时加载 |
+| `data/admin-phira-ids.json` | 管理员 Phira ID | 运维管理（配置类） |
+| `data/welcome-config.json` | 欢迎语配置 | 运维配置 |
+| `data/low-compat-ack` | 低兼容终端确认 | 一次性确认标记 |
+
+**PostgreSQL 表：**
+
+| 表 | 内容 |
+|---|---|
+| `mp_users` | 用户记录（认证、在线/离线） |
+| `playtime` | 游玩时长（total_secs，房间内时间） |
+| `mp_user_visits` | 用户访问记录 |
+| `mp_user_room_history` | 用户房间历史 |
+| `user_ip_history` | 用户 IP 历史（明文） |
+| `room_history` | 房间历史 |
+| `mp_rounds` | 轮次记录 |
+| `mp_round_results` | 轮次玩家结果 |
+| `mp_round_player_data` / `mp_round_touch_batches` / `mp_round_judge_batches` | 轮次玩家数据 / 触控 / 判定批 |
+| `mp_room_snapshots` | 持久房间快照 |
+| `mp_events` | 领域事件 |
+| `mp_server_instances` | 服务器实例跟踪 |
+| `mp_settings` | 设置 |
+| `mp_runtime_*` | 运行时遥测 / 基准 / 保留策略 |
+
+---
+
 ## 部署差异（相对官方）
 
 | 项 | 官方 | PMP |
