@@ -903,7 +903,7 @@ help groups
 管理员在**聊天消息**中发送 `/命令` 可直接执行**原生 CLI 语法**（空格分隔，无字符限制，无需 `_` 房间名转换语法）。命令输出以 `[CLI]` 前缀回显给发送者，不广播给房间。
 
 ```
-/room list
+/rooms
 /connections off
 /server stats
 ```

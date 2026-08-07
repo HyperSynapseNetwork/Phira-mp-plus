@@ -20,8 +20,6 @@ pub fn specs() -> Vec<CommandSpec> {
     vec![
         CommandSpec::new("rooms", "rooms", "查看活跃房间。", "rooms")
             .handler(no_arg(|h| Box::pin(async move { h.list_rooms().await }))),
-        CommandSpec::new("room list", "rooms", "查看活跃房间（`rooms` 别名）。", "room list")
-            .handler(no_arg(|h| Box::pin(async move { h.list_rooms().await }))),
         CommandSpec::new(
             "room create-empty",
             "rooms",

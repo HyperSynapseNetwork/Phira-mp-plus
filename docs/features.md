@@ -89,7 +89,7 @@
 
 ## 四、游戏内 CLI 命令
 
-- **`_` 房间名快捷方式**：管理员在房间名输入框创建名为 `_<command>` 的房间执行 CLI：`_`→空格（`_room_list`→`room list`）、`__` 转义字面量；结果以 `[CLI]` 前缀 Chat 消息回显
+- **`_` 房间名快捷方式**：管理员在房间名输入框创建名为 `_<command>` 的房间执行 CLI：`_`→空格（`_room_info`→`room info`）、`__` 转义字面量；结果以 `[CLI]` 前缀 Chat 消息回显
 - **多行续行**：命令 `--` 结尾暂存，下一条 `--` 开头续接
 - 支持全部管理 CLI 命令
 
@@ -101,7 +101,7 @@
 **用户**：`users`、`kick`、`admin-id list/add/remove/set`
 **封禁**：`ban [reason]`、`ban ip`、`unban`、`banlist`、`ip-history`
 **广播**：`broadcast all|room|user`
-**房间**：`rooms/room list`、`room create-empty`、`room info`、`room start/ready/cancel/kick/host`、`room force-move`、`room hide/unhide`、`room close`、`room lock/cycle`、`room set <field>`（lock/cycle/hidden/persistent/degraded/host/chart/api_endpoint）、`room history/rounds/round/uuid`、`room ban/unban/banlist`、`force-start`
+**房间**：`rooms`、`room create-empty`、`room info`、`room start/ready/cancel/kick/host`、`room force-move`、`room hide/unhide`、`room close`、`room lock/cycle`、`room set <field>`（lock/cycle/hidden/persistent/degraded/host/chart/api_endpoint）、`room history/rounds/round/uuid`、`room ban/unban/banlist`、`force-start`
 **插件**：`plugin list/enable/disable/remove/reload/info/call`（WASM 插件可动态注册 CLI 命令）
 **扩展**：`extension list/get`
 **杂项**：`roomcreation on|off`、`approve openuds`、`welcome-config`、`player-count`
