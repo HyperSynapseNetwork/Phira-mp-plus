@@ -729,6 +729,53 @@ fn server_state_query_dispatch(
             rx.recv_timeout(runtime_state_query_timeout())
                 .unwrap_or(Err("room.set_live timeout".to_string()))
         }
+        "room.set_chart" => {
+            let room_id = args
+                .first()
+                .and_then(Value::as_str)
+                .ok_or_else(|| "room_id required".to_string())?;
+            let chart_id = args
+                .get(1)
+                .and_then(Value::as_i64)
+                .map(|v| v as i32)
+                .ok_or_else(|| "chart_id (int) required".to_string())?;
+            let chart_name = args
+                .get(2)
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string();
+            let (tx, rx) = std::sync::mpsc::channel();
+            let s = Arc::clone(state);
+            let room_id = room_id.to_string();
+            spawn_on_runtime(async move {
+                let chart_name = if chart_name.is_empty() {
+                    let fetched = s
+                        .phira_client
+                        .get_json::<crate::server::Chart>(
+                            &s.config.phira_api_endpoint,
+                            None,
+                            &format!("/chart/{chart_id}"),
+                            None,
+                            crate::phira_client::PhiraRetryNoticeTarget::Silent,
+                            None,
+                        )
+                        .await;
+                    match fetched {
+                        Ok(chart) => chart.name,
+                        Err(_) => format!("chart_{chart_id}"),
+                    }
+                } else {
+                    chart_name
+                };
+                let _ = tx.send(
+                    s.room_commands
+                        .set_chart(&s, &room_id, chart_id, &chart_name, 0, None, None)
+                        .await,
+                );
+            });
+            rx.recv_timeout(runtime_state_query_timeout())
+                .unwrap_or(Err("room.set_chart timeout".to_string()))
+        }
         "room.get_phira_api_endpoint" => {
             let room_id = args
                 .first()

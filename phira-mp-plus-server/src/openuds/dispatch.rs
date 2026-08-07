@@ -40,6 +40,7 @@ pub async fn dispatch_command(
         "room.set_host" => cmd_room_set_host(state, params).await,
         "room.set_tournament" => cmd_room_set_tournament(state, params).await,
         "room.set_live" => cmd_room_set_live(state, params).await,
+        "room.set_chart" => cmd_room_set_chart(state, params).await,
         "room.kick" => cmd_room_kick(state, params).await,
         "room.force_move" => cmd_room_force_move(state, params).await,
         "room.info" => cmd_room_info(state, params).await,
@@ -238,6 +239,46 @@ async fn cmd_room_set_live(
         .and_then(Value::as_bool)
         .ok_or_else(|| "live (bool) required".to_string())?;
     state.room_commands.set_live(state, room_id, live).await
+}
+
+async fn cmd_room_set_chart(
+    state: &Arc<PlusServerState>,
+    params: &Value,
+) -> Result<Value, String> {
+    let room_id = params
+        .get("room_id")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "room_id required".to_string())?;
+    let chart_id = params
+        .get("chart_id")
+        .and_then(Value::as_i64)
+        .map(|v| v as i32)
+        .ok_or_else(|| "chart_id (int) required".to_string())?;
+    // chart_name 可选；缺省时从 Phira API 拉取（与 CLI room set chart-id 一致）。
+    let chart_name = match params.get("chart_name").and_then(Value::as_str) {
+        Some(name) if !name.is_empty() => name.to_string(),
+        _ => {
+            let fetched = state
+                .phira_client
+                .get_json::<crate::server::Chart>(
+                    &state.config.phira_api_endpoint,
+                    None,
+                    &format!("/chart/{chart_id}"),
+                    None,
+                    crate::phira_client::PhiraRetryNoticeTarget::Silent,
+                    None,
+                )
+                .await;
+            match fetched {
+                Ok(chart) => chart.name,
+                Err(_) => format!("chart_{chart_id}"),
+            }
+        }
+    };
+    state
+        .room_commands
+        .set_chart(state, room_id, chart_id, &chart_name, 0, None, None)
+        .await
 }
 
 async fn cmd_room_set_host(

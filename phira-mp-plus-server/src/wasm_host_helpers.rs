@@ -181,6 +181,7 @@ pub fn required_capability(method: &str) -> Option<&'static str> {
         | "room.clear_phira_api_endpoint"
         | "room.set_tournament"
         | "room.set_live"
+        | "room.set_chart"
         | "room.close" => Some("room.manage"),
         value
             if value.starts_with("room.")
@@ -491,6 +492,7 @@ mod tests {
         assert_eq!(required_capability("room.set_lock"), Some("room.manage"));
         assert_eq!(required_capability("room.set_tournament"), Some("room.manage"));
         assert_eq!(required_capability("room.set_live"), Some("room.manage"));
+        assert_eq!(required_capability("room.set_chart"), Some("room.manage"));
         assert_eq!(required_capability("ban.check"), Some("admin"));
         assert_eq!(required_capability("runtime.status"), Some("state.read"));
         assert_eq!(required_capability("not.a.real.method"), None);
