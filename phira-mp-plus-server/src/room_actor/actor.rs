@@ -176,6 +176,7 @@ impl RoomState {
             room_uuid: room_uuid.to_string(),
             locked: self.control.locked,
             cycle: self.control.cycle,
+            tournament: self.control.tournament,
             host: self.control.host_id,
             system_host: self.control.system_host,
             hidden: self.control.hidden,
