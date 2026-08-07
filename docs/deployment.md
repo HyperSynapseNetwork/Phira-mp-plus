@@ -365,8 +365,7 @@ WASM/host API 也支持：`room.create_empty`、`room.set_persistent_empty`、`r
 room create-empty <房间ID> [phira_api_endpoint]
 room set <房间ID> persistent true
 room set <房间ID> persistent false
-room host <房间ID> ?              # 显式设为系统房主，不被后续加入者自动接管
-room set <房间ID> host ?
+room set <房间ID> host ?          # 显式设为系统房主，不被后续加入者自动接管
 ```
 
 `persistent=true` 时最后一名玩家离开后房间仍保留；空房间没有房主，首个普通玩家加入时会静默成为房主，不会广播 `NewHost` 造成 `? 成为房主` 提示。
@@ -417,8 +416,7 @@ admin.set_ids
 隐藏房间不是全局配置项，而是房间状态：
 
 - 房间名以 `-` 开头时默认隐藏。
-- 可用 `room hide <房间ID>` / `room unhide <房间ID>` 手动切换。
-- 也可用 `room set <房间ID> hidden true|false` 修改。
+- 可用 `room set <房间ID> hidden true|false` 修改。
 - WASM/host API 可用 `room.set_hidden`、`room.is_hidden` 管理。
 - 隐藏房间不会出现在房间列表（`rooms.list`，插件挂载的 `GET /api/rooms` 等端点基于此列表）、`[active_rooms]` 欢迎语占位符和房间 SSE 初始公开快照中。
 - 隐藏只影响公开展示，不等于权限隔离；管理员命令和有权限插件仍可定向管理该房间。

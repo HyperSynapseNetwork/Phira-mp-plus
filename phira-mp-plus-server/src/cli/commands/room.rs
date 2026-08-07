@@ -4,7 +4,6 @@ impl CliHandler {
     pub(in crate::cli) async fn dispatch_room_command(&self, args: &[&str]) {
         let sub = args.first().copied().unwrap_or("");
         match sub {
-            "list" | "" => self.list_rooms().await,
             "create-empty" => {
                 if args.len() < 2 {
                     self.out(format!(
@@ -89,27 +88,6 @@ impl CliHandler {
                     self.kick_from_room(args[1], args[2]).await;
                 }
             }
-            "host" => {
-                if args.len() < 3 {
-                    self.out(format!(
-                        "  {} {} room host <房间ID> <用户ID|?>",
-                        c::yellow("?"),
-                        c::bold("用法")
-                    ));
-                } else {
-                    let target = match parse_room_host_target(args[2]) {
-                        Ok(target) => target,
-                        Err(_) => {
-                            self.out(format!(
-                                "  {} 无效的房主目标：请使用用户ID或 ?",
-                                c::red("✗")
-                            ));
-                            return;
-                        }
-                    };
-                    self.room_set_host(args[1], target).await;
-                }
-            }
             "force-move" => {
                 if args.len() < 3 {
                     self.out(format!(
@@ -127,32 +105,6 @@ impl CliHandler {
                     };
                     let monitor = args.get(3).map(|v| parse_cli_bool(v)).unwrap_or(false);
                     self.room_force_move(args[1], uid, monitor).await;
-                }
-            }
-            "hide" => {
-                if args.len() < 2 {
-                    self.out(format!(
-                        "  {} {} room hide <房间ID> [true|false]",
-                        c::yellow("?"),
-                        c::bold("用法")
-                    ));
-                } else {
-                    self.room_hide(
-                        args[1],
-                        args.get(2).map(|v| parse_cli_bool(v)).unwrap_or(true),
-                    )
-                    .await;
-                }
-            }
-            "unhide" => {
-                if args.len() < 2 {
-                    self.out(format!(
-                        "  {} {} room unhide <房间ID>",
-                        c::yellow("?"),
-                        c::bold("用法")
-                    ));
-                } else {
-                    self.room_hide(args[1], false).await;
                 }
             }
             "close" => {
@@ -175,68 +127,6 @@ impl CliHandler {
                     ));
                 } else {
                     self.room_set(args[1], args[2], &args[3..].join(" ")).await;
-                }
-            }
-            "lock" => {
-                if args.len() < 2 {
-                    self.out(format!(
-                        "  {} {} room lock <房间ID> [true|false]",
-                        c::yellow("?"),
-                        c::bold("用法")
-                    ));
-                } else {
-                    let v = args.get(2).map(|v| parse_cli_bool(v)).unwrap_or(true);
-                    match self
-                        .state
-                        .room_commands
-                        .set_lock(&self.state, args[1], v)
-                        .await
-                    {
-                        Ok(_) => {
-                            self.out(format!(
-                                "  {} 房间 {} 已{}锁定",
-                                c::green("✓"),
-                                args[1],
-                                if v { "" } else { "解除" }
-                            ));
-                            // Broadcast to game clients so they update UI immediately.
-                            if let Some(room) = self.find_room(args[1]).await {
-                                room.send(phira_mp_common::Message::LockRoom { lock: v }).await;
-                            }
-                        }
-                        Err(e) => self.out(format!("  {} {}", c::red("✗"), e)),
-                    }
-                }
-            }
-            "cycle" => {
-                if args.len() < 2 {
-                    self.out(format!(
-                        "  {} {} room cycle <房间ID> [true|false]",
-                        c::yellow("?"),
-                        c::bold("用法")
-                    ));
-                } else {
-                    let v = args.get(2).map(|v| parse_cli_bool(v)).unwrap_or(true);
-                    match self
-                        .state
-                        .room_commands
-                        .set_cycle(&self.state, args[1], v)
-                        .await
-                    {
-                        Ok(_) => {
-                            self.out(format!(
-                                "  {} 房间 {} 已{}轮换",
-                                c::green("✓"),
-                                args[1],
-                                if v { "开启" } else { "关闭" }
-                            ));
-                            // Broadcast to game clients so they update UI immediately.
-                            if let Some(room) = self.find_room(args[1]).await {
-                                room.send(phira_mp_common::Message::CycleRoom { cycle: v }).await;
-                            }
-                        }
-                        Err(e) => self.out(format!("  {} {}", c::red("✗"), e)),
-                    }
                 }
             }
             "history" => {
@@ -893,23 +783,6 @@ impl CliHandler {
                 user_id,
                 c::bold(room_id),
                 if monitor { "（旁观）" } else { "" }
-            )),
-            Err(e) => self.out(format!("  {} {}", c::red("✗"), e)),
-        }
-    }
-
-    pub(crate) async fn room_hide(&self, room_id: &str, hidden: bool) {
-        match self
-            .state
-            .room_commands
-            .set_hidden(&self.state, room_id, hidden)
-            .await
-        {
-            Ok(_) => self.out(format!(
-                "  {} 房间 {} 已{}隐藏",
-                c::green("✓"),
-                c::bold(room_id),
-                if hidden { "设为" } else { "取消" }
             )),
             Err(e) => self.out(format!("  {} {}", c::red("✗"), e)),
         }

@@ -54,13 +54,6 @@ pub fn specs() -> Vec<CommandSpec> {
         .advanced()
         .handler(room_sub("kick")),
         CommandSpec::new(
-            "room host",
-            "rooms",
-            "设置房主，? 表示系统房主。",
-            "room host <room_id> <user_id|?>",
-        )
-        .handler(room_sub("host")),
-        CommandSpec::new(
             "room force-move",
             "rooms",
             "强制迁移用户到指定房间。",
@@ -68,22 +61,6 @@ pub fn specs() -> Vec<CommandSpec> {
         )
         .advanced()
         .handler(room_sub("force-move")),
-        CommandSpec::new(
-            "room hide",
-            "rooms",
-            "隐藏房间，使其不出现在 Web API 与欢迎语。",
-            "room hide <room_id> [true|false]",
-        )
-        .advanced()
-        .handler(room_sub("hide")),
-        CommandSpec::new(
-            "room unhide",
-            "rooms",
-            "取消隐藏房间。",
-            "room unhide <room_id>",
-        )
-        .advanced()
-        .handler(room_sub("unhide")),
         CommandSpec::new(
             "room ready",
             "rooms",
@@ -95,20 +72,6 @@ pub fn specs() -> Vec<CommandSpec> {
         .handler(room_sub("ready")),
         CommandSpec::new("room close", "rooms", "解散房间。", "room close <room_id>")
             .handler(room_sub("close")),
-        CommandSpec::new(
-            "room lock",
-            "rooms",
-            "锁定/解锁房间。",
-            "room lock <room_id> [true|false]",
-        )
-        .handler(room_sub("lock")),
-        CommandSpec::new(
-            "room cycle",
-            "rooms",
-            "开启/关闭房主轮换。",
-            "room cycle <room_id> [true|false]",
-        )
-        .handler(room_sub("cycle")),
         CommandSpec::new(
             "room set",
             "rooms",
@@ -204,19 +167,5 @@ pub fn specs() -> Vec<CommandSpec> {
         )
         .advanced()
         .handler(room_sub("whitelist-clear")),
-        CommandSpec::new(
-            "force-start",
-            "rooms",
-            "服务端强制发起房间游戏（room start 别名）。",
-            "force-start <room_id>",
-        )
-        .advanced()
-        .handler(super::with_args(|h, args| {
-            Box::pin(async move {
-                if let Some(room_id) = args.first() {
-                    h.room_start(room_id).await;
-                }
-            })
-        })),
     ]
 }
