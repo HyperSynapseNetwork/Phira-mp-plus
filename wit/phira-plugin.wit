@@ -239,6 +239,9 @@ interface phira-room-mgmt {
     /// late-join、聊天），交 PPB 编排。
     set-room-tournament: func(room-id: string, tournament: bool) -> api-result;
 
+    /// 设置房间 live 状态（建房自动置 true，此处可手动开关，供 Panel/PPB 控制）。
+    set-room-live: func(room-id: string, live: bool) -> api-result;
+
     /// Close / disband a room.
     close-room: func(room-id: string) -> api-result;
 

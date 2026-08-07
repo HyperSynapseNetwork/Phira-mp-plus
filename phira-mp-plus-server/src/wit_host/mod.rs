@@ -299,6 +299,13 @@ mod wit_trait_impls {
                 &[serde_json::json!(room_id), serde_json::json!(tournament)],
             )
         }
+        fn set_room_live(&mut self, room_id: String, live: bool) -> types::ApiResult {
+            query_api_result(
+                self,
+                "room.set_live",
+                &[serde_json::json!(room_id), serde_json::json!(live)],
+            )
+        }
         fn close_room(&mut self, room_id: String) -> types::ApiResult {
             query_api_result(self, "room.close", &[serde_json::json!(room_id)])
         }

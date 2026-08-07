@@ -1034,6 +1034,24 @@ impl CliHandler {
                     Err(e) => self.out(format!("  {} {}", c::red("✗"), e)),
                 }
             }
+            "live" => {
+                // 房间 live 状态（建房自动置 true，此处可手动开关，供 Panel/PPB 控制）。
+                let v = parse_cli_bool(value);
+                match self
+                    .state
+                    .room_commands
+                    .set_live(&self.state, room_id, v)
+                    .await
+                {
+                    Ok(_) => self.out(format!(
+                        "  {} 房间 {} 已{}live 状态",
+                        c::green("✓"),
+                        room_id,
+                        if v { "开启" } else { "关闭" }
+                    )),
+                    Err(e) => self.out(format!("  {} {}", c::red("✗"), e)),
+                }
+            }
             "phira_api_endpoint" => match crate::server::parse_room_endpoint_value(value) {
                 Ok(endpoint) => match self
                     .state

@@ -102,7 +102,7 @@
 **用户**：`users`、`kick`、`admin-id list/add/remove/set`
 **封禁**：`ban [reason]`、`ban ip`、`unban`、`banlist`、`ip-history`
 **广播**：`broadcast all|room|user`
-**房间**：`rooms`、`room create-empty`、`room info`、`room start/ready/cancel/kick/host`、`room force-move`、`room hide/unhide`、`room close`、`room lock/cycle`、`room set <field>`（lock/cycle/hidden/persistent/degraded/host/chart/api_endpoint/tournament）、`room history/rounds/round/uuid`、`room ban/unban/banlist`、`force-start`
+**房间**：`rooms`、`room create-empty`、`room info`、`room start/ready/cancel/kick/host`、`room force-move`、`room hide/unhide`、`room close`、`room lock/cycle`、`room set <field>`（lock/cycle/hidden/persistent/degraded/host/chart/api_endpoint/tournament/live）、`room history/rounds/round/uuid`、`room ban/unban/banlist`、`force-start`
 **插件**：`plugin list/enable/disable/remove/reload/info/call`（WASM 插件可动态注册 CLI 命令）
 **扩展**：`extension list/get`
 **杂项**：`roomcreation on|off`、`approve openuds`、`welcome-config`、`player-count`

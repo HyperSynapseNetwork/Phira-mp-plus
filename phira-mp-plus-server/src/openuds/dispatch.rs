@@ -39,6 +39,7 @@ pub async fn dispatch_command(
         "room.cycle" => cmd_room_cycle(state, params).await,
         "room.set_host" => cmd_room_set_host(state, params).await,
         "room.set_tournament" => cmd_room_set_tournament(state, params).await,
+        "room.set_live" => cmd_room_set_live(state, params).await,
         "room.kick" => cmd_room_kick(state, params).await,
         "room.force_move" => cmd_room_force_move(state, params).await,
         "room.info" => cmd_room_info(state, params).await,
@@ -222,6 +223,21 @@ async fn cmd_room_set_tournament(
         .room_commands
         .set_tournament(state, room_id, tournament)
         .await
+}
+
+async fn cmd_room_set_live(
+    state: &Arc<PlusServerState>,
+    params: &Value,
+) -> Result<Value, String> {
+    let room_id = params
+        .get("room_id")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "room_id required".to_string())?;
+    let live = params
+        .get("live")
+        .and_then(Value::as_bool)
+        .ok_or_else(|| "live (bool) required".to_string())?;
+    state.room_commands.set_live(state, room_id, live).await
 }
 
 async fn cmd_room_set_host(
