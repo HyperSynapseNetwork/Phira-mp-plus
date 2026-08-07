@@ -18,6 +18,7 @@
 pub mod command;
 pub mod config;
 pub mod environment;
+pub mod isolated;
 pub mod metrics;
 pub mod mock_phira;
 pub mod presets;

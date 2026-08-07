@@ -272,6 +272,41 @@ impl CliHandler {
                     let addr = cmd_args[i].to_string();
                     run_args.overrides.push(("listen-addr".to_string(), addr));
                 }
+                "--db-url" => {
+                    i += 1;
+                    if i >= cmd_args.len() {
+                        self.out(format!(
+                            "  {} --db-url requires a PostgreSQL connection string for World B",
+                            c::red("✗")
+                        ));
+                        return;
+                    }
+                    run_args.server_db_url = cmd_args[i].to_string();
+                }
+                "--no-spawn" => {
+                    run_args.spawn_isolated = false;
+                }
+                "--server-port" => {
+                    i += 1;
+                    if i >= cmd_args.len() {
+                        self.out(format!(
+                            "  {} --server-port requires a number (World B game port)",
+                            c::red("✗")
+                        ));
+                        return;
+                    }
+                    match cmd_args[i].parse::<u16>() {
+                        Ok(p) => run_args.server_port = Some(p),
+                        Err(_) => {
+                            self.out(format!(
+                                "  {} invalid port: {}",
+                                c::red("✗"),
+                                cmd_args[i]
+                            ));
+                            return;
+                        }
+                    }
+                }
                 "--mock-phira-delay" => {
                     i += 1;
                     if i >= cmd_args.len() {
@@ -849,6 +884,18 @@ impl CliHandler {
         ));
         self.out(format!(
             "  {}   --mock-phira-timeout <ms> Mock Phira timeout delay (default: 30000ms)",
+            c::dim("│")
+        ));
+        self.out(format!(
+            "  {}   --db-url <conn>        World B 独立测试数据库连接串（默认模式必填）",
+            c::dim("│")
+        ));
+        self.out(format!(
+            "  {}   --server-port <N>      World B 游戏端口（默认自动选空闲端口）",
+            c::dim("│")
+        ));
+        self.out(format!(
+            "  {}   --no-spawn             不拉起隔离实例，改为连接现有服务器（--listen-addr）",
             c::dim("│")
         ));
         self.out(format!(

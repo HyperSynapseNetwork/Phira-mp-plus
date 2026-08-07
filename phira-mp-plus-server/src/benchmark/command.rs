@@ -191,6 +191,13 @@ pub struct BenchmarkRunArgs {
     pub overrides: Vec<(String, String)>,
     /// 运行唯一标识（每次运行生成一次）
     pub run_id: Uuid,
+    /// 是否拉起隔离的独立服务器实例（World B）进行压测（默认 true）。
+    /// false 时连接现有服务器（`--listen-addr`），不碰任何线上配置。
+    pub spawn_isolated: bool,
+    /// World B 独立实例使用的测试数据库连接串（spawn_isolated 时必须提供）。
+    pub server_db_url: String,
+    /// World B 独立实例的游戏端口（None 时自动选空闲端口）。
+    pub server_port: Option<u16>,
 }
 
 impl Default for BenchmarkRunArgs {
@@ -205,6 +212,9 @@ impl Default for BenchmarkRunArgs {
             plugins: Vec::new(),
             overrides: Vec::new(),
             run_id: Uuid::new_v4(),
+            spawn_isolated: true,
+            server_db_url: String::new(),
+            server_port: None,
         }
     }
 }

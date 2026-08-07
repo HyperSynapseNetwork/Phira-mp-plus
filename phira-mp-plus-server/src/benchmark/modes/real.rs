@@ -985,13 +985,19 @@ pub async fn run_real(
     state: &crate::server::PlusServerState,
     run_id: Uuid,
 ) -> Result<RealRunResult, String> {
+    config.validate()?;
     let started_at = Instant::now();
     let environment = EnvironmentSnapshot::capture().await;
     let mut report = BenchmarkReport::new("Real Mode Benchmark", environment, config.clone());
     let overall_deadline = started_at + config.duration;
 
-    // ── 1. 可选：启动 Mock Phira 服务器 ──────────────────────────────
-    let mock_phira = if config.mock_phira {
+    // ── 1. 启动 Mock Phira 服务器（仅隔离世界 World B 使用）────────
+    //    基准客户端使用 bench- 前缀 token，World B 的 phira_api_endpoint
+    //    指向本 mock；线上实例（World A）的配置不被触碰。
+    let mock_phira = if config.spawn_isolated {
+        if !config.mock_phira {
+            return Err("spawn_isolated 模式需要 Mock Phira（请勿关闭 mock_phira）".to_string());
+        }
         let listen_addr = if config.mock_phira_port > 0 {
             format!("127.0.0.1:{}", config.mock_phira_port)
         } else {
@@ -1014,24 +1020,28 @@ pub async fn run_real(
         None
     };
 
-    // ── 1b. 如果启动了 Mock Phira，覆盖 PMP 的 API endpoint ──────────
-    let original_endpoint = if let Some(ref mock) = mock_phira {
-        let port = mock.port().ok_or("Mock Phira port not available")?;
-        let mock_url = format!("http://127.0.0.1:{}", port);
-        let mut lc = state.live_config.write().await;
-        let orig = lc.phira_api_endpoint.clone();
-        info!("Set phira_api_endpoint to {mock_url} (original: {orig})");
-        lc.phira_api_endpoint = mock_url;
-        Some(orig)
+    // ── 2. 隔离 World B 实例 or 连接现有服务器 ─────────────────────
+    //    不再改写线上 live_config.phira_api_endpoint（原隔离泄漏点）。
+    let (isolated, server_addr) = if config.spawn_isolated {
+        let mock_url = mock_phira
+            .as_ref()
+            .and_then(|m| m.port())
+            .map(|port| format!("http://127.0.0.1:{port}"))
+            .ok_or("Mock Phira port not available")?;
+        let server = crate::benchmark::isolated::spawn_isolated_server(&config, &mock_url).await?;
+        info!(
+            "Spawned isolated World B on 127.0.0.1:{} (http {})",
+            server.port, server.http_port
+        );
+        let addr = format!("127.0.0.1:{}", server.port);
+        (Some(server), addr)
     } else {
-        None
+        let addr = config
+            .listen_addr
+            .clone()
+            .unwrap_or_else(|| format!("127.0.0.1:{}", state.config.port));
+        (None, addr)
     };
-
-    // ── 2. 确定服务器地址 ────────────────────────────────────────────
-    let server_addr = config
-        .listen_addr
-        .clone()
-        .unwrap_or_else(|| format!("127.0.0.1:{}", state.config.port));
 
     info!(
         "Starting real benchmark: {} clients, scenario={}, duration={}s, rooms={}, members_per_room={}",
@@ -1324,9 +1334,13 @@ pub async fn run_real(
         total_errors,
     );
 
-    // ── 7. 清理基准测试房间 ──────────────────────────────────────────
-    // 使用 benchmark_run_id 构造房间 ID 前缀，关闭本运行创建的所有房间。
-    if config.scenario != BenchmarkScenario::Connection && !results.is_empty() {
+    // ── 7. 清理 ─────────────────────────────────────────────────────
+    // 隔离模式：World B 进程被杀即随进程清空，无需 close_room；
+    // 连接现有服务器模式：使用 benchmark_run_id 关闭本运行创建的房间。
+    if isolated.is_none()
+        && config.scenario != BenchmarkScenario::Connection
+        && !results.is_empty()
+    {
         let rooms_used = if is_hot_room {
             1u32
         } else {
@@ -1344,10 +1358,10 @@ pub async fn run_real(
         }
     }
 
-    // ── 8. 恢复环境 ──────────────────────────────────────────────────
-    if let Some(orig) = original_endpoint {
-        state.live_config.write().await.phira_api_endpoint = orig;
-        info!("Restored original phira_api_endpoint");
+    // ── 8. 停止 World B / Mock Phira ─────────────────────────────────
+    let server_pid = isolated.as_ref().and_then(|s| s.pid());
+    if let Some(mut iso) = isolated {
+        iso.shutdown().await;
     }
 
     if let Some(mock) = mock_phira {
@@ -1356,6 +1370,6 @@ pub async fn run_real(
 
     Ok(RealRunResult {
         report,
-        server_pid: None,
+        server_pid,
     })
 }

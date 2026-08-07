@@ -48,6 +48,13 @@ pub struct BenchmarkConfig {
     pub listen_addr: Option<String>,
     /// Real 模式下，数据库连接字符串
     pub database_url: Option<String>,
+    /// 是否拉起隔离的独立服务器实例（World B）压测（默认 true）。
+    /// false 时连接现有服务器，不碰任何线上配置。
+    pub spawn_isolated: bool,
+    /// World B 独立实例的测试数据库连接串（spawn_isolated 时必填）。
+    pub server_db_url: String,
+    /// World B 独立实例的游戏端口（None 时自动选空闲端口）。
+    pub server_port: Option<u16>,
 
     // ── 数据采集 ──
     /// 指标采样间隔（毫秒）
@@ -90,6 +97,9 @@ impl BenchmarkConfig {
             plugins: Vec::new(),
             listen_addr: None,
             database_url: None,
+            spawn_isolated: true,
+            server_db_url: String::new(),
+            server_port: None,
             metrics_interval_ms: 1_000,
             profile_enabled: false,
             persist_events: false,
@@ -118,6 +128,11 @@ impl BenchmarkConfig {
         }
         if self.tick_interval_ms < 50 || self.tick_interval_ms > 60_000 {
             return Err("tick_interval_ms must be between 50 and 60000".to_string());
+        }
+        if self.spawn_isolated && self.server_db_url.trim().is_empty() {
+            return Err(
+                "spawn_isolated 需要 --db-url 提供 World B 独立测试数据库连接串".to_string(),
+            );
         }
         Ok(())
     }

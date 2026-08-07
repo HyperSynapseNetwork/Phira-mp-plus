@@ -85,6 +85,9 @@ impl BenchmarkRunner {
         config.duration = args.duration;
         config.seed = args.seed;
         config.plugins = args.plugins.clone();
+        config.spawn_isolated = args.spawn_isolated;
+        config.server_db_url = args.server_db_url.clone();
+        config.server_port = args.server_port;
         for (key, val) in &args.overrides {
             match key.as_str() {
                 "listen-addr" => config.listen_addr = Some(val.clone()),
