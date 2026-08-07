@@ -60,7 +60,7 @@ fn default_overview_shows_primary_commands() {
     for cmd_name in &[
         "help",
         "exit",
-        "status",
+        "check-config",
         "users",
         "rooms",
         "room start",
@@ -78,8 +78,7 @@ fn default_overview_shows_all_commands() {
     let registry = runtime_registry();
     let overview = registry.format_overview();
     for cmd_name in &[
-        "runtime schema",
-        "runtime events",
+        "runtime",
         "wal inspect",
         "ban",
         "benchmark run",
@@ -119,13 +118,12 @@ fn help_advanced_shows_benchmark_commands() {
 }
 
 #[test]
-fn help_dev_shows_developer_commands() {
+fn help_advanced_shows_runtime_command() {
     let registry = runtime_registry();
-    let dev = registry.format_dev();
-    assert!(!dev.is_empty(), "dev view should have commands");
+    let adv = registry.format_advanced();
     assert!(
-        dev.contains("runtime schema"),
-        "dev view should show runtime schema"
+        adv.contains("runtime"),
+        "advanced view should show runtime"
     );
 }
 
@@ -133,8 +131,8 @@ fn help_dev_shows_developer_commands() {
 fn help_command_format_is_unified() {
     let registry = runtime_registry();
     let help = registry
-        .format_help("status")
-        .expect("status command should exist");
+        .format_help("check-config")
+        .expect("check-config command should exist");
     assert!(help.contains("NAME"), "help should contain NAME section");
     assert!(
         help.contains("DESCRIPTION"),
@@ -237,16 +235,14 @@ fn canonical_namespaces_exist() {
 // ── Audience validation ───────────────────────────────────────────────
 
 #[test]
-fn developer_commands_have_developer_audience() {
+fn runtime_command_is_advanced() {
     let registry = runtime_registry();
-    for name in &["runtime schema", "runtime latency"] {
-        let spec = registry.get(name).expect("{name} should be in registry");
-        assert_eq!(
-            spec.audience,
-            CommandAudience::Developer,
-            "command '{name}' must be developer"
-        );
-    }
+    let spec = registry.get("runtime").expect("runtime should be in registry");
+    assert_eq!(
+        spec.audience,
+        CommandAudience::Advanced,
+        "command 'runtime' must be advanced"
+    );
 }
 
 #[test]

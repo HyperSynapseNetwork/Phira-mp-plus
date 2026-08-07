@@ -14,31 +14,14 @@ mod status;
 use super::super::*;
 
 impl CliHandler {
-    pub(in crate::cli) async fn dispatch_runtime_command(&self, args: &[&str]) {
-        self.runtime_command(args).await;
-    }
-
-    async fn runtime_command(&self, args: &[&str]) {
-        let sub = args.first().copied().unwrap_or("status");
-        match sub {
-            "status" | "" => self.print_runtime_status().await,
-            "phira" => self.print_runtime_phira(),
-            "commands" => self.print_runtime_commands(),
-            "events" => self.print_runtime_events(),
-            "schema" => self.print_runtime_schema().await,
-            "persistence" => self.print_runtime_persistence().await,
-            "latency" => self.print_runtime_latency().await,
-            _ => {
-                self.out(format!(
-                    "  {} 未知 runtime 子命令: {}",
-                    c::red("✗"),
-                    c::yellow(sub)
-                ));
-                self.out(format!(
-                    "  {} 可用: runtime status | phira | commands | events | persistence | schema | latency",
-                    c::dim("▸")
-                ));
-            }
-        }
+    /// D3 收敛：`runtime` 单命令一次打印全部诊断分区。
+    pub(in crate::cli) async fn print_runtime_all(&self) {
+        self.print_runtime_status().await;
+        self.print_runtime_commands();
+        self.print_runtime_phira();
+        self.print_runtime_events();
+        self.print_runtime_schema().await;
+        self.print_runtime_persistence().await;
+        self.print_runtime_latency().await;
     }
 }

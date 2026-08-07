@@ -68,23 +68,6 @@ help groups
 
 ---
 
-### `status`
-
-查看服务器运行状态。
-
-**输出:**
-```
-  ◆ Phira-mp+ v0.2.0  │ 端口 12346  │ 房间 5
-```
-
-| 字段 | 说明 |
-|------|------|
-| 版本号 | cargo 包版本 |
-| 端口 | 配置的监听端口 |
-| 房间数 | 当前活跃房间数 |
-
----
-
 ### `version`
 
 显示服务器版本号。
@@ -95,17 +78,9 @@ help groups
 
 ### `check-config`
 
-验证当前加载的配置并显示脱敏摘要。
+验证当前加载的配置并显示脱敏摘要（含活跃会话/房间数，吸收原 `status`/`doctor`）。
 
-**输出:** 服务端版本、端口、数据库、插件目录、容量、保留期等脱敏配置摘要
-
----
-
-### `doctor`
-
-运行系统诊断检查。
-
-**输出:** 数据库连接、会话数、房间数等诊断结果
+**输出:** 服务端版本、端口、数据库、插件目录、容量、保留期、活跃会话/房间数等
 
 ---
 
@@ -703,64 +678,11 @@ Phira），压测完杀进程。线上实例（World A）的配置与状态完�
 
 ## 运行时诊断
 
-### `runtime status`
+### `runtime`
 
-服务器运行时诊断总览。
+一次打印全部运行时诊断分区：command registry / Phira HTTP / events / schema / persistence / latency。
 
-**输出:**
-```
-  <rooms> rooms | <N> commands
-```
-
----
-
-### `runtime persistence`
-
-查看持久化 Worker 和遥测批处理器统计。
-
-**输出:** Worker 队列与 pending、数据库确认/失败、dead-letter 路径与成功/失败计数、per-kind 统计和最近 trace 条目。`worker_enqueued/path_accepted` 仅表示管线接收，不表示 PostgreSQL 已 commit。
-
----
-
-### `runtime phira`
-
-查看 Phira HTTP RetryClient 统计和策略。仅 developer。
-
-**输出:** 请求/成功/重试/失败计数、circuit breaker 状态、endpoint 级统计
-
----
-
-### `runtime commands`
-
-查看命令注册表统计。仅 developer。
-
-**输出:** `Registry: N primary, N advanced, N dev`
-
----
-
-### `runtime events`
-
-查看事件总线统计与最近事件。仅 developer。
-
-**输出:** EventBus 统计（总事件数、trace 窗口大小、订阅者数）
-
----
-
-### `runtime schema`
-
-查看持久化 Schema 信息。仅 developer。
-
-**输出:** Schema 版本号、telemetry 表说明
-
----
-
-
-
-### `runtime latency`
-
-打印延迟直方图。仅 developer。
-
-**输出:** 两个直方图——响应延迟（命令收到→响应）与握手延迟（收到认证→AuthOK 发出），各桶计数与百分比（`< 1ms` / `1–5ms` / … / `≥ 5000ms`）
+**输出:** 各分区的统计与诊断信息（一次出完）。
 
 ---
 

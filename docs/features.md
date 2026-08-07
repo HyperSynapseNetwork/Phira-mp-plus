@@ -98,7 +98,7 @@
 
 ## 五、管理 CLI（`cli/`）
 
-**核心/生命周期**：`exit/quit`、`help`、`status`、`check-config`、`doctor`、`config reload`
+**核心/生命周期**：`exit/quit`、`help`、`check-config`（含活跃会话/房间数，吸收 status/doctor）、`config reload`
 **用户**：`users`、`kick`、`admin-id list/add/remove/set`
 **封禁**：`ban [reason]`、`ban ip`、`unban`、`banlist`、`ip-history`
 **广播**：`broadcast all|room|user`
@@ -108,7 +108,7 @@
 **杂项**：`roomcreation on|off`、`approve openuds`、`welcome-config`、`player-count`
 > `roomcreation` / `update auto` / `connections` 是**运行时开关**（config reload 不重置，YAML 对应项仅启动时生效）——语义统一：运行时开关 = reload 免疫。
 **基准**：`benchmark list/run/suite/compare`（run 默认在隔离的独立实例 World B 上压测，不触碰线上配置，详见 cli.md）
-**运行时**：`runtime status/phira/commands/events/schema/persistence/latency`
+**运行时**：`runtime`（一次打印 registry/phira/events/schema/persistence/latency 全部分区）
 **WAL/死信**：`wal inspect`、`dead-letter list/replay`
 
 ---

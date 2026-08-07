@@ -20,20 +20,6 @@ pub fn specs() -> Vec<CommandSpec> {
             .handler(Arc::new(|_state, _args| {
                 Box::pin(async move { vec![format!("  ◆ PMP v{}", env!("CARGO_PKG_VERSION"))] })
             })),
-        CommandSpec::new("status", "core", "查看服务器运行状态。", "status")
-            .example("status")
-            .handler(Arc::new(|state, _args| {
-                let state = Arc::clone(state);
-                Box::pin(async move {
-                    let rooms = state.rooms.try_read().map(|r| r.len()).unwrap_or(0);
-                    vec![format!(
-                        "  ◆ Phira-mp+ v{}  │ 端口 {}  │ 房间 {}",
-                        env!("CARGO_PKG_VERSION"),
-                        state.config.port,
-                        rooms
-                    )]
-                })
-            })),
         CommandSpec::new(
             "config reload",
             "runtime",
@@ -133,6 +119,10 @@ pub fn specs() -> Vec<CommandSpec> {
                         .unwrap_or("不可用");
                     lines.push(format!("  ◆ 数据库状态: {db_status}"));
                 }
+                let sessions = state.sessions.try_read().map(|s| s.len()).unwrap_or(0);
+                let rooms = state.rooms.try_read().map(|r| r.len()).unwrap_or(0);
+                lines.push(format!("  ◆ 活跃会话: {sessions}"));
+                lines.push(format!("  ◆ 活跃房间: {rooms}"));
                 lines
                 })
             })),
@@ -211,22 +201,5 @@ pub fn specs() -> Vec<CommandSpec> {
                 }
             })
         })),
-        CommandSpec::new("doctor", "core", "运行系统诊断检查。", "doctor")
-            .handler(Arc::new(|state, _args| {
-                let state = Arc::clone(state);
-                Box::pin(async move {
-                let mut lines = vec![format!("  ◆ Phira-mp+ v{} Doctor", env!("CARGO_PKG_VERSION"))];
-                if let Some(_db) = crate::internal_hooks::DB.get() {
-                    lines.push("  ✓ 数据库: 已连接".to_string());
-                } else {
-                    lines.push("  ○ 数据库: 未配置".to_string());
-                }
-                let sessions = state.sessions.try_read().map(|s| s.len()).unwrap_or(0);
-                lines.push(format!("  ✓ 会话: {sessions} 活跃"));
-                let rooms = state.rooms.try_read().map(|r| r.len()).unwrap_or(0);
-                lines.push(format!("  ✓ 房间: {rooms} 个"));
-                lines
-                })
-            })),
     ]
 }
