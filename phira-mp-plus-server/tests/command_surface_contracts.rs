@@ -216,7 +216,8 @@ fn canonical_exit_is_command() {
 #[test]
 fn canonical_namespaces_exist() {
     let registry = runtime_registry();
-    for name in &["room", "plugin", "runtime"] {
+    // D3 收敛：`runtime` 已合并为直接命令（一次打印全部分区），不再是命名空间。
+    for name in &["room", "plugin"] {
         assert!(
             registry.get(name).is_none(),
             "'{name}' as a direct command should not exist (it's a namespace)"
@@ -226,6 +227,10 @@ fn canonical_namespaces_exist() {
             "namespace '{name}' should have child commands"
         );
     }
+    assert!(
+        registry.get("runtime").is_some(),
+        "runtime should now be a direct command (D3 merge)"
+    );
     assert!(
         !registry.child_commands("benchmark").is_empty(),
         "benchmark should have child commands"
