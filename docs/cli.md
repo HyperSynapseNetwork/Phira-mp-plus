@@ -720,6 +720,10 @@ help groups
 
 运行基准测试。仅支持 Real 模式。
 
+**默认在隔离的独立服务器实例（World B）上压测**：`benchmark run` 会自spawn 一个
+独立的 PMP 子进程（独立端口、独立测试数据库、`phira_api_endpoint` 指向 Mock
+Phira），压测完杀进程。线上实例（World A）的配置与状态完全不被触碰。
+
 | 参数 | 类型 | 说明 |
 |------|------|------|
 | `--scenario` | `str` | 负载场景名（见 benchmark list） |
@@ -729,8 +733,11 @@ help groups
 | `--duration` | `str` (可选) | 运行时长，如 30 / 10m / 2h |
 | `--seed` | `int` (可选) | 随机种子 |
 | `--output` | `str` (可选) | 输出格式：text（默认）、json、markdown |
+| `--db-url` | `str` | **World B 独立测试数据库连接串（默认隔离模式必填）** |
+| `--server-port` | `int` (可选) | World B 游戏端口（默认自动选空闲端口） |
+| `--no-spawn` | flag | 不拉起隔离实例，改为连接现有服务器（配合 `--listen-addr`；目标服务器需自行配置好 Mock Phira endpoint） |
 
-**输出:** Benchmark 报告。
+**输出:** Benchmark 报告。报告同时写入线上实例的 `mp_runtime_benchmark_reports` 表。
 
 ---
 
