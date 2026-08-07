@@ -162,6 +162,26 @@ impl RoomCommandGateway {
             .into_untyped()
     }
 
+    /// 赛事模式房间（房间级配置）。开启后禁用 PMP 默认交互行为，交 PPB 编排。
+    pub async fn set_tournament(
+        &self,
+        state: &PlusServerState,
+        room_id: &str,
+        tournament: bool,
+    ) -> Result<Value, String> {
+        let started = Instant::now();
+        let rid = room_id.to_string();
+        let result = self
+            .room_mailbox(&rid, None, |reply| RoomActorCommand::SetTournament {
+                room_id: rid.clone(),
+                tournament,
+                reply,
+            })
+            .await;
+        self.finish_command(state, RoomCommandKind::SetTournament.action(), room_id, started, result)
+            .into_untyped()
+    }
+
     // ── CheckAllReady (fire-and-forget) ────────────────────────────────────
 
     /// PMP45 P0-O: 响应后 fire-and-forget 的 `check_all_ready` 重入。

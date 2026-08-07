@@ -47,6 +47,8 @@ pub(super) enum RoomCommandKind {
     /// PMP45 P0-K: 设置房间 degraded 标志（Join 补偿失败后阻塞后续 Join，
     /// 直到操作员 / 未来 reconcile 清空）。
     SetDegraded,
+    /// 赛事模式房间（房间级配置）：开启后禁用 PMP 默认交互行为，交 PPB 编排。
+    SetTournament,
     AddTouches,
     AddJudges,
     SetDisplayName,
@@ -83,6 +85,7 @@ impl RoomCommandKind {
             Self::RemoveUser => "remove_user",
             Self::SetLive => "set_live",
             Self::SetDegraded => "set_degraded",
+            Self::SetTournament => "set_tournament",
             Self::AddTouches => "add_touches",
             Self::AddJudges => "add_judges",
             Self::SetDisplayName => "set_display_name",
@@ -295,6 +298,14 @@ pub(crate) enum RoomActorCommand {
         degraded: bool,
         reply: oneshot::Sender<RoomCommandResult>,
     },
+    /// 赛事模式房间（房间级配置）。开启后禁用 PMP 默认交互行为（准备倒计时
+    /// 自动开赛、每轮结算广播、房主自动转移、cycle 自动轮换、Playing 期
+    /// late-join 确认、聊天），交 PPB 编排。
+    SetTournament {
+        room_id: String,
+        tournament: bool,
+        reply: oneshot::Sender<RoomCommandResult>,
+    },
     #[allow(dead_code)]
     AddTouches {
         room_id: String,
@@ -373,6 +384,7 @@ impl RoomActorCommand {
             Self::RemoveUser { .. } => RoomCommandKind::RemoveUser,
             Self::SetLive { .. } => RoomCommandKind::SetLive,
             Self::SetDegraded { .. } => RoomCommandKind::SetDegraded,
+            Self::SetTournament { .. } => RoomCommandKind::SetTournament,
             Self::AddTouches { .. } => RoomCommandKind::AddTouches,
             Self::AddJudges { .. } => RoomCommandKind::AddJudges,
             Self::SetDisplayName { .. } => RoomCommandKind::SetDisplayName,
@@ -408,6 +420,7 @@ impl RoomActorCommand {
             | Self::RemoveUser { reply, .. }
             | Self::SetLive { reply, .. }
             | Self::SetDegraded { reply, .. }
+            | Self::SetTournament { reply, .. }
             | Self::AddTouches { reply, .. }
             | Self::AddJudges { reply, .. }
             | Self::SetDisplayName { reply, .. }

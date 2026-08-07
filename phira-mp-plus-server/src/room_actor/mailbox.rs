@@ -410,7 +410,8 @@ async fn run_lifecycle_maintenance(
     as_.player_data.retain(|&k, _| current_ids.contains(&k));
     as_.display_names.retain(|&k, _| current_ids.contains(&k));
 
-    // 准备倒计时：检查是否超时
+    // 准备倒计时：检查是否超时（赛事模式由 PPB 编排开赛，禁用自动开赛）
+    if !as_.state.control.tournament {
     if let InternalRoomState::WaitForReady { .. } = &as_.state.lifecycle {
         if let Some(started_at) = as_.state.ready_countdown_started_at {
             let elapsed = std::time::SystemTime::now()
@@ -432,6 +433,7 @@ async fn run_lifecycle_maintenance(
             }
         }
     }
+    } // end !tournament（赛事模式禁用准备倒计时自动开赛）
 
     // 对局超时：检查 Playing 状态下是否超过截止时间
     if let InternalRoomState::Playing { .. } = &as_.state.lifecycle {

@@ -664,6 +664,10 @@ async fn handle_chat(
     let res: Result<()> = async {
         let room = user.room.read().await.as_ref().map(Arc::clone)
             .ok_or_else(|| anyhow::anyhow!("{}", crate::tl!("no-room")))?;
+        // 赛事模式：禁用聊天（完全抑制默认交互，交 PPB 编排）。
+        if room.control_snapshot().tournament {
+            return Err(anyhow::anyhow!("chat disabled in tournament room"));
+        }
         // PersistenceWorker (exclusive — no direct DB write)
         if let Err(e) = user.server.persistence_worker.enqueue(
             crate::persistence::message::PersistenceEvent::ServerEvent {

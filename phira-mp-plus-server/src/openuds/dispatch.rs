@@ -38,6 +38,7 @@ pub async fn dispatch_command(
         "room.lock" => cmd_room_lock(state, params).await,
         "room.cycle" => cmd_room_cycle(state, params).await,
         "room.set_host" => cmd_room_set_host(state, params).await,
+        "room.set_tournament" => cmd_room_set_tournament(state, params).await,
         "room.kick" => cmd_room_kick(state, params).await,
         "room.force_move" => cmd_room_force_move(state, params).await,
         "room.info" => cmd_room_info(state, params).await,
@@ -205,6 +206,24 @@ async fn cmd_room_cycle(
     state.room_commands.set_cycle(state, room_id, cycle).await
 }
 
+async fn cmd_room_set_tournament(
+    state: &Arc<PlusServerState>,
+    params: &Value,
+) -> Result<Value, String> {
+    let room_id = params
+        .get("room_id")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "room_id required".to_string())?;
+    let tournament = params
+        .get("tournament")
+        .and_then(Value::as_bool)
+        .ok_or_else(|| "tournament (bool) required".to_string())?;
+    state
+        .room_commands
+        .set_tournament(state, room_id, tournament)
+        .await
+}
+
 async fn cmd_room_set_host(
     state: &Arc<PlusServerState>,
     params: &Value,
@@ -314,6 +333,7 @@ async fn cmd_room_info(
         "created_at": room.created_at,
         "locked": control.locked,
         "cycle": control.cycle,
+        "tournament": control.tournament,
         "hidden": control.hidden,
         "live": room.is_live(),
         "persistent_empty": control.persistent_empty,

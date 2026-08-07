@@ -112,7 +112,7 @@ pub fn specs() -> Vec<CommandSpec> {
         CommandSpec::new(
             "room set",
             "rooms",
-            "修改房间设置。",
+            "修改房间设置（field: lock/cycle/hidden/persistent/degraded/host/chart/api_endpoint/tournament）。",
             "room set <room_id> <field> <value>",
         )
         .handler(room_sub("set")),

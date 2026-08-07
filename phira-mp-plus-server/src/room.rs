@@ -176,6 +176,10 @@ pub struct RoomControlSnapshot {
     pub admin_start_pending: bool,
     pub max_users: usize,
     pub generation: u64,
+    /// 赛事模式房间（房间级配置，非全局）。开启后禁用 PMP 默认交互行为：
+    /// 准备倒计时自动开赛、每轮结算广播、房主自动转移、cycle 自动轮换、
+    /// Playing 期 late-join 确认、聊天——全部交由 PPB 编排。
+    pub tournament: bool,
 }
 
 /// A room as a broadcast bus.
@@ -299,6 +303,7 @@ impl Room {
                     admin_start_pending: false,
                     max_users: 100,
                     generation: 0,
+                    tournament: snap.tournament,
                 };
             }
         }
@@ -315,6 +320,7 @@ impl Room {
             admin_start_pending: false,
             max_users: 100,
             generation: 0,
+            tournament: false,
         }
     }
 

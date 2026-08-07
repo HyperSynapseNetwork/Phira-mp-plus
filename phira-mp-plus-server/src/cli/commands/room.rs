@@ -1014,6 +1014,26 @@ impl CliHandler {
                     Err(e) => self.out(format!("  {} {}", c::red("✗"), e)),
                 }
             }
+            "tournament" => {
+                // 赛事模式房间（房间级配置）：开启后禁用 PMP 默认交互行为
+                //（准备倒计时自动开赛、每轮结算广播、房主自动转移、cycle 自动
+                // 轮换、late-join、聊天），交 PPB 编排。
+                let v = parse_cli_bool(value);
+                match self
+                    .state
+                    .room_commands
+                    .set_tournament(&self.state, room_id, v)
+                    .await
+                {
+                    Ok(_) => self.out(format!(
+                        "  {} 房间 {} 已{}赛事模式",
+                        c::green("✓"),
+                        room_id,
+                        if v { "开启" } else { "关闭" }
+                    )),
+                    Err(e) => self.out(format!("  {} {}", c::red("✗"), e)),
+                }
+            }
             "phira_api_endpoint" => match crate::server::parse_room_endpoint_value(value) {
                 Ok(endpoint) => match self
                     .state

@@ -234,6 +234,11 @@ interface phira-room-mgmt {
     /// Hide or unhide a room (hidden rooms excluded from Web API).
     set-room-hidden: func(room-id: string, hidden: bool) -> api-result;
 
+    /// 赛事模式房间（房间级配置）。开启后禁用 PMP 默认交互行为
+    ///（准备倒计时自动开赛、每轮结算广播、房主自动转移、cycle 自动轮换、
+    /// late-join、聊天），交 PPB 编排。
+    set-room-tournament: func(room-id: string, tournament: bool) -> api-result;
+
     /// Close / disband a room.
     close-room: func(room-id: string) -> api-result;
 

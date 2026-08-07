@@ -693,6 +693,24 @@ fn server_state_query_dispatch(
             rx.recv_timeout(runtime_state_query_timeout())
                 .unwrap_or(Err("room.set_hidden timeout".to_string()))
         }
+        "room.set_tournament" => {
+            let room_id = args
+                .first()
+                .and_then(Value::as_str)
+                .ok_or_else(|| "room_id required".to_string())?;
+            let tournament = args
+                .get(1)
+                .and_then(Value::as_bool)
+                .ok_or_else(|| "tournament (bool) required".to_string())?;
+            let (tx, rx) = std::sync::mpsc::channel();
+            let s = Arc::clone(state);
+            let room_id = room_id.to_string();
+            spawn_on_runtime(async move {
+                let _ = tx.send(s.room_commands.set_tournament(&s, &room_id, tournament).await);
+            });
+            rx.recv_timeout(runtime_state_query_timeout())
+                .unwrap_or(Err("room.set_tournament timeout".to_string()))
+        }
         "room.get_phira_api_endpoint" => {
             let room_id = args
                 .first()

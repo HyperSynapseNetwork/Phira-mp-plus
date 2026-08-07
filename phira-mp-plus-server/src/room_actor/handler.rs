@@ -554,6 +554,8 @@ async fn check_all_ready(
 
                 // 发送结算排行（本地化）——以刚结算的 round 为准，不依赖
                 // play_history 缓存（结算显示的是当前局真实成绩，绝不被旧轮覆盖）。
+                // 赛事模式抑制每轮结算广播——由 PPB 统一汇总结算展示。
+                if !as_.state.control.tournament {
                 {
                     if let Some(last) = &completed_round {
                         let mut sorted = last.results.clone();
@@ -597,6 +599,7 @@ async fn check_all_ready(
                         }
                     }
                 }
+                } // end !tournament（赛事模式抑制每轮结算广播）
                 lc.send_msg(Message::GameEnd).await;
                 as_.state.round.round_id = None;
                 as_.state.ready_countdown_started_at = None;
@@ -605,7 +608,10 @@ async fn check_all_ready(
                 as_.state.playing_started_at = None;
                 as_.state.progress_subscribers.clear();
                 as_.state.lifecycle = InternalRoomState::SelectChart;
-                if as_.state.control.cycle && !as_.state.control.system_host {
+                if as_.state.control.cycle
+                    && !as_.state.control.system_host
+                    && !as_.state.control.tournament
+                {
                     debug!(room = lc.room().id.to_string(), "cycling");
                     let users = lc.users().await;
                     let host_id = as_.state.control.host_id;
@@ -1720,7 +1726,10 @@ impl RoomCommandHandler {
                         // leave path was broken because `host_id` was never
                         // cleared (assign_room_host_if_missing bails when
                         // `host_id.is_some()`).
-                        if !should_drop && as_.state.control.host_id == Some(*user_id) {
+                        if !should_drop
+                            && as_.state.control.host_id == Some(*user_id)
+                            && !as_.state.control.tournament
+                        {
                             let remaining = lc.users().await;
                             if let Some(next) = remaining.into_iter().next() {
                                 // Transfer host to the next remaining user.  The
@@ -1844,6 +1853,20 @@ impl RoomCommandHandler {
                         "room degraded flag changed via set_degraded"
                     );
                 }
+                ok(RoomCommandPayload::Empty)
+            }
+
+            RoomActorCommand::SetTournament { room_id, tournament, .. } => {
+                let as_ = ctx.expect_actor_state();
+                // 赛事模式房间（房间级配置）：置位后禁用 PMP 默认交互行为，
+                // 交 PPB 编排。权威状态变更前递增序号（audit §7.5）。
+                let _seq = bump_room_seq(lc, &mut as_.state).await;
+                as_.state.control.tournament = *tournament;
+                info!(
+                    room = %room_id,
+                    tournament = *tournament,
+                    "room tournament mode set via set_tournament"
+                );
                 ok(RoomCommandPayload::Empty)
             }
 

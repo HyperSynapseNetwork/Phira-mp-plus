@@ -547,6 +547,10 @@ pub async fn join_room(
                 }
             }
             Some(phira_mp_common::StrippedRoomState::Playing) => {
+                // 赛事模式：禁止 late-join——对局进行中不允许中途加入。
+                if control.tournament {
+                    bail!("{}", tl!("join-game-ongoing"));
+                }
                 let mut pending = user.join_pending_game.write().await;
                 if pending.as_ref().map(|s| s.as_str()) == Some(id.to_string().as_str()) {
                     pending.take();
