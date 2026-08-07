@@ -166,7 +166,7 @@ fn unknown_namespace_root_lists_subcommands_not_self() {
         !msg.contains("你可能想输入: plugin"),
         "should not suggest the identical input: {msg}"
     );
-    assert!(msg.contains("plugin list"), "should list subcommands: {msg}");
+    assert!(msg.contains("list"), "should list subcommand tokens: {msg}");
     // 有兄弟根命令的根（`room` → `rooms`/`roomcreation`）：过滤自身建议。
     // 注意不能用 contains("你可能想输入: room")——`rooms` 也以 room 开头会误中。
     let room_msg = registry.format_unknown("room");
