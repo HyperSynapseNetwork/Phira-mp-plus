@@ -154,6 +154,38 @@ fn help_unknown_command_shows_suggestion() {
 }
 
 #[test]
+fn unknown_namespace_root_lists_subcommands_not_self() {
+    let registry = runtime_registry();
+    let msg = registry.format_unknown("room");
+    assert!(
+        msg.contains("需要子命令"),
+        "namespace root should suggest subcommands: {msg}"
+    );
+    assert!(
+        !msg.contains("你可能想输入: room"),
+        "should not suggest the identical input: {msg}"
+    );
+    assert!(msg.contains("room info"), "should list room subcommands: {msg}");
+}
+
+#[test]
+fn help_namespace_root_lists_subcommands() {
+    let registry = runtime_registry();
+    let help = registry.format_help("room").expect("help room should work");
+    assert!(help.contains("SUBCOMMANDS"), "help should list subcommands: {help}");
+    assert!(help.contains("room info"), "help should include room info: {help}");
+}
+
+#[test]
+fn room_list_is_registered_alias() {
+    let registry = runtime_registry();
+    assert!(
+        registry.get("room list").is_some(),
+        "documented `room list` should be registered"
+    );
+}
+
+#[test]
 fn help_group_is_available() {
     let registry = runtime_registry();
     let group_help = registry.format_group("rooms", false);

@@ -430,7 +430,23 @@ impl CommandRegistry {
     }
 
     pub fn format_help(&self, name_or_alias: &str) -> Option<String> {
-        let spec = self.get(name_or_alias)?;
+        if let Some(spec) = self.get(name_or_alias) {
+            return Some(self.format_spec_help(spec));
+        }
+        // 命名空间根（`help room`）：列出子命令。
+        let normalized = normalize_command_name(name_or_alias);
+        let children = self.children.get(&normalized)?;
+        let mut lines = vec!["NAMESPACE".to_string(), format!("    {normalized} <子命令>")];
+        lines.push(String::new());
+        lines.push("SUBCOMMANDS".to_string());
+        for sub in children {
+            lines.push(format!("    {normalized} {sub}"));
+        }
+        Some(lines.join("\n"))
+    }
+
+    /// 单个命令的帮助正文。
+    fn format_spec_help(&self, spec: &CommandSpec) -> String {
         let mut lines = Vec::new();
         lines.push("NAME".to_string());
         lines.push(format!("    {}", spec.name));
@@ -464,7 +480,7 @@ impl CommandRegistry {
             }
         }
 
-        Some(lines.join("\n"))
+        lines.join("\n")
     }
 
     pub fn format_overview(&self) -> String {
@@ -620,15 +636,24 @@ impl CommandRegistry {
 
     pub fn format_unknown(&self, command: &str) -> String {
         let normalized = normalize_command_name(command);
-        let suggestions = self.complete_line(&normalized);
-        if suggestions.is_empty() {
-            format!("未知命令: {command}；输入 help 查看帮助")
-        } else {
-            format!(
+        let mut suggestions = self.complete_line(&normalized);
+        // 命名空间根（如 `room`）会把自身当作「建议」返回——过滤等于输入的项，
+        // 避免「未知命令: room；你可能想输入: room」三处相同。
+        suggestions.retain(|s| *s != normalized);
+        if !suggestions.is_empty() {
+            return format!(
                 "未知命令: {command}；你可能想输入: {}",
                 suggestions.join(" | ")
-            )
+            );
         }
+        // 输入是命名空间根（有子命令但无可执行裸命令）→ 列出子命令。
+        if let Some(children) = self.children.get(&normalized) {
+            let preview = children.iter().cloned().collect::<Vec<_>>().join("、");
+            return format!(
+                "命令 `{command}` 需要子命令：{preview}（输入 `help {command} <子命令>` 查看详情）"
+            );
+        }
+        format!("未知命令: {command}；输入 help 查看帮助")
     }
 
     /// Execute a command by name with the given server state and arguments.
