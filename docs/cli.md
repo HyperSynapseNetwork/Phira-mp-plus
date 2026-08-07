@@ -186,8 +186,10 @@ help groups
 | 参数 | 类型 | 说明 |
 |------|------|------|
 | `room_id` | `str` | 房间名 |
-| `field` | `str` | 支持字段：`lock` `cycle` `hidden` `persistent` `degraded` `host` `chart-id` `phira_api_endpoint` |
-| `value` | 因字段而异 | `lock`/`cycle`/`hidden`/`persistent`/`degraded` 接受 `true`/`false`；`host` 接受用户 ID、`?`/`system`（系统房主） |
+| `field` | `str` | 支持字段：`lock` `cycle` `hidden` `persistent` `degraded` `host` `chart-id` `phira_api_endpoint` `tournament` |
+| `value` | 因字段而异 | `lock`/`cycle`/`hidden`/`persistent`/`degraded`/`tournament` 接受 `true`/`false`；`host` 接受用户 ID、`?`/`system`（系统房主） |
+
+**`tournament true`：** 赛事模式房间（房间级配置，非全局）。开启后禁用 PMP 默认交互行为——准备倒计时自动开赛、每轮结算广播、房主自动转移、cycle 自动轮换、Playing 期 late-join 确认、聊天，全部交由 PPB 编排（PPB 经 OpenUDS `room.set_tournament` 设置）。
 
 **输出:** 执行结果消息
 

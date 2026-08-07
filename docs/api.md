@@ -1030,6 +1030,7 @@ PMP 通过 Unix Domain Socket 暴露全部管理能力给外部工具（PPB、We
 | `room.lock` | `{room_id, locked}` | 锁定/解锁 |
 | `room.cycle` | `{room_id, cycle}` | 轮换开关 |
 | `room.set_host` | `{room_id, host_id}` | 设置房主 |
+| `room.set_tournament` | `{room_id, tournament}` | 赛事模式房间（禁用默认交互，交 PPB 编排） |
 | `room.kick` | `{room_id, user_id, reason?}` | 踢人 |
 | `room.force_move` | `{room_id, user_id, monitor?}` | 强制移入 |
 | `room.info` | `{room_id}` | 房间详情 |

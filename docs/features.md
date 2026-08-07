@@ -59,6 +59,7 @@
 - **监视者**：房间 monitor（接收 RoomEvent/UserVisit）、游戏 monitor（实时 Touches/Judges）；绕过锁定/人数/状态门槛
 - **隐藏房间**：`-` 前缀默认隐藏、`SetHidden` 动态切换；不出现在公开列表
 - **持久空房间**：`create_empty_room`、`set_persistent_empty`；快照 debounce 500ms 持久化；启动恢复
+- **赛事模式**（房间级配置 `tournament`，非全局）：开启后禁用 PMP 默认交互行为——准备倒计时自动开赛、每轮结算广播、房主自动转移、cycle 自动轮换、Playing 期 late-join 确认、聊天，全部交由 PPB 编排（PPB 经 OpenUDS `room.set_tournament` 设置）
 - **force-move**：绕过限制强移用户（RemoveUser→AddUser→广播→JoinRoom(Ok) critical flush→房主指派），失败回滚
 - **踢人/关房**：`KickUser`、`CloseRoom`
 - **degraded 标志**：Join 补偿失败置 true，阻塞新加入，CLI 清空
@@ -101,7 +102,7 @@
 **用户**：`users`、`kick`、`admin-id list/add/remove/set`
 **封禁**：`ban [reason]`、`ban ip`、`unban`、`banlist`、`ip-history`
 **广播**：`broadcast all|room|user`
-**房间**：`rooms`、`room create-empty`、`room info`、`room start/ready/cancel/kick/host`、`room force-move`、`room hide/unhide`、`room close`、`room lock/cycle`、`room set <field>`（lock/cycle/hidden/persistent/degraded/host/chart/api_endpoint）、`room history/rounds/round/uuid`、`room ban/unban/banlist`、`force-start`
+**房间**：`rooms`、`room create-empty`、`room info`、`room start/ready/cancel/kick/host`、`room force-move`、`room hide/unhide`、`room close`、`room lock/cycle`、`room set <field>`（lock/cycle/hidden/persistent/degraded/host/chart/api_endpoint/tournament）、`room history/rounds/round/uuid`、`room ban/unban/banlist`、`force-start`
 **插件**：`plugin list/enable/disable/remove/reload/info/call`（WASM 插件可动态注册 CLI 命令）
 **扩展**：`extension list/get`
 **杂项**：`roomcreation on|off`、`approve openuds`、`welcome-config`、`player-count`
