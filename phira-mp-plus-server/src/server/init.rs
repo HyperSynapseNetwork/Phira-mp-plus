@@ -197,6 +197,9 @@ impl PlusServer {
         let http_bind_address = config.http_bind_address.clone();
         let max_pending_auth = config.max_pending_auth;
         let max_sessions = config.max_sessions;
+        // 运行时开关初始值（YAML 播种，config 随后 move 进 state）。
+        let initial_room_creation_enabled = config.room_creation_enabled;
+        let initial_auto_update_enabled = config.auto_update.enabled;
         let live_config = Arc::new(RwLock::new(LiveConfig::from_full(&config)));
         let state = Arc::new(PlusServerState {
             config,
@@ -212,8 +215,8 @@ impl PlusServer {
             shutdown: Notify::new(),
             shutting_down: AtomicBool::new(false),
             accept_new_connections: AtomicBool::new(true),
-            room_creation_enabled: AtomicBool::new(config.room_creation_enabled),
-            auto_update_enabled: AtomicBool::new(config.auto_update.enabled),
+            room_creation_enabled: AtomicBool::new(initial_room_creation_enabled),
+            auto_update_enabled: AtomicBool::new(initial_auto_update_enabled),
             connection_limiter: crate::rate_limiter::ConnectionRateLimiter::new(
                 rate_limit,
                 rate_window,
