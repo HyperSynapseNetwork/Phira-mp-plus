@@ -415,6 +415,11 @@ pub struct PlusConfig {
     pub persistence_retention_days: u32,
     #[serde(default)]
     pub touch_judge_retention_days: Option<u32>,
+    /// 各表最大行数上限（超过后清理最旧行至 80%）。键为表名，值为最大行数；
+    /// 0 或缺失 = 仅按时长保留。防止高流量表（如 mp_events）在保留期内
+    /// 无限膨胀（运维按表设上限）。
+    #[serde(default)]
+    pub table_row_caps: std::collections::HashMap<String, u64>,
     #[serde(default)]
     pub admin_phira_ids: Vec<i32>,
     /// 游玩时间排行榜过滤用户（不显示的 Phira ID，如测试站 Bot）。
@@ -471,6 +476,7 @@ impl Default for PlusConfig {
             database_url: String::new(),
             persistence_retention_days: 30,
             touch_judge_retention_days: None,
+            table_row_caps: std::collections::HashMap::new(),
             admin_phira_ids: Vec::new(),
             playtime_leaderboard_hide: Vec::new(),
             wasm_runtime: WasmRuntimeConfig::default(),

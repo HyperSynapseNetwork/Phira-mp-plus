@@ -8,6 +8,18 @@
 use anyhow::Result;
 use serde_json::Value;
 
+/// 支持按行数上限清理的表及其时间列（BIGINT 毫秒）。
+const TRIM_TIME_COLUMNS: &[(&str, &str)] = &[
+    ("mp_events", "created_at"),
+    ("mp_room_snapshots", "created_at"),
+    ("mp_user_visits", "created_at"),
+    ("mp_runtime_telemetry_batches", "created_at"),
+    ("mp_runtime_telemetry_items", "created_at"),
+    ("mp_round_results", "updated_at"),
+    ("mp_rounds", "updated_at"),
+    ("mp_round_player_data", "updated_at"),
+];
+
 /// Return the embedded sqlx migrator.
 ///
 /// Uses `sqlx::migrate!("migrations")` to embed migration SQL at compile
@@ -111,7 +123,12 @@ impl DbManager {
         .await;
     }
 
-    pub async fn cleanup_expired(&self, retention_days: u32, touch_judge_retention_days: u32) {
+    pub async fn cleanup_expired(
+        &self,
+        retention_days: u32,
+        touch_judge_retention_days: u32,
+        row_caps: &std::collections::HashMap<String, u64>,
+    ) {
         let Self::Pg(pool) = self;
         let now = || {
             std::time::SystemTime::now()
@@ -121,21 +138,26 @@ impl DbManager {
         };
         if retention_days > 0 {
             let cutoff = now().saturating_sub(retention_days as i64 * 86_400_000);
-            for sql in [
-                "DELETE FROM mp_events WHERE created_at < $1",
-                "DELETE FROM mp_user_room_history WHERE created_at < $1",
-                "DELETE FROM mp_round_results WHERE updated_at < $1",
+            for (table, sql) in [
+                ("mp_events", "DELETE FROM mp_events WHERE created_at < $1"),
+                ("mp_user_room_history", "DELETE FROM mp_user_room_history WHERE created_at < $1"),
+                ("mp_round_results", "DELETE FROM mp_round_results WHERE updated_at < $1"),
             ] {
-                let _ = sqlx::query(sql).bind(cutoff).execute(pool).await;
+                if let Err(e) = sqlx::query(sql).bind(cutoff).execute(pool).await {
+                    tracing::warn!(%table, %retention_days, error = %e, "retention cleanup failed");
+                }
             }
         }
         if touch_judge_retention_days > 0 {
             let cutoff = now().saturating_sub(touch_judge_retention_days as i64 * 86_400_000);
             // 触控/判定已合并进 mp_round_player_data（batch 表已删除）。
-            let _ = sqlx::query("DELETE FROM mp_round_player_data WHERE updated_at < $1")
+            if let Err(e) = sqlx::query("DELETE FROM mp_round_player_data WHERE updated_at < $1")
                 .bind(cutoff)
                 .execute(pool)
-                .await;
+                .await
+            {
+                tracing::warn!(%touch_judge_retention_days, error = %e, "touch/judge retention cleanup failed");
+            }
         }
         let round_meta_retention_days = match (retention_days, touch_judge_retention_days) {
             (0, _) | (_, 0) => 0,
@@ -143,10 +165,50 @@ impl DbManager {
         };
         if round_meta_retention_days > 0 {
             let cutoff = now().saturating_sub(round_meta_retention_days as i64 * 86_400_000);
-            let _ = sqlx::query("DELETE FROM mp_rounds WHERE updated_at < $1")
+            if let Err(e) = sqlx::query("DELETE FROM mp_rounds WHERE updated_at < $1")
                 .bind(cutoff)
                 .execute(pool)
-                .await;
+                .await
+            {
+                tracing::warn!(%round_meta_retention_days, error = %e, "rounds retention cleanup failed");
+            }
+        }
+        // 各表最大行数上限：超过后清理最旧行至 80% 上限。
+        for (table, time_col) in TRIM_TIME_COLUMNS {
+            if let Some(&cap) = row_caps.get(*table) {
+                if cap > 0 {
+                    self.trim_table_to_cap(pool, table, time_col, cap).await;
+                }
+            }
+        }
+    }
+
+    /// 将表清理到最大行数上限（保留最新 `target` 行，删更旧的全部）。
+    async fn trim_table_to_cap(
+        &self,
+        pool: &sqlx::PgPool,
+        table: &str,
+        time_col: &str,
+        cap: u64,
+    ) {
+        let Ok(count) = sqlx::query_scalar::<_, i64>(&format!("SELECT count(*) FROM {table}"))
+            .fetch_one(pool)
+            .await
+        else {
+            return;
+        };
+        if count <= cap as i64 {
+            return;
+        }
+        let target = std::cmp::max((cap as f64 * 0.8) as i64, 1);
+        let sql = format!(
+            "DELETE FROM {table} WHERE {time_col} <= \
+             (SELECT {time_col} FROM {table} ORDER BY {time_col} ASC LIMIT 1 OFFSET {target})"
+        );
+        if let Err(e) = sqlx::query(&sql).execute(pool).await {
+            tracing::warn!(%table, %cap, error = %e, "table row-cap trim failed");
+        } else {
+            tracing::info!(%table, %cap, target, "table trimmed to row cap");
         }
     }
 }

@@ -45,6 +45,36 @@ impl IsolatedServer {
     }
 }
 
+/// benchmark 完成后清理测试库（World B 写入的全部表），保证每次压测从干净
+/// 数据库开始，测试库不随运行次数累积膨胀。
+pub async fn cleanup_test_db(db_url: &str) -> Result<(), String> {
+    let pool = sqlx::PgPool::connect(db_url)
+        .await
+        .map_err(|e| format!("failed to connect benchmark test DB: {e}"))?;
+    const TABLES: &[&str] = &[
+        "mp_events",
+        "mp_room_snapshots",
+        "mp_user_visits",
+        "mp_runtime_telemetry_batches",
+        "mp_runtime_telemetry_items",
+        "mp_round_results",
+        "mp_rounds",
+        "mp_round_player_data",
+        "mp_user_room_history",
+        "playtime",
+        "mp_users",
+        "mp_server_instances",
+        "mp_runtime_benchmark_reports",
+    ];
+    for t in TABLES {
+        if let Err(e) = sqlx::query(&format!("TRUNCATE {t}")).execute(&pool).await {
+            tracing::warn!(table = t, error = %e, "benchmark test DB truncate failed");
+        }
+    }
+    pool.close().await;
+    Ok(())
+}
+
 /// 绑定 `127.0.0.1:0` 拿一个空闲端口（随后释放）。
 async fn pick_free_port() -> Result<u16, String> {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")

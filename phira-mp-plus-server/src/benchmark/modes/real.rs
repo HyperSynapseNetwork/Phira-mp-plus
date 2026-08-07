@@ -1362,6 +1362,10 @@ pub async fn run_real(
     let server_pid = isolated.as_ref().and_then(|s| s.pid());
     if let Some(mut iso) = isolated {
         iso.shutdown().await;
+        // benchmark 完成后清理测试库，保证每次从干净 DB 开始。
+        if let Err(e) = crate::benchmark::isolated::cleanup_test_db(&config.server_db_url).await {
+            warn!("benchmark test DB cleanup failed: {e}");
+        }
     }
 
     if let Some(mock) = mock_phira {

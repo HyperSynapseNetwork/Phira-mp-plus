@@ -437,6 +437,7 @@ impl PlusServer {
                         db.cleanup_expired(
                             cleanup_state.config.persistence_retention_days,
                             telemetry_retention_days,
+                            &cleanup_state.config.table_row_caps,
                         )
                         .await;
                     }

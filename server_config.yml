@@ -156,6 +156,15 @@ connection_rate_window: 10
 # 轮次 Touches/Judges 数据保留天数（0 为不保留）
 round_data_retention_days: 7
 
+# 各表最大行数上限（超过后清理最旧行至 80%）。0/缺失 = 仅按时长保留。
+# 高流量表（mp_events 事件日志等）建议设上限，防保留期内无限膨胀。
+# table_row_caps:
+#   mp_events: 200000
+#   mp_room_snapshots: 50000
+#   mp_user_visits: 100000
+#   mp_runtime_telemetry_batches: 100000
+#   mp_runtime_telemetry_items: 200000
+
 # ---- WASM 运行时限制 ----
 
 # WASM 插件资源限制。一般无需修改；插件较大或事件较多时可按需调高。

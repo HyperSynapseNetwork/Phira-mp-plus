@@ -176,7 +176,7 @@
 - **Phira 上游**：phira_api_endpoint、HTTP 重试/退避/熔断
 - **WASM**：wasm_runtime（见插件节）
 - **运行时**：persistence_queue_capacity、WAL/DLQ 路径、persistent_rooms_required、startup_recovery_timeout(30s)
-- **保留**：round_data_retention_days(7)、persistence_retention_days(30)、touch_judge_retention_days
+- **保留**：round_data_retention_days(7)、persistence_retention_days(30)、touch_judge_retention_days、table_row_caps（各表最大行数，超限清最旧行至 80%，防高流量表膨胀）
 - **断线**：heartbeat_timeout(15s)、auth_timeout(15s)、dangle_grace(10s)、playing_reconnect_grace(15s)
 - **兼容性**：official_phira_client、minimum_response_latency_ms(0)、session_command_deadline_ms(4500)、commit_response_reserve_ms(1000)、auth_deadline_ms(5000)、gate 上限、protocol_hack_delay_ms
 - **其他**：monitors、admin_phira_ids、sentry_dsn、plugins_dir、cli_enabled、openuds、graceful_shutdown_timeout
