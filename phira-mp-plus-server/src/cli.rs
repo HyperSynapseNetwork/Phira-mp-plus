@@ -721,7 +721,9 @@ impl CliHandler {
 
     /// 切换玩家建房开关
     pub(in crate::cli) async fn toggle_room_creation(&self, enabled: bool) {
-        self.state.live_config.write().await.room_creation_enabled = enabled;
+        self.state
+            .room_creation_enabled
+            .store(enabled, std::sync::atomic::Ordering::Release);
         self.out(format!(
             "  {} 玩家建房已{}",
             c::green("✓"),

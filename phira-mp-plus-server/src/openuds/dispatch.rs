@@ -674,8 +674,9 @@ async fn cmd_server_roomcreation(
         .get("enabled")
         .and_then(Value::as_bool)
         .ok_or_else(|| "enabled (bool) required".to_string())?;
-    let mut live = state.live_config.write().await;
-    live.room_creation_enabled = enabled;
+    state
+        .room_creation_enabled
+        .store(enabled, std::sync::atomic::Ordering::Release);
     Ok(serde_json::json!({"room_creation_enabled": enabled}))
 }
 

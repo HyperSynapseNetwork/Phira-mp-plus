@@ -73,6 +73,12 @@ pub struct PlusServerState {
     /// 运维门禁：false 时拒绝**新用户**连接（server.users 中不存在的用户），
     /// 已连接用户重连不受影响。`connections on|off` 切换，config reload 不重置。
     pub accept_new_connections: AtomicBool,
+    /// 玩家建房开关（`roomcreation on|off` 切换，config reload 不重置；YAML
+    /// `room_creation_enabled` 仅启动时生效）。
+    pub room_creation_enabled: AtomicBool,
+    /// 自动更新总开关（`update auto on|off` 切换，config reload 不重置；YAML
+    /// `auto_update.enabled` 仅启动时生效）。
+    pub auto_update_enabled: AtomicBool,
     /// 连接速率限制器（按 IP）
     pub connection_limiter: crate::rate_limiter::ConnectionRateLimiter,
     /// 可信代理连接速率限制器（独立于普通客户端，使用更高限额）

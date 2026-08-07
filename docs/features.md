@@ -106,6 +106,7 @@
 **插件**：`plugin list/enable/disable/remove/reload/info/call`（WASM 插件可动态注册 CLI 命令）
 **扩展**：`extension list/get`
 **杂项**：`roomcreation on|off`、`approve openuds`、`welcome-config`、`player-count`
+> `roomcreation` / `update auto` / `connections` 是**运行时开关**（config reload 不重置，YAML 对应项仅启动时生效）——语义统一：运行时开关 = reload 免疫。
 **基准**：`benchmark list/run/suite/compare`（run 默认在隔离的独立实例 World B 上压测，不触碰线上配置，详见 cli.md）
 **运行时**：`runtime status/phira/commands/events/schema/persistence/latency`
 **WAL/死信**：`wal inspect`、`dead-letter list/replay`

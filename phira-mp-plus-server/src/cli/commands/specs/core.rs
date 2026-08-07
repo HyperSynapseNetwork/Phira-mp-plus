@@ -161,7 +161,9 @@ pub fn specs() -> Vec<CommandSpec> {
                         .await
                     }
                     _ => {
-                        let enabled = state.live_config.read().await.room_creation_enabled;
+                        let enabled = state
+                            .room_creation_enabled
+                            .load(std::sync::atomic::Ordering::Acquire);
                         vec![format!(
                             "  ◆ 玩家建房：{}",
                             if enabled { "已开启" } else { "已关闭" }

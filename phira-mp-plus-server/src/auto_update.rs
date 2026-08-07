@@ -416,7 +416,9 @@ pub async fn run_checker(state: Arc<PlusServerState>, config: AutoUpdateConfig) 
             lc.auto_update.check_interval_secs.max(60)
         };
         tokio::time::sleep(Duration::from_secs(interval_secs)).await;
-        let enabled = state.live_config.read().await.auto_update.enabled;
+        let enabled = state
+            .auto_update_enabled
+            .load(std::sync::atomic::Ordering::Acquire);
         check_once(&state, enabled).await;
         try_execute_pending(&state).await;
     }

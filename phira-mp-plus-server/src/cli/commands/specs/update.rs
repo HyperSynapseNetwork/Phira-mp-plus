@@ -132,15 +132,21 @@ pub fn specs() -> Vec<CommandSpec> {
                 Box::pin(async move {
                     match args.first().map(|s| s.as_str()) {
                         Some("on" | "enable" | "1") => {
-                            state.live_config.write().await.auto_update.enabled = true;
+                            state
+                                .auto_update_enabled
+                                .store(true, std::sync::atomic::Ordering::Release);
                             vec!["  ✓ 自动更新已开启".to_string()]
                         }
                         Some("off" | "disable" | "0") => {
-                            state.live_config.write().await.auto_update.enabled = false;
+                            state
+                                .auto_update_enabled
+                                .store(false, std::sync::atomic::Ordering::Release);
                             vec!["  ✓ 自动更新已关闭".to_string()]
                         }
                         _ => {
-                            let enabled = state.live_config.read().await.auto_update.enabled;
+                            let enabled = state
+                                .auto_update_enabled
+                                .load(std::sync::atomic::Ordering::Acquire);
                             vec![format!(
                                 "  ◆ 自动更新：{}",
                                 if enabled { "已开启" } else { "已关闭" }

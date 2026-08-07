@@ -212,6 +212,8 @@ impl PlusServer {
             shutdown: Notify::new(),
             shutting_down: AtomicBool::new(false),
             accept_new_connections: AtomicBool::new(true),
+            room_creation_enabled: AtomicBool::new(config.room_creation_enabled),
+            auto_update_enabled: AtomicBool::new(config.auto_update.enabled),
             connection_limiter: crate::rate_limiter::ConnectionRateLimiter::new(
                 rate_limit,
                 rate_window,
