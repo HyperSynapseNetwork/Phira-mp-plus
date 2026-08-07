@@ -546,6 +546,7 @@ mod tests {
             room_uuid: new_uuid.to_string(),
             locked: false,
             cycle: false,
+            tournament: false,
             host: None,
             system_host: false,
             hidden: false,
