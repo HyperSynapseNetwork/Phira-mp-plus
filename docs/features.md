@@ -83,7 +83,7 @@
 - **命令权限**：Normal/Console/Monitor 权限区分，拒绝映射官方错误响应（绝不静默）
 - **速率限制**：Chat 10/3s、RoomOp 20/6s、Api 12/3s
 - **会话容量**：`max_sessions`（4096）+ `max_pending_auth`（256）
-- **欢迎语**：本地化欢迎消息（`welcome-config.json` 可配占位符）
+- **欢迎语**：本地化欢迎消息（en-US/zh-CN/zh-TW **三语键集一致**，按用户语言渲染；自定义欢迎语用 `welcome-{lang}.ftl` 或 `welcome-config.json`）
 - **登录统计**：`mp_user_visits`（幂等）、playtime 累计、login_count 对账
 
 ---

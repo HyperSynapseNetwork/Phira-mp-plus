@@ -737,7 +737,7 @@ Phira），压测完杀进程。线上实例（World A）的配置与状态完�
 
 **输出:** 欢迎语消息列表、可用占位符及当前配置
 
-欢迎语模板优先级：`data/welcome-config.json` 显式 messages > 配置 `welcome_ftl_dir` 下 `welcome-{lang}.ftl` 的 `welcome-message` > 内置国际化默认（三语）。默认未配置时使用内置国际化默认，按用户语言渲染。
+欢迎语模板优先级：`welcome_ftl_dir` 下 `welcome-{lang}.ftl` 的 `welcome-message` > 内置国际化默认（en-US/zh-CN/zh-TW **三语键集一致**）> `data/welcome-config.json` 显式 messages（若创建）。**默认无配置时走内置国际化，按用户语言渲染**（不再默认中文）。
 
 ---
 
