@@ -318,11 +318,6 @@ impl Default for ConfigProfile {
     }
 }
 
-/// Phira-mp+ 增强配置（支持 YAML 文件、环境变量、CLI 参数三层覆盖）
-///
-/// deny_unknown_fields ensures config typos are caught at startup.
-/// If a field is removed (like `rbac`), users must remove it from their
-/// config file — serde will produce a clear error message.
 /// 单表保留策略：按行数上限 和/或 保留天数裁剪。
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
@@ -335,8 +330,12 @@ pub struct TableRetention {
     pub time_col: Option<String>,
 }
 
+/// Phira-mp+ 增强配置（支持 YAML 文件、环境变量、CLI 参数三层覆盖）。
+///
+/// 未知配置字段**忽略**（不 deny_unknown_fields）：自动更新换二进制后，
+/// 旧 server_config.yml 里已删除的字段不会导致启动失败（运维只需按需清理）。
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(default, deny_unknown_fields)]
+#[serde(default)]
 pub struct PlusConfig {
     #[serde(default)]
     pub profile: ConfigProfile,

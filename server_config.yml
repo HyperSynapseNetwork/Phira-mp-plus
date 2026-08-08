@@ -64,13 +64,6 @@ plugins_dir: plugins
 # PostgreSQL 数据库连接。留空时默认尝试 postgres://postgres:postgres@localhost:5432/phira_mp_plus，会自动建库。
 database_url: ""
 
-# 统一 PostgreSQL 历史数据保留天数。0 表示不自动清理。
-persistence_retention_days: 30
-
-# Touches/Judges 高频遥测在 PostgreSQL 中的独立保留天数。
-# 未设置时遵循 persistence_retention_days；设为 0 表示不自动清理遥测。
-# touch_judge_retention_days: 7
-
 # runtime:
 #   persistence_queue_capacity: 4096
 #   # 数据库重试耗尽后的失败事件保全。设为 null 可禁用；禁用后若数据库最终失败，Supervisor 会进入 degraded。
@@ -152,9 +145,6 @@ connection_rate_limit: 30
 
 # 连接速率统计窗口（秒）
 connection_rate_window: 10
-
-# 轮次 Touches/Judges 数据保留天数（0 为不保留）
-round_data_retention_days: 7
 
 # 每表保留策略（任意 PMP PostgreSQL 表）。time_col = 表的时间列（BIGINT 毫秒，必填）；
 # max_rows 超限清最旧行至 80%；days 超期删除。缺省该表不清理。

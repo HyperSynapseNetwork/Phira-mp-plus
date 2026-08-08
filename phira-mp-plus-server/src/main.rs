@@ -695,9 +695,6 @@ phira_api_endpoint: "https://phira.5wyx.com"
 # PostgreSQL 连接（留空 = 尝试本地默认连接）
 # database_url: "postgres://postgres:postgres@localhost:5432/phira_mp_plus"
 
-# 历史数据保留天数（0 = 不自动清理）
-# persistence_retention_days: 30
-
 # ---- 插件 ----
 
 # WASM 插件目录
