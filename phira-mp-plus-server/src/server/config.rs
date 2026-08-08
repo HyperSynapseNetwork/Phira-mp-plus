@@ -323,8 +323,6 @@ impl Default for ConfigProfile {
 /// deny_unknown_fields ensures config typos are caught at startup.
 /// If a field is removed (like `rbac`), users must remove it from their
 /// config file — serde will produce a clear error message.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(default, deny_unknown_fields)]
 /// 单表保留策略：按行数上限 和/或 保留天数裁剪。
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
@@ -337,6 +335,8 @@ pub struct TableRetention {
     pub time_col: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
 pub struct PlusConfig {
     #[serde(default)]
     pub profile: ConfigProfile,
