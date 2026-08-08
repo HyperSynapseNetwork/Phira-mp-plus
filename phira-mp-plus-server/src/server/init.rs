@@ -56,7 +56,6 @@ impl PlusServer {
         let http_port = config.http_port;
         let rate_limit = config.connection_rate_limit;
         let rate_window = config.connection_rate_window;
-        let retention_days = config.round_data_retention_days;
         let mut admin_ids: std::collections::HashSet<i32> =
             config.admin_phira_ids.iter().copied().collect();
         if admin_ids.is_empty() {
@@ -421,30 +420,15 @@ impl PlusServer {
             }
         });
 
-        // 轮次文件与统一 PostgreSQL 持久化定期清理（每小时检查一次）
-        let telemetry_retention_days = state
-            .config
-            .touch_judge_retention_days
-            .unwrap_or(state.config.persistence_retention_days);
-        if retention_days > 0
-            || state.config.persistence_retention_days > 0
-            || telemetry_retention_days > 0
-        {
+        // PostgreSQL 每表保留策略定期清理（每小时检查一次）。
+        if !state.config.table_retention.is_empty() {
             let cleanup_state = Arc::clone(&state);
             crate::supervisor_actor::spawn_named("retention-cleanup", async move {
                 loop {
                     tokio::time::sleep(std::time::Duration::from_secs(3600)).await;
                     if let Some(db) = crate::internal_hooks::DB.get() {
-                        let telemetry_retention_days = cleanup_state
-                            .config
-                            .touch_judge_retention_days
-                            .unwrap_or(cleanup_state.config.persistence_retention_days);
-                        db.cleanup_expired(
-                            cleanup_state.config.persistence_retention_days,
-                            telemetry_retention_days,
-                            &cleanup_state.config.table_row_caps,
-                        )
-                        .await;
+                        db.cleanup_expired(&cleanup_state.config.table_retention)
+                            .await;
                     }
                 }
             });

@@ -8,18 +8,6 @@
 use anyhow::Result;
 use serde_json::Value;
 
-/// 支持按行数上限清理的表及其时间列（BIGINT 毫秒）。
-const TRIM_TIME_COLUMNS: &[(&str, &str)] = &[
-    ("mp_events", "created_at"),
-    ("mp_room_snapshots", "created_at"),
-    ("mp_user_visits", "created_at"),
-    ("mp_runtime_telemetry_batches", "created_at"),
-    ("mp_runtime_telemetry_items", "created_at"),
-    ("mp_round_results", "updated_at"),
-    ("mp_rounds", "updated_at"),
-    ("mp_round_player_data", "updated_at"),
-];
-
 /// Return the embedded sqlx migrator.
 ///
 /// Uses `sqlx::migrate!("migrations")` to embed migration SQL at compile
@@ -123,11 +111,11 @@ impl DbManager {
         .await;
     }
 
+    /// 按每表保留策略清理：支持 保留天数（超期删除）与 行数上限（超限清最旧行至 80%）。
+    /// 每表策略来自 `config.table_retention`（键=任意 PMP 表，值含 time_col）。
     pub async fn cleanup_expired(
         &self,
-        retention_days: u32,
-        touch_judge_retention_days: u32,
-        row_caps: &std::collections::HashMap<String, u64>,
+        table_retention: &std::collections::HashMap<String, crate::server::config::TableRetention>,
     ) {
         let Self::Pg(pool) = self;
         let now = || {
@@ -136,48 +124,28 @@ impl DbManager {
                 .map(|d| d.as_millis() as i64)
                 .unwrap_or(0)
         };
-        if retention_days > 0 {
-            let cutoff = now().saturating_sub(retention_days as i64 * 86_400_000);
-            for (table, sql) in [
-                ("mp_events", "DELETE FROM mp_events WHERE created_at < $1"),
-                ("mp_user_room_history", "DELETE FROM mp_user_room_history WHERE created_at < $1"),
-                ("mp_round_results", "DELETE FROM mp_round_results WHERE updated_at < $1"),
-            ] {
-                if let Err(e) = sqlx::query(sql).bind(cutoff).execute(pool).await {
-                    tracing::warn!(%table, %retention_days, error = %e, "retention cleanup failed");
+        for (table, r) in table_retention {
+            if r.max_rows.is_none() && r.days.is_none() {
+                continue;
+            }
+            let Some(time_col) = r.time_col.as_deref() else {
+                tracing::warn!(%table, "table retention missing time_col; skipped");
+                continue;
+            };
+            // 保留天数：超期删除。
+            if let Some(days) = r.days {
+                if days > 0 {
+                    let cutoff = now().saturating_sub(days as i64 * 86_400_000);
+                    let sql = format!("DELETE FROM {table} WHERE {time_col} < $1");
+                    if let Err(e) = sqlx::query(&sql).bind(cutoff).execute(pool).await {
+                        tracing::warn!(%table, %days, error = %e, "table retention (days) cleanup failed");
+                    }
                 }
             }
-        }
-        if touch_judge_retention_days > 0 {
-            let cutoff = now().saturating_sub(touch_judge_retention_days as i64 * 86_400_000);
-            // 触控/判定已合并进 mp_round_player_data（batch 表已删除）。
-            if let Err(e) = sqlx::query("DELETE FROM mp_round_player_data WHERE updated_at < $1")
-                .bind(cutoff)
-                .execute(pool)
-                .await
-            {
-                tracing::warn!(%touch_judge_retention_days, error = %e, "touch/judge retention cleanup failed");
-            }
-        }
-        let round_meta_retention_days = match (retention_days, touch_judge_retention_days) {
-            (0, _) | (_, 0) => 0,
-            (a, b) => a.max(b),
-        };
-        if round_meta_retention_days > 0 {
-            let cutoff = now().saturating_sub(round_meta_retention_days as i64 * 86_400_000);
-            if let Err(e) = sqlx::query("DELETE FROM mp_rounds WHERE updated_at < $1")
-                .bind(cutoff)
-                .execute(pool)
-                .await
-            {
-                tracing::warn!(%round_meta_retention_days, error = %e, "rounds retention cleanup failed");
-            }
-        }
-        // 各表最大行数上限：超过后清理最旧行至 80% 上限。
-        for (table, time_col) in TRIM_TIME_COLUMNS {
-            if let Some(&cap) = row_caps.get(*table) {
-                if cap > 0 {
-                    self.trim_table_to_cap(pool, table, time_col, cap).await;
+            // 行数上限：超限清最旧行至 80%。
+            if let Some(max_rows) = r.max_rows {
+                if max_rows > 0 {
+                    self.trim_table_to_cap(pool, table, time_col, max_rows).await;
                 }
             }
         }

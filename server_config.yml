@@ -156,14 +156,18 @@ connection_rate_window: 10
 # 轮次 Touches/Judges 数据保留天数（0 为不保留）
 round_data_retention_days: 7
 
-# 各表最大行数上限（超过后清理最旧行至 80%）。0/缺失 = 仅按时长保留。
-# 高流量表（mp_events 事件日志等）建议设上限，防保留期内无限膨胀。
-# table_row_caps:
-#   mp_events: 200000
-#   mp_room_snapshots: 50000
-#   mp_user_visits: 100000
-#   mp_runtime_telemetry_batches: 100000
-#   mp_runtime_telemetry_items: 200000
+# 每表保留策略（任意 PMP PostgreSQL 表）。time_col = 表的时间列（BIGINT 毫秒，必填）；
+# max_rows 超限清最旧行至 80%；days 超期删除。缺省该表不清理。
+# 回放数据源 mp_round_player_data 保留需宽裕；遥测表可设小（只影响观测不影响回放）。
+# table_retention:
+#   mp_events: { max_rows: 200000, days: 7, time_col: created_at }
+#   mp_room_snapshots: { max_rows: 50000, days: 7, time_col: created_at }
+#   mp_user_visits: { max_rows: 100000, days: 30, time_col: created_at }
+#   mp_runtime_telemetry_batches: { max_rows: 50000, days: 7, time_col: created_at }
+#   mp_runtime_telemetry_items: { max_rows: 100000, days: 7, time_col: created_at }
+#   mp_round_player_data: { days: 30, time_col: updated_at }
+#   mp_round_results: { days: 30, time_col: updated_at }
+#   mp_rounds: { days: 30, time_col: updated_at }
 
 # ---- WASM 运行时限制 ----
 

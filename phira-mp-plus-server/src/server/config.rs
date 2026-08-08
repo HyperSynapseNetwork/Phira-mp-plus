@@ -325,6 +325,18 @@ impl Default for ConfigProfile {
 /// config file — serde will produce a clear error message.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
+/// 单表保留策略：按行数上限 和/或 保留天数裁剪。
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct TableRetention {
+    /// 行数上限：超过后清理最旧行至 80%（需 time_col 可用）。
+    pub max_rows: Option<u64>,
+    /// 保留天数：超期删除（需 time_col 可用）。
+    pub days: Option<u32>,
+    /// 时间列名（BIGINT 毫秒）。缺省时该表的裁剪跳过。
+    pub time_col: Option<String>,
+}
+
 pub struct PlusConfig {
     #[serde(default)]
     pub profile: ConfigProfile,
@@ -407,19 +419,14 @@ pub struct PlusConfig {
     pub phira_api_endpoint: String,
     #[serde(default = "default_true")]
     pub chat_enabled: bool,
-    #[serde(default = "default_retention_days")]
-    pub round_data_retention_days: u32,
     #[serde(default)]
     pub database_url: String,
-    #[serde(default = "default_persistence_retention_days")]
-    pub persistence_retention_days: u32,
+    /// 每表保留策略（行数上限 和/或 保留天数）。键为任意 PMP PostgreSQL 表名，
+    /// 值为 `{ max_rows?, days?, time_col? }`。time_col 为表的时间列
+    /// （BIGINT 毫秒），缺省时该表的裁剪跳过。替换旧全局
+    /// persistence/touch_judge/round_data retention_days 与 table_row_caps。
     #[serde(default)]
-    pub touch_judge_retention_days: Option<u32>,
-    /// 各表最大行数上限（超过后清理最旧行至 80%）。键为表名，值为最大行数；
-    /// 0 或缺失 = 仅按时长保留。防止高流量表（如 mp_events）在保留期内
-    /// 无限膨胀（运维按表设上限）。
-    #[serde(default)]
-    pub table_row_caps: std::collections::HashMap<String, u64>,
+    pub table_retention: std::collections::HashMap<String, TableRetention>,
     #[serde(default)]
     pub admin_phira_ids: Vec<i32>,
     /// 游玩时间排行榜过滤用户（不显示的 Phira ID，如测试站 Bot）。
@@ -472,11 +479,8 @@ impl Default for PlusConfig {
             welcome_ftl_dir: None,
             phira_api_endpoint: "https://phira.5wyxi.com".to_string(),
             chat_enabled: true,
-            round_data_retention_days: 7,
             database_url: String::new(),
-            persistence_retention_days: 30,
-            touch_judge_retention_days: None,
-            table_row_caps: std::collections::HashMap::new(),
+            table_retention: std::collections::HashMap::new(),
             admin_phira_ids: Vec::new(),
             playtime_leaderboard_hide: Vec::new(),
             wasm_runtime: WasmRuntimeConfig::default(),
@@ -988,12 +992,6 @@ fn default_phira_api() -> String {
 }
 fn default_trusted_forwarded_http_port() -> u16 {
     0
-}
-fn default_retention_days() -> u32 {
-    7
-}
-fn default_persistence_retention_days() -> u32 {
-    30
 }
 fn default_runtime_persistence_queue_capacity() -> usize {
     2048

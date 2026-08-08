@@ -24,10 +24,7 @@
     "plugins_dir": { "type": "string", "default": "plugins" },
     "chat_enabled": { "type": "boolean", "default": true },
     "cli_enabled": { "type": "boolean", "default": true },
-    "persistence_retention_days": { "type": "integer", "minimum": 0, "default": 30 },
-    "touch_judge_retention_days": { "oneOf": [{ "type": "null" }, { "type": "integer", "minimum": 0 }] },
-    "table_row_caps": { "type": "object", "additionalProperties": { "type": "integer", "minimum": 0 }, "default": {} },
-    "round_data_retention_days": { "type": "integer", "minimum": 0, "default": 7 },
+    "table_retention": { "type": "object", "additionalProperties": { "type": "object", "properties": { "max_rows": { "type": "integer", "minimum": 0 }, "days": { "type": "integer", "minimum": 0 }, "time_col": { "type": "string" } }, "required": ["time_col"] }, "default": {} },
     "phira_api_endpoint": { "type": "string", "default": "https://phira.5wyxi.com" },
     "admin_phira_ids": { "type": "array", "items": { "type": "integer" }, "default": [] },
     "wasm_runtime": {

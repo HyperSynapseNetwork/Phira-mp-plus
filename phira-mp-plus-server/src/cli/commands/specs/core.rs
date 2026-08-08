@@ -111,7 +111,7 @@ pub fn specs() -> Vec<CommandSpec> {
                 lines.push(format!("  ◆ 插件目录: {}", state.config.plugins_dir));
                 lines.push(format!("  ◆ 最大会话: {}", state.config.max_sessions));
                 lines.push(format!("  ◆ 最大房间: {}", state.config.max_rooms.map(|v| v.to_string()).unwrap_or("无限制".into())));
-                lines.push(format!("  ◆ 数据保留: {} 天", state.config.persistence_retention_days));
+                lines.push(format!("  ◆ 保留策略表: {}", state.config.table_retention.len()));
                 lines.push(format!("  ◆ profile: {:?}", state.config.profile));
                 if !state.config.database_url.is_empty() {
                     let db_status = crate::internal_hooks::DB.get()

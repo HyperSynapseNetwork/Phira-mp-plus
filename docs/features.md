@@ -177,7 +177,7 @@
 - **Phira 上游**：phira_api_endpoint、HTTP 重试/退避/熔断
 - **WASM**：wasm_runtime（见插件节）
 - **运行时**：persistence_queue_capacity、WAL/DLQ 路径、persistent_rooms_required、startup_recovery_timeout(30s)
-- **保留**：round_data_retention_days(7)、persistence_retention_days(30)、touch_judge_retention_days、table_row_caps（各表最大行数，超限清最旧行至 80%，防高流量表膨胀）
+- **保留**：`table_retention`（每表策略：`{max_rows?, days?, time_col?}`，支持任意表；max_rows 超限清 80%、days 超期删）——取代旧全局 retention_days
 - **断线**：heartbeat_timeout(15s)、auth_timeout(15s)、dangle_grace(10s)、playing_reconnect_grace(15s)
 - **兼容性**：official_phira_client、minimum_response_latency_ms(0)、session_command_deadline_ms(4500)、commit_response_reserve_ms(1000)、auth_deadline_ms(5000)、gate 上限、protocol_hack_delay_ms
 - **其他**：monitors、admin_phira_ids、sentry_dsn、plugins_dir、cli_enabled、openuds、graceful_shutdown_timeout
@@ -296,10 +296,14 @@
 | `mp_round_results` | 轮次玩家结果 |
 | `mp_round_player_data` | 轮次玩家数据：聚合 touches/judges + 嵌套原始批（touch_batches/judge_batches），data_uuid 主键 |
 | `mp_room_snapshots` | 持久房间快照 |
-| `mp_events` | 领域事件 |
-| `mp_server_instances` | 服务器实例跟踪 |
+| `mp_events` | 领域事件日志（room.join / round.completed / chat.message 等，带全局序列，PPB 事件溯源数据源） |
+| `mp_server_instances` | 服务器实例跟踪（心跳） |
 | `mp_settings` | 设置 |
-| `mp_runtime_*` | 运行时遥测 / 基准 / 保留策略 |
+| `mp_runtime_telemetry_batches` | **高频运行时遥测批量**：Touch/Judge 遥测项由 HighFrequencyWriter 批量（256 条/500ms）COPY 入库（pipeline=`runtime.telemetry_batcher`），可观测性/审计用；**不影响** `mp_round_player_data` 的回放数据 |
+| `mp_runtime_telemetry_items` | 同上遥测的逐条明细 |
+| `mp_runtime_benchmark_reports` | benchmark 报告 |
+| `mp_runtime_retention_policies` | 保留策略元数据 |
+| `mp_runtime_persistence_meta` | 持久化运行元数据 |
 
 ---
 
