@@ -1048,10 +1048,11 @@ mod tests {
     }
 
     #[test]
-    fn unknown_top_level_field_is_rejected() {
-        let err = serde_yaml::from_str::<PlusConfig>("chat_enabld: false\n")
-            .expect_err("misspelled config keys must not be ignored");
-        assert!(err.to_string().contains("unknown field"));
+    fn unknown_top_level_field_is_ignored() {
+        // 自动更新换二进制后，旧配置残留的已删字段必须不影响启动（未知字段忽略）。
+        let config: PlusConfig = serde_yaml::from_str("chat_enabld: false\npersistence_retention_days: 15\n")
+            .expect("unknown/stale fields must be ignored");
+        assert!(!config.chat_enabled);
     }
 
     #[test]
