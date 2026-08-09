@@ -2,7 +2,7 @@
 
 # Phira-mp+
 
-![Phira-mp+ banner](docs/logo/phira-mp-plus-banner.png)
+<img src="docs/logo/phira-mp-plus-banner.png" width="60%" alt="Phira-mp+ banner" />
 
 **Phira-mp+（PMP）** — 基于 [phira-mp](https://github.com/HyperSynapseNetwork/phira-mp) 的高性能 Phira 多人游戏服务端 · Rust / WASM 插件 / WAL 先行 / Actor 模型
 
