@@ -25,6 +25,7 @@ use ratatui::{
 };
 use std::collections::HashMap;
 use std::io::{self, Write};
+use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::mpsc;
 use tokio::sync::mpsc::error::TryRecvError;

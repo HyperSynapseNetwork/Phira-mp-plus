@@ -204,6 +204,8 @@ async fn main() -> Result<()> {
         (Some(cmd_tx), Some(out_rx), Some(log_rx)) => {
             let mode = terminal.console_mode();
             let screen_compat = terminal.is_screen();
+            // 闭包外克隆 cli_status，避免把 server 移进控制台线程。
+            let cli_status = Arc::clone(&server.state.cli_status);
             if screen_compat {
                 info!("GNU Screen detected; using conservative TUI capabilities with Ctrl+H backspace compatibility");
             }
@@ -260,7 +262,7 @@ async fn main() -> Result<()> {
                             out_rx,
                             log_rx,
                             capabilities,
-                            Arc::clone(&server.state.cli_status),
+                            Arc::clone(&cli_status),
                         ) {
                             eprintln!("TUI error: {err}");
                         }
@@ -271,7 +273,7 @@ async fn main() -> Result<()> {
                             out_rx,
                             log_rx,
                             screen_compat,
-                            Arc::clone(&server.state.cli_status),
+                            Arc::clone(&cli_status),
                         );
                     }
                 }
