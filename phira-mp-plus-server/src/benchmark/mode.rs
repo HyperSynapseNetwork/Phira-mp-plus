@@ -26,9 +26,7 @@ impl BenchmarkMode {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModeParams {
     pub mode: BenchmarkMode,
-    /// 模式一：最大会话数（进程内虚拟会话）。
-    pub max_sessions: u32,
-    /// 模式一：最大同时在线游玩房间数。
+    /// 模式一：最大同时在线游玩房间数。会话数由房间推导（每房 2 个独立成员）。
     pub max_playing_rooms: u32,
     /// 模式二：CPU 上限（百分比 0-100）。
     pub max_cpu_pct: f64,
@@ -42,8 +40,8 @@ impl ModeParams {
     pub fn validate(&self) -> Result<(), String> {
         match self.mode {
             BenchmarkMode::Fixed => {
-                if self.max_sessions == 0 && self.max_playing_rooms == 0 {
-                    return Err("fixed 模式至少需要 --sessions 或 --playing-rooms 大于 0".to_string());
+                if self.max_playing_rooms == 0 {
+                    return Err("fixed 模式需要 --playing-rooms 大于 0".to_string());
                 }
             }
             BenchmarkMode::Ramp => {

@@ -5,7 +5,7 @@ use std::time::Duration;
 
 impl CliHandler {
     pub(in crate::cli) async fn dispatch_benchmark_command(&self, args: &[&str]) {
-        // args = ["run", "fixed", "--sessions", ...]
+        // args = ["run", "fixed", "--playing-rooms", ...]
         if matches!(args.first().copied(), Some("run")) {
             self.dispatch_benchmark_run_command(&args[1..]).await;
             return;
@@ -62,7 +62,6 @@ impl CliHandler {
 
         let mut params = ModeParams {
             mode,
-            max_sessions: 0,
             max_playing_rooms: 0,
             max_cpu_pct: 0.0,
             max_ram_bytes: 0,
@@ -74,20 +73,6 @@ impl CliHandler {
         let mut i = 0;
         while i < flags.len() {
             match flags[i] {
-                "--sessions" | "--users" => {
-                    i += 1;
-                    if i >= flags.len() {
-                        self.out(format!("  {} --sessions requires a number", c::red("✗")));
-                        return;
-                    }
-                    match flags[i].parse::<u32>() {
-                        Ok(n) => params.max_sessions = n,
-                        Err(_) => {
-                            self.out(format!("  {} invalid number: {}", c::red("✗"), flags[i]));
-                            return;
-                        }
-                    }
-                }
                 "--playing-rooms" | "--rooms" => {
                     i += 1;
                     if i >= flags.len() {
@@ -256,8 +241,7 @@ impl CliHandler {
 fn params_desc(params: &ModeParams) -> String {
     match params.mode {
         BenchmarkMode::Fixed => format!(
-            "fixed sessions={} playing_rooms={}{}",
-            params.max_sessions,
+            "fixed playing_rooms={}{}",
             params.max_playing_rooms,
             duration_desc(params.duration),
         ),
@@ -283,7 +267,7 @@ impl CliHandler {
         self.out(format!("  {} benchmark run — 运行基准测试", c::bold("用法")));
         self.out(String::new());
         self.out(format!(
-            "  {}   benchmark run fixed --sessions <N> --playing-rooms <M> [--duration <D>|--forever]",
+            "  {}   benchmark run fixed --playing-rooms <M> [--duration <D>|--forever]",
             c::dim("▸")
         ));
         self.out(format!(
@@ -293,11 +277,7 @@ impl CliHandler {
         self.out(String::new());
         self.out(format!("  {} Options:", c::cyan("▸")));
         self.out(format!(
-            "  {}   --sessions <N>     fixed：最大会话数",
-            c::dim("│")
-        ));
-        self.out(format!(
-            "  {}   --playing-rooms <M> fixed：最大同时在线游玩房间数",
+            "  {}   --playing-rooms <M> fixed：最大同时在线游玩房间数（会话数自动 = 房间 × 2）",
             c::dim("│")
         ));
         self.out(format!(

@@ -634,13 +634,13 @@ help groups
 
 **两种模式：**
 
-- **`fixed`** —— 维持负载上限：最大会话数 + 最大同时在线游玩房间数，持续到
-  时长或取消。
+- **`fixed`** —— 维持最大同时在线游玩房间数，持续到时长或取消。
 - **`ramp`** —— 自动加压直到 CPU / RAM 触顶后维持，持续到时长或取消。
+
+> 会话数由房间自动推导：每个房间 2 个独立虚拟成员，`sessions = playing_rooms × 2`。
 
 | 参数 | 类型 | 说明 |
 |------|------|------|
-| `--sessions <N>` | `int` | fixed：最大会话数 |
 | `--playing-rooms <M>` | `int` | fixed：最大同时在线游玩房间数 |
 | `--cpu <P>` | `float` | ramp：CPU 上限（百分比 0-100） |
 | `--ram <S>` | `str` | ramp：RAM 上限（如 4096m / 4g / 字节数） |
@@ -650,8 +650,8 @@ help groups
 
 **示例:**
 ```
-benchmark run fixed --sessions 1000 --playing-rooms 50 --duration 10m
-benchmark run fixed --sessions 2000 --playing-rooms 100 --forever
+benchmark run fixed --playing-rooms 50 --duration 10m
+benchmark run fixed --playing-rooms 100 --forever
 benchmark run ramp --cpu 80 --ram 4g --duration 1h
 ```
 

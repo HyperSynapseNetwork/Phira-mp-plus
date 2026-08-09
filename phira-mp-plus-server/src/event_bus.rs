@@ -469,7 +469,6 @@ mod tests {
         };
         let params = crate::benchmark::mode::ModeParams {
             mode: crate::benchmark::mode::BenchmarkMode::Fixed,
-            max_sessions: 100,
             max_playing_rooms: 10,
             max_cpu_pct: 0.0,
             max_ram_bytes: 0,

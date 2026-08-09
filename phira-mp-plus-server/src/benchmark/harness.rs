@@ -60,6 +60,8 @@ pub struct BenchmarkHarness {
     rooms: Vec<RoomEntry>,
     next_room_idx: u32,
     next_user_idx: u32,
+    /// 全局成员序号：每个房间从池里取独立的成员（房间 i → sessions[2i], sessions[2i+1]）。
+    next_member_idx: usize,
     started: Instant,
 
     // 指标累加
@@ -95,6 +97,7 @@ impl BenchmarkHarness {
             rooms: Vec::new(),
             next_room_idx: 0,
             next_user_idx: 0,
+            next_member_idx: 0,
             started: Instant::now(),
             total_commands: 0,
             errors: 0,
@@ -112,11 +115,6 @@ impl BenchmarkHarness {
             abort_reason: None,
             sampler: CpuSampler::new(),
         }
-    }
-
-    /// max_sessions 会话上限（0 = 不限，随房间成员自动增长）。
-    fn session_cap(&self) -> usize {
-        self.params.max_sessions as usize
     }
 
     // ── 会话 ─────────────────────────────────────────────────────
@@ -141,20 +139,13 @@ impl BenchmarkHarness {
         id
     }
 
-    /// 取会话池第 `index` 个成员：按需创建会话（受 max_sessions 上限），
-    /// 池满后循环复用，避免房间成员把会话数推过上限。
+    /// 取会话池第 `index` 个成员：不存在则创建，保证每个房间拿到独立成员
+    /// （会话数无上限，随房间需要自动增长）。
     async fn ensure_member(&mut self, index: usize) -> i32 {
-        let cap = self.session_cap();
-        while self.sessions.len() <= index && (cap == 0 || self.sessions.len() < cap) {
+        while self.sessions.len() <= index {
             self.add_session().await;
         }
-        if index < self.sessions.len() {
-            self.sessions[index].user_id
-        } else if !self.sessions.is_empty() {
-            self.sessions[index % self.sessions.len()].user_id
-        } else {
-            SESSION_ID_BASE
-        }
+        self.sessions[index].user_id
     }
 
     // ── 房间 ─────────────────────────────────────────────────────
@@ -170,8 +161,9 @@ impl BenchmarkHarness {
         self.state.create_empty_room(&room_id, None, false).await?;
 
         let mut member_ids = Vec::with_capacity(MEMBERS_PER_ROOM);
-        for m in 0..MEMBERS_PER_ROOM {
-            let uid = self.ensure_member(m).await;
+        for _ in 0..MEMBERS_PER_ROOM {
+            let uid = self.ensure_member(self.next_member_idx).await;
+            self.next_member_idx += 1;
             let name = self
                 .sessions
                 .iter()
@@ -309,12 +301,6 @@ impl BenchmarkHarness {
     // ── 负载管理 ─────────────────────────────────────────────────
 
     async fn manage_fixed(&mut self) {
-        let cap = self.session_cap();
-        if cap > 0 {
-            while self.sessions.len() < cap {
-                self.add_session().await;
-            }
-        }
         while self.rooms.len() < self.params.max_playing_rooms as usize {
             if let Err(e) = self.add_room().await {
                 self.errors += 1;

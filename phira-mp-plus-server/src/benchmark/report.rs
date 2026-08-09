@@ -135,8 +135,8 @@ impl BenchmarkReport {
         match self.params.mode {
             super::mode::BenchmarkMode::Fixed => {
                 out.push_str(&format!(
-                    "    模式: fixed  max_sessions={}  max_playing_rooms={}\n",
-                    self.params.max_sessions, self.params.max_playing_rooms
+                    "    模式: fixed  max_playing_rooms={}\n",
+                    self.params.max_playing_rooms
                 ));
             }
             super::mode::BenchmarkMode::Ramp => {

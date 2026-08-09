@@ -353,7 +353,6 @@ impl CommandRegistry {
                 let mut candidates: Vec<&str> = vec![
                     "fixed",
                     "ramp",
-                    "--sessions",
                     "--playing-rooms",
                     "--cpu",
                     "--ram",
