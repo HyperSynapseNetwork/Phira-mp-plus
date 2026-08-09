@@ -260,9 +260,10 @@ Phira-mp-plus/
 │       │   ├── disconnect.rs        #    disconnect_banned_user
 │       ├── benchmark/               #   Benchmark 模块
 │       │   ├── mod.rs               #    模块入口
-│       │   ├── command.rs           #    BenchmarkCommand/BenchmarkRunArgs
-│       │   ├── config.rs            #    BenchmarkConfig
-│       │   ├── runner.rs            #    顶级调度
+│       │   ├── mode.rs              #    模式与参数（fixed/ramp）
+│       │   ├── harness.rs           #    进程内负载生成器
+│       │   ├── sampler.rs           #    进程内 CPU/RAM 采样
+│       │   ├── report.rs            #    报告生成与格式化
 │       │   ├── environment.rs       #    环境检测
 │       │   ├── mock_phira.rs        #    本地 Mock Phira
 │       │   ├── profile.rs           #    CPU/heap profiling
@@ -288,7 +289,7 @@ Phira-mp-plus/
 │       ├── cli/dispatch.rs          #   顶层命令路由
 │       ├── cli/commands/            #   命令模块
 │       │   ├── admin.rs             #   admin-id / ban / extension
-│       │   ├── benchmark.rs         #   benchmark (list/run/suite/compare)
+│       │   ├── benchmark.rs         #   benchmark run (fixed/ramp)
 │       │   ├── broadcast.rs         #   消息广播
 │       │   ├── plugin.rs            #   WASM 插件管理
 │       │   ├── room.rs              #   房间管理
@@ -362,7 +363,7 @@ Phira-mp-plus/
 │       ├── rate_limiter.rs          #   速率限制
 │       ├── event_bus.rs             #   EventBus (MpEvent 广播)
 │       ├── runtime_diagnostics.rs   #   Runtime 诊断常量
-│       ├── benchmark/               #   基准测试模块（配置/场景/运行器/报告）
+│       ├── benchmark/               #   基准测试模块（模式/负载生成器/采样/报告）
 │       ├── db.rs                    #   PostgreSQL 持久化 (DbManager)
 │       ├── error.rs                 #   错误类型
 │       ├── l10n.rs                  #   Fluent i18n

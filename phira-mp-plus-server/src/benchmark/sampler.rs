@@ -38,7 +38,6 @@ pub fn read_rss_bytes() -> u64 {
 }
 
 /// 窗口差分 CPU 采样器。
-#[derive(Default)]
 pub struct CpuSampler {
     last_ticks: (u64, u64),
     last_at: Instant,
