@@ -351,29 +351,18 @@ impl CommandRegistry {
             "benchmark run",
             Arc::new(|_cmd, prefix| {
                 let mut candidates: Vec<&str> = vec![
-                    "real",
-                    "--mode",
-                    "--scenario",
-                    "--preset",
-                    "--clients",
-                    "--rooms",
+                    "fixed",
+                    "ramp",
+                    "--sessions",
+                    "--playing-rooms",
+                    "--cpu",
+                    "--ram",
                     "--duration",
-                    "--seed",
+                    "--forever",
                     "--output",
                 ];
                 candidates.retain(|c| c.starts_with(prefix));
                 candidates.into_iter().map(|s| s.to_string()).collect()
-            }),
-        );
-
-        self.set_arg_completer(
-            "benchmark suite",
-            Arc::new(|_cmd, prefix| {
-                ["--preset"]
-                    .into_iter()
-                    .filter(|s| s.starts_with(prefix))
-                    .map(|s| s.to_string())
-                    .collect()
             }),
         );
     }

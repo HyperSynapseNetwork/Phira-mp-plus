@@ -1,41 +1,22 @@
-//! Benchmark module — redesigned benchmark framework for Phira-mp+
+//! Benchmark 模块 —— 进程内纯内部调用版。
 //!
-//! 重新设计的基准测试模块，支持 Real 模式，提供统一指标收集、报告生成和性能分析能力。
+//! 直接调用线上 `PlusServerState` 内部 API 生成负载（不跑 phira 线协议、
+//! 不建子进程、不依赖独立数据库）。支持两种模式：
+//! - Fixed：维持最大会话数 + 最大同时在线游玩房间数，持续到时长或取消；
+//! - Ramp：自动加压直到 CPU / RAM 触顶后维持。
 //!
-//! ## 架构概览
-//!
-//! - `command`    — CLI 入口参数类型
-//! - `config`     — 基准测试配置，由 CLI 参数派生
-//! - `runner`     — 顶层运行调度器，分发到 Real runner
-//! - `environment`— 运行环境检测（CPU、内存、OS 等）
-//! - `mock_phira` — 本地 Mock Phira HTTP 服务器
-//! - `profile`    — CPU / 堆内存性能分析（profiling）
-//! - `metrics`    — 运行期间实时指标采集
-//! - `report`     — 基准测试报告生成与格式化
-//! - `presets`    — Quick / Standard / Stress / Soak 预设参数
-//! - `modes`      — Real 运行模式
+//! - `mode`      — 模式与参数
+//! - `harness`   — 进程内负载生成器
+//! - `sampler`   — 进程内 CPU / RAM 采样
+//! - `environment`— 运行环境快照（报告用）
+//! - `report`    — 报告生成与格式化
 
-pub mod command;
-pub mod config;
 pub mod environment;
-pub mod isolated;
-pub mod metrics;
-pub mod mock_phira;
-pub mod presets;
-pub mod profile;
+pub mod harness;
+pub mod mode;
 pub mod report;
-pub mod runner;
+pub mod sampler;
 
-pub mod modes {
-    pub mod real;
-}
-
-// ── Re-exports ────────────────────────────────────────────────────────────────
-
-pub use command::{BenchmarkCommand, BenchmarkRunArgs, BenchmarkScenario};
-pub use command::BenchmarkPreset;
-pub use config::BenchmarkConfig;
-pub use metrics::BenchmarkMetrics;
-pub use presets::BenchmarkPresetParams;
-pub use report::BenchmarkReport;
-pub use runner::BenchmarkRunner;
+pub use harness::BenchmarkHarness;
+pub use mode::{BenchmarkMode, ModeParams};
+pub use report::{BenchmarkReport, RampReached};

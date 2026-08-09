@@ -278,7 +278,6 @@ impl PersistenceEvent {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::benchmark::config::BenchmarkConfig;
     use crate::benchmark::environment::EnvironmentSnapshot;
 
     #[allow(dead_code)]
@@ -299,8 +298,15 @@ mod tests {
             postgres_version: Some("16.2".to_string()),
             captured_at_ms: 1_000_000,
         };
-        let config = BenchmarkConfig::from_preset(crate::benchmark::command::BenchmarkPreset::Quick);
-        BenchmarkReport::new("benchmark", env, config)
+        let params = crate::benchmark::mode::ModeParams {
+            mode: crate::benchmark::mode::BenchmarkMode::Fixed,
+            max_sessions: 100,
+            max_playing_rooms: 10,
+            max_cpu_pct: 0.0,
+            max_ram_bytes: 0,
+            duration: Some(std::time::Duration::from_secs(60)),
+        };
+        BenchmarkReport::new("benchmark", env, params)
     }
 
     #[test]

@@ -1,354 +1,166 @@
 use super::super::*;
+use crate::benchmark::mode::{BenchmarkMode, ModeParams};
+use std::sync::Arc;
+use std::time::Duration;
 
 impl CliHandler {
     pub(in crate::cli) async fn dispatch_benchmark_command(&self, args: &[&str]) {
-        // ── Phase 4.4: New benchmark commands ──
-
-        // benchmark list — list available scenarios and presets
-        if matches!(args.first().copied(), Some("list")) {
-            self.dispatch_benchmark_list_command().await;
+        // args = ["run", "fixed", "--sessions", ...]
+        if matches!(args.first().copied(), Some("run")) {
+            self.dispatch_benchmark_run_command(&args[1..]).await;
             return;
         }
-
-        // benchmark suite — run a predefined suite of scenarios
-        if matches!(args.first().copied(), Some("suite")) {
-            self.dispatch_benchmark_suite_command(&args[1..]).await;
-            return;
-        }
-
-        // benchmark compare — compare two benchmark report JSON files
-        if matches!(args.first().copied(), Some("compare")) {
-            self.dispatch_benchmark_compare_command(&args[1..]).await;
-            return;
-        }
-
-        // bare `benchmark run` — show help
-        if matches!(args.first().copied(), Some("run")) && args.len() == 1 {
-            self.print_benchmark_run_help();
-            return;
-        }
-
-        // `benchmark run --<flag> …` — new-style parametric benchmark run
-        if matches!(args.first().copied(), Some("run"))
-            && args.len() > 1
-            && args[1].starts_with("--")
-        {
-            self.dispatch_benchmark_run_command(args).await;
-            return;
-        }
-
-        // Unknown benchmark command
-        self.out(format!("  {} Unknown benchmark command. Use `benchmark run --help` for usage.", c::yellow("?")));
+        self.out(format!(
+            "  {} Unknown benchmark command. Use `benchmark run <fixed|ramp> --help` for usage.",
+            c::yellow("?")
+        ));
     }
-
-
 }
 
-// ═══════════════════════════════════════════════════════════════════════
-// Phase 4.4 — New benchmark commands: list, run, suite, compare
-// ═══════════════════════════════════════════════════════════════════════
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum OutputFormat {
-    Text,
-    Json,
-    Markdown,
+/// 解析 RAM 上限：支持裸字节数 / `k` / `m` / `g` 后缀。
+fn parse_ram_bytes(value: &str) -> Result<u64, String> {
+    let value = value.trim().to_ascii_lowercase();
+    let (num, mult) = if let Some(v) = value.strip_suffix('g') {
+        (v, 1u64 << 30)
+    } else if let Some(v) = value.strip_suffix('m') {
+        (v, 1u64 << 20)
+    } else if let Some(v) = value.strip_suffix('k') {
+        (v, 1u64 << 10)
+    } else {
+        (value.as_str(), 1u64)
+    };
+    let n: u64 = num
+        .parse()
+        .map_err(|_| format!("invalid RAM size: {value}; use e.g. 4096m, 4g, or raw bytes"))?;
+    Ok(n.saturating_mul(mult))
 }
 
 impl CliHandler {
-    /// `benchmark list` — list available scenarios and presets
-    pub(in crate::cli) async fn dispatch_benchmark_list_command(&self) {
-        self.out(format!("  {} Available benchmark scenarios", c::green("◆")));
-        for scenario in crate::benchmark::command::BenchmarkScenario::all() {
-            self.out(format!(
-                "  {} {:<22} {}",
-                c::dim("│"),
-                scenario.as_str(),
-                scenario.description()
-            ));
-        }
-        self.out(String::new());
-        self.out(format!("  {} Available presets", c::green("◆")));
-        let all_presets = [
-            crate::benchmark::command::BenchmarkPreset::Quick,
-            crate::benchmark::command::BenchmarkPreset::Standard,
-            crate::benchmark::command::BenchmarkPreset::Stress,
-            crate::benchmark::command::BenchmarkPreset::Soak,
-        ];
-        for preset in &all_presets {
-            let params = crate::benchmark::presets::BenchmarkPresetParams::from_preset(*preset);
-            self.out(format!(
-                "  {} {:<12} clients={:<5} rooms={:<5} duration={}s — {}",
-                c::dim("│"),
-                preset.as_str(),
-                params.clients,
-                params.rooms,
-                params.duration.as_secs(),
-                params.description(),
-            ));
-        }
-        self.out(String::new());
-        self.out(format!("  {} Usage examples:", c::cyan("▸")));
-        self.out(format!(
-            "  {}   benchmark run --scenario gameplay --preset standard",
-            c::dim("▸")
-        ));
-        self.out(format!(
-            "  {}   benchmark run --scenario hot-room --clients 100 --rooms 1 --duration 10m",
-            c::dim("▸")
-        ));
-        self.out(format!(
-            "  {}   benchmark suite --preset quick",
-            c::dim("▸")
-        ));
-        self.out(format!(
-            "  {}   benchmark compare old.json new.json",
-            c::dim("▸")
-        ));
-    }
-
-    /// `benchmark run` — parse flags and execute
+    /// `benchmark run <fixed|ramp> [options]` —— 进程内内部调用压测。
     pub(in crate::cli) async fn dispatch_benchmark_run_command(&self, args: &[&str]) {
-        // args = ["run", "--scenario", "gameplay", ...]
-        let cmd_args = &args[1..]; // skip "run"
+        let Some(mode_str) = args.first().copied() else {
+            self.print_benchmark_run_help();
+            return;
+        };
+        let mode = match mode_str {
+            "fixed" => BenchmarkMode::Fixed,
+            "ramp" => BenchmarkMode::Ramp,
+            "help" | "--help" | "-h" => {
+                self.print_benchmark_run_help();
+                return;
+            }
+            _ => {
+                self.out(format!(
+                    "  {} Unknown benchmark mode: {mode_str}. Use fixed or ramp.",
+                    c::red("✗")
+                ));
+                self.print_benchmark_run_help();
+                return;
+            }
+        };
+        let flags = &args[1..];
 
-        let mut run_args = crate::benchmark::command::BenchmarkRunArgs::default();
+        let mut params = ModeParams {
+            mode,
+            max_sessions: 0,
+            max_playing_rooms: 0,
+            max_cpu_pct: 0.0,
+            max_ram_bytes: 0,
+            duration: Some(Duration::from_secs(60)),
+        };
         let mut output_format = OutputFormat::Text;
         let mut show_help = false;
-        let mut explicit_clients = false;
-        let mut explicit_rooms = false;
-        let mut explicit_duration = false;
 
         let mut i = 0;
-        while i < cmd_args.len() {
-            match cmd_args[i] {
-                "--scenario" => {
+        while i < flags.len() {
+            match flags[i] {
+                "--sessions" | "--users" => {
                     i += 1;
-                    if i >= cmd_args.len() {
-                        self.out(format!(
-                            "  {} --scenario requires a value",
-                            c::red("✗")
-                        ));
+                    if i >= flags.len() {
+                        self.out(format!("  {} --sessions requires a number", c::red("✗")));
                         return;
                     }
-                    match crate::benchmark::command::BenchmarkScenario::parse(cmd_args[i]) {
-                        Some(scenario) => run_args.scenario = scenario,
-                        None => {
-                            let names: Vec<&str> =
-                                crate::benchmark::command::BenchmarkScenario::all()
-                                    .iter()
-                                    .map(|s| s.as_str())
-                                    .collect();
-                            self.out(format!(
-                                "  {} invalid scenario: '{}'. Available: {}",
-                                c::red("✗"),
-                                cmd_args[i],
-                                names.join(", ")
-                            ));
-                            return;
-                        }
-                    }
-                }
-                "--preset" => {
-                    i += 1;
-                    if i >= cmd_args.len() {
-                        self.out(format!(
-                            "  {} --preset requires a value",
-                            c::red("✗")
-                        ));
-                        return;
-                    }
-                    match crate::benchmark::command::BenchmarkPreset::parse(cmd_args[i]) {
-                        Some(preset) => run_args.preset = preset,
-                        None => {
-                            self.out(format!(
-                                "  {} invalid preset: '{}'. Available: quick, standard, stress, soak",
-                                c::red("✗"),
-                                cmd_args[i]
-                            ));
-                            return;
-                        }
-                    }
-                }
-                "--clients" | "--users" => {
-                    i += 1;
-                    if i >= cmd_args.len() {
-                        self.out(format!(
-                            "  {} {} requires a number",
-                            c::red("✗"),
-                            cmd_args[i - 1]
-                        ));
-                        return;
-                    }
-                    match cmd_args[i].parse::<u32>() {
-                        Ok(n) => {
-                            run_args.clients = n;
-                            explicit_clients = true;
-                        }
+                    match flags[i].parse::<u32>() {
+                        Ok(n) => params.max_sessions = n,
                         Err(_) => {
-                            self.out(format!(
-                                "  {} invalid number: {}",
-                                c::red("✗"),
-                                cmd_args[i]
-                            ));
+                            self.out(format!("  {} invalid number: {}", c::red("✗"), flags[i]));
                             return;
                         }
                     }
                 }
-                "--rooms" => {
+                "--playing-rooms" | "--rooms" => {
                     i += 1;
-                    if i >= cmd_args.len() {
+                    if i >= flags.len() {
                         self.out(format!(
-                            "  {} --rooms requires a number",
+                            "  {} --playing-rooms requires a number",
                             c::red("✗")
                         ));
                         return;
                     }
-                    match cmd_args[i].parse::<u32>() {
-                        Ok(n) => {
-                            run_args.rooms = n;
-                            explicit_rooms = true;
-                        }
+                    match flags[i].parse::<u32>() {
+                        Ok(n) => params.max_playing_rooms = n,
                         Err(_) => {
-                            self.out(format!(
-                                "  {} invalid number: {}",
-                                c::red("✗"),
-                                cmd_args[i]
-                            ));
+                            self.out(format!("  {} invalid number: {}", c::red("✗"), flags[i]));
                             return;
                         }
                     }
                 }
-                "--duration" => {
+                "--cpu" => {
                     i += 1;
-                    if i >= cmd_args.len() {
-                        self.out(format!(
-                            "  {} --duration requires a value (e.g. 30, 10m, 2h)",
-                            c::red("✗")
-                        ));
+                    if i >= flags.len() {
+                        self.out(format!("  {} --cpu requires a percent (0-100)", c::red("✗")));
                         return;
                     }
-                    match parse_benchmark_duration(cmd_args[i]) {
-                        Ok(d) => {
-                            run_args.duration = d;
-                            explicit_duration = true;
+                    match flags[i].parse::<f64>() {
+                        Ok(n) => params.max_cpu_pct = n,
+                        Err(_) => {
+                            self.out(format!("  {} invalid CPU percent: {}", c::red("✗"), flags[i]));
+                            return;
                         }
+                    }
+                }
+                "--ram" => {
+                    i += 1;
+                    if i >= flags.len() {
+                        self.out(format!("  {} --ram requires a size (e.g. 4096m / 4g)", c::red("✗")));
+                        return;
+                    }
+                    match parse_ram_bytes(flags[i]) {
+                        Ok(n) => params.max_ram_bytes = n,
                         Err(e) => {
                             self.out(format!("  {} {e}", c::red("✗")));
                             return;
                         }
                     }
                 }
-                "--seed" => {
+                "--duration" => {
                     i += 1;
-                    if i >= cmd_args.len() {
+                    if i >= flags.len() {
                         self.out(format!(
-                            "  {} --seed requires a number",
+                            "  {} --duration requires a value (e.g. 30, 10m, 2h)",
                             c::red("✗")
                         ));
                         return;
                     }
-                    match cmd_args[i].parse::<u64>() {
-                        Ok(seed) => run_args.seed = seed,
-                        Err(_) => {
-                            self.out(format!(
-                                "  {} invalid seed: {}",
-                                c::red("✗"),
-                                cmd_args[i]
-                            ));
+                    match parse_benchmark_duration(flags[i]) {
+                        Ok(d) => params.duration = Some(d),
+                        Err(e) => {
+                            self.out(format!("  {} {e}", c::red("✗")));
                             return;
                         }
                     }
                 }
-                "--listen-addr" => {
-                    i += 1;
-                    if i >= cmd_args.len() {
-                        self.out(format!(
-                            "  {} --listen-addr requires an address (ip:port)",
-                            c::red("✗")
-                        ));
-                        return;
-                    }
-                    let addr = cmd_args[i].to_string();
-                    run_args.overrides.push(("listen-addr".to_string(), addr));
-                }
-                "--db-url" => {
-                    i += 1;
-                    if i >= cmd_args.len() {
-                        self.out(format!(
-                            "  {} --db-url requires a PostgreSQL connection string for World B",
-                            c::red("✗")
-                        ));
-                        return;
-                    }
-                    run_args.server_db_url = cmd_args[i].to_string();
-                }
-                "--no-spawn" => {
-                    run_args.spawn_isolated = false;
-                }
-                "--server-port" => {
-                    i += 1;
-                    if i >= cmd_args.len() {
-                        self.out(format!(
-                            "  {} --server-port requires a number (World B game port)",
-                            c::red("✗")
-                        ));
-                        return;
-                    }
-                    match cmd_args[i].parse::<u16>() {
-                        Ok(p) => run_args.server_port = Some(p),
-                        Err(_) => {
-                            self.out(format!(
-                                "  {} invalid port: {}",
-                                c::red("✗"),
-                                cmd_args[i]
-                            ));
-                            return;
-                        }
-                    }
-                }
-                "--mock-phira-delay" => {
-                    i += 1;
-                    if i >= cmd_args.len() {
-                        self.out(format!("  {} --mock-phira-delay requires a number (ms)", c::red("✗")));
-                        return;
-                    }
-                    run_args.overrides.push(("mock-phira-delay".to_string(), cmd_args[i].to_string()));
-                }
-                "--mock-phira-jitter" => {
-                    i += 1;
-                    if i >= cmd_args.len() {
-                        self.out(format!("  {} --mock-phira-jitter requires a number (ms)", c::red("✗")));
-                        return;
-                    }
-                    run_args.overrides.push(("mock-phira-jitter".to_string(), cmd_args[i].to_string()));
-                }
-                "--mock-phira-error-rate" => {
-                    i += 1;
-                    if i >= cmd_args.len() {
-                        self.out(format!("  {} --mock-phira-error-rate requires a float (0.0-1.0)", c::red("✗")));
-                        return;
-                    }
-                    run_args.overrides.push(("mock-phira-error-rate".to_string(), cmd_args[i].to_string()));
-                }
-                "--mock-phira-timeout" => {
-                    i += 1;
-                    if i >= cmd_args.len() {
-                        self.out(format!("  {} --mock-phira-timeout requires a number (ms)", c::red("✗")));
-                        return;
-                    }
-                    run_args.overrides.push(("mock-phira-timeout".to_string(), cmd_args[i].to_string()));
-                }
+                "--forever" | "-f" => params.duration = None,
                 "--output" => {
                     i += 1;
-                    if i >= cmd_args.len() {
+                    if i >= flags.len() {
                         self.out(format!(
                             "  {} --output requires a format (text|json|markdown)",
                             c::red("✗")
                         ));
                         return;
                     }
-                    match cmd_args[i].to_ascii_lowercase().as_str() {
+                    match flags[i].to_ascii_lowercase().as_str() {
                         "text" | "human" => output_format = OutputFormat::Text,
                         "json" => output_format = OutputFormat::Json,
                         "markdown" | "md" => output_format = OutputFormat::Markdown,
@@ -361,18 +173,10 @@ impl CliHandler {
                         }
                     }
                 }
-                "--help" | "-h" => {
-                    show_help = true;
-                }
+                "--help" | "-h" => show_help = true,
                 other => {
-                    self.out(format!(
-                        "  {} unknown option: {other}",
-                        c::red("✗")
-                    ));
-                    self.out(format!(
-                        "  {} Run `benchmark run --help` for usage",
-                        c::dim("▸")
-                    ));
+                    self.out(format!("  {} unknown option: {other}", c::red("✗")));
+                    self.out(format!("  {} Run `benchmark run --help` for usage", c::dim("▸")));
                     return;
                 }
             }
@@ -384,540 +188,142 @@ impl CliHandler {
             return;
         }
 
-        // Apply preset defaults for values not explicitly overridden by the user.
-        // If the user supplied --clients/--rooms/--duration via CLI, those take
-        // priority over the preset.  Fields the user didn't touch get filled from
-        // the preset's own parameters.
-        let preset_params =
-            crate::benchmark::presets::BenchmarkPresetParams::from_preset(run_args.preset);
-        if !explicit_clients {
-            run_args.clients = preset_params.clients;
-        }
-        if !explicit_rooms {
-            run_args.rooms = preset_params.rooms;
-        }
-        if !explicit_duration {
-            run_args.duration = preset_params.duration;
-        }
-
-        // Announce
-        self.out(format!(
-            "  {} Starting benchmark: scenario={} preset={} clients={} rooms={} duration={}s seed={}",
-            c::green("◆"),
-            run_args.scenario.as_str(),
-            run_args.preset.as_str(),
-            run_args.clients,
-            run_args.rooms,
-            run_args.duration.as_secs(),
-            run_args.seed,
-        ));
-
-        // Execute via BenchmarkRunner
-        let mut runner = crate::benchmark::runner::BenchmarkRunner::from_args(run_args);
-        runner.set_server_state(std::sync::Arc::clone(&self.state));
-        match runner.run().await {
-            Ok(report) => {
-                self.out(format!("  {} Benchmark completed", c::green("✓")));
-                match output_format {
-                    OutputFormat::Text => {
-                        for line in report.format_text().lines() {
-                            self.out(line.to_string());
-                        }
-                    }
-                    OutputFormat::Json => match report.format_json() {
-                        Ok(json) => self.out(json),
-                        Err(e) => self.out(format!(
-                            "  {} JSON serialization failed: {e}",
-                            c::red("✗")
-                        )),
-                    },
-                    OutputFormat::Markdown => {
-                        self.out(report.format_markdown());
-                    }
-                }
-            }
-            Err(e) => {
-                self.out(format!("  {} Benchmark failed: {e}", c::red("✗")));
-            }
-        }
-    }
-
-    /// `benchmark suite --preset <name>` — run all scenarios sequentially
-    pub(in crate::cli) async fn dispatch_benchmark_suite_command(&self, args: &[&str]) {
-        let mut preset = crate::benchmark::command::BenchmarkPreset::Standard;
-        let mut show_help = false;
-
-        let mut i = 0;
-        while i < args.len() {
-            match args[i] {
-                "--preset" => {
-                    i += 1;
-                    if i >= args.len() {
-                        self.out(format!(
-                            "  {} --preset requires a value",
-                            c::red("✗")
-                        ));
-                        return;
-                    }
-                    match crate::benchmark::command::BenchmarkPreset::parse(args[i]) {
-                        Some(p) => preset = p,
-                        None => {
-                            self.out(format!(
-                                "  {} invalid preset: '{}'. Available: quick, standard, stress, soak",
-                                c::red("✗"),
-                                args[i]
-                            ));
-                            return;
-                        }
-                    }
-                }
-                "--help" | "-h" => {
-                    show_help = true;
-                }
-                other => {
-                    self.out(format!(
-                        "  {} unknown option: {other}. Usage: benchmark suite --preset <name>",
-                        c::red("✗")
-                    ));
-                    return;
-                }
-            }
-            i += 1;
-        }
-
-        if show_help {
-            self.out(format!("  {} benchmark suite — Run a benchmark suite", c::bold("Usage")));
-            self.out(format!("  {}   benchmark suite --preset <name>", c::dim("▸")));
-            self.out(format!("  {}   Presets: quick, standard (default), stress, soak", c::dim("▸")));
-            self.out(format!("  {} Runs all 11 benchmark scenarios sequentially with the chosen preset parameters", c::dim("▸")));
+        if let Err(e) = params.validate() {
+            self.out(format!("  {} {e}", c::red("✗")));
+            self.print_benchmark_run_help();
             return;
         }
 
-        let scenarios = crate::benchmark::command::BenchmarkScenario::all();
-        let total = scenarios.len();
-        let preset_params =
-            crate::benchmark::presets::BenchmarkPresetParams::from_preset(preset);
-
+        // ── 锁定 CLI 输入（进度矩形 + x 键取消）──────────────────
+        let status = Arc::clone(&self.state.cli_status);
+        let guard = crate::cli_status::CliStatusGuard::new(
+            &status,
+            "benchmark",
+            "准备中…",
+            'x',
+        );
         self.out(format!(
-            "  {} Benchmark suite started: preset={} scenarios={}",
+            "  {} 开始压测: {}  (x 键结束)",
             c::green("◆"),
-            preset.as_str(),
-            total
+            params_desc(&params)
         ));
+
+        let mut harness = crate::benchmark::harness::BenchmarkHarness::new(
+            Arc::clone(&self.state),
+            params.clone(),
+            Arc::clone(&status),
+        );
+        let report = harness.run().await;
+
+        drop(guard); // 恢复输入
+
+        self.state.publish_benchmark_completed(&report);
+
+        self.out(String::new());
         self.out(format!(
-            "  {} clients={} rooms={} duration={}s",
-            c::dim("│"),
-            preset_params.clients,
-            preset_params.rooms,
-            preset_params.duration.as_secs()
+            "  {} {}",
+            c::green("✓"),
+            report.one_line_summary()
         ));
-
-        let mut all_passed = 0usize;
-        let mut all_failed = 0usize;
-
-        for (idx, scenario) in scenarios.iter().enumerate() {
+        if report.aborted {
             self.out(format!(
-                "  {} [{}/{}] {} — {}",
-                c::cyan("▸"),
-                idx + 1,
-                total,
-                scenario.as_str(),
-                scenario.description()
-            ));
-
-            let mut run_args = crate::benchmark::command::BenchmarkRunArgs::default();
-            run_args.scenario = *scenario;
-            run_args.preset = preset;
-            run_args.clients = preset_params.clients;
-            run_args.rooms = preset_params.rooms;
-            run_args.duration = preset_params.duration;
-
-            let mut runner = crate::benchmark::runner::BenchmarkRunner::from_args(run_args);
-            runner.set_server_state(std::sync::Arc::clone(&self.state));
-            match runner.run().await {
-                Ok(report) => {
-                    all_passed += 1;
-                    self.out(format!(
-                        "  {} [{}/{}] {} — {:.0} cmd/s, {:.0} msg/s, {} errors, p50={:.1}ms p99={:.1}ms",
-                        c::green("✓"),
-                        idx + 1,
-                        total,
-                        scenario.as_str(),
-                        report.summary.avg_commands_per_sec,
-                        report.summary.avg_messages_per_sec,
-                        report.errors_total,
-                        report.command_latency.p50_ms,
-                        report.command_latency.p99_ms,
-                    ));
-                }
-                Err(e) => {
-                    all_failed += 1;
-                    self.out(format!(
-                        "  {} [{}/{}] {} — FAILED: {e}",
-                        c::red("✗"),
-                        idx + 1,
-                        total,
-                        scenario.as_str()
-                    ));
-                }
-            }
-        }
-
-        self.out(format!(
-            "  {} Suite complete: {}/{} passed, {}/{} failed",
-            if all_failed == 0 {
-                c::green("✓")
-            } else {
-                c::yellow("!")
-            },
-            all_passed,
-            total,
-            all_failed,
-            total
-        ));
-    }
-
-    /// `benchmark compare <old.json> <new.json>` — compare two benchmark report files
-    pub(in crate::cli) async fn dispatch_benchmark_compare_command(&self, args: &[&str]) {
-        if args.len() < 2 {
-            self.out(format!(
-                "  {} benchmark compare requires two file paths: compare <old.json> <new.json>",
-                c::yellow("?")
-            ));
-            self.out(format!(
-                "  {} The files should be benchmark reports in JSON format",
-                c::dim("▸")
-            ));
-            self.out(format!(
-                "  {} Example: benchmark compare reports/report-001.json reports/report-002.json",
-                c::dim("▸")
-            ));
-            return;
-        }
-
-        let old_path = args[0];
-        let new_path = args[1];
-
-        // Read and parse old report
-        let old_content = match std::fs::read_to_string(old_path) {
-            Ok(c) => c,
-            Err(e) => {
-                self.out(format!(
-                    "  {} Failed to read old report '{}': {e}",
-                    c::red("✗"),
-                    old_path
-                ));
-                return;
-            }
-        };
-        let old_report: crate::benchmark::report::BenchmarkReport =
-            match serde_json::from_str(&old_content) {
-                Ok(r) => r,
-                Err(e) => {
-                    self.out(format!(
-                        "  {} Failed to parse old report '{}': {e}",
-                        c::red("✗"),
-                        old_path
-                    ));
-                    return;
-                }
-            };
-
-        // Read and parse new report
-        let new_content = match std::fs::read_to_string(new_path) {
-            Ok(c) => c,
-            Err(e) => {
-                self.out(format!(
-                    "  {} Failed to read new report '{}': {e}",
-                    c::red("✗"),
-                    new_path
-                ));
-                return;
-            }
-        };
-        let new_report: crate::benchmark::report::BenchmarkReport =
-            match serde_json::from_str(&new_content) {
-                Ok(r) => r,
-                Err(e) => {
-                    self.out(format!(
-                        "  {} Failed to parse new report '{}': {e}",
-                        c::red("✗"),
-                        new_path
-                    ));
-                    return;
-                }
-            };
-
-        // Print comparison header
-        self.out(format!("  {} Benchmark Comparison", c::bold("═══")));
-        self.out(format!(
-            "  {} Old: {} ({})",
-            c::dim("│"),
-            old_path,
-            old_report.title
-        ));
-        self.out(format!(
-            "  {} New: {} ({})",
-            c::dim("│"),
-            new_path,
-            new_report.title
-        ));
-        if old_report.config.scenario != new_report.config.scenario {
-            self.out(format!(
-                "  {} Note: reports have different scenarios (old: {}, new: {})",
-                c::yellow("?"),
-                old_report.config.scenario.as_str(),
-                new_report.config.scenario.as_str()
+                "  {} {}",
+                c::yellow("!"),
+                report.abort_reason.as_deref().unwrap_or("已中止")
             ));
         }
         self.out(String::new());
-
-        // Helper to format a metric change
-        let fmt_change = |old: f64, new: f64| -> String {
-            if old == 0.0 && new == 0.0 {
-                return "      -".to_string();
+        match output_format {
+            OutputFormat::Text => {
+                for line in report.format_text().lines() {
+                    self.out(line.to_string());
+                }
             }
-            if old == 0.0 {
-                return format!("    +{:.0}", new);
+            OutputFormat::Json => match report.format_json() {
+                Ok(json) => self.out(json),
+                Err(e) => self.out(format!(
+                    "  {} JSON serialization failed: {e}",
+                    c::red("✗")
+                )),
+            },
+            OutputFormat::Markdown => {
+                self.out(report.format_markdown());
             }
-            let pct = (new / old - 1.0) * 100.0;
-            if pct >= 0.0 {
-                format!("  +{:.1}%", pct)
-            } else {
-                format!("  {:.1}%", pct)
-            }
-        };
-
-        let hdr_format = |label: &str, old_val: String, new_val: String, change: String| {
-            format!(
-                "  {:<24} {:>14} {:>14} {:>10}",
-                label, old_val, new_val, change
-            )
-        };
-
-        self.out(hdr_format(
-            "Metric",
-            "Old".to_string(),
-            "New".to_string(),
-            "Change".to_string(),
-        ));
-        self.out(format!("  {}", c::dim(&"─".repeat(64))));
-
-        // Throughput
-        self.out(hdr_format(
-            "Commands/s",
-            format!("{:.0}", old_report.summary.avg_commands_per_sec),
-            format!("{:.0}", new_report.summary.avg_commands_per_sec),
-            fmt_change(
-                old_report.summary.avg_commands_per_sec,
-                new_report.summary.avg_commands_per_sec,
-            ),
-        ));
-        self.out(hdr_format(
-            "Messages/s",
-            format!("{:.0}", old_report.summary.avg_messages_per_sec),
-            format!("{:.0}", new_report.summary.avg_messages_per_sec),
-            fmt_change(
-                old_report.summary.avg_messages_per_sec,
-                new_report.summary.avg_messages_per_sec,
-            ),
-        ));
-
-        // Errors
-        self.out(hdr_format(
-            "Errors",
-            format!("{}", old_report.errors_total),
-            format!("{}", new_report.errors_total),
-            fmt_change(
-                old_report.errors_total as f64,
-                new_report.errors_total as f64,
-            ),
-        ));
-
-        // Latency
-        self.out(hdr_format(
-            "p50 latency",
-            format!("{:.1}ms", old_report.command_latency.p50_ms),
-            format!("{:.1}ms", new_report.command_latency.p50_ms),
-            fmt_change(
-                old_report.command_latency.p50_ms,
-                new_report.command_latency.p50_ms,
-            ),
-        ));
-        self.out(hdr_format(
-            "p95 latency",
-            format!("{:.1}ms", old_report.command_latency.p95_ms),
-            format!("{:.1}ms", new_report.command_latency.p95_ms),
-            fmt_change(
-                old_report.command_latency.p95_ms,
-                new_report.command_latency.p95_ms,
-            ),
-        ));
-        self.out(hdr_format(
-            "p99 latency",
-            format!("{:.1}ms", old_report.command_latency.p99_ms),
-            format!("{:.1}ms", new_report.command_latency.p99_ms),
-            fmt_change(
-                old_report.command_latency.p99_ms,
-                new_report.command_latency.p99_ms,
-            ),
-        ));
-        self.out(hdr_format(
-            "max latency",
-            format!("{:.1}ms", old_report.command_latency.max_ms),
-            format!("{:.1}ms", new_report.command_latency.max_ms),
-            fmt_change(
-                old_report.command_latency.max_ms,
-                new_report.command_latency.max_ms,
-            ),
-        ));
-
-        // Resources
-        self.out(hdr_format(
-            "CPU (total)",
-            format!("{:.1}%", old_report.cpu.total_pct),
-            format!("{:.1}%", new_report.cpu.total_pct),
-            fmt_change(old_report.cpu.total_pct, new_report.cpu.total_pct),
-        ));
-        self.out(hdr_format(
-            "RSS (peak)",
-            format!("{}MB", old_report.peak_rss_bytes / 1024 / 1024),
-            format!("{}MB", new_report.peak_rss_bytes / 1024 / 1024),
-            fmt_change(
-                old_report.peak_rss_bytes as f64,
-                new_report.peak_rss_bytes as f64,
-            ),
-        ));
-
-        // Database
-        self.out(hdr_format(
-            "DB rows/s",
-            format!("{:.0}", old_report.database.avg_rows_per_sec),
-            format!("{:.0}", new_report.database.avg_rows_per_sec),
-            fmt_change(
-                old_report.database.avg_rows_per_sec,
-                new_report.database.avg_rows_per_sec,
-            ),
-        ));
-        self.out(hdr_format(
-            "DB txns/s",
-            format!("{:.0}", old_report.database.avg_transactions_per_sec),
-            format!("{:.0}", new_report.database.avg_transactions_per_sec),
-            fmt_change(
-                old_report.database.avg_transactions_per_sec,
-                new_report.database.avg_transactions_per_sec,
-            ),
-        ));
-
-        self.out(format!("  {}", c::dim(&"─".repeat(64))));
-        if new_report.errors_total > old_report.errors_total {
-            self.out(format!(
-                "  {} Errors increased by {} ({} → {})",
-                c::yellow("!"),
-                new_report.errors_total - old_report.errors_total,
-                old_report.errors_total,
-                new_report.errors_total
-            ));
-        }
-        if new_report.command_latency.p99_ms > old_report.command_latency.p99_ms * 1.5 {
-            self.out(format!(
-                "  {} p99 latency degraded significantly ({:.1}ms → {:.1}ms)",
-                c::yellow("!"),
-                old_report.command_latency.p99_ms,
-                new_report.command_latency.p99_ms
-            ));
-        }
-        if old_report.title != new_report.title {
-            self.out(format!(
-                "  {} Note: reports have different titles, ensure you are comparing the right pair",
-                c::dim("▸")
-            ));
         }
     }
 }
 
+fn params_desc(params: &ModeParams) -> String {
+    match params.mode {
+        BenchmarkMode::Fixed => format!(
+            "fixed sessions={} playing_rooms={}{}",
+            params.max_sessions,
+            params.max_playing_rooms,
+            duration_desc(params.duration),
+        ),
+        BenchmarkMode::Ramp => format!(
+            "ramp cpu={:.0}% ram={}MB{}",
+            params.max_cpu_pct,
+            params.max_ram_bytes / 1024 / 1024,
+            duration_desc(params.duration),
+        ),
+    }
+}
+
+fn duration_desc(duration: Option<Duration>) -> String {
+    match duration {
+        Some(d) => format!(" duration={}s", d.as_secs()),
+        None => " forever".to_string(),
+    }
+}
+
 impl CliHandler {
-    /// Print help text for `benchmark run`
+    /// 打印 `benchmark run` 帮助。
     pub(in crate::cli) fn print_benchmark_run_help(&self) {
-        self.out(format!("  {} benchmark run — Run a benchmark", c::bold("Usage")));
+        self.out(format!("  {} benchmark run — 运行基准测试", c::bold("用法")));
+        self.out(String::new());
+        self.out(format!(
+            "  {}   benchmark run fixed --sessions <N> --playing-rooms <M> [--duration <D>|--forever]",
+            c::dim("▸")
+        ));
+        self.out(format!(
+            "  {}   benchmark run ramp --cpu <P> --ram <S> [--duration <D>|--forever]",
+            c::dim("▸")
+        ));
         self.out(String::new());
         self.out(format!("  {} Options:", c::cyan("▸")));
         self.out(format!(
-            "  {}   --scenario <scenario>  Load scenario (use benchmark list to see all)",
+            "  {}   --sessions <N>     fixed：最大会话数",
             c::dim("│")
         ));
         self.out(format!(
-            "  {}   --preset <preset>      Preset: quick, standard (default), stress, soak",
+            "  {}   --playing-rooms <M> fixed：最大同时在线游玩房间数",
             c::dim("│")
         ));
         self.out(format!(
-            "  {}   --clients <N>          Number of simulated clients",
+            "  {}   --cpu <P>          ramp：CPU 上限（百分比 0-100）",
             c::dim("│")
         ));
         self.out(format!(
-            "  {}   --rooms <N>            Number of simulated rooms",
+            "  {}   --ram <S>          ramp：RAM 上限（如 4096m / 4g / 字节数）",
             c::dim("│")
         ));
         self.out(format!(
-            "  {}   --duration <N>         Duration (e.g. 30, 10m, 2h)",
+            "  {}   --duration <D>     时长：30（秒）/ 10m / 2h（缺省 60s）",
             c::dim("│")
         ));
         self.out(format!(
-            "  {}   --seed <N>             Random seed for reproducibility",
+            "  {}   --forever          永久运行（直到 x 键结束）",
             c::dim("│")
         ));
         self.out(format!(
-            "  {}   --output <fmt>         Output: text (default), json, markdown",
-            c::dim("│")
-        ));
-        self.out(format!(
-            "  {}   --mock-phira-delay <ms>   Mock Phira artificial delay (default: 5ms)",
-            c::dim("│")
-        ));
-        self.out(format!(
-            "  {}   --mock-phira-jitter <ms>  Mock Phira delay jitter (default: 2ms)",
-            c::dim("│")
-        ));
-        self.out(format!(
-            "  {}   --mock-phira-error-rate <rate>  Mock Phira error rate (0.0-1.0)",
-            c::dim("│")
-        ));
-        self.out(format!(
-            "  {}   --mock-phira-timeout <ms> Mock Phira timeout delay (default: 30000ms)",
-            c::dim("│")
-        ));
-        self.out(format!(
-            "  {}   --db-url <conn>        World B 独立测试数据库连接串（默认模式必填）",
-            c::dim("│")
-        ));
-        self.out(format!(
-            "  {}   --server-port <N>      World B 游戏端口（默认自动选空闲端口）",
-            c::dim("│")
-        ));
-        self.out(format!(
-            "  {}   --no-spawn             不拉起隔离实例，改为连接现有服务器（--listen-addr）",
-            c::dim("│")
-        ));
-        self.out(format!(
-            "  {}   --help / -h            Show this help",
+            "  {}   --output <fmt>     输出：text（默认）/ json / markdown",
             c::dim("│")
         ));
         self.out(String::new());
-        self.out(format!("  {} Examples:", c::cyan("▸")));
+        self.out(format!("  {} 运行期间 CLI 输入被锁定，按 x 结束并显示报告。", c::dim("▸")));
         self.out(format!(
-            "  {}   benchmark run --scenario gameplay --preset standard",
-            c::dim("│")
-        ));
-        self.out(format!(
-            "  {}   benchmark run --scenario room-lifecycle --clients 50 --rooms 5 --duration 30",
-            c::dim("│")
-        ));
-        self.out(format!(
-            "  {}   benchmark run --output json > report.json",
-            c::dim("│")
-        ));
-        self.out(format!(
-            "  {} Use `benchmark list` to see all scenarios and presets",
+            "  {} 进程内内部调用（虚拟会话/房间），不依赖独立数据库，结束时全清理。",
             c::dim("▸")
         ));
     }
@@ -954,3 +360,10 @@ fn parse_benchmark_duration(value: &str) -> Result<std::time::Duration, String> 
     }
 }
 
+/// 输出格式（兼容旧版）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum OutputFormat {
+    Text,
+    Json,
+    Markdown,
+}

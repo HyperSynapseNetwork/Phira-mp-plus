@@ -467,14 +467,16 @@ mod tests {
             postgres_version: Some("16.2".to_string()),
             captured_at_ms: 1_000_000,
         };
-        let config = crate::benchmark::config::BenchmarkConfig::from_preset(
-            crate::benchmark::command::BenchmarkPreset::Quick,
-        );
-        let mut report = crate::benchmark::report::BenchmarkReport::new(
-            "benchmark probe",
-            env,
-            config,
-        );
+        let params = crate::benchmark::mode::ModeParams {
+            mode: crate::benchmark::mode::BenchmarkMode::Fixed,
+            max_sessions: 100,
+            max_playing_rooms: 10,
+            max_cpu_pct: 0.0,
+            max_ram_bytes: 0,
+            duration: Some(std::time::Duration::from_secs(60)),
+        };
+        let mut report =
+            crate::benchmark::report::BenchmarkReport::new("benchmark probe", env, params);
         report.errors_total = 2;
 
         let event = MpEvent::BenchmarkCompleted { report };

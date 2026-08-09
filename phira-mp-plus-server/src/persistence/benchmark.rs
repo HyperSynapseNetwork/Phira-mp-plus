@@ -37,7 +37,7 @@ impl BenchmarkReportPersistenceRecord {
             probes_failed: 0,
             probes_blocked: 0,
             probes_skipped: 0,
-            failure_samples: report.invariant_violations as usize,
+            failure_samples: 0,
             notes: report.notes.len(),
             source: source.into(),
             schema_version: crate::persistence::schema::RUNTIME_BENCHMARK_REPORTS_SCHEMA_VERSION,
@@ -95,7 +95,6 @@ pub struct BenchmarkReportHistoryRow {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::benchmark::config::BenchmarkConfig;
     use crate::benchmark::environment::EnvironmentSnapshot;
 
     fn make_test_report() -> BenchmarkReport {
@@ -115,8 +114,15 @@ mod tests {
             postgres_version: Some("16.2".to_string()),
             captured_at_ms: 1_000_000,
         };
-        let config = BenchmarkConfig::from_preset(crate::benchmark::command::BenchmarkPreset::Quick);
-        BenchmarkReport::new("test", env, config)
+        let params = crate::benchmark::mode::ModeParams {
+            mode: crate::benchmark::mode::BenchmarkMode::Fixed,
+            max_sessions: 100,
+            max_playing_rooms: 10,
+            max_cpu_pct: 0.0,
+            max_ram_bytes: 0,
+            duration: Some(std::time::Duration::from_secs(60)),
+        };
+        BenchmarkReport::new("test", env, params)
     }
 
     #[test]

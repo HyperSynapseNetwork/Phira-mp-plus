@@ -21,59 +21,24 @@ pub fn specs() -> Vec<CommandSpec> {
 
     out.push(
         CommandSpec::new(
-            "benchmark list",
-            "benchmark",
-            "列出可用场景（scenarios）和预设（presets）。",
-            "benchmark list",
-        )
-        .advanced()
-        .example("benchmark list")
-        .handler(benchmark_sub("list")),
-    );
-    out.push(
-        CommandSpec::new(
             "benchmark run",
             "benchmark",
-            "运行基准测试。",
-            "benchmark run --scenario <name> --preset <name> [options]",
+            "运行基准测试（进程内内部调用，不依赖独立数据库；实时显示进度，x 键结束）。",
+            "benchmark run <fixed|ramp> [options]",
         )
         .advanced()
-        .arg(CommandArgSpec::optional("--scenario", "负载场景名（见 benchmark list）"))
-        .arg(CommandArgSpec::optional("--preset", "预设参数集：quick|standard|stress|soak"))
-        .arg(CommandArgSpec::optional("--clients", "模拟客户端数"))
-        .arg(CommandArgSpec::optional("--rooms", "模拟房间数"))
-        .arg(CommandArgSpec::optional("--duration", "运行时长，如 30（秒）/ 10m / 2h"))
-        .arg(CommandArgSpec::optional("--seed", "随机种子（用于可复现性）"))
+        .arg(CommandArgSpec::optional("fixed|ramp", "运行模式：fixed 维持负载上限；ramp 加压直到 CPU/RAM 触顶"))
+        .arg(CommandArgSpec::optional("--sessions", "fixed：最大会话数"))
+        .arg(CommandArgSpec::optional("--playing-rooms", "fixed：最大同时在线游玩房间数"))
+        .arg(CommandArgSpec::optional("--cpu", "ramp：CPU 上限（百分比 0-100）"))
+        .arg(CommandArgSpec::optional("--ram", "ramp：RAM 上限（如 4096m / 4g / 字节数）"))
+        .arg(CommandArgSpec::optional("--duration", "运行时长，如 30 / 10m / 2h；缺省 60s"))
+        .arg(CommandArgSpec::optional("--forever", "永久运行（直到 x 键结束）"))
         .arg(CommandArgSpec::optional("--output", "输出格式：text（默认）|json|markdown"))
-        .example("benchmark run --scenario room-lifecycle --clients 50 --rooms 5 --duration 30")
-        .example("benchmark run --scenario hot-room --clients 100 --duration 10m")
+        .example("benchmark run fixed --sessions 1000 --playing-rooms 50 --duration 10m")
+        .example("benchmark run fixed --sessions 2000 --playing-rooms 100 --forever")
+        .example("benchmark run ramp --cpu 80 --ram 4g --duration 1h")
         .handler(benchmark_sub("run")),
-    );
-    out.push(
-        CommandSpec::new(
-            "benchmark suite",
-            "benchmark",
-            "按预设参数顺序运行所有场景，汇总输出。",
-            "benchmark suite --preset <name>",
-        )
-        .advanced()
-        .arg(CommandArgSpec::optional("--preset", "预设参数集：quick|standard（默认）|stress|soak"))
-        .example("benchmark suite --preset standard")
-        .example("benchmark suite --preset quick")
-        .handler(benchmark_sub("suite")),
-    );
-    out.push(
-        CommandSpec::new(
-            "benchmark compare",
-            "benchmark",
-            "比较两份基准测试报告（JSON 文件）的差异。",
-            "benchmark compare <old.json> <new.json>",
-        )
-        .advanced()
-        .arg(CommandArgSpec::required("old.json", "原始基准测试报告 JSON 文件"))
-        .arg(CommandArgSpec::required("new.json", "新基准测试报告 JSON 文件"))
-        .example("benchmark compare old.json new.json")
-        .handler(benchmark_sub("compare")),
     );
 
     out
