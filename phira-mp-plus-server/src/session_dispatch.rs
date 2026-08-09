@@ -67,7 +67,12 @@ pub(crate) async fn process(
         );
         // P0-A: a permission rejection must produce the official error response
         // for the command, never a silent drop.
-        return official_error_response(&cmd, "permission denied".to_string());
+        let msg = crate::l10n::translate_system(
+            &user.lang,
+            "error-permission-denied",
+            &fluent::FluentArgs::new(),
+        );
+        return official_error_response(&cmd, msg);
     }
 
     match cmd {

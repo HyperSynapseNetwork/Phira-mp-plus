@@ -2866,7 +2866,11 @@ impl Session {
                                     let resp =
                                         crate::official_client_compat::response::official_error_response(
                                             &cmd,
-                                            "command rate limited".to_string(),
+                                            crate::l10n::translate_system(
+                                                &user.lang,
+                                                "error-command-rate-limited",
+                                                &fluent::FluentArgs::new(),
+                                            ),
                                         );
                                     crate::official_client_compat::timing::CompatTiming::from_config(
                                         &user.server.config,

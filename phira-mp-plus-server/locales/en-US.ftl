@@ -101,3 +101,8 @@ room-progress-notice = Progress: [{ $bar }] { $percent }%    { $remaining } min 
 # ── Phira retry notice ──
 
 phira-retry-notice = Phira server connection is unstable, retrying for a smooth experience
+
+# ── Error popups ──
+
+error-permission-denied = Permission denied
+error-command-rate-limited = Too many requests, try again later

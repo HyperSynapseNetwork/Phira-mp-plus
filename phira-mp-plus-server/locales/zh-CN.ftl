@@ -102,3 +102,8 @@ room-progress-notice = 游玩进程:[{ $bar }]{ $percent }%    还剩{ $remainin
 # ── Phira 重试通知 ──
 
 phira-retry-notice = Phira服务器连接不稳定，正在重试以确保你的流畅体验
+
+# ── 错误弹窗 ──
+
+error-permission-denied = 权限不足，无法执行此操作
+error-command-rate-limited = 操作过于频繁，请稍后再试
