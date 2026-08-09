@@ -1155,14 +1155,19 @@ impl PluginManager {
         Ok(())
     }
 
-    pub async fn execute_cli_command(&self, name: &str, args: &[&str]) -> Option<Vec<String>> {
+    pub async fn execute_cli_command(
+        &self,
+        name: &str,
+        args: &[&str],
+        status: &crate::cli_status::CliStatus,
+    ) -> Option<Vec<String>> {
         let handler = self
             .cli_commands
             .lock()
             .ok()?
             .get(name)
             .map(|command| Arc::clone(&command.handler))?;
-        Some(handler(args))
+        Some(handler(args, status))
     }
 
     pub async fn list_cli_commands(&self) -> Vec<CliCommand> {
@@ -1194,7 +1199,9 @@ pub struct CliCommand {
     pub name: String,
     pub description: String,
     pub usage: String,
-    pub handler: Arc<dyn Fn(&[&str]) -> Vec<String> + Send + Sync>,
+    /// 命令处理器。第二个参数是运行期状态句柄（`state.cli_status`）：
+    /// 插件命令可借此锁定/禁用输入框并显示状态文字（`lock`/`update`/`unlock`）。
+    pub handler: Arc<dyn Fn(&[&str], &crate::cli_status::CliStatus) -> Vec<String> + Send + Sync>,
 }
 
 impl std::fmt::Debug for CliCommand {

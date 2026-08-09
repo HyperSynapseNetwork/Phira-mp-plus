@@ -248,6 +248,7 @@ impl PlusServer {
             db_manager,
             last_all_offline_at: tokio::sync::Mutex::new(std::time::Instant::now()),
             pending_update: tokio::sync::Mutex::new(None),
+            cli_status: Arc::new(crate::cli_status::CliStatus::new()),
         });
         // Wire PersistenceWorker into ExtensionManager for persistence
         state

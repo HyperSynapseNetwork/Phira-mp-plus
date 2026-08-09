@@ -231,7 +231,7 @@ impl CliHandler {
         let result = self
             .state
             .plugin_manager
-            .execute_cli_command(command, args)
+            .execute_cli_command(command, args, &self.state.cli_status)
             .await;
         match result {
             Some(output_lines) => {

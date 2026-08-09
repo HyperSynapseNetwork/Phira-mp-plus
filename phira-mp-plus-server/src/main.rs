@@ -260,6 +260,7 @@ async fn main() -> Result<()> {
                             out_rx,
                             log_rx,
                             capabilities,
+                            Arc::clone(&server.state.cli_status),
                         ) {
                             eprintln!("TUI error: {err}");
                         }
@@ -270,6 +271,7 @@ async fn main() -> Result<()> {
                             out_rx,
                             log_rx,
                             screen_compat,
+                            Arc::clone(&server.state.cli_status),
                         );
                     }
                 }

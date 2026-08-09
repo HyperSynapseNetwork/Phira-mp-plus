@@ -469,7 +469,7 @@ async fn init_welcome(_state: &PlusServerState, pm: &PluginManager) {
             name: "welcome-config".into(),
             description: "查看欢迎语配置与占位符说明".into(),
             usage: "welcome-config".into(),
-            handler: Arc::new(|_| {
+            handler: Arc::new(|_, _| {
                 // 展示内置默认（示例语言 zh-CN），说明默认随版本更新。
                 let builtin = crate::l10n::translate_system(
                     &crate::l10n::Language("zh-CN".parse().unwrap_or_default()),
@@ -540,7 +540,7 @@ async fn init_player_tracker(
             name: "player-count".into(),
             description: "游玩过的玩家总数".into(),
             usage: "player-count".into(),
-            handler: Arc::new(|_| vec![format!("  ◆ 玩家总数: {}", PLAYERS.lock().unwrap().len())]),
+            handler: Arc::new(|_, _| vec![format!("  ◆ 玩家总数: {}", PLAYERS.lock().unwrap().len())]),
         })
         .await;
 }

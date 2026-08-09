@@ -123,6 +123,9 @@ pub struct PlusServerState {
     /// 预约更新目标版本号（`update schedule` 设置 / run_checker 自动预约）。
     /// `None` = 无预约；后台执行器在下线满 `min_idle_minutes` 后据此自动更新。
     pub pending_update: Mutex<Option<String>>,
+    /// CLI 运行期状态：长任务命令（如 benchmark）锁定输入 + 显示状态矩形，
+    /// 完成后解锁。TUI 每帧轮询渲染；插件命令经 `CliCommand.handler` 访问。
+    pub cli_status: Arc<crate::cli_status::CliStatus>,
 }
 
 /// Phira-mp+ 服务器

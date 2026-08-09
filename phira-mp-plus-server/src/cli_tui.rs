@@ -145,6 +145,7 @@ pub fn run_tui(
     mut out_rx: mpsc::Receiver<String>,
     mut log_rx: mpsc::Receiver<String>,
     capabilities: TuiCapabilities,
+    status: Arc<crate::cli_status::CliStatus>,
 ) -> io::Result<()> {
     let _session = match TerminalSession::enter(capabilities) {
         Ok(session) => session,
@@ -152,7 +153,13 @@ pub fn run_tui(
             eprintln!(
                 "TUI unavailable ({err}); falling back to the line-oriented compatibility console."
             );
-            run_stdin_cli_with_logs(cmd_tx, out_rx, log_rx, capabilities.ctrl_h_backspace);
+            run_stdin_cli_with_logs(
+                cmd_tx,
+                out_rx,
+                log_rx,
+                capabilities.ctrl_h_backspace,
+                status,
+            );
             return Ok(());
         }
     };
@@ -167,6 +174,7 @@ pub fn run_tui(
         cmd_tx,
         capabilities.colors && !capabilities.plain_ui,
         capabilities.plain_ui,
+        status,
     );
     let result = app.run_loop(&mut terminal, &mut out_rx, &mut log_rx);
     let _ = terminal.clear();
@@ -193,6 +201,8 @@ struct TuiApp {
     plain_ui: bool,
     dirty: bool,
     cached_stats: String,
+    /// 运行期状态：命令锁定时禁用输入 + 显示状态矩形。
+    status: Arc<crate::cli_status::CliStatus>,
 }
 
 fn completion_prefix(before_cursor: &str) -> &str {
@@ -208,7 +218,12 @@ fn completion_prefix(before_cursor: &str) -> &str {
 }
 
 impl TuiApp {
-    fn new(cmd_tx: mpsc::Sender<String>, colors: bool, plain_ui: bool) -> Self {
+    fn new(
+        cmd_tx: mpsc::Sender<String>,
+        colors: bool,
+        plain_ui: bool,
+        status: Arc<crate::cli_status::CliStatus>,
+    ) -> Self {
         Self {
             output_lines: Vec::with_capacity(1024),
             scroll_from_bottom: 0,
@@ -224,6 +239,7 @@ impl TuiApp {
             plain_ui,
             dirty: true,
             cached_stats: String::new(),
+            status,
         }
     }
 
@@ -343,6 +359,23 @@ impl TuiApp {
 
     fn handle_key(&mut self, key: KeyEvent) {
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        // 命令锁定输入：仅响应取消热键；Ctrl+C 也转为请求取消（不直接关服，
+        // 避免长任务（如 benchmark）中途退出残留状态）。
+        if self.status.is_locked() {
+            let hotkey = self
+                .status
+                .snapshot()
+                .map(|s| s.cancel_hotkey)
+                .unwrap_or('x');
+            match key.code {
+                KeyCode::Char('c') if ctrl => self.status.request_cancel(),
+                KeyCode::Char(ch) if !ctrl && ch.to_ascii_lowercase() == hotkey => {
+                    self.status.request_cancel();
+                }
+                _ => {}
+            }
+            return;
+        }
         match key.code {
             KeyCode::Char('c') if ctrl => {
                 let _ = self.cmd_tx.try_send("exit".to_string());
@@ -587,16 +620,23 @@ impl TuiApp {
         }
 
         // Overall vertical layout
+        let has_status = self.status.is_locked();
+        let mut constraints = vec![
+            Constraint::Length(1), // Header
+            Constraint::Length(6), // Top panels (Rooms | Users)
+            Constraint::Min(1),    // Output / Log area
+        ];
+        if has_status {
+            constraints.push(Constraint::Length(4)); // Status rectangle（命令运行中）
+        }
+        constraints.push(Constraint::Length(3)); // Command input area
+        constraints.push(Constraint::Length(1)); // Status bar
         let chunks = Layout::default()
             .direction(Direction::Vertical)
-            .constraints([
-                Constraint::Length(1), // Header
-                Constraint::Length(6), // Top panels (Rooms | Users)
-                Constraint::Min(1),    // Output / Log area
-                Constraint::Length(3), // Command input area
-                Constraint::Length(1), // Status bar
-            ])
+            .constraints(constraints)
             .split(area);
+        let input_area = if has_status { chunks[4] } else { chunks[3] };
+        let status_bar_area = if has_status { chunks[5] } else { chunks[4] };
 
         // ── Header ──────────────────────────────────────────────────
         let header_text = if self.cached_stats.is_empty() {
@@ -722,32 +762,102 @@ impl TuiApp {
             );
         }
 
+        // ── Status rectangle（命令运行中）──────────────────────────
+        if has_status {
+            let rect_area = chunks[3];
+            let snap = self.status.snapshot();
+            frame.render_widget(Clear, rect_area);
+            let title = snap
+                .as_ref()
+                .map(|s| s.title.clone())
+                .unwrap_or_else(|| "运行中".to_string());
+            frame.render_widget(
+                Block::default()
+                    .title(format!(" {title} "))
+                    .borders(Borders::ALL)
+                    .border_style(self.accent_style()),
+                rect_area,
+            );
+            let rect_inner = inner_rect(rect_area);
+            if rect_inner.width > 0 && rect_inner.height > 0 {
+                let rect_width = rect_inner.width.saturating_sub(1).max(1) as usize;
+                let mut content = String::new();
+                if let Some(snap) = snap {
+                    let text_rows = wrap_display_line(&snap.text, rect_width);
+                    for (i, row) in text_rows.iter().take(1).enumerate() {
+                        if i > 0 {
+                            content.push('\n');
+                        }
+                        content.push_str(row);
+                    }
+                    if !content.is_empty() {
+                        content.push('\n');
+                    }
+                    content.push_str(&render_progress_bar(snap.progress, rect_width));
+                    content.push_str("  ");
+                    content.push_str(&format!(
+                        "按 {} 结束",
+                        snap.cancel_hotkey.to_ascii_uppercase()
+                    ));
+                } else {
+                    content.push_str("准备中…");
+                }
+                frame.render_widget(
+                    Paragraph::new(content).wrap(Wrap { trim: false }),
+                    rect_inner,
+                );
+            }
+        }
+
         // ── Input area ──────────────────────────────────────────────
-        let input_area = chunks[3];
-        let input_inner = inner_rect(input_area);
-        let input_width = input_inner.width.saturating_sub(2) as usize;
-        let (input_visible, cursor_col) = input_window(&self.input, self.cursor_pos, input_width);
-        let prompt = if self.input.is_empty() {
-            Span::styled("› ", self.muted_style())
-        } else {
-            Span::styled("› ", self.accent_style())
-        };
         frame.render_widget(Clear, input_area);
-        frame.render_widget(
-            Block::default()
-                .title(" 命令输入 ")
-                .borders(Borders::ALL)
-                .border_style(self.input_border_style()),
-            input_area,
-        );
-        frame.render_widget(
-            Paragraph::new(Line::from(vec![prompt, Span::raw(input_visible)])),
-            input_inner,
-        );
-        frame.set_cursor_position(Position::new(
-            input_inner.x + 2 + cursor_col.min(input_width) as u16,
-            input_inner.y,
-        ));
+        if has_status {
+            // 输入被命令锁定：显示禁用占位，不渲染光标。
+            frame.render_widget(
+                Block::default()
+                    .title(" 命令输入 ")
+                    .borders(Borders::ALL)
+                    .border_style(self.muted_style()),
+                input_area,
+            );
+            let hint = format!(
+                "  ⏸ {} 按 {} 结束",
+                "命令运行中",
+                self.status
+                    .snapshot()
+                    .map(|s| s.cancel_hotkey.to_ascii_uppercase().to_string())
+                    .unwrap_or_else(|| "X".to_string())
+            );
+            frame.render_widget(
+                Paragraph::new(Line::from(Span::styled(hint, self.muted_style()))),
+                inner_rect(input_area),
+            );
+        } else {
+            let input_inner = inner_rect(input_area);
+            let input_width = input_inner.width.saturating_sub(2) as usize;
+            let (input_visible, cursor_col) =
+                input_window(&self.input, self.cursor_pos, input_width);
+            let prompt = if self.input.is_empty() {
+                Span::styled("› ", self.muted_style())
+            } else {
+                Span::styled("› ", self.accent_style())
+            };
+            frame.render_widget(
+                Block::default()
+                    .title(" 命令输入 ")
+                    .borders(Borders::ALL)
+                    .border_style(self.input_border_style()),
+                input_area,
+            );
+            frame.render_widget(
+                Paragraph::new(Line::from(vec![prompt, Span::raw(input_visible)])),
+                input_inner,
+            );
+            frame.set_cursor_position(Position::new(
+                input_inner.x + 2 + cursor_col.min(input_width) as u16,
+                input_inner.y,
+            ));
+        }
 
         // ── Status bar ──────────────────────────────────────────────
         let scroll_info = if self.scroll_from_bottom == 0 {
@@ -756,10 +866,10 @@ impl TuiApp {
             format!("↑{}", self.scroll_from_bottom)
         };
         let status = format!(" {}  |  Tab补全  ↑↓历史  PgUp/PgDn  ^C退出", scroll_info,);
-        frame.render_widget(Clear, chunks[4]);
+        frame.render_widget(Clear, status_bar_area);
         frame.render_widget(
             Paragraph::new(Span::styled(status, self.muted_style())),
-            chunks[4],
+            status_bar_area,
         );
     }
 
@@ -806,16 +916,39 @@ impl TuiApp {
             .join("\n");
         frame.render_widget(Paragraph::new(visible), output_area);
 
-        frame.render_widget(Paragraph::new("-".repeat(width)), chunks[3]);
-        let prompt = "> ";
-        let input_width = width.saturating_sub(prompt.len()).max(1);
-        let (input_visible, cursor_col) = input_window(&self.input, self.cursor_pos, input_width);
-        let input_line = pad_cells(&format!("{prompt}{input_visible}"), width);
-        frame.render_widget(Paragraph::new(input_line), chunks[4]);
-        frame.set_cursor_position(Position::new(
-            chunks[4].x + prompt.len() as u16 + cursor_col.min(input_width) as u16,
-            chunks[4].y,
-        ));
+        if self.status.is_locked() {
+            // 命令锁定：chunks[3] 显示状态行，chunks[4] 显示禁用输入占位。
+            let snap = self.status.snapshot();
+            let status_line = match snap {
+                Some(s) => format!(
+                    "[{}] {} 按 {} 结束",
+                    s.title,
+                    s.text,
+                    s.cancel_hotkey.to_ascii_uppercase()
+                ),
+                None => "[命令运行中] 按 X 结束".to_string(),
+            };
+            frame.render_widget(
+                Paragraph::new(pad_cells(&status_line, width)),
+                chunks[3],
+            );
+            frame.render_widget(
+                Paragraph::new(pad_cells("> (输入已锁定)", width)),
+                chunks[4],
+            );
+        } else {
+            frame.render_widget(Paragraph::new("-".repeat(width)), chunks[3]);
+            let prompt = "> ";
+            let input_width = width.saturating_sub(prompt.len()).max(1);
+            let (input_visible, cursor_col) =
+                input_window(&self.input, self.cursor_pos, input_width);
+            let input_line = pad_cells(&format!("{prompt}{input_visible}"), width);
+            frame.render_widget(Paragraph::new(input_line), chunks[4]);
+            frame.set_cursor_position(Position::new(
+                chunks[4].x + prompt.len() as u16 + cursor_col.min(input_width) as u16,
+                chunks[4].y,
+            ));
+        }
 
         let status = if self.scroll_from_bottom == 0 {
             format!(
@@ -987,10 +1120,34 @@ fn pad_cells(input: &str, width: usize) -> String {
     out
 }
 
+/// 渲染进度条：`[██████░░░░] 60%`。无确定进度时显示不确定指示。
+fn render_progress_bar(progress: Option<(u64, u64)>, width: usize) -> String {
+    match progress {
+        Some((current, total)) if total > 0 => {
+            let pct = (current as f64 / total as f64) * 100.0;
+            let bar_width = width.saturating_sub(8).max(1);
+            let filled = ((pct / 100.0) * bar_width as f64) as usize;
+            let bar = format!(
+                "{}",
+                "█".repeat(filled.min(bar_width))
+                    + &"░".repeat(bar_width.saturating_sub(filled))
+            );
+            format!("[{bar}] {:.0}%", pct)
+        }
+        _ => "⠋ 运行中…".to_string(),
+    }
+}
+
 /// Line-oriented fallback used when stdin/stdout are redirected or not TTYs.
 pub fn run_stdin_cli(cmd_tx: mpsc::Sender<String>, out_rx: mpsc::Receiver<String>) {
     let (_log_tx, log_rx) = mpsc::channel(1024);
-    run_stdin_cli_with_logs(cmd_tx, out_rx, log_rx, false);
+    run_stdin_cli_with_logs(
+        cmd_tx,
+        out_rx,
+        log_rx,
+        false,
+        Arc::new(crate::cli_status::CliStatus::new()),
+    );
 }
 
 pub fn run_stdin_cli_with_logs(
@@ -998,6 +1155,7 @@ pub fn run_stdin_cli_with_logs(
     mut out_rx: mpsc::Receiver<String>,
     mut log_rx: mpsc::Receiver<String>,
     ctrl_h_backspace: bool,
+    status: Arc<crate::cli_status::CliStatus>,
 ) {
     let _erase_key_guard = if ctrl_h_backspace {
         EraseKeyGuard::ctrl_h().ok()
@@ -1021,7 +1179,17 @@ pub fn run_stdin_cli_with_logs(
     // stdin 读错误（如 pty 在自动更新重启后损坏返回 EIO）时若立即重试会空转
     // 100% CPU + 疯狂刷屏；退避 + 连续错误上限后放弃管理控制台（服务器继续跑）。
     let mut consecutive_errors = 0u32;
+    let mut was_locked = false;
     loop {
+        // 命令锁定输入：提示取消热键；其余输入在锁定期间不派发。
+        let locked = status.is_locked();
+        if locked && !was_locked {
+            println!("[命令运行中] 输入已锁定；输入 x 请求结束");
+            was_locked = true;
+        } else if !locked && was_locked {
+            println!("[命令结束] 输入已恢复");
+            was_locked = false;
+        }
         print!("> ");
         let _ = io::stdout().flush();
         line_buf.clear();
@@ -1043,6 +1211,19 @@ pub fn run_stdin_cli_with_logs(
                     .trim()
                     .to_string();
                 if command.is_empty() {
+                    continue;
+                }
+                if status.is_locked() {
+                    let hotkey = status
+                        .snapshot()
+                        .map(|s| s.cancel_hotkey)
+                        .unwrap_or('x');
+                    if command.len() == 1
+                        && command.chars().next() == Some(hotkey)
+                    {
+                        status.request_cancel();
+                    }
+                    // 锁定期间不派发普通命令。
                     continue;
                 }
                 let exiting = matches!(command.as_str(), "exit" | "quit" | "q");
@@ -1087,7 +1268,8 @@ mod tests {
     #[test]
     fn screen_ctrl_h_is_backspace_but_plain_h_is_text() {
         let (tx, _rx): (tokio::sync::mpsc::Sender<String>, _) = tokio::sync::mpsc::channel(1024);
-        let mut app = TuiApp::new(tx, false, false);
+        let mut app =
+            TuiApp::new(tx, false, false, Arc::new(crate::cli_status::CliStatus::new()));
         app.insert_text("ah");
         app.handle_key(KeyEvent::new(KeyCode::Char('h'), KeyModifiers::CONTROL));
         assert_eq!(app.input, "a");
