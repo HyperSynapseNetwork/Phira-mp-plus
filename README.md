@@ -6,6 +6,9 @@
 
 **Phira-mp+（PMP）** — 基于 [phira-mp](https://github.com/HyperSynapseNetwork/phira-mp) 的高性能 Phira 多人游戏服务端 · Rust / WASM 插件 / WAL 先行 / Actor 模型
 
+<br/>
+
+<p align="center">
 [![License: AGPLv3](https://img.shields.io/badge/License-AGPLv3-blue.svg)](LICENSE)
 [![Rust](https://img.shields.io/badge/Rust-2021-dea584.svg?logo=rust&logoColor=white)](https://www.rust-lang.org/)
 [![Build](https://github.com/HyperSynapseNetwork/Phira-mp-plus/actions/workflows/build.yml/badge.svg)](https://github.com/HyperSynapseNetwork/Phira-mp-plus/actions/workflows/build.yml)
@@ -18,8 +21,12 @@
 [![i18n](https://img.shields.io/badge/i18n-fluent-1b6ac9.svg)](https://projectfluent.org/)
 [![GitHub stars](https://img.shields.io/github/stars/HyperSynapseNetwork/Phira-mp-plus?style=social)](https://github.com/HyperSynapseNetwork/Phira-mp-plus/stargazers)
 [![Last commit](https://img.shields.io/github/last-commit/HyperSynapseNetwork/Phira-mp-plus)](https://github.com/HyperSynapseNetwork/Phira-mp-plus/commits/main)
+</p>
 
 </div>
+
+> [!TIP]
+> 第一次来？直接看[快速开始](#快速开始)。
 
 ## 简介
 
@@ -31,6 +38,9 @@
 - **Actor 模型**：每房间独立 mailbox 串行化状态 + 快照缓存，无锁高并发
 - **WASM 插件系统**：WIT component 动态加载，插件可注册 HTTP/SSE、订阅事件、调 host API，运行时热加载
 - **丰富的拓展功能**：PMP相对于原版Phira-mp提供了大量新功能以优化用户与运维体验，详见[功能总览](docs/features.md)与[CLI 手册](docs/cli.md)
+
+> [!NOTE]
+> 想深入看实现？见[架构文档](docs/development/architecture.md)。
 
 ## 文档
 
@@ -68,12 +78,11 @@ PMP 服务端采用 [AGPL-3.0](LICENSE) 开源。
 
 ### 下载发行版（推荐）
 
-从 [Releases](https://github.com/HyperSynapseNetwork/Phira-mp-plus/releases) 或 CI 构建产物下载：
-- `phira-mp-plus-server-linux-glibc`（Linux glibc，通用）
-- `phira-mp-plus-server-linux`（Linux musl，更便携）
-- `phira-mp-plus-server-linux-arm64-glibc`（Linux ARM64）
-- `phira-mp-plus-server-windows-x86_64`（Windows x86_64）
+从 [Releases](https://github.com/HyperSynapseNetwork/Phira-mp-plus/releases) 下载对应平台的二进制：
+- Linux（静态 musl）：`phira-mp-plus-server-linux-musl` / `-arm64-musl`
+- Windows：`phira-mp-plus-server-windows-x86_64`
 
+> [!NOTE]
 > **平台说明**：Windows 版本**不编译、不支持 OpenUDS**（Unix Domain Socket 是 Unix 特性，模块已 `#[cfg(unix)]` 排除）；其余功能与 Linux 版一致。
 
 **环境配置：**
@@ -87,14 +96,15 @@ sudo systemctl start postgresql
 sudo -u postgres psql -c "ALTER USER postgres PASSWORD 'your_password';"
 sudo -u postgres createdb phira_mp_plus
 
-# 3. 下载 phira-mp-plus-server-linux-glibc 并赋予执行权限
-chmod +x phira-mp-plus-server-linux-glibc
+# 3. 下载 phira-mp-plus-server-linux-musl 并赋予执行权限
+chmod +x phira-mp-plus-server-linux-musl
 
 # 4. 启动（默认配置 + PM_DATABASE_URL 指定数据库即可）
-PM_DATABASE_URL="postgres://postgres:your_password@localhost:5432/phira_mp_plus" ./phira-mp-plus-server-linux-glibc
+PM_DATABASE_URL="postgres://postgres:your_password@localhost:5432/phira_mp_plus" ./phira-mp-plus-server-linux-musl
 # （如需自定义其它配置，可用 --config 指定 server_config.yml）
 ```
 
+> [!IMPORTANT]
 > `database_url` **必填**（留空会启动失败）：PMP 需要 PostgreSQL 连接。
 > 数据库需先创建（`createdb`），PMP 启动后自动 sqlx 迁移建表。
 > 以非 postgres 用户运行时，`localhost` 走密码认证，需先设置 postgres 密码（`ALTER USER`）。
@@ -181,7 +191,9 @@ cli_enabled: true
 PM_DATABASE_URL="postgres://user:pass@host:5432/phira_mp_plus" ./phira-mp-plus-server
 ```
 
+> [!NOTE]
 > **PostgreSQL 设置**：首次启动会自动创建 `phira_mp_plus` 数据库和所有表。如果自动建库失败，可以手动创建：
+>
 > ```bash
 > sudo -u postgres psql -c "CREATE DATABASE phira_mp_plus;"
 > ```
@@ -209,6 +221,9 @@ phira-mp-plus-server [OPTIONS]
 ```
 
 ## 项目结构
+
+<details>
+<summary>完整项目结构（点击展开）</summary>
 
 ```
 Phira-mp-plus/
@@ -263,28 +278,8 @@ Phira-mp-plus/
 │       │   ├── mode.rs              #    模式与参数（fixed/ramp）
 │       │   ├── harness.rs           #    进程内负载生成器
 │       │   ├── sampler.rs           #    进程内 CPU/RAM 采样
-│       │   ├── report.rs            #    报告生成与格式化
 │       │   ├── environment.rs       #    环境检测
-│       │   ├── mock_phira.rs        #    本地 Mock Phira
-│       │   ├── profile.rs           #    CPU/heap profiling
-│       │   ├── metrics.rs           #    指标采集
-│       │   ├── report.rs            #    报告生成 (text/json/markdown)
-│       │   ├── presets.rs           #    预设参数 (quick/standard/stress/soak)
-│       │   ├── modes/               #    运行模式
-│       │   │   └── real.rs          #      真实 TCP 模式
-│       │   └── scenarios/           #    负载场景 (11 个)
-│       │       ├── common.rs        #      共享工具
-│       │       ├── room_lifecycle.rs
-│       │       ├── gameplay.rs
-│       │       ├── connection.rs
-│       │       ├── steady_state.rs
-│       │       ├── hot_room.rs
-│       │       ├── slow_consumer.rs
-│       │       ├── reconnect.rs
-│       │       ├── plugin_load.rs
-│       │       ├── database_write.rs
-│       │       ├── mixed.rs
-│       │       └── long_run.rs
+│       │   └── report.rs            #    报告生成与格式化
 │       ├── cli.rs                   #   CLI 生命周期、输入循环
 │       ├── cli/dispatch.rs          #   顶层命令路由
 │       ├── cli/commands/            #   命令模块
@@ -397,6 +392,8 @@ Phira-mp-plus/
 │   │   └── src/                     #   ClientCommand / ServerCommand / Stream 帧协议
 │   └── phira-mp-macros/             #   #[derive(BinaryData)] 过程宏
 ```
+
+</details>
 
 ## 终端兼容性
 
