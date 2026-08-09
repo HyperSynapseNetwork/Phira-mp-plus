@@ -8,7 +8,6 @@
 
 <br/>
 
-<p align="center">
 [![License: AGPLv3](https://img.shields.io/badge/License-AGPLv3-blue.svg)](LICENSE)
 [![Rust](https://img.shields.io/badge/Rust-2021-dea584.svg?logo=rust&logoColor=white)](https://www.rust-lang.org/)
 [![Build](https://github.com/HyperSynapseNetwork/Phira-mp-plus/actions/workflows/build.yml/badge.svg)](https://github.com/HyperSynapseNetwork/Phira-mp-plus/actions/workflows/build.yml)
@@ -21,7 +20,6 @@
 [![i18n](https://img.shields.io/badge/i18n-fluent-1b6ac9.svg)](https://projectfluent.org/)
 [![GitHub stars](https://img.shields.io/github/stars/HyperSynapseNetwork/Phira-mp-plus?style=social)](https://github.com/HyperSynapseNetwork/Phira-mp-plus/stargazers)
 [![Last commit](https://img.shields.io/github/last-commit/HyperSynapseNetwork/Phira-mp-plus)](https://github.com/HyperSynapseNetwork/Phira-mp-plus/commits/main)
-</p>
 
 </div>
 
