@@ -73,3 +73,9 @@ impl CpuSampler {
         (single_core_pct / cores).clamp(0.0, 100.0)
     }
 }
+
+impl Default for CpuSampler {
+    fn default() -> Self {
+        Self::new()
+    }
+}

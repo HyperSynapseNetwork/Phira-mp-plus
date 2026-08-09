@@ -1137,11 +1137,8 @@ fn render_progress_bar(progress: Option<(u64, u64)>, width: usize) -> String {
             let pct = (current as f64 / total as f64) * 100.0;
             let bar_width = width.saturating_sub(8).max(1);
             let filled = ((pct / 100.0) * bar_width as f64) as usize;
-            let bar = format!(
-                "{}",
-                "█".repeat(filled.min(bar_width))
-                    + &"░".repeat(bar_width.saturating_sub(filled))
-            );
+            let bar = "█".repeat(filled.min(bar_width))
+                + &"░".repeat(bar_width.saturating_sub(filled));
             format!("[{bar}] {:.0}%", pct)
         }
         _ => "⠋ 运行中…".to_string(),
@@ -1228,9 +1225,7 @@ pub fn run_stdin_cli_with_logs(
                         .snapshot()
                         .map(|s| s.cancel_hotkey)
                         .unwrap_or('x');
-                    if command.len() == 1
-                        && command.chars().next() == Some(hotkey)
-                    {
+                    if command == hotkey.to_string() {
                         status.request_cancel();
                     }
                     // 锁定期间不派发普通命令。
