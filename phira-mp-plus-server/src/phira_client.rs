@@ -34,9 +34,77 @@ struct ZipEntry {
     local_offset: u32,
 }
 
+/// MPEG Layer III 比特率表（kbps）。index 0/15 = free/bad。
+const MP3_BITRATES_V1: [u32; 16] = [0,32,40,48,56,64,80,96,112,128,160,192,224,256,320,0];
+const MP3_BITRATES_V2: [u32; 16] = [0,8,16,24,32,40,48,56,64,80,96,112,128,144,160,0];
+const MP3_SAMPLES_V1: [u32; 4] = [44100,48000,32000,0];
+const MP3_SAMPLES_V2: [u32; 4] = [22050,24000,16000,0];
+
+/// 手动扫描 MPEG1/2 Layer III 帧计算时长（秒）。VBR 也准确——
+/// 逐帧用实际比特率累加帧时长，不依赖 Xing/首帧估算。
+/// 返回 None 表示不是（或无法解析为）MP3 帧流。
+fn mp3_duration_scan(data: &[u8]) -> Option<f64> {
+    let mut total = 0.0f64;
+    let mut frames = 0u32;
+    let mut i = 0usize;
+    while i + 4 <= data.len() {
+        // 帧同步：0xFF + 前 3 位 1。
+        if data[i] != 0xFF || data[i + 1] & 0xE0 != 0xE0 {
+            i += 1;
+            continue;
+        }
+        let h = &data[i..i + 4];
+        let version = (h[1] >> 3) & 3; // 3=MPEG1, 2=MPEG2
+        let layer = (h[1] >> 1) & 3; // 3 = Layer III
+        if layer != 3 {
+            i += 1;
+            continue;
+        }
+        let bri = ((h[2] >> 4) & 0xF) as usize;
+        let sri = ((h[2] >> 2) & 3) as usize;
+        let padding = (h[2] >> 1) & 1;
+        let (bitrate, sample) = if version == 3 {
+            (MP3_BITRATES_V1[bri], MP3_SAMPLES_V1[sri])
+        } else {
+            (MP3_BITRATES_V2[bri], MP3_SAMPLES_V2[sri])
+        };
+        if bitrate == 0 || sample == 0 {
+            i += 1;
+            continue;
+        }
+        // MPEG1 Layer III：帧长 = 144 * bitrate / sample + padding；
+        // MPEG2 Layer III 每帧半采样率，帧长减半（72 * bitrate / sample）。
+        let frame_len = if version == 3 {
+            144 * bitrate * 1000 / sample + padding as u32
+        } else {
+            72 * bitrate * 1000 / sample + padding as u32
+        };
+        if frame_len == 0 {
+            i += 1;
+            continue;
+        }
+        total += frame_len as f64 * 8.0 / (bitrate as f64 * 1000.0);
+        frames += 1;
+        i += frame_len as usize;
+    }
+    if frames > 0 { Some(total) } else { None }
+}
+
 /// 用 lofty 探针解析音频时长（MP3/FLAC/WAV/OGG），返回秒。
+/// lofty 对 VBR MP3 的时长估算不可靠（按首帧比特率），故 MP3 优先用手动
+/// 帧扫描（`mp3_duration_scan`）；其它格式回落 lofty。
 /// lofty 的 Probe API 只接受文件路径，音频先落临时文件再解析。
 fn probe_audio_duration(audio: &[u8]) -> Option<f64> {
+    // MP3：跳过 ID3v2 标签头后手动扫描帧（VBR 准确）。
+    let mut offset = 0usize;
+    if audio.len() >= 10 && &audio[0..3] == b"ID3" {
+        let tag_size = u32::from_be_bytes([audio[6], audio[7], audio[8], audio[9]]) as usize;
+        offset = 10 + (tag_size & 0x7f) + ((tag_size >> 8) & 0x7f) + ((tag_size >> 16) & 0x7f) + ((tag_size >> 24) & 0x7f);
+    }
+    if let Some(dur) = mp3_duration_scan(&audio[offset.min(audio.len())..]) {
+        return Some(dur);
+    }
+
     use lofty::prelude::*;
     use lofty::probe::Probe;
 
@@ -886,6 +954,41 @@ fn phira_error_retryable(err: &reqwest::Error) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 构造 N 个 MPEG1 Layer III 128kbps/44100Hz CBR 帧。
+    /// 帧长 = 144 * 128000 / 44100 ≈ 417（无 padding），单帧时长 = 1152/44100 ≈ 26.12ms。
+    fn synth_mp3_frames(n: usize) -> Vec<u8> {
+        let frame_len = 417usize;
+        let mut out = Vec::with_capacity(n * frame_len);
+        for _ in 0..n {
+            // 0xFF 0xFB: MPEG1 / Layer III / 无 CRC；0x90: 128kbps + 44100Hz
+            out.extend_from_slice(&[0xFF, 0xFB, 0x90, 0x00]);
+            out.extend(std::iter::repeat(0u8).take(frame_len - 4));
+        }
+        out
+    }
+
+    #[test]
+    fn mp3_scan_duration_is_accurate() {
+        let n = 100;
+        let dur = mp3_duration_scan(&synth_mp3_frames(n)).expect("should parse MP3 frames");
+        let expected = n as f64 * 1152.0 / 44100.0; // ≈ 2.61s
+        assert!(
+            (dur - expected).abs() < 0.01,
+            "mp3 scan duration {dur} vs expected {expected}"
+        );
+    }
+
+    #[test]
+    fn mp3_scan_handles_id3_tag_prefix() {
+        // ID3v2.3 头（10 字节）+ 声明 10 字节 payload → 音频从 offset 20 开始。
+        let mut audio = vec![b'I', b'D', b'3', 3, 0, 0, 0, 0, 0, 10];
+        audio.extend(std::iter::repeat(0u8).take(10)); // tag payload
+        audio.extend(synth_mp3_frames(10));
+        let dur = probe_audio_duration(&audio).expect("should parse after ID3");
+        let expected = 10.0 * 1152.0 / 44100.0;
+        assert!((dur - expected).abs() < 0.01, "id3 duration {dur} vs {expected}");
+    }
 
     #[test]
     fn phira_502_marker_is_retryable_without_full_notice_text() {
