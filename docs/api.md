@@ -1061,6 +1061,7 @@ PMP 通过 Unix Domain Socket 暴露全部管理能力给外部工具（PPB、We
 | `server.config_reload` | — | 重载配置 |
 | `server.shutdown` | — | 关闭服务器 |
 | `server.roomcreation` | `{enabled}` | 建房开关 |
+| `cli.execute` | `{command}` | 执行任意管理 CLI 命令（`rooms` / `room set ...` / `config reload` 等），返回输出行 |
 
 #### 广播
 

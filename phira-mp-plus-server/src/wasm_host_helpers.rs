@@ -165,7 +165,10 @@ pub fn required_capability(method: &str) -> Option<&'static str> {
     match method {
         "uuid.v4" | "time.now" => None,
         value
-            if value.starts_with("admin.") || value.starts_with("ban.") || value == "user.kick" =>
+            if value.starts_with("admin.")
+                || value.starts_with("ban.")
+                || value == "user.kick"
+                || value == "cli.execute" =>
         {
             Some("admin")
         }
@@ -494,6 +497,7 @@ mod tests {
         assert_eq!(required_capability("room.set_live"), Some("room.manage"));
         assert_eq!(required_capability("room.set_chart"), Some("room.manage"));
         assert_eq!(required_capability("ban.check"), Some("admin"));
+        assert_eq!(required_capability("cli.execute"), Some("admin"));
         assert_eq!(required_capability("runtime.status"), Some("state.read"));
         assert_eq!(required_capability("not.a.real.method"), None);
     }

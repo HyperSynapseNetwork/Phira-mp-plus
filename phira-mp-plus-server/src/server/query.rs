@@ -776,6 +776,20 @@ fn server_state_query_dispatch(
             rx.recv_timeout(runtime_state_query_timeout())
                 .unwrap_or(Err("room.set_chart timeout".to_string()))
         }
+        "cli.execute" => {
+            let command = args
+                .first()
+                .and_then(Value::as_str)
+                .ok_or_else(|| "command required".to_string())?;
+            let (tx, rx) = std::sync::mpsc::channel();
+            let s = Arc::clone(state);
+            let command = command.to_string();
+            spawn_on_runtime(async move {
+                let _ = tx.send(crate::cli::execute_cli_once(s, command).await);
+            });
+            rx.recv_timeout(runtime_state_query_timeout())
+                .unwrap_or_else(|e| Err(format!("cli.execute timeout: {e}")))
+        }
         "room.get_phira_api_endpoint" => {
             let room_id = args
                 .first()

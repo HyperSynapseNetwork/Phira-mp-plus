@@ -63,6 +63,7 @@ pub async fn dispatch_command(
         "server.config_reload" => cmd_server_config_reload(state).await,
         "server.shutdown" => cmd_server_shutdown(state).await,
         "server.roomcreation" => cmd_server_roomcreation(state, params).await,
+        "cli.execute" => cmd_cli_execute(state, params).await,
 
         // ── Broadcast commands ─────────────────────────────────────
         "broadcast.all" => cmd_broadcast_all(state, params).await,
@@ -620,6 +621,20 @@ async fn cmd_player_kick(
 // ════════════════════════════════════════════════════════════════════
 // Server Commands
 // ════════════════════════════════════════════════════════════════════
+
+/// `cli.execute` — 执行任意管理 CLI 命令（复用管理控制台命令路径）。
+/// 供 PPB / 外部工具程序化跑 CLI（如 `rooms`、`room set ...`、`config reload`）。
+async fn cmd_cli_execute(
+    state: &Arc<PlusServerState>,
+    params: &Value,
+) -> Result<Value, String> {
+    let command = params
+        .get("command")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "command (string) required".to_string())?;
+    let lines = crate::cli::execute_cli_once(Arc::clone(state), command.to_string()).await;
+    Ok(serde_json::json!({ "output": lines }))
+}
 
 async fn cmd_server_stats(
     state: &Arc<PlusServerState>,
