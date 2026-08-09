@@ -963,7 +963,7 @@ mod tests {
         for _ in 0..n {
             // 0xFF 0xFB: MPEG1 / Layer III / 无 CRC；0x90: 128kbps + 44100Hz
             out.extend_from_slice(&[0xFF, 0xFB, 0x90, 0x00]);
-            out.extend(std::iter::repeat(0u8).take(frame_len - 4));
+            out.extend(std::iter::repeat_n(0u8, frame_len - 4));
         }
         out
     }
@@ -983,7 +983,7 @@ mod tests {
     fn mp3_scan_handles_id3_tag_prefix() {
         // ID3v2.3 头（10 字节）+ 声明 10 字节 payload → 音频从 offset 20 开始。
         let mut audio = vec![b'I', b'D', b'3', 3, 0, 0, 0, 0, 0, 10];
-        audio.extend(std::iter::repeat(0u8).take(10)); // tag payload
+        audio.extend(std::iter::repeat_n(0u8, 10)); // tag payload
         audio.extend(synth_mp3_frames(10));
         let dur = probe_audio_duration(&audio).expect("should parse after ID3");
         let expected = 10.0 * 1152.0 / 44100.0;
