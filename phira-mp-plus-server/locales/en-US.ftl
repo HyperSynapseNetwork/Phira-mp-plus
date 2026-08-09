@@ -106,3 +106,9 @@ phira-retry-notice = Phira server connection is unstable, retrying for a smooth 
 
 error-permission-denied = Permission denied
 error-command-rate-limited = Too many requests, try again later
+already-aborted = Already aborted
+invalid-room-id = Invalid room ID
+user-not-in-room = You are not in this room
+user-not-found-in-room = User not in room
+round-start-failed = Round start failed
+room-degraded = Room is recovering, try again later

@@ -24,12 +24,18 @@ fn tr(e: String) -> String {
         "already uploaded" => Some("already-uploaded"),
         "not ready" => Some("not-ready"),
         "user aborted" => Some("aborted"),
+        "already aborted" => Some("already-aborted"),
         "no chart selected" => Some("start-no-chart-selected"),
         "room is full" => Some("join-room-full"),
         "administrative start is already in progress" => Some("admin-start-in-progress"),
         "room is not selecting a chart" | "cannot set chart outside SelectChart state" => Some("invalid-state"),
         "not in WaitForReady state" => Some("invalid-state"),
         "not in Playing state" => Some("invalid-state"),
+        "invalid room id" => Some("invalid-room-id"),
+        "user not in room" => Some("user-not-in-room"),
+        "user not found in room" => Some("user-not-found-in-room"),
+        "round start failed" => Some("round-start-failed"),
+        "room join reconciliation pending" => Some("room-degraded"),
         _ => None,
     };
     match id {

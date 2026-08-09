@@ -107,3 +107,9 @@ phira-retry-notice = Phira服务器连接不稳定，正在重试以确保你的
 
 error-permission-denied = 权限不足，无法执行此操作
 error-command-rate-limited = 操作过于频繁，请稍后再试
+already-aborted = 已放弃
+invalid-room-id = 无效的房间 ID
+user-not-in-room = 你不在这个房间里
+user-not-found-in-room = 该用户不在房间里
+round-start-failed = 对局开始失败
+room-degraded = 房间正在恢复中，请稍后再试
