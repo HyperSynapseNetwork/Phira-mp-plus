@@ -124,6 +124,22 @@ impl Drop for TerminalSession {
     }
 }
 
+/// 显式恢复终端（退出 / 重启前调用）。`std::process::exit` 不跑 Drop，
+/// TUI 若残留 raw mode / 备用屏幕，GNU Screen 等外层终端会读到 EIO 疯狂报错。
+pub fn restore_terminal() {
+    use std::io::Write;
+    let _ = disable_raw_mode();
+    let mut stdout = io::stdout();
+    let _ = execute!(
+        stdout,
+        Show,
+        EnableLineWrap,
+        ResetColor,
+        SetAttribute(Attribute::Reset)
+    );
+    let _ = stdout.flush();
+}
+
 pub fn run_tui(
     cmd_tx: mpsc::Sender<String>,
     mut out_rx: mpsc::Receiver<String>,
@@ -1002,6 +1018,9 @@ pub fn run_stdin_cli_with_logs(
 
     let stdin = io::stdin();
     let mut line_buf = String::new();
+    // stdin 读错误（如 pty 在自动更新重启后损坏返回 EIO）时若立即重试会空转
+    // 100% CPU + 疯狂刷屏；退避 + 连续错误上限后放弃管理控制台（服务器继续跑）。
+    let mut consecutive_errors = 0u32;
     loop {
         print!("> ");
         let _ = io::stdout().flush();
@@ -1009,10 +1028,17 @@ pub fn run_stdin_cli_with_logs(
         match stdin.read_line(&mut line_buf) {
             Ok(0) => break,
             Err(err) => {
+                consecutive_errors += 1;
                 eprintln!("\n[input error: {err}]");
+                if consecutive_errors >= 10 {
+                    eprintln!("输入流连续错误，关闭管理控制台");
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(50));
                 continue;
             }
             Ok(_) => {
+                consecutive_errors = 0;
                 let command = normalize_line_input(&strip_ansi(&line_buf))
                     .trim()
                     .to_string();
