@@ -482,7 +482,7 @@ MALLOC_CONF=background_thread:true,dirty_decay_ms:3000,muzzy_decay_ms:3000,stats
 | `data/rounds/` | 轮次 Touches/Judges 数据。 |
 | `data/plugins/<plugin>/` | 插件私有持久化文件目录。 |
 | `log/` | 运行日志目录。 |
-| `NOTICE` | 版权归属与第三方依赖许可证声明。 |
+| `THIRDPARTY_LICENSES` | 版权归属与第三方依赖许可证声明。 |
 
 ### 持久化 WAL（预写日志）
 

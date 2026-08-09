@@ -51,12 +51,6 @@
 | **插件开发** | [插件开发指南](docs/plugin-dev.md)（含 WIT ABI、示例） |
 | **开发** | [架构](docs/development/architecture.md) · [测试指南](docs/development/testing.md) · [CLI 错误码 (EN)](docs/development/error-codes.en.md) |
 
-## 许可
-
-PMP 服务端采用 [AGPL-3.0](LICENSE) 开源。
-插件 SDK（`phira-plugin-sdk`）采用 [Apache-2.0](LICENSE-APACHE) 许可。
-第三方依赖的许可声明见 [NOTICE](NOTICE)。
-
 ## 技术栈
 
 | 技术 | 用途 |
@@ -406,9 +400,9 @@ Phira-mp+ 整体采用 **GNU Affero General Public License v3.0** — 详见 [LI
 协议层（`phira-mp-common`、`phira-mp-macros`）基于 [phira-mp](https://github.com/TeamFlos/phira-mp) 衍生；
 `phira-plugin-sdk`（WASM 插件 SDK）亦按 **Apache License, Version 2.0** 授权 — 详见 [LICENSE-APACHE](LICENSE-APACHE)。
 
-完整的版权归属和第三方依赖许可证声明见 [NOTICE](NOTICE)。
+完整的版权归属和第三方依赖许可证声明见 [THIRDPARTY_LICENSES](THIRDPARTY_LICENSES)。
 
 ## 致谢
 
-感谢 [TeamFlos](https://github.com/TeamFlos) 开发和维护 Phira、phira-mp 项目，以及 [tphira-mp](https://github.com/Pimeng/tphira-mp) 与 [jphira-mp](https://github.com/lRENyaaa/jphira-mp) 提供的实现思路，还有所有支持本项目的用户。详见 [NOTICE](NOTICE)。
+感谢 [TeamFlos](https://github.com/TeamFlos) 开发和维护 Phira、phira-mp 项目，以及 [tphira-mp](https://github.com/Pimeng/tphira-mp) 与 [jphira-mp](https://github.com/lRENyaaa/jphira-mp) 提供的实现思路，还有所有支持本项目的用户。版权归属与第三方依赖许可证见 [THIRDPARTY_LICENSES](THIRDPARTY_LICENSES)。
 
