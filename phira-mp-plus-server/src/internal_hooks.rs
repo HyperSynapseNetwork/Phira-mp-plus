@@ -179,8 +179,10 @@ fn welcome_messages_for(lang: &Language, state: &PlusServerState) -> Vec<String>
     }
     let template = crate::l10n::translate_system(lang, "welcome-message", &fluent::FluentArgs::new());
     // l10n 缺失时 translate_system 返回键名本身。
+    // 兼容 Fluent 把 `\n` 渲染成真实换行或字面 `\n` 两种情况：先统一转成真实换行再分行。
     if !template.is_empty() && template != "welcome-message" {
         return template
+            .replace("\\n", "\n")
             .split('\n')
             .map(|s| s.trim_end().to_string())
             .collect();
