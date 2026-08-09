@@ -1,11 +1,24 @@
+<div align="center">
+
 # Phira-mp+
 
 ![Phira-mp+ banner](docs/logo/phira-mp-plus-banner.png)
 
-> Phira-mp+ 是基于 phira-mp 开发的Phira多人游戏服务端，使用Rust开发，支持WASM插件系统，旨在提供稳定，高性能，高拓展性的Phira多人游戏服务端。使用AI开发。被[HSNPhira](https://phira.htadiy.com/)使用。
+**Phira-mp+（PMP）** — 基于 [phira-mp](https://github.com/HyperSynapseNetwork/phira-mp) 的高性能 Phira 多人游戏服务端 · Rust / WASM 插件 / WAL 先行 / Actor 模型
 
-[![License](https://img.shields.io/badge/License-AGPLv3-blue.svg)](LICENSE)
+[![License: AGPLv3](https://img.shields.io/badge/License-AGPLv3-blue.svg)](LICENSE)
+[![Rust](https://img.shields.io/badge/Rust-2021-dea584.svg?logo=rust&logoColor=white)](https://www.rust-lang.org/)
 [![Build](https://github.com/HyperSynapseNetwork/Phira-mp-plus/actions/workflows/build.yml/badge.svg)](https://github.com/HyperSynapseNetwork/Phira-mp-plus/actions/workflows/build.yml)
+[![Tokio](https://img.shields.io/badge/Tokio-异步-e0c0a0.svg?logo=rust&logoColor=white)](https://tokio.rs/)
+[![PostgreSQL](https://img.shields.io/badge/PostgreSQL-数据库-336791.svg?logo=postgresql&logoColor=white)](https://www.postgresql.org/)
+[![Axum](https://img.shields.io/badge/Axum-HTTP%2FSSE%2FWS-0b0b0b.svg?logo=rust&logoColor=white)](https://github.com/tokio-rs/axum)
+[![wasmtime](https://img.shields.io/badge/wasmtime-WASM%20插件-2E3B4E.svg?logo=rust&logoColor=white)](https://wasmtime.dev/)
+[![WIT](https://img.shields.io/badge/插件%20ABI-WIT%20component-7f52ff.svg)](https://component-model.bytecodealliance.org/)
+[![i18n](https://img.shields.io/badge/i18n-fluent-1b6ac9.svg)](https://projectfluent.org/)
+[![GitHub stars](https://img.shields.io/github/stars/HyperSynapseNetwork/Phira-mp-plus?style=social)](https://github.com/HyperSynapseNetwork/Phira-mp-plus/stargazers)
+[![Last commit](https://img.shields.io/github/last-commit/HyperSynapseNetwork/Phira-mp-plus)](https://github.com/HyperSynapseNetwork/Phira-mp-plus/commits/main)
+
+</div>
 
 ## 简介
 
