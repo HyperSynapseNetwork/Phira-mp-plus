@@ -151,6 +151,7 @@ wasm_runtime:
 | `max_sessions` | `usize` | `4096` | 在线/已注册会话硬上限；容量名额从认证前预留到 Session 生命周期结束。 |
 | `max_pending_auth` | `usize` | `256` | 并发认证握手上限；必须大于 0 且不超过 `max_sessions`。 |
 | `graceful_shutdown_timeout_secs` | `u64` | `15` | 会话通知、插件事件、持久化 flush 和后台任务退出共享的总时限。 |
+| `log_retention_days` | `u32` | `7` | `log/` 日志保留天数（每小时轮转，mtime 判定；0 = 不清理）。PMP 日志量大，默认 7 天。 |
 | `connection_rate_limit` | `u32` | `30` | 每个统计窗口内允许的连接次数。 |
 | `connection_rate_window` | `u32` | `10` | 连接限速窗口，单位秒。 |
 | `round_data_retention_days` | `u32` | `7` | Touches/Judges 轮次文件保留天数，`0` 表示不清理轮次文件。 |

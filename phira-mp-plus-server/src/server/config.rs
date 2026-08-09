@@ -412,6 +412,9 @@ pub struct PlusConfig {
     /// Total deadline used by the ordered shutdown sequence.
     #[serde(default = "default_graceful_shutdown_timeout_secs")]
     pub graceful_shutdown_timeout_secs: u64,
+    /// 日志保留天数（`log/` 目录，0 = 不清理）。PMP 日志量大，默认 7 天。
+    #[serde(default = "default_log_retention_days")]
+    pub log_retention_days: u32,
     /// Port for the optional forwarded-header compatibility listener.
     #[serde(default = "default_trusted_forwarded_http_port")]
     pub trusted_forwarded_http_port: u16,
@@ -495,6 +498,7 @@ impl Default for PlusConfig {
             max_sessions: default_max_sessions(),
             max_pending_auth: default_max_pending_auth(),
             graceful_shutdown_timeout_secs: default_graceful_shutdown_timeout_secs(),
+            log_retention_days: default_log_retention_days(),
             connection_rate_limit: 30,
             connection_rate_window: 10,
             server_name: None,
@@ -1033,6 +1037,10 @@ fn default_max_pending_auth() -> usize {
 fn default_ready_countdown_secs() -> u64 { 60 }
 fn default_room_creation_enabled() -> bool { true }
 fn default_playing_timeout_offset_secs() -> u64 { 60 }
+fn default_log_retention_days() -> u32 {
+    7
+}
+
 fn default_graceful_shutdown_timeout_secs() -> u64 {
     15
 }

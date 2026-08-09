@@ -128,6 +128,28 @@ async fn main() -> Result<()> {
     let _log_guard = phira_mp_plus_server::logging::init(&args.log_file, log_tx)?;
     config_load.report(&args.config);
 
+    // 日志保留清理：启动时清一次，之后每 6 小时清一次（`log_retention_days`，
+    // 默认 7 天；0 = 不清理）。PMP 日志量大，避免 `log/` 无限累积。
+    {
+        let retention_days = config.log_retention_days;
+        let log_file = args.log_file.clone();
+        phira_mp_plus_server::supervisor_actor::spawn_named("log-retention", async move {
+            let mut interval =
+                tokio::time::interval(std::time::Duration::from_secs(6 * 3600));
+            loop {
+                interval.tick().await;
+                let removed = phira_mp_plus_server::logging::cleanup_old_logs(
+                    std::path::Path::new("log"),
+                    &log_file,
+                    retention_days,
+                );
+                if removed > 0 {
+                    info!(removed, "log retention cleanup removed old files");
+                }
+            }
+        });
+    }
+
     // PMP44 P1 §33: 启动时序可观测性 —— 打印生效的官方客户端兼容时序参数，
     // 便于运维在启动时一眼核对兼容时间线（最低响应时延 / 命令 deadline /
     // 认证 deadline / ProtocolHack 补偿延迟）。
@@ -725,6 +747,9 @@ chat_enabled: true
 
 # 启用管理控制台
 cli_enabled: true
+
+# 日志保留天数（0 = 不清理）。PMP 日志量大，默认 7 天。
+# log_retention_days: 7
 
 # 是否允许玩家建房（false 时只有管理员可通过 CLI 创建房间）
 # room_creation_enabled: true

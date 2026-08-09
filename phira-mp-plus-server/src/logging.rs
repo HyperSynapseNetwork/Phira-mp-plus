@@ -5,7 +5,6 @@ use std::path::Path;
 use std::sync::{Mutex, OnceLock};
 use std::time::Instant;
 use tokio::sync::mpsc;
-use tracing::level_filters::LevelFilter;
 use tracing_appender::non_blocking::WorkerGuard;
 use tracing_subscriber::{fmt, prelude::*, EnvFilter};
 
@@ -214,6 +213,39 @@ pub fn take_openuds_log_rx() -> Option<mpsc::Receiver<String>> {
     lock.lock().unwrap().take()
 }
 
+/// 删除 `log_dir` 下超过 `retention_days` 天的日志文件（按文件名前缀过滤，
+/// 只清理本服务产出的轮转文件；0 = 不清理）。基于 mtime 判定，返回删除数。
+pub fn cleanup_old_logs(log_dir: &Path, file_name: &str, retention_days: u32) -> usize {
+    if retention_days == 0 {
+        return 0;
+    }
+    let cutoff = std::time::SystemTime::now()
+        .checked_sub(std::time::Duration::from_secs(retention_days as u64 * 86_400))
+        .unwrap_or(std::time::UNIX_EPOCH);
+    let Ok(entries) = std::fs::read_dir(log_dir) else {
+        return 0;
+    };
+    let mut removed = 0;
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        if !name.to_string_lossy().starts_with(file_name) {
+            continue;
+        }
+        let Ok(meta) = entry.metadata() else {
+            continue;
+        };
+        if !meta.is_file() {
+            continue;
+        }
+        if meta.modified().map(|m| m < cutoff).unwrap_or(false)
+            && std::fs::remove_file(entry.path()).is_ok()
+        {
+            removed += 1;
+        }
+    }
+    removed
+}
+
 pub fn init(file_name: &str, tui_tx: Option<mpsc::Sender<String>>) -> Result<WorkerGuard> {
     let log_dir = Path::new("log");
     if log_dir.exists() && !log_dir.is_dir() {
@@ -244,13 +276,14 @@ pub fn init(file_name: &str, tui_tx: Option<mpsc::Sender<String>>) -> Result<Wor
 
     if log_format == "json" {
         // JSON structured output (machine-parseable, for production).
+        // 文件层跟随 RUST_LOG（默认 info）；需要全量 trace 时设 RUST_LOG=trace。
         let json_file_layer = fmt::layer()
             .json()
             .with_writer(file_writer)
             .with_ansi(false)
             .with_current_span(true)
             .with_span_list(true)
-            .with_filter(LevelFilter::TRACE);
+            .with_filter(filter.clone());
         let stdout_layer = fmt::layer()
             .json()
             .with_writer(StdoutWriter(has_tui))
@@ -276,10 +309,11 @@ pub fn init(file_name: &str, tui_tx: Option<mpsc::Sender<String>>) -> Result<Wor
             .init();
     } else {
         // Human-readable text output (default).
+        // 文件层跟随 RUST_LOG（默认 info）；需要全量 trace 时设 RUST_LOG=trace。
         let file_layer = fmt::layer()
             .with_writer(file_writer)
             .with_ansi(false)
-            .with_filter(LevelFilter::TRACE);
+            .with_filter(filter.clone());
         let stdout_layer = fmt::layer()
             .with_writer(StdoutWriter(has_tui))
             .with_ansi(false)
