@@ -253,8 +253,11 @@ pub fn cleanup_old_logs(log_dir: &Path, file_name: &str, retention_days: u32) ->
         }
         let mtime = meta
             .modified()
-            .and_then(|m| m.duration_since(std::time::UNIX_EPOCH))
-            .map(|d| d.as_secs() as i64)
+            .map(|m| {
+                m.duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_secs() as i64)
+                    .unwrap_or(0)
+            })
             .unwrap_or(0);
 
         if mtime < delete_cutoff {
