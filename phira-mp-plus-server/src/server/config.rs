@@ -321,7 +321,6 @@ impl Default for ConfigProfile {
 /// 欢迎语配置（单文件：server_config.yml 的 `welcome` 段）。
 /// 缺省（不配置）时使用内置国际化，按用户语言渲染。
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(default)]
 pub struct WelcomeConfig {
     /// lang → 欢迎语模板列表（含占位符）。未命中该语言回落内置国际化。
     pub messages: std::collections::HashMap<String, Vec<String>>,

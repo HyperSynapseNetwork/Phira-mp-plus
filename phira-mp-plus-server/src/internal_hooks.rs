@@ -3,7 +3,6 @@ use crate::l10n::Language;
 use crate::plugin::PluginManager;
 use crate::plugin_http::PluginHttpServer;
 use crate::server::PlusServerState;
-use serde::Deserialize;
 use std::collections::HashMap;
 use std::sync::OnceLock;
 use std::sync::{Arc, Mutex};
