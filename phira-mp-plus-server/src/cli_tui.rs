@@ -203,6 +203,8 @@ struct TuiApp {
     cached_stats: String,
     /// 运行期状态：命令锁定时禁用输入 + 显示状态矩形。
     status: Arc<crate::cli_status::CliStatus>,
+    /// 上次渲染的状态快照（变化时置 dirty，让进度/文字实时刷新）。
+    last_status: Option<crate::cli_status::StatusSnapshot>,
 }
 
 fn completion_prefix(before_cursor: &str) -> &str {
@@ -240,6 +242,7 @@ impl TuiApp {
             dirty: true,
             cached_stats: String::new(),
             status,
+            last_status: None,
         }
     }
 
@@ -268,6 +271,12 @@ impl TuiApp {
             }
             while let Ok(msg) = log_rx.try_recv() {
                 self.add_output(sanitize_output(&msg));
+            }
+            // 运行期状态变化（进度/文字/锁定）→ 重绘，否则进度条不刷新。
+            let status_snap = self.status.snapshot();
+            if status_snap != self.last_status {
+                self.last_status = status_snap;
+                self.dirty = true;
             }
             if !self.running {
                 break;

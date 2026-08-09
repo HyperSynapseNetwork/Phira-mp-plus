@@ -9,7 +9,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, RwLock};
 
 /// TUI 每帧渲染用的状态快照。
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StatusSnapshot {
     /// 状态矩形标题（如 "benchmark"）
     pub title: String,
