@@ -433,8 +433,6 @@ pub struct PlusConfig {
     pub server_name: Option<String>,
     /// 可选：欢迎语国际化（Fluent .ftl）文件目录。目录内按
     /// `welcome-{lang}.ftl` 命名（如 welcome-zh-CN.ftl），每条含 `welcome-message`
-    /// 键作为欢迎语模板。未配置或文件缺失时回退到内置默认欢迎语。
-    #[serde(default)]
     /// 欢迎语配置（单文件：server_config.yml 内）。`messages` 为 lang → 模板列表
     /// （含占位符），缺省语言回落内置国际化；`show_time` 控制时间显示。
     #[serde(default)]
