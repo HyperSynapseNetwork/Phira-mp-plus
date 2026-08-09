@@ -198,7 +198,9 @@ connection_rate_window: 10
 admin_phira_ids: []
 
 # 游玩时间排行榜过滤用户（不显示的 Phira ID，如测试站 Bot）。
-playtime_leaderboard_hide: []
+# 全局过滤玩家（如测试站 Bot）：不计游玩时长/排行榜/房间历史/领域事件，
+# 只计入在线数与访问人次；自动更新空闲判定也剔除。已有数据启动时自动清除。
+# filtered_player_ids: []
 
 # ---- Sentry 错误监控 ----
 # 将 sentry_dsn 设为有效的 Sentry DSN 以启用 panic/error 自动上报。

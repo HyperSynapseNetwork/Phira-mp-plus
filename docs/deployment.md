@@ -162,7 +162,7 @@ wasm_runtime:
 | `sentry_dsn` | `String?` | 未设置 | Sentry 错误监控 DSN。设置有效的 Sentry DSN 可启用自动错误和 Panic 捕获，留空或省略则不启用。 |
 | `server_name` | `String?` | 未设置 | 服务器展示名称，可用于欢迎语等场景。 |
 | `admin_phira_ids` | `Vec<i32>` | `[]` | 游戏内管理员 Phira ID。管理员可在创建房间弹窗输入 `_命令` 执行 CLI 命令。 |
-| `playtime_leaderboard_hide` | `Vec<i32>` | `[]` | 游玩时间排行榜过滤用户（不显示的 Phira ID，如测试站 Bot），欢迎语排行榜与查询均不显示。 |
+| `filtered_player_ids` | `Vec<i32>` | `[]` | 全局过滤玩家（如测试站 Bot）：不计游玩时长/排行榜/房间历史/领域事件，只计入在线数与访问人次；自动更新空闲判定剔除；已有数据启动时自动清除。 |
 | `wasm_runtime` | `object` | 见下表 | WASM 插件运行时资源限制。 |
 | `compatibility` | `object` | 见下表 | 官方 Phira 客户端兼容参数（PMP42）。 |
 | `auto_update` | `object` | 见下表 | 自动更新配置（默认关闭）。 |
@@ -380,12 +380,12 @@ admin_phira_ids:
   - 234567
 ```
 
-### 游玩时间排行榜过滤
+### 全局过滤玩家
 
-不想让某些用户（如测试站 Bot）出现在排行榜时，用 `playtime_leaderboard_hide`：
+不想让某些用户（如测试站 Bot）计入任何数据时，用 `filtered_player_ids`——过滤玩家**不计游玩时长/排行榜/房间历史/领域事件**，只计入在线数与服务访问人次；**自动更新空闲判定也剔除**（常驻 Bot 不会阻塞更新）；其既有数据在服务器启动时自动清除。
 
 ```yaml
-playtime_leaderboard_hide:
+filtered_player_ids:
   - 999999
   - 888888
 ```

@@ -296,7 +296,11 @@ pub async fn apply(state: &Arc<PlusServerState>, force: bool) -> Result<String> 
         // 有在线玩家或最近下线未满 min_idle_minutes 时拒绝。
         let players_online = {
             let users = state.users.read().await;
-            users.values().filter(|u| u.id > 0).count()
+            // 过滤玩家（测试 Bot 等）不计入在线，避免常驻账号阻塞自动更新。
+            users
+                .values()
+                .filter(|u| u.id > 0 && !state.config.filtered_player_ids.contains(&u.id))
+                .count()
         };
         if players_online > 0 {
             return Ok(format!("有玩家在线（{players_online} 人），暂不更新"));

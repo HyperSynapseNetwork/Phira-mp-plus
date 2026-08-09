@@ -164,7 +164,7 @@ pub struct LiveConfig {
     pub admin_phira_ids: Vec<i32>,
     /// 游玩时间排行榜过滤用户（不显示的 Phira ID，如测试站 Bot）。
     #[serde(default)]
-    pub playtime_leaderboard_hide: Vec<i32>,
+    pub filtered_player_ids: Vec<i32>,
     /// Connection rate limit (per window).
     #[serde(default = "default_rate_limit")]
     pub connection_rate_limit: u32,
@@ -191,7 +191,7 @@ impl LiveConfig {
             server_name: config.server_name.clone(),
             monitors: config.monitors.clone(),
             admin_phira_ids: config.admin_phira_ids.clone(),
-            playtime_leaderboard_hide: config.playtime_leaderboard_hide.clone(),
+            filtered_player_ids: config.filtered_player_ids.clone(),
             connection_rate_limit: config.connection_rate_limit,
             connection_rate_window: config.connection_rate_window,
             runtime: config.runtime.clone(),
@@ -430,7 +430,7 @@ pub struct PlusConfig {
     pub admin_phira_ids: Vec<i32>,
     /// 游玩时间排行榜过滤用户（不显示的 Phira ID，如测试站 Bot）。
     #[serde(default)]
-    pub playtime_leaderboard_hide: Vec<i32>,
+    pub filtered_player_ids: Vec<i32>,
     #[serde(default)]
     pub wasm_runtime: WasmRuntimeConfig,
     #[serde(default)]
@@ -481,7 +481,7 @@ impl Default for PlusConfig {
             database_url: String::new(),
             table_retention: std::collections::HashMap::new(),
             admin_phira_ids: Vec::new(),
-            playtime_leaderboard_hide: Vec::new(),
+            filtered_player_ids: Vec::new(),
             wasm_runtime: WasmRuntimeConfig::default(),
             runtime: RuntimeConfig::default(),
             idle: IdleConfig::default(),

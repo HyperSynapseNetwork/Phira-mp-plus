@@ -33,7 +33,7 @@ fn ensure_playtime_cache_last_refresh() -> &'static Mutex<Instant> {
 /// Load the playtime cache from PostgreSQL on startup.
 async fn load_playtime_cache(state: &PlusServerState) {
     let rows = state.db_manager.top_playtime(100000).await;
-    let hide = &state.config.playtime_leaderboard_hide;
+    let hide = &state.config.filtered_player_ids;
     let mut cache = ensure_playtime_cache().lock().unwrap();
     for row in rows {
         if let (Some(user_id), Some(secs)) = (
@@ -95,8 +95,14 @@ pub async fn init_internal_hooks(
     // Load the playtime cache from the authoritative PostgreSQL table.
     load_playtime_cache(state).await;
 
+    // 清空过滤玩家的既有记录（playtime / 房间历史 / 领域事件）。
+    let filtered = state.config.filtered_player_ids.clone();
+    if !filtered.is_empty() {
+        state.db_manager.clear_filtered_player_data(&filtered).await;
+    }
+
     // Spawn periodic playtime cache refresh every 60s.
-    let hide = state.config.playtime_leaderboard_hide.clone();
+    let hide = state.config.filtered_player_ids.clone();
     tokio::spawn(async move {
         loop {
             tokio::time::sleep(std::time::Duration::from_secs(60)).await;
@@ -606,14 +612,28 @@ fn now_ms_epoch() -> i64 {
 /// 连接建立：无需记录（游玩时间只算房间内）。
 pub fn playtime_connect(_user_id: i32) {}
 
-/// 进入房间：记录进房时间。
-pub fn playtime_room_enter(user_id: i32, _state: &PlusServerState) {
+/// 过滤玩家（如测试站 Bot）：不计游玩时长/排行榜/房间历史/领域事件，
+/// 只计入在线数与服务访问人次。自动更新空闲判定也剔除过滤玩家。
+pub fn is_filtered_player(state: &PlusServerState, user_id: i32) -> bool {
+    state.config.filtered_player_ids.contains(&user_id)
+}
+
+/// 进入房间：记录进房时间（过滤玩家不记录，避免产生游玩时长）。
+pub fn playtime_room_enter(user_id: i32, state: &PlusServerState) {
+    if is_filtered_player(state, user_id) {
+        return;
+    }
     ROOM_ENTER_AT.lock().unwrap().insert(user_id, now_ms_epoch());
 }
 
 /// 离开房间：把在房时长累加到 playtime 表（异步落库，允许近似）。
 /// 幂等：未在房（如服务器重启丢失记录）时直接跳过。
+/// 过滤玩家不累加（`is_filtered_player`）。
 pub fn playtime_room_leave(user_id: i32, state: &PlusServerState) {
+    if is_filtered_player(state, user_id) {
+        ROOM_ENTER_AT.lock().unwrap().remove(&user_id);
+        return;
+    }
     let start = ROOM_ENTER_AT.lock().unwrap().remove(&user_id);
     if let Some(start) = start {
         let secs = ((now_ms_epoch() - start) / 1000).max(0);

@@ -151,6 +151,23 @@ impl DbManager {
         }
     }
 
+    /// 清空过滤玩家的既有记录（playtime / 房间历史 / 领域事件），供启动时调用。
+    /// 过滤玩家（测试 Bot 等）只计入在线数与访问人次，不保留其余记录。
+    pub async fn clear_filtered_player_data(&self, ids: &[i32]) {
+        let Self::Pg(pool) = self;
+        for id in ids {
+            for sql in [
+                "DELETE FROM playtime WHERE user_id = $1",
+                "DELETE FROM mp_user_room_history WHERE user_id = $1",
+                "DELETE FROM mp_events WHERE user_id = $1",
+            ] {
+                if let Err(e) = sqlx::query(sql).bind(id).execute(pool).await {
+                    tracing::warn!(user = id, error = %e, "clear filtered player data failed");
+                }
+            }
+        }
+    }
+
     /// 将表清理到最大行数上限（保留最新 `target` 行，删更旧的全部）。
     async fn trim_table_to_cap(
         &self,
