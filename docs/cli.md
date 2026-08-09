@@ -623,56 +623,41 @@ help groups
 
 ## 基准测试
 
-### `benchmark list`
+### `benchmark run <fixed|ramp>`
 
-列出可用场景（scenarios）和预设（presets）。
+运行基准测试（**进程内纯内部调用版**）。直接调用服务器内部 API 生成负载，
+不跑 phira 线协议、不拉起独立子进程、**不依赖独立数据库**（复用当前实例，
+虚拟会话用负数 id、房间用 `bench-` 前缀，结束后全清理，不影响真实玩家）。
 
-**输出:** 场景列表、预设参数及使用示例。
+运行期间 CLI 输入被锁定，输入框上方显示状态矩形（会话数/游玩房间/CPU/RAM/
+速率/进度条），按 `x` 键结束；结束（手动或正常完成）显示报告。
 
----
+**两种模式：**
 
-### `benchmark run`
-
-运行基准测试。仅支持 Real 模式。
-
-**默认在隔离的独立服务器实例（World B）上压测**：`benchmark run` 会自spawn 一个
-独立的 PMP 子进程（独立端口、独立测试数据库、`phira_api_endpoint` 指向 Mock
-Phira），压测完杀进程。线上实例（World A）的配置与状态完全不被触碰。
-
-| 参数 | 类型 | 说明 |
-|------|------|------|
-| `--scenario` | `str` | 负载场景名（见 benchmark list） |
-| `--preset` | `str` (可选) | 预设参数：quick、standard（默认）、stress、soak |
-| `--clients` | `int` (可选) | 模拟客户端数 |
-| `--rooms` | `int` (可选) | 模拟房间数 |
-| `--duration` | `str` (可选) | 运行时长，如 30 / 10m / 2h |
-| `--seed` | `int` (可选) | 随机种子 |
-| `--output` | `str` (可选) | 输出格式：text（默认）、json、markdown |
-| `--db-url` | `str` | **World B 独立测试数据库连接串（默认隔离模式必填）** |
-| `--server-port` | `int` (可选) | World B 游戏端口（默认自动选空闲端口） |
-| `--no-spawn` | flag | 不拉起隔离实例，改为连接现有服务器（配合 `--listen-addr`；目标服务器需自行配置好 Mock Phira endpoint） |
-
-**输出:** Benchmark 报告。报告同时写入线上实例的 `mp_runtime_benchmark_reports` 表。
-
----
-
-### `benchmark suite`
-
-按预设参数顺序运行所有场景，汇总输出。
+- **`fixed`** —— 维持负载上限：最大会话数 + 最大同时在线游玩房间数，持续到
+  时长或取消。
+- **`ramp`** —— 自动加压直到 CPU / RAM 触顶后维持，持续到时长或取消。
 
 | 参数 | 类型 | 说明 |
 |------|------|------|
-| `--preset` | `str` (可选) | 预设参数：quick、standard（默认）、stress、soak |
+| `--sessions <N>` | `int` | fixed：最大会话数 |
+| `--playing-rooms <M>` | `int` | fixed：最大同时在线游玩房间数 |
+| `--cpu <P>` | `float` | ramp：CPU 上限（百分比 0-100） |
+| `--ram <S>` | `str` | ramp：RAM 上限（如 4096m / 4g / 字节数） |
+| `--duration <D>` | `str` (可选) | 时长：30 / 10m / 2h（缺省 60s） |
+| `--forever` | flag | 永久运行（直到 x 键结束） |
+| `--output <fmt>` | `str` (可选) | 输出格式：text（默认）、json、markdown |
 
-**输出:** 每个场景的压测结果汇总。
+**示例:**
+```
+benchmark run fixed --sessions 1000 --playing-rooms 50 --duration 10m
+benchmark run fixed --sessions 2000 --playing-rooms 100 --forever
+benchmark run ramp --cpu 80 --ram 4g --duration 1h
+```
 
----
-
-### `benchmark compare <old.json> <new.json>`
-
-比较两份基准测试报告（JSON 文件）的差异。
-
-**输出:** 差异对比表。
+**输出:** Benchmark 报告（时长、峰值/平均会话数与游玩房间数、CPU%、RSS、
+命令速率、错误数、模式参数、ramp 触顶到达点）。报告同时写入当前实例的
+`mp_runtime_benchmark_reports` 表。
 
 ---
 

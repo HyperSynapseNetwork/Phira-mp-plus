@@ -107,7 +107,7 @@
 **扩展**：`extension list/get`
 **杂项**：`roomcreation on|off`、`approve openuds`、`welcome-config`、`player-count`
 > `roomcreation` / `update auto` / `connections` 是**运行时开关**（config reload 不重置，YAML 对应项仅启动时生效）——语义统一：运行时开关 = reload 免疫。
-**基准**：`benchmark list/run/suite/compare`（run 默认在隔离的独立实例 World B 上压测，不触碰线上配置，详见 cli.md）
+**基准**：`benchmark run <fixed|ramp>`（进程内内部调用，复用当前实例、虚拟会话/房间隔离、结束全清理，不依赖独立数据库；详见 cli.md）
 **运行时**：`runtime`（一次打印 registry/phira/events/schema/persistence/latency 全部分区）
 **WAL/死信**：`wal inspect`、`dead-letter list/replay`
 
@@ -209,7 +209,7 @@
 ## 十三、性能 / 其它
 
 - **高频遥测**：Touch/Judge 独立通道批量写 PG；慢 monitor 有界 broadcast 不阻塞热路径
-- **基准测试**：11 场景 × 4 预设；真实二进制协议客户端压测；Mock Phira HTTP（故障注入）；报告指标（延迟/CPU/RSS/DB rows/s）
+- **基准测试**：进程内纯内部调用（两模式：fixed 维持会话/游玩房间上限、ramp 加压直到 CPU/RAM 触顶）；虚拟会话（负数 id）+ `bench-` 房间隔离、结束全清理；不依赖独立数据库；实时状态（TUI 状态矩形 + 进度条 + x 键结束）；报告指标（会话/房间/CPU/RSS/速率）
 - **OpenUDS（Unix Domain Socket API）**：`/var/run/pmp-openuds.sock`；命令（room/player/server/broadcast/plugin/runtime）+ 事件流（user.online/offline、room.*、round.*、touches/judges/logs）；**仅 Unix 平台——Windows 版本不编译/不支持 UDS**
 - **备份/恢复**（pmp-admin）：backup create/verify（config + WAL + dead-letter + extensions + SHA-256 manifest）
 - **ServerStats / Web 快照**：房间/用户富快照（状态、ready/finished/aborted、当前轮、历史）

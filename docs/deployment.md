@@ -325,7 +325,7 @@ runtime:
 
 普通事件与遥测的数据库写入使用有限重试和稳定幂等键。重试耗尽后，能序列化的失败事件写入 `persistence_dead_letter_path` 指定的 JSONL，并执行 `flush + sync_data`。设置为 `null` 可禁用 dead-letter；此时数据库最终失败会使 Supervisor 进入 degraded。dead-letter 只保全已经完成数据库尝试的失败事件，不是 enqueue-before WAL，无法保证 `kill -9`、进程崩溃或主机掉电时内存队列零丢失，也不会自动 replay。
 
-`phira_http` 控制统一 Phira RetryClient。默认策略会在连续失败达到阈值后短暂打开熔断器，避免 Phira 官方服务 502/超时期间继续把认证、选谱、成绩查询压在业务热路径上。Real benchmark 必须显式走这套 client。
+`phira_http` 控制统一 Phira RetryClient。默认策略会在连续失败达到阈值后短暂打开熔断器，避免 Phira 官方服务 502/超时期间继续把认证、选谱、成绩查询压在业务热路径上。基准测试（`benchmark run`）为进程内内部调用，不走线协议，认证/选谱不经过该 client。
 
 插件/WIT/host API 可读取：
 
