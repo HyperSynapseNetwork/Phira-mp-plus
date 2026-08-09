@@ -787,8 +787,10 @@ fn server_state_query_dispatch(
             spawn_on_runtime(async move {
                 let _ = tx.send(crate::cli::execute_cli_once(s, command).await);
             });
-            rx.recv_timeout(runtime_state_query_timeout())
-                .unwrap_or_else(|e| Err(format!("cli.execute timeout: {e}")))
+            let lines = rx
+                .recv_timeout(runtime_state_query_timeout())
+                .map_err(|e| format!("cli.execute timeout: {e}"))?;
+            Ok(serde_json::json!({ "output": lines }))
         }
         "room.get_phira_api_endpoint" => {
             let room_id = args
