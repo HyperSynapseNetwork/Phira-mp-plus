@@ -179,7 +179,6 @@
 - **运行时**：persistence_queue_capacity、WAL/DLQ 路径、persistent_rooms_required、startup_recovery_timeout(30s)
 - **保留**：`table_retention`（每表策略：`{max_rows?, days?, time_col?}`，支持任意表；max_rows 超限清 80%、days 超期删）——取代旧全局 retention_days
 - **断线**：heartbeat_timeout(15s)、auth_timeout(15s)、dangle_grace(10s)、playing_reconnect_grace(15s)
-- **兼容性**：official_phira_client、minimum_response_latency_ms(0)、session_command_deadline_ms(4500)、commit_response_reserve_ms(1000)、auth_deadline_ms(5000)、gate 上限、protocol_hack_delay_ms
 - **其他**：monitors、admin_phira_ids、sentry_dsn、plugins_dir、cli_enabled、openuds、graceful_shutdown_timeout
 - **覆盖顺序**：YAML < 环境变量（PM_DATABASE_URL）< CLI 参数
 
