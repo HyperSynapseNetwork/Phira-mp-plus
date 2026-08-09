@@ -21,6 +21,7 @@ strip = "symbols"
 anyhow = "1.0"
 chrono = "0.4"
 flate2 = "1.1"
+tar = "0.4"
 lofty = "0.24"
 tokio = { version = "1", features = ["full"] }
 tracing = "0.1"

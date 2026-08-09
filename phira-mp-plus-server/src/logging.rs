@@ -1,7 +1,7 @@
 use anyhow::Result;
 use std::collections::HashMap;
 use std::io::{self, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 use std::time::Instant;
 use tokio::sync::mpsc;
@@ -213,22 +213,37 @@ pub fn take_openuds_log_rx() -> Option<mpsc::Receiver<String>> {
     lock.lock().unwrap().take()
 }
 
-/// 删除 `log_dir` 下超过 `retention_days` 天的日志文件（按文件名前缀过滤，
-/// 只清理本服务产出的轮转文件；0 = 不清理）。基于 mtime 判定，返回删除数。
+/// 每日日志归档 + 保留清理。按文件名前缀过滤，只处理本服务产出的轮转文件
+/// （`{file_name}.YYYY-MM-DD-HH` 与归档 `{file_name}.YYYY-MM-DD.tar.gz`）。
+///
+/// - 已完成日（日期早于今天）的轮转文件 → 打成 `{file_name}.YYYY-MM-DD.tar.gz`，
+///   删除原文（当天文件保持明文可读）；
+/// - 超过 `retention_days` 天的明文/归档文件 → 删除（0 = 不清理）。
+///
+/// 返回处理过的文件数（归档 + 删除），供调用方记录。
 pub fn cleanup_old_logs(log_dir: &Path, file_name: &str, retention_days: u32) -> usize {
     if retention_days == 0 {
         return 0;
     }
-    let cutoff = std::time::SystemTime::now()
-        .checked_sub(std::time::Duration::from_secs(retention_days as u64 * 86_400))
-        .unwrap_or(std::time::UNIX_EPOCH);
+    let now = std::time::SystemTime::now();
+    let now_secs = now
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    let delete_cutoff = now_secs.saturating_sub(retention_days as i64 * 86_400);
+    let today = civil_from_days(now_secs.div_euclid(86_400));
+
     let Ok(entries) = std::fs::read_dir(log_dir) else {
         return 0;
     };
-    let mut removed = 0;
+    let prefix = format!("{file_name}.");
+    let mut by_day: HashMap<String, Vec<PathBuf>> = HashMap::new();
+    let mut to_delete: Vec<PathBuf> = Vec::new();
+
     for entry in entries.flatten() {
-        let name = entry.file_name();
-        if !name.to_string_lossy().starts_with(file_name) {
+        let path = entry.path();
+        let name_str = entry.file_name().to_string_lossy().to_string();
+        if !name_str.starts_with(&prefix) {
             continue;
         }
         let Ok(meta) = entry.metadata() else {
@@ -237,13 +252,92 @@ pub fn cleanup_old_logs(log_dir: &Path, file_name: &str, retention_days: u32) ->
         if !meta.is_file() {
             continue;
         }
-        if meta.modified().map(|m| m < cutoff).unwrap_or(false)
-            && std::fs::remove_file(entry.path()).is_ok()
-        {
-            removed += 1;
+        let mtime = meta
+            .modified()
+            .and_then(|m| m.duration_since(std::time::UNIX_EPOCH))
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0);
+
+        if mtime < delete_cutoff {
+            to_delete.push(path);
+            continue;
+        }
+        // 已完成日的明文轮转文件（`YYYY-MM-DD-HH`）按日期分组，待打包。
+        if let Some(rest) = name_str.strip_prefix(&prefix) {
+            if let Some(date) = rest.get(..10) {
+                if let Some(day) = parse_date(date) {
+                    if day < today {
+                        by_day.entry(date.to_string()).or_default().push(path);
+                    }
+                }
+            }
         }
     }
-    removed
+
+    let mut handled = 0;
+    for (day, files) in by_day {
+        if bundle_day(log_dir, file_name, &day, &files).is_ok() {
+            handled += 1;
+        }
+    }
+    for path in to_delete {
+        if std::fs::remove_file(path).is_ok() {
+            handled += 1;
+        }
+    }
+    handled
+}
+
+/// 把一天的轮转日志打包成 `{file_name}.{day}.tar.gz` 并删除原文。
+fn bundle_day(
+    log_dir: &Path,
+    file_name: &str,
+    day: &str,
+    files: &[PathBuf],
+) -> std::io::Result<()> {
+    use flate2::write::GzEncoder;
+    use flate2::Compression;
+
+    let archive = log_dir.join(format!("{file_name}.{day}.tar.gz"));
+    let gz = std::fs::File::create(&archive)?;
+    let encoder = GzEncoder::new(gz, Compression::default());
+    let mut builder = tar::Builder::new(encoder);
+    for file in files {
+        let name = file
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .to_string();
+        builder.append_path_with_name(file, &name)?;
+    }
+    let encoder = builder.into_inner()?;
+    encoder.finish()?;
+    for file in files {
+        let _ = std::fs::remove_file(file);
+    }
+    Ok(())
+}
+
+/// 解析 `YYYY-MM-DD` 为 `(年, 月, 日)`。
+fn parse_date(s: &str) -> Option<(i64, u32, u32)> {
+    let y: i64 = s.get(0..4)?.parse().ok()?;
+    let m: u32 = s.get(5..7)?.parse().ok()?;
+    let d: u32 = s.get(8..10)?.parse().ok()?;
+    Some((y, m, d))
+}
+
+/// 从 1970-01-01 起的天数转公历（Howard Hinnant 算法），返回 `(年, 月, 日)`。
+fn civil_from_days(z: i64) -> (i64, u32, u32) {
+    let z = z + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097);
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    (if m <= 2 { y + 1 } else { y }, m as u32, d as u32)
 }
 
 pub fn init(file_name: &str, tui_tx: Option<mpsc::Sender<String>>) -> Result<WorkerGuard> {

@@ -128,23 +128,23 @@ async fn main() -> Result<()> {
     let _log_guard = phira_mp_plus_server::logging::init(&args.log_file, log_tx)?;
     config_load.report(&args.config);
 
-    // 日志保留清理：启动时清一次，之后每 6 小时清一次（`log_retention_days`，
-    // 默认 7 天；0 = 不清理）。PMP 日志量大，避免 `log/` 无限累积。
+    // 日志保留清理：启动时清一次，之后每天清一次（`log_retention_days`，默认 7 天；
+    // 0 = 不清理）。已完成日打包成 tar.gz，超保留期的删除，避免 `log/` 无限累积。
     {
         let retention_days = config.log_retention_days;
         let log_file = args.log_file.clone();
         phira_mp_plus_server::supervisor_actor::spawn_named("log-retention", async move {
             let mut interval =
-                tokio::time::interval(std::time::Duration::from_secs(6 * 3600));
+                tokio::time::interval(std::time::Duration::from_secs(24 * 3600));
             loop {
                 interval.tick().await;
-                let removed = phira_mp_plus_server::logging::cleanup_old_logs(
+                let handled = phira_mp_plus_server::logging::cleanup_old_logs(
                     std::path::Path::new("log"),
                     &log_file,
                     retention_days,
                 );
-                if removed > 0 {
-                    info!(removed, "log retention cleanup removed old files");
+                if handled > 0 {
+                    info!(handled, "log retention cleanup (gzip + delete) handled files");
                 }
             }
         });
