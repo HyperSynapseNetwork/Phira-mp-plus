@@ -10,6 +10,7 @@
 [![Rust](https://img.shields.io/badge/Rust-2021-dea584.svg?logo=rust&logoColor=white)](https://www.rust-lang.org/)
 [![Build](https://github.com/HyperSynapseNetwork/Phira-mp-plus/actions/workflows/build.yml/badge.svg)](https://github.com/HyperSynapseNetwork/Phira-mp-plus/actions/workflows/build.yml)
 [![Tokio](https://img.shields.io/badge/Tokio-异步-e0c0a0.svg?logo=rust&logoColor=white)](https://tokio.rs/)
+[![Docker](https://img.shields.io/badge/Docker-Ready-2496ED.svg?logo=docker&logoColor=white)](https://www.docker.com/)
 [![PostgreSQL](https://img.shields.io/badge/PostgreSQL-数据库-336791.svg?logo=postgresql&logoColor=white)](https://www.postgresql.org/)
 [![Axum](https://img.shields.io/badge/Axum-HTTP%2FSSE%2FWS-0b0b0b.svg?logo=rust&logoColor=white)](https://github.com/tokio-rs/axum)
 [![wasmtime](https://img.shields.io/badge/wasmtime-WASM%20插件-2E3B4E.svg?logo=rust&logoColor=white)](https://wasmtime.dev/)
