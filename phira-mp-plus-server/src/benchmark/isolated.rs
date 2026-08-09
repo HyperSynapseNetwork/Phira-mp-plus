@@ -30,17 +30,16 @@ impl Drop for IsolatedServer {
     fn drop(&mut self) {
         let _ = self.child.start_kill();
         let _ = std::fs::remove_file(&self.config_path);
-        let _ = std::fs::remove_file(&self.stderr_path);
+        // stderr 日志保留（含 DB URL 的配置删除，服务器日志留作诊断）。
     }
 }
 
 impl IsolatedServer {
-    /// 正常路径：杀进程并等待回收，清理临时配置。
+    /// 正常路径：杀进程并等待回收，清理临时配置（stderr 日志保留）。
     pub async fn shutdown(&mut self) {
         let _ = self.child.start_kill();
         let _ = self.child.wait().await;
         let _ = std::fs::remove_file(&self.config_path);
-        let _ = std::fs::remove_file(&self.stderr_path);
     }
 
     /// 子进程 PID（报告里记录 World B 实例）。
