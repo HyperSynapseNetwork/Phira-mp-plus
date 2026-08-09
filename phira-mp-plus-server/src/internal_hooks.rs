@@ -3,9 +3,8 @@ use crate::l10n::Language;
 use crate::plugin::PluginManager;
 use crate::plugin_http::PluginHttpServer;
 use crate::server::PlusServerState;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use std::collections::HashMap;
-use std::path::Path;
 use std::sync::OnceLock;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
@@ -133,25 +132,6 @@ pub async fn init_internal_hooks(
 //  欢迎语
 // ════════════════════════════════════
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct WelcomeConfig {
-    messages: Vec<String>,
-    show_time: bool,
-    time_format: String,
-}
-
-impl Default for WelcomeConfig {
-    fn default() -> Self {
-        Self {
-            // 空 messages = 使用内置国际化（l10n）欢迎语模板；仅当 l10n 不可用时
-            // 才回退到内置默认文本（见 builtin_welcome_messages）。
-            messages: vec![],
-            show_time: true,
-            time_format: "%Y-%m-%d %H:%M".into(),
-        }
-    }
-}
-
 /// 内置默认欢迎语模板（最终回退，中文）。三语默认模板位于 locales/*.ftl 的
 /// `welcome-message` 键。
 const FALLBACK_WELCOME_MESSAGES: &[&str] = &[
@@ -186,48 +166,16 @@ enum WelcomeSegment {
     TopPlaytime,
 }
 
-static WELCOME: once_cell::sync::Lazy<Arc<Mutex<WelcomeConfig>>> =
-    once_cell::sync::Lazy::new(|| {
-        let cfg = std::fs::read_to_string("data/welcome-config.json")
-            .ok()
-            .and_then(|s| serde_json::from_str(&s).ok())
-            .unwrap_or_default();
-        Arc::new(Mutex::new(cfg))
-    });
-
-/// 解析欢迎语专用 .ftl 文件中的 `welcome-message` 键（单行值，`\n` 分隔多行）。
-fn parse_welcome_ftl(content: &str) -> Option<Vec<String>> {
-    for line in content.lines() {
-        let line = line.trim();
-        if let Some(rest) = line.strip_prefix("welcome-message") {
-            let rest = rest.trim_start();
-            if let Some(val) = rest.strip_prefix('=') {
-                let val = val.trim();
-                if !val.is_empty() {
-                    return Some(val.split("\\n").map(|s| s.to_string()).collect());
-                }
-            }
-        }
-    }
-    None
-}
-
 /// 按语言获取欢迎语模板消息列表。
 ///
-/// 优先级：管理员 welcome-config.json 显式 messages > 可选 `welcome_ftl_dir`
-/// 下的 `welcome-{lang}.ftl` > 内置 l10n `welcome-message` 键 > 内置默认文本。
+/// 优先级：`server_config.yml` 的 `welcome.messages[lang]` > 内置 l10n
+/// `welcome-message` 键（随版本更新，默认即此）> 内置默认文本。
+/// 缺省不配置 `welcome` → 内置国际化，按用户语言渲染。
 fn welcome_messages_for(lang: &Language, state: &PlusServerState) -> Vec<String> {
-    let cfg = WELCOME.lock().unwrap();
-    if !cfg.messages.is_empty() {
-        return cfg.messages.clone();
-    }
-    if let Some(dir) = &state.config.welcome_ftl_dir {
-        let lang_tag = lang.0.to_string();
-        let path = std::path::Path::new(dir).join(format!("welcome-{lang_tag}.ftl"));
-        if let Ok(content) = std::fs::read_to_string(&path) {
-            if let Some(msgs) = parse_welcome_ftl(&content) {
-                return msgs;
-            }
+    let lang_tag = lang.0.to_string();
+    if let Some(msgs) = state.config.welcome.messages.get(&lang_tag) {
+        if !msgs.is_empty() {
+            return msgs.clone();
         }
     }
     let template = crate::l10n::translate_system(lang, "welcome-message", &fluent::FluentArgs::new());
@@ -313,7 +261,7 @@ pub fn send_welcome(user_id: i32, user_name: &str, online: usize, state: &PlusSe
         .ok()
         .and_then(|g| g.get(&user_id).map(|u| u.lang.clone()))
         .unwrap_or_default();
-    let show_time = WELCOME.lock().unwrap().show_time;
+    let show_time = state.config.welcome.show_time;
     let messages = welcome_messages_for(&lang, state);
     let compiled: Vec<Vec<WelcomeSegment>> = messages
         .iter()
@@ -514,24 +462,26 @@ pub fn send_welcome(user_id: i32, user_name: &str, online: usize, state: &PlusSe
 }
 
 async fn init_welcome(_state: &PlusServerState, pm: &PluginManager) {
-    save_json("data/welcome-config.json", &*WELCOME.lock().unwrap());
     let _ = pm
         .register_cli_command(crate::plugin::CliCommand {
             name: "welcome-config".into(),
             description: "查看欢迎语配置与占位符说明".into(),
             usage: "welcome-config".into(),
             handler: Arc::new(|_| {
-                let cfg = WELCOME.lock().unwrap();
+                // 展示内置默认（示例语言 zh-CN），说明默认随版本更新。
+                let builtin = crate::l10n::translate_system(
+                    &crate::l10n::Language("zh-CN".parse().unwrap_or_default()),
+                    "welcome-message",
+                    &fluent::FluentArgs::new(),
+                );
                 let mut out = vec![
                     "  ◆ 欢迎语配置".to_string(),
-                    "  │ data/welcome-config.json".to_string(),
+                    "  │ server_config.yml → welcome（每语言 messages，缺省回落内置）".to_string(),
+                    String::new(),
+                    "  ■ 内置默认（zh-CN 示例，随版本更新，按用户语言渲染）:".to_string(),
                 ];
-                if cfg.messages.is_empty() {
-                    out.push("  │ （未配置 → 使用内置国际化默认欢迎语，按用户语言）".to_string());
-                    out.push("  │ 自定义：编辑 welcome-config.json，或配置 welcome_ftl_dir".to_string());
-                }
-                for (i, msg) in cfg.messages.iter().enumerate() {
-                    out.push(format!("  │ [{i}] {msg}"));
+                for line in builtin.split('\n') {
+                    out.push(format!("  │ {line}"));
                 }
                 out.push(String::new());
                 out.push("  ■ 占位符:".to_string());
@@ -662,11 +612,3 @@ pub fn playtime_disconnect(user_id: i32, state: &PlusServerState) {
 //  辅助
 // ════════════════════════════════════
 
-fn save_json<T: Serialize>(path: &str, data: &T) {
-    if let Ok(json) = serde_json::to_string_pretty(data) {
-        if let Some(parent) = Path::new(path).parent() {
-            std::fs::create_dir_all(parent).ok();
-        }
-        std::fs::write(path, json).ok();
-    }
-}

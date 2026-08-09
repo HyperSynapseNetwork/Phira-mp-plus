@@ -318,6 +318,29 @@ impl Default for ConfigProfile {
     }
 }
 
+/// 欢迎语配置（单文件：server_config.yml 的 `welcome` 段）。
+/// 缺省（不配置）时使用内置国际化，按用户语言渲染。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct WelcomeConfig {
+    /// lang → 欢迎语模板列表（含占位符）。未命中该语言回落内置国际化。
+    pub messages: std::collections::HashMap<String, Vec<String>>,
+    /// 是否显示时间。
+    pub show_time: bool,
+    /// 时间格式（strftime）。
+    pub time_format: String,
+}
+
+impl Default for WelcomeConfig {
+    fn default() -> Self {
+        Self {
+            messages: std::collections::HashMap::new(),
+            show_time: true,
+            time_format: "%Y-%m-%d %H:%M".to_string(),
+        }
+    }
+}
+
 /// 单表保留策略：按行数上限 和/或 保留天数裁剪。
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
@@ -413,7 +436,10 @@ pub struct PlusConfig {
     /// `welcome-{lang}.ftl` 命名（如 welcome-zh-CN.ftl），每条含 `welcome-message`
     /// 键作为欢迎语模板。未配置或文件缺失时回退到内置默认欢迎语。
     #[serde(default)]
-    pub welcome_ftl_dir: Option<String>,
+    /// 欢迎语配置（单文件：server_config.yml 内）。`messages` 为 lang → 模板列表
+    /// （含占位符），缺省语言回落内置国际化；`show_time` 控制时间显示。
+    #[serde(default)]
+    pub welcome: WelcomeConfig,
     #[serde(default = "default_phira_api")]
     pub phira_api_endpoint: String,
     #[serde(default = "default_true")]
@@ -475,7 +501,7 @@ impl Default for PlusConfig {
             connection_rate_limit: 30,
             connection_rate_window: 10,
             server_name: None,
-            welcome_ftl_dir: None,
+            welcome: WelcomeConfig::default(),
             phira_api_endpoint: "https://phira.5wyxi.com".to_string(),
             chat_enabled: true,
             database_url: String::new(),

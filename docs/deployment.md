@@ -478,7 +478,7 @@ MALLOC_CONF=background_thread:true,dirty_decay_ms:3000,muzzy_decay_ms:3000,stats
 | 路径 | 说明 |
 |---|---|
 | `data/extensions.json` | 扩展数据持久化文件，受 `extensions_file` 影响。 |
-| `data/welcome-config.json` | 欢迎语模板与占位符相关配置。 |
+| `welcome`（server_config.yml 段） | 欢迎语每语言配置（单文件；缺省用内置国际化，随版本更新）。 |
 | `data/rounds/` | 轮次 Touches/Judges 数据。 |
 | `data/plugins/<plugin>/` | 插件私有持久化文件目录。 |
 | `log/` | 运行日志目录。 |

@@ -83,7 +83,7 @@
 - **命令权限**：Normal/Console/Monitor 权限区分，拒绝映射官方错误响应（绝不静默）
 - **速率限制**：Chat 10/3s、RoomOp 20/6s、Api 12/3s
 - **会话容量**：`max_sessions`（4096）+ `max_pending_auth`（256）
-- **欢迎语**：本地化欢迎消息（en-US/zh-CN/zh-TW **三语键集一致**，按用户语言渲染；自定义欢迎语用 `welcome-{lang}.ftl` 或 `welcome-config.json`）
+- **欢迎语**：本地化欢迎消息（en-US/zh-CN/zh-TW **三语键集一致**，按用户语言渲染；**单文件配置** = server_config.yml 的 `welcome` 段，缺省回落内置国际化且随版本更新）
 - **登录统计**：`mp_user_visits`（幂等）、playtime 累计、login_count 对账
 
 ---
@@ -280,7 +280,7 @@
 | `data/update/` | 更新下载的二进制 + `updated-version` 标记 | 更新完成后清理 |
 | `data/plugins/` | WASM 插件文件 | 运行时加载 |
 | `data/admin-phira-ids.json` | 管理员 Phira ID | 运维管理（配置类） |
-| `data/welcome-config.json` | 欢迎语配置 | 运维配置 |
+| `welcome`（server_config.yml） | 欢迎语每语言配置 | 运维配置 |
 | `data/low-compat-ack` | 低兼容终端确认 | 一次性确认标记 |
 
 **PostgreSQL 表：**

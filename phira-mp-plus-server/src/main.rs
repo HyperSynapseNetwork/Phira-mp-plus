@@ -761,9 +761,6 @@ cli_enabled: true
 
 # server_name: "My Phira Server"
 
-# 欢迎语国际化文件目录（可选）：目录内放 welcome-{lang}.ftl（如 welcome-zh-CN.ftl），
-# 每条含 welcome-message 键作为欢迎语模板。未配置或缺失时用内置默认（三语）
-# welcome_ftl_dir: "locales/welcome"
 "##;
     if let Some(parent) = std::path::Path::new(path).parent() {
         let _ = std::fs::create_dir_all(parent);

@@ -192,6 +192,15 @@ connection_rate_window: 10
 # 服务器名称（显示在欢迎语等位置）
 # server_name: "My Phira Server"
 
+# 欢迎语（单文件配置）。缺省 = 内置国际化默认（随版本更新，按用户语言渲染）。
+# messages 为 lang → 模板列表（占位符见 `welcome-config` 命令）。
+# welcome:
+#   messages:
+#     zh-CN: ["欢迎 [user_name] 来到本服！当前在线 [player-count] 人。", "活跃房间：[active_rooms]"]
+#     en-US: ["Welcome [user_name]! [player-count] online.", "Active rooms: [active_rooms]"]
+#   show_time: true
+#   time_format: "%Y-%m-%d %H:%M"
+
 # 游戏内管理员 Phira ID。管理员在创建房间弹窗输入 _<CLI命令> 时不会创建房间，
 # 而是执行服务端 CLI 命令，并把输出通过聊天消息发回该客户端。
 # 也可通过 CLI admin-id 或 WIT/host admin.* 动态维护。
