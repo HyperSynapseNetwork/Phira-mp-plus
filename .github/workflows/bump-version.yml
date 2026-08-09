@@ -37,10 +37,12 @@ jobs:
             MINOR=$((MINOR + 1))
           fi
 
-          # C = 自上一个 v{A}.{B}.0 标签以来的 commit 数
-          TAG_PREFIX="v${MAJOR}.${MINOR}.0"
-          if git rev-parse "$TAG_PREFIX" >/dev/null 2>&1; then
-            PATCH=$(git rev-list --count "$TAG_PREFIX"..HEAD)
+          # C = 自上一个版本标签（v*.*.*）以来的 commit 数。
+          # A/B 递增时下级自然归零：C 回到「自上次标签」的小数字，
+          # 而非 vA.B.0（本流程打 vA.B.C 标签，vA.B.0 永不匹配 → 落成总 commit 数）。
+          LAST_TAG=$(git describe --tags --abbrev=0 --match 'v*.*.*' 2>/dev/null || true)
+          if [ -n "$LAST_TAG" ]; then
+            PATCH=$(git rev-list --count "$LAST_TAG"..HEAD)
           else
             PATCH=$(git rev-list --count HEAD)
           fi
