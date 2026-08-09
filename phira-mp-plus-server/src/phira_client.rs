@@ -55,8 +55,8 @@ fn mp3_duration_scan(data: &[u8]) -> Option<f64> {
         }
         let h = &data[i..i + 4];
         let version = (h[1] >> 3) & 3; // 3=MPEG1, 2=MPEG2
-        let layer = (h[1] >> 1) & 3; // 3 = Layer III
-        if layer != 3 {
+        let layer = (h[1] >> 1) & 3; // MPEG 头里 Layer III = 0b01
+        if layer != 1 {
             i += 1;
             continue;
         }
