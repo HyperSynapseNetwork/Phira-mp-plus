@@ -124,7 +124,7 @@ cp target/wasm32-unknown-unknown/release/my_plugin.component.wasm \
 
 缺少 sidecar 时仅获得兼容性默认能力，不包含 `http`、`room.manage` 或 `admin`。插件应显式提交最小 capability 清单，不要依赖默认集合。
 
->TODON:支持第一次安装任意插件时通过CLI审批其申请的权限
+>TODO:支持第一次安装任意插件时通过CLI审批其申请的权限
 
 ## 资源与超时语义
 
