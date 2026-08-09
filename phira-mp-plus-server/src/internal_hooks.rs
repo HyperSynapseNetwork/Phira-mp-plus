@@ -99,11 +99,12 @@ pub async fn init_internal_hooks(
         state.db_manager.clear_filtered_player_data(&filtered).await;
     }
 
-    // Spawn periodic playtime cache refresh every 60s.
+    // Spawn periodic playtime cache refresh（10s：欢迎语排行榜与数据库差异
+    // 控制在 ≤10s，避免 60s 缓存让欢迎语排行榜明显滞后于实时游玩时长）。
     let hide = state.config.filtered_player_ids.clone();
     tokio::spawn(async move {
         loop {
-            tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+            tokio::time::sleep(std::time::Duration::from_secs(10)).await;
             refresh_playtime_cache(&hide).await;
         }
     });
