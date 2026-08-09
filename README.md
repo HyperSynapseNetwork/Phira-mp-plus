@@ -397,7 +397,7 @@ Phira-mp-plus/
 
 启动时会检测 stdin/stdout、`TERM`、`STY` 与 `TMUX`。GNU Screen、Linux console、`ansi`/`cons25` 等环境使用保守 TUI：禁用备用屏幕、鼠标捕获和 Bracketed Paste，并修正 Ctrl+H Backspace；如果 TUI 初始化失败，会自动降级到逐行兼容控制台。tmux、xterm、WezTerm、iTerm、Kitty 等普通终端继续使用完整 TUI。项目遵循 `NO_COLOR`，逐行输出会再次过滤残留控制序列；非交互环境同样使用逐行控制台。
 
-| `http_port` | u16 | `12347` | PMP HTTP/SSE/WebSocket 端口 |
+`http_port` 默认 `12347`（PMP 的 HTTP/SSE/WebSocket 端口）。
 
 ## 许可证
 
