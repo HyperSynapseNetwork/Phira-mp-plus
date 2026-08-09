@@ -748,7 +748,7 @@ chat_enabled: true
 # 启用管理控制台
 cli_enabled: true
 
-# 日志保留天数（0 = 不清理）。PMP 日志量大，默认 7 天。
+# 日志保留天数（0 = 不清理），默认 7 天。
 # log_retention_days: 7
 
 # 是否允许玩家建房（false 时只有管理员可通过 CLI 创建房间）

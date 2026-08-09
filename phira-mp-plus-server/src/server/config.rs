@@ -412,7 +412,7 @@ pub struct PlusConfig {
     /// Total deadline used by the ordered shutdown sequence.
     #[serde(default = "default_graceful_shutdown_timeout_secs")]
     pub graceful_shutdown_timeout_secs: u64,
-    /// 日志保留天数（`log/` 目录，0 = 不清理）。PMP 日志量大，默认 7 天。
+    /// 日志保留天数（`log/` 目录，0 = 不清理），默认 7 天。
     #[serde(default = "default_log_retention_days")]
     pub log_retention_days: u32,
     /// Port for the optional forwarded-header compatibility listener.
