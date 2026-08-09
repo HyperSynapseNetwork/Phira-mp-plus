@@ -1030,8 +1030,10 @@ pub async fn run_real(
             .ok_or("Mock Phira port not available")?;
         let server = crate::benchmark::isolated::spawn_isolated_server(&config, &mock_url).await?;
         info!(
-            "Spawned isolated World B on 127.0.0.1:{} (http {})",
-            server.port, server.http_port
+            "Spawned isolated World B on 127.0.0.1:{} (http {}) stderr={}",
+            server.port,
+            server.http_port,
+            server.stderr_path.display()
         );
         let addr = format!("127.0.0.1:{}", server.port);
         (Some(server), addr)

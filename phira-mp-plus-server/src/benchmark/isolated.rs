@@ -22,12 +22,15 @@ pub struct IsolatedServer {
     pub http_port: u16,
     /// 临时配置文件路径
     config_path: PathBuf,
+    /// World B stderr 日志路径（启动/DB/认证失败时诊断用）
+    pub stderr_path: PathBuf,
 }
 
 impl Drop for IsolatedServer {
     fn drop(&mut self) {
         let _ = self.child.start_kill();
         let _ = std::fs::remove_file(&self.config_path);
+        let _ = std::fs::remove_file(&self.stderr_path);
     }
 }
 
@@ -37,6 +40,7 @@ impl IsolatedServer {
         let _ = self.child.start_kill();
         let _ = self.child.wait().await;
         let _ = std::fs::remove_file(&self.config_path);
+        let _ = std::fs::remove_file(&self.stderr_path);
     }
 
     /// 子进程 PID（报告里记录 World B 实例）。
@@ -125,13 +129,20 @@ pub async fn spawn_isolated_server(
 
     let exe = std::env::current_exe()
         .map_err(|e| format!("failed to resolve self path for World B: {e}"))?;
+    // World B stderr 落临时日志（启动/DB/认证失败时可诊断；之前 null 掉吞了错误）。
+    let stderr_path = std::env::temp_dir().join(format!(
+        "pmp-bench-worldb-{}.log",
+        uuid::Uuid::new_v4()
+    ));
+    let stderr_file = std::fs::File::create(&stderr_path)
+        .map_err(|e| format!("failed to create World B log file: {e}"))?;
     let mut child = tokio::process::Command::new(&exe)
         .arg("--config")
         .arg(&config_path)
         .arg("--no-cli")
         .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
+        .stderr(Stdio::from(stderr_file))
         .spawn()
         .map_err(|e| format!("failed to spawn World B server: {e}"))?;
 
@@ -158,7 +169,10 @@ pub async fn spawn_isolated_server(
     if !ready {
         let _ = child.start_kill();
         let _ = std::fs::remove_file(&config_path);
-        return Err(format!("World B did not become ready within 30s ({ready_url})"));
+        return Err(format!(
+            "World B did not become ready within 30s ({ready_url}); stderr: {}",
+            stderr_path.display()
+        ));
     }
 
     Ok(IsolatedServer {
@@ -166,5 +180,6 @@ pub async fn spawn_isolated_server(
         port,
         http_port,
         config_path,
+        stderr_path,
     })
 }
