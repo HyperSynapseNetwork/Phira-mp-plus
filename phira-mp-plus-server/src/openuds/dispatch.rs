@@ -47,6 +47,19 @@ pub async fn dispatch_command(
         "room.list" => cmd_room_list(state, params).await,
         "room.history" => cmd_room_history(state, params).await,
         "room.chat_history" => cmd_room_chat_history(state, params).await,
+        "room.uuid" => cmd_room_uuid(state, params).await,
+        "room.rounds" => cmd_room_rounds(state, params).await,
+        "room.round" => cmd_room_round(state, params).await,
+        "room.set_hidden" => cmd_room_set_hidden(state, params).await,
+        "room.set_persistent" => cmd_room_set_persistent(state, params).await,
+        "room.set_degraded" => cmd_room_set_degraded(state, params).await,
+        "room.set_api_endpoint" => cmd_room_set_api_endpoint(state, params).await,
+        "room.ban" => cmd_room_ban(state, params).await,
+        "room.unban" => cmd_room_unban(state, params).await,
+        "room.banlist" => cmd_room_banlist(state, params).await,
+        "room.whitelist" => cmd_room_whitelist(state, params).await,
+        "room.whitelist_add" => cmd_room_whitelist_add(state, params).await,
+        "room.whitelist_remove" => cmd_room_whitelist_remove(state, params).await,
 
         // ── Player commands ────────────────────────────────────────
         "player.ban" => cmd_player_ban(state, params).await,
@@ -475,6 +488,184 @@ async fn cmd_room_chat_history(
         "messages": messages,
         "count": messages.len(),
     }))
+}
+
+/// 解析 `room_id` 并克隆房间 Arc。
+async fn resolve_room(state: &Arc<PlusServerState>, room_id: &str) -> Result<Arc<crate::room::Room>, String> {
+    let rid: RoomId = room_id.to_string().try_into().map_err(|_| "invalid room_id".to_string())?;
+    let rooms = state.rooms.read().await;
+    rooms.get(&rid).map(Arc::clone).ok_or_else(|| "room not found".to_string())
+}
+
+/// `room.uuid` — 房间 UUID。
+async fn cmd_room_uuid(
+    state: &Arc<PlusServerState>,
+    params: &Value,
+) -> Result<Value, String> {
+    let room_id = params.get("room_id").and_then(Value::as_str).ok_or_else(|| "room_id required".to_string())?;
+    let room = resolve_room(state, room_id).await?;
+    Ok(serde_json::json!({"room_id": room.id.to_string(), "uuid": room.uuid.to_string()}))
+}
+
+/// `room.rounds` — 房间轮次列表（含轮次 UUID）。
+async fn cmd_room_rounds(
+    state: &Arc<PlusServerState>,
+    params: &Value,
+) -> Result<Value, String> {
+    let room_id = params.get("room_id").and_then(Value::as_str).ok_or_else(|| "room_id required".to_string())?;
+    let room = resolve_room(state, room_id).await?;
+    let rounds: Vec<Value> = room.play_history.recent_sync().iter().map(|r| serde_json::json!({
+        "round_id": r.round_id.to_string(),
+        "chart_id": r.chart_id,
+        "chart_name": r.chart_name,
+    })).collect();
+    Ok(serde_json::json!({"room_id": room.id.to_string(), "rounds": rounds}))
+}
+
+/// `room.round` — 按轮次 UUID 查单轮详情。
+async fn cmd_room_round(
+    state: &Arc<PlusServerState>,
+    params: &Value,
+) -> Result<Value, String> {
+    let room_id = params.get("room_id").and_then(Value::as_str).ok_or_else(|| "room_id required".to_string())?;
+    let round_id = params.get("round_id").and_then(Value::as_str).ok_or_else(|| "round_id required".to_string())?;
+    let room = resolve_room(state, room_id).await?;
+    let round = room
+        .play_history
+        .recent_sync()
+        .into_iter()
+        .find(|r| r.round_id.to_string() == round_id)
+        .ok_or_else(|| format!("round {round_id} not found"))?;
+    let results: Vec<Value> = round.results.iter().map(|res| serde_json::json!({
+        "player": res.user_id,
+        "user_name": res.user_name,
+        "score": res.score,
+        "accuracy": res.accuracy,
+        "perfect": res.perfect, "good": res.good, "bad": res.bad, "miss": res.miss,
+        "max_combo": res.max_combo,
+        "full_combo": res.full_combo,
+        "aborted": res.aborted,
+    })).collect();
+    Ok(serde_json::json!({
+        "room_id": room.id.to_string(),
+        "round_id": round.round_id.to_string(),
+        "chart_id": round.chart_id,
+        "chart_name": round.chart_name,
+        "results": results,
+    }))
+}
+
+/// `room.set_hidden` — 隐藏/公开房间。
+async fn cmd_room_set_hidden(
+    state: &Arc<PlusServerState>,
+    params: &Value,
+) -> Result<Value, String> {
+    let room_id = params.get("room_id").and_then(Value::as_str).ok_or_else(|| "room_id required".to_string())?;
+    let hidden = params.get("hidden").and_then(Value::as_bool).ok_or_else(|| "hidden (bool) required".to_string())?;
+    state.room_commands.set_hidden(state, room_id, hidden).await
+}
+
+/// `room.set_persistent` — 持久空房间开关。
+async fn cmd_room_set_persistent(
+    state: &Arc<PlusServerState>,
+    params: &Value,
+) -> Result<Value, String> {
+    let room_id = params.get("room_id").and_then(Value::as_str).ok_or_else(|| "room_id required".to_string())?;
+    let persistent = params.get("persistent").and_then(Value::as_bool).ok_or_else(|| "persistent (bool) required".to_string())?;
+    state.room_commands.set_persistent_empty(state, room_id, persistent).await
+}
+
+/// `room.set_degraded` — 清除房间持久化降级标志。
+async fn cmd_room_set_degraded(
+    state: &Arc<PlusServerState>,
+    params: &Value,
+) -> Result<Value, String> {
+    let room_id = params.get("room_id").and_then(Value::as_str).ok_or_else(|| "room_id required".to_string())?;
+    let degraded = params.get("degraded").and_then(Value::as_bool).ok_or_else(|| "degraded (bool) required".to_string())?;
+    state.room_commands.set_degraded(state, room_id, degraded).await
+}
+
+/// `room.set_api_endpoint` — 设置房间 Phira API 端点。
+async fn cmd_room_set_api_endpoint(
+    state: &Arc<PlusServerState>,
+    params: &Value,
+) -> Result<Value, String> {
+    let room_id = params.get("room_id").and_then(Value::as_str).ok_or_else(|| "room_id required".to_string())?;
+    let endpoint = params.get("endpoint").and_then(Value::as_str).map(|s| s.to_string());
+    state.room_commands.set_phira_api_endpoint(state, room_id, endpoint).await
+}
+
+/// `room.ban` — 房间黑名单封禁（按房间名解析 UUID）。
+async fn cmd_room_ban(
+    state: &Arc<PlusServerState>,
+    params: &Value,
+) -> Result<Value, String> {
+    let room_id = params.get("room_id").and_then(Value::as_str).ok_or_else(|| "room_id required".to_string())?;
+    let user_id = params.get("user_id").and_then(Value::as_i64).map(|v| v as i32).ok_or_else(|| "user_id required".to_string())?;
+    let reason = params.get("reason").and_then(Value::as_str).unwrap_or("").to_string();
+    let room = resolve_room(state, room_id).await?;
+    state.ban_manager.room_ban_user(&room.uuid.to_string(), user_id, &reason).await?;
+    Ok(serde_json::json!({"ok": true, "room_id": room_id, "user_id": user_id}))
+}
+
+/// `room.unban` — 房间黑名单解封。
+async fn cmd_room_unban(
+    state: &Arc<PlusServerState>,
+    params: &Value,
+) -> Result<Value, String> {
+    let room_id = params.get("room_id").and_then(Value::as_str).ok_or_else(|| "room_id required".to_string())?;
+    let user_id = params.get("user_id").and_then(Value::as_i64).map(|v| v as i32).ok_or_else(|| "user_id required".to_string())?;
+    let room = resolve_room(state, room_id).await?;
+    state.ban_manager.room_unban_user(&room.uuid.to_string(), user_id).await?;
+    Ok(serde_json::json!({"ok": true, "room_id": room_id, "user_id": user_id}))
+}
+
+/// `room.banlist` — 房间黑名单列表。
+async fn cmd_room_banlist(
+    state: &Arc<PlusServerState>,
+    params: &Value,
+) -> Result<Value, String> {
+    let room_id = params.get("room_id").and_then(Value::as_str).ok_or_else(|| "room_id required".to_string())?;
+    let room = resolve_room(state, room_id).await?;
+    let bans: Vec<Value> = state.ban_manager.list_room_bans(&room.uuid.to_string()).await.iter().map(|b| serde_json::json!({
+        "user_id": b.user_id, "reason": b.reason, "banned_at": b.banned_at,
+    })).collect();
+    Ok(serde_json::json!({"room_id": room_id, "bans": bans}))
+}
+
+/// `room.whitelist` — 房间白名单列表。
+async fn cmd_room_whitelist(
+    state: &Arc<PlusServerState>,
+    params: &Value,
+) -> Result<Value, String> {
+    let room_id = params.get("room_id").and_then(Value::as_str).ok_or_else(|| "room_id required".to_string())?;
+    let room = resolve_room(state, room_id).await?;
+    let list = state.ban_manager.room_whitelist(&room.uuid.to_string()).await;
+    Ok(serde_json::json!({"room_id": room_id, "whitelist": list}))
+}
+
+/// `room.whitelist_add` — 白名单添加用户。
+async fn cmd_room_whitelist_add(
+    state: &Arc<PlusServerState>,
+    params: &Value,
+) -> Result<Value, String> {
+    let room_id = params.get("room_id").and_then(Value::as_str).ok_or_else(|| "room_id required".to_string())?;
+    let user_id = params.get("user_id").and_then(Value::as_i64).map(|v| v as i32).ok_or_else(|| "user_id required".to_string())?;
+    let room = resolve_room(state, room_id).await?;
+    state.ban_manager.whitelist_add_user(&room.uuid.to_string(), user_id).await?;
+    Ok(serde_json::json!({"ok": true, "room_id": room_id, "user_id": user_id}))
+}
+
+/// `room.whitelist_remove` — 白名单移除用户。
+async fn cmd_room_whitelist_remove(
+    state: &Arc<PlusServerState>,
+    params: &Value,
+) -> Result<Value, String> {
+    let room_id = params.get("room_id").and_then(Value::as_str).ok_or_else(|| "room_id required".to_string())?;
+    let user_id = params.get("user_id").and_then(Value::as_i64).map(|v| v as i32).ok_or_else(|| "user_id required".to_string())?;
+    let room = resolve_room(state, room_id).await?;
+    state.ban_manager.whitelist_remove_user(&room.uuid.to_string(), user_id).await?;
+    Ok(serde_json::json!({"ok": true, "room_id": room_id, "user_id": user_id}))
 }
 
 async fn cmd_room_list(
