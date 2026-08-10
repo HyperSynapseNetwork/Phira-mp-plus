@@ -1148,6 +1148,10 @@ async fn cmd_plugin_remove(
         .get("name")
         .and_then(Value::as_str)
         .ok_or_else(|| "name required".to_string())?;
+    // 破坏性操作（删插件文件 + 清扩展/私有数据）：必须显式确认。
+    if !params.get("confirm").and_then(Value::as_bool).unwrap_or(false) {
+        return Err("plugin.remove 是破坏性操作（删除插件文件、清除扩展/私有数据），必须传 confirm: true".to_string());
+    }
     state.plugin_manager.remove_plugin(name).await?;
     Ok(serde_json::json!({"name": name}))
 }
