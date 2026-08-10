@@ -1,6 +1,6 @@
 [package]
 name = "phira-mp-plus-server"
-version = "1.0.16"
+version = "1.0.17"
 edition.workspace = true
 license = "Apache-2.0"
 
