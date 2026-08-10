@@ -155,17 +155,19 @@ pub(crate) fn server_state_query_inner(
                 .find(|room| room.id.to_string() == room_id)
                 .map(Arc::clone)
                 .ok_or_else(|| format!("room {room_id} not found"))?;
-            let history = room.chat_history.read().await;
-            let messages: Vec<Value> = history
-                .iter()
-                .filter_map(|msg| match msg {
-                    phira_mp_common::Message::Chat { user, content } => Some(serde_json::json!({
-                        "user": user,
-                        "content": content,
-                    })),
-                    _ => None,
-                })
-                .collect();
+            let messages: Vec<Value> = match room.chat_history.try_read() {
+                Ok(history) => history
+                    .iter()
+                    .filter_map(|msg| match msg {
+                        phira_mp_common::Message::Chat { user, content } => Some(serde_json::json!({
+                            "user": user,
+                            "content": content,
+                        })),
+                        _ => None,
+                    })
+                    .collect(),
+                Err(_) => return Err("chat_history busy".to_string()),
+            };
             Ok(serde_json::json!({
                 "room_id": room.id.to_string(),
                 "messages": messages,
