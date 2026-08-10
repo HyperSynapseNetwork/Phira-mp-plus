@@ -609,15 +609,18 @@ help groups
 
 ---
 
-### `plugin remove <name>`
+### `plugin remove <name> [-y]`
 
-卸载插件。
+卸载插件（删除插件文件、清除扩展与私有数据，不可撤销）。
 
 | 参数 | 类型 | 说明 |
 |------|------|------|
 | `name` | `str` | 插件名 |
+| `-y` | flag | 跳过确认直接删除（供 OpenUDS / 非交互调用） |
 
 **输出:** `Removed plugin <name>` 或错误信息
+
+> 交互环境（TTY）删除需输入 `y` 确认；非 TTY 环境自动取消，需用 `-y`（OpenUDS 经 `cli.execute "plugin remove X -y"` 可完成删除）。
 
 ---
 
