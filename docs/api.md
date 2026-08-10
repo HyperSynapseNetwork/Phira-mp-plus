@@ -1039,6 +1039,8 @@ PMP 通过 Unix Domain Socket 暴露全部管理能力给外部工具（PPB、We
 | `room.list` | `{filters?}` | 房间列表 |
 | `room.history` | `{room_id}` | 房间游玩历史（rounds + 完整记录，上限 `play_history_cache_size`） |
 | `room.chat_history` | `{room_id}` | 房间聊天历史（最近 `chat_history_limit` 条 Chat 消息） |
+| `logs.history` | `{limit?}` | 本进程运行以来的最近日志行（默认 100，上限 2000） |
+| `logs.input` | `{limit?}` | 本进程运行以来的最近管理输入（CLI/OpenUDS/管理员，默认 100） |
 
 #### 玩家管理
 
