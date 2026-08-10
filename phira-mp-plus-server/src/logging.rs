@@ -411,7 +411,9 @@ pub fn init(file_name: &str, tui_tx: Option<mpsc::Sender<String>>) -> Result<Wor
             .with_filter(filter.clone());
         // 进程内历史环形缓冲（OpenUDS `logs.history` 查询）；排除 benchmark 洪峰。
         let mut history_filter = filter;
-        let _ = history_filter.add_directive("phira_mp_plus_server::benchmark=off".parse());
+        if let Ok(directive) = "phira_mp_plus_server::benchmark=off".parse() {
+            let _ = history_filter.add_directive(directive);
+        }
         let history_layer = fmt::layer()
             .with_writer(HistoryWriter)
             .with_ansi(false)
@@ -445,7 +447,9 @@ pub fn init(file_name: &str, tui_tx: Option<mpsc::Sender<String>>) -> Result<Wor
             .with_filter(filter.clone());
         // 进程内历史环形缓冲（OpenUDS `logs.history` 查询）；排除 benchmark 洪峰。
         let mut history_filter = filter;
-        let _ = history_filter.add_directive("phira_mp_plus_server::benchmark=off".parse());
+        if let Ok(directive) = "phira_mp_plus_server::benchmark=off".parse() {
+            let _ = history_filter.add_directive(directive);
+        }
         let history_layer = fmt::layer()
             .with_writer(HistoryWriter)
             .with_ansi(false)
