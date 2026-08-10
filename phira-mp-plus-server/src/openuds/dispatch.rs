@@ -73,6 +73,13 @@ pub async fn dispatch_command(
         "player.info" => cmd_player_info(state, params).await,
         "player.kick" => cmd_player_kick(state, params).await,
 
+        // ── Admin / users ─────────────────────────────────────────
+        "admin.id_list" => cmd_admin_id_list(state, params).await,
+        "admin.id_add" => cmd_admin_id_add(state, params).await,
+        "admin.id_remove" => cmd_admin_id_remove(state, params).await,
+        "admin.id_set" => cmd_admin_id_set(state, params).await,
+        "users.list" => cmd_users_list(state, params).await,
+
         // ── Server commands ────────────────────────────────────────
         "server.stats" => cmd_server_stats(state).await,
         "server.status" => cmd_server_status(state).await,
@@ -855,6 +862,68 @@ async fn cmd_player_kick(
         .and_then(Value::as_str)
         .unwrap_or("kicked via OpenUDS");
     crate::server::run_admin_kick_user(state, user_id, reason).await
+}
+
+/// `admin.id_list` — 管理员 ID 列表。
+async fn cmd_admin_id_list(
+    state: &Arc<PlusServerState>,
+    _params: &Value,
+) -> Result<Value, String> {
+    let mut ids: Vec<i32> = state.admin_ids.read().await.iter().copied().collect();
+    ids.sort_unstable();
+    Ok(serde_json::json!({ "admin_ids": ids }))
+}
+
+/// `admin.id_add` — 添加管理员 ID。
+async fn cmd_admin_id_add(
+    state: &Arc<PlusServerState>,
+    params: &Value,
+) -> Result<Value, String> {
+    let user_id = params.get("user_id").and_then(Value::as_i64).map(|v| v as i32).ok_or_else(|| "user_id required".to_string())?;
+    let ids = state.add_admin_id(user_id).await;
+    Ok(serde_json::json!({ "admin_ids": ids }))
+}
+
+/// `admin.id_remove` — 移除管理员 ID。
+async fn cmd_admin_id_remove(
+    state: &Arc<PlusServerState>,
+    params: &Value,
+) -> Result<Value, String> {
+    let user_id = params.get("user_id").and_then(Value::as_i64).map(|v| v as i32).ok_or_else(|| "user_id required".to_string())?;
+    let ids = state.remove_admin_id(user_id).await;
+    Ok(serde_json::json!({ "admin_ids": ids }))
+}
+
+/// `admin.id_set` — 整体设置管理员 ID 列表。
+async fn cmd_admin_id_set(
+    state: &Arc<PlusServerState>,
+    params: &Value,
+) -> Result<Value, String> {
+    let ids: Vec<i32> = params
+        .get("user_ids")
+        .and_then(Value::as_array)
+        .map(|arr| arr.iter().filter_map(|v| v.as_i64().map(|x| x as i32)).collect())
+        .unwrap_or_default();
+    let ids = state.set_admin_ids(ids).await;
+    Ok(serde_json::json!({ "admin_ids": ids }))
+}
+
+/// `users.list` — 在线用户列表（id>0 真实玩家）。
+async fn cmd_users_list(
+    state: &Arc<PlusServerState>,
+    _params: &Value,
+) -> Result<Value, String> {
+    let users = state.users.read().await;
+    let list: Vec<Value> = users
+        .iter()
+        .filter(|(_, user)| user.id > 0)
+        .map(|(user_id, user)| serde_json::json!({
+            "user_id": user_id,
+            "name": user.name,
+            "online": true,
+        }))
+        .collect();
+    Ok(serde_json::json!({ "users": list }))
 }
 
 // ════════════════════════════════════════════════════════════════════
