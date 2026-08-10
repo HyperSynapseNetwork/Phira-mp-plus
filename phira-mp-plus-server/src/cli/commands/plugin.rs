@@ -36,7 +36,7 @@ impl CliHandler {
                     ));
                 } else {
                     // `-y` 跳过确认（供 OpenUDS / 非交互调用）；无 TTY 时自动取消，不阻塞。
-                    let force = args.iter().any(|a| a == "-y" || a == "--yes");
+                    let force = args.contains(&"-y") || args.contains(&"--yes");
                     self.remove_plugin(args[1], force).await;
                 }
             }
