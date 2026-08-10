@@ -308,6 +308,7 @@ impl CliHandler {
                         });
                     }
 
+                    crate::history::record_input("cli", &redact_cli_command_for_event(&line));
                     if !self.dispatch_command(command, &args).await { break; }
                 }
                 _ = status_interval.tick() => {

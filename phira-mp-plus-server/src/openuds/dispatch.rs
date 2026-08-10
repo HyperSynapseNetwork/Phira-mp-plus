@@ -28,6 +28,8 @@ pub async fn dispatch_command(
     req_id: Option<&str>,
     state: &Arc<PlusServerState>,
 ) -> Value {
+    // 记录 OpenUDS 输入到历史（供面板 `logs.input` 查询；只记方法名，避免泄露参数）。
+    crate::history::record_input("openuds", command);
     let result = match command {
         // ── Room commands ──────────────────────────────────────────
         "room.create" => cmd_room_create(state, params).await,
@@ -98,6 +100,10 @@ pub async fn dispatch_command(
         "runtime.actors" => cmd_runtime_actors(state).await,
         "runtime.persistence" => cmd_runtime_persistence(state).await,
         "runtime.phira" => cmd_runtime_phira(state).await,
+
+        // ── 历史查询 ──────────────────────────────────────────────
+        "logs.history" => cmd_logs_history(state, params).await,
+        "logs.input" => cmd_logs_input(state, params).await,
 
         // ── Subscription commands (handled by session) ────────────
         "subscribe" | "unsubscribe" | "subscribe_stream" => {
@@ -1210,4 +1216,34 @@ async fn cmd_runtime_phira(
 ) -> Result<Value, String> {
     let stats = state.phira_client.stats();
     Ok(serde_json::to_value(stats).unwrap_or_default())
+}
+
+/// `logs.history` — 本进程运行以来的最近日志行（默认 100 条）。
+async fn cmd_logs_history(
+    _state: &Arc<PlusServerState>,
+    params: &Value,
+) -> Result<Value, String> {
+    let limit = params
+        .get("limit")
+        .and_then(Value::as_u64)
+        .map(|v| v as usize)
+        .unwrap_or(100)
+        .clamp(1, 2000);
+    let lines = crate::history::recent_logs(limit);
+    Ok(serde_json::json!({ "lines": lines, "count": lines.len() }))
+}
+
+/// `logs.input` — 本进程运行以来的最近管理输入（CLI/OpenUDS/管理员）。
+async fn cmd_logs_input(
+    _state: &Arc<PlusServerState>,
+    params: &Value,
+) -> Result<Value, String> {
+    let limit = params
+        .get("limit")
+        .and_then(Value::as_u64)
+        .map(|v| v as usize)
+        .unwrap_or(100)
+        .clamp(1, 1000);
+    let entries = crate::history::recent_inputs(limit);
+    Ok(serde_json::json!({ "inputs": entries, "count": entries.len() }))
 }

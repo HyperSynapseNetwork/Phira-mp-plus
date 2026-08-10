@@ -235,6 +235,7 @@ pub async fn create_room(
                 .await;
                 bail!("empty admin command");
             }
+            crate::history::record_input("admin", &command);
             let lines =
                 crate::cli::execute_cli_once(Arc::clone(&user.server), command.clone()).await;
             user.try_send(

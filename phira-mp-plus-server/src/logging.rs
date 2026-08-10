@@ -66,6 +66,41 @@ impl<'a> fmt::MakeWriter<'a> for ChannelWriterFactory {
     }
 }
 
+/// 把格式化日志行写入进程内历史环形缓冲（OpenUDS `logs.history` 用）。
+struct HistoryWriter;
+
+impl<'a> fmt::MakeWriter<'a> for HistoryWriter {
+    type Writer = HistorySink;
+
+    fn make_writer(&'a self) -> Self::Writer {
+        HistorySink(Vec::new())
+    }
+}
+
+struct HistorySink(Vec<u8>);
+
+impl Write for HistorySink {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        self.0.extend_from_slice(buf);
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        if !self.0.is_empty() {
+            let line = String::from_utf8_lossy(&self.0).into_owned();
+            self.0.clear();
+            crate::history::push_log(line);
+        }
+        Ok(())
+    }
+}
+
+impl Drop for HistorySink {
+    fn drop(&mut self) {
+        let _ = self.flush();
+    }
+}
+
 struct StdoutWriter(bool);
 
 impl<'a> fmt::MakeWriter<'a> for StdoutWriter {
@@ -373,13 +408,21 @@ pub fn init(file_name: &str, tui_tx: Option<mpsc::Sender<String>>) -> Result<Wor
         let openuds_layer = fmt::layer()
             .with_writer(ChannelWriterFactory(Some(OPENUDS_LOG_TX.get().unwrap().clone())))
             .with_ansi(false)
-            .with_filter(filter);
+            .with_filter(filter.clone());
+        // 进程内历史环形缓冲（OpenUDS `logs.history` 查询）；排除 benchmark 洪峰。
+        let mut history_filter = filter;
+        let _ = history_filter.add_directive("phira_mp_plus_server::benchmark=off".parse());
+        let history_layer = fmt::layer()
+            .with_writer(HistoryWriter)
+            .with_ansi(false)
+            .with_filter(history_filter);
         tracing_subscriber::registry()
             .with(RateLimitLayer::new(RATE_LIMIT_BURST))
             .with(json_file_layer)
             .with(stdout_layer)
             .with(tui_layer)
             .with(openuds_layer)
+            .with(history_layer)
             .init();
     } else {
         // Human-readable text output (default).
@@ -399,13 +442,21 @@ pub fn init(file_name: &str, tui_tx: Option<mpsc::Sender<String>>) -> Result<Wor
         let openuds_layer = fmt::layer()
             .with_writer(ChannelWriterFactory(Some(OPENUDS_LOG_TX.get().unwrap().clone())))
             .with_ansi(false)
-            .with_filter(filter);
+            .with_filter(filter.clone());
+        // 进程内历史环形缓冲（OpenUDS `logs.history` 查询）；排除 benchmark 洪峰。
+        let mut history_filter = filter;
+        let _ = history_filter.add_directive("phira_mp_plus_server::benchmark=off".parse());
+        let history_layer = fmt::layer()
+            .with_writer(HistoryWriter)
+            .with_ansi(false)
+            .with_filter(history_filter);
         tracing_subscriber::registry()
             .with(RateLimitLayer::new(RATE_LIMIT_BURST))
             .with(file_layer)
             .with(stdout_layer)
             .with(tui_layer)
             .with(openuds_layer)
+            .with(history_layer)
             .init();
     }
 

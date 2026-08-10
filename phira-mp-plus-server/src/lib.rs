@@ -51,6 +51,7 @@ pub mod event_bus;
 pub mod extensions;
 pub mod plugin_tcp;
 pub mod internal_hooks;
+pub mod history;
 pub mod l10n;
 pub mod logging;
 pub mod persistence;
