@@ -198,7 +198,7 @@
 
 ## 十二、本地化（`l10n.rs`、`locales/`）
 
-- **语言**：en-US（57 key）、zh-CN（57 key）、zh-TW（30 key，缺失回退英文）
+- **语言**：en-US / zh-CN / zh-TW（三语键集一致）
 - Fluent `.ftl`，`set_use_isolating(false)` 去双向隔离字符
 - **key 分类**：房间管理/会话认证/CLI/服务器/系统广播
 - **语言来源**：Phira `/me` 的 language 字段；task-local `LANGUAGE` 作用域
