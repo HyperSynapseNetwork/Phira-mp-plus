@@ -393,6 +393,30 @@ Phira-mp-plus/
 
 `http_port` 默认 `12347`（PMP 的 HTTP/SSE/WebSocket 端口）。
 
+## 性能
+
+> [!WARNING]
+> **不同 Phira-mp 实现的压测工具与负载模型差异较大，以下结果仅在 PMP 自带基准测试
+> （`benchmark run ramp`）下测得，在其他 Phira-mp 实现上没有可比性。**
+
+实测环境：**1 核 2GB** 服务器，`benchmark run ramp --cpu 90 --ram 2048m --forever`，运行 2m28s 后手动结束（x 键）：
+
+| 指标 | 数值 |
+|------|------|
+| 峰值会话数 | 6,208 |
+| 峰值游玩房间数 | 1,478 |
+| 峰值 CPU | 37.6%（1 核） |
+| 平均 CPU | 24.1% |
+| 峰值 RSS | 68MB |
+| 平均 RSS | 31MB |
+| 命令速率 | 127 cmd/s |
+| 错误 | 0 |
+
+> [!NOTE]
+> - 进程内基准测试用虚拟会话（负数 id）+ `bench-` 房间压测**服务器状态容量**（`state.users` / `state.rooms`），不走真实网络栈——测的是服务器能同时维持多少会话与游玩房间，不代表真实 TCP 连接上限。
+> - 上面数字在负载较轻时测得（每房触控频率较低）；提高每房负载密度（更多触控/判定/回合结算）后 CPU 会向上限靠近。
+> - 复现：`benchmark run ramp --cpu <P> --ram <S> [--duration <D>|--forever]`。
+
 ## 许可证
 
 Phira-mp+ 整体采用 **Apache License, Version 2.0** — 详见 [LICENSE](LICENSE)。
