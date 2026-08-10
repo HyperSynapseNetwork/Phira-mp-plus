@@ -393,6 +393,9 @@ pub struct PlusConfig {
     /// 每个房间内存保留的最近游玩轮次上限（房间信息 `rounds` 展示用）。
     #[serde(default = "default_play_history_cache_size")]
     pub play_history_cache_size: usize,
+    /// 每个房间内存保留的最近聊天消息条数（新人加入时回放；0 = 不缓存）。
+    #[serde(default = "default_chat_history_limit")]
+    pub chat_history_limit: usize,
     /// 准备倒计时（秒）。房主/管理员发起游戏后，未在此时长内准备的玩家自动弃权。
     #[serde(default = "default_ready_countdown_secs")]
     pub ready_countdown_secs: u64,
@@ -475,6 +478,10 @@ pub struct PlusConfig {
     pub auto_update: AutoUpdateConfig,
 }
 
+fn default_chat_history_limit() -> usize {
+    50
+}
+
 fn default_play_history_cache_size() -> usize {
     100
 }
@@ -495,6 +502,7 @@ impl Default for PlusConfig {
             max_rooms: None,
             max_users_per_room: None,
             play_history_cache_size: default_play_history_cache_size(),
+            chat_history_limit: default_chat_history_limit(),
             max_sessions: default_max_sessions(),
             max_pending_auth: default_max_pending_auth(),
             graceful_shutdown_timeout_secs: default_graceful_shutdown_timeout_secs(),

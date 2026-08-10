@@ -737,6 +737,9 @@ plugins_dir: plugins
 # 每房间最大玩家数
 # max_users_per_room: 100
 
+# 每房间聊天历史缓存条数（新人加入时回放；0 = 不缓存）
+# chat_history_limit: 50
+
 # 准备倒计时（秒）。发起游戏后未在此时长内准备的玩家自动弃权
 # ready_countdown_secs: 60
 

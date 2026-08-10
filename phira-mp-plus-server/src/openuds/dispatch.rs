@@ -46,6 +46,7 @@ pub async fn dispatch_command(
         "room.info" => cmd_room_info(state, params).await,
         "room.list" => cmd_room_list(state, params).await,
         "room.history" => cmd_room_history(state, params).await,
+        "room.chat_history" => cmd_room_chat_history(state, params).await,
 
         // ── Player commands ────────────────────────────────────────
         "player.ban" => cmd_player_ban(state, params).await,
@@ -432,6 +433,47 @@ async fn cmd_room_history(
     Ok(serde_json::json!({
         "room_id": rid.to_string(),
         "rounds": crate::server::snapshot::room_history_json(&room),
+    }))
+}
+
+/// `room.chat_history` — 读取房间聊天历史缓存（最近 `chat_history_limit` 条 Chat 消息）。
+async fn cmd_room_chat_history(
+    state: &Arc<PlusServerState>,
+    params: &Value,
+) -> Result<Value, String> {
+    let room_id = params
+        .get("room_id")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "room_id required".to_string())?;
+    let rid: RoomId = room_id
+        .to_string()
+        .try_into()
+        .map_err(|_| "invalid room_id".to_string())?;
+
+    let room = {
+        let rooms = state.rooms.read().await;
+        rooms
+            .get(&rid)
+            .map(Arc::clone)
+            .ok_or_else(|| "room not found".to_string())?
+    };
+
+    let history = room.chat_history.read().await;
+    let messages: Vec<Value> = history
+        .iter()
+        .filter_map(|msg| match msg {
+            phira_mp_common::Message::Chat { user, content } => Some(serde_json::json!({
+                "user": user,
+                "content": content,
+            })),
+            _ => None,
+        })
+        .collect();
+
+    Ok(serde_json::json!({
+        "room_id": rid.to_string(),
+        "messages": messages,
+        "count": messages.len(),
     }))
 }
 

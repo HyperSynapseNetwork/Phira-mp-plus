@@ -223,6 +223,8 @@ pub struct Room {
 
     /// 最近 N 条聊天消息缓冲区，新人加入时同步 (仅包含 Chat 变体)
     pub chat_history: RwLock<VecDeque<Message>>,
+    /// 聊天历史缓存条数上限（0 = 不缓存）。
+    pub chat_history_cap: usize,
 }
 
 /// 房间名以前缀 `-` 开头时默认隐藏。
@@ -240,6 +242,7 @@ impl Room {
         round_store: Option<Arc<crate::round_store::RoundStore>>,
         creator_id: Option<i32>,
         play_history_cap: usize,
+        chat_history_cap: usize,
     ) -> Self {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -258,6 +261,7 @@ impl Room {
             created_at: now,
             last_room_seq: AtomicU64::new(0),
             chat_history: RwLock::new(VecDeque::new()),
+            chat_history_cap,
         }
     }
 
@@ -268,6 +272,7 @@ impl Room {
         max_users: usize,
         round_store: Option<Arc<crate::round_store::RoundStore>>,
         play_history_cap: usize,
+        chat_history_cap: usize,
     ) -> Self {
         let mut room = Self::new(
             id,
@@ -278,6 +283,7 @@ impl Room {
             round_store,
             None,
             play_history_cap,
+            chat_history_cap,
         );
         room.users = Vec::new().into();
         room
@@ -361,7 +367,7 @@ impl Room {
         if let ServerCommand::Message(msg) = &cmd {
             if matches!(msg, Message::Chat { .. }) {
                 let mut buf = self.chat_history.write().await;
-                if buf.len() >= 50 {
+                if buf.len() >= self.chat_history_cap {
                     buf.pop_front();
                 }
                 buf.push_back(msg.clone());
@@ -377,7 +383,7 @@ impl Room {
         if let ServerCommand::Message(msg) = &cmd {
             if matches!(msg, Message::Chat { .. }) {
                 let mut buf = self.chat_history.write().await;
-                if buf.len() >= 50 {
+                if buf.len() >= self.chat_history_cap {
                     buf.pop_front();
                 }
                 buf.push_back(msg.clone());

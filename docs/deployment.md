@@ -148,6 +148,7 @@ wasm_runtime:
 | `chat_enabled` | `bool` | `true` | 是否允许聊天；可通过 `config reload` 热更新。 |
 | `max_rooms` | `usize?` | 不限制 | 最大房间数。达到上限后会拒绝继续创建房间。 |
 | `max_users_per_room` | `usize?` | `100` | 每个房间最大玩家数。 |
+| `chat_history_limit` | `usize` | `50` | 每房间内存保留的最近聊天消息条数（新人加入时回放；0 = 不缓存）。 |
 | `max_sessions` | `usize` | `4096` | 在线/已注册会话硬上限；容量名额从认证前预留到 Session 生命周期结束。 |
 | `max_pending_auth` | `usize` | `256` | 并发认证握手上限；必须大于 0 且不超过 `max_sessions`。 |
 | `graceful_shutdown_timeout_secs` | `u64` | `15` | 会话通知、插件事件、持久化 flush 和后台任务退出共享的总时限。 |

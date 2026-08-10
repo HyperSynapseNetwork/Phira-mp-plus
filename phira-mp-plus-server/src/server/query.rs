@@ -144,6 +144,34 @@ pub(crate) fn server_state_query_inner(
                 "rounds": crate::server::snapshot::room_history_json(&room),
             }))
         }
+        "rooms.chat_history" => {
+            let room_id = args
+                .first()
+                .and_then(Value::as_str)
+                .ok_or_else(|| "room_id required".to_string())?;
+            let rooms = crate::read_lock!(state.rooms);
+            let room = rooms
+                .values()
+                .find(|room| room.id.to_string() == room_id)
+                .map(Arc::clone)
+                .ok_or_else(|| format!("room {room_id} not found"))?;
+            let history = room.chat_history.read().await;
+            let messages: Vec<Value> = history
+                .iter()
+                .filter_map(|msg| match msg {
+                    phira_mp_common::Message::Chat { user, content } => Some(serde_json::json!({
+                        "user": user,
+                        "content": content,
+                    })),
+                    _ => None,
+                })
+                .collect();
+            Ok(serde_json::json!({
+                "room_id": room.id.to_string(),
+                "messages": messages,
+                "count": messages.len(),
+            }))
+        }
         "persist.events" => {
             let since = args.first().and_then(Value::as_i64).unwrap_or(0);
             let limit = args.get(1).and_then(Value::as_i64).unwrap_or(100);

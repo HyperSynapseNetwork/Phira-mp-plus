@@ -137,7 +137,7 @@
   - `phira-messaging`：send-to-user/room/all
   - `phira-persistence`：query-events/snapshots/touches/judges/playtime
   - `phira-admin`、`phira-config`、`phira-crypto`、`phira-timer`、`phira-tcp`（连接/监听/收发）、`phira-room-state`、`phira-handler`、`phira-runtime`
-- **通用 api_call / ServerStateQuery**：约 60+ 方法名（http.register_route、sse.register_stream、rooms.history 等）
+- **通用 api_call / ServerStateQuery**：约 60+ 方法名（http.register_route、sse.register_stream、rooms.history、rooms.chat_history 等）
 - **能力清单**：`.capabilities.json`（14 个可声明能力）；未知能力拒绝加载
 - **WasmRuntimeConfig**：内存 64MB、fuel、栈 2MB、HTTP 超时、并发 8、队列 2048、调用超时 2s、init 超时 10s
 - **插件状态**：Loaded/Enabled/Disabled/Error(quarantined)
