@@ -30,12 +30,14 @@ impl CliHandler {
             "remove" | "uninstall" => {
                 if args.len() < 2 {
                     self.out(format!(
-                        "  {} {} plugin remove <插件名>",
+                        "  {} {} plugin remove <插件名> [-y]",
                         c::yellow("?"),
                         c::bold("用法")
                     ));
                 } else {
-                    self.remove_plugin(args[1]).await;
+                    // `-y` 跳过确认（供 OpenUDS / 非交互调用）；无 TTY 时自动取消，不阻塞。
+                    let force = args.iter().any(|a| a == "-y" || a == "--yes");
+                    self.remove_plugin(args[1], force).await;
                 }
             }
             "reload" => self.reload_plugins().await,
@@ -129,7 +131,24 @@ impl CliHandler {
         }
     }
 
-    pub(crate) async fn remove_plugin(&self, name: &str) {
+    pub(crate) async fn remove_plugin(&self, name: &str, force: bool) {
+        // `-y` 跳过确认（供 OpenUDS / 非交互调用）；stdin 非 TTY 时自动取消，避免阻塞。
+        if force {
+            match self.state.plugin_manager.remove_plugin(name).await {
+                Ok(_) => self.out(format!("  {} 插件 {} 已删除", c::green("✓"), c::bold(name))),
+                Err(e) => self.out(format!("  {} {}", c::red("✗"), e)),
+            }
+            return;
+        }
+        use std::io::IsTerminal;
+        if !std::io::stdin().is_terminal() {
+            self.out(format!(
+                "  {} 非交互环境，已取消（可用 plugin remove {} -y 跳过确认）",
+                c::yellow("!"),
+                c::bold(name)
+            ));
+            return;
+        }
         self.out(format!(
             "  {} 确认删除插件 {}？此操作将：",
             c::yellow("⚠"),

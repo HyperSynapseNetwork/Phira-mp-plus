@@ -27,8 +27,8 @@ pub fn specs() -> Vec<CommandSpec> {
         CommandSpec::new(
             "plugin remove",
             "plugins",
-            "删除插件：卸载并删除插件文件和数据。",
-            "plugin remove <name>",
+            "删除插件：卸载并删除插件文件和数据。`-y` 跳过确认（OpenUDS/非交互）。",
+            "plugin remove <name> [-y]",
         )
         .advanced()
         .handler(plugin_sub("remove")),
