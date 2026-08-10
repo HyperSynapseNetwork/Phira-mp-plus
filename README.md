@@ -8,7 +8,7 @@
 
 <br/>
 
-[![License: AGPLv3](https://img.shields.io/badge/License-AGPLv3-blue.svg)](LICENSE)
+[![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 [![Rust](https://img.shields.io/badge/Rust-2021-dea584.svg?logo=rust&logoColor=white)](https://www.rust-lang.org/)
 [![Build](https://github.com/HyperSynapseNetwork/Phira-mp-plus/actions/workflows/build.yml/badge.svg)](https://github.com/HyperSynapseNetwork/Phira-mp-plus/actions/workflows/build.yml)
 [![Tokio](https://img.shields.io/badge/Tokio-异步-e0c0a0.svg?logo=rust&logoColor=white)](https://tokio.rs/)
@@ -222,7 +222,7 @@ Phira-mp-plus/
 │
 ├── Cargo.toml                       # 工作区根 (workspace)
 ├── Cargo.lock
-├── LICENSE                          # AGPL-3.0
+├── LICENSE                          # Apache-2.0
 ├── README.md
 ├── server_config.yml                # YAML 配置文件
 ├── wit/                             # WIT 接口定义
@@ -395,10 +395,9 @@ Phira-mp-plus/
 
 ## 许可证
 
-Phira-mp+ 整体采用 **GNU Affero General Public License v3.0** — 详见 [LICENSE](LICENSE)。
+Phira-mp+ 整体采用 **Apache License, Version 2.0** — 详见 [LICENSE](LICENSE)。
 
-协议层（`phira-mp-common`、`phira-mp-macros`）基于 [phira-mp](https://github.com/TeamFlos/phira-mp) 衍生；
-`phira-plugin-sdk`（WASM 插件 SDK）亦按 **Apache License, Version 2.0** 授权 — 详见 [LICENSE-APACHE](LICENSE-APACHE)。
+协议层（`phira-mp-common`、`phira-mp-macros`）基于 [phira-mp](https://github.com/TeamFlos/phira-mp) 衍生，同样为 Apache-2.0。
 
 完整的版权归属和第三方依赖许可证声明见 [THIRDPARTY_LICENSES](THIRDPARTY_LICENSES)。
 

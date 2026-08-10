@@ -2,7 +2,7 @@
 name = "phira-mp-plus-server-api"
 version = "0.1.0"
 edition = "2021"
-license = "AGPL-3.0"
+license = "Apache-2.0"
 
 [dependencies]
 serde = { version = "1.0", features = ["derive"] }

@@ -3,14 +3,6 @@ Phira-mp+ Third-Party Licenses
 
 
 ---
-GNU Affero General Public License v3.0
-
-  - phira-mp-plus-server v0.4.0
-  - phira-mp-plus-server-api v0.1.0
-  - phira-plugin-sdk v0.4.0
-
-
----
 Apache License 2.0
 
   - cranelift-bforest v0.119.1
