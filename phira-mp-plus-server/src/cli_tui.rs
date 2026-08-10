@@ -1141,9 +1141,18 @@ fn render_progress_bar(progress: Option<(u64, u64)>, width: usize) -> String {
                 + &"░".repeat(bar_width.saturating_sub(filled));
             format!("[{bar}] {:.0}%", pct)
         }
-        _ => "⠋ 运行中…".to_string(),
+        _ => {
+            let frame = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| (d.as_millis() / 100) as usize % SPINNER.len())
+                .unwrap_or(0);
+            format!("{} 运行中…", SPINNER[frame])
+        }
     }
 }
+
+/// 不确定进度的旋转指示器帧（每 100ms 切换）。
+const SPINNER: [char; 10] = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
 
 /// Line-oriented fallback used when stdin/stdout are redirected or not TTYs.
 pub fn run_stdin_cli(cmd_tx: mpsc::Sender<String>, out_rx: mpsc::Receiver<String>) {

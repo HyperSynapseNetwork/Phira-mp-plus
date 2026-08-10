@@ -282,11 +282,11 @@ async fn reap_finished(
         let critical = child.criticality.is_critical();
         let outcome = match child.handle.await {
             Ok(()) => {
-                info!(task = %child.name, critical, "supervised task exited");
+                debug!(task = %child.name, critical, "supervised task exited");
                 "exited".to_string()
             }
             Err(err) if err.is_cancelled() => {
-                info!(task = %child.name, critical, "supervised task was cancelled");
+                debug!(task = %child.name, critical, "supervised task was cancelled");
                 "cancelled".to_string()
             }
             Err(err) if err.is_panic() => {

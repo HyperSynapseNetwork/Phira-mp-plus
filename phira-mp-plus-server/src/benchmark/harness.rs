@@ -23,8 +23,6 @@ use std::time::{Duration, Instant};
 const TICK: Duration = Duration::from_millis(100);
 /// Ramp 模式房间数硬上限（防失控）。
 const RAMP_MAX_ROOMS: usize = 5000;
-/// Ramp 模式每 tick 新增房间步长。
-const RAMP_ROOM_STEP: usize = 3;
 /// 每房间成员数（从会话池抽取）。
 const MEMBERS_PER_ROOM: usize = 2;
 /// 房间生命周期（到点 close + recreate 重置内存）。
@@ -79,6 +77,8 @@ pub struct BenchmarkHarness {
     ramp_reached: Option<RampReached>,
     aborted: bool,
     abort_reason: Option<String>,
+    /// 最近一次 add_room 错误（暴露到 TUI 状态，便于诊断卡住原因）。
+    last_error: Option<String>,
 
     sampler: CpuSampler,
 }
@@ -113,6 +113,7 @@ impl BenchmarkHarness {
             ramp_reached: None,
             aborted: false,
             abort_reason: None,
+            last_error: None,
             sampler: CpuSampler::new(),
         }
     }
@@ -293,6 +294,7 @@ impl BenchmarkHarness {
             self.close_room(&room.room_id).await;
             if let Err(e) = self.add_room().await {
                 self.errors += 1;
+                self.last_error = Some(e.clone());
                 tracing::warn!(%e, "bench recycle add_room failed");
             }
         }
@@ -304,6 +306,7 @@ impl BenchmarkHarness {
         while self.rooms.len() < self.params.max_playing_rooms as usize {
             if let Err(e) = self.add_room().await {
                 self.errors += 1;
+                self.last_error = Some(e.clone());
                 tracing::warn!(%e, "bench add_room failed");
                 break;
             }
@@ -325,13 +328,15 @@ impl BenchmarkHarness {
             }
             return; // 触顶：维持当前负载
         }
-        // 未触顶：加压（房间成员会自动创建会话）。
-        for _ in 0..RAMP_ROOM_STEP {
+        // 未触顶：几何加速加压（房间越多，每 tick 加得越多），成员自动创建会话。
+        let step = (self.rooms.len() / 8 + 1).min(RAMP_MAX_ROOMS);
+        for _ in 0..step {
             if self.rooms.len() >= RAMP_MAX_ROOMS {
                 break;
             }
             if let Err(e) = self.add_room().await {
                 self.errors += 1;
+                self.last_error = Some(e.clone());
                 tracing::warn!(%e, "bench ramp add_room failed");
                 break;
             }
@@ -381,7 +386,7 @@ impl BenchmarkHarness {
                 Some(d) if !d.is_zero() => Some((elapsed.as_secs(), d.as_secs())),
                 _ => None,
             };
-            let status_text = format!(
+            let mut status_text = format!(
                 "会话 {} 游玩房间 {} CPU {:.1}% RAM {}MB 速率 {:.0} cmd/s",
                 self.sessions.len(),
                 self.rooms.len(),
@@ -389,6 +394,9 @@ impl BenchmarkHarness {
                 ram / 1024 / 1024,
                 self.current_rate(),
             );
+            if let Some(err) = &self.last_error {
+                status_text.push_str(&format!(" 错误: {err}"));
+            }
             self.status.update(status_text, progress);
 
             let cancelled = self.status.is_cancelled();
