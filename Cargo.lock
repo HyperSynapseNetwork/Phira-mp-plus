@@ -2284,7 +2284,7 @@ dependencies = [
 
 [[package]]
 name = "phira-mp-plus-server"
-version = "1.0.23"
+version = "1.0.24"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2337,7 +2337,7 @@ dependencies = [
 
 [[package]]
 name = "phira-plugin-sdk"
-version = "1.0.23"
+version = "1.0.24"
 dependencies = [
  "serde",
  "serde_json",
