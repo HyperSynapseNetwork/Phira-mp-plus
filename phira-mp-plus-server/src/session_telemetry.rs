@@ -202,6 +202,20 @@ pub(crate) async fn handle_touches(user: Arc<User>, room: Arc<Room>, frames: Arc
         persist_touches(&user, &room, &touch_data, has_active_monitors).await;
     }
 
+    // OpenUDS touches 流投递：有订阅者才查 round + 序列化，避免热路径白耗。
+    if let Some(mgr) = crate::openuds::get_stream_manager() {
+        if mgr.has_subscribers("touches").await {
+            let round_id = user
+                .server
+                .room_commands
+                .room_snapshot(&room.id.to_string())
+                .and_then(|snap| snap.round_id.map(|rid| rid.to_string()));
+            let frames_json = serde_json::to_value(&touch_data).unwrap_or_default();
+            mgr.deliver_touches(user.id, &room.id.to_string(), round_id.as_deref(), frames_json)
+                .await;
+        }
+    }
+
     user.server
         .publish_runtime_event(crate::event_bus::MpEvent::TouchesReceived {
             room_id: room.id.clone(),
@@ -261,6 +275,20 @@ pub(crate) async fn handle_judges(user: Arc<User>, room: Arc<Room>, judges: Arc<
 
     if !judge_data.is_empty() {
         persist_judges(&user, &room, &judge_data, has_active_monitors).await;
+    }
+
+    // OpenUDS judges 流投递：有订阅者才查 round + 序列化，避免热路径白耗。
+    if let Some(mgr) = crate::openuds::get_stream_manager() {
+        if mgr.has_subscribers("judges").await {
+            let round_id = user
+                .server
+                .room_commands
+                .room_snapshot(&room.id.to_string())
+                .and_then(|snap| snap.round_id.map(|rid| rid.to_string()));
+            let events_json = serde_json::to_value(&judge_data).unwrap_or_default();
+            mgr.deliver_judges(user.id, &room.id.to_string(), round_id.as_deref(), events_json)
+                .await;
+        }
     }
 
     user.server

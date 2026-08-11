@@ -51,6 +51,15 @@ impl StreamManager {
         }
     }
 
+    /// 是否有已认证会话订阅指定流。生产热路径在无订阅者时跳过
+    /// round 查询与 JSON 序列化，避免白耗。
+    pub async fn has_subscribers(&self, stream: &str) -> bool {
+        let sessions = self.sessions.read().await;
+        sessions
+            .values()
+            .any(|s| s.is_authenticated() && s.subscribes_to_stream(stream))
+    }
+
     /// 向订阅 "touches" 的会话投递一帧触控数据。
     pub async fn deliver_touches(
         &self,
@@ -203,5 +212,21 @@ mod tests {
         std::thread::sleep(std::time::Duration::from_millis(2));
         let b = monotonic_ms();
         assert!(b >= a);
+    }
+
+    #[tokio::test]
+    async fn has_subscribers_only_counts_authenticated_matching_stream() {
+        let mgr = manager();
+        let (sess, _rx) = Session::new(64);
+        sess.set_authenticated();
+        sess.add_stream_subscriptions(&["touches".to_string()]);
+        {
+            let mut s = mgr.sessions.write().await;
+            s.insert(sess.id, sess);
+        }
+        // 有 touches 订阅：命中。
+        assert!(mgr.has_subscribers("touches").await);
+        // 无 judges 订阅：未命中。
+        assert!(!mgr.has_subscribers("judges").await);
     }
 }

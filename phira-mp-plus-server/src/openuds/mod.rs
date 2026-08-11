@@ -50,6 +50,7 @@ pub mod session;
 pub mod streams;
 
 use crate::openuds::auth::AuthState;
+use crate::openuds::streams::StreamManager;
 use std::sync::Arc;
 use std::sync::OnceLock;
 
@@ -65,4 +66,19 @@ pub fn set_auth_state(state: Arc<AuthState>) {
 /// Get the global auth state reference (used by CLI approve command).
 pub fn get_auth_state() -> Option<&'static Arc<AuthState>> {
     AUTH_STATE.get()
+}
+
+/// Global StreamManager, set when the OpenUDS server starts. Lets the
+/// production touch/judge telemetry path deliver high-frequency frames to
+/// OpenUDS sessions subscribed to "touches"/"judges" streams.
+static STREAM_MANAGER: OnceLock<Arc<StreamManager>> = OnceLock::new();
+
+/// Set the global stream manager (called from server::start).
+pub fn set_stream_manager(mgr: Arc<StreamManager>) {
+    let _ = STREAM_MANAGER.set(mgr);
+}
+
+/// Get the global stream manager reference (None until OpenUDS starts).
+pub fn get_stream_manager() -> Option<&'static Arc<StreamManager>> {
+    STREAM_MANAGER.get()
 }

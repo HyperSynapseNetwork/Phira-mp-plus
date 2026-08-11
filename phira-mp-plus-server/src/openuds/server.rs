@@ -78,6 +78,8 @@ pub async fn start(state: Arc<PlusServerState>, config: &OpenUdsConfig) {
     let stream_manager = Arc::new(crate::openuds::streams::StreamManager::new(
         Arc::clone(&sessions),
     ));
+    // 注册全局引用，供生产 touches/judges 投递（session_telemetry 热路径）。
+    crate::openuds::set_stream_manager(Arc::clone(&stream_manager));
 
     // Log-stream broker: forwards formatted server log lines from the tracing
     // layer to sessions subscribed to "logs".

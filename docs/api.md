@@ -1109,7 +1109,7 @@ PMP 通过 Unix Domain Socket 暴露全部管理能力给外部工具（PPB、We
 |------|------|------|
 | `subscribe` | `{event_types: ["room.*"]}` | 订阅事件 |
 | `unsubscribe` | `{event_types}` | 取消订阅 |
-| `subscribe_stream` | `{stream: "touches", room_id?}` | 订阅数据流 |
+| `subscribe_stream` | `{stream: "touches"\|"judges"\|"logs", room_id?}` | 订阅高频数据流；touches/judges 为对局实时遥测生产投递 |
 
 所有命令的标准响应格式：
 
@@ -1142,8 +1142,8 @@ PMP 通过 Unix Domain Socket 暴露全部管理能力给外部工具（PPB、We
 | `user.online` | `{user_id, name}` | 玩家上线 |
 | `user.offline` | `{user_id}` | 玩家离线 |
 | `server.heartbeat` | `{users, rooms, sessions, ...}` | 定期统计 |
-| `stream.touches` | `{user_id, frames}` | 触控数据流 |
-| `stream.judges` | `{user_id, events}` | 判定数据流 |
+| `stream.touches` | `{user_id, frames, sequence, room, round, timestamp}` | 触控数据流（对局实时投递：玩家触控批次，`round` 为当前轮次 UUID 或 null） |
+| `stream.judges` | `{user_id, events, sequence, room, round, timestamp}` | 判定数据流（对局实时投递：玩家判定批次，`round` 为当前轮次 UUID 或 null） |
 
 ### 订阅模型
 
