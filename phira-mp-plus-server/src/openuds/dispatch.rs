@@ -112,6 +112,10 @@ pub async fn dispatch_command(
         "logs.history" => cmd_logs_history(state, params).await,
         "logs.input" => cmd_logs_input(state, params).await,
 
+        // ── 持久化历史查询（对齐 WIT phira-persistence query-touches/judges）─
+        "persist.touches" => cmd_persist_touches(state, params).await,
+        "persist.judges" => cmd_persist_judges(state, params).await,
+
         // ── Subscription commands (handled by session) ────────────
         "subscribe" | "unsubscribe" | "subscribe_stream" => {
             // These are handled in the session reader loop, not here.
@@ -1315,4 +1319,68 @@ async fn cmd_logs_input(
         .clamp(1, 1000);
     let entries = crate::history::recent_inputs(limit);
     Ok(serde_json::json!({ "inputs": entries, "count": entries.len() }))
+}
+
+/// `persist.touches` — 查询持久化触控批次历史（对齐 WIT `query-touches`）。
+async fn cmd_persist_touches(
+    state: &Arc<PlusServerState>,
+    params: &Value,
+) -> Result<Value, String> {
+    let since = params
+        .get("since")
+        .and_then(Value::as_i64)
+        .unwrap_or(0)
+        .max(0);
+    let limit = params
+        .get("limit")
+        .and_then(Value::as_i64)
+        .unwrap_or(100)
+        .clamp(1, 500);
+    let round = params
+        .get("round_uuid")
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    let player = params
+        .get("player_id")
+        .and_then(Value::as_i64)
+        .map(|v| v as i32);
+    let args = vec![
+        serde_json::json!(since),
+        serde_json::json!(limit),
+        serde_json::json!(round),
+        serde_json::json!(player),
+    ];
+    crate::server::query::server_state_query_inner(state, "persist.touches", &args)
+}
+
+/// `persist.judges` — 查询持久化判定批次历史（对齐 WIT `query-judges`）。
+async fn cmd_persist_judges(
+    state: &Arc<PlusServerState>,
+    params: &Value,
+) -> Result<Value, String> {
+    let since = params
+        .get("since")
+        .and_then(Value::as_i64)
+        .unwrap_or(0)
+        .max(0);
+    let limit = params
+        .get("limit")
+        .and_then(Value::as_i64)
+        .unwrap_or(100)
+        .clamp(1, 500);
+    let round = params
+        .get("round_uuid")
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    let player = params
+        .get("player_id")
+        .and_then(Value::as_i64)
+        .map(|v| v as i32);
+    let args = vec![
+        serde_json::json!(since),
+        serde_json::json!(limit),
+        serde_json::json!(round),
+        serde_json::json!(player),
+    ];
+    crate::server::query::server_state_query_inner(state, "persist.judges", &args)
 }

@@ -1041,6 +1041,8 @@ PMP 通过 Unix Domain Socket 暴露全部管理能力给外部工具（PPB、We
 | `room.chat_history` | `{room_id}` | 房间聊天历史（最近 `chat_history_limit` 条 Chat 消息） |
 | `logs.history` | `{limit?}` | 本进程运行以来的最近日志行（默认 100，上限 2000） |
 | `logs.input` | `{limit?}` | 本进程运行以来的最近管理输入（CLI/OpenUDS/管理员，默认 100） |
+| `persist.touches` | `{since?, limit?, round_uuid?, player_id?}` | 触控批次持久化历史（对齐 WIT `query-touches`；按 seq 递增，limit 上限 500） |
+| `persist.judges` | `{since?, limit?, round_uuid?, player_id?}` | 判定批次持久化历史（对齐 WIT `query-judges`；按 seq 递增，limit 上限 500） |
 | `admin.id_list` | `{}` | 管理员 ID 列表 |
 | `admin.id_add` | `{user_id}` | 添加管理员 |
 | `admin.id_remove` | `{user_id}` | 移除管理员 |
