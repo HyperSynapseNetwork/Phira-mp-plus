@@ -819,11 +819,14 @@ impl PhiraRetryClient {
             .await
             .ok()?;
         let central_status = central_resp.status().as_u16();
-        let mut central = central_resp.bytes().await.ok()?;
+        let central_bytes = central_resp.bytes().await.ok()?;
         // Range 被忽略（200 全文件）时裁出中央目录区段再遍历
-        if central_status != 206 && (central_offset + central_size) as usize <= central.len() {
-            central = central[central_offset as usize..(central_offset + central_size) as usize].to_vec();
-        }
+        let central: &[u8] =
+            if central_status != 206 && (central_offset + central_size) as usize <= central_bytes.len() {
+                &central_bytes[central_offset as usize..(central_offset + central_size) as usize]
+            } else {
+                &central_bytes
+            };
         tracing::debug!(file_url, central_status, central_len = central.len(), "chart_duration: central downloaded");
 
         // 4. Walk central directory, pick the largest audio entry (正曲，排除 preview)
