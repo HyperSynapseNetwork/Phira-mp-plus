@@ -90,6 +90,54 @@ fn mp3_duration_scan(data: &[u8]) -> Option<f64> {
     if frames > 0 { Some(total) } else { None }
 }
 
+/// 手动扫描 OGG（Vorbis/Opus）时长：末页 granule 位置 / 采样率。
+/// lofty 对部分 OGG 时长估算不准，故优先手动扫描，失败回落 lofty。
+fn ogg_duration_scan(data: &[u8]) -> Option<f64> {
+    let mut i = 0usize;
+    let mut last_granule: Option<u64> = None;
+    let mut sample_rate: Option<u32> = None;
+    let mut opus_pre_skip: u64 = 0;
+    let mut is_opus = false;
+    let mut pages = 0u32;
+    while i + 27 <= data.len() && &data[i..i + 4] == b"OggS" {
+        let granule = u64::from_le_bytes(data[i + 6..i + 14].try_into().ok()?);
+        let nsegs = data[i + 26] as usize;
+        let seg_end = i + 27 + nsegs;
+        if seg_end > data.len() {
+            break;
+        }
+        let body_len: usize = data[i + 27..seg_end].iter().map(|&s| s as usize).sum();
+        let body_start = seg_end;
+        let body_end = body_start.saturating_add(body_len);
+        let body = data.get(body_start..body_end)?;
+        if pages == 0 {
+            if body.starts_with(b"\x01vorbis") && body.len() >= 16 {
+                sample_rate = Some(u32::from_le_bytes(body[12..16].try_into().ok()?));
+            } else if body.starts_with(b"OpusHead") && body.len() >= 16 {
+                is_opus = true;
+                opus_pre_skip = u32::from_le_bytes(body[10..14].try_into().ok()?) as u64;
+                sample_rate = Some(48_000);
+            }
+        }
+        if granule != u64::MAX {
+            last_granule = Some(granule);
+        }
+        pages += 1;
+        i = body_end;
+        if pages > 200_000 {
+            break;
+        }
+    }
+    let granule = last_granule?;
+    let rate = sample_rate?;
+    let granule = if is_opus {
+        granule.saturating_sub(opus_pre_skip)
+    } else {
+        granule
+    };
+    Some(granule as f64 / rate as f64)
+}
+
 /// 用 lofty 探针解析音频时长（MP3/FLAC/WAV/OGG），返回秒。
 /// lofty 对 VBR MP3 的时长估算不可靠（按首帧比特率），故 MP3 优先用手动
 /// 帧扫描（`mp3_duration_scan`）；其它格式回落 lofty。
@@ -102,6 +150,11 @@ fn probe_audio_duration(audio: &[u8]) -> Option<f64> {
         offset = 10 + (tag_size & 0x7f) + ((tag_size >> 8) & 0x7f) + ((tag_size >> 16) & 0x7f) + ((tag_size >> 24) & 0x7f);
     }
     if let Some(dur) = mp3_duration_scan(&audio[offset.min(audio.len())..]) {
+        return Some(dur);
+    }
+
+    // OGG（Vorbis/Opus）：手动末页 granule 扫描（lofty 对部分 OGG 时长估算不准）。
+    if let Some(dur) = ogg_duration_scan(audio) {
         return Some(dur);
     }
 
@@ -988,6 +1041,69 @@ mod tests {
         let dur = probe_audio_duration(&audio).expect("should parse after ID3");
         let expected = 10.0 * 1152.0 / 44100.0;
         assert!((dur - expected).abs() < 0.01, "id3 duration {dur} vs {expected}");
+    }
+
+    /// 构造单页 OGG：Vorbis 标识头 + 给定 granule 位置。
+    fn synth_ogg_vorbis(sample_rate: u32, granule: u64) -> Vec<u8> {
+        let mut body = Vec::new();
+        body.extend_from_slice(b"\x01vorbis");
+        body.extend_from_slice(&0u32.to_le_bytes()); // version
+        body.push(2); // channels
+        body.extend_from_slice(&sample_rate.to_le_bytes());
+        body.extend(std::iter::repeat_n(0u8, 30 - body.len()));
+        let mut page = Vec::new();
+        page.extend_from_slice(b"OggS");
+        page.push(0);
+        page.push(0);
+        page.extend_from_slice(&granule.to_le_bytes());
+        page.extend_from_slice(&1u32.to_le_bytes()); // serial
+        page.extend_from_slice(&0u32.to_le_bytes()); // page seq
+        page.extend_from_slice(&0u32.to_le_bytes()); // crc（扫描不校验）
+        page.push(1); // nsegs
+        page.push(body.len() as u8);
+        page.extend_from_slice(&body);
+        page
+    }
+
+    #[test]
+    fn ogg_scan_vorbis_duration_from_last_granule() {
+        // 44100Hz，末页 granule 44100 → 1.0s。
+        let ogg = synth_ogg_vorbis(44100, 44100);
+        assert_eq!(ogg_duration_scan(&ogg), Some(1.0));
+    }
+
+    #[test]
+    fn ogg_scan_uses_last_non_sentinel_granule() {
+        // 首页 granule=0（Vorbis 头页），第二页 granule=88200 → 2.0s。
+        let mut a = synth_ogg_vorbis(44100, 0);
+        let mut b = synth_ogg_vorbis(44100, 88200);
+        b[5] = 1; // 标记第二页（扫描不依赖，仅区分）
+        a.extend_from_slice(&b);
+        assert_eq!(ogg_duration_scan(&a), Some(2.0));
+    }
+
+    #[test]
+    fn ogg_scan_opus_subtracts_pre_skip() {
+        // Opus：固定 48000Hz，pre_skip 312，末页 granule 48312 → (48312-312)/48000 = 1.0s。
+        let mut body = Vec::new();
+        body.extend_from_slice(b"OpusHead");
+        body.push(1); // version
+        body.push(2); // channels
+        body.extend_from_slice(&312u16.to_le_bytes()); // pre_skip
+        body.extend_from_slice(&48000u32.to_le_bytes()); // input sample rate
+        body.extend(std::iter::repeat_n(0u8, 19 - body.len()));
+        let mut page = Vec::new();
+        page.extend_from_slice(b"OggS");
+        page.push(0);
+        page.push(0);
+        page.extend_from_slice(&48_312u64.to_le_bytes());
+        page.extend_from_slice(&1u32.to_le_bytes());
+        page.extend_from_slice(&0u32.to_le_bytes());
+        page.extend_from_slice(&0u32.to_le_bytes());
+        page.push(1);
+        page.push(body.len() as u8);
+        page.extend_from_slice(&body);
+        assert_eq!(ogg_duration_scan(&page), Some(1.0));
     }
 
     #[test]
