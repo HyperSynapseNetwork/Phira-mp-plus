@@ -222,7 +222,7 @@ mod tests {
         sess.add_stream_subscriptions(&["touches".to_string()]);
         {
             let mut s = mgr.sessions.write().await;
-            s.insert(sess.id, sess);
+            s.insert(sess.id, Arc::new(sess));
         }
         // 有 touches 订阅：命中。
         assert!(mgr.has_subscribers("touches").await);
