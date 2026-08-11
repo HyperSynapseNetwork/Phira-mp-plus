@@ -6,7 +6,7 @@
 
 use anyhow::{bail, Result};
 use phira_mp_common::{Message, ServerCommand, StreamSender};
-use reqwest::header::RANGE;
+use reqwest::header::{CONTENT_RANGE, RANGE};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use std::collections::HashMap;
 use std::{
@@ -774,17 +774,25 @@ impl PhiraRetryClient {
         const CHART_AUDIO_FETCH_TIMEOUT: Duration = Duration::from_secs(100);
 
         // 1. Download last 64KB to find EOCD + central directory offset
-        let tail = self
+        let tail_resp = self
             .client
             .get(file_url)
             .timeout(CHART_AUDIO_FETCH_TIMEOUT)
             .header(RANGE, "bytes=-65536")
             .send()
             .await
-            .ok()?
-            .bytes()
-            .await
             .ok()?;
+        let tail_status = tail_resp.status().as_u16();
+        // 从 Content-Range 的 `/total` 解析文件总大小，用于钳制音频请求的 range_end
+        //（避免超过 EOF 的非法 Range 在部分 CDN 节点上触发 416/错乱）。
+        let file_total = tail_resp
+            .headers()
+            .get(CONTENT_RANGE)
+            .and_then(|v| v.to_str().ok())
+            .and_then(|s| s.rsplit('/').next())
+            .and_then(|s| s.parse::<u64>().ok());
+        let tail = tail_resp.bytes().await.ok()?;
+        tracing::debug!(file_url, tail_status, tail_len = tail.len(), "chart_duration: tail downloaded");
 
         // 2. Find EOCD signature (PK\x05\x06) from the end
         let eocd_sig = b"PK\x05\x06";
@@ -802,21 +810,26 @@ impl PhiraRetryClient {
         }
 
         // 3. Download central directory
-        let central = self
+        let central_resp = self
             .client
             .get(file_url)
             .timeout(CHART_AUDIO_FETCH_TIMEOUT)
             .header(RANGE, format!("bytes={}-{}", central_offset, central_offset + central_size - 1))
             .send()
             .await
-            .ok()?
-            .bytes()
-            .await
             .ok()?;
+        let central_status = central_resp.status().as_u16();
+        let mut central = central_resp.bytes().await.ok()?;
+        // Range 被忽略（200 全文件）时裁出中央目录区段再遍历
+        if central_status != 206 && (central_offset + central_size) as usize <= central.len() {
+            central = central[central_offset as usize..(central_offset + central_size) as usize].to_vec();
+        }
+        tracing::debug!(file_url, central_status, central_len = central.len(), "chart_duration: central downloaded");
 
         // 4. Walk central directory, pick the largest audio entry (正曲，排除 preview)
         const AUDIO_EXTS: [&str; 8] = [".mp3", ".flac", ".wav", ".ogg", ".oga", ".opus", ".m4a", ".aac"];
         let mut best: Option<ZipEntry> = None;
+        let mut best_name = String::new();
         let mut pos = 0usize;
         while pos + 46 <= central.len() {
             if &central[pos..pos + 4] != b"PK\x01\x02" {
@@ -847,6 +860,7 @@ impl PhiraRetryClient {
                 .unwrap_or(true)
             {
                 best = Some(entry);
+                best_name = filename.into_owned();
             }
         }
         let Some(entry) = best else {
@@ -859,6 +873,8 @@ impl PhiraRetryClient {
             + 30
             + std::cmp::max(4096u64, entry.fn_len as u64 + entry.extra_len as u64 + 64)
             + entry.compressed_size as u64;
+        // 钳制到文件末尾，避免超过 EOF 的非法 Range
+        let range_end = file_total.map(|t| range_end.min(t)).unwrap_or(range_end);
         let resp = match self
             .client
             .get(file_url)
@@ -873,6 +889,7 @@ impl PhiraRetryClient {
                 return None;
             }
         };
+        let audio_status = resp.status().as_u16();
         let raw = match resp.bytes().await {
             Ok(b) => b,
             Err(e) => {
@@ -880,15 +897,23 @@ impl PhiraRetryClient {
                 return None;
             }
         };
-        if raw.len() < 42 + entry.compressed_size as usize {
-            tracing::debug!(file_url, raw_len = raw.len(), need = 42 + entry.compressed_size, "chart_duration: audio download truncated");
+        // 206 时 raw 从条目 local_header 起；200（Range 被忽略）时从文件头起，偏移到条目
+        let raw_base = if audio_status == 206 { 0usize } else { entry.local_offset as usize };
+        let (lh_fn_len, lh_extra_len) = match raw.get(raw_base + 26..raw_base + 30) {
+            Some(h) => (
+                u16::from_le_bytes(h[0..2].try_into().unwrap()),
+                u16::from_le_bytes(h[2..4].try_into().unwrap()),
+            ),
+            None => {
+                tracing::debug!(file_url, raw_len = raw.len(), raw_base, "chart_duration: audio local header missing");
+                return None;
+            }
+        };
+        let data_start = raw_base + 30 + lh_fn_len as usize + lh_extra_len as usize;
+        let Some(compressed) = raw.get(data_start..data_start + entry.compressed_size as usize) else {
+            tracing::debug!(file_url, raw_len = raw.len(), data_start, need = data_start + entry.compressed_size as usize, audio_status, "chart_duration: audio download truncated");
             return None;
-        }
-
-        let lh_fn_len = u16::from_le_bytes([raw[26], raw[27]]);
-        let lh_extra_len = u16::from_le_bytes([raw[28], raw[29]]);
-        let data_start = 30 + lh_fn_len as usize + lh_extra_len as usize;
-        let compressed = &raw[data_start..data_start + entry.compressed_size as usize];
+        };
 
         // 6. Decompress（stored 直读 / deflate 解压）
         let audio: Vec<u8> = if entry.compression == 0 {
@@ -907,8 +932,11 @@ impl PhiraRetryClient {
             return None;
         };
 
+        tracing::debug!(file_url, entry = %best_name, audio_status, raw_len = raw.len(), audio_len = audio.len(), expected = entry.uncompressed_size, "chart_duration: audio decompressed");
+
         // 7. Probe duration（lofty 支持 MP3/FLAC/WAV/OGG）
         let dur = probe_audio_duration(&audio);
+        tracing::debug!(file_url, ?dur, "chart_duration: computed");
         if dur.is_none() {
             tracing::debug!(file_url, audio_len = audio.len(), "chart_duration: audio probe returned None");
         }
