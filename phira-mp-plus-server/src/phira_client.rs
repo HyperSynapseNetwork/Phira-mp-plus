@@ -767,11 +767,17 @@ impl PhiraRetryClient {
     /// Fetch chart duration by downloading just the audio file from the
     /// .phira zip via HTTP Range requests and probing it with lofty
     /// (MP3/FLAC/WAV/OGG). Returns seconds, or None if unavailable.
+    ///
+    /// 在后台任务运行（选谱后异步解析），音频 RANGE 下载可达数 MB——覆盖客户端
+    /// 全局 5s 超时用宽松值，避免慢链路掐断下载导致时长回退 120s。
     pub async fn fetch_chart_duration(&self, file_url: &str) -> Option<f64> {
+        const CHART_AUDIO_FETCH_TIMEOUT: Duration = Duration::from_secs(120);
+
         // 1. Download last 64KB to find EOCD + central directory offset
         let tail = self
             .client
             .get(file_url)
+            .timeout(CHART_AUDIO_FETCH_TIMEOUT)
             .header(RANGE, "bytes=-65536")
             .send()
             .await
@@ -799,6 +805,7 @@ impl PhiraRetryClient {
         let central = self
             .client
             .get(file_url)
+            .timeout(CHART_AUDIO_FETCH_TIMEOUT)
             .header(RANGE, format!("bytes={}-{}", central_offset, central_offset + central_size - 1))
             .send()
             .await
@@ -855,6 +862,7 @@ impl PhiraRetryClient {
         let resp = match self
             .client
             .get(file_url)
+            .timeout(CHART_AUDIO_FETCH_TIMEOUT)
             .header(RANGE, format!("bytes={}-{}", entry.local_offset, range_end))
             .send()
             .await

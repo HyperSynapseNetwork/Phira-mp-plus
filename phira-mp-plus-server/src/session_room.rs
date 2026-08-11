@@ -1129,9 +1129,8 @@ pub async fn select_chart(
             };
         debug!("chart name: {chart_name}");
 
-        // 异步解析谱面时长（只下 info.txt，不拖整个 zip）；经 mailbox 写入
-        // 房间级 chart_duration，供对局超时计算。谱面时时可能更新，不缓存
-        // 复用——每次选谱解析，结算时释放。
+        // 异步解析谱面时长（RANGE 只下 zip 内正曲音频）；经 mailbox 写入
+        // 房间级 chart_duration，供对局超时计算。每次选谱解析，结算时释放。
         {
             let file_url = user.server.phira_client
                 .fetch_chart_by_id(&endpoint, id)
@@ -1142,12 +1141,15 @@ pub async fn select_chart(
                 let cid = id;
                 let rid = room.id.to_string();
                 tokio::spawn(async move {
-                    if let Some(duration) = state.phira_client.fetch_chart_duration(&url).await {
-                        let _ = state
-                            .room_commands
-                            .set_chart_duration(&state, &rid, Some(duration))
-                            .await;
-                        debug!(chart = cid, duration, "chart duration set");
+                    match state.phira_client.fetch_chart_duration(&url).await {
+                        Some(duration) => {
+                            let _ = state
+                                .room_commands
+                                .set_chart_duration(&state, &rid, Some(duration))
+                                .await;
+                            debug!(chart = cid, duration, "chart duration set");
+                        }
+                        None => warn!(chart = cid, "chart duration probe failed, using 120s fallback"),
                     }
                 });
             }
