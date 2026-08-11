@@ -871,6 +871,15 @@ impl PhiraRetryClient {
             return None;
         };
 
+        // OGG/Opus：暂不解析时长——部分部署 CDN 下载音频错位，扫描值不可信
+        //（会算成极小值误导进度/超时）。直接失败走 10000s 兜底 + 「解析失败」提示；
+        // MP3/FLAC/WAV 照常解析。
+        let ext = best_name.rsplit('.').next().unwrap_or("").to_ascii_lowercase();
+        if matches!(ext.as_str(), "ogg" | "oga" | "opus") {
+            tracing::debug!(file_url, entry = %best_name, "chart_duration: OGG/Opus skipped, returning None");
+            return None;
+        }
+
         // 5. Download local file header + compressed audio（4KB 缓冲覆盖文件名/extra）
         let range_end = entry.local_offset as u64
             + 30
