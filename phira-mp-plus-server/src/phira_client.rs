@@ -771,7 +771,7 @@ impl PhiraRetryClient {
     /// 在后台任务运行（选谱后异步解析），音频 RANGE 下载可达数 MB——覆盖客户端
     /// 全局 5s 超时用宽松值，避免慢链路掐断下载导致时长回退 120s。
     pub async fn fetch_chart_duration(&self, file_url: &str) -> Option<f64> {
-        const CHART_AUDIO_FETCH_TIMEOUT: Duration = Duration::from_secs(120);
+        const CHART_AUDIO_FETCH_TIMEOUT: Duration = Duration::from_secs(100);
 
         // 1. Download last 64KB to find EOCD + central directory offset
         let tail = self
