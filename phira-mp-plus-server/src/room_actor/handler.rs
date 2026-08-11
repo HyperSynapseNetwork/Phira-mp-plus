@@ -392,7 +392,8 @@ async fn check_all_ready(
     let lifecycle = as_.state.lifecycle.clone();
     match &lifecycle {
         InternalRoomState::WaitForReady { started, admin_started } => {
-            let total: Vec<_> = lc.users().await.into_iter().chain(lc.monitors().await).collect();
+            // 只算玩家（非观战）——观战无需准备，不应阻塞开赛。
+            let total: Vec<_> = lc.users().await;
             let ready_count = total.iter().filter(|it| started.contains(&it.id)).count();
             if ready_count < total.len() {
                 debug!(
