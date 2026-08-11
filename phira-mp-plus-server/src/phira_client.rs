@@ -113,9 +113,9 @@ fn ogg_duration_scan(data: &[u8]) -> Option<f64> {
         if pages == 0 {
             if body.starts_with(b"\x01vorbis") && body.len() >= 16 {
                 sample_rate = Some(u32::from_le_bytes(body[12..16].try_into().ok()?));
-            } else if body.starts_with(b"OpusHead") && body.len() >= 16 {
+            } else if body.starts_with(b"OpusHead") && body.len() >= 12 {
                 is_opus = true;
-                opus_pre_skip = u32::from_le_bytes(body[10..14].try_into().ok()?) as u64;
+                opus_pre_skip = u16::from_le_bytes(body[10..12].try_into().ok()?) as u64;
                 sample_rate = Some(48_000);
             }
         }
