@@ -49,6 +49,7 @@ pub async fn dispatch_command(
         "room.list" => cmd_room_list(state, params).await,
         "room.history" => cmd_room_history(state, params).await,
         "room.chat_history" => cmd_room_chat_history(state, params).await,
+        "room.chat_send" => cmd_room_chat_send(state, params).await,
         "room.uuid" => cmd_room_uuid(state, params).await,
         "room.rounds" => cmd_room_rounds(state, params).await,
         "room.round" => cmd_room_round(state, params).await,
@@ -505,6 +506,64 @@ async fn cmd_room_chat_history(
         "messages": messages,
         "count": messages.len(),
     }))
+}
+
+/// `room.chat_send` — 以房间内真实玩家身份发送聊天（复用 `Room::send_as`）。
+///
+/// `user_id` 必须是该房间**当前在线**的真实玩家：从 `room.users()`（在线玩家，
+/// 不含观战/离线/跨房）解析，伪造者不在名单内即拒绝——禁止跨房/离线伪造。
+/// 发送行为与真实玩家聊天一致：持久化 + `send_as` 广播 + 运行时事件。
+async fn cmd_room_chat_send(
+    state: &Arc<PlusServerState>,
+    params: &Value,
+) -> Result<Value, String> {
+    let room_id = params
+        .get("room_id")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "room_id required".to_string())?;
+    let user_id = params
+        .get("user_id")
+        .and_then(Value::as_i64)
+        .map(|v| v as i32)
+        .ok_or_else(|| "user_id required".to_string())?;
+    let content = params
+        .get("content")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "content required".to_string())?;
+
+    let room = resolve_room(state, room_id).await?;
+
+    // 真实玩家校验：必须是该房间当前在线的玩家（非观战、非跨房、非离线）。
+    let user = room
+        .users()
+        .await
+        .into_iter()
+        .find(|u| u.id == user_id)
+        .ok_or_else(|| "user_id is not a real player in this room".to_string())?;
+
+    // 与真实玩家聊天路径一致：持久化 + send_as 广播 + 运行时事件。
+    if let Err(e) = state
+        .persistence_worker
+        .enqueue(crate::persistence::message::PersistenceEvent::ServerEvent {
+            kind: "chat.message".to_string(),
+            payload: Arc::new(serde_json::json!({
+                "room_id": room.id.to_string(),
+                "user_id": user.id,
+                "user_name": user.name.clone(),
+                "message": content,
+            })),
+        })
+        .await
+    {
+        tracing::warn!(user = user.id, kind = %e.kind(), "room.chat_send persistence enqueue failed");
+    }
+    room.send_as(&user, content.to_string()).await;
+    state.publish_runtime_event(crate::event_bus::MpEvent::ChatMessage {
+        room_id: Some(room.id.clone()),
+        user_id: user.id,
+    });
+
+    Ok(serde_json::json!({ "ok": true, "room_id": room_id, "user_id": user_id }))
 }
 
 /// 解析 `room_id` 并克隆房间 Arc。

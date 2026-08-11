@@ -1039,6 +1039,7 @@ PMP 通过 Unix Domain Socket 暴露全部管理能力给外部工具（PPB、We
 | `room.list` | `{filters?}` | 房间列表 |
 | `room.history` | `{room_id}` | 房间游玩历史（rounds + 完整记录，上限 `play_history_cache_size`） |
 | `room.chat_history` | `{room_id}` | 房间聊天历史（最近 `chat_history_limit` 条 Chat 消息） |
+| `room.chat_send` | `{room_id, user_id, content}` | 以房间内**真实在线玩家**身份发送聊天（复用 `Room::send_as`）；`user_id` 必须是该房间当前在线玩家，禁止跨房/离线伪造 |
 | `logs.history` | `{limit?}` | 本进程运行以来的最近日志行（默认 100，上限 2000） |
 | `logs.input` | `{limit?}` | 本进程运行以来的最近管理输入（CLI/OpenUDS/管理员，默认 100） |
 | `persist.touches` | `{since?, limit?, round_uuid?, player_id?}` | 触控批次持久化历史（对齐 WIT `query-touches`；按 seq 递增，limit 上限 500） |
