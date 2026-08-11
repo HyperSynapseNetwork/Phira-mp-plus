@@ -782,12 +782,16 @@ impl PhiraRetryClient {
 
         // 2. Find EOCD signature (PK\x05\x06) from the end
         let eocd_sig = b"PK\x05\x06";
-        let eocd_pos = tail.windows(4).rposition(|w| w == eocd_sig)?;
+        let Some(eocd_pos) = tail.windows(4).rposition(|w| w == eocd_sig) else {
+            tracing::debug!(file_url, tail_len = tail.len(), "chart_duration: EOCD not found in tail");
+            return None;
+        };
         let eocd = &tail[eocd_pos..];
 
         let central_offset = u64::from_le_bytes([eocd[16], eocd[17], eocd[18], eocd[19], 0, 0, 0, 0]);
         let central_size = u64::from_le_bytes([eocd[12], eocd[13], eocd[14], eocd[15], 0, 0, 0, 0]);
         if central_size == 0 {
+            tracing::debug!(file_url, "chart_duration: central_size==0");
             return None;
         }
 
@@ -838,23 +842,40 @@ impl PhiraRetryClient {
                 best = Some(entry);
             }
         }
-        let entry = best?;
+        let Some(entry) = best else {
+            tracing::debug!(file_url, "chart_duration: no audio entry in central dir");
+            return None;
+        };
 
         // 5. Download local file header + compressed audio（4KB 缓冲覆盖文件名/extra）
         let range_end = entry.local_offset as u64
             + 30
             + std::cmp::max(4096u64, entry.fn_len as u64 + entry.extra_len as u64 + 64)
             + entry.compressed_size as u64;
-        let raw = self
+        let resp = match self
             .client
             .get(file_url)
             .header(RANGE, format!("bytes={}-{}", entry.local_offset, range_end))
             .send()
             .await
-            .ok()?
-            .bytes()
-            .await
-            .ok()?;
+        {
+            Ok(r) => r,
+            Err(e) => {
+                tracing::debug!(file_url, %e, "chart_duration: audio download send failed");
+                return None;
+            }
+        };
+        let raw = match resp.bytes().await {
+            Ok(b) => b,
+            Err(e) => {
+                tracing::debug!(file_url, %e, "chart_duration: audio download bytes failed");
+                return None;
+            }
+        };
+        if raw.len() < 42 + entry.compressed_size as usize {
+            tracing::debug!(file_url, raw_len = raw.len(), need = 42 + entry.compressed_size, "chart_duration: audio download truncated");
+            return None;
+        }
 
         let lh_fn_len = u16::from_le_bytes([raw[26], raw[27]]);
         let lh_extra_len = u16::from_le_bytes([raw[28], raw[29]]);
@@ -868,14 +889,22 @@ impl PhiraRetryClient {
             use std::io::Read;
             let mut decoder = flate2::read::DeflateDecoder::new(compressed);
             let mut buf = Vec::with_capacity(entry.uncompressed_size as usize);
-            decoder.read_to_end(&mut buf).ok()?;
+            if decoder.read_to_end(&mut buf).is_err() {
+                tracing::debug!(file_url, "chart_duration: deflate decode failed");
+                return None;
+            }
             buf
         } else {
+            tracing::debug!(file_url, compression = entry.compression, "chart_duration: unsupported compression");
             return None;
         };
 
         // 7. Probe duration（lofty 支持 MP3/FLAC/WAV/OGG）
-        probe_audio_duration(&audio)
+        let dur = probe_audio_duration(&audio);
+        if dur.is_none() {
+            tracing::debug!(file_url, audio_len = audio.len(), "chart_duration: audio probe returned None");
+        }
+        dur
     }
 
     /// Fetch user name by Phira user ID (unauthenticated).
