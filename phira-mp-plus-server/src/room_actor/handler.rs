@@ -25,6 +25,10 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use tracing::{debug, info, warn};
 
+/// chart_duration 未知时的兜底值。设大（~2.8h）避免进度显示/超时受
+/// 错误短值误导——真实时长靠下载扫描，游玩结束由首结算人+offset 收敛。
+const DEFAULT_CHART_DURATION: f64 = 10000.0;
+
 /// Calculate and set the playing timeout deadline based on chart duration + offset.
 /// Falls back to a default if no cached duration is available.
 fn set_playing_deadline(
@@ -37,7 +41,7 @@ fn set_playing_deadline(
         return; // 超时未启用
     }
     let chart_id = as_.state.chart.unwrap_or(0);
-    let duration_secs = as_.state.chart_duration.unwrap_or(120.0);
+    let duration_secs = as_.state.chart_duration.unwrap_or(DEFAULT_CHART_DURATION);
     let total_ms = (duration_secs + offset_secs as f64) * 1000.0;
     let deadline = now_ms() + total_ms as i64;
     as_.state.playing_timeout_deadline = Some(deadline);
@@ -65,34 +69,42 @@ pub(super) async fn send_progress_notice(
         return;
     }
     let Some(started) = as_.state.playing_started_at else { return };
-    let now = now_ms();
-    let dur = as_.state.chart_duration.unwrap_or(120.0);
-    let elapsed = ((now - started) as f64 / 1000.0).max(0.0);
-    let ratio = (elapsed / dur).clamp(0.0, 1.0);
-    let percent = (ratio * 100.0).round() as i64;
-    let filled = (ratio * 20.0).round() as usize; // 进度条宽度 20
-    // 填充用深色 shade ▓、空用浅色 shade ░：同为 shade 渲染一致、等宽，
-    // 视觉比例准确（空格与 > 宽度不一致、█ 常渲染成不等宽正方形，均不可用）。
-    let bar = format!("{}{}", "▓".repeat(filled), "░".repeat(20 - filled));
-    let remaining = ((dur - elapsed) / 60.0).max(0.0);
-
-    let mut args = fluent::FluentArgs::new();
-    args.set("bar", bar);
-    args.set("percent", percent);
-    args.set("remaining", format!("{remaining:.1}"));
 
     // 用户在房间（玩家或观战者）才发送；否则可能已离开。
     let mut user = lc.users().await.into_iter().find(|u| u.id == user_id);
     if user.is_none() {
         user = lc.monitors().await.into_iter().find(|u| u.id == user_id);
     }
-    if let Some(user) = user {
-        // 同步构建文案再发送，避免 FluentArgs（含非 Send 的 dyn FluentType）
-        // 跨 await 被持有导致 future 不满足 Send。
-        let content = crate::l10n::translate_system(&user.lang, "room-progress-notice", &args);
-        user.try_send(ServerCommand::Message(Message::Chat { user: 0, content }), None)
-            .await;
-    }
+    let Some(user) = user else { return };
+
+    let now = now_ms();
+    // 谱面时长未知（下载/解析失败）时明确提示，不伪造进度。
+    // 文案在拿到 user.lang 后同步构建，避免 FluentArgs（非 Send）跨 await。
+    let content = match as_.state.chart_duration {
+        Some(dur) => {
+            let elapsed = ((now - started) as f64 / 1000.0).max(0.0);
+            let ratio = (elapsed / dur).clamp(0.0, 1.0);
+            let percent = (ratio * 100.0).round() as i64;
+            let filled = (ratio * 20.0).round() as usize; // 进度条宽度 20
+            // 填充用深色 shade ▓、空用浅色 shade ░：同为 shade 渲染一致、等宽，
+            // 视觉比例准确（空格与 > 宽度不一致、█ 常渲染成不等宽正方形，均不可用）。
+            let bar = format!("{}{}", "▓".repeat(filled), "░".repeat(20 - filled));
+            let remaining = ((dur - elapsed) / 60.0).max(0.0);
+
+            let mut args = fluent::FluentArgs::new();
+            args.set("bar", bar);
+            args.set("percent", percent);
+            args.set("remaining", format!("{remaining:.1}"));
+            crate::l10n::translate_system(&user.lang, "room-progress-notice", &args)
+        }
+        None => crate::l10n::translate_system(
+            &user.lang,
+            "room-progress-unavailable",
+            &fluent::FluentArgs::new(),
+        ),
+    };
+    user.try_send(ServerCommand::Message(Message::Chat { user: 0, content }), None)
+        .await;
 }
 
 /// Helper: build an error result.
@@ -787,7 +799,7 @@ pub(super) async fn force_start_playing(
         let offset_secs = server_state.config.playing_timeout_offset_secs;
         if offset_secs > 0 {
             let chart_id = state.chart.unwrap_or(0);
-            let duration_secs = state.chart_duration.unwrap_or(120.0);
+            let duration_secs = state.chart_duration.unwrap_or(DEFAULT_CHART_DURATION);
             let total_ms = (duration_secs + offset_secs as f64) * 1000.0;
             state.playing_timeout_deadline = Some(now_ms() + total_ms as i64);
             debug!(

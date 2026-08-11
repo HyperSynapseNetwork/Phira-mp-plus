@@ -1149,7 +1149,7 @@ pub async fn select_chart(
                                 .await;
                             debug!(chart = cid, duration, "chart duration set");
                         }
-                        None => warn!(chart = cid, "chart duration probe failed, using 120s fallback"),
+                        None => warn!(chart = cid, "chart duration probe failed, using long fallback"),
                     }
                 });
             }

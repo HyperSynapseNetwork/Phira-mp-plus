@@ -97,6 +97,7 @@ chart-updated =     譜面更新: { $date }
 room-ban-notice = 你已被加入此房間的黑名單
 room-ban-notice-reason = 你已被加入此房間的黑名單：{ $reason }
 room-progress-notice = 遊玩進程:[{ $bar }]{ $percent }%    還剩{ $remaining }分鐘
+room-progress-unavailable = 譜面時長解析失敗
 
 
 # ── Phira 重試通知 ──

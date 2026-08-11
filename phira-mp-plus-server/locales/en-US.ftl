@@ -96,6 +96,7 @@ chart-updated =     Chart updated: { $date }
 room-ban-notice = You have been banned from this room
 room-ban-notice-reason = You have been banned from this room: { $reason }
 room-progress-notice = Progress: [{ $bar }] { $percent }%    { $remaining } min left
+room-progress-unavailable = Chart duration unavailable
 
 
 # ── Phira retry notice ──

@@ -97,6 +97,7 @@ chart-updated =     谱面更新: { $date }
 room-ban-notice = 你已被加入该房间的黑名单
 room-ban-notice-reason = 你已被加入该房间的黑名单：{ $reason }
 room-progress-notice = 游玩进程:[{ $bar }]{ $percent }%    还剩{ $remaining }分钟
+room-progress-unavailable = 谱面时长解析失败
 
 
 # ── Phira 重试通知 ──
