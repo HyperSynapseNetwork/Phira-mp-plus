@@ -203,6 +203,7 @@ pub(crate) async fn handle_touches(user: Arc<User>, room: Arc<Room>, frames: Arc
     }
 
     // OpenUDS touches 流投递：有订阅者才查 round + 序列化，避免热路径白耗。
+    #[cfg(unix)]
     if let Some(mgr) = crate::openuds::get_stream_manager() {
         if mgr.has_subscribers("touches").await {
             let round_id = user
@@ -278,6 +279,7 @@ pub(crate) async fn handle_judges(user: Arc<User>, room: Arc<Room>, judges: Arc<
     }
 
     // OpenUDS judges 流投递：有订阅者才查 round + 序列化，避免热路径白耗。
+    #[cfg(unix)]
     if let Some(mgr) = crate::openuds::get_stream_manager() {
         if mgr.has_subscribers("judges").await {
             let round_id = user
