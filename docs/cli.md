@@ -767,18 +767,6 @@ benchmark run ramp --cpu 80 --ram 4g --duration 1h
 
 ---
 
-### `approve openuds <pending_id>`
-
-批准挂起的 OpenUDS 连接（仅 Unix）。
-
-| 参数 | 类型 | 说明 |
-|------|------|------|
-| `pending_id` | `str` | 挂起连接的 ID |
-
-**输出:** 批准确认消息；Windows 上提示 OpenUDS 不可用
-
----
-
 ### `wal inspect`
 
 查看 WAL 状态统计。

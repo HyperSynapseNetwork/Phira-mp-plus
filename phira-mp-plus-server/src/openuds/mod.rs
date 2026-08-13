@@ -37,9 +37,8 @@
 //! Two modes:
 //! 1. **Token mode** (auth_token set in config): Client sends
 //!    `{"type":"authenticate","token":"xxx"}` → validated → `authenticated`
-//! 2. **CLI approve mode** (auth_token empty): Client sends
-//!    `{"type":"authenticate","client_name":"my-tool"}` → gets `pending_id`
-//!    → admin runs `approve openuds <pending_id>` in CLI → `authenticated`
+//! 2. **Direct mode** (auth_token empty): the Unix socket's filesystem
+//!    permissions isolate access, so any `authenticate` frame → `authenticated`
 
 pub mod auth;
 pub mod dispatch;
@@ -49,24 +48,9 @@ pub mod server;
 pub mod session;
 pub mod streams;
 
-use crate::openuds::auth::AuthState;
 use crate::openuds::streams::StreamManager;
 use std::sync::Arc;
 use std::sync::OnceLock;
-
-/// Global reference to the AuthState, set when the OpenUDS server starts.
-/// Used by the CLI `approve` command to approve pending connections.
-static AUTH_STATE: OnceLock<Arc<AuthState>> = OnceLock::new();
-
-/// Set the global auth state reference (called from server::start).
-pub fn set_auth_state(state: Arc<AuthState>) {
-    let _ = AUTH_STATE.set(state);
-}
-
-/// Get the global auth state reference (used by CLI approve command).
-pub fn get_auth_state() -> Option<&'static Arc<AuthState>> {
-    AUTH_STATE.get()
-}
 
 /// Global StreamManager, set when the OpenUDS server starts. Lets the
 /// production touch/judge telemetry path deliver high-frequency frames to

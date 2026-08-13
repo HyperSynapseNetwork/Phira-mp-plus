@@ -933,7 +933,7 @@ pub struct OpenUdsConfig {
     #[serde(default = "default_openuds_socket_path")]
     pub socket_path: String,
     /// Auth token for automatic authentication.
-    /// Empty string = CLI approve mode.
+    /// Empty string = direct mode (socket filesystem permissions gate access).
     #[serde(default)]
     pub auth_token: String,
     /// Maximum concurrent UDS connections.

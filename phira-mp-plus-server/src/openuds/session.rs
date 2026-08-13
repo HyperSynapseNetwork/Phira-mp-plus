@@ -33,8 +33,6 @@ pub struct Session {
     subscriptions: RwLock<HashSet<String>>,
     /// Subscribed data streams (e.g., "touches", "judges").
     stream_subscriptions: RwLock<HashSet<String>>,
-    /// Client-provided name (for CLI approve mode display).
-    pub client_name: RwLock<String>,
     /// Whether this session is for a toolbar/bot connection.
     pub is_bot: AtomicBool,
 }
@@ -51,7 +49,6 @@ impl Session {
                 tx,
                 subscriptions: RwLock::new(HashSet::new()),
                 stream_subscriptions: RwLock::new(HashSet::new()),
-                client_name: RwLock::new(String::new()),
                 is_bot: AtomicBool::new(false),
             },
             rx,
@@ -134,21 +131,6 @@ impl Session {
                 subs.remove(s);
             }
         }
-    }
-
-    /// Set the client name.
-    pub fn set_client_name(&self, name: &str) {
-        if let Ok(mut n) = self.client_name.write() {
-            *n = name.to_string();
-        }
-    }
-
-    /// Get the client name.
-    pub fn get_client_name(&self) -> String {
-        self.client_name
-            .read()
-            .map(|n| n.clone())
-            .unwrap_or_default()
     }
 
     /// Send a frame to the client. Returns false if the send channel is closed.

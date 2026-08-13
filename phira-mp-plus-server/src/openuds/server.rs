@@ -5,8 +5,7 @@
 //! - Manages connected session registry
 //! - Cleans up the socket file on shutdown
 
-use crate::openuds::auth::{build_auth_error_response, build_auth_pending_response,
-    build_authenticated_response};
+use crate::openuds::auth::{build_auth_error_response, build_authenticated_response};
 use crate::openuds::protocol;
 use crate::openuds::session::{self as openuds_session, Session};
 use crate::server::config::OpenUdsConfig;
@@ -60,9 +59,6 @@ pub async fn start(state: Arc<PlusServerState>, config: &OpenUdsConfig) {
 
     // Auth state
     let auth_state = Arc::new(crate::openuds::auth::AuthState::new(auth_token));
-
-    // Set global auth state reference for CLI approve command
-    crate::openuds::set_auth_state(Arc::clone(&auth_state));
 
     // Start event dispatcher
     let event_dispatcher = crate::openuds::events::EventDispatcher::new(
@@ -253,56 +249,13 @@ async fn handle_auth_frame(
         let _ = session.send(resp).await;
         Ok(())
     } else {
-        // CLI approve mode
-        let client_name = frame
-            .get("client_name")
-            .and_then(Value::as_str)
-            .unwrap_or("unknown")
-            .to_string();
-
-        session.set_client_name(&client_name);
-
-        let (pending_id, auth_rx) = auth_state
-            .create_pending(client_name)
-            .await
-            .map_err(|e| format!("auth pending failed: {e}"))?;
-
-        // Send pending response
-        let resp = build_auth_pending_response(&pending_id);
+        // No token configured: the Unix socket's filesystem permissions
+        // (mode 660) already isolate access, so authenticate directly.
+        session.set_authenticated();
+        let session_id = session.id.to_string();
+        let resp = build_authenticated_response(&session_id, env!("CARGO_PKG_VERSION"));
         let _ = session.send(resp).await;
-
-        // Wait for approval (with timeout)
-        let timeout = std::time::Duration::from_secs(120);
-        match tokio::time::timeout(timeout, auth_rx).await {
-            Ok(Ok(result)) => {
-                if result.success {
-                    // Authenticated!
-                    session.set_authenticated();
-                    let session_id = session.id.to_string();
-                    let resp = build_authenticated_response(&session_id, env!("CARGO_PKG_VERSION"));
-                    let _ = session.send(resp).await;
-                    Ok(())
-                } else {
-                    let err = build_auth_error_response(
-                        result.error.as_deref().unwrap_or("approval rejected"),
-                    );
-                    let _ = session.send(err).await;
-                    Err("approval rejected".to_string())
-                }
-            }
-            Ok(Err(_)) => {
-                let err = build_auth_error_response("approval channel closed");
-                let _ = session.send(err).await;
-                Err("approval channel closed".to_string())
-            }
-            Err(_) => {
-                // Timeout — try to reject the pending request
-                let _ = auth_state.reject_pending(&pending_id, "timeout").await;
-                let err = build_auth_error_response("approval timeout");
-                let _ = session.send(err).await;
-                Err("approval timeout".to_string())
-            }
-        }
+        Ok(())
     }
 }
 

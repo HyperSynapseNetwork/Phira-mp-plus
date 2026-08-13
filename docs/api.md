@@ -1005,14 +1005,12 @@ PMP 通过 Unix Domain Socket 暴露全部管理能力给外部工具（PPB、We
   │◄─ Authenticated ─────────┤ { session_id, server_version }
 ```
 
-#### CLI 审批模式（手动）
+#### 直接模式（无 token）
 
 ```
 外部工具                          PMP
   │                           │
-  ├─ Authenticate ───────────►│ { client_name: "我的工具" }
-  │◄─ AuthPending ───────────┤ { pending_id: "abc" }
-  │         管理员: _approve openuds abc
+  ├─ Authenticate ───────────►│ { }  (socket 文件权限隔离)
   │◄─ Authenticated ─────────┤ { session_id, server_version }
 ```
 
@@ -1168,7 +1166,7 @@ src/openuds/
 ├── server.rs    # UDS listener + 连接管理
 ├── session.rs   # 每个客户端连接的会话
 ├── protocol.rs  # 帧编码/解码
-├── auth.rs      # 认证（token / CLI 审批）
+├── auth.rs      # 认证（token / direct）
 ├── dispatch.rs  # 命令路由（复用 PMP 现有 handler）
 ├── events.rs    # 事件订阅 + 推送
 └── streams.rs   # 高频数据流（touches/judges）
