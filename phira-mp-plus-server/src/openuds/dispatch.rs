@@ -822,6 +822,7 @@ async fn cmd_player_ban_ip(
 ) -> Result<Value, String> {
     let target = params
         .get("target")
+        .or_else(|| params.get("user_id"))
         .and_then(Value::as_str)
         .ok_or_else(|| "target (user_id or IP) required".to_string())?;
     let reason = params
