@@ -91,9 +91,9 @@ impl PlusServerState {
     /// operation, replacing the older pattern of calling
     /// `publish_runtime_event()` + `dispatch_plugin_event()` separately.
     ///
-    /// Migration: new code should call `canonical_event()` instead of the
-    /// two-step pattern. The old functions remain for backward compatibility
-    /// during the transition (Phase A → Phase B).
+    /// New code calls `canonical_event()` instead of the former two-step
+    /// dispatch pattern. The older functions remain only for compatibility
+    /// with callers that have not yet migrated.
     pub async fn canonical_event(
         &self,
         event: crate::event_bus::MpEvent,

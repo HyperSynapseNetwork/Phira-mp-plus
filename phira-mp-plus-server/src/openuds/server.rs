@@ -83,8 +83,8 @@ pub async fn start(state: Arc<PlusServerState>, config: &OpenUdsConfig) {
         let log_stream_manager = Arc::clone(&stream_manager);
         crate::supervisor_actor::spawn_named("openuds-logs", async move {
             let mut rx = log_rx;
-            while let Some(line) = rx.recv().await {
-                log_stream_manager.deliver_logs(line).await;
+            while let Some(entry) = rx.recv().await {
+                log_stream_manager.deliver_logs(entry).await;
             }
         });
     }

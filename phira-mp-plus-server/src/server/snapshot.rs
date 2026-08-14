@@ -1,6 +1,6 @@
 //! Room/user snapshot types and builders.
 //!
-//! After Phase 2 Work C, Room no longer holds mutable state. Snapshots are
+//! In the current actor-owned room model, Room no longer holds mutable state. Snapshots are
 //! built from control_snapshot() (sync, reads actor cache) and the actor
 //! RoomSnapshot from room_snapshot().
 

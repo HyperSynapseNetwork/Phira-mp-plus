@@ -217,7 +217,7 @@
 
 ## 十四、自动更新
 
-- **自动更新**（默认关闭）：`update auto on|off` 开关；启动时与按 `check_interval_secs` 间隔检查 GitHub Release，发现新版本且无在线玩家满 `min_idle_minutes` 后自动下载替换并重启
+- **自动更新**（默认关闭）：`update auto on|off` 开关；启动时与按 `check_interval_secs` 间隔检查 GitHub Release，发现新版本且无在线玩家满 `min_idle_minutes` 后，以 `.part` + HTTP Range 断点续传、有限重试下载，严格匹配 Release `SHA256SUMS` 校验后才原子替换并重启
 - **命令**：`update check`（检查新版）/ `update apply`（立即更新，检查在线与空闲）/ `update force`（跳过检查强制更新）/ `update schedule`（预约更新）/ `update cancel`（取消预约）/ `update auto [on|off]`（开关）
 - **预约更新**：`update schedule` 与自动更新统一走 `pending_update` 预约流程（幂等，不重复预约），后台执行器在下线满 `min_idle_minutes` 后执行；重启成功后一次性提示「更新完成：已更新到 vX」
 - **重启接管**：替换二进制后 spawn 新进程（stdin 重开 `/dev/tty`，管理控制台续用；`PMP_RESTARTED` 跳过交互提示），旧进程以非零退出码退出触发 systemd `Restart=on-failure` / Docker 重启；新进程绑定端口有 3 秒重试窗口

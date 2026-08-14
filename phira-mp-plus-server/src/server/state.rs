@@ -54,6 +54,8 @@ macro_rules! read_lock {
 
 /// Phira-mp+ 服务器状态
 pub struct PlusServerState {
+    /// Monotonic process start marker used for truthful runtime uptime.
+    pub started_at: Instant,
     pub config: PlusConfig,
     /// Hot-reloadable runtime config.
     pub live_config: Arc<RwLock<LiveConfig>>,

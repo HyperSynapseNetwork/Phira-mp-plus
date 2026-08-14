@@ -116,6 +116,7 @@ pub async fn dispatch_command(
         // ── 持久化历史查询（对齐 WIT phira-persistence query-touches/judges）─
         "persist.touches" => cmd_persist_touches(state, params).await,
         "persist.judges" => cmd_persist_judges(state, params).await,
+        "persist.rounds" => cmd_persist_rounds(state, params).await,
 
         // ── Subscription commands (handled by session) ────────────
         "subscribe" | "unsubscribe" | "subscribe_stream" => {
@@ -757,11 +758,17 @@ async fn cmd_room_list(
     let mut list = Vec::with_capacity(rooms.len());
     for room in &rooms {
         let control = room.control_snapshot();
+        let actor = state.room_snapshot(&room.id.to_string());
         let user_count = room.users().await.len();
         let monitor_count = room.monitors().await.len();
         list.push(serde_json::json!({
             "room_id": room.id.to_string(),
             "uuid": room.uuid.to_string(),
+            "host_id": control.host_id,
+            "chart_id": actor.as_ref().and_then(|snapshot| snapshot.chart),
+            "chart_name": actor.as_ref().and_then(|snapshot| snapshot.chart_name.clone()),
+            "state": actor.as_ref().map(|snapshot| snapshot.stripped),
+            "max_users": control.max_users,
             "locked": control.locked,
             "cycle": control.cycle,
             "hidden": control.hidden,
@@ -1029,7 +1036,7 @@ async fn cmd_server_stats(
         "loaded_plugins": plugin_count,
         "port": state.config.port,
         "http_port": state.config.http_port,
-        "uptime_secs": 0, // TODO: track server start time
+        "uptime_secs": state.started_at.elapsed().as_secs()
         "server_name": state.config.server_name,
     }))
 }
@@ -1362,8 +1369,9 @@ async fn cmd_logs_history(
         .map(|v| v as usize)
         .unwrap_or(100)
         .clamp(1, 2000);
-    let lines = crate::history::recent_logs(limit);
-    Ok(serde_json::json!({ "lines": lines, "count": lines.len() }))
+    let entries = crate::history::recent_log_entries(limit);
+    let lines = entries.iter().map(|entry| entry.line.clone()).collect::<Vec<_>>();
+    Ok(serde_json::json!({ "entries": entries, "lines": lines, "count": lines.len() }))
 }
 
 /// `logs.input` — 本进程运行以来的最近管理输入（CLI/OpenUDS/管理员）。
@@ -1443,4 +1451,37 @@ async fn cmd_persist_judges(
         serde_json::json!(player),
     ];
     crate::server::query::server_state_query_inner(state, "persist.judges", &args)
+}
+
+/// `persist.rounds` — list durable round metadata used to resolve Replay
+/// identity to its chart and room without scanning telemetry payloads.
+async fn cmd_persist_rounds(
+    state: &Arc<PlusServerState>,
+    params: &Value,
+) -> Result<Value, String> {
+    let limit = params
+        .get("limit")
+        .and_then(Value::as_u64)
+        .unwrap_or(100)
+        .clamp(1, 1000) as usize;
+    let offset = params.get("offset").and_then(Value::as_u64).unwrap_or(0) as usize;
+    let round_uuid = params.get("round_uuid").and_then(Value::as_str);
+    let player_id = params.get("player_id").and_then(Value::as_i64).map(|v| v as i32);
+
+    let filtered = state
+        .round_store
+        .list_rounds()
+        .await
+        .into_iter()
+        .filter(|round| round_uuid.map_or(true, |wanted| round.round_uuid == wanted))
+        .filter(|round| player_id.map_or(true, |wanted| round.players.contains(&wanted)))
+        .collect::<Vec<_>>();
+    let total = filtered.len();
+    let rounds = filtered.into_iter().skip(offset).take(limit).collect::<Vec<_>>();
+    let count = rounds.len();
+    let next_offset = (offset + count < total).then_some(offset + count);
+    Ok(serde_json::json!({
+        "items": rounds, "count": count, "total": total,
+        "offset": offset, "next_offset": next_offset
+    }))
 }

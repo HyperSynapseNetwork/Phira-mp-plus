@@ -7,12 +7,19 @@
 
 use serde::Serialize;
 use std::collections::VecDeque;
-use std::sync::{Mutex, OnceLock};
+use std::sync::{atomic::{AtomicU64, Ordering}, Mutex, OnceLock};
 
 /// 日志环形缓冲上限。
 const LOG_RING_CAP: usize = 2000;
 /// 输入环形缓冲上限。
 const INPUT_RING_CAP: usize = 1000;
+
+/// 一条日志 occurrence。`seq` 在单次 PMP 进程生命周期内单调递增。
+#[derive(Debug, Clone, Serialize)]
+pub struct LogHistoryEntry {
+    pub seq: u64,
+    pub line: String,
+}
 
 /// 一条管理输入记录。
 #[derive(Debug, Clone, Serialize)]
@@ -25,23 +32,29 @@ pub struct InputEntry {
     pub command: String,
 }
 
-static LOG_RING: OnceLock<Mutex<VecDeque<String>>> = OnceLock::new();
+static LOG_RING: OnceLock<Mutex<VecDeque<LogHistoryEntry>>> = OnceLock::new();
+static LOG_SEQ: AtomicU64 = AtomicU64::new(1);
 static INPUT_RING: OnceLock<Mutex<VecDeque<InputEntry>>> = OnceLock::new();
 
-fn log_ring() -> &'static Mutex<VecDeque<String>> {
+fn log_ring() -> &'static Mutex<VecDeque<LogHistoryEntry>> {
     LOG_RING.get_or_init(|| Mutex::new(VecDeque::new()))
 }
 fn input_ring() -> &'static Mutex<VecDeque<InputEntry>> {
     INPUT_RING.get_or_init(|| Mutex::new(VecDeque::new()))
 }
 
-/// 记录一条日志行（logging 层调用）。
-pub fn push_log(line: String) {
+/// 记录一条日志 occurrence（logging 层调用）并返回它的稳定进程内序号。
+pub fn push_log(line: String) -> LogHistoryEntry {
+    let entry = LogHistoryEntry {
+        seq: LOG_SEQ.fetch_add(1, Ordering::Relaxed),
+        line,
+    };
     let mut ring = log_ring().lock().unwrap_or_else(|e| e.into_inner());
     if ring.len() >= LOG_RING_CAP {
         ring.pop_front();
     }
-    ring.push_back(line);
+    ring.push_back(entry.clone());
+    entry
 }
 
 /// 记录一条管理输入（CLI / OpenUDS / 游戏内管理员）。
@@ -61,10 +74,15 @@ pub fn record_input(source: &str, command: &str) {
     });
 }
 
-/// 最近 N 条日志行（新→旧）。
-pub fn recent_logs(limit: usize) -> Vec<String> {
+/// 最近 N 条日志 occurrence（新→旧）。
+pub fn recent_log_entries(limit: usize) -> Vec<LogHistoryEntry> {
     let ring = log_ring().lock().unwrap_or_else(|e| e.into_inner());
     ring.iter().rev().take(limit).cloned().collect()
+}
+
+/// 兼容旧调用者：只返回日志文本。
+pub fn recent_logs(limit: usize) -> Vec<String> {
+    recent_log_entries(limit).into_iter().map(|entry| entry.line).collect()
 }
 
 /// 最近 N 条输入记录（新→旧）。

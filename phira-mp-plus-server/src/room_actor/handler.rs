@@ -5,7 +5,7 @@
 //! returning a typed payload. The caller (execute_command in actor.rs)
 //! updates the snapshot cache after execution.
 //!
-//! After Phase 2 Work C, Room no longer holds mutable state. All state
+//! Room no longer holds mutable state. All state
 //! is actor-owned via `RoomActorState`. Room is used only for:
 //! - `send()` / `broadcast*()` — message dispatch
 //! - `publish_update()` — infrastructure notification

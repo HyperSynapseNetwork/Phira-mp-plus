@@ -1034,7 +1034,7 @@ PMP 通过 Unix Domain Socket 暴露全部管理能力给外部工具（PPB、We
 | `room.kick` | `{room_id, user_id, reason?}` | 踢人 |
 | `room.force_move` | `{room_id, user_id, monitor?}` | 强制移入 |
 | `room.info` | `{room_id}` | 房间详情 |
-| `room.list` | `{filters?}` | 房间列表 |
+| `room.list` | `{filters?}` | 房间列表；每项含 `room_id/uuid/host_id/chart_id/chart_name/state/max_users/player_count` 及控制状态 |
 | `room.history` | `{room_id}` | 房间游玩历史（rounds + 完整记录，上限 `play_history_cache_size`） |
 | `room.chat_history` | `{room_id}` | 房间聊天历史（最近 `chat_history_limit` 条 Chat 消息） |
 | `room.chat_send` | `{room_id, user_id, content}` | 以房间内**真实在线玩家**身份发送聊天（复用 `Room::send_as`）；`user_id` 必须是该房间当前在线玩家，禁止跨房/离线伪造 |
@@ -1042,6 +1042,7 @@ PMP 通过 Unix Domain Socket 暴露全部管理能力给外部工具（PPB、We
 | `logs.input` | `{limit?}` | 本进程运行以来的最近管理输入（CLI/OpenUDS/管理员，默认 100） |
 | `persist.touches` | `{since?, limit?, round_uuid?, player_id?}` | 触控批次持久化历史（对齐 WIT `query-touches`；按 seq 递增，limit 上限 500） |
 | `persist.judges` | `{since?, limit?, round_uuid?, player_id?}` | 判定批次持久化历史（对齐 WIT `query-judges`；按 seq 递增，limit 上限 500） |
+| `persist.rounds` | `{limit?, round_uuid?, player_id?}` | 持久化轮次元数据（谱面、房间、玩家、起止时间）；供 Replay 索引与 Viewer 使用，limit 上限 1000 |
 | `admin.id_list` | `{}` | 管理员 ID 列表 |
 | `admin.id_add` | `{user_id}` | 添加管理员 |
 | `admin.id_remove` | `{user_id}` | 移除管理员 |

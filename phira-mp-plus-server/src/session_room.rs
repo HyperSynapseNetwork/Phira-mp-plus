@@ -3,7 +3,7 @@
 //! This module is intentionally kept free of socket/authentication details so
 //! `session.rs` can become a thin dispatcher before the real Session Actor split.
 //!
-//! After Phase 2 Work C, Room is a pure broadcast interface and no longer
+//! Room is a pure broadcast interface and no longer
 //! holds mutable state. All state queries route through the actor snapshot
 //! cache (server.room_snapshot()) or Room::control_snapshot(). All state
 //! mutations route through RoomCommandGateway.

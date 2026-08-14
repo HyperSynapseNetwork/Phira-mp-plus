@@ -176,6 +176,8 @@ wasm_runtime:
 检查 GitHub 最新 Release；检测到新版本且无在线玩家超过 `min_idle_minutes` 时，
 自动下载匹配当前平台的资产、替换自身可执行文件并尝试重启。
 
+Release 必须同时发布 `SHA256SUMS`（或 `SHA256SUMS.txt`），且包含所选二进制的精确文件名与 SHA-256。下载使用 `data/update/<asset>.part` 持久临时文件、HTTP Range 续传与最多三次退避重试；校验失败会删除临时文件，绝不会进入替换阶段。
+
 | 配置项 | 类型 | 默认值 | 说明 |
 |---|---:|---:|---|
 | `auto_update.enabled` | `bool` | `false` | 自动更新总开关。可通过 CLI `update auto on\|off` 运行时切换。 |

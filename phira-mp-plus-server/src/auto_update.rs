@@ -12,6 +12,8 @@
 
 use anyhow::{anyhow, bail, Result};
 use serde::Deserialize;
+use sha2::{Digest, Sha256};
+use std::io::{Read, Write};
 use std::sync::Arc;
 use std::time::Duration;
 use tracing::{debug, info, warn};
@@ -213,13 +215,18 @@ fn pick_asset(assets: &[ReleaseAsset]) -> Option<&ReleaseAsset> {
     None
 }
 
-/// 下载发布资产到内存（大文件直接读入内存，用于替换自身）。
-async fn download_asset(download_url: &str) -> Result<Vec<u8>> {
+/// Download a release checksum manifest with a strict size cap.
+async fn expected_asset_sha256(assets: &[ReleaseAsset], asset_name: &str) -> Result<String> {
+    let manifest = assets
+        .iter()
+        .find(|asset| asset.name.eq_ignore_ascii_case("SHA256SUMS") || asset.name.eq_ignore_ascii_case("SHA256SUMS.txt"))
+        .ok_or_else(|| anyhow!("Release 缺少 SHA256SUMS，拒绝自动更新"))?;
     let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(600))
+        .connect_timeout(Duration::from_secs(15))
+        .timeout(Duration::from_secs(60))
         .build()?;
-    let resp = client
-        .get(download_url)
+    let mut resp = client
+        .get(&manifest.download_url)
         .header(
             reqwest::header::USER_AGENT,
             format!("phira-mp-plus-server/{}", env!("CARGO_PKG_VERSION")),
@@ -227,13 +234,113 @@ async fn download_asset(download_url: &str) -> Result<Vec<u8>> {
         .send()
         .await?;
     if !resp.status().is_success() {
-        bail!("下载更新包失败: {}", resp.status());
+        bail!("下载 SHA256SUMS 失败: {}", resp.status());
     }
-    let bytes = resp.bytes().await?.to_vec();
-    if bytes.is_empty() {
-        bail!("下载的更新包为空");
+    if resp.content_length().is_some_and(|length| length > 1024 * 1024) {
+        bail!("SHA256SUMS 异常过大");
     }
-    Ok(bytes)
+    let mut body = Vec::new();
+    while let Some(chunk) = resp.chunk().await? {
+        if body.len() + chunk.len() > 1024 * 1024 {
+            bail!("SHA256SUMS 异常过大");
+        }
+        body.extend_from_slice(&chunk);
+    }
+    let text = String::from_utf8(body).map_err(|_| anyhow!("SHA256SUMS 不是 UTF-8"))?;
+    checksum_for_asset(&text, asset_name)
+        .ok_or_else(|| anyhow!("SHA256SUMS 中没有资产 {asset_name}"))
+}
+
+fn checksum_for_asset(text: &str, asset_name: &str) -> Option<String> {
+    for line in text.lines() {
+        let mut parts = line.split_whitespace();
+        let Some(hash) = parts.next() else { continue };
+        let Some(name) = parts.next() else { continue };
+        if name.trim_start_matches('*') == asset_name
+            && hash.len() == 64
+            && hash.chars().all(|ch| ch.is_ascii_hexdigit())
+        {
+            return Some(hash.to_ascii_lowercase());
+        }
+    }
+    None
+}
+
+/// Stream an asset into a persistent `.part` file. Interrupted downloads are
+/// resumed with Range; servers that ignore Range safely restart from byte 0.
+async fn download_asset_to_part(download_url: &str, part_path: &std::path::Path) -> Result<()> {
+    let client = reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(15))
+        .timeout(Duration::from_secs(600))
+        .build()?;
+    let mut last_error = None;
+    for attempt in 0..3u64 {
+        let existing = std::fs::metadata(part_path).map(|meta| meta.len()).unwrap_or(0);
+        let mut request = client
+            .get(download_url)
+            .header(
+                reqwest::header::USER_AGENT,
+                format!("phira-mp-plus-server/{}", env!("CARGO_PKG_VERSION")),
+            );
+        if existing > 0 {
+            request = request.header(reqwest::header::RANGE, format!("bytes={existing}-"));
+        }
+        match request.send().await {
+            Ok(mut response) if response.status().is_success() => {
+                let resumed = existing > 0 && response.status() == reqwest::StatusCode::PARTIAL_CONTENT;
+                let stream_result: Result<()> = async {
+                    let mut file = std::fs::OpenOptions::new()
+                        .create(true)
+                        .write(true)
+                        .append(resumed)
+                        .truncate(!resumed)
+                        .open(part_path)?;
+                    let mut wrote = 0u64;
+                    while let Some(chunk) = response.chunk().await? {
+                        file.write_all(&chunk)?;
+                        wrote += chunk.len() as u64;
+                    }
+                    file.sync_all()?;
+                    let final_size = std::fs::metadata(part_path)?.len();
+                    if final_size == 0 || (wrote == 0 && !resumed) {
+                        bail!("下载的更新包为空");
+                    }
+                    Ok(())
+                }
+                .await;
+                match stream_result {
+                    Ok(()) => return Ok(()),
+                    Err(error) => last_error = Some(error),
+                }
+            }
+            Ok(response) if response.status() == reqwest::StatusCode::RANGE_NOT_SATISFIABLE => {
+                let _ = std::fs::remove_file(part_path);
+                last_error = Some(anyhow!("断点范围无效，已清空临时文件"));
+            }
+            Ok(response) => last_error = Some(anyhow!("下载更新包失败: {}", response.status())),
+            Err(error) => last_error = Some(error.into()),
+        }
+        tokio::time::sleep(Duration::from_secs(1 << attempt)).await;
+    }
+    Err(last_error.unwrap_or_else(|| anyhow!("下载更新包失败")))
+}
+
+fn verify_file_sha256(path: &std::path::Path, expected: &str) -> Result<()> {
+    let mut file = std::fs::File::open(path)?;
+    let mut hasher = Sha256::new();
+    let mut buffer = [0u8; 64 * 1024];
+    loop {
+        let read = file.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+    }
+    let actual = format!("{:x}", hasher.finalize());
+    if actual != expected {
+        bail!("更新包 SHA256 校验失败: expected {expected}, got {actual}");
+    }
+    Ok(())
 }
 
 /// 替换自身可执行文件。
@@ -323,13 +430,18 @@ pub async fn apply(state: &Arc<PlusServerState>, force: bool) -> Result<String> 
     let asset = pick_asset(&info.assets)
         .ok_or_else(|| anyhow!("未找到匹配当前平台的发布资产"))?;
 
-    let bytes = download_asset(&asset.download_url).await?;
-
     std::fs::create_dir_all("data/update")
         .map_err(|e| anyhow!("创建 data/update 失败: {e}"))?;
     let tmp_path = format!("data/update/{}", asset.name);
-    std::fs::write(&tmp_path, &bytes)
-        .map_err(|e| anyhow!("写入更新文件失败（{tmp_path}）: {e}"))?;
+    let part_path = format!("{tmp_path}.part");
+    let expected_sha256 = expected_asset_sha256(&info.assets, &asset.name).await?;
+    download_asset_to_part(&asset.download_url, std::path::Path::new(&part_path)).await?;
+    if let Err(error) = verify_file_sha256(std::path::Path::new(&part_path), &expected_sha256) {
+        let _ = std::fs::remove_file(&part_path);
+        return Err(error);
+    }
+    std::fs::rename(&part_path, &tmp_path)
+        .map_err(|e| anyhow!("激活已校验更新文件失败（{tmp_path}）: {e}"))?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -575,7 +687,7 @@ async fn try_execute_pending(state: &Arc<PlusServerState>) {
 
 #[cfg(test)]
 mod tests {
-    use super::{is_newer, parse_version};
+    use super::{checksum_for_asset, is_newer, parse_version};
 
     #[test]
     fn parse_handles_v_prefix_and_variable_segments() {
@@ -603,5 +715,16 @@ mod tests {
         assert!(!is_newer(&[0, 5], &[0, 5, 1]));
         assert!(!is_newer(&[0, 5, 1], &[0, 5, 1]));
         assert!(!is_newer(&[0, 4, 190], &[0, 5, 2091]));
+    }
+
+    #[test]
+    fn checksum_manifest_requires_exact_asset_name_and_sha256() {
+        let hash = "A".repeat(64);
+        let manifest = format!("{hash}  pmp-linux-musl\ninvalid other\n");
+        assert_eq!(
+            checksum_for_asset(&manifest, "pmp-linux-musl"),
+            Some(hash.to_ascii_lowercase())
+        );
+        assert_eq!(checksum_for_asset(&manifest, "pmp-linux"), None);
     }
 }

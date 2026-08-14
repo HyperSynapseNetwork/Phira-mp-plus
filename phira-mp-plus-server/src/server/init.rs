@@ -201,6 +201,7 @@ impl PlusServer {
         let initial_auto_update_enabled = config.auto_update.enabled;
         let live_config = Arc::new(RwLock::new(LiveConfig::from_full(&config)));
         let state = Arc::new(PlusServerState {
+            started_at: std::time::Instant::now(),
             config,
             live_config,
             sessions: IdMap::default(),

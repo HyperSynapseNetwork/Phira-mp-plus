@@ -320,7 +320,10 @@ impl DbManager {
 
     pub async fn list_rounds(&self, limit: i64) -> Vec<crate::round_store::RoundMeta> {
         let Self::Pg(pool) = self;
-        let limit = limit.clamp(1, 200);
+        // Replay inventory is bounded by the OpenUDS contract at 1000. Keep
+        // the repository bound identical so `persist.rounds {limit: 1000}`
+        // does not silently truncate to an unrelated lower ceiling.
+        let limit = limit.clamp(1, 1000);
         let rows = sqlx::query(
             "SELECT round_uuid, room_id, chart_id, chart_name, players::text AS players,
                         started_at, finished_at

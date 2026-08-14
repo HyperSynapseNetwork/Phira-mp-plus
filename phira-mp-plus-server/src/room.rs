@@ -10,7 +10,7 @@
 //! PlayerLiveData, PlayRound, PlayResult) that the actor and snapshot
 //! subsystems use. These are data shapes, not mutable state.
 //!
-//! Phase 2, Work C — Room was degraded from a state-holder to a pure
+//! Room is a pure
 //! broadcast interface. Every set_* method was removed; callers route
 //! mutations through RoomActorCommand variants via RoomCommandGateway.
 
@@ -214,6 +214,11 @@ pub struct Room {
     /// 房间创建时间戳（Unix 毫秒）
     pub created_at: i64,
 
+    /// Immutable admission limit supplied at room creation. Mutable room
+    /// state lives in the actor, but this bootstrap value must survive until
+    /// the first actor snapshot is published.
+    pub max_users: usize,
+
     /// PMP47 B: 房间权威状态事件序号的镜像（emit-time binding）。Room Actor
     /// 在每次权威状态变更（`bump_room_seq`）时写入；`Room::broadcast` 等广播
     /// 方法在**事件产生时**读取它给 `SnapshotCovered` 事件打戳（`room_seq`），
@@ -238,7 +243,7 @@ impl Room {
         host: Weak<super::session::User>,
         plugin_manager: Option<Arc<PluginManager>>,
         server: Weak<crate::server::PlusServerState>,
-        _max_users: usize,
+        max_users: usize,
         round_store: Option<Arc<crate::round_store::RoundStore>>,
         creator_id: Option<i32>,
         play_history_cap: usize,
@@ -259,6 +264,7 @@ impl Room {
             play_history: crate::play_history::PlayHistoryStore::new(play_history_cap),
             round_store,
             created_at: now,
+            max_users,
             last_room_seq: AtomicU64::new(0),
             chat_history: RwLock::new(VecDeque::new()),
             chat_history_cap,
@@ -307,7 +313,7 @@ impl Room {
                     system_host: snap.system_host,
                     phira_api_endpoint: None,
                     admin_start_pending: false,
-                    max_users: 100,
+                    max_users: self.max_users,
                     generation: 0,
                     tournament: snap.tournament,
                 };
@@ -324,7 +330,7 @@ impl Room {
             system_host: false,
             phira_api_endpoint: None,
             admin_start_pending: false,
-            max_users: 100,
+            max_users: self.max_users,
             generation: 0,
             tournament: false,
         }

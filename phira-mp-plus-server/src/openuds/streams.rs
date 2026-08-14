@@ -114,15 +114,15 @@ impl StreamManager {
         }
     }
 
-    /// Deliver a formatted server log line to all sessions subscribed to "logs".
-    pub async fn deliver_logs(&self, line: String) {
+    /// Deliver one sequenced server-log occurrence to subscribers of `logs`.
+    pub async fn deliver_logs(&self, entry: crate::history::LogHistoryEntry) {
         let sessions = self.sessions.read().await;
         for (_id, session) in sessions.iter() {
             if session.is_authenticated() && session.subscribes_to_stream("logs") {
                 let frame = Session::stream_response(
                     "logs",
                     0,
-                    serde_json::json!({ "line": line }),
+                    serde_json::json!({ "seq": entry.seq, "line": entry.line }),
                 );
                 let _ = session.send(frame).await;
             }

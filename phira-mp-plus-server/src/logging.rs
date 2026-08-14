@@ -15,8 +15,8 @@ use tracing_subscriber::{fmt, prelude::*, EnvFilter};
 /// sessions subscribed to the `"logs"` stream.  Bounded (drop-oldest when the
 /// broker is slow, matching the TUI channel) so the tracing subscriber never
 /// blocks.
-static OPENUDS_LOG_TX: OnceLock<mpsc::Sender<String>> = OnceLock::new();
-static OPENUDS_LOG_RX: OnceLock<Mutex<Option<mpsc::Receiver<String>>>> = OnceLock::new();
+static OPENUDS_LOG_TX: OnceLock<mpsc::Sender<crate::history::LogHistoryEntry>> = OnceLock::new();
+static OPENUDS_LOG_RX: OnceLock<Mutex<Option<mpsc::Receiver<crate::history::LogHistoryEntry>>>> = OnceLock::new();
 
 enum ChannelWriter {
     Sink,
@@ -66,36 +66,41 @@ impl<'a> fmt::MakeWriter<'a> for ChannelWriterFactory {
     }
 }
 
-/// 把格式化日志行写入进程内历史环形缓冲（OpenUDS `logs.history` 用）。
-struct HistoryWriter;
+/// OpenUDS 日志输出与 `logs.history` 共用同一个 occurrence 入口，
+/// 因而 history 和 live stream 对同一日志使用完全相同的 `seq`。
+struct OpenUdsHistoryWriterFactory(mpsc::Sender<crate::history::LogHistoryEntry>);
 
-impl<'a> fmt::MakeWriter<'a> for HistoryWriter {
-    type Writer = HistorySink;
+impl<'a> fmt::MakeWriter<'a> for OpenUdsHistoryWriterFactory {
+    type Writer = OpenUdsHistorySink;
 
     fn make_writer(&'a self) -> Self::Writer {
-        HistorySink(Vec::new())
+        OpenUdsHistorySink { tx: self.0.clone(), pending: Vec::new() }
     }
 }
 
-struct HistorySink(Vec<u8>);
+struct OpenUdsHistorySink {
+    tx: mpsc::Sender<crate::history::LogHistoryEntry>,
+    pending: Vec<u8>,
+}
 
-impl Write for HistorySink {
+impl Write for OpenUdsHistorySink {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        self.0.extend_from_slice(buf);
+        self.pending.extend_from_slice(buf);
         Ok(buf.len())
     }
 
     fn flush(&mut self) -> io::Result<()> {
-        if !self.0.is_empty() {
-            let line = String::from_utf8_lossy(&self.0).into_owned();
-            self.0.clear();
-            crate::history::push_log(line);
+        if !self.pending.is_empty() {
+            let line = String::from_utf8_lossy(&self.pending).into_owned();
+            self.pending.clear();
+            let entry = crate::history::push_log(line);
+            let _ = self.tx.try_send(entry);
         }
         Ok(())
     }
 }
 
-impl Drop for HistorySink {
+impl Drop for OpenUdsHistorySink {
     fn drop(&mut self) {
         let _ = self.flush();
     }
@@ -243,7 +248,7 @@ pub fn redact_sensitive(message: &str) -> String {
 
 /// Take the OpenUDS log-stream receiver.  Returns `None` on the first call
 /// after the receiver was already claimed, or if `init()` has not run.
-pub fn take_openuds_log_rx() -> Option<mpsc::Receiver<String>> {
+pub fn take_openuds_log_rx() -> Option<mpsc::Receiver<crate::history::LogHistoryEntry>> {
     let lock = OPENUDS_LOG_RX.get_or_init(|| Mutex::new(None));
     lock.lock().unwrap().take()
 }
@@ -379,7 +384,7 @@ pub fn init(file_name: &str, tui_tx: Option<mpsc::Sender<String>>) -> Result<Wor
     // Create the OpenUDS log-stream channel.  The broker task is started by
     // the OpenUDS server via take_openuds_log_rx(); if no OpenUDS server is
     // enabled, the sender's channel is never read and the broker never runs.
-    let (openuds_log_tx, openuds_log_rx) = mpsc::channel::<String>(1024);
+    let (openuds_log_tx, openuds_log_rx) = mpsc::channel::<crate::history::LogHistoryEntry>(1024);
     let _ = OPENUDS_LOG_TX.set(openuds_log_tx);
     *OPENUDS_LOG_RX.get_or_init(|| Mutex::new(None)).lock().unwrap() = Some(openuds_log_rx);
 
@@ -404,27 +409,22 @@ pub fn init(file_name: &str, tui_tx: Option<mpsc::Sender<String>>) -> Result<Wor
             .with_writer(ChannelWriterFactory(tui_tx))
             .with_ansi(false)
             .with_filter(filter.clone());
-        // OpenUDS log stream: always human-readable lines for external tools.
-        let openuds_layer = fmt::layer()
-            .with_writer(ChannelWriterFactory(Some(OPENUDS_LOG_TX.get().unwrap().clone())))
-            .with_ansi(false)
-            .with_filter(filter.clone());
-        // 进程内历史环形缓冲（OpenUDS `logs.history` 查询）；排除 benchmark 洪峰。
-        let mut history_filter = filter;
+        // OpenUDS live + history share one occurrence sequence. Exclude benchmark
+        // bursts so the bounded history/live channel remains operationally useful.
+        let mut openuds_filter = filter.clone();
         if let Ok(directive) = "phira_mp_plus_server::benchmark=off".parse() {
-            history_filter = history_filter.add_directive(directive);
+            openuds_filter = openuds_filter.add_directive(directive);
         }
-        let history_layer = fmt::layer()
-            .with_writer(HistoryWriter)
+        let openuds_layer = fmt::layer()
+            .with_writer(OpenUdsHistoryWriterFactory(OPENUDS_LOG_TX.get().unwrap().clone()))
             .with_ansi(false)
-            .with_filter(history_filter);
+            .with_filter(openuds_filter);
         tracing_subscriber::registry()
             .with(RateLimitLayer::new(RATE_LIMIT_BURST))
             .with(json_file_layer)
             .with(stdout_layer)
             .with(tui_layer)
             .with(openuds_layer)
-            .with(history_layer)
             .init();
     } else {
         // Human-readable text output (default).
@@ -441,26 +441,20 @@ pub fn init(file_name: &str, tui_tx: Option<mpsc::Sender<String>>) -> Result<Wor
             .with_writer(ChannelWriterFactory(tui_tx))
             .with_ansi(false)
             .with_filter(filter.clone());
-        let openuds_layer = fmt::layer()
-            .with_writer(ChannelWriterFactory(Some(OPENUDS_LOG_TX.get().unwrap().clone())))
-            .with_ansi(false)
-            .with_filter(filter.clone());
-        // 进程内历史环形缓冲（OpenUDS `logs.history` 查询）；排除 benchmark 洪峰。
-        let mut history_filter = filter;
+        let mut openuds_filter = filter.clone();
         if let Ok(directive) = "phira_mp_plus_server::benchmark=off".parse() {
-            history_filter = history_filter.add_directive(directive);
+            openuds_filter = openuds_filter.add_directive(directive);
         }
-        let history_layer = fmt::layer()
-            .with_writer(HistoryWriter)
+        let openuds_layer = fmt::layer()
+            .with_writer(OpenUdsHistoryWriterFactory(OPENUDS_LOG_TX.get().unwrap().clone()))
             .with_ansi(false)
-            .with_filter(history_filter);
+            .with_filter(openuds_filter);
         tracing_subscriber::registry()
             .with(RateLimitLayer::new(RATE_LIMIT_BURST))
             .with(file_layer)
             .with(stdout_layer)
             .with(tui_layer)
             .with(openuds_layer)
-            .with(history_layer)
             .init();
     }
 

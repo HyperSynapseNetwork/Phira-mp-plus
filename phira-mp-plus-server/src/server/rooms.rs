@@ -212,7 +212,7 @@ impl PlusServerState {
 
     /// 刷新房间内展示用用户名与谱面名。只影响服务端 TUI/Web/欢迎语/历史展示；不改客户端本机 Phira API。
     ///
-    /// After Phase 2 Work C, display name and chart mutations route through
+    /// Display-name and chart mutations route through
     /// the RoomCommandGateway.
     pub async fn refresh_room_display_metadata(&self, room: &Arc<crate::room::Room>) {
         // Use server's default endpoint (room override no longer directly readable).
@@ -411,7 +411,7 @@ impl PlusServerState {
             .as_ref()
             .is_some_and(|room| room.id.to_string() == rid.to_string());
 
-        // Phase 1: RemoveUser from old room via actor (actor state + Room connection registry).
+        // Step 1: RemoveUser from old room via actor (actor state + Room connection registry).
         let old_room_dropped = if let Some(ref old_room_val) = old_room {
             if same_room {
                 false
@@ -439,7 +439,7 @@ impl PlusServerState {
             false
         };
 
-        // Phase 2: AddUser to new room via actor (actor state).
+        // Step 2: AddUser to new room via actor (actor state).
         user.monitor.store(monitor, Ordering::SeqCst);
         // Admin force-move has no client-facing deadline; use the same budget as
         // the room mailbox COMMAND_TIMEOUT so the deadline check never fires
@@ -497,13 +497,13 @@ impl PlusServerState {
             return Err(err);
         }
 
-        // Phase 3: Update connection registry.
+        // Step 3: Update connection registry.
         target_room
             .force_add_user(Arc::downgrade(&user), monitor)
             .await;
         *user.room.write().await = Some(Arc::clone(&target_room));
 
-        // Phase 4: Set monitor live flag.
+        // Step 4: Set monitor live flag.
         if monitor {
             let _ = self
                 .room_commands
@@ -511,12 +511,12 @@ impl PlusServerState {
                 .await;
         }
 
-        // Phase 5: Assign host if missing.
+        // Step 5: Assign host if missing.
         self.assign_room_host_if_missing(&target_room, &user, monitor, true)
             .await;
         self.refresh_room_display_metadata_background(&target_room);
 
-        // Phase 6: Broadcast join.
+        // Step 6: Broadcast join.
         let join = ServerCommand::OnJoinRoom(user.to_info());
         let message = ServerCommand::Message(phira_mp_common::Message::JoinRoom {
             user: user.id,
@@ -537,7 +537,7 @@ impl PlusServerState {
             }
         }
 
-        // Phase 7: Send JoinRoom response to user.
+        // Step 7: Send JoinRoom response to user.
         let mut users = target_room.users().await;
         users.extend(target_room.monitors().await);
         let room_state = crate::session_room::build_client_room_state(&target_room, &user).await;
@@ -571,7 +571,7 @@ impl PlusServerState {
         // 作为告知传 None（cutover 不剔除）。
         user.try_send(ServerCommand::ChangeHost(is_host), None).await;
 
-        // Phase 8: Record history.
+        // Step 8: Record history.
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_millis() as i64)
@@ -584,7 +584,7 @@ impl PlusServerState {
         )
         .await;
 
-        // Phase 9: Plugin events.
+        // Step 9: Plugin events.
         self.dispatch_plugin_event(crate::plugin::PluginEvent::RoomJoin {
             user_id: target_id,
             room_id: rid.to_string(),
@@ -598,7 +598,7 @@ impl PlusServerState {
         })
         .await;
 
-        // Phase 10: System message.
+        // Step 10: System message.
         {
             let uname = user.name.clone();
             target_room.send_system_msg(

@@ -177,6 +177,14 @@ jobs:
           cargo install cargo-cyclonedx --locked || echo "cargo-cyclonedx install failed"
           cargo cyclonedx --output-format json 2>/dev/null || echo "SBOM generation skipped"
           ls -la *.cdx.json 2>/dev/null && echo "SBOM generated" || echo "No SBOM file"
+      - name: Generate release checksums
+        run: |
+          sha256sum \
+            phira-mp-plus-server-linux-musl \
+            phira-mp-plus-server-linux-arm64-musl \
+            phira-mp-plus-server-windows-x86_64 \
+            phira-plugin-sdk.tar.gz > SHA256SUMS
+          cat SHA256SUMS
       - name: Release
         uses: softprops/action-gh-release@v2
         with:
@@ -189,4 +197,5 @@ jobs:
             phira-mp-plus-server-linux-arm64-musl
             phira-mp-plus-server-windows-x86_64
             phira-plugin-sdk.tar.gz
+            SHA256SUMS
           prerelease: false
