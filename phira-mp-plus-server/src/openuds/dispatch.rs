@@ -1036,7 +1036,7 @@ async fn cmd_server_stats(
         "loaded_plugins": plugin_count,
         "port": state.config.port,
         "http_port": state.config.http_port,
-        "uptime_secs": state.started_at.elapsed().as_secs()
+        "uptime_secs": state.started_at.elapsed().as_secs(),
         "server_name": state.config.server_name,
     }))
 }
