@@ -370,21 +370,11 @@ async fn cmd_room_info(
         .get("room_id")
         .and_then(Value::as_str)
         .ok_or_else(|| "room_id required".to_string())?;
-    let rid: RoomId = room_id
-        .to_string()
-        .try_into()
-        .map_err(|_| "invalid room_id".to_string())?;
-
-    let room = {
-        let rooms = state.rooms.read().await;
-        rooms
-            .get(&rid)
-            .map(Arc::clone)
-            .ok_or_else(|| "room not found".to_string())?
-    };
+    let room = resolve_room(state, room_id).await?;
+    let rid = room.id.to_string();
 
     let control = room.control_snapshot();
-    let actor_snap = state.room_snapshot(&rid.to_string());
+    let actor_snap = state.room_snapshot(&rid);
     let (users_data, monitors_data) = {
         let users: Vec<_> = room
             .users()
@@ -419,7 +409,7 @@ async fn cmd_room_info(
         .unwrap_or_else(|| "unknown".to_string());
 
     Ok(serde_json::json!({
-        "room_id": rid.to_string(),
+        "room_id": rid,
         "uuid": room.uuid.to_string(),
         "created_at": room.created_at,
         "locked": control.locked,
@@ -569,9 +559,21 @@ async fn cmd_room_chat_send(
 
 /// 解析 `room_id` 并克隆房间 Arc。
 async fn resolve_room(state: &Arc<PlusServerState>, room_id: &str) -> Result<Arc<crate::room::Room>, String> {
-    let rid: RoomId = room_id.to_string().try_into().map_err(|_| "invalid room_id".to_string())?;
+    // 1. Exact short `RoomId` lookup first (OpenUDS commands use the short id).
+    if let Ok(rid) = RoomId::try_from(room_id.to_string()) {
+        let rooms = state.rooms.read().await;
+        if let Some(room) = rooms.get(&rid) {
+            return Ok(Arc::clone(room));
+        }
+    }
+    // 2. Fallback: Panel navigates with the room UUID, so resolve by uuid too.
     let rooms = state.rooms.read().await;
-    rooms.get(&rid).map(Arc::clone).ok_or_else(|| "room not found".to_string())
+    for room in rooms.values() {
+        if room.uuid.to_string() == room_id {
+            return Ok(Arc::clone(room));
+        }
+    }
+    Err("room not found".to_string())
 }
 
 /// `room.uuid` — 房间 UUID。
@@ -1037,7 +1039,7 @@ async fn cmd_server_stats(
         "port": state.config.port,
         "http_port": state.config.http_port,
         "uptime_secs": state.started_at.elapsed().as_secs(),
-        "server_name": state.config.server_name,
+        "server_name": state.config.server_name.clone().unwrap_or_default(),
     }))
 }
 
@@ -1050,7 +1052,7 @@ async fn cmd_server_status(
         "running": !state.shutting_down.load(std::sync::atomic::Ordering::Acquire),
         "port": state.config.port,
         "http_port": state.config.http_port,
-        "server_name": state.config.server_name,
+        "server_name": state.config.server_name.clone().unwrap_or_default(),
     }))
 }
 
