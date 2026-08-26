@@ -718,16 +718,3 @@ fn on_event(&mut self, event: PluginEvent) -> Result<bool, String> {
 ```
 
 > 完整源码：[HSNPhira-v2-PMP-plugin](https://github.com/FireflyF09/HSNPhira-v2-PMP-plugin)
-
-## 非宿主能力（插件侧自行处理）
-
-以下功能直接在 WASM 侧用库解决，不进宿主 API：
-
-| 功能 | 原因 |
-|---|---|
-| CBOR 确定性编码 | tiny crate ~2KB WASM |
-| ULEB128 帧编码 | 10 行代码 |
-| 会话管理状态机 | 业务逻辑，属于插件自身 |
-| 事件链哈希验证 | 已暴露 sha256，链由插件维护 |
-| 心跳/Ping | `set-timer` + TCP send |
-| Peer 路由表 | 插件内存数据 |
