@@ -5,7 +5,6 @@
 <img src="docs/logo/phira-mp-plus-banner.png" width="60%" alt="Phira-mp+ banner" />
 
 **Phira-mp+（PMP）** — 基于 [phira-mp](https://github.com/HyperSynapseNetwork/phira-mp) 的高性能 Phira 多人游戏服务端 · Rust / WASM 插件 / WAL 先行 / Actor 模型
-Phira-mp+ 是基于 phira-mp 开发的Phira多人游戏服务端，使用Rust开发，支持WASM插件系统，旨在提供稳定，高性能，高拓展性的Phira多人游戏服务端
 
 <br/>
 
@@ -29,7 +28,7 @@ Phira-mp+ 是基于 phira-mp 开发的Phira多人游戏服务端，使用Rust开
 
 ## 简介
 
-**Phira-mp+（PMP）** 是 [phira-mp](https://github.com/HyperSynapseNetwork/phira-mp) 的增强版多人游戏服务端。在 Phira+ 架构中，PMP 负责游戏协议、房间运行时、WASM 插件与游戏数据持久化。HTTP/SSE/WebSocket 端口用于兼容、诊断和内部集成。
+**Phira-mp+（PMP）** 是 [phira-mp](https://github.com/HyperSynapseNetwork/phira-mp) 的增强版多人游戏服务端，支持WASM插件系统，旨在提供稳定，高性能，高拓展性的Phira多人游戏服务端
 
 > [!WARNING]
 > 本项目使用了**AI**进行开发
