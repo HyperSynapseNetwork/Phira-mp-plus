@@ -428,6 +428,10 @@ Phira-mp+ 整体采用 **Apache License, Version 2.0** — 详见 [LICENSE](LICE
 
 完整的版权归属和第三方依赖许可证声明见 [THIRDPARTY_LICENSES](THIRDPARTY_LICENSES)。
 
+## 贡献指南
+
+欢迎您通过提交 Issues、PR，或联系 FireflyF09@outlook.com 来反馈问题、提出建议，参与本项目的完善。
+
 ## 致谢
 
 感谢 [TeamFlos](https://github.com/TeamFlos) 开发和维护 Phira、phira-mp 项目，以及 [tphira-mp](https://github.com/Pimeng/tphira-mp) 与 [jphira-mp](https://github.com/lRENyaaa/jphira-mp) 提供的实现思路，还有所有支持本项目的用户。版权归属与第三方依赖许可证见 [THIRDPARTY_LICENSES](THIRDPARTY_LICENSES)。
