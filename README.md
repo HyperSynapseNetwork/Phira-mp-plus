@@ -31,7 +31,7 @@
 **Phira-mp+（PMP）** 是 [phira-mp](https://github.com/HyperSynapseNetwork/phira-mp) 的增强版多人游戏服务端，支持WASM插件系统，旨在提供稳定，高性能，高拓展性的Phira多人游戏服务端
 
 > [!WARNING]
-> 本项目使用了**AI**进行开发
+> 本项目使用了**AI**进行开发，而且还一堆bug
 
 ### 核心特性
 
