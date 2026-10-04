@@ -1319,6 +1319,9 @@ impl RoomCommandHandler {
                 let as_ = ctx.expect_actor_state();
                 as_.player_data.remove(target_id);
                 as_.display_names.remove(target_id);
+                as_.state.members.users.retain(|id| *id != *target_id);
+                as_.state.members.monitors.retain(|id| *id != *target_id);
+                as_.state.progress_subscribers.remove(target_id);
                 // Host transfer when the kicked user was the host (same
                 // choke-point rule as RemoveUser): hand the host to the next
                 // remaining user, or revert to the system host for an empty

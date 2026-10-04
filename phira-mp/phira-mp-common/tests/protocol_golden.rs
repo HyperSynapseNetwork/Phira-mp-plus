@@ -470,6 +470,14 @@ fn round_trip_all_server_commands() {
     round_trip_ok(&ServerCommand::UserVisit(77));
 }
 
+#[test]
+fn rejects_overflowing_uleb_lengths() {
+    // Ten-byte ULEB128 with a payload bit outside u64 must be rejected rather
+    // than silently truncated at the shift-63 boundary.
+    let malformed = [0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x02];
+    assert!(decode_packet::<Vec<u8>>(&malformed).is_err());
+}
+
 // ── 3. field layout golden (exact byte arrays) ─────────────────────────────────
 // Official-protocol wire-format pins (PMP44 §27/§33). Each byte is load-bearing.
 

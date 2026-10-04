@@ -50,10 +50,12 @@ impl<'a> BinaryReader<'a> {
         let mut result = 0;
         let mut shift = 0;
         loop {
-            if shift >= 64 {
+            let byte = self.read::<u8>()?;
+            if shift >= 64
+                || (shift == 63 && (byte & 0x7e != 0 || byte & 0x80 != 0))
+            {
                 return Err(anyhow!("ULEB128 value is too large"));
             }
-            let byte = self.read::<u8>()?;
             result |= ((byte & 0x7f) as u64) << shift;
             if byte & 0x80 == 0 {
                 break Ok(result);

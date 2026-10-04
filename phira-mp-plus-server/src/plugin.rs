@@ -1055,19 +1055,13 @@ impl PluginManager {
         {
             if let Ok(tx_guard) = self.plugin_tcp_tx.try_lock() {
                 if let Some(ref tx) = *tx_guard {
-                    let (reply, rx) = std::sync::mpsc::channel();
-                    let _ = tx.try_send(crate::plugin_tcp::PluginTcpCommand::RemovePlugin {
+                    let (reply, _rx) = std::sync::mpsc::channel();
+                    if tx.try_send(crate::plugin_tcp::PluginTcpCommand::RemovePlugin {
                         plugin_id: plugin_name.clone(),
                         reply,
-                    });
-                    // The TCP actor uses a synchronous reply for WIT host
-                    // calls. Wait on it off the async runtime so plugin
-                    // reload cannot block a Tokio worker thread.
-                    let _ = tokio::time::timeout(
-                        std::time::Duration::from_secs(5),
-                        tokio::task::spawn_blocking(move || rx.recv()),
-                    )
-                    .await;
+                    }).is_err() {
+                        warn!(plugin = %plugin_name, "TCP cleanup command could not be queued during plugin removal");
+                    }
                 }
             }
         }

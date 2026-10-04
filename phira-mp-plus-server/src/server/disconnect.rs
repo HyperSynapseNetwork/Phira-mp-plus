@@ -68,6 +68,14 @@ pub(crate) async fn run_admin_kick_user(
             .remove_user(state, &room.id.to_string(), target_id, None, None)
             .await
             .map_err(|error| format!("kick room removal failed: {error}"))?;
+        if !user.monitor.load(std::sync::atomic::Ordering::Relaxed) {
+            state
+                .dispatch_plugin_event(crate::plugin::PluginEvent::RoomLeave {
+                    user_id: target_id,
+                    room_id: room.id.to_string(),
+                })
+                .await;
+        }
     }
 
     let target_session = {

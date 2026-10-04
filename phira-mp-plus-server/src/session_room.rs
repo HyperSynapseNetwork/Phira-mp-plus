@@ -663,16 +663,12 @@ pub async fn join_room(
         )
         .await
         .map_err(|e| anyhow!("{}", tr(e)))?;
-    // Actor AddUser 已提交成员——从现在起，任何提前取消都必须触发 Drop 补偿。
+    // Actor AddUser 已提交成员——从现在起，任何提前取消都必须触发 Drop 补偿.
     join_guard.mark_committed();
     // NOTE: after the actor AddUser commits, `deadline`（commit）不再是预检查。
     // 后续 flush 使用 `response_deadline`（PMP45 P0-I）的 remaining-budget
     // 超时 → close_uncertain + bail（P0-D uncertain-after-commit），绝不普通
     // bail——那会让用户已提交而客户端被误导。
-
-    // The actor command attached the connection and committed membership as a
-    // single serialized operation.
-    join_guard.disarm();
 
     info!(
         user = user.id,
@@ -693,6 +689,11 @@ pub async fn join_room(
     tracing::debug!(user = user.id, room = %room.id, became_host, "join became_host");
 
     *room_guard = Some(Arc::clone(&room));
+    // The actor command attached the connection and committed membership as a
+    // single serialized operation. Keep the compensation guard armed until
+    // the user-to-room binding is also installed; cancellation before this
+    // point must remove the actor membership and registry entry.
+    join_guard.disarm();
     // 清除进行中游戏加入确认标记
     user.join_pending_game.write().await.take();
     drop(room_guard);

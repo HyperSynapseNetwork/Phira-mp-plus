@@ -1245,11 +1245,25 @@ impl PersistenceWal {
             if let Some(last) = lines.pop() {
                 if !last.is_empty() {
                     match serde_json::from_slice::<WalFrame>(last) {
-                        Ok(frame) if frame.verify().is_ok() && frame.ver <= WAL_FORMAT_VERSION => {
-                            lines.push(last);
-                        }
-                        _ => {
+                        Err(_) => {
                             has_truncated = true;
+                        }
+                        Ok(frame) => {
+                            if frame.ver > WAL_FORMAT_VERSION {
+                                self.mark_degraded(DEGRADED_CORRUPTION);
+                                return Err(format!(
+                                    "WAL {} final frame uses unsupported format version {}",
+                                    self.path.display(), frame.ver
+                                ));
+                            }
+                            if let Err(error) = frame.verify() {
+                                self.mark_degraded(DEGRADED_CORRUPTION);
+                                return Err(format!(
+                                    "corrupt WAL {} final frame: {error}",
+                                    self.path.display()
+                                ));
+                            }
+                            lines.push(last);
                         }
                     }
                 }

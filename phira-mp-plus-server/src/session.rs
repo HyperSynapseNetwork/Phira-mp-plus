@@ -3011,13 +3011,6 @@ impl Session {
             }),
         )
         .await?;
-        if stream.version() != phira_mp_common::PROTOCOL_VERSION {
-            return Err(anyhow!(
-                "unsupported Phira-mp protocol version {}; expected {}",
-                stream.version(),
-                phira_mp_common::PROTOCOL_VERSION
-            ));
-        }
         let monitor_task_handle = tokio::spawn({
             let server_clone = Arc::clone(&server_clone);
             async move {

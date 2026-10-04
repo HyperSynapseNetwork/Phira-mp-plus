@@ -137,6 +137,13 @@ mod stream_impl {
             } else {
                 read.read_u8().await?
             };
+            if version != crate::PROTOCOL_VERSION {
+                return Err(anyhow!(
+                    "unsupported Phira-mp protocol version {}; expected {}",
+                    version,
+                    crate::PROTOCOL_VERSION
+                ));
+            }
 
             let (send_tx, mut send_rx) = mpsc::channel(1024);
             let send_tx = Arc::new(StreamSender { tx: send_tx });
